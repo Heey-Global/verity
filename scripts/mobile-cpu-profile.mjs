@@ -46,7 +46,9 @@ export function stampProfileMap(mapPath, commit, bundlePath) {
  * @param {string} exported @param {string} commit @param {string} destination
  */
 export function retainOTAProfile(exported, commit, destination) {
-  const metadata = JSON.parse(readFileSync(join(exported, 'metadata.json'), 'utf8'));
+  /** @type {unknown} */
+  const metadataJSON = JSON.parse(readFileSync(join(exported, 'metadata.json'), 'utf8'));
+  const metadata = /** @type {{fileMetadata?: {ios?: {bundle?: unknown}}}} */ (metadataJSON);
   const name = metadata.fileMetadata?.ios?.bundle;
   if (typeof name !== 'string' || !name.endsWith('.hbc'))
     throw new Error('Expected iOS Hermes export');

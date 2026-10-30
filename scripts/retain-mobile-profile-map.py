@@ -31,7 +31,8 @@ def retain(root, ipa, commit, destination, mode="dedicated"):
         else:
             raise ValueError("Unknown profiling artifact mode")
         if embedded.get("schema") == 2:
-            digest = hashlib.sha256(archive.read(app + "/main.jsbundle")).hexdigest()
+            with archive.open(app + "/main.jsbundle") as binary:
+                digest = hashlib.file_digest(binary, "sha256").hexdigest()
             if embedded.get("bundleSha256") != digest:
                 raise ValueError("Embedded map does not match archived bundle")
         elif mode == "staging":
@@ -58,6 +59,11 @@ def retain(root, ipa, commit, destination, mode="dedicated"):
     (destination / "build.json").write_text(json.dumps({
         "commit": commit,
         "buildNumber": info["CFBundleVersion"],
+        "bundleId": info.get("CFBundleIdentifier"),
+        "nativeVersion": info.get("CFBundleShortVersionString"),
+        "runtimeVersion": updates.get("EXUpdatesRuntimeVersion"),
+        "bundleSha256": embedded.get("bundleSha256"),
+        "mapSha256": embedded.get("mapSha256"),
         "ipaSha256": ipa_digest,
     }, indent=2) + "\n")
 

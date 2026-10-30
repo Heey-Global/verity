@@ -6,11 +6,17 @@
 #import <VerityCPUProfiler/VerityCPUProfiler-Swift.h>
 #include <time.h>
 #include <pthread.h>
+#include <mutex>
 
 // The watchdog and lifecycle stop run on this queue, independently of JS. Never
 // access a jsi::Runtime here: only the process-wide, thread-safe sampler API.
 @interface VerityCPUProfiler : NSObject <RCTBridgeModule, RCTInvalidating>
 @end
+
+// Hermes sampling is process-wide, while reload can overlap bridge instances.
+// Serialize ownership so an old bridge cannot stop a replacement's recording.
+static std::mutex samplerMutex;
+static __weak VerityCPUProfiler *samplerOwner;
 
 @implementation VerityCPUProfiler {
   dispatch_queue_t _queue;
@@ -61,6 +67,7 @@ RCT_EXPORT_MODULE(VerityCPUProfiler)
     @"ready": @(_captureID != nil && !_recording && !_failure)};
 }
 - (void)finish:(NSString *)reason {
+  std::lock_guard<std::mutex> lock(samplerMutex);
   if (!_recording) return;
   _recording = NO;
   _stoppedMonotonicUs = @(clock_gettime_nsec_np(CLOCK_UPTIME_RAW) / 1000);
@@ -70,7 +77,9 @@ RCT_EXPORT_MODULE(VerityCPUProfiler)
   auto *api = facebook::jsi::castInterface<facebook::hermes::IHermesRootAPI>(facebook::hermes::makeHermesRootAPI());
   if (!api) { _failure = @"Hermes sampling API is unavailable."; return; }
   // Disable before serializing: a delayed JS callback cannot extend sampling.
+  if (samplerOwner != self) { _failure = @"CPU recording ownership changed."; return; }
   api->disableSamplingProfiler();
+  samplerOwner = nil;
   try {
     api->dumpSampledTraceToFile(self.rawURL.path.UTF8String);
     NSNumber *size;
@@ -99,6 +108,10 @@ RCT_EXPORT_METHOD(start:(NSString *)jsThreadID resolver:(RCTPromiseResolveBlock)
   NSError *identityError;
   NSDictionary *identity = [VerityProfileBundleIdentity snapshotAndReturnError:&identityError];
   if (!identity) { reject(@"identity", @"Could not identify the running bundle.", identityError); return; }
+  std::lock_guard<std::mutex> lock(samplerMutex);
+  if (samplerOwner && samplerOwner != self) {
+    reject(@"busy", @"Another bridge is still finishing a CPU recording. Retry after reload.", nil); return;
+  }
   _bundleIdentity = [identity copy];
   _directory = [[NSFileManager.defaultManager URLsForDirectory:NSCachesDirectory inDomains:NSUserDomainMask].firstObject
     URLByAppendingPathComponent:@"verity-cpu-profile" isDirectory:YES];
@@ -117,6 +130,7 @@ RCT_EXPORT_METHOD(start:(NSString *)jsThreadID resolver:(RCTPromiseResolveBlock)
   if (!api) { _failure = @"Hermes sampling API is unavailable."; reject(@"sampler", _failure, nil); return; }
   try { api->enableSamplingProfiler(100); }
   catch (...) { _failure = @"Hermes sampling is unavailable."; reject(@"sampler", _failure, nil); return; }
+  samplerOwner = self;
   _recording = YES;
   _watchdog = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, _queue);
   dispatch_source_set_timer(_watchdog, dispatch_time(DISPATCH_TIME_NOW, 30 * NSEC_PER_SEC), DISPATCH_TIME_FOREVER, 0);

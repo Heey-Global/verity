@@ -1,55 +1,47 @@
 # Optimized iOS CPU capture
 
-Use a dedicated **staging profiling** native build to identify JavaScript CPU work
-behind delayed touches and session commits. This is a diagnostic tool, not a
-latency fix. Ordinary staging/production binaries do not link the sampler. OTA
-cannot add it. The profiling build uses Release optimization, the existing Hermes
-V1 engine, a commit-specific runtime and disabled Expo Updates. Do not attach
-DevTools, start a Worklets profiler or run another Hermes sampler during capture.
+Regular **iOS staging** includes a manually started Hermes sampler with Release
+optimization, the normal staging runtime and Expo Updates enabled. Production
+omits the sampler. Install a new native staging build containing this integration;
+an OTA update cannot add it to an older binary. Do not attach DevTools, start a
+Worklets profiler or run another Hermes sampler during capture.
 
 ## Build and retain the matching map
 
-Build from a clean, committed checkout with the repository's pinned Node and npm.
-The device binary uses the staging bundle ID and replaces the ordinary staging
-installation. Distribution/signing and TestFlight upload require the normal release
-authorization; the diagnostic dispatch of the native publishing workflow selects this profile.
+The regular native release workflow retains `staging-cpu-map-<run-id>` before
+uploading staging to Apple. It verifies the archived bundle and map hashes against
+the embedded manifest and records the source commit and IPA build identity.
+Download the artifact within its retention period and keep it with the capture.
+Successful Apple processing does not establish installation or populated sampling.
 
-For authorized TestFlight distribution, dispatch `mobile-native-build.yml` with
-`profile-source` set to the full merged commit. This diagnostic path selects only
-staging, disables OTA, retains the exact IPA-matched map before upload, and skips
-normal release publication/evidence. Download `staging-cpu-map-<run-id>` within
-14 days and keep it privately with the capture. `staging-cpu-build-<run-id>` records
-Apple's processed build identity. Successful upload/processing does not establish
-installation or populated sampling on the iPad.
+Staging OTA uses one Hermes export with external source maps, retains the exact
+bundle/map hashes and publishes that same export with `--skip-bundler`. Before
+moving the staging channel, the pipeline checks the retained map and bundle hash
+against the published iOS manifest. Download `staging-cpu-ota-<source-commit>`
+within 90 days. A retry restores this artifact instead of re-exporting its commit;
+missing or mismatched evidence blocks delivery. A cancellation before artifact
+upload may require recovery of the original export; a new export is no substitute.
 
-On an Apple build host, from `apps/mobile`:
+Captures record the actual launched bundle SHA-256, Expo update ID/runtime,
+embedded/OTA state, bundle ID and native version/build at recording start. An
+available or downloaded update does not label a capture until it is launched.
+The converter selects the map by bundle hash and verifies its own digest and full
+source commit. Maps contain source text: retain them privately, not in issues or
+app assets. Keep the capture's native identity and `build.json` or `update.json`.
 
-```sh
-export VERITY_PROFILE_COMMIT="$(git rev-parse HEAD)"
-export VERITY_APP_VARIANT=staging
-export EXPO_UPDATE_CHANNEL=staging
-export VERITY_CPU_PROFILING=1
-npx expo prebuild --platform ios --no-install --clean
-```
-
-Install pods and archive the generated `VerityStaging` scheme in **Release**, or
-use the repository-pinned EAS CLI with `--profile profiling --local`. Supply
-`VERITY_PROFILE_COMMIT` to EAS's build environment as well. Keep the local EAS
-working directory (`EAS_LOCAL_BUILD_SKIP_CLEANUP=1`) and copy the generated
-`apps/mobile/profiling-artifacts` directory before deleting it. It contains
-`main.jsbundle.map` and `manifest.json` with the full commit and map SHA-256. Maps
-contain source text; keep them with private diagnostic artifacts, not in public
-issues or app assets. Never substitute a freshly exported bundle's map.
-
-For a **non-publishing simulator compile** of the profiling configuration:
+For a **non-publishing simulator compile** of regular staging:
 
 ```sh
-gh workflow run mobile-native-verify.yml -f ref=<commit-or-branch> -f cpu_profiling=true
+gh workflow run mobile-native-verify.yml --ref <branch> -f ref=<commit-or-branch> -f regular_staging=true
 ```
 
-The workflow retains its exact map as a short-lived artifact. A successful normal
-native verification does **not** compile the opt-in sampler. Simulator compilation
-and a synthetic converter test do not establish populated on-device sampling.
+A production compile does not exercise the staging sampler. Simulator compilation
+and synthetic conversion do not establish populated on-device sampling.
+
+The legacy dedicated diagnostic profile remains available with
+`VERITY_CPU_PROFILING=1` and a full `VERITY_PROFILE_COMMIT`; it disables OTA and
+uses a commit-specific runtime. Existing schema-1 captures still require their
+original commit/map digest pair. Prefer regular staging for new captures.
 
 ## Capture on the affected iPad
 
@@ -83,7 +75,7 @@ node scripts/mobile-cpu-profile.mjs extract \
   /private/path/converted
 ```
 
-The converter rejects a mismatched commit/map digest and broken sample stacks. It
+The converter rejects a mismatched bundle/map digest and broken sample stacks. It
 uses the installed Expo/Metro symbolicator, then writes a symbolicated Hermes
 trace, `profile.speedscope.json` and `diagnostics.json`. Open the Speedscope file
 locally in a compatible viewer. The names and source locations are only as good
@@ -111,7 +103,7 @@ measure React component commits; use the existing commit timing markers.
 
 ## Acceptance before attributing or fixing latency
 
-- The opt-in configuration compiles on Apple with the pinned Hermes API.
+- The regular staging configuration compiles on Apple with the pinned Hermes API.
 - The affected iPad produces non-empty app-JS samples, imports into the viewer and
   resolves known application frames using the exact source map.
 - Manual stop, native deadline, background stop, restart and export failures behave

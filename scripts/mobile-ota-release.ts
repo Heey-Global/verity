@@ -8,6 +8,7 @@ import {
   openSync,
   closeSync,
 } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { isReleaseBotLogin } from './release-bot-logins.mjs';
 
@@ -31,6 +32,37 @@ interface Update {
   gitCommitHash: string;
   group: string;
   isRollBackToEmbedded?: boolean;
+  id?: string;
+  manifestPermalink?: string;
+}
+// Verify the published launch asset rather than trusting an artifact name or commit.
+export function validateOTAProfile(
+  root: string,
+  commit: string,
+  published: { id?: string; runtimeVersion?: string; launchAsset?: { hash?: string } },
+  update: Update,
+) {
+  const manifest = JSON.parse(readFileSync(`${root}/manifest.json`, 'utf8')) as {
+    schema?: unknown;
+    commit?: unknown;
+    mapSha256?: unknown;
+    bundleSha256?: unknown;
+  };
+  const mapHash = createHash('sha256')
+    .update(readFileSync(`${root}/main.jsbundle.map`))
+    .digest('hex');
+  const bundleHash = Buffer.from(published.launchAsset?.hash ?? '', 'base64url').toString('hex');
+  if (
+    manifest.schema !== 2 ||
+    manifest.commit !== commit ||
+    manifest.mapSha256 !== mapHash ||
+    !/^[0-9a-f]{64}$/.test(bundleHash) ||
+    manifest.bundleSha256 !== bundleHash ||
+    !update.id ||
+    published.id?.toLowerCase() !== update.id.toLowerCase() ||
+    published.runtimeVersion !== update.runtimeVersion
+  )
+    throw new Error('Exact staging OTA bundle/map evidence does not match publication');
 }
 interface UpdateList {
   currentPage: { group: string }[];
@@ -557,15 +589,25 @@ function stage(runtime: string, version: string) {
     }
     run('unzip', ['-o', archive, '-d', `apps/mobile/${profileRoot}`]);
   }
+  const updates = easJson<Update[]>('update:view', stagingGroup);
+  const ios = updates.filter((update) => update.platform === 'ios');
+  if (ios.length !== 1 || !ios[0].manifestPermalink?.startsWith('https://'))
+    throw new Error('Published iOS manifest evidence is missing');
+  const publishedManifest = JSON.parse(
+    run('curl', [
+      '--fail',
+      '--silent',
+      '--show-error',
+      '--max-time',
+      '60',
+      ios[0].manifestPermalink,
+    ]),
+  ) as Parameters<typeof validateOTAProfile>[2];
+  validateOTAProfile(`apps/mobile/${profileRoot}`, commit, publishedManifest, ios[0]);
   writeFileSync(
     `apps/mobile/${profileRoot}/update.json`,
     JSON.stringify(
-      {
-        group: stagingGroup,
-        source: commit,
-        runtime: stagingCandidate.runtime,
-        updates: easJson('update:view', stagingGroup),
-      },
+      { group: stagingGroup, source: commit, runtime: stagingCandidate.runtime, updates },
       null,
       2,
     ),

@@ -180,6 +180,9 @@ namespace hermes { class IHermesRootAPI; void *makeHermesRootAPI(); }
     symlinkSync(resolve('scripts'), join(f.root, 'scripts'));
     const original = `printf '%s' '{"version":3,"sources":[],"names":[],"mappings":""}' > "$SOURCEMAP_FILE"\n`;
     writeFileSync(join(f.root, 'App.app/main.jsbundle'), 'exact Hermes bytes');
+    const regular = plugin.profileBundleScript(original, '');
+    expect(plugin.profileBundleScript(regular, '')).toBe(regular);
+    expect(regular.match(/export VERITY_PROFILE_COMMIT=/g)).toHaveLength(1);
     const first = plugin.profileBundleScript(original, 'b'.repeat(40));
     const next = plugin.profileBundleScript(first, commit);
     expect(next).not.toContain('b'.repeat(40));
@@ -202,6 +205,11 @@ namespace hermes { class IHermesRootAPI; void *makeHermesRootAPI(); }
       readFileSync(join(f.root, 'apps/mobile/profiling-artifacts/manifest.json'), 'utf8'),
     ).toBe(JSON.stringify(nativeIdentity, null, 2));
     // A failed bundle must not leave a usable identity from an earlier build.
+    // Debug builds intentionally use Metro and have no embedded bundle or map.
+    execFileSync('bash', ['-c', plugin.profileBundleScript('export SKIP_BUNDLING=1\n', commit)], {
+      env: { ...process.env, PROJECT_DIR: projectDir, NODE_BINARY: process.execPath },
+    });
+    expect(existsSync(join(f.root, 'apps/mobile/profiling-artifacts/manifest.json'))).toBe(false);
     const failed = plugin.profileBundleScript('exit 9\n', commit);
     expect(() =>
       execFileSync('bash', ['-c', failed], { env: { ...process.env, PROJECT_DIR: projectDir } }),
