@@ -107,7 +107,7 @@ export async function compareDependencyTrees(
   if (local.isDirectory() && shared.isDirectory()) {
     let bytes = 0;
     for (const entry of await readdir(privatePath)) {
-      if (entry === '.package-lock.json') continue; // npm-generated installation receipt, never source.
+      if (entry === '.package-lock.json' && privatePath.endsWith('/node_modules')) continue; // npm-generated installation receipt, never source.
       bytes += await compareDependencyTrees(
         join(privatePath, entry),
         join(sharedPath, entry),
@@ -350,8 +350,9 @@ export class SessionStorage {
                 const path = field.slice(9);
                 if (dirname(path) !== join(root, '.verity-sessions') || live.has(path)) continue;
                 const since = old[path];
-                current[path] = Number.isFinite(since) && since > 0 ? since : now;
-                if (now - current[path]! < WEEK) continue;
+                current[path] =
+                  typeof since === 'number' && Number.isFinite(since) && since > 0 ? since : now;
+                if (now - current[path] < WEEK) continue;
                 try {
                   await this.reclaim(project, path, null, git, report, signal);
                 } catch (error) {
