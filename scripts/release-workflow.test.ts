@@ -1786,7 +1786,9 @@ describe('toolkit Feature retry payload equivalence', () => {
     )?.run ?? '';
   const comparison = /<<'PYTHON'\n([\s\S]*?)\nPYTHON/.exec(step)?.[1] ?? '';
 
-  function compare(change: string): number | null {
+  // The devcontainer CLI publishes Feature layers as plain tar despite the .tgz
+  // name; 4.68.0 failed when the comparison assumed gzip.
+  function compare(change: string, format: 'w' | 'w:gz' = 'w'): number | null {
     const cwd = mkdtempSync(join(tmpdir(), 'toolkit-retry-'));
     try {
       execFileSync('python3', [
@@ -1794,7 +1796,7 @@ describe('toolkit Feature retry payload equivalence', () => {
         `
 import io, sys, tarfile
 for index, path in enumerate(sys.argv[1:3]):
-    with tarfile.open(path, 'w:gz') as archive:
+    with tarfile.open(path, sys.argv[4]) as archive:
         entry = tarfile.TarInfo('install.sh')
         entry.mtime = index + 100
         entry.uid = index + 1000
@@ -1812,6 +1814,7 @@ for index, path in enumerate(sys.argv[1:3]):
         join(cwd, 'old.tgz'),
         join(cwd, 'new.tgz'),
         change,
+        format,
       ]);
       return spawnSync('python3', ['-c', comparison, join(cwd, 'old.tgz'), join(cwd, 'new.tgz')], {
         encoding: 'utf8',
@@ -1824,6 +1827,7 @@ for index, path in enumerate(sys.argv[1:3]):
   it('reuses an identical payload despite archive timestamps and owner differences', () => {
     expect(comparison).not.toBe('');
     expect(compare('metadata')).toBe(0);
+    expect(compare('metadata', 'w:gz')).toBe(0);
     expect(step).toContain('oras tag "${image}@${existing}" "$VERSION"');
     expect(step.indexOf('payload(sys.argv[1])')).toBeLessThan(
       step.indexOf('oras tag "${image}@${existing}" "$VERSION"'),

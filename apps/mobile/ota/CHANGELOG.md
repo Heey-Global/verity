@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.81.1](https://github.com/Heey-Global/verity/compare/mobile-v1.81.0...mobile-v1.81.1) (2026-10-30)
+
+
+### Features
+
+* **scheduling:** offer meeting times through booking links ([#2080](https://github.com/Heey-Global/verity/issues/2080)) ([b06f9e9](https://github.com/Heey-Global/verity/commit/b06f9e91b7b46c7e107b33ce1f2a33a095d07957))
+
+
+### Bug Fixes
+
+* **lint:** bound memory and reuse dependency-aware results ([#2084](https://github.com/Heey-Global/verity/issues/2084)) ([293839c](https://github.com/Heey-Global/verity/commit/293839c5f6c73fda508e8207c45aa132eb9bf748))
+* **mobile:** clear keyboard gap after interrupted opening ([#2086](https://github.com/Heey-Global/verity/issues/2086)) ([9dc532d](https://github.com/Heey-Global/verity/commit/9dc532d78b3d26d94f47cef4713a6a8f67c65120))
+* **mobile:** keep iPhone sessions single-pane across rotation ([#2087](https://github.com/Heey-Global/verity/issues/2087)) ([40ab27f](https://github.com/Heey-Global/verity/commit/40ab27f074f073dcf351a7bcc4480bc9c60a0c82))
+
 ## [1.80.5](https://github.com/Heey-Global/verity/compare/mobile-v1.80.4...mobile-v1.80.5) (2026-10-29)
 
 
