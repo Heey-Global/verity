@@ -1410,7 +1410,7 @@ jobs:
 
           def payload(path):
               entries = {}
-              with tarfile.open(path, "r:gz") as archive:
+              with tarfile.open(path, "r:*") as archive:
                   for entry in archive:
                       if entry.name in entries:
                           raise ValueError("Duplicate Feature archive entry")
