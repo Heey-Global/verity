@@ -973,12 +973,10 @@ jobs:
   # fork of the default profile with two syscall rules changed, which is a file
   # nobody would keep in step with Docker's.
   #
-  # The backup provisioning fixture also bind-mounts private /etc and /run trees
-  # inside its user/mount namespace. Docker's AppArmor profile denies these mounts
-  # even with seccomp disabled, so this throwaway container disables that profile
-  # too. Keep the non-root user, dropped capabilities, no network and readonly
-  # checkout; do not grant host capabilities or mount a Docker socket.
-  # The preflight proves an actual bind mount, not just namespace creation.
+  # Backup provisioning additionally needs bind mounts. Its separate root fixture
+  # gets SYS_ADMIN only inside a disposable container with no writable host mount,
+  # network or Docker socket. It creates a mount namespace without uid remapping;
+  # the ordinary installer suite stays non-root and capability-less.
   installer:
     needs: changes
     if: needs.changes.outputs.installer == 'true'
@@ -987,7 +985,9 @@ jobs:
     env:
       # Same pin the Dockerfiles carry, so Renovate moves one version for all of them.
       VERITY_INSTALLER_IMAGE: node:26.12.1-bookworm-slim@sha256:3041f464442defe6de36c20b6904b125a6178cfa0a7fc7cc99c0bb5120586f70
-      VERITY_INSTALLER_SANDBOX: --rm --cap-drop ALL --network none --security-opt seccomp=unconfined --security-opt apparmor=unconfined
+      VERITY_INSTALLER_SANDBOX: --rm --cap-drop ALL --network none --security-opt seccomp=unconfined
+      # Mount-only root fixture: no user namespace/uid_map, host mounts or Docker socket.
+      VERITY_BACKUP_TEST_SANDBOX: --rm --cap-drop ALL --cap-add SYS_ADMIN --network none --security-opt seccomp=unconfined --security-opt apparmor=unconfined
     steps:
       # A prior job on this lane can leave root-owned files in the shared workspace,
       # and actions/checkout's clean then fails with EACCES for the non-root runner.
@@ -1026,13 +1026,13 @@ jobs:
           docker build --file deploy/installer-ci.Dockerfile \
             --build-arg "VERITY_INSTALLER_BASE_IMAGE=$VERITY_INSTALLER_IMAGE" --tag "$fixture" .
           echo "VERITY_INSTALLER_IMAGE=$fixture" >> "$GITHUB_ENV"
-      - name: Ensure isolated user and mount namespaces are available in the test container
+      - name: Ensure unprivileged user namespaces are available in the test container
         run: |
           set -euo pipefail
           docker run $VERITY_INSTALLER_SANDBOX \
             --user "$(id -u):$(id -g)" \
             "$VERITY_INSTALLER_IMAGE" \
-            unshare -rm sh -c 'mount --bind /tmp /tmp'
+            unshare -r true
       - name: Run the installer behaviour suite
         run: |
           set -euo pipefail
@@ -1046,7 +1046,18 @@ jobs:
             --volume "$GITHUB_WORKSPACE:/workspace:ro" \
             --workdir /workspace \
             "$VERITY_INSTALLER_IMAGE" \
-            node --test deploy/bin/verity-install.test.mjs deploy/bin/verity-restore-install.test.mjs deploy/bin/verity-rotate-identity.test.mjs docs/website/site/install.test.mjs deploy/bin/verity-backup-provision.test.mjs
+            node --test deploy/bin/verity-install.test.mjs deploy/bin/verity-restore-install.test.mjs deploy/bin/verity-rotate-identity.test.mjs docs/website/site/install.test.mjs
+
+      - name: Run backup provisioning in an isolated mount fixture
+        run: |
+          set -euo pipefail
+          docker run $VERITY_BACKUP_TEST_SANDBOX \
+            --user 0:0 \
+            --env CI=true \
+            --volume "$GITHUB_WORKSPACE:/workspace:ro" \
+            --workdir /workspace \
+            "$VERITY_INSTALLER_IMAGE" \
+            sh -c 'unshare -m sh -c "mount --bind /tmp /tmp" && exec node --test deploy/bin/verity-backup-provision.test.mjs'
 
       - name: Clean installer test tools
         if: always()

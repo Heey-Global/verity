@@ -4,7 +4,10 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync
 import { createServer } from 'node:net';
 import { join, resolve } from 'node:path';
 import { test } from 'node:test';
-const namespace = spawnSync('unshare', ['-rm', 'true'], { encoding: 'utf8' });
+// CI uses a root container with only the mount capability; local non-root runs
+// map their own UID first. Avoid uid_map writes in the root mount-only fixture.
+const namespaceFlags = process.getuid?.() === 0 ? '-m' : '-rm';
+const namespace = spawnSync('unshare', [namespaceFlags, 'true'], { encoding: 'utf8' });
 const supported = namespace.status === 0;
 if (process.env.CI && !supported)
   throw new Error(
@@ -63,7 +66,7 @@ test(
         spawnSync(
           'unshare',
           [
-            '-rm',
+            namespaceFlags,
             'bash',
             '-c',
             'mount --bind "$1/etc" /etc && mount --bind "$1/run" /run && exec bash "$2"',
