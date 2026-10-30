@@ -147,12 +147,13 @@ export interface SlotInput {
 
 /**
  * Bookable start times: each window is cut into consecutive slots of the meeting's duration,
- * starting at the window's start; a slot must fit completely, start after the minimum notice and
- * before the request closes, and must not overlap any busy interval, even partially.
+ * starting at the window's start; a slot must fit completely, start after the minimum notice, and must not overlap any busy interval, even partially.
  */
 export function bookableSlots(input: SlotInput): Slot[] {
   const duration = input.durationMinutes * 60_000;
   if (!(duration > 0)) return [];
+  // The deadline closes booking, not the calendar: a meeting may take place after it.
+  if (input.now.getTime() >= input.closesAt.getTime()) return [];
   const earliest = input.now.getTime() + (input.minimumNoticeMinutes ?? 60) * 60_000;
   const seen = new Set<number>();
   const slots: Slot[] = [];
@@ -161,7 +162,7 @@ export function bookableSlots(input: SlotInput): Slot[] {
   )) {
     for (let start = window.start; start + duration <= window.end; start += duration) {
       const slot = { start, end: start + duration };
-      if (start < earliest || start >= input.closesAt.getTime() || seen.has(start)) continue;
+      if (start < earliest || seen.has(start)) continue;
       if (input.busy.some((busy) => overlaps(busy, slot))) continue;
       seen.add(start);
       slots.push({ start: new Date(start), end: new Date(slot.end), position });

@@ -32,7 +32,9 @@ The design mockup is in [`assets/scheduling/mockup.html`](assets/scheduling/mock
 Each window is cut into consecutive slots of the meeting's duration, starting at the
 window's start; a slot must fit completely. A 14:00–16:00 window offers 14:00, 14:30,
 15:00 and 15:30 for 30 minutes, and 14:00 and 14:45 for 45 minutes. A slot must also
-start at least an hour from now and before the request closes.
+start at least an hour from now. The deadline closes booking, not the calendar: a
+meeting can take place after it, so a guest may pick a time three weeks out within
+the first week. Booking closes at the latest when the last window ends.
 
 ## The calendar is the source of truth
 
@@ -92,6 +94,6 @@ not be removed are posted into the session and sent as push notifications.
 ## Limits
 
 - One guest per request; at most 10 windows and 10 colleagues.
-- Booking stays open for at most 7 days.
+- Booking stays open for at most 7 days; windows may start up to 60 days ahead.
 - Colleagues' availability is not checked.
 - The page is available in English and German.

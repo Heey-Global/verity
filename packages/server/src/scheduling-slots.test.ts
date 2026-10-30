@@ -53,18 +53,24 @@ describe('bookable slots', () => {
     );
   });
 
-  it('respects the minimum notice and the closing deadline', () => {
+  it('respects the minimum notice and offers nothing once booking has closed', () => {
+    const input = { ...base, windows: [window], durationMinutes: 30 };
+    expect(times(bookableSlots({ ...input, now: new Date('2026-11-03T12:10:00Z') }))).toEqual([
+      '13:30',
+      '14:00',
+      '14:30',
+    ]);
+    // Booking closes before the meeting: the window stays bookable until the deadline.
     expect(
-      times(
-        bookableSlots({
-          ...base,
-          now: new Date('2026-11-03T12:10:00Z'),
-          closesAt: new Date('2026-11-03T14:00:00Z'),
-          windows: [window],
-          durationMinutes: 30,
-        }),
-      ),
-    ).toEqual(['13:30']);
+      times(bookableSlots({ ...input, closesAt: new Date('2026-11-02T00:00:00Z') })),
+    ).toHaveLength(4);
+    expect(
+      bookableSlots({
+        ...input,
+        now: new Date('2026-11-02T00:00:00Z'),
+        closesAt: new Date('2026-11-02T00:00:00Z'),
+      }),
+    ).toEqual([]);
   });
 
   it('offers a start once when two windows of the request overlap', () => {
