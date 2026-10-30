@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.80.5](https://github.com/Heey-Global/verity/compare/mobile-v1.80.4...mobile-v1.80.5) (2026-10-29)
+
+
+### Features
+
+* **backup:** add mobile setup and enable provisioned backups ([#2053](https://github.com/Heey-Global/verity/issues/2053)) ([df75b9a](https://github.com/Heey-Global/verity/commit/df75b9aa2a18bc118c5d2429183618db3cbd2a99))
+
+
+### Bug Fixes
+
+* **sessions:** serialize consecutive deletions and bound lint memory ([#2056](https://github.com/Heey-Global/verity/issues/2056)) ([0add0d1](https://github.com/Heey-Global/verity/commit/0add0d19e627d79b9eb2f91ebba0a13990b724aa))
+
 ## [1.80.4](https://github.com/Heey-Global/verity/compare/mobile-v1.80.3...mobile-v1.80.4) (2026-10-29)
 
 

@@ -1,3 +1,4 @@
+import { createBrokerRelayServer } from '../../project-relay/src/relay.js';
 import { secretAuditEventInputSchema } from '@verity/secret-contracts';
 import type { Backend, Conductor } from '@verity/session';
 import { InMemoryEventBus } from '@verity/session';
@@ -309,20 +310,25 @@ function build(
   return { app, store, tokens, records, invocations, approvals, dispatches };
 }
 
+const relayPorts = new Map<string, number>();
 function postUnix(
   socketPath: string,
   authorization: string | undefined,
   payload: unknown,
+  extraHeaders: Record<string, string> = {},
 ): Promise<{ status: number; body: string }> {
   return new Promise((resolve, reject) => {
     const body = JSON.stringify(payload);
     const req = request(
       {
-        socketPath,
+        ...(relayPorts.has(socketPath)
+          ? { host: '127.0.0.1', port: relayPorts.get(socketPath)! }
+          : { socketPath }),
         method: 'POST',
         path: '/internal/mcp',
         headers: {
           ...(authorization !== undefined ? { authorization } : {}),
+          ...extraHeaders,
           'content-type': 'application/json',
           'content-length': Buffer.byteLength(body),
         },
@@ -346,7 +352,9 @@ function getUnix(
   return new Promise((resolve, reject) => {
     const req = request(
       {
-        socketPath,
+        ...(relayPorts.has(socketPath)
+          ? { host: '127.0.0.1', port: relayPorts.get(socketPath)! }
+          : { socketPath }),
         method: 'GET',
         path: '/internal/mcp',
         headers: { accept: 'text/event-stream' },
@@ -371,6 +379,7 @@ function getUnix(
 async function withListener(
   harness: Harness,
   run: (socketPath: string) => Promise<void>,
+  throughRelay = true,
 ): Promise<void> {
   const dir = mkdtempSync(join(tmpdir(), 'verity-mcp-route-'));
   await harness.app.ready();
@@ -380,9 +389,15 @@ async function withListener(
     ownerUid: TEST_UID,
     relayGid: TEST_GID,
   });
+  const relay = createBrokerRelayServer({ socketPath: listener.socketPath });
+  await new Promise<void>((resolve) => relay.listen(0, '127.0.0.1', resolve));
+  if (throughRelay) relayPorts.set(listener.socketPath, (relay.address() as AddressInfo).port);
   try {
     await run(listener.socketPath);
   } finally {
+    relayPorts.delete(listener.socketPath);
+    relay.closeAllConnections();
+    await new Promise<void>((resolve) => relay.close(() => resolve()));
     await listener.close();
     await harness.app.close();
     rmSync(dir, { recursive: true, force: true });
@@ -1166,26 +1181,32 @@ describe('POST /internal/mcp (loopback MCP gateway)', () => {
   it('accepts an escaped 256 KiB payload within the route byte limit', async () => {
     const harness = build({ allow: true });
     const token = harness.tokens.issue({ projectId: 'p1', sessionId: 's1', turnId: 't1' });
-    await withListener(harness, async (socketPath) => {
-      const text = '\u0001'.repeat(256 * 1024);
-      const res = await postUnix(socketPath, `Bearer ${token}`, {
-        jsonrpc: '2.0',
-        id: 1,
-        method: 'tools/call',
-        params: {
-          name: 'verity_http_request',
-          arguments: {
-            method: 'POST',
-            url: 'https://api.example.com/documents',
-            secretAlias: 'API_TOKEN',
-            auth: { kind: 'static', header: 'authorization', scheme: 'Bearer' },
-            body: { text },
+    await withListener(
+      harness,
+      async (socketPath) => {
+        const text = '\u0001'.repeat(256 * 1024);
+        const res = await postUnix(socketPath, `Bearer ${token}`, {
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'tools/call',
+          params: {
+            name: 'verity_http_request',
+            arguments: {
+              method: 'POST',
+              url: 'https://api.example.com/documents',
+              secretAlias: 'API_TOKEN',
+              auth: { kind: 'static', header: 'authorization', scheme: 'Bearer' },
+              body: { text },
+            },
           },
-        },
-      });
-      expect(res.status).toBe(200);
-      expect(harness.records.some((record) => record.kind === 'gateway_call_received')).toBe(true);
-    });
+        });
+        expect(res.status).toBe(200);
+        expect(harness.records.some((record) => record.kind === 'gateway_call_received')).toBe(
+          true,
+        );
+      },
+      false,
+    ); // This tests the Server route byte ceiling; the relay has its own smaller bound.
   });
 
   it('serves a tool call for the session and turn the bearer was minted for', async () => {
@@ -2526,4 +2547,21 @@ it('serves vulnerability reads through the audited gateway and refuses foreign r
       (r) => r.toolName === 'verity_vulnerabilities' && r.kind === 'gateway_call_served',
     ),
   ).toBe(true);
+});
+
+it('rejects forged project/generation headers at the real relay before broker execution', async () => {
+  const harness = build();
+  await withListener(harness, async (socketPath) => {
+    const reply = await postUnix(
+      socketPath,
+      undefined,
+      { jsonrpc: '2.0', id: 1, method: 'tools/list' },
+      {
+        'x-verity-project-id': 'forged-project',
+        'x-verity-container-generation': 'forged-generation',
+      },
+    );
+    expect(reply.status).toBe(400);
+    expect(harness.invocations).toEqual([]);
+  });
 });

@@ -14,7 +14,7 @@ to the trusted Server. It must never be a project secret or environment value.
 The listener limits headers, request size and concurrent admitted operations.
 
 The strict protocol can query the current binding, register an exact network
-binding, prepare denial, start an exact container as sandbox/relay, and retire a
+binding, prepare denial, start an exact container as sandbox/relay, connect the fixed inspected pair, and retire a
 generation.
 It accepts neither commands nor nft rules, URLs, destination grants or arbitrary
 Docker specifications. Renewal/admission is deliberately unavailable in this
@@ -52,7 +52,7 @@ start. Post-start inspection failures restore denial and stop the exact containe
 Retirement keeps denial and reservations, stops registered containers, and rejects
 reactivation even after process reconstruction. No cleanup operation opens access.
 
-This denies all traffic, including DNS and relay traffic. Bounded transports,
+Before explicit transport readiness, this denies all traffic, including DNS and relay traffic. Bounded transports,
 verified endpoint admission and the full Runner runtime acceptance fixture remain
 subsequent increments, not hidden exceptions in this protocol.
 
@@ -63,7 +63,8 @@ subsequent increments, not hidden exceptions in this protocol.
 are uninstalled fixture templates, not a production installation command:
 
 - `verity-egress-bootstrap.service` restores denial before Docker.
-- `docker-egress.conf` makes Docker require successful bootstrap.
+- `docker-egress.conf` makes Docker require successful bootstrap and repeats
+  locked denial restoration in `ExecStartPre` on every daemon start.
 - `verity-egress-host.service` restores denial again before binding the socket,
   then accepts the trusted Server's commands after Docker starts.
 
@@ -72,8 +73,25 @@ bundle at `/opt/verity-egress`, Node 26, nftables, a local rootful Docker daemon
 and the unit/drop-in files together. RuntimeDirectory cleanup removes stale
 sockets between service invocations; the application never steals an existing
 socket pathname. `LiveRestoreEnabled` and rootless Docker are rejected by the
-control entrypoint. Systemd ordering and restart behavior still require full
-managed-host integration evidence before these templates may be installed.
+control entrypoint. The experimental entrypoint accepts Docker 29.9.2, matching
+the pinned runtime fixture; other daemon versions require explicit validation.
+Systemd >=249 must run as PID 1: Docker continuously upholds
+the controller, and `BindsTo`/`PartOf` plus ordering couple controller teardown and
+revalidation to daemon transitions. `Type=notify` reports readiness only after
+denial, host checks, binding revalidation and control-socket creation. Shutdown
+rejects queued admissions before fencing after in-flight writes; independent
+`ExecStopPost` denial also runs after crashes or failed startup, without needing
+the registry or Docker. Both preflight and cleanup share the controller lock.
+Kernel-denial failure attempts registered-container containment during graceful
+shutdown; systemd ordering alone cannot guarantee containment if the kernel and
+container stop operations both fail.
+
+The separate `project-egress-boot` workflow preflights an actual KVM guest from a
+dated, SHA256-pinned Canonical image and requires a changed guest kernel boot ID.
+Missing KVM is a failure, not a skipped acceptance result or container fallback.
+This establishes boot-VM feasibility only; actual-unit ordering, retained
+Runner/relay topology and daemon/Server recovery still require the subsequent
+VM integration matrix before these templates may be installed in production.
 
 ## Evidence and remaining gates
 
@@ -158,3 +176,36 @@ systrap runtime, 32 produced a `newosproc` failure; a sequential comparison at
 64 passed broker readiness with the same 192 MiB memory and CPU limits. The
 96 MiB V8 heap cap is unchanged. This evidence is specific to the pinned runtime,
 not a universal minimum for other gVisor versions or workloads.
+
+
+## Experimental Sandbox-to-relay transport
+
+After both registered roles are running, the host derives each endpoint from
+local Docker inspection and the actual network-namespace/veth/bridge topology.
+Docker's network and container IP/MAC assignments must agree. gVisor transfers
+addresses into netstack, so the Linux peer proves the interface binding, not the
+continued presence of an address on that Linux NIC.
+
+Admission atomically replaces both the reserved-prefix boot rules and generation
+rules. The only IPv4/TCP paths are Sandbox to its relay on 8080, 8443 and, when the
+host policy includes a Codex socket, 8444. Return traffic must match the same pair,
+service source port and established conntrack state. Bridge rules additionally
+bind both interface indices/names and MACs; ARP is limited to the same pair.
+Each admission uses a fresh 128-bit conntrack label, assigned only to an initial
+SYN. Both directions require that exact label, so old streams remain denied after
+re-admission, including loosely re-tracked mid-stream packets. Protected transport
+labels are host-owned and are not restored from cached controller state.
+Host input, other endpoints, IPv6, UDP and DNS remain denied. The relay has no
+Internet exception. Existing gateway TLS, project identity, credential/account
+and action authorization remain authoritative.
+
+`connect` takes only a project/generation reference and acknowledges the inspected
+relay IPv4 address. Provisioning compares it with the mounted hostname projection.
+Protected DNS overrides confer no access. Start, prepare, retirement and recovery
+first revoke the pair; restart can admit it only after both roles are revalidated.
+Recovery does not replay cached addresses. A failed revocation poisons the
+controller and attempts to stop both registered containers.
+
+This remains experimental and uninstalled. It does not implement general DNS or
+Internet admission, connector/preview transport expansion, the full attack matrix,
+daemon boot acceptance, or hard expiry during host/controller suspension.

@@ -89,6 +89,7 @@ describe('mobile native compatibility', () => {
     'apps/mobile/patches/fix.patch',
     'scripts/prepare-mobile-eas-build.mjs',
     'scripts/patch-mobile-native-deps.mjs',
+    'scripts/mobile-cpu-profile.mjs',
     'apps/mobile/.fingerprintignore',
   ])('guards custom native input %s even if Expo would ignore it', async (path) => {
     const load = vi.fn();

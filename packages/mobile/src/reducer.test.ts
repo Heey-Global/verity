@@ -1403,3 +1403,36 @@ it('refreshes a saved meeting notice in place during live updates and history re
   r.apply(4, { t: 'notice', text: 'Meeting saved to the knowledge base: [Other](docs/other.md)' });
   expect(r.messages).toHaveLength(3);
 });
+
+describe('MCP Apps replay', () => {
+  it('restores one card with the latest result without relying on backend tool ids', () => {
+    const event: Extract<AgentEvent, { t: 'mcp_app' }> = {
+      t: 'mcp_app',
+      appId: '00000000-0000-4000-8000-000000000001',
+      projectId: 'p',
+      sessionId: 's',
+      turnId: 'finished',
+      connectionId: 'c',
+      connectionFingerprint: 'fingerprint',
+      toolName: 'dashboard',
+      resourceUri: 'ui://dashboard',
+      input: {},
+      result: { content: [], structuredContent: { count: 1 } },
+    };
+    const live = new SessionReducer();
+    live.apply(1, event);
+    const initial = live.messages[0];
+    live.apply(2, { ...event, result: { content: [], structuredContent: { count: 2 } } });
+    const replayed = new SessionReducer();
+    replayed.apply(1, event);
+    replayed.apply(2, { ...event, result: { content: [], structuredContent: { count: 2 } } });
+    expect(live.messages).toEqual(replayed.messages);
+    expect(live.messages).toHaveLength(1);
+    expect(live.messages[0]).not.toBe(initial);
+    expect(live.messages[0]).toMatchObject({
+      kind: 'agent-event',
+      event: { result: { structuredContent: { count: 2 } } },
+    });
+    expect(live.running).toBe(false);
+  });
+});

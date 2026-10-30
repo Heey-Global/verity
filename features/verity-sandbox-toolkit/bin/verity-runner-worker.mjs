@@ -23621,6 +23621,19 @@ var agentEventSchema = import_zod.z.discriminatedUnion("t", [
     text: import_zod.z.string()
   }),
   import_zod.z.object({
+    t: import_zod.z.literal("mcp_app"),
+    appId: import_zod.z.string().uuid(),
+    projectId: import_zod.z.string().min(1),
+    sessionId: import_zod.z.string().min(1),
+    turnId: import_zod.z.string().min(1),
+    connectionId: import_zod.z.string().min(1),
+    connectionFingerprint: import_zod.z.string().min(1),
+    toolName: import_zod.z.string().min(1),
+    resourceUri: import_zod.z.string().startsWith("ui://"),
+    input: import_zod.z.record(import_zod.z.string(), import_zod.z.unknown()),
+    result: import_zod.z.record(import_zod.z.string(), import_zod.z.unknown())
+  }),
+  import_zod.z.object({
     t: import_zod.z.literal("tool_call_start"),
     id: import_zod.z.string().min(1),
     name: import_zod.z.string().min(1),
