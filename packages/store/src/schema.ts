@@ -816,6 +816,8 @@ export interface QueuedTurnsTable {
  * row still present at startup means the turn was abandoned by a crash/restart.
  */
 interface RunningTurnsTable {
+  marker_id: ColumnType<string | null, string | null | undefined, string | null | undefined>;
+  settled: Generated<boolean>;
   session_id: string;
   /** Seq of the prompt event this turn is executing — recovery/reattach anchor. */
   prompt_seq: number;
@@ -1592,6 +1594,8 @@ export interface VulnDigestsTable {
   day: string;
 }
 export interface Database {
+  qa_dispatches: QADispatchesTable;
+  repair_resource_budgets: RepairResourceBudgetsTable;
   repair_mandates: RepairMandatesTable;
   repair_incidents: RepairIncidentsTable;
   repair_workflow_heads: RepairWorkflowHeadsTable;
@@ -1601,6 +1605,8 @@ export interface Database {
   qa_inbox: QAInboxTable;
   qa_proposals: QAProposalsTable;
   qa_decisions: QADecisionsTable;
+  assistant_settings: AssistantSettingsTable;
+  assistant_project_grants: AssistantProjectGrantsTable;
   vuln_digests: VulnDigestsTable;
   vuln_ignores: VulnIgnoresTable;
   vuln_notifications: VulnNotificationsTable;
@@ -1799,6 +1805,8 @@ interface RepairMandatesTable {
   checked_at: Date | null;
 }
 interface RepairIncidentsTable {
+  verified_success: Generated<boolean>;
+  repair_pr: number | null;
   id: string;
   project_id: string;
   resource: string;
@@ -1830,6 +1838,21 @@ interface RepairSessionHistoryTable {
   resource: string;
   session_id: string;
   created_at: Generated<Date>;
+}
+interface AssistantSettingsTable {
+  id: number;
+  enabled: Generated<boolean>;
+  revision: Generated<number>;
+  sponsor_user_id: string | null;
+  session_id: string | null;
+  updated_at: Generated<Date>;
+}
+interface AssistantProjectGrantsTable {
+  project_id: string;
+  mode: import('./assistant.js').AssistantMode;
+  sponsor_user_id: string;
+  revision: Generated<number>;
+  updated_at: Generated<Date>;
 }
 interface QACoordinatorTable {
   id: number;
@@ -1867,4 +1890,18 @@ interface QADecisionsTable {
   snapshot: string;
   outcome: string | null;
   created_at: Generated<Date>;
+}
+
+interface QADispatchesTable {
+  id: string;
+  session_id: string;
+  state: 'reserved' | 'admitted' | 'cancelled' | 'legacy';
+  prompt_seq: ColumnType<string | null, string | number | null, string | number | null>;
+  created_at: Generated<Date>;
+}
+interface RepairResourceBudgetsTable {
+  project_id: string;
+  resource: string;
+  used: Generated<number>;
+  cycle: Generated<number>;
 }

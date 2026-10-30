@@ -13,6 +13,8 @@ chmod 0700 "$work"
 prefix="verity-backup-restore-dind-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
 original="$prefix-original"
 fresh="$prefix-fresh"
+first_fresh=$fresh
+second="$prefix-second"
 root=/opt/verity-restore-fixture
 repo=ghcr.io/heey-global/verity/verity-server
 registry=registry:2.8.3@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373
@@ -24,7 +26,7 @@ cleanup() {
   local status=$?
   trap - EXIT
   # Never print the private input or installer output, even on an assertion failure.
-  for name in "$original" "$fresh"; do
+  for name in "$original" "$first_fresh" "$second"; do
     host_docker rm -f "$name" >/dev/null 2>&1 || true
     host_docker volume rm "$name-data" >/dev/null 2>&1 || true
   done
@@ -34,7 +36,7 @@ cleanup() {
 trap cleanup EXIT
 start_host() {
   daemon_name=$1
-  [[ $daemon_name = "$original" || $daemon_name = "$fresh" ]]
+  [[ $daemon_name = "$original" || $daemon_name = "$fresh" || $daemon_name = "$second" ]]
   local socket_dir="$work/${daemon_name##*-}"
   mkdir -m 0700 "$socket_dir"
   socket="unix://$socket_dir/docker.sock"
@@ -74,6 +76,9 @@ start_host() {
 run_driver() {
   local action=$1 fault=${2:-} job='' phase=''
   local -a mounts=(--mount "type=bind,src=$root,dst=$root")
+  if [[ $action = destination-full ]]; then
+    mounts+=(--mount "type=tmpfs,dst=$root/enospc,tmpfs-size=4194304,tmpfs-mode=0700")
+  fi
   if [[ $action != capture && $action != diagnose-activation && $action != monitor-activation ]]; then
     if [[ $action != late-revoke ]]; then mounts+=(--mount "type=bind,src=$root/backup,dst=$root/backup,readonly"); fi
     if [[ $action = no-space ]]; then mounts+=(--mount "type=tmpfs,dst=$root/host/restore,tmpfs-size=33554432,tmpfs-mode=0700"); fi
@@ -90,7 +95,7 @@ run_driver() {
   inner run --rm --init --user 0:0 --network host --label "verity.restore-job=$job" \
     --mount type=bind,src=/var/run/docker.sock,dst=/var/run/docker.sock "${mounts[@]}" \
     --env VERITY_RESTORE_DOCKER_ACCEPTANCE=1 --env "VERITY_RESTORE_TEST_DAEMON_ID=$daemon_id" \
-    --env "VERITY_RESTORE_TEST_IMAGE=$digest" --env "VERITY_RESTORE_TEST_INTERRUPT=$fault" \
+    --env "VERITY_RESTORE_ENABLED_IMAGE=${enabled_digest:-}" --env "VERITY_RESTORE_TEST_IMAGE=$digest" --env "VERITY_RESTORE_TEST_INTERRUPT=$fault" \
     --env "VERITY_RESTORE_TEST_NEW_IDENTITY=${new_identity:-0}" \
     --entrypoint node "$digest" "$root/driver.mjs" "$action"
 }
@@ -111,6 +116,11 @@ prepare_reviewed() {
   for step in 1 2 3; do run_driver advance; done
   run_driver wrong-password
   sleep 6
+  if [[ ${trial_surfaces_checked:-0} = 0 ]]; then
+    run_driver trial-surfaces
+    trial_surfaces_checked=1
+    sleep 6
+  fi
   run_driver review
   run_driver advance
 }
@@ -119,6 +129,8 @@ start_host "$original"
 original_id=$daemon_id
 original_digest=$digest
 run_driver capture
+echo '--- recovery: actual ENOSPC on a private destination'
+run_driver destination-full
 mkdir -m 0700 "$work/copied"
 host_docker cp "$original:$root/backup" "$work/copied/backup"
 host_docker cp "$original:$root/input" "$work/copied/input"
@@ -206,6 +218,7 @@ activate_installer() {
   # Capture safe summaries before managed-up removes an unhealthy candidate during rollback.
   run_driver monitor-activation >"$work/activation-diagnostics.log" 2>&1 &
   monitor=$!
+  inside sh -c 'date +%s000 > "$1/restored-schedule-start"' sh "$root"
   # The real bundled installer consumes the supplied keys on stdin and performs normal deployment activation.
   inside jq -r '.recoveryKey,.masterPassword' "$root/input" \
     | host_docker exec -i --env DOCKER_HOST=unix:///var/run/docker.sock --env "VERITY_STATE_DIR=$root/host" \
@@ -221,6 +234,62 @@ activate_installer() {
 }
 activate_installer
 run_driver verify-api
+
+run_driver verify-restored-schedule
+run_driver assert-prerequisites
+build_test_image() {
+inside mkdir -p "$root/enabled-build"
+host_docker exec -i "$fresh" sh -c 'cat >"$1/Dockerfile"' sh "$root/enabled-build" <<'DOCKERFILE'
+ARG BASE
+FROM ${BASE}
+USER 0
+# Test-only diagnostics preserve control flow and report only static source error literals/codes.
+RUN node --input-type=module -e 'import {readFileSync,writeFileSync,readdirSync} from "node:fs"; const root="/app/packages/server/dist/backup/"; const files=readdirSync(root).filter(n=>n.endsWith(".js")); const safe=files.flatMap(n=>[...readFileSync(root+n,"utf8").matchAll(/new Error\((["\x27])([^"\x27\\]*?)\1\)/g)].map(m=>m[2])); const report="console.error(\"BACKUP_ACCEPTANCE_FAILURE \"+JSON.stringify({name:error?.name,code:/^[A-Z0-9_]{1,30}$/.test(error?.code)?error.code:undefined,message:"+JSON.stringify(safe)+".includes(error?.message)?error.message:undefined}));"; for(const [name,before,after] of [["scheduler.js","catch {","catch (error) {"+report],["runtime.js","catch (error) {","catch (error) {"+report],["identity-request.js","// A previous attempt","console.error(\"BACKUP_ACCEPTANCE_IDENTITY \"+JSON.stringify({code:error?.code,mismatch:error?.message===\"Identity helper receipt does not match this capture\"})); // A previous attempt"]]) {const p=root+name;const s=readFileSync(p,"utf8");if(s.split(before).length!==2)throw Error("diagnostic patch mismatch");writeFileSync(p,s.replace(before,after));}'
+USER 1000:1000
+DOCKERFILE
+inside docker build --quiet --build-arg "BASE=$digest" --tag "$repo:backup-enabled-acceptance" "$root/enabled-build" >/dev/null
+inner push --quiet "$repo:backup-enabled-acceptance" >/dev/null
+enabled_digest=$(inner image inspect --format '{{index .RepoDigests 0}}' "$repo:backup-enabled-acceptance")
+[[ $enabled_digest =~ ^ghcr.io/heey-global/verity/verity-server@sha256:[a-f0-9]{64}$ && $enabled_digest != "$digest" ]]
+}
+install_test_image() {
+  local target=$1 status=0
+  # Fixture-only offline preparation: paired installations correctly reject arbitrary image repair.
+  # Stop writers and bind the isolated authority to the exact unpublished test digest.
+  mapfile -t test_writers < <(inner ps -q --filter label=com.docker.compose.service=verity-updater)
+  [[ ${#test_writers[@]} = 1 ]]
+  inner stop "${test_writers[@]}" >/dev/null
+  [[ $(inner inspect --format '{{.State.Running}}' "${test_writers[0]}") = false ]]
+  inner rm -f verity-managed-server >/dev/null
+  inner run --rm --user 0:0 --mount type=volume,src=verity-managed-deployment,dst=/authority \
+    --entrypoint node "$digest" --input-type=module -e '
+      import assert from "node:assert/strict";
+      import {readFile,writeFile,rename,stat,chown} from "node:fs/promises";
+      import {parseServerDeploymentSpec,sealDeploymentSpec} from "/app/packages/server/dist/self-update/deployment-spec.js";
+      const path="/authority/server-deployment.json";
+      const owner=await stat(path);
+      const spec=parseServerDeploymentSpec(JSON.parse(await readFile(path,"utf8")));
+      assert.ok(spec);
+      const {checksum,...body}=spec;
+      assert.match(process.argv[1], /^ghcr\.io\/heey-global\/verity\/verity-server@sha256:[a-f0-9]{64}$/);
+      await writeFile(path+".fixture",JSON.stringify(sealDeploymentSpec({...body,image:process.argv[1]})),{mode:0o600});
+      await chown(path+".fixture",owner.uid,owner.gid);
+      await rename(path+".fixture",path);
+    ' "$target"
+  host_docker exec --env DOCKER_HOST=unix:///var/run/docker.sock --env "VERITY_STATE_DIR=$root/host" \
+    --env VERITY_API_HOST_PORT=0 --env VERITY_PAIRING_HOST=127.0.0.1 "$fresh" \
+    sh -c 'umask 077; exec /opt/verity-install/deploy/bin/verity-install --image "$1" >"$2/test-image-install.log" 2>&1' sh "$target" "$root" || status=$?
+  if [[ $status != 0 ]]; then
+    inside sh -c 'sed -n "/^verity-install:/p; /^verity-backup-prerequisites:/p; /^docker: Error response from daemon:/p; /^Error: VERITY_SERVER_IMAGE/p" "$1/test-image-install.log"' sh "$root" >&2 || true
+    echo "isolated test-image installation failed (exit $status)" >&2
+    return "$status"
+  fi
+}
+build_test_image
+install_test_image "$enabled_digest"
+run_driver verify-enabled-restart
+install_test_image "$digest"
+run_driver assert-prerequisites
 
 echo '--- recovery: real root helper exposed-generation retirement'
 run_driver prepare-exposure-original
@@ -272,4 +341,42 @@ run_driver assert-restored
 run_driver advance
 activate_installer
 run_driver verify-api
+echo '--- recovery: two independently accepted hosts retain and collect only owned repositories'
+run_driver owned-maintenance
+host_docker cp "$first_fresh:$root/ownership-result" "$work/first-ownership.json"
+host_docker cp "$first_fresh:$root/new-backups/repositories" "$work/peer-repositories"
+first_daemon_id=$daemon_id
+# Park the first disposable installation while the second runs to bound CI memory use.
+mapfile -t parked_containers < <(inner ps -q)
+if (( ${#parked_containers[@]} )); then inner stop "${parked_containers[@]}" >/dev/null; fi
+fresh=$second
+new_identity=0
+start_host "$fresh"
+[[ $daemon_id != "$first_daemon_id" && $daemon_id != "$original_id" ]]
+host_docker cp "$work/copied/." "$fresh:$root"
+host_docker cp "$work/peer-repositories" "$fresh:$root/peer-repositories"
+run_driver seed-compose
+prepare_reviewed
+run_driver late-revoke
+run_driver advance
+run_driver assert-restored
+run_driver advance
+activate_installer
+run_driver verify-api
+run_driver verify-restored-schedule
+run_driver assert-prerequisites
+build_test_image
+install_test_image "$enabled_digest"
+run_driver verify-enabled-restart
+install_test_image "$digest"
+run_driver assert-prerequisites
+run_driver owned-maintenance
+host_docker cp "$second:$root/ownership-result" "$work/second-ownership.json"
+node --input-type=module -e 'import assert from "node:assert/strict"; import {readFileSync} from "node:fs"; const [a,b]=process.argv.slice(1).map(p=>JSON.parse(readFileSync(p))); assert.notEqual(a.installationId,b.installationId); assert.notEqual(a.repository,b.repository);' "$work/first-ownership.json" "$work/second-ownership.json"
+run_driver verify-owned-unchanged
+fresh=$first_fresh
+daemon_name=$first_fresh
+socket="unix://$work/fresh/docker.sock"
+daemon_id=$first_daemon_id
+run_driver verify-owned-unchanged
 echo 'Separate-host capture, restore, interruption, abort, acceptance and identity checks passed.'

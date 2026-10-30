@@ -1067,3 +1067,88 @@ describe('build storage reconciliation', () => {
     expect(existsSync(young)).toBe(false);
   });
 });
+
+describe('admission reclamation', () => {
+  it('reclaims once and measures capacity again before admitting', async () => {
+    const f = fixture();
+    f.local.availableBytes = 0;
+    f.writeReport(0);
+    const manager = f.manager();
+    const reclaim = vi.fn(async () => {
+      f.local.availableBytes = 100 * GiB;
+      f.writeReport();
+    });
+    manager.setReclaimer(reclaim);
+    const lease = await manager.admitInTurn();
+    expect(reclaim).toHaveBeenCalledOnce();
+    lease.dispose();
+  });
+  it('reclaims after the later full build reservation rejects host capacity', async () => {
+    const f = fixture();
+    f.writeReport(6 * GiB);
+    const manager = f.manager();
+    const reclaim = vi.fn(async () => {
+      f.writeReport();
+    });
+    manager.setReclaimer(reclaim);
+    const lease = await manager.admitInTurn();
+    expect(reclaim).not.toHaveBeenCalled();
+    await lease.reserveBuildWithReclamation?.();
+    expect(reclaim).toHaveBeenCalledOnce();
+    lease.dispose();
+  });
+  it('retries full build reservations only once without discarding evidence', async () => {
+    const f = fixture();
+    f.writeReport(6 * GiB);
+    const manager = f.manager();
+    const reclaim = vi.fn(async () => {});
+    manager.setReclaimer(reclaim);
+    const lease = await manager.admitInTurn();
+    await expect(lease.reserveBuildWithReclamation?.()).rejects.toThrow('admission rejected');
+    expect(reclaim).toHaveBeenCalledOnce();
+    lease.dispose();
+  });
+  it('keeps FIFO ownership while reclamation awaits', async () => {
+    const f = fixture();
+    f.local.availableBytes = 0;
+    f.writeReport(0);
+    const manager = f.manager();
+    let finish!: () => void;
+    const reclaim = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = () => {
+            f.local.availableBytes = 100 * GiB;
+            f.writeReport();
+            resolve();
+          };
+        }),
+    );
+    manager.setReclaimer(reclaim);
+    const first = manager.admitInTurn();
+    const queued = vi.fn();
+    const second = manager.admitInTurn(queued);
+    expect(queued).toHaveBeenCalledOnce();
+    expect(reclaim).toHaveBeenCalledOnce();
+    finish();
+    const firstLease = await first;
+    let secondAdmitted = false;
+    void second.then(() => {
+      secondAdmitted = true;
+    });
+    await Promise.resolve();
+    expect(secondAdmitted).toBe(false);
+    firstLease.dispose();
+    (await second).dispose();
+  });
+  it('does not loop or override reservation/capacity refusals', async () => {
+    const f = fixture();
+    f.local.availableBytes = 0;
+    f.writeReport(0);
+    const manager = f.manager();
+    const reclaim = vi.fn(async () => {});
+    manager.setReclaimer(reclaim);
+    await expect(manager.admitInTurn()).rejects.toThrow('admission rejected');
+    expect(reclaim).toHaveBeenCalledOnce();
+  });
+});

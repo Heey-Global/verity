@@ -47,6 +47,7 @@ import { createSessionChangeFeed } from './live/live-hub.js';
 import type { ReleaseChannelResolver } from './self-update/release-channel.js';
 
 export interface ControlPlaneDeps {
+  sessionStorage?: ServerDeps['sessionStorage'];
   backup?: ServerDeps['backup'];
   eventStore: EventStore;
   /** Durable server root for filesystem-backed project Knowledge. Forwarded to
@@ -183,6 +184,10 @@ export interface ControlPlaneDeps {
   branchPr?: ((branch: string, worktree: string) => Promise<number | null>) | undefined;
   /** Compact PR strip status for a branch: title, URL, check counts and mergeability. */
   invalidateProjectPrStatus?: (projectId: string) => void;
+  repairPullRequest?: (
+    project: ProjectRecord,
+    number: number,
+  ) => Promise<{ state: 'open' | 'closed' | 'merged' } | null>;
   repairDiscovery?: (project: ProjectRecord, page: number) => Promise<RepairDiscovery>;
   branchPrStatus?:
     ((branch: string, worktree: string) => Promise<PullRequestStatus | null>) | undefined;
@@ -460,6 +465,7 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
     ...(deps.invalidateProjectPrStatus !== undefined
       ? { invalidateProjectPrStatus: deps.invalidateProjectPrStatus }
       : {}),
+    ...(deps.repairPullRequest ? { repairPullRequest: deps.repairPullRequest } : {}),
     ...(deps.repairDiscovery !== undefined ? { repairDiscovery: deps.repairDiscovery } : {}),
     ...(deps.branchPr !== undefined ? { branchPr: deps.branchPr } : {}),
     ...(deps.branchPrStatus !== undefined ? { branchPrStatus: deps.branchPrStatus } : {}),
@@ -519,6 +525,7 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
       ? { meetingTranscriber: deps.meetingTranscriber }
       : {}),
     ...(deps.projectWorktrees !== undefined ? { projectWorktrees: deps.projectWorktrees } : {}),
+    ...(deps.sessionStorage ? { sessionStorage: deps.sessionStorage } : {}),
     ...(deps.deprovisioner !== undefined ? { deprovisioner: deps.deprovisioner } : {}),
     ...(deps.onProjectHidden !== undefined ? { onProjectHidden: deps.onProjectHidden } : {}),
     ...(deps.audit !== undefined ? { audit: deps.audit } : {}),

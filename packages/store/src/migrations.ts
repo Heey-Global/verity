@@ -4918,3 +4918,70 @@ migrations['0173_qa_coordinator'] = {
     await sql`drop table qa_coordinator`.execute(db);
   },
 };
+
+migrations['0174_qa_recovery'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`create table qa_dispatches (
+      id text primary key, session_id text not null,
+      state text not null check(state in ('reserved','admitted','cancelled','legacy')),
+      prompt_seq bigint, created_at timestamptz not null default now()
+    )`.execute(db);
+    // Existing in-flight work has no atomic receipt; never infer that it did not run.
+    await sql`insert into qa_dispatches(id,session_id,state) select dispatch_id,owner_session_id,'legacy' from repair_incidents where dispatch_id is not null and owner_session_id is not null on conflict do nothing`.execute(
+      db,
+    );
+    await sql`insert into qa_dispatches(id,session_id,state) select active_dispatch,session_id,'legacy' from qa_coordinator where active_dispatch is not null and session_id is not null on conflict do nothing`.execute(
+      db,
+    );
+    await sql`create table repair_resource_budgets (
+      project_id text not null references projects(id) on delete cascade, resource text not null,
+      used integer not null default 0, cycle integer not null default 0,
+      primary key(project_id,resource)
+    )`.execute(db);
+    await sql`insert into repair_resource_budgets(project_id,resource,used) select project_id,resource,least(2,sum(attempts)) from repair_incidents where state <> 'resolved' group by project_id,resource`.execute(
+      db,
+    );
+    await sql`alter table repair_incidents add column repair_pr integer, add column verified_success boolean not null default false`.execute(
+      db,
+    );
+    await sql`update repair_incidents set verified_success=true where state='resolved'`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table repair_incidents drop column repair_pr, drop column verified_success`.execute(
+      db,
+    );
+    await sql`drop table repair_resource_budgets`.execute(db);
+    await sql`drop table qa_dispatches`.execute(db);
+  },
+};
+
+migrations['0175_running_turn_settlement'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table running_turns add column marker_id text, add column settled boolean not null default false`.execute(
+      db,
+    );
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table running_turns drop column marker_id, drop column settled`.execute(db);
+  },
+};
+
+migrations['0176_assistant'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`create table assistant_settings (
+      id integer primary key check (id = 1), enabled boolean not null default false,
+      revision integer not null default 0, sponsor_user_id text, session_id text,
+      updated_at timestamptz not null default now()
+    )`.execute(db);
+    await sql`create table assistant_project_grants (
+      project_id text primary key references projects(id) on delete cascade,
+      mode text not null check (mode in ('off', 'tasks', 'delegate')),
+      sponsor_user_id text not null, revision integer not null default 1,
+      updated_at timestamptz not null default now()
+    )`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table assistant_project_grants`.execute(db);
+    await sql`drop table assistant_settings`.execute(db);
+  },
+};

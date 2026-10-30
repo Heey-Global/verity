@@ -1,3 +1,4 @@
+import { LocalPreviewManager } from './local-preview-manager.js';
 import { sessionGoogleStatus } from './session-google-status.js';
 import { ForgeMergePermissionError } from './forge-provider.js';
 import {
@@ -3359,6 +3360,27 @@ describe('GET /sessions', () => {
     const byId: Record<string, boolean> = {};
     for (const s of res.json()) byId[s.sessionId] = s.resumable;
     expect(byId).toEqual({ s1: true, s2: false });
+  });
+
+  it('keeps safely retired sessions resumable in list and detail responses', async () => {
+    await ctx.store.createSession({ sessionId: 'retired', worktree: '/wt/retired', model: 'm' });
+    const server = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      sessionStorage: {
+        bind: () => {},
+        canRestore: async (session: { sessionId: string }) => session.sessionId === 'retired',
+      } as unknown as import('./session-storage.js').SessionStorage,
+    });
+    try {
+      const list = await server.inject({ method: 'GET', url: '/sessions' });
+      expect(list.json()[0].resumable).toBe(true);
+      const detail = await server.inject({ method: 'GET', url: '/sessions/retired' });
+      expect(detail.json().resumable).toBe(true);
+    } finally {
+      await server.close();
+    }
   });
 
   it('marks sessions that carry an automation and checks its model on confirm', async () => {
@@ -7336,6 +7358,64 @@ describe('DELETE /sessions/:id', () => {
     expect(await ctx.store.getSession('s1')).toBeUndefined();
     const list = await app.inject({ method: 'GET', url: '/sessions' });
     expect(list.json()).toEqual([]);
+  });
+
+  it('queues overlapping deletions in the same project behind the preview fence', async () => {
+    await ctx.store.createProject({
+      id: 'delete-project',
+      kind: 'local',
+      owner: '__local__',
+      repo: 'delete',
+      cloneDir: 'delete',
+      containerName: 'delete',
+      state: 'active',
+    });
+    for (const sessionId of ['delete-a', 'delete-b']) {
+      await ctx.store.createSession({
+        sessionId,
+        worktree: `/wt/${sessionId}`,
+        model: 'm',
+        projectId: 'delete-project',
+      });
+    }
+    const localPreviewManager = new LocalPreviewManager({ store: ctx.store } as never);
+    let releasePurge!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      releasePurge = resolve;
+    });
+    let markStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    const purge = vi.fn(async (id: string) => {
+      if (id === 'delete-a') {
+        markStarted();
+        await blocked;
+      }
+    });
+    const a = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      localPreviewManager,
+      purgeSessionArtifacts: purge,
+    });
+    try {
+      const first = a.inject({ method: 'DELETE', url: '/sessions/delete-a' }).then((res) => res);
+      await started;
+      const second = a.inject({ method: 'DELETE', url: '/sessions/delete-b' }).then((res) => res);
+      // The first request retains the real project fence while the second arrives.
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      releasePurge();
+      expect((await first).statusCode).toBe(200);
+      expect((await second).statusCode).toBe(200);
+      expect(await ctx.store.getSession('delete-a')).toBeUndefined();
+      expect(await ctx.store.getSession('delete-b')).toBeUndefined();
+    } finally {
+      releasePurge();
+      await a.close();
+      await localPreviewManager.close();
+    }
   });
 
   it('returns 404 for an unknown session', async () => {

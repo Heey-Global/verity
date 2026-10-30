@@ -92,6 +92,15 @@ the main path, including the restore-test key prompt (screen 10) and the
 mandatory paired-device review (screen 12). Screen 2 uses a shortened sample
 recovery key; production must show the complete encoded key.
 
+The first app release is narrower: [`app-v1.html`](assets/backup/app-v1.html)
+(renders `v1-*.png`) covers setup into the installer's backup folder, status,
+restore test, interval, pause and a new recovery key. It drops the QR code and
+the paste-back confirmation; the restore test checks the saved key instead.
+"Create new recovery key" asks no reason and keeps older backups until normal
+retention removes them. Choosing another folder, "Back up now", snapshots,
+project restore, waiting for a backup before updates, and deleting backups
+follow later.
+
 ### Set up
 
 1. Settings, group "Server", row "Backup" (screen 0).
@@ -100,12 +109,11 @@ recovery key; production must show the complete encoded key.
    (screen 1).
 3. Recovery key, shown once (screen 2). Copy (to a password manager on the
    same phone), Save (to a file through the platform save dialog) and Print.
-   "Show QR code for another device" is optional, for keeping the key on a
-   second device. Verity keeps no copy.
-4. Confirm: paste the key back once, so the saved copy is known to be correct
-   (screen 3). Only then are backups turned on.
-5. Success; the first full run starts and shows progress and an estimate
-   (screen 4). The user can keep working.
+   Verity keeps no copy. "I saved it, turn on backup" turns backups on; there
+   is no QR code and no paste-back step (amended 2026-10-29).
+4. Success; the first full run starts right away (screen 4). The user can keep
+   working. The first restore test, which needs the saved key, verifies the
+   copy.
 
 An abandoned setup discards the generated keys; nothing has been encrypted to
 them yet, so the next attempt starts over with a new key.
@@ -130,8 +138,8 @@ them yet, so the next attempt starts over with a new key.
 
 ### Lost or replaced recovery key
 
-"Replace recovery key" generates a new key, shows it once and asks for the
-confirmation paste, as in setup. It starts a new repository with a full first
+"Create new recovery key" generates a new key and shows it once, as in setup.
+The app asks no reason and always uses the "lost" replacement. It starts a new repository with a full first
 run (see "Format and key lifecycle"). Snapshots in the old repository still need
 the old key; the snapshot list shows which key each snapshot needs, and the old
 repository expires under normal retention. Before it starts, the flow warns that
@@ -180,8 +188,8 @@ confirmation. See "Deletion and shutdown".
 | --- | --- | --- |
 | 0 | Settings | Entry row "Backup" with last backup time |
 | 1 | Explain | What is covered, what is not |
-| 2 | Recovery key | Show once; copy, save, print, optional QR |
-| 3 | Confirm | Paste once to prove the saved copy |
+| 2 | Recovery key | Show once; copy, save, print |
+| 3 | Confirm | Dropped 2026-10-29: the restore test verifies the saved copy |
 | 4 | Success | Backups on, first run in progress |
 | 5 | Status | Last, next, restore test, actions |
 | 6 | Snapshots | List by day, pre-update marked |

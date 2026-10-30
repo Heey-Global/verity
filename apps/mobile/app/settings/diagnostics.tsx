@@ -5,6 +5,7 @@ import { useCallback, useMemo, useState } from 'react';
 import { Alert, View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 import { CardRow, Eyebrow, RowCard, Tag } from '../../components/premium/PremiumChrome';
+import { CPUProfiling } from '../../components/settings/CPUProfiling';
 import { MatrixImportErrors } from '../../components/settings/MatrixImportErrors';
 import { PublicPreviewDiagnostics } from '../../components/settings/PublicPreviewDiagnostics';
 import { ReturnPathDiagnostics } from '../../components/settings/ReturnPathDiagnostics';
@@ -142,6 +143,7 @@ export function DiagnosticsSettings({ client }: { client: VerityClient }) {
               switchValue={recordingGestures}
               onPress={() => setGestureDiagnosticsEnabled(!recordingGestures)}
             />
+            <CPUProfiling />
             <CardRow
               title="Export app update logs"
               subtitle={

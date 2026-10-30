@@ -1,0 +1,277 @@
+#!/usr/bin/env node
+// Reuse an existing compatible project installation without mutating it.
+import { execFileSync, spawnSync } from 'node:child_process';
+import {
+  existsSync,
+  readFileSync,
+  realpathSync,
+  readdirSync,
+  lstatSync,
+  readlinkSync,
+} from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
+
+function git(...args) {
+  return execFileSync('git', args, {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'ignore'],
+  }).trim();
+}
+function read(path) {
+  try {
+    return readFileSync(path, 'utf8');
+  } catch {
+    return undefined;
+  }
+}
+function manager(root) {
+  const declared = JSON.parse(read(join(root, 'package.json')) ?? '{}').packageManager;
+  if (typeof declared === 'string' && /^(yarn|pnpm)@/.test(declared)) return declared.split('@')[0];
+  if (existsSync(join(root, 'pnpm-lock.yaml'))) return 'pnpm';
+  if (existsSync(join(root, 'yarn.lock'))) return 'yarn';
+  return 'npm';
+}
+function installed(root) {
+  try {
+    const selected = manager(root);
+    if (selected === 'pnpm')
+      return (
+        existsSync(join(root, 'node_modules', '.modules.yaml')) &&
+        read(join(root, 'pnpm-lock.yaml')) !== undefined &&
+        read(join(root, 'node_modules', '.pnpm', 'lock.yaml')) ===
+          read(join(root, 'pnpm-lock.yaml'))
+      );
+    if (selected === 'yarn') {
+      // Receipt presence alone cannot prove current manifests/lockfile were installed.
+      // Classic's integrity check is read-only; unsupported managers fail closed.
+      if (!existsSync(join(root, 'node_modules', '.yarn-integrity'))) return false;
+      return (
+        spawnSync('yarn', ['check', '--integrity', '--offline'], {
+          cwd: root,
+          stdio: 'ignore',
+          timeout: 10_000,
+        }).status === 0
+      );
+    }
+    const receipt = JSON.parse(read(join(root, 'node_modules', '.package-lock.json')) ?? 'null');
+    if (!receipt || !receipt.packages || typeof receipt.packages !== 'object') return false;
+    const source = read(join(root, 'npm-shrinkwrap.json')) ?? read(join(root, 'package-lock.json'));
+    if (!source) return true;
+    const lock = JSON.parse(source);
+    let packages = lock.packages;
+    if (
+      lock.lockfileVersion === 1 &&
+      !packages &&
+      (lock.dependencies === undefined || typeof lock.dependencies === 'object')
+    ) {
+      packages = {};
+      const collect = (dependencies, prefix = '') => {
+        for (const [name, entry] of Object.entries(dependencies)) {
+          const path = `${prefix}node_modules/${name}`;
+          packages[path] = entry;
+          if (entry.dependencies) collect(entry.dependencies, `${path}/`);
+        }
+      };
+      collect(lock.dependencies ?? {});
+    }
+    if (!packages || typeof packages !== 'object') return false;
+    return Object.entries(packages).every(([path, wanted]) => {
+      if (!path.startsWith('node_modules/') && !path.includes('/node_modules/')) return true;
+      if (path.split('/').includes('..')) return false;
+      if (wanted.link) {
+        if (typeof wanted.resolved !== 'string') return false;
+        const target = resolve(root, wanted.resolved);
+        return (
+          lstatSync(join(root, path)).isSymbolicLink() &&
+          realpathSync(join(root, path)) === realpathSync(target) &&
+          existsSync(join(target, 'package.json'))
+        );
+      }
+      const actual = receipt.packages[path];
+      if (!actual) return wanted.optional === true || wanted.devOptional === true;
+      return (
+        actual.version === wanted.version &&
+        actual.integrity === wanted.integrity &&
+        existsSync(join(root, path, 'package.json'))
+      );
+    });
+  } catch {
+    return false;
+  }
+}
+/** Compare install inputs, excluding release-only workspace versions and scripts. */
+function dependencyInputIdentity(path, source) {
+  const fields = [
+    'name',
+    'dependencies',
+    'devDependencies',
+    'peerDependencies',
+    'peerDependenciesMeta',
+    'optionalDependencies',
+    'overrides',
+    'resolutions',
+    'workspaces',
+    'packageManager',
+    'engines',
+    'os',
+    'cpu',
+    'libc',
+    'bin',
+  ];
+  const manifest = (value) =>
+    Object.fromEntries(fields.filter((key) => key in value).map((key) => [key, value[key]]));
+  const sort = (value) =>
+    Array.isArray(value)
+      ? value.map(sort)
+      : value !== null && typeof value === 'object'
+        ? Object.fromEntries(
+            Object.entries(value)
+              .sort(([a], [b]) => a.localeCompare(b))
+              .map(([key, item]) => [key, sort(item)]),
+          )
+        : value;
+  if (!/(^|\/)(package.json|package-lock.json|npm-shrinkwrap.json)$/.test(path)) return source;
+  const value = JSON.parse(source);
+  if (path.endsWith('package.json')) return JSON.stringify(sort(manifest(value)));
+  if (!value.packages || typeof value.packages !== 'object') return JSON.stringify(sort(value));
+  return JSON.stringify(
+    sort({
+      lockfileVersion: value.lockfileVersion,
+      packages: Object.fromEntries(
+        Object.entries(value.packages).map(([name, entry]) => [
+          name,
+          name.startsWith('node_modules/') || name.includes('/node_modules/')
+            ? entry
+            : manifest(entry),
+        ]),
+      ),
+    }),
+  );
+}
+
+function compatible(root, base) {
+  const files = git('-C', root, 'ls-files', '-z')
+    .split('\0')
+    .filter((p) =>
+      /(^|\/)(package.json|package-lock.json|npm-shrinkwrap.json|yarn.lock|pnpm-lock.yaml|pnpm-workspace.yaml|.npmrc)$/.test(
+        p,
+      ),
+    );
+  if (!files.includes('package.json') || !files.some((p) => /lock/.test(p))) return false;
+  const baseFiles = git('-C', base, 'ls-files', '-z')
+    .split('\0')
+    .filter((p) =>
+      /(^|\/)(package.json|package-lock.json|npm-shrinkwrap.json|yarn.lock|pnpm-lock.yaml|pnpm-workspace.yaml|.npmrc)$/.test(
+        p,
+      ),
+    );
+  if (files.join('\0') !== baseFiles.join('\0')) return false;
+  if (
+    git(
+      '-C',
+      root,
+      'ls-files',
+      '--others',
+      '--exclude-standard',
+      '--',
+      '**/package.json',
+      'package.json',
+    )
+  )
+    return false;
+  return files.every(
+    (p) =>
+      read(join(root, p)) !== undefined &&
+      read(join(base, p)) !== undefined &&
+      dependencyInputIdentity(p, read(join(root, p))) ===
+        dependencyInputIdentity(p, read(join(base, p))),
+  );
+}
+function privateSkeleton(root) {
+  const modules = join(root, 'node_modules');
+  if (!existsSync(modules)) return true;
+  if (!lstatSync(modules).isDirectory() || lstatSync(modules).isSymbolicLink()) return false;
+  const sources = new Map();
+  for (const path of git('-C', root, 'ls-files', '-z').split('\0')) {
+    if (!path.endsWith('/package.json')) continue;
+    const manifest = JSON.parse(read(join(root, path)) ?? '{}');
+    if (typeof manifest.name === 'string') sources.set(manifest.name, dirname(join(root, path)));
+  }
+  const valid = (name, path) =>
+    lstatSync(path).isSymbolicLink() &&
+    sources.get(name) === resolve(dirname(path), readlinkSync(path));
+  for (const name of readdirSync(modules)) {
+    const path = join(modules, name);
+    if (
+      name.startsWith('@') &&
+      lstatSync(path).isDirectory() &&
+      !lstatSync(path).isSymbolicLink()
+    ) {
+      if (!readdirSync(path).every((child) => valid(`${name}/${child}`, join(path, child))))
+        return false;
+    } else if (!valid(name, path)) return false;
+  }
+  return true;
+}
+try {
+  const root = git('rev-parse', '--show-toplevel');
+  const common = resolve(root, git('rev-parse', '--git-common-dir'));
+  const base = dirname(common);
+  // A private installation stays isolated. Workspace-link skeletons are not installations.
+  const local = installed(root);
+  let shared = false;
+  if (
+    !local &&
+    privateSkeleton(root) &&
+    root !== base &&
+    !existsSync(join(base, '.pnp.cjs')) &&
+    compatible(root, base)
+  ) {
+    // Only reuse a directory Node can reach by walking up from this worktree.
+    let parent = dirname(root);
+    while (parent !== dirname(parent)) {
+      const modules = join(parent, 'node_modules');
+      if (
+        existsSync(modules) &&
+        installed(base) &&
+        realpathSync(modules) === realpathSync(join(base, 'node_modules'))
+      ) {
+        shared = true;
+        break;
+      }
+      parent = dirname(parent);
+    }
+  }
+  const action = process.argv[2] ?? 'status';
+  if (action === 'status') process.exit(local || shared ? 0 : 1);
+  if (action !== 'install') throw new Error('Usage: verity-dependencies status|install');
+  if (shared && !local) {
+    console.log('Using compatible shared project dependencies; no private install needed.');
+    process.exit(0);
+  }
+  const selected = manager(root);
+  if (selected !== 'npm') {
+    if (local || shared) {
+      console.log(`Using existing ${selected} installation.`);
+      process.exit(0);
+    }
+    throw new Error(
+      `Use this project's ${selected} install command, then retry; this helper never replaces its package manager with npm.`,
+    );
+  }
+  // Different lockfiles need a private installation; never modify shared project state.
+  const result = spawnSync(
+    'npm',
+    [
+      existsSync(join(root, 'package-lock.json')) || existsSync(join(root, 'npm-shrinkwrap.json'))
+        ? 'ci'
+        : 'install',
+      '--ignore-scripts',
+    ],
+    { cwd: root, stdio: 'inherit' },
+  );
+  process.exit(result.status ?? 1);
+} catch (error) {
+  if (process.argv[2] === 'install') console.error(error.message);
+  process.exit(1);
+}

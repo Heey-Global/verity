@@ -1905,7 +1905,11 @@ export interface Provisioner {
   ): Promise<LinkCloneToGitHubResult>;
   /** Run a project mutation while new turns wait at the same admission barrier
    * used by Sandbox repair, and reject when existing work is active. */
-  withProjectExclusiveMutation?<T>(projectId: string, mutation: () => Promise<T>): Promise<T>;
+  withProjectExclusiveMutation?<T>(
+    projectId: string,
+    mutation: () => Promise<T>,
+    exceptSessionIds?: ReadonlySet<string>,
+  ): Promise<T>;
   /** Stop and retain an idle Sandbox, revoking all of its live authority first. */
   sleepProject?(
     projectId: string,
@@ -1929,6 +1933,8 @@ export interface Provisioner {
   /** Recreate only the project container using the existing clone path.
    * Does not fetch, reset, delete, or otherwise mutate the project worktree. */
   recreateContainer?(projectId: string, opts?: RecreateContainerOptions): Promise<ProjectRecord>;
+  /** Reattach a verified retained relay without replacing its Sandbox. */
+  resumeProjectRelay?(projectId: string): Promise<void>;
   /** Best-effort Stage 3 watchdog: re-probe/relaunch supervisors for active
    * Sandboxes that already carry a protected runtime mount. */
   reconcileRunnerSupervisors?(projects: readonly ProjectRecord[]): Promise<void>;
@@ -2810,6 +2816,16 @@ export class ProvisionerImpl implements Provisioner {
     this.localConfigState = opts.localConfigState ?? inspectLocalConfig;
   }
 
+  async resumeProjectRelay(projectId: string): Promise<void> {
+    const project = await this.opts.store.getProject(projectId);
+    if (project === undefined || project.state !== 'active' || project.kind === 'control_plane')
+      return;
+    // Classification already validates and resumes the retained generation. It
+    // makes no migration/replacement decision; an empty process-local map alone
+    // must not force a fresh Sandbox during secret-unlock identity projection.
+    await this.classifyProjectSandbox(project);
+  }
+
   async reconcileRunnerSupervisors(projects: readonly ProjectRecord[]): Promise<void> {
     const runtimeRoot = this.opts.dataVolumeRoot;
     const supervisorEnabled = this.opts.runnerSupervisor === true && runtimeRoot !== undefined;
@@ -3613,6 +3629,15 @@ export class ProvisionerImpl implements Provisioner {
                 'sandbox',
                 inspect.id,
               );
+              const identity = { projectId: project.id, containerGeneration: generation };
+              const address = await this.opts.projectEgress.connect(identity);
+              if (
+                !inspect.extraHosts?.length ||
+                inspect.extraHosts.some((entry) => !entry.endsWith(`:${address}`))
+              ) {
+                await this.opts.projectEgress.prepare(identity);
+                throw new Error('Retained relay projection differs from host transport binding');
+              }
             } else await this.opts.docker.startContainer(inspect.id);
             const running = await this.opts.docker.inspectContainer(project.containerName);
             if (!running.running) throw new Error('Docker did not report the Sandbox as running');
@@ -3650,6 +3675,9 @@ export class ProvisionerImpl implements Provisioner {
               wakeStartedAt: null,
             })) as ProjectRecord;
           } catch (cause) {
+            await this.opts.projectEgress
+              ?.prepare({ projectId: project.id, containerGeneration: generation })
+              .catch(() => undefined);
             const cleanup = await Promise.allSettled([
               this.opts.docker.stopContainer(project.containerName),
               ...(relayAwake && sleepRelay !== undefined ? [sleepRelay(project.id)] : []),
@@ -5150,7 +5178,9 @@ export class ProvisionerImpl implements Provisioner {
           effectiveCodexGatewayUrl,
         ]);
         const servers =
-          this.opts.sandboxDnsServers !== undefined && this.opts.sandboxDnsServers.length > 0
+          this.opts.projectEgress === undefined &&
+          this.opts.sandboxDnsServers !== undefined &&
+          this.opts.sandboxDnsServers.length > 0
             ? this.opts.sandboxDnsServers
             : [relayResolverAddress(effectiveClaudeGatewayUrl, gvisorExtraHosts)];
         if (this.opts.gitSecretRoot === undefined) {
@@ -5858,6 +5888,14 @@ export class ProvisionerImpl implements Provisioner {
       try {
         if (this.opts.projectEgress !== undefined) {
           await this.opts.projectEgress.start(relayActivation.identity, 'sandbox', containerId);
+          const relayAddress = await this.opts.projectEgress.connect(relayActivation.identity);
+          if (
+            !gvisorExtraHosts.length ||
+            gvisorExtraHosts.some((entry) => !entry.endsWith(`:${relayAddress}`))
+          ) {
+            await this.opts.projectEgress.prepare(relayActivation.identity);
+            throw new Error('Sandbox relay projection differs from host transport binding');
+          }
         } else await this.opts.docker.startContainer(containerId);
       } catch (cause) {
         if (
@@ -5886,6 +5924,9 @@ export class ProvisionerImpl implements Provisioner {
       await this.opts.onContainerStarted?.(project);
     } catch (cause) {
       const message = `post-start projection failed: ${failureMessage(cause)}`;
+      // Revoke the pair before rollback removes either endpoint. The host
+      // attempts containment itself if kernel revocation fails.
+      await this.opts.projectEgress?.prepare(relayActivation.identity).catch(() => undefined);
       await this.opts.docker.stopContainer(dirs.containerName).catch(() => undefined);
       let removalFailure: unknown;
       try {
@@ -5939,6 +5980,9 @@ export class ProvisionerImpl implements Provisioner {
         const component =
           runnerRuntimePath !== undefined ? 'Runner supervisor' : 'Sandbox egress connector';
         const message = `${component} failed to start: ${commandFailureMessage(cause)}`;
+        // Revoke the pair before rollback removes either endpoint. The host
+        // attempts containment itself if kernel revocation fails.
+        await this.opts.projectEgress?.prepare(relayActivation.identity).catch(() => undefined);
         await this.opts.docker.stopContainer(dirs.containerName).catch(() => undefined);
         let removalFailure: unknown;
         try {
@@ -6047,6 +6091,9 @@ export class ProvisionerImpl implements Provisioner {
       }
     } catch (cause) {
       const message = `devcontainer ${lifecycleFailureLabel} failed: ${commandFailureMessage(cause)}`;
+      // Revoke the pair before rollback removes either endpoint. The host
+      // attempts containment itself if kernel revocation fails.
+      await this.opts.projectEgress?.prepare(relayActivation.identity).catch(() => undefined);
       await this.opts.docker.stopContainer(dirs.containerName).catch(() => undefined);
       let removalFailure: unknown;
       try {
@@ -6280,7 +6327,9 @@ export class ProvisionerImpl implements Provisioner {
             // Missing/pruned images and unavailable diagnostics use the fallback.
           }
         }
-        storageLease.reserveBuild(imageBytes);
+        if (storageLease.reserveBuildWithReclamation)
+          await storageLease.reserveBuildWithReclamation(imageBytes);
+        else storageLease.reserveBuild(imageBytes);
       }
       // Mint a ghcr token (GitHub App installation, packages:read) so the build can
       // resolve the PRIVATE verity-sandbox-toolkit Feature + pull the base image as

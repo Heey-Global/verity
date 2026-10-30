@@ -128,6 +128,8 @@ export interface DockerClient {
    *  named volumes are unaffected by `v` — so taking them down with the
    *  container is both safe and the only correct lifetime. */
   removeContainer(id: string): Promise<void>;
+  /** GC only: never stop a running container and never delete attached volumes. */
+  removeStoppedContainer?(id: string): Promise<void>;
   /** Replace one host-infrastructure container with the same Docker config and
    * mounts but a different immutable image. The real client rolls the original
    * config back if creation or startup of the successor fails. Optional config
@@ -244,6 +246,7 @@ export interface DockerContainerSummary {
   id: string;
   /** Resolved image content id (`sha256:…`), NOT the human-readable `repo:tag`. */
   imageId: string;
+  state?: string;
   /** Container names as the daemon reports them, WITHOUT the leading `/`. Only
    *  used for logging which container a sweep retired. Optional so pre-existing
    *  test fakes stay valid. */
@@ -436,6 +439,8 @@ export interface ContainerInspect {
   id: string;
   /** True while the container's state reports `Running: true`. */
   running: boolean;
+  finishedAt?: string;
+  exitCode?: number;
   /** Whether Docker keeps stdin open when no attach client is currently connected. */
   openStdin?: boolean;
   /** Container image reference recorded on the container config. */
@@ -601,55 +606,77 @@ export interface DockerClientOptions {
   registryAuth?: string;
 }
 
-/** Decode multiplexed Docker output; plain TTY logs pass through as text. */
-function decodeDockerLogFrames(bytes: Buffer): string {
-  const parts: Buffer[] = [];
-  let offset = 0;
-  while (offset + 8 <= bytes.length) {
-    const stream = bytes[offset];
-    if (
-      (stream !== 1 && stream !== 2) ||
-      bytes[offset + 1] !== 0 ||
-      bytes[offset + 2] !== 0 ||
-      bytes[offset + 3] !== 0
-    ) {
-      return bytes.toString('utf8');
-    }
-    const length = bytes.readUInt32BE(offset + 4);
-    if (offset + 8 + length > bytes.length) {
-      parts.push(bytes.subarray(offset + 8), Buffer.from('\n[truncated]\n'));
-      return Buffer.concat(parts).toString('utf8');
-    }
-    parts.push(bytes.subarray(offset + 8, offset + 8 + length));
-    offset += 8 + length;
-  }
-  if (offset < bytes.length && parts.length > 0) parts.push(Buffer.from('\n[truncated]\n'));
-  return parts.length === 0 ? bytes.toString('utf8') : Buffer.concat(parts).toString('utf8');
-}
-
-async function boundedResponseBytes(res: HttpResponse, limit: number): Promise<Buffer> {
-  if (res.body !== undefined && res.body !== null) {
-    const reader = res.body.getReader();
-    const chunks: Buffer[] = [];
-    let total = 0;
-    try {
-      while (total < limit) {
-        const next = await reader.read();
-        if (next.done) break;
-        const chunk = Buffer.from(next.value);
-        const remaining = limit - total;
-        chunks.push(chunk.subarray(0, remaining));
-        total += Math.min(chunk.length, remaining);
-        if (chunk.length > remaining) break;
+/** Decode frames incrementally and retain the latest output, on both transports.
+ * Frame headers must be removed before trimming: a byte tail can start inside a frame.
+ */
+async function dockerLogTail(res: HttpResponse, limit: number): Promise<string> {
+  let tail = Buffer.alloc(0);
+  let header = Buffer.alloc(0);
+  let mode: 'detect' | 'frames' | 'plain' = 'detect';
+  let remaining = 0;
+  let shortened = false;
+  const append = (bytes: Buffer) => {
+    if (!bytes.length) return;
+    shortened ||= tail.length + bytes.length > limit;
+    tail =
+      bytes.length >= limit
+        ? Buffer.from(bytes.subarray(-limit))
+        : Buffer.concat([tail.subarray(Math.max(0, tail.length + bytes.length - limit)), bytes]);
+  };
+  const consume = (input: Uint8Array) => {
+    let bytes = Buffer.from(input.buffer, input.byteOffset, input.byteLength);
+    while (bytes.length) {
+      if (mode === 'plain') {
+        append(bytes);
+        return;
       }
+      if (remaining > 0) {
+        const count = Math.min(bytes.length, remaining);
+        append(bytes.subarray(0, count));
+        remaining -= count;
+        bytes = bytes.subarray(count);
+        continue;
+      }
+      const count = Math.min(8 - header.length, bytes.length);
+      header = Buffer.concat([header, bytes.subarray(0, count)]);
+      bytes = bytes.subarray(count);
+      if (header.length < 8) continue;
+      if (
+        (header[0] !== 1 && header[0] !== 2) ||
+        header[1] !== 0 ||
+        header[2] !== 0 ||
+        header[3] !== 0
+      ) {
+        mode = 'plain';
+        append(header);
+        header = Buffer.alloc(0);
+        continue;
+      }
+      mode = 'frames';
+      remaining = header.readUInt32BE(4);
+      header = Buffer.alloc(0);
+    }
+  };
+  if (res.body) {
+    const reader = res.body.getReader();
+    try {
+      for (let next = await reader.read(); !next.done; next = await reader.read())
+        consume(next.value);
     } finally {
       await reader.cancel().catch(() => undefined);
     }
-    return Buffer.concat(chunks, total);
+  } else if (res.arrayBuffer) consume(new Uint8Array(await res.arrayBuffer()));
+  else consume(Buffer.from(res.text ? await res.text() : JSON.stringify(await res.json())));
+  if (mode === 'detect' || mode === 'plain') append(header);
+  else if (header.length || remaining) shortened = true;
+  // Omit a leading fragment after byte eviction, rather than displaying a broken
+  // credential-bearing JSON line. The latest complete lines remain intact.
+  if (shortened && tail.length >= limit) {
+    const newline = tail.indexOf(10);
+    tail = newline >= 0 ? tail.subarray(newline + 1) : Buffer.alloc(0);
+    while (tail.length && (tail[0]! & 0xc0) === 0x80) tail = tail.subarray(1);
   }
-  if (res.arrayBuffer !== undefined) return Buffer.from(await res.arrayBuffer()).subarray(0, limit);
-  const text = res.text === undefined ? JSON.stringify(await res.json()) : await res.text();
-  return Buffer.from(text, 'utf8').subarray(0, limit);
+  return tail.toString('utf8') + (shortened ? '\n[truncated]\n' : '');
 }
 
 /**
@@ -767,11 +794,13 @@ async function callDocker(
   method: string,
   timeoutMs: number,
   body?: unknown,
+  stream = false,
 ): Promise<HttpResponse> {
   const init: HttpFetchInit = {
     method,
     signal: AbortSignal.timeout(timeoutMs),
   };
+  if (stream) init.stream = true;
   if (body !== undefined) {
     init.headers = { 'content-type': 'application/json' };
     init.body = JSON.stringify(body);
@@ -1747,17 +1776,14 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
       }
       const res = await callDocker(
         doFetch,
-        `${base}/containers/${id}/logs?${query.toString()}`,
+        `${base}/containers/${encodeURIComponent(id)}/logs?${query.toString()}`,
         'GET',
         timeoutMs,
+        undefined,
+        true,
       );
       if (!res.ok) throw await toDockerError(res, id);
-      // Reserve room for the decoder's explicit truncation marker.
-      const body = await boundedResponseBytes(res, 64 * 1024 - 32);
-      const decoded = decodeDockerLogFrames(body);
-      return body.length >= 64 * 1024 - 32 && !decoded.includes('[truncated]')
-        ? `${decoded}\n[truncated]\n`
-        : decoded;
+      return dockerLogTail(res, 64 * 1024 - 32);
     },
     stopContainer: async (id) => {
       const res = await callDocker(doFetch, `${base}/containers/${id}/stop`, 'POST', timeoutMs);
@@ -1765,6 +1791,15 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
       // so the socket-proxy transport failed every stop of a stopped container,
       // including the rollback of a start that never got the container running.
       if (!res.ok && res.status !== 304) throw await toDockerError(res, id);
+    },
+    removeStoppedContainer: async (id) => {
+      const res = await callDocker(
+        doFetch,
+        `${base}/containers/${encodeURIComponent(id)}?force=false&v=false`,
+        'DELETE',
+        timeoutMs,
+      );
+      if (!res.ok && res.status !== 404) throw await toDockerError(res, id);
     },
     removeContainer: async (id) => {
       // `v=true` removes the anonymous volumes the daemon minted for this
@@ -2047,6 +2082,8 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
         Image?: unknown;
         RestartCount?: unknown;
         State?: {
+          FinishedAt?: string;
+          ExitCode?: number;
           Running?: unknown;
           Status?: unknown;
           Health?: { Status?: unknown };
@@ -2135,6 +2172,10 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
           : {}),
         id: json.Id,
         running: json.State?.Running === true,
+        ...(typeof json.State?.FinishedAt === 'string'
+          ? { finishedAt: json.State.FinishedAt }
+          : {}),
+        ...(typeof json.State?.ExitCode === 'number' ? { exitCode: json.State.ExitCode } : {}),
         ...(typeof json.Config?.Image === 'string' ? { image: json.Config.Image } : {}),
         ...(typeof json.Image === 'string' ? { imageId: json.Image } : {}),
         ...(labels !== undefined ? { labels } : {}),
@@ -2432,7 +2473,7 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
       return json.map((entry): DockerContainerSummary => {
         if (typeof entry !== 'object' || entry === null || Array.isArray(entry))
           throw invalidInventory();
-        const { Id, ImageID, Names, Labels, Created } = entry as Record<string, unknown>;
+        const { Id, ImageID, Names, Labels, Created, State } = entry as Record<string, unknown>;
         if (
           typeof Id !== 'string' ||
           Id.trim() === '' ||
@@ -2448,6 +2489,7 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
         return {
           id: Id,
           imageId: ImageID,
+          ...(typeof State === 'string' ? { state: State } : {}),
           names,
           labels: parseDockerLabels(Labels) ?? {},
           ...(typeof Created === 'number' ? { created: Created } : {}),

@@ -21,8 +21,7 @@ import {
   premiumChromeStyles as chrome,
 } from '../../components/premium/PremiumChrome';
 import { premiumFeatures } from '../../components/premium/premiumFeatures';
-import { Button, ConfirmSheet } from '../../components/ui';
-import { tint } from '../../components/ui/tint';
+import { Button, ConfirmSheet, StepIntro, SuccessHero } from '../../components/ui';
 import {
   SettingsListPanel,
   SettingsMessage,
@@ -259,17 +258,10 @@ export function PremiumSettings({ client }: { client: VerityClient }) {
       {mode === 'activated' ? (
         <>
           <Confetti />
-          <View style={styles.hero}>
-            <View style={styles.check}>
-              <Icon name="check" size={40} color={theme.colors.signature} />
-            </View>
-            <Text style={styles.heroTitle}>Premium is active</Text>
-            <Text style={styles.heroLead}>
-              Your server is connected to Verity Uplink.
-              {'\n'}
-              {activatedSummary(status)}
-            </Text>
-          </View>
+          <SuccessHero
+            title="Premium is active"
+            lead={`Your server is connected to Verity Uplink.\n${activatedSummary(status)}`}
+          />
           <View style={styles.stack}>
             {premiumFeatures
               .filter((feature) => feature.settingsKey !== null)
@@ -323,13 +315,11 @@ export function PremiumSettings({ client }: { client: VerityClient }) {
         </View>
       ) : !configured ? (
         <>
-          <View style={styles.intro}>
-            <Text style={styles.headline}>
-              Your server,{'\n'}
-              <Text style={styles.accent}>reachable anywhere.</Text>
-            </Text>
-            <Text style={styles.lead}>Premium connects your server to Verity Uplink.</Text>
-          </View>
+          <StepIntro
+            headline="Your server,"
+            accent="reachable anywhere."
+            lead="Premium connects your server to Verity Uplink."
+          />
           <View style={styles.stack}>
             <Eyebrow>What you get</Eyebrow>
             {premiumFeatures.map((feature) => featureCard(feature, false))}
@@ -511,34 +501,8 @@ function featureSummary(status: UplinkDiagnostics | null): string {
 
 const styles = StyleSheet.create((theme) => ({
   stack: { gap: theme.spacing.sm },
-  intro: { gap: theme.spacing.sm, paddingTop: theme.spacing.md },
-  headline: { ...theme.typography.display, color: theme.colors.text },
-  accent: { color: theme.colors.signature },
-  lead: { ...theme.typography.body, color: theme.colors.textMuted },
   error: { color: theme.colors.attention },
   help: { ...theme.typography.subtitle, color: theme.colors.textMuted },
   // A text button keeps the width of its label instead of spanning the column.
   inline: { flexDirection: 'row' },
-  hero: {
-    alignItems: 'center',
-    gap: 10,
-    paddingTop: 34,
-    paddingBottom: theme.spacing.md,
-  },
-  check: {
-    width: 84,
-    height: 84,
-    borderRadius: 24,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 1,
-    borderColor: tint(theme.colors.signature, 'border'),
-    backgroundColor: tint(theme.colors.signature, 'fill'),
-    shadowColor: theme.colors.signature,
-    shadowOpacity: 0.35,
-    shadowRadius: 25,
-    shadowOffset: { width: 0, height: 0 },
-  },
-  heroTitle: { ...theme.typography.display, color: theme.colors.text },
-  heroLead: { ...theme.typography.body, color: theme.colors.textMuted, textAlign: 'center' },
 }));

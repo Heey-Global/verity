@@ -239,6 +239,13 @@ export type {
 } from './live-meetings.js';
 
 export {
+  AssistantStore,
+  type AssistantGrant,
+  type AssistantMode,
+  type AssistantSettings,
+} from './assistant.js';
+
+export {
   RepairSupervisionStore,
   type RepairMandate,
   type RepairIncident,

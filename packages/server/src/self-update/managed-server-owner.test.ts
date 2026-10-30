@@ -15,6 +15,7 @@ import {
 import {
   initializeManagedDeployment,
   migrateManagedDevcontainerBuilder,
+  migrateManagedBackupMounts,
   migrateManagedHostDiagnostics,
 } from './managed-deployment.js';
 import {
@@ -1623,5 +1624,48 @@ describe('recorded devcontainer builder migration', () => {
     await migrate(root);
     const client = docker({ ...owned(true), groupAdd: ['999', '1101', '4242'] });
     await expect(reconcileManagedServer(runtimeOptions(root, client))).rejects.toThrow('conflicts');
+  });
+});
+
+describe('recorded backup mount migration', () => {
+  const migrate = async (root: string) =>
+    migrateManagedBackupMounts({
+      root,
+      deploymentId: 'deployment-1',
+      image: body().image,
+      backupPath: '/var/lib/verity/backups',
+      identityPath: '/var/lib/verity/backup-identity',
+    });
+  it('preserves the running generation until guarded cutover and survives retry', async () => {
+    const root = await authority();
+    await migrate(root);
+    await migrate(root);
+    const client = docker(owned(true));
+    await expect(reconcileManagedServer(runtimeOptions(root, client))).resolves.toEqual({
+      containerId: 'existing',
+      action: 'unchanged',
+      backupMountPending: true,
+    });
+    expect(client.removeContainer).not.toHaveBeenCalled();
+    expect(client.createContainer).not.toHaveBeenCalled();
+  });
+  it('recreates a stopped old generation with both sealed binds', async () => {
+    const root = await authority();
+    await migrate(root);
+    const client = docker(owned(false));
+    await reconcileManagedServer(runtimeOptions(root, client));
+    expect(client.createContainer.mock.calls[0]?.[0].binds).toEqual(
+      expect.arrayContaining([
+        '/var/lib/verity/backups:/run/verity-backups',
+        '/var/lib/verity/backup-identity:/run/verity-backup-identity',
+      ]),
+    );
+  });
+  it('does not excuse unrelated drift with a backup checkpoint', async () => {
+    const root = await authority();
+    await migrate(root);
+    const client = docker({ ...owned(true), readOnlyRootfs: true });
+    await expect(reconcileManagedServer(runtimeOptions(root, client))).rejects.toThrow('conflicts');
+    expect(client.removeContainer).not.toHaveBeenCalled();
   });
 });

@@ -119,7 +119,7 @@ anonymous daemon volume and tagged images. The workflow has read-only repository
 permissions, no secrets and no production-daemon access. It runs on matching PR
 changes or a manual workflow dispatch; merely creating the local files runs no CI.
 
-## Production differences and limits
+## Reduced baseline differences and limits
 
 The reference launcher is
 [`packages/server/src/provisioner.ts`](../../../packages/server/src/provisioner.ts),
@@ -147,3 +147,74 @@ handoff and all real shared IPC paths remain integration gates.
 A successful CI run supports this specific reduced project-boundary prototype.
 It does not authorize enabling protected egress, declare the real Launcher secure,
 or implement the [routing contract](../../../docs/project-egress-routing.md).
+
+## Runner and relay topology probe
+
+The host startup probe builds the repository's actual Sandbox and distroless
+relay images. It starts the installed Runner stack with its production capability
+set, mounts a worktree and the 0170 runtime directory, and requests supervisor
+status and a persistent session home through the shared Unix socket. An independent
+receiver starts first. A project-UID process continuously sends on an inherited
+UDP descriptor and a descriptor transferred with SCM_RIGHTS. Both must become
+observable when the fence is deliberately removed.
+
+The actual relay is started through the production Docker lifecycle adapter under
+the separately inspected `runsc-relay` profile. Broker, Claude and Codex socket
+positive controls use generation-specific volume subpaths and production inode
+permissions. Profile, image, user and mount substitutions must fail before start. A failed positive control fails the job;
+absence of traffic alone is not acceptance. This probe does not execute an agent
+turn or certify all production shared IPC paths, transport admission, daemon boot
+ordering, or hard expiry under host suspension. Those remain explicit gates.
+
+If the normal relay start fails, disposable diagnostic clones retain the same
+image, mounts, CPU and memory limits on the already-denied generation network.
+They use a logging-only runtime variant and compare PID ceilings of 32 and 64
+sequentially. Their output is diagnostic only: the original error still fails the
+job, and the host controller never accepts the debug runtime as a protected role.
+
+The transport increment additionally drives the three actual relay ports from a
+project-UID process inside the Runner Sandbox. Host-side model receivers and a
+Sandbox-side broker stream receiver record successful delivery before measuring
+revocation of each retained connection (two-second upper bound). Controller
+reconstruction restores denial before explicit revalidation. An independent
+dual-stack receiver observes direct TCP with caller-supplied test credentials and
+UDP/DNS attempts, and every external path must work after deliberate fence removal.
+Authorization suites separately drive the actual TCP-to-UDS relay and existing
+broker/model handlers, retaining project, account and action rejection checks.
+
+## Native boot fixture
+
+`boot-build.sh` assembles the actual EmbeddedServer, persistent PGlite test
+backend, AgentGateway and managed Runner/relay images. `boot-proof.py` installs
+the experimental units only inside the pinned disposable KVM guest. An outer
+TAP receiver remains independent of the guest, Docker daemon and Server process.
+Its dual-stack TCP/UDP positive controls and continuous heartbeat are mandatory.
+
+Setup, guest operations, event orchestration and cleanup are separate. The
+host-side driver explicitly requests fresh authenticated admission; no stored
+transport grant counts as recovery. Container IDs, images, registry generation,
+worktree mounts and a data marker must survive recovery. Process crashes and
+kernel/daemon restarts are distinct evidence events.
+
+The memory relay intentionally closes each completed response. Revocation is
+therefore measured with repeated authenticated requests, separately from a
+retained **in-flight** memory request across fast fence/readmission. That request
+must finish within ten seconds, below the actual fifteen-second relay timeout;
+a delayed-completion positive must append its unique marker, while the revoked
+request must not append. This does not claim persistent SSE survival across a
+kernel reboot. Actual Server memory and fresh authenticated requests decide the
+verdict. Removing the real kernel fences must produce external receipts and a
+failed protected-receiver verdict.
+
+The workflow uploads full observations, the protected observation window,
+per-event topology, revocation and recovery timings, guest journal, and kernel
+rules. Infrastructure reboot feasibility alone is not full topology acceptance;
+only a completed `boot-proof.json` together with its supporting observations can
+establish that narrower experimental-host result. No production installer loads
+these assets or enables the experimental composition seam.
+
+After downloading the complete evidence artifact, independently recompute its
+verdict with `python3 scripts/probes/project-egress/boot-proof.py verify <directory>`.
+The verifier checks original receiver observations, actual handler receipts,
+retained identities, required events, changed boot ID, failure controls and
+removed-fence sensitivity; it does not trust the `complete` flag alone.

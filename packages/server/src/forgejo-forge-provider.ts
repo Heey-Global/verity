@@ -185,11 +185,13 @@ export function createForgejoForgeProvider(options: {
     return entry.value;
   };
   const service = (repoDir: string, boundRef?: ForgeRepoRef): ForgePrService => {
+    const read = <T>(key: string, load: () => Promise<T>): Promise<T> =>
+      boundRef ? load() : cached(key, load);
     const lookup = async (branch: string) => {
       try {
         const ref = boundRef ?? (await options.identityFor(repoDir)());
         if (!ref) return null;
-        const pulls = await cached(`pulls:${coordinate(ref)}`, () =>
+        const pulls = await read(`pulls:${coordinate(ref)}`, () =>
           pages<ForgejoPull>(`${coordinate(ref)}/pulls?state=all`),
         );
         const pull = pulls
@@ -204,7 +206,7 @@ export function createForgejoForgeProvider(options: {
               (b.updated_at ?? '').localeCompare(a.updated_at ?? ''),
           )[0];
         return pull
-          ? await cached(
+          ? await read(
               `status:${coordinate(ref)}:${pull.number}:${pull.head.sha}:${pull.updated_at ?? ''}`,
               () => status(ref, pull),
             )

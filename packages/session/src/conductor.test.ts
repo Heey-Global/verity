@@ -427,6 +427,30 @@ describe('Conductor.sendTurn', () => {
     expect(fake.last().appendSystemPrompt).toContain('You are Verity, acting in the QA function');
   });
 
+  it('gives the assistant session its standing prompt without taking its tools away', async () => {
+    await ctx.store.assistant.configure(true, 'admin');
+    await ctx.store.assistant.session('assistant');
+    await ctx.store.createSession({
+      sessionId: 'assistant',
+      worktree: '/wt/assistant',
+      model: 'm',
+    });
+    await ctx.store.createSession({ sessionId: 'plain', worktree: '/wt/plain', model: 'm' });
+    const fake = scriptedBackend();
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: fake.backend,
+      worktreeExists: async () => true,
+    });
+    await conductor.sendTurn('assistant', 'Did Jonas send the offer?');
+    expect(fake.last().toolless).not.toBe(true);
+    expect(fake.last().gatewayToolsOnly).toBe(true);
+    expect(fake.last().appendSystemPrompt).toContain('# Verity assistant');
+    await conductor.sendTurn('plain', 'Continue');
+    expect(fake.last().appendSystemPrompt).not.toContain('# Verity assistant');
+    expect(fake.last().gatewayToolsOnly).not.toBe(true);
+  });
+
   it('does not claim a turn when pre-admission migration fails', async () => {
     await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
     const prepare = vi
@@ -964,6 +988,38 @@ describe('Conductor.sendTurn', () => {
     await expect(conductor.sendTurn('ghost', 'hi')).rejects.toBeInstanceOf(UnknownSessionError);
     expect(fake.ran()).toBe(false);
     expect(conductor.isBusy('ghost')).toBe(false);
+  });
+
+  it('restores a retired workspace under the turn lock before checking existence', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/retired', model: 'm' });
+    const fake = scriptedBackend();
+    let restored = false;
+    const conductor: Conductor = new Conductor({
+      store: ctx.store,
+      backend: fake.backend,
+      ensureWorkspace: async () => {
+        expect(conductor.isBusy('s1')).toBe(true);
+        restored = true;
+      },
+      worktreeExists: async () => restored,
+    });
+    await conductor.sendTurn('s1', 'Resume');
+    expect(fake.calls).toHaveLength(1);
+  });
+
+  it('releases the session lock after interrupted workspace restoration', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/retired', model: 'm' });
+    const fake = scriptedBackend();
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: fake.backend,
+      ensureWorkspace: async () => {
+        throw new Error('restore interrupted');
+      },
+    });
+    await expect(conductor.sendTurn('s1', 'Resume')).rejects.toThrow('restore interrupted');
+    expect(conductor.isBusy('s1')).toBe(false);
+    expect(fake.calls).toHaveLength(0);
   });
 
   it('rejects resuming a session whose worktree is gone, without spawning', async () => {
@@ -1983,6 +2039,129 @@ describe('Conductor.dispatchTurn', () => {
       expect(conductor.queuedCount('s1')).toBe(0);
     },
   );
+
+  it('durably admits a QA dispatch once and rejects a cancelled reservation before backend execution', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    await ctx.store.repairs.configureQA(true, 'admin');
+    await ctx.store.repairs.qaSession('s1');
+    const id = (await ctx.store.repairs.qaClaim(1, '[]', 0))!;
+    const fake = scriptedBackend();
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: fake.backend,
+      worktreeExists: async () => true,
+    });
+    expect(
+      await conductor.dispatchTurnWhenIdle('s1', 'review', {}, { durableDispatchId: id }),
+    ).toEqual({ accepted: true });
+    await vi.waitFor(() => expect(conductor.isBusy('s1')).toBe(false));
+    expect((await ctx.store.repairs.dispatchReceipt(id))?.state).toBe('admitted');
+    expect(
+      await conductor.dispatchTurnWhenIdle('s1', 'duplicate', {}, { durableDispatchId: id }),
+    ).toEqual({ accepted: true });
+    expect(fake.calls).toHaveLength(1);
+    await ctx.store.repairs.qaFinish(id, 'done');
+    const cancelled = (await ctx.store.repairs.qaClaim(1, '[]', 0))!;
+    expect(await ctx.store.repairs.cancelReservedDispatch(cancelled)).toBe(true);
+    expect(
+      await conductor.dispatchTurnWhenIdle('s1', 'late', {}, { durableDispatchId: cancelled }),
+    ).toEqual({ accepted: false });
+    expect(fake.calls).toHaveLength(1);
+    expect((await ctx.store.getEvents('s1')).filter((row) => row.t === 'prompt')).toHaveLength(1);
+  });
+
+  it('settles acceptance interrupted before backend launch without replaying the prompt', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    await ctx.store.repairs.configureQA(true, 'admin');
+    await ctx.store.repairs.qaSession('s1');
+    const id = (await ctx.store.repairs.qaClaim(1, '[]', 0))!;
+    await ctx.store.admitBackgroundDispatch(id, 's1', { t: 'prompt', text: 'review' });
+    const fake = scriptedBackend();
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: fake.backend,
+      worktreeExists: async () => true,
+    });
+    await conductor.recover();
+    expect(fake.calls).toHaveLength(0);
+    expect(await ctx.store.listRunningTurns()).toHaveLength(0);
+    expect((await ctx.store.getEvents('s1')).at(-1)?.t).toBe('interrupted');
+  });
+
+  it.each(['delayed', 'failed'] as const)(
+    'admits QA after %s predecessor cleanup without deleting its successor',
+    async (mode) => {
+      await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+      const clear = ctx.store.clearRunningTurn.bind(ctx.store);
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const cleanup = vi
+        .spyOn(ctx.store, 'clearRunningTurn')
+        .mockImplementationOnce(async (...args) => {
+          if (mode === 'failed') throw new Error('cleanup unavailable');
+          await gate;
+          await clear(...args);
+        });
+      const fake = scriptedBackend();
+      const conductor = new Conductor({
+        store: ctx.store,
+        backend: fake.backend,
+        worktreeExists: async () => true,
+      });
+      await conductor.dispatchTurnWhenIdle('s1', 'previous');
+      await vi.waitFor(() => expect(conductor.isBusy('s1')).toBe(false));
+      await vi.waitFor(() => expect(cleanup).toHaveBeenCalled());
+      await ctx.store.repairs.configureQA(true, 'admin');
+      await ctx.store.repairs.qaSession('s1');
+      const dispatch = (await ctx.store.repairs.qaClaim(1, '[]', 0))!;
+      try {
+        expect(
+          await conductor.dispatchTurnWhenIdle('s1', 'review', {}, { durableDispatchId: dispatch }),
+        ).toEqual({ accepted: true });
+        release();
+        await vi.waitFor(() => expect(conductor.isBusy('s1')).toBe(false));
+        expect(fake.calls).toHaveLength(2);
+        expect((await ctx.store.repairs.dispatchReceipt(dispatch))?.state).toBe('admitted');
+      } finally {
+        release();
+        cleanup.mockRestore();
+      }
+    },
+  );
+
+  it('bounds a hung settlement proof and leaves unproven QA admission closed', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    const proof = vi
+      .spyOn(ctx.store, 'confirmTurnSettled')
+      .mockImplementation(() => new Promise(() => {}));
+    const cleanup = vi
+      .spyOn(ctx.store, 'clearRunningTurn')
+      .mockRejectedValue(new Error('cleanup unavailable'));
+    const fake = scriptedBackend();
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: fake.backend,
+      worktreeExists: async () => true,
+    });
+    try {
+      await conductor.dispatchTurnWhenIdle('s1', 'previous');
+      await vi.waitFor(() => expect(proof).toHaveBeenCalled());
+      await vi.waitFor(() => expect(conductor.isBusy('s1')).toBe(false), { timeout: 10_000 });
+      await ctx.store.repairs.configureQA(true, 'admin');
+      await ctx.store.repairs.qaSession('s1');
+      const dispatch = (await ctx.store.repairs.qaClaim(1, '[]', 0))!;
+      expect(
+        await conductor.dispatchTurnWhenIdle('s1', 'review', {}, { durableDispatchId: dispatch }),
+      ).toEqual({ accepted: false });
+      expect(fake.calls).toHaveLength(1);
+      expect((await ctx.store.repairs.dispatchReceipt(dispatch))?.state).toBe('reserved');
+    } finally {
+      proof.mockRestore();
+      cleanup.mockRestore();
+    }
+  });
 
   it('validates idle dispatch under its lock and releases rejected admissions', async () => {
     await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
@@ -4676,6 +4855,35 @@ async function waitFor(cond: () => boolean): Promise<void> {
 }
 
 describe('Conductor.startSession', () => {
+  it('admits QA after initial-session marker cleanup fails', async () => {
+    const cleanup = vi
+      .spyOn(ctx.store, 'clearRunningTurn')
+      .mockRejectedValueOnce(new Error('cleanup unavailable'));
+    const fake = scriptedBackend({ sessionId: 'initial-qa', model: 'sonnet', text: 'hi' });
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: fake.backend,
+      worktreeExists: async () => true,
+    });
+    const { sessionId } = await conductor.startSession({ worktree: '/wt/new', prompt: 'start' });
+    await vi.waitFor(() => expect(conductor.isBusy(sessionId)).toBe(false));
+    expect(cleanup).toHaveBeenCalled();
+    expect(await ctx.store.listRunningTurns()).toHaveLength(1);
+    await ctx.store.repairs.configureQA(true, 'admin');
+    await ctx.store.repairs.qaSession(sessionId);
+    const dispatch = (await ctx.store.repairs.qaClaim(1, '[]', 0))!;
+    expect(
+      await conductor.dispatchTurnWhenIdle(
+        sessionId,
+        'review',
+        {},
+        { durableDispatchId: dispatch },
+      ),
+    ).toEqual({ accepted: true });
+    await vi.waitFor(() => expect(conductor.isBusy(sessionId)).toBe(false));
+    expect(fake.calls).toHaveLength(2);
+  });
+
   it('spawns a fresh agent run, resolves the minted id, and persists the session', async () => {
     const fake = scriptedBackend({ sessionId: 'claude-xyz', model: 'sonnet', text: 'hi' });
     const conductor = new Conductor({

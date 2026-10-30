@@ -305,6 +305,13 @@ function HydratedRoot() {
               />
               <Stack.Screen name="settings/services/matrix/index" options={{ title: 'Matrix' }} />
               <Stack.Screen name="settings/server-update" options={{ title: 'Updates' }} />
+              <Stack.Screen name="settings/backup" options={{ title: 'Backup' }} />
+              <Stack.Screen name="settings/backup-test" options={{ title: 'Test restore' }} />
+              <Stack.Screen name="settings/backup-options" options={{ title: 'Options' }} />
+              <Stack.Screen
+                name="settings/backup-new-key"
+                options={{ title: 'New recovery key' }}
+              />
               <Stack.Screen
                 name="settings/server-update-channel"
                 options={{ title: 'Update channel' }}

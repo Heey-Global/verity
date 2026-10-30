@@ -3,16 +3,23 @@
 Description=Verity project network host controller
 Requires=verity-egress-bootstrap.service docker.service
 After=verity-egress-bootstrap.service docker.service
+BindsTo=docker.service
+PartOf=docker.service
 
 [Service]
-Type=simple
+Type=notify
+NotifyAccess=all
 User=root
 Group=verity-egress-control
 StateDirectory=verity-egress
 StateDirectoryMode=0700
 RuntimeDirectory=verity-egress
 RuntimeDirectoryMode=0750
-ExecStart=/usr/bin/flock --exclusive --nonblock /var/lib/verity-egress/service.lock /usr/bin/node /opt/verity-egress/project-egress-host-main.mjs serve
+ExecStart=/usr/bin/flock --exclusive --nonblock --no-fork /var/lib/verity-egress/service.lock /usr/bin/node /opt/verity-egress/project-egress-host-main.mjs serve
+ExecStopPost=/usr/bin/flock --exclusive --nonblock /var/lib/verity-egress/service.lock /usr/bin/node /opt/verity-egress/project-egress-host-main.mjs deny
+KillMode=control-group
+TimeoutStartSec=30
+TimeoutStopSec=10
 Restart=on-failure
 RestartSec=1
 UMask=0027

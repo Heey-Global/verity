@@ -47,6 +47,18 @@
         "EXPO_UPDATE_CHANNEL": "staging"
       },
       "node": "26.12.1"
+    },
+    "profiling": {
+      "extends": "staging",
+      "env": {
+        "VERITY_APP_VARIANT": "staging",
+        "EXPO_UPDATE_CHANNEL": "staging",
+        "VERITY_CPU_PROFILING": "1"
+      },
+      "ios": {
+        "buildConfiguration": "Release"
+      },
+      "node": "26.12.1"
     }
   },
   "submit": {

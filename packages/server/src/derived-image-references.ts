@@ -53,20 +53,23 @@ export class DerivedImageReferences {
   }
 }
 
-/** Read from durable rows on every pass, including selections of absent projects. */
+/** Read durable rows on every pass. A sleeping project's last-used image is
+ * historical: its retained container protects it until retirement, and wake
+ * resolves the current default. Explicit overrides remain protected in all states. */
 export function createProjectImageReferences(db: Kysely<Database>): DerivedImageReferences {
   return new DerivedImageReferences(async () => {
     const projects = await db
       .selectFrom('projects')
-      .select(['image_ref', 'image_override_ref', 'owner', 'repo'])
+      .select(['image_ref', 'image_override_ref', 'owner', 'repo', 'state'])
       .where('hidden_at', 'is', null)
       .execute();
     return {
       refs: new Set(
         projects.flatMap((project) =>
-          [project.image_ref, project.image_override_ref].filter(
-            (ref): ref is string => ref !== null,
-          ),
+          [
+            project.state === 'sleeping' ? null : project.image_ref,
+            project.image_override_ref,
+          ].filter((ref): ref is string => ref !== null),
         ),
       ),
       repositories: new Set(

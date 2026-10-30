@@ -1,6 +1,6 @@
 # CI supervision
 
-QA is a function of the Verity assistant. Its persistent technical session,
+QA is a function of the [Verity assistant](assistant.md). Its persistent technical session,
 Verity · QA, lives in Verity Control and reviews
 changes from repository monitoring and delegates ordinary project repair sessions.
 The installation-wide switch in Settings → QA · CI supervision is disabled by
@@ -96,7 +96,7 @@ The persistent inbox coalesces unchanged observations and retains decision
 snapshots and outcomes. Automatic reviews are capped at 24 per UTC day, at most
 one active review, three minutes per review, and two proposed assignments per
 review. Existing repair limits remain one worker per project, two installation-wide
-and two attempts per unresolved resource. Invalid decisions, unavailable backends,
+and two attempts per resource since its last newly verified successful revision. Invalid decisions, unavailable backends,
 unknown dispatch acceptance and exhausted budgets remain visible as coordinator
 health states. A possibly running review is never replaced merely because time
 has elapsed. Decisions are consumed before dispatch to prevent replay; a crash
@@ -122,3 +122,49 @@ Automatic repairs, including future repairs; declining preserves monitoring.
 The card states this scope before the action. Server-side permission, mandate
 revision, global revision and incident checks reject stale or unauthorized cards.
 No repair is started merely because the model requested permission.
+
+## Restart recovery and bounded retries
+
+Every new QA review and repair claim has a durable dispatch identity. Session
+admission commits the canonical prompt, acceptance receipt and running-turn
+marker in one transaction before backend execution. Recovery releases only
+reservations that have not been admitted, refunds their repair budget, and
+rejects delayed admission of a cancelled identity. Accepted work follows normal
+session recovery; missing local activity alone never authorizes replay.
+Pre-upgrade in-flight claims have no atomic receipt and remain conservative:
+inspect their associated session if terminal evidence cannot be established.
+
+Repair history remains intact across budget cycles. A newly verified successful
+revision resets the resource's two-attempt budget; repeated observations of that
+same success do not reset it again. Per-project and installation-wide worker
+limits remain in force.
+
+Standalone workflow repairs retain their correction PR number within the
+project's repository. A closed, unmerged PR can reopen the incident only after
+current failure evidence, automatic consent, execution permission and remaining
+budget are checked. Open or merged correction PRs do not prove CI success.
+Retry requests report acceptance only when the incident actually changes state;
+stale evidence and awaiting-merge incidents are rejected by the manual retry API.
+
+Inbox limits apply after enabled, authorized projects are selected, so inactive
+entries cannot starve active projects. Re-enabled projects receive reconciled
+observations. Repository-bound Forgejo reads bypass the provider's inner cache;
+the shared cache still isolates credentials and owns mutation invalidation.
+
+
+## Admission after delayed turn cleanup
+
+Background admission can replace a predecessor marker only after server-confirmed
+backend completion for that marker's unique identity, prompt sequence and Runner
+identity, or an exact Runner terminal/recovery-fence claim. Transcript status and
+interruption events alone are not proof. Legacy markers without proof continue
+through normal recovery.
+
+The predecessor check and removal, new prompt, new marker and dispatch receipt
+commit together under the session event lock. Repeated dispatch identities do not
+start another backend. A resumed attempt gets a fresh marker identity even when
+it reuses its prompt anchor, so delayed completion or cleanup cannot settle or
+erase the successor. Recording completion is bounded; a database failure does
+not turn Stop into an unbounded wait. Without a durable proof, admission defers
+without starting work and the existing recovery path remains responsible for
+the predecessor.

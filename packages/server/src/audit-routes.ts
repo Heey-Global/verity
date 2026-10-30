@@ -15,8 +15,7 @@ import type { AuditRecorder } from './audit-recorder.js';
  * not listed in `paired-route-policy.ts`, so only an active administrator reaches
  * them; project membership grants nothing here.
  *
- * Operations are returned, not raw events: one build is one entry, whatever number
- * of events it took to record it.
+ * Both individual events and grouped operation details are available.
  */
 
 type AuditOperationKind = 'build' | 'image_removed' | 'project_deleted' | 'write_gap';
@@ -184,6 +183,8 @@ const listQuerySchema = z
   .object({
     domain: z.enum(AUDIT_DOMAINS as [string, ...string[]]).optional(),
     q: z.string().trim().max(200).optional(),
+    since: z.string().datetime({ offset: true }).optional(),
+    until: z.string().datetime({ offset: true }).optional(),
     before: z.string().max(500).optional(),
     limit: z.coerce.number().int().min(1).max(200).optional(),
   })
@@ -198,12 +199,48 @@ export function registerAuditRoutes(app: FastifyInstance, deps: AuditRouteDeps):
     sessionName: deps.sessionName,
   });
 
+  app.get('/audit/events', async (request, reply) => {
+    const query = listQuerySchema.safeParse(request.query);
+    if (
+      !query.success ||
+      (query.data.since &&
+        query.data.until &&
+        Date.parse(query.data.since) >= Date.parse(query.data.until)) ||
+      (query.data.before !== undefined && !decodeAuditCursor(query.data.before))
+    ) {
+      return reply.code(400).send({ error: 'invalid audit query' });
+    }
+    void reply.header('cache-control', 'no-store');
+    const page = await deps.log.listEvents({
+      ...query.data,
+      domain: query.data.domain as AuditEvent['domain'] | undefined,
+      search: query.data.q,
+    });
+    return {
+      events: page.events.map((event) => ({
+        eventId: event.eventId,
+        operationId: event.operationId,
+        kind: event.kind,
+        recordedAt: event.recordedAt,
+        domain: event.domain,
+        project: event.projectId ? { id: event.projectId, label: event.projectLabel } : null,
+        imageId: event.imageId,
+        payload: event.payload,
+      })),
+      nextBefore: page.nextBefore,
+      oldestRecordedAt: await deps.log.oldestRecordedAt(),
+    };
+  });
+
   app.get('/audit/operations', async (request, reply) => {
     const query = listQuerySchema.safeParse(request.query);
     // An unreadable cursor would otherwise return the first page, which a client
     // paging forward appends as duplicates.
     if (
       !query.success ||
+      (query.data.since !== undefined &&
+        query.data.until !== undefined &&
+        Date.parse(query.data.since) >= Date.parse(query.data.until)) ||
       (query.data.before !== undefined && decodeAuditCursor(query.data.before) === undefined)
     ) {
       reply.code(400);
@@ -213,6 +250,8 @@ export function registerAuditRoutes(app: FastifyInstance, deps: AuditRouteDeps):
     const { operations, nextBefore } = await deps.log.listOperations({
       domain: query.data.domain as never,
       search: query.data.q,
+      since: query.data.since,
+      until: query.data.until,
       before: query.data.before,
       limit: query.data.limit,
     });

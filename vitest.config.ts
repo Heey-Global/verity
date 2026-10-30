@@ -12,10 +12,21 @@ const TEST_TIMEOUT_MS =
     : DEFAULT_TEST_TIMEOUT_MS;
 
 export default defineConfig({
+  // Root tests import web-only mobile components without installing the Expo workspace.
+  tsconfig: fileURLToPath(new URL('./tsconfig.base.json', import.meta.url)),
   // Pin Vite/Vitest's transform cache under .cache so CI can persist it across
   // runs via actions/cache (default is node_modules/.vite, which is wiped with
   // node_modules). .cache/ is gitignored.
   cacheDir: '.cache/vitest',
+  plugins: [
+    {
+      name: 'root-test-native-style-mock',
+      // Web tests mock this native module; slim CI installs intentionally omit it.
+      resolveId(id) {
+        if (id === 'react-native-unistyles') return id;
+      },
+    },
+  ],
   resolve: {
     // Resolve workspace packages to their TypeScript source so tests run without
     // a prior `tsc -b` build (the published packages export `dist/`, which CI's

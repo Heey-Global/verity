@@ -1,6 +1,17 @@
+import type { SessionStorage } from './session-storage.js';
+import { createMcpAppsInterceptor } from './mcp-apps.js';
+import { registerMcpAppsRoutes } from './mcp-apps-routes.js';
 import { createQACoordinator } from './qa-coordinator.js';
 import { createRepairSupervisor, repairTurnTerminated } from './repair-supervisor.js';
 import { registerRepairRoutes, registerQASettingsRoutes } from './repair-routes.js';
+import { registerAssistantRoutes } from './assistant-routes.js';
+import {
+  assistantToolRefusal,
+  executeAssistantTool,
+  requireAssistantGrant,
+  requireAssistantSession,
+  type AssistantToolDeps,
+} from './assistant-tool.js';
 import type { RepairDiscovery } from './repair-supervisor.js';
 import { registerProjectEgressRoutes } from './project-egress-routes.js';
 import { createBackupAlertNotifier } from './backup/alert-notifier.js';
@@ -376,7 +387,7 @@ import { registerMessageSearchRoute } from './message-search-route.js';
 import { registerProviderLimitsRoute } from './provider-limits-route.js';
 import { claudeSubscriptionPlan, codexSubscriptionPlan } from './agent-subscription.js';
 import { registerHealthRoute } from './health-route.js';
-import { BACKUP_RECOVERY_ACCEPTED, registerBackupRoutes } from './backup/routes.js';
+import { registerBackupRoutes } from './backup/routes.js';
 import type { BackupRuntime } from './backup/runtime.js';
 import type { RemoteControlDescriptor } from './uplink-control-client.js';
 import type { PreviewSharingCapability } from './preview-capability.js';
@@ -1323,6 +1334,7 @@ export interface ServerDeps {
    * dir} default (empty, no repo — A1 behavior).
    */
   worktrees?: WorktreeProvisioner;
+  sessionStorage?: SessionStorage | undefined;
   /**
    * The repo-root checkout (e.g. `/work`) reserved for the human/main session —
    * NEVER provisioned or removed by the server (#105). Sessions never run here
@@ -1352,6 +1364,10 @@ export interface ServerDeps {
   /** Live compact PR status for the current branch: title, URL, check counts and
    * whether the Merge button should be enabled. Absent → older token-less behavior. */
   invalidateProjectPrStatus?: (projectId: string) => void;
+  repairPullRequest?: (
+    project: ProjectRecord,
+    number: number,
+  ) => Promise<{ state: 'open' | 'closed' | 'merged' } | null>;
   repairDiscovery?: (project: ProjectRecord, page: number) => Promise<RepairDiscovery>;
   branchPrStatus?: (branch: string, worktree: string) => Promise<PullRequestStatus | null>;
   /**
@@ -3227,7 +3243,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
    * fifty times ten seconds inside one request — the stall the bound exists to prevent,
    * arrived at by arithmetic.
    */
-  const deleteSessionEverywhere = async (
+  const deleteSessionEverywhereUnqueued = async (
     sessionId: string,
     budget?: SessionArtifactPurgeBudget,
   ): Promise<boolean> => {
@@ -3269,6 +3285,31 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       return await deps.eventStore.deleteSession(sessionId);
     } finally {
       release?.();
+    }
+  };
+  // The preview fence is project-wide, even when deleting different sessions.
+  // Optimistic clients can send the next delete before the first cleanup settles.
+  const projectSessionDeletes = new Map<string, Promise<void>>();
+  const deleteSessionEverywhere = async (
+    sessionId: string,
+    budget?: SessionArtifactPurgeBudget,
+  ): Promise<boolean> => {
+    const session = await deps.eventStore.getSession(sessionId);
+    const projectId = session?.projectId;
+    if (!projectId || !deps.localPreviewManager)
+      return deleteSessionEverywhereUnqueued(sessionId, budget);
+    const previous = projectSessionDeletes.get(projectId) ?? Promise.resolve();
+    let release!: () => void;
+    const current = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    projectSessionDeletes.set(projectId, current);
+    await previous;
+    try {
+      return await deleteSessionEverywhereUnqueued(sessionId, budget);
+    } finally {
+      release();
+      if (projectSessionDeletes.get(projectId) === current) projectSessionDeletes.delete(projectId);
     }
   };
   // Search projection is an eventually-consistent read model. Start/resume its
@@ -3444,6 +3485,19 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   // filesystem. (The store lock in `createSession` covers only the row: it stops
   // such a spawn from leaving a session behind, not from writing a directory.)
   const projectSpawnsInFlight = new Map<string, Set<Promise<void>>>();
+  deps.sessionStorage?.bind(
+    (id, run) =>
+      conductor.isMovingSession(id) ||
+      sessionsBeingReaped.has(id) ||
+      (meetingJobsBySession.get(id)?.size ?? 0) > 0
+        ? Promise.resolve({ ran: false as const })
+        : conductor.tryRunExclusive(id, run),
+    (projectId) =>
+      projectsBeingDeleted.has(projectId) ||
+      (projectSpawnsInFlight.get(projectId)?.size ?? 0) > 0 ||
+      deps.managedDevServerManager?.hasRunningServers(projectId) === true ||
+      (deps.localPreviewManager?.listProject(projectId).length ?? 0) > 0,
+  );
   /** Register an admitted spawn; the returned callback releases it. */
   const beginProjectSpawn = (projectId: string): (() => void) => {
     let finish: () => void = () => undefined;
@@ -3813,6 +3867,22 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       (event) => event.seq === running.promptSeq,
     )?.event;
     return prompt?.t === 'prompt' ? prompt.initiatedBy : undefined;
+  };
+  // The assistant acts for the user behind its running turn, and only in granted projects.
+  // Reading and filing tasks follow the project routes, where administrators count as
+  // readers. Handing off starts a turn, so it needs the same execute permission as
+  // `canExecuteAs`, which every later tool call of that turn is checked against.
+  const assistantToolDeps: AssistantToolDeps = {
+    eventStore: deps.eventStore,
+    initiator: runningTurnInitiator,
+    permitted: async (userId, projectId, permission) => {
+      if (userId === undefined) return deps.authRegistry?.isEnabled() !== true;
+      if (permission === 'execute') return canExecuteAs(userId, projectId);
+      return (
+        (await deps.eventStore.isActiveAdministrator(userId)) ||
+        (await deps.eventStore.hasProjectPermission(userId, projectId, 'read'))
+      );
+    },
   };
   const automationExecutor = createAutomationExecutor({
     isAuthorized: async (automation, session) => {
@@ -4584,18 +4654,15 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
 
   if (deps.backup) {
     app.addHook('onClose', () => deps.backup!.close());
-    if (BACKUP_RECOVERY_ACCEPTED) {
-      deps.backup.service?.setAlertNotifier(createBackupAlertNotifier(deps.eventStore, pushSender));
-      app.addHook('onReady', (done) => {
-        deps.backup!.service?.start();
-        done();
-      });
-    }
+    deps.backup.service?.setAlertNotifier(createBackupAlertNotifier(deps.eventStore, pushSender));
+    app.addHook('onReady', (done) => {
+      deps.backup!.service?.start();
+      done();
+    });
   }
   registerBackupRoutes(app, {
     userId: (request) => request.localUserId,
     isAdministrator: (userId) => deps.eventStore.isActiveAdministrator(userId),
-    recoveryAccepted: () => BACKUP_RECOVERY_ACCEPTED,
     service: deps.backup?.service,
     unavailableReason: () => deps.backup?.unavailableReason ?? 'installer-required',
   });
@@ -5518,6 +5585,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     );
   };
 
+  const sessionResumable = async (session: SessionRecord): Promise<boolean> =>
+    (await worktreeExists(session.worktree)) ||
+    (await deps.sessionStorage?.canRestore(session)) === true;
+
   const summarizeSessionWithFacts = async (
     session: SessionRecord,
     facts: SessionProjectionFacts,
@@ -5527,7 +5598,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     const events = await projectionEventsFor(session.sessionId, facts);
     const pr = prSummaryFor(session);
     const pullRequest = pr === undefined ? undefined : sessionPrCache.peek(session.worktree);
-    const resumable = await worktreeExists(session.worktree);
+    const resumable = await sessionResumable(session);
     const branch = listBranchFor(session, resumable);
     // Not from `events`: the quota state in force can be older than any tail, so
     // the store reads the newest one per window separately. See
@@ -5939,26 +6010,79 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       ) => Promise<boolean>)
     | undefined;
   if (deps.mcpProxyResolveCaller !== undefined) {
+    const resolveMcpAppConnection: HttpMcpProxyDeps['resolveConnection'] = async ({
+      projectId,
+      connectionId,
+    }) => {
+      const [bindings, connections] = await Promise.all([
+        deps.eventStore.listProjectMcpBindings(projectId),
+        deps.eventStore.listHttpMcpConnections(),
+      ]);
+      const binding = bindings.find(
+        (candidate) => candidate.connectionId === connectionId && candidate.enabled,
+      );
+      const connection = connections.find(
+        (candidate) => candidate.id === connectionId && candidate.enabled,
+      );
+      if (binding === undefined || connection === undefined) return undefined;
+      const authorization = await httpMcpAuthorization(deps.eventStore, connection);
+      return {
+        id: connection.id,
+        url: connection.url,
+        ...(authorization === undefined ? {} : { authorization }),
+      };
+    };
+    const emitMcpApp = (sessionId: string, event: Extract<AgentEvent, { t: 'mcp_app' }>) =>
+      emitSessionEvent(deps.eventStore, deps.bus, sessionId, event);
     registerHttpMcpProxyRoute(app, {
       resolveCaller: deps.mcpProxyResolveCaller,
-      resolveConnection: async ({ projectId, connectionId }) => {
-        const [bindings, connections] = await Promise.all([
-          deps.eventStore.listProjectMcpBindings(projectId),
-          deps.eventStore.listHttpMcpConnections(),
-        ]);
-        const binding = bindings.find(
-          (candidate) => candidate.connectionId === connectionId && candidate.enabled,
+      resolveConnection: resolveMcpAppConnection,
+      intercept: createMcpAppsInterceptor({
+        emit: emitMcpApp,
+        onError: (error) => app.log.warn({ err: error }, 'MCP app snapshot unavailable'),
+      }),
+    });
+    registerMcpAppsRoutes(app, {
+      authorizeRequest: async (request) => {
+        const registry = deps.authRegistry;
+        if (registry === undefined || !registry.isEnabled()) return true;
+        const token = requestCredential(request);
+        if (!registry.verify(token)) return false;
+        const userId = registry.resolveUserId(token);
+        if (userId === undefined || userId !== request.localUserId) return false;
+        return (
+          (await authorizePairedRoute(
+            deps.eventStore,
+            userId,
+            request.method,
+            request.routeOptions.url ?? request.url,
+            (request.params ?? {}) as Record<string, unknown>,
+          )) === 'allow'
         );
-        const connection = connections.find(
-          (candidate) => candidate.id === connectionId && candidate.enabled,
-        );
-        if (binding === undefined || connection === undefined) return undefined;
-        const authorization = await httpMcpAuthorization(deps.eventStore, connection);
-        return {
-          id: connection.id,
-          url: connection.url,
-          ...(authorization === undefined ? {} : { authorization }),
-        };
+      },
+      resolveConnection: resolveMcpAppConnection,
+      getProjectId: async (sessionId) =>
+        (await deps.eventStore.getSession(sessionId))?.projectId ?? undefined,
+      getApp: (sessionId, appId) => deps.eventStore.getMcpAppEvent(sessionId, appId),
+      emit: emitMcpApp,
+      settled: (sessionId, callId) =>
+        emitSessionEvent(deps.eventStore, deps.bus, sessionId, {
+          t: 'tool_result',
+          id: callId,
+          output: 'MCP app permission settled',
+          isError: false,
+        }),
+      approve: async ({ sessionId, callId, toolName, input, signal }) => {
+        const answer = await conductor.requestExternalPermission({
+          sessionId,
+          toolUseId: callId,
+          toolName,
+          input,
+          signal,
+          channel: 'acp',
+          allowStandingGrant: false,
+        });
+        return answer.decision.behavior === 'allow';
       },
     });
   }
@@ -6118,6 +6242,15 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     const controlPlaneSessionTools = createControlPlaneSessionTools({
       controlProjectId: VERITY_CONTROL_PROJECT_ID,
       allowKnowledgeControlOperations: true,
+      // Plain Control sessions keep their reach; the assistant needs a "delegate" grant.
+      authorizeHandoffTarget: async ({ sessionId, turnId, projectId }) => {
+        if ((await deps.eventStore.assistant.settings()).session_id !== sessionId) return;
+        await requireAssistantGrant(
+          assistantToolDeps,
+          { sessionId, turnId, projectId },
+          'delegate',
+        );
+      },
       authorizeKnowledgeCaller: async ({ projectId, sessionId }) => {
         const knowledge = deps.eventStore.knowledge;
         if (knowledge === undefined) return;
@@ -6144,17 +6277,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         const { summaries, omitted } = await collectSessionFacts(
           {
             listSessions: () => deps.eventStore.listSessions(),
-            // These two must decide worktree liveness identically, and today they do:
-            // `summarizeSession` sets `resumable` from this same `worktreeExists`. The
-            // coupling is load-bearing rather than tidy. The prefilter drops rows by
-            // `worktreeExists`; eligibility is then decided by `facts.resumable`. Let
-            // `resumable` become the broader of the two and a session the handoff would
-            // have called eligible never reaches the predicate — so a project holding two
-            // eligible sessions presents as holding one, and an ambiguous handoff that
-            // `sessionHandoffCaveats` promises will "fail rather than choosing" delivers
-            // to whichever survived instead. Changing where either gets its answer means
-            // changing both.
-            worktreeExists: (worktree) => worktreeExists(worktree),
+            // Match summary eligibility, including safely journaled retired worktrees.
+            worktreeExists: (_worktree, session) => sessionResumable(session),
             summarize: summarizeSession,
           },
           keep,
@@ -6505,6 +6629,16 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           throw new ControlPlaneSessionAuthorityError(
             'QA uses server-validated decisions, not executable tools.',
           );
+        // The assistant reads mail and voice notes, so it gets an allow-list rather than
+        // Control's full set: no fleet-wide reads, secrets or brokered HTTP. A tool added to
+        // Control later stays closed to it until it is listed here.
+        const assistantRefusal = assistantToolRefusal(
+          await deps.eventStore.assistant.settings(),
+          sessionId,
+          toolName,
+        );
+        if (assistantRefusal !== undefined)
+          throw new ControlPlaneSessionAuthorityError(assistantRefusal);
         if (toolName === 'verity_vulnerabilities') {
           await vulnerabilityTool.authorize(input);
           return;
@@ -6695,6 +6829,11 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           }
           return;
         }
+        if (toolName === 'verity_assistant') {
+          await controlPlaneSessionTools.authorizeCaller({ projectId, sessionId });
+          await requireAssistantSession(deps.eventStore, sessionId);
+          return;
+        }
         if (
           toolName !== 'verity_diagnostics' &&
           toolName !== 'verity_list_sessions' &&
@@ -6772,6 +6911,14 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           return (
             matrixRequestSchema.parse(request).action !== 'send' &&
             (await deps.eventStore.getSession(sessionId))?.projectId === projectId
+          );
+        }
+        // The project grant is the user's consent; the executor re-checks it on every call.
+        if (toolName === 'verity_assistant') {
+          const session = await deps.eventStore.getSession(sessionId);
+          return (
+            session?.projectId === projectId &&
+            (await deps.eventStore.assistant.settings()).session_id === sessionId
           );
         }
         // The tasks tool writes only to the calling session's own list and cannot
@@ -7049,6 +7196,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             documentViewForSession(session),
           );
         }
+        if (input.toolName === 'verity_assistant')
+          return executeAssistantTool(assistantToolDeps, input);
         if (input.toolName === 'verity_diagnostics') return controlDiagnosticsTool(input);
         if (input.toolName === 'verity_list_sessions')
           return controlPlaneSessionTools.listSessions(input);
@@ -8496,7 +8645,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         usage: facts.usage,
         ...(rateLimit ? { rateLimit } : {}),
         ...(rateLimits.length > 0 ? { rateLimits } : {}),
-        resumable: await worktreeExists(session.worktree),
+        resumable: await sessionResumable(session),
         eventCount: facts.eventCount,
         agentTextCounterVersion: 'agent-text-v2',
         lastActivityAt: facts.lastActivityAt,
@@ -10014,6 +10163,32 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
 
   registerRepairRoutes(app, deps.eventStore);
   registerQASettingsRoutes(app, deps.eventStore, (id) => conductor.cancelTurn(id));
+  // One Verity Control session, recreated under a fresh id if it was deleted. Concurrent
+  // callers share one attempt, so two requests never spawn the same session id twice.
+  let ensuringAssistant: Promise<string> | undefined;
+  const ensureAssistantSession = async (): Promise<string> => {
+    let id = await deps.eventStore.assistant.session(randomUUID());
+    if (await deps.eventStore.getSession(id)) return id;
+    // Never respawn under an old id: rows keyed by a deleted session may outlive it.
+    id = await deps.eventStore.assistant.replaceSession(id, randomUUID());
+    if (await deps.eventStore.getSession(id)) return id;
+    const project = await ensureVerityControlProject();
+    const result = await sessionCreate.spawn(
+      // Claude is the backend that enforces Verity-tools-only turns (docs/assistant.md).
+      { projectId: project.id, sessionId: id, name: 'Verity · Assistant', model: DEFAULT_MODEL },
+      app.log,
+    );
+    if (result.statusCode >= 300) throw new Error('Assistant session could not be created');
+    return id;
+  };
+  registerAssistantRoutes(app, deps.eventStore, {
+    ensureSession: () =>
+      (ensuringAssistant ??= ensureAssistantSession().finally(() => {
+        ensuringAssistant = undefined;
+      })),
+    sessionExists: async (id) => (await deps.eventStore.getSession(id)) !== undefined,
+    cancel: (id) => conductor.cancelTurn(id),
+  });
   if (deps.repairDiscovery) {
     const qaEnabled = async () => {
       const state = await deps.eventStore.repairs.qa();
@@ -10023,11 +10198,14 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         (await deps.eventStore.isActiveAdministrator(state.sponsor))
       );
     };
+    const preparingDispatches = new Set<string>();
     const supervisor = createRepairSupervisor({
+      preparingDispatches,
       enabled: qaEnabled,
       coordinate: true,
       store: deps.eventStore,
       discover: deps.repairDiscovery,
+      ...(deps.repairPullRequest ? { pullRequest: deps.repairPullRequest } : {}),
       changed: (projectId) => {
         resources.invalidate(`/projects/${encodeURIComponent(projectId)}/repairs`);
         void deps.eventStore.repairs
@@ -10068,7 +10246,11 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         return match ? { sessionId: match, blocked: false } : { blocked: false };
       },
       terminated: async (id, dispatchId) => {
-        const boundary = await deps.eventStore.repairs.attemptBoundary(dispatchId);
+        const receipt = await deps.eventStore.repairs.dispatchReceipt(dispatchId);
+        const boundary =
+          receipt?.prompt_seq == null
+            ? await deps.eventStore.repairs.attemptBoundary(dispatchId)
+            : Number(receipt.prompt_seq);
         if (boundary === undefined) return false;
         const events = await deps.eventStore.listRecentSessionProjectionEvents(id, 20);
         return repairTurnTerminated(events.filter((row) => row.seq > boundary));
@@ -10082,13 +10264,15 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         if (result.statusCode >= 300) throw new Error('Repair session could not be created');
       },
       dispatch: async (sessionId, prompt, dispatchId, validate, sponsorUserId, projectId) => {
-        if (await deps.eventStore.hasSessionAutomationMarker(sessionId, dispatchId)) return true;
+        if ((await deps.eventStore.repairs.dispatchReceipt(dispatchId))?.state === 'admitted')
+          return true;
         const result = await conductor.dispatchTurnWhenIdle(
           sessionId,
           prompt,
           {},
           {
             displayPrompt: 'QA: investigate assigned CI failure',
+            durableDispatchId: dispatchId,
             initiatedBy: { userId: sponsorUserId },
             validateSession: async (session) => {
               if (session.projectId !== projectId || !(await validate())) return false;
@@ -10100,11 +10284,11 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             },
           },
         );
-        if (result.accepted) await deps.eventStore.markSessionAutomation(sessionId, dispatchId);
         return result.accepted;
       },
     });
     const qa = createQACoordinator({
+      preparingDispatches,
       store: deps.eventStore,
       authorized: canExecuteAs,
       administrator: (userId) => deps.eventStore.isActiveAdministrator(userId),
@@ -10118,13 +10302,14 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         );
         if (result.statusCode >= 300) throw new Error('QA session could not be created');
       },
-      dispatch: async (id, prompt, validate, sponsor) => {
+      dispatch: async (id, prompt, validate, sponsor, dispatchId) => {
         const result = await conductor.dispatchTurnWhenIdle(
           id,
           prompt,
           { timeoutMs: 180_000 },
           {
             displayPrompt: 'QA: review changes in CI supervision',
+            durableDispatchId: dispatchId,
             initiatedBy: { userId: sponsor },
             validateSession: validate,
           },

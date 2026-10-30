@@ -118,3 +118,44 @@ it('requires administrator consent for the global switch and disables before can
     await app.close();
   }
 });
+
+it('accepts retry only on a real eligible transition and rejects repeated or awaiting-merge requests', async () => {
+  await ctx.store.repairs.configureQA(true, 'admin');
+  await ctx.store.repairs.configure('a', 'user', 'automatic');
+  const evidence = JSON.stringify({
+    observedAt: new Date().toISOString(),
+    status: { pipeline: 'failure', headSha: 'sha' },
+  });
+  const incident = await ctx.store.repairs.observe('a', 'pr:1', 'sha', evidence);
+  await ctx.store.repairs.blockUnowned(incident.id);
+  const app = Fastify();
+  app.addHook('preHandler', async (request) => {
+    request.localUserId = 'user';
+  });
+  vi.spyOn(ctx.store, 'isActiveAdministrator').mockResolvedValue(true);
+  registerRepairRoutes(app, ctx.store);
+  const retry = () =>
+    app.inject({
+      method: 'POST',
+      url: '/projects/a/repairs/retry',
+      payload: { incidentId: incident.id },
+    });
+  try {
+    expect((await retry()).statusCode).toBe(200);
+    expect((await retry()).statusCode).toBe(409);
+    await ctx.db
+      .updateTable('repair_incidents')
+      .set({ state: 'awaiting_merge' })
+      .where('id', '=', incident.id)
+      .execute();
+    expect((await retry()).statusCode).toBe(409);
+    await ctx.db
+      .updateTable('repair_incidents')
+      .set({ state: 'blocked', evidence: '{}' })
+      .where('id', '=', incident.id)
+      .execute();
+    expect((await retry()).statusCode).toBe(409);
+  } finally {
+    await app.close();
+  }
+});

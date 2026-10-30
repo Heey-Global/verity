@@ -102,7 +102,7 @@ describe('paired device management', () => {
   afterAll(async () => ctx.close());
   beforeEach(async () => truncateAll(ctx.db));
 
-  it('keeps backup setup behind paired-device administrator authority and recovery acceptance', async () => {
+  it('keeps backup setup behind paired-device administrator authority and installer resources', async () => {
     const store = new EventStore(ctx.db);
     const registry = await createAuthTokenRegistry(store, { enabled: true });
     const device = await registry.mint('backup administrator');
@@ -125,7 +125,7 @@ describe('paired device management', () => {
       ).toBe(401);
       expect(
         (await app.inject({ method: 'GET', url: '/api/backups/status', headers })).json(),
-      ).toEqual({ available: false, reason: 'recovery-validation-pending' });
+      ).toEqual({ available: false, reason: 'installer-required' });
       expect(
         (await app.inject({ method: 'POST', url: '/api/backups/setup', headers })).statusCode,
       ).toBe(503);

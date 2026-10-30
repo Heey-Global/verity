@@ -2422,6 +2422,7 @@ describe('GitHub-hosted runner boundary', () => {
     const job = ci.jobs.installer;
     expect(job?.['runs-on']).toBe('ubuntu-26.04');
     expect(job?.env?.VERITY_INSTALLER_SANDBOX).toContain('--security-opt seccomp=unconfined');
+    expect(job?.steps?.some((step) => step.run?.includes('unshare -r true'))).toBe(true);
     expect(
       job?.steps?.some((step) =>
         step.run?.includes('docker build --file deploy/installer-ci.Dockerfile'),
@@ -2437,6 +2438,21 @@ describe('GitHub-hosted runner boundary', () => {
     expect(suite?.run).toContain('$VERITY_INSTALLER_SANDBOX');
     expect(suite?.run).toContain('--user "$(id -u):$(id -g)"');
     expect(suite?.run).toContain('--env CI=true');
+    const backupSuite = job?.steps?.find((step) =>
+      step.run?.includes('node --test deploy/bin/verity-backup-provision.test.mjs'),
+    );
+    expect(backupSuite?.run).toContain('$VERITY_BACKUP_TEST_SANDBOX');
+    expect(backupSuite?.run).toContain('--user 0:0');
+    expect(backupSuite?.run).toContain('--env CI=true');
+    expect(backupSuite?.run).toContain('unshare -m sh -c');
+    expect(backupSuite?.run).toContain('$GITHUB_WORKSPACE:/workspace:ro');
+    expect(backupSuite?.run).not.toContain('docker.sock');
+    expect(job?.env?.VERITY_INSTALLER_SANDBOX).not.toContain('SYS_ADMIN');
+    expect(job?.env?.VERITY_INSTALLER_SANDBOX).toContain('--cap-drop ALL --network none');
+    expect(job?.env?.VERITY_BACKUP_TEST_SANDBOX).toContain(
+      '--cap-drop ALL --cap-add SYS_ADMIN --network none',
+    );
+    expect(job?.env?.VERITY_BACKUP_TEST_SANDBOX).toContain('--security-opt apparmor=unconfined');
     expect(
       job?.steps?.some(
         (step) => step.run === 'node --test deploy/bin/verity-pairing-material.test.mjs',
@@ -3419,9 +3435,8 @@ describe('CI runner footprint', () => {
     // the next. Both halves are asserted because "add --cache, it is free" is the
     // obvious review comment and the flag costs one line to reintroduce.
     //
-    // `lint:changed` is deliberately NOT covered: the pre-push hook runs it on a
-    // single machine with stable mtimes, and it only ever lints the changed files,
-    // so it never claimed to see an unchanged consumer in the first place.
+    // The scoped command uses the same uncached runner. Its explicit targets
+    // still do not replace the full CI check of unchanged consumers.
     const scripts = (
       JSON.parse(readFileSync('package.json', 'utf8')) as { scripts?: Record<string, string> }
     ).scripts;
@@ -3439,7 +3454,7 @@ describe('CI runner footprint', () => {
     const runner = scripts?.lint?.match(/^bash (scripts\/[A-Za-z0-9_-]+\.sh)$/)?.[1];
     expect(runner).toBeDefined();
     const source = readFileSync(runner!, 'utf8');
-    expect(source).toMatch(/^\s*npx eslint\s/m);
+    expect(source).toMatch(/^\s*node scripts\/lint-files\.mjs\s/m);
     expect(source).toContain('git ls-files');
     const eslintStep = (ci.jobs.lint?.steps ?? []).find((step) => step.name === 'ESLint');
     expect(eslintStep?.run).toBe('npm run lint');
@@ -4170,7 +4185,7 @@ describe('managed installer CI acceptance', () => {
     expect(assignment).toBeDefined();
     const workTemplate = source.match(/^work=\$\(mktemp -d "(.+)"\)$/m)?.[1];
     expect(workTemplate).toBeDefined();
-    const paths = ['original', 'fresh'].map((host) =>
+    const paths = ['original', 'fresh', 'second'].map((host) =>
       execFileSync(
         'bash',
         [
@@ -4182,7 +4197,7 @@ describe('managed installer CI acceptance', () => {
         { encoding: 'utf8' },
       ),
     );
-    expect(new Set(paths).size).toBe(2);
+    expect(new Set(paths).size).toBe(3);
     // Linux sockaddr_un reserves one of its 108 bytes for the terminating NUL.
     for (const path of paths) expect(Buffer.byteLength(path)).toBeLessThanOrEqual(107);
   });

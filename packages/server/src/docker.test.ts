@@ -594,7 +594,8 @@ describe('createDockerClient (#174)', () => {
     ]);
     const docker = createDockerClient({ baseUrl: 'http://127.0.0.1:9234/v1.41', fetch });
     const logs = await docker.containerLogs?.('abc', 25);
-    expect(logs).toContain('aaaa');
+    // A clipped single line has no safe boundary; omit its fragment.
+    expect(logs).not.toContain('aaaa');
     expect(logs).toContain('[truncated]');
     expect(Buffer.byteLength(logs ?? '')).toBeLessThanOrEqual(64 * 1024);
   });
@@ -2559,8 +2560,61 @@ describe('createDockerClient runtime + response validation', () => {
     // Plain (non-multiplexed) output comes back verbatim, capped at the budget.
     expect(Buffer.byteLength(logs ?? '')).toBeLessThanOrEqual(64 * 1024);
     expect(logs).toContain('[truncated]');
-    expect(logs).toMatch(/^a+\n\[truncated\]\n$/);
+    expect(logs).toBe('\n[truncated]\n');
   });
+
+  it.each(['http-stream', 'unix-socket'])(
+    'containerLogs keeps the newest framed output over %s',
+    async (transport) => {
+      const frame = (value: string) => {
+        const data = Buffer.from(value),
+          header = Buffer.alloc(8);
+        header[0] = 1;
+        header.writeUInt32BE(data.length, 4);
+        return Buffer.concat([header, data]);
+      };
+      const bytes = Buffer.concat([
+        frame('oldest message\n' + 'x'.repeat(80_000) + '\n'),
+        frame('latest failure\n'),
+      ]);
+      let close: (() => Promise<void>) | undefined;
+      let docker;
+      if (transport === 'unix-socket') {
+        const stub = await startDockerStub(() => ({ status: 200, raw: bytes.toString('utf8') }));
+        close = stub.close;
+        docker = createDockerClient({ baseUrl: `unix://${stub.socketPath}` });
+      } else {
+        let offset = 0;
+        const body = new ReadableStream<Uint8Array>({
+          pull(controller) {
+            if (offset >= bytes.length) {
+              controller.close();
+              return;
+            }
+            // Frame headers and UTF-8 payloads need not align with transport chunks.
+            controller.enqueue(bytes.subarray(offset, offset + 127));
+            offset += 127;
+          },
+        });
+        const fetch = fakeFetch([
+          {
+            match: /\/containers\/abc\/logs/,
+            resp: { ok: true, status: 200, body, json: async () => ({}) },
+          },
+        ]);
+        docker = client(fetch);
+      }
+      try {
+        const output = await docker.containerLogs!('abc', 1000);
+        expect(output).toContain('latest failure');
+        expect(output).not.toContain('oldest message');
+        expect(output).toContain('[truncated]');
+        expect(Buffer.byteLength(output)).toBeLessThanOrEqual(64 * 1024);
+      } finally {
+        await close?.();
+      }
+    },
+  );
 
   it('containerLogs falls back to arrayBuffer when the response exposes no stream', async () => {
     const fetch = fakeFetch([
@@ -2578,7 +2632,7 @@ describe('createDockerClient runtime + response validation', () => {
     const logs = await client(fetch).containerLogs?.('abc', 25);
     expect(Buffer.byteLength(logs ?? '')).toBeLessThanOrEqual(64 * 1024);
     expect(logs).toContain('[truncated]');
-    expect(logs).toMatch(/^b+\n\[truncated\]\n$/);
+    expect(logs).toBe('\n[truncated]\n');
   });
 
   it('containerLogs marks a trailing partial frame header as truncated', async () => {
@@ -3092,4 +3146,11 @@ it('DockerClient.pullImage honors caller cancellation during a disposable operat
   await expect(
     docker.pullImage!('postgres:18-alpine', { signal: controller.signal }),
   ).rejects.toMatchObject({ kind: 'network' });
+});
+
+it('GC removal never forces a running container or deletes volumes', async () => {
+  const fetch = fakeFetch([{ match: /containers\/stopped/, method: 'DELETE', resp: res({}) }]);
+  const docker = createDockerClient({ baseUrl: 'http://docker', fetch });
+  await docker.removeStoppedContainer!('stopped');
+  expect(fetch.calls[0]?.url).toContain('force=false&v=false');
 });
