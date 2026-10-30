@@ -48,7 +48,12 @@ new UDP flow may acquire that label. An existing label is never rewritten on
 renewal. This does not make a UDP socket identity stronger than conntrack's flow
 identity after its entry is destroyed.
 
-Overlapping grants conservatively share the earliest absolute authority expiry.
+Overlapping grants conservatively share the earliest absolute authority expiry
+for the current admission, while each represented temporary expiry receives its
+own persistent BOOTTIME mapping and kernel tombstones. Both directions latch
+all represented expired authorities before any earlier-expiry drop. Tombstones
+use the fixed project address, so multiple destinations cannot exhaust their
+single identity slot or evade a previously observed expiry.
 nftables date syntax rounds that expiry down to a whole UTC second, so access
 may close up to one second early. Kernel-observed wall expiry is latched in
 expiry-specific dynamic sets in either direction. These sets survive all rule
@@ -61,7 +66,7 @@ are conservatively denied together. Missing or unreadable tombstones prevent
 admission. This direct-grant guard is not installed on the separate permanent
 relay service paths by this increment.
 
-The first BOOTTIME mapping of each absolute authority expiry is also retained
+The first BOOTTIME mapping of every represented absolute authority expiry is retained
 for the generation and can only decrease. Renewing a controller lease after
 wall-clock rollback cannot move that original authority budget into the future,
 including quiet intervals with no expiry packet. A request exceeding the saved

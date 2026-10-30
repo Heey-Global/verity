@@ -354,3 +354,26 @@ it('never admits capture-expired grants after rollback during revocation', async
     }
   }
 });
+
+it('captures and latches every overlapping expiry before an earlier expiry can drop', async () => {
+  const { deps, fence } = fixture();
+  await fence.prepare(binding);
+  await fence.refresh({
+    binding,
+    revision: 1,
+    grants: [grant, { ...grant, id: 'later', expiresAt: 9000 }],
+  });
+  expect(deps.deadline.arm.mock.calls[0]).toEqual([
+    binding,
+    expect.objectContaining({
+      authorityBootDeadlines: { '5000': '5000000000', '9000': '9000000000' },
+    }),
+  ]);
+  const rules = deps.apply.mock.calls.at(-1)![0];
+  const lastLatch = rules.indexOf('meta time >= "1970-01-01 00:00:09" add @expired4');
+  const firstDrop = rules.indexOf('meta time >= "1970-01-01 00:00:05" counter name expired drop');
+  expect(lastLatch).toBeGreaterThan(0);
+  expect(firstDrop).toBeGreaterThan(lastLatch);
+  expect(rules).toContain('{ 172.30.1.2 }');
+  expect(rules).toContain('{ fd42::2 }');
+});

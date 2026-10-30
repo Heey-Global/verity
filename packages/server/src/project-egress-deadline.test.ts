@@ -22,7 +22,7 @@ const clock: ProjectDeadlineClock = {
 it('caps standing authority to one second captured before asynchronous admission', () => {
   const lease = projectDeadlineLease(binding, 1, null, clock);
   expect(lease.bootDeadlineNs).toBe('6000000000');
-  expect(lease.authorityBootDeadlineNs).toBeNull();
+  expect(lease.authorityBootDeadlines).toEqual({});
   expect(Object.isFrozen(lease)).toBe(true);
   // Serialization into an executor request must not turn it into a fresh TTL.
   expect(JSON.parse(JSON.stringify(lease)).bootDeadlineNs).toBe(lease.bootDeadlineNs);
@@ -30,7 +30,7 @@ it('caps standing authority to one second captured before asynchronous admission
 
 it('uses the shorter absolute authority budget and omits already expired authority', () => {
   expect(projectDeadlineLease(binding, 1, 1_000_250, clock).bootDeadlineNs).toBe('5250000000');
-  expect(projectDeadlineLease(binding, 1, 1_010_000, clock).authorityBootDeadlineNs).toBe(
+  expect(projectDeadlineLease(binding, 1, 1_010_000, clock).authorityBootDeadlines['1010000']).toBe(
     '15000000000',
   );
   expect(projectDeadlineLease(binding, 1, 1_000_000, clock).bootDeadlineNs).toBe('0');
@@ -93,4 +93,16 @@ it('rejects kernel clock overflow before serializing a map update', () => {
       }),
     ).toThrow('uint64');
   }
+});
+
+it('maps every overlapping authority from the same immutable clock sample', () => {
+  const lease = projectDeadlineLease(binding, 1, 1_000_250, clock, [1_010_000, 1_000_250]);
+  expect(lease.authorityBootDeadlines).toEqual({
+    '1000250': '5250000000',
+    '1010000': '15000000000',
+  });
+  expect(Object.isFrozen(lease.authorityBootDeadlines)).toBe(true);
+  expect(() => projectDeadlineLease(binding, 1, 1_000_250, clock, [1_010_000])).toThrow(
+    'expiry set',
+  );
 });

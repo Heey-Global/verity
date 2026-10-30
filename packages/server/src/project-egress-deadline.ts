@@ -23,7 +23,7 @@ export interface ProjectDeadlineLease {
   readonly capturedBootNs: string;
   readonly bootDeadlineNs: string;
   readonly authorityExpiresAt: number | null;
-  readonly authorityBootDeadlineNs: string | null;
+  readonly authorityBootDeadlines: Readonly<Record<string, string>>;
 }
 const PROJECT_DEADLINE_MAX_NS = 1_000_000_000n;
 
@@ -33,6 +33,7 @@ export function projectDeadlineLease(
   revision: number,
   authorityExpiresAt: number | null,
   sample: ProjectDeadlineClock,
+  authorityExpiries: readonly number[] = authorityExpiresAt === null ? [] : [authorityExpiresAt],
 ): ProjectDeadlineLease {
   const clock = clockSchema.parse(sample);
   if (!Number.isSafeInteger(revision) || revision < 0)
@@ -56,10 +57,21 @@ export function projectDeadlineLease(
   const duration = remaining < PROJECT_DEADLINE_MAX_NS ? remaining : PROJECT_DEADLINE_MAX_NS;
   if (duration > 0n && before + duration > UINT64_MAX)
     throw new Error('Deadline exceeds kernel uint64 range');
-  const authorityBoot =
-    authorityExpiresAt === null ? null : remaining > 0n ? before + remaining : 0n;
-  if (authorityBoot !== null && authorityBoot > UINT64_MAX)
-    throw new Error('Authority deadline exceeds kernel uint64 range');
+  const expiries = [...new Set(authorityExpiries)].sort((a, b) => a - b);
+  if (expiries.length > 1000 || (expiries[0] ?? null) !== authorityExpiresAt)
+    throw new Error('Invalid authority expiry set');
+  const authorityBootDeadlines = Object.freeze(
+    Object.fromEntries(
+      expiries.map((expiry) => {
+        if (!Number.isSafeInteger(expiry) || expiry < 0 || BigInt(expiry) * 1_000_000n > UINT64_MAX)
+          throw new Error('Invalid authority expiry');
+        const budget = BigInt(expiry) * 1_000_000n - BigInt(clock.realNs);
+        const mapped = budget > 0n ? before + budget : 0n;
+        if (mapped > UINT64_MAX) throw new Error('Authority deadline exceeds kernel uint64 range');
+        return [String(expiry), mapped.toString()];
+      }),
+    ),
+  );
   return Object.freeze({
     bootId: clock.bootId,
     binding: createHash('sha256')
@@ -81,7 +93,7 @@ export function projectDeadlineLease(
     capturedBootNs: before.toString(),
     bootDeadlineNs: (duration > 0n ? before + duration : 0n).toString(),
     authorityExpiresAt,
-    authorityBootDeadlineNs: authorityBoot?.toString() ?? null,
+    authorityBootDeadlines,
   });
 }
 

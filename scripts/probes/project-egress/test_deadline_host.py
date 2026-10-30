@@ -26,10 +26,10 @@ class DeadlineHostTests(unittest.TestCase):
         host.save(self.path, {'binding': self.binding, 'peer': self.peer, 'bootId': 'boot',
                              'revision': 1, 'program': 7, 'invalidBeforeNs': '10', 'lastCapturedNs': '0',
                              'authorityExpiresAt': None, 'expiredAuthorities': [], 'uncertainExpiry': False,
-                             'seenAuthorities': [None], 'authorityBootDeadlines': {}})
+                             'seenAuthorities': [None], 'authorityBootDeadlines': {}, 'nftAuthorities': [None]})
         self.lease = {'bootId': 'boot', 'binding': self.key, 'revision': 1, 'nonce': 'd' * 32,
                       'capturedBootNs': '20', 'bootDeadlineNs': '1000000020', 'authorityExpiresAt': None,
-                      'authorityBootDeadlineNs': None}
+                      'authorityBootDeadlines': {}}
         self.enter = self.enterContext
         original_lstat = Path.lstat
         registration = self.path
@@ -95,11 +95,12 @@ class DeadlineHostTests(unittest.TestCase):
 
     def test_observed_wall_expiry_survives_replacing_nft_tombstone(self):
         self.lease['authorityExpiresAt'] = 5000
-        self.lease['authorityBootDeadlineNs'] = '5000000020'
+        self.lease['authorityBootDeadlines'] = {'5000': '5000000020'}
         self.arm()
         a, b = host.expiry_set_names(5000)
         self.listing.return_value = json.dumps({'nftables': [
-            {'set': {'name': a, 'elem': ['172.30.106.2']}}, {'set': {'name': b}}]})
+            {'set': {'name': a, 'elem': ['172.30.106.2']}}, {'set': {'name': b}},
+            *[{'set': {'name': name}} for name in host.expiry_set_names(None)]]})
         host.execute({'operation': 'revoke', 'binding': self.binding})
         self.lease['capturedBootNs'] = '2000000002'
         self.lease['bootDeadlineNs'] = '2000000002'
@@ -118,29 +119,59 @@ class DeadlineHostTests(unittest.TestCase):
         self.assertEqual(self.write.call_args.args[-1], 0)
 
     def test_quiet_expiry_cannot_be_rebased_after_wall_clock_rollback(self):
-        self.lease.update({'authorityExpiresAt': 5000, 'authorityBootDeadlineNs': '3000000000'})
+        self.lease.update({'authorityExpiresAt': 5000, 'authorityBootDeadlines': {'5000': '3000000000'}})
         self.arm()
         host.clocks.return_value = {'bootId': 'boot', 'bootBeforeNs': '4000000010',
                                    'bootAfterNs': '4000000011', 'realNs': '0'}
         self.lease.update({'capturedBootNs': '4000000000', 'bootDeadlineNs': '5000000000',
-                           'authorityBootDeadlineNs': '9000000000'})
+                           'authorityBootDeadlines': {'5000': '9000000000'}})
         with self.assertRaisesRegex(ValueError, 'Original authority clock budget exhausted'):
             self.arm()
         self.assertEqual(self.write.call_args.args[-1], 0)
 
     def test_renewal_preserves_first_authority_mapping_and_can_only_shorten_it(self):
-        self.lease.update({'authorityExpiresAt': 5000, 'authorityBootDeadlineNs': '3000000000'})
+        self.lease.update({'authorityExpiresAt': 5000, 'authorityBootDeadlines': {'5000': '3000000000'}})
         self.arm()
         self.lease.update({'capturedBootNs': '1000000000', 'bootDeadlineNs': '2000000000',
-                           'authorityBootDeadlineNs': '9000000000'})
+                           'authorityBootDeadlines': {'5000': '9000000000'}})
         self.arm()
         saved = json.loads(self.path.read_text())
         self.assertEqual(saved['authorityBootDeadlines']['5000'], '3000000000')
         self.lease.update({'capturedBootNs': '1000000001', 'bootDeadlineNs': '2000000001',
-                           'authorityBootDeadlineNs': '2500000000'})
+                           'authorityBootDeadlines': {'5000': '2500000000'}})
         self.arm()
         self.assertEqual(json.loads(self.path.read_text())['authorityBootDeadlines']['5000'],
                          '2500000000')
+
+    def test_overlapping_authority_keeps_its_original_budget_after_earlier_grant_is_removed(self):
+        self.lease.update({'authorityExpiresAt': 5000,
+                           'authorityBootDeadlines': {'5000': '3000000000', '7000': '5000000000'}})
+        self.arm()
+        host.clocks.return_value = {'bootId': 'boot', 'bootBeforeNs': '6000000010',
+                                   'bootAfterNs': '6000000011', 'realNs': '0'}
+        self.lease.update({'authorityExpiresAt': 7000, 'capturedBootNs': '6000000000',
+                           'bootDeadlineNs': '7000000000',
+                           'authorityBootDeadlines': {'7000': '13000000000'}})
+        with self.assertRaisesRegex(ValueError, 'Original authority clock budget exhausted'):
+            self.arm()
+        self.assertEqual(self.write.call_args.args[-1], 0)
+
+    def test_later_authority_tombstone_is_read_even_when_earlier_expiry_was_selected(self):
+        self.lease.update({'authorityExpiresAt': 5000,
+                           'authorityBootDeadlines': {'5000': '3000000000', '7000': '9000000000'}})
+        self.arm()
+        sets = [{'set': {'name': name, **({'elem': ['172.30.106.2']} if expiry == 7000 else {})}}
+                for expiry in (None, 5000, 7000) for name in host.expiry_set_names(expiry)]
+        self.listing.return_value = json.dumps({'nftables': sets})
+        host.execute({'operation': 'revoke', 'binding': self.binding})
+        self.assertEqual(json.loads(self.path.read_text())['expiredAuthorities'], [7000])
+        self.lease.update({'authorityExpiresAt': 7000, 'capturedBootNs': '2000000002',
+                           'bootDeadlineNs': '3000000002',
+                           'authorityBootDeadlines': {'7000': '9000000000'}})
+        host.clocks.return_value = {'bootId': 'boot', 'bootBeforeNs': '3000000010',
+                                   'bootAfterNs': '3000000011', 'realNs': '0'}
+        with self.assertRaisesRegex(ValueError, 'already observed expired'):
+            self.arm()
 
     def test_attestation_accepts_only_one_software_program_with_matching_headers(self):
         header = {'kind': 'bpf', 'pref': 1, 'chain': 0, 'protocol': 'all'}

@@ -148,33 +148,63 @@ export function projectFenceRules(
   const wall = admission?.authorityExpiresAt;
   if (wall !== undefined && wall !== null && (!Number.isSafeInteger(wall) || wall < 0))
     throw new Error('Invalid absolute packet expiry');
-  const expiryIdentity = createHash('sha256')
-    .update(wall == null ? 'standing' : String(wall))
-    .digest('hex')
-    .slice(0, 16);
-  // nft's date syntax is second precision. Rounding down only closes early.
-  const date =
-    wall == null
-      ? null
-      : new Date(Math.floor(wall / 1000) * 1000).toISOString().slice(0, 19).replace('T', ' ');
+  const expiries: Array<number | null> =
+    admission && wall !== null && wall !== undefined
+      ? Object.keys(admission.authorityBootDeadlines).map(Number)
+      : [null];
+  if (wall != null && (!expiries.includes(wall) || Math.min(...expiries.map(Number)) !== wall))
+    throw new Error('Invalid authority expiry set');
+  const deadlines = expiries.map((expiry) => {
+    if (expiry !== null && (!Number.isSafeInteger(expiry) || expiry < 0))
+      throw new Error('Invalid absolute packet expiry');
+    return {
+      identity: createHash('sha256')
+        .update(expiry === null ? 'standing' : String(expiry))
+        .digest('hex')
+        .slice(0, 16),
+      // nft date syntax rounds down, so permission can only close early.
+      date:
+        expiry === null
+          ? null
+          : new Date(Math.floor(expiry / 1000) * 1000).toISOString().slice(0, 19).replace('T', ' '),
+    };
+  });
+  const expirySets = deadlines
+    .flatMap(({ identity }) =>
+      [4, 6].map(
+        (family) =>
+          `set expired${family}_${identity} { type ipv${family}_addr; flags dynamic; size 1; }`,
+      ),
+    )
+    .join('\n');
   const expiry = (reverse: boolean): string =>
     [4, 6]
       .map((family) => {
         const ip = family === 4 ? 'ip' : 'ip6';
-        const address = family === 4 ? binding.ipv4 : binding.ipv6;
-        const source = reverse ? `${ip} daddr ${address}` : `${ip} saddr ${address}`;
-        return (
-          `${source} ${ip} ${reverse ? 'daddr' : 'saddr'} @expired${family}_${expiryIdentity} counter name expired drop\n` +
-          (date
-            ? `${source} meta time >= "${date}" add @expired${family}_${expiryIdentity} { ${ip} ${reverse ? 'daddr' : 'saddr'} } counter name expired drop\n`
-            : '')
+        const source = `${ip} ${reverse ? 'daddr' : 'saddr'} ${family === 4 ? binding.ipv4 : binding.ipv6}`;
+        const identityAddress = family === 4 ? binding.ipv4 : binding.ipv6;
+        const identityField = `${ip} ${reverse ? 'daddr' : 'saddr'}`;
+        // Latch every represented authority before any earlier-expiry drop. An
+        // in-flight packet must retain B's expiry even after A's rules are replaced.
+        const latch = deadlines
+          .filter(({ date }) => date !== null)
+          .map(
+            ({ identity, date }) =>
+              `${source} meta time >= "${date}" add @expired${family}_${identity} { ${identityAddress} }`,
+          );
+        const reject = deadlines.map(
+          ({ identity }) =>
+            `${source} ${identityField} @expired${family}_${identity} counter name expired drop`,
         );
+        const wallReject = deadlines
+          .filter(({ date }) => date !== null)
+          .map(({ date }) => `${source} meta time >= "${date}" counter name expired drop`);
+        return [...latch, ...wallReject, ...reject].join('\n') + '\n';
       })
       .join('');
   commands.push(`table inet ${table} {
 ${sets}
-set expired4_${expiryIdentity} { type ipv4_addr; flags dynamic; size 1; }
-set expired6_${expiryIdentity} { type ipv6_addr; flags dynamic; size 1; }
+${expirySets}
 counter expired { }
 chain fence {
  ip saddr != ${binding.ipv4} drop
@@ -314,7 +344,13 @@ export class ProjectEgressFence {
                 : Math.min(earliest, grant.expiresAt),
           null,
         );
-        admission = projectDeadlineLease(snapshot.binding, snapshot.revision, expiry, sample);
+        admission = projectDeadlineLease(
+          snapshot.binding,
+          snapshot.revision,
+          expiry,
+          sample,
+          authority.flatMap((grant) => (grant.expiresAt === null ? [] : [grant.expiresAt])),
+        );
       } catch (error) {
         await this.deny(current.binding);
         throw error;

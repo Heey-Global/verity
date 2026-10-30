@@ -189,19 +189,19 @@ def remember_expiry(binding, state):
         (binding['projectId'] + ':' + binding['generation']).encode()).hexdigest()[:24]
     listing = json.loads(run('/usr/sbin/nft', '-j', 'list', 'table', 'inet', name))
     sets = {entry['set']['name']: entry['set'] for entry in listing['nftables'] if 'set' in entry}
-    names = expiry_set_names(state.get('authorityExpiresAt'))
-    if not set(names) <= sets.keys():
-        raise ValueError('Missing authoritative expiry tombstones')
-    if any(sets[key].get('elem') for key in names):
-        expiry = state.get('authorityExpiresAt')
-        if expiry is not None and expiry not in state['expiredAuthorities']:
-            if len(state['expiredAuthorities']) >= 1000:
-                raise ValueError('Deadline authority tombstone capacity exhausted')
-            state['expiredAuthorities'].append(expiry)
+    for expiry in state['nftAuthorities']:
+        names = expiry_set_names(expiry)
+        if not set(names) <= sets.keys():
+            raise ValueError('Missing authoritative expiry tombstones')
+        if any(sets[key].get('elem') for key in names):
+            if expiry is not None and expiry not in state['expiredAuthorities']:
+                if len(state['expiredAuthorities']) >= 1000:
+                    raise ValueError('Deadline authority tombstone capacity exhausted')
+                state['expiredAuthorities'].append(expiry)
 
 
 def validate_lease(key, state, lease, pending=False):
-    if (set(lease) != {'bootId', 'binding', 'revision', 'nonce', 'capturedBootNs', 'bootDeadlineNs', 'authorityExpiresAt', 'authorityBootDeadlineNs'}
+    if (set(lease) != {'bootId', 'binding', 'revision', 'nonce', 'capturedBootNs', 'bootDeadlineNs', 'authorityExpiresAt', 'authorityBootDeadlines'}
             or lease['bootId'] != state['bootId'] or lease['binding'] != key
             or not isinstance(lease['revision'], int) or isinstance(lease['revision'], bool)
             or lease['revision'] < state['revision'] or not re.fullmatch(r'[a-f0-9]{32}', lease['nonce'])
@@ -212,23 +212,29 @@ def validate_lease(key, state, lease, pending=False):
     deadline = int(lease['bootDeadlineNs'])
     captured = int(lease['capturedBootNs'])
     expiry = lease['authorityExpiresAt']
-    authority_boot = lease['authorityBootDeadlineNs']
+    budgets = lease['authorityBootDeadlines']
     if (deadline > (1 << 64) - 1 or (expiry is not None and
             (not isinstance(expiry, int) or isinstance(expiry, bool)
              or expiry < 0 or expiry * 1_000_000 > (1 << 64) - 1))):
         raise ValueError('Deadline exceeds kernel range')
-    if expiry is None:
-        if authority_boot is not None:
-            raise ValueError('Standing authority cannot acquire a temporary clock mapping')
-    elif (not isinstance(authority_boot, str) or not re.fullmatch(r'(?:0|[1-9][0-9]{0,19})', authority_boot)
-          or int(authority_boot) > (1 << 64) - 1 or deadline > int(authority_boot)):
-        raise ValueError('Invalid immutable authority clock mapping')
-    original = state['authorityBootDeadlines'].get(str(expiry))
-    if original is not None and (deadline > int(original) or captured >= int(original)):
-        raise ValueError('Original authority clock budget exhausted')
-    if expiry in state['expiredAuthorities']:
-        raise ValueError('Authority already observed expired')
-    if expiry not in state['seenAuthorities'] and len(state['seenAuthorities']) >= 1000:
+    if not isinstance(budgets, dict) or len(budgets) > 1000:
+        raise ValueError('Invalid immutable authority clock mappings')
+    if (expiry is None and budgets) or (expiry is not None and str(expiry) not in budgets):
+        raise ValueError('Missing immutable authority clock mapping')
+    for key_expiry, budget in budgets.items():
+        if (not re.fullmatch(r'(?:0|[1-9][0-9]{0,13})', key_expiry)
+                or int(key_expiry) * 1_000_000 > (1 << 64) - 1
+                or not isinstance(budget, str) or not re.fullmatch(r'(?:0|[1-9][0-9]{0,19})', budget)
+                or int(budget) > (1 << 64) - 1 or deadline > int(budget)
+                or int(key_expiry) < expiry):
+            raise ValueError('Invalid immutable authority clock mapping')
+        original = state['authorityBootDeadlines'].get(key_expiry)
+        if original is not None and (deadline > int(original) or captured >= int(original)):
+            raise ValueError('Original authority clock budget exhausted')
+        if int(key_expiry) in state['expiredAuthorities']:
+            raise ValueError('Authority already observed expired')
+    seen = set(state['seenAuthorities']) | {int(key) for key in budgets}
+    if len(seen) > 1000:
         raise ValueError('Deadline authority capacity requires a fresh generation')
     sample = clocks()
     if ((captured <= int(state['invalidBeforeNs']) and not (pending and lease == state.get('pendingAdmission')))
@@ -240,12 +246,11 @@ def validate_lease(key, state, lease, pending=False):
 
 
 def remember_authority(state, lease):
-    expiry = lease['authorityExpiresAt']
-    if expiry not in state['seenAuthorities']:
-        state['seenAuthorities'].append(expiry)
-    if expiry is not None:
-        key = str(expiry)
-        budget = int(lease['authorityBootDeadlineNs'])
+    for key, value in lease['authorityBootDeadlines'].items():
+        expiry = int(key)
+        if expiry not in state['seenAuthorities']:
+            state['seenAuthorities'].append(expiry)
+        budget = int(value)
         state['authorityBootDeadlines'][key] = str(min(budget, int(state['authorityBootDeadlines'].get(key, budget))))
 
 
@@ -287,7 +292,7 @@ def execute(request):
                  'program': program['id'], 'revision': -1,
                  'invalidBeforeNs': clocks()['bootAfterNs'], 'lastCapturedNs': '0',
                  'authorityExpiresAt': None, 'expiredAuthorities': [], 'uncertainExpiry': False,
-                 'pendingAdmission': None, 'seenAuthorities': [None], 'authorityBootDeadlines': {}}
+                 'pendingAdmission': None, 'seenAuthorities': [None], 'authorityBootDeadlines': {}, 'nftAuthorities': [None]}
         attest(root, peer, state['program'])
         save(path, state)
         return {'state': 'denied'}
@@ -326,6 +331,9 @@ def execute(request):
     state['lastCapturedNs'] = str(captured)
     state['authorityExpiresAt'] = expiry
     remember_authority(state, lease)
+    for value in lease['authorityBootDeadlines']:
+        if int(value) not in state['nftAuthorities']:
+            state['nftAuthorities'].append(int(value))
     save(path, state)
     # No remaining duration is recomputed here. An arbitrarily late update stays expired.
     write_deadline(root, state['peer']['index'], deadline)
@@ -343,7 +351,7 @@ if __name__ == '__main__':
         raise ValueError('Untrusted deadline lock')
     with os.fdopen(lock, 'w') as held:
         fcntl.flock(held, fcntl.LOCK_EX)
-        data = sys.stdin.buffer.read(16385)
-        if len(data) > 16384:
+        data = sys.stdin.buffer.read(65537)
+        if len(data) > 65536:
             raise ValueError('Oversized deadline request')
         print(json.dumps(execute(json.loads(data))))
