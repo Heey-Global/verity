@@ -1,4 +1,5 @@
-import { nativeRetirementSchema } from '@verity/events';
+// Scripts must resolve current sources even when workspace dist has not been built.
+import { nativeRetirementSchema } from '../packages/events/src/storage-reclamation.js';
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
