@@ -4719,7 +4719,14 @@ export async function buildEmbeddedServer(
       // would recreate a valid retained Sandbox while checking its unlock state.
       for (const project of await eventStore.listProjects()) {
         if (project.kind === 'control_plane' || project.state !== 'active') continue;
-        await provisioner?.resumeProjectRelay?.(project.id);
+        try {
+          await provisioner?.resumeProjectRelay?.(project.id);
+        } catch (error) {
+          app.log.warn(
+            { err: error, projectId: project.id },
+            'Retained relay resume deferred until project recovery',
+          );
+        }
       }
       await projectAgentGatewayIdentity();
       let inspected = 0;

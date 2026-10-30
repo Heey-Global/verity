@@ -3262,6 +3262,7 @@ describe('buildEmbeddedServer', () => {
         .spyOn(ProvisionerImpl.prototype, 'resumeProjectRelay')
         .mockImplementation(async (id) => {
           order.push(`resume:${id}`);
+          if (id === 'unavailable-unlock') throw new Error('host egress service unavailable');
         });
       if (refreshUnavailable) {
         vi.stubGlobal(
@@ -3349,6 +3350,15 @@ describe('buildEmbeddedServer', () => {
         const retainedDb = createEmbeddedDb(dataDir);
         try {
           const retainedStore = new EventStore(retainedDb);
+          // A failed project dependency must not prevent administrative unlock
+          // or stop another retained project's listener recovery.
+          await retainedStore.upsertProject({
+            id: 'unavailable-unlock',
+            owner: 'local',
+            repo: 'unavailable',
+            containerName: 'dev-unavailable',
+            state: 'active',
+          });
           await retainedStore.upsertProject({
             id: 'retained-unlock',
             owner: 'local',
@@ -3373,6 +3383,7 @@ describe('buildEmbeddedServer', () => {
           payload: { password, deviceLabel: 'test device' },
         });
         expect(unlock.statusCode).toBe(200);
+        expect(resume).toHaveBeenCalledWith('unavailable-unlock');
         expect(resume).toHaveBeenCalledWith('retained-unlock');
         expect(order.indexOf('resume:retained-unlock')).toBeGreaterThanOrEqual(0);
 
