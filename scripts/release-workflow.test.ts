@@ -357,7 +357,12 @@ describe('multi-architecture runtime image publication', () => {
     const stage = workflow.jobs['stage-bundled-images'].steps.find((step) =>
       step.run?.includes('publish-release-index.mjs'),
     );
-    expect(stage?.run).toContain('STAGE_TAG="candidate-v${VERSION}"');
+    const template = /STAGE_TAG="([^"\n]+)"/u.exec(stage?.run ?? '')?.[1];
+    expect(template).toBeDefined();
+    const candidate = (source: string) =>
+      template!.replaceAll('${VERSION}', '4.68.0').replaceAll('${SOURCE_REVISION}', source);
+    expect(candidate('a'.repeat(40))).toMatch(/^candidate-v4\.68\.0-/u);
+    expect(candidate('a'.repeat(40))).not.toBe(candidate('b'.repeat(40)));
     expect(stage?.run).not.toContain('imagetools create');
     for (const component of ['project-relay', 'matrix-connector'] as const) {
       expect(workflow.jobs['stage-bundled-images'].outputs?.[`${component}-image`]).toBe(
