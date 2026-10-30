@@ -10215,6 +10215,27 @@ describe('reconcileRelays + provision hard-stop (Stage 5 legacy migration)', () 
     expect(recreate).not.toHaveBeenCalled();
   });
 
+  it('resumes a retained relay for unlock without entering migration or replacement', async () => {
+    const p = await seedActive('resumed', 'dev-resumed');
+    const { client } = dockerInspecting({ 'dev-resumed': migratedInspect(p.id) });
+    let active = false;
+    const resume = vi.fn(async () => {
+      active = true;
+      return true;
+    });
+    const provisioner = makeProvisioner(client, {
+      isHealthy: async () => active,
+      resume,
+    });
+    provisioner.attachProjectBusyProbe(async () => false);
+    const recreate = vi.spyOn(provisioner, 'recreateContainer').mockResolvedValue(p);
+    await provisioner.resumeProjectRelay(p.id);
+    expect(resume).toHaveBeenCalledWith(
+      expect.objectContaining({ projectId: p.id, containerGeneration: 'gen-1' }),
+    );
+    expect(recreate).not.toHaveBeenCalled();
+  });
+
   it('updates a stale sandbox automatically once its project is idle', async () => {
     const p = await seedActive('image-update', 'dev-image-update');
     const { client } = dockerInspecting({ 'dev-image-update': migratedInspect(p.id) });

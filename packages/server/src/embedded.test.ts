@@ -73,6 +73,7 @@ import {
   prepareControlPlaneRunnerForTurn,
 } from './embedded.js';
 import { buildTestEmbeddedServer } from './testing.js';
+import { ProvisionerImpl } from './provisioner.js';
 import {
   startAgentGatewayControlServer,
   type AgentGatewayConfiguration,
@@ -3256,6 +3257,12 @@ describe('buildEmbeddedServer', () => {
       const socketPath = join(root, 'control.sock');
       const password = 'correct horse battery staple';
       const configured: AgentGatewayConfiguration[] = [];
+      const order: string[] = [];
+      const resume = vi
+        .spyOn(ProvisionerImpl.prototype, 'resumeProjectRelay')
+        .mockImplementation(async (id) => {
+          order.push(`resume:${id}`);
+        });
       if (refreshUnavailable) {
         vi.stubGlobal(
           'fetch',
@@ -3268,6 +3275,7 @@ describe('buildEmbeddedServer', () => {
         socketPath,
         configure(value): void {
           configured.push(value);
+          order.push('configure');
         },
         status: () => ({
           ready: true,
@@ -3338,18 +3346,35 @@ describe('buildEmbeddedServer', () => {
           await first.close();
         }
 
+        const retainedDb = createEmbeddedDb(dataDir);
+        try {
+          const retainedStore = new EventStore(retainedDb);
+          await retainedStore.upsertProject({
+            id: 'retained-unlock',
+            owner: 'local',
+            repo: 'retained',
+            containerName: 'dev-retained',
+            state: 'active',
+          });
+        } finally {
+          await retainedDb.destroy();
+        }
+
         // Phase 2 — boot SEALED against that store, the state a host reboot or a
         // self-update handover leaves behind.
         configured.length = 0;
         server = await buildTestEmbeddedServer({ dataDir, ...gatewayConfig });
         expect(configured).toEqual([]);
 
+        order.length = 0;
         const unlock = await server.app.inject({
           method: 'POST',
           url: '/secret/unlock',
           payload: { password, deviceLabel: 'test device' },
         });
         expect(unlock.statusCode).toBe(200);
+        expect(resume).toHaveBeenCalledWith('retained-unlock');
+        expect(order.indexOf('resume:retained-unlock')).toBeGreaterThanOrEqual(0);
 
         // Two things are asserted, and both matter. The DEADLINE: a configuration
         // has to reach the gateway now, well inside a replacement's health window
@@ -3366,6 +3391,7 @@ describe('buildEmbeddedServer', () => {
             }),
           { timeout: 5_000 },
         );
+        expect(order.indexOf('configure')).toBeGreaterThan(order.indexOf('resume:retained-unlock'));
         expect(configured.at(-1)?.codex?.credential).toMatchObject({
           unsealKey: 'a'.repeat(64),
           authJson:
@@ -3373,10 +3399,12 @@ describe('buildEmbeddedServer', () => {
         });
         expect(configured.at(-1)?.codex?.credential.sourceRevision).toMatch(/^[a-f0-9]{64}$/u);
       } finally {
+        resume.mockRestore();
         await control.close();
         await rm(root, { recursive: true, force: true });
       }
     },
+    60_000,
   );
 
   it('does not expose OpenCode models until all settings are configured', async () => {
