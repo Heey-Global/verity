@@ -327,10 +327,16 @@ export class SchedulingStore {
     );
   }
 
-  async setShare(id: string, binding: SchedulingShareBinding): Promise<void> {
-    await sql`update scheduling_requests set share_secret = ${this.cipher.encrypt(JSON.stringify(binding))},
-      link_expires_at = ${new Date(binding.expiresAt)}, share_revoked_at = null,
-      revision = revision + 1, updated_at = now() where id = ${id}`.execute(this.db);
+  /** Record a request's one public link; false when it already has one. */
+  async setShare(id: string, binding: SchedulingShareBinding): Promise<boolean> {
+    return (
+      (
+        await sql`update scheduling_requests set share_secret = ${this.cipher.encrypt(JSON.stringify(binding))},
+          link_expires_at = ${new Date(binding.expiresAt)}, share_revoked_at = null,
+          revision = revision + 1, updated_at = now()
+          where id = ${id} and share_secret is null returning id`.execute(this.db)
+      ).rows.length === 1
+    );
   }
 
   async share(id: string): Promise<SchedulingShareBinding | undefined> {

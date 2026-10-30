@@ -562,9 +562,21 @@ export class SchedulingPageListeners {
 
   constructor(private readonly backend: SchedulingPageBackend) {}
 
-  listen = async (requestId: string): Promise<string> => {
+  private readonly starting = new Map<string, Promise<string>>();
+
+  listen = (requestId: string): Promise<string> => {
     const existing = this.servers.get(requestId);
-    if (existing) return existing.origin;
+    if (existing) return Promise.resolve(existing.origin);
+    // Concurrent callers share one start, so no second listener is left running.
+    let start = this.starting.get(requestId);
+    if (!start) {
+      start = this.start(requestId).finally(() => this.starting.delete(requestId));
+      this.starting.set(requestId, start);
+    }
+    return start;
+  };
+
+  private start = async (requestId: string): Promise<string> => {
     const handler = createSchedulingPageHandler(this.backend, requestId);
     const server = createServer((request, response) => {
       handler(request, response).catch(() => {

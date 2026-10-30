@@ -543,7 +543,7 @@ export class SchedulingService {
           durationSeconds: (SCHEDULING_LINK_DAYS * DAY) / 1000,
           pinHash: hashPreviewPin(pin),
         });
-        await this.store.setShare(requestId, {
+        const recorded = await this.store.setShare(requestId, {
           shareId: binding.shareId,
           publicOrigin: binding.publicOrigin,
           edgeUrl: binding.edgeUrl,
@@ -552,6 +552,8 @@ export class SchedulingService {
           pin,
           expiresAt: binding.expiresAt.toISOString(),
         });
+        // Another run recorded a link first; this one would be an orphan nobody was sent.
+        if (!recorded) await this.deps.edge.remove(binding.shareId).catch(() => undefined);
         request = (await this.store.get(requestId))!;
       }
       const binding = (await this.store.share(requestId))!;
@@ -651,12 +653,13 @@ export class SchedulingService {
   private async liveSlots(
     scheduling: SchedulingStore,
     request: SchedulingRequest,
+    knownToken?: string,
   ): Promise<{
     slots: Slot[];
     events: Map<string, CalendarEventRecord>;
     booked?: SchedulingRequest;
   }> {
-    const token = await this.calendarToken(request);
+    const token = knownToken ?? (await this.calendarToken(request));
     const now = this.now();
     const own = await listCalendarEventsInRange(
       token,
@@ -755,6 +758,7 @@ export class SchedulingService {
   private async modelFor(
     scheduling: SchedulingStore,
     request: SchedulingRequest,
+    token?: string,
   ): Promise<SchedulingPageModel> {
     if (request.state === 'booked') return { kind: 'booked', request };
     if (request.state === 'draft' || request.state === 'provisioning')
@@ -762,7 +766,7 @@ export class SchedulingService {
     if (request.state !== 'open' || request.closesAt <= this.now())
       return { kind: 'closed', request };
     try {
-      const live = await this.liveSlots(scheduling, request);
+      const live = await this.liveSlots(scheduling, request, token);
       if (live.booked) return { kind: 'booked', request: live.booked };
       return live.slots.length > 0
         ? { kind: 'open', request, slots: live.slots }
@@ -780,6 +784,13 @@ export class SchedulingService {
   async book(requestId: string, start: string, note?: string): Promise<SchedulingBookResult> {
     const first = await this.store.get(requestId);
     if (!first) return { kind: 'unavailable', model: { kind: 'unavailable', request: undefined } };
+    // Resolved before the lock: nothing that may touch the database waits inside it.
+    let token: string;
+    try {
+      token = await this.calendarToken(first);
+    } catch {
+      return { kind: 'unavailable', model: { kind: 'unavailable', request: first } };
+    }
     let transitioned = false;
     const result = await this.store.withCalendarLock(
       this.lockKey(first),
@@ -787,12 +798,12 @@ export class SchedulingService {
         for (let attempt = 0; attempt < 2; attempt += 1) {
           const request = (await scheduling.get(requestId))!;
           if (request.state !== 'open' || request.closesAt <= this.now()) {
-            const model = await this.modelFor(scheduling, request);
+            const model = await this.modelFor(scheduling, request, token);
             return { kind: 'closed', model };
           }
           let live: Awaited<ReturnType<SchedulingService['liveSlots']>>;
           try {
-            live = await this.liveSlots(scheduling, request);
+            live = await this.liveSlots(scheduling, request, token);
           } catch {
             return { kind: 'unavailable', model: { kind: 'unavailable', request } };
           }
@@ -816,7 +827,6 @@ export class SchedulingService {
               .map((attendee) => [attendee.email.toLowerCase(), { email: attendee.email }]),
           );
           attendees.set(request.guestEmail.toLowerCase(), { email: request.guestEmail });
-          const token = await this.calendarToken(request);
           const patched = await patchCalendarEvent(
             token,
             {
@@ -857,7 +867,7 @@ export class SchedulingService {
           return { kind: 'booked', request: (await scheduling.get(requestId))! };
         }
         const request = (await scheduling.get(requestId))!;
-        return { kind: 'taken', model: await this.modelFor(scheduling, request) };
+        return { kind: 'taken', model: await this.modelFor(scheduling, request, token) };
       },
     );
     if (transitioned) this.bookedNow.add(requestId);
