@@ -517,6 +517,7 @@ export class SchedulingService {
           );
       }
       if (!(await still())) return;
+      request = (await this.store.get(requestId))!;
       if (!request.hasShare) {
         if (!this.deps.edge)
           throw new Error(
@@ -578,8 +579,9 @@ export class SchedulingService {
         );
         const gmailToken = await this.deps.googleAccessToken(gmail.accountId);
         if (!gmailToken) throw new Error('Gmail is not connected');
-        // Marked immediately before the send: only a send that may have happened counts.
-        await this.store.update(requestId, { attempts: 1 });
+        // Claimed immediately before the send: only a send that may have happened counts, and
+        // only one caller can ever get here for a request.
+        if (!(await this.store.claimEmailSend(requestId))) return;
         await (this.deps.sendMail ?? sendGmailMessage)(gmailToken, {
           to: [request.guestEmail],
           subject: request.emailSubject,

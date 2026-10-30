@@ -421,7 +421,7 @@ export class SchedulingStore {
   async nextDueAt(): Promise<Date | undefined> {
     const row = (
       await sql<{ at: Date | string | null }>`select least(
-        (select min(coalesce(next_attempt_at, updated_at)) from scheduling_requests where state = 'provisioning'),
+        (select min(coalesce(next_attempt_at, updated_at)) from scheduling_requests where state = 'provisioning' and (lease_until is null or lease_until < now())),
         (select min(greatest(closes_at, coalesce(next_attempt_at, closes_at))) from scheduling_requests where state = 'open'),
         (select min(greatest(link_expires_at, coalesce(next_attempt_at, link_expires_at))) from scheduling_requests where share_secret is not null and share_revoked_at is null),
         (select min(coalesce(next_attempt_at, updated_at)) from scheduling_holds where state = 'cancel_pending')
@@ -437,9 +437,22 @@ export class SchedulingStore {
   async lease(id: string, owner: string, ms: number): Promise<boolean> {
     const result = await sql`update scheduling_requests set lease_owner = ${owner},
       lease_until = now() + ${`${String(ms)} milliseconds`}::interval
-      where id = ${id} and (lease_until is null or lease_until < now() or lease_owner = ${owner})
+      where id = ${id} and (lease_until is null or lease_until < now())
       returning id`.execute(this.db);
     return result.rows.length === 1;
+  }
+
+  /**
+   * Claim the one email send of a request. Exactly one caller wins; the claim stays even if
+   * the send fails, because Gmail cannot tell whether a failed send went out.
+   */
+  async claimEmailSend(id: string): Promise<boolean> {
+    return (
+      (
+        await sql`update scheduling_requests set attempts = 1
+          where id = ${id} and attempts = 0 and email_sent_at is null returning id`.execute(this.db)
+      ).rows.length === 1
+    );
   }
 
   async release(id: string, owner: string): Promise<void> {

@@ -137,8 +137,19 @@ describe('scheduling requests', () => {
     await ctx.store.scheduling.createDraft(draft('r1'));
     expect(await ctx.store.scheduling.lease('r1', 'a', 60_000)).toBe(true);
     expect(await ctx.store.scheduling.lease('r1', 'b', 60_000)).toBe(false);
+    // Not even the holder itself: two tasks of one process must not overlap either.
+    expect(await ctx.store.scheduling.lease('r1', 'a', 60_000)).toBe(false);
     await ctx.store.scheduling.release('r1', 'a');
     expect(await ctx.store.scheduling.lease('r1', 'b', 60_000)).toBe(true);
+  });
+
+  it('lets exactly one caller claim the email send', async () => {
+    await ctx.store.scheduling.createDraft(draft('r1'));
+    const claims = await Promise.all([
+      ctx.store.scheduling.claimEmailSend('r1'),
+      ctx.store.scheduling.claimEmailSend('r1'),
+    ]);
+    expect(claims.filter(Boolean)).toHaveLength(1);
   });
 
   it('serializes work on one calendar and writes through the locking transaction', async () => {
