@@ -35,10 +35,25 @@ class AdapterDeadlineProofTests(unittest.TestCase):
         before['clocks']['bootBeforeNs'] = '2100000000'
         after.update({'denied': 2, 'last_denied_boot_ns': '2200000000', 'clocks': {'bootBeforeNs': '4000000000'}})
         self.evidence = {'complete': True, 'baseline': {'accepted': 0}, 'positive': positive,
-                         'expiredBefore': before, 'expiredAfter': after}
+                         'expiredBefore': before, 'expiredAfter': after,
+                         'renewalStart': '5000000000', 'renewalEnd': '7200000000',
+                         'renewalControls': ['renewal-a', 'renewal-b']}
         self.retained = [{'marker': marker, 'boot_ns': instant} for marker, instant in [
             ('deadline-stream-0', 1400000000), ('deadline-stream-1', 1600000000),
-            ('deadline-retained-live', 1700000000), ('deadline-fresh-after-renewal', 5000000000)]]
+            ('deadline-retained-live', 1700000000), ('deadline-fresh-after-renewal', 5000000000),
+            ('renewal-a', 5500000000), ('renewal-b', 6500000000)]]
+        self.evidence['pauseCases'] = []
+        for kind in ('controller', 'executor'):
+            observation = {'deadline_ns': '10000000000', 'accepted': 5, 'denied': 0,
+                           'last_accepted_boot_ns': '8000000000', 'clocks': {'bootBeforeNs': '12000000000'}}
+            after_pause = copy.deepcopy(observation)
+            after_pause['denied'] = 1
+            self.evidence['pauseCases'].append({'kind': kind, 'before': observation, 'after': after_pause,
+                'stopped': {'kind': kind, 'complete': True, 'status_at_stop': 'Name:\tnode\nState:\tT (stopped)\n',
+                            'stopped_ns': '9500000000', 'resumed_ns': '11500000000',
+                            'lease': {'capturedBootNs': '9000000000', 'bootDeadlineNs': '10000000000'}}})
+            self.retained += [{'marker': f'deadline-pause-{phase}-{kind}', 'boot_ns': 8000000000}
+                              for phase in ('positive', 'recovered')]
 
     def verify(self):
         (self.root / 'adapter-result.json').write_text(json.dumps(self.report))
@@ -75,6 +90,22 @@ class AdapterDeadlineProofTests(unittest.TestCase):
 
     def test_missing_case(self):
         self.report['cases'].pop()
+        with self.assertRaises(AssertionError): self.verify()
+
+    def test_short_renewal_observation(self):
+        self.evidence['renewalEnd'] = '6999999999'
+        with self.assertRaises(AssertionError): self.verify()
+
+    def test_requires_actual_stopped_process(self):
+        self.evidence['pauseCases'][0]['stopped']['status_at_stop'] = 'State:\tS (sleeping)'
+        with self.assertRaises(AssertionError): self.verify()
+
+    def test_requires_live_lease_at_stop(self):
+        self.evidence['pauseCases'][0]['stopped']['stopped_ns'] = '10000000000'
+        with self.assertRaises(AssertionError): self.verify()
+
+    def test_rebased_delayed_commit(self):
+        self.evidence['pauseCases'][0]['after']['deadline_ns'] = '13000000000'
         with self.assertRaises(AssertionError): self.verify()
 
 

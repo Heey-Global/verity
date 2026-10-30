@@ -25,9 +25,11 @@ class DeadlineHostTests(unittest.TestCase):
         self.path = self.root / (self.key + '.json')
         host.save(self.path, {'binding': self.binding, 'peer': self.peer, 'bootId': 'boot',
                              'revision': 1, 'program': 7, 'invalidBeforeNs': '10', 'lastCapturedNs': '0',
-                             'authorityExpiresAt': None, 'expiredAuthorities': [], 'uncertainExpiry': False})
+                             'authorityExpiresAt': None, 'expiredAuthorities': [], 'uncertainExpiry': False,
+                             'seenAuthorities': [None], 'authorityBootDeadlines': {}})
         self.lease = {'bootId': 'boot', 'binding': self.key, 'revision': 1, 'nonce': 'd' * 32,
-                      'capturedBootNs': '20', 'bootDeadlineNs': '1000000020', 'authorityExpiresAt': None}
+                      'capturedBootNs': '20', 'bootDeadlineNs': '1000000020', 'authorityExpiresAt': None,
+                      'authorityBootDeadlineNs': None}
         self.enter = self.enterContext
         original_lstat = Path.lstat
         registration = self.path
@@ -45,7 +47,7 @@ class DeadlineHostTests(unittest.TestCase):
         self.enter(patch.object(host, 'endpoint', return_value=self.peer))
         self.enter(patch.object(host, 'attest'))
         self.listing = self.enter(patch.object(host, 'run', return_value=json.dumps({'nftables': [
-            {'set': {'name': 'expired4'}}, {'set': {'name': 'expired6'}}]})))
+            {'set': {'name': name}} for name in host.expiry_set_names(None)]})))
         self.write = self.enter(patch.object(host, 'write_deadline'))
 
     def arm(self):
@@ -93,9 +95,11 @@ class DeadlineHostTests(unittest.TestCase):
 
     def test_observed_wall_expiry_survives_replacing_nft_tombstone(self):
         self.lease['authorityExpiresAt'] = 5000
+        self.lease['authorityBootDeadlineNs'] = '5000000020'
         self.arm()
+        a, b = host.expiry_set_names(5000)
         self.listing.return_value = json.dumps({'nftables': [
-            {'set': {'name': 'expired4', 'elem': ['172.30.106.2']}}, {'set': {'name': 'expired6'}}]})
+            {'set': {'name': a, 'elem': ['172.30.106.2']}}, {'set': {'name': b}}]})
         host.execute({'operation': 'revoke', 'binding': self.binding})
         self.lease['capturedBootNs'] = '2000000002'
         self.lease['bootDeadlineNs'] = '2000000002'
@@ -112,6 +116,41 @@ class DeadlineHostTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'fresh generation'):
             self.arm()
         self.assertEqual(self.write.call_args.args[-1], 0)
+
+    def test_quiet_expiry_cannot_be_rebased_after_wall_clock_rollback(self):
+        self.lease.update({'authorityExpiresAt': 5000, 'authorityBootDeadlineNs': '3000000000'})
+        self.arm()
+        host.clocks.return_value = {'bootId': 'boot', 'bootBeforeNs': '4000000010',
+                                   'bootAfterNs': '4000000011', 'realNs': '0'}
+        self.lease.update({'capturedBootNs': '4000000000', 'bootDeadlineNs': '5000000000',
+                           'authorityBootDeadlineNs': '9000000000'})
+        with self.assertRaisesRegex(ValueError, 'Original authority clock budget exhausted'):
+            self.arm()
+        self.assertEqual(self.write.call_args.args[-1], 0)
+
+    def test_renewal_preserves_first_authority_mapping_and_can_only_shorten_it(self):
+        self.lease.update({'authorityExpiresAt': 5000, 'authorityBootDeadlineNs': '3000000000'})
+        self.arm()
+        self.lease.update({'capturedBootNs': '1000000000', 'bootDeadlineNs': '2000000000',
+                           'authorityBootDeadlineNs': '9000000000'})
+        self.arm()
+        saved = json.loads(self.path.read_text())
+        self.assertEqual(saved['authorityBootDeadlines']['5000'], '3000000000')
+        self.lease.update({'capturedBootNs': '1000000001', 'bootDeadlineNs': '2000000001',
+                           'authorityBootDeadlineNs': '2500000000'})
+        self.arm()
+        self.assertEqual(json.loads(self.path.read_text())['authorityBootDeadlines']['5000'],
+                         '2500000000')
+
+    def test_attestation_accepts_only_one_software_program_with_matching_headers(self):
+        header = {'kind': 'bpf', 'pref': 1, 'chain': 0, 'protocol': 'all'}
+        concrete = {**header, 'options': {'id': 7, 'not_in_hw': True}}
+        host.attest_filters([header, concrete], 7)
+        for filters in ([header], [concrete, concrete], [{**concrete, 'protocol': 'ip'}],
+                        [{**concrete, 'options': {'id': 8}}],
+                        [{**concrete, 'options': {'id': 7, 'in_hw': True}}],
+                        [{**concrete, 'options': {'id': 7, 'actions': [{'kind': 'mirred'}]}}]):
+            with self.assertRaises(ValueError): host.attest_filters(filters, 7)
 
 
 if __name__ == '__main__':

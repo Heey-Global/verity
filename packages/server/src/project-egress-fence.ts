@@ -95,7 +95,18 @@ export function projectFenceRules(
 ): string {
   validateBinding(binding);
   const table = tableName(binding.projectId + ':' + binding.generation);
-  const commands = replace ? [`delete table inet ${table}`, `delete table bridge ${table}`] : [];
+  // Keep expiry tombstones in the kernel for the entire generation. A packet
+  // already past TC can update them after a userspace snapshot has been read.
+  const commands = replace
+    ? [
+        ...['fence', 'reply', 'forward', 'input', 'output'].map(
+          (chain) => `flush chain inet ${table} ${chain}`,
+        ),
+        `flush set inet ${table} allow4`,
+        `flush set inet ${table} allow6`,
+        `delete table bridge ${table}`,
+      ]
+    : [];
   const unique = new Map<string, Lease>();
   for (const lease of leases) {
     if (
@@ -137,6 +148,10 @@ export function projectFenceRules(
   const wall = admission?.authorityExpiresAt;
   if (wall !== undefined && wall !== null && (!Number.isSafeInteger(wall) || wall < 0))
     throw new Error('Invalid absolute packet expiry');
+  const expiryIdentity = createHash('sha256')
+    .update(wall == null ? 'standing' : String(wall))
+    .digest('hex')
+    .slice(0, 16);
   // nft's date syntax is second precision. Rounding down only closes early.
   const date =
     wall == null
@@ -149,17 +164,17 @@ export function projectFenceRules(
         const address = family === 4 ? binding.ipv4 : binding.ipv6;
         const source = reverse ? `${ip} daddr ${address}` : `${ip} saddr ${address}`;
         return (
-          `${source} ${ip} ${reverse ? 'daddr' : 'saddr'} @expired${family} counter name expired drop\n` +
+          `${source} ${ip} ${reverse ? 'daddr' : 'saddr'} @expired${family}_${expiryIdentity} counter name expired drop\n` +
           (date
-            ? `${source} meta time >= "${date}" add @expired${family} { ${ip} ${reverse ? 'daddr' : 'saddr'} } counter name expired drop\n`
+            ? `${source} meta time >= "${date}" add @expired${family}_${expiryIdentity} { ${ip} ${reverse ? 'daddr' : 'saddr'} } counter name expired drop\n`
             : '')
         );
       })
       .join('');
   commands.push(`table inet ${table} {
 ${sets}
-set expired4 { type ipv4_addr; flags dynamic; size 1; }
-set expired6 { type ipv6_addr; flags dynamic; size 1; }
+set expired4_${expiryIdentity} { type ipv4_addr; flags dynamic; size 1; }
+set expired6_${expiryIdentity} { type ipv6_addr; flags dynamic; size 1; }
 counter expired { }
 chain fence {
  ip saddr != ${binding.ipv4} drop

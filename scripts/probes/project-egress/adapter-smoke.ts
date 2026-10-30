@@ -1,8 +1,8 @@
 /** Runs only inside the disposable nested Docker host, never on a production daemon. */
 import assert from 'node:assert/strict';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
-import { writeFile } from 'node:fs/promises';
+import { readFile, rename, writeFile } from 'node:fs/promises';
 import { setTimeout as delay } from 'node:timers/promises';
 import {
   ProjectEgressFence,
@@ -11,7 +11,10 @@ import {
   type ProjectFenceBinding,
 } from '../../../packages/server/src/project-egress-fence.js';
 import { inspectProjectFenceAttachment } from '../../../packages/server/src/project-egress-attachment.js';
-import { hostProjectDeadlineEnforcer } from '../../../packages/server/src/project-egress-deadline.js';
+import {
+  hostProjectDeadlineEnforcer,
+  type ProjectDeadlineLease,
+} from '../../../packages/server/src/project-egress-deadline.js';
 const exec = promisify(execFile);
 assert.equal(process.env.PROJECT_EGRESS_DISPOSABLE, 'yes');
 const docker = async (...args: string[]) =>
@@ -26,15 +29,66 @@ const nets = [
 const bindings: ProjectFenceBinding[] = [];
 let renewProjects: number[] = [];
 let revision = 0;
+const nativeDeadline = hostProjectDeadlineEnforcer();
+let pauseKind: 'controller' | 'executor' | null = null;
+let stagedLease: ProjectDeadlineLease | undefined;
 const fence = new ProjectEgressFence({
-  deadline: hostProjectDeadlineEnforcer(),
+  deadline: {
+    ...nativeDeadline,
+    async revoke(binding, next) {
+      stagedLease = next;
+      await nativeDeadline.revoke(binding, next);
+    },
+    async arm(binding, lease) {
+      if (pauseKind !== 'executor') return nativeDeadline.arm(binding, lease);
+      const pending = exec('/usr/bin/python3', ['/probe/deadline-paused-executor.py'], {
+        timeout: 10000,
+        killSignal: 'SIGKILL',
+      });
+      assert.ok(pending.child.stdin);
+      pending.child.stdin.end(JSON.stringify({ operation: 'arm', binding, lease }));
+      const response = JSON.parse((await pending).stdout) as {
+        state: string;
+        bootDeadlineNs: string;
+      };
+      assert.equal(response.state, 'armed');
+      assert.equal(response.bootDeadlineNs, lease.bootDeadlineNs);
+      pauseKind = null;
+    },
+  },
   inspect: inspectProjectFenceAttachment,
   directTargetAllowed: (host) => Promise.resolve(addresses.includes(host)),
   destinationAllowed: (address) => Promise.resolve(addresses.includes(address)),
   resolve: () => Promise.reject(new Error('This smoke uses exact public addresses')),
   policyCurrent: (snapshot) => Promise.resolve(snapshot.revision === revision),
-  apply: applyProjectFenceRules,
+  async apply(script) {
+    if (pauseKind === 'controller' && script.includes('elements =')) {
+      assert.ok(stagedLease);
+      await writeFile(
+        '/evidence/deadline-pause-controller-request.pending',
+        JSON.stringify({ pid: process.pid, lease: stagedLease }),
+      );
+      await rename(
+        '/evidence/deadline-pause-controller-request.pending',
+        '/evidence/deadline-pause-controller-request.json',
+      );
+      process.kill(process.pid, 'SIGSTOP');
+      pauseKind = null;
+    }
+    await applyProjectFenceRules(script);
+  },
 });
+function pauseDriver(kind: 'controller' | 'executor'): Promise<void> {
+  const child = spawn('/usr/bin/python3', ['/probe/deadline-pause-driver.py', kind], {
+    stdio: ['ignore', 'ignore', 'inherit'],
+  });
+  return new Promise((resolve, reject) => {
+    child.once('error', reject);
+    child.once('close', (code) =>
+      code === 0 ? resolve() : reject(new Error('Actual pause driver failed')),
+    );
+  });
+}
 interface KernelObservation {
   identity: string;
   deadline_ns: string;
@@ -64,6 +118,7 @@ async function observe(
   expected: boolean,
   name: string,
   receiver = 've-receiver',
+  record = true,
 ) {
   const marker = name.replace(/[^a-z0-9]/giu, '-');
   let observed = false;
@@ -90,7 +145,7 @@ async function observe(
     });
     if (observed) break;
   }
-  evidence.push({ case: name, expected, observed });
+  if (record) evidence.push({ case: name, expected, observed });
   assert.equal(observed, expected, name);
 }
 async function matrix(project: string, expected: boolean, label: string) {
@@ -286,6 +341,73 @@ try {
   await renewed([0], async () => {
     await observe('ve-a', addresses[0]!, 'tcp', true, 'deadline-fresh-after-renewal');
   });
+  const renewalStart = (await kernelObservation()).clocks.bootBeforeNs;
+  let renewalEnd = renewalStart;
+  const renewalControls: string[] = [];
+  for (
+    let attempt = 0;
+    attempt < 12 && (attempt < 2 || BigInt(renewalEnd) - BigInt(renewalStart) < 2_200_000_000n);
+    attempt++
+  ) {
+    await fence.refresh({ binding: bindings[0]!, revision, grants: grants() });
+    await flow({
+      action: 'flow-send',
+      id: 'deadline-retained',
+      marker: 'deadline-retained-renewed',
+    });
+    const marker = `deadline-renewal-control-${attempt}`;
+    await observe('ve-a', addresses[0]!, 'tcp', true, marker, 've-receiver', false);
+    renewalControls.push(marker);
+    await delay(150);
+    renewalEnd = (await hostProjectDeadlineEnforcer().clock()).bootBeforeNs;
+  }
+  assert.ok(BigInt(renewalEnd) - BigInt(renewalStart) >= 2_000_000_000n);
+  const pauseCases = [];
+  for (const kind of ['controller', 'executor'] as const) {
+    await fence.refresh({ binding: bindings[0]!, revision, grants: grants() });
+    await observe(
+      've-a',
+      addresses[0]!,
+      'udp',
+      true,
+      `deadline-pause-positive-${kind}`,
+      've-receiver',
+      false,
+    );
+    pauseKind = kind;
+    const driver = pauseDriver(kind);
+    await fence.refresh({ binding: bindings[0]!, revision, grants: grants() });
+    await driver;
+    assert.equal(pauseKind, null);
+    const before = await kernelObservation();
+    await observe(
+      've-a',
+      addresses[0]!,
+      'udp',
+      false,
+      `deadline-paused-${kind}`,
+      've-receiver',
+      false,
+    );
+    const after = await kernelObservation();
+    assert.equal(after.accepted, before.accepted);
+    assert.ok(after.denied > before.denied);
+    assert.ok(BigInt(after.last_accepted_boot_ns) < BigInt(after.deadline_ns));
+    const stopped = JSON.parse(
+      await readFile(`/evidence/deadline-pause-${kind}-result.json`, 'utf8'),
+    ) as unknown;
+    pauseCases.push({ kind, before, after, stopped });
+    await fence.refresh({ binding: bindings[0]!, revision, grants: grants() });
+    await observe(
+      've-a',
+      addresses[0]!,
+      'udp',
+      true,
+      `deadline-pause-recovered-${kind}`,
+      've-receiver',
+      false,
+    );
+  }
   const retainedLogs = await docker('logs', 've-receiver');
   assert.ok(!retainedLogs.includes('deadline-retained-expired'));
   assert.ok(!retainedLogs.includes('deadline-retained-renewed'));
@@ -299,6 +421,10 @@ try {
         positive,
         expiredBefore,
         expiredAfter,
+        renewalStart,
+        renewalEnd,
+        renewalControls,
+        pauseCases,
       },
       null,
       2,

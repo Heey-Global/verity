@@ -23,6 +23,7 @@ export interface ProjectDeadlineLease {
   readonly capturedBootNs: string;
   readonly bootDeadlineNs: string;
   readonly authorityExpiresAt: number | null;
+  readonly authorityBootDeadlineNs: string | null;
 }
 const PROJECT_DEADLINE_MAX_NS = 1_000_000_000n;
 
@@ -55,6 +56,10 @@ export function projectDeadlineLease(
   const duration = remaining < PROJECT_DEADLINE_MAX_NS ? remaining : PROJECT_DEADLINE_MAX_NS;
   if (duration > 0n && before + duration > UINT64_MAX)
     throw new Error('Deadline exceeds kernel uint64 range');
+  const authorityBoot =
+    authorityExpiresAt === null ? null : remaining > 0n ? before + remaining : 0n;
+  if (authorityBoot !== null && authorityBoot > UINT64_MAX)
+    throw new Error('Authority deadline exceeds kernel uint64 range');
   return Object.freeze({
     bootId: clock.bootId,
     binding: createHash('sha256')
@@ -76,6 +81,7 @@ export function projectDeadlineLease(
     capturedBootNs: before.toString(),
     bootDeadlineNs: (duration > 0n ? before + duration : 0n).toString(),
     authorityExpiresAt,
+    authorityBootDeadlineNs: authorityBoot?.toString() ?? null,
   });
 }
 
@@ -93,12 +99,17 @@ export function hostProjectDeadlineEnforcer(): ProjectDeadlineEnforcer {
   const request = (input: unknown): Promise<unknown> =>
     new Promise((resolve, reject) => {
       const child = spawn('/usr/bin/python3', ['/opt/verity-egress/project-egress-deadline.py'], {
-        stdio: ['pipe', 'pipe', 'ignore'],
+        stdio: ['pipe', 'pipe', 'pipe'],
         timeout: 5000,
         killSignal: 'SIGKILL',
         env: { PATH: '/usr/sbin:/usr/bin:/sbin:/bin', TZ: 'UTC' },
       });
       let output = '';
+      let diagnostic = '';
+      child.stderr.setEncoding('utf8');
+      child.stderr.on('data', (chunk: string) => {
+        diagnostic = (diagnostic + chunk).slice(-8192);
+      });
       child.stdout.setEncoding('utf8');
       child.stdout.on('data', (chunk: string) => {
         output += chunk;
@@ -110,7 +121,8 @@ export function hostProjectDeadlineEnforcer(): ProjectDeadlineEnforcer {
       child.once('error', reject);
       child.stdin.once('error', reject);
       child.once('close', (code) => {
-        if (code !== 0) return reject(new Error('Host packet deadline operation failed'));
+        if (code !== 0)
+          return reject(new Error('Host packet deadline operation failed: ' + diagnostic));
         try {
           resolve(JSON.parse(output) as unknown);
         } catch (error) {

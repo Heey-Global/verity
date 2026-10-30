@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import socket
 import subprocess
 import sys
 import tarfile
@@ -55,10 +56,30 @@ def verify(directory):
     payloads = [base64.b64decode(r['data']).decode() for r in records if r['kind'] == 'received']
     expected_payloads = {f'positive-{c["name"]}' for c in result['cases']}
     expected_payloads.update(f'wall-live-{c["name"]}' for c in result['cases'] if c['name'].startswith('wall-'))
+    expected_payloads.update({'positive-zero', 'positive-mutation-wall', 'mutation-removed-wall', 'mutation-removed-guard'})
     assert set(payloads) == expected_payloads, 'Unexpected or absent external payload'
     for case in result['cases']:
         assert f'positive-{case["name"]}' in payloads
         assert f'expired-{case["name"]}' not in payloads
+    inbound = [json.loads(line) for line in (root / 'inbound-receipts.jsonl').read_text().splitlines()]
+    markers = {row['marker'] for row in inbound if row['kind'] == 'received'}
+    expected_inbound = {'inbound-' + marker for marker in expected_payloads}
+    assert markers == expected_inbound, 'Unexpected or absent inbound payload'
+    zero = result['zero']
+    assert zero['map']['deadline_ns'] == 0 and zero['map']['index'] > 0
+    assert zero['positive']['accepted'] > zero['baseline']['accepted']
+    assert zero['after']['accepted'] == zero['before']['accepted']
+    assert zero['after']['denied'] > zero['before']['denied']
+    wall = result['mutations']['wall']
+    assert wall['protected_after'] > wall['protected_before']
+    assert wall['after']['accepted'] > wall['before']['accepted']
+    assert wall['after']['clocks']['real_ns'] >= wall['real_deadline_ns']
+    assert wall['after']['last_accepted_boot_ns'] < wall['lease']['deadline_ns']
+    guard = result['mutations']['guard']
+    assert guard['map']['deadline_ns'] == 0
+    assert not any(q['kind'] in ('clsact', 'ingress') for q in guard['removed']['qdiscs'])
+    assert guard['before']['accepted'] == guard['after']['accepted']
+    assert guard['before']['denied'] == guard['after']['denied']
     return {'cases': len(expected), 'complete': True}
 
 
@@ -78,6 +99,9 @@ def main():
     def send(marker):
         vm.ssh('sudo ip netns exec deadline-project env PROJECT_EGRESS_DISPOSABLE=yes '
                'python3 /opt/verity-fixture/deadline-guest.py send ' + marker)
+    def send_inbound(marker):
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as channel:
+            channel.sendto(('inbound-' + marker).encode(), ('172.30.106.2', 8081))
     try:
         run('sudo', '-n', 'ip', 'tuntap', 'add', 'dev', link, 'mode', 'tap', 'user', str(os.getuid()))
         run('sudo', '-n', 'ip', 'addr', 'add', '172.30.105.2/24', 'dev', link)
@@ -101,12 +125,23 @@ def main():
         vm.ssh('sudo apt-get update && sudo apt-get install -y --no-install-recommends clang llvm libbpf-dev bpftool nftables iproute2 util-linux', timeout=300)
         setup = call('setup', timeout=60)
         (root / 'setup.json').write_text(json.dumps(setup))
+        zero = {'baseline': call('stats')}
+        call('arm 3000')
+        send('positive-zero')
+        send_inbound('positive-zero')
+        zero['positive'] = call('stats')
+        zero['map'] = call('disarm')
+        zero['before'] = call('stats')
+        send('zero-denied')
+        send_inbound('zero-denied')
+        zero['after'] = call('stats')
         for name in ('expired', 'delayed-commit', 'suspend', 'vm-pause', 'wall-forward', 'wall-backward', 'wall-forward-backward'):
             baseline = call('stats')
             # Longer prototype positives isolate capability from a one-second
             # production renewal budget; integration must impose the latter.
             lease = call('arm 3000')
             send('positive-' + name)
+            send_inbound('positive-' + name)
             positive = call('stats')
             assert positive['accepted'] > baseline['accepted']
             before_clocks = positive['clocks']
@@ -131,6 +166,7 @@ def main():
                 extra['wall_deadline_real_ns'] = call('nft ' + str(real + 5))['deadline_real_ns']
                 extra['wall_positive_before'] = call('stats')
                 send('wall-live-' + name)
+                send_inbound('wall-live-' + name)
                 extra['wall_positive_after'] = call('stats')
                 offset = 10 if name.startswith('wall-forward') else -10
                 vm.ssh(f'sudo date -u -s "@{real + offset}"')
@@ -143,6 +179,7 @@ def main():
                 extra['wall_expired_before'] = next(r['counter']['packets'] for r in call('nft-stats')['nftables'] if 'counter' in r)
             before = call('stats')
             send('expired-' + name)
+            send_inbound('expired-' + name)
             after = call('stats')
             if name.startswith('wall-forward'):
                 extra['wall_expired_after'] = next(r['counter']['packets'] for r in call('nft-stats')['nftables'] if 'counter' in r)
@@ -151,6 +188,7 @@ def main():
                 extra['rollback_clocks'] = call('stats')['clocks']
                 extra['latch_before'] = extra['wall_expired_after']
                 send('expired-rollback')
+                send_inbound('expired-rollback')
                 extra['latch_after'] = next(r['counter']['packets'] for r in call('nft-stats')['nftables'] if 'counter' in r)
             case = {'name': name, 'baseline': baseline, 'positive': positive, 'before': before,
                     'after': after, 'lease': lease, 'clocks_before': before_clocks, **extra}
@@ -163,12 +201,33 @@ def main():
                 assert after['denied'] > before['denied'], f'No expiry attempt: {name}'
             if name.startswith('wall-'):
                 vm.ssh('sudo nft delete table inet deadline_probe')
+        wall = {'lease': call('arm 10000')}
+        real = call('stats')['clocks']['real_ns'] // 1_000_000_000
+        wall['real_deadline_ns'] = call('nft ' + str(real + 5))['deadline_real_ns']
+        send('positive-mutation-wall')
+        send_inbound('positive-mutation-wall')
+        vm.ssh(f'sudo date -u -s "@{real + 10}"')
+        wall['protected_before'] = next(r['counter']['packets'] for r in call('nft-stats')['nftables'] if 'counter' in r)
+        send('mutation-wall-protected')
+        send_inbound('mutation-wall-protected')
+        wall['protected_after'] = next(r['counter']['packets'] for r in call('nft-stats')['nftables'] if 'counter' in r)
+        vm.ssh('sudo nft delete table inet deadline_probe')
+        wall['before'] = call('stats')
+        send('mutation-removed-wall')
+        send_inbound('mutation-removed-wall')
+        wall['after'] = call('stats')
+        guard = {'map': call('disarm'), 'before': call('stats'), 'removed': call('remove-guard')}
+        send('mutation-removed-guard')
+        send_inbound('mutation-removed-guard')
+        guard['after'] = call('stats')
         finished = time.monotonic_ns()
-        result = {'complete': True, 'cases': cases, 'started_mono_ns': started, 'finished_mono_ns': finished}
+        result = {'complete': True, 'cases': cases, 'zero': zero, 'mutations': {'wall': wall, 'guard': guard},
+                  'started_mono_ns': started, 'finished_mono_ns': finished}
         (root / 'deadline-proof.json').write_text(json.dumps(result, indent=2))
     finally:
         if vm.process is not None and vm.process.poll() is None:
             try:
+                (root / 'inbound-receipts.jsonl').write_text(vm.ssh('sudo cat /opt/verity-fixture/inbound.jsonl', timeout=20))
                 (root / 'journal.txt').write_text(vm.ssh('sudo journalctl -b --no-pager', timeout=20))
             except (subprocess.SubprocessError, OSError):
                 pass

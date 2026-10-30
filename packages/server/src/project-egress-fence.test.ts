@@ -323,4 +323,8 @@ it('binds both directions to fresh labels and absolute expiry tombstones', async
   expect(first).toContain('ct state new ct label == (0 & 1)');
   await fence.refresh({ binding, revision: 1, grants: [grant] });
   expect(deps.apply.mock.calls.at(-1)![0]).not.toBe(first);
+  const second = deps.apply.mock.calls.at(-1)![0];
+  expect(second).not.toContain('delete table inet');
+  expect(second).not.toMatch(/flush set.*expired/u);
+  expect(second.match(/set expired4_\w+/u)?.[0]).toBe(first.match(/set expired4_\w+/u)?.[0]);
 });

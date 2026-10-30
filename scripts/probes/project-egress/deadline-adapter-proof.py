@@ -47,6 +47,27 @@ def verify(directory):
     markers = {r.get('marker') for r in retained}
     assert 'deadline-retained-live' in markers and 'deadline-fresh-after-renewal' in markers
     assert not {'deadline-retained-expired', 'deadline-retained-renewed'} & markers
+    assert int(proof['renewalEnd']) - int(proof['renewalStart']) >= 2_000_000_000
+    assert len(set(proof['renewalControls'])) >= 2
+    assert set(proof['renewalControls']) <= markers
+    pauses = proof['pauseCases']
+    assert len(pauses) == 2 and {case['kind'] for case in pauses} == {'controller', 'executor'}
+    for case in pauses:
+        stopped = case['stopped']
+        assert stopped['complete'] is True and stopped['kind'] == case['kind']
+        assert '\nState:\tT' in stopped['status_at_stop']
+        stop, resume = int(stopped['stopped_ns']), int(stopped['resumed_ns'])
+        limit = int(stopped['lease']['bootDeadlineNs'])
+        assert int(stopped['lease']['capturedBootNs']) <= stop < limit <= resume
+        assert resume - stop >= 2_000_000_000
+        a, b = case['before'], case['after']
+        assert int(a['deadline_ns']) == int(b['deadline_ns']) == limit
+        assert int(a['clocks']['bootBeforeNs']) >= resume
+        assert b['accepted'] == a['accepted'] and b['denied'] > a['denied']
+        assert int(b['last_accepted_boot_ns']) < limit
+        assert f'deadline-paused-{case["kind"]}' not in markers
+        assert f'deadline-pause-positive-{case["kind"]}' in markers
+        assert f'deadline-pause-recovered-{case["kind"]}' in markers
     stream = [r for r in retained if r.get('marker', '').startswith('deadline-stream-')]
     assert len(stream) >= 2, 'Missing continuous retained-stream positive control'
     last_receipt = max(int(r['boot_ns']) for r in stream)

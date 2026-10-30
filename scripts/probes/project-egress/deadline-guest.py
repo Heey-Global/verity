@@ -85,6 +85,14 @@ def setup():
     for direction in ('ingress', 'egress'):
         run('tc', 'filter', 'add', 'dev', PEER, direction, 'pref', '1', 'handle', '1',
             'bpf', 'da', 'pinned', str(PINS / 'guard'), 'skip_hw')
+    with (ROOT / 'inbound.jsonl').open('w') as output:
+        subprocess.Popen(['ip', 'netns', 'exec', 'deadline-project', 'python3',
+                          str(ROOT / 'deadline-guest.py'), 'receive'], stdout=output, stderr=subprocess.STDOUT)
+    for _ in range(100):
+        if (ROOT / 'inbound.jsonl').read_text().strip():
+            break
+        time.sleep(0.05)
+    assert (ROOT / 'inbound.jsonl').read_text().strip(), 'Inbound receiver not ready'
     return {'clocks': clocks(), 'kernel': run('uname', '-r').strip(),
             'versions': run('dpkg-query', '-W', 'clang', 'libbpf-dev', 'bpftool', 'nftables'),
             'power_states': Path('/sys/power/state').read_text().strip(),
@@ -99,6 +107,12 @@ def arm(duration_ms, delay_ms=0):
     time.sleep(delay_ms / 1000)
     element('deadline', struct.pack('<QII', deadline, index, 0), True)
     return {'before': start, 'committed': clocks(), 'deadline_ns': deadline}
+
+
+def disarm():
+    index = int((Path('/sys/class/net') / PEER / 'ifindex').read_text())
+    element('deadline', struct.pack('<QII', 0, index, 0), True)
+    return {'deadline_ns': 0, 'index': index}
 
 
 def stats():
@@ -120,6 +134,10 @@ chain forward {{ type filter hook forward priority -200; policy accept;
  iifname "{PEER}" meta time >= "{date}" add @expired_sources {{ ip saddr }} counter name expired drop
  iifname "{PEER}" ip daddr 172.30.105.2 udp dport 8080 meta time < "{date}" counter accept
  iifname "{PEER}" counter drop
+ oifname "{PEER}" ip daddr @expired_sources counter name expired drop
+ oifname "{PEER}" meta time >= "{date}" add @expired_sources {{ ip daddr }} counter name expired drop
+ oifname "{PEER}" ip saddr 172.30.105.2 udp dport 8081 meta time < "{date}" counter accept
+ oifname "{PEER}" counter drop
 }}
 }}'''
     run('nft', '-f', '-', input=rules, env={**os.environ, 'TZ': 'UTC'})
@@ -132,6 +150,16 @@ def send(marker):
     channel.close()
 
 
+def receive():
+    channel = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    channel.bind(('172.30.106.2', 8081))
+    print(json.dumps({'kind': 'ready', 'boot_ns': clocks()['boot_ns']}), flush=True)
+    while True:
+        payload, peer = channel.recvfrom(4096)
+        print(json.dumps({'kind': 'received', 'marker': payload.decode(), 'peer': peer,
+                          'boot_ns': clocks()['boot_ns']}), flush=True)
+
+
 if __name__ == '__main__':
     assert os.geteuid() == 0 and platform.machine() == 'x86_64'
     assert os.environ.get('PROJECT_EGRESS_DISPOSABLE') == 'yes'
@@ -140,6 +168,11 @@ if __name__ == '__main__':
         result = setup()
     elif action == 'arm':
         result = arm(*map(int, sys.argv[2:]))
+    elif action == 'disarm':
+        result = disarm()
+    elif action == 'remove-guard':
+        run('tc', 'qdisc', 'del', 'dev', PEER, 'clsact')
+        result = {'qdiscs': json.loads(run('tc', '-j', 'qdisc', 'show', 'dev', PEER))}
     elif action == 'stats':
         result = stats()
     elif action == 'nft':
@@ -149,6 +182,8 @@ if __name__ == '__main__':
     elif action == 'send':
         send(sys.argv[2])
         result = clocks()
+    elif action == 'receive':
+        receive()
     else:
         raise ValueError('Unknown action')
     print(json.dumps(result))

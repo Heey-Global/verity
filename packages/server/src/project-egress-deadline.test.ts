@@ -22,6 +22,7 @@ const clock: ProjectDeadlineClock = {
 it('caps standing authority to one second captured before asynchronous admission', () => {
   const lease = projectDeadlineLease(binding, 1, null, clock);
   expect(lease.bootDeadlineNs).toBe('6000000000');
+  expect(lease.authorityBootDeadlineNs).toBeNull();
   expect(Object.isFrozen(lease)).toBe(true);
   // Serialization into an executor request must not turn it into a fresh TTL.
   expect(JSON.parse(JSON.stringify(lease)).bootDeadlineNs).toBe(lease.bootDeadlineNs);
@@ -29,6 +30,9 @@ it('caps standing authority to one second captured before asynchronous admission
 
 it('uses the shorter absolute authority budget and omits already expired authority', () => {
   expect(projectDeadlineLease(binding, 1, 1_000_250, clock).bootDeadlineNs).toBe('5250000000');
+  expect(projectDeadlineLease(binding, 1, 1_010_000, clock).authorityBootDeadlineNs).toBe(
+    '15000000000',
+  );
   expect(projectDeadlineLease(binding, 1, 1_000_000, clock).bootDeadlineNs).toBe('0');
   expect(projectDeadlineLease(binding, 1, 999_999, clock).bootDeadlineNs).toBe('0');
 });

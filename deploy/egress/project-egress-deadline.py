@@ -25,8 +25,12 @@ BINDING_FIELDS = ('projectId', 'generation', 'containerId', 'networkId', 'endpoi
 
 
 def run(*args):
-    return subprocess.check_output(args, text=True, stderr=subprocess.STDOUT, timeout=5,
-                                   env={'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'DOCKER_HOST': 'unix:///var/run/docker.sock'})
+    try:
+        return subprocess.check_output(args, text=True, stderr=subprocess.STDOUT, timeout=5,
+                                       env={'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'DOCKER_HOST': 'unix:///var/run/docker.sock'})
+    except subprocess.CalledProcessError as error:
+        print(error.output[-8192:], file=sys.stderr)
+        raise
 
 
 def private_directory(path):
@@ -122,6 +126,22 @@ def endpoint(binding):
     return {'device': peer['ifname'], 'index': peer['ifindex']}
 
 
+def attest_filters(filters, identity):
+    # tc may emit a separate protocol/chain header before the concrete filter.
+    programs = []
+    for entry in filters:
+        if (entry.get('kind') != 'bpf' or entry.get('pref') != 1
+                or entry.get('protocol') != 'all' or entry.get('chain', 0) != 0):
+            raise ValueError('Unexpected deadline classifier')
+        if 'options' in entry:
+            programs.append(entry['options'])
+        elif set(entry) - {'protocol', 'pref', 'kind', 'chain', 'parent'}:
+            raise ValueError('Unexpected deadline classifier header')
+    if (len(programs) != 1 or programs[0].get('id') != identity
+            or programs[0].get('in_hw', False) or programs[0].get('actions')):
+        raise ValueError('Deadline hook identity changed: ' + json.dumps(filters))
+
+
 def attest(root, peer, identity):
     ruleset = json.loads(run('/usr/sbin/nft', '-j', 'list', 'ruleset'))
     if any('flowtable' in entry for entry in ruleset['nftables']):
@@ -133,10 +153,7 @@ def attest(root, peer, identity):
         raise ValueError('Deadline program identity changed')
     for direction in ('ingress', 'egress'):
         filters = json.loads(run('/sbin/tc', '-j', 'filter', 'show', 'dev', peer['device'], direction))
-        if (len(filters) != 1 or filters[0]['kind'] != 'bpf' or filters[0]['pref'] != 1
-                or filters[0]['options'].get('id') != identity
-                or filters[0]['options'].get('in_hw', False)):
-            raise ValueError('Deadline hook identity changed')
+        attest_filters(filters, identity)
 
 
 def save(path, value):
@@ -154,15 +171,21 @@ def save(path, value):
         os.close(directory)
 
 
+def expiry_set_names(expiry):
+    key = hashlib.sha256(('standing' if expiry is None else str(expiry)).encode()).hexdigest()[:16]
+    return ('expired4_' + key, 'expired6_' + key)
+
+
 def remember_expiry(binding, state):
-    """Persist observed wall expiry before replacing any nftables tombstone."""
+    """Remember observed expiry; kernel sets also survive every admission update."""
     name = 'verity_egress_' + hashlib.sha256(
         (binding['projectId'] + ':' + binding['generation']).encode()).hexdigest()[:24]
     listing = json.loads(run('/usr/sbin/nft', '-j', 'list', 'table', 'inet', name))
     sets = {entry['set']['name']: entry['set'] for entry in listing['nftables'] if 'set' in entry}
-    if not {'expired4', 'expired6'} <= sets.keys():
+    names = expiry_set_names(state.get('authorityExpiresAt'))
+    if not set(names) <= sets.keys():
         raise ValueError('Missing authoritative expiry tombstones')
-    if any(sets[key].get('elem') for key in ('expired4', 'expired6')):
+    if any(sets[key].get('elem') for key in names):
         expiry = state.get('authorityExpiresAt')
         if expiry is not None and expiry not in state['expiredAuthorities']:
             if len(state['expiredAuthorities']) >= 1000:
@@ -171,7 +194,7 @@ def remember_expiry(binding, state):
 
 
 def validate_lease(key, state, lease, pending=False):
-    if (set(lease) != {'bootId', 'binding', 'revision', 'nonce', 'capturedBootNs', 'bootDeadlineNs', 'authorityExpiresAt'}
+    if (set(lease) != {'bootId', 'binding', 'revision', 'nonce', 'capturedBootNs', 'bootDeadlineNs', 'authorityExpiresAt', 'authorityBootDeadlineNs'}
             or lease['bootId'] != state['bootId'] or lease['binding'] != key
             or not isinstance(lease['revision'], int) or isinstance(lease['revision'], bool)
             or lease['revision'] < state['revision'] or not re.fullmatch(r'[a-f0-9]{32}', lease['nonce'])
@@ -182,12 +205,24 @@ def validate_lease(key, state, lease, pending=False):
     deadline = int(lease['bootDeadlineNs'])
     captured = int(lease['capturedBootNs'])
     expiry = lease['authorityExpiresAt']
+    authority_boot = lease['authorityBootDeadlineNs']
     if (deadline > (1 << 64) - 1 or (expiry is not None and
             (not isinstance(expiry, int) or isinstance(expiry, bool)
              or expiry < 0 or expiry * 1_000_000 > (1 << 64) - 1))):
         raise ValueError('Deadline exceeds kernel range')
+    if expiry is None:
+        if authority_boot is not None:
+            raise ValueError('Standing authority cannot acquire a temporary clock mapping')
+    elif (not isinstance(authority_boot, str) or not re.fullmatch(r'(?:0|[1-9][0-9]{0,19})', authority_boot)
+          or int(authority_boot) > (1 << 64) - 1 or deadline > int(authority_boot)):
+        raise ValueError('Invalid immutable authority clock mapping')
+    original = state['authorityBootDeadlines'].get(str(expiry))
+    if original is not None and (deadline > int(original) or captured >= int(original)):
+        raise ValueError('Original authority clock budget exhausted')
     if expiry in state['expiredAuthorities']:
         raise ValueError('Authority already observed expired')
+    if expiry not in state['seenAuthorities'] and len(state['seenAuthorities']) >= 1000:
+        raise ValueError('Deadline authority capacity requires a fresh generation')
     sample = clocks()
     if ((captured <= int(state['invalidBeforeNs']) and not (pending and lease == state.get('pendingAdmission')))
             or captured <= int(state['lastCapturedNs'])
@@ -195,6 +230,16 @@ def validate_lease(key, state, lease, pending=False):
             or (deadline != 0 and (deadline < captured or deadline - captured > 1_000_000_000))):
         raise ValueError('Deadline exceeds controller lifetime')
     return deadline, captured, expiry
+
+
+def remember_authority(state, lease):
+    expiry = lease['authorityExpiresAt']
+    if expiry not in state['seenAuthorities']:
+        state['seenAuthorities'].append(expiry)
+    if expiry is not None:
+        key = str(expiry)
+        budget = int(lease['authorityBootDeadlineNs'])
+        state['authorityBootDeadlines'][key] = str(min(budget, int(state['authorityBootDeadlines'].get(key, budget))))
 
 
 def execute(request):
@@ -235,7 +280,7 @@ def execute(request):
                  'program': program['id'], 'revision': -1,
                  'invalidBeforeNs': clocks()['bootAfterNs'], 'lastCapturedNs': '0',
                  'authorityExpiresAt': None, 'expiredAuthorities': [], 'uncertainExpiry': False,
-                 'pendingAdmission': None}
+                 'pendingAdmission': None, 'seenAuthorities': [None], 'authorityBootDeadlines': {}}
         attest(root, peer, state['program'])
         save(path, state)
         return {'state': 'denied'}
@@ -256,6 +301,7 @@ def execute(request):
         candidate = request.get('lease') if op == 'revoke' else None
         if candidate is not None:
             validate_lease(key, state, candidate)
+            remember_authority(state, candidate)
         state['pendingAdmission'] = candidate
         state['invalidBeforeNs'] = clocks()['bootAfterNs']
         state['uncertainExpiry'] = False
@@ -272,6 +318,7 @@ def execute(request):
     state['revision'] = lease['revision']
     state['lastCapturedNs'] = str(captured)
     state['authorityExpiresAt'] = expiry
+    remember_authority(state, lease)
     save(path, state)
     # No remaining duration is recomputed here. An arbitrarily late update stays expired.
     write_deadline(root, state['peer']['index'], deadline)

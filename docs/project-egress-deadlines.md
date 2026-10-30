@@ -51,12 +51,29 @@ identity after its entry is destroyed.
 Overlapping grants conservatively share the earliest absolute authority expiry.
 nftables date syntax rounds that expiry down to a whole UTC second, so access
 may close up to one second early. Kernel-observed wall expiry is latched in
-dynamic sets in either direction. Before replacing those sets, the helper
-persists the expired authority timestamp and refuses later admission with that
-timestamp, even after a backward clock step. Different grants sharing an expiry
+expiry-specific dynamic sets in either direction. These sets survive all rule
+updates for the entire generation, including writes by packets already past TC
+when a refresh began. The helper also persists observed expired timestamps and
+refuses later admission with them, even after a backward clock step. The helper
+bounds each generation to 1000 distinct authority expiry values; exhaustion
+requires a fresh generation. Different grants sharing an expiry
 are conservatively denied together. Missing or unreadable tombstones prevent
 admission. This direct-grant guard is not installed on the separate permanent
 relay service paths by this increment.
+
+The first BOOTTIME mapping of each absolute authority expiry is also retained
+for the generation and can only decrease. Renewing a controller lease after
+wall-clock rollback cannot move that original authority budget into the future,
+including quiet intervals with no expiry packet. A request exceeding the saved
+budget is rejected rather than rewritten at commit.
+
+The disposable pause probes stop the actual Node controller and run the unchanged
+helper with a Python trace that stops immediately before its positive map write.
+A separate process records `/proc` state `T`, requires a live lease at stop, waits
+at least two seconds beyond capture, and resumes after the immutable deadline.
+These tracing and signal helpers are fixture-only and are not host-helper API
+options. The independent verifier requires raw map observations and fresh
+receiver controls after both recoveries.
 
 Acceptance distinguishes the kernel decision timestamp from external receipt:
 no packet may be admitted after its applicable deadline, while independently
