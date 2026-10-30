@@ -55,43 +55,56 @@ def main():
         assert status == 401, status
         print('authenticated-memory-positive; forged-capability-denied', flush=True)
         return
-    assert mode == 'stream'
     phase = sys.argv[2]
-    channel, path = connect()
-    # Connect once. Never reconnect an old stream after revocation/readmission.
-    channel.connect()
-    original = channel.sock
-    attempts = successes = 0
-    last_success = 0
-    while True:
-        attempts += 1
+    if mode == 'inflight':
+        channel, path = connect()
+        channel.connect()
+        body = json.dumps({'text': f'boot-inflight-{phase}' + ' ' * 4096}).encode()
+        capability = Path(os.environ['VERITY_GH_BROKER_CAPABILITY_FILE']).read_text().strip()
+        channel.putrequest('POST', path, skip_accept_encoding=True)
+        channel.putheader('Authorization', f'Bearer {capability}')
+        channel.putheader('Content-Type', 'application/json')
+        channel.putheader('Content-Length', str(len(body)))
+        channel.endheaders(body[:128])
+        started = time.time_ns()
+        Path(f'/work/.boot-inflight-{phase}-ready').write_text(str(started))
+        deadline = time.monotonic() + 9
+        while not Path(f'/work/.boot-inflight-{phase}-finish').exists():
+            if time.monotonic() > deadline:
+                raise RuntimeError('In-flight test exceeded the real relay request budget')
+            time.sleep(0.01)
+        status = None
         try:
-            if channel.sock is not original:
-                break
-            status, _ = append(channel, path, f'boot-stream-{phase}\n')
-            successes += int(status == 200)
+            channel.send(body[128:])
+            response = channel.getresponse()
+            status = response.status
+            response.read()
+        except (OSError, http.client.HTTPException):
+            pass
+        Path(f'/work/.boot-inflight-{phase}-result').write_text(json.dumps({
+            'status': status, 'started_ns': started, 'finished_ns': time.time_ns(),
+        }))
+        return
+    assert mode == 'poll'
+    attempts = successes = last_success = 0
+    while not Path(f'/work/.boot-stop-{phase}').exists():
+        attempts += 1
+        channel, path = connect()
+        try:
+            status, _ = append(channel, path, f'boot-poll-{phase}\n')
             if status == 200:
+                successes += 1
                 last_success = time.time_ns()
         except (OSError, http.client.HTTPException):
-            # HTTPConnection can automatically reconnect after an error: retaining
-            # the raw failed socket prevents this from becoming a fresh positive.
-            break
+            pass
+        finally:
+            channel.close()
         checkpoint = Path(f'/work/.boot-stream-{phase}.json.tmp')
         checkpoint.write_text(json.dumps({
             'attempts': attempts, 'successes': successes, 'last_success_ns': last_success,
+            'heartbeat_ns': time.time_ns(),
         }))
         checkpoint.replace(f'/work/.boot-stream-{phase}.json')
-        time.sleep(0.05)
-    # Keep the original descriptor attempting bytes without the HTTP helper's retry.
-    raw = original
-    while True:
-        attempts += 1
-        try:
-            if raw:
-                raw.send(b'POST /internal/project/memory HTTP/1.1\r\n')
-        except OSError:
-            pass
-        Path(f'/work/.boot-alive-{phase}').write_text(str(time.time_ns()))
         time.sleep(0.05)
 
 

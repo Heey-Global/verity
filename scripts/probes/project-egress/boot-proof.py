@@ -81,6 +81,8 @@ def main():
         # Observe real denial while actual first-instruction inherited/transferred emitters run.
         vm.ssh(guest + 'external')
         time.sleep(2)
+        inflight = {phase: json.loads(vm.ssh(guest + f'inflight {phase}', timeout=20)) for phase in ('positive', 'denied')}
+        (evidence / 'inflight.json').write_text(json.dumps(inflight))
         for event in ('controller-kill', 'server-kill', 'docker-stop-start', 'docker-crash', 'reboot'):
             vm.ssh(guest + f'stream {event}')
             time.sleep(1)
@@ -112,21 +114,20 @@ def main():
             if event != 'server-kill':
                 rules = vm.ssh('sudo nft list ruleset')
                 assert 'ct label set' not in rules, 'Controller/daemon restored a prior admission'
+            time.sleep(2)
+            stream_after = json.loads(vm.ssh(guest + f'stream-status {event}'))
+            assert stream_after['last_success_ns'] - event_time <= 2_000_000_000, 'Observed revocation exceeded two seconds'
+            if event in ('controller-kill', 'server-kill'):
+                now = int(vm.ssh('date +%s%N').strip())
+                assert now - stream_after['heartbeat_ns'] < 2_000_000_000, 'Project poll stopped attempting authenticated requests'
+            vm.ssh(guest + f'stop-poll {event}')
             vm.ssh(guest + 'recover', timeout=240)
             after = json.loads(vm.ssh(guest + 'snapshot'))
             verify_retained(initial, after)
             vm.ssh(guest + 'external')
-            stream_after = json.loads(vm.ssh(guest + f'stream-status {event}'))
-            assert stream_after['last_success_ns'] - event_time <= 2_000_000_000, 'Observed revocation exceeded two seconds'
-            time.sleep(1)
-            stream_final = json.loads(vm.ssh(guest + f'stream-status {event}'))
-            assert stream_after['successes'] == stream_final['successes'], 'Old stream revived after fresh admission'
-            if event in ('controller-kill', 'server-kill'):
-                now = int(vm.ssh('date +%s%N').strip())
-                assert stream_final['heartbeat_ns'] and now - stream_final['heartbeat_ns'] < 2_000_000_000, 'Original stream process stopped attempting traffic'
             events.append({'event': event, 'event_time_ns': event_time, 'before': before, 'after': vm.facts(),
                            'recovery_ns': time.monotonic_ns() - recovery_start, 'retained': after,
-                           'stream_before': stream_before, 'stream_after': stream_after, 'stream_final': stream_final})
+                           'stream_before': stream_before, 'stream_after': stream_after})
             (evidence / 'events.json').write_text(json.dumps(events, indent=2))
         faults = json.loads(vm.ssh(guest + 'faults', timeout=180))
         (evidence / 'faults.json').write_text(json.dumps(faults))
@@ -142,6 +143,8 @@ def main():
         # into a failed verdict; a synthetic verifier test is insufficient here.
         vm.ssh(guest + 'remove-fences')
         vm.ssh(guest + 'external')
+        mutation_inflight = json.loads(vm.ssh(guest + 'inflight removed-fences', timeout=20))
+        (evidence / 'mutation-inflight.json').write_text(json.dumps(mutation_inflight))
         time.sleep(1)
         try:
             verify_receipts(receipts, start_ns, end_ns)

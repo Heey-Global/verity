@@ -115,6 +115,36 @@ def recover():
     return token
 
 
+def worktree():
+    container = json.loads(run('docker', 'inspect', sandbox()))[0]
+    mount = next(m for m in container['HostConfig']['Mounts'] if m['Target'] == '/work')
+    assert mount['Source'] == 'verity-boot-data'
+    config = json.loads((ROOT / 'config.json').read_text())
+    directory = Path(config['dataRoot'], mount['VolumeOptions']['Subpath']).resolve()
+    assert directory.is_relative_to(Path(config['dataRoot']).resolve())
+    return directory
+
+
+def inflight(phase):
+    token = api('/secret/unlock', {'password': PASSWORD, 'deviceLabel': 'inflight proof'})['token']
+    directory = worktree()
+    run('docker', 'exec', '-d', '--user', '1000:1000', sandbox(), 'python3', '/opt/verity-boot/boot-client.py', 'inflight', phase)
+    wait(lambda: (directory / f'.boot-inflight-{phase}-ready').exists(), 5)
+    if phase == 'denied':
+        run('env', 'PROJECT_EGRESS_DISPOSABLE=yes', '/usr/bin/node', '/opt/verity-fixture/boot-server.mjs', 'readmit')
+    (directory / f'.boot-inflight-{phase}-finish').touch()
+    result = wait(lambda: json.loads((directory / f'.boot-inflight-{phase}-result').read_text())
+                  if (directory / f'.boot-inflight-{phase}-result').exists() else None, 5)
+    assert result['finished_ns'] - result['started_ns'] < 10_000_000_000, 'Natural relay timeout invalidated old-flow proof'
+    expected = phase != 'denied'
+    assert (result['status'] == 200) == expected, result
+    positive()
+    detail = api('/projects/' + descriptor()['projectId'], token=token)
+    memory = (detail.get('settings') or {}).get('memory') or ''
+    assert (f'boot-inflight-{phase}' in memory) == expected, 'Actual Server memory disagrees with in-flight verdict'
+    print(json.dumps(result))
+
+
 def snapshot():
     registry = json.loads(Path('/var/lib/verity-egress/registry.json').read_text())
     facts = []
@@ -211,17 +241,12 @@ if __name__ == '__main__':
     elif operation == 'snapshot':
         print(json.dumps(snapshot()))
     elif operation == 'stream-status':
-        container = json.loads(run('docker', 'inspect', sandbox()))[0]
-        mount = next(m for m in container['HostConfig']['Mounts'] if m['Target'] == '/work')
-        assert mount['Source'] == 'verity-boot-data'
-        config = json.loads((ROOT / 'config.json').read_text())
-        directory = Path(config['dataRoot'], mount['VolumeOptions']['Subpath']).resolve()
-        assert directory.is_relative_to(Path(config['dataRoot']).resolve())
-        status = json.loads((directory / f'.boot-stream-{sys.argv[2]}.json').read_text())
-        alive = directory / f'.boot-alive-{sys.argv[2]}'
-        status['heartbeat_ns'] = int(alive.read_text()) if alive.exists() else None
-        print(json.dumps(status))
+        print((worktree() / f'.boot-stream-{sys.argv[2]}.json').read_text())
+    elif operation == 'stop-poll':
+        (worktree() / f'.boot-stop-{sys.argv[2]}').touch()
+    elif operation == 'inflight':
+        inflight(sys.argv[2])
     elif operation == 'stream':
-        run('docker', 'exec', '-d', '--user', '1000:1000', sandbox(), 'python3', '/opt/verity-boot/boot-client.py', 'stream', sys.argv[2])
+        run('docker', 'exec', '-d', '--user', '1000:1000', sandbox(), 'python3', '/opt/verity-boot/boot-client.py', 'poll', sys.argv[2])
     else:
         raise ValueError(operation)
