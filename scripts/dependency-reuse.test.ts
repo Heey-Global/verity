@@ -1,5 +1,13 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -163,6 +171,28 @@ describe('shared dependency reuse', () => {
       expect(existsSync(f.called)).toBe(false);
     },
   );
+  it('requires npm workspace links to exist and target their declared workspace', () => {
+    const f = fixture();
+    mkdirSync(join(f.worktree, 'packages', 'source'), { recursive: true });
+    mkdirSync(join(f.worktree, 'packages', 'other'), { recursive: true });
+    for (const name of ['source', 'other'])
+      writeFileSync(join(f.worktree, 'packages', name, 'package.json'), '{}');
+    writeFileSync(
+      join(f.worktree, 'package-lock.json'),
+      JSON.stringify({
+        lockfileVersion: 3,
+        packages: { 'node_modules/source': { link: true, resolved: 'packages/source' } },
+      }),
+    );
+    mkdirSync(join(f.worktree, 'node_modules'));
+    writeFileSync(join(f.worktree, 'node_modules', '.package-lock.json'), '{"packages":{}}');
+    expect(f.run('status').status).toBe(1);
+    symlinkSync('../packages/other', join(f.worktree, 'node_modules', 'source'));
+    expect(f.run('status').status).toBe(1);
+    rmSync(join(f.worktree, 'node_modules', 'source'));
+    symlinkSync('../packages/source', join(f.worktree, 'node_modules', 'source'));
+    expect(f.run('status').status).toBe(0);
+  });
   it('ships identical executable helpers in both seed trees', () => {
     expect(readFileSync(helper, 'utf8')).toBe(
       readFileSync('features/verity-sandbox-toolkit/agent-seed/bin/verity-dependencies', 'utf8'),

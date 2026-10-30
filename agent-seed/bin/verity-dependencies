@@ -45,11 +45,13 @@ function installed(root) {
       // Receipt presence alone cannot prove current manifests/lockfile were installed.
       // Classic's integrity check is read-only; unsupported managers fail closed.
       if (!existsSync(join(root, 'node_modules', '.yarn-integrity'))) return false;
-      return spawnSync('yarn', ['check', '--integrity', '--offline'], {
-        cwd: root,
-        stdio: 'ignore',
-        timeout: 10_000,
-      }).status === 0;
+      return (
+        spawnSync('yarn', ['check', '--integrity', '--offline'], {
+          cwd: root,
+          stdio: 'ignore',
+          timeout: 10_000,
+        }).status === 0
+      );
     }
     const receipt = JSON.parse(read(join(root, 'node_modules', '.package-lock.json')) ?? 'null');
     if (!receipt || !receipt.packages || typeof receipt.packages !== 'object') return false;
@@ -74,9 +76,18 @@ function installed(root) {
     }
     if (!packages || typeof packages !== 'object') return false;
     return Object.entries(packages).every(([path, wanted]) => {
-      if ((!path.startsWith('node_modules/') && !path.includes('/node_modules/')) || wanted.link)
-        return true;
+      if (!path.startsWith('node_modules/') && !path.includes('/node_modules/')) return true;
       if (path.split('/').includes('..')) return false;
+      if (wanted.link) {
+        if (typeof wanted.resolved !== 'string') return false;
+        const target = resolve(root, wanted.resolved);
+        return (
+          target.startsWith(`${root}/`) &&
+          lstatSync(join(root, path)).isSymbolicLink() &&
+          realpathSync(join(root, path)) === realpathSync(target) &&
+          existsSync(join(target, 'package.json'))
+        );
+      }
       const actual = receipt.packages[path];
       if (!actual) return wanted.optional === true || wanted.devOptional === true;
       return (
