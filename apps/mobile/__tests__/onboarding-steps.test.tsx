@@ -255,6 +255,7 @@ describe('device authorization unlock route', () => {
 describe('device authorization recovery after a failed Face ID read', () => {
   let appStateListeners: ((state: AppStateStatus) => void)[] = [];
   let addListener: jest.SpyInstance;
+  const currentStateDescriptor = Object.getOwnPropertyDescriptor(AppState, 'currentState');
 
   beforeEach(() => {
     appStateListeners = [];
@@ -278,6 +279,8 @@ describe('device authorization recovery after a failed Face ID read', () => {
   afterEach(() => {
     addListener.mockRestore();
     jest.restoreAllMocks();
+    if (currentStateDescriptor)
+      Object.defineProperty(AppState, 'currentState', currentStateDescriptor);
   });
 
   const emitAppState = (state: AppStateStatus) =>
