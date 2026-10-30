@@ -66,6 +66,19 @@ function fixture() {
 const commandOptions = { env: process.env, timeout: 5000, maxBuffer: 1024 * 1024 };
 
 describe('build storage admission', () => {
+  it('requires an independent empty disk inventory for native retirement', () => {
+    const f = fixture();
+    const manager = f.manager();
+    expect(manager.retirementInventoryEmpty()).toBe(true);
+    mkdirSync(f.root);
+    expect(manager.retirementInventoryEmpty()).toBe(true);
+    const attempt = join(f.root, 'attempt-unknown');
+    mkdirSync(attempt);
+    writeFileSync(join(attempt, 'remote-operation.json'), '{}');
+    expect(manager.unresolvedAttempts()).toEqual([]);
+    expect(manager.retirementInventoryEmpty()).toBe(false);
+    expect(existsSync(join(attempt, 'remote-operation.json'))).toBe(true);
+  });
   it('rejects malformed settings and keeps conservative unknown-build defaults', () => {
     // The default must let an ordinary host build at all: a 306 GiB estimate
     // refused every build with 78 GiB free while the build needed about 15.

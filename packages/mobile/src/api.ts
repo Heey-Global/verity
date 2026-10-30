@@ -1,3 +1,4 @@
+import { storageReclamationActionSchema, type StorageReclamationAction } from '@verity/events';
 import { buildDiagnosticResponseSchema, systemLogResponseSchema } from './logs.js';
 import {
   auditHealthSchema,
@@ -4018,6 +4019,12 @@ export class VerityClient {
   /** Pre-auth liveness probe carrying the server's own release version — used to
    *  show which server build the app is talking to. Re-read whenever the settings
    *  screen gains focus so a server update (restart) is reflected without polling. */
+  async getStorageReclamation(): Promise<StorageReclamationAction> {
+    return storageReclamationActionSchema.parse(await (await this.request('/settings/storage/reclamation', { method: 'GET' })).json());
+  }
+  async reclaimStorage(): Promise<StorageReclamationAction> {
+    return storageReclamationActionSchema.parse(await (await this.request('/settings/storage/reclamation', { method: 'POST' })).json());
+  }
   async getHealth(): Promise<Health> {
     const res = await this.request('/healthz', { method: 'GET' });
     return healthSchema.parse(await res.json());

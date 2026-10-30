@@ -1,3 +1,5 @@
+import { nativeRetirementSchema } from '@verity/events';
+export { nativeRetirementSchema } from '@verity/events';
 import {
   builderAdmissionMessage,
   readBuilderAdmissionState,
@@ -148,23 +150,13 @@ const buildStorageReservationSchema = z
     reason: z.string().max(200),
   })
   .strict();
-export const nativeRetirementSchema = z.object({
-  version: z.literal(1),
-  observedAt: timestamp,
-  path: z.string().max(500),
-  dryRun: z.literal(true),
-  eligible: z.literal(false),
-  allocatedBytes: number.nullable(),
-  overlayAllocatedBytes: number.nullable(),
-  reclaimableBytes: number.nullable(),
-  blockers: z.array(z.string().max(200)).max(20),
-});
 const storageReclamationSchema = z.object({
   accounting: z.string().max(300),
   lastGc: z
     .object({
       observedAt: timestamp,
       containersRemoved: z.array(z.string()).max(100),
+      retainedContainers: z.array(z.object({ name: z.string(), reason: z.string() })).optional(),
       imagesRemoved: z.number().int().nonnegative(),
       lowDisk: z.boolean(),
       errors: z.number().int().nonnegative(),

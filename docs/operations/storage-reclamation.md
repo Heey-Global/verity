@@ -19,7 +19,7 @@ When installation is authorized, `verity-dependencies install` reuses compatible
 shared dependencies, or installs privately with lifecycle scripts disabled when
 the dependency inputs differ. It never installs into another checkout.
 
-After seven days without session activity, collection compares private
+Whenever a registered session is not running a turn and has no managed dev server or preview, collection compares private
 `node_modules` files with their shared counterparts. Only byte-identical files
 and matching links in compatible installations qualify. Local patches, unknown
 packages, tracked dependencies, unknown build output and symlink targets remain
@@ -94,13 +94,55 @@ retention policy remains unchanged, including under low disk.
 ## BuildKit and diagnostics
 
 The root-owned snapshotter reconciler publishes `native-retirement.json` next
-to its migration status. This first rollout is **dry-run only**: it never deletes
-native state. Inventory includes allocated bytes and blockers for worker identity,
-canonical paths, mounts, leases, consumers, activity and migration recovery.
-Persistent Server reservations require separate evidence; overlay convergence
-never clears them. Shared daemon metadata and rollback retirement must be
-reviewed before any future deletion policy is enabled. Existing overlay GC
-settings remain unchanged.
+to its migration status. It retires only the canonical `runc-native` directory,
+under the install/migration lock and the exclusive admission fence. Overlayfs
+configuration and worker verification, no migration recovery, a complete mount
+inventory (including descendant mounts), known consumers, no runtime leases and
+no in-use cache records are required. A fresh root-owned challenge additionally
+requires every running socket consumer to attest an independent empty on-disk
+reservation inventory. Unknown files and remote-operation records block deletion;
+this check never reconciles or removes reservations. Stopped socket consumers
+without independent evidence also block retirement. Their presence must be
+resolved through existing lifecycle/maintenance processes, not by forging receipts
+or deleting lease markers. Missing, stale or incomplete evidence retains data.
+
+The reconciler journals the exact transaction and fences admission before stopping
+the dedicated daemon, renames native state to a fixed quarantine on the same
+filesystem, starts and verifies the overlay worker with a bounded gVisor probe,
+and only then removes the quarantine. Shared daemon metadata and overlay state
+are preserved. A durable marker prohibits automatic native rollback after
+retirement. Interrupted work retains its journal and admission blocker until a
+subsequent pass can verify and finish recovery; an unsupported state requires
+maintenance. File allocation and filesystem free-space change are reported
+separately. Other host activity can affect the latter; no exact future saving is
+guaranteed by an inventory estimate.
+
+The matching signed host-builder bundle must be installed as well as the Server
+release. It installs the root-owned `verity-buildkit-snapshotter.path` alongside
+the existing timer. The Server writes only a fixed request file in the dedicated
+group-writable evidence directory; requests carry no executable command or path.
+No host state mount or general root-execution API is exposed. Old host helpers
+remain safe but cannot perform the new action. Existing BuildKit cache settings
+are unchanged.
+
+## Manual reclamation
+
+Administrators can use **Settings → Diagnostics → Host storage → Reclaim now**.
+The confirmation describes effects across all projects. The authenticated,
+origin-protected API is `POST /settings/storage/reclamation` with no body;
+`GET /settings/storage/reclamation` reports status. Both require active
+administrator membership. The POST returns 202 without waiting for a long pass;
+concurrent requests reuse the scheduler's single-flight collector, also used by
+scheduled and capacity-admission passes. Native host work is asynchronous and is
+reported as pending until a host receipt arrives. A completed Docker/dependency
+pass does not imply completed native retirement. Refresh remains available if
+leaving the screen stops polling. There is no additional unaudited Control tool;
+the existing Control diagnostics can read results.
+
+Results separate removal counts, retained-container reasons, dependency blockers,
+actual observed filesystem free-space change and native receipts. Release-image
+retention, stopped-container grace and whole-worktree retirement safeguards apply
+equally to the manual action. It does not force-delete protected resources.
 
 `verity_diagnostics` includes the last GC result, containers retired, images
 pinned by stopped containers and their estimated sizes, per-image pin reasons,

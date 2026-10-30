@@ -34,6 +34,8 @@ init() {
     fi
     chmod 0644 "$run_dir/build-admission.lock"
     install -d -m 0770 -g "$gid" "$run_dir/leases"
+    [[ ! -L $run_dir/reclamation-evidence ]] || return 1
+    install -d -m 0770 -g "$gid" "$run_dir/reclamation-evidence"
     install -d -m 0700 "$state"
 }
 selected() {
@@ -50,6 +52,12 @@ worker() {
       .["org.mobyproject.buildkit.worker.snapshotter"]'
 }
 restore() {
+    if [[ -e $state/native-retired && $(selected) != overlayfs ]]; then
+        status blocked "Native state was retired; native rollback is unavailable"; return 1
+    fi
+    if [[ -e $state/native-retired ]] && grep -Eq 'snapshotter[[:space:]]*=[[:space:]]*"(native|auto)"' "$backup"; then
+        status blocked "Native rollback is unavailable after retirement"; return 1
+    fi
     [[ -f $backup && ! -L $backup ]] || { status blocked 'Migration backup is unavailable'; return 1; }
     [[ $(sha256sum "$backup" | cut -d' ' -f1) == "$(jq -er .sha256 "$journal")" ]] || return 1
     cp -- "$backup" "$config.new"
@@ -60,6 +68,7 @@ restore() {
 }
 recover() {
     init
+    if [[ -e $state/native-retired && $(selected) != overlayfs ]]; then status blocked "Native state has been retired"; return 1; fi
     [[ -e $journal ]] || return 0
     local pid boot start actual
     pid=$(jq -er 'select(.version == 1) | .pid | select(type == "number" and . > 1)' "$journal")
@@ -248,54 +257,16 @@ reconcile() {
     trap - EXIT TERM INT
     status converged 'overlayfs worker and gVisor RUN verified; native state retained for rollback'
 }
-# Inventory only: native state shares daemon metadata and is not disposable just
-# because an overlay worker is running. A future apply policy needs reviewed
-# metadata/rollback handling and independent persistent-reservation evidence.
-native_inventory() {
-    local target=$root/runc-native bytes=null overlay_bytes=null measured blockers='[]' temp
-    add_blocker() { blockers=$(jq -cn --argjson current "$blockers" --arg reason "$1" '$current + [$reason]'); }
-    [[ $root == /var/lib/verity-buildkit && $(realpath -e -- "$root") == "$root" && ! -L $target ]] || add_blocker 'unsupported-or-symlinked-state-root'
-    [[ ! -e $journal && ! -e $run_dir/migration-pending ]] || add_blocker 'migration-or-recovery-pending'
-    [[ $(worker) == overlayfs && $(selected) == overlayfs ]] || add_blocker 'overlay-worker-not-verified'
-    exec 7<"$run_dir/build-admission.lock"
-    if flock -n 7; then
-        clients_compatible || add_blocker 'unknown-builder-consumers'
-        [[ -z $(find "$run_dir/leases" -mindepth 1 -maxdepth 1 -print -quit) ]] || add_blocker 'unresolved-runtime-leases'
-        ctl du --format '{{json .}}' | jq -se 'length == 1 and (.[0] | type == "array" and all(.[]; .inUse == false))' >/dev/null || add_blocker 'builder-activity-not-excluded'
-    else
-        add_blocker 'builder-admission-busy'
-    fi
-    if [[ -d $target && ! -L $target && $(realpath -e -- "$target") == "$target" ]]; then
-        if timeout 3 findmnt --noheadings --mountpoint "$target" >/dev/null 2>&1; then
-            add_blocker 'native-state-is-a-mountpoint'
-        else
-            measured=$(timeout 10 du -sx -B1 -- "$target" 2>/dev/null) || measured=
-            if [[ $measured =~ ^([0-9]+)[[:space:]] ]]; then bytes=${BASH_REMATCH[1]}; else add_blocker 'allocated-bytes-unavailable'; fi
-        fi
-    else
-        add_blocker 'native-state-absent-or-unsafe'
-    fi
-    if [[ -d $root/runc-overlayfs && ! -L $root/runc-overlayfs && $(realpath -e -- "$root/runc-overlayfs") == "$root/runc-overlayfs" ]]; then
-        measured=$(timeout 5 du -sx -B1 -- "$root/runc-overlayfs" 2>/dev/null) || measured=
-        if [[ $measured =~ ^([0-9]+)[[:space:]] ]]; then overlay_bytes=${BASH_REMATCH[1]}; fi
-    fi
-    add_blocker 'persistent-reservations-require-independent-evidence'
-    add_blocker 'shared-metadata-and-rollback-retirement-not-approved'
-    temp=$(mktemp "$run_dir/.native-retirement.XXXXXX")
-    jq -cn --arg observedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg path "$target" \
-        --argjson allocatedBytes "$bytes" --argjson overlayAllocatedBytes "$overlay_bytes" --argjson blockers "$blockers" \
-        '{version:1,observedAt:$observedAt,path:$path,dryRun:true,eligible:false,allocatedBytes:$allocatedBytes,overlayAllocatedBytes:$overlayAllocatedBytes,reclaimableBytes:null,blockers:$blockers}' > "$temp"
-    chmod 0644 "$temp"
-    sync -f "$temp"
-    mv -f "$temp" "$run_dir/native-retirement.json"
-    exec 7<&-
-}
+source "$bin/native-retire.sh"
 
 case ${1:-} in
     init) init ;;
     recover) recover ;;
     recover-verify) recover_verify ;;
-    reconcile) reconcile; exec 8<&-; native_inventory ;;
+    reconcile)
+        if [[ -e $state/native-retirement.json ]]; then native_retire; else
+            reconcile; exec 8<&-; exec 7>&-; native_retire
+        fi ;;
     drained) drained ;;
     *) echo 'Expected init, recover, recover-verify, drained or reconcile' >&2; exit 2 ;;
 esac

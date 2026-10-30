@@ -332,7 +332,7 @@ describe('safe session storage reclamation', () => {
       true,
     );
   });
-  it('skips active sessions, recent sessions and incompatible dependencies', async () => {
+  it('skips active sessions and incompatible dependencies but slims recent idle sessions', async () => {
     const f = fixture();
     f.busy();
     await f.service.runOnce();
@@ -340,7 +340,9 @@ describe('safe session storage reclamation', () => {
     const recent = fixture();
     recent.recent();
     await recent.service.runOnce();
-    expect(existsSync(join(recent.path, 'node_modules'))).toBe(true);
+    expect(existsSync(join(recent.path, 'node_modules'))).toBe(false);
+    expect(existsSync(join(recent.path, '.git'))).toBe(true);
+    expect(recent.service.lastReport?.worktreesRetired).toEqual([]);
     const incompatible = fixture();
     writeFileSync(
       join(incompatible.path, 'package.json'),
@@ -348,6 +350,17 @@ describe('safe session storage reclamation', () => {
     );
     await incompatible.service.runOnce();
     expect(existsSync(join(incompatible.path, 'node_modules'))).toBe(true);
+  });
+  it('rechecks dev server and preview blockers after claiming a recent session', async () => {
+    const f = fixture();
+    f.recent();
+    let blocked = false;
+    f.service.bind(async (_, run) => {
+      blocked = true;
+      return { ran: true, value: await run() };
+    }, () => blocked);
+    await f.service.runOnce();
+    expect(existsSync(join(f.path, 'node_modules'))).toBe(true);
   });
   it('requires a persistent orphan grace period', async () => {
     const f = fixture();

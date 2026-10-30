@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Verity storage maintenance on authenticated Server request
+After=verity-buildkit.service
+
+[Path]
+PathChanged=/run/verity-buildkit/reclamation-evidence/request.json
+Unit=verity-buildkit-snapshotter.service
+
+[Install]
+WantedBy=multi-user.target

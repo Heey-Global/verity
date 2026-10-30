@@ -56,6 +56,7 @@ case "$1" in
  build) ${options.failProbe ? 'exit 1' : 'exit 0'} ;;
 esac\n`,
   );
+  writeFileSync(join(bin, 'native-retire.sh'), readFileSync('deploy/buildkit/native-retire.sh'));
   const env = {
     ...process.env,
     PATH: `${bin}:${process.env.PATH ?? ''}`,
@@ -82,8 +83,8 @@ esac\n`,
     expect(f.invoke().status).toBe(0);
     expect(existsSync(join(f.state, 'pending.json'))).toBe(false);
     const inventory = JSON.parse(readFileSync(join(f.run, 'native-retirement.json'), 'utf8'));
-    expect(inventory).toMatchObject({ dryRun: true, eligible: false, reclaimableBytes: null });
-    expect(inventory.blockers).toContain('shared-metadata-and-rollback-retirement-not-approved');
+    expect(inventory).toMatchObject({ dryRun: false, eligible: false, reclaimableBytes: null });
+    expect(inventory.blockers).toContain('unsupported-or-symlinked-state-root');
   });
   it.each([{ legacy: true }, { busy: true }])(
     'defers unknown clients or active work: %j',

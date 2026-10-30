@@ -60,7 +60,7 @@ chmod 0755 /usr/local/libexec/verity-buildkit/buildkitd.new
 /usr/local/libexec/verity-buildkit/buildkitd.new --version
 mv /usr/local/libexec/verity-buildkit/buildkitd.new /usr/local/libexec/verity-buildkit/buildkitd
 ln -sfn "/opt/verity/runsc/$RUNSC_RELEASE/runsc" /usr/local/libexec/verity-buildkit/runsc-real
-install -m 0755 "$source_dir/runsc" "$source_dir/runsc-buildkit-args.sh" "$source_dir/runsc-netns.sh" "$source_dir/network.sh" "$source_dir/storage-report.sh" "$source_dir/publish-storage-report.sh" "$source_dir/snapshotter-migrate.sh" /usr/local/libexec/verity-buildkit/
+install -m 0755 "$source_dir/runsc" "$source_dir/runsc-buildkit-args.sh" "$source_dir/runsc-netns.sh" "$source_dir/network.sh" "$source_dir/storage-report.sh" "$source_dir/publish-storage-report.sh" "$source_dir/snapshotter-migrate.sh" "$source_dir/native-retire.sh" /usr/local/libexec/verity-buildkit/
 # CNI plugins for the per-step build network. The pinned archive is verified and
 # extracted afresh every run, replacing any earlier or partial copy as a whole,
 # so a hand-installed or interrupted directory is adopted rather than trusted.
@@ -108,12 +108,12 @@ chmod 0644 /etc/systemd/system/verity-build-storage.service.new
 mv /etc/systemd/system/verity-build-storage.service.new /etc/systemd/system/verity-build-storage.service
 install -m 0644 "$source_dir/verity-build-storage.timer" /etc/systemd/system/
 install -m 0644 "$source_dir/snapshotter-policy.conf" /etc/verity-buildkit/
-install -m 0644 "$source_dir/verity-buildkit-snapshotter.service" "$source_dir/verity-buildkit-snapshotter.timer" /etc/systemd/system/
+install -m 0644 "$source_dir/verity-buildkit-snapshotter.service" "$source_dir/verity-buildkit-snapshotter.timer" "$source_dir/verity-buildkit-snapshotter.path" /etc/systemd/system/
 systemctl daemon-reload
 systemctl enable verity-buildkit.service
 systemctl restart verity-buildkit.service
 /usr/local/libexec/verity-buildkit/snapshotter-migrate.sh init
-systemctl enable --now verity-buildkit-snapshotter.timer
+systemctl enable --now verity-buildkit-snapshotter.timer verity-buildkit-snapshotter.path
 systemctl enable --now verity-build-storage.timer
 systemctl start verity-build-storage.service
 # Snapshotter state is not an installer artifact. Old workers can hold references

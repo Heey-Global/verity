@@ -40,8 +40,9 @@ export async function retireStoppedContainers(input: {
   withProjectMutation: (projectId: string, run: () => Promise<void>) => Promise<void>;
   now?: number;
   dryRun?: boolean;
-}): Promise<{ removed: string[]; errors: string[] }> {
-  const result = { removed: [] as string[], errors: [] as string[] };
+}): Promise<{ removed: string[]; errors: string[]; retained: Array<{ name: string; reason: string }> }> {
+  const result = { removed: [] as string[], errors: [] as string[], retained: [] as Array<{ name: string; reason: string }> };
+  const keep = (c: DockerContainerSummary, reason: string) => { result.retained.push({ name: c.names?.[0] ?? c.id, reason }); };
   const { docker } = input;
   if (!docker.listContainers || !docker.listImages || !docker.removeStoppedContainer) return result;
   const now = input.now ?? Date.now();
@@ -52,7 +53,7 @@ export async function retireStoppedContainers(input: {
   for (const candidate of containers) {
     if (!stopped(candidate)) continue;
     const projectId = candidate.labels?.[projectLabel];
-    if (!projectId) continue; // One-shots have a separate deployment owner.
+    if (!projectId) { keep(candidate, 'No project identity; outside managed ownership'); continue; }
     const maintenance =
       candidate.labels?.[componentLabel] === 'storage-maintenance' &&
       candidate.names?.some((name) => /^verity-query-[a-f0-9-]{36}$/.test(name));
@@ -63,7 +64,7 @@ export async function retireStoppedContainers(input: {
       candidate.names?.includes(project.containerName);
     // An orphan still needs identity labels; names or image ancestry alone are insufficient.
     if (!maintenance && !relay(candidate) && !ownedSandbox && !candidate.labels?.[generationLabel])
-      continue;
+      { keep(candidate, 'Container ownership is ambiguous'); continue; }
     try {
       await input.withProjectMutation(projectId, async () => {
         const freshProjects = await input.listProjects();
@@ -72,9 +73,8 @@ export async function retireStoppedContainers(input: {
           !maintenance &&
           latestProject &&
           !['sleeping', 'absent', 'failed'].includes(latestProject.state)
-        )
-          return;
-        if (!maintenance && latestProject?.imageOverrideRef) return;
+        ) { keep(candidate, 'Project is active or changing state'); return; }
+        if (!maintenance && latestProject?.imageOverrideRef) { keep(candidate, 'Explicit project image override'); return; }
         const current = (await docker.listContainers!()).find((c) => c.id === candidate.id);
         if (!current || !stopped(current) || current.imageId !== candidate.imageId) return;
         const inspect = await docker.inspectContainer(current.id);
@@ -90,9 +90,10 @@ export async function retireStoppedContainers(input: {
             ? (current.created ?? NaN) * 1000
             : Date.parse(inspect.finishedAt ?? '');
         const grace = latestProject && !maintenance ? DAY : 7 * DAY;
-        if (!Number.isFinite(since) || since <= 0 || now - since < grace) return;
+        if (!Number.isFinite(since) || since <= 0) { keep(current, 'Stop time is unknown'); return; }
+        if (now - since < grace) { keep(current, `Stopped-container grace period (${grace / DAY} days)`); return; }
         if (!maintenance && latestProject && !superseded(current, await docker.listImages!()))
-          return;
+          { keep(current, 'No newer image in the managed repository'); return; }
         // A relay may only be retired with its stopped sandbox generation, never independently of a running sandbox.
         if (
           relay(current) &&
@@ -103,8 +104,7 @@ export async function retireStoppedContainers(input: {
               c.labels?.[generationLabel] === current.labels?.[generationLabel] &&
               !stopped(c),
           )
-        )
-          return;
+        ) { keep(current, 'Relay generation still has a running sandbox'); return; }
         if (!latestProject && heldProjects.has(projectId)) return; // Project changed during the pass; retry next time.
         if (!input.dryRun) await docker.removeStoppedContainer!(current.id);
         result.removed.push(current.names?.[0] ?? current.id);

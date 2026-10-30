@@ -208,6 +208,8 @@ export function makeProject(
 }
 
 export type ClientOverrides = {
+  getStorageReclamation?: VerityClient['getStorageReclamation'];
+  reclaimStorage?: VerityClient['reclaimStorage'];
   validateGithubApp?: jest.Mock;
   getReturnPathStatus?: VerityClient['getReturnPathStatus'];
   startReturnPathDiagnostics?: VerityClient['startReturnPathDiagnostics'];
@@ -263,6 +265,8 @@ export function makeClient(status: SecretStatus, opts: ClientOverrides = {}): Ve
     validateGithubApp:
       opts.validateGithubApp ??
       jest.fn().mockResolvedValue({ ok: true, commitStatusPermission: { state: 'ready' } }),
+    getStorageReclamation: opts.getStorageReclamation ?? jest.fn().mockRejectedValue(new Error('unavailable')),
+    reclaimStorage: opts.reclaimStorage ?? notImplemented('reclaimStorage'),
     getReturnPathStatus: opts.getReturnPathStatus ?? notImplemented('getReturnPathStatus'),
     startReturnPathDiagnostics:
       opts.startReturnPathDiagnostics ?? notImplemented('startReturnPathDiagnostics'),

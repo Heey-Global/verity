@@ -215,13 +215,14 @@ export interface DockerGcDeps {
    *  wire it wherever both the GC and the lifecycle are available. */
   beforeSweep?: () => Promise<void>;
   onReport?: (report: DockerGcReport) => void;
-  retireContainers?: () => Promise<{ removed: string[]; errors: string[] }>;
+  retireContainers?: () => Promise<{ removed: string[]; errors: string[]; retained?: Array<{ name: string; reason: string }> }>;
   heldRelays?: () => Iterable<{ projectId: string; containerGeneration: string }>;
 }
 
 export interface DockerGcReport {
   observedAt: string;
   containersRemoved: string[];
+  retainedContainers?: Array<{ name: string; reason: string }>; 
   stoppedContainerPins: { images: number; containers: number; estimatedBytes: number };
   keptImageReasons: Array<{ imageId: string; containers: string[] }>;
 
@@ -554,6 +555,7 @@ export async function runDockerGc(deps: DockerGcDeps): Promise<DockerGcReport> {
       const retired = await deps.retireContainers?.();
       if (retired) {
         report.containersRemoved = retired.removed;
+        if (retired.retained) report.retainedContainers = retired.retained;
         errors.push(
           ...retired.errors.map((message) => ({ resource: 'stopped container', message })),
         );
