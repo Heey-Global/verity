@@ -1,3 +1,4 @@
+import { nativeRetirementSchema } from '@verity/events';
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -27,7 +28,7 @@ function fixture(options: { reserved?: boolean; stale?: boolean; busy?: boolean;
   writeFileSync(wrapper, `set -euo pipefail\nroot='${root}'\nstate='${state}'\nrun_dir='${run}'\njournal='${state}/pending.json'\nselected() { echo overlayfs; }\nworker() { echo overlayfs; }\nclients_compatible() { ${options.unknown ? 'return 1' : 'return 0'}; }\nctl() { echo '${options.busy ? '[{"inUse":true}]' : '[]'}'; }\nprobe() { if flock --shared --nonblock '${run}/build-admission.lock' true; then return 1; fi; [[ ! -e '${dir}/fail-probe' ]]; }\nsource '${helper}'\nnative_retire\n`);
   if (options.failProbe) writeFileSync(join(dir, 'fail-probe'), '');
   const invoke = () => spawnSync('bash', [wrapper], { encoding: 'utf8', timeout: 10_000, env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ''}` } });
-  const report = () => JSON.parse(readFileSync(join(run, 'native-retirement.json'), 'utf8'));
+  const report = () => nativeRetirementSchema.parse(JSON.parse(readFileSync(join(run, 'native-retirement.json'), 'utf8')));
   return { dir, root, state, run, invoke, report };
 }
 (available ? describe : describe.skip)('native BuildKit retirement', () => {
@@ -41,6 +42,7 @@ function fixture(options: { reserved?: boolean; stale?: boolean; busy?: boolean;
     expect(existsSync(join(f.run, 'migration-pending'))).toBe(false);
     const completedAt = f.report().observedAt;
     const overlayBytes = f.report().overlayAllocatedBytes;
+    if (overlayBytes === null) throw new Error('Expected measured overlay allocation');
     writeFileSync(join(f.root, 'runc-overlayfs', 'new-allocation'), Buffer.alloc(65536));
     expect(f.invoke().status).toBe(0);
     expect(f.report().observedAt >= completedAt).toBe(true);
