@@ -68,6 +68,17 @@ class DeadlineHostTests(unittest.TestCase):
         self.assertEqual(self.write.call_args.args[-1], 0)
         self.assertEqual(json.loads(self.path.read_text())['invalidBeforeNs'], '2000000001')
 
+    def test_only_exact_staged_admission_survives_its_own_revoke(self):
+        host.execute({'operation': 'revoke', 'binding': self.binding, 'lease': self.lease})
+        altered = dict(self.lease)
+        self.lease['nonce'] = 'e' * 32
+        with self.assertRaises(ValueError):
+            self.arm()
+        self.lease = altered
+        self.assertEqual(self.arm()['bootDeadlineNs'], '1000000020')
+        with self.assertRaises(ValueError):
+            self.arm()
+
     def test_delayed_executor_cannot_rebase_lifetime(self):
         self.lease['bootDeadlineNs'] = '3000000000'
         with self.assertRaises(ValueError):
@@ -88,6 +99,8 @@ class DeadlineHostTests(unittest.TestCase):
         host.execute({'operation': 'revoke', 'binding': self.binding})
         self.lease['capturedBootNs'] = '2000000002'
         self.lease['bootDeadlineNs'] = '2000000002'
+        host.clocks.return_value = {'bootId': 'boot', 'bootBeforeNs': '2000000010',
+                                   'bootAfterNs': '2000000011', 'realNs': '1'}
         with self.assertRaisesRegex(ValueError, 'already observed expired'):
             self.arm()
         self.assertEqual(json.loads(self.path.read_text())['expiredAuthorities'], [5000])

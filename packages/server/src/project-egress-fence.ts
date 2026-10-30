@@ -218,6 +218,13 @@ export class ProjectEgressFence {
     if (bindingKey(await this.deps.inspect(binding)) !== bindingKey(binding))
       throw new Error('Project fence attachment changed');
   }
+  private async deny(binding: ProjectFenceBinding, next?: ProjectDeadlineLease): Promise<void> {
+    try {
+      await this.deps.deadline.revoke(binding, next);
+    } finally {
+      await this.deps.apply(projectFenceRules(binding, [], this.now(), true));
+    }
+  }
   prepare(binding: ProjectFenceBinding): Promise<void> {
     binding = { ...binding };
     return this.serialize(async () => {
@@ -272,31 +279,33 @@ export class ProjectEgressFence {
         snapshot.grants.length > 1000
       )
         throw new Error('Stale or invalid project fence policy');
+      // Capture before inspection, classification, DNS or either executor can pause.
+      let admission: ProjectDeadlineLease;
+      try {
+        const sample = await this.deps.deadline.clock();
+        const authority = snapshot.grants.filter(
+          (grant) =>
+            grant.revokedAt === undefined &&
+            (grant.expiresAt === null || grant.expiresAt > this.now()),
+        );
+        const expiry = authority.reduce<number | null>(
+          (earliest, grant) =>
+            grant.expiresAt === null
+              ? earliest
+              : earliest === null
+                ? grant.expiresAt
+                : Math.min(earliest, grant.expiresAt),
+          null,
+        );
+        admission = projectDeadlineLease(snapshot.binding, snapshot.revision, expiry, sample);
+      } catch (error) {
+        await this.deny(current.binding);
+        throw error;
+      }
       // Close old access before inspecting or resolving. A failing refresh cannot
       // keep its previous grants alive; kernel timeouts also bound a killed process.
-      try {
-        await this.deps.deadline.revoke(current.binding);
-      } finally {
-        await this.deps.apply(projectFenceRules(current.binding, [], this.now(), true));
-      }
+      await this.deny(current.binding, admission);
       current.revision = snapshot.revision;
-      // Capture before inspection, classification, DNS or either executor can pause.
-      const sample = await this.deps.deadline.clock();
-      const authority = snapshot.grants.filter(
-        (grant) =>
-          grant.revokedAt === undefined &&
-          (grant.expiresAt === null || grant.expiresAt > this.now()),
-      );
-      const expiry = authority.reduce<number | null>(
-        (earliest, grant) =>
-          grant.expiresAt === null
-            ? earliest
-            : earliest === null
-              ? grant.expiresAt
-              : Math.min(earliest, grant.expiresAt),
-        null,
-      );
-      const admission = projectDeadlineLease(snapshot.binding, snapshot.revision, expiry, sample);
       await this.verify(snapshot.binding);
       if (!(await this.deps.policyCurrent(snapshot)))
         throw new Error('Project fence authority changed');
@@ -339,7 +348,7 @@ export class ProjectEgressFence {
       try {
         if (leases.length) await this.deps.deadline.arm(snapshot.binding, admission);
       } catch (error) {
-        await this.deps.deadline.revoke(snapshot.binding);
+        await this.deny(snapshot.binding);
         throw error;
       }
     });
@@ -350,11 +359,7 @@ export class ProjectEgressFence {
       const current = this.active.get(binding.projectId);
       if (!current || bindingKey(current.binding) !== bindingKey(binding))
         throw new Error('Inactive project fence generation');
-      try {
-        await this.deps.deadline.revoke(binding);
-      } finally {
-        await this.deps.apply(projectFenceRules(binding, [], this.now(), true));
-      }
+      await this.deny(binding);
       this.retired.add(generationKey(binding));
       // Keep the deny-only table and attachment reservation until explicit host cleanup.
     });

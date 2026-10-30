@@ -170,6 +170,33 @@ def remember_expiry(binding, state):
             state['expiredAuthorities'].append(expiry)
 
 
+def validate_lease(key, state, lease, pending=False):
+    if (set(lease) != {'bootId', 'binding', 'revision', 'nonce', 'capturedBootNs', 'bootDeadlineNs', 'authorityExpiresAt'}
+            or lease['bootId'] != state['bootId'] or lease['binding'] != key
+            or not isinstance(lease['revision'], int) or isinstance(lease['revision'], bool)
+            or lease['revision'] < state['revision'] or not re.fullmatch(r'[a-f0-9]{32}', lease['nonce'])
+            or lease['nonce'] == '0' * 32
+            or not re.fullmatch(r'(?:0|[1-9][0-9]{0,19})', lease['bootDeadlineNs'])
+            or not re.fullmatch(r'(?:0|[1-9][0-9]{0,19})', lease['capturedBootNs'])):
+        raise ValueError('Invalid deadline lease')
+    deadline = int(lease['bootDeadlineNs'])
+    captured = int(lease['capturedBootNs'])
+    expiry = lease['authorityExpiresAt']
+    if (deadline > (1 << 64) - 1 or (expiry is not None and
+            (not isinstance(expiry, int) or isinstance(expiry, bool)
+             or expiry < 0 or expiry * 1_000_000 > (1 << 64) - 1))):
+        raise ValueError('Deadline exceeds kernel range')
+    if expiry in state['expiredAuthorities']:
+        raise ValueError('Authority already observed expired')
+    sample = clocks()
+    if ((captured <= int(state['invalidBeforeNs']) and not (pending and lease == state.get('pendingAdmission')))
+            or captured <= int(state['lastCapturedNs'])
+            or captured > int(sample['bootBeforeNs']) or captured > (1 << 64) - 1
+            or (deadline != 0 and (deadline < captured or deadline - captured > 1_000_000_000))):
+        raise ValueError('Deadline exceeds controller lifetime')
+    return deadline, captured, expiry
+
+
 def execute(request):
     if request == {'operation': 'clock'}:
         return clocks()
@@ -207,7 +234,8 @@ def execute(request):
         state = {'binding': binding, 'peer': peer, 'bootId': clocks()['bootId'],
                  'program': program['id'], 'revision': -1,
                  'invalidBeforeNs': clocks()['bootAfterNs'], 'lastCapturedNs': '0',
-                 'authorityExpiresAt': None, 'expiredAuthorities': [], 'uncertainExpiry': False}
+                 'authorityExpiresAt': None, 'expiredAuthorities': [], 'uncertainExpiry': False,
+                 'pendingAdmission': None}
         attest(root, peer, state['program'])
         save(path, state)
         return {'state': 'denied'}
@@ -225,6 +253,10 @@ def execute(request):
         save(path, state)
         write_deadline(root, state['peer']['index'], 0)
         remember_expiry(binding, state)
+        candidate = request.get('lease') if op == 'revoke' else None
+        if candidate is not None:
+            validate_lease(key, state, candidate)
+        state['pendingAdmission'] = candidate
         state['invalidBeforeNs'] = clocks()['bootAfterNs']
         state['uncertainExpiry'] = False
         save(path, state)
@@ -232,31 +264,11 @@ def execute(request):
     # Validation and failed admission must not preserve the previous live grant.
     write_deadline(root, state['peer']['index'], 0)
     lease = request['lease']
-    if (set(lease) != {'bootId', 'binding', 'revision', 'nonce', 'capturedBootNs', 'bootDeadlineNs', 'authorityExpiresAt'}
-            or lease['bootId'] != state['bootId'] or lease['binding'] != key
-            or not isinstance(lease['revision'], int) or isinstance(lease['revision'], bool)
-            or lease['revision'] < state['revision'] or not re.fullmatch(r'[a-f0-9]{32}', lease['nonce'])
-            or lease['nonce'] == '0' * 32
-            or not re.fullmatch(r'(?:0|[1-9][0-9]{0,19})', lease['bootDeadlineNs'])
-            or not re.fullmatch(r'(?:0|[1-9][0-9]{0,19})', lease['capturedBootNs'])):
-        raise ValueError('Invalid deadline lease')
-    deadline = int(lease['bootDeadlineNs'])
-    captured = int(lease['capturedBootNs'])
-    expiry = lease['authorityExpiresAt']
-    if (deadline > (1 << 64) - 1 or (expiry is not None and
-            (not isinstance(expiry, int) or isinstance(expiry, bool)
-             or expiry < 0 or expiry * 1_000_000 > (1 << 64) - 1))):
-        raise ValueError('Deadline exceeds kernel range')
-    if expiry in state['expiredAuthorities']:
-        raise ValueError('Authority already observed expired')
-    sample = clocks()
-    if (captured <= int(state['invalidBeforeNs']) or captured <= int(state['lastCapturedNs'])
-            or captured > int(sample['bootBeforeNs']) or captured > (1 << 64) - 1
-            or (deadline != 0 and (deadline < captured or deadline - captured > 1_000_000_000))):
-        raise ValueError('Deadline exceeds controller lifetime')
+    deadline, captured, expiry = validate_lease(key, state, lease, pending=True)
     if endpoint(binding) != state['peer']:
         raise ValueError('Deadline interface changed')
     attest(root, state['peer'], state['program'])
+    state['pendingAdmission'] = None
     state['revision'] = lease['revision']
     state['lastCapturedNs'] = str(captured)
     state['authorityExpiresAt'] = expiry

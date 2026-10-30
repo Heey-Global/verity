@@ -264,12 +264,36 @@ it('captures immutable BOOTTIME before DNS and keeps a delayed apply expired', a
   ]);
 });
 
+it('captures before the revoke and deny executors can stall', async () => {
+  const { deps, fence, setNow } = fixture();
+  await fence.prepare(binding);
+  deps.deadline.revoke.mockImplementation(async () => {
+    setNow(5000);
+  });
+  await fence.refresh({ binding, revision: 1, grants: [{ ...grant, expiresAt: 10000 }] });
+  expect(deps.deadline.arm.mock.calls[0]).toEqual([
+    binding,
+    expect.objectContaining({ capturedBootNs: '1000000000', bootDeadlineNs: '2000000000' }),
+  ]);
+});
+
 it('installs nft denial even when the required kernel guard fails', async () => {
   const { deps, fence } = fixture();
   deps.deadline.prepare.mockRejectedValue(new Error('unsupported guard'));
   await expect(fence.prepare(binding)).rejects.toThrow('unsupported guard');
   expect(deps.apply.mock.calls.at(-1)![0]).not.toContain('elements =');
   expect(deps.deadline.arm).not.toHaveBeenCalled();
+});
+
+it('denies previous access when a new clock sample cannot be trusted', async () => {
+  const { deps, fence } = fixture();
+  await fence.prepare(binding);
+  deps.deadline.clock.mockRejectedValue(new Error('clock unavailable'));
+  await expect(fence.refresh({ binding, revision: 1, grants: [grant] })).rejects.toThrow(
+    'clock unavailable',
+  );
+  expect(deps.deadline.revoke).toHaveBeenCalled();
+  expect(deps.apply.mock.calls.at(-1)![0]).not.toContain('elements =');
 });
 
 it('preserves denial on revocation or admission failure', async () => {

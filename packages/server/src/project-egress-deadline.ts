@@ -85,7 +85,7 @@ export interface ProjectDeadlineEnforcer {
   clock(): Promise<ProjectDeadlineClock>;
   /** Must preserve the given absolute deadline even after arbitrarily late commit. */
   arm(binding: ProjectFenceBinding, lease: ProjectDeadlineLease): Promise<void>;
-  revoke(binding: ProjectFenceBinding): Promise<void>;
+  revoke(binding: ProjectFenceBinding, next?: ProjectDeadlineLease): Promise<void>;
 }
 
 /** Fixed root-owned helper; no executable or namespace comes from a project. */
@@ -134,8 +134,10 @@ export function hostProjectDeadlineEnforcer(): ProjectDeadlineEnforcer {
       if (result.bootDeadlineNs !== lease.bootDeadlineNs)
         throw new Error('Host changed immutable packet deadline');
     },
-    async revoke(binding) {
-      denied.parse(await request({ operation: 'revoke', binding }));
+    async revoke(binding, next) {
+      denied.parse(
+        await request({ operation: 'revoke', binding, ...(next ? { lease: next } : {}) }),
+      );
     },
   };
 }
