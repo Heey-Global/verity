@@ -80,7 +80,10 @@ async function fixture(handler: Handler, options: { branch?: string | null; url?
       child.stderr.on('data', (chunk: Buffer) => (stderr += chunk.toString()));
       child.on('error', reject);
       child.on('close', (code) => done({ code, stdout, stderr }));
-      child.stdin.end(stdin);
+      // Rejected commands can exit before reading their body; do not write an
+      // empty payload into a pipe they may already have closed.
+      if (stdin) child.stdin.end(stdin);
+      else child.stdin.end();
     });
   return { calls, run };
 }

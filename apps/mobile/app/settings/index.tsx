@@ -84,9 +84,9 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
   // `null` until the Server says this device may read audit logs; members and
   // Servers without the trail never show the row.
   const [auditHealth, setAuditHealth] = useState<AuditHealth | null>(null);
-  // `null` while this Server cannot back up or this device may not manage it
-  // (members get 403), so the row appears only where it leads somewhere.
-  const [backup, setBackup] = useState<Extract<BackupStatus, { available: true }> | null>(null);
+  // An unavailable capability still has a useful explanation. A denied request
+  // (members get 403) must not expose administrator controls.
+  const [backup, setBackup] = useState<BackupStatus | null>(null);
   // Re-read on focus: this screen stays mounted under /devices, where the
   // count changes.
   useFocusEffect(
@@ -104,7 +104,7 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
         .catch(() => undefined);
       client
         .getBackupStatus()
-        .then((status) => active && setBackup(status.available ? status : null))
+        .then((status) => active && setBackup(status))
         .catch(() => active && setBackup(null));
       // A stored key is not an active subscription: Uplink may have refused it.
       // Keep the last known state while re-reading so the row does not flicker.

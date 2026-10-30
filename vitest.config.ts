@@ -16,6 +16,18 @@ export default defineConfig({
   // runs via actions/cache (default is node_modules/.vite, which is wiped with
   // node_modules). .cache/ is gitignored.
   cacheDir: '.cache/vitest',
+  // Root tests also render web-only app components without the Expo toolchain.
+  // Use the server transform contract instead of following the app's extends.
+  tsconfig: './tsconfig.base.json',
+  plugins: [
+    {
+      name: 'root-test-native-style-mock',
+      // Web tests mock this native module; slim CI installs intentionally omit it.
+      resolveId(id) {
+        if (id === 'react-native-unistyles') return id;
+      },
+    },
+  ],
   resolve: {
     // Resolve workspace packages to their TypeScript source so tests run without
     // a prior `tsc -b` build (the published packages export `dist/`, which CI's
