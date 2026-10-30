@@ -185,7 +185,7 @@ const input = (overrides: Partial<PrepareSchedulingInput> = {}): PrepareScheduli
   timeZone: 'Europe/Berlin',
   language: 'en',
   bookingDays: 7,
-  organizerName: 'Holger',
+  organizerName: 'Sam',
   ...overrides,
 });
 
@@ -275,6 +275,47 @@ describe('scheduling requests', () => {
       scheduler.send(prepared.requestId, 'other-session', prepared.digest),
     ).rejects.toThrow('not found');
     expect(calendar.events.size).toBe(0);
+  });
+
+  it('sends the content edited on the card and binds the approval to it', async () => {
+    const scheduler = service();
+    const prepared = await scheduler.prepare(input({ language: 'de', title: 'Kennenlernen' }));
+    expect(prepared.language).toBe('de');
+    const card = await scheduler.approvalSummary(prepared.requestId, 's1');
+    // The card can follow a changed title or language exactly as send will.
+    expect(card?.defaultEmail?.en.subject).toBe('Pick a time: {title}');
+    const sentSummary = await scheduler.send(prepared.requestId, 's1', prepared.digest, {
+      title: 'Intro call',
+      language: 'en',
+    });
+    // An untouched default email follows the new title and language.
+    expect(sentSummary).toMatchObject({ title: 'Intro call', language: 'en' });
+    expect(sent[0]!.subject).toBe('Pick a time: Intro call');
+    expect(sent[0]!.body).toMatch(/^Hi Anna,/u);
+    const stored = (await ctx.store.scheduling.get(prepared.requestId))!;
+    expect(stored.approvalDigest).not.toBe(prepared.digest);
+    expect([...calendar.events.values()][0]?.summary).toBe('Hold · Anna · Intro call');
+  });
+
+  it('keeps a custom email on a language change and refuses one without the link', async () => {
+    const scheduler = service();
+    const prepared = await scheduler.prepare(input());
+    await expect(
+      scheduler.send(prepared.requestId, 's1', prepared.digest, { emailBody: 'No link here' }),
+    ).rejects.toThrow('{link}');
+    await expect(
+      scheduler.send(prepared.requestId, 's1', 'f'.repeat(64), { title: 'Other' }),
+    ).rejects.toThrow('differs');
+    expect(calendar.events.size).toBe(0);
+    expect((await ctx.store.scheduling.get(prepared.requestId))?.state).toBe('draft');
+    await scheduler.send(prepared.requestId, 's1', prepared.digest, {
+      language: 'de',
+      emailSubject: 'Termin',
+      emailBody: 'Hallo Anna,\n{link}',
+    });
+    expect(sent[0]).toMatchObject({ subject: 'Termin' });
+    expect(sent[0]!.body).toMatch(/^Hallo Anna,\nhttps:/u);
+    expect((await ctx.store.scheduling.get(prepared.requestId))?.language).toBe('de');
   });
 
   it('reads the offered times live: deleted holds disappear and resized holds change the offer', async () => {

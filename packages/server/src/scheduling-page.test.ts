@@ -19,7 +19,7 @@ const request = (overrides: Partial<SchedulingRequest> = {}): SchedulingRequest 
   title: 'Intro call <Berger>',
   durationMinutes: 30,
   addMeet: true,
-  organizerName: 'Holger',
+  organizerName: 'Sam',
   organizerEmail: 'holger@example.test',
   guestEmail: 'anna@example.test',
   guestName: 'Anna',

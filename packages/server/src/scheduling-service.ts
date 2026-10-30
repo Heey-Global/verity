@@ -2,6 +2,7 @@ import { createHash, randomInt, randomUUID } from 'node:crypto';
 import { hashPreviewPin } from '@verity/preview-tunnel';
 import type {
   EventStore,
+  SchedulingDraftContent,
   SchedulingHold,
   SchedulingRequest,
   SchedulingShareBinding,
@@ -110,6 +111,7 @@ export interface SchedulingSummary {
   durationMinutes: number;
   addGoogleMeet: boolean;
   timeZone: string;
+  language: 'en' | 'de';
   guest: { email: string; name: string | null };
   colleagues: { email: string; name?: string }[];
   organizer: { email: string; name: string };
@@ -121,6 +123,20 @@ export interface SchedulingSummary {
   emailSent: boolean;
   /** The Gmail account the email is sent from; may differ from the calendar's account. */
   sender?: string;
+  /**
+   * Present on an approval card while the draft still carries the default email: that email in
+   * each language, titled {@link SCHEDULING_TITLE_PLACEHOLDER}, so the card can follow a changed
+   * title or language exactly as {@link SchedulingService.send} will.
+   */
+  defaultEmail?: Record<'en' | 'de', { subject: string; body: string }>;
+}
+
+/** Content the operator changed on the approval card; omitted fields keep the draft's value. */
+export interface SchedulingCardEdits {
+  title?: string | undefined;
+  language?: 'en' | 'de' | undefined;
+  emailSubject?: string | undefined;
+  emailBody?: string | undefined;
 }
 
 export type SchedulingPageModel =
@@ -206,25 +222,53 @@ function publicLink(binding: Pick<SchedulingShareBinding, 'publicOrigin' | 'pin'
   return `${binding.publicOrigin.replace(/\/$/u, '')}/?pin=${encodeURIComponent(binding.pin)}`;
 }
 
-function defaultEmail(
-  input: PrepareSchedulingInput,
-  closesAt: Date,
+/** Stands for the meeting title in {@link defaultEmailTemplate}; the card fills it in as typed. */
+export const SCHEDULING_TITLE_PLACEHOLDER = '{title}';
+
+type DefaultEmailFields = Pick<
+  SchedulingRequest,
+  'guestEmail' | 'guestName' | 'durationMinutes' | 'organizerName' | 'timeZone' | 'closesAt'
+>;
+
+/** The default email in one language, with the title left as {@link SCHEDULING_TITLE_PLACEHOLDER}. */
+function defaultEmailTemplate(
+  fields: DefaultEmailFields,
+  language: 'en' | 'de',
 ): { subject: string; body: string } {
-  const guest = input.guest.name?.trim() || input.guest.email;
-  const until = formatInZone(closesAt, input.timeZone, input.language, {
+  const guest = fields.guestName?.trim() || fields.guestEmail;
+  const title = SCHEDULING_TITLE_PLACEHOLDER;
+  const until = formatInZone(fields.closesAt, fields.timeZone, language, {
     weekday: 'long',
     day: 'numeric',
     month: 'long',
   });
-  return input.language === 'de'
+  return language === 'de'
     ? {
-        subject: `Terminauswahl: ${input.title}`,
-        body: `Hallo ${guest},\n\nbitte wähle hier einen passenden Termin für „${input.title}“ (${String(input.durationMinutes)} Minuten):\n${SCHEDULING_LINK_PLACEHOLDER}\n\nDer Link ist bis ${until} geöffnet.\n\nViele Grüße\n${input.organizerName}`,
+        subject: `Terminauswahl: ${title}`,
+        body: `Hallo ${guest},\n\nbitte wähle hier einen passenden Termin für „${title}“ (${String(fields.durationMinutes)} Minuten):\n${SCHEDULING_LINK_PLACEHOLDER}\n\nDer Link ist bis ${until} geöffnet.\n\nViele Grüße\n${fields.organizerName}`,
       }
     : {
-        subject: `Pick a time: ${input.title}`,
-        body: `Hi ${guest},\n\nPlease pick a time that suits you for "${input.title}" (${String(input.durationMinutes)} minutes):\n${SCHEDULING_LINK_PLACEHOLDER}\n\nThe link is open until ${until}.\n\nBest,\n${input.organizerName}`,
+        subject: `Pick a time: ${title}`,
+        body: `Hi ${guest},\n\nPlease pick a time that suits you for "${title}" (${String(fields.durationMinutes)} minutes):\n${SCHEDULING_LINK_PLACEHOLDER}\n\nThe link is open until ${until}.\n\nBest,\n${fields.organizerName}`,
       };
+}
+
+function defaultEmail(
+  fields: DefaultEmailFields,
+  language: 'en' | 'de',
+  title: string,
+): { subject: string; body: string } {
+  const template = defaultEmailTemplate(fields, language);
+  return {
+    subject: template.subject.replaceAll(SCHEDULING_TITLE_PLACEHOLDER, title),
+    body: template.body.replaceAll(SCHEDULING_TITLE_PLACEHOLDER, title),
+  };
+}
+
+/** Whether a draft still carries the default email, which follows its title and language. */
+function hasDefaultEmail(request: SchedulingRequest): boolean {
+  const expected = defaultEmail(request, request.language, request.title);
+  return request.emailSubject === expected.subject && request.emailBody === expected.body;
 }
 
 function holdText(request: SchedulingRequest) {
@@ -252,6 +296,37 @@ function bookedDescription(request: SchedulingRequest, note: string | undefined)
       ? `Von ${guest} über eine Verity-Terminanfrage gebucht.`
       : `Booked by ${guest} through a Verity scheduling request.`;
   return note ? `${lead}\n\n${request.language === 'de' ? 'Notiz' : 'Note'}: ${note}` : lead;
+}
+
+/**
+ * The draft content after the card's edits, or undefined when nothing actually changed. A
+ * default email that the operator left alone follows a new title or language.
+ */
+function editedContent(
+  request: SchedulingRequest,
+  edits: SchedulingCardEdits,
+): SchedulingDraftContent | undefined {
+  const title = edits.title?.trim() ?? request.title;
+  const language = edits.language ?? request.language;
+  const keepsDefault =
+    edits.emailSubject === undefined && edits.emailBody === undefined && hasDefaultEmail(request);
+  const email = keepsDefault
+    ? defaultEmail(request, language, title)
+    : {
+        subject: edits.emailSubject?.trim() ?? request.emailSubject,
+        body: edits.emailBody ?? request.emailBody,
+      };
+  if (!title) throw new Error('The meeting title must not be empty');
+  if (!email.subject) throw new Error('The email subject must not be empty');
+  if (!email.body.includes(SCHEDULING_LINK_PLACEHOLDER))
+    throw new Error(`The email must contain ${SCHEDULING_LINK_PLACEHOLDER} where the link goes`);
+  const content = { title, language, emailSubject: email.subject, emailBody: email.body };
+  return content.title === request.title &&
+    content.language === request.language &&
+    content.emailSubject === request.emailSubject &&
+    content.emailBody === request.emailBody
+    ? undefined
+    : content;
 }
 
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
@@ -328,7 +403,20 @@ export class SchedulingService {
         lastEnd.getTime(),
       ),
     );
-    const email = input.email ?? defaultEmail(input, closesAt);
+    const email =
+      input.email ??
+      defaultEmail(
+        {
+          guestEmail: input.guest.email.trim(),
+          guestName: input.guest.name?.trim() || null,
+          durationMinutes: input.durationMinutes,
+          organizerName: input.organizerName.trim(),
+          timeZone: input.timeZone,
+          closesAt,
+        },
+        input.language,
+        input.title.trim(),
+      );
     const id = randomUUID();
     const request = await this.store.createDraft({
       id,
@@ -423,7 +511,18 @@ export class SchedulingService {
         closesAt: request.closesAt,
       }),
     );
-    return sender ? { ...summary, sender } : summary;
+    return {
+      ...summary,
+      ...(sender ? { sender } : {}),
+      ...(request.state === 'draft' && hasDefaultEmail(request)
+        ? {
+            defaultEmail: {
+              en: defaultEmailTemplate(request, 'en'),
+              de: defaultEmailTemplate(request, 'de'),
+            },
+          }
+        : {}),
+    };
   }
 
   summarize(
@@ -438,6 +537,7 @@ export class SchedulingService {
       durationMinutes: request.durationMinutes,
       addGoogleMeet: request.addMeet,
       timeZone: request.timeZone,
+      language: request.language,
       guest: { email: request.guestEmail, name: request.guestName },
       colleagues: request.colleagues,
       organizer: { email: request.organizerEmail, name: request.organizerName },
@@ -464,8 +564,17 @@ export class SchedulingService {
   /**
    * Execute an approved draft: record the approval, then create holds, the public link and send
    * the email. Every step is idempotent, so a crash part-way resumes from the scheduler.
+   *
+   * `edits` are what the operator changed on the approval card. The digest still has to match
+   * the draft the card was raised for; the approval then covers the edited content, which is
+   * stored with it in one step.
    */
-  async send(requestId: string, sessionId: string, digest: string): Promise<SchedulingSummary> {
+  async send(
+    requestId: string,
+    sessionId: string,
+    digest: string,
+    edits?: SchedulingCardEdits,
+  ): Promise<SchedulingSummary> {
     const request = await this.store.get(requestId);
     if (!request || request.sessionId !== sessionId)
       throw new Error('Scheduling request not found');
@@ -479,8 +588,16 @@ export class SchedulingService {
     // The sending account the card showed is bound to the approval; a later resume must not
     // send from whatever account the session uses by then.
     const sender = await resolveGoogleServiceCredential(this.deps.store, sessionId, 'gmail');
-    if (!(await this.store.approve(requestId, digest, sender.accountId)))
-      throw new Error('This scheduling request was already sent');
+    const content = edits ? editedContent(request, edits) : undefined;
+    const approved = content
+      ? await this.store.approve(
+          requestId,
+          schedulingDigest({ ...request, ...content }, holds),
+          sender.accountId,
+          { content, revision: request.revision },
+        )
+      : await this.store.approve(requestId, digest, sender.accountId);
+    if (!approved) throw new Error('This scheduling request was already sent');
     await this.provisionLeased(requestId);
     const current = (await this.store.get(requestId))!;
     if (current.state === 'failed')

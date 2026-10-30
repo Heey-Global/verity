@@ -27,7 +27,7 @@ const draft = (
   title: 'Intro call',
   durationMinutes: 30,
   addMeet: true,
-  organizerName: 'Holger',
+  organizerName: 'Sam',
   organizerEmail: 'holger@example.test',
   guestEmail: 'anna@example.test',
   guestName: 'Anna',

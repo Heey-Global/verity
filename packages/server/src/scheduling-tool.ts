@@ -17,7 +17,13 @@ export const schedulingRequestSchema = z.discriminatedUnion('action', [
   z
     .object({
       action: z.literal('prepare'),
-      title: z.string().min(1).max(200),
+      title: z
+        .string()
+        .min(1)
+        .max(200)
+        .describe(
+          'The calendar title both sides see: name the purpose of the meeting, in the guest language, not the conferencing tool.',
+        ),
       durationMinutes: z.number().int().min(5).max(480),
       windows: z
         .array(
@@ -37,7 +43,11 @@ export const schedulingRequestSchema = z.discriminatedUnion('action', [
         .describe('Ask the user whether to add Google Meet; never assume a default.'),
       calendarId: z.string().min(1).max(1024).default('primary'),
       timeZone: z.string().min(1).max(64),
-      language: z.enum(['en', 'de']),
+      language: z
+        .enum(['en', 'de'])
+        .describe(
+          'The guest language for the email and booking page; derive it from earlier correspondence with the guest, ask when unclear.',
+        ),
       bookingDays: z
         .number()
         .int()
@@ -59,7 +69,17 @@ export const schedulingRequestSchema = z.discriminatedUnion('action', [
   z.object({ action: z.literal('revoke'), requestId }).strict(),
 ]);
 
-export const SCHEDULING_TOOL_DESCRIPTION = `Offer meeting times to one guest through a booking link. prepare checks the organizer's calendar, derives the start times (each window is cut into slots of durationMinutes from its start; a slot must fit completely) and stores a draft; nothing leaves Verity yet. Ask the user whether to add Google Meet before prepare. Use only email addresses supplied or confirmed by the user. Colleagues are invited to the holds and the final meeting; the guest only gets the link. The email body must contain ${SCHEDULING_LINK_PLACEHOLDER} where the link goes, and should not list times; omit email to use the default text. Show the user the prepared summary, then call send with the requestId and digest unchanged: the user approves the whole request at once (holds in the calendar, the email, booking the time the guest picks, and removing the remaining holds afterwards). After sending, Verity runs the request on its own until it is booked, expires (at most ${String(SCHEDULING_MAX_BOOKING_DAYS)} days) or is revoked. status reports one request, list this session's requests, revoke withdraws a request after approval.`;
+/** Fields of a scheduling draft the operator may change on the send approval card. */
+export const schedulingCardEditsSchema = z
+  .object({
+    title: z.string().min(1).max(200).optional(),
+    language: z.enum(['en', 'de']).optional(),
+    emailSubject: z.string().min(1).max(300).optional(),
+    emailBody: z.string().min(1).max(10_000).optional(),
+  })
+  .strict();
+
+export const SCHEDULING_TOOL_DESCRIPTION = `Offer meeting times to one guest through a booking link. Guide the user before prepare: collect the guest's email address, the purpose, the duration, whether to add Google Meet and the time windows. Propose what the conversation and context already settle, such as the purpose or earlier mail with the guest, and ask only for what is missing, in one message. Choose a title that names the purpose. Pick the guest language from earlier correspondence or the user's instructions; ask when it is unclear, and write the title and email in it. Resolve relative dates ("tomorrow", "Saturday") against today in the organizer's time zone and restate every window with weekday and date before calling prepare. prepare checks the organizer's calendar, derives the start times (each window is cut into slots of durationMinutes from its start; a slot must fit completely) and stores a draft; nothing leaves Verity yet. Ask the user whether to add Google Meet before prepare. Use only email addresses supplied or confirmed by the user. Colleagues are invited to the holds and the final meeting; the guest only gets the link. The email body must contain ${SCHEDULING_LINK_PLACEHOLDER} where the link goes, and should not list times; omit email to use the default text. Show the user the prepared summary, including the language and anything you assumed, then call send with the requestId and digest unchanged: the user approves the whole request at once (holds in the calendar, the email, booking the time the guest picks, and removing the remaining holds afterwards). On the approval card the user can still change the title, language, email subject and body; send returns what was actually sent. After sending, Verity runs the request on its own until it is booked, expires (at most ${String(SCHEDULING_MAX_BOOKING_DAYS)} days) or is revoked. status reports one request, list this session's requests, revoke withdraws a request after approval.`;
 
 /** Reads and drafts need no card; sending and revoking change calendars and mailboxes. */
 export function schedulingHasStandingAuthorization(request: unknown): boolean {
@@ -71,6 +91,11 @@ interface Input {
   projectId: string;
   sessionId: string;
   request: unknown;
+}
+
+interface InvokeInput extends Input {
+  /** What the operator changed on the send approval card; never taken from the agent. */
+  approvedEdits?: unknown;
 }
 
 export function createSchedulingTool(deps: {
@@ -114,7 +139,18 @@ export function createSchedulingTool(deps: {
     return summary ? { scheduling: summary } : undefined;
   };
 
-  const invoke = async (input: Input): Promise<unknown> => {
+  /**
+   * The card edits an approval may carry: only for send, and only the draft's editable content.
+   * Anything else is refused, so an edit cannot widen what was approved.
+   */
+  const approvedEdits = (request: unknown, updatedInput: Record<string, unknown>) => {
+    const parsed = schedulingRequestSchema.safeParse(request);
+    if (!parsed.success || parsed.data.action !== 'send')
+      throw new Error('Only a scheduling send can be edited on its card');
+    return schedulingCardEditsSchema.parse(updatedInput);
+  };
+
+  const invoke = async (input: InvokeInput): Promise<unknown> => {
     const request = await authorize(input);
     const service = deps.service();
     switch (request.action) {
@@ -141,7 +177,14 @@ export function createSchedulingTool(deps: {
         };
       }
       case 'send':
-        return service.send(request.requestId, input.sessionId, request.digest);
+        return service.send(
+          request.requestId,
+          input.sessionId,
+          request.digest,
+          input.approvedEdits === undefined
+            ? undefined
+            : schedulingCardEditsSchema.parse(input.approvedEdits),
+        );
       case 'status': {
         const stored = await deps.store.scheduling.get(request.requestId);
         if (!stored || stored.sessionId !== input.sessionId)
@@ -166,5 +209,5 @@ export function createSchedulingTool(deps: {
     }
   };
 
-  return { authorize, presentation, invoke };
+  return { authorize, presentation, approvedEdits, invoke };
 }

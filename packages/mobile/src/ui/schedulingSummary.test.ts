@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { schedulingApprovalSummary } from './schedulingSummary.js';
+import {
+  schedulingApprovalSummary,
+  schedulingCardDecision,
+  schedulingCardEdit,
+  schedulingCardEmail,
+  type SchedulingEditable,
+} from './schedulingSummary.js';
 
 const draft = {
   title: 'Intro call',
@@ -17,7 +23,7 @@ const draft = {
     },
   ],
   email: { to: 'anna@example.test', subject: 'Pick a time', body: 'Hi Anna {link}' },
-  sender: 'holger@example.test',
+  sender: 'sam@example.test',
 };
 
 describe('scheduling approval summary', () => {
@@ -32,11 +38,13 @@ describe('scheduling approval summary', () => {
         'Times in Europe/Berlin',
         'Holds in your calendar, invited: Lea (lea@example.test) (availability not checked)',
         'Booking link to: Anna (anna@example.test)',
-        'Email sent from: holger@example.test',
+        'Email sent from: sam@example.test',
         'Booking closes Fri 6 Nov, 11:41',
       ],
       email: { subject: 'Pick a time', body: 'Hi Anna {link}' },
       scope: expect.stringContaining('remove the remaining holds'),
+      // A server that does not report the language cannot take edits.
+      editable: null,
     });
   });
 
@@ -60,5 +68,56 @@ describe('scheduling approval summary', () => {
     expect(
       schedulingApprovalSummary({ action: 'revoke', requestId: 'r', scheduling: draft })?.scope,
     ).toContain('Lea (lea@example.test) get the cancellation');
+  });
+
+  describe('editing on the send card', () => {
+    const defaults = {
+      en: { subject: 'Pick a time: {title}', body: 'Hi Anna, {title}\n{link}' },
+      de: { subject: 'Terminauswahl: {title}', body: 'Hallo Anna, {title}\n{link}' },
+    };
+    const editable = (defaultEmail: unknown = defaults): SchedulingEditable =>
+      schedulingApprovalSummary({
+        action: 'send',
+        scheduling: {
+          ...draft,
+          language: 'en',
+          email: { to: 'anna@example.test', ...defaults.en },
+          defaultEmail,
+        },
+      })!.editable!;
+
+    it('approves unchanged content without edits', () => {
+      const card = editable();
+      expect(card.meeting).toBe('30 min · Google Meet');
+      expect(schedulingCardDecision(card, schedulingCardEdit(card))).toEqual({});
+    });
+
+    it('lets an untouched default email follow the title and language, as the server will', () => {
+      const card = editable();
+      const edit = { ...schedulingCardEdit(card), title: ' Kickoff ', language: 'de' as const };
+      expect(schedulingCardEmail(card, edit)).toEqual({
+        subject: 'Terminauswahl: Kickoff',
+        body: 'Hallo Anna, Kickoff\n{link}',
+      });
+      // The email itself is not sent: the server regenerates it from title and language.
+      expect(schedulingCardDecision(card, edit)).toEqual({
+        updatedInput: { title: 'Kickoff', language: 'de' },
+      });
+    });
+
+    it('sends the operator’s own email text and refuses one without the link', () => {
+      const card = editable(undefined);
+      const edit = { ...schedulingCardEdit(card), emailEdited: true, emailBody: 'Hello {link}' };
+      expect(schedulingCardEmail(card, edit).body).toBe('Hello {link}');
+      expect(schedulingCardDecision(card, edit)).toEqual({
+        updatedInput: { emailBody: 'Hello {link}' },
+      });
+      expect(schedulingCardDecision(card, { ...edit, emailBody: 'Hello' })).toEqual({
+        error: expect.stringContaining('{link}'),
+      });
+      expect(schedulingCardDecision(card, { ...edit, title: '  ' })).toEqual({
+        error: expect.stringContaining('title'),
+      });
+    });
   });
 });
