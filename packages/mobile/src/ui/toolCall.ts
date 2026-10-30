@@ -130,6 +130,7 @@ const VERITY_TOOL_LABELS: Record<string, string> = {
   verity_gmail: 'Gmail',
   verity_matrix: 'Matrix',
   verity_google_calendar: 'Google Calendar',
+  verity_scheduling: 'Scheduling',
   verity_google_contacts: 'Google Contacts',
   verity_google_docs: 'Google Docs',
   verity_google_drive: 'Google Drive',

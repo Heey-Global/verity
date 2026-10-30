@@ -246,6 +246,19 @@ export {
 } from './assistant.js';
 
 export {
+  CLOSED_SCHEDULING_STATES,
+  SchedulingStore,
+  type CreateSchedulingDraft,
+  type SchedulingColleague,
+  type SchedulingHold,
+  type SchedulingHoldState,
+  type SchedulingRequest,
+  type SchedulingRequestPatch,
+  type SchedulingRequestState,
+  type SchedulingShareBinding,
+} from './scheduling.js';
+
+export {
   RepairSupervisionStore,
   type RepairMandate,
   type RepairIncident,

@@ -30,6 +30,13 @@ import {
 } from './document-workspace.js';
 import { sessionGoogleStatus, type SessionGoogleStatus } from './session-google-status.js';
 import { createVulnerabilityTool } from './vulnerability-tool.js';
+import { PreviewConnector } from '@verity/preview-tunnel';
+import { SchedulingPageListeners } from './scheduling-page.js';
+import { registerSchedulingRoutes } from './scheduling-routes.js';
+import { startSchedulingScheduler, type SchedulingScheduler } from './scheduling-scheduler.js';
+import { SchedulingService } from './scheduling-service.js';
+import { schedulingNoticeText, schedulingPush } from './scheduling-notices.js';
+import { createSchedulingTool, schedulingHasStandingAuthorization } from './scheduling-tool.js';
 import { scanStartedProjectIfNeeded } from './vulnerability-start.js';
 import { canWakeForScan, vulnerabilitySandboxLease } from './vulnerability-sandbox.js';
 import { startVulnerabilityPush } from './vulnerability-push.js';
@@ -1256,6 +1263,8 @@ export interface ServerDeps {
   /** Sealable at-rest secret cipher backing `/secret/status|init|unlock`.
    *  Omit → the secret store is treated as an unmanaged always-unlocked no-op. */
   attendeeEdge?: import('./preview-share-manager.js').PreviewEdgeControl;
+  /** Mints access tokens for a stored Google account; scheduling requests act on their own. */
+  googleAccessToken?: ((accountId?: string) => Promise<string | undefined>) | undefined;
   secretCipher?: SealableSecretCipher | undefined;
   /** Per-device API auth-token registry backing the C1 auth gate. When present
    *  AND enabled (a master password exists), a global `onRequest` hook requires a
@@ -3780,6 +3789,75 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     pushFirePoints === undefined
       ? undefined
       : deps.bus.subscribeAll((sessionId, event) => pushFirePoints.observe(sessionId, event));
+  // Scheduling requests run on their own once approved: the service owns holds, the public
+  // booking links (one Uplink share and loopback page each) and cleanup; the scheduler resumes
+  // all of it from durable state after a restart.
+  let schedulingScheduler: SchedulingScheduler | undefined;
+  const schedulingPages: SchedulingPageListeners = new SchedulingPageListeners({
+    view: (id) => schedulingService.view(id),
+    book: (id, start, note) => schedulingService.book(id, start, note),
+    publicOrigin: async (id) => (await deps.eventStore.scheduling.share(id))?.publicOrigin,
+  });
+  const schedulingService: SchedulingService = new SchedulingService({
+    store: deps.eventStore,
+    googleAccessToken: deps.googleAccessToken ?? (() => Promise.resolve(undefined)),
+    edge: deps.attendeeEdge,
+    listen: schedulingPages.listen,
+    unlisten: schedulingPages.unlisten,
+    connect: async (binding, targetOrigin) => {
+      const connector = new PreviewConnector({
+        edgeUrl: binding.edgeUrl,
+        connectorToken: binding.connectorToken,
+        targetOrigin,
+        maxBodyBytes: 65_536,
+        requestTimeoutMs: 25_000,
+      });
+      await connector.connect();
+      return connector;
+    },
+    notify: async (notification) => {
+      const sessionId = notification.request.sessionId;
+      try {
+        await emitNotice({
+          eventStore: deps.eventStore,
+          bus: deps.bus,
+          sessionId,
+          text: schedulingNoticeText(notification),
+        });
+      } catch (err) {
+        app.log.warn({ err, sessionId }, 'scheduling notice failed');
+      }
+      const push = schedulingPush(notification);
+      if (push && pushRouter)
+        try {
+          await pushRouter.notify({
+            key: `scheduling:${notification.request.id}:${notification.kind}`,
+            sessionId,
+            initiatorUserId: await pushFirePoints?.initiatorOf(sessionId),
+            notification: push,
+          });
+        } catch (err) {
+          app.log.warn({ err, sessionId }, 'scheduling push failed');
+        }
+    },
+    wake: () => schedulingScheduler?.wake(),
+  });
+  registerSchedulingRoutes(app, { eventStore: deps.eventStore, service: schedulingService });
+  app.addHook('onReady', () => {
+    schedulingScheduler = startSchedulingScheduler({
+      runDue: () => schedulingService.runDue(),
+      log: app.log,
+    });
+  });
+  app.addHook('onClose', async () => {
+    schedulingScheduler?.stop();
+    schedulingService.close();
+    await schedulingPages.close();
+  });
+  const schedulingTool = createSchedulingTool({
+    store: deps.eventStore,
+    service: () => schedulingService,
+  });
   // Built here rather than in `embedded.ts` because this is where the single
   // long-lived PushSender exists: a second instance would poll Expo receipts in
   // parallel with this one, and the notifier needs delivery, not its own fleet.
@@ -6685,6 +6763,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             'External tools are unavailable in planning mode; use read-only local tools.',
           );
         }
+        if (toolName === 'verity_scheduling') {
+          await schedulingTool.authorize({ projectId, sessionId, request: input.request });
+          return;
+        }
         if (toolName === 'verity_matrix') {
           await createMatrixTool({ eventStore: deps.eventStore }).authorize({
             ...input,
@@ -6859,7 +6941,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         const service =
           toolName === 'verity_gmail'
             ? 'gmail'
-            : toolName === 'verity_google_calendar'
+            : toolName === 'verity_google_calendar' || toolName === 'verity_scheduling'
               ? 'calendar'
               : toolName === 'verity_google_contacts'
                 ? 'contacts'
@@ -6905,6 +6987,12 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       }) => {
         if (toolName === 'verity_vulnerabilities') {
           await vulnerabilityTool.authorize({ projectId, sessionId, turnId, request });
+          return true;
+        }
+        if (toolName === 'verity_scheduling') {
+          if (!schedulingHasStandingAuthorization(request)) return false;
+          // A refused read must fail as such, not turn into a card showing raw arguments.
+          await schedulingTool.authorize({ projectId, sessionId, request });
           return true;
         }
         if (toolName === 'verity_matrix') {
@@ -7045,6 +7133,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       },
       invokeTool: async (input) => {
         if (input.toolName === 'verity_vulnerabilities') return vulnerabilityTool.invoke(input);
+        if (input.toolName === 'verity_scheduling') return schedulingTool.invoke(input);
         if (input.toolName === 'verity_secret_output') {
           const session = await deps.eventStore.getSession(input.sessionId);
           if (session?.projectId !== input.projectId)
@@ -7267,13 +7356,18 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           toolName,
           request: input,
         });
+        // The card shows the stored draft itself, never the agent's description of it.
+        const scheduling =
+          toolName === 'verity_scheduling'
+            ? await schedulingTool.presentation({ projectId, sessionId, request: input })
+            : undefined;
         let answer;
         try {
           answer = await conductor.requestExternalPermission({
             sessionId,
             toolUseId: callId,
             toolName,
-            input: googleAccount ? { ...input, googleAccount } : input,
+            input: { ...input, ...(googleAccount ? { googleAccount } : {}), ...scheduling },
             channel: 'acp',
             ...((toolName === 'verity_http_request' || toolName === 'verity_secret_run') &&
             authorizationSnapshot !== undefined

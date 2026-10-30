@@ -102,6 +102,7 @@ export interface ControlPlaneDeps {
   /** Temporary public preview lifecycle. Absent keeps sharing routes disabled. */
   previewShareManager?: ServerDeps['previewShareManager'];
   attendeeEdge?: ServerDeps['attendeeEdge'];
+  googleAccessToken?: ServerDeps['googleAccessToken'];
   listenerDiscovery?: ServerDeps['listenerDiscovery'];
   localPreviewManager?: ServerDeps['localPreviewManager'];
   managedDevServerManager?: ServerDeps['managedDevServerManager'];
@@ -401,6 +402,7 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
       ? { previewSharingCapability: deps.previewSharingCapability }
       : {}),
     ...(deps.attendeeEdge !== undefined ? { attendeeEdge: deps.attendeeEdge } : {}),
+    ...(deps.googleAccessToken !== undefined ? { googleAccessToken: deps.googleAccessToken } : {}),
     ...(deps.previewShareManager !== undefined
       ? { previewShareManager: deps.previewShareManager }
       : {}),
