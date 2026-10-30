@@ -133,12 +133,14 @@ def worktree():
 
 
 def inflight(phase):
-    token = api('/secret/unlock', {'password': PASSWORD, 'deviceLabel': 'inflight proof'})['token']
+    api('/secret/unlock', {'password': PASSWORD, 'deviceLabel': 'inflight proof'})
     directory = worktree()
     run('docker', 'exec', '-d', '--user', '1000:1000', sandbox(), 'python3', '/opt/verity-boot/boot-client.py', 'inflight', phase)
     wait(lambda: (directory / f'.boot-inflight-{phase}-ready').exists(), 5)
-    if phase == 'denied':
+    if phase in ('denied', 'removed-fences'):
         run('env', 'PROJECT_EGRESS_DISPOSABLE=yes', '/usr/bin/node', '/opt/verity-fixture/boot-server.mjs', 'readmit')
+    if phase == 'removed-fences':
+        remove_fences()
     (directory / f'.boot-inflight-{phase}-finish').touch()
     result = wait(lambda: json.loads((directory / f'.boot-inflight-{phase}-result').read_text())
                   if (directory / f'.boot-inflight-{phase}-result').exists() else None, 5)
@@ -146,8 +148,8 @@ def inflight(phase):
     expected = phase != 'denied'
     assert (result['status'] == 200) == expected, result
     positive()
-    detail = api('/projects/' + descriptor()['projectId'], token=token)
-    memory = (detail.get('settings') or {}).get('memory') or ''
+    config = json.loads((ROOT / 'config.json').read_text())
+    memory = Path(config['dataRoot'], 'knowledge', descriptor()['projectId'], 'overview.md').read_text()
     assert (f'boot-inflight-{phase}' in memory) == expected, 'Actual Server memory disagrees with in-flight verdict'
     print(json.dumps(result))
 

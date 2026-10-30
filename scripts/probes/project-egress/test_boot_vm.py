@@ -177,3 +177,48 @@ class FullBundleTests(unittest.TestCase):
             Path(directory, 'broker-receipts.jsonl').write_text(''.join(json.dumps(row) + '\n' for row in broker))
             with self.assertRaisesRegex(AssertionError, 'no actual handler evidence'):
                 boot_proof.verify_bundle(directory)
+
+
+class ActualMemoryPersistenceTests(unittest.TestCase):
+    def exercise(self, phase, marker=True):
+        import contextlib
+        import io
+        import json
+        import tempfile
+        from unittest.mock import patch
+        spec = importlib.util.spec_from_file_location('boot_guest', Path(__file__).with_name('boot-guest.py'))
+        guest = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(guest)
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / 'config.json').write_text(json.dumps({'dataRoot': temp}))
+            overview = root / 'knowledge' / 'project' / 'overview.md'
+            overview.parent.mkdir(parents=True)
+            overview.write_text(f'boot-inflight-{phase}' if marker else 'other memory')
+            (root / f'.boot-inflight-{phase}-ready').touch()
+            (root / f'.boot-inflight-{phase}-result').write_text(json.dumps({
+                'started_ns': 1, 'finished_ns': 2, 'status': 200}))
+            calls = []
+            def run(*args):
+                calls.append(args)
+            def remove():
+                self.assertEqual(calls[-1][-1], 'readmit')
+                self.assertFalse((root / f'.boot-inflight-{phase}-finish').exists())
+                calls.append(('remove-fences',))
+            with patch.object(guest, 'ROOT', root), patch.object(guest, 'worktree', return_value=root), \
+                    patch.object(guest, 'sandbox', return_value='sandbox'), \
+                    patch.object(guest, 'descriptor', return_value={'projectId': 'project'}), \
+                    patch.object(guest, 'api', return_value={'token': 'test'}), \
+                    patch.object(guest, 'run', side_effect=run), patch.object(guest, 'positive'), \
+                    patch.object(guest, 'remove_fences', side_effect=remove), contextlib.redirect_stdout(io.StringIO()):
+                guest.inflight(phase)
+            return calls
+
+    def test_requires_committed_canonical_overview_marker(self):
+        self.exercise('positive')
+        with self.assertRaisesRegex(AssertionError, 'Actual Server memory'):
+            self.exercise('positive', marker=False)
+
+    def test_removed_fence_control_repeats_readmission_before_completion(self):
+        calls = self.exercise('removed-fences')
+        self.assertEqual(calls[-1], ('remove-fences',))
