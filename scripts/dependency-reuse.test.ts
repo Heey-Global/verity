@@ -193,6 +193,23 @@ describe('shared dependency reuse', () => {
     symlinkSync('../packages/source', join(f.worktree, 'node_modules', 'source'));
     expect(f.run('status').status).toBe(0);
   });
+  it('accepts declared local npm links outside the checkout', () => {
+    const f = fixture();
+    const target = resolve(f.worktree, '../shared');
+    mkdirSync(target);
+    writeFileSync(join(target, 'package.json'), '{"name":"shared"}');
+    writeFileSync(
+      join(f.worktree, 'package-lock.json'),
+      JSON.stringify({
+        lockfileVersion: 3,
+        packages: { 'node_modules/shared': { link: true, resolved: '../shared' } },
+      }),
+    );
+    mkdirSync(join(f.worktree, 'node_modules'));
+    writeFileSync(join(f.worktree, 'node_modules', '.package-lock.json'), '{"packages":{}}');
+    symlinkSync(target, join(f.worktree, 'node_modules', 'shared'));
+    expect(f.run('status').status).toBe(0);
+  });
   it('ships identical executable helpers in both seed trees', () => {
     expect(readFileSync(helper, 'utf8')).toBe(
       readFileSync('features/verity-sandbox-toolkit/agent-seed/bin/verity-dependencies', 'utf8'),

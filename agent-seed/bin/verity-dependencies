@@ -82,7 +82,6 @@ function installed(root) {
         if (typeof wanted.resolved !== 'string') return false;
         const target = resolve(root, wanted.resolved);
         return (
-          target.startsWith(`${root}/`) &&
           lstatSync(join(root, path)).isSymbolicLink() &&
           realpathSync(join(root, path)) === realpathSync(target) &&
           existsSync(join(target, 'package.json'))
