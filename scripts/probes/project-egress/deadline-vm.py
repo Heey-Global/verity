@@ -35,6 +35,8 @@ def verify(directory):
             assert case['after']['accepted'] == case['before']['accepted'], 'Kernel admitted post-deadline traffic'
         assert case['after']['last_accepted_boot_ns'] < case['lease']['deadline_ns']
         assert case['positive']['accepted'] > case['baseline']['accepted'], 'Missing kernel positive control'
+        if case['name'].startswith('wall-'):
+            assert case['wall_positive_after']['accepted'] > case['wall_positive_before']['accepted'], 'No positive through absolute nft guard'
         if case['name'] == 'suspend':
             a, b = case['clocks_before'], case['after']['clocks']
             assert (b['boot_ns'] - a['boot_ns']) - (b['mono_ns'] - a['mono_ns']) >= 2_000_000_000, 'No actual guest suspend'
@@ -47,7 +49,9 @@ def verify(directory):
     assert beats[0] <= result['started_mono_ns'] and beats[-1] >= result['finished_mono_ns']
     assert max(b - a for a, b in zip(beats, beats[1:])) <= 2_000_000_000
     payloads = [base64.b64decode(r['data']).decode() for r in records if r['kind'] == 'received']
-    assert set(payloads) == {f'positive-{c["name"]}' for c in result['cases']}, 'Unexpected external payload'
+    expected_payloads = {f'positive-{c["name"]}' for c in result['cases']}
+    expected_payloads.update(f'wall-live-{c["name"]}' for c in result['cases'] if c['name'].startswith('wall-'))
+    assert set(payloads) == expected_payloads, 'Unexpected or absent external payload'
     for case in result['cases']:
         assert f'positive-{case["name"]}' in payloads
         assert f'expired-{case["name"]}' not in payloads
@@ -120,7 +124,10 @@ def main():
                 # An unexpired BOOTTIME lease isolates nft's wall-clock guard.
                 lease = call('arm 10000')
                 real = positive['clocks']['real_ns'] // 1_000_000_000
-                call('nft ' + str(real + 3))
+                call('nft ' + str(real + 5))
+                extra['wall_positive_before'] = call('stats')
+                send('wall-live-' + name)
+                extra['wall_positive_after'] = call('stats')
                 offset = 10 if name == 'wall-forward' else -10
                 vm.ssh(f'sudo date -u -s "@{real + offset}"')
                 if name == 'wall-backward':

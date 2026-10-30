@@ -20,6 +20,7 @@ def evidence():
                                 'clocks': {'boot_ns': 5_000_000_001, 'mono_ns': 1}},
                       'lease': {'deadline_ns': 2, 'committed': {'boot_ns': 3}},
                       'clocks_before': {'boot_ns': 1, 'mono_ns': 1},
+                      'wall_positive_before': {'accepted': 0}, 'wall_positive_after': {'accepted': 1},
                       'outer_pause_ns': 4_000_000_000, 'wall_expired_before': 0, 'wall_expired_after': 1})
     return {'complete': True, 'cases': cases, 'started_mono_ns': 1, 'finished_mono_ns': 2}
 
@@ -31,6 +32,7 @@ class DeadlineVerifierTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.proof = evidence()
         self.payloads = [f'positive-{c["name"]}' for c in self.proof['cases']]
+        self.payloads += [f'wall-live-{c["name"]}' for c in self.proof['cases'] if c['name'].startswith('wall-')]
 
     def verify(self):
         (self.root / 'deadline-proof.json').write_text(json.dumps(self.proof))
@@ -67,6 +69,11 @@ class DeadlineVerifierTests(unittest.TestCase):
     def test_rejects_absent_absolute_time_denial(self):
         case = next(c for c in self.proof['cases'] if c['name'] == 'wall-forward')
         case['wall_expired_after'] = 0
+        with self.assertRaises(AssertionError):
+            self.verify()
+
+    def test_rejects_missing_wall_positive(self):
+        self.proof['cases'][-1]['wall_positive_after']['accepted'] = 0
         with self.assertRaises(AssertionError):
             self.verify()
 
