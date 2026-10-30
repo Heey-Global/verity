@@ -2,6 +2,9 @@
 import { build } from 'esbuild';
 import { cp, mkdir, readFile, realpath, symlink, writeFile } from 'node:fs/promises';
 import { dirname, join, relative, resolve } from 'node:path';
+import { isBuiltin } from 'node:module';
+import { spawnSync } from 'node:child_process';
+import assert from 'node:assert/strict';
 
 const root = resolve('.');
 const output = resolve(process.argv[2]);
@@ -55,7 +58,26 @@ await build({
   entryPoints: ['scripts/probes/project-egress/boot-server.ts'],
   outfile: join(output, 'boot-server.mjs'),
   bundle: true,
-  packages: 'external',
+  plugins: [
+    {
+      name: 'preserve-package-resolution',
+      setup(bundler) {
+        bundler.onResolve({ filter: /^[^./]/ }, async (args) => {
+          if (isBuiltin(args.path) || args.pluginData?.resolved) return;
+          const result = await bundler.resolve(args.path, {
+            resolveDir: args.resolveDir,
+            kind: args.kind,
+            pluginData: { resolved: true },
+          });
+          if (result.errors.length) return { errors: result.errors };
+          if (!result.path.startsWith(`${root}/`)) throw new Error('Import outside checkout');
+          // The entry bundle moves to the guest root; bare imports would lose
+          // the source package's nested dependency lookup and version selection.
+          return { path: `./${relative(root, result.path)}`, external: true };
+        });
+      },
+    },
+  ],
   platform: 'node',
   format: 'esm',
   target: 'node26',
@@ -63,6 +85,22 @@ await build({
     js: "import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);",
   },
 });
+// Load all eager imports without allowing ancestor node_modules to hide missing
+// guest assets. Only the image's optional version stamps live outside the bundle.
+const smoke = spawnSync(
+  process.execPath,
+  [
+    '--permission',
+    `--allow-fs-read=${output}`,
+    '--allow-fs-read=/app/.verity-server-version',
+    '--allow-fs-read=/app/.verity-schema-forward-max',
+    join(output, 'boot-server.mjs'),
+  ],
+  { encoding: 'utf8', env: { ...process.env, PROJECT_EGRESS_DISPOSABLE: '' } },
+);
+assert.equal(smoke.status, 1, smoke.stderr);
+assert.match(smoke.stderr, /AssertionError \[ERR_ASSERTION\]/u);
+assert.match(smoke.stderr, /'' !== 'yes'/u, smoke.stderr);
 await cp('agent-seed', join(output, 'agent-seed'), { recursive: true });
 await cp('scripts/probes/project-egress', join(output, 'probe'), {
   recursive: true,
