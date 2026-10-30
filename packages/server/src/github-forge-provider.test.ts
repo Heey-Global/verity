@@ -198,16 +198,26 @@ describe('repository supervision discovery', () => {
         if (url.includes('/status?')) return json({ statuses: [] });
         return json({ default_branch: 'main' });
       });
-      const forge = provider(fetch);
-      const service = forge.repositoryPrService!(project);
-      expect((await service.prStatusForBranch('feature'))?.pipeline).toBe('success');
+      const forge = provider(fetch, async () => 'https://github.com/acme/app.git\n');
+      const services = [
+        forge.repositoryPrService!(project),
+        forge.prServiceFor('/sessions/one'),
+        forge.prServiceFor('/sessions/two'),
+      ];
+      for (const service of services)
+        expect((await service.prStatusForBranch('feature'))?.pipeline).toBe('success');
 
       await expect(forge.discover!(project, 1)).rejects.toThrow(String(status));
       await expect(forge.discover!(project, 1)).rejects.toThrow('backing off');
 
       // A failing Actions endpoint must not erase readable checks and mergeability
       // in the PR bar, even when discovery keeps retrying in the background.
-      expect(await service.prStatusForBranch('feature')).toMatchObject({
+      for (const service of services)
+        expect(await service.prStatusForBranch('feature')).toMatchObject({
+          pipeline: 'success',
+          mergeable: true,
+        });
+      expect(await forge.prServiceFor('/sessions/new').prStatusForBranch('feature')).toMatchObject({
         pipeline: 'success',
         mergeable: true,
       });
