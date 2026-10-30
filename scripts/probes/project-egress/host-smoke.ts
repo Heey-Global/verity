@@ -1,3 +1,4 @@
+import { inspectEgressTransport } from '../../../packages/server/src/project-egress-transport.js';
 import {
   createDockerProjectRelayStarter,
   projectRelayContainerName,
@@ -12,7 +13,7 @@ import { ProjectEgressLifecycle } from '../../../packages/server/src/project-egr
 /** Deny-before-first-instruction fixture; no production daemon or credentials. */
 import assert from 'node:assert/strict';
 import { createServer, request, type Server } from 'node:http';
-import { mkdtemp, writeFile, rm, mkdir, chmod, chown } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile, rm, mkdir, chmod, chown } from 'node:fs/promises';
 import {
   createServer as createNetServer,
   createConnection,
@@ -45,8 +46,34 @@ const store = await openProjectEgressHostStore(directory);
 let relayPolicy: EgressRelayPolicy | undefined;
 const starts: string[] = [];
 const dependencies = {
+  inspectTransport: (
+    binding: Parameters<typeof inspectEgressTransport>[0],
+    ids: Parameters<typeof inspectEgressTransport>[1],
+  ) =>
+    inspectEgressTransport(binding, ids, relayPolicy?.codexSubpath !== undefined).catch(
+      async (error: unknown) => {
+        process.stderr.write(`Transport inspection failed: ${String(error)}\n`);
+        await writeFile('/evidence/transport-inspection-error.txt', String(error));
+        throw error;
+      },
+    ),
   save: (state: Parameters<typeof store.save>[0]) => store.save(state),
-  apply: applyProjectFenceRules,
+  apply: async (script: string) => {
+    try {
+      await applyProjectFenceRules(script);
+    } catch (error) {
+      process.stderr.write(`Kernel transaction failed: ${String(error)}\n`);
+      await writeFile('/evidence/transport-kernel-error.txt', String(error));
+      await writeFile('/evidence/transport-kernel-error.nft', script);
+      await writeFile(
+        '/evidence/transport-kernel-check.txt',
+        await exec('/usr/sbin/nft', ['--check', '-f', '/evidence/transport-kernel-error.nft'])
+          .then((reply) => reply.stdout)
+          .catch(String),
+      );
+      throw error;
+    }
+  },
   inspectNetwork: inspectEgressHostNetwork,
   inspectContainer: async (
     binding: Parameters<typeof inspectEgressHostContainer>[0],
@@ -111,10 +138,11 @@ try {
       '--opt',
       'com.docker.network.bridge.gateway_mode_ipv4=nat-unprotected',
       '--opt',
+      'com.docker.network.bridge.gateway_mode_ipv6=nat-unprotected',
+      '--opt',
       'com.docker.network.bridge.enable_ip_masquerade=false',
       name!,
     );
-  const receiver = `import socket\ns=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)\ns.bind(('0.0.0.0',8080))\nprint('ready',flush=True)\nwhile True:\n d,a=s.recvfrom(1024)\n print(d.decode(),flush=True)\n`;
   const emitter = `import socket,time\ns=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)\nprint('sending',flush=True)\nwhile True:\n s.sendto(b'host-startup-marker',('172.30.105.2',8080))\n time.sleep(0.01)\n`;
   await docker(
     'run',
@@ -125,6 +153,10 @@ try {
     'veh-receiver',
     '--ip',
     '172.30.105.2',
+    '--ip6',
+    'fd42:feed:5::2',
+    '--mount',
+    'type=bind,src=/probe,dst=/probe,readonly',
     '--memory',
     '128m',
     '--pids-limit',
@@ -137,8 +169,7 @@ try {
     'python3',
     'project-egress-fixture:local',
     '-u',
-    '-c',
-    receiver,
+    '/probe/transport-receiver.py',
   );
   for (let i = 0; i < 50 && !(await docker('logs', 'veh-receiver')).includes('ready'); i++)
     await delay(100);
@@ -163,7 +194,11 @@ try {
       call.on('error', reject);
       call.end(JSON.stringify(body));
     });
-  const command = createProjectEgressHostClient({ socketPath: `${directory}/control.sock`, token });
+  const command = createProjectEgressHostClient({
+    socketPath: `${directory}/control.sock`,
+    token,
+    timeoutMs: 30000,
+  });
   const lifecycle = new ProjectEgressLifecycle(
     command,
     createDockerClient({ baseUrl: 'unix:///var/run/docker.sock' }),
@@ -321,6 +356,11 @@ try {
     codexSubpath: 'codex',
   };
   let brokerRequests = 0;
+  const receipts: Record<string, number[]> = {
+    'broker.sock': [],
+    'claude.sock': [],
+    'codex.sock': [],
+  };
   const sockets = relaySocketMounts(binding, relayPolicy);
   for (const item of sockets) {
     const path = `${dataRoot}/${item.subpath}`;
@@ -329,11 +369,21 @@ try {
     await chmod(path, 0o710);
     const listener =
       item.socket === 'broker.sock'
-        ? createServer((_request, response) => {
+        ? createServer((request, response) => {
             brokerRequests++;
-            response.end('project-bound-fixture');
+            if (request.url === '/internal/mcp-proxy') {
+              response.writeHead(200, { 'content-type': 'text/event-stream' });
+              const timer = setInterval(() => response.write('transport-stream-marker\n'), 50);
+              response.once('close', () => clearInterval(timer));
+            } else response.end('project-bound-fixture');
           })
-        : createNetServer((socket) => socket.once('data', () => socket.end(item.socket)));
+        : createNetServer((socket) => {
+            socket.on('error', () => undefined);
+            socket.on('data', (data) => {
+              if (data.includes('transport-stream-marker')) receipts[item.socket]!.push(Date.now());
+              else socket.write(item.socket);
+            });
+          });
     socketServers.push(listener);
     await new Promise<void>((resolve) => listener.listen(`${path}/${item.socket}`, resolve));
     await chown(`${path}/${item.socket}`, 0, 65532);
@@ -525,8 +575,202 @@ try {
   assert.ok((await docker('logs', udsId)).includes('sandbox-uds-open-denied'));
   await lifecycle.retire(udsIdentity);
   results.push('Sandbox can see an injected broker socket but cannot open it');
+  const relayAddress = await lifecycle.connect(identity);
+  const client = async (mode: string, address = relayAddress, port?: number) =>
+    docker(
+      'exec',
+      '--user',
+      '1000:1000',
+      containerId,
+      'python3',
+      '/probe/transport-client.py',
+      address,
+      mode,
+      ...(port === undefined ? [] : [String(port)]),
+    );
+  assert.ok((await client('positive')).includes('transport-positive'));
+  const rawSocket =
+    'import socket; s=socket.socket(socket.AF_PACKET,socket.SOCK_RAW,socket.htons(0x800)); s.close()';
+  await exec('python3', ['-c', rawSocket]);
+  await assert.rejects(
+    docker('exec', '--user', '1000:1000', containerId, 'python3', '-c', rawSocket),
+  );
+  results.push(
+    'project process cannot forge Ethernet/IP frames; host raw-socket positive control succeeds',
+  );
+  const foreignIdentity = { projectId: 'foreign-project', containerGeneration: 'gen1' };
+  const foreignBinding = await lifecycle.create(foreignIdentity);
+  extraNetworks.push(foreignBinding.networkName);
+  const foreignId = (
+    await docker(
+      'create',
+      '--runtime',
+      'runsc-project',
+      '--network',
+      foreignBinding.networkName,
+      '--restart',
+      'no',
+      '--cap-drop',
+      'ALL',
+      '--security-opt',
+      'no-new-privileges=true',
+      '--memory',
+      '128m',
+      '--pids-limit',
+      '64',
+      '--user',
+      '65532:65532',
+      '--mount',
+      'type=bind,src=/probe,dst=/probe,readonly',
+      '--entrypoint',
+      'python3',
+      'project-egress-fixture:local',
+      '-u',
+      '/probe/transport-receiver.py',
+    )
+  ).trim();
+  extraContainers.push(foreignId);
+  await lifecycle.start(foreignIdentity, 'sandbox', foreignId);
+  for (let i = 0; i < 50 && !(await docker('logs', foreignId)).includes('ready'); i++)
+    await delay(100);
+  assert.ok((await docker('logs', foreignId)).includes('ready'));
+  const foreignAddress = (
+    await docker(
+      'inspect',
+      '--format',
+      `{{(index .NetworkSettings.Networks "${foreignBinding.networkName}").IPAddress}}`,
+      foreignId,
+    )
+  ).trim();
+  await docker(
+    'exec',
+    foreignId,
+    'python3',
+    '-c',
+    "import socket; s=socket.create_connection(('127.0.0.1',8080),timeout=2);s.sendall(b'foreign-positive');assert s.recv(100)==b'external-positive';s.close()",
+  );
+  assert.ok((await client('negative', foreignAddress, 8080)).includes('transport-denied'));
+  assert.ok((await docker('logs', foreignId)).includes('foreign-positive'));
+  await lifecycle.retire(foreignIdentity);
+  results.push(
+    'foreign registered generation is unreachable despite a successful receiver control',
+  );
+
+  for (const port of [53])
+    assert.ok((await client('negative', relayAddress, port)).includes('transport-denied'));
+  await docker(
+    'exec',
+    '--user',
+    '1000:1000',
+    containerId,
+    'python3',
+    '/probe/transport-client.py',
+    relayAddress,
+    'external',
+    'negative',
+  );
+  assert.ok(!(await docker('logs', 'veh-receiver')).includes('external-'));
+  results.push('project UID reaches only the bound broker/model TCP ports over the actual bridge');
+  const refreshBrokerReceipts = async () => {
+    const raw = await readFile(`${worktree}/broker-receipts`, 'utf8').catch(() => '');
+    receipts['broker.sock'] = raw.trim().split('\n').filter(Boolean).map(Number);
+  };
+  const stream = async (phase: string) => {
+    await writeFile(`${worktree}/broker-receipts`, '');
+    await chown(`${worktree}/broker-receipts`, 1000, 1000);
+    for (const values of Object.values(receipts)) values.length = 0;
+    await docker(
+      'exec',
+      '-d',
+      '--user',
+      '1000:1000',
+      containerId,
+      'python3',
+      '/probe/transport-client.py',
+      relayAddress,
+      'stream',
+      phase,
+    );
+    for (let i = 0; i < 80 && !Object.values(receipts).every((values) => values.length >= 2); i++) {
+      await delay(100);
+      await refreshBrokerReceipts();
+    }
+    assert.ok(
+      Object.values(receipts).every((values) => values.length >= 2),
+      'every retained transport must be observed before revocation',
+    );
+  };
+  const revokeAndMeasure = async (revoke: () => Promise<unknown>, phase: string) => {
+    await stream(phase);
+    const begin = Date.now();
+    await revoke();
+    await delay(2100);
+    await refreshBrokerReceipts();
+    const closure = Object.fromEntries(
+      Object.entries(receipts).map(([name, values]) => [
+        name,
+        Math.max(0, values.at(-1)! - begin) / 1000,
+      ]),
+    );
+    assert.ok(
+      Object.values(closure).every((seconds) => seconds <= 2),
+      JSON.stringify(closure),
+    );
+    await writeFile(`/evidence/transport-closure-${phase}.json`, JSON.stringify(closure));
+  };
+  const verifyNoRevival = async (phase: string) => {
+    await refreshBrokerReceipts();
+    const before = Object.fromEntries(
+      Object.entries(receipts).map(([name, values]) => [name, values.length]),
+    );
+    await lifecycle.connect(identity);
+    assert.ok((await client('positive')).includes('transport-positive'));
+    await delay(2500);
+    await refreshBrokerReceipts();
+    const after = Object.fromEntries(
+      Object.entries(receipts).map(([name, values]) => [name, values.length]),
+    );
+    assert.deepEqual(
+      after,
+      before,
+      'revoked streams must not revive when fresh connections are admitted',
+    );
+    const heartbeat = Number(await readFile(`${worktree}/stream-alive-${phase}`, 'utf8'));
+    assert.ok(
+      Date.now() - heartbeat < 1000,
+      'original stream client must still be attempting traffic',
+    );
+    await writeFile(
+      `/evidence/transport-no-revival-${phase}.json`,
+      JSON.stringify({ before, after, heartbeat }),
+    );
+  };
+  await revokeAndMeasure(() => lifecycle.prepare(identity), 'prepare');
+  assert.ok((await client('negative', relayAddress, 8080)).includes('transport-denied'));
+  await verifyNoRevival('prepare');
   await docker('stop', '--time', '1', relayId);
   await startRelay({ ...context, resumeExisting: true });
+  await probeRelay(relayId);
+  await writeFile(
+    '/evidence/transport-restart-endpoints.json',
+    JSON.stringify(
+      await inspectEgressTransport(binding, { sandbox: containerId, relay: relayId }, true),
+    ),
+  );
+  // Docker assigns a new MAC on restart. Keep the exact host binding while
+  // netstack expires its cached neighbour; a stale-MAC packet must stay denied.
+  const restartBegin = Date.now();
+  let restartReply = '';
+  for (let attempt = 0; attempt < 20; attempt++) {
+    restartReply = await client('positive').catch(String);
+    if (restartReply.includes('transport-positive')) break;
+    await delay(250);
+  }
+  assert.ok(restartReply.includes('transport-positive'), restartReply);
+  await writeFile(
+    '/evidence/transport-restart-ready.json',
+    JSON.stringify({ elapsedMs: Date.now() - restartBegin }),
+  );
   results.push('actual relay forwards broker and model sockets and survives mediated restart');
 
   await delay(2000);
@@ -541,14 +785,16 @@ try {
   );
   server = undefined;
   const recovered = new ProjectEgressHost(await store.load(), dependencies);
-  await recovered.restore();
+  await revokeAndMeasure(() => recovered.restore(), 'controller-restore');
   await recovered.revalidate();
   server = await listenProjectEgressHost({ directory, token, controller: recovered });
   await delay(500);
   assert.ok(!(await docker('logs', 'veh-receiver')).includes('host-startup-marker'));
   assert.deepEqual(await lifecycle.current(binding.projectId), binding);
-  results.push('registry recovery retains denial');
-  await lifecycle.retire(identity);
+  assert.ok((await client('negative', relayAddress, 8080)).includes('transport-denied'));
+  await verifyNoRevival('controller-restore');
+  results.push('registry recovery denies old transports and requires explicit revalidation');
+  await revokeAndMeasure(() => lifecycle.retire(identity), 'retire');
   await assert.rejects(lifecycle.start(identity, 'sandbox', containerId));
   results.push('retired generation cannot restart');
   const nextIdentity = { ...identity, containerGeneration: 'gen2' };
@@ -569,6 +815,58 @@ try {
     `delete table inet ${table}\ndelete table bridge ${table}\ndelete table inet verity_egress_boot\ndelete table bridge verity_egress_boot\n`,
   );
   await docker('start', containerId);
+  await exec('ip6tables', [
+    '-I',
+    'FORWARD',
+    '1',
+    '-i',
+    bridge,
+    '-o',
+    'veh-receiver',
+    '-j',
+    'ACCEPT',
+  ]);
+  await exec('ip6tables', [
+    '-I',
+    'FORWARD',
+    '1',
+    '-i',
+    'veh-receiver',
+    '-o',
+    bridge,
+    '-j',
+    'ACCEPT',
+  ]);
+  await exec('iptables', [
+    '-I',
+    'FORWARD',
+    '1',
+    '-i',
+    'veh-receiver',
+    '-o',
+    bridge,
+    '-j',
+    'ACCEPT',
+  ]);
+  await docker(
+    'exec',
+    '--user',
+    '1000:1000',
+    containerId,
+    'python3',
+    '/probe/transport-client.py',
+    relayAddress,
+    'external',
+    'positive',
+  );
+  const externalLog = await docker('logs', 'veh-receiver');
+  for (const family of [2, 10])
+    for (const suffix of ['udp-53', 'udp-8080', 'tcp-own-credential'])
+      assert.ok(
+        externalLog.includes(`external-${family}-${suffix}`),
+        `missing independent positive control ${family}/${suffix}`,
+      );
+  results.push('removed-fence controls prove direct credential and DNS/IPv6 receiver paths');
   let receiverLog = '';
   for (
     let i = 0;
@@ -591,6 +889,18 @@ try {
     JSON.stringify({ complete: true, results }, null, 2),
   );
 } catch (error) {
+  await writeFile(
+    '/evidence/host-failure-rules.txt',
+    await exec('/usr/sbin/nft', ['list', 'ruleset'])
+      .then((r) => r.stdout)
+      .catch(String),
+  );
+  await writeFile(
+    '/evidence/host-failure-links.json',
+    await exec('/sbin/ip', ['-j', 'link', 'show'])
+      .then((r) => r.stdout)
+      .catch(String),
+  );
   await writeFile(
     '/evidence/host-result.json',
     JSON.stringify({ complete: false, results, error: String(error) }, null, 2),

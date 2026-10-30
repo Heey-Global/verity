@@ -84,13 +84,19 @@ export function createProjectEgressHostClient(options: {
                   command.operation === 'register'
                     ? command.binding.generation
                     : command.generation;
-                const state =
+                const expectedStates =
                   command.operation === 'start'
-                    ? 'started-denied'
-                    : command.operation === 'retire'
-                      ? 'retired'
-                      : 'denied';
-                if (result.state !== state || result.generation !== generation)
+                    ? ['started-denied', 'started-connected']
+                    : command.operation === 'connect'
+                      ? ['connected']
+                      : command.operation === 'retire'
+                        ? ['retired']
+                        : ['denied'];
+                if (
+                  !expectedStates.includes(result.state) ||
+                  result.state === 'current' ||
+                  result.generation !== generation
+                )
                   throw new Error('Mismatched host acknowledgement');
               }
               clearTimeout(timer);
