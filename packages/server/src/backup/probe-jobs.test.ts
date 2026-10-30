@@ -142,9 +142,13 @@ it('keeps the exclusive slot while cancellation cleanup is unfinished', async ()
 });
 it('bounds execution, reports a safe timeout and clears resources before allowing another job', async () => {
   const f = await fixture();
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  const executing = deferred();
   try {
     const manager = await BackupProbeJobs.open({ ...f.deps, timeoutMs: 20 });
     f.execute.mockImplementationOnce(async (_job, _key, signal) => {
+      signal.throwIfAborted();
+      executing.resolve();
       await new Promise<void>((resolve) =>
         signal.addEventListener('abort', () => resolve(), { once: true }),
       );
@@ -152,11 +156,16 @@ it('bounds execution, reports a safe timeout and clears resources before allowin
       return f.result;
     });
     await manager.start('secret');
+    await executing.promise;
+    // The deadline starts before the durable write; filesystem latency must not
+    // make the fake worker miss an abort dispatched before listener registration.
+    await vi.advanceTimersByTimeAsync(20);
     await f.idle();
     expect(manager.status()).toMatchObject({ status: 'failed', error: 'timed-out' });
     expect(f.cleanup).toHaveBeenCalledOnce();
     expect(f.verified).not.toHaveBeenCalled();
   } finally {
+    vi.useRealTimers();
     await f.remove();
   }
 });

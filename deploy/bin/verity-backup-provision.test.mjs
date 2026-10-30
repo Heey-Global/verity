@@ -4,9 +4,12 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync
 import { createServer } from 'node:net';
 import { join, resolve } from 'node:path';
 import { test } from 'node:test';
-const supported = spawnSync('unshare', ['-rm', 'true']).status === 0;
+const namespace = spawnSync('unshare', ['-rm', 'true'], { encoding: 'utf8' });
+const supported = namespace.status === 0;
 if (process.env.CI && !supported)
-  throw new Error('Backup provisioning tests require isolated user and mount namespaces');
+  throw new Error(
+    `Backup provisioning tests require isolated user and mount namespaces: ${namespace.stderr}`,
+  );
 const script = resolve('deploy/host/verity-backup-provision');
 const image = `ghcr.io/heey-global/verity/verity-server@sha256:${'a'.repeat(64)}`;
 test(

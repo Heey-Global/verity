@@ -2422,6 +2422,11 @@ describe('GitHub-hosted runner boundary', () => {
     const job = ci.jobs.installer;
     expect(job?.['runs-on']).toBe('ubuntu-26.04');
     expect(job?.env?.VERITY_INSTALLER_SANDBOX).toContain('--security-opt seccomp=unconfined');
+    expect(job?.env?.VERITY_INSTALLER_SANDBOX).toContain('--security-opt apparmor=unconfined');
+    expect(job?.env?.VERITY_INSTALLER_SANDBOX).toContain('--cap-drop ALL --network none');
+    expect(
+      job?.steps?.some((step) => step.run?.includes("unshare -rm sh -c 'mount --bind /tmp /tmp'")),
+    ).toBe(true);
     expect(
       job?.steps?.some((step) =>
         step.run?.includes('docker build --file deploy/installer-ci.Dockerfile'),
