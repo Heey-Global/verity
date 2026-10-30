@@ -66,6 +66,12 @@ function fixture() {
 const commandOptions = { env: process.env, timeout: 5000, maxBuffer: 1024 * 1024 };
 
 describe('build storage admission', () => {
+  it('does not mistake an inaccessible reservation path for an absent directory', () => {
+    const f = fixture();
+    const parent = join(f.directory, 'not-a-directory');
+    writeFileSync(parent, 'unreadable inventory');
+    expect(new BuildStorage(join(parent, 'attempts')).retirementInventoryEmpty()).toBe(false);
+  });
   it('requires an independent empty disk inventory for native retirement', () => {
     const f = fixture();
     const manager = f.manager();

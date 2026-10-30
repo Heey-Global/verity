@@ -68,3 +68,13 @@ it('allows another independent pass when the host never acknowledges a request',
   await vi.waitFor(async () => expect((await service.status()).state).toBe('completed'));
   expect((await service.status()).nativePending).toBe(true);
 });
+
+it('uses the actual native request time when joining an earlier scheduled pass', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'storage-action-')); roots.push(directory);
+  const requestedAt = new Date(Date.now() - 2000).toISOString();
+  writeFileSync(join(directory, 'native-retirement.json'), JSON.stringify({ version: 1, observedAt: new Date(Date.now() - 1000).toISOString(), path: '/var/lib/verity-buildkit/runc-native', dryRun: false, eligible: true, state: 'completed', allocatedBytes: 4096, overlayAllocatedBytes: null, reclaimableBytes: null, blockers: [] }));
+  const service = new StorageReclamation({ directory, collect: async () => ({ ...report, nativeRequestedAt: requestedAt }), worktrees: () => undefined });
+  await service.start();
+  await vi.waitFor(async () => expect((await service.status()).state).toBe('completed'));
+  expect((await service.status()).nativePending).toBe(false);
+});

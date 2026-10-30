@@ -7,6 +7,7 @@ import type { SessionStorageReport } from './session-storage.js';
 
 export class StorageReclamation {
   private flight: Promise<void> | undefined;
+  private nativeRequestedAt: string | null = null;
   private value: StorageReclamationAction = {
     supported: true, state: 'idle', startedAt: null, completedAt: null, error: null,
     result: null, nativePending: false, nativeBuildkit: null,
@@ -16,14 +17,13 @@ export class StorageReclamation {
     worktrees: () => SessionStorageReport | undefined;
     directory?: string | undefined;
     dataRoot?: string | undefined;
-    nativeRequested?: () => boolean;
   }) {}
   async status(): Promise<StorageReclamationAction> {
     let nativeBuildkit = null;
     try {
       nativeBuildkit = nativeRetirementSchema.parse(JSON.parse(await readFile(join(this.deps.directory ?? '/run/verity-buildkit', 'native-retirement.json'), 'utf8')));
     } catch { /* Missing host receipts remain unknown. */ }
-    this.value.nativePending = this.value.nativePending && (!nativeBuildkit || Date.parse(nativeBuildkit.observedAt) < Date.parse(this.value.startedAt!));
+    this.value.nativePending = this.value.nativePending && (!nativeBuildkit || Date.parse(nativeBuildkit.observedAt) < Date.parse(this.nativeRequestedAt!));
     return { ...this.value, nativeBuildkit };
   }
   async start(): Promise<void> {
@@ -48,9 +48,12 @@ export class StorageReclamation {
     blockers.push(...(worktrees?.blockers.map(e => e.reason) ?? []));
     let nativePending = false;
     try {
-      if (this.deps.nativeRequested) {
-        if (!this.deps.nativeRequested()) throw new Error('Native host request failed');
-      } else await requestNativeReclamation(this.deps.directory);
+      // A manual request may join an older scheduled pass. Correlate against
+      // that pass's actual host request, not the later UI action start time.
+      this.nativeRequestedAt = report.nativeRequestedAt === undefined
+        ? await requestNativeReclamation(this.deps.directory)
+        : report.nativeRequestedAt;
+      if (this.nativeRequestedAt === null) throw new Error('Native host request failed');
       nativePending = true;
     } catch { blockers.push('Native BuildKit host maintenance is unavailable; install the matching host component.'); }
     this.value = { ...this.value, state: 'completed', completedAt: new Date().toISOString(), nativePending,
@@ -66,10 +69,12 @@ export class StorageReclamation {
 }
 
 /** A fixed request file wakes the root-owned path unit; its contents are never commands. */
-export async function requestNativeReclamation(directory = '/run/verity-buildkit'): Promise<void> {
+export async function requestNativeReclamation(directory = '/run/verity-buildkit'): Promise<string> {
   const evidence = join(directory, 'reclamation-evidence');
   if (await realpath(evidence) !== evidence) throw new Error('Unsafe evidence directory');
   const temp = join(evidence, `request-${randomUUID()}.tmp`);
-  await writeFile(temp, JSON.stringify({ version: 1, requestedAt: new Date().toISOString() }), { flag: 'wx', mode: 0o600 });
+  const requestedAt = new Date().toISOString();
+  await writeFile(temp, JSON.stringify({ version: 1, requestedAt }), { flag: 'wx', mode: 0o600 });
   await rename(temp, join(evidence, 'request.json'));
+  return requestedAt;
 }

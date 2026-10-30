@@ -221,6 +221,7 @@ export interface DockerGcDeps {
 
 export interface DockerGcReport {
   observedAt: string;
+  nativeRequestedAt?: string | null;
   containersRemoved: string[];
   retainedContainers?: Array<{ name: string; reason: string }>;
   stoppedContainerPins: { images: number; containers: number; estimatedBytes: number };

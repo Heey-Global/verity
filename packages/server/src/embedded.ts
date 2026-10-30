@@ -6127,7 +6127,7 @@ export async function buildEmbeddedServer(
   // the disk is full; `docker system prune` does not reach either (the image tags
   // are tagged, not dangling, and prune skips volumes entirely).
   if (projectDocker !== undefined && config.dockerGc !== false) {
-    let nativeMaintenanceRequested = false;
+    let nativeMaintenanceRequested: string | null = null;
     const dockerGc = startDockerGcScheduler({
       docker: projectDocker,
       log: app.log,
@@ -6142,11 +6142,12 @@ export async function buildEmbeddedServer(
       // been created yet — neither the listing nor elapsed time can see that.
       heldRelays: () => projectRelayLifecycle?.heldRelays() ?? [],
       beforeSweep: async () => {
-        nativeMaintenanceRequested = false;
-        await requestNativeReclamation().then(() => { nativeMaintenanceRequested = true; }).catch(() => undefined);
+        nativeMaintenanceRequested = null;
+        await requestNativeReclamation().then((requestedAt) => { nativeMaintenanceRequested = requestedAt; }).catch(() => undefined);
         await sessionStorage?.runOnce();
       },
       onReport: (report) => {
+        report.nativeRequestedAt = nativeMaintenanceRequested;
         lastDockerGcReport = report;
       },
       retireContainers: async () => {
@@ -6180,7 +6181,6 @@ export async function buildEmbeddedServer(
     storageReclamation = new StorageReclamation({
       collect: () => dockerGc.runOnce(),
       worktrees: () => sessionStorage?.lastReport,
-      nativeRequested: () => nativeMaintenanceRequested,
       dataRoot: config.dataVolumeRoot,
     });
     buildStorage?.setReclaimer(async () => {

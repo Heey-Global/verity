@@ -767,8 +767,17 @@ export class BuildStorage {
   retirementInventoryEmpty(): boolean {
     if (this.held || this.unresolved.length > 0) return false;
     try {
-      if (!existsSync(this.root)) return true;
-      if (lstatSync(this.root).isSymbolicLink() || realpathSync(this.root) !== this.root) return false;
+      // existsSync also returns false for permission and traversal errors. Only
+      // a genuine ENOENT below a verified parent can establish an absent root.
+      if (realpathSync(dirname(this.root)) !== dirname(this.root)) return false;
+      let stat;
+      try {
+        stat = lstatSync(this.root);
+      } catch (error) {
+        return (error as NodeJS.ErrnoException).code === 'ENOENT';
+      }
+      if (!stat.isDirectory() || stat.isSymbolicLink() || realpathSync(this.root) !== this.root)
+        return false;
       return readdirSync(this.root).length === 0;
     } catch {
       return false;
