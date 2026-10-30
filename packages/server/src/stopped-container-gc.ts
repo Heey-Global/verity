@@ -46,7 +46,7 @@ export async function retireStoppedContainers(input: {
   if (!docker.listContainers || !docker.listImages || !docker.removeStoppedContainer) return result;
   const now = input.now ?? Date.now();
   const projects = await input.listProjects(); // A failed inventory must not mean all projects were deleted.
-  const images = await docker.listImages();
+  await docker.listImages(); // Inventory errors must fail closed.
   const containers = await docker.listContainers();
   const heldProjects = new Set(projects.map((p) => p.id));
   for (const candidate of containers) {
@@ -133,6 +133,9 @@ export async function retireCompletedUpdateContainers(
       (await docker.listContainers()).some(
         (server) =>
           server.state === 'running' &&
+          Number.isFinite(c.created) &&
+          Number.isFinite(server.created) &&
+          server.created! > c.created! &&
           (completedDeployment !== undefined || server.imageId !== c.imageId) &&
           server.labels?.[composeLabel] === project &&
           server.labels?.[serviceLabel] === 'verity-server',

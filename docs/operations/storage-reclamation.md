@@ -23,7 +23,8 @@ After seven days without session activity, collection compares private
 and matching links in compatible installations qualify. Local patches, unknown
 packages, tracked dependencies, unknown build output and symlink targets remain
 protected. A modified package does not prevent collection of other identical
-packages. No package-manager migration or writable hardlink sharing is required.
+packages. Nested private installations remain protected because their base-checkout
+copies are outside Node's ancestor lookup. No package-manager migration or writable hardlink sharing is required.
 
 ## Worktree lifecycle and recovery
 
@@ -45,6 +46,12 @@ and worktree sidecar. The session and transcript are kept. Resume restores the
 worktree while holding the session turn lock, verifies the commit, repairs
 workspace links, and only then clears its recovery record. If the branch moved
 meanwhile, restoration uses the saved commit detached and preserves that branch.
+Sleeping-project maintenance uses an isolated sandbox with a writable checkout,
+a read-only root filesystem and disabled Git hooks. Its default metadata-query
+mode remains read-only and offline. Missing retired project containers use the
+current sandbox image with bounded resources. Remote verification must succeed;
+Forgejo retirement currently retains worktrees while dependency slimming remains
+available. GitHub fetch authorization is scoped to GitHub and is not persisted.
 An interrupted removal or restoration can be retried safely; unknown paths are
 not recreated without a matching record.
 

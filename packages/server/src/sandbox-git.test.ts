@@ -411,3 +411,40 @@ it('mounts sleeping session queries from the data volume in Compose deployments'
   ).rejects.toThrow('Metadata checkout escapes data volume');
   expect(docker.createContainer).toHaveBeenCalledOnce();
 });
+
+it('keeps maintenance writes and fetch networking opt-in, including a retired template', async () => {
+  const docker = queryDocker();
+  docker.inspectContainer.mockRejectedValueOnce(
+    new DockerError({ kind: 'container_not_found', id: 'parent' }),
+  );
+  const exec = vi.fn<SandboxExec>(async () => ({ stdout: 'saved', stderr: '' }));
+  await withSleepingSessionGit(
+    {
+      docker,
+      templateContainer: 'parent',
+      projectId: 'p',
+      hostRoot: '/data/p',
+      exec,
+      maintenance: {
+        fallback: {
+          imageId: 'sha256:current',
+          runtime: 'runsc-project',
+          memoryBytes: 512 * 1024 ** 2,
+          nanoCpus: 1_000_000_000,
+          pidsLimit: 128,
+        },
+      },
+    },
+    (git) => git(['-C', '/data/p', 'fetch', 'origin']),
+  );
+  const spec = docker.createContainer.mock.calls[0]![0];
+  expect(spec).toMatchObject({
+    image: 'sha256:current',
+    binds: ['/data/p:/work:rw'],
+    readOnlyRootfs: true,
+    runtime: 'runsc-project',
+  });
+  expect(spec.network).toBeUndefined();
+  expect(exec.mock.calls[0]![1]).toContain('core.hooksPath=/dev/null');
+  expect(docker.removeContainer).toHaveBeenCalledOnce();
+});

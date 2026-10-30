@@ -4,7 +4,7 @@ import { relative, isAbsolute } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import type { GitOutput } from './branches.js';
-import { DockerError, type DockerClient } from './docker.js';
+import { DockerError, type DockerClient, type ContainerInspect } from './docker.js';
 import { containerPathFor, dockerHostFor } from './project-backend.js';
 
 const execFileAsync = promisify(execFile);
@@ -204,6 +204,16 @@ interface SleepingSessionGitOptions {
     'inspectContainer' | 'createContainer' | 'startContainer' | 'removeContainer'
   >;
   templateContainer: string;
+  /** Storage maintenance holds the project lifecycle barrier and needs Git writes/fetches. */
+  maintenance?: {
+    fallback: {
+      imageId: string;
+      runtime: string;
+      memoryBytes: number;
+      nanoCpus: number;
+      pidsLimit: number;
+    };
+  };
   projectId: string;
   hostRoot: string;
   dataVolume?: { name: string; root: string };
@@ -223,7 +233,13 @@ export async function withSleepingSessionGit<T>(
   const subpath = opts.dataVolume ? relative(opts.dataVolume.root, opts.hostRoot) : undefined;
   if (subpath !== undefined && (subpath === '' || subpath.startsWith('..') || isAbsolute(subpath)))
     throw new Error('Metadata checkout escapes data volume');
-  const parent = await opts.docker.inspectContainer(opts.templateContainer);
+  const parent: ContainerInspect = await opts.docker
+    .inspectContainer(opts.templateContainer)
+    .catch((error: unknown) => {
+      if (opts.maintenance && error instanceof DockerError && error.kind === 'container_not_found')
+        return { ...opts.maintenance.fallback, running: false, id: opts.templateContainer };
+      throw error;
+    });
   const image = parent.imageId ?? parent.image;
   if (!image) throw new Error('Metadata query image is unavailable');
   const name = `verity-query-${randomUUID()}`;
@@ -233,14 +249,19 @@ export async function withSleepingSessionGit<T>(
     ...(opts.dataVolume
       ? {
           volumeMounts: [
-            { volume: opts.dataVolume.name, subpath: subpath!, target: '/work', readOnly: true },
+            {
+              volume: opts.dataVolume.name,
+              subpath: subpath!,
+              target: '/work',
+              readOnly: !opts.maintenance,
+            },
           ],
         }
-      : { binds: [`${opts.hostRoot}:/work:ro`] }),
+      : { binds: [`${opts.hostRoot}:/work:${opts.maintenance ? 'rw' : 'ro'}`] }),
     user: parent.user || '1000:1000',
     entrypoint: ['sleep'],
     command: ['infinity'],
-    network: 'none',
+    ...(opts.maintenance ? {} : { network: 'none' }),
     readOnlyRootfs: true,
     capDrop: ['ALL'],
     ...(parent.ulimits ? { ulimits: parent.ulimits } : {}),
@@ -267,7 +288,11 @@ export async function withSleepingSessionGit<T>(
       ...(opts.exec ? { exec: opts.exec } : {}),
     });
     return await operation((args) => {
-      const command = git(['--no-optional-locks', ...args]);
+      const command = git([
+        '--no-optional-locks',
+        ...(opts.maintenance ? ['-c', 'core.hooksPath=/dev/null', '-c', 'gc.auto=0'] : []),
+        ...args,
+      ]);
       commands.push(command);
       return command;
     });

@@ -424,6 +424,22 @@ export class SessionStorage {
     report: SessionStorageReport,
     signal: AbortSignal,
   ): Promise<void> {
+    const root = await this.safeRoot(project, path);
+    try {
+      await this.reclaimContents(project, path, sessionId, git, report, signal);
+    } finally {
+      // Every retained worktree needs its own source links, even when remote proof fails.
+      if (!this.deps.dryRun && (await exists(path))) linkWorkspacePackages(root, path);
+    }
+  }
+  private async reclaimContents(
+    project: ProjectRecord,
+    path: string,
+    sessionId: string | null,
+    git: GitOutput,
+    report: SessionStorageReport,
+    signal: AbortSignal,
+  ): Promise<void> {
     signal.throwIfAborted();
     const root = await this.safeRoot(project, path);
     if (!(await exists(path))) return;
@@ -452,12 +468,9 @@ export class SessionStorage {
       .some((f) => inputs.test(f));
     if (unknownManifests) throw new Error('Untracked dependency inputs');
     // Only node_modules trees with byte-identical shared copies qualify. Unknown build output stays protected.
-    const modulePaths = new Set([
-      'node_modules',
-      ...dependencyInputs
-        .filter((f) => f.endsWith('/package.json'))
-        .map((f) => join(dirname(f), 'node_modules')),
-    ]);
+    // Nested installations are outside Node's ancestor lookup from a worktree.
+    // Retain them until equivalent private resolution can be restored safely.
+    const modulePaths = ['node_modules'];
     for (const modules of modulePaths) {
       let ancestor = path;
       for (const part of modules.split('/').slice(0, -1)) {

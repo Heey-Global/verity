@@ -1,3 +1,4 @@
+import type { GitOutput } from './branches.js';
 import { SessionStorage } from './session-storage.js';
 import {
   retireStoppedContainers,
@@ -4619,7 +4620,7 @@ export async function buildEmbeddedServer(
           root: (project) => projectClonePath(config.hostCloneRoot!, project),
           mutate: (projectId, sessionId, operation) =>
             withStorageProjectMutation(projectId, () =>
-              provisioner!.withProjectExclusiveMutation!(
+              provisioner.withProjectExclusiveMutation(
                 projectId,
                 async () => {
                   if (managedDevServerManager?.hasRunningServers(projectId))
@@ -4636,36 +4637,75 @@ export async function buildEmbeddedServer(
               ),
             ),
           withGit: async (project, operation) => {
+            if (config.dataVolume && !dataVolumeRoot)
+              throw new Error('Data volume root is unavailable');
             const containerName = project.containerName;
             const hostRoot = projectClonePath(config.hostCloneRoot!, project);
-            const inspect = await projectDocker!.inspectContainer(containerName);
-            if (!inspect.running)
+            const inspect = await projectDocker
+              .inspectContainer(containerName)
+              .catch((error: unknown) => {
+                if (error instanceof DockerError && error.kind === 'container_not_found')
+                  return null;
+                throw error;
+              });
+            const authenticated = async (git: GitOutput) =>
+              operation(async (args) => {
+                if (!args.includes('fetch')) return git(args);
+                // Keep provider credentials out of persistent Git config and cleanup reports.
+                if (project.kind === 'forgejo')
+                  throw new Error('Forgejo retirement fetch is unavailable; worktree retained');
+                const token =
+                  project.kind === 'local' ? undefined : await cachedProjectTokenMint(project);
+                try {
+                  return await git([
+                    ...(token
+                      ? ['-c', `http.https://github.com/.extraHeader=${gitAuthHeader(token)}`]
+                      : []),
+                    ...args,
+                  ]);
+                } catch {
+                  throw new Error('Retirement remote verification failed; worktree retained');
+                }
+              });
+            if (!inspect?.running)
               return withSleepingSessionGit(
                 {
-                  docker: projectDocker!,
+                  docker: projectDocker,
                   templateContainer: containerName,
                   projectId: project.id,
                   hostRoot,
                   dockerBaseUrl: config.dockerBaseUrl!,
+                  maintenance: {
+                    fallback: {
+                      imageId:
+                        typeof defaultProjectImage === 'function'
+                          ? await defaultProjectImage()
+                          : defaultProjectImage,
+                      runtime: PROJECT_RUNSC_RUNTIME,
+                      memoryBytes: 512 * 1024 ** 2,
+                      nanoCpus: 1_000_000_000,
+                      pidsLimit: 128,
+                    },
+                  },
                   ...(config.dataVolume && dataVolumeRoot
                     ? { dataVolume: { name: config.dataVolume, root: dataVolumeRoot } }
                     : {}),
                 },
-                operation,
+                authenticated,
               );
-            return operation(
+            return authenticated(
               createSandboxGit({
                 containerName,
                 hostRoot,
                 dockerBaseUrl: config.dockerBaseUrl!,
-                inspect: () => projectDocker!.inspectContainer(containerName),
+                inspect: () => projectDocker.inspectContainer(containerName),
                 timeoutMs: 15_000,
               }),
             );
           },
           wake: async (project, sessionId) => {
             if (project.state === 'sleeping')
-              await provisioner!.ensureProjectSandboxAwake?.(project.id, new Set([sessionId]));
+              await provisioner.ensureProjectSandboxAwake?.(project.id, new Set([sessionId]));
           },
           pr: (project, branch) => readProjectStatus(project, branch),
         })
@@ -6049,7 +6089,7 @@ export async function buildEmbeddedServer(
           listProjects: () => eventStore.listProjects(),
           withProjectMutation: (id, run) =>
             withStorageProjectMutation(id, () =>
-              provisioner!.withProjectExclusiveMutation!(id, async () => {
+              provisioner.withProjectExclusiveMutation(id, async () => {
                 if (managedDevServerManager?.hasRunningServers(id))
                   throw new Error('Managed dev server is active');
                 if (

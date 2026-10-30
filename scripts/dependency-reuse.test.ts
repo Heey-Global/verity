@@ -77,7 +77,7 @@ describe('shared dependency reuse', () => {
     writeFileSync(join(f.worktree, 'packages', 'extra', 'package.json'), '{}');
     expect(f.run('status').status).toBe(1);
     mkdirSync(join(f.worktree, 'node_modules'));
-    writeFileSync(join(f.worktree, 'node_modules', '.package-lock.json'), '{\"packages\":{}}');
+    writeFileSync(join(f.worktree, 'node_modules', '.package-lock.json'), '{"packages":{}}');
     expect(f.run('status').status).toBe(0);
   });
   it('does not install again for release metadata or script-only changes', () => {

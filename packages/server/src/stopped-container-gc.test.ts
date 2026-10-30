@@ -19,6 +19,7 @@ function fixture() {
     names: ['verity-p'],
     imageId: 'old',
     state: 'exited',
+    created: 1,
     labels: { 'verity.project-id': 'p', 'verity.container-generation': 'g' },
   };
   const images = [
@@ -133,6 +134,7 @@ describe('completed update bootstrap jobs', () => {
     expect(f.docker.removeStoppedContainer).not.toHaveBeenCalled();
     f.containers.push({
       id: 'server',
+      created: 2,
       imageId: 'new',
       state: 'running',
       labels: {
@@ -140,6 +142,9 @@ describe('completed update bootstrap jobs', () => {
         'com.docker.compose.project': 'deploy',
       },
     });
+    f.containers[1]!.created = 0;
+    expect(await retireCompletedUpdateContainers(f.input.docker)).toEqual([]);
+    f.containers[1]!.created = 2;
     expect(await retireCompletedUpdateContainers(f.input.docker)).toEqual(['verity-p']);
   });
   it('retains failures and unrelated deployment jobs', async () => {
