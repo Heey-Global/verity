@@ -1,15 +1,24 @@
 {
   "schema": 1,
-  "version": "1.80.2",
+  "version": "1.80.5",
   "runtime": "1.80.0",
   "channel": "production",
-  "commit": "05d5726cef342dcd66eadc1e4ee68312dcff7ddf",
-  "tag": "mobile-v1.80.2",
-  "branch": "staging-mobile-v1.80.2-05d5726cef342dcd66eadc1e4ee68312dcff7ddf",
-  "baseline": "mobile-v1.80.1",
-  "group": "2b46ddfd-aea3-4ede-8704-5ea3b395c72b",
+  "commit": "8a86ce5021f1bd93ae4d70c1091631697e3a99ec",
+  "tag": "mobile-v1.80.5",
+  "branch": "staging-mobile-v1.80.5-8a86ce5021f1bd93ae4d70c1091631697e3a99ec",
+  "baseline": "mobile-v1.80.2",
+  "group": "46589a5a-1d34-4ddc-b239-dcbcfade9605",
   "notes": [
-    "recover oversized events in bounded chunks (#2007)",
-    "group features and app administration settings (#2005)"
+    "host interactive MCP Apps in web chat (#2055)",
+    "add mobile setup and enable provisioned backups (#2053)",
+    "list individual audit and system events (#2052)",
+    "preserve selection evidence in diagnostic exports (#2051)",
+    "distinguish missing sessions in history errors (#2050)",
+    "add the Verity assistant as a Verity Control function (#2048)",
+    "add opt-in CI supervision and repair coordination (#2040)",
+    "improve task microphone gestures and docking (#2034)",
+    "link build diagnostics with audit and system logs (#2031)",
+    "add selection scheduling diagnostics (#2023)",
+    "refine feature order and simplify footer (#2021)"
   ]
 }
