@@ -37,7 +37,9 @@ await appendFile(
   })}\n`,
 );
 
-if (process.argv.slice(2, 5).join(' ') === 'auth status --json') {
+const probeArgs = process.argv.slice(2);
+if (probeArgs[0] === '--settings') probeArgs.splice(0, 2);
+if (probeArgs.join(' ') === 'auth status --json') {
   process.stdout.write(`${JSON.stringify({ loggedIn: false })}\n`);
   process.exit(0);
 }

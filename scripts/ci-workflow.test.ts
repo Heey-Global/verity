@@ -4327,6 +4327,18 @@ describe('Claude ACP sandbox smoke', () => {
     expect(lossCheck).toBeLessThan(recreate.indexOf('client.startTurn('));
   });
 
+  it('patches Claude auth probes for root option parsing', () => {
+    const result = spawnSync(
+      process.execPath,
+      ['--test', 'scripts/claude-acp-auth-probe.test.mjs'],
+      {
+        encoding: 'utf8',
+        timeout: 30_000,
+      },
+    );
+    expect(result.status, result.stderr || result.stdout).toBe(0);
+  });
+
   it('answers ACP auth probes with managed settings without starting a session', async () => {
     const worktree = await mkdtemp(join(tmpdir(), 'verity-auth-probe-fixture-'));
     try {
@@ -4334,7 +4346,7 @@ describe('Claude ACP sandbox smoke', () => {
         for (const settings of [[], ['--settings', '{"apiKeyHelper":""}']]) {
           const result = spawnSync(
             process.execPath,
-            [`scripts/fixtures/${fixture}`, 'auth', 'status', '--json', ...settings],
+            [`scripts/fixtures/${fixture}`, ...settings, 'auth', 'status', '--json'],
             {
               env: { VERITY_LIVE_SMOKE_WORKTREE: worktree },
               encoding: 'utf8',

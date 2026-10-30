@@ -330,6 +330,7 @@ if [ "$INSTALL_CLAUDE_ACP" = "true" ]; then
     # cannot silently lapse on a Renovate bump. See docs/adr/0012.
     node "$FEATURE_DIR/bin/verity-claude-acp-harden.mjs"
     node "$FEATURE_DIR/bin/verity-claude-acp-lifecycle.mjs"
+    node "$FEATURE_DIR/bin/verity-claude-acp-auth-probe.mjs"
   else
     echo "!! verity-sandbox-toolkit: installClaudeAcp=true but npm not on PATH — skipping Claude ACP." >&2
   fi
