@@ -14,6 +14,7 @@ const config = JSON.parse(await readFile(`${root}/config.json`, 'utf8')) as {
   relayImage: string;
   dataRoot: string;
   gatewayKey: string;
+  controlToken: string;
 };
 const gatewaySocket = `${root}/gateway.sock`;
 if (process.argv[2] === 'gateway') {
@@ -67,7 +68,7 @@ if (process.argv[2] === 'gateway') {
   const docker = createDockerClient({ baseUrl: 'unix:///var/run/docker.sock' });
   const command = createProjectEgressHostClient({
     socketPath: '/run/verity-egress/control.sock',
-    token: (await readFile('/etc/verity-egress/control.key', 'utf8')).trim(),
+    token: config.controlToken,
   });
   const server = await buildTestEmbeddedServer({
     logger: true,

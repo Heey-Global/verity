@@ -82,9 +82,11 @@ def setup():
         run('docker', 'pull', target)
         refs[role] = json.loads(run('docker', 'image', 'inspect', target))[0]['RepoDigests'][0]
     data_root = json.loads(run('docker', 'volume', 'inspect', 'verity-boot-data'))[0]['Mountpoint']
-    config = {'runnerImage': refs['runner'], 'relayImage': refs['relay'], 'dataRoot': data_root, 'gatewayKey': secrets.token_hex(32)}
+    config = {'runnerImage': refs['runner'], 'relayImage': refs['relay'], 'dataRoot': data_root, 'gatewayKey': secrets.token_hex(32),
+              'controlToken': Path('/etc/verity-egress/control.key').read_text().strip()}
     (ROOT / 'config.json').write_text(json.dumps(config))
     os.chmod(ROOT / 'config.json', 0o600)
+    os.chown(ROOT / 'config.json', 1000, 1000)
     policy = {'image': refs['relay'], 'dataVolume': 'verity-boot-data', 'socketOwnerUid': 0,
               'relayGid': 1102, 'brokerSubpath': 'relay/broker', 'claudeSubpath': 'relay/claude', 'codexSubpath': 'relay/codex'}
     Path('/etc/verity-egress/relay.json').write_text(json.dumps(policy))

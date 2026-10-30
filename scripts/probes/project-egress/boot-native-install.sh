@@ -7,13 +7,14 @@ set -euo pipefail
 assets=/opt/verity-fixture
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install -y --no-install-recommends nftables iptables conntrack iproute2 util-linux python3 libatomic1 libstdc++6
+apt-get install -y --no-install-recommends nftables iptables conntrack iproute2 util-linux acl python3 libatomic1 libstdc++6
 cp -a "$assets/runtime/bin/." /usr/local/bin/
 cp -a "$assets/runtime/opt/." /opt/
 install -m 0755 "$assets/node" /usr/bin/node
 ln -sf /usr/local/bin/docker /usr/bin/docker
 mkdir -p /etc/docker /etc/verity-egress /opt/verity-egress /var/lib/verity-egress /var/lib/verity-egress-fixture
 chmod 0700 /var/lib/verity-egress /var/lib/verity-egress-fixture
+chown 1000:1000 /var/lib/verity-egress-fixture
 getent group verity-egress-control >/dev/null || groupadd verity-egress-control
 getent group 1101 >/dev/null || groupadd --gid 1101 verity-runner
 getent group 1102 >/dev/null || groupadd --gid 1102 verity-relay
@@ -42,7 +43,7 @@ After=network-online.target
 Wants=network-online.target
 [Service]
 Type=notify
-ExecStart=/usr/local/bin/dockerd --host=unix:///var/run/docker.sock
+ExecStart=/usr/local/bin/dockerd --host=unix:///var/run/docker.sock --group=verity-egress-control
 Restart=on-failure
 RestartSec=1
 KillMode=process
@@ -76,10 +77,12 @@ for component in gateway server; do
 Description=Disposable real Verity $component
 $dependencies
 [Service]
+User=1000
+Group=1000
 Environment=PROJECT_EGRESS_DISPOSABLE=yes
 ExecStart=/usr/bin/node /opt/verity-fixture/boot-server.mjs $component
 WorkingDirectory=/opt/verity-fixture
-SupplementaryGroups=verity-runner verity-relay
+SupplementaryGroups=verity-runner verity-relay verity-egress-control
 Restart=no
 TimeoutStopSec=15
 UNIT
@@ -90,4 +93,10 @@ systemctl start verity-boot-observation.service docker.service
 # No Server is enabled at boot: recovery must be explicitly verified, then admitted.
 docker load --input "$assets/images.tar"
 docker volume create verity-boot-data
+# The native Server uses the same UID as the actual managed Runner. Give it
+# traversal to its volume without exposing Docker's other private state.
+setfacl -m u:1000:x /var/lib/docker /var/lib/docker/volumes
+fixture_volume_root=$(docker volume inspect --format '{{.Mountpoint}}' verity-boot-data)
+setfacl -m u:1000:x "$(dirname "$fixture_volume_root")"
+chown 1000:1000 "$fixture_volume_root"
 docker run --rm --runtime runsc-project --entrypoint /bin/true verity-boot-observed-runner:local

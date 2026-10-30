@@ -59,3 +59,22 @@ it('waits for native Docker readiness before loading fixture images', () => {
   expect(dockerUnit).toBeDefined();
   expect(dockerUnit).toMatch(/^Type=notify$/mu);
 });
+
+it('runs the native Server as the same identity as its actual Runner probes', () => {
+  const installer = readFileSync(
+    new URL('./probes/project-egress/boot-native-install.sh', import.meta.url),
+    'utf8',
+  );
+  const guest = readFileSync(
+    new URL('./probes/project-egress/boot-guest.py', import.meta.url),
+    'utf8',
+  );
+  const serverUnit = installer.match(/Description=Disposable real Verity[\s\S]*?\nUNIT/u)?.[0];
+  expect(serverUnit).toBeDefined();
+  const uid = /^User=(\d+)$/mu.exec(serverUnit!)?.[1];
+  const gid = /^Group=(\d+)$/mu.exec(serverUnit!)?.[1];
+  expect(uid).toBeDefined();
+  expect(gid).toBeDefined();
+  expect(uid).not.toBe('0');
+  expect(guest).toContain(`'--user', '${uid}:${gid}'`);
+});
