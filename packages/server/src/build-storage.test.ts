@@ -1083,6 +1083,39 @@ describe('admission reclamation', () => {
     expect(reclaim).toHaveBeenCalledOnce();
     lease.dispose();
   });
+  it('keeps FIFO ownership while reclamation awaits', async () => {
+    const f = fixture();
+    f.local.availableBytes = 0;
+    f.writeReport(0);
+    const manager = f.manager();
+    let finish!: () => void;
+    const reclaim = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = () => {
+            f.local.availableBytes = 100 * GiB;
+            f.writeReport();
+            resolve();
+          };
+        }),
+    );
+    manager.setReclaimer(reclaim);
+    const first = manager.admitInTurn();
+    const queued = vi.fn();
+    const second = manager.admitInTurn(queued);
+    expect(queued).toHaveBeenCalledOnce();
+    expect(reclaim).toHaveBeenCalledOnce();
+    finish();
+    const firstLease = await first;
+    let secondAdmitted = false;
+    void second.then(() => {
+      secondAdmitted = true;
+    });
+    await Promise.resolve();
+    expect(secondAdmitted).toBe(false);
+    firstLease.dispose();
+    (await second).dispose();
+  });
   it('does not loop or override reservation/capacity refusals', async () => {
     const f = fixture();
     f.local.availableBytes = 0;

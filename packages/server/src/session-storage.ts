@@ -506,30 +506,9 @@ export class SessionStorage {
           return false;
         }
       };
-      if (await removeVerified(local, join(root, modules))) continue;
-      // One patched package or unknown cache must not pin every other dependency.
-      // Keep the unknown entry and compare the remaining packages individually.
-      let removed = false;
-      for (const entry of await readdir(local, { withFileTypes: true })) {
-        signal.throwIfAborted();
-        if (entry.name === '.package-lock.json') continue;
-        if (entry.name.startsWith('@') && entry.isDirectory()) {
-          for (const name of await readdir(join(local, entry.name))) {
-            removed =
-              (await removeVerified(
-                join(local, entry.name, name),
-                join(root, modules, entry.name, name),
-              )) || removed;
-          }
-        } else {
-          removed =
-            (await removeVerified(join(local, entry.name), join(root, modules, entry.name))) ||
-            removed;
-        }
-      }
-      // npm's receipt must not claim that a now-partial private tree is complete.
-      if (removed && !this.deps.dryRun)
-        await rm(join(local, '.package-lock.json'), { force: true });
+      // Keep the entire private graph when any package differs: shared dependents
+      // would otherwise resolve shared versions instead of retained local patches.
+      await removeVerified(local, join(root, modules));
     }
     const sha = (await git(['-C', path, 'rev-parse', 'HEAD'])).trim();
     const branch =

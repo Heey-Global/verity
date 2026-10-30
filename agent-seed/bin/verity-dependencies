@@ -17,8 +17,39 @@ function read(path) {
     return undefined;
   }
 }
+function manager(root) {
+  const declared = JSON.parse(read(join(root, 'package.json')) ?? '{}').packageManager;
+  if (typeof declared === 'string' && /^(yarn|pnpm)@/.test(declared)) return declared.split('@')[0];
+  if (existsSync(join(root, 'pnpm-lock.yaml'))) return 'pnpm';
+  if (existsSync(join(root, 'yarn.lock'))) return 'yarn';
+  return 'npm';
+}
 function installed(root) {
   try {
+    const selected = manager(root);
+    if (selected === 'pnpm')
+      return (
+        existsSync(join(root, 'node_modules', '.modules.yaml')) &&
+        read(join(root, 'pnpm-lock.yaml')) !== undefined &&
+        read(join(root, 'node_modules', '.pnpm', 'lock.yaml')) ===
+          read(join(root, 'pnpm-lock.yaml'))
+      );
+    if (selected === 'yarn') {
+      const integrity = read(join(root, 'node_modules', '.yarn-integrity'));
+      if (integrity) {
+        const receipt = JSON.parse(integrity);
+        return (
+          Array.isArray(receipt.topLevelPatterns) &&
+          receipt.lockfileEntries !== null &&
+          typeof receipt.lockfileEntries === 'object'
+        );
+      }
+      return (
+        existsSync(join(root, '.yarn', 'install-state.gz')) &&
+        (existsSync(join(root, '.pnp.cjs')) ||
+          existsSync(join(root, 'node_modules', '.yarn-state.yml')))
+      );
+    }
     const receipt = JSON.parse(read(join(root, 'node_modules', '.package-lock.json')) ?? 'null');
     if (!receipt || !receipt.packages || typeof receipt.packages !== 'object') return false;
     const source = read(join(root, 'npm-shrinkwrap.json')) ?? read(join(root, 'package-lock.json'));
@@ -136,7 +167,7 @@ try {
   // A private installation stays isolated. Workspace-link skeletons are not installations.
   const local = installed(root);
   let shared = false;
-  if (!local && root !== base && compatible(root, base)) {
+  if (!local && root !== base && !existsSync(join(base, '.pnp.cjs')) && compatible(root, base)) {
     // Only reuse a directory Node can reach by walking up from this worktree.
     let parent = dirname(root);
     while (parent !== dirname(parent)) {
@@ -158,6 +189,16 @@ try {
   if (shared && !local) {
     console.log('Using compatible shared project dependencies; no private install needed.');
     process.exit(0);
+  }
+  const selected = manager(root);
+  if (selected !== 'npm') {
+    if (local || shared) {
+      console.log(`Using existing ${selected} installation.`);
+      process.exit(0);
+    }
+    throw new Error(
+      `Use this project's ${selected} install command, then retry; this helper never replaces its package manager with npm.`,
+    );
   }
   // Different lockfiles need a private installation; never modify shared project state.
   const result = spawnSync(

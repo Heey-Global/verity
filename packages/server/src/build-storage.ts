@@ -453,6 +453,7 @@ export class BuildStorage {
         if (!(error instanceof BuildStorageCapacityError) || !this.reclaimer) throw error;
         // One bounded pass; a timeout fails closed while the coalesced collector finishes.
         let timer: ReturnType<typeof setTimeout> | undefined;
+        this.handingOver = true;
         try {
           await Promise.race([
             this.reclaimer(),
@@ -467,6 +468,7 @@ export class BuildStorage {
           ]);
         } finally {
           if (timer) clearTimeout(timer);
+          this.handingOver = false;
         }
         return this.admit();
       }

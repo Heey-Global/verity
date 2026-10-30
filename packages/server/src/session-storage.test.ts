@@ -1,3 +1,4 @@
+import { createRequire } from 'node:module';
 import { execFileSync } from 'node:child_process';
 import {
   cpSync,
@@ -136,6 +137,19 @@ describe('safe session storage reclamation', () => {
     expect(await f.service.canRestore(f.session)).toBe(false);
     await expect(f.service.ensureWorkspace(f.session)).rejects.toThrow('Unsafe');
     expect(existsSync(f.path)).toBe(false);
+  });
+  it('preserves runtime resolution of patched transitive dependencies', async () => {
+    const f = fixture();
+    for (const root of [f.root, f.path]) {
+      for (const name of ['a', 'b'])
+        mkdirSync(join(root, 'node_modules', name), { recursive: true });
+      writeFileSync(join(root, 'node_modules', 'a', 'index.js'), "module.exports = require('b');");
+      writeFileSync(join(root, 'node_modules', 'b', 'index.js'), "module.exports = 'shared';");
+    }
+    writeFileSync(join(f.path, 'node_modules', 'b', 'index.js'), "module.exports = 'patched';");
+    await f.service.runOnce();
+    expect(createRequire(join(f.path, 'caller.cjs'))('a')).toBe('patched');
+    expect(existsSync(join(f.path, 'node_modules', 'a'))).toBe(true);
   });
   it('retains nested dependencies outside ancestor resolution', async () => {
     const f = fixture();

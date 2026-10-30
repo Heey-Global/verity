@@ -95,6 +95,34 @@ describe('shared dependency reuse', () => {
     writeFileSync(join(f.worktree, 'package-lock.json'), lock);
     expect(f.run('status').status).toBe(1);
   });
+  it.each(['yarn', 'pnpm'])(
+    'recognizes an existing %s install without switching package managers',
+    (manager) => {
+      const f = fixture();
+      writeFileSync(
+        join(f.worktree, 'package.json'),
+        JSON.stringify({ packageManager: `${manager}@1.0.0` }),
+      );
+      mkdirSync(join(f.worktree, 'node_modules'), { recursive: true });
+      if (manager === 'yarn') {
+        writeFileSync(
+          join(f.worktree, 'node_modules', '.yarn-integrity'),
+          JSON.stringify({ topLevelPatterns: [], lockfileEntries: {} }),
+        );
+      } else {
+        writeFileSync(join(f.worktree, 'pnpm-lock.yaml'), 'lockfileVersion: 9');
+        writeFileSync(join(f.worktree, 'node_modules', '.modules.yaml'), 'layoutVersion: 5');
+        mkdirSync(join(f.worktree, 'node_modules', '.pnpm'));
+        writeFileSync(join(f.worktree, 'node_modules', '.pnpm', 'lock.yaml'), 'lockfileVersion: 9');
+      }
+      expect(f.run('status').status).toBe(0);
+      expect(f.run('install').status).toBe(0);
+      expect(existsSync(f.called)).toBe(false);
+      rmSync(join(f.worktree, 'node_modules'), { recursive: true });
+      expect(f.run('install').status).toBe(1);
+      expect(existsSync(f.called)).toBe(false);
+    },
+  );
   it('ships identical executable helpers in both seed trees', () => {
     expect(readFileSync(helper, 'utf8')).toBe(
       readFileSync('features/verity-sandbox-toolkit/agent-seed/bin/verity-dependencies', 'utf8'),
