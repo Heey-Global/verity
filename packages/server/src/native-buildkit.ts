@@ -1,5 +1,6 @@
 import { hostname } from 'node:os';
-import { lstat, readFile, realpath, rename, writeFile } from 'node:fs/promises';
+import { lstat, open, readFile, realpath, rename, rm } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { z } from 'zod';
 
@@ -16,6 +17,8 @@ export function startNativeRetirementEvidence(
   const tick = async () => {
     if (running || !/^[a-zA-Z0-9-]{1,64}$/.test(identity)) return;
     running = true;
+    let temp: string | undefined;
+    let owned = false;
     try {
       const path = join(directory, 'native-challenge.json');
       if ((await lstat(path)).isSymbolicLink()) return;
@@ -25,13 +28,21 @@ export function startNativeRetirementEvidence(
       const evidence = join(directory, 'reclamation-evidence');
       if ((await realpath(evidence)) !== evidence) return;
       const target = join(evidence, `${identity}.json`);
-      const temp = `${target}.${process.pid}.tmp`;
-      // Never reconcile, remove or release an uncertain reservation to answer a challenge.
-      await writeFile(temp, JSON.stringify({ ...value, identity, empty: inventory() }), { flag: 'wx', mode: 0o600 });
+      temp = `${target}.${randomUUID()}.tmp`;
+      const file = await open(temp, 'wx', 0o600);
+      owned = true;
+      try {
+        // Never reconcile, remove or release an uncertain reservation to answer a challenge.
+        await file.writeFile(JSON.stringify({ ...value, identity, empty: inventory() }));
+      } finally {
+        await file.close();
+      }
       await rename(temp, target);
+      temp = undefined;
     } catch {
       // Missing host protocol, incomplete inventory and malformed challenges fail closed.
     } finally {
+      if (owned && temp) await rm(temp, { force: true }).catch(() => undefined);
       running = false;
     }
   };
