@@ -260,8 +260,8 @@ function defaultEmail(
 ): { subject: string; body: string } {
   const template = defaultEmailTemplate(fields, language);
   return {
-    subject: template.subject.replaceAll(SCHEDULING_TITLE_PLACEHOLDER, title),
-    body: template.body.replaceAll(SCHEDULING_TITLE_PLACEHOLDER, title),
+    subject: template.subject.replaceAll(SCHEDULING_TITLE_PLACEHOLDER, () => title),
+    body: template.body.replaceAll(SCHEDULING_TITLE_PLACEHOLDER, () => title),
   };
 }
 

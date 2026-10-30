@@ -109,6 +109,14 @@ describe('scheduling approval summary', () => {
       });
     });
 
+    it('puts the title in literally, as the server does', () => {
+      const card = editable();
+      expect(
+        schedulingCardEmail(card, { ...schedulingCardEdit(card), title: "$$ budget $' $&" })
+          .subject,
+      ).toBe("Pick a time: $$ budget $' $&");
+    });
+
     it('sends the operator’s own email text and refuses one without the link', () => {
       const card = editable(undefined);
       const edit = { ...schedulingCardEdit(card), emailEdited: true, emailBody: 'Hello {link}' };

@@ -55,8 +55,8 @@ export function schedulingCardEmail(
   if (!template) return { subject: edit.emailSubject, body: edit.emailBody };
   const title = edit.title.trim();
   return {
-    subject: template.subject.replaceAll(TITLE_PLACEHOLDER, title),
-    body: template.body.replaceAll(TITLE_PLACEHOLDER, title),
+    subject: template.subject.replaceAll(TITLE_PLACEHOLDER, () => title),
+    body: template.body.replaceAll(TITLE_PLACEHOLDER, () => title),
   };
 }
 

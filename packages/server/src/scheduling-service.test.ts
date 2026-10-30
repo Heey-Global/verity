@@ -297,6 +297,13 @@ describe('scheduling requests', () => {
     expect([...calendar.events.values()][0]?.summary).toBe('Hold · Anna · Intro call');
   });
 
+  it('puts a title into the default email literally, whatever characters it has', async () => {
+    const scheduler = service();
+    const prepared = await scheduler.prepare(input());
+    await scheduler.send(prepared.requestId, 's1', prepared.digest, { title: "$$ budget $' $&" });
+    expect(sent[0]!.subject).toBe("Pick a time: $$ budget $' $&");
+  });
+
   it('keeps a custom email on a language change and refuses one without the link', async () => {
     const scheduler = service();
     const prepared = await scheduler.prepare(input());
