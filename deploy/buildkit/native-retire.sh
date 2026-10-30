@@ -56,8 +56,8 @@ native_retire() (
         fi
         if [[ -f $state/native-retirement-completed.json ]]; then
             temp=$(mktemp "$run_dir/.native-result.XXXXXX")
-            jq --arg observedAt "$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)" \
-              '.lastCompletedAt = .observedAt | .observedAt = $observedAt' "$state/native-retirement-completed.json" > "$temp"
+            jq --arg observedAt "$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)" --argjson overlayAllocatedBytes "$overlay_bytes" \
+              '.lastCompletedAt = .observedAt | .observedAt = $observedAt | .overlayAllocatedBytes = $overlayAllocatedBytes' "$state/native-retirement-completed.json" > "$temp"
             chmod 0644 "$temp"; mv -f "$temp" "$run_dir/native-retirement.json"
         else report absent; fi
         exit 0

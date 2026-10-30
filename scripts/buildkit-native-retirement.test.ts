@@ -40,9 +40,12 @@ function fixture(options: { reserved?: boolean; stale?: boolean; busy?: boolean;
     expect(f.report().allocatedBytes).toBeGreaterThan(0);
     expect(existsSync(join(f.run, 'migration-pending'))).toBe(false);
     const completedAt = f.report().observedAt;
+    const overlayBytes = f.report().overlayAllocatedBytes;
+    writeFileSync(join(f.root, 'runc-overlayfs', 'new-allocation'), Buffer.alloc(65536));
     expect(f.invoke().status).toBe(0);
     expect(f.report().observedAt >= completedAt).toBe(true);
     expect(f.report().lastCompletedAt).toBe(completedAt);
+    expect(f.report().overlayAllocatedBytes).toBeGreaterThan(overlayBytes);
   });
   it.each([
     [{ reserved: true }, 'persistent-reservations-not-proven-empty'],

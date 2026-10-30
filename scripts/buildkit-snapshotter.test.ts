@@ -146,6 +146,17 @@ esac\n`,
     expect(f.status().state).toBe('rolled-back');
     expect(existsSync(join(f.state, 'pending.json'))).toBe(false);
   });
+  it.each(['{}', 'invalid'])('restores the native recovery fence after reboot: %s', (journal) => {
+    const f = fixture();
+    writeFileSync(join(f.state, 'native-retirement.json'), journal);
+    expect(existsSync(join(f.run, 'migration-pending'))).toBe(false);
+    expect(f.invoke('recover').status).toBe(0);
+    expect(existsSync(join(f.run, 'migration-pending'))).toBe(true);
+    expect(f.invoke('recover-verify').status).toBe(0);
+    expect(existsSync(join(f.run, 'migration-pending'))).toBe(true);
+    expect(f.invoke('drained').status).not.toBe(0);
+    expect(readFileSync(join(f.state, 'native-retirement.json'), 'utf8')).toBe(journal);
+  });
   it('retains recovery state and admission blocking when the restored service cannot restart', () => {
     const f = fixture({ crash: true });
     expect(f.invoke().signal).toBe('SIGKILL');

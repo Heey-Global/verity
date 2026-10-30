@@ -68,6 +68,12 @@ restore() {
 }
 recover() {
     init
+    # Runtime admission markers disappear on reboot; only retirement recovery
+    # may release the fence backed by this durable journal (even if malformed).
+    if [[ -e $state/native-retirement.json || -L $state/native-retirement.json ]]; then
+        : > "$run_dir/migration-pending"
+        status blocked 'Native retirement recovery is pending'
+    fi
     if [[ -e $state/native-retired && $(selected) != overlayfs ]]; then status blocked "Native state has been retired"; return 1; fi
     [[ -e $journal ]] || return 0
     local pid boot start actual
@@ -105,7 +111,10 @@ recover_verify() {
         status blocked 'Previous worker could not be verified; recovery journal retained'
         return 1
     fi
-    rm -f "$journal" "$run_dir/migration-pending"
+    rm -f "$journal"
+    if [[ ! -e $state/native-retirement.json && ! -L $state/native-retirement.json ]]; then
+        rm -f "$run_dir/migration-pending"
+    fi
     sync -f "$state"
     status rolled-back 'Previous worker verified after interrupted migration recovery'
 }
