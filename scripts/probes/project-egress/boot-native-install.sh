@@ -25,6 +25,8 @@ from pathlib import Path
 p = Path('/etc/docker/daemon.json')
 c = json.loads(p.read_text())
 c['live-restore'] = False
+# Keep real generation-bound Unix socket paths below Linux sun_path limits.
+c['data-root'] = '/d'
 c['runtimes']['runsc-relay'] = dict(c['runtimes']['runsc-project'])
 c['runtimes']['runsc-relay']['runtimeArgs'] = ['--platform=systrap','--network=sandbox','--host-uds=open']
 p.write_text(json.dumps(c))
@@ -95,7 +97,7 @@ docker load --input "$assets/images.tar"
 docker volume create verity-boot-data
 # The native Server uses the same UID as the actual managed Runner. Give it
 # traversal to its volume without exposing Docker's other private state.
-setfacl -m u:1000:x /var/lib/docker /var/lib/docker/volumes
+setfacl -m u:1000:x /d /d/volumes
 fixture_volume_root=$(docker volume inspect --format '{{.Mountpoint}}' verity-boot-data)
 setfacl -m u:1000:x "$(dirname "$fixture_volume_root")"
 chown 1000:1000 "$fixture_volume_root"

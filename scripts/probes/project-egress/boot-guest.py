@@ -97,10 +97,11 @@ def setup():
     run('systemctl', 'start', 'verity-boot-gateway.service', 'verity-boot-server.service')
     wait(lambda: api('/healthz'))
     token = api('/secret/init', {'password': PASSWORD, 'deviceLabel': 'boot fixture'})['token']
-    created = api('/projects', {'kind': 'local', 'name': 'Boot fixture'}, token)
-    project = created.get('project', created)
+    # Adopt the actual first-boot project; creating another would double the
+    # native Runner footprint and leave an unobserved protected generation.
+    project = wait(lambda: next((p for p in api('/projects', token=token)
+                                if p.get('repo') == 'getting-started'), None), 30)
     (ROOT / 'topology.json').write_text(json.dumps({'projectId': project['id']}))
-    api(f"/projects/{project['id']}/repair", {'confirmWarnings': True}, token)
     wait(positive, 180)
     Path(data_root, 'boot-retained-marker').write_text('retained actual project data')
 

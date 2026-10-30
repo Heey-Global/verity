@@ -1,4 +1,6 @@
 import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { projectSocketBindingName } from '../packages/server/src/project-relay-identity.js';
 import { expect, it } from 'vitest';
 import { verifyProjectEgressDockerHost } from '../packages/server/src/project-egress-host-service.js';
 
@@ -78,4 +80,30 @@ it('runs the native Server as the same identity as its actual Runner probes', ()
   expect(uid).not.toBe('0');
   expect(guest).toContain(`'--user', '${uid}:${gid}'`);
   expect(guest).toContain(`'socketOwnerUid': ${uid},`);
+});
+
+it('keeps native generation-bound broker sockets within Linux path limits', () => {
+  const installer = readFileSync(
+    new URL('./probes/project-egress/boot-native-install.sh', import.meta.url),
+    'utf8',
+  );
+  const guest = readFileSync(
+    new URL('./probes/project-egress/boot-guest.py', import.meta.url),
+    'utf8',
+  );
+  const dataRoot = /c\['data-root'\] = '([^']+)'/u.exec(installer)?.[1] ?? '/var/lib/docker';
+  const volume = /'dataVolume': '([^']+)'/u.exec(guest)?.[1];
+  const subpath = /'brokerSubpath': '([^']+)'/u.exec(guest)?.[1];
+  expect(volume).toBeDefined();
+  expect(subpath).toBeDefined();
+  const socket = join(
+    dataRoot,
+    'volumes',
+    volume!,
+    '_data',
+    subpath!,
+    projectSocketBindingName({ projectId: 'project', containerGeneration: 'generation' }),
+    'broker.sock',
+  );
+  expect(Buffer.byteLength(socket)).toBeLessThan(108);
 });
