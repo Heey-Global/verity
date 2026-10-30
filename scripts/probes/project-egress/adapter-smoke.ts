@@ -120,6 +120,7 @@ async function observe(
   name: string,
   receiver = 've-receiver',
   record = true,
+  retained?: { id: string; marker: string },
 ) {
   const marker = name.replace(/[^a-z0-9]/giu, '-');
   let observed = false;
@@ -138,8 +139,15 @@ async function observe(
       project,
       'python3',
       '/probe/agent.py',
-      'send',
-      JSON.stringify({ host, kind, marker, port: 8080 }),
+      retained ? 'command' : 'send',
+      JSON.stringify({
+        host,
+        kind,
+        marker,
+        port: 8080,
+        action: retained ? 'flow-and-send' : 'send',
+        retained,
+      }),
     );
     const sent = process.hrtime.bigint();
     attemptTimings.push({
@@ -335,8 +343,8 @@ try {
     host: addresses[0],
     id: 'deadline-retained',
     repeatMarker: 'deadline-stream',
+    marker: 'deadline-retained-live',
   });
-  await flow({ action: 'flow-send', id: 'deadline-retained', marker: 'deadline-retained-live' });
   const positive = await kernelObservation();
   assert.ok(positive.accepted > baseline.accepted, 'No positive through the actual TC guard');
   assert.ok(BigInt(positive.last_accepted_boot_ns) < BigInt(positive.deadline_ns));
@@ -351,10 +359,18 @@ try {
   assert.ok(BigInt(expiredAfter.last_accepted_boot_ns) < BigInt(positive.deadline_ns));
   assert.ok(BigInt(expiredAfter.last_denied_boot_ns) >= BigInt(positive.deadline_ns));
   await flow({ action: 'flow-repeat-stop', id: 'deadline-retained' });
-  await fence.refresh({ binding: bindings[0]!, revision, grants: grants() });
-  await flow({ action: 'flow-send', id: 'deadline-retained', marker: 'deadline-retained-renewed' });
+  const retained = { id: 'deadline-retained', marker: 'deadline-retained-renewed' };
   await renewed([0], async () => {
-    await observe('ve-a', addresses[0]!, 'tcp', true, 'deadline-fresh-after-renewal');
+    await observe(
+      've-a',
+      addresses[0]!,
+      'tcp',
+      true,
+      'deadline-fresh-after-renewal',
+      've-receiver',
+      true,
+      retained,
+    );
   });
   const renewalStart = (await kernelObservation()).clocks.bootBeforeNs;
   let renewalEnd = renewalStart;
@@ -364,14 +380,10 @@ try {
     attempt < 12 && (attempt < 2 || BigInt(renewalEnd) - BigInt(renewalStart) < 2_200_000_000n);
     attempt++
   ) {
-    await fence.refresh({ binding: bindings[0]!, revision, grants: grants() });
-    await flow({
-      action: 'flow-send',
-      id: 'deadline-retained',
-      marker: 'deadline-retained-renewed',
-    });
     const marker = `deadline-renewal-control-${attempt}`;
-    await observe('ve-a', addresses[0]!, 'tcp', true, marker, 've-receiver', false);
+    await renewed([0], async () => {
+      await observe('ve-a', addresses[0]!, 'tcp', true, marker, 've-receiver', false, retained);
+    });
     renewalControls.push(marker);
     await delay(150);
     renewalEnd = (await hostProjectDeadlineEnforcer().clock()).bootBeforeNs;

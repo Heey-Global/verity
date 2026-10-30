@@ -300,12 +300,18 @@ class ObserverTests(unittest.IsolatedAsyncioTestCase):
         with (patch.object(agent, 'FLOWS', flows), patch.object(agent, 'FLOW_TASKS', tasks),
               patch.object(agent.asyncio, 'open_connection', side_effect=redirect)):
             await agent.operation({'action': 'flow-start', 'kind': 'tcp', 'host': '127.0.0.1',
-                                   'id': 'retained', 'repeatMarker': 'continuous'})
+                                   'id': 'retained', 'repeatMarker': 'continuous', 'marker': 'initial-stream'})
             try:
                 await asyncio.sleep(0.16)
+                self.assertIn(('initial-stream', 'tcp'), self.events)
                 await agent.operation({'action': 'flow-repeat-stop', 'id': 'retained'})
                 self.assertGreaterEqual(len([v for v in self.events if v[0].startswith('continuous-')]), 2)
-                await agent.operation({'action': 'flow-send', 'id': 'retained', 'marker': 'same-stream'})
+                original = flows['retained']
+                await agent.operation({'action': 'flow-and-send', 'host': '127.0.0.1',
+                                       'port': self.port, 'kind': 'tcp', 'marker': 'fresh-control',
+                                       'retained': {'id': 'retained', 'marker': 'same-stream'}})
+                self.assertIs(flows['retained'], original)
+                self.assertIn(('fresh-control', 'tcp'), self.events)
                 await asyncio.sleep(0.02)
                 self.assertIn(('same-stream', 'tcp'), self.events)
             finally:

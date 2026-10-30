@@ -288,6 +288,9 @@ async def operation(request):
                 for item in request["flows"]
             ]
         }
+    if action == 'flow-and-send':
+        await operation({'action': 'flow-send', **request['retained']})
+        return await send(request)
     if action == "flow-start":
         if request["kind"] == "tcp":
             FLOWS[request["id"]] = await asyncio.open_connection(request["host"], 8080)
@@ -296,6 +299,8 @@ async def operation(request):
             sock = socket.socket(family, socket.SOCK_DGRAM)
             sock.connect((request["host"], 8080))
             FLOWS[request["id"]] = sock
+        if request.get('marker'):
+            await operation({'action': 'flow-send', 'id': request['id'], 'marker': request['marker']})
         if request.get('repeatMarker'):
             FLOW_TASKS[request['id']] = asyncio.create_task(repeat_flow(request['id'], request['repeatMarker']))
         return {"opened": True}
