@@ -296,6 +296,26 @@ describe('EventStore — secret encryption at rest (ADR 0002 D3)', () => {
     });
   });
 
+  it('keeps the unassigned meeting retention unset until chosen, and survives other patches', async () => {
+    // Null means "the default in code"; a stored 7 would pin today's default forever.
+    await store.updateVeritySettings({ uplinkInstallationId: 'installation-fixture' });
+    await expect(store.getVeritySettings()).resolves.toMatchObject({
+      unassignedMeetingRetentionDays: null,
+    });
+    await store.updateVeritySettings({ unassignedMeetingRetentionDays: 14 });
+    await store.updateVeritySettings({ premiumSharingEnabled: false });
+    await expect(store.getVeritySettingsRaw()).resolves.toMatchObject({
+      unassignedMeetingRetentionDays: 14,
+    });
+    await store.updateVeritySettings({ unassignedMeetingRetentionDays: null });
+    await expect(store.getVeritySettings()).resolves.toMatchObject({
+      unassignedMeetingRetentionDays: null,
+    });
+    await expect(
+      store.updateVeritySettings({ unassignedMeetingRetentionDays: 0 }),
+    ).rejects.toThrow();
+  });
+
   it('encrypts the minted Doppler token at rest but keeps the binding plaintext (#320)', async () => {
     const projectId = randomUUID();
     await store.upsertProject({

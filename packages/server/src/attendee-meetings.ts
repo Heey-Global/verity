@@ -30,13 +30,31 @@ interface MeetingStartDiagnostic {
 }
 /** Safe startup guidance that the API may expose without internal error details. */
 export class OnlineMeetingStartError extends Error {}
+export class UnassignedMeetingNotFoundError extends Error {
+  constructor() {
+    super('This meeting is no longer waiting to be assigned.');
+  }
+}
 
 export interface AttendeeConfig {
   apiKey: string;
   webhookSecret: string;
 }
+/** The meeting as this owner keeps it. `sessionId` stays null while the meeting is
+ * unassigned: Verity joined before anyone chose a project, so nothing is published to a
+ * session, and assigning it later publishes the complete transcript at once. */
+type OwnedMeeting = Omit<LiveMeetingSyncRecord, 'sessionId'> & { sessionId: string | null };
+export interface UnassignedOnlineMeeting {
+  id: string;
+  title: string | null;
+  startedAt: number;
+  endedAt: number | null;
+  state: LiveMeetingSyncRecord['state'];
+  captureStatus: string;
+  people: number;
+}
 interface OnlineMeeting {
-  meeting: LiveMeetingSyncRecord;
+  meeting: OwnedMeeting;
   botId?: string;
   binding?: Omit<PreviewEdgeBinding, 'expiresAt'> & { expiresAt: string };
   pin: string;
@@ -50,7 +68,12 @@ interface OnlineMeeting {
   timeOriginMs?: number;
   speakerNameOverrides?: Record<string, string>;
   botCreateAttempted?: boolean;
+  /** Set by discard: the provider is stopped and the state deleted once it has ended. */
+  discarded?: boolean;
   error?: string;
+}
+function assigned(meeting: OwnedMeeting): LiveMeetingSyncRecord | undefined {
+  return meeting.sessionId === null ? undefined : { ...meeting, sessionId: meeting.sessionId };
 }
 const terminal = new Set(['ended', 'fatal_error']);
 const webhookSchema = z.object({
@@ -138,7 +161,8 @@ export class AttendeeMeetings {
   private async publish(state: OnlineMeeting) {
     state.meeting.revision += 1;
     await this.save(state);
-    await this.options.ingest(state.meeting);
+    const meeting = assigned(state.meeting);
+    if (meeting) await this.options.ingest(meeting);
   }
   async config() {
     const config = await this.options.store.getAttendeeState<AttendeeConfig>('config');
@@ -257,8 +281,9 @@ export class AttendeeMeetings {
       .catch(() => undefined);
   }
 
+  /** Starts a bot for `sessionId`, or unassigned when `sessionId` is null. */
   async start(
-    sessionId: string,
+    sessionId: string | null,
     meetingUrl: string,
     listenForVerity: boolean,
     title?: string,
@@ -269,14 +294,11 @@ export class AttendeeMeetings {
         throw new OnlineMeetingStartError(
           'Online meetings require an available Uplink webhook connection. Check Uplink / Online Sharing and retry.',
         );
-      if (!(await this.options.store.getSession(sessionId))) throw new Error('Session not found.');
+      if (sessionId !== null && !(await this.options.store.getSession(sessionId)))
+        throw new Error('Session not found.');
       const credentials = await this.options.store.getAttendeeState<AttendeeConfig>('config');
       if (!credentials) throw new Error('Configure Attendee in Connected services first.');
-      if (
-        (await this.records()).some(
-          (row) => row.state.meeting.sessionId === sessionId && row.state.phase !== 'ended',
-        )
-      )
+      if (sessionId !== null && (await this.activeIn(sessionId)))
         throw new Error('An online meeting is already active in this session.');
       const id = randomUUID();
       const state: OnlineMeeting = {
@@ -457,6 +479,81 @@ export class AttendeeMeetings {
     });
   }
 
+  /** Unassigned meetings, newest first. Discarded ones are on their way out. */
+  async unassigned(): Promise<UnassignedOnlineMeeting[]> {
+    return (await this.records())
+      .map((row) => row.state)
+      .filter((state) => state.meeting.sessionId === null && !state.discarded)
+      .map((state) => ({
+        id: state.meeting.id,
+        title: state.meeting.title ?? null,
+        startedAt: state.meeting.startedAt,
+        endedAt: state.meeting.endedAt,
+        state: state.meeting.state,
+        captureStatus: state.meeting.captureStatus,
+        people: new Set(Object.values(state.identities)).size,
+      }))
+      .sort((a, b) => b.startedAt - a.startedAt);
+  }
+
+  /** Attaches an unassigned meeting to a session and publishes everything said so far. */
+  async assign(id: string, sessionId: string): Promise<{ meetingId: string }> {
+    return this.serial(async () => {
+      const state = await this.options.store.getAttendeeState<OnlineMeeting>(`meeting:${id}`);
+      if (!state || state.meeting.sessionId !== null || state.discarded)
+        throw new UnassignedMeetingNotFoundError();
+      if (!(await this.options.store.getSession(sessionId))) throw new Error('Session not found.');
+      if (state.phase !== 'ended' && (await this.activeIn(sessionId)))
+        throw new Error('An online meeting is already active in this session.');
+      state.meeting.sessionId = sessionId;
+      await this.publish(state);
+      this.schedulePendingRequests(state);
+      return { meetingId: id };
+    });
+  }
+
+  /** Stops the bot of an unassigned meeting and forgets what it heard. False when the
+   * meeting is unknown or was assigned meanwhile: published meetings stay. */
+  async discard(id: string): Promise<boolean> {
+    return this.serial(async () => {
+      const state = await this.options.store.getAttendeeState<OnlineMeeting>(`meeting:${id}`);
+      if (!state || state.meeting.sessionId !== null) return false;
+      state.discarded = true;
+      this.forget(state);
+      await this.save(state);
+      // A provider failure leaves the flag for the reconcile loop to finish.
+      await this.finishDiscard(state).catch(() => undefined);
+      return true;
+    });
+  }
+
+  private async activeIn(sessionId: string): Promise<boolean> {
+    return (await this.records()).some(
+      (row) =>
+        row.state.meeting.sessionId === sessionId &&
+        row.state.phase !== 'ended' &&
+        !row.state.discarded,
+    );
+  }
+
+  /** Drops transcript and pending work so a discarded meeting keeps nothing it heard. */
+  private forget(state: OnlineMeeting) {
+    state.stopRequested = true;
+    state.pendingRequests = {};
+    state.meeting.transcript = '';
+    state.meeting.timedWords = [];
+    state.meeting.speakerTurns = [];
+  }
+
+  /** Ends the provider side of a discarded meeting; deletes the state once it has ended.
+   * A failure leaves the state for the reconcile loop to finish. */
+  private async finishDiscard(state: OnlineMeeting) {
+    if (state.phase !== 'ended') await this.reconcileOne(state, true);
+    if (state.phase !== 'ended') return;
+    await this.options.store.deleteAttendeeState(`meeting:${state.meeting.id}`);
+    if (state.botId) await this.options.store.deleteAttendeeState(`event:${state.botId}`);
+  }
+
   private poll() {
     if (this.closed || this.polling) return;
     this.polling = this.reconcile()
@@ -473,20 +570,18 @@ export class AttendeeMeetings {
         const state = await this.options.store.getAttendeeState<OnlineMeeting>(id);
         if (!state) return;
         try {
-          const deleted = !(await this.options.store.getSession(state.meeting.sessionId));
+          const sessionId = state.meeting.sessionId;
+          const deleted =
+            state.discarded === true ||
+            (sessionId !== null && !(await this.options.store.getSession(sessionId)));
           if (deleted) {
-            state.stopRequested = true;
-            state.pendingRequests = {};
-            state.meeting.transcript = '';
-            state.meeting.timedWords = [];
-            state.meeting.speakerTurns = [];
+            this.forget(state);
             await this.save(state);
+            await this.finishDiscard(state);
+          } else {
+            if (state.phase !== 'ended') await this.reconcileOne(state);
+            this.schedulePendingRequests(state);
           }
-          if (state.phase !== 'ended') await this.reconcileOne(state, deleted);
-          if (deleted && state.phase === 'ended') {
-            await this.options.store.deleteAttendeeState(`meeting:${state.meeting.id}`);
-            if (state.botId) await this.options.store.deleteAttendeeState(`event:${state.botId}`);
-          } else if (!deleted) this.schedulePendingRequests(state);
         } catch {
           state.error = 'Meeting connection interrupted; retrying recovery.';
           await this.save(state);
@@ -495,23 +590,37 @@ export class AttendeeMeetings {
     }
   }
   private schedulePendingRequests(state: OnlineMeeting) {
-    if (this.closed || !this.options.spoken || this.researchJobs.has(state.meeting.id)) return;
+    // Requests wait until the meeting has a session to answer in.
+    if (
+      this.closed ||
+      !this.options.spoken ||
+      state.meeting.sessionId === null ||
+      this.researchJobs.has(state.meeting.id)
+    )
+      return;
     const job = this.processPendingRequests(state)
       .catch(() => undefined)
       .finally(() => this.researchJobs.delete(state.meeting.id));
     this.researchJobs.set(state.meeting.id, job);
   }
   private async processPendingRequests(state: OnlineMeeting) {
-    if (!this.options.spoken) return;
+    const meeting = assigned(state.meeting);
+    if (!this.options.spoken || !meeting) return;
     for (const [identity, text] of Object.entries(state.pendingRequests ?? {})) {
       if (this.closed) return;
-      await this.options.spoken(state.meeting, text, `meeting-${state.meeting.id}-${identity}`);
+      await this.options.spoken(meeting, text, `meeting-${state.meeting.id}-${identity}`);
       // Classification must not hold the lifecycle queue or overwrite a newer stop/snapshot.
       await this.serial(async () => {
         const latest = await this.options.store.getAttendeeState<OnlineMeeting>(
           `meeting:${state.meeting.id}`,
         );
-        if (!latest || !(await this.options.store.getSession(latest.meeting.sessionId))) return;
+        if (
+          !latest ||
+          latest.discarded ||
+          latest.meeting.sessionId === null ||
+          !(await this.options.store.getSession(latest.meeting.sessionId))
+        )
+          return;
         latest.processedRequests ??= {};
         latest.processedRequests[identity] = true;
         delete latest.pendingRequests?.[identity];
@@ -595,7 +704,10 @@ export class AttendeeMeetings {
       state.phase = final ? 'stopping' : state.stopRequested ? 'stopping' : 'running';
       if (final) state.meeting.endedAt ??= Date.now();
       if (previous !== JSON.stringify(state.meeting)) await this.publish(state);
-      else await this.options.ingest(state.meeting);
+      else {
+        const meeting = assigned(state.meeting);
+        if (meeting) await this.options.ingest(meeting);
+      }
       if (state.listenForVerity && this.options.spoken) {
         state.pendingRequests ??= {};
         state.processedRequests ??= {};

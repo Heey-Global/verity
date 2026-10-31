@@ -902,10 +902,40 @@ export const veritySettingsSchema = z.object({
   googleDriveAccountEmail: z.string().nullable(),
   googleDriveConnected: z.boolean(),
   advancedModeEnabled: z.boolean().default(false),
+  unassignedMeetingRetentionDays: z.number().int().nullable().optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
 export type VeritySettings = z.infer<typeof veritySettingsSchema>;
+
+const activeLiveMeetingsSchema = z.object({
+  running: z.array(
+    z.object({
+      sessionId: z.string(),
+      id: z.string(),
+      title: z.string().nullable(),
+      engine: z.string(),
+      startedAt: z.number(),
+      state: z.enum(['active', 'interrupted']),
+      captureStatus: z.string(),
+      sessionName: z.string().nullable(),
+      projectId: z.string().nullable(),
+    }),
+  ),
+  unassigned: z.array(
+    z.object({
+      id: z.string(),
+      title: z.string().nullable(),
+      startedAt: z.number(),
+      endedAt: z.number().nullable(),
+      state: z.enum(['active', 'interrupted', 'ended']),
+      captureStatus: z.string(),
+      people: z.number(),
+    }),
+  ),
+  retentionDays: z.number(),
+});
+export type ActiveLiveMeetings = z.infer<typeof activeLiveMeetingsSchema>;
 
 const httpMcpConnectionSchema = z.object({
   id: z.string(),
@@ -1113,6 +1143,7 @@ export type GoogleDriveImportResult = z.infer<typeof googleDriveImportResultSche
 
 type VeritySettingsKey =
   | 'advancedModeEnabled'
+  | 'unassignedMeetingRetentionDays'
   | 'gitUserName'
   | 'gitUserEmail'
   | 'gitSshPrivateKeyPath'
@@ -2525,6 +2556,32 @@ export class VerityClient {
       `/sessions/${encodeURIComponent(sessionId)}/live-meetings/${encodeURIComponent(meetingId)}/online/stop`,
       { method: 'POST' },
     );
+  }
+  /** Running meetings of readable sessions and, for administrators, unassigned ones. */
+  async getActiveLiveMeetings(): Promise<ActiveLiveMeetings> {
+    return activeLiveMeetingsSchema.parse(
+      await (await this.request('/live-meetings/active', { method: 'GET' })).json(),
+    );
+  }
+  /** Assigns an unassigned meeting to a project (new session) or an existing session. */
+  async assignLiveMeeting(
+    meetingId: string,
+    target: { projectId: string } | { sessionId: string },
+  ): Promise<{ sessionId: string; meetingId: string }> {
+    return z.object({ sessionId: z.string(), meetingId: z.string() }).parse(
+      await (
+        await this.request(`/live-meetings/unassigned/${encodeURIComponent(meetingId)}/assign`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(target),
+        })
+      ).json(),
+    );
+  }
+  async discardLiveMeeting(meetingId: string): Promise<void> {
+    await this.request(`/live-meetings/unassigned/${encodeURIComponent(meetingId)}`, {
+      method: 'DELETE',
+    });
   }
   async editOnlineMeetingSpeakers(
     sessionId: string,

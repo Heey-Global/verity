@@ -5040,3 +5040,16 @@ migrations['0178_qa_observation_diagnostics'] = {
     await sql`alter table repair_mandates drop column observation_error`.execute(db);
   },
 };
+
+migrations['0179_unassigned_meeting_retention'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    // Null keeps the default in code, so changing the default needs no migration.
+    await sql`alter table verity_settings add column unassigned_meeting_retention_days integer
+      check (unassigned_meeting_retention_days between 1 and 365)`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table verity_settings drop column unassigned_meeting_retention_days`.execute(
+      db,
+    );
+  },
+};

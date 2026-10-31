@@ -76,6 +76,7 @@ import { registerAttachmentRoute } from './attachment-route.js';
 import { AttendeeMeetings } from './attendee-meetings.js';
 import { attendeeResearchHints } from './attendee-research.js';
 import { registerAttendeeRoutes } from './attendee-routes.js';
+import { registerLiveMeetingIntakeRoutes } from './live-meeting-intake.js';
 import {
   attentionSignals,
   sessionAttentionSignals,
@@ -4689,6 +4690,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
 
   const veritySettingsBody = z.object({
     advancedModeEnabled: z.boolean().optional(),
+    unassignedMeetingRetentionDays: z.number().int().min(1).max(365).nullable().optional(),
     gitUserName: z.string().nullable().optional(),
     gitUserEmail: z.string().nullable().optional(),
     gitSshPrivateKeyPath: z.string().nullable().optional(),
@@ -5986,6 +5988,17 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     isSleepLifecycleState,
     publicProject: (project) => presentProject(project, null, UNKNOWN_SANDBOX_UPDATE, null),
     defaultModel: DEFAULT_MODEL,
+  });
+  registerLiveMeetingIntakeRoutes(app, {
+    store: deps.eventStore,
+    meetings: attendeeMeetings,
+    spawn: sessionCreate.spawn,
+    canReadSession: async (userId, sessionId) =>
+      userId === undefined ||
+      (await authorizePairedRoute(deps.eventStore, userId, 'GET', '/sessions/:id', {
+        id: sessionId,
+      })) === 'allow',
+    log: app.log,
   });
 
   registerRepairRoutes(app, deps.eventStore);

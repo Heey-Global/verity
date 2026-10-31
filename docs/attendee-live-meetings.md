@@ -49,3 +49,34 @@ reference is recorded in the `verity-preview-edge-image` workflow artifact.
 Deployment must use a tested immutable digest; local TypeScript verification is
 not deployment evidence. Real Meet validation must include closing and reopening
 the app, speaker mapping, final transcript reconciliation and connector restart.
+
+## Unassigned meetings
+
+Core can run an online meeting before anyone has chosen a project, for example
+when it joins a calendar meeting on its own. Such a meeting has no session. Core
+keeps transcribing it in its encrypted Attendee state but publishes nothing:
+there is no live meeting record, no analysis and no answer to a spoken request
+until the meeting is assigned. Requests addressed to Verity wait in the state.
+
+Administrators see unassigned meetings in `GET /live-meetings/active`, next to
+the running meetings of every session the caller may read. Unassigned meetings
+belong to no project, so like project-less sessions they are visible to
+administrators only.
+
+- `POST /live-meetings/unassigned/:meetingId/assign` with `{ "projectId" }`
+  creates a session in that project, named after the meeting, and attaches the
+  meeting to it. The session id derives from meeting and project, so a retried
+  request reuses the session the first attempt created. With `{ "sessionId" }`
+  the meeting continues in an existing session instead. Assigning publishes the
+  whole transcript so far, then the meeting behaves like one started in that
+  session, including waiting spoken requests. A session can still have only one
+  running online meeting.
+- `DELETE /live-meetings/unassigned/:meetingId` discards the meeting: the bot is
+  asked to leave, the transcript is dropped at once and the remaining state is
+  deleted once the provider reports the bot ended. Only unassigned meetings can
+  be discarded this way; an assigned meeting has already been published.
+
+Unassigned meetings are discarded automatically once they have been over for
+the retention period, `unassignedMeetingRetentionDays` in the server settings
+(seven days when unset). A meeting that is still running is never discarded by
+the retention job.

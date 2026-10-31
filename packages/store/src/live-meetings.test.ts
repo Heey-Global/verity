@@ -29,6 +29,44 @@ beforeEach(async () => {
   await ctx.store.createSession({ sessionId: 'session-2', worktree: '/two', model: 'm' });
 });
 
+describe('running meetings', () => {
+  it('lists online meetings until they end and device recordings only while they report in', async () => {
+    const put = (record: Partial<LiveMeetingSyncRecord>) =>
+      ctx.store.liveMeetings.putMeeting({ ...meeting, ...record });
+    await put({ id: 'device-live', title: 'Standup', startedAt: 300 });
+    await put({ id: 'device-dead', startedAt: 200 });
+    await put({ id: 'online', sessionId: 'session-2', engine: 'attendee', startedAt: 400 });
+    await put({
+      id: 'online-recovering',
+      engine: 'attendee',
+      state: 'interrupted',
+      startedAt: 150,
+    });
+    await put({ id: 'online-ended', engine: 'attendee', state: 'ended', endedAt: 500 });
+    await put({ id: 'device-ended', state: 'ended', endedAt: 500 });
+    // An app that died mid-meeting leaves its row `active`; only the heartbeat tells.
+    await ctx.db
+      .updateTable('live_meetings')
+      .set({ recorder_last_seen_at: Date.now() - 120_000 })
+      .where('id', 'in', ['device-dead', 'online'])
+      .execute();
+
+    const running = await ctx.store.liveMeetings.running();
+    expect(running.map((item) => item.id)).toEqual(['online', 'device-live', 'online-recovering']);
+    expect(running[0]).toEqual({
+      sessionId: 'session-2',
+      id: 'online',
+      title: null,
+      engine: 'attendee',
+      startedAt: 400,
+      state: 'active',
+      captureStatus: 'listening',
+    });
+    expect(running[1]).toMatchObject({ title: 'Standup', sessionId: 'session-1' });
+    expect(running[2]).toMatchObject({ state: 'interrupted' });
+  });
+});
+
 describe('live meeting sync', () => {
   it.skipIf(!process.env.VERITY_TEST_SHARED_POSTGRES_URL)(
     'does not advance the cursor past an uncommitted earlier update',

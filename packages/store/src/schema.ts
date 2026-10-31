@@ -530,6 +530,12 @@ export interface VeritySettingsTable {
   id: string;
   /** Shows internal Verity Control project/workspace surfaces when enabled. */
   advanced_mode_enabled: ColumnType<boolean, boolean | undefined, boolean>;
+  /** Days an unassigned live meeting is kept after it ends; null means the default. */
+  unassigned_meeting_retention_days: ColumnType<
+    number | null,
+    number | null | undefined,
+    number | null
+  >;
   git_user_name: ColumnType<string | null, string | null | undefined, string | null>;
   git_user_email: ColumnType<string | null, string | null | undefined, string | null>;
   git_ssh_private_key_path: ColumnType<string | null, string | null | undefined, string | null>;
