@@ -1,3 +1,6 @@
+import { StorageReclamation, requestNativeReclamation } from './storage-reclamation.js';
+import { registerStorageReclamationRoutes } from './storage-reclamation-routes.js';
+import { startNativeRetirementEvidence } from './native-buildkit.js';
 import type { GitOutput } from './branches.js';
 import { SessionStorage } from './session-storage.js';
 import {
@@ -2966,6 +2969,7 @@ export async function buildEmbeddedServer(
   }
   let docker: DockerClient | undefined;
   let provisioner: ProvisionerImpl | undefined;
+  let stopNativeEvidence: (() => void) | undefined;
   let buildStorage: BuildStorage | undefined;
   const projectSandboxLifecycleTelemetry = new ProjectSandboxLifecycleTelemetry();
   let deprovisioner: DeprovisionerImpl | undefined;
@@ -3864,6 +3868,11 @@ export async function buildEmbeddedServer(
       undefined,
       '/run/verity-buildkit',
     );
+    const nativeEvidence = startNativeRetirementEvidence(
+      () => buildStorage?.retirementInventoryEmpty() === true,
+    );
+    // Registered after app construction below.
+    stopNativeEvidence = () => nativeEvidence.stop();
     provisioner = new ProvisionerImpl({
       ...(config.projectEgress === undefined ? {} : { projectEgress: config.projectEgress }),
       buildStorage,
@@ -4661,6 +4670,7 @@ export async function buildEmbeddedServer(
                   if (managedDevServerManager?.hasRunningServers(projectId))
                     throw new Error('Managed dev server is active');
                   if (
+                    (localPreviewManager?.listProject(projectId).length ?? 0) > 0 ||
                     (await eventStore.listPublicPreviewShares(projectId)).some((s) =>
                       ['creating', 'active', 'revoking'].includes(s.state),
                     )
@@ -4967,7 +4977,7 @@ export async function buildEmbeddedServer(
           );
           if (
             Date.now() - Date.parse(value.observedAt) >= 0 &&
-            Date.now() - Date.parse(value.observedAt) < 120_000
+            (value.state === 'completed' || Date.now() - Date.parse(value.observedAt) < 120_000)
           )
             nativeBuildkit = value;
         } catch {
@@ -4985,6 +4995,7 @@ export async function buildEmbeddedServer(
                 errors: lastDockerGcReport.errors.length,
                 stoppedContainerPins: lastDockerGcReport.stoppedContainerPins,
                 keptImageReasons: lastDockerGcReport.keptImageReasons,
+                retainedContainers: lastDockerGcReport.retainedContainers,
               }
             : null,
           worktrees: report
@@ -6107,6 +6118,10 @@ export async function buildEmbeddedServer(
     void sweep();
   }
 
+  app.addHook('onClose', () => stopNativeEvidence?.());
+
+  let storageReclamation: StorageReclamation | undefined;
+
   // Host-disk GC (docker-gc.ts). Wired off `projectDocker` because that is the
   // client that CREATES the resources it collects — the devcontainer image cache
   // in `resolveOrBuildImage` and the sandbox containers whose anonymous volumes
@@ -6114,6 +6129,7 @@ export async function buildEmbeddedServer(
   // the disk is full; `docker system prune` does not reach either (the image tags
   // are tagged, not dangling, and prune skips volumes entirely).
   if (projectDocker !== undefined && config.dockerGc !== false) {
+    let nativeMaintenanceRequested: string | null = null;
     const dockerGc = startDockerGcScheduler({
       docker: projectDocker,
       log: app.log,
@@ -6127,8 +6143,17 @@ export async function buildEmbeddedServer(
       // provision. This is what keeps the sweep off a relay whose sandbox has not
       // been created yet — neither the listing nor elapsed time can see that.
       heldRelays: () => projectRelayLifecycle?.heldRelays() ?? [],
-      beforeSweep: () => sessionStorage?.runOnce() ?? Promise.resolve(),
+      beforeSweep: async () => {
+        nativeMaintenanceRequested = null;
+        await requestNativeReclamation()
+          .then((requestedAt) => {
+            nativeMaintenanceRequested = requestedAt;
+          })
+          .catch(() => undefined);
+        await sessionStorage?.runOnce();
+      },
       onReport: (report) => {
+        report.nativeRequestedAt = nativeMaintenanceRequested;
         lastDockerGcReport = report;
       },
       retireContainers: async () => {
@@ -6153,11 +6178,20 @@ export async function buildEmbeddedServer(
               }),
             ),
         });
-        return { removed: [...removed, ...result.removed], errors: result.errors };
+        return {
+          removed: [...removed, ...result.removed],
+          errors: result.errors,
+          retained: result.retained,
+        };
       },
       imageReferences,
       onProjectImageRemoved: (image) =>
         auditRecorder.imageRemoved({ imageRef: image.ref, imageId: image.imageId }),
+    });
+    storageReclamation = new StorageReclamation({
+      collect: () => dockerGc.runOnce(),
+      worktrees: () => sessionStorage?.lastReport,
+      dataRoot: config.dataVolumeRoot,
     });
     buildStorage?.setReclaimer(async () => {
       await dockerGc.runOnce();
@@ -6166,6 +6200,7 @@ export async function buildEmbeddedServer(
       dockerGc.stop();
     });
   }
+  registerStorageReclamationRoutes(app, eventStore, storageReclamation);
   if (codexModelCatalog !== undefined) {
     app.addHook('onClose', () => codexModelCatalog.close());
   }

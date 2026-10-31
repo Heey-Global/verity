@@ -1,5 +1,14 @@
 import { execFileSync, type ExecFileSyncOptionsWithStringEncoding } from 'node:child_process';
-import { readFileSync, writeFileSync, appendFileSync } from 'node:fs';
+import {
+  readFileSync,
+  writeFileSync,
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  closeSync,
+} from 'node:fs';
+import { createHash } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { isReleaseBotLogin } from './release-bot-logins.mjs';
 
@@ -23,6 +32,37 @@ interface Update {
   gitCommitHash: string;
   group: string;
   isRollBackToEmbedded?: boolean;
+  id?: string;
+  manifestPermalink?: string;
+}
+// Verify the published launch asset rather than trusting an artifact name or commit.
+export function validateOTAProfile(
+  root: string,
+  commit: string,
+  published: { id?: string; runtimeVersion?: string; launchAsset?: { hash?: string } },
+  update: Update,
+) {
+  const manifest = JSON.parse(readFileSync(`${root}/manifest.json`, 'utf8')) as {
+    schema?: unknown;
+    commit?: unknown;
+    mapSha256?: unknown;
+    bundleSha256?: unknown;
+  };
+  const mapHash = createHash('sha256')
+    .update(readFileSync(`${root}/main.jsbundle.map`))
+    .digest('hex');
+  const bundleHash = Buffer.from(published.launchAsset?.hash ?? '', 'base64url').toString('hex');
+  if (
+    manifest.schema !== 2 ||
+    manifest.commit !== commit ||
+    manifest.mapSha256 !== mapHash ||
+    !/^[0-9a-f]{64}$/.test(bundleHash) ||
+    manifest.bundleSha256 !== bundleHash ||
+    !update.id ||
+    published.id?.toLowerCase() !== update.id.toLowerCase() ||
+    published.runtimeVersion !== update.runtimeVersion
+  )
+    throw new Error('Exact staging OTA bundle/map evidence does not match publication');
 }
 interface UpdateList {
   currentPage: { group: string }[];
@@ -386,7 +426,7 @@ export function proposalBaseForSource(source: string, execute = git): string {
   return base;
 }
 
-function stage(runtime: string, version: string) {
+function stage(runtime: string, version: string, prepareOnly = false) {
   const stagingOAuth = process.env.STAGING_GOOGLE_AUTH_ID?.trim();
   if (!stagingOAuth || !/^[0-9]+-[a-z0-9-]+\.apps\.googleusercontent\.com$/.test(stagingOAuth))
     throw new Error('STAGING_GOOGLE_AUTH_ID must identify the Staging app OAuth client');
@@ -456,18 +496,54 @@ function stage(runtime: string, version: string) {
   } catch {
     /* Read verifies existence. */
   }
+  const profileRoot = `profiling-artifacts/ota-${commit}`;
   let stagingGroup = readGroup(stagingCandidate);
   if (!stagingGroup) {
     if (!reserve(`ota-staging-upload/${candidate.tag}/${commit}`, stagingCandidate))
       throw new Error(
         'Staging upload was attempted without recorded evidence; reconcile before retrying',
       );
+    const stagingEnv = {
+      ...process.env,
+      VERITY_APP_VARIANT: 'staging',
+      EXPO_UPDATE_CHANNEL: 'staging',
+      GOOGLE_AUTH_ID: stagingOAuth,
+    };
+    run(
+      'npx',
+      [
+        'expo',
+        'export',
+        '--platform',
+        'ios',
+        '--source-maps',
+        'external',
+        '--max-workers',
+        '1',
+        '--output-dir',
+        'dist-cpu-profile',
+      ],
+      {
+        cwd: 'apps/mobile',
+        env: stagingEnv,
+      },
+    );
+    run('node', [
+      'scripts/mobile-cpu-profile.mjs',
+      'retain-ota',
+      'apps/mobile/dist-cpu-profile',
+      commit,
+      `apps/mobile/${profileRoot}`,
+    ]);
     run(
       'npx',
       [
         '--yes',
         'eas-cli@21.0.1',
         'update',
+        '--skip-bundler',
+        '--input-dir',
+        'dist-cpu-profile',
         '--branch',
         stagingCandidate.branch,
         '--platform',
@@ -489,6 +565,54 @@ function stage(runtime: string, version: string) {
     stagingGroup = readGroup(stagingCandidate);
     if (!stagingGroup) throw new Error('Staging OTA evidence is missing');
   }
+  // Reconciliation cannot invent a map by exporting the same commit again.
+  if (!existsSync(`apps/mobile/${profileRoot}/manifest.json`)) {
+    const name = `staging-cpu-ota-${commit}`;
+    const artifacts = api<{ artifacts: { id: number; expired: boolean }[] }>(
+      `repos/${repository()}/actions/artifacts?name=${name}&per_page=100`,
+    ).artifacts.filter((artifact) => !artifact.expired);
+    if (artifacts.length === 0)
+      throw new Error(
+        'Exact staging OTA map missing; restore its retained artifact before delivery',
+      );
+    mkdirSync(`apps/mobile/${profileRoot}`, { recursive: true });
+    const archive = `apps/mobile/${profileRoot}/retained.zip`;
+    const descriptor = openSync(archive, 'w');
+    try {
+      execFileSync(
+        'gh',
+        ['api', `repos/${repository()}/actions/artifacts/${artifacts[0].id}/zip`],
+        { stdio: ['ignore', descriptor, 'inherit'] },
+      );
+    } finally {
+      closeSync(descriptor);
+    }
+    run('unzip', ['-o', archive, '-d', `apps/mobile/${profileRoot}`]);
+  }
+  const updates = easJson<Update[]>('update:view', stagingGroup);
+  const ios = updates.filter((update) => update.platform === 'ios');
+  if (ios.length !== 1 || !ios[0].manifestPermalink?.startsWith('https://'))
+    throw new Error('Published iOS manifest evidence is missing');
+  const publishedManifest = JSON.parse(
+    run('curl', [
+      '--fail',
+      '--silent',
+      '--show-error',
+      '--max-time',
+      '60',
+      ios[0].manifestPermalink,
+    ]),
+  ) as Parameters<typeof validateOTAProfile>[2];
+  validateOTAProfile(`apps/mobile/${profileRoot}`, commit, publishedManifest, ios[0]);
+  writeFileSync(
+    `apps/mobile/${profileRoot}/update.json`,
+    JSON.stringify(
+      { group: stagingGroup, source: commit, runtime: stagingCandidate.runtime, updates },
+      null,
+      2,
+    ),
+  );
+  if (prepareOnly) return;
   eas('channel:edit', 'staging', '--branch', stagingCandidate.branch, '--non-interactive');
   verifyChannel(
     easJson('channel:view', 'staging', '--non-interactive'),
@@ -916,7 +1040,8 @@ function finishRelease(candidate: Artifact, staging = false) {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  if (process.argv[2] === 'stage') stage(process.argv[3] ?? '', process.argv[4] ?? '');
+  if (['stage', 'stage-map'].includes(process.argv[2] ?? ''))
+    stage(process.argv[3] ?? '', process.argv[4] ?? '', process.argv[2] === 'stage-map');
   else if (process.argv[2] === 'promote') promote();
   else throw new Error('Usage: mobile-ota-release.ts stage <runtime> <version> | promote');
 }

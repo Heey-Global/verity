@@ -312,7 +312,7 @@ it('publishes only merged fixed versions under an independent staging lock', () 
   expect(workflow.concurrency.group).not.toBe('release-mobile');
   expect(workflow.concurrency['cancel-in-progress']).toBe(false);
   const steps = workflow.jobs.update.steps;
-  const stage = steps.find((step) => step.run?.includes('mobile-ota-release.ts stage'));
+  const stage = steps.find((step) => step.run?.includes('mobile-ota-release.ts stage '));
   expect(stage?.if).toContain("steps.intent.outputs.mode == 'stage'");
   expect(stage?.run).toContain('steps.intent.outputs.version');
   expect((stage as { id?: string })?.id).toBe('stage');
@@ -368,7 +368,7 @@ it('gates OTA delivery on native publication while allowing PR planning immediat
   expect(plan?.run).toContain('apps/mobile/version.txt');
   expect(gate?.if).toBe("steps.intent.outputs.mode == 'stage'");
   expect(
-    steps.find((step: { run?: string }) => step.run?.includes('mobile-ota-release.ts stage'))?.if,
+    steps.find((step: { run?: string }) => step.run?.includes('mobile-ota-release.ts stage '))?.if,
   ).toContain("steps.version.outputs.blocked != 'true'");
 });
 

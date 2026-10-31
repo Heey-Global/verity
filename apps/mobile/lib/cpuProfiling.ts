@@ -32,7 +32,7 @@ export async function cpuProfilingStatus() {
 }
 export async function startCPUProfiling() {
   const native = profiler();
-  if (!native) throw new Error('Use the staging CPU profiling build.');
+  if (!native) throw new Error('Install the latest native staging build to record CPU activity.');
   const capture = await native.start(native.jsThreadId());
   setGestureDiagnosticsEnabled(true);
   return capture;

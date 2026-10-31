@@ -32,7 +32,7 @@ jobs:
       EXPO_UPDATE_CHANNEL: ${{ inputs.profile-source != '' && 'staging' || inputs.variant }}
       NATIVE_PROFILE: ${{ inputs.profile-source != '' && 'profiling' || inputs.variant == 'staging' && 'staging' || 'testflight' }}
       VERITY_CPU_PROFILING: ${{ inputs.profile-source != '' && '1' || '0' }}
-      EAS_LOCAL_BUILD_SKIP_CLEANUP: ${{ inputs.profile-source != '' && '1' || '' }}
+      EAS_LOCAL_BUILD_SKIP_CLEANUP: ${{ (inputs.profile-source != '' || inputs.variant == 'staging') && '1' || '' }}
       MOBILE_TAG: ${{ inputs.mobile-tag }}
     permissions:
       contents: write
@@ -109,6 +109,10 @@ jobs:
           git fetch origin main
           git merge-base --is-ancestor HEAD origin/main
           echo "VERITY_PROFILE_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      - name: Bind staging map to native source
+        if: inputs.profile-source != '' || inputs.variant == 'staging'
+        run: echo "VERITY_PROFILE_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
 
       # The release job must not depend on the ambient Node.js installation.
       # renovate: datasource=github-actions depName=actions/setup-node
@@ -321,7 +325,7 @@ jobs:
           echo "Native build and IPA verification: $(( $(date +%s) - build_started )) seconds" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Load profiling artifact helper from workflow revision
-        if: inputs.profile-source != ''
+        if: inputs.profile-source != '' || inputs.variant == 'staging'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.workflow_sha }}
@@ -331,13 +335,13 @@ jobs:
           persist-credentials: false
 
       - name: Collect exact profiling source map
-        if: inputs.profile-source != ''
+        if: inputs.profile-source != '' || inputs.variant == 'staging'
         run: |
           set -euo pipefail
-          python3 .mobile-profile-tools/scripts/retain-mobile-profile-map.py "$RUNNER_TEMP/verity-eas-build" "$RUNNER_TEMP/Verity.ipa" "$VERITY_PROFILE_COMMIT" "$RUNNER_TEMP/profiling-artifacts"
+          python3 .mobile-profile-tools/scripts/retain-mobile-profile-map.py "$RUNNER_TEMP/verity-eas-build" "$RUNNER_TEMP/Verity.ipa" "$VERITY_PROFILE_COMMIT" "$RUNNER_TEMP/profiling-artifacts" "${{ inputs.profile-source != '' && 'dedicated' || 'staging' }}"
 
       - name: Retain exact profiling source map before upload
-        if: inputs.profile-source != ''
+        if: inputs.profile-source != '' || inputs.variant == 'staging'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: staging-cpu-map-${{ github.run_id }}
@@ -499,6 +503,6 @@ jobs:
           ccache --show-stats --verbose >> "$GITHUB_STEP_SUMMARY"
 
       - name: Remove diagnostic build workspace and signing material
-        if: always() && inputs.profile-source != ''
+        if: always() && (inputs.profile-source != '' || inputs.variant == 'staging')
         run: |
           rm -rf "$RUNNER_TEMP/verity-eas-build" "$RUNNER_TEMP/app-store-connect" "$HOME/.appstoreconnect/private_keys"

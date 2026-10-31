@@ -17,9 +17,10 @@ const appVariant = process.env.VERITY_APP_VARIANT ?? 'production';
 if (appVariant !== 'production' && appVariant !== 'staging')
   throw new Error('Invalid VERITY_APP_VARIANT');
 const staging = appVariant === 'staging';
-const cpuProfiling = process.env.VERITY_CPU_PROFILING === '1';
+const dedicatedProfiling = process.env.VERITY_CPU_PROFILING === '1';
+const cpuProfiling = staging;
 const profileCommit = process.env.VERITY_PROFILE_COMMIT?.trim();
-if (cpuProfiling && (!staging || !profileCommit || !/^[0-9a-f]{40}$/.test(profileCommit)))
+if (dedicatedProfiling && (!staging || !profileCommit || !/^[0-9a-f]{40}$/.test(profileCommit)))
   throw new Error('CPU profiling requires staging and VERITY_PROFILE_COMMIT (full commit SHA)');
 const expoUpdateChannel =
   process.env.EXPO_UPDATE_CHANNEL?.trim() || (staging ? 'staging' : undefined);
@@ -46,7 +47,7 @@ const config: ExpoConfig = {
   // The Google scheme must be registered in the native binary before its OAuth
   // redirect can return from the system browser.
   scheme: [staging ? 'verity-staging' : 'verity', googleOAuthScheme],
-  version: '1.81.0', // x-release-please-version
+  version: '1.82.0', // x-release-please-version
   // iPad and iPad-on-Mac should adapt to the user's current window/device
   // orientation, especially with Magic Keyboard or Stage Manager. Phone layouts
   // still render portrait-first through the app's responsive UI constraints.
@@ -60,7 +61,7 @@ const config: ExpoConfig = {
   // the matching transparent mark in the adaptive icon below.
   icon: './assets/icon.png',
   updates: {
-    ...(cpuProfiling ? { enabled: false } : {}),
+    ...(dedicatedProfiling ? { enabled: false } : {}),
     url: `https://u.expo.dev/${expoProjectId}`,
     // GitHub's native build does not receive an EAS build profile. Its release
     // workflow supplies the channel explicitly; development and preview builds
@@ -97,7 +98,7 @@ const config: ExpoConfig = {
     },
     infoPlist: {
       VerityCPUProfiling: cpuProfiling,
-      ...(cpuProfiling
+      ...(dedicatedProfiling
         ? {
             VerityProfileCommit: profileCommit,
             VerityProfileRuntime: `staging-profile-${profileCommit}`,
@@ -241,7 +242,7 @@ const config: ExpoConfig = {
 // that X.(Y+1).x updates can never reach an older X.Y.0 installation.
 if (!config.version) throw new Error('Mobile release version is required');
 const [runtimeMajor, runtimeMinor] = config.version.split('.');
-config.runtimeVersion = cpuProfiling
+config.runtimeVersion = dedicatedProfiling
   ? `staging-profile-${profileCommit}`
   : `${staging ? 'staging-' : ''}${runtimeMajor}.${runtimeMinor}.0`;
 

@@ -253,6 +253,7 @@ export {
   type SchedulingHold,
   type SchedulingHoldState,
   type SchedulingRequest,
+  type SchedulingDraftContent,
   type SchedulingRequestPatch,
   type SchedulingRequestState,
   type SchedulingShareBinding,
