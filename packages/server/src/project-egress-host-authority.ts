@@ -62,7 +62,6 @@ export const egressHostAuthority = z.strictObject({
     ),
   projectSponsors: z.record(name, name),
 });
-export type EgressHostAuthority = z.infer<typeof egressHostAuthority>;
 
 /** Re-read all host addresses and every Docker subnet on each admission check.
  * Public project CIDRs and publicly addressed host control sockets are protected too.
