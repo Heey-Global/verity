@@ -41,6 +41,7 @@ export function createGitHubForgeProvider(opts: GitHubForgeProviderOptions): For
   // Share cooldowns between session worktrees of the SAME repository without
   // pausing unrelated projects that may use a different GitHub installation.
   const prFailureCooldowns = new Map<string, { until: number; inFlight?: Promise<void> }>();
+  const discoveryFailureCooldowns = new Map<string, number>();
   const prFailureCooldownFor = (
     owner: string,
     repo: string,
@@ -69,7 +70,9 @@ export function createGitHubForgeProvider(opts: GitHubForgeProviderOptions): For
   return {
     async discover(ref, page) {
       const cooldown = prFailureCooldownFor(ref.owner, ref.repo);
-      if (Date.now() < cooldown.until) throw new Error('GitHub discovery is backing off');
+      const key = `${ref.owner.toLowerCase()}/${ref.repo.toLowerCase()}`;
+      if (Date.now() < Math.max(cooldown.until, discoveryFailureCooldowns.get(key) ?? 0))
+        throw new Error('GitHub discovery is backing off');
       const token = await (opts.discoveryTokenMint ?? opts.projectTokenMint)(ref);
       if (!token) throw new Error('GitHub credentials unavailable');
       const read = async (path: string) => {
@@ -81,15 +84,22 @@ export function createGitHubForgeProvider(opts: GitHubForgeProviderOptions): For
           },
         );
         if (!response.ok) {
-          const retry = Number(response.headers?.get('retry-after'));
-          const reset = Number(response.headers?.get('x-ratelimit-reset')) * 1000;
-          cooldown.until = Math.max(
+          const retry = Number(response.headers?.get('retry-after') ?? undefined);
+          const reset = Number(response.headers?.get('x-ratelimit-reset') ?? undefined) * 1000;
+          const rateLimited =
+            response.status === 429 ||
+            (response.status === 403 &&
+              (response.headers?.get('x-ratelimit-remaining') === '0' || retry > 0));
+          const until = Math.max(
             Date.now() + 60_000,
             Number.isFinite(retry) ? Date.now() + Math.min(retry * 1000, 3_600_000) : 0,
-            response.status === 403 || response.status === 429
-              ? Math.min(reset || 0, Date.now() + 3_600_000)
-              : 0,
+            rateLimited && Number.isFinite(reset) ? Math.min(reset, Date.now() + 3_600_000) : 0,
           );
+          discoveryFailureCooldowns.set(key, until);
+          // Discovery uses a different token and additional endpoints (Actions).
+          // An endpoint/permission failure must not erase readable PR status;
+          // only rate limiting justifies pausing both readers together.
+          if (rateLimited) cooldown.until = Math.max(cooldown.until, until);
           throw new Error(`GitHub discovery unavailable (${response.status})`);
         }
         return response.json();
