@@ -126,7 +126,7 @@ describe('scheduling request routes', () => {
         })
       ).json<{
         assistantSessionId: string | null;
-        requests: { id: string; projectId: string }[];
+        requests: { id: string; projectId: string; sessionAvailable: boolean }[];
       }>();
     const member = await overview('member');
     expect(member.assistantSessionId).toBe('assistant');
@@ -138,6 +138,13 @@ describe('scheduling request routes', () => {
     // The first request's chat was deleted; the app must not link to it.
     expect(member.requests.map((r) => r.sessionAvailable)).toEqual([false, true]);
     expect((await overview('stranger')).requests).toEqual([]);
+    // Every chat asks with its own id; any other chat gets an empty answer without the work.
+    const other = await app!.inject({
+      method: 'GET',
+      url: '/assistant/scheduling-requests?sessionId=other',
+      headers: { 'x-test-user': 'member' },
+    });
+    expect(other.json()).toEqual({ assistantSessionId: 'assistant', requests: [] });
   });
 
   it('shows no overview while the assistant is switched off', async () => {

@@ -122,7 +122,7 @@ export function AssistantSchedulingOverview({
 }) {
   const resource = useScanResource(
     useCallback(async () => {
-      const overview = await client.assistantSchedulingRequests();
+      const overview = await client.assistantSchedulingRequests(sessionId);
       if (overview.assistantSessionId !== sessionId) return null;
       const projects = await client.listProjects();
       const names = new Map(projects.map((project) => [project.id, project.repo]));

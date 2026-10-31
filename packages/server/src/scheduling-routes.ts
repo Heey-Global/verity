@@ -8,6 +8,7 @@ import type { SchedulingService } from './scheduling-service.js';
 
 const sessionParams = z.object({ id: z.string().min(1) });
 const revokeParams = z.object({ requestId: z.string().uuid() });
+const assistantOverviewQuery = z.object({ sessionId: z.string().min(1).optional() });
 
 interface SchedulingRequestView {
   id: string;
@@ -115,9 +116,13 @@ export function registerSchedulingRoutes(
   // filtered to what the caller may use. Every caller learns the assistant's session id, so
   // the app shows the overview there and nowhere else.
   app.get('/assistant/scheduling-requests', async (request) => {
+    const { sessionId } = assistantOverviewQuery.parse(request.query);
     const settings = await deps.eventStore.assistant.settings();
     if (!settings.enabled || settings.session_id === null)
       return { assistantSessionId: null, requests: [] };
+    // Each chat asks with its own id; only the assistant's gets the list it would show.
+    if (sessionId !== undefined && sessionId !== settings.session_id)
+      return { assistantSessionId: settings.session_id, requests: [] };
     // The same projects the assistant itself may use: granted, and neither hidden nor archived.
     const granted = new Set<string>();
     for (const grant of await deps.eventStore.assistant.grants()) {

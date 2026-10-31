@@ -5883,11 +5883,14 @@ export class VerityClient {
     return schedulingRequestsSchema.parse(await res.json()).requests;
   }
   /** The assistant's overview: its session id and the requests of the projects granted to it. */
-  async assistantSchedulingRequests(): Promise<{
+  async assistantSchedulingRequests(sessionId?: string): Promise<{
     assistantSessionId: string | null;
     requests: (SchedulingRequestView & { sessionAvailable?: boolean | undefined })[];
   }> {
-    const res = await this.request('/assistant/scheduling-requests', { method: 'GET' });
+    const res = await this.request(
+      `/assistant/scheduling-requests${sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : ''}`,
+      { method: 'GET' },
+    );
     return z
       .object({
         assistantSessionId: z.string().nullable(),

@@ -103,6 +103,7 @@ it('appears only in the assistant session', async () => {
   unmount();
   render(<AssistantSchedulingOverview client={client} sessionId="assistant" />);
   expect(await screen.findByText('1 open scheduling request')).toBeTruthy();
+  expect(client.assistantSchedulingRequests).toHaveBeenLastCalledWith('assistant');
 });
 
 it('leads to all requests instead of a deleted chat, and stays put for its own', async () => {
