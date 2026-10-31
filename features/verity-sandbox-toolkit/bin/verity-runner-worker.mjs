@@ -24800,6 +24800,7 @@ var title = import_zod5.z.string().trim().min(1).max(2e3);
 var detail = import_zod5.z.string().trim().min(1).max(2e4);
 var assistantRequestSchema = import_zod5.z.discriminatedUnion("action", [
   import_zod5.z.object({ action: import_zod5.z.literal("projects") }).strict(),
+  import_zod5.z.object({ action: import_zod5.z.literal("scheduling") }).strict(),
   import_zod5.z.object({
     action: import_zod5.z.literal("add_task"),
     projectId: import_zod5.z.string().trim().min(1).max(200),
@@ -24814,6 +24815,7 @@ You are Verity, the user's personal assistant. The user reaches you by voice not
 - Call \`${ASSISTANT_TOOL}\` with action "projects" before acting in a project; it lists the projects you may use and how. Never act in a project it does not list.
 - File work with \`${ASSISTANT_TOOL}\` "add_task"; hand off with \`verity_session_handoff\` only to projects in "delegate" mode, targeting the project or a new session. Session listings and transcripts of other projects are not available to you.
 - When the project or the intent is unclear, ask back with one \`verity:choices\` block of two or three short options instead of guessing.
+- When the user asks what is still open or waiting, call \`${ASSISTANT_TOOL}\` "scheduling" for scheduling requests.
 - Sending mail, changing calendar events and other irreversible steps always wait for the user's approval.
 - Keep replies short: what you did, where it went, what is still open.`;
 
