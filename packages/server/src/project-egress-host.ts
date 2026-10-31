@@ -403,7 +403,8 @@ export class ProjectEgressHost {
           throw new Error('Direct enforcement is not ready');
         try {
           // Close direct authority before validating the current roles and topology.
-          await this.deps.enforcement.revoke(record.binding);
+          if (request.operation === 'revoke-direct')
+            await this.deps.enforcement.revoke(record.binding);
           if (request.operation === 'refresh-direct') {
             for (const role of ['sandbox', 'relay'] as const)
               await this.deps.inspectContainer(record.binding, record.containers[role]!, role);

@@ -107,6 +107,7 @@ export function projectFenceRules(
   replace: boolean,
   admission?: ProjectDeadlineLease,
   relay?: ProjectFenceRelay,
+  flowLabel = admission?.nonce,
 ): string {
   validateBinding(binding);
   const table = tableName(binding.projectId + ':' + binding.generation);
@@ -158,11 +159,14 @@ export function projectFenceRules(
     })
     .join('\n');
   if (leases.length && !admission) throw new Error('Packet deadline is required for admission');
-  if (admission && (!/^[a-f0-9]{32}$/u.test(admission.nonce) || /^0+$/u.test(admission.nonce)))
+  if (
+    admission &&
+    (flowLabel === undefined || !/^[a-f0-9]{32}$/u.test(flowLabel) || /^0+$/u.test(flowLabel))
+  )
     throw new Error('Invalid packet admission identity');
   // Numeric ct-label tokens name bit indices, not a raw bitmap literal.
   const bits = Array.from({ length: 128 }, (_, bit) => bit).filter(
-    (bit) => (BigInt(`0x${admission?.nonce ?? '0'}`) & (1n << BigInt(bit))) !== 0n,
+    (bit) => (BigInt(`0x${flowLabel ?? '0'}`) & (1n << BigInt(bit))) !== 0n,
   );
   const label = bits.length ? `(${bits.join(' | ')})` : '(0 & 1)';
   const wall = admission?.authorityExpiresAt;
@@ -266,7 +270,20 @@ chain forward { type filter hook forward priority -200; policy accept; ${relayRu
  * denial before daemon restart. This adapter alone does not supply that boot gate.
  */
 export class ProjectEgressFence {
-  private readonly active = new Map<string, { binding: ProjectFenceBinding; revision: number }>();
+  private readonly active = new Map<
+    string,
+    {
+      binding: ProjectFenceBinding;
+      revision: number;
+      continuity?: {
+        lease: ProjectDeadlineLease;
+        flowLabel: string;
+        grants: string;
+        validUntil: number;
+        targets: string;
+      };
+    }
+  >();
   private readonly retired = new Set<string>();
   private readonly bridges = new Map<string, string>();
   private queue: Promise<unknown> = Promise.resolve();
@@ -284,6 +301,8 @@ export class ProjectEgressFence {
       throw new Error('Project fence attachment changed');
   }
   private async deny(binding: ProjectFenceBinding, next?: ProjectDeadlineLease): Promise<void> {
+    const active = this.active.get(binding.projectId);
+    if (active) delete active.continuity;
     try {
       await this.deps.deadline.revoke(binding, next);
     } finally {
@@ -351,10 +370,23 @@ export class ProjectEgressFence {
         throw new Error('Stale or invalid project fence policy');
       // Capture before inspection, classification, DNS or either executor can pause.
       let admission: ProjectDeadlineLease;
+      let capturedRealNs: bigint;
+      let continuity: (typeof current)['continuity'];
       let authority: ProjectFenceSnapshot['grants'];
       try {
         const sample = await this.deps.deadline.clock();
-        const capturedAt = Number(BigInt(sample.realNs) / 1_000_000n);
+        capturedRealNs = BigInt(sample.realNs);
+        const capturedAt = Number(capturedRealNs / 1_000_000n);
+        continuity =
+          this.deps.deadline.renew &&
+          current.continuity &&
+          current.revision === snapshot.revision &&
+          current.continuity.grants === JSON.stringify(snapshot.grants) &&
+          current.continuity.lease.bootId === sample.bootId &&
+          current.continuity.validUntil > capturedAt &&
+          BigInt(current.continuity.lease.bootDeadlineNs) > BigInt(sample.bootAfterNs)
+            ? current.continuity
+            : undefined;
         authority = snapshot.grants.filter(
           (grant) =>
             grant.revokedAt === undefined &&
@@ -382,7 +414,7 @@ export class ProjectEgressFence {
       }
       // Close old access before inspecting or resolving. A failing refresh cannot
       // keep its previous grants alive; kernel timeouts also bound a killed process.
-      await this.deny(current.binding, admission);
+      if (!continuity) await this.deny(current.binding, admission);
       current.revision = snapshot.revision;
       await this.verify(snapshot.binding);
       if (!(await this.deps.policyCurrent(snapshot)))
@@ -423,6 +455,24 @@ export class ProjectEgressFence {
         for (const address of addresses)
           leases.push({ address, protocol: target.protocol, port: target.port, expiresAt });
       }
+      const targets = JSON.stringify(
+        leases.map((lease) => [lease.address, lease.protocol, lease.port]).sort(),
+      );
+      if (continuity && continuity.targets !== targets) {
+        continuity = undefined;
+        await this.deny(current.binding, admission);
+      }
+      if (this.deps.deadline.renew && leases.length) {
+        // A continuous epoch must not outlive its earliest DNS/tuple budget.
+        // Make that budget part of the kernel lease, not a userspace precheck.
+        const tupleBudget =
+          BigInt(Math.floor(Math.min(...leases.map((lease) => lease.expiresAt)))) * 1_000_000n -
+          capturedRealNs;
+        const tupleDeadline =
+          tupleBudget > 0n ? BigInt(admission.capturedBootNs) + tupleBudget : 0n;
+        if (tupleDeadline < BigInt(admission.bootDeadlineNs))
+          admission = Object.freeze({ ...admission, bootDeadlineNs: tupleDeadline.toString() });
+      }
       // Resolution may yield while Docker replaces an attachment. Recheck before admission.
       await this.verify(snapshot.binding);
       if (!(await this.deps.policyCurrent(snapshot)))
@@ -435,6 +485,7 @@ export class ProjectEgressFence {
           true,
           admission,
           this.deps.relay?.(),
+          continuity?.flowLabel ?? admission.nonce,
         ),
       );
       try {
@@ -443,9 +494,22 @@ export class ProjectEgressFence {
         if (!(await this.deps.policyCurrent(snapshot)))
           throw new Error('Project fence authority changed');
         if (leases.length) {
-          await this.deps.deadline.arm(snapshot.binding, admission);
+          if (continuity)
+            await this.deps.deadline.renew!(
+              snapshot.binding,
+              admission,
+              continuity.lease.bootDeadlineNs,
+            );
+          else await this.deps.deadline.arm(snapshot.binding, admission);
           if (!(await this.deps.policyCurrent(snapshot)))
             throw new Error('Project fence authority changed');
+          current.continuity = {
+            lease: admission,
+            flowLabel: continuity?.flowLabel ?? admission.nonce,
+            grants: JSON.stringify(snapshot.grants),
+            validUntil: Math.min(...leases.map((lease) => lease.expiresAt)),
+            targets,
+          };
         }
       } catch (error) {
         await this.deny(snapshot.binding);

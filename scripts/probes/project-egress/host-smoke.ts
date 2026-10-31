@@ -955,6 +955,22 @@ try {
       last_accepted_boot_ns: string;
       clocks: { bootBeforeNs: string };
     };
+  // Keep the same retained TCP flow live across multiple kernel-checked renewals.
+  const continuousStart = Date.now();
+  while (Date.now() - continuousStart < 2200) {
+    await lifecycle.refreshDirect(identity);
+    await delay(150);
+  }
+  const retainedReceipts = (await docker('logs', 'veh-direct'))
+    .trim()
+    .split('\n')
+    .map((line) => JSON.parse(line) as { marker?: string; boot_ns?: string })
+    .filter((row) => row.marker === 'stream-retained');
+  assert.ok(retainedReceipts.length > 5);
+  assert.ok(
+    BigInt(retainedReceipts.at(-1)!.boot_ns!) - BigInt(retainedReceipts[0]!.boot_ns!) >=
+      2_000_000_000n,
+  );
   const live = await kernel();
   await delay(1300);
   const expired = await kernel();

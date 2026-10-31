@@ -160,6 +160,7 @@ export class ProjectEgressLifecycle {
       throw new Error('Direct admission was not acknowledged');
   }
   async revokeDirect(identity: InternalConnectionIdentity): Promise<void> {
+    this.stopRenewal(identity);
     const reply = await this.command({ operation: 'revoke-direct', ...this.reference(identity) });
     if (reply.state !== 'direct-revoked' || reply.generation !== identity.containerGeneration)
       throw new Error('Direct revocation was not acknowledged');

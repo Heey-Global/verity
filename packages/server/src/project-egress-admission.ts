@@ -11,6 +11,7 @@ import {
  */
 export function createProjectEgressAdmission(options: {
   binding: ProjectFenceBinding;
+  continuous?: boolean;
   sponsorUserId: string;
   store: Pick<ProjectEgressStore, 'readForAdmission'>;
   dependencies: Omit<ProjectFenceDependencies, 'policyCurrent'>;
@@ -64,10 +65,15 @@ export function createProjectEgressAdmission(options: {
         if (attempt !== lifecycle) throw new Error('Admission refresh superseded');
         refreshing = attempt;
         // Permission revocation or a failed database read cannot retain old access.
-        await fence.revoke(binding);
-        const policy = await store.readForAdmission(binding.projectId, sponsorUserId);
-        if (attempt !== lifecycle) throw new Error('Admission refresh superseded');
-        await fence.refresh({ binding, revision: policy.revision, grants: policy.grants });
+        try {
+          if (!options.continuous) await fence.revoke(binding);
+          const policy = await store.readForAdmission(binding.projectId, sponsorUserId);
+          if (attempt !== lifecycle) throw new Error('Admission refresh superseded');
+          await fence.refresh({ binding, revision: policy.revision, grants: policy.grants });
+        } catch (error) {
+          await fence.revoke(binding);
+          throw error;
+        }
       });
     },
     revoke: () => invalidate(() => fence.revoke(binding)),

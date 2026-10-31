@@ -75,6 +75,7 @@ export function createProjectEgressHostEnforcement(options: {
           admission: undefined as unknown as Admission,
         };
         generation.admission = createProjectEgressAdmission({
+          continuous: true,
           binding: b,
           sponsorUserId: options.sponsor(binding),
           store: options.store,

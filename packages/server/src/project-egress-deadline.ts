@@ -101,6 +101,12 @@ export interface ProjectDeadlineEnforcer {
   /** Attach and attest both software hooks in a denied state. */
   prepare(binding: ProjectFenceBinding): Promise<void>;
   clock(): Promise<ProjectDeadlineClock>;
+  /** Kernel-side compare-and-renew; a late handoff must fail without reviving old flows. */
+  renew?(
+    binding: ProjectFenceBinding,
+    lease: ProjectDeadlineLease,
+    previousBootDeadlineNs: string,
+  ): Promise<void>;
   /** Must preserve the given absolute deadline even after arbitrarily late commit. */
   arm(binding: ProjectFenceBinding, lease: ProjectDeadlineLease): Promise<void>;
   revoke(binding: ProjectFenceBinding, next?: ProjectDeadlineLease): Promise<void>;
@@ -168,6 +174,13 @@ export function hostProjectDeadlineEnforcer(): ProjectDeadlineRelayEnforcer {
     },
     async clock() {
       return clockSchema.parse(await request({ operation: 'clock' }));
+    },
+    async renew(binding, lease, previousBootDeadlineNs) {
+      const result = z
+        .strictObject({ state: z.literal('armed'), bootDeadlineNs: decimal })
+        .parse(await request({ operation: 'renew', binding, lease, previousBootDeadlineNs }));
+      if (result.bootDeadlineNs !== lease.bootDeadlineNs)
+        throw new Error('Host changed immutable packet deadline');
     },
     async arm(binding, lease) {
       const result = z

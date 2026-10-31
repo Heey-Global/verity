@@ -94,6 +94,46 @@ def write_deadline(root, index, deadline):
         os.close(fd)
 
 
+class TestRunAttr(ctypes.Structure):
+    _fields_ = [('prog_fd', ctypes.c_uint32), ('retval', ctypes.c_uint32),
+                ('data_size_in', ctypes.c_uint32), ('data_size_out', ctypes.c_uint32),
+                ('data_in', ctypes.c_uint64), ('data_out', ctypes.c_uint64),
+                ('repeat', ctypes.c_uint32), ('duration', ctypes.c_uint32),
+                ('ctx_size_in', ctypes.c_uint32), ('ctx_size_out', ctypes.c_uint32),
+                ('ctx_in', ctypes.c_uint64), ('ctx_out', ctypes.c_uint64),
+                ('flags', ctypes.c_uint32), ('cpu', ctypes.c_uint32), ('batch_size', ctypes.c_uint32)]
+
+
+def renew_deadline(root, index, previous, deadline):
+    program = root / 'renew'
+    if not program.exists():
+        obj = OBJECT.with_name('project-egress-renew.bpf.o')
+        value = obj.lstat()
+        if not stat.S_ISREG(value.st_mode) or value.st_uid != 0 or value.st_mode & 0o022:
+            raise ValueError('Untrusted deadline renewal object')
+        run('/usr/sbin/bpftool', 'prog', 'load', str(obj), str(program),
+            'map', 'name', 'deadline', 'pinned', str(root / 'maps/deadline'))
+    pathname = ctypes.create_string_buffer(str(program).encode())
+    fd = bpf(7, ObjectAttr(ctypes.addressof(pathname), 0, 0))
+    packet = bytearray(78)
+    packet[12:14] = bytes.fromhex('0800')
+    packet[14] = 0x45
+    packet[16:18] = (64).to_bytes(2, 'big')
+    packet[22:24] = bytes([64, 6])
+    packet[46] = 0x50
+    packet[54:] = struct.pack('<QQII', previous, deadline, index, 0)
+    data = ctypes.create_string_buffer(bytes(packet), len(packet))
+    output = ctypes.create_string_buffer(len(packet))
+    attr = TestRunAttr(prog_fd=fd, data_size_in=len(packet), data_size_out=len(packet),
+                       data_in=ctypes.addressof(data), data_out=ctypes.addressof(output), repeat=1)
+    try:
+        bpf(10, attr)
+        if attr.retval != 1:
+            raise ValueError('Kernel deadline continuity expired or changed')
+    finally:
+        os.close(fd)
+
+
 def write_relay(root, policy=None):
     pathname = ctypes.create_string_buffer(str(root / 'maps/relay_transport').encode())
     fd = bpf(7, ObjectAttr(ctypes.addressof(pathname), 0, 0))
@@ -318,7 +358,8 @@ def execute(request):
     if request == {'operation': 'clock'}:
         return clocks()
     if set(request) not in ({'operation', 'binding'}, {'operation', 'binding', 'lease'},
-                            {'operation', 'binding', 'relay'}):
+                            {'operation', 'binding', 'relay'},
+                            {'operation', 'binding', 'lease', 'previousBootDeadlineNs'}):
         raise ValueError('Invalid deadline request')
     binding = request['binding']
     key = binding_key(binding)
@@ -328,6 +369,7 @@ def execute(request):
     fields = {
         'prepare': ({'operation', 'binding'},),
         'arm': ({'operation', 'binding', 'lease'},),
+        'renew': ({'operation', 'binding', 'lease', 'previousBootDeadlineNs'},),
         'revoke': ({'operation', 'binding'}, {'operation', 'binding', 'lease'}),
         'configure-relay': ({'operation', 'binding', 'relay'},),
         'clear-relay': ({'operation', 'binding'},),
@@ -414,8 +456,17 @@ def execute(request):
         state['uncertainExpiry'] = False
         save(path, state)
         return {'state': 'denied'}
-    # Validation and failed admission must not preserve the previous live grant.
-    write_deadline(root, state['peer']['index'], 0)
+    # A continuous renewal keeps the old kernel deadline until compare-and-renew.
+    # Failure is followed by the caller's explicit revoke; the old lease expires independently.
+    if op != 'renew':
+        write_deadline(root, state['peer']['index'], 0)
+    else:
+        previous = request['previousBootDeadlineNs']
+        if (not isinstance(previous, str) or not re.fullmatch(r'[1-9][0-9]{0,19}', previous)
+                or previous != state.get('lastDeadlineNs') or int(previous) > (1 << 64) - 1
+                or request['lease']['revision'] != state['revision']):
+            raise ValueError('Invalid continuous deadline renewal')
+        remember_expiry(binding, state)
     lease = request['lease']
     deadline, captured, expiry = validate_lease(key, state, lease, pending=True)
     try:
@@ -428,6 +479,7 @@ def execute(request):
     except BaseException:
         write_relay(root)
         raise
+    state['lastDeadlineNs'] = str(deadline)
     state['pendingAdmission'] = None
     state['revision'] = lease['revision']
     state['lastCapturedNs'] = str(captured)
@@ -438,7 +490,10 @@ def execute(request):
             state['nftAuthorities'].append(int(value))
     save(path, state)
     # No remaining duration is recomputed here. An arbitrarily late update stays expired.
-    write_deadline(root, state['peer']['index'], deadline)
+    if op == 'renew':
+        renew_deadline(root, state['peer']['index'], int(previous), deadline)
+    else:
+        write_deadline(root, state['peer']['index'], deadline)
     return {'state': 'armed', 'bootDeadlineNs': str(deadline)}
 
 

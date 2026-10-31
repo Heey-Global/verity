@@ -19,7 +19,8 @@ class ComposedProof(unittest.TestCase):
                 if allowed:
                     for protocol in ('tcp', 'udp'):
                         records.append({'kind': protocol, 'marker': f'{phase}-{family}-{protocol}', 'boot_ns': '1000000000'})
-        records.append({'kind': 'tcp', 'marker': 'stream-retained', 'boot_ns': '1500000000'})
+        records.extend([{'kind': 'tcp', 'marker': 'stream-retained', 'boot_ns': '100000000'},
+                        {'kind': 'tcp', 'marker': 'stream-retained', 'boot_ns': '2300000000'}])
         proof = {'live': {'deadline_ns': '2000000000', 'accepted': 10},
                  'expired': {'accepted': 12, 'denied': 1, 'clocks': {'bootBeforeNs': '3000000000'}},
                  'attempted': {'accepted': 12, 'denied': 2, 'last_accepted_boot_ns': '1500000000', 'clocks': {'bootBeforeNs': '3300000000'}},

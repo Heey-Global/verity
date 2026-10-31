@@ -1,3 +1,4 @@
+import ipaddr from 'ipaddr.js';
 import { z } from 'zod';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -227,10 +228,47 @@ export function directCorridorRules(
  oifname "${network.bridge}" iifname != "${network.bridge}" ip6 daddr ${b.ipv6} return;
 `;
   if (hook !== 'input') return '';
-  const nd = `ip6 saddr ${b.ipv6} ip6 daddr ${direct.gateway6} ip6 hoplimit 255 icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert } return;`;
-  if (family === 'inet') return `iifname "${network.bridge}" ${nd}\n`;
+  const raw = (address: string) =>
+    '0x' +
+    ipaddr
+      .parse(address)
+      .toByteArray()
+      .map((byte) => byte.toString(16).padStart(2, '0'))
+      .join('');
+  const mac = t.sandbox.mac.split(':').map((byte) => Number.parseInt(byte, 16));
+  const linkLocal = ipaddr
+    .fromByteArray([
+      0xfe,
+      0x80,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      mac[0]! ^ 2,
+      mac[1]!,
+      mac[2]!,
+      0xff,
+      0xfe,
+      mac[3]!,
+      mac[4]!,
+      mac[5]!,
+    ])
+    .toString();
+  // NS normally targets a solicited-node multicast address. Match its ICMPv6
+  // target field, not the IPv6 destination, and never accept router advertisements.
+  const prefix =
+    family === 'inet'
+      ? `iifname "${network.bridge}"`
+      : `meta ibrname "${network.bridge}" meta iif ${t.sandbox.index} iifname "${t.sandbox.device}" ether saddr ${t.sandbox.mac}`;
+  const nd = `
+ ${prefix} ip6 saddr { ${b.ipv6}, ${linkLocal} } ip6 hoplimit 255 icmpv6 type nd-neighbor-solicit @th,64,128 ${raw(direct.gateway6)} return;
+ ${prefix} ip6 saddr { ${b.ipv6}, ${linkLocal} } ip6 hoplimit 255 icmpv6 type nd-neighbor-advert @th,64,128 ${raw(b.ipv6)} return;
+`;
+  if (family === 'inet') return nd;
   return `
- meta ibrname "${network.bridge}" meta iif ${t.sandbox.index} iifname "${t.sandbox.device}" ether saddr ${t.sandbox.mac} arp operation { request, reply } arp saddr ether ${t.sandbox.mac} arp saddr ip ${b.ipv4} arp daddr ip ${direct.gateway4} return;
- meta ibrname "${network.bridge}" meta iif ${t.sandbox.index} iifname "${t.sandbox.device}" ether saddr ${t.sandbox.mac} ${nd}
+ ${prefix} arp operation { request, reply } arp saddr ether ${t.sandbox.mac} arp saddr ip ${b.ipv4} arp daddr ip ${direct.gateway4} return;
+ ${nd}
 `;
 }

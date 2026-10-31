@@ -11,7 +11,7 @@ if expectation == 'stream':
     with socket.socket(family, socket.SOCK_STREAM) as channel:
         channel.settimeout(0.1)
         channel.connect((target, 443))
-        end = time.monotonic() + 4
+        end = time.monotonic() + 9
         attempts = 0
         while time.monotonic() < end:
             attempts += 1

@@ -283,6 +283,36 @@ class DeadlineHostTests(unittest.TestCase):
                         [{**concrete, 'options': {**concrete['options'], 'actions': [{'kind': 'mirred'}]}}]):
             with self.assertRaises(ValueError): host.attest_filters(filters, 7)
 
+    def test_continuous_renewal_uses_kernel_handoff_without_zeroing_a_live_lease(self):
+        self.arm()
+        previous = self.lease['bootDeadlineNs']
+        candidate = {**self.lease, 'capturedBootNs': '30', 'bootDeadlineNs': '1000000030'}
+        self.write.reset_mock()
+        with patch.object(host, 'renew_deadline') as renew:
+            result = host.execute({'operation': 'renew', 'binding': self.binding,
+                                   'lease': candidate, 'previousBootDeadlineNs': previous})
+        self.assertEqual(result['bootDeadlineNs'], candidate['bootDeadlineNs'])
+        renew.assert_called_once_with(host.PINS / self.key, 5, int(previous), int(candidate['bootDeadlineNs']))
+        self.write.assert_not_called()
+
+    def test_failed_kernel_continuity_is_an_error_not_a_userspace_rearm(self):
+        self.arm()
+        previous = self.lease['bootDeadlineNs']
+        candidate = {**self.lease, 'capturedBootNs': '30', 'bootDeadlineNs': '1000000030'}
+        self.write.reset_mock()
+        with patch.object(host, 'renew_deadline', side_effect=ValueError('Kernel continuity expired')):
+            with self.assertRaisesRegex(ValueError, 'continuity expired'):
+                host.execute({'operation': 'renew', 'binding': self.binding,
+                              'lease': candidate, 'previousBootDeadlineNs': previous})
+        self.write.assert_not_called()
+
+    def test_wrong_previous_deadline_cannot_select_continuous_handoff(self):
+        self.arm()
+        with patch.object(host, 'renew_deadline') as renew:
+            with self.assertRaises(ValueError):
+                host.execute({'operation': 'renew', 'binding': self.binding,
+                              'lease': self.lease, 'previousBootDeadlineNs': '1000000000'})
+        renew.assert_not_called()
 
 class RelayIdentityTests(unittest.TestCase):
     def setUp(self):

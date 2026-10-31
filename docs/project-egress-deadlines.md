@@ -203,7 +203,13 @@ refreshes sequentially, waiting 250 ms after each completed refresh; the kernel
 lease still lasts at most 1000 ms from its original clock capture. Refresh errors
 stop renewal and attempt direct revocation. Prepare, retirement and Server close
 cancel renewal; the host does not renew on behalf of a lost Server. Renewal does
-not revive previously labelled connections or extend temporary grant budgets.
+not revive expired connection epochs or extend temporary grant budgets. Unchanged
+policy and resolved tuples retain their conntrack label only when a host-only
+BPF test-run program confirms that the previous kernel lease is still live.
+The handoff compares the expected deadline and interface in the kernel before
+updating the lease; a failed handoff closes direct access. Changed targets,
+revocation and expired leases require a fresh connection epoch. The lease is
+also capped by the earliest DNS/tuple budget.
 
 Host records bind packet-enforced generations to the host boot ID. Every daemon
 pre-start restore retires old packet generations before Docker starts; a new
@@ -218,7 +224,8 @@ The experimental service requires a mounted bpffs and an existing root-owned
 only that pin subtree and the existing private service state. Deadline evidence
 is stored under `/var/lib/verity-egress/deadline`, independently of the control
 socket runtime directory, and survives service restarts and host reboot; boot-ID
-checks still require a fresh generation after reboot. Missing helper/object, unsupported kernel,
+checks still require a fresh generation after reboot. Both `project-egress-deadline.bpf.o` and `project-egress-renew.bpf.o`
+are required beside the fixed helper. Missing helper/object, unsupported kernel,
 missing pins or failed attestation prevent packet-enforced startup. These
 requirements do not authorize installation on an existing host.
 
