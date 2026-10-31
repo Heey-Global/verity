@@ -27,7 +27,7 @@ import {
 import { randomBytes } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { promisify } from 'node:util';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import {
   ProjectEgressHost,
   projectEgressStartupRules,
@@ -921,7 +921,16 @@ try {
   await delay(1200);
   await directProbe('lease-expired', false);
   assert.ok((await client('positive', relayAddress)).includes('transport-positive'));
-  await lifecycle.refreshDirect(identity);
+  const renewalProcess = spawn(process.execPath, ['/probe/composed-renewal.mjs'], {
+    env: { ...process.env, PROBE_CONTROL_DIRECTORY: directory, PROBE_CONTROL_TOKEN: token },
+    stdio: ['ignore', 'inherit', 'inherit'],
+  });
+  for (let i = 0; i < 100; i++) {
+    if ((await readFile(`${directory}/renewal-ready`, 'utf8').catch(() => '')) === 'ready') break;
+    assert.equal(renewalProcess.exitCode, null, 'Renewal process exited before readiness');
+    await delay(50);
+  }
+  assert.equal(await readFile(`${directory}/renewal-ready`, 'utf8'), 'ready');
   await docker(
     'exec',
     '-d',
@@ -956,11 +965,10 @@ try {
       clocks: { bootBeforeNs: string };
     };
   // Keep the same retained TCP flow live across multiple kernel-checked renewals.
-  const continuousStart = Date.now();
-  while (Date.now() - continuousStart < 2200) {
-    await lifecycle.refreshDirect(identity);
-    await delay(150);
-  }
+  await delay(2200);
+  const renewalExit = new Promise<void>((resolve) => renewalProcess.once('exit', () => resolve()));
+  assert.ok(renewalProcess.kill('SIGKILL'));
+  await renewalExit;
   const retainedReceipts = (await docker('logs', 'veh-direct'))
     .trim()
     .split('\n')

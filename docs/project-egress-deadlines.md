@@ -231,7 +231,8 @@ requirements do not authorize installation on an existing host.
 
 The disposable Runner/relay fixture now exercises the combined Docker, TC and
 nftables path with an independent dual-stack receiver, fresh direct controls,
-lease expiry, retained TCP attempts, direct revoke and unchanged relay controls.
+lease expiry, retained TCP across automatic Server renewal, SIGKILL of the
+renewal process, direct revoke and unchanged relay controls.
 `composed-proof.py` independently checks receiver receipts, raw TC observations
 and sender heartbeat evidence; forged late receipts, missing positive controls
 and late kernel admission are rejected by its tests. These checks supplement the

@@ -35,8 +35,10 @@ export class ProjectEgressLifecycle {
       try {
         await this.refreshDirect(identity);
       } catch (error) {
-        this.stopRenewal(identity);
-        await this.revokeDirect(identity).catch(() => undefined);
+        if (this.renewals.get(identity.projectId) === state) {
+          this.stopRenewal(identity);
+          await this.revokeDirect(identity).catch(() => undefined);
+        }
         throw error;
       }
       if (this.renewals.get(identity.projectId) !== state || this.closed) return;

@@ -143,3 +143,41 @@ it('stops renewing after an ambiguous host failure and attempts direct revocatio
     vi.useRealTimers();
   }
 });
+
+it('does not let an obsolete failed refresh cancel a replacement renewal', async () => {
+  vi.useFakeTimers();
+  let rejectOld!: (error: Error) => void;
+  let calls = 0;
+  const operations: string[] = [];
+  const lifecycle = new ProjectEgressLifecycle(async (input) => {
+    operations.push(input.operation);
+    if (input.operation === 'connect')
+      return {
+        state: 'connected',
+        generation: 'g1',
+        relayAddress: '172.30.1.3',
+        directAuthority: true,
+      };
+    if (input.operation === 'refresh-direct') {
+      if (++calls === 2)
+        await new Promise<void>((_resolve, reject) => {
+          rejectOld = reject;
+        });
+      return { state: 'direct-refreshed', generation: 'g1' };
+    }
+    return { state: 'direct-revoked', generation: 'g1' };
+  }, {});
+  try {
+    await lifecycle.connect(identity);
+    await vi.advanceTimersByTimeAsync(250);
+    expect(calls).toBe(2);
+    await lifecycle.connect(identity);
+    rejectOld(new Error('obsolete request failed'));
+    await vi.advanceTimersByTimeAsync(500);
+    expect(calls).toBe(5);
+    expect(operations).not.toContain('revoke-direct');
+  } finally {
+    await lifecycle.close();
+    vi.useRealTimers();
+  }
+});

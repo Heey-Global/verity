@@ -401,27 +401,39 @@ export class ProjectEgressHost {
       if (request.operation === 'refresh-direct' || request.operation === 'revoke-direct') {
         if (!this.deps.enforcement || !this.transports.has(key(record.binding)))
           throw new Error('Direct enforcement is not ready');
+        const verifyTransport = async () => {
+          for (const role of ['sandbox', 'relay'] as const)
+            await this.deps.inspectContainer(record.binding, record.containers[role]!, role);
+          await this.deps.inspectNetwork(record.binding, containerIds(record));
+          const transport = await this.deps.inspectTransport?.(record.binding, {
+            sandbox: record.containers.sandbox!,
+            relay: record.containers.relay!,
+          });
+          if (
+            JSON.stringify(transport) !==
+            JSON.stringify(this.transports.get(key(record.binding))!.transport)
+          )
+            throw new Error('Direct transport changed');
+        };
+        let directContained = false;
         try {
-          // Close direct authority before validating the current roles and topology.
           if (request.operation === 'revoke-direct')
             await this.deps.enforcement.revoke(record.binding);
-          if (request.operation === 'refresh-direct') {
-            for (const role of ['sandbox', 'relay'] as const)
-              await this.deps.inspectContainer(record.binding, record.containers[role]!, role);
-            await this.deps.inspectNetwork(record.binding, containerIds(record));
-            const transport = await this.deps.inspectTransport?.(record.binding, {
-              sandbox: record.containers.sandbox!,
-              relay: record.containers.relay!,
-            });
-            if (
-              JSON.stringify(transport) !==
-              JSON.stringify(this.transports.get(key(record.binding))!.transport)
-            )
-              throw new Error('Direct transport changed');
-            await this.deps.enforcement.refresh(record.binding);
+          else {
+            await verifyTransport();
+            try {
+              await this.deps.enforcement.refresh(record.binding);
+            } catch (error) {
+              // Authority failures close direct access while preserving the checked relay.
+              // A topology change or failed containment still closes both paths below.
+              await verifyTransport();
+              await this.deps.enforcement.revoke(record.binding);
+              directContained = true;
+              throw error;
+            }
           }
         } catch (error) {
-          await this.deny(record);
+          if (!directContained) await this.deny(record);
           throw error;
         }
         return {
