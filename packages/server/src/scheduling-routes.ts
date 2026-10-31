@@ -8,10 +8,13 @@ import type { SchedulingService } from './scheduling-service.js';
 
 const sessionParams = z.object({ id: z.string().min(1) });
 const revokeParams = z.object({ requestId: z.string().uuid() });
+const assistantOverviewQuery = z.object({ sessionId: z.string().min(1).optional() });
 
 interface SchedulingRequestView {
   id: string;
   sessionId: string;
+  /** The project the request was prepared in; it decides who may see it. */
+  projectId: string | null;
   state: SchedulingRequest['state'];
   title: string;
   durationMinutes: number;
@@ -40,6 +43,7 @@ async function schedulingRequestView(
   return {
     id: request.id,
     sessionId: request.sessionId,
+    projectId: request.projectId,
     state: request.state,
     title: request.title,
     durationMinutes: request.durationMinutes,
@@ -106,6 +110,47 @@ export function registerSchedulingRoutes(
       if (usable.get(stored.projectId)) visible.push(stored);
     }
     return { requests: await Promise.all(visible.map(view)) };
+  });
+
+  // The assistant's overview: requests of the projects granted to it and its own, still
+  // filtered to what the caller may use. Every caller learns the assistant's session id, so
+  // the app shows the overview there and nowhere else.
+  app.get('/assistant/scheduling-requests', async (request) => {
+    const { sessionId } = assistantOverviewQuery.parse(request.query);
+    const settings = await deps.eventStore.assistant.settings();
+    if (!settings.enabled || settings.session_id === null)
+      return { assistantSessionId: null, requests: [] };
+    // Each chat asks with its own id; only the assistant's gets the list it would show.
+    if (sessionId !== undefined && sessionId !== settings.session_id)
+      return { assistantSessionId: settings.session_id, requests: [] };
+    // The same projects the assistant itself may use: granted, and neither hidden nor archived.
+    const granted = new Set<string>();
+    for (const grant of await deps.eventStore.assistant.grants()) {
+      if (grant.mode === 'off') continue;
+      const project = await deps.eventStore.getProject(grant.project_id);
+      if (project && project.hiddenAt === null && !project.archived) granted.add(project.id);
+    }
+    const usable = new Map<string | null, boolean>();
+    const visible: SchedulingRequest[] = [];
+    for (const stored of await deps.eventStore.scheduling.listRecent()) {
+      // Only running requests: the bar shows nothing else, and settled ones need no link.
+      if (stored.state !== 'open' && stored.state !== 'provisioning') continue;
+      const own = stored.sessionId === settings.session_id;
+      if (!own && (stored.projectId === null || !granted.has(stored.projectId))) continue;
+      if (!usable.has(stored.projectId))
+        usable.set(stored.projectId, await mayUse(request.localUserId, stored.projectId));
+      if (usable.get(stored.projectId)) visible.push(stored);
+    }
+    return {
+      assistantSessionId: settings.session_id,
+      // Requests outlive their chat; the overview links to the chat only while it exists.
+      requests: await Promise.all(
+        visible.map(async (stored) => ({
+          ...(await view(stored)),
+          sessionAvailable: (await deps.eventStore.getSession(stored.sessionId)) !== undefined,
+        })),
+      ),
+    };
   });
 
   // Also for requests whose session was deleted: they keep running until withdrawn.

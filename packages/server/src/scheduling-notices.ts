@@ -1,3 +1,4 @@
+import type { EventStore } from '@verity/store';
 import type { PushNotification } from './push-sender.js';
 import type { SchedulingNotification } from './scheduling-service.js';
 
@@ -67,4 +68,24 @@ export function schedulingPush(notification: SchedulingNotification): PushNotifi
         data,
       };
   }
+}
+
+/**
+ * Where else a scheduling notice belongs: the assistant's session, when the request was made in
+ * a project granted to it. The assistant keeps the overview across projects; its own requests
+ * already land there, and nothing is copied while it is switched off or the project is hidden.
+ */
+export async function assistantNoticeTarget(
+  store: Pick<EventStore, 'assistant' | 'getProject'>,
+  request: { sessionId: string; projectId: string | null },
+): Promise<{ sessionId: string; prefix: string } | undefined> {
+  if (request.projectId === null) return undefined;
+  const settings = await store.assistant.settings();
+  if (!settings.enabled || settings.session_id === null) return undefined;
+  if (settings.session_id === request.sessionId) return undefined;
+  const grant = await store.assistant.grant(request.projectId);
+  if (!grant || grant.mode === 'off') return undefined;
+  const project = await store.getProject(request.projectId);
+  if (!project || project.hiddenAt !== null || project.archived) return undefined;
+  return { sessionId: settings.session_id, prefix: `${project.owner}/${project.repo}: ` };
 }
