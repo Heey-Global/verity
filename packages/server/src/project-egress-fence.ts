@@ -425,6 +425,20 @@ export class ProjectEgressFence {
       // Keep the deny-only table and attachment reservation until explicit host cleanup.
     });
   }
+  /** Close access before loading replacement authority, without retiring identity. */
+  revoke(binding: ProjectFenceBinding): Promise<void> {
+    binding = { ...binding };
+    return this.serialize(async () => {
+      const current = this.active.get(binding.projectId);
+      if (
+        !current ||
+        bindingKey(current.binding) !== bindingKey(binding) ||
+        this.retired.has(generationKey(binding))
+      )
+        throw new Error('Inactive project fence generation');
+      await this.deny(binding);
+    });
+  }
 }
 
 /** Must execute in the trusted host network namespace, never inside a project. */

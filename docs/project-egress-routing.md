@@ -80,6 +80,21 @@ controller lease remains an independent requirement. This primitive does not
 connect DNS or destination admission to the host control service, enable sandbox
 DNS, or activate production enforcement.
 
+### Experimental policy admission composition
+
+`createProjectEgressAdmission` binds one trusted registrar identity and execution
+sponsor to a fence. Refresh accepts no caller-supplied grants: it first revokes
+the current fence, then reads the durable policy through `readForAdmission`.
+That store operation requires current project execution rights, an active sponsor
+and, for revalidation, the exact policy revision. The complete grant set is
+compared again before admission, including after asynchronous DNS work. Failed
+reads and changed authority leave the fence denied; reading never renews a grant.
+
+The adapter exposes prepare, refresh, revoke and retire for lifecycle composition.
+It is not constructed by the production Server or host service. Combining direct
+admission with the startup and bounded-relay fences, and proving that combination
+in the native fixture, remain required before protected mode can be enabled.
+
 ## Public package retrieval defaults
 
 The target scope includes every ecosystem below; it is not limited to an initial
