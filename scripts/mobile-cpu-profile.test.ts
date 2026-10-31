@@ -149,6 +149,24 @@ namespace hermes { class IHermesRootAPI; void *makeHermesRootAPI(); }
       stdio: ['pipe', 'pipe', 'pipe'],
     });
   });
+  it.each(['static', 'framework'])('resolves the generated Swift header for %s pods', (layout) => {
+    const source = readFileSync('apps/mobile/plugins/cpu-profiler/VerityCPUProfiler.mm', 'utf8');
+    const block = source.match(
+      /#if __has_include\(<VerityCPUProfiler\/VerityCPUProfiler-Swift\.h>\)[\s\S]*?#endif/,
+    );
+    if (!block) throw new Error('Missing mixed-pod Swift header import');
+    const root = mkdtempSync(join(tmpdir(), 'verity-swift-import-'));
+    roots.push(root);
+    const headers = layout === 'framework' ? join(root, 'VerityCPUProfiler') : root;
+    mkdirSync(headers, { recursive: true });
+    writeFileSync(join(headers, 'VerityCPUProfiler-Swift.h'), 'int verity_header_found;\n');
+    const output = execFileSync('c++', ['-E', '-P', '-x', 'c++', '-I', root, '-'], {
+      input: block[0],
+      encoding: 'utf8',
+      stdio: 'pipe',
+    });
+    expect(output).toContain('verity_header_found');
+  });
   it('loads the bundle-phase helper when Expo is omitted from contract CI', () => {
     execFileSync(
       process.execPath,

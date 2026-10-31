@@ -3,7 +3,11 @@
 #import <React/RCTBridgeModule.h>
 #import <React/RCTInvalidating.h>
 #import <hermes/hermes.h>
+#if __has_include(<VerityCPUProfiler/VerityCPUProfiler-Swift.h>)
 #import <VerityCPUProfiler/VerityCPUProfiler-Swift.h>
+#else
+#import <VerityCPUProfiler-Swift.h>
+#endif
 #include <time.h>
 #include <pthread.h>
 #include <mutex>
