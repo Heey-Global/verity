@@ -182,7 +182,19 @@ describe('assistant scheduling overview', () => {
       project: 'team/a',
       state: 'open',
     });
-    expect(JSON.stringify(result)).not.toContain('pin');
+    // The guest's link carries its PIN; an entry may only ever have these fields.
+    const allowed = [
+      'requestId',
+      'project',
+      'state',
+      'title',
+      'guest',
+      'sentAt',
+      'closesAt',
+      'bookedStart',
+    ];
+    for (const entry of result.requests)
+      expect(Object.keys(entry).filter((key) => !allowed.includes(key))).toEqual([]);
   });
 
   it('drops a granted project whose requests the turn user may not steer', async () => {
