@@ -1910,11 +1910,12 @@ export interface Provisioner {
     projectId: string,
     mutation: () => Promise<T>,
     exceptSessionIds?: ReadonlySet<string>,
+    waitForMutation?: AbortSignal,
   ): Promise<T>;
   /** Stop and retain an idle Sandbox, revoking all of its live authority first. */
   sleepProject?(
     projectId: string,
-    options?: { shouldRestore?: () => boolean },
+    options?: { shouldRestore?: () => boolean; restoreSleepingSince?: Date | null },
   ): Promise<ProjectRecord>;
   /** Finish authority cleanup after a process died during an explicit sleep. */
   recoverInterruptedSleep?(projectId: string): Promise<ProjectRecord>;
@@ -3159,10 +3160,33 @@ export class ProvisionerImpl implements Provisioner {
     projectId: string,
     mutation: () => Promise<T>,
     exceptSessionIds?: ReadonlySet<string>,
+    waitForMutation?: AbortSignal,
   ): Promise<T> {
-    if (this.turnSandboxRepairs.has(projectId) || this.inFlightProvisions.has(projectId)) {
-      throw new ProvisioningError(`project ${projectId} already has a mutation in progress`);
+    for (;;) {
+      const owner =
+        this.turnSandboxRepairs.get(projectId)?.promise ?? this.inFlightProvisions.get(projectId);
+      if (!owner) break;
+      if (!waitForMutation)
+        throw new ProvisioningError(`project ${projectId} already has a mutation in progress`);
+      waitForMutation.throwIfAborted();
+      // Wait for the actual owner; a timeout must never release its barrier.
+      await new Promise<void>((resolve, reject) => {
+        const abort = () =>
+          reject(
+            new ProvisioningError(
+              `project ${projectId} storage maintenance timed out waiting for an existing mutation`,
+            ),
+          );
+        waitForMutation.addEventListener('abort', abort, { once: true });
+        void owner
+          .catch(() => undefined)
+          .then(() => {
+            waitForMutation.removeEventListener('abort', abort);
+            resolve();
+          });
+      });
     }
+    waitForMutation?.throwIfAborted();
     let releaseBarrier!: (result: boolean) => void;
     const barrier = new Promise<boolean>((resolve) => {
       releaseBarrier = resolve;
@@ -3190,7 +3214,7 @@ export class ProvisionerImpl implements Provisioner {
 
   async sleepProject(
     projectId: string,
-    options?: { shouldRestore?: () => boolean },
+    options?: { shouldRestore?: () => boolean; restoreSleepingSince?: Date | null },
   ): Promise<ProjectRecord> {
     const startedAt = Date.now();
     try {
@@ -3230,7 +3254,15 @@ export class ProvisionerImpl implements Provisioner {
           await this.confirmSandboxStopped(project.containerName);
           return (await this.opts.store.updateProjectSleepState(project.id, 'sleeping', {
             sleepCompatibilityFingerprint: fingerprint,
-            sleepingSince: new Date(),
+            // A scan-owned wake must not renew the idle-container grace.
+            sleepingSince:
+              options?.shouldRestore &&
+              options.restoreSleepingSince &&
+              Number.isFinite(options.restoreSleepingSince.getTime()) &&
+              options.restoreSleepingSince.getTime() > 0 &&
+              options.restoreSleepingSince.getTime() <= Date.now()
+                ? options.restoreSleepingSince
+                : new Date(),
             wakeStartedAt: null,
           })) as ProjectRecord;
         } catch (cause) {
