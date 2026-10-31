@@ -173,7 +173,7 @@ describe('assistant scheduling overview', () => {
     await request(ids[3], 'a', 'session-in-a', 'revoked'); // closed
     await request(ids[4], 'a', 'session-in-a', 'booked'); // meeting still ahead
     await request(ids[5], 'a', 'session-in-a', 'booked', new Date(Date.now() - 86_400_000));
-    const result = (await executeAssistantTool(deps({ a: ['read'] }), {
+    const result = (await executeAssistantTool(deps({ a: ['read', 'execute'] }), {
       ...call,
       request: { action: 'scheduling' },
     })) as { requests: { requestId: string; project: string | null; state: string }[] };
@@ -185,14 +185,15 @@ describe('assistant scheduling overview', () => {
     expect(JSON.stringify(result)).not.toContain('pin');
   });
 
-  it('drops a granted project whose requests the turn user may no longer read', async () => {
+  it('drops a granted project whose requests the turn user may not steer', async () => {
+    // The app's overview needs execute access; read access alone must not reveal guests
+    // through the assistant either.
     await ctx.store.assistant.setGrant('a', ADMIN, 'delegate');
     await request('20000000-0000-4000-8000-000000000001', 'a', 'session-in-a');
-    const result = await executeAssistantTool(deps({}), {
-      ...call,
-      request: { action: 'scheduling' },
-    });
-    expect(result).toEqual({ requests: [] });
+    for (const rights of [{}, { a: ['read' as const] }])
+      expect(
+        await executeAssistantTool(deps(rights), { ...call, request: { action: 'scheduling' } }),
+      ).toEqual({ requests: [] });
   });
 });
 

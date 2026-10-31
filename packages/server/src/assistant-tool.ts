@@ -127,9 +127,12 @@ async function schedulingOverview(
   deps: AssistantToolDeps,
   input: { sessionId: string; turnId: string },
 ) {
-  const names = new Map(
-    (await grantedProjects(deps, input)).map((project) => [project.projectId, project.name]),
-  );
+  // Execute access, as for the app's overview: a request is steered from its project.
+  const initiator = await deps.initiator(input.sessionId, input.turnId);
+  const names = new Map<string, string>();
+  for (const project of await grantedProjects(deps, input))
+    if (await deps.permitted(initiator?.userId, project.projectId, 'execute'))
+      names.set(project.projectId, project.name);
   const now = Date.now();
   return (await deps.eventStore.scheduling.listRecent())
     .filter(

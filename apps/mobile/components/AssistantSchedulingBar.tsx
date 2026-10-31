@@ -45,9 +45,12 @@ export function openSchedulingDetail(request: SchedulingRequestView, now = Date.
  */
 export function AssistantSchedulingBar({
   items,
+  sessionId,
   now = Date.now(),
 }: {
   items: readonly AssistantSchedulingItem[];
+  /** The session showing the bar; its own requests only close the sheet. */
+  sessionId?: string;
   now?: number;
 }) {
   const { theme } = useUnistyles();
@@ -92,7 +95,7 @@ export function AssistantSchedulingBar({
               navigates
               onPress={() => {
                 setOpen(false);
-                router.push(`/session/${request.sessionId}`);
+                if (request.sessionId !== sessionId) router.push(`/session/${request.sessionId}`);
               }}
             />
           ))}
@@ -125,5 +128,7 @@ export function AssistantSchedulingOverview({
       }));
     }, [client, sessionId]),
   );
-  return resource.data ? <AssistantSchedulingBar items={resource.data} /> : null;
+  return resource.data ? (
+    <AssistantSchedulingBar items={resource.data} sessionId={sessionId} />
+  ) : null;
 }
