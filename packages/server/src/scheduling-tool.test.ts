@@ -66,6 +66,31 @@ describe('scheduling tool', () => {
     );
   });
 
+  it('takes card edits only for send and only for the editable content', async () => {
+    const { created, send: serviceSend } = tool({});
+    const edits = { title: 'Project kickoff', language: 'en' };
+    expect(created.approvedEdits(send, edits)).toEqual(edits);
+    expect(() =>
+      created.approvedEdits({ action: 'revoke', requestId: send.requestId }, edits),
+    ).toThrow('Only a scheduling send');
+    // Recipients, times and the request itself are not on the card's editor.
+    expect(() => created.approvedEdits(send, { ...edits, guest: 'x@example.test' })).toThrow();
+    expect(() => created.approvedEdits(send, { requestId: send.requestId })).toThrow();
+    await created.invoke({ projectId: 'p', sessionId: 's1', request: send, approvedEdits: edits });
+    expect(serviceSend).toHaveBeenCalledWith(send.requestId, 's1', send.digest, edits);
+  });
+
+  it('never takes edits from the agent: send accepts only the request and digest', () => {
+    const { created } = tool({});
+    return expect(
+      created.authorize({
+        projectId: 'p',
+        sessionId: 's1',
+        request: { ...send, title: 'Changed by the agent' },
+      }),
+    ).rejects.toThrow();
+  });
+
   it('rejects arguments the schema does not know, so an agent cannot inject card content', () => {
     const { created } = tool({});
     return expect(

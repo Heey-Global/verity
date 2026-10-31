@@ -1225,6 +1225,11 @@ export function registerServerMcpRoutes({
           hasGoogleWorkspaceScope(account.scopes, file.kind),
         );
       },
+      // Only the scheduling send card has an editor; every other edited approval is refused.
+      approvedEdits: ({ toolName, request, updatedInput }) =>
+        toolName === 'verity_scheduling'
+          ? schedulingTool.approvedEdits(request, updatedInput)
+          : undefined,
       invokeTool: async (input) => {
         if (input.toolName === 'verity_vulnerabilities') return vulnerabilityTool.invoke(input);
         if (input.toolName === 'verity_scheduling') return schedulingTool.invoke(input);
