@@ -58,10 +58,10 @@ function createEnforcement() {
     sponsor: () => 'fixture-sponsor',
     directAuthority: () => true,
     store: {
-      readForAdmission: async (projectId, sponsor) => {
+      readForAdmission: (projectId, sponsor) => {
         assert.equal(projectId, 'host-smoke');
         assert.equal(sponsor, 'fixture-sponsor');
-        return {
+        return Promise.resolve({
           revision: 1,
           requests: {},
           grants: directEnabled
@@ -78,18 +78,16 @@ function createEnforcement() {
                 })),
               )
             : [],
-        };
+        });
       },
     },
     inspect: inspectEgressHostDirect,
     dependencies: {
       inspect: inspectProjectFenceAttachment,
       apply: applyProjectFenceRules,
-      directTargetAllowed: async (host) => composedTargets.includes(host),
-      destinationAllowed: async (address) => composedTargets.includes(address),
-      resolve: async () => {
-        throw new Error('Exact address fixture');
-      },
+      directTargetAllowed: (host) => Promise.resolve(composedTargets.includes(host)),
+      destinationAllowed: (address) => Promise.resolve(composedTargets.includes(address)),
+      resolve: () => Promise.reject(new Error('Exact address fixture')),
       existing: async (binding) => {
         const rules = await exec('/usr/sbin/nft', ['-j', 'list', 'tables']);
         return (
@@ -905,7 +903,7 @@ try {
         containerId,
         'python3',
         '/probe/composed-client.py',
-        target!,
+        target,
         `${phase}-${family}`,
         expected ? 'positive' : 'negative',
       );
