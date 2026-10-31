@@ -1,5 +1,9 @@
 import { expect, it, vi } from 'vitest';
-import { inspectEgressTransport, transportRules } from './project-egress-transport.js';
+import {
+  directCorridorRules,
+  inspectEgressTransport,
+  transportRules,
+} from './project-egress-transport.js';
 const binding = {
   projectId: 'p1',
   generation: 'g1',
@@ -161,4 +165,30 @@ it.each([
   if (decoded !== 0n) expect(indices.every((bit) => bit >= 0 && bit < 128)).toBe(true);
   expect(rules).toContain(`ct state established ct label == (${encoded})`);
   expect(rules).not.toContain(`ct label set 0x${label}`);
+});
+
+it('passes only the bound routed source from bridge input to the later inet fence', async () => {
+  const f = fixture();
+  const transport = (await inspectEgressTransport(binding, ids, true, f.io))!;
+  const direct = {
+    binding: {
+      ...binding,
+      containerId: ids.sandbox,
+      endpointId: 'd'.repeat(64),
+      ipv4: transport.sandbox.address,
+      ipv6: 'fd42::2',
+    },
+    gateway4: '172.20.0.1',
+    gateway6: 'fd42::1',
+  };
+  const rules = directCorridorRules(binding, transport, direct, 'input', 'bridge');
+  const prefix = `meta ibrname "${binding.bridge}" meta iif ${transport.sandbox.index} iifname "${transport.sandbox.device}" ether saddr ${transport.sandbox.mac}`;
+  expect(rules).toContain(`${prefix} ip saddr ${direct.binding.ipv4} return;`);
+  expect(rules).toContain(`${prefix} ip6 saddr ${direct.binding.ipv6} return;`);
+  expect(rules).not.toContain('accept');
+  const hostInput = directCorridorRules(binding, transport, direct, 'input', 'inet');
+  expect(hostInput).not.toContain(`ip saddr ${direct.binding.ipv4} return;`);
+  expect(hostInput).not.toContain(`ip6 saddr ${direct.binding.ipv6} return;`);
+  expect(directCorridorRules(binding, transport, direct, 'forward', 'bridge')).toBe('');
+  expect(directCorridorRules(binding, transport, undefined, 'input', 'bridge')).toBe('');
 });

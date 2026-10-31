@@ -29,7 +29,11 @@ it('requires an every-start fence even when the bootstrap oneshot is already act
   const docker = unit('docker-egress.conf');
   const host = unit('verity-egress-host.service');
   const preflight = docker.find((line) => line.startsWith('ExecStartPre='));
-  expect(preflight).toContain('flock --exclusive --nonblock');
+  expect(preflight).toContain('flock --exclusive --timeout 15');
+  const stopTimeout = Number(
+    host.find((line) => line.startsWith('TimeoutStopSec='))?.split('=')[1],
+  );
+  expect(stopTimeout).toBeLessThan(15);
   expect(preflight).toContain('project-egress-host-main.mjs restore');
   expect(docker).toContain('Upholds=verity-egress-host.service');
   expect(host).toContain('After=verity-egress-bootstrap.service docker.service');

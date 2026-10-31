@@ -1132,6 +1132,14 @@ try {
   );
 } catch (error) {
   await writeFile(
+    '/evidence/composed-receiver.txt',
+    await docker('logs', 'veh-direct').catch(String),
+  );
+  await writeFile(
+    '/evidence/composed-renewal-trace.jsonl',
+    await readFile(`${directory}/renewal-trace.jsonl`, 'utf8').catch(String),
+  );
+  await writeFile(
     '/evidence/host-failure-project-routes.txt',
     await docker(
       'exec',

@@ -181,3 +181,41 @@ it('does not let an obsolete failed refresh cancel a replacement renewal', async
     vi.useRealTimers();
   }
 });
+
+it('counts refresh work toward renewal cadence without overlapping requests', async () => {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
+  let active = 0;
+  let maximum = 0;
+  const starts: number[] = [];
+  const lifecycle = new ProjectEgressLifecycle(async (input) => {
+    if (input.operation === 'connect')
+      return {
+        state: 'connected',
+        generation: 'g1',
+        relayAddress: '172.30.1.3',
+        directAuthority: true,
+      };
+    if (input.operation === 'refresh-direct') {
+      starts.push(performance.now());
+      maximum = Math.max(maximum, ++active);
+      await new Promise<void>((resolve) => setTimeout(resolve, 400));
+      active--;
+      return { state: 'direct-refreshed', generation: 'g1' };
+    }
+    return { state: 'direct-revoked', generation: 'g1' };
+  }, {});
+  try {
+    const connected = lifecycle.connect(identity);
+    await vi.advanceTimersByTimeAsync(400);
+    await connected;
+    await vi.advanceTimersByTimeAsync(402);
+    expect(starts).toHaveLength(3);
+    expect(starts[1]! - starts[0]!).toBeLessThanOrEqual(401);
+    expect(starts[2]! - starts[1]!).toBeLessThanOrEqual(401);
+    expect(maximum).toBe(1);
+  } finally {
+    await lifecycle.close();
+    await vi.advanceTimersByTimeAsync(400);
+    vi.useRealTimers();
+  }
+});
