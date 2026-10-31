@@ -1,4 +1,6 @@
 import { expect, it, vi } from 'vitest';
+import { Resolver } from 'node:dns/promises';
+import { createSocket } from 'node:dgram';
 import { createProjectEgressResolver } from './project-egress-resolver.js';
 
 function fixture() {
@@ -93,5 +95,50 @@ it('cancels a stalled resolution within its total DNS budget', async () => {
     expect(f.resolver.cancel).toHaveBeenCalledOnce();
   } finally {
     vi.useRealTimers();
+  }
+});
+
+it('reads TTL and both families through the actual Node DNS resolver', async () => {
+  const socket = createSocket('udp4');
+  socket.on('message', (question, peer) => {
+    const family = question.readUInt16BE(question.length - 4);
+    const data =
+      family === 1
+        ? Buffer.from([8, 8, 8, 8])
+        : Buffer.from('26064700470000000000000000001111', 'hex');
+    const header = Buffer.from(question.subarray(0, 12));
+    header.writeUInt16BE(0x8180, 2);
+    header.writeUInt16BE(1, 6);
+    const record = Buffer.alloc(12);
+    record.writeUInt16BE(0xc00c, 0);
+    record.writeUInt16BE(family, 2);
+    record.writeUInt16BE(1, 4);
+    record.writeUInt32BE(family === 1 ? 30 : 20, 6);
+    record.writeUInt16BE(data.length, 10);
+    socket.send(
+      Buffer.concat([header, question.subarray(12), record, data]),
+      peer.port,
+      peer.address,
+    );
+  });
+  await new Promise<void>((resolve) => socket.bind(0, '127.0.0.1', resolve));
+  try {
+    const address = socket.address();
+    const resolve = createProjectEgressResolver({
+      servers: ['127.0.0.1'],
+      now: () => 1000,
+      destinationAllowed: async () => true,
+      createResolver: () => {
+        const resolver = new Resolver({ timeout: 500, tries: 1 });
+        resolver.setServers([`127.0.0.1:${address.port}`]);
+        return resolver;
+      },
+    });
+    expect(await resolve('downloads.example.com')).toEqual({
+      addresses: ['8.8.8.8', '2606:4700:4700::1111'],
+      expiresAt: 21000,
+    });
+  } finally {
+    await new Promise<void>((resolve) => socket.close(resolve));
   }
 });
