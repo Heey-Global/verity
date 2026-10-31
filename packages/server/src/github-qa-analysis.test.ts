@@ -309,3 +309,69 @@ it('records inspected release-definition evidence and keeps queued runs out of s
     ],
   });
 });
+
+it('scrubs run metadata and resumes interrupted job pagination without refetching page one', async () => {
+  const token = 'github-test-token-sensitive-metadata';
+  const run = {
+    id: 1,
+    run_attempt: 1,
+    workflow_id: 10,
+    event: 'push',
+    head_branch: 'main',
+    head_sha: 'abc',
+    status: 'completed',
+    conclusion: 'success',
+    created_at: '2026-10-01T00:00:00Z',
+    run_started_at: '2026-10-01T00:00:01Z',
+    updated_at: '2026-10-01T00:01:00Z',
+    html_url: 'https://github.com/team/app/actions/runs/1',
+    name: token,
+  };
+  const job = {
+    id: 1,
+    name: 'test',
+    conclusion: 'success',
+    started_at: '2026-10-01T00:00:01Z',
+    completed_at: '2026-10-01T00:01:00Z',
+    html_url: 'https://github.com/team/app/actions/runs/1/job/1',
+  };
+  let firstPageReads = 0,
+    secondPageReads = 0;
+  const reader = createGitHubQAAnalysis(
+    async () => token,
+    async (input) => {
+      const url = new URL(
+        typeof input === 'string' ? input : input instanceof URL ? input.href : input.url,
+      );
+      if (url.pathname.endsWith('/app/')) return Response.json({ default_branch: 'main' });
+      if (url.pathname.endsWith('/actions/runs'))
+        return Response.json({ total_count: 1, workflow_runs: [run] });
+      if (url.searchParams.get('page') === '1') {
+        firstPageReads++;
+        return Response.json({ total_count: 2, jobs: [job] });
+      }
+      if (++secondPageReads === 1) throw new DOMException('interrupted', 'TimeoutError');
+      return Response.json({ total_count: 2, jobs: [{ ...job, id: 2 }] });
+    },
+  );
+  const runs = await reader(ref, { action: 'runs', projectId: 'p', page: 1 }, async () => {});
+  expect(runs.untrusted).toBe(true);
+  expect(JSON.stringify(runs)).not.toContain(token);
+  const request = {
+    action: 'statistics' as const,
+    projectId: 'p',
+    releaseWorkflowIds: [],
+    since: '2026-10-01T00:00:00Z',
+    until: '2026-10-02T00:00:00Z',
+  };
+  const partial = await reader(ref, request, async () => {});
+  expect(partial).toMatchObject({ complete: false, continuation: expect.any(String) });
+  const result = await reader(
+    ref,
+    { ...request, continuation: String(partial.continuation) },
+    async () => {},
+  );
+  expect(result).toMatchObject({ complete: true });
+  expect(firstPageReads).toBe(1);
+  expect(secondPageReads).toBe(2);
+});

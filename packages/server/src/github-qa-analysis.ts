@@ -80,6 +80,7 @@ export function createGitHubQAAnalysis(
     gaps: unknown[];
     limited: boolean;
     jobBytes: number;
+    pendingJobs?: { page: number; items: AnalysisJob[] };
     busy: boolean;
   };
   const snapshots = new Map<string, Snapshot>();
@@ -247,8 +248,10 @@ export function createGitHubQAAnalysis(
             page * 30 < Math.min(result.total_count, 1000)
               ? page + 1
               : null;
+          await authorize();
           return {
-            data,
+            data: JSON.parse(scrub(JSON.stringify(data))),
+            untrusted: true,
             nextPage,
             total: result.total_count,
             complete: !nextPage && result.total_count <= 1000,
@@ -511,8 +514,9 @@ export function createGitHubQAAnalysis(
                     r.id,
                     runSchema.parse(await read(`actions/runs/${r.id}/attempts/1`)),
                   );
-                const all: AnalysisJob[] = [];
-                for (let pageNumber = 1; ; pageNumber++) {
+                const progress = (state.pendingJobs ??= { page: 1, items: [] });
+                const all = progress.items;
+                for (let pageNumber = progress.page; ; pageNumber++) {
                   const body = z
                     .object({ total_count: z.number(), jobs: z.array(jobSchema) })
                     .parse(
@@ -520,7 +524,16 @@ export function createGitHubQAAnalysis(
                         `actions/runs/${r.id}/attempts/${r.run_attempt}/jobs?per_page=100&page=${pageNumber}`,
                       ),
                     );
+                  if (
+                    state.jobBytes + Buffer.byteLength(JSON.stringify([...all, ...body.jobs])) >
+                    4000000
+                  ) {
+                    state.limited = true;
+                    state.cursor = state.runs.length;
+                    throw new ForgeObservationError('unavailable', 'job-byte-limit');
+                  }
                   all.push(...body.jobs);
+                  progress.page = pageNumber + 1;
                   if (all.length >= body.total_count) break;
                   if (!body.jobs.length || pageNumber >= 10)
                     throw new ForgeObservationError('invalid-response', 'job-pagination');
@@ -538,13 +551,11 @@ export function createGitHubQAAnalysis(
                 state.jobBytes += Buffer.byteLength(JSON.stringify(all));
                 state.jobs.set(r.id, all);
               } catch (error) {
-                if (
-                  error instanceof ForgeObservationError &&
-                  ['rate-limit', 'timeout'].includes(error.category)
-                )
+                if (['rate-limit', 'timeout'].includes(observationFailure(error).category))
                   throw error;
                 state.gaps.push({ runId: r.id, ...observationFailure(error) });
               }
+              delete state.pendingJobs;
               state.cursor++;
             }
           } catch (error) {
