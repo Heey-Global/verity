@@ -101,7 +101,7 @@ class RelayPacketTests(unittest.TestCase):
             self.assertFalse(self.matches(data, length), length)
         for position, value in ((12, 0x86), (13, 0xdd), (12, 0x81), (14, 0x46),
                                 (14, 0x65), (23, 17), (20, 0x20), (20, 0x80),
-                                (21, 1), (17, 39), (46, 0x40)):
+                                (21, 1), (17, 39), (17, 41), (16, 1), (46, 0x40), (46, 0xf0)):
             changed = data.copy()
             changed[position] = value
             self.assertFalse(self.matches(changed), (position, value))
