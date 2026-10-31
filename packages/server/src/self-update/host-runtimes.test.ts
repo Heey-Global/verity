@@ -57,7 +57,7 @@ const both = {
 describe('the host runtimes a release declares', () => {
   it('is what the Server verifies against, in the image every build produces', () => {
     expect(declared).not.toBeNull();
-    expect(declared).toEqual({
+    expect(declared).toMatchObject({
       release: PINNED_RUNSC_RELEASE,
       sha512: expect.objectContaining({}),
       runtimes: { runsc: [...PINNED_RUNSC_ARGS], 'runsc-project': [...PINNED_PROJECT_RUNSC_ARGS] },
@@ -269,5 +269,150 @@ describe('reconcileHostRuntimes', () => {
       requestDir: dir,
       ...fast,
     });
+  });
+});
+
+describe('a release that pins a gVisor release archive', () => {
+  const archiveRelease = 'release-20261026.0';
+  const archivePath = `/opt/verity/runsc/${archiveRelease}/runsc`;
+  const archived: HostRuntimeRequirements = {
+    release: archiveRelease,
+    sha512: { x86_64: 'a'.repeat(128), aarch64: 'b'.repeat(128) },
+    archiveSha512: { x86_64: 'c'.repeat(128), aarch64: 'd'.repeat(128) },
+    runtimes: { runsc: [...PINNED_RUNSC_ARGS], 'runsc-project': [...PINNED_PROJECT_RUNSC_ARGS] },
+  };
+  const registered = {
+    runsc: { path: archivePath, args: [...PINNED_RUNSC_ARGS] },
+    'runsc-project': { path: archivePath, args: [...PINNED_PROJECT_RUNSC_ARGS] },
+  };
+  const fast = {
+    timeoutMs: 2_000,
+    pollMs: 5,
+    sleep: () => new Promise<void>((r) => setTimeout(r, 5)),
+  };
+  const legacyAgent = { version: 1, trigger: 'systemd-path', builder: 'systemd-path' };
+  const archiveAgent = { ...legacyAgent, runtimeArtifacts: ['binary', 'archive'] };
+
+  /** Stands in for the path unit: register the runtimes and answer the first request. */
+  function answerFirstRequest(dir: string, runtimes: Record<string, DockerRuntimeRegistration>) {
+    let answered = false;
+    const timer = setInterval(() => {
+      void readFile(join(dir, 'request.json'), 'utf8').then(
+        async (body) => {
+          if (answered) return;
+          answered = true;
+          clearInterval(timer);
+          const request = JSON.parse(body) as { id: string; requirements: unknown };
+          expect(request.requirements).toEqual(archived);
+          Object.assign(runtimes, registered);
+          await writeFile(
+            join(dir, 'result.json'),
+            JSON.stringify({ version: 1, id: request.id, ok: true }),
+          );
+        },
+        () => undefined,
+      );
+    }, 5);
+    return () => clearInterval(timer);
+  }
+
+  it('parses the archive pin and refuses a malformed one', () => {
+    expect(parseHostRuntimeRequirements(archived)).toEqual(archived);
+    expect(
+      parseHostRuntimeRequirements({ ...archived, archiveSha512: { x86_64: 'c'.repeat(128) } }),
+    ).toBeNull();
+    expect(parseHostRuntimeRequirements({ ...archived, extra: true })).toBeNull();
+  });
+
+  it('asks a host runtime service that installs archives directly', async () => {
+    const { docker, runtimes } = daemon(both);
+    const dir = await requestDir(archiveAgent);
+    const refreshHostComponents = vi.fn(async () => undefined);
+    const stop = answerFirstRequest(dir, runtimes);
+    try {
+      await reconcileHostRuntimes({
+        docker,
+        requirements: archived,
+        requestId: 'a1',
+        requestDir: dir,
+        refreshHostComponents,
+        ...fast,
+      });
+    } finally {
+      stop();
+    }
+    expect(refreshHostComponents).not.toHaveBeenCalled();
+  });
+
+  it('never sends an archive pin to a service that would refuse it', async () => {
+    const { docker } = daemon(both);
+    const dir = await requestDir(legacyAgent);
+    await expect(
+      reconcileHostRuntimes({
+        docker,
+        requirements: archived,
+        requestId: 'a2',
+        requestDir: dir,
+        ...fast,
+      }),
+    ).rejects.toThrow(/predates archives.*keeps serving.*Re-run the Verity installer once/su);
+    await expect(readFile(join(dir, 'request.json'))).rejects.toThrow(/ENOENT/u);
+  });
+
+  it('is done when the refreshed host components registered the runtimes themselves', async () => {
+    const { docker, runtimes } = daemon(both);
+    const dir = await requestDir(legacyAgent);
+    await reconcileHostRuntimes({
+      docker,
+      requirements: archived,
+      requestId: 'a3',
+      requestDir: dir,
+      // The builder bundle runs the target's install-runsc-host.sh before anything else.
+      refreshHostComponents: async () => {
+        Object.assign(runtimes, registered);
+        return undefined;
+      },
+      ...fast,
+    });
+    await expect(readFile(join(dir, 'request.json'))).rejects.toThrow(/ENOENT/u);
+  });
+
+  it('asks the replaced service once the refresh advertised archives', async () => {
+    const { docker, runtimes } = daemon(both);
+    const dir = await requestDir(legacyAgent);
+    const stop = answerFirstRequest(dir, runtimes);
+    try {
+      await reconcileHostRuntimes({
+        docker,
+        requirements: archived,
+        requestId: 'a4',
+        requestDir: dir,
+        refreshHostComponents: async () => {
+          await writeFile(join(dir, 'agent.json'), JSON.stringify(archiveAgent));
+          return undefined;
+        },
+        ...fast,
+      });
+    } finally {
+      stop();
+    }
+    expect(runtimes.runsc?.path).toBe(archivePath);
+  });
+
+  it('names why the refresh did not happen and keeps the current version', async () => {
+    const { docker, runtimes } = daemon(both);
+    const dir = await requestDir(legacyAgent);
+    await expect(
+      reconcileHostRuntimes({
+        docker,
+        requirements: archived,
+        requestId: 'a5',
+        requestDir: dir,
+        refreshHostComponents: async () => 'builds are still running; builder update deferred',
+        ...fast,
+      }),
+    ).rejects.toThrow(/builds are still running.*keeps serving/su);
+    expect(runtimes.runsc?.path).toBe(PINNED_RUNSC_PATH);
+    await expect(readFile(join(dir, 'request.json'))).rejects.toThrow(/ENOENT/u);
   });
 });

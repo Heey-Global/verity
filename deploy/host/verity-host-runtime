@@ -6,11 +6,20 @@
 # dockerd, and a release that needs a new runtime registration (runsc-project, a gVisor bump)
 # must not reach a host that lacks it. So the Updater asks, through a request file in a
 # root-owned host directory, and this script answers: install the pinned, checksum-verified
-# runsc binary, merge exactly the two runtime entries into daemon.json, reload Docker, and
-# report. Nothing else.
+# runsc, merge exactly the two runtime entries into daemon.json, reload Docker, and report.
+# Nothing else.
+#
+# gVisor publishes runsc in one of two ways, and a pin names which. Older releases ship a
+# single `runsc` binary. Newer ones ship `gvisor.tar.bz2`, whose runsc refuses to start a
+# sandbox without the sidecar binaries in `gvisor-bin/` next to it. For those, both the
+# archive and the runsc inside it are pinned. The archive is verified before a single member
+# is unpacked, the whole tree is assembled in a staging directory, and the release directory
+# appears by rename once complete. Every other release directory stays as it is, because
+# running containers and a rollback still use them.
 #
 #   verity-host-runtime apply-pins <versions.env>   reconcile from a pin file (verity-install)
 #   verity-host-runtime apply-request               answer the pending request (systemd path unit)
+#   verity-host-runtime install-self                replace the installed copy with this one
 #
 # Every step is idempotent and each state it can be interrupted in is one the next run
 # finishes from: a binary is only ever renamed into place once verified, daemon.json only once
@@ -31,6 +40,17 @@ DOCKER_PID_FILE="${VERITY_DOCKER_PID_FILE:-/var/run/docker.pid}"
 SYSTEMD_RUN_DIR="${VERITY_SYSTEMD_RUN_DIR:-/run/systemd/system}"
 RELOAD_TIMEOUT_SECONDS="${VERITY_HOST_RUNTIME_RELOAD_TIMEOUT:-30}"
 DOWNLOAD_BASE='https://storage.googleapis.com/gvisor/releases/release'
+# Where verity-install puts this script. `install-self` replaces that copy only.
+LIBEXEC_DIR="${VERITY_HOST_RUNTIME_LIBEXEC:-/usr/local/libexec/verity}"
+# Which pin shapes this copy installs, as advertised in agent.json. The Updater sends an
+# archive pin only to a host whose installed copy lists `archive` here.
+RUNTIME_ARTIFACTS='["binary","archive"]'
+# The only paths a pinned archive may contain. The archive is checksum-pinned already; this
+# keeps an unexpected layout from being unpacked at all.
+ARCHIVE_MEMBER='^(runsc|containerd-shim-runsc-v1|gvisor-bin/|gvisor-bin/[A-Za-z0-9_][A-Za-z0-9_.-]*)$'
+# The sidecar runsc cannot start a sandbox without; its absence means the archive is not one
+# this script understands.
+REQUIRED_SIDECAR='gvisor-bin/gvisor_sentry'
 # The only runtime names and arguments a request may carry. A release that needs another flag
 # ships a new copy of this script, which the Verity installer puts in place; the Updater cannot
 # widen what this root process will write into daemon.json.
@@ -67,27 +87,38 @@ pin() {
   printf '%s' "${value%\'}"
 }
 
+# RUNSC_SHA512_* always pin the runsc binary. RUNSC_ARCHIVE_SHA512_* are present only for a
+# release that ships as an archive, and pin the archive itself.
 requirements_from_pins() {
-  local file=$1
+  local file=$1 archive_x86_64 archive_aarch64
   [[ -f $file ]] || die "pin file not found: $file"
+  archive_x86_64="$(pin RUNSC_ARCHIVE_SHA512_X86_64 "$file")"
+  archive_aarch64="$(pin RUNSC_ARCHIVE_SHA512_AARCH64 "$file")"
   jq -cn \
     --arg release "$(pin RUNSC_RELEASE "$file")" \
     --arg x86_64 "$(pin RUNSC_SHA512_X86_64 "$file")" \
     --arg aarch64 "$(pin RUNSC_SHA512_AARCH64 "$file")" \
+    --arg archive_x86_64 "$archive_x86_64" \
+    --arg archive_aarch64 "$archive_aarch64" \
     --argjson runsc "$(pin RUNSC_ARGS "$file")" \
     --argjson project "$(pin RUNSC_PROJECT_ARGS "$file")" \
     '{release: $release, sha512: {x86_64: $x86_64, aarch64: $aarch64},
-      runtimes: {runsc: $runsc, "runsc-project": $project}}'
+      runtimes: {runsc: $runsc, "runsc-project": $project}}
+     + (if $archive_x86_64 == "" and $archive_aarch64 == "" then {}
+        else {archiveSha512: {x86_64: $archive_x86_64, aarch64: $archive_aarch64}} end)'
 }
 
 # Reject anything outside the fixed shape before a single byte is downloaded or written.
 validate_requirements() {
   jq -e \
     --argjson names "$RUNTIME_NAMES" --argjson allowed "$ALLOWED_ARGS" '
-      type == "object" and (keys == ["release", "runtimes", "sha512"])
+      def sums: type == "object" and keys == ["aarch64", "x86_64"]
+        and all(.[]; type == "string" and test("^[a-f0-9]{128}$"));
+      type == "object"
+      and (keys == ["release", "runtimes", "sha512"]
+           or (keys == ["archiveSha512", "release", "runtimes", "sha512"] and (.archiveSha512 | sums)))
       and (.release | type == "string" and test("^release-[0-9]{8}\\.[0-9]+$"))
-      and (.sha512 | type == "object" and keys == ["aarch64", "x86_64"]
-           and all(.[]; type == "string" and test("^[a-f0-9]{128}$")))
+      and (.sha512 | sums)
       and (.runtimes | type == "object" and (keys | sort) == ($names | sort)
            and all(.[]; type == "array" and length > 0 and length <= 8
                    and all(.[]; type == "string" and (. as $arg | $allowed | index($arg) != null))))
@@ -122,6 +153,81 @@ ensure_binary() {
   [[ $("$tmp" --version 2>/dev/null | head -n 1) == "runsc version $release" ]] ||
     die "downloaded runsc does not report $release; nothing was changed"
   mv -f "$tmp" "$path"
+}
+
+# The release directory of an archive install: runsc as pinned, and every file the archive put
+# there unchanged since it was verified.
+archive_matches() {
+  local dir=$1 sha=$2 archive_sha=$3 release=$4
+  [[ -d $dir && ! -L $dir && ! -L $dir/gvisor-bin ]] || return 1
+  binary_matches "$dir/runsc" "$sha" "$release" || return 1
+  [[ -f $dir/.verity-archive-sha512 && -f $dir/.verity-files.sha512 && -f $dir/$REQUIRED_SIDECAR ]] || return 1
+  [[ $(cat "$dir/.verity-archive-sha512") == "$archive_sha" ]] || return 1
+  (cd "$dir" && sha512sum --check --status --strict .verity-files.sha512)
+}
+
+# Refuse an archive whose listing holds anything but plain files and directories at the
+# expected paths, before it is unpacked.
+check_archive_listing() {
+  local archive=$1 names types name
+  names="$(tar -tjf "$archive")" || return 1
+  types="$(tar -tvjf "$archive" | cut -c1)" || return 1
+  [[ -n $names ]] || return 1
+  while IFS= read -r name; do
+    [[ $name =~ $ARCHIVE_MEMBER && $name != *..* ]] || {
+      log "unexpected archive member: ${name:0:120}"
+      return 1
+    }
+  done <<<"$names"
+  [[ -z $(tr -d -- '-d\n' <<<"$types") ]] || {
+    log 'the archive contains something other than regular files and directories'
+    return 1
+  }
+}
+
+ensure_archive() {
+  local release=$1 sha=$2 archive_sha=$3 arch=$4 dir stage tree
+  dir="$RUNSC_ROOT/$release"
+  if archive_matches "$dir" "$sha" "$archive_sha" "$release"; then return 0; fi
+  install -d -m 0755 "$RUNSC_ROOT"
+  # On the same filesystem as the release directory, so the tree lands there by rename.
+  stage="$(mktemp -d "$RUNSC_ROOT/.stage.XXXXXX")"
+  chmod 0700 "$stage"
+  # shellcheck disable=SC2064 # expand now: the trap must name this path.
+  trap "rm -rf '$stage'" RETURN EXIT
+  log "downloading gVisor $release ($arch)"
+  curl --fail --silent --show-error --location --proto '=https' \
+    "$DOWNLOAD_BASE/${release#release-}/$arch/gvisor.tar.bz2" --output "$stage/gvisor.tar.bz2" ||
+    die "gVisor $release could not be downloaded; check this host's HTTPS egress to storage.googleapis.com"
+  printf '%s  %s\n' "$archive_sha" "$stage/gvisor.tar.bz2" | sha512sum --check --status ||
+    die "downloaded gVisor archive does not match the pinned $release checksum; nothing was changed"
+  check_archive_listing "$stage/gvisor.tar.bz2" ||
+    die "the gVisor $release archive has an unexpected layout; nothing was changed"
+  tree="$stage/tree"
+  install -d -m 0755 "$tree"
+  tar -xjf "$stage/gvisor.tar.bz2" -C "$tree" --no-same-owner --no-same-permissions runsc gvisor-bin ||
+    die "the gVisor $release archive could not be unpacked; nothing was changed"
+  [[ -z $(find "$tree" ! -type f ! -type d -print -quit) ]] ||
+    die "the gVisor $release archive unpacked to something other than files; nothing was changed"
+  find "$tree" -type d -exec chmod 0755 {} +
+  find "$tree" -type f -exec chmod 0755 {} +
+  [[ -f $tree/$REQUIRED_SIDECAR ]] ||
+    die "the gVisor $release archive lacks $REQUIRED_SIDECAR; nothing was changed"
+  printf '%s  %s\n' "$sha" "$tree/runsc" | sha512sum --check --status ||
+    die "the runsc in the gVisor $release archive does not match its pinned checksum; nothing was changed"
+  [[ $("$tree/runsc" --version 2>/dev/null | head -n 1) == "runsc version $release" ]] ||
+    die "the runsc in the gVisor archive does not report $release; nothing was changed"
+  (cd "$tree" && find runsc gvisor-bin -type f | LC_ALL=C sort | while IFS= read -r file; do
+    sha512sum -- "$file"
+  done) >"$tree/.verity-files.sha512" || die 'could not record the unpacked gVisor files; nothing was changed'
+  printf '%s\n' "$archive_sha" >"$tree/.verity-archive-sha512"
+  chmod 0644 "$tree/.verity-files.sha512" "$tree/.verity-archive-sha512"
+  # A directory left by an interrupted or tampered install is set aside, not merged into.
+  if [[ -e $dir || -L $dir ]]; then mv -f -- "$dir" "$stage/previous"; fi
+  if ! mv -- "$tree" "$dir"; then
+    [[ -e $stage/previous ]] && mv -- "$stage/previous" "$dir"
+    die "could not install gVisor $release; nothing was changed"
+  fi
 }
 
 desired_runtimes() {
@@ -162,12 +268,14 @@ await_live() {
 }
 
 apply_requirements() {
-  local requirements=$1 arch release sha path want current merged backup='' changed=0
+  local requirements=$1 arch release sha archive_sha path want current merged backup='' changed=0
   need_tools curl docker dockerd jq sha512sum flock
   validate_requirements "$requirements"
   arch="$(host_arch)"
   release="$(jq -r .release <<<"$requirements")"
   sha="$(jq -r --arg a "$arch" '.sha512[$a]' <<<"$requirements")"
+  archive_sha="$(jq -r --arg a "$arch" '.archiveSha512[$a] // empty' <<<"$requirements")"
+  [[ -z $archive_sha ]] || need_tools tar bzip2
   path="$(runsc_path "$release")"
   want="$(desired_runtimes "$requirements" "$path")"
 
@@ -176,7 +284,11 @@ apply_requirements() {
   exec 9>"$PRIVATE_DIR/lock"
   flock -w 900 9 || die 'another host runtime reconciliation is still running'
 
-  ensure_binary "$release" "$sha" "$arch"
+  if [[ -n $archive_sha ]]; then
+    ensure_archive "$release" "$sha" "$archive_sha" "$arch"
+  else
+    ensure_binary "$release" "$sha" "$arch"
+  fi
 
   install -d -m 0755 "$(dirname "$DAEMON_JSON")"
   current='{}'
@@ -249,6 +361,35 @@ apply_request() {
   return "$status"
 }
 
+# Replace the copy verity-install put in place with this one, and advertise what it installs.
+# Run from a verified release bundle (deploy/buildkit/install.sh, which the host builder runs
+# out of a signature-checked Server image), so a host learns new pin shapes through a regular
+# update instead of a manual installer run. A host this installer never set up is left alone.
+install_self() {
+  local target="$LIBEXEC_DIR/verity-host-runtime" agent="$STATE_DIR/agent.json" tmp
+  need_tools jq
+  if [[ ! -f $target || -L $target ]]; then
+    log "no installed host runtime service at $target; nothing to replace"
+    return 0
+  fi
+  if ! cmp -s -- "${BASH_SOURCE[0]}" "$target"; then
+    tmp="$(mktemp "$LIBEXEC_DIR/.verity-host-runtime.XXXXXX")"
+    cp -- "${BASH_SOURCE[0]}" "$tmp"
+    chmod 0755 "$tmp"
+    bash -n "$tmp" || {
+      rm -f -- "$tmp"
+      die 'the bundled host runtime service does not parse; the installed one was kept'
+    }
+    mv -f -- "$tmp" "$target"
+    log "installed the host runtime service from this release"
+  fi
+  # Only after the copy above: the Updater must never be told about a shape the installed
+  # copy cannot take yet.
+  [[ -f $agent && ! -L $agent ]] || return 0
+  write_json_atomically "$agent" "$(jq -c --argjson artifacts "$RUNTIME_ARTIFACTS" \
+    '. + {runtimeArtifacts: $artifacts}' "$agent")" || die "could not update $agent"
+}
+
 [[ $(id -u) -eq 0 || ${VERITY_HOST_RUNTIME_TEST:-} == 1 ]] || die 'must run as root'
 case "${1:-}" in
   apply-pins)
@@ -257,5 +398,6 @@ case "${1:-}" in
     apply_requirements "$(requirements_from_pins "$2")"
     ;;
   apply-request) apply_request ;;
-  *) die 'usage: verity-host-runtime apply-pins <versions.env> | apply-request' ;;
+  install-self) install_self ;;
+  *) die 'usage: verity-host-runtime apply-pins <versions.env> | apply-request | install-self' ;;
 esac

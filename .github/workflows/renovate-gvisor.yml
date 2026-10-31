@@ -1,0 +1,85 @@
+name: verity-renovate-gvisor
+
+# deploy/gvisor/versions.env names the gVisor release every host installs, and
+# Renovate tracks that name (renovate.json). Everything else about the pin follows
+# from it: the checksums the hosts verify, the org.verity.host-runtimes label the
+# Updater reads off deploy/Dockerfile, and the runtime path the Server verifies in
+# gvisor-runtime-config.ts. A bump of the name alone would ship a release no host
+# can install, and Renovate cannot derive the rest itself: postUpgradeTasks are
+# blocked on the hosted Mend app (docs.renovatebot.com/mend-hosted/faq).
+#
+# So on a Renovate branch `derive` computes them from what gVisor published and
+# commits them through scripts/renovate-gvisor-pins.mjs, the same signed GraphQL
+# commit and check dispatch renovate-notices.yml uses. On every other pull request
+# that touches the pins, `check` fails unless they match what gVisor published.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - deploy/gvisor/versions.env
+      - packages/server/src/gvisor-runtime-config.ts
+      - scripts/gvisor-pins.mjs
+
+permissions: read-all
+
+concurrency:
+  # A newer head supersedes the run for the older one; the older commit would
+  # be rejected on its expectedHeadOid anyway.
+  group: renovate-gvisor-${{ github.head_ref }}
+  cancel-in-progress: true
+
+jobs:
+  derive:
+    # Only pushes Renovate itself made to its own branches: the job holds a
+    # write token and runs the script from the PR head. `user.login` is who
+    # opened the PR; `sender.login` is who made this push.
+    if: >-
+      github.event.pull_request.user.login == 'renovate[bot]' &&
+      github.event.sender.login == 'renovate[bot]' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    permissions:
+      actions: write
+      contents: write
+    steps:
+      # renovate: datasource=github-actions depName=actions/checkout
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          # Nothing here pushes through git; the commit goes through gh.
+          persist-credentials: false
+
+      # renovate: datasource=github-actions depName=actions/setup-node
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '26.12.1'
+
+      # No npm ci: the scripts use Node built-ins, tar and nothing else.
+      - name: Derive the gVisor pins and dispatch the checks
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: node scripts/renovate-gvisor-pins.mjs "$HEAD_REF" "$HEAD_SHA"
+
+  check:
+    if: >-
+      !(github.event.pull_request.user.login == 'renovate[bot]' &&
+      github.event.sender.login == 'renovate[bot]' &&
+      github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    steps:
+      # renovate: datasource=github-actions depName=actions/checkout
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # renovate: datasource=github-actions depName=actions/setup-node
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '26.12.1'
+
+      - name: Check the gVisor pins against what gVisor published
+        run: node scripts/gvisor-pins.mjs check

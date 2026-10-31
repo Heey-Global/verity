@@ -169,6 +169,13 @@
       "description": "Update osv-scanner together with both architecture SHA256 checksums in install.sh; version-only updates break sandbox builds.",
       "matchPackageNames": ["google/osv-scanner"],
       "enabled": false
+    },
+    {
+      "description": "gVisor is the sandbox boundary of every project and Secret job, so a bump is a security update for the hosts: typed `fix` so that it cuts a release. Its releases are named by date, which the versioning in its custom manager reads as a major version, so every new release is a major update; that is expected and not a reason to hold it back.",
+      "matchFileNames": ["deploy/gvisor/versions.env"],
+      "matchPackageNames": ["google/gvisor"],
+      "semanticCommitType": "fix",
+      "commitMessageTopic": "gVisor runtime"
     }
   ],
   "customManagers": [
@@ -321,6 +328,15 @@
       ],
       "datasourceTemplate": "github-releases",
       "depNameTemplate": "google/osv-scanner"
+    },
+    {
+      "customType": "regex",
+      "description": "Track the gVisor release every Verity host installs. deploy/gvisor/versions.env is a plain pin file no stock manager reads, so without this the runtime stayed on release-20260714.0 after gVisor fixed CVE-2026-95702 upstream. A bump rewrites RUNSC_RELEASE only: the checksums the hosts verify, the image label the Updater reads and the path the Server verifies all follow from it, and `.github/workflows/renovate-gvisor.yml` derives them on the Renovate branch through `scripts/gvisor-pins.mjs`. The same script's `check` fails any other pull request whose pins do not match what gVisor published.",
+      "managerFilePatterns": ["/^deploy/gvisor/versions\\.env$/"],
+      "matchStrings": ["(?:^|\\n)RUNSC_RELEASE=(?<currentValue>release-\\d{8}\\.\\d+)\\n"],
+      "datasourceTemplate": "github-releases",
+      "depNameTemplate": "google/gvisor",
+      "versioningTemplate": "regex:^release-(?<major>\\d{8})\\.(?<minor>\\d+)$"
     }
   ]
 }
