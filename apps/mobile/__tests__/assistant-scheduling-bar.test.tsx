@@ -104,3 +104,34 @@ it('appears only in the assistant session', async () => {
   render(<AssistantSchedulingOverview client={client} sessionId="assistant" />);
   expect(await screen.findByText('1 open scheduling request')).toBeTruthy();
 });
+
+it('leads to all requests instead of a deleted chat, and stays put for its own', async () => {
+  const { mockPush } = jest.requireActual<typeof import('./support/settingsHarness')>(
+    './support/settingsHarness',
+  );
+  render(
+    <AssistantSchedulingBar
+      sessionId="assistant"
+      items={[
+        { request: request({ id: 'gone' }), project: null, sessionAvailable: false },
+        {
+          request: request({
+            id: 'own',
+            sessionId: 'assistant',
+            guest: { email: 'b@x.test', name: 'Ben' },
+          }),
+          project: null,
+          sessionAvailable: true,
+        },
+      ]}
+      now={NOW}
+    />,
+  );
+  fireEvent.press(screen.getByLabelText(/open scheduling requests/u));
+  fireEvent.press(await screen.findByText('Anna · Intro call'));
+  expect(mockPush).toHaveBeenLastCalledWith('/settings/scheduling-requests');
+  mockPush.mockClear();
+  fireEvent.press(screen.getByLabelText(/open scheduling requests/u));
+  fireEvent.press(await screen.findByText('Ben · Intro call'));
+  expect(mockPush).not.toHaveBeenCalled();
+});

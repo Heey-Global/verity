@@ -14,6 +14,8 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 export interface AssistantSchedulingItem {
   request: SchedulingRequestView;
   project: string | null;
+  /** False once the request's chat was deleted; the request keeps running without it. */
+  sessionAvailable?: boolean | undefined;
 }
 
 /** The open requests of every granted project, longest waiting first. */
@@ -87,7 +89,7 @@ export function AssistantSchedulingBar({
         }
       >
         <Group>
-          {openItems.map(({ request, project }) => (
+          {openItems.map(({ request, project, sessionAvailable }) => (
             <Row
               key={request.id}
               title={`${schedulingGuestName(request)} · ${request.title}`}
@@ -95,7 +97,9 @@ export function AssistantSchedulingBar({
               navigates
               onPress={() => {
                 setOpen(false);
-                if (request.sessionId !== sessionId) router.push(`/session/${request.sessionId}`);
+                if (sessionAvailable === false) router.push('/settings/scheduling-requests');
+                else if (request.sessionId !== sessionId)
+                  router.push(`/session/${request.sessionId}`);
               }}
             />
           ))}
@@ -122,9 +126,10 @@ export function AssistantSchedulingOverview({
       if (overview.assistantSessionId !== sessionId) return null;
       const projects = await client.listProjects();
       const names = new Map(projects.map((project) => [project.id, project.repo]));
-      return overview.requests.map((request) => ({
+      return overview.requests.map(({ sessionAvailable, ...request }) => ({
         request,
         project: request.projectId ? (names.get(request.projectId) ?? null) : null,
+        sessionAvailable,
       }));
     }, [client, sessionId]),
   );

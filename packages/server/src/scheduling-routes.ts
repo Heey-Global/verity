@@ -136,7 +136,13 @@ export function registerSchedulingRoutes(
     }
     return {
       assistantSessionId: settings.session_id,
-      requests: await Promise.all(visible.map(view)),
+      // Requests outlive their chat; the overview links to the chat only while it exists.
+      requests: await Promise.all(
+        visible.map(async (stored) => ({
+          ...(await view(stored)),
+          sessionAvailable: (await deps.eventStore.getSession(stored.sessionId)) !== undefined,
+        })),
+      ),
     };
   });
 

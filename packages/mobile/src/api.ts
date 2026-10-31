@@ -5885,13 +5885,15 @@ export class VerityClient {
   /** The assistant's overview: its session id and the requests of the projects granted to it. */
   async assistantSchedulingRequests(): Promise<{
     assistantSessionId: string | null;
-    requests: SchedulingRequestView[];
+    requests: (SchedulingRequestView & { sessionAvailable?: boolean | undefined })[];
   }> {
     const res = await this.request('/assistant/scheduling-requests', { method: 'GET' });
     return z
       .object({
         assistantSessionId: z.string().nullable(),
-        requests: z.array(schedulingRequestViewSchema),
+        requests: z.array(
+          schedulingRequestViewSchema.extend({ sessionAvailable: z.boolean().optional() }),
+        ),
       })
       .parse(await res.json());
   }

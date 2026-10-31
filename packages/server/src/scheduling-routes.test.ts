@@ -70,7 +70,7 @@ async function serve(extra: SchedulingRequest[] = []) {
         ['mine', 'control', 'archived'].includes(projectId) &&
         permission === 'execute',
       isActiveAdministrator: async (userId: string) => userId === 'admin',
-      getSession: async () => undefined,
+      getSession: async (id: string) => (id === 'assistant' ? { id } : undefined),
     } as unknown as EventStore,
     service: {
       publicLink: async () => 'https://x.preview.example.test/?pin=123456',
@@ -135,6 +135,8 @@ describe('scheduling request routes', () => {
     // project keeps its grant but drops out, as it does for the assistant's own tool.
     expect(member.requests.map((r) => r.id)).toEqual([stored[0]!.id, own.id]);
     expect(member.requests[0]!.projectId).toBe('mine');
+    // The first request's chat was deleted; the app must not link to it.
+    expect(member.requests.map((r) => r.sessionAvailable)).toEqual([false, true]);
     expect((await overview('stranger')).requests).toEqual([]);
   });
 
