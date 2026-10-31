@@ -3,7 +3,6 @@
 BPF_PROG_TEST_RUN verifies program execution, not end-to-end network delivery.
 No production host configuration is installed by this fixture.
 """
-import ctypes
 import json
 import os
 from pathlib import Path
@@ -19,6 +18,9 @@ import importlib.util
 spec = importlib.util.spec_from_file_location('deadline_guest', Path(__file__).with_name('deadline-guest.py'))
 guest = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(guest)
+spec = importlib.util.spec_from_file_location('deadline_host', Path(__file__).with_name('project-egress-deadline.py'))
+host = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(host)
 
 
 class KernelRelayPacketTests(RelayPacketTests):
@@ -38,11 +40,11 @@ class KernelRelayPacketTests(RelayPacketTests):
 
     def tearDown(self):
         # Never leave the synthetic endpoints enabled for subsequent deadline probes.
-        guest.element('relay_transport', bytes(ctypes.sizeof(self.policy)), True)
+        host.write_relay(guest.PINS)
         guest.element('deadline', struct.pack('<QII', 0, self.index, 0), True)
 
     def matches(self, data, length=None):
-        guest.element('relay_transport', bytes(self.policy), True)
+        host.write_relay(guest.PINS, bytes(self.policy))
         packet = bytes(data[:length]) if length is not None else bytes(data)
         # The kernel requires at least an Ethernet header for a TC test skb.
         (self.root / 'packet').write_bytes(packet.ljust(14, b'\0'))

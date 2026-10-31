@@ -1,7 +1,9 @@
 """Host admission contract tests; these do not substitute for native BPF proof."""
 import importlib.util
+import ctypes
 import json
 import os
+import struct
 from pathlib import Path
 import tempfile
 import unittest
@@ -49,6 +51,7 @@ class DeadlineHostTests(unittest.TestCase):
         self.listing = self.enter(patch.object(host, 'run', return_value=json.dumps({'nftables': [
             {'set': {'name': name}} for name in host.expiry_set_names(None)]})))
         self.write = self.enter(patch.object(host, 'write_deadline'))
+        self.relay_write = self.enter(patch.object(host, 'write_relay'))
 
     def arm(self):
         return host.execute({'operation': 'arm', 'binding': self.binding, 'lease': self.lease})
@@ -173,6 +176,91 @@ class DeadlineHostTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'already observed expired'):
             self.arm()
 
+    def configure_relay(self):
+        return host.execute({'operation': 'configure-relay', 'binding': self.binding,
+                             'relay': self.registration})
+
+    def relay_fixture(self):
+        self.registration = {'containerId': 'd' * 64, 'endpointId': 'e' * 64, 'codex': False}
+        self.policy = struct.pack('<II', 1, 0) + bytes([172, 30, 106, 2, 172, 30, 106, 3]) + bytes.fromhex('02010203040502060708090a')
+        return self.enter(patch.object(host, 'relay_policy', return_value=self.policy))
+
+    def test_relay_configuration_clears_before_inspection_and_checks_after_write(self):
+        inspector = self.relay_fixture()
+        events = []
+        self.relay_write.side_effect = lambda *args: events.append(('write', args[-1] if len(args) > 1 else None))
+        inspector.side_effect = lambda *args: events.append(('inspect', None)) or self.policy
+        self.assertEqual(self.configure_relay(), {'state': 'relay-configured'})
+        self.assertEqual(events, [('write', None), ('inspect', None), ('write', self.policy), ('inspect', None)])
+        self.assertEqual(json.loads(self.path.read_text())['relayRegistration'], self.registration)
+
+    def test_relay_replacement_or_codex_change_requires_new_generation(self):
+        self.relay_fixture()
+        self.configure_relay()
+        for name, value in (('containerId', 'f' * 64), ('endpointId', 'f' * 64), ('codex', True)):
+            original = self.registration[name]
+            self.registration[name] = value
+            with self.assertRaisesRegex(ValueError, 'fresh generation'):
+                self.configure_relay()
+            self.assertEqual(len(self.relay_write.call_args.args), 1)
+            self.registration[name] = original
+
+    def test_relay_endpoint_changes_cannot_reuse_registration(self):
+        inspector = self.relay_fixture()
+        self.configure_relay()
+        inspector.return_value = bytes(28)
+        with self.assertRaisesRegex(ValueError, 'fresh generation'):
+            self.configure_relay()
+        self.assertEqual(len(self.relay_write.call_args.args), 1)
+
+    def test_relay_change_during_installation_clears_policy(self):
+        inspector = self.relay_fixture()
+        inspector.side_effect = [self.policy, bytes(28)]
+        with self.assertRaisesRegex(ValueError, 'during configuration'):
+            self.configure_relay()
+        self.assertEqual([len(c.args) for c in self.relay_write.call_args_list], [1, 2, 1])
+
+    def test_relay_attestation_failure_after_installation_clears_policy(self):
+        self.relay_fixture()
+        host.attest.side_effect = [None, ValueError('changed hook')]
+        with self.assertRaisesRegex(ValueError, 'changed hook'):
+            self.configure_relay()
+        self.assertEqual([len(c.args) for c in self.relay_write.call_args_list], [1, 2, 1])
+
+    def test_relay_clear_preserves_immutable_registration(self):
+        self.relay_fixture()
+        self.configure_relay()
+        state = json.loads(self.path.read_text())
+        self.assertEqual(host.execute({'operation': 'clear-relay', 'binding': self.binding}),
+                         {'state': 'relay-denied'})
+        self.assertEqual(json.loads(self.path.read_text()), state)
+        self.assertEqual(len(self.relay_write.call_args.args), 1)
+
+    def test_direct_revoke_does_not_clear_system_transport(self):
+        self.relay_fixture()
+        self.configure_relay()
+        self.relay_write.reset_mock()
+        host.execute({'operation': 'revoke', 'binding': self.binding})
+        self.relay_write.assert_not_called()
+        self.assertEqual(self.write.call_args.args[-1], 0)
+
+    def test_direct_arm_rechecks_registered_relay(self):
+        inspector = self.relay_fixture()
+        self.configure_relay()
+        inspector.return_value = bytes(28)
+        with self.assertRaisesRegex(ValueError, 'endpoints changed'):
+            self.arm()
+        self.assertEqual(self.write.call_args.args[-1], 0)
+        self.assertEqual(len(self.relay_write.call_args.args), 1)
+
+    def test_failed_relay_inspection_never_writes_enabled_policy(self):
+        inspector = self.relay_fixture()
+        inspector.side_effect = ValueError('foreign project')
+        with self.assertRaisesRegex(ValueError, 'foreign project'):
+            self.configure_relay()
+        self.assertEqual([len(c.args) for c in self.relay_write.call_args_list], [1])
+
+
     def test_attestation_accepts_only_one_software_program_with_matching_headers(self):
         header = {'kind': 'bpf', 'pref': 1, 'chain': 0, 'protocol': 'all'}
         concrete = {**header, 'options': {'id': 7, 'not_in_hw': True,
@@ -194,6 +282,96 @@ class DeadlineHostTests(unittest.TestCase):
                         [{**concrete, 'options': {**concrete['options'], 'in_hw': True}}],
                         [{**concrete, 'options': {**concrete['options'], 'actions': [{'kind': 'mirred'}]}}]):
             with self.assertRaises(ValueError): host.attest_filters(filters, 7)
+
+
+class RelayIdentityTests(unittest.TestCase):
+    def setUp(self):
+        self.binding = dict(zip(host.BINDING_FIELDS, ['project', 'generation', 'a' * 64,
+                            'b' * 64, 'c' * 64, 've-test', '172.30.106.2', 'fd42:feed::2']))
+        self.registration = {'containerId': 'd' * 64, 'endpointId': 'e' * 64, 'codex': False}
+        self.peer = {'device': 'vtest', 'index': 5}
+        self.sandbox = {'MacAddress': '02:01:02:03:04:05', 'IPAddress': '172.30.106.2',
+                        'GlobalIPv6Address': 'fd42:feed::2'}
+        self.relay = {'MacAddress': '02:06:07:08:09:0a', 'IPAddress': '172.30.106.3',
+                      'GlobalIPv6Address': 'fd42:feed::3'}
+        self.network = {'Containers': {identity: {'MacAddress': net['MacAddress'],
+                            'IPv4Address': net['IPAddress'] + '/24'}
+                        for identity, net in ((self.binding['containerId'], self.sandbox),
+                                              (self.registration['containerId'], self.relay))}}
+        def daemon(*args):
+            if args[1] == 'network':
+                return json.dumps([self.network])
+            net = self.sandbox if args[-1] == self.binding['containerId'] else self.relay
+            return json.dumps([{'NetworkSettings': {'Networks': {'project': net}}}])
+        self.enterContext(patch.object(host, 'run', side_effect=daemon))
+        self.inspector = self.enterContext(patch.object(host, 'endpoint', side_effect=lambda binding:
+            self.peer if binding['containerId'] == self.binding['containerId'] else {'device': 'vrelay', 'index': 6}))
+
+    def policy(self):
+        return host.relay_policy(self.binding, self.peer, self.registration)
+
+    def test_exact_policy_encoding_and_both_inspected_bindings(self):
+        value = self.policy()
+        self.assertEqual(value, struct.pack('<II', 1, 0) + bytes([172, 30, 106, 2, 172, 30, 106, 3])
+                         + bytes.fromhex('02010203040502060708090a'))
+        checked = self.inspector.call_args_list[1].args[0]
+        self.assertEqual(checked, {**self.binding, 'containerId': self.registration['containerId'],
+                         'endpointId': self.registration['endpointId'], 'ipv4': '172.30.106.3', 'ipv6': 'fd42:feed::3'})
+        self.registration['codex'] = True
+        self.assertEqual(struct.unpack('<II', self.policy()[:8]), (1, 1))
+
+    def test_caller_cannot_supply_destinations_or_non_boolean_codex(self):
+        for changed in ({**self.registration, 'ipv4': '1.1.1.1'},
+                        {**self.registration, 'codex': 1},
+                        {**self.registration, 'endpointId': '--help'},
+                        {**self.registration, 'containerId': self.binding['containerId']}):
+            with self.assertRaises(ValueError):
+                host.relay_policy(self.binding, self.peer, changed)
+        self.inspector.assert_not_called()
+
+    def test_extra_or_missing_project_endpoint_is_rejected(self):
+        self.network['Containers']['f' * 64] = {}
+        with self.assertRaisesRegex(ValueError, 'registered project pair'):
+            self.policy()
+        del self.network['Containers']['f' * 64]
+        del self.network['Containers'][self.registration['containerId']]
+        with self.assertRaisesRegex(ValueError, 'registered project pair'):
+            self.policy()
+
+    def test_daemon_disagreement_and_invalid_hardware_are_rejected(self):
+        for mac in ('02:01:02:03:04:05', '00:00:00:00:00:00', '03:06:07:08:09:0a', 'invalid'):
+            self.relay['MacAddress'] = mac
+            self.network['Containers'][self.registration['containerId']]['MacAddress'] = mac
+            with self.assertRaises(ValueError):
+                self.policy()
+        self.relay['MacAddress'] = '02:06:07:08:09:0a'
+        with self.assertRaisesRegex(ValueError, 'disagreement'):
+            self.policy()
+
+    def test_changed_veth_is_rejected(self):
+        self.inspector.side_effect = None
+        self.inspector.return_value = {'device': 'different', 'index': 9}
+        with self.assertRaisesRegex(ValueError, 'interface changed'):
+            self.policy()
+
+
+class RelayMapWriterTests(unittest.TestCase):
+    def test_enabled_and_disabled_map_values_use_the_kernel_layout(self):
+        writes = []
+        def syscall(command, attr):
+            if command == 7:
+                self.assertEqual(ctypes.string_at(attr.pathname), b'/pins/maps/relay_transport')
+                return 42
+            self.assertEqual(command, 2)
+            self.assertEqual(attr.fd, 42)
+            self.assertEqual(ctypes.c_uint32.from_address(attr.key).value, 0)
+            writes.append(ctypes.string_at(attr.value, 28))
+            return 0
+        with patch.object(host, 'bpf', side_effect=syscall), patch.object(host.os, 'close') as close:
+            host.write_relay(Path('/pins'), bytes(range(28)))
+            host.write_relay(Path('/pins'))
+        self.assertEqual(writes, [bytes(range(28)), bytes(28)])
+        self.assertEqual([c.args for c in close.call_args_list], [(42,), (42,)])
 
 
 if __name__ == '__main__':

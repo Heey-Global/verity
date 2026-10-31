@@ -126,3 +126,30 @@ and clears the synthetic relay policy after each case. `relay-kernel.txt` retain
 the matrix result, including failures. This proves kernel program execution when
 the job succeeds; it does not prove end-to-end relay delivery or install trusted
 relay policy on a supported host.
+
+### Experimental host relay configuration
+
+The uninstalled root-only deadline helper accepts `configure-relay` with a
+registered relay container ID, endpoint ID and Boolean Codex flag. It accepts no
+caller-selected addresses or MACs. The trusted host must validate the relay's role,
+image and mounts before registering these IDs; Docker labels are not authority.
+The helper derives both endpoints from the daemon, requires exactly that pair on
+the project network, checks both namespace/veth attachments and bridge membership,
+and verifies network/container address and MAC agreement. The binary policy is
+bound to the original generation and endpoints; changing either identity, address,
+MAC or the Codex flag requires a fresh generation.
+
+Configuration clears the relay map before inspection, attests the TC hooks, saves
+the immutable registration, installs the policy, and repeats inspection and
+attestation. A failed post-install check clears the map. `clear-relay` explicitly
+disables the system exception while retaining its immutable registration.
+Generation `prepare` clears it as well. Direct `revoke` preserves the system class;
+subsequent direct admission rechecks its registered endpoints and clears the relay
+map if they changed or attestation fails. Map-write failures are fatal and must
+prevent the lifecycle owner from claiming successful configuration or revocation.
+
+The KVM packet fixture uses the host map writer, including its disabled encoding.
+Host configuration tests mock daemon and kernel responses; they do not certify
+actual Docker/TC composition. These helper operations are not yet selected by the
+production host lifecycle. Combining and verifying startup, relay and direct
+nftables rules, crash/restart recovery and real relay delivery remain required.
