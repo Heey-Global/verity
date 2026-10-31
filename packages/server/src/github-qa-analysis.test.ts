@@ -375,3 +375,26 @@ it('scrubs run metadata and resumes interrupted job pagination without refetchin
   expect(firstPageReads).toBe(1);
   expect(secondPageReads).toBe(2);
 });
+
+it('requires fixed bounds on subsequent run pages before contacting GitHub', async () => {
+  const fetcher = vi.fn(async () => Response.json({ total_count: 0, workflow_runs: [] }));
+  const reader = createGitHubQAAnalysis(async () => 'github-test-token-for-analysis', fetcher);
+  const result = await reader(ref, { action: 'runs', projectId: 'p', page: 2 }, async () => {});
+  expect(result).toMatchObject({
+    available: false,
+    error: { step: 'pagination-requires-original-since-and-until' },
+  });
+  expect(fetcher).not.toHaveBeenCalled();
+  await reader(
+    ref,
+    {
+      action: 'runs',
+      projectId: 'p',
+      page: 2,
+      since: '2026-10-01T00:00:00Z',
+      until: '2026-10-02T00:00:00Z',
+    },
+    async () => {},
+  );
+  expect(fetcher).toHaveBeenCalledOnce();
+});

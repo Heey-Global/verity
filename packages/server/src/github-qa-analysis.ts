@@ -92,6 +92,18 @@ export function createGitHubQAAnalysis(
     await authorize();
     const base = `https://api.github.com/repos/${encodeURIComponent(ref.owner)}/${encodeURIComponent(ref.repo)}/`;
     const checkedAt = new Date().toISOString();
+    if (request.action === 'runs' && request.page > 1 && (!request.since || !request.until))
+      return {
+        available: false,
+        checkedAt,
+        error: observationFailure(
+          new ForgeObservationError(
+            'invalid-response',
+            'pagination-requires-original-since-and-until',
+          ),
+        ),
+      };
+
     let until =
       request.action === 'runs' || request.action === 'statistics'
         ? (request.until ?? checkedAt)
