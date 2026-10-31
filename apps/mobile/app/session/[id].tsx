@@ -1,6 +1,7 @@
 import { McpAppCard } from '../../components/McpAppCard';
 import { QAApprovalCard } from '../../components/QAApprovalCard';
 import { SchedulingApprovalEditor } from '../../components/SchedulingApprovalEditor';
+import { AssistantSchedulingOverview } from '../../components/AssistantSchedulingBar';
 import { SchedulingRequestsCard } from '../../components/SchedulingRequestsCard';
 import {
   managedServerApproval,
@@ -4796,6 +4797,7 @@ export const SessionChat = memo(function SessionChat({
       ) : null}
       {client ? <QAApprovalCard client={client} sessionId={sessionId} /> : null}
       {client ? <SchedulingRequestsCard client={client} sessionId={sessionId} /> : null}
+      {client ? <AssistantSchedulingOverview client={client} sessionId={sessionId} /> : null}
       {/* Last above the composer: below the plan and the PR bar, never above them. */}
       {client ? <SessionVulnerabilityCard client={client} sessionId={sessionId} /> : null}
       <InputBar

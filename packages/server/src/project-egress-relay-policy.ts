@@ -14,6 +14,8 @@ export const egressRelayPolicy = z.strictObject({
   brokerSubpath: subpath,
   claudeSubpath: subpath,
   codexSubpath: subpath.optional(),
+  /** Explicit experimental host selection; legacy fixtures do not claim deadlines. */
+  packetEnforcement: z.boolean().optional(),
 });
 export type EgressRelayPolicy = z.infer<typeof egressRelayPolicy>;
 const mount = z.object({

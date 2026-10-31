@@ -3,3 +3,5 @@ __pycache__/
 adapter-smoke.mjs
 
 host-smoke.mjs
+
+composed-renewal.mjs

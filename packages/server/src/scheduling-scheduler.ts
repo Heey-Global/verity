@@ -15,7 +15,7 @@ export interface SchedulingSchedulerDeps {
 }
 
 export interface SchedulingScheduler {
-  stop(): void;
+  stop(): Promise<void>;
   wake(): void;
   runOnce(): Promise<void>;
 }
@@ -27,7 +27,7 @@ export function startSchedulingScheduler(deps: SchedulingSchedulerDeps): Schedul
   const now = deps.now ?? Date.now;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let stopped = false;
-  let running = false;
+  let active: Promise<void> | undefined;
   let again = false;
 
   const arm = (delay: number) => {
@@ -39,32 +39,36 @@ export function startSchedulingScheduler(deps: SchedulingSchedulerDeps): Schedul
 
   const run = async (): Promise<void> => {
     if (stopped) return;
-    if (running) {
+    if (active) {
       again = true;
       return;
     }
-    running = true;
-    let delay = MAX_SLEEP_MS;
-    try {
-      const dueAt = await deps.runDue();
-      if (dueAt) delay = Math.max(1_000, Math.min(MAX_SLEEP_MS, dueAt.getTime() - now()));
-    } catch (err) {
-      deps.log.warn({ err }, 'scheduling scheduler pass failed');
-    } finally {
-      running = false;
-      if (again) {
-        again = false;
-        arm(0);
-      } else arm(delay);
-    }
+    active = Promise.resolve().then(async () => {
+      let delay = MAX_SLEEP_MS;
+      try {
+        const dueAt = await deps.runDue();
+        if (dueAt) delay = Math.max(1_000, Math.min(MAX_SLEEP_MS, dueAt.getTime() - now()));
+      } catch (err) {
+        deps.log.warn({ err }, 'scheduling scheduler pass failed');
+      } finally {
+        active = undefined;
+        if (again) {
+          again = false;
+          arm(0);
+        } else arm(delay);
+      }
+    });
+    await active;
   };
 
   arm(0);
 
   return {
-    stop(): void {
+    async stop(): Promise<void> {
       stopped = true;
       if (timer !== undefined) clearTimeout(timer);
+      // Database users may tear down immediately after stop resolves.
+      await active;
     },
     wake(): void {
       arm(0);

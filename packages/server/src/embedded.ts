@@ -6151,6 +6151,7 @@ export async function buildEmbeddedServer(
     app.addHook('onClose', () => clearInterval(buildStorageTimer));
   }
   app.addHook('onClose', () => listenerDiscovery?.close());
+  app.addHook('onClose', () => config.projectEgress?.close());
   if (!localPreviewManager) previewRecoveryReady = true;
   managedDevServerLog.current = (message, detail) => app.log.info(detail ?? {}, message);
   app.addHook('onClose', () => managedDevServerManager?.close());

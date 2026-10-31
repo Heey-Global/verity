@@ -12,11 +12,73 @@ import type {
  * labels, missing host state or transport errors permit a legacy network fallback.
  */
 export class ProjectEgressLifecycle {
+  private readonly renewals = new Map<
+    string,
+    { identity: InternalConnectionIdentity; timer?: ReturnType<typeof setTimeout> }
+  >();
+  private closed = false;
+  private stopRenewal(identity: InternalConnectionIdentity): void {
+    const pending = this.renewals.get(identity.projectId);
+    if (!pending || pending.identity.containerGeneration !== identity.containerGeneration) return;
+    clearTimeout(pending.timer);
+    this.renewals.delete(identity.projectId);
+  }
+  private async renew(identity: InternalConnectionIdentity): Promise<void> {
+    this.stopRenewal(identity);
+    if (this.closed) throw new Error('Project egress lifecycle is closed');
+    const state: { identity: InternalConnectionIdentity; timer?: ReturnType<typeof setTimeout> } = {
+      identity: { ...identity },
+    };
+    this.renewals.set(identity.projectId, state);
+    const tick = async () => {
+      if (this.renewals.get(identity.projectId) !== state || this.closed) return;
+      try {
+        await this.refreshDirect(identity);
+      } catch (error) {
+        if (this.renewals.get(identity.projectId) === state) {
+          this.stopRenewal(identity);
+          await this.revokeDirect(identity).catch(() => undefined);
+        }
+        throw error;
+      }
+      if (this.renewals.get(identity.projectId) !== state || this.closed) return;
+      state.timer = setTimeout(() => {
+        void tick().catch(() => undefined);
+      }, 250);
+      state.timer.unref();
+    };
+    await tick();
+  }
+  async requiresFreshWakeGeneration(projectId: string): Promise<boolean> {
+    const reply = await this.command({ operation: 'current', projectId });
+    if (
+      reply.state !== 'current' ||
+      reply.projectId !== projectId ||
+      (reply.binding !== null && reply.binding.projectId !== projectId)
+    )
+      throw new Error('Mismatched host binding');
+    return reply.packetEnforcement === true;
+  }
+  async close(): Promise<void> {
+    this.closed = true;
+    const identities = [...this.renewals.values()].map((item) => item.identity);
+    for (const identity of identities) this.stopRenewal(identity);
+    const errors: unknown[] = [];
+    for (const identity of identities) {
+      try {
+        await this.revokeDirect(identity);
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+    if (errors.length) throw new AggregateError(errors, 'Direct admission shutdown failed');
+  }
   constructor(
     private readonly command: (
       input: ProjectEgressHostRequest,
     ) => Promise<ProjectEgressHostResponse>,
     private readonly docker: Pick<DockerClient, 'createEgressNetwork'>,
+    private readonly renewDirect = true,
   ) {}
   async current(projectId: string): Promise<ProjectEgressNetworkBinding | undefined> {
     const result = await this.command({ operation: 'current', projectId });
@@ -56,6 +118,7 @@ export class ProjectEgressLifecycle {
     return binding;
   }
   async prepare(identity: InternalConnectionIdentity): Promise<ProjectEgressNetworkBinding> {
+    this.stopRenewal(identity);
     const binding = await this.binding(identity);
     await this.acknowledge(
       { operation: 'prepare', ...this.reference(identity) },
@@ -69,6 +132,8 @@ export class ProjectEgressLifecycle {
     role: 'sandbox' | 'relay',
     containerId: string,
   ): Promise<void> {
+    if (this.closed) throw new Error('Project egress lifecycle is closed');
+    this.stopRenewal(identity);
     const result = await this.command({
       operation: 'start',
       ...this.reference(identity),
@@ -80,14 +145,30 @@ export class ProjectEgressLifecycle {
       result.generation !== identity.containerGeneration
     )
       throw new Error('Mismatched host acknowledgement');
+    if (result.state === 'started-connected' && result.directAuthority === true && this.renewDirect)
+      await this.renew(identity);
   }
   async connect(identity: InternalConnectionIdentity): Promise<string> {
+    if (this.closed) throw new Error('Project egress lifecycle is closed');
     const result = await this.command({ operation: 'connect', ...this.reference(identity) });
     if (result.state !== 'connected' || result.generation !== identity.containerGeneration)
       throw new Error('Transport readiness was not acknowledged');
+    if (result.directAuthority === true && this.renewDirect) await this.renew(identity);
     return result.relayAddress;
   }
+  async refreshDirect(identity: InternalConnectionIdentity): Promise<void> {
+    const reply = await this.command({ operation: 'refresh-direct', ...this.reference(identity) });
+    if (reply.state !== 'direct-refreshed' || reply.generation !== identity.containerGeneration)
+      throw new Error('Direct admission was not acknowledged');
+  }
+  async revokeDirect(identity: InternalConnectionIdentity): Promise<void> {
+    this.stopRenewal(identity);
+    const reply = await this.command({ operation: 'revoke-direct', ...this.reference(identity) });
+    if (reply.state !== 'direct-revoked' || reply.generation !== identity.containerGeneration)
+      throw new Error('Direct revocation was not acknowledged');
+  }
   async retire(identity: InternalConnectionIdentity): Promise<void> {
+    this.stopRenewal(identity);
     await this.acknowledge(
       { operation: 'retire', ...this.reference(identity) },
       'retired',

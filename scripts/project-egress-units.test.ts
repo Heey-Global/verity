@@ -107,3 +107,20 @@ it('keeps native generation-bound broker sockets within Linux path limits', () =
   );
   expect(Buffer.byteLength(socket)).toBeLessThan(108);
 });
+
+it('keeps deadline evidence outside the disposable control socket directory and bounds writable pins', () => {
+  const helper = readFileSync(
+    new URL('../deploy/egress/project-egress-deadline.py', import.meta.url),
+    'utf8',
+  );
+  const state = /^STATE = Path\('([^']+)'\)/mu.exec(helper)?.[1];
+  const pins = /^PINS = Path\('([^']+)'\)/mu.exec(helper)?.[1];
+  const host = unit('verity-egress-host.service');
+  const writable = host.find((line) => line.startsWith('ReadWritePaths='));
+  expect(state).toBeDefined();
+  expect(state).toMatch(/^\/var\/lib\/verity-egress\//u);
+  expect(host).toContain('RuntimeDirectory=verity-egress');
+  expect(host).not.toContain('RuntimeDirectoryPreserve=yes');
+  expect(writable).toContain(`-${pins}`);
+  expect(writable).not.toMatch(/(?:=|\s)\/?sys\/fs\/bpf(?:\s|$)/u);
+});

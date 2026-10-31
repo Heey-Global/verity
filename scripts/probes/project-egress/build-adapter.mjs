@@ -20,3 +20,12 @@ await build({
   target: 'node22',
   alias: { '@verity/store': resolve('packages/store/src/project-egress.ts') },
 });
+
+await build({
+  entryPoints: ['scripts/probes/project-egress/composed-renewal.ts'],
+  outfile: 'scripts/probes/project-egress/composed-renewal.mjs',
+  bundle: true,
+  platform: 'node',
+  format: 'esm',
+  target: 'node22',
+});

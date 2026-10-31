@@ -101,13 +101,27 @@ export interface ProjectDeadlineEnforcer {
   /** Attach and attest both software hooks in a denied state. */
   prepare(binding: ProjectFenceBinding): Promise<void>;
   clock(): Promise<ProjectDeadlineClock>;
+  /** Kernel-side compare-and-renew; a late handoff must fail without reviving old flows. */
+  renew?(
+    binding: ProjectFenceBinding,
+    lease: ProjectDeadlineLease,
+    previousBootDeadlineNs: string,
+  ): Promise<void>;
   /** Must preserve the given absolute deadline even after arbitrarily late commit. */
   arm(binding: ProjectFenceBinding, lease: ProjectDeadlineLease): Promise<void>;
   revoke(binding: ProjectFenceBinding, next?: ProjectDeadlineLease): Promise<void>;
 }
 
+export interface ProjectDeadlineRelayEnforcer extends ProjectDeadlineEnforcer {
+  configureRelay(
+    binding: ProjectFenceBinding,
+    relay: { containerId: string; endpointId: string; codex: boolean },
+  ): Promise<void>;
+  clearRelay(binding: ProjectFenceBinding): Promise<void>;
+}
+
 /** Fixed root-owned helper; no executable or namespace comes from a project. */
-export function hostProjectDeadlineEnforcer(): ProjectDeadlineEnforcer {
+export function hostProjectDeadlineEnforcer(): ProjectDeadlineRelayEnforcer {
   const request = (input: unknown): Promise<unknown> =>
     new Promise((resolve, reject) => {
       const child = spawn('/usr/bin/python3', ['/opt/verity-egress/project-egress-deadline.py'], {
@@ -145,11 +159,28 @@ export function hostProjectDeadlineEnforcer(): ProjectDeadlineEnforcer {
     });
   const denied = z.strictObject({ state: z.literal('denied') });
   return {
+    async configureRelay(binding, relay) {
+      z.strictObject({ state: z.literal('relay-configured') }).parse(
+        await request({ operation: 'configure-relay', binding, relay }),
+      );
+    },
+    async clearRelay(binding) {
+      z.strictObject({ state: z.literal('relay-denied') }).parse(
+        await request({ operation: 'clear-relay', binding }),
+      );
+    },
     async prepare(binding) {
       denied.parse(await request({ operation: 'prepare', binding }));
     },
     async clock() {
       return clockSchema.parse(await request({ operation: 'clock' }));
+    },
+    async renew(binding, lease, previousBootDeadlineNs) {
+      const result = z
+        .strictObject({ state: z.literal('armed'), bootDeadlineNs: decimal })
+        .parse(await request({ operation: 'renew', binding, lease, previousBootDeadlineNs }));
+      if (result.bootDeadlineNs !== lease.bootDeadlineNs)
+        throw new Error('Host changed immutable packet deadline');
     },
     async arm(binding, lease) {
       const result = z
