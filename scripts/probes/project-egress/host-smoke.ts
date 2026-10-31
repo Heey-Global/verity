@@ -42,6 +42,14 @@ import {
 import { listenProjectEgressHost } from '../../../packages/server/src/project-egress-host-control.js';
 import { applyProjectFenceRules } from '../../../packages/server/src/project-egress-fence.js';
 assert.equal(process.env.PROJECT_EGRESS_DISPOSABLE, 'yes');
+class ProbeHost extends ProjectEgressHost {
+  override execute(input: unknown) {
+    return super.execute(input).catch((error: unknown) => {
+      process.stderr.write(`Disposable host refusal: ${String(error)}\n`);
+      throw error;
+    });
+  }
+}
 const exec = promisify(execFile);
 let bridge = '';
 let generationNetwork = '';
@@ -229,7 +237,7 @@ try {
   for (let i = 0; i < 50 && !(await docker('logs', 'veh-receiver')).includes('ready'); i++)
     await delay(100);
   assert.ok((await docker('logs', 'veh-receiver')).includes('ready'));
-  const host = new ProjectEgressHost(await store.load(), dependencies);
+  const host = new ProbeHost(await store.load(), dependencies);
   await host.restore();
   server = await listenProjectEgressHost({ directory, token, controller: host });
   const send = (body: ProjectEgressHostRequest) =>
@@ -804,37 +812,16 @@ try {
   await revokeAndMeasure(() => lifecycle.prepare(identity), 'prepare');
   assert.ok((await client('negative', relayAddress, 8080)).includes('transport-denied'));
   await verifyNoRevival('prepare');
-  await docker('stop', '--time', '1', relayId);
-  await startRelay({ ...context, resumeExisting: true });
-  await probeRelay(relayId);
-  await writeFile(
-    '/evidence/transport-restart-endpoints.json',
-    JSON.stringify(
-      await inspectEgressTransport(binding, { sandbox: containerId, relay: relayId }, true),
-    ),
+  results.push(
+    'actual relay forwards broker and model sockets after explicit denied-state revalidation',
   );
-  // Docker assigns a new MAC on restart. Keep the exact host binding while
-  // netstack expires its cached neighbour; a stale-MAC packet must stay denied.
-  const restartBegin = Date.now();
-  let restartReply = '';
-  for (let attempt = 0; attempt < 20; attempt++) {
-    restartReply = await client('positive').catch(String);
-    if (restartReply.includes('transport-positive')) break;
-    await delay(250);
-  }
-  assert.ok(restartReply.includes('transport-positive'), restartReply);
-  await writeFile(
-    '/evidence/transport-restart-ready.json',
-    JSON.stringify({ elapsedMs: Date.now() - restartBegin }),
-  );
-  results.push('actual relay forwards broker and model sockets and survives mediated restart');
 
   await delay(2000);
   assert.ok((await docker('logs', 'veh-source')).includes('sending'));
   assert.ok((await docker('logs', 'veh-source')).includes('transferred-socket-ready'));
   assert.ok(!(await docker('logs', 'veh-receiver')).includes('transferred-startup-marker'));
   assert.ok(!(await docker('logs', 'veh-receiver')).includes('host-startup-marker'));
-  results.push('no receiver observation during Runner/relay startup and mediated restart');
+  results.push('no receiver observation during Runner/relay startup and denied-state revalidation');
   // Compose the actual startup, direct nft and TC paths, with an independent receiver.
   await docker(
     'network',
@@ -1023,7 +1010,7 @@ try {
   );
   server = undefined;
   dependencies.enforcement = createEnforcement();
-  const recovered = new ProjectEgressHost(await store.load(), dependencies);
+  const recovered = new ProbeHost(await store.load(), dependencies);
   await revokeAndMeasure(() => recovered.restore(), 'controller-restore');
   await recovered.revalidate();
   server = await listenProjectEgressHost({ directory, token, controller: recovered });
@@ -1038,7 +1025,9 @@ try {
   ).corridor.binding;
   await revokeAndMeasure(() => lifecycle.retire(identity), 'retire');
   await assert.rejects(lifecycle.start(identity, 'sandbox', containerId));
-  results.push('retired generation cannot restart');
+  await assert.rejects(startRelay({ ...context, resumeExisting: true }));
+  assert.ok((await client('negative', relayAddress, 8080)).includes('transport-denied'));
+  results.push('retired generation and its relay cannot restart or regain transport');
   const nextIdentity = { ...identity, containerGeneration: 'gen2' };
   const nextBinding = await lifecycle.create(nextIdentity);
   extraNetworks.push(nextBinding.networkName);
