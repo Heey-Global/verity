@@ -1,3 +1,4 @@
+import { ForgeObservationError, observationFailure } from './forge-observation-error.js';
 import type { ProjectRecord } from '@verity/store';
 import type { GitOutput } from './branches.js';
 import type { ForgePrService, ForgeProvider, ForgeRepoRef } from './forge-provider.js';
@@ -18,6 +19,8 @@ export interface GitHubForgeProviderOptions {
   /** Cached repository-scoped installation token used for PR, release and broker calls. */
   projectTokenMint: GitHubProjectTokenMint;
   discoveryTokenMint?: GitHubProjectTokenMint;
+  discoveryPrTokenMint?: GitHubProjectTokenMint;
+  repositoryStatusTokenMint?: GitHubProjectTokenMint;
   /** Narrower read-only mint for the issue list. */
   issuesTokenMint: GitHubProjectTokenMint;
   /** Metadata-only installation token for the repository list. Rejections propagate,
@@ -41,6 +44,7 @@ export function createGitHubForgeProvider(opts: GitHubForgeProviderOptions): For
   // Share cooldowns between session worktrees of the SAME repository without
   // pausing unrelated projects that may use a different GitHub installation.
   const prFailureCooldowns = new Map<string, { until: number; inFlight?: Promise<void> }>();
+  const discoveryFailureCooldowns = new Map<string, number>();
   const prFailureCooldownFor = (
     owner: string,
     repo: string,
@@ -69,10 +73,22 @@ export function createGitHubForgeProvider(opts: GitHubForgeProviderOptions): For
   return {
     async discover(ref, page) {
       const cooldown = prFailureCooldownFor(ref.owner, ref.repo);
-      if (Date.now() < cooldown.until) throw new Error('GitHub discovery is backing off');
-      const token = await (opts.discoveryTokenMint ?? opts.projectTokenMint)(ref);
-      if (!token) throw new Error('GitHub credentials unavailable');
+      const key = `${ref.owner.toLowerCase()}/${ref.repo.toLowerCase()}`;
+      if (Date.now() < Math.max(cooldown.until, discoveryFailureCooldowns.get(key) ?? 0))
+        throw new ForgeObservationError(
+          (discoveryFailureCooldowns.get(key) ?? 0) > Date.now() ? 'rate-limit' : 'unavailable',
+          'discovery-backoff',
+          new Date(Math.max(cooldown.until, discoveryFailureCooldowns.get(key) ?? 0)).toISOString(),
+        );
       const read = async (path: string) => {
+        const mint = path.startsWith('actions/')
+          ? (opts.discoveryTokenMint ?? opts.projectTokenMint)
+          : (opts.discoveryPrTokenMint ?? opts.discoveryTokenMint ?? opts.projectTokenMint);
+        const token = await mint(ref);
+        if (!token)
+          throw new ForgeObservationError('credentials', path.split('?')[0] || 'repository');
+        if (Date.now() < (discoveryFailureCooldowns.get(key) ?? 0))
+          throw new ForgeObservationError('rate-limit', 'discovery-backoff');
         const response = await (opts.fetch ?? fetch)(
           `https://api.github.com/repos/${encodeURIComponent(ref.owner)}/${encodeURIComponent(ref.repo)}/${path}`,
           {
@@ -81,27 +97,54 @@ export function createGitHubForgeProvider(opts: GitHubForgeProviderOptions): For
           },
         );
         if (!response.ok) {
-          const retry = Number(response.headers?.get('retry-after'));
-          const reset = Number(response.headers?.get('x-ratelimit-reset')) * 1000;
-          cooldown.until = Math.max(
+          const retry = Number(response.headers?.get('retry-after') ?? undefined);
+          const reset = Number(response.headers?.get('x-ratelimit-reset') ?? undefined) * 1000;
+          const rateLimited =
+            response.status === 429 ||
+            (response.status === 403 &&
+              (response.headers?.get('x-ratelimit-remaining') === '0' || retry > 0));
+          const until = Math.max(
             Date.now() + 60_000,
             Number.isFinite(retry) ? Date.now() + Math.min(retry * 1000, 3_600_000) : 0,
-            response.status === 403 || response.status === 429
-              ? Math.min(reset || 0, Date.now() + 3_600_000)
-              : 0,
+            rateLimited && Number.isFinite(reset) ? Math.min(reset, Date.now() + 3_600_000) : 0,
           );
-          throw new Error(`GitHub discovery unavailable (${response.status})`);
+          if (rateLimited) discoveryFailureCooldowns.set(key, until);
+          // Discovery uses a different token and additional endpoints (Actions).
+          // An endpoint/permission failure must not erase readable PR status;
+          // only rate limiting justifies pausing both readers together.
+          if (rateLimited) cooldown.until = Math.max(cooldown.until, until);
+          throw new ForgeObservationError(
+            rateLimited
+              ? 'rate-limit'
+              : response.status === 403
+                ? 'forbidden'
+                : response.status === 401
+                  ? 'credentials'
+                  : 'unavailable',
+            path.split('?')[0] || 'repository',
+            rateLimited ? new Date(until).toISOString() : undefined,
+          );
         }
         return response.json();
       };
-      const repository = (await read('')) as { default_branch: string };
-      const pulls = (await read(`pulls?state=open&per_page=30&page=${page}`)) as {
+      const errors: NonNullable<import('./forge-provider.js').ForgeDiscoveryPage['errors']> = [];
+      const repository = (await read('').catch((error) => {
+        errors.push(observationFailure(error, 'repository'));
+        return { default_branch: null };
+      })) as { default_branch: string | null };
+      const pulls = (await read(`pulls?state=open&per_page=30&page=${page}`).catch((error) => {
+        errors.push(observationFailure(error, 'pulls'));
+        return [];
+      })) as {
         number: number;
         head: { ref: string; sha: string; repo?: { full_name?: string } };
       }[];
       const body = (await read(
         `actions/runs?created=${encodeURIComponent('>=' + new Date(Date.now() - 7 * 86400_000).toISOString())}&per_page=30&page=${page}`,
-      )) as {
+      ).catch((error) => {
+        errors.push(observationFailure(error, 'actions/runs'));
+        return { workflow_runs: [] };
+      })) as {
         workflow_runs: {
           id: number;
           workflow_id: number;
@@ -116,6 +159,7 @@ export function createGitHubForgeProvider(opts: GitHubForgeProviderOptions): For
       if (!Array.isArray(pulls) || !Array.isArray(body.workflow_runs))
         throw new Error('Invalid GitHub discovery response');
       return {
+        errors,
         pulls: pulls.map((p) => ({
           number: p.number,
           branch: p.head.ref,
@@ -151,7 +195,8 @@ export function createGitHubForgeProvider(opts: GitHubForgeProviderOptions): For
           // Repository reads are cached by the shared, mutation-invalidated status layer.
           ttlMs: 0,
           identity: () => Promise.resolve(ref),
-          asyncToken: (owner, repo) => opts.projectTokenMint({ owner, repo }),
+          asyncToken: (owner, repo) =>
+            (opts.repositoryStatusTokenMint ?? opts.projectTokenMint)({ owner, repo }),
           failureCooldownFor: prFailureCooldownFor,
           ...fetchOpt,
         });

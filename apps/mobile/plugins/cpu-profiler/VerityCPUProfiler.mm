@@ -3,13 +3,24 @@
 #import <React/RCTBridgeModule.h>
 #import <React/RCTInvalidating.h>
 #import <hermes/hermes.h>
+#if __has_include(<VerityCPUProfiler/VerityCPUProfiler-Swift.h>)
+#import <VerityCPUProfiler/VerityCPUProfiler-Swift.h>
+#else
+#import <VerityCPUProfiler-Swift.h>
+#endif
 #include <time.h>
 #include <pthread.h>
+#include <mutex>
 
 // The watchdog and lifecycle stop run on this queue, independently of JS. Never
 // access a jsi::Runtime here: only the process-wide, thread-safe sampler API.
 @interface VerityCPUProfiler : NSObject <RCTBridgeModule, RCTInvalidating>
 @end
+
+// Hermes sampling is process-wide, while reload can overlap bridge instances.
+// Serialize ownership so an old bridge cannot stop a replacement's recording.
+static std::mutex samplerMutex;
+static __weak VerityCPUProfiler *samplerOwner;
 
 @implementation VerityCPUProfiler {
   dispatch_queue_t _queue;
@@ -18,6 +29,7 @@
   BOOL _recording;
   BOOL _invalidated;
   NSString *_captureID;
+  NSDictionary *_bundleIdentity;
   NSString *_jsThreadID;
   NSString *_failure;
   NSString *_stopReason;
@@ -48,7 +60,7 @@ RCT_EXPORT_MODULE(VerityCPUProfiler)
 - (BOOL)enabled {
   NSDictionary *info = NSBundle.mainBundle.infoDictionary;
   return !_invalidated && [NSBundle.mainBundle.bundleIdentifier isEqual:@"build.verity.app.staging"] &&
-    [info[@"VerityCPUProfiling"] boolValue] && [info[@"VerityProfileCommit"] length] == 40;
+    [info[@"VerityCPUProfiling"] boolValue];
 }
 - (NSURL *)rawURL { return [_directory URLByAppendingPathComponent:@"profile.hermesprofile"]; }
 - (NSDictionary *)snapshot {
@@ -59,6 +71,7 @@ RCT_EXPORT_MODULE(VerityCPUProfiler)
     @"ready": @(_captureID != nil && !_recording && !_failure)};
 }
 - (void)finish:(NSString *)reason {
+  std::lock_guard<std::mutex> lock(samplerMutex);
   if (!_recording) return;
   _recording = NO;
   _stoppedMonotonicUs = @(clock_gettime_nsec_np(CLOCK_UPTIME_RAW) / 1000);
@@ -68,7 +81,9 @@ RCT_EXPORT_MODULE(VerityCPUProfiler)
   auto *api = facebook::jsi::castInterface<facebook::hermes::IHermesRootAPI>(facebook::hermes::makeHermesRootAPI());
   if (!api) { _failure = @"Hermes sampling API is unavailable."; return; }
   // Disable before serializing: a delayed JS callback cannot extend sampling.
+  if (samplerOwner != self) { _failure = @"CPU recording ownership changed."; return; }
   api->disableSamplingProfiler();
+  samplerOwner = nil;
   try {
     api->dumpSampledTraceToFile(self.rawURL.path.UTF8String);
     NSNumber *size;
@@ -92,8 +107,16 @@ RCT_EXPORT_BLOCKING_SYNCHRONOUS_METHOD(jsThreadId) {
   return [NSString stringWithFormat:@"%llu", (unsigned long long)tid];
 }
 RCT_EXPORT_METHOD(start:(NSString *)jsThreadID resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
-  if (![self enabled]) { reject(@"unsupported", @"Use the dedicated staging profiling build.", nil); return; }
+  if (![self enabled]) { reject(@"unsupported", @"Use a staging build with CPU recording support.", nil); return; }
   if (_recording) { reject(@"busy", @"A CPU recording is already running.", nil); return; }
+  NSError *identityError;
+  NSDictionary *identity = [VerityProfileBundleIdentity snapshotAndReturnError:&identityError];
+  if (!identity) { reject(@"identity", @"Could not identify the running bundle.", identityError); return; }
+  std::lock_guard<std::mutex> lock(samplerMutex);
+  if (samplerOwner && samplerOwner != self) {
+    reject(@"busy", @"Another bridge is still finishing a CPU recording. Retry after reload.", nil); return;
+  }
+  _bundleIdentity = [identity copy];
   _directory = [[NSFileManager.defaultManager URLsForDirectory:NSCachesDirectory inDomains:NSUserDomainMask].firstObject
     URLByAppendingPathComponent:@"verity-cpu-profile" isDirectory:YES];
   [NSFileManager.defaultManager removeItemAtURL:_directory error:nil];
@@ -111,6 +134,7 @@ RCT_EXPORT_METHOD(start:(NSString *)jsThreadID resolver:(RCTPromiseResolveBlock)
   if (!api) { _failure = @"Hermes sampling API is unavailable."; reject(@"sampler", _failure, nil); return; }
   try { api->enableSamplingProfiler(100); }
   catch (...) { _failure = @"Hermes sampling is unavailable."; reject(@"sampler", _failure, nil); return; }
+  samplerOwner = self;
   _recording = YES;
   _watchdog = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, _queue);
   dispatch_source_set_timer(_watchdog, dispatch_time(DISPATCH_TIME_NOW, 30 * NSEC_PER_SEC), DISPATCH_TIME_FOREVER, 0);
@@ -144,18 +168,14 @@ RCT_EXPORT_METHOD(exportCapture:(NSString *)context resolver:(RCTPromiseResolveB
   if (!mainJS) {
     reject(@"runtime", @"Profile does not contain the app JavaScript thread. Close other profilers and retry.", nil); return;
   }
-  NSDictionary *info = NSBundle.mainBundle.infoDictionary;
-  NSURL *mapIdentityURL = [NSBundle.mainBundle URLForResource:@"verity-profile-map" withExtension:@"json"];
-  NSData *mapIdentityData = mapIdentityURL ? [NSData dataWithContentsOfURL:mapIdentityURL] : nil;
-  NSDictionary *mapIdentity = mapIdentityData ? [NSJSONSerialization JSONObjectWithData:mapIdentityData options:0 error:nil] : nil;
-  if (![mapIdentity isKindOfClass:NSDictionary.class] ||
-      ![mapIdentity[@"commit"] isEqual:info[@"VerityProfileCommit"]] || [mapIdentity[@"mapSha256"] length] != 64) {
-    reject(@"identity", @"Exact-bundle map identity missing. Rebuild the profiling app.", nil); return;
+  NSDictionary *current = [VerityProfileBundleIdentity snapshotAndReturnError:&error];
+  if (!current || ![current isEqual:_bundleIdentity]) {
+    reject(@"identity", @"The running bundle changed; record again after restart.", error); return;
   }
-  NSDictionary *capture = @{@"schema": @1, @"recording": [self snapshot],
-    @"identity": @{@"commit": info[@"VerityProfileCommit"], @"mapSha256": mapIdentity[@"mapSha256"], @"bundleId": NSBundle.mainBundle.bundleIdentifier,
-      @"nativeVersion": info[@"CFBundleShortVersionString"], @"nativeBuild": info[@"CFBundleVersion"],
-      @"runtimeVersion": info[@"VerityProfileRuntime"], @"samplingHz": @100, @"jsThreadId": _jsThreadID, @"updatesEnabled": @NO},
+  NSMutableDictionary *identity = [_bundleIdentity mutableCopy];
+  identity[@"samplingHz"] = @100;
+  identity[@"jsThreadId"] = _jsThreadID;
+  NSDictionary *capture = @{@"schema": @2, @"recording": [self snapshot], @"identity": identity,
     @"diagnostics": diagnostics, @"hermesProfile": profile};
   NSData *data = [NSJSONSerialization dataWithJSONObject:capture options:0 error:&error];
   NSURL *output = [_directory URLByAppendingPathComponent:@"verity-cpu-capture.json"];

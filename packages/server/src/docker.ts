@@ -340,6 +340,8 @@ export interface ContainerSpec {
   /** OCI runtime registered with the Docker daemon (`HostConfig.Runtime`). Secret jobs set this
    *  explicitly to `runsc`; omitting it preserves the daemon default for ordinary sandboxes. */
   runtime?: string;
+  /** Host PID visibility for the bounded host-systemd provisioning helper only. */
+  pidMode?: 'host';
   /** Mount the image root filesystem read-only (`HostConfig.ReadonlyRootfs`). */
   readOnlyRootfs?: boolean;
   /** Ephemeral in-memory mounts keyed by their absolute container path (`HostConfig.Tmpfs`). */
@@ -1463,6 +1465,7 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
           : {}),
         ...(spec.extraHosts?.length ? { ExtraHosts: spec.extraHosts } : {}),
         ...(spec.runtime !== undefined ? { Runtime: spec.runtime } : {}),
+        ...(spec.pidMode !== undefined ? { PidMode: spec.pidMode } : {}),
         ...(spec.groupAdd?.length ? { GroupAdd: spec.groupAdd } : {}),
         ...(spec.readOnlyRootfs !== undefined ? { ReadonlyRootfs: spec.readOnlyRootfs } : {}),
         ...(spec.tmpfs !== undefined ? { Tmpfs: spec.tmpfs } : {}),

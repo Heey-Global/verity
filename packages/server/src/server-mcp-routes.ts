@@ -1,3 +1,5 @@
+import { saveQAReport } from './qa-report.js';
+import { executeQAAnalysis } from './qa-analysis-tool.js';
 import {
   schedulingHasStandingAuthorization,
   type createSchedulingTool,
@@ -797,7 +799,10 @@ export function registerServerMcpRoutes({
         // The composition's own pre-card refusals (the trusted CLI isolation check) first.
         await gatewayDeps.authorizeCall?.(input);
         const { projectId, sessionId, toolName } = input;
-        if ((await deps.eventStore.repairs.qa()).session_id === sessionId)
+        if (
+          (await deps.eventStore.repairs.qa()).session_id === sessionId &&
+          toolName !== 'verity_qa_analysis'
+        )
           throw new ControlPlaneSessionAuthorityError(
             'QA uses server-validated decisions, not executable tools.',
           );
@@ -1107,9 +1112,15 @@ export function registerServerMcpRoutes({
         // delete, so it runs without a card like the planning tools do. App help
         // reads a static catalog and touches no data at all.
         if (
+          toolName === 'verity_qa_analysis' &&
+          (request as { action?: string }).action === 'save_report'
+        )
+          return false;
+        if (
           toolName === 'verity_secret_output' ||
           toolName === 'verity_list_linked_sessions' ||
           toolName === 'verity_repairs' ||
+          toolName === 'verity_qa_analysis' ||
           toolName === 'verity_tasks' ||
           toolName === 'verity_app_help'
         ) {
@@ -1225,6 +1236,11 @@ export function registerServerMcpRoutes({
           hasGoogleWorkspaceScope(account.scopes, file.kind),
         );
       },
+      // Only the scheduling send card has an editor; every other edited approval is refused.
+      approvedEdits: ({ toolName, request, updatedInput }) =>
+        toolName === 'verity_scheduling'
+          ? schedulingTool.approvedEdits(request, updatedInput)
+          : undefined,
       invokeTool: async (input) => {
         if (input.toolName === 'verity_vulnerabilities') return vulnerabilityTool.invoke(input);
         if (input.toolName === 'verity_scheduling') return schedulingTool.invoke(input);
@@ -1379,6 +1395,21 @@ export function registerServerMcpRoutes({
             documentViewForSession(session),
           );
         }
+        if (input.toolName === 'verity_qa_analysis')
+          return executeQAAnalysis(
+            {
+              ...assistantToolDeps,
+              saveReport: (projectId, id, report, authorize) => {
+                if (!deps.dataRoot) throw new Error('Document storage unavailable');
+                return saveQAReport(deps.dataRoot, projectId, id, report, authorize);
+              },
+              read:
+                deps.qaAnalysisRead ??
+                (() =>
+                  Promise.resolve({ available: false, reason: 'Repository analysis unavailable' })),
+            },
+            input,
+          );
         if (input.toolName === 'verity_assistant')
           return executeAssistantTool(assistantToolDeps, input);
         if (input.toolName === 'verity_diagnostics') return controlDiagnosticsTool(input);

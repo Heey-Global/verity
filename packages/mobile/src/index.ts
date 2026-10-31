@@ -610,9 +610,16 @@ export {
 
 export { calendarChangeSummary, type CalendarChangeSummary } from './ui/calendarChangeSummary.js';
 export {
+  SCHEDULING_LANGUAGES,
   schedulingApprovalSummary,
+  schedulingCardDecision,
+  schedulingCardEdit,
+  schedulingCardEmail,
   schedulingWindowLabel,
   type SchedulingApprovalSummary,
+  type SchedulingCardEdit,
+  type SchedulingEditable,
+  type SchedulingLanguage,
 } from './ui/schedulingSummary.js';
 
 export type { LocalPreviewShare, ManagedDevServer } from './api.js';

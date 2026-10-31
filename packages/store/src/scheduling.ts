@@ -116,6 +116,14 @@ export interface CreateSchedulingDraft {
   windows: { start: Date; end: Date; eventId: string }[];
 }
 
+/** What the operator may change on the approval card before a draft is sent. */
+export interface SchedulingDraftContent {
+  title: string;
+  language: 'en' | 'de';
+  emailSubject: string;
+  emailBody: string;
+}
+
 export type SchedulingRequestPatch = Partial<{
   failure: string | null;
   closesAt: Date;
@@ -318,12 +326,20 @@ export class SchedulingStore {
     id: string,
     digest: string,
     senderAccountId: string | null = null,
+    edited?: { content: SchedulingDraftContent; revision: number },
   ): Promise<boolean> {
+    // Content edited on the card is written in the same statement as the approval, and only
+    // over the revision the edit was made against, so no other draft can be approved with it.
+    const content = edited
+      ? sql`, title = ${edited.content.title}, language = ${edited.content.language},
+        email_subject = ${edited.content.emailSubject}, email_body = ${edited.content.emailBody}`
+      : sql``;
+    const revision = edited ? sql` and revision = ${edited.revision}` : sql``;
     const result =
       await sql`update scheduling_requests set state = 'provisioning', approved_at = now(),
-      approval_digest = ${digest}, sender_account_id = ${senderAccountId},
+      approval_digest = ${digest}, sender_account_id = ${senderAccountId}${content},
       revision = revision + 1, updated_at = now()
-      where id = ${id} and state = 'draft' returning id`.execute(this.db);
+      where id = ${id} and state = 'draft'${revision} returning id`.execute(this.db);
     return result.rows.length === 1;
   }
 

@@ -1,3 +1,4 @@
+import type { QAAnalysisDeps } from './qa-analysis-tool.js';
 import type { SessionStorage } from './session-storage.js';
 import type { Backend, Conductor, EventBus } from '@verity/session';
 import type {
@@ -259,6 +260,7 @@ export interface ServerDeps {
     project: ProjectRecord,
     number: number,
   ) => Promise<{ state: 'open' | 'closed' | 'merged' } | null>;
+  qaAnalysisRead?: QAAnalysisDeps['read'];
   repairDiscovery?: (project: ProjectRecord, page: number) => Promise<RepairDiscovery>;
   branchPrStatus?: (branch: string, worktree: string) => Promise<PullRequestStatus | null>;
   /**

@@ -723,6 +723,7 @@ describe('createDockerClient (#174)', () => {
     expect(body.HostConfig.CpuShares).toBeUndefined();
     expect(body.HostConfig.Ulimits).toBeUndefined();
     expect(body.HostConfig.Runtime).toBeUndefined();
+    expect(body.HostConfig.PidMode).toBeUndefined();
     expect(body.HostConfig.ReadonlyRootfs).toBeUndefined();
     expect(body.HostConfig.Tmpfs).toBeUndefined();
     expect(body.HostConfig.Annotations).toBeUndefined();
@@ -741,6 +742,16 @@ describe('createDockerClient (#174)', () => {
     const body = JSON.parse(fetch.calls[0]?.init?.body ?? '{}');
     expect(body.HostConfig.Annotations).toEqual(annotations);
     expect(body.Annotations).toBeUndefined();
+  });
+
+  it('passes explicit host PID visibility to the daemon for host provisioning', async () => {
+    const fetch = fakeFetch([
+      { match: /\/containers\/create\?name=/, method: 'POST', resp: res({ Id: 'abc123' }) },
+    ]);
+    const docker = createDockerClient({ baseUrl: 'http://127.0.0.1:9234/v1.41', fetch });
+    await docker.createContainer({ ...sampleSpec, pidMode: 'host' });
+    const body = JSON.parse(fetch.calls[0]?.init?.body ?? '{}');
+    expect(body.HostConfig.PidMode).toBe('host');
   });
 
   it('emits runtime-hardening HostConfig fields when the spec sets them (C1)', async () => {

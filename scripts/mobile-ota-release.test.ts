@@ -10,6 +10,7 @@ import {
   validateCandidate,
   verifyChannel,
   verifyUpdates,
+  validateOTAProfile,
 } from './mobile-ota-release.ts';
 
 const sha = 'a'.repeat(40);
@@ -189,10 +190,58 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import { spawnSync, execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { createHash } from 'node:crypto';
+
+describe('published OTA map binding', () => {
+  it('rejects a different export, altered map, source, runtime and update identity', () => {
+    const root = mkdtempSync(join(tmpdir(), 'verity-map-binding-'));
+    const digest = (text: string) => createHash('sha256').update(text).digest('hex');
+    const manifest = {
+      schema: 2,
+      commit: sha,
+      mapSha256: digest('map'),
+      bundleSha256: digest('bundle'),
+    };
+    const published = {
+      id: group,
+      runtimeVersion: 'staging-1.33.0',
+      launchAsset: { hash: createHash('sha256').update('bundle').digest('base64url') },
+    };
+    const evidence = { ...update(), id: group, runtimeVersion: published.runtimeVersion };
+    try {
+      writeFileSync(join(root, 'main.jsbundle.map'), 'map');
+      const save = (value: object) =>
+        writeFileSync(join(root, 'manifest.json'), JSON.stringify(value));
+      save(manifest);
+      expect(() => validateOTAProfile(root, sha, published, evidence)).not.toThrow();
+      for (const change of [
+        { schema: 1 },
+        { commit: 'b'.repeat(40) },
+        { mapSha256: digest('wrong') },
+        { bundleSha256: digest('other export') },
+      ]) {
+        save({ ...manifest, ...change });
+        expect(() => validateOTAProfile(root, sha, published, evidence)).toThrow('does not match');
+      }
+      save(manifest);
+      for (const change of [{ id: other }, { runtimeVersion: 'other' }, { launchAsset: {} }])
+        expect(() => validateOTAProfile(root, sha, { ...published, ...change }, evidence)).toThrow(
+          'does not match',
+        );
+      writeFileSync(join(root, 'main.jsbundle.map'), 'corrupt');
+      expect(() => validateOTAProfile(root, sha, published, evidence)).toThrow('does not match');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
 
 interface ServiceState {
   calls: string[];
   stagingOAuth?: string;
+  wrongBundle?: boolean;
+  artifactArchive?: string;
+  loseStagingUpload?: boolean;
   tags: Record<string, { commit: string; message: string }>;
   group?: string;
   loseUpload?: boolean;
@@ -231,6 +280,10 @@ function serviceFixture(changes: Partial<ServiceState> = {}) {
   mkdirSync(join(cwd, 'apps/mobile'), { recursive: true });
   mkdirSync(join(cwd, 'scripts'));
   writeFileSync(join(cwd, 'scripts/stamp-mobile-build-info.mjs'), '');
+  writeFileSync(
+    join(cwd, 'scripts/mobile-cpu-profile.mjs'),
+    readFileSync('scripts/mobile-cpu-profile.mjs'),
+  );
   writeFileSync(join(cwd, 'apps/mobile/ota-promotion.json'), JSON.stringify(artifact()));
   const statePath = join(cwd, 'state.json');
   const initial: ServiceState = {
@@ -262,6 +315,7 @@ const onMain = () => {
   const previous = parts[0]+'.'+parts[1]+'.'+(Number(parts[2])-1);
   return {...candidate, version, tag:'mobile-v'+version, branch:'staging-mobile-v'+version+'-'+sha, baseline:'mobile-v'+previous};
 };
+if(tool === 'curl') out({id:candidate.group,runtimeVersion:'staging-'+candidate.runtime,launchAsset:{hash:require('node:crypto').createHash('sha256').update(s.wrongBundle?'different export':'hermes').digest('base64url')}});
 if(tool === 'git') {
   if(args[0] === 'rev-parse') {if(args[1]==='origin/main'){s.baseReads=(s.baseReads??0)+1;out(s.moveProposalBase && s.baseReads>1?'e'.repeat(40):(s.proposalBase??sha));}out(sha);}
   if(args[0] === 'merge-base' || args[0] === 'fetch') out('');
@@ -287,6 +341,8 @@ if(tool === 'gh') {
   if(args[0] === 'api' && args.includes('graphql')) {if(s.loseMetadata){s.loseMetadata=false;fail();}if(s.modelMetadataCommit){s.rollingHead='d'.repeat(40);const contents=args.find(a=>a.startsWith('contents=')).slice(9);fs.writeFileSync(process.env.OTA_FAKE_CWD+'/apps/mobile/ota-promotion.json',Buffer.from(contents,'base64'));}out({data:{createCommitOnBranch:{commit:{oid:s.modelMetadataCommit?s.rollingHead:sha,signature:{isValid:true}}}}});}
   if(args[0] === 'api') {
     const endpoint=args.find(a=>a.startsWith('repos/'));
+    if(endpoint?.includes('/actions/artifacts?')) out({artifacts:s.artifactArchive?[{id:1,expired:false}]:[]});
+    if(endpoint?.endsWith('/actions/artifacts/1/zip')) {save();process.stdout.write(fs.readFileSync(s.artifactArchive));process.exit(0);}
     if(endpoint?.includes('/releases?')) {
       s.releaseReads++;
       if(s.deliverAfterReads && s.releaseReads >= s.deliverAfterReads) s.released=candidate.tag;
@@ -318,23 +374,24 @@ if(tool === 'gh') {
   }
 }
 if(tool === 'npx') {
+  if(args[0]==='expo' && args[1]==='export') {const dir=path.join(process.cwd(),'dist-cpu-profile');fs.mkdirSync(dir,{recursive:true});fs.writeFileSync(path.join(dir,'metadata.json'),JSON.stringify({fileMetadata:{ios:{bundle:'main.hbc'}}}));fs.writeFileSync(path.join(dir,'main.hbc'),'hermes');fs.writeFileSync(path.join(dir,'main.hbc.map'),JSON.stringify({version:3,sources:[],mappings:''}));out('');}
   const command=args[2];
   if(command==='branch:create') out('');
   if(command==='update:list') {s.lastReadBranch=args[args.indexOf('--branch')+1]; const group=s.lastReadBranch.startsWith('staging-staging-')?s.stagingGroup:s.group;out({currentPage:group?[{group}]:[]});}
-  if(command==='update:view') {const staging=s.lastReadBranch?.startsWith('staging-staging-');out([{group:staging?s.stagingGroup:s.group,branch:s.lastReadBranch??candidate.branch,runtimeVersion:staging?'staging-'+candidate.runtime:candidate.runtime,gitCommitHash:sha,platform:'ios'}]);}
-  if(command==='update') {const branch=args[args.indexOf('--branch')+1];if(branch.startsWith('staging-staging-')) {s.stagingGroup=candidate.group;s.stagingOAuth=process.env.GOOGLE_AUTH_ID;}else s.group=candidate.group;if(s.loseUpload){s.loseUpload=false;fail();}out([]);}
+  if(command==='update:view') {const staging=s.lastReadBranch?.startsWith('staging-staging-');out([{id:candidate.group,manifestPermalink:'https://example.com/manifest',group:staging?s.stagingGroup:s.group,branch:s.lastReadBranch??candidate.branch,runtimeVersion:staging?'staging-'+candidate.runtime:candidate.runtime,gitCommitHash:sha,platform:'ios'}]);}
+  if(command==='update') {const branch=args[args.indexOf('--branch')+1];if(branch.startsWith('staging-staging-')) {s.stagingGroup=candidate.group;s.stagingOAuth=process.env.GOOGLE_AUTH_ID;if(s.loseStagingUpload){s.loseStagingUpload=false;fail();}}else s.group=candidate.group;if(s.loseUpload){s.loseUpload=false;fail();}out([]);}
   if(command==='channel:edit') {s.channelBranch=args[args.indexOf('--branch')+1];out('');}
   if(command==='channel:view') out({currentPage:{name:args[3],branchMapping:JSON.stringify({version:0,data:[{branchId:'branch',branchMappingLogic:'true'}]}),updateBranches:[{id:'branch',name:s.channelBranch??candidate.branch}]}});
 }
 save();console.error('Unhandled fake command',tool,args);process.exit(2);
 `;
-  for (const name of ['git', 'gh', 'npx']) {
+  for (const name of ['git', 'gh', 'npx', 'curl']) {
     writeFileSync(join(bin, name), mock);
     chmodSync(join(bin, name), 0o755);
   }
   return {
     run: (
-      command: 'stage' | 'promote',
+      command: 'stage' | 'stage-map' | 'promote',
       overrides: Record<string, string> = {},
       version = artifact().version,
     ) =>
@@ -359,6 +416,19 @@ save();console.error('Unhandled fake command',tool,args);process.exit(2);
           },
         },
       ),
+    retainRemotely: () => {
+      const root = join(cwd, 'apps/mobile/profiling-artifacts/ota-' + sha);
+      const archive = join(cwd, 'retained.zip');
+      execFileSync('python3', [
+        '-c',
+        'import pathlib,sys,zipfile; root=pathlib.Path(sys.argv[1]); z=zipfile.ZipFile(sys.argv[2],"w"); [z.write(p,p.name) for p in root.iterdir()]; z.close()',
+        root,
+        archive,
+      ]);
+      const state = JSON.parse(readFileSync(statePath, 'utf8'));
+      writeFileSync(statePath, JSON.stringify({ ...state, artifactArchive: archive }));
+      rmSync(root, { recursive: true, force: true });
+    },
     output: () => readFileSync(join(cwd, 'output'), 'utf8'),
     state: () => JSON.parse(readFileSync(statePath, 'utf8')) as ServiceState,
     update: (changes: Partial<ServiceState>) =>
@@ -370,6 +440,41 @@ save();console.error('Unhandled fake command',tool,args);process.exit(2);
 }
 
 describe('OTA CLI interrupted external operations', () => {
+  it('blocks channel delivery when the published bundle differs from the retained export', () => {
+    const service = serviceFixture({ wrongBundle: true });
+    const result = service.run('stage');
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('does not match publication');
+    expect(service.state().calls.some((call) => call.includes('channel:edit staging'))).toBe(false);
+  });
+  it('resumes an accepted staging upload without exporting different bytes', () => {
+    const service = serviceFixture({ loseStagingUpload: true });
+    expect(service.run('stage').status).not.toBe(0);
+    const result = service.run('stage');
+    expect(result.status, result.stderr).toBe(0);
+    expect(service.state().calls.filter((call) => call.startsWith('npx expo export'))).toHaveLength(
+      1,
+    );
+    expect(
+      service.state().calls.filter((call) => call.includes('update --skip-bundler')),
+    ).toHaveLength(1);
+  });
+  it('retains maps before channel delivery and restores them on a fresh runner', () => {
+    const service = serviceFixture();
+    const prepared = service.run('stage-map');
+    expect(prepared.status, prepared.stderr).toBe(0);
+    expect(service.state().calls.some((call) => call.includes('channel:edit staging'))).toBe(false);
+    service.retainRemotely();
+    const delivered = service.run('stage');
+    expect(delivered.status, delivered.stderr).toBe(0);
+    expect(service.state().calls.some((call) => call.includes('/actions/artifacts/1/zip'))).toBe(
+      true,
+    );
+    expect(service.state().calls.filter((call) => call.startsWith('npx expo export'))).toHaveLength(
+      1,
+    );
+    expect(service.state().calls.some((call) => call.includes('channel:edit staging'))).toBe(true);
+  });
   it('exports Staging OTA with the native Staging OAuth identity', () => {
     const service = serviceFixture();
     const result = service.run('stage', { GITHUB_SHA: 'b'.repeat(40), OTA_SOURCE_SHA: sha });
@@ -780,7 +885,7 @@ describe('OTA CLI interrupted external operations', () => {
     expect(resumed.status, resumed.stderr).toBe(0);
     const recovered = service.state().calls;
     expect(
-      recovered.filter((call) => call.includes('eas-cli@21.0.1 update --branch')),
+      recovered.filter((call) => call.startsWith('npx --yes eas-cli@21.0.1 update ')),
     ).toHaveLength(2);
     expect(recovered.some((call) => call.includes('--force-with-lease'))).toBe(true);
     expect(recovered.some((call) => call.startsWith('gh pr create'))).toBe(true);

@@ -107,6 +107,108 @@ describe('verity_assistant', () => {
   });
 });
 
+describe('assistant scheduling overview', () => {
+  /** A sent request in `projectId`, prepared in `sessionId`, in the given end state. */
+  async function request(
+    id: string,
+    projectId: string | null,
+    sessionId: string,
+    state: 'open' | 'booked' | 'revoked' = 'open',
+    bookedStart = new Date(Date.now() + 86_400_000),
+  ) {
+    await ctx.store.scheduling.createDraft({
+      id,
+      sessionId,
+      projectId,
+      googleAccountId: 'acct',
+      calendarId: 'primary',
+      timeZone: 'Europe/Berlin',
+      language: 'en',
+      title: `Call ${id}`,
+      durationMinutes: 30,
+      addMeet: true,
+      organizerName: 'Sam',
+      organizerEmail: 'sam@example.test',
+      guestEmail: `${id}@example.test`,
+      guestName: null,
+      colleagues: [],
+      emailSubject: 'Pick a time',
+      emailBody: 'Hi {link}',
+      closesAt: new Date(Date.now() + 7 * 86_400_000),
+      windows: [
+        {
+          start: new Date(Date.now() + 86_400_000),
+          end: new Date(Date.now() + 90_000_000),
+          eventId: `ev-${id}`,
+        },
+      ],
+    });
+    await ctx.store.scheduling.approve(id, 'digest');
+    await ctx.store.scheduling.transition(id, ['provisioning'], 'open');
+    if (state !== 'open')
+      await ctx.store.scheduling.transition(
+        id,
+        ['open'],
+        state,
+        state === 'booked'
+          ? { bookedStart, bookedEnd: new Date(bookedStart.getTime() + 1_800_000) }
+          : {},
+      );
+  }
+
+  it('lists what is still open in granted projects and its own session, without guest links', async () => {
+    await ctx.store.assistant.setGrant('a', ADMIN, 'tasks');
+    await ctx.store.assistant.setGrant('b', ADMIN, 'off');
+    const ids = [
+      '10000000-0000-4000-8000-000000000001',
+      '10000000-0000-4000-8000-000000000002',
+      '10000000-0000-4000-8000-000000000003',
+      '10000000-0000-4000-8000-000000000004',
+      '10000000-0000-4000-8000-000000000005',
+      '10000000-0000-4000-8000-000000000006',
+    ] as const;
+    await request(ids[0], 'a', 'session-in-a');
+    await request(ids[1], 'b', 'session-in-b'); // project not granted
+    await request(ids[2], null, 'assistant'); // the assistant's own
+    await request(ids[3], 'a', 'session-in-a', 'revoked'); // closed
+    await request(ids[4], 'a', 'session-in-a', 'booked'); // meeting still ahead
+    await request(ids[5], 'a', 'session-in-a', 'booked', new Date(Date.now() - 86_400_000));
+    const result = (await executeAssistantTool(deps({ a: ['read', 'execute'] }), {
+      ...call,
+      request: { action: 'scheduling' },
+    })) as { requests: { requestId: string; project: string | null; state: string }[] };
+    expect(result.requests.map((r) => r.requestId).sort()).toEqual([ids[0], ids[2], ids[4]].sort());
+    expect(result.requests.find((r) => r.requestId === ids[0])).toMatchObject({
+      project: 'team/a',
+      state: 'open',
+    });
+    // The guest's link carries its PIN; an entry may only ever have these fields.
+    const allowed = [
+      'requestId',
+      'project',
+      'state',
+      'title',
+      'guest',
+      'sentAt',
+      'closesAt',
+      'bookedStart',
+    ];
+    for (const entry of result.requests)
+      expect(Object.keys(entry).filter((key) => !allowed.includes(key))).toEqual([]);
+  });
+
+  it('drops a granted project whose requests the turn user may not steer', async () => {
+    // The app's overview needs execute access; read access alone must not reveal guests
+    // through the assistant either.
+    await ctx.store.assistant.setGrant('a', ADMIN, 'delegate');
+    await request('20000000-0000-4000-8000-000000000001', 'a', 'session-in-a');
+    for (const rights of [{}, { a: ['read' as const] }])
+      expect(
+        await executeAssistantTool(deps(rights), { ...call, request: { action: 'scheduling' } }),
+      ).toEqual({ requests: [] });
+  });
+});
+
 describe('assistant handoff grant', () => {
   it('needs a delegate grant and execute permission', async () => {
     const check = (rights: AssistantToolDeps) =>
