@@ -63,6 +63,22 @@ Verity Control itself can never be granted.
 - The grant is the consent for `verity_assistant`; its calls run without a
   separate approval card. The handoff keeps its approval card.
 
+## Scheduling overview
+
+The assistant keeps track of scheduling requests across the projects granted to
+it. Above the composer of the assistant session, a single line shows how many
+requests are still open; tapping it lists them with their project, how long the
+guest has been waiting and when the link closes, and opens the session a request
+came from. Booked, expired and withdrawn requests are not listed there; Settings →
+Google → Scheduling requests keeps the full history.
+
+The list contains the requests made in granted projects and in the assistant
+session itself, limited to projects the user may run. Booking notices and the
+other scheduling notices of granted projects are also posted into the assistant
+session, prefixed with the project name; push notifications still go only to the
+session that made the request. The assistant reads the same overview with
+`verity_assistant` action `scheduling`, without the guests' links.
+
 ## Quick capture
 
 When the assistant is on, the capture sheet offers **Verity** next to the

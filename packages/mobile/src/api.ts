@@ -2443,6 +2443,8 @@ export type LiveMeetingInsight = z.infer<typeof liveMeetingInsightSchema>;
 const schedulingRequestViewSchema = z.object({
   id: z.string(),
   sessionId: z.string(),
+  /** The project the request was prepared in; older servers omit it. */
+  projectId: z.string().nullable().optional(),
   state: z.enum(['draft', 'provisioning', 'open', 'booked', 'expired', 'revoked', 'failed']),
   title: z.string(),
   durationMinutes: z.number(),
@@ -5879,6 +5881,19 @@ export class VerityClient {
   async schedulingRequests(): Promise<SchedulingRequestView[]> {
     const res = await this.request('/scheduling-requests', { method: 'GET' });
     return schedulingRequestsSchema.parse(await res.json()).requests;
+  }
+  /** The assistant's overview: its session id and the requests of the projects granted to it. */
+  async assistantSchedulingRequests(): Promise<{
+    assistantSessionId: string | null;
+    requests: SchedulingRequestView[];
+  }> {
+    const res = await this.request('/assistant/scheduling-requests', { method: 'GET' });
+    return z
+      .object({
+        assistantSessionId: z.string().nullable(),
+        requests: z.array(schedulingRequestViewSchema),
+      })
+      .parse(await res.json());
   }
   async revokeSchedulingRequest(requestId: string): Promise<void> {
     await this.request(`/scheduling-requests/${encodeURIComponent(requestId)}/revoke`, {

@@ -95,31 +95,73 @@ export async function requireAssistantGrant(
   return { userId: initiator?.userId, projectName: `${project.owner}/${project.repo}` };
 }
 
+/** The projects granted to the assistant that the turn's user may still read. */
+async function grantedProjects(
+  deps: AssistantToolDeps,
+  input: { sessionId: string; turnId: string },
+): Promise<{ projectId: string; name: string; mode: AssistantMode }[]> {
+  const initiator = await deps.initiator(input.sessionId, input.turnId);
+  const projects = new Map(
+    (await deps.eventStore.listProjects()).map((project) => [project.id, project]),
+  );
+  const granted: { projectId: string; name: string; mode: AssistantMode }[] = [];
+  for (const grant of await deps.eventStore.assistant.grants()) {
+    const project = projects.get(grant.project_id);
+    if (grant.mode === 'off' || !project || project.hiddenAt !== null || project.archived) continue;
+    if (!(await deps.permitted(initiator?.userId, project.id, 'read'))) continue;
+    granted.push({
+      projectId: project.id,
+      name: `${project.owner}/${project.repo}`,
+      mode: grant.mode,
+    });
+  }
+  return granted;
+}
+
+/**
+ * Scheduling requests still open in granted projects and the assistant's own session, plus
+ * meetings booked through them that are still ahead. Guest links stay out: the assistant
+ * reads untrusted mail and has no reason to hand a booking PIN on.
+ */
+async function schedulingOverview(
+  deps: AssistantToolDeps,
+  input: { sessionId: string; turnId: string },
+) {
+  const names = new Map(
+    (await grantedProjects(deps, input)).map((project) => [project.projectId, project.name]),
+  );
+  const now = Date.now();
+  return (await deps.eventStore.scheduling.listRecent())
+    .filter(
+      (request) =>
+        (request.sessionId === input.sessionId ||
+          (request.projectId !== null && names.has(request.projectId))) &&
+        (request.state === 'open' ||
+          request.state === 'provisioning' ||
+          (request.state === 'booked' &&
+            request.bookedStart !== null &&
+            request.bookedStart.getTime() > now)),
+    )
+    .map((request) => ({
+      requestId: request.id,
+      project: request.projectId === null ? null : (names.get(request.projectId) ?? null),
+      state: request.state,
+      title: request.title,
+      guest: request.guestName ?? request.guestEmail,
+      sentAt: request.emailSentAt?.toISOString() ?? null,
+      closesAt: request.closesAt.toISOString(),
+      ...(request.bookedStart ? { bookedStart: request.bookedStart.toISOString() } : {}),
+    }));
+}
+
 export async function executeAssistantTool(
   deps: AssistantToolDeps,
   input: { sessionId: string; turnId: string; request: unknown },
 ): Promise<Record<string, unknown>> {
   await requireAssistantSession(deps.eventStore, input.sessionId);
   const request = assistantRequestSchema.parse(input.request);
-  if (request.action === 'projects') {
-    const initiator = await deps.initiator(input.sessionId, input.turnId);
-    const projects = new Map(
-      (await deps.eventStore.listProjects()).map((project) => [project.id, project]),
-    );
-    const granted: { projectId: string; name: string; mode: AssistantMode }[] = [];
-    for (const grant of await deps.eventStore.assistant.grants()) {
-      const project = projects.get(grant.project_id);
-      if (grant.mode === 'off' || !project || project.hiddenAt !== null || project.archived)
-        continue;
-      if (!(await deps.permitted(initiator?.userId, project.id, 'read'))) continue;
-      granted.push({
-        projectId: project.id,
-        name: `${project.owner}/${project.repo}`,
-        mode: grant.mode,
-      });
-    }
-    return { projects: granted };
-  }
+  if (request.action === 'projects') return { projects: await grantedProjects(deps, input) };
+  if (request.action === 'scheduling') return { requests: await schedulingOverview(deps, input) };
   const { userId, projectName } = await requireAssistantGrant(
     deps,
     { ...input, projectId: request.projectId },

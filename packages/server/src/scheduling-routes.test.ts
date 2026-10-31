@@ -4,10 +4,14 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { registerSchedulingRoutes } from './scheduling-routes.js';
 import type { SchedulingService } from './scheduling-service.js';
 
-const request = (id: string, projectId: string | null): SchedulingRequest =>
+const request = (
+  id: string,
+  projectId: string | null,
+  sessionId = 'deleted-session',
+): SchedulingRequest =>
   ({
     id,
-    sessionId: 'deleted-session',
+    sessionId,
     projectId,
     state: 'open',
     title: 'Intro call',
@@ -36,7 +40,14 @@ afterEach(async () => {
   await app?.close();
 });
 
-async function serve() {
+let assistant = { enabled: true, session_id: 'assistant' as string | null };
+const grants = [
+  { project_id: 'mine', mode: 'tasks' },
+  { project_id: 'theirs', mode: 'off' },
+];
+
+async function serve(extra: SchedulingRequest[] = []) {
+  const all = [...stored, ...extra];
   const revoke = vi.fn(async (id: string) => stored.find((r) => r.id === id)!);
   app = Fastify();
   app.decorateRequest('localUserId', null);
@@ -47,12 +58,15 @@ async function serve() {
   registerSchedulingRoutes(app, {
     eventStore: {
       scheduling: {
-        listRecent: async () => stored,
-        get: async (id: string) => stored.find((r) => r.id === id),
+        listRecent: async () => all,
+        get: async (id: string) => all.find((r) => r.id === id),
         holds: async () => [],
       },
+      assistant: { settings: async () => assistant, grants: async () => grants },
       hasProjectPermission: async (userId: string, projectId: string, permission: string) =>
-        userId === 'member' && projectId === 'mine' && permission === 'execute',
+        userId === 'member' &&
+        (projectId === 'mine' || projectId === 'control') &&
+        permission === 'execute',
       isActiveAdministrator: async (userId: string) => userId === 'admin',
       getSession: async () => undefined,
     } as unknown as EventStore,
@@ -94,5 +108,44 @@ describe('scheduling request routes', () => {
     expect(revoke).not.toHaveBeenCalled();
     expect((await withdraw(stored[0]!.id)).statusCode).toBe(200);
     expect(revoke).toHaveBeenCalledWith(stored[0]!.id);
+  });
+
+  it('gives the assistant the requests of granted projects and its own, as far as the user may see', async () => {
+    const own = request('44444444-4444-4444-8444-444444444444', 'control', 'assistant');
+    const elsewhere = request('55555555-5555-4555-8555-555555555555', 'control', 'other');
+    await serve([own, elsewhere]);
+    const overview = async (user: string) =>
+      (
+        await app!.inject({
+          method: 'GET',
+          url: '/assistant/scheduling-requests',
+          headers: { 'x-test-user': user },
+        })
+      ).json<{
+        assistantSessionId: string | null;
+        requests: { id: string; projectId: string }[];
+      }>();
+    const member = await overview('member');
+    expect(member.assistantSessionId).toBe('assistant');
+    // 'theirs' is not granted, the null-project request needs an administrator, and a request
+    // from another Control session is neither granted nor the assistant's own.
+    expect(member.requests.map((r) => r.id)).toEqual([stored[0]!.id, own.id]);
+    expect(member.requests[0]!.projectId).toBe('mine');
+    expect((await overview('stranger')).requests).toEqual([]);
+  });
+
+  it('shows no overview while the assistant is switched off', async () => {
+    assistant = { enabled: false, session_id: 'assistant' };
+    try {
+      await serve();
+      const response = await app!.inject({
+        method: 'GET',
+        url: '/assistant/scheduling-requests',
+        headers: { 'x-test-user': 'member' },
+      });
+      expect(response.json()).toEqual({ assistantSessionId: null, requests: [] });
+    } finally {
+      assistant = { enabled: true, session_id: 'assistant' };
+    }
   });
 });
