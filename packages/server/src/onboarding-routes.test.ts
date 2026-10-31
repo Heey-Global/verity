@@ -5,7 +5,8 @@ import { InMemoryEventBus } from '@verity/session';
 import { EventStore, createSealableSecretCipher, type SealableSecretCipher } from '@verity/store';
 import { createTestDb, truncateAll, type TestDb } from '@verity/store/testing';
 import type { FastifyInstance } from 'fastify';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { SchedulingService } from './scheduling-service.js';
 import { buildServer } from './server.js';
 import type { OnboardingStatus } from './onboarding-routes.js';
 import { ensureControlPlaneProject } from './control-plane-project.js';
@@ -371,4 +372,42 @@ describe('GET /onboarding/status', () => {
       await app.close();
     }
   });
+});
+
+// Closing the previous app must drain its scheduler before the next beforeEach truncates.
+it('waits for in-flight scheduling database work when closing the server', async () => {
+  let started!: () => void;
+  let release!: () => void;
+  const entered = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  const blocked = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const runDue = vi.spyOn(SchedulingService.prototype, 'runDue').mockImplementation(async function (
+    this: SchedulingService,
+  ) {
+    started();
+    await blocked;
+    return original.call(this);
+  });
+  const app = buildServer({ eventStore: ctx.store, bus: new InMemoryEventBus(), conductor });
+  let closed = false;
+  let closing: Promise<void> | undefined;
+  try {
+    await app.ready();
+    await entered;
+    closing = app.close().then(() => {
+      closed = true;
+    });
+    // Give close hooks a turn while the scheduler is deliberately blocked.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(closed).toBe(false);
+  } finally {
+    release();
+    await (closing ?? app.close());
+    runDue.mockRestore();
+  }
+  expect(closed).toBe(true);
+  await truncateAll(ctx.db);
 });
