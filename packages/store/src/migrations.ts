@@ -5071,3 +5071,33 @@ migrations['0180_calendar_watch_calendars'] = {
     await sql`drop table calendar_watch_calendars`.execute(db);
   },
 };
+
+migrations['0181_calendar_watch_events'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    // Joinable events of watched calendars and what Verity already did about them, so a
+    // restart neither repeats a notification nor joins a meeting twice. Title and link are
+    // encrypted: links often carry the meeting passcode.
+    await sql`create table calendar_watch_events (
+      event_key text primary key,
+      account_id text not null,
+      calendar_id text not null,
+      event_id text not null,
+      title text,
+      meeting_url text not null,
+      starts_at timestamptz not null,
+      ends_at timestamptz not null,
+      notified_at timestamptz,
+      decision text check (decision in ('joined', 'skipped', 'failed')),
+      meeting_id text,
+      started_notified_at timestamptz,
+      updated_at timestamptz not null default now(),
+      foreign key (account_id, calendar_id)
+        references calendar_watch_calendars(account_id, calendar_id) on delete cascade
+    )`.execute(db);
+    await sql`create index calendar_watch_events_calendar
+      on calendar_watch_events(account_id, calendar_id, starts_at)`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table calendar_watch_events`.execute(db);
+  },
+};

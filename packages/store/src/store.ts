@@ -2067,7 +2067,7 @@ export class EventStore implements EventSink {
   }
 
   get calendarWatch(): CalendarWatchStore {
-    return new CalendarWatchStore(this.db);
+    return new CalendarWatchStore(this.db, this.cipher);
   }
 
   async getGoogleServiceCredentials(sessionId: string, service: 'gmail' | 'calendar' | 'contacts') {

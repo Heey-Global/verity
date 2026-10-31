@@ -133,6 +133,23 @@ export interface CalendarWatchCalendarsTable {
   updated_at: ColumnType<Date, string | undefined, string>;
 }
 
+/** A joinable event of a watched calendar; `title` and `meeting_url` are encrypted. */
+export interface CalendarWatchEventsTable {
+  event_key: string;
+  account_id: string;
+  calendar_id: string;
+  event_id: string;
+  title: string | null;
+  meeting_url: string;
+  starts_at: ColumnType<Date, string, string>;
+  ends_at: ColumnType<Date, string, string>;
+  notified_at: ColumnType<Date | null, string | null | undefined, string | null>;
+  decision: 'joined' | 'skipped' | 'failed' | null;
+  meeting_id: string | null;
+  started_notified_at: ColumnType<Date | null, string | null | undefined, string | null>;
+  updated_at: ColumnType<Date, string | undefined, string>;
+}
+
 export interface GoogleServiceOverridesTable {
   mode: 'inherit' | 'disabled' | 'account';
   revision: string;
@@ -1663,6 +1680,7 @@ export interface Database {
   google_workspace_recents: GoogleWorkspaceRecentsTable;
   google_accounts: GoogleAccountsTable;
   calendar_watch_calendars: CalendarWatchCalendarsTable;
+  calendar_watch_events: CalendarWatchEventsTable;
   google_service_overrides: GoogleServiceOverridesTable;
   project_google_drive_folders: ProjectGoogleDriveFoldersTable;
   project_google_connections: ProjectGoogleConnectionsTable;
