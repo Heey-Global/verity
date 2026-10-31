@@ -1,4 +1,9 @@
-import { transportRules, type EgressTransport } from './project-egress-transport.js';
+import {
+  transportRules,
+  directCorridorRules,
+  type EgressDirectCorridor,
+  type EgressTransport,
+} from './project-egress-transport.js';
 import { createHash, randomBytes } from 'node:crypto';
 import { z } from 'zod';
 
@@ -17,6 +22,8 @@ export const projectEgressHostRequest = z.discriminatedUnion('operation', [
   z.strictObject({ operation: z.literal('register'), binding: networkBinding }),
   z.strictObject({ operation: z.literal('prepare'), ...reference }),
   z.strictObject({ operation: z.literal('connect'), ...reference }),
+  z.strictObject({ operation: z.literal('refresh-direct'), ...reference }),
+  z.strictObject({ operation: z.literal('revoke-direct'), ...reference }),
   z.strictObject({
     operation: z.literal('start'),
     ...reference,
@@ -30,12 +37,17 @@ export const projectEgressHostResponse = z.discriminatedUnion('state', [
     state: z.literal('current'),
     projectId: identity,
     binding: networkBinding.nullable(),
+    packetEnforcement: z.boolean().optional(),
   }),
-  z.strictObject({ state: z.enum(['denied', 'started-denied', 'retired']), generation: identity }),
+  z.strictObject({
+    state: z.enum(['denied', 'started-denied', 'retired', 'direct-refreshed', 'direct-revoked']),
+    generation: identity,
+  }),
   z.strictObject({
     state: z.enum(['connected', 'started-connected']),
     generation: identity,
     relayAddress: z.ipv4(),
+    directAuthority: z.boolean().optional(),
   }),
 ]);
 export type ProjectEgressHostResponse = z.infer<typeof projectEgressHostResponse>;
@@ -44,6 +56,7 @@ export type ProjectEgressNetworkBinding = z.infer<typeof networkBinding>;
 const recordSchema = z.strictObject({
   binding: networkBinding,
   retired: z.boolean(),
+  bootId: z.uuid().optional(),
   containers: z.strictObject({ sandbox: objectId.optional(), relay: objectId.optional() }),
 });
 export const projectEgressHostState = z.strictObject({
@@ -54,7 +67,21 @@ export type ProjectEgressHostState = z.infer<typeof projectEgressHostState>;
 type RecordState = z.infer<typeof recordSchema>;
 const containerIds = (record: RecordState): string[] =>
   Object.values(record.containers).filter((id): id is string => id !== undefined);
+export interface ProjectEgressHostEnforcement {
+  directAuthority(binding: ProjectEgressNetworkBinding): boolean;
+  invalidate(binding: { projectId: string; generation: string }): void;
+  connect(
+    binding: ProjectEgressNetworkBinding,
+    ids: { sandbox: string; relay: string },
+    relay: { transport: EgressTransport; flowLabel: string },
+  ): Promise<EgressDirectCorridor>;
+  deny(binding: ProjectEgressNetworkBinding): Promise<void>;
+  refresh(binding: ProjectEgressNetworkBinding): Promise<void>;
+  revoke(binding: ProjectEgressNetworkBinding): Promise<void>;
+}
 interface Dependencies {
+  bootId?: string;
+  enforcement?: ProjectEgressHostEnforcement;
   save(state: ProjectEgressHostState): Promise<void>;
   apply(script: string): Promise<void>;
   inspectNetwork(
@@ -83,25 +110,34 @@ export function projectEgressBootstrapRules(
     binding: ProjectEgressNetworkBinding;
     transport: EgressTransport;
     flowLabel: string;
+    direct?: EgressDirectCorridor;
   }[] = [],
 ): string {
   const allowed = (family: 'inet' | 'bridge') =>
     active
-      .map(({ binding, transport, flowLabel }) =>
-        transportRules(networkBinding.parse(binding), transport, family, flowLabel),
+      .map(
+        ({ binding, transport, flowLabel, direct }) =>
+          transportRules(networkBinding.parse(binding), transport, family, flowLabel) +
+          directCorridorRules(binding, transport, direct, 'forward', family),
+      )
+      .join('\n');
+  const input = (family: 'inet' | 'bridge') =>
+    active
+      .map(({ binding, transport, direct }) =>
+        directCorridorRules(binding, transport, direct, 'input', family),
       )
       .join('\n');
   return `add table inet verity_egress_boot
   delete table inet verity_egress_boot
   table inet verity_egress_boot {
     chain forward { type filter hook forward priority -220; policy accept; ${allowed('inet')} iifname "vep*" counter drop; oifname "vep*" counter drop; }
-    chain input { type filter hook input priority -220; policy accept; iifname "vep*" counter drop; }
+    chain input { type filter hook input priority -220; policy accept; ${input('inet')} iifname "vep*" counter drop; }
   }
   add table bridge verity_egress_boot
   delete table bridge verity_egress_boot
   table bridge verity_egress_boot {
     chain forward { type filter hook forward priority -220; policy accept; ${allowed('bridge')} meta ibrname "vep*" counter drop; meta obrname "vep*" counter drop; }
-    chain input { type filter hook input priority -220; policy accept; meta ibrname "vep*" counter drop; }
+    chain input { type filter hook input priority -220; policy accept; ${input('bridge')} meta ibrname "vep*" counter drop; }
   }
 `;
 }
@@ -112,7 +148,7 @@ export function projectEgressBootstrapRules(
  */
 export function projectEgressStartupRules(
   binding: ProjectEgressNetworkBinding,
-  admission?: { transport: EgressTransport; flowLabel: string },
+  admission?: { transport: EgressTransport; flowLabel: string; direct?: EgressDirectCorridor },
 ): string {
   networkBinding.parse(binding);
   const table =
@@ -120,8 +156,8 @@ export function projectEgressStartupRules(
   return `add table inet ${table}
 delete table inet ${table}
 table inet ${table} {
- chain forward { type filter hook forward priority -210; policy accept; ${admission ? transportRules(binding, admission.transport, 'inet', admission.flowLabel) : ''} iifname "${binding.bridge}" counter drop; oifname "${binding.bridge}" counter drop; }
- chain input { type filter hook input priority -210; policy accept; iifname "${binding.bridge}" counter drop; }
+ chain forward { type filter hook forward priority -210; policy accept; ${admission ? transportRules(binding, admission.transport, 'inet', admission.flowLabel) + directCorridorRules(binding, admission.transport, admission.direct, 'forward', 'inet') : ''} iifname "${binding.bridge}" counter drop; oifname "${binding.bridge}" counter drop; }
+ chain input { type filter hook input priority -210; policy accept; ${admission ? directCorridorRules(binding, admission.transport, admission.direct, 'input', 'inet') : ''} iifname "${binding.bridge}" counter drop; }
 }
 add table bridge ${table}
 delete table bridge ${table}
@@ -141,7 +177,12 @@ export class ProjectEgressHost {
   private healthy = true;
   private readonly transports = new Map<
     string,
-    { binding: ProjectEgressNetworkBinding; transport: EgressTransport; flowLabel: string }
+    {
+      binding: ProjectEgressNetworkBinding;
+      transport: EgressTransport;
+      flowLabel: string;
+      direct?: EgressDirectCorridor;
+    }
   >();
   constructor(
     state: unknown,
@@ -190,10 +231,12 @@ export class ProjectEgressHost {
   /** Reject queued/new commands before waiting for any in-flight kernel write. */
   shutdown(): Promise<void> {
     this.healthy = false;
+    for (const record of this.state.records) this.deps.enforcement?.invalidate(record.binding);
     return this.queue.then(async () => {
       this.transports.clear();
       try {
         await this.deps.apply(projectEgressBootstrapRules());
+        for (const record of this.state.records) await this.deps.enforcement?.deny(record.binding);
       } catch (error) {
         const stopped = await Promise.allSettled(
           this.state.records.flatMap(containerIds).map((id) => this.deps.stopContainer(id)),
@@ -210,13 +253,24 @@ export class ProjectEgressHost {
     });
   }
   /** Must finish before opening the control socket; does not require Docker. */
-  restore(): Promise<void> {
+  restore(retireGenerations = false): Promise<void> {
     return this.serialize(async () => {
       this.transports.clear();
       try {
         await this.deps.apply(projectEgressBootstrapRules());
-        for (const record of this.state.records)
+        let changed = false;
+        for (const record of this.state.records) {
           await this.deps.apply(projectEgressStartupRules(record.binding));
+          if (
+            !record.retired &&
+            (retireGenerations ||
+              (this.deps.bootId !== undefined && record.bootId !== this.deps.bootId))
+          ) {
+            record.retired = true;
+            changed = true;
+          }
+        }
+        if (changed) await this.save();
       } catch (error) {
         this.healthy = false;
         const stopped = await Promise.allSettled(
@@ -267,6 +321,10 @@ export class ProjectEgressHost {
   }
   execute(input: unknown): Promise<ProjectEgressHostResponse> {
     const request = projectEgressHostRequest.parse(input);
+    if (request.operation !== 'current' && request.operation !== 'refresh-direct')
+      this.deps.enforcement?.invalidate(
+        request.operation === 'register' ? request.binding : request,
+      );
     return this.serialize(async () => {
       if (request.operation === 'current') {
         const record = this.state.records.find(
@@ -277,6 +335,7 @@ export class ProjectEgressHost {
           state: 'current',
           projectId: request.projectId,
           binding: record === undefined ? null : structuredClone(record.binding),
+          ...(this.deps.enforcement ? { packetEnforcement: true } : {}),
         };
       }
       if (request.operation === 'register') {
@@ -303,7 +362,12 @@ export class ProjectEgressHost {
         )
           throw new Error('Retire the existing generation and use a fresh network');
         await this.deps.inspectNetwork(request.binding, []);
-        const record: RecordState = { binding: request.binding, retired: false, containers: {} };
+        const record: RecordState = {
+          binding: request.binding,
+          retired: false,
+          containers: {},
+          ...(this.deps.bootId === undefined ? {} : { bootId: this.deps.bootId }),
+        };
         this.state.records.push(record);
         // Reserve durably before any successful response or process start.
         await this.save();
@@ -334,6 +398,36 @@ export class ProjectEgressHost {
         await this.prepare(record);
         return { state: 'denied', generation: record.binding.generation };
       }
+      if (request.operation === 'refresh-direct' || request.operation === 'revoke-direct') {
+        if (!this.deps.enforcement || !this.transports.has(key(record.binding)))
+          throw new Error('Direct enforcement is not ready');
+        try {
+          // Close direct authority before validating the current roles and topology.
+          await this.deps.enforcement.revoke(record.binding);
+          if (request.operation === 'refresh-direct') {
+            for (const role of ['sandbox', 'relay'] as const)
+              await this.deps.inspectContainer(record.binding, record.containers[role]!, role);
+            await this.deps.inspectNetwork(record.binding, containerIds(record));
+            const transport = await this.deps.inspectTransport?.(record.binding, {
+              sandbox: record.containers.sandbox!,
+              relay: record.containers.relay!,
+            });
+            if (
+              JSON.stringify(transport) !==
+              JSON.stringify(this.transports.get(key(record.binding))!.transport)
+            )
+              throw new Error('Direct transport changed');
+            await this.deps.enforcement.refresh(record.binding);
+          }
+        } catch (error) {
+          await this.deny(record);
+          throw error;
+        }
+        return {
+          state: request.operation === 'refresh-direct' ? 'direct-refreshed' : 'direct-revoked',
+          generation: record.binding.generation,
+        };
+      }
       if (request.operation === 'connect') {
         await this.prepare(record);
         const transport = await this.connect(record);
@@ -342,6 +436,9 @@ export class ProjectEgressHost {
           state: 'connected',
           generation: record.binding.generation,
           relayAddress: transport.relay.address,
+          ...(this.deps.enforcement?.directAuthority(record.binding)
+            ? { directAuthority: true }
+            : {}),
         };
       }
       // Revoke even when a changed role/image fails the first validation.
@@ -390,6 +487,9 @@ export class ProjectEgressHost {
           state: 'started-connected',
           generation: record.binding.generation,
           relayAddress: transport.relay.address,
+          ...(this.deps.enforcement?.directAuthority(record.binding)
+            ? { directAuthority: true }
+            : {}),
         };
       return { state: 'started-denied', generation: record.binding.generation };
     });
@@ -401,6 +501,7 @@ export class ProjectEgressHost {
         projectEgressBootstrapRules([...this.transports.values()]) +
           projectEgressStartupRules(record.binding),
       );
+      await this.deps.enforcement?.deny(record.binding);
     } catch (error) {
       this.healthy = false;
       const stopped = await Promise.allSettled(
@@ -421,13 +522,24 @@ export class ProjectEgressHost {
     await this.deps.inspectNetwork(record.binding, containerIds(record));
     const transport = await this.deps.inspectTransport(record.binding, { sandbox, relay });
     if (!transport) return undefined;
-    const admission = {
+    const admission: {
+      binding: ProjectEgressNetworkBinding;
+      transport: EgressTransport;
+      flowLabel: string;
+      direct?: EgressDirectCorridor;
+    } = {
       binding: record.binding,
       transport,
       flowLabel: randomBytes(16).toString('hex'),
     };
-    const next = [...this.transports.values(), admission];
     try {
+      if (this.deps.enforcement)
+        admission.direct = await this.deps.enforcement.connect(
+          record.binding,
+          { sandbox, relay },
+          admission,
+        );
+      const next = [...this.transports.values(), admission];
       await this.deps.apply(
         projectEgressBootstrapRules(next) + projectEgressStartupRules(record.binding, admission),
       );

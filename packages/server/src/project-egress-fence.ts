@@ -1,3 +1,4 @@
+import { transportRules, type EgressTransport } from './project-egress-transport.js';
 import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { isIP } from 'node:net';
@@ -25,7 +26,15 @@ export interface ProjectFenceSnapshot {
   revision: number;
   grants: readonly EgressGrant[];
 }
+export interface ProjectFenceRelay {
+  transport: EgressTransport;
+  flowLabel: string;
+}
 export interface ProjectFenceDependencies {
+  /** Only the trusted lifecycle owner may install this exact relay pair. */
+  relay?: () => ProjectFenceRelay | undefined;
+  /** Host restart must replace chains while retaining kernel expiry tombstones. */
+  existing?: (binding: ProjectFenceBinding) => Promise<boolean>;
   /** Required suspend-aware guard; absence must never select a weaker executor. */
   deadline: ProjectDeadlineEnforcer;
   /** Trusted daemon inspection, not labels or a sandbox-provided attachment. */
@@ -49,6 +58,10 @@ const tableName = (projectId: string): string =>
 const generationKey = (binding: ProjectFenceBinding): string =>
   binding.projectId + ':' + binding.generation;
 const hexId = /^[a-f0-9]{64}$/u;
+export function projectFenceTable(binding: ProjectFenceBinding): string {
+  validateBinding(binding);
+  return tableName(binding.projectId + ':' + binding.generation);
+}
 function validateBinding(binding: ProjectFenceBinding): void {
   if (
     !/^[a-zA-Z0-9_-]{1,128}$/u.test(binding.projectId) ||
@@ -93,6 +106,7 @@ export function projectFenceRules(
   now: number,
   replace: boolean,
   admission?: ProjectDeadlineLease,
+  relay?: ProjectFenceRelay,
 ): string {
   validateBinding(binding);
   const table = tableName(binding.projectId + ':' + binding.generation);
@@ -108,6 +122,11 @@ export function projectFenceRules(
         `delete table bridge ${table}`,
       ]
     : [];
+  if (relay && relay.transport.sandbox.address !== binding.ipv4)
+    throw new Error('Relay sandbox does not match direct binding');
+  const network = { ...binding, networkName: '' };
+  const relayRules = (family: 'inet' | 'bridge') =>
+    relay ? transportRules(network, relay.transport, family, relay.flowLabel) : '';
   const unique = new Map<string, Lease>();
   for (const lease of leases) {
     if (
@@ -225,7 +244,7 @@ chain reply {
  ct direction reply ct label == ${label} ip6 saddr . meta l4proto . th sport @allow6 accept
  counter drop
 }
-chain forward { type filter hook forward priority -200; policy accept; iifname "${binding.bridge}" jump fence; oifname "${binding.bridge}" jump reply; }
+chain forward { type filter hook forward priority -200; policy accept; ${relayRules('inet')} iifname "${binding.bridge}" jump fence; oifname "${binding.bridge}" jump reply; }
 chain output { type filter hook output priority -200; policy accept;
  oifname "${binding.bridge}" ip6 hoplimit 255 icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert } accept
  oifname "${binding.bridge}" jump reply
@@ -237,7 +256,7 @@ chain input { type filter hook input priority -200; policy accept;
 }`);
   // Routed inet hooks alone do not cover packets switched between bridge ports.
   commands.push(`table bridge ${table} {
-chain forward { type filter hook forward priority -200; policy accept; meta ibrname "${binding.bridge}" counter drop; }
+chain forward { type filter hook forward priority -200; policy accept; ${relayRules('bridge')} meta ibrname "${binding.bridge}" counter drop; }
 }`);
   return commands.join('\n') + '\n';
 }
@@ -268,7 +287,9 @@ export class ProjectEgressFence {
     try {
       await this.deps.deadline.revoke(binding, next);
     } finally {
-      await this.deps.apply(projectFenceRules(binding, [], this.now(), true));
+      await this.deps.apply(
+        projectFenceRules(binding, [], this.now(), true, undefined, this.deps.relay?.()),
+      );
     }
   }
   prepare(binding: ProjectFenceBinding): Promise<void> {
@@ -297,7 +318,10 @@ export class ProjectEgressFence {
             binding,
             [],
             this.now(),
-            old !== undefined && bindingKey(old.binding) === key,
+            (old !== undefined && bindingKey(old.binding) === key) ||
+              ((await this.deps.existing?.(binding)) ?? false),
+            undefined,
+            this.deps.relay?.(),
           ),
         );
       }
@@ -404,7 +428,14 @@ export class ProjectEgressFence {
       if (!(await this.deps.policyCurrent(snapshot)))
         throw new Error('Project fence authority changed');
       await this.deps.apply(
-        projectFenceRules(snapshot.binding, leases, this.now(), true, admission),
+        projectFenceRules(
+          snapshot.binding,
+          leases,
+          this.now(),
+          true,
+          admission,
+          this.deps.relay?.(),
+        ),
       );
       try {
         // A lifecycle change can arrive while the kernel transaction is pending.

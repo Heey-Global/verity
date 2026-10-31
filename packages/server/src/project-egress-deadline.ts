@@ -106,8 +106,16 @@ export interface ProjectDeadlineEnforcer {
   revoke(binding: ProjectFenceBinding, next?: ProjectDeadlineLease): Promise<void>;
 }
 
+export interface ProjectDeadlineRelayEnforcer extends ProjectDeadlineEnforcer {
+  configureRelay(
+    binding: ProjectFenceBinding,
+    relay: { containerId: string; endpointId: string; codex: boolean },
+  ): Promise<void>;
+  clearRelay(binding: ProjectFenceBinding): Promise<void>;
+}
+
 /** Fixed root-owned helper; no executable or namespace comes from a project. */
-export function hostProjectDeadlineEnforcer(): ProjectDeadlineEnforcer {
+export function hostProjectDeadlineEnforcer(): ProjectDeadlineRelayEnforcer {
   const request = (input: unknown): Promise<unknown> =>
     new Promise((resolve, reject) => {
       const child = spawn('/usr/bin/python3', ['/opt/verity-egress/project-egress-deadline.py'], {
@@ -145,6 +153,16 @@ export function hostProjectDeadlineEnforcer(): ProjectDeadlineEnforcer {
     });
   const denied = z.strictObject({ state: z.literal('denied') });
   return {
+    async configureRelay(binding, relay) {
+      z.strictObject({ state: z.literal('relay-configured') }).parse(
+        await request({ operation: 'configure-relay', binding, relay }),
+      );
+    },
+    async clearRelay(binding) {
+      z.strictObject({ state: z.literal('relay-denied') }).parse(
+        await request({ operation: 'clear-relay', binding }),
+      );
+    },
     async prepare(binding) {
       denied.parse(await request({ operation: 'prepare', binding }));
     },

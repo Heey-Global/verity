@@ -187,3 +187,50 @@ export function transportRules(
   }
   return rules;
 }
+
+/** A routing corridor is selected only after the host installed the direct fence.
+ * `return` continues through its later base chain; it never authorizes a target.
+ * Switched project-to-project traffic has no corridor.
+ */
+export interface EgressDirectCorridor {
+  binding: import('./project-egress-fence.js').ProjectFenceBinding;
+  gateway4: string;
+  gateway6: string;
+}
+export function directCorridorRules(
+  network: ProjectEgressNetworkBinding,
+  transport: EgressTransport,
+  direct: EgressDirectCorridor | undefined,
+  hook: 'forward' | 'input',
+  family: 'inet' | 'bridge',
+): string {
+  if (!direct) return '';
+  const b = direct.binding;
+  const t = egressTransportSchema.parse(transport);
+  z.ipv4().parse(b.ipv4);
+  z.ipv6().parse(b.ipv6);
+  z.ipv4().parse(direct.gateway4);
+  z.ipv6().parse(direct.gateway6);
+  if (
+    b.projectId !== network.projectId ||
+    b.generation !== network.generation ||
+    b.networkId !== network.networkId ||
+    b.bridge !== network.bridge ||
+    b.ipv4 !== t.sandbox.address
+  )
+    throw new Error('Direct corridor binding mismatch');
+  if (family === 'inet' && hook === 'forward')
+    return `
+ iifname "${network.bridge}" oifname != "${network.bridge}" ip saddr ${b.ipv4} return;
+ iifname "${network.bridge}" oifname != "${network.bridge}" ip6 saddr ${b.ipv6} return;
+ oifname "${network.bridge}" iifname != "${network.bridge}" ip daddr ${b.ipv4} return;
+ oifname "${network.bridge}" iifname != "${network.bridge}" ip6 daddr ${b.ipv6} return;
+`;
+  if (hook !== 'input') return '';
+  const nd = `ip6 saddr ${b.ipv6} ip6 daddr ${direct.gateway6} ip6 hoplimit 255 icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert } return;`;
+  if (family === 'inet') return `iifname "${network.bridge}" ${nd}\n`;
+  return `
+ meta ibrname "${network.bridge}" meta iif ${t.sandbox.index} iifname "${t.sandbox.device}" ether saddr ${t.sandbox.mac} arp operation { request, reply } arp saddr ether ${t.sandbox.mac} arp saddr ip ${b.ipv4} arp daddr ip ${direct.gateway4} return;
+ meta ibrname "${network.bridge}" meta iif ${t.sandbox.index} iifname "${t.sandbox.device}" ether saddr ${t.sandbox.mac} ${nd}
+`;
+}

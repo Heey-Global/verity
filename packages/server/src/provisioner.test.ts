@@ -1031,8 +1031,8 @@ describe('ProvisionerImpl (#174)', () => {
     );
   });
 
-  it.each([false, true])(
-    'wakes the exact retained generation with fresh relay capabilities (host: %s)',
+  it.each([false, true, 'packet'] as const)(
+    'wakes with the host-required generation and fresh relay capabilities (host: %s)',
     async (protectedStart) => {
       const id = await seedProject('active');
       const retained = {
@@ -1079,6 +1079,9 @@ describe('ProvisionerImpl (#174)', () => {
       const egress = new ProjectEgressLifecycle(async () => {
         throw new Error('unexpected host command');
       }, {});
+      vi.spyOn(egress, 'requiresFreshWakeGeneration').mockResolvedValue(
+        protectedStart === 'packet',
+      );
       const hostStart = vi.spyOn(egress, 'start').mockResolvedValue(undefined);
       vi.spyOn(egress, 'connect').mockResolvedValue('172.20.0.2');
       const provisioner = createProvisioner({
@@ -1101,6 +1104,25 @@ describe('ProvisionerImpl (#174)', () => {
       );
       provisioner.attachProjectBusyProbe(busyProbe);
 
+      if (protectedStart === 'packet') {
+        const replace = vi.spyOn(provisioner, 'recreateContainer').mockImplementation(async () => {
+          await ctx.store.updateProjectState(id, 'active');
+          return (await ctx.store.getProject(id))!;
+        });
+        const result = await provisioner.ensureProjectSandboxAwake(id, requestingSessionIds);
+        expect(result.state).toBe('active');
+        expect(replace).toHaveBeenCalledWith(
+          id,
+          expect.objectContaining({
+            confirmWarnings: true,
+            initiator: { kind: 'system', trigger: 'sandbox_wake' },
+          }),
+        );
+        expect(hostStart).not.toHaveBeenCalled();
+        expect(bindings).toEqual([]);
+        expect(calls.some((call) => call.method === 'startContainer')).toBe(false);
+        return;
+      }
       const result = await provisioner.ensureProjectSandboxAwake(id, requestingSessionIds);
 
       expect(result).toMatchObject({

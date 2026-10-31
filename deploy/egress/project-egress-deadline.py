@@ -18,7 +18,7 @@ import subprocess
 import sys
 import time
 
-STATE = Path('/run/verity-egress-deadline')
+STATE = Path('/var/lib/verity-egress/deadline')
 PINS = Path('/sys/fs/bpf/verity_egress_deadline')
 OBJECT = Path('/opt/verity-egress/project-egress-deadline.bpf.o')
 BINDING_FIELDS = ('projectId', 'generation', 'containerId', 'networkId', 'endpointId', 'bridge', 'ipv4', 'ipv6')

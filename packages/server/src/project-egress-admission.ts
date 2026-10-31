@@ -15,6 +15,7 @@ export function createProjectEgressAdmission(options: {
   store: Pick<ProjectEgressStore, 'readForAdmission'>;
   dependencies: Omit<ProjectFenceDependencies, 'policyCurrent'>;
 }): {
+  invalidate(): void;
   prepare(): Promise<void>;
   refresh(): Promise<void>;
   revoke(): Promise<void>;
@@ -53,6 +54,9 @@ export function createProjectEgressAdmission(options: {
     },
   });
   return {
+    invalidate: () => {
+      lifecycle = Symbol();
+    },
     prepare: () => invalidate(() => fence.prepare(binding)),
     refresh: () => {
       const attempt = lifecycle;

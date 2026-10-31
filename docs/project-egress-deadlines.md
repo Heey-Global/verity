@@ -98,8 +98,9 @@ outside this increment.
 
 The TC program also contains an independently classified relay path to support
 future composition on a shared project veth. Its `relay_transport` array starts
-disabled. The current host helper does not configure it, and neither production
-nor the experimental host service selects this path yet.
+disabled. The experimental host service selects trusted configuration only when
+its root-owned relay policy explicitly sets `packetEnforcement: true`. Production
+installation and activation remain disabled.
 
 When configured by trusted host code, the class must still match the guard's
 registered interface index, exact Sandbox/relay IPv4 and MAC pair, and TCP service
@@ -150,12 +151,84 @@ prevent the lifecycle owner from claiming successful configuration or revocation
 
 The KVM packet fixture uses the host map writer, including its disabled encoding.
 Host configuration tests mock daemon and kernel responses; they do not certify
-actual Docker/TC composition. These helper operations are not yet selected by the
-production host lifecycle. Combining and verifying startup, relay and direct
-nftables rules, crash/restart recovery and real relay delivery remain required.
+actual Docker/TC composition. Production installation remains disabled. The opt-in experimental host lifecycle
+now composes the helper operations with startup, relay and direct nftables rules;
+complete supported-host acceptance remains a separate gate.
 
 The kernel test API initializes protocol metadata before invoking TC. Synthetic
 inputs shorter than an Ethernet plus base IPv4 header are therefore zero-padded
 to 34 bytes. The ordinary C matrix still exercises the exact short lengths; the
 kernel matrix's sub-34-byte cases cover padded malformed inputs, not actual short
 skbs. API failures remain errors and are never counted as classifier denials.
+
+
+### Opt-in host lifecycle composition
+
+`/etc/verity-egress/relay.json` may explicitly select `packetEnforcement: true`.
+This is an experimental host selection, not an installer default or a project
+request field. The host verifies the registered relay role, image and mounts,
+then derives both endpoint identities from Docker. Under the existing startup
+fence it prepares the denied TC guard and direct nftables chains, installs the
+exact relay exception, repeats inspection and only then acknowledges connected
+readiness. A failed configuration leaves the generation denied; failure to
+restore denial also attempts to stop its containers.
+
+The startup tables provide a corridor for the bound sandbox's routed IPv4/IPv6
+addresses only after its direct fence exists. `return` continues through the
+later direct fence; it does not authorize a destination. Same-bridge forwarding
+still permits only the inspected relay pair and ports. Gateway neighbour discovery
+is bounded to the inspected sandbox identity and gateway addresses. The direct
+fence preserves that same relay exception before evaluating direct expiry and
+target tuples. A direct revoke does not clear the relay class; prepare, retirement
+and shutdown close both paths.
+
+Optional `/etc/verity-egress/authority.json` supplies `databaseUrl`, explicit
+`dnsServers`, a reviewed `directHosts` route inventory and `projectSponsors`
+(project ID to sponsor user ID). Both configuration files must be root-owned,
+private regular files with trusted ancestors and no symlink traversal. The
+route inventory must contain only destinations classified as direct: broker,
+model/control and other mandatory mediated routes are not direct destinations.
+Unclassified hosts remain unavailable. This bounded inventory does not replace
+the remaining transport-adapter integration work.
+
+The host reads the authoritative PostgreSQL egress policy and rechecks sponsor
+execute permission and policy revision around admission. Control requests accept
+only project and generation references, never grants, addresses, revisions or
+sponsor overrides. Missing authority configuration or sponsorship cannot open
+direct access. Destination inspection excludes host interface addresses and all
+Docker network subnets, including publicly addressed project networks.
+
+After a connected acknowledgement with direct authority, the Server lifecycle
+refreshes sequentially, waiting 250 ms after each completed refresh; the kernel
+lease still lasts at most 1000 ms from its original clock capture. Refresh errors
+stop renewal and attempt direct revocation. Prepare, retirement and Server close
+cancel renewal; the host does not renew on behalf of a lost Server. Renewal does
+not revive previously labelled connections or extend temporary grant budgets.
+
+Host records bind packet-enforced generations to the host boot ID. Every daemon
+pre-start restore retires old packet generations before Docker starts; a new
+host boot likewise retires them before readiness. Service-only reconstruction
+within one boot retains the binding but starts denied and preserves expiry
+state. A stopped sandbox wakes through the existing cold replacement path,
+retaining project data while allocating a fresh generation and network. Endpoint
+or immutable relay-policy changes require replacement rather than in-place repair.
+
+The experimental service requires a mounted bpffs and an existing root-owned
+0700 `/sys/fs/bpf/verity_egress_deadline` directory. Its writable paths include
+only that pin subtree and the existing private service state. Deadline evidence
+is stored under `/var/lib/verity-egress/deadline`, independently of the control
+socket runtime directory, and survives service restarts and host reboot; boot-ID
+checks still require a fresh generation after reboot. Missing helper/object, unsupported kernel,
+missing pins or failed attestation prevent packet-enforced startup. These
+requirements do not authorize installation on an existing host.
+
+The disposable Runner/relay fixture now exercises the combined Docker, TC and
+nftables path with an independent dual-stack receiver, fresh direct controls,
+lease expiry, retained TCP attempts, direct revoke and unchanged relay controls.
+`composed-proof.py` independently checks receiver receipts, raw TC observations
+and sender heartbeat evidence; forged late receipts, missing positive controls
+and late kernel admission are rejected by its tests. These checks supplement the
+existing controller-reconstruction and generation-replacement fixture. The
+legacy boot fixture, whose relay policy does not select packet enforcement,
+continues to certify its existing startup fence only; its reboot results must
+not be presented as combined TC/nftables reboot acceptance.

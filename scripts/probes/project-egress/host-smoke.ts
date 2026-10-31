@@ -1,3 +1,8 @@
+import { createProjectEgressHostEnforcement } from '../../../packages/server/src/project-egress-host-enforcement.js';
+import { hostProjectDeadlineEnforcer } from '../../../packages/server/src/project-egress-deadline.js';
+import { inspectProjectFenceAttachment } from '../../../packages/server/src/project-egress-attachment.js';
+import { projectFenceTable } from '../../../packages/server/src/project-egress-fence.js';
+import { inspectEgressHostDirect } from '../../../packages/server/src/project-egress-host-runtime.js';
 import { inspectEgressTransport } from '../../../packages/server/src/project-egress-transport.js';
 import {
   createDockerProjectRelayStarter,
@@ -45,7 +50,59 @@ const token = randomBytes(32).toString('hex');
 const store = await openProjectEgressHostStore(directory);
 let relayPolicy: EgressRelayPolicy | undefined;
 const starts: string[] = [];
+const composedTargets = ['11.77.106.2', '2001:4860:feed:106::2'];
+let directEnabled = true;
+function createEnforcement() {
+  return createProjectEgressHostEnforcement({
+    deadline: hostProjectDeadlineEnforcer(),
+    sponsor: () => 'fixture-sponsor',
+    directAuthority: () => true,
+    store: {
+      readForAdmission: async (projectId, sponsor) => {
+        assert.equal(projectId, 'host-smoke');
+        assert.equal(sponsor, 'fixture-sponsor');
+        return {
+          revision: 1,
+          requests: {},
+          grants: directEnabled
+            ? composedTargets.flatMap((host) =>
+                [
+                  { host, protocol: 'tcp' as const, port: 443 },
+                  { host, protocol: 'udp' as const, port: 8080 },
+                ].map((target) => ({
+                  id: `${target.host}-${target.protocol}`,
+                  target,
+                  approvedAt: 0,
+                  approvedBy: 'fixture-manager',
+                  expiresAt: null,
+                })),
+              )
+            : [],
+        };
+      },
+    },
+    inspect: inspectEgressHostDirect,
+    dependencies: {
+      inspect: inspectProjectFenceAttachment,
+      apply: applyProjectFenceRules,
+      directTargetAllowed: async (host) => composedTargets.includes(host),
+      destinationAllowed: async (address) => composedTargets.includes(address),
+      resolve: async () => {
+        throw new Error('Exact address fixture');
+      },
+      existing: async (binding) => {
+        const rules = await exec('/usr/sbin/nft', ['-j', 'list', 'tables']);
+        return (
+          JSON.parse(rules.stdout) as { nftables: { table?: { family: string; name: string } }[] }
+        ).nftables.some(
+          (item) => item.table?.family === 'inet' && item.table.name === projectFenceTable(binding),
+        );
+      },
+    },
+  });
+}
 const dependencies = {
+  enforcement: createEnforcement(),
   inspectTransport: (
     binding: Parameters<typeof inspectEgressTransport>[0],
     ids: Parameters<typeof inspectEgressTransport>[1],
@@ -202,6 +259,7 @@ try {
   const lifecycle = new ProjectEgressLifecycle(
     command,
     createDockerClient({ baseUrl: 'unix:///var/run/docker.sock' }),
+    false,
   );
   const identity = { projectId: 'host-smoke', containerGeneration: 'gen1' };
   const binding = await lifecycle.create(identity);
@@ -779,11 +837,170 @@ try {
   assert.ok(!(await docker('logs', 'veh-receiver')).includes('transferred-startup-marker'));
   assert.ok(!(await docker('logs', 'veh-receiver')).includes('host-startup-marker'));
   results.push('no receiver observation during Runner/relay startup and mediated restart');
+  // Compose the actual startup, direct nft and TC paths, with an independent receiver.
+  await docker(
+    'network',
+    'create',
+    '--ipv6',
+    '--subnet',
+    '11.77.106.0/24',
+    '--subnet',
+    '2001:4860:feed:106::/64',
+    '--opt',
+    'com.docker.network.bridge.name=veh-direct',
+    '--opt',
+    'com.docker.network.bridge.gateway_mode_ipv4=nat-unprotected',
+    '--opt',
+    'com.docker.network.bridge.gateway_mode_ipv6=nat-unprotected',
+    '--opt',
+    'com.docker.network.bridge.enable_ip_masquerade=false',
+    'veh-direct',
+  );
+  extraNetworks.push('veh-direct');
+  await docker(
+    'run',
+    '-d',
+    '--name',
+    'veh-direct',
+    '--network',
+    'veh-direct',
+    '--ip',
+    composedTargets[0]!,
+    '--ip6',
+    composedTargets[1]!,
+    '--mount',
+    'type=bind,src=/probe,dst=/probe,readonly',
+    '--memory',
+    '128m',
+    '--pids-limit',
+    '64',
+    '--cap-drop',
+    'ALL',
+    '--security-opt',
+    'no-new-privileges=true',
+    '--entrypoint',
+    'python3',
+    'project-egress-fixture:local',
+    '-u',
+    '/probe/composed-receiver.py',
+  );
+  extraContainers.push('veh-direct');
+  for (let i = 0; i < 50 && !(await docker('logs', 'veh-direct')).includes('ready'); i++)
+    await delay(100);
+  assert.ok((await docker('logs', 'veh-direct')).includes('ready'));
+  for (const command of ['iptables', 'ip6tables'])
+    for (const [source, target] of [
+      [bridge, 'veh-direct'],
+      ['veh-direct', bridge],
+    ])
+      await exec(command, ['-I', 'FORWARD', '1', '-i', source!, '-o', target!, '-j', 'ACCEPT']);
+  const directCases: { phase: string; family: number; expected: boolean; observed: boolean }[] = [];
+  const directProbe = async (phase: string, expected: boolean) => {
+    for (const [family, target] of composedTargets.entries()) {
+      if (expected) await lifecycle.refreshDirect(identity);
+      await docker(
+        'exec',
+        '--user',
+        '1000:1000',
+        containerId,
+        'python3',
+        '/probe/composed-client.py',
+        target!,
+        `${phase}-${family}`,
+        expected ? 'positive' : 'negative',
+      );
+      const log = await docker('logs', 'veh-direct');
+      const observed =
+        log.includes(`${phase}-${family}-tcp`) && log.includes(`${phase}-${family}-udp`);
+      assert.equal(observed, expected, `${phase}/${family}`);
+      if (!expected) assert.ok(!log.includes(`${phase}-${family}-`));
+      directCases.push({ phase, family, expected, observed });
+    }
+  };
+  await directProbe('before-admission', false);
+  await directProbe('admitted', true);
+  // Stopping renewal must close direct access while the independent relay stays usable.
+  await delay(1200);
+  await directProbe('lease-expired', false);
+  assert.ok((await client('positive', relayAddress)).includes('transport-positive'));
+  await lifecycle.refreshDirect(identity);
+  await docker(
+    'exec',
+    '-d',
+    '--user',
+    '1000:1000',
+    containerId,
+    'python3',
+    '/probe/composed-client.py',
+    composedTargets[0]!,
+    'stream',
+    'stream',
+  );
+  for (let i = 0; i < 20 && !(await docker('logs', 'veh-direct')).includes('stream-retained'); i++)
+    await delay(20);
+  assert.ok((await docker('logs', 'veh-direct')).includes('stream-retained'));
+  const actualBinding = (
+    await inspectEgressHostDirect(binding, { sandbox: containerId, relay: relayId })
+  ).corridor.binding;
+  const kernel = async () =>
+    JSON.parse(
+      (
+        await exec('/usr/bin/python3', [
+          '/probe/deadline-observe.py',
+          JSON.stringify(actualBinding),
+        ])
+      ).stdout,
+    ) as {
+      deadline_ns: string;
+      accepted: number;
+      denied: number;
+      last_accepted_boot_ns: string;
+      clocks: { bootBeforeNs: string };
+    };
+  const live = await kernel();
+  await delay(1300);
+  const expired = await kernel();
+  await delay(300);
+  const attempted = await kernel();
+  assert.ok(BigInt(expired.clocks.bootBeforeNs) >= BigInt(live.deadline_ns));
+  assert.equal(expired.accepted, attempted.accepted);
+  assert.ok(attempted.denied > expired.denied);
+  assert.ok(BigInt(attempted.last_accepted_boot_ns) < BigInt(live.deadline_ns));
+  await directProbe('fresh-after-expiry', true);
+  await lifecycle.revokeDirect(identity);
+  await directProbe('direct-revoked', false);
+  assert.ok((await client('positive', relayAddress)).includes('transport-positive'));
+  directEnabled = false;
+  await lifecycle.refreshDirect(identity);
+  await directProbe('authority-empty', false);
+  directEnabled = true;
+  await delay(2500);
+  const heartbeat = JSON.parse(await readFile(`${worktree}/composed-stream.json`, 'utf8')) as {
+    attempts: number;
+    boot_ns: string;
+  };
+  assert.ok(
+    heartbeat.attempts > 10 &&
+      BigInt(heartbeat.boot_ns) > BigInt(live.deadline_ns) + 2_000_000_000n,
+  );
+  await writeFile(
+    '/evidence/composed-stream-proof.json',
+    JSON.stringify({ live, expired, attempted, heartbeat }),
+  );
+  await writeFile('/evidence/composed-receiver.txt', await docker('logs', 'veh-direct'));
+  await writeFile(
+    '/evidence/composed-result.json',
+    JSON.stringify({ complete: true, cases: directCases }),
+  );
+  results.push(
+    'actual startup/TC/nft composition admits only current direct grants and retains the relay after direct expiry/revoke',
+  );
   // Reconstruct the host controller from its real fsynced state while traffic continues.
   await new Promise<void>((resolve, reject) =>
     server!.close((error) => (error ? reject(error) : resolve())),
   );
   server = undefined;
+  dependencies.enforcement = createEnforcement();
   const recovered = new ProjectEgressHost(await store.load(), dependencies);
   await revokeAndMeasure(() => recovered.restore(), 'controller-restore');
   await recovered.revalidate();
@@ -794,6 +1011,9 @@ try {
   assert.ok((await client('negative', relayAddress, 8080)).includes('transport-denied'));
   await verifyNoRevival('controller-restore');
   results.push('registry recovery denies old transports and requires explicit revalidation');
+  const directBinding = (
+    await inspectEgressHostDirect(binding, { sandbox: containerId, relay: relayId })
+  ).corridor.binding;
   await revokeAndMeasure(() => lifecycle.retire(identity), 'retire');
   await assert.rejects(lifecycle.start(identity, 'sandbox', containerId));
   results.push('retired generation cannot restart');
@@ -812,7 +1032,7 @@ try {
   // Deliberately broken boundary: the same source must reach the independent receiver.
   const table = projectEgressStartupRules(binding).match(/add table inet (\w+)/)![1];
   await applyProjectFenceRules(
-    `delete table inet ${table}\ndelete table bridge ${table}\ndelete table inet verity_egress_boot\ndelete table bridge verity_egress_boot\n`,
+    `delete table inet ${projectFenceTable(directBinding)}\ndelete table bridge ${projectFenceTable(directBinding)}\ndelete table inet ${table}\ndelete table bridge ${table}\ndelete table inet verity_egress_boot\ndelete table bridge verity_egress_boot\n`,
   );
   await docker('start', containerId);
   await exec('ip6tables', [
