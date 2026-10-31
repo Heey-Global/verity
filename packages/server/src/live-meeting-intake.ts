@@ -45,7 +45,9 @@ export function assignedSessionId(meetingId: string, projectId: string): string 
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
-export async function retentionDays(store: EventStore): Promise<number> {
+export async function retentionDays(
+  store: Pick<EventStore, 'getVeritySettingsRaw'>,
+): Promise<number> {
   const settings = await store.getVeritySettingsRaw();
   return settings?.unassignedMeetingRetentionDays ?? DEFAULT_UNASSIGNED_MEETING_RETENTION_DAYS;
 }

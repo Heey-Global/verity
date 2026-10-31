@@ -124,6 +124,15 @@ export interface GoogleAccountsTable {
   created_at: ColumnType<Date, string | undefined, never>;
 }
 
+/** A watched calendar; a row exists only while watching is on. */
+export interface CalendarWatchCalendarsTable {
+  account_id: string;
+  calendar_id: string;
+  summary: string;
+  auto_join: ColumnType<boolean, boolean | undefined, boolean>;
+  updated_at: ColumnType<Date, string | undefined, string>;
+}
+
 export interface GoogleServiceOverridesTable {
   mode: 'inherit' | 'disabled' | 'account';
   revision: string;
@@ -1653,6 +1662,7 @@ export interface Database {
   session_slide_decks: SessionSlideDecksTable;
   google_workspace_recents: GoogleWorkspaceRecentsTable;
   google_accounts: GoogleAccountsTable;
+  calendar_watch_calendars: CalendarWatchCalendarsTable;
   google_service_overrides: GoogleServiceOverridesTable;
   project_google_drive_folders: ProjectGoogleDriveFoldersTable;
   project_google_connections: ProjectGoogleConnectionsTable;

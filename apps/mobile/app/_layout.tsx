@@ -285,6 +285,10 @@ function HydratedRoot() {
                 name="settings/scheduling-requests"
                 options={{ title: 'Scheduling requests' }}
               />
+              <Stack.Screen
+                name="settings/meeting-calendars"
+                options={{ title: 'Meeting calendars' }}
+              />
               <Stack.Screen name="settings/premium" options={{ title: 'Verity Premium' }} />
               <Stack.Screen name="settings/diagnostics" options={{ title: 'Diagnostics' }} />
               <Stack.Screen name="settings/design-system" options={{ title: 'Design system' }} />

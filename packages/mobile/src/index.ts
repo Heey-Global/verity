@@ -484,7 +484,7 @@ export {
   type ProjectSettingsDraft,
 } from './projectSettings.js';
 export { secretStatusSchema, type SecretStatus } from './api.js';
-export type { ActiveLiveMeetings, SchedulingRequestView } from './api.js';
+export type { ActiveLiveMeetings, CalendarWatch, SchedulingRequestView } from './api.js';
 export { type IntegrationAccount, type IntegrationSource } from './api.js';
 export {
   type LiveMeeting,

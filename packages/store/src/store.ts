@@ -4,6 +4,7 @@ import { RepairSupervisionStore } from './repair-supervision.js';
 import { ProjectEgressStore } from './project-egress.js';
 import { VulnerabilityScanStore } from './vulnerability-scan.js';
 import { ForgeConnectionStore } from './forge-connections.js';
+import { CalendarWatchStore } from './calendar-watch.js';
 import { GoogleAccountStore } from './google-accounts.js';
 import {
   HISTORY_MAX_BYTES,
@@ -2063,6 +2064,10 @@ export class EventStore implements EventSink {
 
   get googleAccounts(): GoogleAccountStore {
     return new GoogleAccountStore(this.db, this.cipher);
+  }
+
+  get calendarWatch(): CalendarWatchStore {
+    return new CalendarWatchStore(this.db);
   }
 
   async getGoogleServiceCredentials(sessionId: string, service: 'gmail' | 'calendar' | 'contacts') {

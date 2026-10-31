@@ -5053,3 +5053,21 @@ migrations['0179_unassigned_meeting_retention'] = {
     );
   },
 };
+
+migrations['0180_calendar_watch_calendars'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    // Calendars Verity watches for online meetings. A calendar carries no project: meetings
+    // joined from it start unassigned. Disconnecting the account drops its choices.
+    await sql`create table calendar_watch_calendars (
+      account_id text not null references google_accounts(id) on delete cascade,
+      calendar_id text not null,
+      summary text not null,
+      auto_join boolean not null default false,
+      updated_at timestamptz not null default now(),
+      primary key (account_id, calendar_id)
+    )`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table calendar_watch_calendars`.execute(db);
+  },
+};

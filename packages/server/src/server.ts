@@ -77,6 +77,7 @@ import { AttendeeMeetings } from './attendee-meetings.js';
 import { attendeeResearchHints } from './attendee-research.js';
 import { registerAttendeeRoutes } from './attendee-routes.js';
 import { registerLiveMeetingIntakeRoutes } from './live-meeting-intake.js';
+import { registerCalendarWatchRoutes } from './calendar-watch-routes.js';
 import {
   attentionSignals,
   sessionAttentionSignals,
@@ -5998,6 +5999,11 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       (await authorizePairedRoute(deps.eventStore, userId, 'GET', '/sessions/:id', {
         id: sessionId,
       })) === 'allow',
+    log: app.log,
+  });
+  registerCalendarWatchRoutes(app, {
+    store: deps.eventStore,
+    googleAccessToken: deps.googleAccessToken ?? (() => Promise.resolve(undefined)),
     log: app.log,
   });
 

@@ -937,6 +937,29 @@ const activeLiveMeetingsSchema = z.object({
 });
 export type ActiveLiveMeetings = z.infer<typeof activeLiveMeetingsSchema>;
 
+const calendarWatchSchema = z.object({
+  accounts: z.array(
+    z.object({
+      id: z.string(),
+      email: z.string(),
+      displayName: z.string().nullable(),
+      // `.catch` keeps a newer server's additional state readable as "unavailable".
+      access: z.enum(['ok', 'missing_scope', 'unavailable']).catch('unavailable'),
+      calendars: z.array(
+        z.object({
+          id: z.string(),
+          summary: z.string(),
+          primary: z.boolean(),
+          watched: z.boolean(),
+          autoJoin: z.boolean(),
+        }),
+      ),
+    }),
+  ),
+  retentionDays: z.number(),
+});
+export type CalendarWatch = z.infer<typeof calendarWatchSchema>;
+
 const httpMcpConnectionSchema = z.object({
   id: z.string(),
   name: z.string(),
@@ -2562,6 +2585,24 @@ export class VerityClient {
     return activeLiveMeetingsSchema.parse(
       await (await this.request('/live-meetings/active', { method: 'GET' })).json(),
     );
+  }
+  /** The Google calendars Verity may watch for online meetings, with the current choices. */
+  async getCalendarWatch(): Promise<CalendarWatch> {
+    return calendarWatchSchema.parse(
+      await (await this.request('/settings/calendar-watch', { method: 'GET' })).json(),
+    );
+  }
+  async setCalendarWatch(choice: {
+    accountId: string;
+    calendarId: string;
+    watched: boolean;
+    autoJoin: boolean;
+  }): Promise<void> {
+    await this.request('/settings/calendar-watch', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(choice),
+    });
   }
   /** Assigns an unassigned meeting to a project (new session) or an existing session. */
   async assignLiveMeeting(

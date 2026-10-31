@@ -112,12 +112,17 @@ function GoogleSettingsContent({ client }: { client: VerityClient }) {
       </SettingsGroup>
       <SettingsGroup
         title="Calendar"
-        description="Times you offered through booking links, across all chats."
+        description="Times you offered through booking links, and calendars Verity watches for online meetings."
       >
         <SettingsNavRow
           title="Scheduling requests"
           icon="calendar"
           onPress={() => router.push('/settings/scheduling-requests')}
+        />
+        <SettingsNavRow
+          title="Meeting calendars"
+          icon="video"
+          onPress={() => router.push('/settings/meeting-calendars')}
         />
       </SettingsGroup>
       <Sheet

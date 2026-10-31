@@ -236,6 +236,9 @@ export interface CalendarEventRecord {
   extendedProperties?: { private?: Record<string, string> };
   hangoutLink?: string;
   htmlLink?: string;
+  location?: string;
+  /** Only the entry points' URIs; the meeting watcher looks for a join link there. */
+  conferenceData?: { entryPoints: { entryPointType?: string; uri: string }[] };
 }
 
 /** The writable part of an event the scheduling service creates or patches. */
@@ -316,6 +319,34 @@ function eventRecord(value: unknown): CalendarEventRecord | undefined {
       : {}),
     ...(typeof event.hangoutLink === 'string' ? { hangoutLink: event.hangoutLink } : {}),
     ...(typeof event.htmlLink === 'string' ? { htmlLink: event.htmlLink } : {}),
+    ...(typeof event.location === 'string' ? { location: event.location } : {}),
+    ...conferenceRecord(event.conferenceData),
+  };
+}
+
+function conferenceRecord(raw: unknown): Pick<CalendarEventRecord, 'conferenceData'> {
+  const entryPoints = (typeof raw === 'object' && raw !== null ? raw : {}) as {
+    entryPoints?: unknown;
+  };
+  if (!Array.isArray(entryPoints.entryPoints)) return {};
+  return {
+    conferenceData: {
+      entryPoints: entryPoints.entryPoints.flatMap((value: unknown) => {
+        const entry = (typeof value === 'object' && value !== null ? value : {}) as Record<
+          string,
+          unknown
+        >;
+        if (typeof entry.uri !== 'string') return [];
+        return [
+          {
+            uri: entry.uri,
+            ...(typeof entry.entryPointType === 'string'
+              ? { entryPointType: entry.entryPointType }
+              : {}),
+          },
+        ];
+      }),
+    },
   };
 }
 
@@ -385,6 +416,58 @@ export async function listCalendarEventsInRange(
     pageToken = body.nextPageToken;
   }
   throw new Error('Calendar has too many events in this range to check availability');
+}
+
+/** A calendar of the account's calendar list. */
+export interface CalendarListEntry {
+  id: string;
+  summary: string;
+  primary: boolean;
+  /** `freeBusyReader` sees only busy times, not the links of events. */
+  accessRole: string;
+}
+
+/** The account's calendar list, following pagination up to a fixed bound. */
+export async function listCalendars(
+  token: string,
+  doFetch: GoogleFetch = fetch,
+): Promise<CalendarListEntry[]> {
+  const calendars: CalendarListEntry[] = [];
+  let pageToken: string | undefined;
+  for (let page = 0; page < MAX_EVENT_PAGES; page += 1) {
+    const params = new URLSearchParams({ maxResults: '250' });
+    if (pageToken) params.set('pageToken', pageToken);
+    const response = await calendarFetch(
+      doFetch,
+      token,
+      `https://www.googleapis.com/calendar/v3/users/me/calendarList?${params.toString()}`,
+    );
+    if (response.status < 200 || response.status >= 300)
+      throw new GoogleCalendarHttpError(response.status);
+    const body = (await response.json()) as { items?: unknown; nextPageToken?: unknown };
+    if (Array.isArray(body.items))
+      for (const raw of body.items) {
+        const item = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<
+          string,
+          unknown
+        >;
+        if (typeof item.id !== 'string') continue;
+        calendars.push({
+          id: item.id,
+          summary:
+            typeof item.summaryOverride === 'string'
+              ? item.summaryOverride
+              : typeof item.summary === 'string'
+                ? item.summary
+                : item.id,
+          primary: item.primary === true,
+          accessRole: typeof item.accessRole === 'string' ? item.accessRole : 'none',
+        });
+      }
+    if (typeof body.nextPageToken !== 'string') return calendars;
+    pageToken = body.nextPageToken;
+  }
+  return calendars;
 }
 
 /** One event, or undefined when it no longer exists. */
