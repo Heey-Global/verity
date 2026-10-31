@@ -26,7 +26,7 @@ import {
 } from 'node:net';
 import { randomBytes } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
-import { promisify } from 'node:util';
+import { inspect, promisify } from 'node:util';
 import { execFile, spawn } from 'node:child_process';
 import {
   ProjectEgressHost,
@@ -45,7 +45,7 @@ assert.equal(process.env.PROJECT_EGRESS_DISPOSABLE, 'yes');
 class ProbeHost extends ProjectEgressHost {
   override execute(input: unknown) {
     return super.execute(input).catch((error: unknown) => {
-      process.stderr.write(`Disposable host refusal: ${String(error)}\n`);
+      process.stderr.write(`Disposable host refusal: ${inspect(error, { depth: 5 })}\n`);
       throw error;
     });
   }
@@ -879,27 +879,49 @@ try {
       ['veh-direct', bridge],
     ])
       await exec(command, ['-I', 'FORWARD', '1', '-i', source!, '-o', target!, '-j', 'ACCEPT']);
+  const beginRenewal = async () => {
+    await rm(`${directory}/renewal-ready`, { force: true });
+    const child = spawn(process.execPath, ['/probe/composed-renewal.mjs'], {
+      env: { ...process.env, PROBE_CONTROL_DIRECTORY: directory, PROBE_CONTROL_TOKEN: token },
+      stdio: ['ignore', 'inherit', 'inherit'],
+    });
+    for (let i = 0; i < 100; i++) {
+      if ((await readFile(`${directory}/renewal-ready`, 'utf8').catch(() => '')) === 'ready') break;
+      assert.equal(child.exitCode, null, 'Renewal process exited before readiness');
+      await delay(50);
+    }
+    assert.equal(await readFile(`${directory}/renewal-ready`, 'utf8'), 'ready');
+    return async () => {
+      const exited = new Promise<void>((resolve) => child.once('exit', () => resolve()));
+      assert.ok(child.kill('SIGKILL'));
+      await exited;
+    };
+  };
   const directCases: { phase: string; family: number; expected: boolean; observed: boolean }[] = [];
   const directProbe = async (phase: string, expected: boolean) => {
-    for (const [family, target] of composedTargets.entries()) {
-      if (expected) await lifecycle.refreshDirect(identity);
-      await docker(
-        'exec',
-        '--user',
-        '1000:1000',
-        containerId,
-        'python3',
-        '/probe/composed-client.py',
-        target,
-        `${phase}-${family}`,
-        expected ? 'positive' : 'negative',
-      );
-      const log = await docker('logs', 'veh-direct');
-      const observed =
-        log.includes(`${phase}-${family}-tcp`) && log.includes(`${phase}-${family}-udp`);
-      assert.equal(observed, expected, `${phase}/${family}`);
-      if (!expected) assert.ok(!log.includes(`${phase}-${family}-`));
-      directCases.push({ phase, family, expected, observed });
+    const stop = expected ? await beginRenewal() : undefined;
+    try {
+      for (const [family, target] of composedTargets.entries()) {
+        await docker(
+          'exec',
+          '--user',
+          '1000:1000',
+          containerId,
+          'python3',
+          '/probe/composed-client.py',
+          target,
+          `${phase}-${family}`,
+          expected ? 'positive' : 'negative',
+        );
+        const log = await docker('logs', 'veh-direct');
+        const observed =
+          log.includes(`${phase}-${family}-tcp`) && log.includes(`${phase}-${family}-udp`);
+        assert.equal(observed, expected, `${phase}/${family}`);
+        if (!expected) assert.ok(!log.includes(`${phase}-${family}-`));
+        directCases.push({ phase, family, expected, observed });
+      }
+    } finally {
+      await stop?.();
     }
   };
   await directProbe('before-admission', false);
@@ -908,16 +930,7 @@ try {
   await delay(1200);
   await directProbe('lease-expired', false);
   assert.ok((await client('positive', relayAddress)).includes('transport-positive'));
-  const renewalProcess = spawn(process.execPath, ['/probe/composed-renewal.mjs'], {
-    env: { ...process.env, PROBE_CONTROL_DIRECTORY: directory, PROBE_CONTROL_TOKEN: token },
-    stdio: ['ignore', 'inherit', 'inherit'],
-  });
-  for (let i = 0; i < 100; i++) {
-    if ((await readFile(`${directory}/renewal-ready`, 'utf8').catch(() => '')) === 'ready') break;
-    assert.equal(renewalProcess.exitCode, null, 'Renewal process exited before readiness');
-    await delay(50);
-  }
-  assert.equal(await readFile(`${directory}/renewal-ready`, 'utf8'), 'ready');
+  const stopRenewalProcess = await beginRenewal();
   await docker(
     'exec',
     '-d',
@@ -953,9 +966,7 @@ try {
     };
   // Keep the same retained TCP flow live across multiple kernel-checked renewals.
   await delay(2200);
-  const renewalExit = new Promise<void>((resolve) => renewalProcess.once('exit', () => resolve()));
-  assert.ok(renewalProcess.kill('SIGKILL'));
-  await renewalExit;
+  await stopRenewalProcess();
   const retainedReceipts = (await docker('logs', 'veh-direct'))
     .trim()
     .split('\n')
@@ -1120,6 +1131,39 @@ try {
     JSON.stringify({ complete: true, results }, null, 2),
   );
 } catch (error) {
+  await writeFile(
+    '/evidence/host-failure-project-routes.txt',
+    await docker(
+      'exec',
+      '--user',
+      '1000:1000',
+      'veh-source',
+      'sh',
+      '-c',
+      'cat /proc/net/route /proc/net/arp /proc/net/ipv6_route',
+    ).catch(String),
+  );
+  await writeFile(
+    '/evidence/host-failure-deadlines.json',
+    await exec('/bin/sh', ['-c', 'cat /var/lib/verity-egress/deadline/*.json'])
+      .then((r) => r.stdout)
+      .catch(String),
+  );
+  await writeFile(
+    '/evidence/host-failure-neighbors.txt',
+    await exec('/sbin/ip', ['neighbor', 'show'])
+      .then((r) => r.stdout)
+      .catch(String),
+  );
+  await writeFile(
+    '/evidence/host-failure-tc.txt',
+    await exec('/bin/sh', [
+      '-c',
+      'for p in /sys/fs/bpf/verity_egress_deadline/*/maps/deadline; do /usr/sbin/bpftool map dump pinned "$p"; done',
+    ])
+      .then((r) => r.stdout)
+      .catch(String),
+  );
   await writeFile(
     '/evidence/host-failure-rules.txt',
     await exec('/usr/sbin/nft', ['list', 'ruleset'])
