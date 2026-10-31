@@ -118,3 +118,11 @@ frames. These tests do not establish BPF verifier acceptance, native packet-path
 coverage or production readiness. Trusted map configuration, lifecycle clearing,
 combined nftables rules and independent native controls are still required before
 the relay exception may be selected.
+
+The disposable KVM job also runs the relay packet matrix through
+`BPF_PROG_TEST_RUN` against the compiled, verifier-loaded TC program. It uses
+a zero direct lease, checks both directions and the interface/reserved binding,
+and clears the synthetic relay policy after each case. `relay-kernel.txt` retains
+the matrix result, including failures. This proves kernel program execution when
+the job succeeds; it does not prove end-to-end relay delivery or install trusted
+relay policy on a supported host.
