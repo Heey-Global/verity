@@ -83,6 +83,12 @@ int relay_packet_matches(const __u8 *data, __u32 length,
                ((__u32)data[16] * 256 + data[17]) < 40 || (data[46] >> 4) < 5) {
         return 0;
     }
+    if (!arp) {
+        __u32 ip_length = (__u32)data[16] * 256 + data[17];
+        __u32 tcp_length = (__u32)(data[46] >> 4) * 4;
+        if (ip_length > length - 14 || 20 + tcp_length > ip_length)
+            return 0;
+    }
     const __u8 *source_ip = data + (arp ? 28 : 26);
     const __u8 *target_ip = data + (arp ? 38 : 30);
     int reverse = same_bytes(source_ip, policy->relay_ip, 4) &&
@@ -156,7 +162,7 @@ int enforce_deadline(struct __sk_buff *skb)
             if (load_bytes(skb, 0, data, 14) == 0) {
                 __u32 length = data[12] == 0x08 && data[13] == 0x06 ? 42 : 54;
                 if (load_bytes(skb, 0, data, length) == 0)
-                    system = relay_packet_matches(data, length, policy);
+                    system = relay_packet_matches(data, skb->len, policy);
             }
         }
         if (system) {

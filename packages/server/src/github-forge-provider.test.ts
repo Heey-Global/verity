@@ -156,8 +156,10 @@ describe('repository supervision discovery', () => {
       }),
     );
     const forge = provider(fetch);
-    await expect(forge.discover!(project, 1)).rejects.toThrow('429');
-    await expect(forge.discover!(project, 1)).rejects.toThrow('backing off');
+    expect((await forge.discover!(project, 1)).errors).toEqual(
+      expect.arrayContaining([expect.objectContaining({ category: 'rate-limit' })]),
+    );
+    await expect(forge.discover!(project, 1)).rejects.toThrow('discovery-backoff');
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
@@ -173,7 +175,7 @@ describe('repository supervision discovery', () => {
       json: async () => ({}),
     }));
     const forge = provider(fetch);
-    await expect(forge.discover!(project, 1)).rejects.toThrow(String(status));
+    expect((await forge.discover!(project, 1)).errors?.length).toBeGreaterThan(0);
     await forge.repositoryPrService!(project).prStatusForBranch('feature');
     expect(fetch).toHaveBeenCalledTimes(1);
   });
@@ -195,7 +197,7 @@ describe('repository supervision discovery', () => {
         if (url.endsWith('/pulls/7')) return json({ mergeable: true, mergeable_state: 'clean' });
         if (url.includes('/check-runs?'))
           return json({ check_runs: [{ status: 'completed', conclusion: 'success' }] });
-        if (url.includes('/status?')) return json({ statuses: [] });
+        if (url.includes('/status?')) return { ok: false, status: 403, json: async () => ({}) };
         return json({ default_branch: 'main' });
       });
       const forge = provider(fetch, async () => 'https://github.com/acme/app.git\n');
@@ -207,8 +209,16 @@ describe('repository supervision discovery', () => {
       for (const service of services)
         expect((await service.prStatusForBranch('feature'))?.pipeline).toBe('success');
 
-      await expect(forge.discover!(project, 1)).rejects.toThrow(String(status));
-      await expect(forge.discover!(project, 1)).rejects.toThrow('backing off');
+      const observed = await forge.discover!(project, 1);
+      expect(observed.pulls).toHaveLength(1);
+      expect(observed.runs).toHaveLength(0);
+      expect(observed.errors).toEqual([
+        expect.objectContaining({
+          category: status === 403 ? 'forbidden' : 'unavailable',
+          step: 'actions/runs',
+        }),
+      ]);
+      expect((await forge.discover!(project, 1)).pulls).toHaveLength(1);
 
       // A failing Actions endpoint must not erase readable checks and mergeability
       // in the PR bar, even when discovery keeps retrying in the background.
@@ -240,4 +250,27 @@ it('refetches repository status after the shared cache is invalidated', async ()
   cache.invalidate(identity);
   await read();
   expect(fetch.mock.calls.length).toBeGreaterThan(first);
+});
+
+it('preserves PR discovery when the installation cannot mint Actions credentials', async () => {
+  const fetch = vi.fn<HttpFetch>(async (url, init) => {
+    expect(init?.headers?.Authorization).toBe('Bearer read-prs');
+    return url.includes('/pulls?')
+      ? json([{ number: 1, head: { ref: 'feature', sha: 'abc', repo: { full_name: 'acme/app' } } }])
+      : json({ default_branch: 'main' });
+  });
+  const forge = createGitHubForgeProvider({
+    projectTokenMint: async () => undefined,
+    discoveryTokenMint: async () => undefined,
+    discoveryPrTokenMint: async () => 'read-prs',
+    issuesTokenMint: async () => undefined,
+    installationToken: async () => undefined,
+    fetch,
+  });
+  const page = await forge.discover!(project, 1);
+  expect(page.pulls).toHaveLength(1);
+  expect(page.errors).toEqual([
+    expect.objectContaining({ category: 'credentials', step: 'actions/runs' }),
+  ]);
+  expect(fetch).toHaveBeenCalledTimes(2);
 });

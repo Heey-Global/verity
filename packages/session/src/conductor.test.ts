@@ -405,7 +405,7 @@ describe('formatBrokeredSecretAliases', () => {
 });
 
 describe('Conductor.sendTurn', () => {
-  it('enforces tool-free QA turns even when a caller requests execution tools', async () => {
+  it('limits interactive QA to gateway tools even when a caller requests execution tools', async () => {
     await ctx.store.repairs.configureQA(false, 'admin');
     await ctx.store.repairs.qaSession('qa');
     await ctx.store.repairs.configureQA(true, 'admin');
@@ -422,9 +422,10 @@ describe('Conductor.sendTurn', () => {
       permissionMode: 'bypassPermissions',
       allowedTools: ['Bash'],
     });
-    expect(fake.last().toolless).toBe(true);
+    expect(fake.last().gatewayToolsOnly).toBe(true);
+    expect(fake.last().toolless).toBe(false);
     expect(fake.last().resumeSessionId).toBeUndefined();
-    expect(fake.last().appendSystemPrompt).toContain('You are Verity, acting in the QA function');
+    expect(fake.last().appendSystemPrompt).toContain('verity_qa_analysis');
   });
 
   it('gives the assistant session its standing prompt without taking its tools away', async () => {

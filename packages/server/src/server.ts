@@ -3,7 +3,11 @@ import { SchedulingPageListeners } from './scheduling-page.js';
 import { registerSchedulingRoutes } from './scheduling-routes.js';
 import { startSchedulingScheduler, type SchedulingScheduler } from './scheduling-scheduler.js';
 import { SchedulingService } from './scheduling-service.js';
-import { schedulingNoticeText, schedulingPush } from './scheduling-notices.js';
+import {
+  assistantNoticeTarget,
+  schedulingNoticeText,
+  schedulingPush,
+} from './scheduling-notices.js';
 import { createSchedulingTool } from './scheduling-tool.js';
 import compressPlugin from '@fastify/compress';
 import rateLimitPlugin from '@fastify/rate-limit';
@@ -1996,6 +2000,18 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       } catch (err) {
         app.log.warn({ err, sessionId }, 'scheduling notice failed');
       }
+      try {
+        const assistant = await assistantNoticeTarget(deps.eventStore, notification.request);
+        if (assistant)
+          await emitNotice({
+            eventStore: deps.eventStore,
+            bus: deps.bus,
+            sessionId: assistant.sessionId,
+            text: `${assistant.prefix}${schedulingNoticeText(notification)}`,
+          });
+      } catch (err) {
+        app.log.warn({ err, sessionId }, 'assistant scheduling notice failed');
+      }
       const push = schedulingPush(notification);
       if (push && pushRouter)
         try {
@@ -2019,7 +2035,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     });
   });
   app.addHook('onClose', async () => {
-    schedulingScheduler?.stop();
+    await schedulingScheduler?.stop();
     schedulingService.close();
     await schedulingPages.close();
   });

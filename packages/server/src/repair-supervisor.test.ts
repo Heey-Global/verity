@@ -481,3 +481,17 @@ it('does not recover a live reservation while delegated session provisioning is 
   const claim = (await ctx.store.repairs.incidents('a'))[0]!;
   expect((await ctx.store.repairs.dispatchReceipt(claim.dispatch_id!))?.state).toBe('admitted');
 });
+
+it('retains PR incidents and safe diagnostics when Actions observation is unavailable', async () => {
+  await ctx.store.repairs.configure('a', 'admin', 'monitor');
+  const h = harness();
+  h.observation.page.errors = [
+    { category: 'forbidden', step: 'actions/runs', checkedAt: '2026-10-31T00:00:00Z' },
+  ];
+  await h.supervisor.sweep();
+  expect((await ctx.store.repairs.incidents('a')).length).toBeGreaterThan(0);
+  expect(await ctx.store.repairs.mandate('a')).toMatchObject({
+    health: 'partial',
+    observation_error: expect.stringContaining('actions/runs'),
+  });
+});

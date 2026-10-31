@@ -4,6 +4,7 @@ import type { Database } from './schema.js';
 
 export type RepairMode = 'off' | 'monitor' | 'automatic';
 export interface RepairMandate {
+  observation_error?: string | null;
   project_id: string;
   sponsor_user_id: string;
   mode: RepairMode;
@@ -204,8 +205,13 @@ export class RepairSupervisionStore {
       this.db,
     );
   }
-  async health(projectId: string, health: string, cursor: string | null): Promise<void> {
-    await sql`update repair_mandates set health = ${health}, cursor = ${cursor}, checked_at = now() where project_id = ${projectId}`.execute(
+  async health(
+    projectId: string,
+    health: string,
+    cursor: string | null,
+    diagnostic: unknown = null,
+  ): Promise<void> {
+    await sql`update repair_mandates set observation_error = ${diagnostic === null ? null : JSON.stringify(diagnostic)}, health = ${health}, cursor = ${cursor}, checked_at = now() where project_id = ${projectId}`.execute(
       this.db,
     );
   }
