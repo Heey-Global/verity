@@ -407,7 +407,15 @@ export class ProjectEgressFence {
         projectFenceRules(snapshot.binding, leases, this.now(), true, admission),
       );
       try {
-        if (leases.length) await this.deps.deadline.arm(snapshot.binding, admission);
+        // A lifecycle change can arrive while the kernel transaction is pending.
+        // Do not arm its TC guard after that transaction lost its authority.
+        if (!(await this.deps.policyCurrent(snapshot)))
+          throw new Error('Project fence authority changed');
+        if (leases.length) {
+          await this.deps.deadline.arm(snapshot.binding, admission);
+          if (!(await this.deps.policyCurrent(snapshot)))
+            throw new Error('Project fence authority changed');
+        }
       } catch (error) {
         await this.deny(snapshot.binding);
         throw error;
@@ -423,6 +431,20 @@ export class ProjectEgressFence {
       await this.deny(binding);
       this.retired.add(generationKey(binding));
       // Keep the deny-only table and attachment reservation until explicit host cleanup.
+    });
+  }
+  /** Close access before loading replacement authority, without retiring identity. */
+  revoke(binding: ProjectFenceBinding): Promise<void> {
+    binding = { ...binding };
+    return this.serialize(async () => {
+      const current = this.active.get(binding.projectId);
+      if (
+        !current ||
+        bindingKey(current.binding) !== bindingKey(binding) ||
+        this.retired.has(generationKey(binding))
+      )
+        throw new Error('Inactive project fence generation');
+      await this.deny(binding);
     });
   }
 }
