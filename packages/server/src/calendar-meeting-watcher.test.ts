@@ -7,6 +7,7 @@ import {
   startCalendarMeetingWatcher,
   type CalendarMeetingDeps,
 } from './calendar-meeting-watcher.js';
+import type { PushSender } from './push-sender.js';
 
 const MIN = 60_000;
 const START = Date.parse('2026-11-02T10:00:00Z');
@@ -55,7 +56,7 @@ async function fixture(options: { autoJoin?: boolean; items?: unknown[] } = {}) 
     autoJoin: options.autoJoin ?? false,
   });
   const state = { now: START - 10 * MIN, items: options.items ?? [meetingEvent()] };
-  const send = vi.fn(async () => ({
+  const send = vi.fn<PushSender['send']>(async () => ({
     targets: 1,
     ticketsAccepted: 1,
     ticketErrors: 0,
@@ -86,7 +87,7 @@ async function fixture(options: { autoJoin?: boolean; items?: unknown[] } = {}) 
       status: 200,
       ok: true,
       json: async () => ({ items: state.items }),
-    })) as unknown as CalendarMeetingDeps['fetch'],
+    })) as unknown as NonNullable<CalendarMeetingDeps['fetch']>,
     warn: vi.fn(),
     now: () => state.now,
   };

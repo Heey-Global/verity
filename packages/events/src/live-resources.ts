@@ -22,6 +22,7 @@ export function liveResourceInterval(path: string): number | undefined {
     return 2_000;
   if (/^\/server\/(?:updates|update-channel)$/u.test(p)) return 2_000;
   if (p === '/live-meetings/active') return 10_000;
+  if (p === '/live-meetings/upcoming') return 30_000;
   if (/^\/settings\/agent-logins\/[^/]+$/u.test(p)) return 2_500;
   if (p === '/sessions' || p === '/provider-limits') return 30_000;
   if (/^\/sessions\/[^/]+\/activity$/u.test(p)) return 10_000;

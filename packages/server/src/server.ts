@@ -78,7 +78,11 @@ import { attendeeResearchHints } from './attendee-research.js';
 import { registerAttendeeRoutes } from './attendee-routes.js';
 import { registerLiveMeetingIntakeRoutes } from './live-meeting-intake.js';
 import { registerCalendarWatchRoutes } from './calendar-watch-routes.js';
-import { startCalendarMeetingWatcher } from './calendar-meeting-watcher.js';
+import {
+  startCalendarMeetingWatcher,
+  type CalendarMeetingDeps,
+} from './calendar-meeting-watcher.js';
+import { registerCalendarMeetingRoutes } from './calendar-meeting-routes.js';
 import {
   attentionSignals,
   sessionAttentionSignals,
@@ -5669,15 +5673,17 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     Boolean(deps.secretCipher && !deps.secretCipher.isSealed()),
   );
   app.addHook('onReady', () => attendeeMeetings.open());
+  const calendarMeetings: CalendarMeetingDeps = {
+    store: deps.eventStore,
+    meetings: attendeeMeetings,
+    sender: pushSender,
+    googleAccessToken: deps.googleAccessToken ?? (() => Promise.resolve(undefined)),
+    warn: (obj, msg) => app.log.warn(obj, msg),
+  };
+  registerCalendarMeetingRoutes(app, calendarMeetings);
   let calendarMeetingWatcher: ReturnType<typeof startCalendarMeetingWatcher> | undefined;
   app.addHook('onReady', () => {
-    calendarMeetingWatcher = startCalendarMeetingWatcher({
-      store: deps.eventStore,
-      meetings: attendeeMeetings,
-      sender: pushSender,
-      googleAccessToken: deps.googleAccessToken ?? (() => Promise.resolve(undefined)),
-      warn: (obj, msg) => app.log.warn(obj, msg),
-    });
+    calendarMeetingWatcher = startCalendarMeetingWatcher(calendarMeetings);
   });
   app.addHook('onClose', async () => {
     // Before the meetings close: a pass in flight may still be starting a bot.

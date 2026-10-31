@@ -960,6 +960,22 @@ const calendarWatchSchema = z.object({
 });
 export type CalendarWatch = z.infer<typeof calendarWatchSchema>;
 
+const upcomingMeetingsSchema = z.object({
+  upcoming: z.array(
+    z.object({
+      eventKey: z.string(),
+      title: z.string().nullable(),
+      startsAt: z.number(),
+      endsAt: z.number(),
+      calendar: z.string(),
+      provider: z.enum(['meet', 'teams', 'zoom']).catch('meet'),
+      decision: z.enum(['joined', 'skipped', 'failed']).nullable().catch(null),
+      meetingId: z.string().nullable(),
+    }),
+  ),
+});
+export type UpcomingMeeting = z.infer<typeof upcomingMeetingsSchema>['upcoming'][number];
+
 const httpMcpConnectionSchema = z.object({
   id: z.string(),
   name: z.string(),
@@ -2585,6 +2601,29 @@ export class VerityClient {
     return activeLiveMeetingsSchema.parse(
       await (await this.request('/live-meetings/active', { method: 'GET' })).json(),
     );
+  }
+  /** Meetings of the next hours from watched calendars. */
+  async getUpcomingMeetings(): Promise<UpcomingMeeting[]> {
+    return upcomingMeetingsSchema.parse(
+      await (await this.request('/live-meetings/upcoming', { method: 'GET' })).json(),
+    ).upcoming;
+  }
+  /** Joins a calendar meeting: into `sessionId` when given, otherwise unassigned. */
+  async joinCalendarMeeting(eventKey: string, sessionId?: string): Promise<{ meetingId: string }> {
+    return z.object({ meetingId: z.string() }).parse(
+      await (
+        await this.request(`/live-meetings/calendar/${encodeURIComponent(eventKey)}/join`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(sessionId ? { sessionId } : {}),
+        })
+      ).json(),
+    );
+  }
+  async skipCalendarMeeting(eventKey: string): Promise<void> {
+    await this.request(`/live-meetings/calendar/${encodeURIComponent(eventKey)}/skip`, {
+      method: 'POST',
+    });
   }
   /** The Google calendars Verity may watch for online meetings, with the current choices. */
   async getCalendarWatch(): Promise<CalendarWatch> {
