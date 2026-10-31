@@ -2,5 +2,5 @@
 ARG VERITY_INSTALLER_BASE_IMAGE
 FROM ${VERITY_INSTALLER_BASE_IMAGE}
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends jq openssl \
+    && apt-get install -y --no-install-recommends jq openssl systemd \
     && rm -rf /var/lib/apt/lists/*
