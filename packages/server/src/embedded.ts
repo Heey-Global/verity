@@ -1,3 +1,4 @@
+import { createGitHubQAAnalysis } from './github-qa-analysis.js';
 import { StorageReclamation, requestNativeReclamation } from './storage-reclamation.js';
 import { registerStorageReclamationRoutes } from './storage-reclamation-routes.js';
 import { startNativeRetirementEvidence } from './native-buildkit.js';
@@ -2054,6 +2055,7 @@ export async function buildEmbeddedServer(
             'verity_end_planning',
             'verity_tasks',
             'verity_repairs',
+            'verity_qa_analysis',
             'verity_app_help',
             'verity_vulnerabilities',
             'verity_google_slides',
@@ -2077,6 +2079,7 @@ export async function buildEmbeddedServer(
             'verity_end_planning',
             'verity_tasks',
             'verity_repairs',
+            'verity_qa_analysis',
             'verity_app_help',
             'verity_vulnerabilities',
             'verity_google_slides',
@@ -2450,14 +2453,78 @@ export async function buildEmbeddedServer(
       ...baseMintOpts,
       permissions: {
         metadata: 'read',
-        contents: 'read',
-        pull_requests: 'read',
-        checks: 'read',
         actions: 'read',
       },
     }),
     { authorityKey: githubAppAuthorityKey },
   );
+  const discoveryPrTokenMint = createCachedProjectTokenMint(
+    createGitHubAppProjectTokenMint({
+      ...baseMintOpts,
+      permissions: { metadata: 'read', pull_requests: 'read' },
+    }),
+    { authorityKey: githubAppAuthorityKey },
+  );
+  const repositoryStatusTokenMint = createCachedProjectTokenMint(
+    createGitHubAppProjectTokenMint({
+      ...baseMintOpts,
+      permissions: { metadata: 'read', pull_requests: 'read', checks: 'read', statuses: 'read' },
+    }),
+    { authorityKey: githubAppAuthorityKey },
+  );
+  const analysisChecksMint = createCachedProjectTokenMint(
+    createGitHubAppProjectTokenMint({
+      ...baseMintOpts,
+      permissions: { metadata: 'read', checks: 'read' },
+    }),
+    { authorityKey: githubAppAuthorityKey },
+  );
+  const analysisStatusesMint = createCachedProjectTokenMint(
+    createGitHubAppProjectTokenMint({
+      ...baseMintOpts,
+      permissions: { metadata: 'read', statuses: 'read' },
+    }),
+    { authorityKey: githubAppAuthorityKey },
+  );
+  const analysisContentsMint = createCachedProjectTokenMint(
+    createGitHubAppProjectTokenMint({
+      ...baseMintOpts,
+      permissions: { metadata: 'read', contents: 'read', actions: 'read' },
+    }),
+    { authorityKey: githubAppAuthorityKey },
+  );
+  const analysisReleaseMint = createCachedProjectTokenMint(
+    createGitHubAppProjectTokenMint({
+      ...baseMintOpts,
+      permissions: { metadata: 'read', contents: 'read' },
+    }),
+    { authorityKey: githubAppAuthorityKey },
+  );
+  const analysisDeploymentMint = createCachedProjectTokenMint(
+    createGitHubAppProjectTokenMint({
+      ...baseMintOpts,
+      permissions: { metadata: 'read', deployments: 'read' },
+    }),
+    { authorityKey: githubAppAuthorityKey },
+  );
+  const githubQAAnalysis = createGitHubQAAnalysis((ref, action) => {
+    const mint =
+      config.githubProjectTokenMint ??
+      (action === 'checks'
+        ? analysisChecksMint
+        : action === 'statuses'
+          ? analysisStatusesMint
+          : action === 'pulls' || action === 'pull_status'
+            ? discoveryPrTokenMint
+            : action === 'releases'
+              ? analysisReleaseMint
+              : action === 'deployments' || action === 'deployment_statuses'
+                ? analysisDeploymentMint
+                : action === 'workflow'
+                  ? analysisContentsMint
+                  : discoveryTokenMint);
+    return mint(ref);
+  });
   const issuesTokenMint = createGitHubAppProjectTokenMint({
     ...baseMintOpts,
     permissions: { metadata: 'read', issues: 'read' },
@@ -2487,6 +2554,8 @@ export async function buildEmbeddedServer(
   // /projects` reads it synchronously and it refreshes in the background on a TTL.
   const githubForge = createGitHubForgeProvider({
     discoveryTokenMint: config.githubProjectTokenMint ?? discoveryTokenMint,
+    discoveryPrTokenMint: config.githubProjectTokenMint ?? discoveryPrTokenMint,
+    repositoryStatusTokenMint: config.githubProjectTokenMint ?? repositoryStatusTokenMint,
     projectTokenMint: cachedProjectTokenMint,
     issuesTokenMint,
     installationToken: async () => {
@@ -5075,6 +5144,43 @@ export async function buildEmbeddedServer(
     repairPullRequest: async (project, number) => {
       const provider = await projectForgeProvider(eventStore, githubForge, project);
       return (await provider?.repositoryOperations(project).findPullRequest({ number })) ?? null;
+    },
+    qaAnalysisRead: async (project, request, authorize) => {
+      if (project.kind === 'forgejo') {
+        await authorize();
+        const provider = await projectForgeProvider(eventStore, githubForge, project);
+        if (request.action === 'pulls' && provider?.discover) {
+          const page = await provider.discover(project, request.page);
+          await authorize();
+          return {
+            data: page.pulls,
+            nextPage: page.nextPage,
+            checkedAt: new Date().toISOString(),
+            untrusted: true,
+          };
+        }
+        if (request.action === 'pull_status' && provider) {
+          const pull = await provider
+            .repositoryOperations(project)
+            .findPullRequest({ number: request.number });
+          await authorize();
+          const status = pull ? await readProjectStatus(project, pull.head) : null;
+          await authorize();
+          return {
+            data: status?.number === request.number ? status : null,
+            checkedAt: new Date().toISOString(),
+            untrusted: true,
+          };
+        }
+        return {
+          available: false,
+          reason:
+            'This Forgejo integration supports PR reads, not historical Actions/release analysis',
+        };
+      }
+      if (project.kind !== 'github')
+        return { available: false, reason: 'This project has no supported repository provider' };
+      return githubQAAnalysis(project, request, authorize);
     },
     repairDiscovery: async (project, pageNumber) => {
       const provider = await projectForgeProvider(eventStore, githubForge, project);

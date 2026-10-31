@@ -95,6 +95,7 @@ describe('buildManifest', () => {
       // CI visibility plus run administration (`gh run view/watch/rerun/cancel`).
       checks: 'read',
       statuses: 'read',
+      deployments: 'read',
       actions: 'write',
       // Push .github/workflows/* files (GitHub blocks bot workflow-file pushes otherwise).
       workflows: 'write',

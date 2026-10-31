@@ -1,3 +1,4 @@
+import { qaAnalysisRequestSchema, QA_ANALYSIS_DESCRIPTION } from '@verity/events';
 import {
   vulnerabilityRequestSchema,
   VULNERABILITY_TOOL_DESCRIPTION,
@@ -333,6 +334,7 @@ const TOOL_SCHEMAS = {
   verity_end_planning: z.object({ action: z.enum(['implement', 'discard']).optional() }).strict(),
   verity_repairs: z.object({ action: z.literal('status') }).strict(),
   verity_assistant: assistantRequestSchema,
+  verity_qa_analysis: qaAnalysisRequestSchema,
   verity_tasks: tasksRequestSchema,
   verity_app_help: appHelpRequestSchema,
   verity_vulnerabilities: vulnerabilityRequestSchema,
@@ -493,6 +495,7 @@ const TOOL_DESCRIPTIONS: Record<GatewayToolName, string> = {
   verity_repairs:
     'Read the current project repair mandate and incidents, including assigned sessions and verification state. This tool grants no execution rights and cannot mark a repair successful.',
   verity_assistant: ASSISTANT_TOOL_DESCRIPTION,
+  verity_qa_analysis: QA_ANALYSIS_DESCRIPTION,
   verity_tasks: TASKS_TOOL_DESCRIPTION,
   verity_app_help: APP_HELP_TOOL_DESCRIPTION,
   verity_vulnerabilities: VULNERABILITY_TOOL_DESCRIPTION,
