@@ -70,7 +70,7 @@ export const schedulingRequestSchema = z.discriminatedUnion('action', [
 ]);
 
 /** Fields of a scheduling draft the operator may change on the send approval card. */
-export const schedulingCardEditsSchema = z
+const schedulingCardEditsSchema = z
   .object({
     title: z.string().min(1).max(200).optional(),
     language: z.enum(['en', 'de']).optional(),

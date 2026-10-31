@@ -223,7 +223,7 @@ function publicLink(binding: Pick<SchedulingShareBinding, 'publicOrigin' | 'pin'
 }
 
 /** Stands for the meeting title in {@link defaultEmailTemplate}; the card fills it in as typed. */
-export const SCHEDULING_TITLE_PLACEHOLDER = '{title}';
+const SCHEDULING_TITLE_PLACEHOLDER = '{title}';
 
 type DefaultEmailFields = Pick<
   SchedulingRequest,

@@ -6,7 +6,7 @@ export const SCHEDULING_LANGUAGES: readonly { value: SchedulingLanguage; label: 
 ];
 
 /** The draft content the operator may change on the send card before approving. */
-export interface SchedulingDraftFields {
+interface SchedulingDraftFields {
   title: string;
   language: SchedulingLanguage;
   emailSubject: string;
