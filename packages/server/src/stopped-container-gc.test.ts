@@ -64,6 +64,30 @@ function fixture() {
   return { docker, containers, sandbox, input };
 }
 describe('stopped container retirement', () => {
+  it('does not renew sleeping grace when maintenance briefly restarts a sandbox', async () => {
+    const f = fixture();
+    f.docker.inspectContainer.mockResolvedValue({
+      id: 'sandbox',
+      running: false,
+      status: 'exited',
+      imageId: 'old',
+      finishedAt: new Date(now).toISOString(),
+      exitCode: 0,
+    });
+    const sleeping = { ...project, sleepingSince: new Date(now - 2 * 86400000) };
+    expect(
+      (await retireStoppedContainers({ ...f.input, listProjects: async () => [sleeping] })).removed,
+    ).toEqual(['verity-p']);
+    expect(
+      (
+        await retireStoppedContainers({
+          ...f.input,
+          listProjects: async () => [{ ...sleeping, sleepingSince: new Date(now) }],
+        })
+      ).removed,
+    ).toEqual([]);
+  });
+
   it('retires outdated stopped sandboxes under the lifecycle gate without force or volumes', async () => {
     const f = fixture();
     expect((await retireStoppedContainers(f.input)).removed).toEqual(['verity-p']);

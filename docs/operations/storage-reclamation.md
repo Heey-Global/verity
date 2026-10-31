@@ -34,6 +34,9 @@ copies are outside Node's ancestor lookup. No package-manager migration or writa
 Collection claims the session turn lock and project mutation barrier, excludes
 meeting jobs, moves, managed dev servers and previews, and rechecks activity.
 Source and Git metadata stay intact while regenerable dependencies are slimmed.
+Storage collection waits for an existing project mutation within its one-minute
+pass budget, then rechecks active work. Timeout retains the existing owner and
+reports a blocker; collection never clears another operation's lock.
 
 A session with a closed or merged PR may have its whole worktree retired after
 seven idle days only when its current commit is reachable from a freshly fetched
@@ -74,7 +77,9 @@ recovery. Collection never force-removes a branch.
 
 Outdated project sandboxes stopped for at least 24 hours and eligible stopped
 relays can be removed under the same project/preview lifecycle barriers used by
-starts. Explicit image overrides are protected. Stopped containers of deleted
+starts. For sleeping projects, the grace starts at the durable sleep transition,
+not Docker's latest stop timestamp. A temporary vulnerability-scan wake restores
+the original sleep timestamp only if no other work took over. Explicit image overrides are protected. Stopped containers of deleted
 projects need seven days and Verity identity labels. Unknown containers, including
 unlabelled containers merely using a Verity image, remain protected.
 
@@ -153,3 +158,10 @@ native/overlay host inventory. Missing measurements are unknown, not zero. Image
 sizes and file blocks can double-count shared layers or reflinks: never sum them
 with filesystem totals or interpret them as measured bytes freed. Database
 retention and unrelated host workloads are outside this collector's ownership.
+
+Missing or invalid native retirement receipts are reported as blocked with unknown
+byte counts, rather than omitted. A missing receipt does not prove the helper is
+absent: verify the matching host bundle, its timer and the Server receipt mount.
+Stale or future-dated receipts retain their timestamp and gain an explicit blocker.
+A synthetic missing-receipt report uses the Unix epoch as an unknown-time sentinel.
+Blockers remain visible while a manual host request is pending.
