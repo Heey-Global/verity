@@ -9,6 +9,14 @@ import tempfile
 import unittest
 
 
+def kernel_packet(data, length=None):
+    packet = bytes(data[:length]) if length is not None else bytes(data)
+    # TEST_RUN initializes IPv4 socket metadata before executing the TC program.
+    # Supply a complete base IPv4 header even for synthetic truncation cases.
+    # Sub-34-byte cases therefore exercise zero-padded inputs, not short skbs.
+    return packet.ljust(34, b'\0')
+
+
 class Policy(ctypes.Structure):
     _fields_ = [('enabled', ctypes.c_uint32), ('codex', ctypes.c_uint32),
                 ('sandbox_ip', ctypes.c_ubyte * 4), ('relay_ip', ctypes.c_ubyte * 4),
@@ -65,6 +73,18 @@ class RelayPacketTests(unittest.TestCase):
         data[46] = 0x50
         data[47] = 0x02
         return data
+
+    def test_kernel_padding_does_not_admit_truncated_headers(self):
+        for reverse in (False, True):
+            for arp in (None, 1, 2):
+                data = self.packet(reverse, arp=arp)
+                for length in range(len(data)):
+                    padded = kernel_packet(data, length)
+                    self.assertGreaterEqual(len(padded), 34)
+                    self.assertEqual(padded[:length], data[:length])
+                    self.assertFalse(self.matches(padded), (reverse, arp, length))
+                self.assertEqual(kernel_packet(data), data)
+
 
     def test_only_exact_service_ports_in_both_directions(self):
         for reverse in (False, True):

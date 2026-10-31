@@ -153,3 +153,9 @@ Host configuration tests mock daemon and kernel responses; they do not certify
 actual Docker/TC composition. These helper operations are not yet selected by the
 production host lifecycle. Combining and verifying startup, relay and direct
 nftables rules, crash/restart recovery and real relay delivery remain required.
+
+The kernel test API initializes protocol metadata before invoking TC. Synthetic
+inputs shorter than an Ethernet plus base IPv4 header are therefore zero-padded
+to 34 bytes. The ordinary C matrix still exercises the exact short lengths; the
+kernel matrix's sub-34-byte cases cover padded malformed inputs, not actual short
+skbs. API failures remain errors and are never counted as classifier denials.

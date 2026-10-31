@@ -11,7 +11,7 @@ import subprocess
 import tempfile
 import unittest
 
-from test_deadline_relay import RelayPacketTests
+from test_deadline_relay import RelayPacketTests, kernel_packet
 
 # Import the guest helper without invoking its command-line entry point.
 import importlib.util
@@ -45,16 +45,19 @@ class KernelRelayPacketTests(RelayPacketTests):
 
     def matches(self, data, length=None):
         host.write_relay(guest.PINS, bytes(self.policy))
-        packet = bytes(data[:length]) if length is not None else bytes(data)
-        # The kernel requires at least an Ethernet header for a TC test skb.
-        (self.root / 'packet').write_bytes(packet.ljust(14, b'\0'))
+        packet = kernel_packet(data, length)
+        (self.root / 'packet').write_bytes(packet)
         context = bytearray(72)
         struct.pack_into('<I', context, 40, self.context_index)  # __sk_buff.ifindex
         (self.root / 'context').write_bytes(context)
-        result = json.loads(subprocess.check_output([
+        result = subprocess.run([
             'bpftool', '-j', 'prog', 'run', 'pinned', str(guest.PINS / 'guard'),
             'data_in', str(self.root / 'packet'), 'ctx_in', str(self.root / 'context'),
-            'repeat', '1'], text=True))
+            'repeat', '1'], text=True, capture_output=True, check=False)
+        self.assertEqual(result.returncode, 0,
+                         f'BPF test API failed: requested length={length}, input length={len(packet)}, '
+                         f'stdout={result.stdout}, stderr={result.stderr}')
+        result = json.loads(result.stdout)
         self.assertIn(result['retval'], (0, 2), result)
         return result['retval'] == 0
 
