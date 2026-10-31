@@ -2470,7 +2470,7 @@ export async function buildEmbeddedServer(
       ...baseMintOpts,
       // Optional legacy statuses must not prevent minting the shared PR reader.
       // QA analysis uses a separate statuses token and reports missing access.
-      permissions: { metadata: 'read', pull_requests: 'read', checks: 'read' },
+      permissions: { metadata: 'read', pull_requests: 'read', checks: 'read', actions: 'read' },
     }),
     { authorityKey: githubAppAuthorityKey },
   );

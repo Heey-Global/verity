@@ -986,5 +986,6 @@ it('keeps the shared PR token independent of optional legacy status access', () 
     source.indexOf('const analysisChecksMint ='),
   );
   expect(mint).toContain("checks: 'read'");
+  expect(mint).toContain("actions: 'read'");
   expect(mint).not.toMatch(/statuses:\s*'read'/);
 });
