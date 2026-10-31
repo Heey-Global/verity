@@ -133,6 +133,8 @@ export function registerSchedulingRoutes(
     const usable = new Map<string | null, boolean>();
     const visible: SchedulingRequest[] = [];
     for (const stored of await deps.eventStore.scheduling.listRecent()) {
+      // Only running requests: the bar shows nothing else, and settled ones need no link.
+      if (stored.state !== 'open' && stored.state !== 'provisioning') continue;
       const own = stored.sessionId === settings.session_id;
       if (!own && (stored.projectId === null || !granted.has(stored.projectId))) continue;
       if (!usable.has(stored.projectId))

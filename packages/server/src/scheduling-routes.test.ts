@@ -116,7 +116,12 @@ describe('scheduling request routes', () => {
     const own = request('44444444-4444-4444-8444-444444444444', 'control', 'assistant');
     const elsewhere = request('55555555-5555-4555-8555-555555555555', 'control', 'other');
     const archived = request('66666666-6666-4666-8666-666666666666', 'archived');
-    await serve([own, elsewhere, archived]);
+    // Settled requests would still carry their guest link to the app for nothing.
+    const booked = {
+      ...request('77777777-7777-4777-8777-777777777777', 'mine'),
+      state: 'booked',
+    } as SchedulingRequest;
+    await serve([own, elsewhere, archived, booked]);
     const overview = async (user: string) =>
       (
         await app!.inject({
@@ -132,7 +137,8 @@ describe('scheduling request routes', () => {
     expect(member.assistantSessionId).toBe('assistant');
     // 'theirs' is not granted, the null-project request needs an administrator, and a request
     // from another Control session is neither granted nor the assistant's own. An archived
-    // project keeps its grant but drops out, as it does for the assistant's own tool.
+    // project keeps its grant but drops out, as it does for the assistant's own tool. A booked
+    // request is no longer open.
     expect(member.requests.map((r) => r.id)).toEqual([stored[0]!.id, own.id]);
     expect(member.requests[0]!.projectId).toBe('mine');
     // The first request's chat was deleted; the app must not link to it.
