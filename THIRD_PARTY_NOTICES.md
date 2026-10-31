@@ -53,7 +53,7 @@ separately by `TRADEMARKS.md`.
 | Apache-2.0 | 61 |
 | Apache-2.0 AND LGPL-3.0-or-later | 3 |
 | Apache-2.0 AND LGPL-3.0-or-later AND MIT | 1 |
-| BlueOak-1.0.0 | 9 |
+| BlueOak-1.0.0 | 10 |
 | BSD-2-Clause | 23 |
 | BSD-3-Clause | 27 |
 | CC-BY-3.0 | 1 |
@@ -303,6 +303,7 @@ separately by `TRADEMARKS.md`.
 | @img/sharp-win32-ia32 | Apache-2.0 AND LGPL-3.0-or-later | [source](https://www.npmjs.com/package/%40img%2Fsharp-win32-ia32) |
 | @img/sharp-win32-x64 | Apache-2.0 AND LGPL-3.0-or-later | [source](https://www.npmjs.com/package/%40img%2Fsharp-win32-x64) |
 | @isaacs/cliui | ISC | [source](https://www.npmjs.com/package/%40isaacs%2Fcliui) |
+| @isaacs/nonrecursive-glob-match | BlueOak-1.0.0 | [source](https://www.npmjs.com/package/%40isaacs%2Fnonrecursive-glob-match) |
 | @isaacs/ttlcache | ISC | [source](https://www.npmjs.com/package/%40isaacs%2Fttlcache) |
 | @istanbuljs/load-nyc-config | ISC | [source](https://www.npmjs.com/package/%40istanbuljs%2Fload-nyc-config) |
 | @istanbuljs/schema | MIT | [source](https://www.npmjs.com/package/%40istanbuljs%2Fschema) |
