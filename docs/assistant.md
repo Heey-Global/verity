@@ -76,7 +76,9 @@ The list contains the requests made in granted projects and in the assistant
 session itself, limited to projects the user may run. Booking notices and the
 other scheduling notices of granted projects are also posted into the assistant
 session, prefixed with the project name: the project's grant is the consent for
-that, so anyone who reads the assistant session reads them. The notices name the
+that. Only the administrator who owns Verity Control can open the assistant
+session, so the notices reach no one else; the `scheduling` action additionally
+checks the turn user's execute permission per project. The notices name the
 guest, the title and the time, never the guest's link; push notifications still go only to the
 session that made the request. The assistant reads the same overview with
 `verity_assistant` action `scheduling`, without the guests' links.
