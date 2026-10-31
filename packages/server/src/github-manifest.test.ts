@@ -978,3 +978,13 @@ describe('POST /settings/github/disconnect', () => {
     }
   });
 });
+
+it('keeps the shared PR token independent of optional legacy status access', () => {
+  const source = readFileSync(new URL('./embedded.ts', import.meta.url), 'utf8');
+  const mint = source.slice(
+    source.indexOf('const repositoryStatusTokenMint ='),
+    source.indexOf('const analysisChecksMint ='),
+  );
+  expect(mint).toContain("checks: 'read'");
+  expect(mint).not.toMatch(/statuses:\s*'read'/);
+});

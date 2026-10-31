@@ -197,7 +197,7 @@ describe('repository supervision discovery', () => {
         if (url.endsWith('/pulls/7')) return json({ mergeable: true, mergeable_state: 'clean' });
         if (url.includes('/check-runs?'))
           return json({ check_runs: [{ status: 'completed', conclusion: 'success' }] });
-        if (url.includes('/status?')) return json({ statuses: [] });
+        if (url.includes('/status?')) return { ok: false, status: 403, json: async () => ({}) };
         return json({ default_branch: 'main' });
       });
       const forge = provider(fetch, async () => 'https://github.com/acme/app.git\n');
