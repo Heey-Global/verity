@@ -7,9 +7,12 @@ Pod::Spec.new do |s|
   s.author = 'Verity contributors'
   s.platform = :ios, '27.0'
   s.source = { :git => 'https://github.com/Heey-Global/verity.git' }
-  s.source_files = '*.{h,mm}'
+  s.source_files = '*.{h,mm,swift}'
   s.dependency 'React-Core'
   s.dependency 'React-jsi'
   s.dependency 'hermes-engine'
+  s.dependency 'EXUpdates'
+  s.swift_version = '5.0'
+  s.module_name = 'VerityCPUProfiler'
   s.pod_target_xcconfig = { 'CLANG_CXX_LANGUAGE_STANDARD' => 'c++20' }
 end

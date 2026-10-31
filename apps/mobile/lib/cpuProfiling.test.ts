@@ -32,10 +32,10 @@ afterEach(() => {
   delete NativeModules.VerityCPUProfiler;
   setGestureDiagnosticsEnabled(false);
 });
-it('keeps ordinary builds and Android unsupported without invoking native sampling', async () => {
+it('keeps older native builds and Android unsupported without invoking native sampling', async () => {
   Platform.OS = 'android';
   expect(await cpuProfilingStatus()).toEqual({ supported: false, capture: null });
-  await expect(startCPUProfiling()).rejects.toThrow('profiling build');
+  await expect(startCPUProfiling()).rejects.toThrow('latest native staging build');
   expect(native.start).not.toHaveBeenCalled();
   Platform.OS = 'ios';
   delete NativeModules.VerityCPUProfiler;
