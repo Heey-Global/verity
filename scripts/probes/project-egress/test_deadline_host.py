@@ -84,6 +84,21 @@ class DeadlineHostTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.arm()
 
+    def test_staged_admission_can_only_narrow_its_kernel_deadline(self):
+        host.execute({'operation': 'revoke', 'binding': self.binding, 'lease': self.lease})
+        self.lease['bootDeadlineNs'] = '500000020'
+        self.assertEqual(self.arm()['bootDeadlineNs'], '500000020')
+        with self.assertRaises(ValueError):
+            self.arm()
+
+    def test_staged_deadline_cannot_expand_even_within_controller_lifetime(self):
+        self.lease['bootDeadlineNs'] = '500000020'
+        host.execute({'operation': 'revoke', 'binding': self.binding, 'lease': self.lease})
+        self.lease['bootDeadlineNs'] = '600000020'
+        with self.assertRaises(ValueError):
+            self.arm()
+        self.assertEqual(self.write.call_args.args[-1], 0)
+
     def test_delayed_executor_cannot_rebase_lifetime(self):
         self.lease['bootDeadlineNs'] = '3000000000'
         with self.assertRaises(ValueError):

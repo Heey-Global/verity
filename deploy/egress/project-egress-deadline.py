@@ -337,7 +337,13 @@ def validate_lease(key, state, lease, pending=False):
     if len(seen) > 1000:
         raise ValueError('Deadline authority capacity requires a fresh generation')
     sample = clocks()
-    if ((captured <= int(state['invalidBeforeNs']) and not (pending and lease == state.get('pendingAdmission')))
+    staged = state.get('pendingAdmission')
+    # DNS/tuple resolution may only shorten the originally staged lease. Every
+    # identity and immutable authority budget must still match its own revoke.
+    staged_match = (pending and isinstance(staged, dict)
+                    and {**lease, 'bootDeadlineNs': staged['bootDeadlineNs']} == staged
+                    and deadline <= int(staged['bootDeadlineNs']))
+    if ((captured <= int(state['invalidBeforeNs']) and not staged_match)
             or captured <= int(state['lastCapturedNs'])
             or captured > int(sample['bootBeforeNs']) or captured > (1 << 64) - 1
             or (deadline != 0 and (deadline < captured or deadline - captured > 1_000_000_000))):
