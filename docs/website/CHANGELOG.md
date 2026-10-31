@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.6.0](https://github.com/Heey-Global/verity/compare/website-v2.5.3...website-v2.6.0) (2026-10-31)
+
+
+### Features
+
+* **qa:** add bounded CI and release analysis ([#2111](https://github.com/Heey-Global/verity/issues/2111)) ([702760b](https://github.com/Heey-Global/verity/commit/702760bba7c640d680422c37d60753eb6bbd837e))
+
 ## [2.5.3](https://github.com/Heey-Global/verity/compare/website-v2.5.2...website-v2.5.3) (2026-10-25)
 
 
