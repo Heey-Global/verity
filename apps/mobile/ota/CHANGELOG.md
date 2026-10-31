@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.81.2](https://github.com/Heey-Global/verity/compare/mobile-v1.81.1...mobile-v1.81.2) (2026-10-31)
+
+
+### Features
+
+* **scheduling:** guide meeting requests and edit them on the approval card ([#2097](https://github.com/Heey-Global/verity/issues/2097)) ([cb1c086](https://github.com/Heey-Global/verity/commit/cb1c086532208315bab592cf504098875dbd818a))
+* **storage:** reclaim idle dependencies and native BuildKit state on demand ([#2094](https://github.com/Heey-Global/verity/issues/2094)) ([fc5a829](https://github.com/Heey-Global/verity/commit/fc5a8293c248a184cf1d6e2cd0320ad7283a2126))
+
+
+### Bug Fixes
+
+* **deps:** update dependency @fastify/compress to v9.3.0 ([#2102](https://github.com/Heey-Global/verity/issues/2102)) ([15b59c1](https://github.com/Heey-Global/verity/commit/15b59c14977d69e9d5cb77f2932c0fe7f3078b37))
+* **deps:** update dependency @modelcontextprotocol/ext-apps to v2.0.4 ([#2100](https://github.com/Heey-Global/verity/issues/2100)) ([e7aeb2d](https://github.com/Heey-Global/verity/commit/e7aeb2d4cb6ef915a84a740d1227a8efe0bdf1dc))
+* **deps:** update dependency minimatch to v11 ([#2103](https://github.com/Heey-Global/verity/issues/2103)) ([5d5adef](https://github.com/Heey-Global/verity/commit/5d5adefc3fbeded890bf7fd32435d731e258fb32))
+* **updater:** resume standby failures and explain retry outcomes ([#2093](https://github.com/Heey-Global/verity/issues/2093)) ([257dde1](https://github.com/Heey-Global/verity/commit/257dde1e1d51c52bc90880b603ed187b377d488f))
+
 ## [1.81.1](https://github.com/Heey-Global/verity/compare/mobile-v1.81.0...mobile-v1.81.1) (2026-10-30)
 
 
