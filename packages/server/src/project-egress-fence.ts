@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { isIP } from 'node:net';
 import ipaddr from 'ipaddr.js';
+import type { ProjectEgressResolution } from './project-egress-resolver.js';
 import { canonicalEgressTarget, type EgressGrant } from '@verity/store';
 import {
   projectDeadlineLease,
@@ -32,7 +33,7 @@ export interface ProjectFenceDependencies {
   /** Must deny broker/system/overlapping destinations; absent classification denies. */
   directTargetAllowed(host: string): Promise<boolean>;
   /** Host-owned resolver called only for a valid, explicitly granted target. */
-  resolve(host: string): Promise<readonly string[]>;
+  resolve(host: string): Promise<ProjectEgressResolution>;
   /** Excludes host addresses and every project network, including public ranges. */
   destinationAllowed(address: string): Promise<boolean>;
   /** Recheck durable revision, current generation and sponsor authority at admission. */
@@ -375,11 +376,16 @@ export class ProjectEgressFence {
         const target = canonicalEgressTarget(grant.target);
         if (!(await this.deps.directTargetAllowed(target.host)))
           throw new Error('Destination requires a broker or system route');
-        const addresses = isIP(target.host) ? [target.host] : await this.deps.resolve(target.host);
+        const resolution = isIP(target.host)
+          ? { addresses: [target.host], expiresAt: Infinity }
+          : await this.deps.resolve(target.host);
+        const { addresses } = resolution;
         if (
           !addresses.length ||
           addresses.length > 32 ||
-          addresses.some((address) => !publicAddress(address))
+          addresses.some((address) => !publicAddress(address)) ||
+          (!isIP(target.host) &&
+            (!Number.isSafeInteger(resolution.expiresAt) || resolution.expiresAt <= this.now()))
         )
           throw new Error('Nonpublic project fence resolution');
         for (const address of addresses)
@@ -387,6 +393,7 @@ export class ProjectEgressFence {
             throw new Error('Protected project or host destination');
         const expiresAt = Math.min(
           (grant.expiresAt ?? Infinity) - APPLY_BUDGET_MS,
+          resolution.expiresAt - APPLY_BUDGET_MS,
           this.now() + LEASE_MS,
         );
         for (const address of addresses)
