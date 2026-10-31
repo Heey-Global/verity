@@ -1798,6 +1798,7 @@ interface ProjectEgressPolicyTable {
 }
 
 interface RepairMandatesTable {
+  observation_error: string | null;
   project_id: string;
   sponsor_user_id: string;
   mode: import('./repair-supervision.js').RepairMode;
