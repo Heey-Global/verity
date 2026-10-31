@@ -2019,7 +2019,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     });
   });
   app.addHook('onClose', async () => {
-    schedulingScheduler?.stop();
+    await schedulingScheduler?.stop();
     schedulingService.close();
     await schedulingPages.close();
   });
