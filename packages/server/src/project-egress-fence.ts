@@ -407,7 +407,15 @@ export class ProjectEgressFence {
         projectFenceRules(snapshot.binding, leases, this.now(), true, admission),
       );
       try {
-        if (leases.length) await this.deps.deadline.arm(snapshot.binding, admission);
+        // A lifecycle change can arrive while the kernel transaction is pending.
+        // Do not arm its TC guard after that transaction lost its authority.
+        if (!(await this.deps.policyCurrent(snapshot)))
+          throw new Error('Project fence authority changed');
+        if (leases.length) {
+          await this.deps.deadline.arm(snapshot.binding, admission);
+          if (!(await this.deps.policyCurrent(snapshot)))
+            throw new Error('Project fence authority changed');
+        }
       } catch (error) {
         await this.deny(snapshot.binding);
         throw error;

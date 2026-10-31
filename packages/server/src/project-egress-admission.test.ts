@@ -89,8 +89,11 @@ it('loads durable policy after denial and rechecks sponsor and revision before a
     ['project', 'sponsor'],
     ['project', 'sponsor', 1],
     ['project', 'sponsor', 1],
+    ['project', 'sponsor', 1],
+    ['project', 'sponsor', 1],
   ]);
-  expect(f.events.at(-1)).toBe('allow');
+  expect(f.events).toContain('allow');
+  expect(f.dependencies.deadline.arm).toHaveBeenCalledOnce();
 });
 
 it('closes existing access before a sponsor loses authority or the store fails', async () => {
@@ -112,7 +115,7 @@ it('does not read or admit replacement authority when revocation fails', async (
   expect(f.dependencies.apply.mock.calls.at(-1)![0]).not.toContain('elements =');
 });
 
-it.each([1, 2, 3])(
+it.each([1, 2, 3, 4, 5])(
   'invalidates a refresh paused at authority read %i before completing a concurrent revoke',
   async (pauseAt) => {
     const f = fixture();
@@ -141,12 +144,65 @@ it.each([1, 2, 3])(
     release();
     await rejected;
     await revoked;
-    expect(f.dependencies.deadline.arm).not.toHaveBeenCalled();
+    expect(f.dependencies.deadline.arm).toHaveBeenCalledTimes(pauseAt === 5 ? 1 : 0);
     expect(f.dependencies.apply.mock.calls.at(-1)![0]).not.toContain('elements =');
     await f.admission.refresh();
-    expect(f.dependencies.deadline.arm).toHaveBeenCalledOnce();
+    expect(f.dependencies.deadline.arm).toHaveBeenCalledTimes(pauseAt === 5 ? 2 : 1);
   },
 );
+
+it('does not arm a kernel transaction invalidated while it was pending', async () => {
+  const f = fixture();
+  await f.admission.prepare();
+  let release!: () => void;
+  const paused = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let entered!: () => void;
+  const applying = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  f.dependencies.apply.mockImplementation(async (script) => {
+    if (script.includes('elements =')) {
+      entered();
+      await paused;
+    }
+  });
+  const refreshing = f.admission.refresh();
+  const rejected = expect(refreshing).rejects.toThrow('authority changed');
+  await applying;
+  const revoked = f.admission.revoke();
+  release();
+  await rejected;
+  await revoked;
+  expect(f.dependencies.deadline.arm).not.toHaveBeenCalled();
+  expect(f.dependencies.apply.mock.calls.at(-1)![0]).not.toContain('elements =');
+});
+
+it('restores denial if lifecycle authority changes during guard acknowledgement', async () => {
+  const f = fixture();
+  await f.admission.prepare();
+  let release!: () => void;
+  const paused = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let entered!: () => void;
+  const arming = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  f.dependencies.deadline.arm.mockImplementationOnce(async () => {
+    entered();
+    await paused;
+  });
+  const refreshing = f.admission.refresh();
+  const rejected = expect(refreshing).rejects.toThrow('authority changed');
+  await arming;
+  const revoked = f.admission.revoke();
+  release();
+  await rejected;
+  await revoked;
+  expect(f.dependencies.apply.mock.calls.at(-1)![0]).not.toContain('elements =');
+});
 
 it('rejects policy changes during DNS work and keeps the generation denied', async () => {
   const f = fixture();
