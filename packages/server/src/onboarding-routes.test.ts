@@ -384,13 +384,15 @@ it('waits for in-flight scheduling database work when closing the server', async
   const blocked = new Promise<void>((resolve) => {
     release = resolve;
   });
-  const runDue = vi.spyOn(SchedulingService.prototype, 'runDue').mockImplementation(async function (
-    this: SchedulingService,
-  ) {
-    started();
-    await blocked;
-    return original.call(this);
-  });
+  const runDue = vi.spyOn(SchedulingService.prototype, 'runDue').mockImplementation(() =>
+    ctx.db.transaction().execute(async (trx) => {
+      await trx.selectFrom('sessions').select('session_id').execute();
+      started();
+      await blocked;
+      await trx.selectFrom('scheduling_requests').select('id').execute();
+      return undefined;
+    }),
+  );
   const app = buildServer({ eventStore: ctx.store, bus: new InMemoryEventBus(), conductor });
   let closed = false;
   let closing: Promise<void> | undefined;
