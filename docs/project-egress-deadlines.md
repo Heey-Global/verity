@@ -93,3 +93,28 @@ can be claimed implemented.
 The existing native boot proof remains a separate regression baseline. General
 transport/package/UI work, other attack surfaces and production activation stay
 outside this increment.
+
+## Experimental relay packet class
+
+The TC program also contains an independently classified relay path to support
+future composition on a shared project veth. Its `relay_transport` array starts
+disabled. The current host helper does not configure it, and neither production
+nor the experimental host service selects this path yet.
+
+When configured by trusted host code, the class must still match the guard's
+registered interface index, exact Sandbox/relay IPv4 and MAC pair, and TCP service
+port 8080 or 8443 (8444 only under the explicit Codex flag). The reverse direction
+matches the service source port. Only the same pair's well-formed ARP requests and
+replies receive the neighbour-discovery exception. VLANs, IPv6, UDP, IP options,
+fragmented packets and other ports receive no relay exception. Existing nftables
+interface, MAC, service and fresh conntrack-label rules remain mandatory; a TC
+classification alone never authorizes a packet through those rules.
+
+Relay admissions have their own `relay_observations` counters. The existing
+deadline observations continue to measure direct-class admission, so permitted
+relay traffic cannot conceal post-expiry direct traffic in acceptance evidence.
+Unprivileged tests compile and execute the actual C matcher with constructed
+frames. These tests do not establish BPF verifier acceptance, native packet-path
+coverage or production readiness. Trusted map configuration, lifecycle clearing,
+combined nftables rules and independent native controls are still required before
+the relay exception may be selected.
