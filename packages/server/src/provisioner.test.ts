@@ -2275,6 +2275,62 @@ describe('ProvisionerImpl (#174)', () => {
     expect(calls).toEqual([]);
   });
 
+  it.each(['provision', 'recreateContainer'] as const)(
+    'keeps %s ownership pending through asynchronous image-reference cleanup',
+    async (method) => {
+      const references = new DerivedImageReferences(async () => ({
+        refs: new Set(),
+        repositories: new Set(),
+      }));
+      let release!: () => void;
+      let entered!: () => void;
+      const cleaning = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      vi.spyOn(references, 'releaseProject').mockImplementation(async () => {
+        entered();
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+      });
+      const provisioner = createProvisioner({
+        store: ctx.store,
+        db: ctx.db,
+        docker: fakeDocker().client,
+        projectTokenMint: async () => undefined,
+        defaultImageRef: 'image:test',
+        hostCloneRoot: '/data/dev',
+        imageReferences: references,
+      });
+      // An unknown project ends the Docker phase immediately, but cleanup still owns the gate.
+      const id = randomUUID();
+      const operation = provisioner[method](id).catch(() => undefined);
+      await cleaning;
+      let ran = false;
+      const controller = new AbortController();
+      const waiting = provisioner.withProjectExclusiveMutation(
+        id,
+        async () => {
+          ran = true;
+        },
+        undefined,
+        controller.signal,
+      );
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      expect(ran).toBe(false);
+      controller.abort();
+      await expect(waiting).rejects.toThrow('timed out waiting');
+      expect(provisioner.isProjectProvisioning(id)).toBe(true);
+      release();
+      await operation;
+      expect(provisioner.isProjectProvisioning(id)).toBe(false);
+      await provisioner.withProjectExclusiveMutation(id, async () => {
+        ran = true;
+      });
+      expect(ran).toBe(true);
+    },
+  );
+
   it('serializes storage mutations and leaves an existing owner fenced on timeout', async () => {
     const provisioner = createProvisioner({
       store: ctx.store,

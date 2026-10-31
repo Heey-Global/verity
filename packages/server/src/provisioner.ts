@@ -4438,13 +4438,24 @@ export class ProvisionerImpl implements Provisioner {
     const running = this.inFlightProvisions.get(projectId);
     if (running !== undefined) return running;
     const attempt = this.provisionOnce(projectId, opts);
-    this.inFlightProvisions.set(projectId, attempt);
-    try {
-      return await attempt;
-    } finally {
-      await this.opts.imageReferences?.releaseProject(projectId);
-      this.inFlightProvisions.delete(projectId);
-    }
+    return this.trackProvision(projectId, attempt);
+  }
+
+  /** The ownership promise settles only after reference cleanup has released the gate. */
+  private trackProvision(
+    projectId: string,
+    attempt: Promise<ProjectRecord>,
+  ): Promise<ProjectRecord> {
+    const owned = attempt.finally(async () => {
+      try {
+        await this.opts.imageReferences?.releaseProject(projectId);
+      } finally {
+        if (this.inFlightProvisions.get(projectId) === owned)
+          this.inFlightProvisions.delete(projectId);
+      }
+    });
+    this.inFlightProvisions.set(projectId, owned);
+    return owned;
   }
 
   private async provisionOnce(projectId: string, opts: ProvisionOptions): Promise<ProjectRecord> {
@@ -4481,13 +4492,7 @@ export class ProvisionerImpl implements Provisioner {
       throw new ProvisioningError(`project ${projectId} is already provisioning`);
     }
     const attempt = this.recreateContainerOnce(projectId, opts);
-    this.inFlightProvisions.set(projectId, attempt);
-    try {
-      return await attempt;
-    } finally {
-      await this.opts.imageReferences?.releaseProject(projectId);
-      this.inFlightProvisions.delete(projectId);
-    }
+    return this.trackProvision(projectId, attempt);
   }
 
   /** Whether this process still owns provisioning/replacement work for a project.
