@@ -6,6 +6,20 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.70.0](https://github.com/Heey-Global/verity/compare/v4.69.0...v4.70.0) (2026-10-31)
+
+
+### Features
+
+* **assistant:** show open scheduling requests of granted projects ([#2112](https://github.com/Heey-Global/verity/issues/2112)) ([32f0f90](https://github.com/Heey-Global/verity/commit/32f0f9035e756ee072ee71d4121aed050597533f))
+* **egress:** bind admission to current policy and sponsor ([#2108](https://github.com/Heey-Global/verity/issues/2108)) ([a25683c](https://github.com/Heey-Global/verity/commit/a25683ce4cebe039557e31d15356b20b50a1a1d2))
+* **qa:** add bounded CI and release analysis ([#2111](https://github.com/Heey-Global/verity/issues/2111)) ([702760b](https://github.com/Heey-Global/verity/commit/702760bba7c640d680422c37d60753eb6bbd837e))
+
+
+### Bug Fixes
+
+* **server:** drain scheduling work before shutdown ([#2109](https://github.com/Heey-Global/verity/issues/2109)) ([7666b70](https://github.com/Heey-Global/verity/commit/7666b7058b1ea25a373dfb46899f1507f047bb8c))
+
 ## [4.69.0](https://github.com/Heey-Global/verity/compare/v4.68.0...v4.69.0) (2026-10-31)
 
 
