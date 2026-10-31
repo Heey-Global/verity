@@ -112,6 +112,42 @@ it('does not read or admit replacement authority when revocation fails', async (
   expect(f.dependencies.apply.mock.calls.at(-1)![0]).not.toContain('elements =');
 });
 
+it.each([1, 2, 3])(
+  'invalidates a refresh paused at authority read %i before completing a concurrent revoke',
+  async (pauseAt) => {
+    const f = fixture();
+    await f.admission.prepare();
+    const policy = await f.store.readForAdmission('project', 'sponsor');
+    let release!: () => void;
+    const paused = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let entered!: () => void;
+    const reading = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    let reads = 0;
+    f.store.readForAdmission.mockImplementation(async () => {
+      if (++reads === pauseAt) {
+        entered();
+        await paused;
+      }
+      return policy;
+    });
+    const refreshing = f.admission.refresh();
+    const rejected = expect(refreshing).rejects.toThrow(/superseded|authority changed/u);
+    await reading;
+    const revoked = f.admission.revoke();
+    release();
+    await rejected;
+    await revoked;
+    expect(f.dependencies.deadline.arm).not.toHaveBeenCalled();
+    expect(f.dependencies.apply.mock.calls.at(-1)![0]).not.toContain('elements =');
+    await f.admission.refresh();
+    expect(f.dependencies.deadline.arm).toHaveBeenCalledOnce();
+  },
+);
+
 it('rejects policy changes during DNS work and keeps the generation denied', async () => {
   const f = fixture();
   await f.admission.prepare();

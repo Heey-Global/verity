@@ -89,6 +89,9 @@ That store operation requires current project execution rights, an active sponso
 and, for revalidation, the exact policy revision. The complete grant set is
 compared again before admission, including after asynchronous DNS work. Failed
 reads and changed authority leave the fence denied; reading never renews a grant.
+Lifecycle operations serialize across policy reads and kernel work. A revoke,
+prepare or retirement request immediately invalidates pending refreshes, including
+ones paused in a store read; they cannot later reinstall their previous authority.
 
 The adapter exposes prepare, refresh, revoke and retire for lifecycle composition.
 It is not constructed by the production Server or host service. Combining direct
