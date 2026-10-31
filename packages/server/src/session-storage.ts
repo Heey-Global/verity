@@ -380,7 +380,7 @@ export class SessionStorage {
       for (const session of owned) {
         if (signal.aborted) return;
         const activity = await this.deps.activity(session.sessionId);
-        if (activity === null || now - activity < WEEK) continue;
+        if (activity === null) continue;
         await this.claim(session.sessionId, async () => {
           try {
             await this.deps.mutate(project.id, session.sessionId, async () => {
@@ -389,15 +389,17 @@ export class SessionStorage {
                 (s) => s.sessionId === session.sessionId,
               );
               const latest = await this.deps.activity(session.sessionId);
-              if (
-                !fresh ||
-                fresh.worktree !== session.worktree ||
-                latest === null ||
-                now - latest < WEEK
-              )
-                return;
+              if (!fresh || fresh.worktree !== session.worktree || latest === null) return;
               await this.deps.withGit(project, (git) =>
-                this.reclaim(project, session.worktree, session.sessionId, git, report, signal),
+                this.reclaim(
+                  project,
+                  session.worktree,
+                  session.sessionId,
+                  git,
+                  report,
+                  signal,
+                  now - latest >= WEEK,
+                ),
               );
             });
           } catch (error) {
@@ -499,11 +501,12 @@ export class SessionStorage {
     git: GitOutput,
     report: SessionStorageReport,
     signal: AbortSignal,
+    retireWorktree = true,
   ): Promise<void> {
     const root = await this.safeRoot(project, path);
     const firstRemoval = report.dependenciesRemoved.length;
     try {
-      await this.reclaimContents(project, path, sessionId, git, report, signal);
+      await this.reclaimContents(project, path, sessionId, git, report, signal, retireWorktree);
     } finally {
       // Restore wiring only for installations this pass verified and removed.
       // A rejected private graph can contain intentionally customized workspace links.
@@ -522,6 +525,7 @@ export class SessionStorage {
     git: GitOutput,
     report: SessionStorageReport,
     signal: AbortSignal,
+    retireWorktree: boolean,
   ): Promise<void> {
     signal.throwIfAborted();
     const root = await this.safeRoot(project, path);
@@ -604,6 +608,8 @@ export class SessionStorage {
       if (!(await removeVerified(local, join(root, modules)))) dependencyMismatch = true;
     }
     if (dependencyMismatch) throw new Error('Private dependency differences remain');
+    // Dependency slimming needs no idle-age grace; retiring source still does.
+    if (!retireWorktree) return;
     const sha = (await git(['-C', path, 'rev-parse', 'HEAD'])).trim();
     const branch =
       (
