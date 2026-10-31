@@ -3552,6 +3552,12 @@ export class ProvisionerImpl implements Provisioner {
               throw cause;
             }
           };
+          if (await this.opts.projectEgress?.requiresFreshWakeGeneration(project.id)) {
+            // Docker allocates new veth attachments after a stopped Sandbox.
+            // Packet registrations are immutable: cold wake retains project data
+            // but retires the old network and creates a fresh protected generation.
+            return await replaceRetained('contract_mismatch');
+          }
           if (fallbackReason !== undefined) {
             // The retained object is no longer the exact Sandbox we put to sleep.
             // Reuse the established replacement path rather than starting unknown

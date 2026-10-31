@@ -390,3 +390,43 @@ it('captures and latches every overlapping expiry before an earlier expiry can d
   expect(rules).toContain('{ 172.30.1.2 }');
   expect(rules).toContain('{ fd42::2 }');
 });
+
+it('preserves live connection labels only through a kernel-checked same-policy handoff', async () => {
+  const { fence, deps, setNow } = fixture();
+  const renew = vi.fn(async () => undefined);
+  Object.assign(deps.deadline, { renew });
+  await fence.prepare(binding);
+  await fence.refresh({ binding, revision: 1, grants: [grant] });
+  const first = deps.apply.mock.calls.at(-1)![0];
+  const label = first.match(/ct label set (.+)/u)![1];
+  setNow(1250);
+  await fence.refresh({ binding, revision: 1, grants: [grant] });
+  expect(renew).toHaveBeenCalledOnce();
+  expect(renew.mock.calls[0]).toHaveLength(3);
+  expect(deps.apply.mock.calls.at(-1)![0]).toContain(`ct label set ${label}`);
+  // An expired controller epoch is replaced, even with an unchanged policy.
+  setNow(3000);
+  await fence.refresh({ binding, revision: 1, grants: [grant] });
+  expect(renew).toHaveBeenCalledOnce();
+  expect(deps.apply.mock.calls.at(-1)![0]).not.toContain(`ct label set ${label}`);
+  await fence.revoke(binding);
+  setNow(3100);
+  await fence.refresh({ binding, revision: 1, grants: [grant] });
+  expect(renew).toHaveBeenCalledOnce();
+});
+
+it('closes direct authority when the kernel rejects a delayed continuity handoff', async () => {
+  const { fence, deps, setNow } = fixture();
+  const renew = vi.fn(async () => {
+    throw new Error('kernel epoch expired');
+  });
+  Object.assign(deps.deadline, { renew });
+  await fence.prepare(binding);
+  await fence.refresh({ binding, revision: 1, grants: [grant] });
+  setNow(1250);
+  await expect(fence.refresh({ binding, revision: 1, grants: [grant] })).rejects.toThrow(
+    'kernel epoch expired',
+  );
+  expect(deps.apply.mock.calls.at(-1)![0]).not.toContain('elements =');
+  expect(deps.deadline.revoke).toHaveBeenCalled();
+});
