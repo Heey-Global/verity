@@ -63,6 +63,41 @@ an operation-constrained broker or keep it blocked. This applies even when code
 uses its own token instead of a Verity-managed credential. A service-specific
 hostname list alone is not the classification model.
 
+## Experimental host DNS primitive
+
+`createProjectEgressResolver` uses explicitly configured DNS server IPs rather
+than sandbox DNS settings or the host search path. Its caller must first validate
+the exact grant and classify the destination as eligible for direct access. A
+fresh resolver queries A and AAAA under a one-second total DNS budget, without
+caching. Missing family data is permitted; other resolver failures deny access.
+The complete answer must contain at most 32 public unicast addresses and pass
+host/project exclusions. A mixed public/private answer is rejected in full.
+
+The resolver preserves the earliest TTL from query start, with a conservative
+one-day upper bound. The fence rejects stale answers and bounds destination
+leases by that expiry minus its existing executor budget. The immutable kernel
+controller lease remains an independent requirement. This primitive does not
+connect DNS or destination admission to the host control service, enable sandbox
+DNS, or activate production enforcement.
+
+### Experimental policy admission composition
+
+`createProjectEgressAdmission` binds one trusted registrar identity and execution
+sponsor to a fence. Refresh accepts no caller-supplied grants: it first revokes
+the current fence, then reads the durable policy through `readForAdmission`.
+That store operation requires current project execution rights, an active sponsor
+and, for revalidation, the exact policy revision. The complete grant set is
+compared again before admission, including after asynchronous DNS work. Failed
+reads and changed authority leave the fence denied; reading never renews a grant.
+Lifecycle operations serialize across policy reads and kernel work. A revoke,
+prepare or retirement request immediately invalidates pending refreshes, including
+ones paused in a store read; they cannot later reinstall their previous authority.
+
+The adapter exposes prepare, refresh, revoke and retire for lifecycle composition.
+It is not constructed by the production Server or host service. Combining direct
+admission with the startup and bounded-relay fences, and proving that combination
+in the native fixture, remain required before protected mode can be enabled.
+
 ## Public package retrieval defaults
 
 The target scope includes every ecosystem below; it is not limited to an initial

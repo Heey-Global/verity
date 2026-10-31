@@ -1,3 +1,4 @@
+import { StorageReclamation } from '../../components/settings/StorageReclamation';
 import { type IntegrationSource, type VerityClient } from '@verity/mobile';
 import * as Application from 'expo-application';
 import { router, useFocusEffect } from 'expo-router';
@@ -99,6 +100,7 @@ export function DiagnosticsSettings({ client }: { client: VerityClient }) {
   const errorCount = sources?.reduce((total, source) => total + source.importDiagnostics.length, 0);
   return (
     <SettingsScaffold title="Diagnostics" detail>
+      <StorageReclamation client={client} />
       <PublicPreviewDiagnostics
         client={client}
         keyConfigured={settings?.uplinkSubscriptionKeyConfigured}

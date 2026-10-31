@@ -1,3 +1,4 @@
+import { storageReclamationActionSchema, type StorageReclamationAction } from '@verity/events';
 import { buildDiagnosticResponseSchema, systemLogResponseSchema } from './logs.js';
 import {
   auditHealthSchema,
@@ -2442,6 +2443,8 @@ export type LiveMeetingInsight = z.infer<typeof liveMeetingInsightSchema>;
 const schedulingRequestViewSchema = z.object({
   id: z.string(),
   sessionId: z.string(),
+  /** The project the request was prepared in; older servers omit it. */
+  projectId: z.string().nullable().optional(),
   state: z.enum(['draft', 'provisioning', 'open', 'booked', 'expired', 'revoked', 'failed']),
   title: z.string(),
   durationMinutes: z.number(),
@@ -4018,6 +4021,16 @@ export class VerityClient {
   /** Pre-auth liveness probe carrying the server's own release version — used to
    *  show which server build the app is talking to. Re-read whenever the settings
    *  screen gains focus so a server update (restart) is reflected without polling. */
+  async getStorageReclamation(): Promise<StorageReclamationAction> {
+    return storageReclamationActionSchema.parse(
+      await (await this.request('/settings/storage/reclamation', { method: 'GET' })).json(),
+    );
+  }
+  async reclaimStorage(): Promise<StorageReclamationAction> {
+    return storageReclamationActionSchema.parse(
+      await (await this.request('/settings/storage/reclamation', { method: 'POST' })).json(),
+    );
+  }
   async getHealth(): Promise<Health> {
     const res = await this.request('/healthz', { method: 'GET' });
     return healthSchema.parse(await res.json());
@@ -5868,6 +5881,24 @@ export class VerityClient {
   async schedulingRequests(): Promise<SchedulingRequestView[]> {
     const res = await this.request('/scheduling-requests', { method: 'GET' });
     return schedulingRequestsSchema.parse(await res.json()).requests;
+  }
+  /** The assistant's overview: its session id and the requests of the projects granted to it. */
+  async assistantSchedulingRequests(sessionId?: string): Promise<{
+    assistantSessionId: string | null;
+    requests: (SchedulingRequestView & { sessionAvailable?: boolean | undefined })[];
+  }> {
+    const res = await this.request(
+      `/assistant/scheduling-requests${sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : ''}`,
+      { method: 'GET' },
+    );
+    return z
+      .object({
+        assistantSessionId: z.string().nullable(),
+        requests: z.array(
+          schedulingRequestViewSchema.extend({ sessionAvailable: z.boolean().optional() }),
+        ),
+      })
+      .parse(await res.json());
   }
   async revokeSchedulingRequest(requestId: string): Promise<void> {
     await this.request(`/scheduling-requests/${encodeURIComponent(requestId)}/revoke`, {

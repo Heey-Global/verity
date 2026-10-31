@@ -171,6 +171,7 @@ export class SessionStorage {
         projectId: string,
         sessionId: string | undefined,
         operation: () => Promise<void>,
+        signal?: AbortSignal,
       ) => Promise<void>;
       pr: (project: ProjectRecord, branch: string) => Promise<{ phase: string } | null>;
       wake?: (project: ProjectRecord, sessionId: string) => Promise<void>;
@@ -380,26 +381,33 @@ export class SessionStorage {
       for (const session of owned) {
         if (signal.aborted) return;
         const activity = await this.deps.activity(session.sessionId);
-        if (activity === null || now - activity < WEEK) continue;
+        if (activity === null) continue;
         await this.claim(session.sessionId, async () => {
           try {
-            await this.deps.mutate(project.id, session.sessionId, async () => {
-              if (this.blocked(project.id)) return;
-              const fresh = (await this.deps.listSessions()).find(
-                (s) => s.sessionId === session.sessionId,
-              );
-              const latest = await this.deps.activity(session.sessionId);
-              if (
-                !fresh ||
-                fresh.worktree !== session.worktree ||
-                latest === null ||
-                now - latest < WEEK
-              )
-                return;
-              await this.deps.withGit(project, (git) =>
-                this.reclaim(project, session.worktree, session.sessionId, git, report, signal),
-              );
-            });
+            await this.deps.mutate(
+              project.id,
+              session.sessionId,
+              async () => {
+                if (this.blocked(project.id)) return;
+                const fresh = (await this.deps.listSessions()).find(
+                  (s) => s.sessionId === session.sessionId,
+                );
+                const latest = await this.deps.activity(session.sessionId);
+                if (!fresh || fresh.worktree !== session.worktree || latest === null) return;
+                await this.deps.withGit(project, (git) =>
+                  this.reclaim(
+                    project,
+                    session.worktree,
+                    session.sessionId,
+                    git,
+                    report,
+                    signal,
+                    now - latest >= WEEK,
+                  ),
+                );
+              },
+              signal,
+            );
           } catch (error) {
             report.blockers.push({
               path: session.worktree,
@@ -411,35 +419,40 @@ export class SessionStorage {
       // Orphans are registered Git worktrees, never directory-name guesses.
       if (!signal.aborted)
         try {
-          await this.deps.mutate(project.id, undefined, async () => {
-            if (this.blocked(project.id)) return;
-            await this.deps.withGit(project, async (git) => {
-              const root = resolve(this.deps.root(project));
-              const journal = join(root, '.git', 'verity-storage', 'orphans.json');
-              const old = JSON.parse((await optionalFile(journal)) ?? '{}') as Record<
-                string,
-                number
-              >;
-              const current: Record<string, number> = {};
-              const live = new Set((await this.deps.listSessions()).map((s) => s.worktree));
-              for (const path of (await this.registrations(root, git)).keys()) {
-                if (dirname(path) !== join(root, '.verity-sessions') || live.has(path)) continue;
-                const since = old[path];
-                current[path] =
-                  typeof since === 'number' && Number.isFinite(since) && since > 0 ? since : now;
-                if (now - current[path] < WEEK) continue;
-                try {
-                  await this.reclaim(project, path, null, git, report, signal);
-                } catch (error) {
-                  report.blockers.push({
-                    path,
-                    reason: error instanceof Error ? error.message : String(error),
-                  });
+          await this.deps.mutate(
+            project.id,
+            undefined,
+            async () => {
+              if (this.blocked(project.id)) return;
+              await this.deps.withGit(project, async (git) => {
+                const root = resolve(this.deps.root(project));
+                const journal = join(root, '.git', 'verity-storage', 'orphans.json');
+                const old = JSON.parse((await optionalFile(journal)) ?? '{}') as Record<
+                  string,
+                  number
+                >;
+                const current: Record<string, number> = {};
+                const live = new Set((await this.deps.listSessions()).map((s) => s.worktree));
+                for (const path of (await this.registrations(root, git)).keys()) {
+                  if (dirname(path) !== join(root, '.verity-sessions') || live.has(path)) continue;
+                  const since = old[path];
+                  current[path] =
+                    typeof since === 'number' && Number.isFinite(since) && since > 0 ? since : now;
+                  if (now - current[path] < WEEK) continue;
+                  try {
+                    await this.reclaim(project, path, null, git, report, signal);
+                  } catch (error) {
+                    report.blockers.push({
+                      path,
+                      reason: error instanceof Error ? error.message : String(error),
+                    });
+                  }
                 }
-              }
-              if (!this.deps.dryRun) await atomicJson(journal, current);
-            });
-          });
+                if (!this.deps.dryRun) await atomicJson(journal, current);
+              });
+            },
+            signal,
+          );
         } catch (error) {
           report.blockers.push({
             path: this.deps.root(project),
@@ -499,11 +512,12 @@ export class SessionStorage {
     git: GitOutput,
     report: SessionStorageReport,
     signal: AbortSignal,
+    retireWorktree = true,
   ): Promise<void> {
     const root = await this.safeRoot(project, path);
     const firstRemoval = report.dependenciesRemoved.length;
     try {
-      await this.reclaimContents(project, path, sessionId, git, report, signal);
+      await this.reclaimContents(project, path, sessionId, git, report, signal, retireWorktree);
     } finally {
       // Restore wiring only for installations this pass verified and removed.
       // A rejected private graph can contain intentionally customized workspace links.
@@ -522,6 +536,7 @@ export class SessionStorage {
     git: GitOutput,
     report: SessionStorageReport,
     signal: AbortSignal,
+    retireWorktree: boolean,
   ): Promise<void> {
     signal.throwIfAborted();
     const root = await this.safeRoot(project, path);
@@ -604,6 +619,8 @@ export class SessionStorage {
       if (!(await removeVerified(local, join(root, modules)))) dependencyMismatch = true;
     }
     if (dependencyMismatch) throw new Error('Private dependency differences remain');
+    // Dependency slimming needs no idle-age grace; retiring source still does.
+    if (!retireWorktree) return;
     const sha = (await git(['-C', path, 'rev-parse', 'HEAD'])).trim();
     const branch =
       (

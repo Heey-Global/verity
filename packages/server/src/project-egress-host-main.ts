@@ -1,5 +1,16 @@
+import { z } from 'zod';
+import { createPostgresDb, ProjectEgressStore } from '@verity/store';
+import {
+  readEgressHostConfiguration,
+  egressHostAuthority,
+  egressHostDestinationAllowed,
+  unavailableEgressAuthority,
+} from './project-egress-host-authority.js';
+import { createProjectEgressHostEnforcement } from './project-egress-host-enforcement.js';
+import { hostProjectDeadlineEnforcer } from './project-egress-deadline.js';
+import { inspectProjectFenceAttachment } from './project-egress-attachment.js';
+import { createProjectEgressResolver } from './project-egress-resolver.js';
 import { inspectEgressTransport } from './project-egress-transport.js';
-import { constants } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import {
@@ -7,15 +18,15 @@ import {
   verifyProjectEgressServiceManager,
   verifyProjectEgressDockerHost,
 } from './project-egress-host-service.js';
-import { dirname } from 'node:path';
 import { egressRelayPolicy } from './project-egress-relay-policy.js';
 /** Experimental host entrypoint. Not installed or enabled by production setup. */
-import { readFile, lstat, realpath, open } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import { ProjectEgressHost, projectEgressBootstrapRules } from './project-egress-host.js';
-import { applyProjectFenceRules } from './project-egress-fence.js';
+import { applyProjectFenceRules, projectFenceTable } from './project-egress-fence.js';
 import { listenProjectEgressHost } from './project-egress-host-control.js';
 import {
   inspectEgressHostContainer,
+  inspectEgressHostDirect,
   inspectEgressHostNetwork,
   openProjectEgressHostStore,
   projectEgressHostDocker,
@@ -35,43 +46,61 @@ verifyProjectEgressServiceManager(
   await readFile('/proc/1/comm', 'utf8'),
 );
 const store = await openProjectEgressHostStore('/var/lib/verity-egress');
-const policyPath = '/etc/verity-egress/relay.json';
-const policyFile = await open(policyPath, constants.O_RDONLY | constants.O_NOFOLLOW).catch(
-  (error: NodeJS.ErrnoException) => {
-    if (error.code === 'ENOENT') return undefined;
-    throw error;
+const rawRelay = await readEgressHostConfiguration('/etc/verity-egress/relay.json');
+const relayPolicy = rawRelay === undefined ? undefined : egressRelayPolicy.parse(rawRelay);
+const rawAuthority = await readEgressHostConfiguration('/etc/verity-egress/authority.json');
+const authority = rawAuthority === undefined ? undefined : egressHostAuthority.parse(rawAuthority);
+if (authority !== undefined && relayPolicy?.packetEnforcement !== true)
+  throw new Error('Direct authority requires host packet enforcement');
+const database = authority === undefined ? undefined : createPostgresDb(authority.databaseUrl);
+const policyStore =
+  database === undefined ? unavailableEgressAuthority : new ProjectEgressStore(database);
+const resolve =
+  authority === undefined
+    ? () => Promise.reject(new Error('Host DNS authority is not configured'))
+    : createProjectEgressResolver({
+        servers: authority.dnsServers,
+        destinationAllowed: egressHostDestinationAllowed,
+      });
+const enforcement = createProjectEgressHostEnforcement({
+  deadline: hostProjectDeadlineEnforcer(),
+  store: policyStore,
+  directAuthority: (binding) => authority?.projectSponsors[binding.projectId] !== undefined,
+  sponsor: (binding) => authority?.projectSponsors[binding.projectId] ?? '__unconfigured__',
+  inspect: inspectEgressHostDirect,
+  dependencies: {
+    inspect: inspectProjectFenceAttachment,
+    apply: applyProjectFenceRules,
+    directTargetAllowed: (host) => Promise.resolve(authority?.directHosts.includes(host) === true),
+    destinationAllowed: egressHostDestinationAllowed,
+    resolve,
+    existing: async (binding) => {
+      const tables = z
+        .object({
+          nftables: z.array(
+            z.object({ table: z.object({ family: z.string(), name: z.string() }).optional() }),
+          ),
+        })
+        .parse(
+          JSON.parse(
+            (
+              await promisify(execFile)('/usr/sbin/nft', ['-j', 'list', 'tables'], {
+                timeout: 1000,
+              })
+            ).stdout,
+          ),
+        );
+      return tables.nftables.some(
+        (item) => item.table?.family === 'inet' && item.table.name === projectFenceTable(binding),
+      );
+    },
   },
-);
-let relayPolicy: import('./project-egress-relay-policy.js').EgressRelayPolicy | undefined;
-if (policyFile) {
-  try {
-    const stat = await policyFile.stat();
-    if (
-      !stat.isFile() ||
-      stat.uid !== 0 ||
-      (stat.mode & 0o077) !== 0 ||
-      stat.size > 8192 ||
-      (await realpath(policyPath)) !== policyPath
-    )
-      throw new Error('Untrusted relay policy file');
-    for (let path = dirname(policyPath); ; path = dirname(path)) {
-      const parent = await lstat(path);
-      if (
-        !parent.isDirectory() ||
-        parent.isSymbolicLink() ||
-        parent.uid !== 0 ||
-        (parent.mode & 0o022) !== 0
-      )
-        throw new Error('Untrusted relay policy directory');
-      if (path === '/') break;
-    }
-    relayPolicy = egressRelayPolicy.parse(JSON.parse(await policyFile.readFile('utf8')));
-  } finally {
-    await policyFile.close();
-  }
-}
+});
 
 const controller = new ProjectEgressHost(await store.load(), {
+  ...(relayPolicy?.packetEnforcement === true
+    ? { enforcement, bootId: (await readFile('/proc/sys/kernel/random/boot_id', 'utf8')).trim() }
+    : {}),
   save: (state) => store.save(state),
   apply: applyProjectFenceRules,
   inspectNetwork: inspectEgressHostNetwork,
@@ -88,8 +117,10 @@ const controller = new ProjectEgressHost(await store.load(), {
     await projectEgressHostDocker('container', 'stop', '--time', '1', id);
   },
 });
-if (mode === 'restore') await controller.restore();
-else {
+if (mode === 'restore') {
+  await controller.restore(relayPolicy?.packetEnforcement === true);
+  await database?.destroy();
+} else {
   const service = await serveProjectEgressHost({
     restore: () => controller.restore(),
     deny: () => controller.shutdown(),
@@ -114,7 +145,10 @@ else {
   });
   const stop = () => {
     void service.stop().then(
-      () => process.exit(0),
+      async () => {
+        await database?.destroy();
+        process.exit(0);
+      },
       () => process.exit(1),
     );
   };

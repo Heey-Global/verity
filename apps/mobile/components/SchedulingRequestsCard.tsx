@@ -37,7 +37,8 @@ export function schedulingStatus(request: SchedulingRequestView): {
   }
 }
 
-function when(iso: string, timeZone: string): string {
+/** A time in the request's own zone, e.g. "Thu 5 Nov, 13:00". */
+export function schedulingTime(iso: string, timeZone: string): string {
   const options = {
     weekday: 'short',
     day: 'numeric',
@@ -58,13 +59,17 @@ export function schedulingGuestName(request: SchedulingRequestView): string {
 }
 
 export function schedulingSubtitle(request: SchedulingRequestView): string {
-  if (request.booked) return `Booked ${when(request.booked.start, request.timeZone)}`;
+  if (request.booked) return `Booked ${schedulingTime(request.booked.start, request.timeZone)}`;
   if (request.state === 'open')
-    return `${request.title} · closes ${when(request.closesAt, request.timeZone)}`;
+    return `${request.title} · closes ${schedulingTime(request.closesAt, request.timeZone)}`;
   return request.failure ?? request.title;
 }
 
-/** Requests worth showing above the composer: running ones, problems, and fresh bookings. */
+/**
+ * Requests worth showing above the composer: running ones and problems that still need the
+ * operator. A booking is final and already announced by a notice in the chat history, so pinning
+ * it here until the meeting starts would only repeat that notice; Settings keeps the full list.
+ */
 export function visibleSchedulingRequests(
   requests: readonly SchedulingRequestView[],
   now = Date.now(),
@@ -74,8 +79,7 @@ export function visibleSchedulingRequests(
       request.state === 'open' ||
       request.state === 'provisioning' ||
       request.pendingCleanups > 0 ||
-      (request.state === 'failed' && now - Date.parse(request.createdAt) < RECENT_MS) ||
-      (request.booked !== null && now - Date.parse(request.booked.start) < 0),
+      (request.state === 'failed' && now - Date.parse(request.createdAt) < RECENT_MS),
   );
 }
 

@@ -5031,3 +5031,12 @@ migrations['0177_scheduling_requests'] = {
     await sql`drop table scheduling_requests`.execute(db);
   },
 };
+
+migrations['0178_qa_observation_diagnostics'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table repair_mandates add column observation_error text`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table repair_mandates drop column observation_error`.execute(db);
+  },
+};

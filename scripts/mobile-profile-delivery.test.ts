@@ -1,5 +1,7 @@
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { readFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
 
@@ -53,6 +55,92 @@ with tempfile.TemporaryDirectory() as tmp:
     },
   );
 
+  it.each(['valid', 'bundle', 'ota'])(
+    'retains regular staging with exact archived bytecode: %s',
+    (scenario) => {
+      execFileSync(
+        'python3',
+        [
+          '-c',
+          `
+import hashlib, importlib.util, json, pathlib, plistlib, sys, tempfile, zipfile
+sys.dont_write_bytecode = True
+spec = importlib.util.spec_from_file_location('retain', 'scripts/retain-mobile-profile-map.py')
+module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+scenario = sys.argv[1]; commit = 'a'*40
+with tempfile.TemporaryDirectory() as tmp:
+    root = pathlib.Path(tmp); maps = root/'build'/'profiling-artifacts'; maps.mkdir(parents=True)
+    data = b'{"version":3}'; bundle = b'compiled Hermes'
+    identity = {'schema':2,'commit':commit,'mapSha256':hashlib.sha256(data).hexdigest(),'bundleSha256':hashlib.sha256(bundle).hexdigest()}
+    (maps/'manifest.json').write_text(json.dumps(identity)); (maps/'main.jsbundle.map').write_bytes(data)
+    ipa = root/'app.ipa'
+    with zipfile.ZipFile(ipa, 'w') as archive:
+        archive.writestr('Payload/App.app/verity-profile-map.json', json.dumps(identity))
+        archive.writestr('Payload/App.app/main.jsbundle', bundle if scenario != 'bundle' else b'other build')
+        archive.writestr('Payload/App.app/Info.plist', plistlib.dumps({'CFBundleVersion':'33','VerityCPUProfiling':True}))
+        archive.writestr('Payload/App.app/Expo.plist', plistlib.dumps({'EXUpdatesEnabled':scenario != 'ota'}))
+    try: module.retain(root, ipa, commit, root/'retained', 'staging')
+    except ValueError: assert scenario != 'valid'
+    else: assert scenario == 'valid'
+`,
+          scenario,
+        ],
+        { stdio: 'pipe' },
+      );
+    },
+  );
+  it('preserves regular staging through native manifest generation and bundling', () => {
+    const workflow = parse(readFileSync('.github/workflows/mobile-native-verify.yml', 'utf8'));
+    const steps = workflow.jobs['verify-ios'].steps as {
+      name?: string;
+      run?: string;
+      env?: Record<string, string>;
+    }[];
+    const generate = steps.find((step) => step.name === 'Generate the iOS project');
+    expect(generate?.env?.VERITY_APP_VARIANT).toContain('inputs.regular_staging');
+    if (!generate?.run) throw new Error('Missing prebuild step');
+    const root = mkdtempSync(join(tmpdir(), 'verity-staging-env-'));
+    const exported = join(root, 'env');
+    try {
+      execFileSync('bash', ['-c', 'npx() { :; }\n' + generate.run], {
+        env: {
+          ...process.env,
+          VERITY_APP_VARIANT: 'staging',
+          VERITY_CPU_PROFILING: '0',
+          GITHUB_ENV: exported,
+        },
+      });
+      const entries = readFileSync(exported, 'utf8').split('\n');
+      expect(entries).toContain('VERITY_APP_VARIANT=staging');
+      expect(entries).toContain('VERITY_CPU_PROFILING=0');
+      expect(entries.some((line) => /^VERITY_PROFILE_COMMIT=[a-f0-9]{40}$/.test(line))).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+  it('uploads recoverable OTA maps before channel delivery', () => {
+    const workflow = parse(readFileSync('.github/workflows/mobile-ota.yml', 'utf8')) as {
+      jobs: Record<
+        string,
+        { steps: { run?: string; uses?: string; with?: Record<string, unknown> }[] }
+      >;
+    };
+    const jobs = Object.values(workflow.jobs);
+    const steps = jobs.flatMap((job) => job.steps);
+    const prepare = steps.findIndex((step) =>
+      step.run?.includes('mobile-ota-release.ts stage-map '),
+    );
+    const retain = steps.findIndex(
+      (step) =>
+        typeof step.with?.path === 'string' && step.with.path.includes('profiling-artifacts/ota-'),
+    );
+    const deliver = steps.findIndex((step) => step.run?.includes('mobile-ota-release.ts stage '));
+    expect(prepare).toBeGreaterThan(-1);
+    expect(retain).toBeGreaterThan(prepare);
+    expect(deliver).toBeGreaterThan(retain);
+    expect(steps[retain].with?.overwrite).toBe(true);
+    expect(steps[retain].with?.['if-no-files-found']).toBe('error');
+  });
   it('retains the validated map before upload and isolates diagnostics from release evidence', () => {
     const workflow = parse(readFileSync('.github/workflows/mobile-native-build.yml', 'utf8'));
     const job = workflow.jobs.build;

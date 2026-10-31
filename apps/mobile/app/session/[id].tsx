@@ -1,5 +1,7 @@
 import { McpAppCard } from '../../components/McpAppCard';
 import { QAApprovalCard } from '../../components/QAApprovalCard';
+import { SchedulingApprovalEditor } from '../../components/SchedulingApprovalEditor';
+import { AssistantSchedulingOverview } from '../../components/AssistantSchedulingBar';
 import { SchedulingRequestsCard } from '../../components/SchedulingRequestsCard';
 import {
   managedServerApproval,
@@ -16,7 +18,7 @@ import {
   VulnerabilityStarterCard,
 } from '../../components/vulnerability/VulnerabilityStarterCard';
 import { SplitScreenRedirect } from '../../components/SplitScreenRedirect';
-import { SPLIT_SCREEN_MIN_WIDTH } from '../../lib/sessionLayout';
+import { sessionLayout } from '../../lib/sessionLayout';
 import type { GoogleMenuAccess } from '../../lib/attachMenu';
 import { driveOverview, singleDriveFolderPath } from '../../lib/driveHierarchy';
 import type { ProjectDriveFolder } from '@verity/mobile';
@@ -112,6 +114,9 @@ import {
   matrixSendSummary,
   calendarChangeSummary,
   schedulingApprovalSummary,
+  schedulingCardDecision,
+  schedulingCardEdit,
+  type SchedulingCardEdit,
   forgeRefUrl,
   providerName,
   isSessionImageFilePath,
@@ -542,6 +547,7 @@ export default function SessionScreen() {
   const client = useMemo(() => createVerityClient(), []);
   const baseUrl = getVerityBaseUrl();
   const { width } = useWindowDimensions();
+  const { wide: windowWide } = sessionLayout(width);
 
   if (!id) {
     return <CenteredMessage title="Session not found" subtitle="No session id was provided." />;
@@ -559,7 +565,7 @@ export default function SessionScreen() {
   // rather than the old per-route flat sidebar this screen used to render. Keeps
   // exactly one split implementation, so a new-session `replace('/session/[id]')`
   // (new.tsx) lands in the project-grouped overview like everywhere else.
-  if (width >= SPLIT_SCREEN_MIN_WIDTH) {
+  if (windowWide) {
     return (
       <SplitScreenRedirect
         id={id}
@@ -4791,6 +4797,7 @@ export const SessionChat = memo(function SessionChat({
       ) : null}
       {client ? <QAApprovalCard client={client} sessionId={sessionId} /> : null}
       {client ? <SchedulingRequestsCard client={client} sessionId={sessionId} /> : null}
+      {client ? <AssistantSchedulingOverview client={client} sessionId={sessionId} /> : null}
       {/* Last above the composer: below the plan and the PR bar, never above them. */}
       {client ? <SessionVulnerabilityCard client={client} sessionId={sessionId} /> : null}
       <InputBar
@@ -8866,6 +8873,19 @@ function PermissionPrompt({
   const knowledgeSummary = isKnowledge ? knowledgePublishSummary(pending.input) : null;
   const calendarSummary = isCalendar ? calendarChangeSummary(pending.input) : null;
   const schedulingSummary = isScheduling ? schedulingApprovalSummary(pending.input) : null;
+  const schedulingEditable = schedulingSummary?.editable ?? null;
+  // Keyed by the prompt, so edits never carry over to the next request's card.
+  const [schedulingDraft, setSchedulingDraft] = useState<{
+    toolUseId: string;
+    edit: SchedulingCardEdit;
+    error?: string;
+  }>();
+  const schedulingEdit =
+    schedulingEditable === null
+      ? null
+      : schedulingDraft?.toolUseId === pending.toolUseId
+        ? schedulingDraft.edit
+        : schedulingCardEdit(schedulingEditable);
   const httpSummary = isBrokeredHttp ? brokeredHttpSummary(pending.input) : null;
   const cliSummary = isTrustedCli ? trustedCliSummary(pending.input) : null;
   const handoffSummary = isSessionHandoff ? sessionHandoffSummary(pending.input) : null;
@@ -8992,6 +9012,19 @@ function PermissionPrompt({
       allowTiming.current = undefined;
     allowTiming.current ??= beginSessionSwitch(sessionId, 'permission');
     markSessionSwitch(allowTiming.current, 'allow-js-press-handler');
+    if (schedulingEditable !== null && schedulingEdit !== null) {
+      const decision = schedulingCardDecision(schedulingEditable, schedulingEdit);
+      if ('error' in decision) {
+        setSchedulingDraft({
+          toolUseId: pending.toolUseId,
+          edit: schedulingEdit,
+          error: decision.error,
+        });
+        return;
+      }
+      onDecide(pending.toolUseId, { behavior: 'allow', ...decision });
+      return;
+    }
     onDecide(
       pending.toolUseId,
       packageInstall !== null
@@ -9193,6 +9226,31 @@ function PermissionPrompt({
               {spellOutBidiControls(detail)}
             </Text>
           ))}
+        </View>
+      ) : schedulingSummary !== null &&
+        schedulingSummary.editable !== null &&
+        schedulingEdit !== null ? (
+        <View style={styles.permissionHttpSummary}>
+          <Text style={styles.permissionSubtitle} selectable>
+            {spellOutBidiControls(schedulingSummary.editable.meeting)}
+          </Text>
+          {schedulingSummary.details.slice(1).map((detail, index) => (
+            <Text key={index} style={styles.permissionSubtitle} selectable>
+              {spellOutBidiControls(detail)}
+            </Text>
+          ))}
+          <SchedulingApprovalEditor
+            editable={schedulingSummary.editable}
+            edit={schedulingEdit}
+            onChange={(edit) => setSchedulingDraft({ toolUseId: pending.toolUseId, edit })}
+            error={
+              schedulingDraft?.toolUseId === pending.toolUseId ? schedulingDraft.error : undefined
+            }
+            disabled={!active}
+          />
+          <Text style={styles.permissionHttpMeta}>
+            {spellOutBidiControls(schedulingSummary.scope)}
+          </Text>
         </View>
       ) : schedulingSummary !== null ? (
         <View style={styles.permissionHttpSummary}>

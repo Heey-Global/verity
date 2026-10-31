@@ -11,6 +11,7 @@ import {
   readFileSync,
   readdirSync,
   readlinkSync,
+  realpathSync,
   rmSync,
   statfsSync,
   writeFileSync,
@@ -759,6 +760,28 @@ export class BuildStorage {
     console.warn(
       `Build storage released ${directory.slice(directory.lastIndexOf('/') + 1)}: ${reason}.`,
     );
+  }
+
+  /** Stronger than the cached unresolved list: any on-disk entry or held lease
+   * blocks native retirement, including unknown files and remote-operation records. */
+  retirementInventoryEmpty(): boolean {
+    if (this.held || this.unresolved.length > 0) return false;
+    try {
+      // existsSync also returns false for permission and traversal errors. Only
+      // a genuine ENOENT below a verified parent can establish an absent root.
+      if (realpathSync(dirname(this.root)) !== dirname(this.root)) return false;
+      let stat;
+      try {
+        stat = lstatSync(this.root);
+      } catch (error) {
+        return (error as NodeJS.ErrnoException).code === 'ENOENT';
+      }
+      if (!stat.isDirectory() || stat.isSymbolicLink() || realpathSync(this.root) !== this.root)
+        return false;
+      return readdirSync(this.root).length === 0;
+    } catch {
+      return false;
+    }
   }
 
   /** Earlier attempts that still hold space because their end is not yet confirmed. */

@@ -32,7 +32,7 @@ const target = { targetMessageId: 'message/3', targetSearchQuery: 'needle', retr
 it('keeps the same session and target across collapse and expansion', () => {
   const { rerender } = renderHook(
     ({ width, id }: { width: number; id: string }) =>
-      useSessionLayoutNavigation(sessionLayout(width).wide, id, target),
+      useSessionLayoutNavigation(sessionLayout(width, true).wide, id, target),
     { initialProps: { width: 834, id: 'session/1' } },
   );
   expect(mockPush).not.toHaveBeenCalled();

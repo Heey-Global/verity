@@ -1377,7 +1377,7 @@ jobs:
           oci-registry: ghcr.io
           disable-repo-tagging: 'true'
 
-      - uses: oras-project/setup-oras@005458ad77f1c8facd38a094e4af2e69e5607ff4 # v2.0.2
+      - uses: oras-project/setup-oras@5e2f2482b30b0cb3e14e67f89a80c88c659a7c63 # v2.0.3
       - name: Publish toolkit channel tags
         if: ${{ !inputs['backend-artifact-only'] }}
         shell: bash
@@ -1392,10 +1392,46 @@ jobs:
           digest="$(docker buildx imagetools inspect --format '{{.Manifest.Digest}}' "$numeric")"
           [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]
           if existing="$(docker buildx imagetools inspect --format '{{.Manifest.Digest}}' "${image}:v${VERSION}" 2>&1)"; then
-            [[ "$existing" == "$digest" ]] || {
-              echo '::error::Toolkit version alias differs from its immutable Feature.' >&2
-              exit 1
-            }
+            if [[ "$existing" != "$digest" ]]; then
+              [[ "$existing" =~ ^sha256:[a-f0-9]{64}$ ]]
+              docker buildx imagetools inspect --raw "${image}@${existing}" | \
+                jq -e --arg sha "$source_sha" '.annotations["dev.containers.metadata"] | fromjson | .customizations.verity.sourceRevision == $sha' >/dev/null
+              # Feature archives include timestamps. A retry may have a new digest
+              # for identical files: retain the original immutable artifact only
+              # after checking payload bytes, modes, entry types and link targets.
+              scratch="$(mktemp -d)"
+              trap 'rm -rf "$scratch"' EXIT
+              oras pull --output "$scratch/existing" "${image}@${existing}"
+              oras pull --output "$scratch/incoming" "${image}@${digest}"
+              python3 - "$scratch/existing/devcontainer-feature-verity-sandbox-toolkit.tgz" "$scratch/incoming/devcontainer-feature-verity-sandbox-toolkit.tgz" <<'PYTHON'
+          import hashlib
+          import sys
+          import tarfile
+
+          def payload(path):
+              entries = {}
+              with tarfile.open(path, "r:*") as archive:
+                  for entry in archive:
+                      if entry.name in entries:
+                          raise ValueError("Duplicate Feature archive entry")
+                      if not (entry.isfile() or entry.isdir() or entry.issym() or entry.islnk()):
+                          raise ValueError("Unsupported Feature archive entry")
+                      content = None
+                      if entry.isfile():
+                          with archive.extractfile(entry) as stream:
+                              content = hashlib.file_digest(stream, "sha256").hexdigest()
+                      entries[entry.name] = (entry.type, entry.mode, entry.linkname, content)
+              if not entries:
+                  raise ValueError("Empty Feature archive")
+              return entries
+
+          if payload(sys.argv[1]) != payload(sys.argv[2]):
+              raise SystemExit("Toolkit version alias differs from its immutable Feature payload")
+          PYTHON
+              # Repair the mutable numeric alias; never rewrite the vX.Y.Z tag.
+              oras tag "${image}@${existing}" "$VERSION"
+              digest="$existing"
+            fi
           elif grep -qiE 'not found|manifest unknown|404' <<< "$existing"; then
             docker buildx imagetools create --prefer-index=false \
               -t "${image}:v${VERSION}" "${image}@${digest}"
@@ -1533,7 +1569,7 @@ jobs:
 
   stage-bundled-images:
     # The Server bakes the relay and connector in by digest. Their indexes are
-    # staged here under `candidate-vX.Y.Z`, ahead of the release gate, so the
+    # staged here under `candidate-vX.Y.Z-<source-sha>`, ahead of the release gate, so the
     # Server build does not wait for it; no Server resolves a candidate tag, and
     # the `vX.Y.Z` tags stay with the gated publish jobs.
     needs: [release-please, build-project-relay, build-matrix-connector]
@@ -1591,7 +1627,7 @@ jobs:
             # An index already released under vX.Y.Z is returned instead of a
             # staged twin, so a re-run bundles what was published.
             result="$(GITHUB_OUTPUT= IMAGE="$image" VERSION="$VERSION" \
-              SOURCE_SHA="$SOURCE_REVISION" STAGE_TAG="candidate-v${VERSION}" \
+              SOURCE_SHA="$SOURCE_REVISION" STAGE_TAG="candidate-v${VERSION}-${SOURCE_REVISION}" \
               node .release-tools/scripts/publish-release-index.mjs \
                 "${image}:sha-${short_sha}-amd64" "${image}:sha-${short_sha}-arm64")"
             digest="$(sed -n 's/^digest=//p' <<<"$result")"
@@ -2008,7 +2044,7 @@ jobs:
       - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
 
       # renovate: datasource=github-actions depName=oras-project/setup-oras
-      - uses: oras-project/setup-oras@005458ad77f1c8facd38a094e4af2e69e5607ff4 # v2.0.2
+      - uses: oras-project/setup-oras@5e2f2482b30b0cb3e14e67f89a80c88c659a7c63 # v2.0.3
 
       - name: Prepare signed architecture release channel
         shell: bash
@@ -2106,7 +2142,7 @@ jobs:
           pattern: server-release-evidence-v${{ needs.release-please.outputs.backend-version }}-*
           path: evidence
       # renovate: datasource=github-actions depName=oras-project/setup-oras
-      - uses: oras-project/setup-oras@005458ad77f1c8facd38a094e4af2e69e5607ff4 # v2.0.2
+      - uses: oras-project/setup-oras@5e2f2482b30b0cb3e14e67f89a80c88c659a7c63 # v2.0.3
       - name: Promote verified architecture channels
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -2967,7 +3003,7 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '26.12.1'
-      - uses: oras-project/setup-oras@005458ad77f1c8facd38a094e4af2e69e5607ff4 # v2.0.2
+      - uses: oras-project/setup-oras@5e2f2482b30b0cb3e14e67f89a80c88c659a7c63 # v2.0.3
       - name: Open production approval for staged Server
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}

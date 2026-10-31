@@ -338,7 +338,7 @@ const CAUSE_LABEL: Record<string, string> = {
   'disk-full': 'the disk is full',
   unhealthy: 'a service did not start',
   docker: 'Docker reported an error',
-  unknown: 'unknown error',
+  unknown: 'the updater did not provide a specific cause',
 };
 
 /** Phases after which the stuck operation's target is already serving. */

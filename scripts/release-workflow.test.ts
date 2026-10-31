@@ -357,7 +357,12 @@ describe('multi-architecture runtime image publication', () => {
     const stage = workflow.jobs['stage-bundled-images'].steps.find((step) =>
       step.run?.includes('publish-release-index.mjs'),
     );
-    expect(stage?.run).toContain('STAGE_TAG="candidate-v${VERSION}"');
+    const template = /STAGE_TAG="([^"\n]+)"/u.exec(stage?.run ?? '')?.[1];
+    expect(template).toBeDefined();
+    const candidate = (source: string) =>
+      template!.replaceAll('${VERSION}', '4.68.0').replaceAll('${SOURCE_REVISION}', source);
+    expect(candidate('a'.repeat(40))).toMatch(/^candidate-v4\.68\.0-/u);
+    expect(candidate('a'.repeat(40))).not.toBe(candidate('b'.repeat(40)));
     expect(stage?.run).not.toContain('imagetools create');
     for (const component of ['project-relay', 'matrix-connector'] as const) {
       expect(workflow.jobs['stage-bundled-images'].outputs?.[`${component}-image`]).toBe(
@@ -1770,5 +1775,67 @@ describe('publication reconciliation', () => {
     );
     const guard = steps.find((step) => step.name === 'Validate backend re-plan request');
     expect(guard?.env?.REPLAN).toContain('inputs.website-replan');
+  });
+});
+
+describe('toolkit Feature retry payload equivalence', () => {
+  const workflow = parse(readFileSync('.github/workflows/release.yml', 'utf8')) as ReleaseWorkflow;
+  const step =
+    workflow.jobs['publish-toolkit'].steps.find(
+      (entry) => entry.name === 'Publish toolkit channel tags',
+    )?.run ?? '';
+  const comparison = /<<'PYTHON'\n([\s\S]*?)\nPYTHON/.exec(step)?.[1] ?? '';
+
+  // The devcontainer CLI publishes Feature layers as plain tar despite the .tgz
+  // name; 4.68.0 failed when the comparison assumed gzip.
+  function compare(change: string, format: 'w' | 'w:gz' = 'w'): number | null {
+    const cwd = mkdtempSync(join(tmpdir(), 'toolkit-retry-'));
+    try {
+      execFileSync('python3', [
+        '-c',
+        `
+import io, sys, tarfile
+for index, path in enumerate(sys.argv[1:3]):
+    with tarfile.open(path, sys.argv[4]) as archive:
+        entry = tarfile.TarInfo('install.sh')
+        entry.mtime = index + 100
+        entry.uid = index + 1000
+        entry.mode = 0o755 if index == 0 or sys.argv[3] != 'mode' else 0o644
+        content = b'original' if index == 0 or sys.argv[3] != 'content' else b'changed!'
+        entry.size = len(content)
+        archive.addfile(entry, io.BytesIO(content))
+        link = tarfile.TarInfo('installer')
+        link.type = tarfile.SYMTYPE
+        link.linkname = 'install.sh' if index == 0 or sys.argv[3] != 'link' else 'other.sh'
+        archive.addfile(link)
+        if index == 1 and sys.argv[3] == 'duplicate':
+            archive.addfile(link)
+`,
+        join(cwd, 'old.tgz'),
+        join(cwd, 'new.tgz'),
+        change,
+        format,
+      ]);
+      return spawnSync('python3', ['-c', comparison, join(cwd, 'old.tgz'), join(cwd, 'new.tgz')], {
+        encoding: 'utf8',
+      }).status;
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  }
+
+  it('reuses an identical payload despite archive timestamps and owner differences', () => {
+    expect(comparison).not.toBe('');
+    expect(compare('metadata')).toBe(0);
+    expect(compare('metadata', 'w:gz')).toBe(0);
+    expect(step).toContain('oras tag "${image}@${existing}" "$VERSION"');
+    expect(step.indexOf('payload(sys.argv[1])')).toBeLessThan(
+      step.indexOf('oras tag "${image}@${existing}" "$VERSION"'),
+    );
+    expect(step).toContain('imagetools inspect --raw "${image}@${existing}"');
+  });
+
+  it.each(['content', 'mode', 'link', 'duplicate'])('rejects a changed %s', (change) => {
+    expect(compare(change)).not.toBe(0);
   });
 });
