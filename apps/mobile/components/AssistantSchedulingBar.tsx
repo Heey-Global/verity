@@ -4,7 +4,7 @@ import { useUnistyles } from 'react-native-unistyles';
 import type { SchedulingRequestView, VerityClient } from '@verity/mobile';
 import { useScanResource } from '../lib/useScanResource';
 import { Icon } from './Icon';
-import { schedulingGuestName, schedulingSubtitle } from './SchedulingRequestsCard';
+import { schedulingGuestName, schedulingTime } from './SchedulingRequestsCard';
 import { Button, Group, Row, Sheet } from './ui';
 import { SessionBar, SessionBarContent, SessionBarTarget } from './ui/SessionBar';
 
@@ -33,7 +33,7 @@ export function openSchedulingDetail(request: SchedulingRequestView, now = Date.
   return [
     days < 1 ? 'Sent today' : `Waiting ${String(days)} day${days === 1 ? '' : 's'}`,
     request.windows.some((window) => window.state === 'active') ? null : 'no times left',
-    schedulingSubtitle(request).replace(/^.* · /u, ''),
+    `closes ${schedulingTime(request.closesAt, request.timeZone)}`,
   ]
     .filter(Boolean)
     .join(' · ');

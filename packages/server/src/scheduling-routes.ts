@@ -118,11 +118,13 @@ export function registerSchedulingRoutes(
     const settings = await deps.eventStore.assistant.settings();
     if (!settings.enabled || settings.session_id === null)
       return { assistantSessionId: null, requests: [] };
-    const granted = new Set(
-      (await deps.eventStore.assistant.grants())
-        .filter((grant) => grant.mode !== 'off')
-        .map((grant) => grant.project_id),
-    );
+    // The same projects the assistant itself may use: granted, and neither hidden nor archived.
+    const granted = new Set<string>();
+    for (const grant of await deps.eventStore.assistant.grants()) {
+      if (grant.mode === 'off') continue;
+      const project = await deps.eventStore.getProject(grant.project_id);
+      if (project && project.hiddenAt === null && !project.archived) granted.add(project.id);
+    }
     const usable = new Map<string | null, boolean>();
     const visible: SchedulingRequest[] = [];
     for (const stored of await deps.eventStore.scheduling.listRecent()) {

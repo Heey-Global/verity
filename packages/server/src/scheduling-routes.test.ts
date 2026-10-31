@@ -44,6 +44,7 @@ let assistant = { enabled: true, session_id: 'assistant' as string | null };
 const grants = [
   { project_id: 'mine', mode: 'tasks' },
   { project_id: 'theirs', mode: 'off' },
+  { project_id: 'archived', mode: 'tasks' },
 ];
 
 async function serve(extra: SchedulingRequest[] = []) {
@@ -63,9 +64,10 @@ async function serve(extra: SchedulingRequest[] = []) {
         holds: async () => [],
       },
       assistant: { settings: async () => assistant, grants: async () => grants },
+      getProject: async (id: string) => ({ id, hiddenAt: null, archived: id === 'archived' }),
       hasProjectPermission: async (userId: string, projectId: string, permission: string) =>
         userId === 'member' &&
-        (projectId === 'mine' || projectId === 'control') &&
+        ['mine', 'control', 'archived'].includes(projectId) &&
         permission === 'execute',
       isActiveAdministrator: async (userId: string) => userId === 'admin',
       getSession: async () => undefined,
@@ -113,7 +115,8 @@ describe('scheduling request routes', () => {
   it('gives the assistant the requests of granted projects and its own, as far as the user may see', async () => {
     const own = request('44444444-4444-4444-8444-444444444444', 'control', 'assistant');
     const elsewhere = request('55555555-5555-4555-8555-555555555555', 'control', 'other');
-    await serve([own, elsewhere]);
+    const archived = request('66666666-6666-4666-8666-666666666666', 'archived');
+    await serve([own, elsewhere, archived]);
     const overview = async (user: string) =>
       (
         await app!.inject({
@@ -128,7 +131,8 @@ describe('scheduling request routes', () => {
     const member = await overview('member');
     expect(member.assistantSessionId).toBe('assistant');
     // 'theirs' is not granted, the null-project request needs an administrator, and a request
-    // from another Control session is neither granted nor the assistant's own.
+    // from another Control session is neither granted nor the assistant's own. An archived
+    // project keeps its grant but drops out, as it does for the assistant's own tool.
     expect(member.requests.map((r) => r.id)).toEqual([stored[0]!.id, own.id]);
     expect(member.requests[0]!.projectId).toBe('mine');
     expect((await overview('stranger')).requests).toEqual([]);
