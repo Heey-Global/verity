@@ -35,12 +35,14 @@ with socket.socket(family, socket.SOCK_STREAM) as channel:
     # A short application timeout leaves queued UDP behind for the next admission.
     # Require terminal resolution failure, not just elapsed observation time.
     initial_denial = expectation == 'negative' and phase.startswith('before-admission-')
-    # Admission does not reset that netstack's retry timer after a denied resolution:
-    # queued UDP/SYN leave only on its next 1-second probe, so a positive control
-    # must outlast one full probe interval instead of racing it.
+    # Without the host's post-admission neighbor refresh, queued UDP/SYN would leave
+    # only on that netstack's next 1-second probe. Outlast one interval so such a
+    # delay surfaces as the measured connect duration the verifier rejects.
     channel.settimeout(4 if initial_denial else 3 if expectation == 'positive' else 0.4)
     try:
+        started = time.monotonic_ns()
         channel.connect((target, 443))
+        connect_ns = time.monotonic_ns() - started
         channel.sendall((phase + '-tcp').encode())
         assert b'external-positive' in channel.recv(1024)
     except OSError as error:
@@ -54,3 +56,6 @@ with socket.socket(family, socket.SOCK_STREAM) as channel:
     else:
         if expectation != 'positive':
             raise RuntimeError('Denied direct connection reached receiver')
+        # Guest-local duration only; the host verifier bounds it below one probe interval.
+        print(json.dumps({'phase': phase, 'family': 6 if family == socket.AF_INET6 else 4,
+                          'connectNs': str(connect_ns)}))
