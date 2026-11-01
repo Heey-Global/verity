@@ -7,6 +7,10 @@ import sys
 
 target, phase, expectation = sys.argv[1:]
 family = socket.AF_INET6 if ':' in target else socket.AF_INET
+def record(event):
+    with open('/work/composed-client-phases.jsonl', 'a') as output:
+        print(json.dumps({'phase': phase, 'event': event, 'boot_ns': str(time.clock_gettime_ns(time.CLOCK_BOOTTIME))}), file=output)
+record('start')
 if expectation == 'stream':
     with socket.socket(family, socket.SOCK_STREAM) as channel:
         channel.settimeout(0.1)
@@ -32,7 +36,8 @@ with socket.socket(family, socket.SOCK_STREAM) as channel:
         channel.connect((target, 443))
         channel.sendall((phase + '-tcp').encode())
         assert b'external-positive' in channel.recv(1024)
-    except OSError:
+    except OSError as error:
+        record(str(error))
         if expectation == 'positive':
             raise
     else:

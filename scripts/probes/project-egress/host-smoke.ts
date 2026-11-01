@@ -960,6 +960,17 @@ try {
       await stop?.();
     }
   };
+  const packetTrace = spawn('/usr/bin/python3', ['/probe/packet-phases.py', bridge], {
+    stdio: 'inherit',
+  });
+  packetTrace.unref();
+  for (
+    let i = 0;
+    i < 50 &&
+    !(await readFile('/evidence/packet-phases.jsonl', 'utf8').catch(() => '')).includes('ready');
+    i++
+  )
+    await delay(20);
   await directProbe('before-admission', false);
   await directProbe('admitted', true);
   // Stopping renewal must close direct access while the independent relay stays usable.
@@ -1176,6 +1187,17 @@ try {
     await readFile(`${directory}/renewal-trace.jsonl`, 'utf8').catch(String),
   );
   await writeFile(
+    '/evidence/composed-client-phases.jsonl',
+    await docker(
+      'exec',
+      '--user',
+      '1000:1000',
+      'veh-source',
+      'cat',
+      '/work/composed-client-phases.jsonl',
+    ).catch(String),
+  );
+  await writeFile(
     '/evidence/host-failure-project-routes.txt',
     await docker(
       'exec',
@@ -1203,8 +1225,20 @@ try {
     '/evidence/host-failure-tc.txt',
     await exec('/bin/sh', [
       '-c',
-      'for p in /sys/fs/bpf/verity_egress_deadline/*/maps/deadline; do /usr/sbin/bpftool map dump pinned "$p"; done',
+      'for p in /sys/fs/bpf/verity_egress_deadline/*/maps/deadline /sys/fs/bpf/verity_egress_deadline/*/maps/observations; do /usr/sbin/bpftool map dump pinned "$p"; done',
     ])
+      .then((r) => r.stdout)
+      .catch(String),
+  );
+  await writeFile(
+    '/evidence/host-failure-rules.json',
+    await exec('/usr/sbin/nft', ['-j', 'list', 'ruleset'])
+      .then((r) => r.stdout)
+      .catch(String),
+  );
+  await writeFile(
+    '/evidence/host-failure-conntrack.txt',
+    await exec('/usr/sbin/conntrack', ['-L', '-o', 'extended'])
       .then((r) => r.stdout)
       .catch(String),
   );

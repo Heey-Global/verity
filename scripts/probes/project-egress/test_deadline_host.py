@@ -475,9 +475,10 @@ class DockerInspectionTests(unittest.TestCase):
 
     def test_trickling_cannot_restart_budget(self):
         with host.DockerInspectionSocket() as connection:
-            with patch.object(host.time, 'monotonic', return_value=connection.deadline + 1):
+            with patch.object(host.time, 'monotonic', return_value=connection.deadline + 1), patch.object(host.socket.socket, 'recv_into', return_value=1) as read:
                 with self.assertRaises(TimeoutError):
                     connection.recv_into(bytearray(1))
+                read.assert_not_called()
 
     def test_read_keeps_fixed_endpoint_and_cli_shape(self):
         from unittest.mock import MagicMock
