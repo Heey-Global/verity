@@ -1389,13 +1389,43 @@ export function registerServerMcpRoutes({
                 (turn) => turn.sessionId === input.sessionId,
               );
               if (!running) throw new Error('A decision requires an active confirmation prompt');
-              const seq = request.confirmationMessageSeq ?? running.promptSeq;
+              let seq = request.confirmationMessageSeq;
+              if (seq === undefined) {
+                let before: number | undefined;
+                // Steering does not advance the turn's starting promptSeq. Resolve
+                // the latest delivered user prompt rather than misattributing a save.
+                for (let page = 0; page < 10 && seq === undefined; page++) {
+                  const recent = await deps.eventStore.getEventsBeforeSeq(
+                    input.sessionId,
+                    200,
+                    before,
+                  );
+                  const delivered = [...recent.events]
+                    .reverse()
+                    .find(
+                      ({ seq: eventSeq, event }) =>
+                        event.t === 'prompt' &&
+                        (eventSeq === running.promptSeq ||
+                          (eventSeq > running.promptSeq && event.steered === true)),
+                    );
+                  seq = delivered?.seq;
+                  before = recent.events[0]?.seq;
+                  if (!recent.hasMore || before === undefined || before <= running.promptSeq) break;
+                }
+                if (seq === undefined)
+                  throw new Error(
+                    'No delivered user confirmation found; supply its confirmationMessageSeq.',
+                  );
+              }
               const events = await deps.eventStore.getEventsAfter(input.sessionId, seq - 1, 1);
               const confirmation = events[0];
               if (
                 confirmation?.seq !== seq ||
                 confirmation.event.t !== 'prompt' ||
-                seq > running.promptSeq
+                confirmation.event.peer !== undefined ||
+                (deps.authRegistry?.isEnabled() === true &&
+                  confirmation.event.initiatedBy === undefined) ||
+                (seq > running.promptSeq && confirmation.event.steered !== true)
               )
                 throw new Error(
                   'Decision confirmation must reference a user prompt in the calling session',

@@ -142,8 +142,10 @@ or publish to Global.
 Each decision is readable Markdown under Documents → decisions, with a stable ID,
 confirmation session and user-message sequence, recording date and stated
 rationale. The tool binds provenance to the calling project/session and checks
-that the referenced message is a user prompt; it does not verify the meaning of
-that prompt. Only a successful durable-save receipt warrants a saved acknowledgement
+that the referenced message is a user prompt rather than a linked-peer message;
+with authentication enabled it also requires user attribution. By default it uses
+the latest delivered user prompt, including mid-turn steering. It does not verify
+the meaning of that prompt. Only a successful durable-save receipt warrants a saved acknowledgement
 and document link in chat. Errors must be reported rather than described as saves.
 
 Before answering decision questions, agents use `lookup_decisions` to read full

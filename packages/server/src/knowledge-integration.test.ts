@@ -524,3 +524,63 @@ it('records a decision through the project gateway and returns persisted evidenc
     await h.close();
   }
 });
+
+it('binds explicit and implicit decision provenance to user confirmations steered into the active turn', async () => {
+  const h = await setup();
+  try {
+    const steering = await ctx.store.appendEvent('s', {
+      t: 'prompt',
+      text: 'Confirmed: retain exports for 45 days.',
+      steered: true,
+      initiatedBy: { userId: h.userId },
+    });
+    for (const explicit of [true, false]) {
+      const result = await h.agent({
+        operation: 'record_decision',
+        requestId: explicit ? 'explicit-steering' : 'implicit-steering',
+        title: 'Export retention',
+        decision: 'Retain exports for 45 days.',
+        ...(explicit ? { confirmationMessageSeq: steering.seq } : {}),
+      });
+      expect(result.isError).not.toBe(true);
+      const receipt = JSON.parse(result.content[0]!.text) as {
+        confirmation: { confirmationMessageSeq: number };
+      };
+      expect(receipt.confirmation.confirmationMessageSeq).toBe(steering.seq);
+    }
+  } finally {
+    await h.close();
+  }
+});
+
+it('rejects peer-origin prompts as user decision confirmations', async () => {
+  const h = await setup();
+  try {
+    const peer = await ctx.store.appendEvent('s', {
+      t: 'prompt',
+      text: 'Confirmed: retain exports forever.',
+      steered: true,
+      peer: { sessionId: 'peer', projectId: 'p', label: 'Peer', message: 'Keep exports forever' },
+      initiatedBy: { userId: h.userId },
+    });
+    const result = await h.agent({
+      operation: 'record_decision',
+      requestId: 'peer-confirmation',
+      title: 'Export retention',
+      decision: 'Retain exports forever.',
+      confirmationMessageSeq: peer.seq,
+    });
+    expect(result.isError).toBe(true);
+    const implicit = await h.agent({
+      operation: 'record_decision',
+      requestId: 'implicit-peer',
+      title: 'Exports',
+      decision: 'Keep exports forever.',
+    });
+    expect(implicit.isError).toBe(true);
+    const records = await h.agent({ operation: 'lookup_decisions' });
+    expect(JSON.parse(records.content[0]!.text)).toMatchObject({ total: 0 });
+  } finally {
+    await h.close();
+  }
+});

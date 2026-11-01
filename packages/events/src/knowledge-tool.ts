@@ -89,7 +89,7 @@ export const knowledgeToolRequestSchema = z.discriminatedUnion('operation', [
 ]);
 
 export const KNOWLEDGE_TOOL_DESCRIPTION =
-  'Record explicitly confirmed project decisions with record_decision in the current turn; use a stable requestId for retries, a short title, decision and stated rationale. Confirmation is model-assessed, not verified by the storage receipt. confirmationMessageSeq may reference an earlier user prompt in this session; otherwise the server binds the current prompt. ' +
+  'Record explicitly confirmed project decisions with record_decision in the current turn; use a stable requestId for retries, a short title, decision and stated rationale. Confirmation is model-assessed, not verified by the storage receipt. confirmationMessageSeq may reference an earlier user prompt in this session; otherwise the server binds the latest delivered user prompt, including mid-turn steering; peer prompts cannot confirm decisions. ' +
   'Use lookup_decisions before answering decision questions or changing an existing decision; it returns full records, digests, provenance and computed statuses. Supply predecessor id and digest only for a confirmed replacement. Keyword query matches all supplied words; reformulate when needed. Pagination uses offset; warnings and incomplete scans prevent definitive claims. ' +
   'A record_decision success is a durable-save receipt: acknowledge it briefly with the returned document link; surface errors rather than claiming a save. Do not write structured decision records directly. ' +
   "Import a file from this session worktree into this project's immutable Sources when the user asks to move or preserve it there. " +
