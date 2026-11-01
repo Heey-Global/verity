@@ -542,6 +542,57 @@ describe('Docker update preparation', () => {
     }
   });
 
+  it('logs a failed builder refresh separately from the archive runtime error', async () => {
+    const { root } = await setup();
+    const hostRuntimeDir = await mkdtemp(join(tmpdir(), 'verity-host-builder-'));
+    const docker = { ...fakeDocker(), inspectRuntime: vi.fn(async () => undefined) };
+    const log = vi.fn();
+    try {
+      await writeFile(
+        join(hostRuntimeDir, 'devcontainer-builder.json'),
+        '{"version":1,"gid":1102}',
+      );
+      await writeFile(
+        join(hostRuntimeDir, 'agent.json'),
+        JSON.stringify({ version: 1, trigger: 'systemd-path', builder: 'systemd-path' }),
+      );
+      // The request cannot be written at all: an error, not a host answer.
+      await mkdir(join(hostRuntimeDir, 'builder-request.json'));
+      docker.inspectImageLabels = vi.fn(async () => ({
+        'org.verity.devcontainer-builder': DEVCONTAINER_BUILDER_CONTRACT,
+        'org.verity.host-runtimes': JSON.stringify({
+          release: 'release-20261026.0',
+          sha512: { x86_64: 'a'.repeat(128), aarch64: 'b'.repeat(128) },
+          archiveSha512: { x86_64: 'c'.repeat(128), aarch64: 'd'.repeat(128) },
+          runtimes: {
+            runsc: ['--platform=systrap', '--network=none'],
+            'runsc-project': ['--platform=systrap', '--network=sandbox', '--host-uds=create'],
+          },
+        }),
+      }));
+      await expect(
+        resumeUpdatePreparation(
+          root,
+          await dockerUpdatePreparation({
+            managedRoot: root,
+            docker,
+            environment: { DATABASE_URL: 'postgres://db', DEPLOYMENT_ID: 'deployment-1' },
+            verifyImage: async () => undefined,
+            hostRuntimeDir,
+            log,
+          }),
+        ),
+      ).rejects.toThrow(/runtime service predates archives\. The current version keeps serving/u);
+      expect(log).toHaveBeenCalledWith(
+        expect.stringMatching(
+          /Host components not refreshed through the devcontainer builder\..+/u,
+        ),
+      );
+    } finally {
+      await rm(hostRuntimeDir, { recursive: true, force: true });
+    }
+  });
+
   it('prepares the standby and reports a builder the host components cannot update', async () => {
     const { root } = await setup();
     const hostRuntimeDir = await mkdtemp(join(tmpdir(), 'verity-host-builder-'));

@@ -411,7 +411,7 @@ describe('a release that pins a gVisor release archive', () => {
     expect(runtimes.runsc?.path).toBe(archivePath);
   });
 
-  it('names why the refresh did not happen and keeps the current version', async () => {
+  it('keeps builder refresh details out of the runtime error and keeps the current version', async () => {
     const { docker, runtimes } = daemon(binaryOnly);
     const dir = await requestDir(legacyAgent);
     await expect(
@@ -420,10 +420,16 @@ describe('a release that pins a gVisor release archive', () => {
         requirements: archived,
         requestId: 'a5',
         requestDir: dir,
-        refreshHostComponents: async () => 'builds are still running; builder update deferred',
+        refreshHostComponents: async () =>
+          'The host could not update the devcontainer builder: builds are still running; builder update deferred',
         ...fast,
       }),
-    ).rejects.toThrow(/builds are still running.*keeps serving/su);
+    ).rejects.toThrow(
+      `This release needs Docker runtime runsc and runsc-project (${archived.release}), ` +
+        "which gVisor ships as a release archive, and this host's runtime service predates archives. " +
+        'The current version keeps serving. Re-run the Verity installer once on the host ' +
+        '(it installs the host runtime service and registers the runtimes), then retry the update.',
+    );
     expect(runtimes.runsc?.path).toBe(binaryPath);
     await expect(readFile(join(dir, 'request.json'))).rejects.toThrow(/ENOENT/u);
   });

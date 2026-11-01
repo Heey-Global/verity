@@ -322,17 +322,13 @@ export async function reconcileHostRuntimes(options: ReconcileHostRuntimesOption
     // The builder service installs the bundle out of the verified target image, and that
     // bundle both registers the target's runtimes and replaces the host runtime service. So
     // afterwards either nothing is missing any more, or the service takes the request below.
-    const failure =
-      options.refreshHostComponents === undefined
-        ? 'no host component can update it'
-        : await options.refreshHostComponents();
+    await options.refreshHostComponents?.();
     if ((await unsatisfiedHostRuntimes(docker, requirements)).length === 0) return;
     const refreshed = await readJson(join(dir, 'agent.json')).catch(() => undefined);
     if (!installsArchives(refreshed)) {
       throw new HostRuntimeError(
         `This release needs ${need}, which gVisor ships as a release archive, and this host's ` +
-          'runtime service predates archives' +
-          (failure === undefined ? '. ' : ` (${failure}). `) +
+          'runtime service predates archives. ' +
           'The current version keeps serving. ' +
           REPAIR,
       );

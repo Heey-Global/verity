@@ -402,7 +402,11 @@ export async function dockerUpdatePreparation(
           refreshHostComponents: async () => {
             const refreshed = await reconcileBuilder();
             if (refreshed.state === 'reconciled') return undefined;
-            return refreshed.state === 'skipped' ? refreshed.reason : refreshed.message;
+            const detail = refreshed.state === 'skipped' ? refreshed.reason : refreshed.message;
+            (options.log ?? console.warn)(
+              `Host components not refreshed through the devcontainer builder. ${detail}`,
+            );
+            return detail;
           },
         });
       }
