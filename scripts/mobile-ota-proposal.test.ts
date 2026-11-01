@@ -303,7 +303,13 @@ it('publishes only merged fixed versions under an independent staging lock', () 
     concurrency: { group: string; 'cancel-in-progress': boolean };
     jobs: {
       update: {
-        steps: Array<{ name?: string; run?: string; if?: string; env?: Record<string, string> }>;
+        steps: Array<{
+          id?: string;
+          name?: string;
+          run?: string;
+          if?: string;
+          env?: Record<string, string>;
+        }>;
       };
     };
   };
@@ -312,7 +318,8 @@ it('publishes only merged fixed versions under an independent staging lock', () 
   expect(workflow.concurrency.group).not.toBe('release-mobile');
   expect(workflow.concurrency['cancel-in-progress']).toBe(false);
   const steps = workflow.jobs.update.steps;
-  const stage = steps.find((step) => step.run?.includes('mobile-ota-release.ts stage '));
+  const stage = steps.find((step) => step.id === 'stage');
+  expect(stage?.run).toContain('node "$OTA_RELEASE_TOOLS/mobile-ota-release.ts" stage ');
   expect(stage?.if).toContain("steps.intent.outputs.mode == 'stage'");
   expect(stage?.run).toContain('steps.intent.outputs.version');
   expect((stage as { id?: string })?.id).toBe('stage');
@@ -367,9 +374,9 @@ it('gates OTA delivery on native publication while allowing PR planning immediat
   expect(plan?.if).toBe("steps.intent.outputs.mode == 'plan'");
   expect(plan?.run).toContain('apps/mobile/version.txt');
   expect(gate?.if).toBe("steps.intent.outputs.mode == 'stage'");
-  expect(
-    steps.find((step: { run?: string }) => step.run?.includes('mobile-ota-release.ts stage '))?.if,
-  ).toContain("steps.version.outputs.blocked != 'true'");
+  expect(steps.find((step) => step.id === 'stage')?.if).toContain(
+    "steps.version.outputs.blocked != 'true'",
+  );
 });
 
 it('uses only an immutable compatible native draft source for early planning', () => {
