@@ -12,6 +12,7 @@ const labels = {
 };
 function unwrap(value: unknown, depth = 0): Record<string, unknown> | undefined {
   if (depth > 4 || !value || typeof value !== 'object') return undefined;
+  if (Array.isArray(value)) return unwrap({ content: value }, depth + 1);
   const v = value as Record<string, unknown>;
   if (v.isError === true) return undefined;
   if (v.structuredContent) return unwrap(v.structuredContent, depth + 1);

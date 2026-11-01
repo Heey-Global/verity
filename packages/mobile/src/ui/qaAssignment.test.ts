@@ -35,3 +35,9 @@ it.each([
 ])('rejects unconfirmed or unknown results', (candidate) => {
   expect(qaAssignmentView(candidate)).toBeUndefined();
 });
+
+it('renders raw MCP content arrays used by backend tool results', () => {
+  expect(
+    qaAssignmentView({ ...tool, result: [{ type: 'text', text: JSON.stringify(tool.result) }] }),
+  ).toMatchObject({ label: 'Working', sessionId: 's' });
+});
