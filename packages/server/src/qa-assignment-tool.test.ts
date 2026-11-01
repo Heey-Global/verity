@@ -46,14 +46,16 @@ function setup() {
       revision: 'sha',
       pull: { number: 1, pipeline: 'success' },
     }),
-    dispatch: vi.fn(async (sessionId, prompt, id, userId, validate) => {
-      if (!(await validate())) return false;
-      return !!(await ctx.store.admitBackgroundDispatch(id, sessionId, {
-        t: 'prompt',
-        text: prompt,
-        initiatedBy: { userId },
-      }));
-    }),
+    dispatch: vi.fn<QAAssignmentDeps['dispatch']>(
+      async (sessionId, prompt, id, userId, validate) => {
+        if (!(await validate())) return false;
+        return !!(await ctx.store.admitBackgroundDispatch(id, sessionId, {
+          t: 'prompt',
+          text: prompt,
+          initiatedBy: { userId },
+        }));
+      },
+    ),
   };
   const service = createQAAssignmentTool(deps);
   const propose = async (key = 'one') =>
@@ -258,4 +260,50 @@ it('moves a revoked admitted assignment to stopping instead of releasing its cap
   deps.permitted = async () => false;
   await service.sweep();
   expect((await ctx.store.qaAssignments.get(p.assignmentId))?.state).toBe('stopping');
+});
+
+it('releases verification ownership after QA authorization changes', async () => {
+  const { service, propose, finish } = setup();
+  const p = await propose();
+  await service.request(caller, 'p', p.assignmentId, 'once');
+  await finish();
+  expect((await ctx.store.qaAssignments.get(p.assignmentId))?.state).toBe('verifying');
+  await ctx.store.repairs.configureQA(false, 'user');
+  await service.sweep();
+  expect((await ctx.store.qaAssignments.get(p.assignmentId))?.state).toBe('blocked');
+});
+it('rejects a follow-up when the captured worktree or prompt changed', async () => {
+  const { service, propose, finish, deps } = setup();
+  deps.inspect = async () => ({
+    verified: false,
+    worktreeFingerprint: 'own-dirty-state',
+    lastPromptSeq: 2,
+  });
+  const p = await propose();
+  await service.request(caller, 'p', p.assignmentId, 'once');
+  await finish();
+  const a = await service.status(caller, 'p', p.assignmentId);
+  deps.inspect = async () => ({
+    verified: false,
+    worktreeFingerprint: 'someone-else-edited',
+    lastPromptSeq: 2,
+  });
+  await expect(
+    service.review(caller, 'p', p.assignmentId, a.version, 'retry', 'Finish the existing change.'),
+  ).rejects.toThrow('changed after');
+  deps.inspect = async () => ({
+    verified: false,
+    worktreeFingerprint: 'own-dirty-state',
+    lastPromptSeq: 2,
+  });
+  expect(
+    await service.review(
+      caller,
+      'p',
+      p.assignmentId,
+      a.version,
+      'retry',
+      'Finish the existing change.',
+    ),
+  ).toMatchObject({ status: 'queued' });
 });

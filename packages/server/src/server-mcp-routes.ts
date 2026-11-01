@@ -1,4 +1,8 @@
-import { createQAAssignmentTool, trustedQAAssignmentConsent } from './qa-assignment-tool.js';
+import {
+  createQAAssignmentTool,
+  trustedQAAssignmentConsent,
+  matchesQAAssignmentContinuation,
+} from './qa-assignment-tool.js';
 import { qaAnalysisRequestSchema } from '@verity/events';
 import {
   createQARepairTool,
@@ -333,10 +337,20 @@ export function registerServerMcpRoutes({
     permitted: canExecuteAs,
     busy: (id) => conductor.isBusy(id),
     create: createHandoffSession,
-    target: async (session) => {
+    target: async (session, assignment) => {
       if (!(await sessionResumable(session)) || session.planning === 'active') return false;
       const branches = await branchesForSession(session);
-      return !!branches && !(await branches.isDirty(session.worktree));
+      if (!branches) return false;
+      if (assignment && assignment.attempt > 0) {
+        const latest = await deps.eventStore.getEventsBeforeSeq(session.sessionId, 2000);
+        const lastPromptSeq = latest.events.findLast((row) => row.event.t === 'prompt')?.seq;
+        return matchesQAAssignmentContinuation(
+          assignment.evidence,
+          await branches.worktreeFingerprint?.(session.worktree),
+          lastPromptSeq,
+        );
+      }
+      return !(await branches.isDirty(session.worktree));
     },
     dispatch: async (sessionId, prompt, dispatchId, userId, validate) =>
       (
@@ -365,9 +379,12 @@ export function registerServerMcpRoutes({
       const revision = await branches?.headRevision?.(session.worktree);
       const branch = await branches?.current(session.worktree);
       const dirty = await branches?.isDirty(session.worktree);
+      const worktreeFingerprint = await branches?.worktreeFingerprint?.(session.worktree);
+      const recent = await deps.eventStore.getEventsBeforeSeq(session.sessionId, 2000);
+      const lastPromptSeq = recent.events.findLast((row) => row.event.t === 'prompt')?.seq;
       const project = await deps.eventStore.getProject(a.project_id);
       if (!project || !deps.repairDiscovery || !revision || !branch)
-        return { verified: false, revision, branch, dirty };
+        return { verified: false, revision, branch, dirty, worktreeFingerprint, lastPromptSeq };
       deps.invalidateProjectPrStatus?.(a.project_id);
       let pageNumber: number | undefined = 1;
       for (let pages = 0; pageNumber !== undefined && pages < 10; pages++) {
@@ -381,6 +398,8 @@ export function registerServerMcpRoutes({
             revision,
             branch,
             dirty,
+            worktreeFingerprint,
+            lastPromptSeq,
             pull: pr.status,
           };
         pageNumber = page.nextPage ?? undefined;
@@ -390,6 +409,8 @@ export function registerServerMcpRoutes({
         revision,
         branch,
         dirty,
+        worktreeFingerprint,
+        lastPromptSeq,
         reason: 'No matching current PR evidence',
       };
     },

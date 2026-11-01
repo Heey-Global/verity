@@ -8,23 +8,27 @@ import {
 
 export interface QAAssignmentDeps {
   store: EventStore;
-  permitted(userId: string, projectId: string): Promise<boolean>;
-  busy(sessionId: string): boolean;
-  target(session: SessionRecord): Promise<boolean>;
-  create(input: {
-    projectId: string;
-    name: string;
-    idempotencyKey: string;
-  }): Promise<{ sessionId: string }>;
+  permitted(this: void, userId: string, projectId: string): Promise<boolean>;
+  busy(this: void, sessionId: string): boolean;
+  target(this: void, session: SessionRecord, assignment?: QAAssignment): Promise<boolean>;
+  create(
+    this: void,
+    input: {
+      projectId: string;
+      name: string;
+      idempotencyKey: string;
+    },
+  ): Promise<{ sessionId: string }>;
   dispatch(
+    this: void,
     sessionId: string,
     prompt: string,
     id: string,
     userId: string,
     validate: () => Promise<boolean>,
   ): Promise<boolean>;
-  cancel(sessionId: string, dispatchId: string): Promise<boolean>;
-  inspect(a: QAAssignment): Promise<Record<string, unknown>>;
+  cancel(this: void, sessionId: string, dispatchId: string): Promise<boolean>;
+  inspect(this: void, a: QAAssignment): Promise<Record<string, unknown>>;
 }
 type Caller = { sessionId: string; userId: string };
 export function createQAAssignmentTool(deps: QAAssignmentDeps) {
@@ -110,7 +114,7 @@ export function createQAAssignmentTool(deps: QAAssignmentDeps) {
       !target ||
       target.projectId !== a.project_id ||
       target.planning === 'active' ||
-      !(await deps.target(target))
+      !(await deps.target(target, reserved))
     )
       throw new ControlPlaneSessionToolError(
         'Target session is unavailable or its worktree is unsafe.',
@@ -132,7 +136,7 @@ export function createQAAssignmentTool(deps: QAAssignmentDeps) {
           !!s &&
           s.projectId === a.project_id &&
           s.planning !== 'active' &&
-          (await deps.target(s))
+          (await deps.target(s, reserved))
         );
       },
     );
@@ -281,6 +285,16 @@ export function createQAAssignmentTool(deps: QAAssignmentDeps) {
       if (a.state !== 'verifying' || a.version !== version)
         throw new ControlPlaneSessionToolError('Read the current verification evidence first.');
       const evidence = await deps.inspect(a);
+      const previous = JSON.parse(a.evidence) as { repository?: Record<string, unknown> };
+      if (
+        outcome === 'retry' &&
+        previous.repository &&
+        (previous.repository.worktreeFingerprint !== evidence.worktreeFingerprint ||
+          previous.repository.lastPromptSeq !== evidence.lastPromptSeq)
+      )
+        throw new ControlPlaneSessionToolError(
+          'The worktree or session changed after this attempt; a new assignment approval is required.',
+        );
       if (outcome === 'completed' && (evidence.verified !== true || !assessment.trim()))
         throw new ControlPlaneSessionToolError(
           'Current repository evidence does not establish successful completion.',
@@ -311,7 +325,7 @@ export function createQAAssignmentTool(deps: QAAssignmentDeps) {
     sweeping = true;
     try {
       for (const a of await store.list()) {
-        if (!['queued', 'running', 'waiting', 'stopping'].includes(a.state)) continue;
+        if (!['queued', 'running', 'waiting', 'verifying', 'stopping'].includes(a.state)) continue;
         try {
           if (a.state === 'stopping') {
             if (a.target_session_id && a.dispatch_id)
@@ -322,7 +336,7 @@ export function createQAAssignmentTool(deps: QAAssignmentDeps) {
           }
           await current(a);
           if (a.state === 'queued') await deliver(a);
-          else await observe(a);
+          else if (a.state !== 'verifying') await observe(a);
         } catch (error) {
           // Transport failures remain retryable; only a confirmed authority/target failure fences work.
           if (
@@ -332,9 +346,11 @@ export function createQAAssignmentTool(deps: QAAssignmentDeps) {
             await store.change(
               a.id,
               a.version,
-              a.state === 'queued' &&
-                (!a.dispatch_id ||
-                  (await deps.store.repairs.dispatchReceipt(a.dispatch_id))?.state !== 'admitted')
+              a.state === 'verifying' ||
+                (a.state === 'queued' &&
+                  (!a.dispatch_id ||
+                    (await deps.store.repairs.dispatchReceipt(a.dispatch_id))?.state !==
+                      'admitted'))
                 ? 'blocked'
                 : 'stopping',
               error.message,
@@ -404,4 +420,19 @@ export async function trustedQAAssignmentConsent(
   )
     return undefined;
   return `${sessionId}:${latest.seq}`;
+}
+
+/** A follow-up inherits only the exact captured workspace and conversation boundary. */
+export function matchesQAAssignmentContinuation(
+  evidence: string,
+  fingerprint: string | undefined,
+  lastPromptSeq: number | undefined,
+): boolean {
+  const approved = JSON.parse(evidence) as { worktreeFingerprint?: string; lastPromptSeq?: number };
+  return (
+    !!fingerprint &&
+    !!approved.worktreeFingerprint &&
+    approved.worktreeFingerprint === fingerprint &&
+    approved.lastPromptSeq === lastPromptSeq
+  );
 }

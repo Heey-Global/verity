@@ -278,7 +278,10 @@ criteria and any selected session. Agent messages and repository content cannot
 supply consent. Approval does not enable future automatic work.
 
 Assignments share project exclusivity and the two concurrent-work limit with CI
-repairs. A busy target waits instead of being steered. Receipts deduplicate
+repairs. A busy target waits instead of being steered. Follow-ups may continue unfinished
+changes only when tracked, staged and untracked contents and the last prompt still
+match the captured attempt boundary; unrelated edits require a new approval.
+Submodule worktrees are not eligible for this continuation shortcut. Receipts deduplicate
 admission across retries and restarts. Each assignment uses one target and allows
 at most two follow-up attempts. Existing tool permissions and review gates still
 apply; the assignment does not authorize merging, deployment or broader access.
