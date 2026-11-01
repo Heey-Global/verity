@@ -22,7 +22,7 @@ def verify(directory):
         for protocol in ('tcp', 'udp'):
             assert any(r.get('kind') == protocol and r.get('marker') == key + '-' + protocol for r in records) is allowed, key
     markers = {key + '-' + protocol for key, allowed in expected.items() if allowed for protocol in ('tcp', 'udp')}
-    markers.add('stream-retained')
+    markers.update(('stream-retained', 'helper-retained'))
     assert all(row.get('marker') in markers for row in records if 'marker' in row), 'Unauthorized receipt'
     live, expired, attempted = (proof[k] for k in ('live', 'expired', 'attempted'))
     stream_deadline = int(live['deadline_ns'])
@@ -55,6 +55,9 @@ def verify(directory):
     assert int(attempted['clocks']['bootBeforeNs']) - int(helper['beforeKill']['clocks']['bootBeforeNs']) <= 2_000_000_000
     assert attempted['accepted'] == expired['accepted'] and attempted['denied'] > expired['denied']
     assert int(attempted['last_accepted_boot_ns']) < deadline
+    helper_receipts = [int(row['boot_ns']) for row in records if row.get('marker') == 'helper-retained']
+    assert helper_receipts and min(helper_receipts) <= int(helper['beforeKill']['clocks']['bootBeforeNs'])
+    assert max(helper_receipts) - int(helper['beforeKill']['clocks']['bootBeforeNs']) <= 2_000_000_000
     return {'complete': True, 'cases': len(cases), 'kernel_late_acceptance': False,
             'receiver_tail_seconds': max(0, (max(retained) - stream_deadline) / 1_000_000_000)}
 

@@ -21,8 +21,11 @@ if expectation == 'stream':
                 channel.recv(1024)
             except OSError:
                 pass
-            Path('/work/composed-stream.json').write_text(json.dumps({
+            heartbeat = Path(f'/work/composed-{phase}.json')
+            temporary = heartbeat.with_suffix('.tmp')
+            temporary.write_text(json.dumps({
                 'attempts': attempts, 'boot_ns': str(time.clock_gettime_ns(time.CLOCK_BOOTTIME))}))
+            temporary.replace(heartbeat)
             time.sleep(0.05)
     raise SystemExit(0)
 with socket.socket(family, socket.SOCK_DGRAM) as channel:

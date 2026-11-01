@@ -30,6 +30,7 @@ class ComposedProof(unittest.TestCase):
                   'beforeKill': {'clocks': {'bootBeforeNs': '1300000000'}},
                   'live': {'deadline_ns': '2500000000', 'accepted': 10, 'clocks': {'bootBeforeNs': '1400000000'}},
                   'expired': proof['expired'], 'attempted': proof['attempted']}
+        records.append({'kind': 'tcp', 'marker': 'helper-retained', 'boot_ns': '1200000000'})
         (root / 'retired-containers.json').write_text(json.dumps({'sandbox': {'id': 'sandbox', 'running': False}, 'relay': {'id': 'relay', 'running': False}}))
         (root / 'composed-helper-proof.json').write_text(json.dumps(helper))
         (root / 'composed-result.json').write_text(json.dumps({'complete': True, 'cases': cases}))
@@ -76,6 +77,20 @@ class ComposedProof(unittest.TestCase):
                     report['cases'].pop()
                     (root / 'composed-result.json').write_text(json.dumps(report))
                 (root / 'composed-stream-proof.json').write_text(json.dumps(proof))
+                (root / 'composed-receiver.txt').write_text('\n'.join(map(json.dumps, records)))
+                with self.assertRaises(AssertionError):
+                    composed.verify(root)
+
+    def test_rejects_missing_or_late_helper_receiver_evidence(self):
+        for missing in (True, False):
+            with self.subTest(missing=missing), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                self.fixture(root)
+                records = [json.loads(line) for line in (root / 'composed-receiver.txt').read_text().splitlines()]
+                if missing:
+                    records = [row for row in records if row.get('marker') != 'helper-retained']
+                else:
+                    records.append({'kind': 'tcp', 'marker': 'helper-retained', 'boot_ns': '3300000001'})
                 (root / 'composed-receiver.txt').write_text('\n'.join(map(json.dumps, records)))
                 with self.assertRaises(AssertionError):
                     composed.verify(root)

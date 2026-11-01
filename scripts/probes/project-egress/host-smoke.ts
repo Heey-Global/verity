@@ -1078,6 +1078,22 @@ try {
   );
   // Kill the actual resident helper while a separate Server continues requesting renewals.
   const stopAfterHelperFailure = await beginRenewal();
+  await docker(
+    'exec',
+    '-d',
+    '--user',
+    '1000:1000',
+    containerId,
+    'python3',
+    '/probe/composed-client.py',
+    composedTargets[0]!,
+    'helper',
+    'stream',
+  );
+  for (let i = 0; i < 20 && !(await docker('logs', 'veh-direct')).includes('helper-retained'); i++)
+    await delay(20);
+  assert.ok((await docker('logs', 'veh-direct')).includes('helper-retained'));
+
   const children = (await readFile(`/proc/self/task/${process.pid}/children`, 'utf8'))
     .trim()
     .split(/\s+/u);
