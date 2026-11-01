@@ -34,7 +34,15 @@ def verify(directory):
     retained = [int(row['boot_ns']) for row in records if row.get('marker') == 'stream-retained']
     assert retained and max(retained) - min(retained) >= 2_000_000_000
     assert max(retained) - stream_deadline <= 2_000_000_000
-    assert proof['heartbeat']['attempts'] > 10 and int(proof['heartbeat']['boot_ns']) > stream_deadline + 2_000_000_000
+    retired = json.loads((root / 'retired-containers.json').read_text())
+    assert set(retired) == {'sandbox', 'relay'}
+    for role, identity in [('sandbox', live['state']['binding']['containerId']),
+                           ('relay', live['state']['relayRegistration']['containerId'])]:
+        assert retired[role]['id'] == identity and retired[role]['running'] is False
+    heartbeat = proof['heartbeat']
+    assert heartbeat['attempts'] > 10 and heartbeat['attempts'] > heartbeat['lateAttempts']
+    assert int(heartbeat['hostBootBeforeNs']) > stream_deadline + 2_000_000_000
+
     helper = json.loads((root / 'composed-helper-proof.json').read_text())
     assert helper['afterKillState'] in ('gone', 'Z')
     assert helper['signal'] == 'SIGKILL' and helper['helper']['pid'] > 1
