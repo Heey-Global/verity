@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
-import { StorageReclamation } from './storage-reclamation.js';
+import { readNativeReclamation, StorageReclamation } from './storage-reclamation.js';
 import { registerStorageReclamationRoutes } from './storage-reclamation-routes.js';
 import type { DockerGcReport } from './docker-gc.js';
 const roots: string[] = [];
@@ -173,4 +173,20 @@ it('uses the actual native request time when joining an earlier scheduled pass',
   await service.start();
   await vi.waitFor(async () => expect((await service.status()).state).toBe('completed'));
   expect((await service.status()).nativePending).toBe(false);
+});
+
+it('reports absent, invalid and stale native receipts explicitly without measured-byte claims', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'native-visibility-'));
+  roots.push(directory);
+  const missing = await readNativeReclamation(directory);
+  expect(missing.state).toBe('blocked');
+  expect(missing.blockers[0]).toContain('missing');
+  expect(missing.allocatedBytes).toBeNull();
+  writeFileSync(join(directory, 'native-retirement.json'), '{}');
+  expect((await readNativeReclamation(directory)).blockers[0]).toContain('invalid');
+  writeFileSync(
+    join(directory, 'native-retirement.json'),
+    JSON.stringify({ ...missing, observedAt: new Date(1).toISOString(), blockers: [] }),
+  );
+  expect((await readNativeReclamation(directory)).blockers[0]).toContain('stale');
 });
