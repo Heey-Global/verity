@@ -1431,8 +1431,9 @@ A Server image alone cannot change that component.
    the update stops before the standby is created, says why, and the current version keeps
    serving.
 5. A gVisor bump is a change of `RUNSC_RELEASE` alone. Renovate tracks it, and
-   `scripts/gvisor-pins.mjs` derives every other pin from what gVisor published, cross-checking the
-   release bucket against the GitHub release checksums. On Renovate branches,
+   `scripts/gvisor-pins.mjs` derives every other pin from what gVisor published. For archive releases it
+   cross-checks the release bucket against the GitHub release checksums; older single-binary
+   releases publish only the bucket checksum, which the download must match. On Renovate branches,
    `.github/workflows/renovate-gvisor.yml` commits the derived pins. On every other pull request
    it fails pins that do not match.
 
@@ -1441,7 +1442,9 @@ update changes nothing on hosts except the component itself, through point 3. Re
 switches the pin to an archive. A host that runs A but whose component was not replaced (the
 builder was busy, for example) reaches B through point 4. A host still on a release before A
 updates with the older Updater, which refuses B's label and changes nothing (point 2). Such a host
-has to run A first, so B is published only after A has reached the hosts. Hosts installed before
+has to run A first, so B is published only after A has reached the hosts. Until then the gVisor
+rule in `renovate.json` holds bumps for approval on the Dependency Dashboard, so Renovate cannot
+publish B right behind A; the hold is lifted once B has shipped. Hosts installed before
 the builder component (Amendment 4), or without systemd, need one installer run, as before.
 
 **Limits.** Running containers keep the runtime they started with. Rolling back re-registers the

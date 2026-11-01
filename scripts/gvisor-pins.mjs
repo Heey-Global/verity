@@ -7,9 +7,10 @@
 // RUNSC_RELEASE is the one value a bump changes (Renovate tracks it, see renovate.json); the
 // checksums the hosts verify, the label the Updater reads and the path the Server verifies all
 // follow from it. A bump that changed the release alone would ship a release no host can
-// install, so every pin is derived here and nowhere by hand. Each checksum is taken from two
-// independent places: the release bucket the hosts download from, and the checksum file on the
-// GitHub release. The download is hashed as well, and has to agree with both.
+// install, so every pin is derived here and nowhere by hand. An archive checksum is taken from
+// two independent places: the release bucket the hosts download from, and the checksum file on
+// the GitHub release. Older single-binary releases publish only the bucket checksum. Either way
+// the download is hashed as well, and has to agree with every published checksum.
 import { Buffer } from 'node:buffer';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';

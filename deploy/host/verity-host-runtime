@@ -190,6 +190,8 @@ ensure_archive() {
   dir="$RUNSC_ROOT/$release"
   if archive_matches "$dir" "$sha" "$archive_sha" "$release"; then return 0; fi
   install -d -m 0755 "$RUNSC_ROOT"
+  # Left behind by a run that was killed; the reconciliation lock is held, so none is in use.
+  rm -rf -- "$RUNSC_ROOT"/.stage.*
   # On the same filesystem as the release directory, so the tree lands there by rename.
   stage="$(mktemp -d "$RUNSC_ROOT/.stage.XXXXXX")"
   chmod 0700 "$stage"
@@ -367,12 +369,14 @@ apply_request() {
 # update instead of a manual installer run. A host this installer never set up is left alone.
 install_self() {
   local target="$LIBEXEC_DIR/verity-host-runtime" agent="$STATE_DIR/agent.json" tmp
-  need_tools jq
   if [[ ! -f $target || -L $target ]]; then
     log "no installed host runtime service at $target; nothing to replace"
     return 0
   fi
-  if ! cmp -s -- "${BASH_SOURCE[0]}" "$target"; then
+  need_tools jq sha512sum
+  # sha512sum rather than cmp: every host already has it, and a missing tool here would fail
+  # the builder install that runs this.
+  if [[ $(sha512sum <"${BASH_SOURCE[0]}") != $(sha512sum <"$target") ]]; then
     tmp="$(mktemp "$LIBEXEC_DIR/.verity-host-runtime.XXXXXX")"
     cp -- "${BASH_SOURCE[0]}" "$tmp"
     chmod 0755 "$tmp"

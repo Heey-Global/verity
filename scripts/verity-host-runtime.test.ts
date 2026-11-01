@@ -518,6 +518,10 @@ describeArchive('deploy/host/verity-host-runtime with a gVisor release archive',
     expect(result.status, result.stderr).toBe(0);
     expect(existsSync(join(h.releaseDir, 'gvisor-bin', 'gvisor_sentry'))).toBe(true);
     expect(existsSync(join(h.releaseDir, '.verity-files.sha512'))).toBe(true);
+    // Each killed run would otherwise leave a full archive behind for good.
+    expect(readdirSync(join(h.root, 'runsc')).filter((name) => name.startsWith('.stage.'))).toEqual(
+      [],
+    );
   });
 
   it('answers an Updater request that pins an archive', () => {

@@ -1727,12 +1727,13 @@ jobs:
 
           if [[ ! -x "$host_runsc" ]]; then
             # The whole release directory: an archive release keeps the sidecars runsc needs
-            # in gvisor-bin/ next to it.
+            # in gvisor-bin/ next to it. Its contents, so a leftover partial directory is
+            # filled in rather than gaining a nested copy.
             runsc_copy="$RUNNER_TEMP/verity-clean-install-runsc"
             rm -rf "$runsc_copy"
             docker cp "$VERITY_CI_CLEAN_DIND:$(dirname "$host_runsc")" "$runsc_copy"
-            sudo install -d -o root -g root -m 0755 /opt/verity/runsc
-            sudo cp -R --no-preserve=ownership "$runsc_copy" "$(dirname "$host_runsc")"
+            sudo install -d -o root -g root -m 0755 "$(dirname "$host_runsc")"
+            sudo cp -R --no-preserve=ownership "$runsc_copy/." "$(dirname "$host_runsc")"
             sudo chown -R root:root "$(dirname "$host_runsc")"
             rm -rf "$runsc_copy"
             installed_host_runsc=1
