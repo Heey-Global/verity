@@ -235,9 +235,29 @@ preflight guest uses a 20 GiB preparation floor; the 32 GiB retained guest uses 
 headroom without weakening the VM's launch-time free-space check.
 
 Host inspection reads use the fixed local Docker Unix socket directly in Node and
-the short-lived Python deadline helper. Supported inspection routes retain the
+the controller-owned Python deadline helper. Supported inspection routes retain the
 Docker CLI's JSON shape for the existing validators; container lifecycle mutations
 still use the established command path. Each read has a one-second total deadline
 and a 2 MiB body limit, with no fallback after a failed HTTP inspection. Responses
 are never cached across validation boundaries. Kernel clock capture, authority
 checks, expiry rejection and sequential map writes retain their original order.
+
+The controller keeps one root-only deadline worker on private stdin/stdout pipes.
+Requests and replies are newline-framed UTF-8 JSON with increasing request IDs,
+a 64 KiB request limit, a 16 KiB reply limit and at most 16 pending operations.
+Only one request is dispatched at a time. A five-second watchdog includes queue
+and execution time. Protocol failure or timeout rejects pending operations and
+kills the worker process group before replacement; uncertain mutations are never
+replayed. Explicit shutdown closes the worker, and Linux parent-death signaling
+binds its lifetime to the controller. It has no autonomous renewal timer and
+caches no authority or endpoint snapshots. State locking remains per operation.
+One-shot helper execution remains available for administrative and pause probes.
+
+The compare-and-renew program is loaded and checked against the exact deadline
+map during denied-state preparation, rather than on the first live renewal.
+Missing renewal pins during a live handoff cause denial. The composed probe also
+writes up to 256 fixed-operation records in `lease-budget.json`, containing queue
+and response durations, worker BOOTTIME boundaries and immutable lease timestamps.
+The finished timestamp bounds completion of the kernel operation; it is not a
+packet-admission observation. Together with start/end offsets in the lifecycle
+trace, these records distinguish admission work from renewal and response delay.

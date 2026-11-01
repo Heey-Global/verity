@@ -1,5 +1,8 @@
 import { createProjectEgressHostEnforcement } from '../../../packages/server/src/project-egress-host-enforcement.js';
-import { hostProjectDeadlineEnforcer } from '../../../packages/server/src/project-egress-deadline.js';
+import {
+  hostProjectDeadlineEnforcer,
+  type ProjectDeadlineTiming,
+} from '../../../packages/server/src/project-egress-deadline.js';
 import { inspectProjectFenceAttachment } from '../../../packages/server/src/project-egress-attachment.js';
 import { projectFenceTable } from '../../../packages/server/src/project-egress-fence.js';
 import { inspectEgressHostDirect } from '../../../packages/server/src/project-egress-host-runtime.js';
@@ -84,8 +87,11 @@ function measured<A extends unknown[], R>(stage: string, operation: (...args: A)
     }
   };
 }
+const leaseBudget: ProjectDeadlineTiming[] = [];
+const deadline = hostProjectDeadlineEnforcer((timing) => {
+  if (leaseBudget.length < 256) leaseBudget.push(timing);
+});
 function createEnforcement() {
-  const deadline = hostProjectDeadlineEnforcer();
   return createProjectEgressHostEnforcement({
     deadline: {
       ...deadline,
@@ -1223,6 +1229,8 @@ try {
   );
   throw error;
 } finally {
+  deadline.close();
+  await writeFile('/evidence/lease-budget.json', JSON.stringify(leaseBudget, null, 2));
   await writeFile(
     '/evidence/renewal-stages.json',
     JSON.stringify(Object.fromEntries(stageTimings), null, 2),

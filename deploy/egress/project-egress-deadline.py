@@ -21,6 +21,8 @@ import struct
 import subprocess
 import sys
 import time
+import signal
+import traceback
 
 STATE = Path('/var/lib/verity-egress/deadline')
 PINS = Path('/sys/fs/bpf/verity_egress_deadline')
@@ -163,15 +165,28 @@ class TestRunAttr(ctypes.Structure):
                 ('flags', ctypes.c_uint32), ('cpu', ctypes.c_uint32), ('batch_size', ctypes.c_uint32)]
 
 
-def renew_deadline(root, index, previous, deadline):
+def prepare_renewal(root):
     program = root / 'renew'
+    obj = OBJECT.with_name('project-egress-renew.bpf.o')
+    value = obj.lstat()
+    if not stat.S_ISREG(value.st_mode) or value.st_uid != 0 or value.st_mode & 0o022:
+        raise ValueError('Untrusted deadline renewal object')
     if not program.exists():
-        obj = OBJECT.with_name('project-egress-renew.bpf.o')
-        value = obj.lstat()
-        if not stat.S_ISREG(value.st_mode) or value.st_uid != 0 or value.st_mode & 0o022:
-            raise ValueError('Untrusted deadline renewal object')
         run('/usr/sbin/bpftool', 'prog', 'load', str(obj), str(program),
             'map', 'name', 'deadline', 'pinned', str(root / 'maps/deadline'))
+    program_info = json.loads(run('/usr/sbin/bpftool', '-j', 'prog', 'show', 'pinned', str(program)))
+    map_info = json.loads(run('/usr/sbin/bpftool', '-j', 'map', 'show', 'pinned', str(root / 'maps/deadline')))
+    if isinstance(program_info, list):
+        program_info = program_info[0]
+    if isinstance(map_info, list):
+        map_info = map_info[0]
+    if program_info['type'] != 'socket_filter' or program_info['map_ids'] != [map_info['id']]:
+        raise ValueError('Renewal program is not bound to the deadline map')
+
+
+def renew_deadline(root, index, previous, deadline):
+    # Loading is denied-state preparation work, never part of a live handoff.
+    program = root / 'renew'
     pathname = ctypes.create_string_buffer(str(program).encode())
     fd = bpf(7, ObjectAttr(ctypes.addressof(pathname), 0, 0))
     packet = bytearray(78)
@@ -468,6 +483,7 @@ def execute(request):
         run('/usr/sbin/bpftool', 'prog', 'load', str(OBJECT), str(root / 'guard'),
             'type', 'classifier', 'pinmaps', str(root / 'maps'))
         write_deadline(root, peer['index'], 0)
+        prepare_renewal(root)
         write_relay(root)
         # A dedicated veth with unknown classifiers is unsupported, not overwritten.
         qdisc = json.loads(run('/sbin/tc', '-j', 'qdisc', 'show', 'dev', peer['device']))
@@ -524,6 +540,9 @@ def execute(request):
             raise
         return {'state': 'relay-configured'}
     if op in ('revoke', 'prepare'):
+        if op == 'prepare':
+            write_deadline(root, state['peer']['index'], 0)
+            prepare_renewal(root)
         state['uncertainExpiry'] = True
         save(path, state)
         write_deadline(root, state['peer']['index'], 0)
@@ -578,9 +597,7 @@ def execute(request):
     return {'state': 'armed', 'bootDeadlineNs': str(deadline)}
 
 
-if __name__ == '__main__':
-    if os.geteuid() != 0 or platform.machine() != 'x86_64':
-        raise RuntimeError('Deadline helper requires the supported rootful x86_64 host')
+def locked_execute(request):
     private_directory(STATE)
     lock = os.open(STATE / 'lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
     value = os.fstat(lock)
@@ -589,7 +606,56 @@ if __name__ == '__main__':
         raise ValueError('Untrusted deadline lock')
     with os.fdopen(lock, 'w') as held:
         fcntl.flock(held, fcntl.LOCK_EX)
+        return execute(request)
+
+
+def serve_worker(source, destination):
+    previous = 0
+    while True:
+        data = source.readline(65537)
+        if not data:
+            return
+        if len(data) > 65536 or not data.endswith(b'\n'):
+            raise ValueError('Oversized or incomplete deadline frame')
+        envelope = json.loads(data.decode('utf-8'))
+        if (not isinstance(envelope, dict) or set(envelope) != {'id', 'request'}
+                or type(envelope['id']) is not int or not previous < envelope['id'] <= 9007199254740991):
+            raise ValueError('Invalid deadline frame identity')
+        previous = envelope['id']
+        started = time.clock_gettime_ns(time.CLOCK_BOOTTIME)
+        try:
+            response = {'id': previous, 'result': locked_execute(envelope['request'])}
+        except Exception:
+            traceback.print_exc(file=sys.stderr)
+            response = {'id': previous, 'error': True}
+        response['startedBootNs'] = str(started)
+        response['finishedBootNs'] = str(time.clock_gettime_ns(time.CLOCK_BOOTTIME))
+        output = json.dumps(response).encode('utf-8') + b'\n'
+        if len(output) > 16384:
+            raise ValueError('Oversized deadline reply')
+        destination.write(output)
+        destination.flush()
+
+
+def bind_controller():
+    parent = os.getppid()
+    # Private pipes confer no authority to outlive the owning controller.
+    if ctypes.CDLL(None, use_errno=True).prctl(1, signal.SIGKILL, 0, 0, 0) != 0:
+        raise OSError(ctypes.get_errno(), 'Cannot bind deadline worker to controller')
+    if os.getppid() != parent or parent == 1:
+        raise RuntimeError('Deadline controller exited during worker startup')
+
+
+if __name__ == '__main__':
+    if os.geteuid() != 0 or platform.machine() != 'x86_64':
+        raise RuntimeError('Deadline helper requires the supported rootful x86_64 host')
+    if sys.argv[1:] == ['--worker']:
+        bind_controller()
+        serve_worker(sys.stdin.buffer, sys.stdout.buffer)
+    elif not sys.argv[1:]:
         data = sys.stdin.buffer.read(65537)
         if len(data) > 65536:
             raise ValueError('Oversized deadline request')
-        print(json.dumps(execute(json.loads(data))))
+        print(json.dumps(locked_execute(json.loads(data))))
+    else:
+        raise ValueError('Unsupported deadline helper mode')
