@@ -59,6 +59,7 @@ def remove_fences_mutation(vm, guest):
     # by the TC attestation, so removal must not precede it. The receipt window
     # starts only after that removal has returned.
     inflight = json.loads(vm.ssh(guest + 'inflight removed-fences', timeout=20))
+    assert inflight.get('fencesRemoved') is True, 'In-flight control did not remove the kernel fences'
     started_ns = time.time_ns()
     vm.ssh(guest + 'external')
     return started_ns, inflight
@@ -208,7 +209,8 @@ def verify_bundle(directory):
         assert (result['status'] == 200) == (phase == 'positive')
         assert result['finished_ns'] - result['started_ns'] < 10_000_000_000
     assert set(inflight) == {'positive', 'denied'}
-    assert json.loads((directory / 'mutation-inflight.json').read_text())['status'] == 200
+    mutation = json.loads((directory / 'mutation-inflight.json').read_text())
+    assert mutation['status'] == 200 and mutation.get('fencesRemoved') is True
     assert set(proof['faults']) == {'corrupt-registry-denied', 'nftables-failure-denied', 'unsupported-live-restore-denied'}
     return {'events': len(events), 'removed_fence_paths': 8, 'complete': True}
 

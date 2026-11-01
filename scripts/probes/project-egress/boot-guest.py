@@ -174,7 +174,8 @@ def inflight(phase):
     config = json.loads((ROOT / 'config.json').read_text())
     memory = Path(config['dataRoot'], 'knowledge', descriptor()['projectId'], 'overview.md').read_text()
     assert (f'boot-inflight-{phase}' in memory) == expected, 'Actual Server memory disagrees with in-flight verdict'
-    print(json.dumps(result))
+    # The outer proof requires this before trusting its removed-fence receipt window.
+    print(json.dumps({**result, 'fencesRemoved': phase == 'removed-fences'}))
 
 
 def snapshot():

@@ -204,7 +204,7 @@ class FullBundleTests(unittest.TestCase):
         for name, value in [('boot-proof', proof), ('topology-before', initial),
                             ('inflight', {'positive': {'status': 200, 'started_ns': 1, 'finished_ns': 2},
                                           'denied': {'status': None, 'started_ns': 1, 'finished_ns': 2}}),
-                            ('mutation-inflight', {'status': 200})]:
+                            ('mutation-inflight', {'status': 200, 'fencesRemoved': True})]:
             Path(directory, name + '.json').write_text(json.dumps(value))
         Path(directory, 'protected-receipts.jsonl').write_text(protected)
         Path(directory, 'external-receipts.jsonl').write_text(full)
@@ -221,6 +221,16 @@ class FullBundleTests(unittest.TestCase):
             Path(directory, 'broker-receipts.jsonl').write_text(''.join(json.dumps(row) + '\n' for row in broker))
             with self.assertRaisesRegex(AssertionError, 'Actual handler committed'):
                 boot_proof.verify_bundle(directory)
+
+    def test_rejects_mutation_evidence_without_reported_fence_removal(self):
+        import json
+        import tempfile
+        for value in ({'status': 200}, {'status': 200, 'fencesRemoved': False}):
+            with self.subTest(value=value), tempfile.TemporaryDirectory() as directory:
+                self.fixture(directory)
+                Path(directory, 'mutation-inflight.json').write_text(json.dumps(value))
+                with self.assertRaises(AssertionError):
+                    boot_proof.verify_bundle(directory)
 
     def test_rejects_a_missing_event_even_when_complete_is_true(self):
         import json
@@ -340,8 +350,10 @@ class ActualMemoryPersistenceTests(unittest.TestCase):
                     patch.object(guest, 'descriptor', return_value={'projectId': 'project'}), \
                     patch.object(guest, 'api', return_value={'token': 'test'}), \
                     patch.object(guest, 'run', side_effect=run), patch.object(guest, 'positive'), \
-                    patch.object(guest, 'remove_fences', side_effect=remove), contextlib.redirect_stdout(io.StringIO()):
+                    patch.object(guest, 'remove_fences', side_effect=remove), \
+                    contextlib.redirect_stdout(io.StringIO()) as printed:
                 guest.inflight(phase)
+            self.captured = printed.getvalue()
             return calls
 
     def test_requires_committed_canonical_overview_marker(self):
@@ -353,6 +365,12 @@ class ActualMemoryPersistenceTests(unittest.TestCase):
         calls = self.exercise('removed-fences')
         self.assertEqual(calls[-1], ('remove-fences',))
 
+    def test_inflight_reports_whether_it_removed_fences(self):
+        import json
+        for phase, removed in (('removed-fences', True), ('positive', False)):
+            self.exercise(phase)
+            self.assertIs(json.loads(self.captured)['fencesRemoved'], removed)
+
 
 class FenceMutationOrderTests(unittest.TestCase):
     def test_inflight_readmission_runs_before_any_fence_removal(self):
@@ -363,17 +381,24 @@ class FenceMutationOrderTests(unittest.TestCase):
         spec.loader.exec_module(proof)
         vm = Mock()
         clock = []
+        result = {'status': 200, 'fencesRemoved': True}
         def ssh(command, **_):
-            clock.append((command, proof.time.time_ns()))
-            return json.dumps({'status': 200}) if 'inflight' in command else ''
+            clock.append(proof.time.time_ns())
+            output = json.dumps(result) if 'inflight' in command else ''
+            clock.append(proof.time.time_ns())
+            return output
         vm.ssh.side_effect = ssh
         started, inflight = proof.remove_fences_mutation(vm, 'guest ')
         self.assertEqual([call.args[0] for call in vm.ssh.call_args_list],
                          ['guest inflight removed-fences', 'guest external'])
         self.assertEqual(vm.ssh.call_args_list[0].kwargs, {'timeout': 20})
-        self.assertEqual(inflight, {'status': 200})
-        # The receipt window opens after removal returned and before external probes.
-        self.assertTrue(clock[0][1] <= started <= clock[1][1])
+        self.assertEqual(inflight, result)
+        # The receipt window opens after the in-flight removal returned, before external probes.
+        self.assertTrue(clock[1] <= started <= clock[2])
+        for reported in ({'status': 200}, {'status': 200, 'fencesRemoved': False}):
+            vm.ssh.side_effect = lambda command, **_: json.dumps(reported) if 'inflight' in command else ''
+            with self.assertRaisesRegex(AssertionError, 'did not remove'):
+                proof.remove_fences_mutation(vm, 'guest ')
 
 
 class GuestCommandEvidenceTests(unittest.TestCase):
