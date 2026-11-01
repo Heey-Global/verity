@@ -185,6 +185,7 @@ export function registerServerMcpRoutes({
         return {
           branch: await branches.current(session.worktree),
           dirty: await branches.isDirty(session.worktree),
+          revision: await branches.headRevision?.(session.worktree),
         };
       } catch {
         return undefined;

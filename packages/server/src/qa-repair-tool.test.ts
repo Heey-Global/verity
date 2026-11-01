@@ -52,7 +52,11 @@ function setup() {
         mergeable: null,
       },
     }),
-    branch: async (s) => ({ branch: s.sessionId === 'qa' ? 'main' : 'fix/ci', dirty: false }),
+    branch: async (s) => ({
+      branch: s.sessionId === 'qa' ? 'main' : 'fix/ci',
+      revision: 'sha',
+      dirty: false,
+    }),
     busy: () => false,
     dispatch: vi.fn<QARepairDeps['dispatch']>(async (sessionId, prompt, id, userId, validate) => {
       if (!(await validate())) return false;
@@ -288,4 +292,17 @@ it('does not treat a bare PR number or untrusted log result as project-bound con
   });
   await prompt();
   expect(await trustedQARepairInstruction(ctx.store, 'qa', 'turn', id)).toBe(false);
+});
+
+it('rejects a clean matching branch at a different commit before consuming repair budget', async () => {
+  const { deps, service, resolve } = setup();
+  const id = await resolve();
+  deps.branch = async (s) => ({
+    branch: s.sessionId === 'qa' ? 'main' : 'fix/ci',
+    dirty: false,
+    revision: 'older-commit',
+  });
+  await expect(service.request(caller, 'p', id)).rejects.toThrow('approved commit');
+  expect(await ctx.store.repairs.budgetUsed('p', 'pr:2120')).toBe(0);
+  expect(deps.dispatch).not.toHaveBeenCalled();
 });

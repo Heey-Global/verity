@@ -249,7 +249,9 @@ The manual request shares the existing durable incident ownership, concurrency
 limits and repair budget with background repairs. Busy sessions receive a durable
 queued assignment rather than steering their current turn. Every admission,
 including after a restart, checks current access, QA settings, expiry, PR revision,
-failure evidence and the target worktree again. Revoked or invalid queued requests
+failure evidence and the target worktree again. Before admission, its attached
+HEAD must equal the approved PR commit; a detached preview or a clean but stale
+worktree is refused. Revoked or invalid queued requests
 are cancelled; an admitted receipt is never replayed. `repair_status` reports
 `proposed`, `queued`, `accepted` or `blocked`; accepted confirms admission, not a
 successful repair. The existing supervisor checks terminal execution and forge

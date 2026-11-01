@@ -17,7 +17,7 @@ export interface QARepairDeps {
   branch(
     this: void,
     session: SessionRecord,
-  ): Promise<{ branch: string; dirty: boolean } | undefined>;
+  ): Promise<{ branch: string; dirty: boolean; revision?: string | undefined } | undefined>;
   busy(this: void, sessionId: string): boolean;
   dispatch(
     this: void,
@@ -107,10 +107,10 @@ export function createQARepairTool(deps: QARepairDeps) {
           (deps.busy(m.session.sessionId) || m.facts.dirty),
       ) ||
       target.session.planning === 'active' ||
-      (requireClean && target.facts.dirty)
+      (requireClean && (target.facts.dirty || target.facts.revision !== p.revision))
     )
       throw new ControlPlaneSessionToolError(
-        'Target session is missing, ambiguous, planning, or has uncommitted changes.',
+        'Target session is missing, ambiguous, planning, dirty, or not at the approved commit.',
       );
     const final = await authorize(
       { sessionId: p.source_session_id, userId: p.user_id },
