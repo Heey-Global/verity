@@ -8,8 +8,7 @@ import struct
 from pathlib import Path
 import tempfile
 import unittest
-import unittest.mock
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 source = Path(__file__).resolve().parents[3] / 'deploy/egress/project-egress-deadline.py'
 spec = importlib.util.spec_from_file_location('deadline_host', source)
@@ -70,6 +69,11 @@ class DeadlineHostTests(unittest.TestCase):
         self.send.side_effect = lambda *args: order.append(('send',) + args)
         self.arm()
         self.assertEqual(order, [('write', 0), ('write', 1000000020), ('send', 'vtest', [b'probe'])])
+
+    def test_empty_neighbor_refresh_opens_no_packet_socket(self):
+        self.refresh.return_value = []
+        self.arm()
+        self.send.assert_not_called()
 
     def test_neighbor_refresh_failure_keeps_the_decided_lease(self):
         self.send.side_effect = OSError('transmit failed')
@@ -504,11 +508,12 @@ class NeighborRefreshTests(unittest.TestCase):
     def setUp(self):
         self.binding = dict(zip(host.BINDING_FIELDS, ['project', 'generation', 'a' * 64,
                             'b' * 64, 'c' * 64, 've-test', '172.30.106.2', 'fd42:feed::2']))
-        self.net = {'MacAddress': '02:01:02:03:04:05', 'Gateway': '172.30.106.1', 'IPPrefixLen': 24,
+        self.net = {'MacAddress': '02:01:02:03:04:05', 'IPAddress': '172.30.106.2',
+                    'GlobalIPv6Address': 'fd42:feed::2', 'Gateway': '172.30.106.1', 'IPPrefixLen': 24,
                     'IPv6Gateway': 'fd42:feed::1', 'GlobalIPv6PrefixLen': 64}
         self.links = [{'ifindex': 3, 'ifname': 've-test', 'address': '02:aa:bb:cc:dd:ee'},
                       {'ifindex': 4, 'ifname': 'other', 'address': '02:11:11:11:11:11'}]
-        self.facts = unittest.mock.Mock()
+        self.facts = Mock()
         self.facts.container.return_value = {'NetworkSettings': {'Networks': {'project': self.net}}}
         self.facts.host_links.return_value = self.links
 
@@ -551,9 +556,27 @@ class NeighborRefreshTests(unittest.TestCase):
             with self.subTest(field=field, value=value), patch.dict(self.net, {field: value}):
                 with self.assertRaises(ValueError):
                     self.frames()
+        for field, value in (('IPPrefixLen', None), ('IPAddress', '172.30.106.9')):
+            with self.subTest(field=field), patch.dict(self.net, {field: value}):
+                with self.assertRaises(ValueError):
+                    self.frames()
+        with patch.dict(self.net):
+            del self.net['MacAddress']
+            with self.assertRaisesRegex(ValueError, 'Malformed'):
+                self.frames()
+        networks = self.facts.container.return_value['NetworkSettings']['Networks']
+        networks['other'] = dict(self.net)
+        with self.assertRaisesRegex(ValueError, 'attachment changed'):
+            self.frames()
+        del networks['other']
         self.links[1]['ifname'] = 've-test'
         with self.assertRaisesRegex(ValueError, 'inspected bridge'):
             self.frames()
+
+    def test_ipv6_only_attachment_yields_only_a_solicitation(self):
+        self.binding['ipv4'] = ''
+        self.net['IPAddress'] = ''
+        self.assertEqual([frame[12:14] for frame in self.frames()], [b'\x86\xdd'])
 
     def test_transmission_is_bound_to_the_given_device(self):
         with patch.object(host.socket, 'socket') as factory:
