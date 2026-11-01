@@ -53,14 +53,19 @@ def verify_removed_fences(path, started_ns):
 
 
 
-def guest_clock(vm):
-    # Receipts carry host time; map guest timestamps with a bracketed offset.
-    before = time.time_ns()
-    guest = int(vm.ssh('date +%s%N').strip())
-    after = time.time_ns()
-    uncertainty = (after - before) // 2 + 1
-    assert uncertainty <= 1_000_000_000, 'Guest clock offset is too uncertain'
-    return {'offsetNs': guest - (before + after) // 2, 'uncertaintyNs': uncertainty}
+def guest_clock(vm, samples=3):
+    # Receipts carry host time; map guest timestamps with the tightest bracketed
+    # offset, since each SSH call includes its own connection setup.
+    best = None
+    for _ in range(samples):
+        before = time.time_ns()
+        guest = int(vm.ssh('date +%s%N').strip())
+        after = time.time_ns()
+        sample = {'offsetNs': guest - (before + after) // 2, 'uncertaintyNs': (after - before) // 2 + 1}
+        if best is None or sample['uncertaintyNs'] < best['uncertaintyNs']:
+            best = sample
+    assert best['uncertaintyNs'] <= 1_000_000_000, 'Guest clock offset is too uncertain'
+    return best
 
 
 def check_mutation_clock(clock, removal_ns):
@@ -76,7 +81,7 @@ def mutation_start(clock, removal_ns):
     return removal_ns - clock['offsetNs'] - clock['uncertaintyNs']
 
 
-def remove_fences_mutation(vm, guest, evidence):
+def remove_fences_mutation(vm, guest, evidence, protected_end_ns):
     # The in-flight control readmits while the kernel fences are intact and removes
     # them itself. Readmitting an already tampered generation is refused and contained
     # by the TC attestation, so removal must not precede it. Readmission stays inside
@@ -91,6 +96,8 @@ def remove_fences_mutation(vm, guest, evidence):
     clock.update(removalNs=inflight.get('fencesRemovedNs'), controlNs=control_ns, returnedNs=returned_ns)
     (evidence / 'mutation-clock.json').write_text(json.dumps(clock))
     started_ns = check_mutation_clock(clock, inflight.get('fencesRemovedNs'))
+    # Same condition the offline verifier applies to the recorded bundle.
+    assert started_ns > protected_end_ns, 'Mutation window overlaps the protected window'
     vm.ssh(guest + 'external')
     return started_ns, inflight
 
@@ -357,7 +364,7 @@ def main():
         verify_receipts(protected, start_ns, end_ns)
         # Removing the real kernel fences must turn independent receiver silence
         # into a failed verdict; a synthetic verifier test is insufficient here.
-        mutation_started_ns, _ = remove_fences_mutation(vm, guest, evidence)
+        mutation_started_ns, _ = remove_fences_mutation(vm, guest, evidence, end_ns)
         time.sleep(1)
         verify_removed_fences(receipts, mutation_started_ns)
         try:

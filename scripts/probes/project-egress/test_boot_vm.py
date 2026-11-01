@@ -2,6 +2,7 @@ import importlib.util
 from pathlib import Path
 import json
 import unittest
+import unittest.mock
 
 spec = importlib.util.spec_from_file_location('boot_vm', Path(__file__).with_name('boot-vm.py'))
 boot_vm = importlib.util.module_from_spec(spec)
@@ -453,17 +454,36 @@ class FenceMutationOrderTests(unittest.TestCase):
         offset = 7_000_000_000
         result = lambda guest_now: {'status': 200, 'fencesRemoved': True, 'fencesRemovedNs': guest_now}
         vm = self.vm(offset, result)
-        started, inflight = self.proof.remove_fences_mutation(vm, 'guest ', self.evidence)
+        started, inflight = self.proof.remove_fences_mutation(vm, 'guest ', self.evidence, 0)
         self.assertEqual([command for command, _ in self.calls],
-                         ['date +%s%N', 'guest inflight removed-fences', 'guest external'])
-        self.assertEqual(vm.ssh.call_args_list[1].kwargs, {'timeout': 20})
+                         ['date +%s%N'] * 3 + ['guest inflight removed-fences', 'guest external'])
+        self.assertEqual(vm.ssh.call_args_list[3].kwargs, {'timeout': 20})
         self.assertEqual(json.loads((self.evidence / 'mutation-inflight.json').read_text()), inflight)
         clock = json.loads((self.evidence / 'mutation-clock.json').read_text())
         self.assertEqual(started, self.proof.mutation_start(clock, inflight['fencesRemovedNs']))
         # The readmission phase of the control stays protected: the window opens after it.
-        control_ns, external_ns = self.calls[1][1], self.calls[2][1]
+        control_ns, external_ns = self.calls[3][1], self.calls[4][1]
         self.assertGreater(started, control_ns + 10_000_000)
         self.assertLess(started, external_ns)
+
+    def test_rejects_overlap_with_protected_window_and_uncertain_clock(self):
+        from unittest.mock import Mock
+        result = lambda guest_now: {'status': 200, 'fencesRemoved': True, 'fencesRemovedNs': guest_now}
+        with self.assertRaisesRegex(AssertionError, 'overlaps the protected window'):
+            self.proof.remove_fences_mutation(self.vm(0, result), 'guest ', self.evidence, 1 << 62)
+        ticks = iter(range(0, 60_000_000_000, 3_000_000_000))
+        slow = Mock(side_effect=lambda command, **_: '0')
+        with unittest.mock.patch.object(self.proof.time, 'time_ns', side_effect=lambda: next(ticks)):
+            with self.assertRaisesRegex(AssertionError, 'too uncertain'):
+                self.proof.guest_clock(Mock(ssh=slow))
+
+    def test_clock_keeps_the_tightest_sample(self):
+        from unittest.mock import Mock, patch
+        times = iter([0, 400, 1000, 1010, 2000, 2200])
+        vm = Mock(ssh=Mock(side_effect=['100', '1105', '2100']))
+        with patch.object(self.proof.time, 'time_ns', side_effect=lambda: next(times)):
+            clock = self.proof.guest_clock(vm)
+        self.assertEqual(clock, {'offsetNs': 100, 'uncertaintyNs': 6})
 
     def test_rejects_missing_or_implausible_removal(self):
         import json
@@ -473,7 +493,7 @@ class FenceMutationOrderTests(unittest.TestCase):
                                   (lambda now: {'status': 200, 'fencesRemoved': True,
                                                 'fencesRemovedNs': now - 60_000_000_000}, 'outside its control')):
             with self.subTest(message=message), self.assertRaisesRegex(AssertionError, message):
-                self.proof.remove_fences_mutation(self.vm(0, reported), 'guest ', self.evidence)
+                self.proof.remove_fences_mutation(self.vm(0, reported), 'guest ', self.evidence, 0)
             # The failing in-flight result is retained as evidence before the verdict.
             self.assertIn('status', json.loads((self.evidence / 'mutation-inflight.json').read_text()))
 
