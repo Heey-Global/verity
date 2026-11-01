@@ -1,9 +1,9 @@
+import { DEFAULT_SANDBOX_HOST_RESERVE_BYTES } from './sandbox-memory-policy.js';
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { parseByteSize, parseCpuCores, parseSwapSize } from './embedded.js';
 import {
   clampNanoCpusToHost,
-  DEFAULT_SANDBOX_MEMORY_BYTES,
   DEFAULT_SANDBOX_NANO_CPUS,
   DEFAULT_SANDBOX_SWAP_BYTES,
 } from './provisioner.js';
@@ -25,13 +25,30 @@ function composeDefault(name: string): string | undefined {
 }
 
 describe('sandbox resource defaults', () => {
+  it('leaves the hard limit automatic in Compose', () => {
+    expect(composeDefault('VERITY_SANDBOX_MEMORY')).toBe('');
+    expect(composeDefault('VERITY_SANDBOX_MEMORY_RESERVATION')).toBe('');
+  });
+  it.each([
+    ['sandboxMemoryReservationBytes', 'VERITY_SANDBOX_MEMORY_RESERVATION'],
+    ['sandboxHostReserveBytes', 'VERITY_SANDBOX_HOST_RESERVE'],
+    ['sandboxOomScoreAdj', 'VERITY_SANDBOX_OOM_SCORE_ADJ'],
+  ])('forwards %s through the embedded composition root', (field, name) => {
+    // A parsed setting can look configured while the composition root drops it.
+    expect(readFileSync(new URL('packages/server/src/server-main.ts', repoRoot), 'utf8')).toContain(
+      `process.env.${name}`,
+    );
+    expect(readFileSync(new URL('packages/server/src/embedded.ts', repoRoot), 'utf8')).toContain(
+      `${field}: config.${field}`,
+    );
+  });
   // Compose sets these variables on every Compose Server; an embedded Server, or a
   // managed host whose sealed sources predate a variable, falls through to the
   // provisioner constant instead. If the two drift apart, some hosts get the old
   // ceilings with nothing wrong in any config file. Parsed with the Server's own
   // parsers, so a Compose default the Server would reject at boot also fails here.
   it.each([
-    ['VERITY_SANDBOX_MEMORY', parseByteSize, DEFAULT_SANDBOX_MEMORY_BYTES],
+    ['VERITY_SANDBOX_HOST_RESERVE', parseByteSize, DEFAULT_SANDBOX_HOST_RESERVE_BYTES],
     ['VERITY_SANDBOX_SWAP', parseSwapSize, DEFAULT_SANDBOX_SWAP_BYTES],
     ['VERITY_SANDBOX_CPUS', parseCpuCores, DEFAULT_SANDBOX_NANO_CPUS],
   ] as const)('ships the same %s from Compose as the provisioner', (name, parseValue, code) => {

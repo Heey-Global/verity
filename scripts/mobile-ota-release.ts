@@ -600,6 +600,8 @@ function stage(runtime: string, version: string, prepareOnly = false) {
       '--show-error',
       '--max-time',
       '60',
+      '--header',
+      'Accept: application/json',
       ios[0].manifestPermalink,
     ]),
   ) as Parameters<typeof validateOTAProfile>[2];

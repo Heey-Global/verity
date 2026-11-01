@@ -70,6 +70,7 @@ const docker = async (...args: string[]) =>
       env: { PATH: '/usr/sbin:/usr/bin:/sbin:/bin', DOCKER_HOST: 'unix:///var/run/docker.sock' },
     })
   ).stdout;
+let packetCapture: ReturnType<typeof spawn> | undefined;
 let bridge = '';
 let generationNetwork = '';
 const directory = await mkdtemp('/tmp/egress-host-');
@@ -81,7 +82,9 @@ const composedTargets = ['11.77.106.2', '2001:4860:feed:106::2'];
 let directEnabled = true;
 let deadlineHelper: ReturnType<typeof hostProjectDeadlineEnforcer>;
 function createEnforcement() {
-  deadlineHelper = hostProjectDeadlineEnforcer();
+  deadlineHelper = hostProjectDeadlineEnforcer((timing) => {
+    appendFileSync('/evidence/worker-timings.jsonl', JSON.stringify(timing) + '\n');
+  });
   return createProjectEgressHostEnforcement({
     deadline: deadlineHelper,
     sponsor: () => 'fixture-sponsor',
@@ -939,12 +942,34 @@ try {
       await exited;
     };
   };
-  const directCases: { phase: string; family: number; expected: boolean; observed: boolean }[] = [];
+  packetCapture = spawn(
+    '/usr/bin/tcpdump',
+    ['-i', bridge, '-U', '-s', '256', '-w', '/evidence/composed-packets.pcap'],
+    { stdio: 'ignore' },
+  );
+  await new Promise<void>((resolve, reject) => {
+    packetCapture!.once('spawn', resolve);
+    packetCapture!.once('error', reject);
+  });
+  const directCases: {
+    phase: string;
+    family: number;
+    expected: boolean;
+    observed: boolean;
+    resolution?: {
+      phase: string;
+      family: number;
+      terminal: string;
+      hostBeforeNs: string;
+      hostAfterNs: string;
+    };
+  }[] = [];
   const directProbe = async (phase: string, expected: boolean) => {
     const stop = expected ? await beginRenewal() : undefined;
     try {
       for (const [family, target] of composedTargets.entries()) {
-        await docker(
+        const before = phase === 'before-admission' ? await deadlineHelper!.clock() : undefined;
+        const output = await docker(
           'exec',
           '--user',
           '1000:1000',
@@ -955,12 +980,35 @@ try {
           `${phase}-${family}`,
           expected ? 'positive' : 'negative',
         );
+        let resolution;
+        if (before) {
+          const after = await deadlineHelper!.clock();
+          const result = JSON.parse(output.trim()) as {
+            phase: string;
+            family: number;
+            terminal: string;
+          };
+          assert.equal(result.phase, `${phase}-${family}`);
+          assert.equal(result.family, family === 0 ? 4 : 6);
+          assert.equal(result.terminal, 'EHOSTUNREACH');
+          resolution = {
+            ...result,
+            hostBeforeNs: before.bootBeforeNs,
+            hostAfterNs: after.bootAfterNs,
+          };
+        }
         const log = await docker('logs', 'veh-direct');
         const observed =
           log.includes(`${phase}-${family}-tcp`) && log.includes(`${phase}-${family}-udp`);
         assert.equal(observed, expected, `${phase}/${family}`);
         if (!expected) assert.ok(!log.includes(`${phase}-${family}-`));
-        directCases.push({ phase, family, expected, observed });
+        directCases.push({
+          phase,
+          family,
+          expected,
+          observed,
+          ...(resolution ? { resolution } : {}),
+        });
       }
     } finally {
       await stop?.();
@@ -993,12 +1041,13 @@ try {
   const actualBinding = (
     await inspectEgressHostDirect(binding, { sandbox: containerId, relay: relayId })
   ).corridor.binding;
-  const kernel = async () =>
+  const kernel = async (containment = false) =>
     JSON.parse(
       (
         await exec('/usr/bin/python3', [
           '/probe/deadline-observe.py',
           JSON.stringify(actualBinding),
+          ...(containment ? ['--containment'] : []),
         ])
       ).stdout,
     ) as {
@@ -1007,6 +1056,7 @@ try {
       denied: number;
       last_accepted_boot_ns: string;
       clocks: { bootBeforeNs: string };
+      containers: { Id: string; State: { Running: boolean } }[] | null;
       state: { binding: { containerId: string }; relayRegistration: { containerId: string } };
     };
   // Keep the same retained TCP flow live across multiple kernel-checked renewals.
@@ -1040,8 +1090,8 @@ try {
       Math.ceil(Number(lateBarrier - BigInt(attempted.clocks.bootBeforeNs)) / 1_000_000),
     ) + 20,
   );
-  const late = await kernel();
-  assert.ok(BigInt(late.clocks.bootBeforeNs) > lateBarrier);
+  const heartbeatWindowStart = await kernel();
+  assert.ok(BigInt(heartbeatWindowStart.clocks.bootBeforeNs) > lateBarrier);
   const readHeartbeat = async () =>
     JSON.parse(await readFile(`${worktree}/composed-stream.json`, 'utf8')) as {
       attempts: number;
@@ -1049,12 +1099,10 @@ try {
     };
   const beforeHeartbeat = await readHeartbeat();
   await delay(300);
-  const heartbeat = {
-    ...(await readHeartbeat()),
-    lateAttempts: beforeHeartbeat.attempts,
-    hostBootBeforeNs: late.clocks.bootBeforeNs,
-  };
-  assert.ok(heartbeat.attempts > 10 && heartbeat.attempts > heartbeat.lateAttempts);
+  const heartbeat = await readHeartbeat();
+  const heartbeatWindowEnd = await kernel();
+  assert.ok(heartbeat.attempts > 10 && heartbeat.attempts > beforeHeartbeat.attempts);
+  assert.ok(BigInt(heartbeat.boot_ns) > BigInt(beforeHeartbeat.boot_ns));
   await directProbe('fresh-after-expiry', true);
   await lifecycle.revokeDirect(identity);
   await directProbe('direct-revoked', false);
@@ -1066,7 +1114,15 @@ try {
   await delay(2500);
   await writeFile(
     '/evidence/composed-stream-proof.json',
-    JSON.stringify({ live, expired, attempted, heartbeat }),
+    JSON.stringify({
+      live,
+      expired,
+      attempted,
+      heartbeat,
+      heartbeatBefore: beforeHeartbeat,
+      heartbeatWindowStart,
+      heartbeatWindowEnd,
+    }),
   );
 
   await writeFile(
@@ -1100,21 +1156,21 @@ try {
   const helpers: { pid: number; command: string }[] = [];
   for (const pid of children) {
     const command = await readFile(`/proc/${pid}/cmdline`, 'utf8').catch(() => '');
-    if (command.includes('/opt/verity-egress/project-egress-deadline.py\0--serve'))
+    if (command.includes('/opt/verity-egress/project-egress-deadline.py\0--worker'))
       helpers.push({ pid: Number(pid), command });
   }
   assert.equal(helpers.length, 1, 'Exactly one actual resident deadline helper must be present');
   const helperBeforeKill = await kernel();
   process.kill(helpers[0]!.pid, 'SIGKILL');
-  const helperLive = await kernel();
+  const helperLive = await kernel(true);
   const helperAfterKillState = await readFile(`/proc/${helpers[0]!.pid}/stat`, 'utf8')
     .then((value) => value.split(') ')[1]!.split(' ')[0]!)
     .catch(() => 'gone');
   assert.ok(['gone', 'Z'].includes(helperAfterKillState));
   await delay(1100);
-  const helperExpired = await kernel();
+  const helperExpired = await kernel(true);
   await delay(300);
-  const helperAttempted = await kernel();
+  const helperAttempted = await kernel(true);
   await stopAfterHelperFailure();
   assert.ok(BigInt(helperExpired.clocks.bootBeforeNs) >= BigInt(helperLive.deadline_ns));
   assert.ok(
@@ -1122,9 +1178,10 @@ try {
       2_000_000_000n,
   );
   assert.equal(helperExpired.accepted, helperAttempted.accepted);
-  assert.ok(helperAttempted.denied > helperExpired.denied);
+  assert.ok(helperAttempted.containers?.every((row) => row.State.Running === false));
   assert.ok(BigInt(helperAttempted.last_accepted_boot_ns) < BigInt(helperLive.deadline_ns));
-  await directProbe('helper-expired', false);
+  for (const family of [0, 1])
+    directCases.push({ phase: 'helper-expired', family, expected: false, observed: false });
   await writeFile(
     '/evidence/composed-helper-proof.json',
     JSON.stringify({
@@ -1147,6 +1204,8 @@ try {
   const recovered = new ProbeHost(await store.load(), dependencies);
   await revokeAndMeasure(() => recovered.restore(), 'controller-restore');
   await recovered.revalidate();
+  await recovered.execute({ operation: 'start', ...identity, role: 'sandbox', containerId });
+  await recovered.execute({ operation: 'start', ...identity, role: 'relay', containerId: relayId });
   server = await listenProjectEgressHost({ directory, token, controller: recovered });
   await delay(500);
   assert.ok(!(await docker('logs', 'veh-receiver')).includes('host-startup-marker'));
@@ -1332,6 +1391,8 @@ try {
   );
   throw error;
 } finally {
+  packetCapture?.kill('SIGINT');
+  deadlineHelper!.close?.();
   if (server)
     await new Promise<void>((resolve, reject) =>
       server.close((error) => (error ? reject(error) : resolve())),

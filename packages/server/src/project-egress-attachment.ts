@@ -59,10 +59,12 @@ export async function inspectProjectFenceAttachment(
   binding: ProjectFenceBinding,
   io = {
     inspect: async (containerId: string, networkId: string) =>
-      JSON.stringify([
-        await readEgressDockerObject('container', containerId),
-        await readEgressDockerObject('network', networkId),
-      ]),
+      JSON.stringify(
+        await Promise.all([
+          readEgressDockerObject('container', containerId),
+          readEgressDockerObject('network', networkId),
+        ]),
+      ),
     ifindex: (bridge: string) => readFile(`/sys/class/net/${bridge}/ifindex`, 'utf8'),
   },
 ): Promise<ProjectFenceBinding> {

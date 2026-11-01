@@ -49,7 +49,10 @@ export async function readEgressDockerObject(
         response.on('aborted', () => reject(new Error('Truncated host Docker inspection')));
         response.on('end', () => {
           try {
-            const value: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+            if (!response.complete) throw new Error('Truncated host Docker inspection');
+            const value: unknown = JSON.parse(
+              new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks)),
+            );
             if (kind === 'container' || kind === 'network')
               z.object({ Id: z.literal(id!) }).parse(value);
             resolve(value);

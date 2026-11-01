@@ -96,11 +96,44 @@ function runHook(
   cwd: string,
   opts: { path?: string; env?: Record<string, string>; input?: string } = {},
 ): ReturnType<typeof spawnSync> {
-  return spawnSync(hook, [], {
+  // Isolate dependency preparation from the registry while exercising the real hook.
+  const fixtureSeed = mkdtempSync(join(tmpdir(), 'verity-hook-seed-'));
+  tempRoots.push(fixtureSeed);
+  mkdirSync(join(fixtureSeed, 'hooks'));
+  mkdirSync(join(fixtureSeed, 'bin'));
+  const fixtureHook = join(fixtureSeed, 'hooks/pre-push');
+  writeFileSync(fixtureHook, readFileSync(hook), { mode: 0o755 });
+  for (const name of ['verity-review-base.sh', 'verity-local-checks']) {
+    symlinkSync(
+      fileURLToPath(new URL(`../agent-seed/bin/${name}`, import.meta.url)),
+      join(fixtureSeed, 'bin', name),
+    );
+  }
+  writeFileSync(
+    join(fixtureSeed, 'bin/verity-dependencies'),
+    `#!/bin/sh
+if [ "$1" = install ]; then
+  echo install >> .install-log
+  [ "$VERITY_TEST_INSTALL_FAIL" != 1 ] || exit 1
+  mkdir -p node_modules
+  touch node_modules/.fixture-ready
+fi
+[ -f node_modules/.fixture-ready ] || [ -f node_modules/.package-lock.json ]
+`,
+    { mode: 0o755 },
+  );
+  return spawnSync(fixtureHook, [], {
     cwd,
     encoding: 'utf8',
     input: opts.input,
-    env: { ...process.env, ...hermeticGit, PATH: opts.path ?? process.env.PATH, ...opts.env },
+    env: {
+      ...process.env,
+      ...hermeticGit,
+      // A copied hook cannot rely on a globally installed seed scanner in CI.
+      VERITY_SECRET_SCAN_BIN: passingSecretScan(),
+      PATH: opts.path ?? process.env.PATH,
+      ...opts.env,
+    },
   });
 }
 
@@ -170,8 +203,7 @@ describe('pre-push lint gate', () => {
    * Missing npm and missing node_modules used to share one banner. They are
    * different situations: nobody chose to leave npm out of the image, so that
    * stays a provisioning block, while node_modules is absent in every fresh
-   * worktree by design and installing it is a decision — the hook must not make
-   * it, and must not ask the operator to fix the image either.
+   * worktree by design and must be prepared automatically before running checks.
    */
   it('still blocks as a provisioning bug when npm is unavailable', () => {
     const repo = repoWith('{"scripts":{"lint":"eslint ."}}');
@@ -187,31 +219,23 @@ describe('pre-push lint gate', () => {
     expect(result.stderr).not.toContain('dependencies are not installed');
   });
 
-  it('asks before installing when dependencies are missing, naming both commands', () => {
-    const repo = repoWith('{"scripts":{"lint":"eslint ."}}');
-    writeFileSync(join(repo, 'package-lock.json'), '{"lockfileVersion":3}');
-
-    const result = runHook(repo, { env: { VERITY_SECRET_SCAN_BIN: passingSecretScan() } });
-
-    expect(result.status).toBe(2);
-    expect(result.stderr).toContain(
-      "lint and format checks can't run: dependencies are not installed",
-    );
-    // The two options the operator is to be offered, as runnable commands: an
-    // agent that only ever sees this banner must be able to act on either answer.
-    expect(result.stderr).toContain('verity-dependencies" install');
-    expect(result.stderr).toContain('verity-local-checks skip');
-    expect(result.stderr).not.toMatch(/--no-verify/);
+  it('automatically installs once and runs checks before the review gate', () => {
+    const repo = repoWithPendingReview('{"scripts":{"lint":"echo checked >&2"}}');
+    const result = runHook(repo, { env: reviewEnv() });
+    expect(result.stderr).toContain('checked');
+    expect(result.stderr).toContain('pre-push code review required');
+    expect(readFileSync(join(repo, '.install-log'), 'utf8')).toBe('install\n');
+    runHook(repo, { env: reviewEnv() });
+    expect(readFileSync(join(repo, '.install-log'), 'utf8')).toBe('install\n');
   });
 
-  it('offers npm install when there is no lockfile to install from', () => {
-    const result = runHook(repoWith('{"scripts":{"format":"prettier --check ."}}'), {
-      env: { VERITY_SECRET_SCAN_BIN: passingSecretScan() },
-    });
-
+  it('blocks on installation failure before running checks', () => {
+    const repo = repoWithPendingReview('{"scripts":{"lint":"echo SHOULD_NOT_RUN >&2"}}');
+    const result = runHook(repo, { env: { ...reviewEnv(), VERITY_TEST_INSTALL_FAIL: '1' } });
     expect(result.status).toBe(2);
-    expect(result.stderr).toContain('verity-dependencies" install');
-    expect(result.stderr).not.toContain('npm ci');
+    expect(result.stderr).toContain('dependency preparation failed');
+    expect(result.stderr).not.toContain('SHOULD_NOT_RUN');
+    expect(result.stderr).not.toContain('pre-push code review required');
   });
 
   it('stays inert in a repository that declares neither check', () => {
@@ -238,7 +262,7 @@ describe('pre-push lint gate', () => {
     expect(result.stderr).toContain('pre-push code review required');
   });
 
-  it('asks again when package.json or the lockfile changed since the skip', () => {
+  it('automatically prepares when dependency inputs invalidate the skip', () => {
     const repo = repoWithPendingReview('{"scripts":{"lint":"eslint ."}}');
     skipLocalChecks(repo);
     writeFileSync(join(repo, 'package-lock.json'), '{"lockfileVersion":3}');
@@ -246,10 +270,8 @@ describe('pre-push lint gate', () => {
     const result = runHook(repo, { env: reviewEnv() });
 
     expect(result.status).toBe(2);
-    expect(result.stderr).toContain('PUSH BLOCKED - dependencies or check config changed');
-    expect(result.stderr).toContain('verity-dependencies" install');
-    expect(result.stderr).toContain('verity-local-checks skip');
-    expect(result.stderr).not.toContain('pre-push code review required');
+    expect(result.stderr).toContain('preparing dependencies automatically');
+    expect(readFileSync(join(repo, '.install-log'), 'utf8')).toBe('install\n');
   });
 
   it('forgets the skip on reset', () => {
@@ -264,7 +286,7 @@ describe('pre-push lint gate', () => {
     const result = runHook(repo, { env: reviewEnv() });
 
     expect(result.status).toBe(2);
-    expect(result.stderr).toContain('dependencies are not installed');
+    expect(result.stderr).toContain('preparing dependencies automatically');
   });
 
   it('ignores the skip once dependencies are installed and runs the checks', () => {
@@ -571,12 +593,8 @@ describe('agent-seed hook packaging', () => {
         artifact.indexOf('verity-code-review mark'),
       );
       expect(artifact).toContain('code_review');
-      // The dependency question: the fragment tells the agent what to do when
-      // the hook prints this banner, so the two have to agree on its wording.
-      expect(artifact).toContain(
-        "lint and format checks can't run: dependencies are not installed",
-      );
-      expect(artifact).toContain('dependencies or check config changed');
+      expect(artifact).toContain('verity-dependencies');
+      expect(artifact).not.toContain('Ask which one to do');
     }
   });
 

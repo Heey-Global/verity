@@ -315,6 +315,7 @@ const onMain = () => {
   const previous = parts[0]+'.'+parts[1]+'.'+(Number(parts[2])-1);
   return {...candidate, version, tag:'mobile-v'+version, branch:'staging-mobile-v'+version+'-'+sha, baseline:'mobile-v'+previous};
 };
+if(tool === 'curl' && !args.includes('Accept: application/json')) out('--ExpoManifestBoundary\\r\\nContent-Type: application/json\\r\\n');
 if(tool === 'curl') out({id:candidate.group,runtimeVersion:'staging-'+candidate.runtime,launchAsset:{hash:require('node:crypto').createHash('sha256').update(s.wrongBundle?'different export':'hermes').digest('base64url')}});
 if(tool === 'git') {
   if(args[0] === 'rev-parse') {if(args[1]==='origin/main'){s.baseReads=(s.baseReads??0)+1;out(s.moveProposalBase && s.baseReads>1?'e'.repeat(40):(s.proposalBase??sha));}out(sha);}

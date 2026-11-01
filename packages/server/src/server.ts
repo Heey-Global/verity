@@ -3030,7 +3030,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   );
   app.get('/api/remote-control/recordings/:runId/export', async (request, reply) =>
     recordingRequest(request, reply, (manager) =>
-      manager.export((request.params as { runId: string }).runId),
+      manager.export(
+        (request.params as { runId: string }).runId,
+        request.headers['x-verity-recording-failure-details'] === '1',
+      ),
     ),
   );
   app.addHook('onClose', (_instance, done) => {

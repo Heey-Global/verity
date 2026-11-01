@@ -411,13 +411,17 @@ export class ProjectEgressHost {
           const transport = this.deps.inspectDirectTransport
             ? await this.deps.inspectDirectTransport(record.binding, ids)
             : await (async () => {
-                for (const role of ['sandbox', 'relay'] as const)
-                  await this.deps.inspectContainer(record.binding, record.containers[role]!, role);
-                await this.deps.inspectNetwork(record.binding, containerIds(record));
-                return await this.deps.inspectTransport?.(record.binding, {
-                  sandbox: record.containers.sandbox!,
-                  relay: record.containers.relay!,
-                });
+                // Await every reader before admission or containment, including failures.
+                const checks = await Promise.allSettled([
+                  ...(['sandbox', 'relay'] as const).map((role) =>
+                    this.deps.inspectContainer(record.binding, record.containers[role]!, role),
+                  ),
+                  this.deps.inspectNetwork(record.binding, containerIds(record)),
+                  this.deps.inspectTransport?.(record.binding, ids),
+                ]);
+                for (const check of checks) if (check.status === 'rejected') throw check.reason;
+                const result = checks[3]!;
+                return result.status === 'fulfilled' ? result.value : undefined;
               })();
           if (
             JSON.stringify(transport) !==

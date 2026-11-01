@@ -99,9 +99,9 @@ run_preflight() {
     *) preflight_error "amd64 or arm64 is required (found $(uname -m 2>/dev/null || printf unknown))" ;;
   esac
 
-  # curl and jq are what the host runtime service (deploy/host/verity-host-runtime) needs to
-  # fetch and register the pinned gVisor runtimes.
-  for tool in tar flock openssl curl jq; do
+  # curl, jq and bzip2 are what the host runtime service (deploy/host/verity-host-runtime)
+  # needs to fetch, unpack and register the pinned gVisor runtimes.
+  for tool in tar flock openssl curl jq bzip2; do
     if ! command -v "$tool" >/dev/null 2>&1; then
       missing_system_tools+=("$tool")
       preflight_error "$tool is required"
@@ -159,6 +159,7 @@ install_system_tools() {
       openssl) packages+=(openssl) ;;
       curl) packages+=(curl) ;;
       jq) packages+=(jq) ;;
+      bzip2) packages+=(bzip2) ;;
     esac
   done
 

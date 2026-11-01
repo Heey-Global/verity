@@ -1,5 +1,8 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { createDeadlineChannel } from './project-egress-deadline-channel.js';
+import {
+  createProjectDeadlineWorker,
+  type DeadlineWorkerTiming,
+} from './project-egress-deadline-worker.js';
 import { z } from 'zod';
 import type { ProjectFenceBinding } from './project-egress-fence.js';
 
@@ -113,7 +116,6 @@ export interface ProjectDeadlineEnforcer {
 }
 
 export interface ProjectDeadlineRelayEnforcer extends ProjectDeadlineEnforcer {
-  close?(): void;
   configureRelay(
     binding: ProjectFenceBinding,
     relay: { containerId: string; endpointId: string; codex: boolean },
@@ -122,12 +124,56 @@ export interface ProjectDeadlineRelayEnforcer extends ProjectDeadlineEnforcer {
 }
 
 /** Fixed root-owned helper; no executable or namespace comes from a project. */
-export function hostProjectDeadlineEnforcer(): ProjectDeadlineRelayEnforcer {
-  const channel = createDeadlineChannel();
-  const request = (input: unknown) => channel.request(input);
+export interface ProjectDeadlineTiming extends DeadlineWorkerTiming {
+  operation: string;
+  capturedBootNs?: string;
+  bootDeadlineNs?: string;
+  previousBootDeadlineNs?: string;
+}
+export function hostProjectDeadlineEnforcer(
+  observe?: (timing: ProjectDeadlineTiming) => void,
+): ProjectDeadlineRelayEnforcer & { close(): void } {
+  const worker = createProjectDeadlineWorker();
+  const request = (input: { operation: string; [key: string]: unknown }): Promise<unknown> =>
+    worker.request(
+      input,
+      (value) => {
+        if (input.operation === 'clock') return clockSchema.parse(value);
+        const state =
+          input.operation === 'configure-relay'
+            ? 'relay-configured'
+            : input.operation === 'clear-relay'
+              ? 'relay-denied'
+              : ['arm', 'renew'].includes(input.operation)
+                ? 'armed'
+                : 'denied';
+        if (state === 'armed') {
+          const result = z
+            .strictObject({ state: z.literal('armed'), bootDeadlineNs: decimal })
+            .parse(value);
+          if (result.bootDeadlineNs !== (input.lease as ProjectDeadlineLease).bootDeadlineNs)
+            throw new Error('Host changed immutable packet deadline');
+          return result;
+        }
+        return z.strictObject({ state: z.literal(state) }).parse(value);
+      },
+      (timing) => {
+        const lease = input.lease as ProjectDeadlineLease | undefined;
+        observe?.({
+          ...timing,
+          operation: input.operation,
+          ...(lease
+            ? { capturedBootNs: lease.capturedBootNs, bootDeadlineNs: lease.bootDeadlineNs }
+            : {}),
+          ...(typeof input.previousBootDeadlineNs === 'string'
+            ? { previousBootDeadlineNs: input.previousBootDeadlineNs }
+            : {}),
+        });
+      },
+    );
   const denied = z.strictObject({ state: z.literal('denied') });
   return {
-    close: () => channel.close(),
+    close: () => worker.close(),
     async configureRelay(binding, relay) {
       z.strictObject({ state: z.literal('relay-configured') }).parse(
         await request({ operation: 'configure-relay', binding, relay }),

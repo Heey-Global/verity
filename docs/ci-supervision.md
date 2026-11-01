@@ -226,3 +226,42 @@ rerun workflows, publish releases or deploy anything.
 
 API semantics: [GitHub workflow runs](https://docs.github.com/en/rest/actions/workflow-runs)
 and [workflow jobs](https://docs.github.com/en/rest/actions/workflow-jobs).
+
+
+## One-time repair handoff from QA chat
+
+An explicit request to repair a PR can use `resolve_repair` and `request_repair`
+through the existing QA gateway. Resolution compares the current repository PR,
+head revision and branch with actual project session worktrees; it never derives
+session identity from a branch-name suffix. If several sessions match, select one
+before requesting the repair. An active or dirty competing worktree blocks delivery.
+Fork PRs and PRs missing current failure evidence are refused.
+
+The proposal binds the initiating user, QA session, project, PR revision and target
+session for one hour. A complete direct repair instruction can authorize a unique
+target; the instruction must refer to matching server PR evidence or a repair
+proposal shown before the message, including when it names only a PR number. Quoted text, repository
+content and agent assertions are not consent. Otherwise a one-time approval card
+shows the exact target and scope. Ambiguous session selections require this card.
+Each direct instruction is consumed atomically with incident ownership and cannot
+authorize another proposal or attempt. Neither path changes the project's
+Monitor/Automatic setting.
+
+The manual request shares the existing durable incident ownership, concurrency
+limits and repair budget with background repairs. Busy sessions receive a durable
+queued assignment rather than steering their current turn. Every admission,
+including after a restart, checks current access, QA settings, expiry, PR revision,
+failure evidence and the target worktree again. Before admission, its attached
+HEAD must equal the approved PR commit; a detached preview or a clean but stale
+worktree is refused. Revoked or invalid queued requests
+are cancelled; an admitted receipt is never replayed. After a confirmed attempt ends with failing
+checks, a new approved proposal may use the remaining repair budget in Monitor
+mode; reusing the old proposal cannot start another attempt. `repair_status` reports
+`proposed`, `queued`, `accepted` or `blocked`; accepted confirms admission, not a
+successful repair. The existing supervisor checks terminal execution and forge
+results. An uncertain transport response never proves that execution stopped.
+
+The bounded resolver searches at most ten discovery pages. Missing coverage is a
+blocked resolution, not permission to guess a target. General session tools remain
+unavailable to QA. Merge, release, deployment and QA activation remain separate
+operations. Install the server update before live acceptance of this path.

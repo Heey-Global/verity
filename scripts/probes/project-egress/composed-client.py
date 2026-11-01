@@ -41,8 +41,11 @@ with socket.socket(family, socket.SOCK_STREAM) as channel:
         channel.sendall((phase + '-tcp').encode())
         assert b'external-positive' in channel.recv(1024)
     except OSError as error:
-        if initial_denial and error.errno != errno.EHOSTUNREACH:
-            raise RuntimeError('Initial negative probe did not finish neighbor resolution') from error
+        if initial_denial:
+            if error.errno != errno.EHOSTUNREACH:
+                raise RuntimeError('Initial negative probe did not finish neighbor resolution') from error
+            print(json.dumps({'phase': phase, 'family': 6 if family == socket.AF_INET6 else 4,
+                              'terminal': 'EHOSTUNREACH'}))
         if expectation == 'positive':
             raise
     else:

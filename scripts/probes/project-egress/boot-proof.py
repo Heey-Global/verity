@@ -247,7 +247,11 @@ def main():
                 assert now - stream_after['heartbeat_ns'] < 2_000_000_000, 'Project poll stopped attempting authenticated requests'
             vm.ssh(guest + f'stop-poll {event}')
             recovery_start = time.monotonic_ns()
-            vm.ssh(guest + 'recover', timeout=240)
+            try:
+                vm.ssh(guest + 'recover', timeout=240)
+            except subprocess.CalledProcessError as error:
+                (evidence / (event + '-recovery-error.txt')).write_text(str(error.output))
+                raise
             after = json.loads(vm.ssh(guest + 'snapshot'))
             verify_retained(initial, after)
             vm.ssh(guest + 'external')

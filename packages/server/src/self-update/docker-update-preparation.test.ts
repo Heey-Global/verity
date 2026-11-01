@@ -1,6 +1,6 @@
 import { DEVCONTAINER_BUILDER_CONTRACT } from './devcontainer-builder.js';
 import { readFileSync } from 'node:fs';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
@@ -153,6 +153,7 @@ function inspectFromSpec(spec: ContainerSpec, status: string): ContainerInspect 
     command: spec.command,
     ...(spec.memoryBytes === undefined ? {} : { memoryBytes: spec.memoryBytes }),
     ...(spec.memorySwapBytes === undefined ? {} : { memorySwapBytes: spec.memorySwapBytes }),
+    ...(spec.oomScoreAdj === undefined ? {} : { oomScoreAdj: spec.oomScoreAdj }),
     ...(spec.nanoCpus === undefined ? {} : { nanoCpus: spec.nanoCpus }),
     ...(spec.pidsLimit === undefined ? {} : { pidsLimit: spec.pidsLimit }),
     mounts: [
@@ -428,6 +429,77 @@ describe('Docker update preparation', () => {
       await expect(prepare(docker)).resolves.toMatchObject({ phase: 'standby' });
       expect(docker.createContainer).toHaveBeenCalledTimes(2);
     });
+  });
+
+  // A host whose runtime service predates archive pins reaches an archive release through the
+  // builder: the target's bundle registers the runtimes, so no runtime request is needed.
+  it('installs an archive release through the builder on a host whose runtime service predates it', async () => {
+    const { root } = await setup();
+    const hostRuntimeDir = await mkdtemp(join(tmpdir(), 'verity-host-archive-'));
+    const release = 'release-20261026.0';
+    const args = {
+      runsc: ['--platform=systrap', '--network=none'],
+      'runsc-project': ['--platform=systrap', '--network=sandbox', '--host-uds=create'],
+    } as Record<string, string[]>;
+    const runtimes = new Map<string, { path: string; args: string[] }>();
+    const docker = {
+      ...fakeDocker(),
+      inspectRuntime: vi.fn(async (name: string) => runtimes.get(name)),
+    };
+    const builderRequests: string[] = [];
+    const host = setInterval(() => {
+      void readFile(join(hostRuntimeDir, 'builder-request.json'), 'utf8').then(
+        async (body) => {
+          const { id } = JSON.parse(body) as { id: string };
+          if (builderRequests.includes(id)) return;
+          builderRequests.push(id);
+          for (const name of Object.keys(args))
+            runtimes.set(name, { path: `/opt/verity/runsc/${release}/runsc`, args: args[name]! });
+          await writeFile(
+            join(hostRuntimeDir, 'builder-result.json'),
+            JSON.stringify({ version: 1, id, ok: true, message: 'builder updated' }),
+          );
+        },
+        () => undefined,
+      );
+    }, 5);
+    try {
+      await writeFile(
+        join(hostRuntimeDir, 'devcontainer-builder.json'),
+        '{"version":1,"gid":1102}',
+      );
+      await writeFile(
+        join(hostRuntimeDir, 'agent.json'),
+        JSON.stringify({ version: 1, trigger: 'systemd-path', builder: 'systemd-path' }),
+      );
+      docker.inspectImageLabels = vi.fn(async () => ({
+        'org.verity.devcontainer-builder': DEVCONTAINER_BUILDER_CONTRACT,
+        'org.verity.host-runtimes': JSON.stringify({
+          release,
+          sha512: { x86_64: 'a'.repeat(128), aarch64: 'b'.repeat(128) },
+          archiveSha512: { x86_64: 'c'.repeat(128), aarch64: 'd'.repeat(128) },
+          runtimes: args,
+        }),
+      }));
+      await expect(
+        resumeUpdatePreparation(
+          root,
+          await dockerUpdatePreparation({
+            managedRoot: root,
+            docker,
+            environment: { DATABASE_URL: 'postgres://db', DEPLOYMENT_ID: 'deployment-1' },
+            verifyImage: async () => undefined,
+            hostRuntimeDir,
+          }),
+        ),
+      ).resolves.toMatchObject({ phase: 'standby' });
+      // One builder installation, reused by the regular builder step after the runtimes.
+      expect(builderRequests).toHaveLength(1);
+      await expect(readFile(join(hostRuntimeDir, 'request.json'))).rejects.toThrow(/ENOENT/u);
+    } finally {
+      clearInterval(host);
+      await rm(hostRuntimeDir, { recursive: true, force: true });
+    }
   });
 
   // Repository builds are not a reason to hold back a Server update: a builder the host cannot
