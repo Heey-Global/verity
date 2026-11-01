@@ -4,13 +4,16 @@ Brokered Secret jobs use Docker's `runsc` runtime; project Sandboxes that serve 
 `runsc-project`, a second registration of the same pinned binary. Both belong to the Docker host,
 not the Verity server or project-sandbox image.
 
-`versions.env` pins the upstream release, the SHA-512 checksum for both supported architectures, and
-the arguments of both registrations. The CI smoke runs natively on amd64 and arm64; it does not use
+`versions.env` pins the upstream release, the SHA-512 checksum of `runsc` for both supported
+architectures, and the arguments of both registrations. gVisor ships newer releases as
+`gvisor.tar.bz2`, whose `runsc` needs the sidecar binaries in `gvisor-bin/` next to it; for those,
+`RUNSC_ARCHIVE_SHA512_*` pins the archive as well. The CI smoke runs natively on amd64 and arm64; it does not use
 emulation for this security boundary.
 
 Managed installations need nothing done by hand. `deploy/bin/verity-install` installs the host
 component `deploy/host/verity-host-runtime` (with a systemd path unit) and uses it to download the
-pinned artifact, verify its checksum and version, install it at `/opt/verity/runsc/<release>/runsc`,
+pinned artifact, verify its checksum and version, install it at `/opt/verity/runsc/<release>/runsc`
+(an archive release with its `gvisor-bin/` beside it),
 merge exactly the `runsc` and `runsc-project` entries into `/etc/docker/daemon.json`, and reload
 Docker. A reload re-reads the runtimes without restarting any container; a reload Docker does not
 take restores the previous `daemon.json`. Afterwards the managed Updater asks the same component
@@ -79,6 +82,11 @@ Sandbox is replaced under `runsc-project`. The future Docker
 Policy Gateway must admit this read-only operation; see ADR 0017. The historical generic proxy
 sketch is not a supported security boundary.
 
-Updating gVisor requires changing the release and both checksums together, rolling the host asset,
-reloading Docker, and updating the expected verifier path. Never point the runtime registration at
-an unversioned `runsc` symlink and never fall back to `runc`.
+Updating gVisor means changing `RUNSC_RELEASE`; Renovate proposes it. Every other pin follows from
+it, and `node scripts/gvisor-pins.mjs write` derives them from what gVisor published: the
+checksums, the `org.verity.host-runtimes` label in `deploy/Dockerfile`, and the path the Server
+verifies. On Renovate branches `.github/workflows/renovate-gvisor.yml` does this itself, and it
+fails any other pull request whose pins do not match (`node scripts/gvisor-pins.mjs check`). The
+Updater then installs the release on each host before activating it (ADR 0008 Amendments 2 and
+5). Never point the runtime registration at an unversioned `runsc` symlink and never fall back to
+`runc`.

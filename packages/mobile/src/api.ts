@@ -30,6 +30,7 @@ import {
 } from './runtimeDiagnostics.js';
 import { recordingDigest, type RecordingDigest } from './recording-digest.js';
 import {
+  recordingFailureReasonSchema,
   selectedEvidenceMetadataSchema,
   selectedEvidenceExportSchema,
   selectedEvidenceHashInput,
@@ -982,7 +983,13 @@ const serverUpdateAttemptSchema = z.object({
 });
 export type ServerUpdateAttempt = z.infer<typeof serverUpdateAttemptSchema>;
 
+const hostPreparationSchema = z.object({
+  updateId: z.string().min(1),
+  targetDigest: z.string().min(1),
+  stage: z.enum(['renewing', 'registering', 'ready', 'restored', 'recovery-required', 'unchanged']),
+});
 const serverUpdateRecoverySchema = z.object({
+  hostPreparation: hostPreparationSchema.optional().catch(undefined),
   installed: z
     .object({
       version: z.string().min(1),
@@ -1000,6 +1007,7 @@ export type ServerUpdateStatus = z.infer<typeof serverUpdateStatusSchema> & {
 } & Partial<{
     installed: { version: string; generation: number | null };
     attempt: ServerUpdateAttempt | null;
+    hostPreparation: z.infer<typeof hostPreparationSchema>;
     stalled: boolean;
     recovery: { retry: boolean; supersede: boolean };
   }>;
@@ -1319,6 +1327,13 @@ export type SelectedConnectionRecordingStatus = z.infer<
 
 export const connectionRecordingExportSchema = z
   .object({
+    failures: z
+      .object({
+        stop: recordingFailureReasonSchema.nullable(),
+        export: recordingFailureReasonSchema.nullable(),
+      })
+      .strict()
+      .optional(),
     version: z.literal(1),
     status: connectionRecordingStatusSchema,
     core: z
@@ -3446,6 +3461,9 @@ export class VerityClient {
     return {
       ...serverUpdateStatusSchema.parse(body),
       ...serverUpdateEnvelopeSchema.parse(body),
+      ...(recovery.hostPreparation === undefined
+        ? {}
+        : { hostPreparation: recovery.hostPreparation }),
       ...(recovery.installed === undefined ? {} : { installed: recovery.installed }),
       ...(recovery.attempt === undefined ? {} : { attempt: recovery.attempt }),
       ...(recovery.stalled === undefined ? {} : { stalled: recovery.stalled }),
@@ -4185,6 +4203,7 @@ export class VerityClient {
       `/api/remote-control/recordings/${runId}/export`,
       {
         method: 'GET',
+        headers: { 'x-verity-recording-failure-details': '1' },
       },
       this.recordingFetchImpl,
     );
@@ -4516,6 +4535,7 @@ export class VerityClient {
     authType?: 'none' | 'static' | 'oauth';
     oauthClientId?: string | null;
     oauthClientSecret?: string | null;
+    oauthTokenAuthMethod?: 'none' | 'client_secret_post' | 'client_secret_basic';
     oauthAuthorizationEndpoint?: string | null;
     oauthTokenEndpoint?: string | null;
     oauthScopes?: string | null;
@@ -4528,14 +4548,70 @@ export class VerityClient {
     return z.object({ connection: httpMcpConnectionSchema }).parse(await res.json()).connection;
   }
 
+  async discoverHttpMcpOAuth(url: string): Promise<{
+    authorizationEndpoint: string;
+    tokenEndpoint: string;
+    scopes: string;
+    registrationAvailable: boolean;
+  }> {
+    const res = await this.request('/mcp-connections/oauth/discover', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ url }),
+    });
+    return z
+      .object({
+        authorizationEndpoint: z.string(),
+        tokenEndpoint: z.string(),
+        scopes: z.string(),
+        registrationAvailable: z.boolean(),
+      })
+      .parse(await res.json());
+  }
+
+  async startHttpMcpOAuth(
+    connectionId: string,
+    platform: 'web' | 'native' | 'native-staging',
+  ): Promise<{
+    authorizationUrl: string;
+    state: string;
+    redirectUri: string;
+    expiresAt: number;
+  }> {
+    const res = await this.request(
+      `/mcp-connections/${encodeURIComponent(connectionId)}/oauth/start`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ platform }),
+      },
+    );
+    return z
+      .object({
+        authorizationUrl: z.string(),
+        state: z.string(),
+        redirectUri: z.string(),
+        expiresAt: z.number(),
+      })
+      .parse(await res.json());
+  }
+
+  async cancelHttpMcpOAuth(connectionId: string, state: string): Promise<void> {
+    await this.request(`/mcp-connections/${encodeURIComponent(connectionId)}/oauth/cancel`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ state }),
+    });
+  }
+
   async completeHttpMcpOAuth(
     connectionId: string,
-    input: { code: string; codeVerifier: string; redirectUri: string },
+    input: { code: string; state: string },
   ): Promise<void> {
     await this.request(`/mcp-connections/${encodeURIComponent(connectionId)}/oauth/complete`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(input),
+      body: JSON.stringify({ code: input.code, state: input.state }),
     });
   }
 

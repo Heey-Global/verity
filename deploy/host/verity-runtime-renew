@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Executed only after independent signature admission of this exact target image.
+set -euo pipefail
+umask 077
+die() { echo "verity-runtime-renew: $*" >&2; exit 1; }
+[[ $(id -u) = 0 ]] || die 'requires root'
+[[ ${VERITY_RENEW_IMAGE:-} =~ ^ghcr\.io/heey-global/verity/verity-server@sha256:[a-f0-9]{64}$ ]] || die 'requires an official digest'
+for identifier in "${VERITY_RENEW_DEPLOYMENT:-}" "${VERITY_RENEW_ID:-}"; do
+  [[ $identifier =~ ^[A-Za-z0-9][A-Za-z0-9_.:-]{0,255}$ ]] || die 'invalid renewal identity'
+done
+[[ -S /run/systemd/private ]] || die 'automatic renewal requires host systemd'
+# Do not overlap the installer, including one from an older release.
+lock=${VERITY_INSTALL_LOCK:?}
+[[ -f $lock && ! -L $lock && $(stat -c %u "$lock") = 0 ]] || die 'unsafe installer lock'
+[[ $(( 8#$(stat -c %a "$lock") & 8#22 )) = 0 ]] || die 'installer lock is writable by other users'
+exec 8<>"$lock"
+flock -n 8 || die 'another installer is running'
+exec bash "$(dirname -- "${BASH_SOURCE[0]}")/install-runtime-service.sh"

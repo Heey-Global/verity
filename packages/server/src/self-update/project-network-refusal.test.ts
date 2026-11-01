@@ -138,6 +138,8 @@ describe('a managed deployment refuses project networks', () => {
       // request to resume that same journalled operation now. The resume runs
       // the steps the journal already names; it adds no Docker verb of its own.
       'GET /v1/update/attempt',
+      // Reads host preparation progress; it grants no network mutation authority.
+      'GET /v1/update/host-preparation',
       'POST /v1/update/retry',
       // Activation only records that Matrix credentials exist; the Updater still
       // owns the worker and this route never grants network attachment verbs.

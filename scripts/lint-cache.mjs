@@ -54,8 +54,6 @@ export class LocalLintCache {
   observations = new Map();
   /** @type {unknown[]} */
   context = [];
-  /** @type {Record<string, { digest: string, ambient: boolean }>} */
-  classifications = {};
   enabled = true;
   stable = true;
 
@@ -64,32 +62,14 @@ export class LocalLintCache {
     this.directory = resolve(cwd, '.cache/lint');
     this.files = files.map((file) => resolve(cwd, file));
     this.path = join(this.directory, `${digest(this.files)}.json.gz`);
-    this.ambientPath = join(this.directory, 'ambient.json');
     this.context.push(process.version, process.platform, process.arch, ts.version, cwd, configs);
     // A change to discovery or validation must not reuse an older classification.
-    const tools = ['lint-files.mjs', 'lint-cache.mjs', 'lint-runner.mjs'];
+    const tools = ['lint-files.mjs', 'lint-cache.mjs', 'lint-runner.mjs', 'lint-ambient-cache.mjs'];
     this.toolVersion = digest([
       ts.version,
       ...tools.map((file) => ts.sys.readFile(resolve(import.meta.dirname, file))),
     ]);
     this.context.push(this.toolVersion);
-    try {
-      /** @type {unknown} */
-      const state = JSON.parse(readFileSync(this.ambientPath, 'utf8'));
-      if (
-        state &&
-        typeof state === 'object' &&
-        'version' in state &&
-        'files' in state &&
-        state.version === this.toolVersion &&
-        state.files &&
-        typeof state.files === 'object'
-      ) {
-        this.classifications = /** @type {typeof this.classifications} */ (state.files);
-      }
-    } catch {
-      // Missing or damaged local state is a cache miss, never a passing result.
-    }
     /** @type {Set<string>} */
     const visited = new Set();
     for (const configFile of configFiles) this.configuration(configFile, visited);
@@ -165,25 +145,9 @@ export class LocalLintCache {
   /** @param {string} file @param {() => boolean} classify */
   ambient(file, classify) {
     const hash = digest(ts.sys.readFile(file));
-    const previous = this.classifications[file];
-    const ambient =
-      previous?.digest === hash && typeof previous.ambient === 'boolean'
-        ? previous.ambient
-        : classify();
-    this.classifications[file] = { digest: hash, ambient };
+    const ambient = classify();
     if (ambient) this.context.push([file, hash]);
     return ambient;
-  }
-
-  flushClassifications() {
-    try {
-      atomicWrite(
-        this.ambientPath,
-        JSON.stringify({ version: this.toolVersion, files: this.classifications }),
-      );
-    } catch {
-      // A read-only cache must not prevent lint from running.
-    }
   }
 
   /** @param {unknown} input */
@@ -211,7 +175,6 @@ export class LocalLintCache {
   }
 
   hit() {
-    this.flushClassifications();
     if (!this.enabled || !this.stable) return false;
     try {
       if (statSync(this.path).size > 16 * 1024 * 1024) return false;

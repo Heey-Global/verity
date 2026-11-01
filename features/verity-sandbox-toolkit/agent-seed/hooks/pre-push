@@ -220,15 +220,8 @@ PUSH_CHECK_TIP="${REVIEW_TIPS[0]:-HEAD}"
 # inspect package.json without mistaking unrelated keys for npm scripts, and a
 # missing npm is a provisioning bug rather than a choice anyone made.
 #
-# Missing node_modules is different: a fresh session worktree has no dependencies
-# until somebody installs them, and installing runs code from the registry. That
-# is the operator's call, not the hook's and not the agent's. The hook therefore
-# stops with the two options spelled out — install (scripts disabled) or skip
-# lint/format for this session — and `verity-local-checks skip` records the
-# second one in `.agents/.local-checks-skip` together with a fingerprint of
-# package.json and the lockfile. The skip holds for this checkout until one of
-# those files changes, at which point the question is asked again. With
-# node_modules present the marker is ignored and the checks run.
+# Missing compatible dependencies are prepared automatically before checks.
+# Explicit session skips remain valid until dependency inputs change.
 if [ -f "${REPO_ROOT}/package.json" ]; then
   if ! command -v node >/dev/null 2>&1; then
     echo "pre-push: PUSH BLOCKED - package.json exists but node is unavailable" >&2
@@ -281,56 +274,29 @@ EOF
       fi
       SKIP_STATUS=0
       "$LOCAL_CHECKS_BIN" status >/dev/null 2>&1 || SKIP_STATUS=$?
-      if [ -f "${REPO_ROOT}/package-lock.json" ] || [ -f "${REPO_ROOT}/npm-shrinkwrap.json" ]; then
-        INSTALL_CMD="npm ci --ignore-scripts"
+      if [ "$SKIP_STATUS" -eq 0 ]; then
+        echo "pre-push: Lint and format skipped (your choice for this session). Secret scan and code review still run." >&2
+        LOCAL_CHECKS="skip"
       else
-        INSTALL_CMD="npm install --ignore-scripts"
+        echo "pre-push: preparing dependencies automatically for lint and format…" >&2
+        if [ -n "${DEPENDENCIES_BIN:-}" ]; then
+          if ! (cd "$REPO_ROOT" && "$DEPENDENCIES_BIN" install) ||
+             ! (cd "$REPO_ROOT" && "$DEPENDENCIES_BIN" status); then
+            echo "PUSH BLOCKED - dependency preparation failed; fix the installation error above and retry." >&2
+            exit 2
+          fi
+        else
+          if [ -f "${REPO_ROOT}/package-lock.json" ] || [ -f "${REPO_ROOT}/npm-shrinkwrap.json" ]; then
+            INSTALL_ACTION=ci
+          else
+            INSTALL_ACTION=install
+          fi
+          if ! (cd "$REPO_ROOT" && npm "$INSTALL_ACTION" --ignore-scripts); then
+            echo "PUSH BLOCKED - dependency preparation failed; fix the installation error above and retry." >&2
+            exit 2
+          fi
+        fi
       fi
-      if [ -n "${DEPENDENCIES_BIN:-}" ]; then INSTALL_CMD="\"$DEPENDENCIES_BIN\" install"; fi
-      case "$SKIP_STATUS" in
-        0)
-          echo "pre-push: Lint and format skipped (your choice for this session). Secret scan and code review still run." >&2
-          LOCAL_CHECKS="skip"
-          ;;
-        3)
-          cat >&2 <<EOF
-============================================================
-PUSH BLOCKED - dependencies or check config changed
-
-Lint and format were skipped for this session, but package.json or the
-lockfile changed since, and the dependencies are still not installed.
-Ask the operator again — install the dependencies, or skip lint and format
-for this session — and run the matching command before pushing again:
-
-    Install and run checks:          (cd "$REPO_ROOT" && $INSTALL_CMD)
-    Skip lint/format this session:   verity-local-checks skip
-
-Secret scan and code review run either way. Do not bypass the hook.
-============================================================
-EOF
-          exit 2
-          ;;
-        *)
-          cat >&2 <<EOF
-============================================================
-PUSH BLOCKED - lint and format checks can't run: dependencies are not installed
-
-This repository declares a lint or format check, but no complete compatible dependency installation was found.
-Installing runs code from the registry, so that is your decision.
-Ask which one to do, then run the matching command and push again:
-
-    Install and run checks:          (cd "$REPO_ROOT" && $INSTALL_CMD)
-    Skip lint/format this session:   verity-local-checks skip
-
-The install disables lifecycle scripts; the checks themselves still execute
-project code. The skip is remembered for this checkout until package.json or
-the lockfile changes. Secret scan and code review run either way. Do not
-bypass the hook.
-============================================================
-EOF
-          exit 2
-          ;;
-      esac
     fi
   fi
 

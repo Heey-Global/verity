@@ -48,10 +48,9 @@ export async function inspectEgressTransport(
   ids: { sandbox: string; relay: string },
   codex: boolean,
   io = transportIO,
+  docker = io.docker,
 ): Promise<EgressTransport | undefined> {
-  const networkReply: unknown = JSON.parse(
-    await io.docker('network', 'inspect', binding.networkId),
-  );
+  const networkReply: unknown = JSON.parse(await docker('network', 'inspect', binding.networkId));
   verifyEgressHostNetwork(binding, networkReply, [ids.sandbox, ids.relay]);
   const topology = z
     .array(
@@ -65,77 +64,90 @@ export async function inspectEgressTransport(
     .length(1)
     .parse(networkReply)[0]!;
   const result: Partial<Record<'sandbox' | 'relay', z.infer<typeof endpoint>>> = {};
-  for (const role of ['sandbox', 'relay'] as const) {
-    const raw: unknown = JSON.parse(await io.docker('inspect', ids[role]));
-    const state = z
-      .array(z.object({ Id: z.string(), State: z.object({ Running: z.boolean() }) }))
-      .length(1)
-      .parse(raw)[0]!;
-    if (state.Id !== ids[role]) throw new Error('Transport container identity mismatch');
-    if (!state.State.Running) return undefined;
-    const value = inspected.parse(raw)[0]!;
-    if (value.Id !== ids[role]) throw new Error('Transport container identity mismatch');
-    if (!value.State.Running) return undefined;
-    const entries = Object.entries(value.NetworkSettings.Networks);
-    const net = entries[0]?.[1];
-    if (
-      entries.length !== 1 ||
-      entries[0]?.[0] !== binding.networkName ||
-      net?.NetworkID !== binding.networkId
-    )
-      throw new Error('Transport network mismatch');
-    const args = ['--net=' + value.NetworkSettings.SandboxKey, '/sbin/ip', '-j', 'address', 'show'];
-    const links = z
-      .array(
-        z.object({
-          ifindex: z.number().int().positive(),
-          ifname: z.string(),
-          link_index: z.number().int().positive().optional(),
-          address: z.string(),
-          addr_info: z.array(z.object({ family: z.string(), local: z.string() })),
-        }),
+  const peers = await Promise.allSettled(
+    (['sandbox', 'relay'] as const).map(async (role) => {
+      const raw: unknown = JSON.parse(await docker('inspect', ids[role]));
+      const state = z
+        .array(z.object({ Id: z.string(), State: z.object({ Running: z.boolean() }) }))
+        .length(1)
+        .parse(raw)[0]!;
+      if (state.Id !== ids[role]) throw new Error('Transport container identity mismatch');
+      if (!state.State.Running) return undefined;
+      const value = inspected.parse(raw)[0]!;
+      if (value.Id !== ids[role]) throw new Error('Transport container identity mismatch');
+      if (!value.State.Running) return undefined;
+      const entries = Object.entries(value.NetworkSettings.Networks);
+      const net = entries[0]?.[1];
+      if (
+        entries.length !== 1 ||
+        entries[0]?.[0] !== binding.networkName ||
+        net?.NetworkID !== binding.networkId
       )
-      .parse(JSON.parse(await io.run('/usr/bin/nsenter', args)));
-    const assignment = topology.Containers[ids[role]];
-    if (
-      !assignment ||
-      assignment.IPv4Address.split('/')[0] !== net.IPAddress ||
-      assignment.MacAddress !== net.MacAddress
-    )
-      throw new Error('Transport daemon endpoint disagreement');
-    // runsc transfers IP addresses from the Linux NIC to netstack at startup.
-    // The daemon owns the address assignment; the kernel proves the veth peer.
-    const candidates = links.filter((link) => link.ifname !== 'lo');
-    if (
-      candidates.some(
-        (link) =>
-          link.address !== net.MacAddress ||
-          link.addr_info.some((a) => a.family === 'inet' && a.local !== net.IPAddress),
+        throw new Error('Transport network mismatch');
+      const args = [
+        '--net=' + value.NetworkSettings.SandboxKey,
+        '/sbin/ip',
+        '-j',
+        'address',
+        'show',
+      ];
+      const links = z
+        .array(
+          z.object({
+            ifindex: z.number().int().positive(),
+            ifname: z.string(),
+            link_index: z.number().int().positive().optional(),
+            address: z.string(),
+            addr_info: z.array(z.object({ family: z.string(), local: z.string() })),
+          }),
+        )
+        .parse(JSON.parse(await io.run('/usr/bin/nsenter', args)));
+      const assignment = topology.Containers[ids[role]];
+      if (
+        !assignment ||
+        assignment.IPv4Address.split('/')[0] !== net.IPAddress ||
+        assignment.MacAddress !== net.MacAddress
       )
-    )
-      throw new Error('Unexpected transport namespace interface');
-    if (candidates.length !== 1 || candidates[0]!.link_index === undefined)
-      throw new Error('Transport namespace endpoint mismatch');
-    const link = candidates[0]!;
-    const hosts = z
-      .array(z.object({ ifindex: z.number(), ifname: z.string() }))
-      .parse(JSON.parse(await io.run('/sbin/ip', ['-j', 'link', 'show'])))
-      .filter((item) => item.ifindex === link.link_index);
-    if (hosts.length !== 1) throw new Error('Transport host peer missing');
-    const peer = endpoint.parse({
-      address: net.IPAddress,
-      mac: net.MacAddress,
-      device: hosts[0]!.ifname,
-      index: hosts[0]!.ifindex,
-    });
-    const root = `/sys/class/net/${peer.device}`;
-    if (
-      Number(await io.readFile(`${root}/iflink`)) !== link.ifindex ||
-      Number(await io.readFile(`${root}/ifindex`)) !== peer.index ||
-      !(await io.readlink(`${root}/master`)).endsWith('/' + binding.bridge)
-    )
-      throw new Error('Transport host bridge peer mismatch');
-    result[role] = peer;
+        throw new Error('Transport daemon endpoint disagreement');
+      // runsc transfers IP addresses from the Linux NIC to netstack at startup.
+      // The daemon owns the address assignment; the kernel proves the veth peer.
+      const candidates = links.filter((link) => link.ifname !== 'lo');
+      if (
+        candidates.some(
+          (link) =>
+            link.address !== net.MacAddress ||
+            link.addr_info.some((a) => a.family === 'inet' && a.local !== net.IPAddress),
+        )
+      )
+        throw new Error('Unexpected transport namespace interface');
+      if (candidates.length !== 1 || candidates[0]!.link_index === undefined)
+        throw new Error('Transport namespace endpoint mismatch');
+      const link = candidates[0]!;
+      const hosts = z
+        .array(z.object({ ifindex: z.number(), ifname: z.string() }))
+        .parse(JSON.parse(await io.run('/sbin/ip', ['-j', 'link', 'show'])))
+        .filter((item) => item.ifindex === link.link_index);
+      if (hosts.length !== 1) throw new Error('Transport host peer missing');
+      const peer = endpoint.parse({
+        address: net.IPAddress,
+        mac: net.MacAddress,
+        device: hosts[0]!.ifname,
+        index: hosts[0]!.ifindex,
+      });
+      const root = `/sys/class/net/${peer.device}`;
+      if (
+        Number(await io.readFile(`${root}/iflink`)) !== link.ifindex ||
+        Number(await io.readFile(`${root}/ifindex`)) !== peer.index ||
+        !(await io.readlink(`${root}/master`)).endsWith('/' + binding.bridge)
+      )
+        throw new Error('Transport host bridge peer mismatch');
+      return { role, peer };
+    }),
+  );
+  for (const entry of peers) if (entry.status === 'rejected') throw entry.reason;
+  for (const entry of peers) {
+    if (entry.status !== 'fulfilled' || entry.value === undefined) return undefined;
+    result[entry.value.role] = entry.value.peer;
   }
   const transport = egressTransportSchema.parse({ ...result, codex });
   if (

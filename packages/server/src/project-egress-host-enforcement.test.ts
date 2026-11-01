@@ -254,35 +254,39 @@ it('preserves same-boot generations but permanently retires them before a new ho
   ).rejects.toThrow('Retired');
 });
 
-it('contains admission failures to direct access but closes both paths on topology failure', async () => {
-  const f = fixture();
-  const inspectTransport = vi.fn(async () => relay.transport);
-  const host = new ProjectEgressHost(
-    { version: 1, records: [{ binding: network, containers: ids, retired: false }] },
-    {
-      enforcement: f.enforcement,
-      save: async () => undefined,
-      apply: async () => undefined,
-      inspectContainer: async () => undefined,
-      inspectNetwork: async () => undefined,
-      inspectTransport,
-      startContainer: async () => undefined,
-      stopContainer: async () => undefined,
-    },
-  );
-  await host.execute({ operation: 'connect', projectId: 'a', generation: 'g1' });
-  f.readForAdmission.mockRejectedValueOnce(new Error('database unavailable'));
-  await expect(
-    host.execute({ operation: 'refresh-direct', projectId: 'a', generation: 'g1' }),
-  ).rejects.toThrow('database unavailable');
-  expect(f.deadline.clearRelay).not.toHaveBeenCalled();
-  expect(f.apply.mock.calls.at(-1)![0]).toContain('tcp dport { 8080, 8443 }');
-  await expect(
-    host.execute({ operation: 'refresh-direct', projectId: 'a', generation: 'g1' }),
-  ).resolves.toMatchObject({ state: 'direct-refreshed' });
-  inspectTransport.mockRejectedValueOnce(new Error('endpoint changed'));
-  await expect(
-    host.execute({ operation: 'refresh-direct', projectId: 'a', generation: 'g1' }),
-  ).rejects.toThrow('endpoint changed');
-  expect(f.deadline.clearRelay).toHaveBeenCalled();
-});
+it.each([false, true])(
+  'contains admission failures but closes topology failures with batched inspection=%s',
+  async (batched) => {
+    const f = fixture();
+    const inspectTransport = vi.fn(async () => relay.transport);
+    const host = new ProjectEgressHost(
+      { version: 1, records: [{ binding: network, containers: ids, retired: false }] },
+      {
+        enforcement: f.enforcement,
+        save: async () => undefined,
+        apply: async () => undefined,
+        inspectContainer: async () => undefined,
+        inspectNetwork: async () => undefined,
+        inspectTransport,
+        ...(batched ? { inspectDirectTransport: inspectTransport } : {}),
+        startContainer: async () => undefined,
+        stopContainer: async () => undefined,
+      },
+    );
+    await host.execute({ operation: 'connect', projectId: 'a', generation: 'g1' });
+    f.readForAdmission.mockRejectedValueOnce(new Error('database unavailable'));
+    await expect(
+      host.execute({ operation: 'refresh-direct', projectId: 'a', generation: 'g1' }),
+    ).rejects.toThrow('database unavailable');
+    expect(f.deadline.clearRelay).not.toHaveBeenCalled();
+    expect(f.apply.mock.calls.at(-1)![0]).toContain('tcp dport { 8080, 8443 }');
+    await expect(
+      host.execute({ operation: 'refresh-direct', projectId: 'a', generation: 'g1' }),
+    ).resolves.toMatchObject({ state: 'direct-refreshed' });
+    inspectTransport.mockRejectedValueOnce(new Error('endpoint changed'));
+    await expect(
+      host.execute({ operation: 'refresh-direct', projectId: 'a', generation: 'g1' }),
+    ).rejects.toThrow('endpoint changed');
+    expect(f.deadline.clearRelay).toHaveBeenCalled();
+  },
+);

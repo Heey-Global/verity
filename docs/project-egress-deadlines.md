@@ -161,7 +161,6 @@ to 34 bytes. The ordinary C matrix still exercises the exact short lengths; the
 kernel matrix's sub-34-byte cases cover padded malformed inputs, not actual short
 skbs. API failures remain errors and are never counted as classifier denials.
 
-
 ### Opt-in host lifecycle composition
 
 `/etc/verity-egress/relay.json` may explicitly select `packetEnforcement: true`.
@@ -237,6 +236,53 @@ renewal process, direct revoke and unchanged relay controls.
 and sender heartbeat evidence; forged late receipts, missing positive controls
 and late kernel admission are rejected by its tests. These checks supplement the
 existing controller-reconstruction and generation-replacement fixture. The
-legacy boot fixture, whose relay policy does not select packet enforcement,
-continues to certify its existing startup fence only; its reboot results must
-not be presented as combined TC/nftables reboot acceptance.
+disposable boot fixture selects combined TC/nftables enforcement and requires
+fresh generation replacement after Docker restart and host reboot. Acceptance
+requires successful raw-evidence verification on the current runtime pin;
+legacy startup-fence results alone do not satisfy this requirement.
+
+The host controller owns a single root-only Python deadline worker over private
+pipes. It accepts bounded, sequential, explicitly requested operations, holds the
+trusted state lock per operation, and never renews authority autonomously. A
+whole-request watchdog includes queue time; transport failures kill the worker
+process group and reject pending and future operations without replay or
+automatic replacement. Explicit controller reconstruction is required before
+fresh authorization. Linux parent-death
+signaling kills the worker with its controller. All authority, endpoint and hook
+checks remain fresh, and absolute lease capture still precedes asynchronous
+admission work. The compare-and-renew program is prepared against the exact
+deadline map while denied, removing its load from the first live handoff.
+
+## Kernel inspection readers
+
+The supported little-endian x86_64 host uses `libnftables.so.1` JSON output for
+fixed ruleset/table reads, BPF object-info syscalls for pinned program identity,
+and read-only rtnetlink dumps for links and ingress/egress classifiers. The
+implementation follows the Linux UAPI layouts in
+[`rtnetlink.h`](https://github.com/torvalds/linux/blob/master/include/uapi/linux/rtnetlink.h),
+[`if_link.h`](https://github.com/torvalds/linux/blob/master/include/uapi/linux/if_link.h)
+and [`pkt_cls.h`](https://github.com/torvalds/linux/blob/master/include/uapi/linux/pkt_cls.h).
+Python must provide `os.setns`; disposable image and VM preparation check this
+and the library before starting protected fixtures. Missing capabilities fail
+closed without a CLI fallback. Provisioning-only loaders remain unchanged.
+
+Each route socket is private to one fresh query. Replies require the kernel
+sender, matching sequence/port, complete multipart termination, valid lengths
+and supported classifier attributes. Interrupted dumps, offload, unexpected
+hooks, duplicate attributes and truncated messages are rejected. Reads allow at
+most 2 MiB and 4,096 route records with a one-second socket deadline. Nft output
+is capped at 2 MiB and 10,000 entries and rejected after a one-second elapsed
+read; the outer helper operation watchdog terminates a stuck library call within
+five seconds. These limits never extend a kernel lease.
+
+Namespace inspection opens only the daemon-derived namespace, checks its
+network-namespace type, and restores the saved host namespace descriptor on
+success or failure. Failed restoration terminates the resident helper. No
+inspection facts or namespace descriptors persist across requests.
+
+The previous native baseline, run 41321104315 at c4ad67059, failed continuous
+handoff despite the resident Python helper and Docker API reads: approximately
+415 ms after the first capture plus the next inspection, validation and failed
+453 ms kernel phase exceeded the immutable 1,000 ms lease. Replacing readers
+requires new native continuity, failure and combined recovery evidence; local
+parser tests alone do not establish acceptance.

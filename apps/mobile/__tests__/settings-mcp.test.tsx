@@ -163,8 +163,7 @@ describe('settings/services/mcp — the list', () => {
     mockRunMcpOAuth.mockResolvedValue({
       kind: 'success',
       code: 'auth-code',
-      codeVerifier: 'verifier',
-      redirectUri: 'https://verity.build/mcp/oauth/callback',
+      state: 'state',
     });
     mockCreateVerityClient.mockReturnValue(
       makeClient('unlocked', { listHttpMcpConnections, completeHttpMcpOAuth }),
@@ -337,54 +336,89 @@ describe('settings/services/mcp/new — adding one', () => {
     });
   });
 
-  // Google's endpoints are not discoverable from the MCP URL, and typing them by
-  // hand is where this flow usually fails.
-  it('fills in the Google endpoints when OAuth is enabled for the official Gmail URL', async () => {
-    mockCreateVerityClient.mockReturnValue(makeClient('unlocked'));
+  it('detects generic OAuth settings and permits automatic client registration', async () => {
+    const createHttpMcpConnection = jest.fn().mockResolvedValue(undefined);
+    const discoverHttpMcpOAuth = jest.fn().mockResolvedValue({
+      authorizationEndpoint: 'https://identity.example/authorize',
+      tokenEndpoint: 'https://identity.example/token',
+      scopes: 'read,write',
+      registrationAvailable: true,
+    });
+    const api = makeClient('unlocked', { createHttpMcpConnection });
+    Object.assign(api, { discoverHttpMcpOAuth });
+    mockCreateVerityClient.mockReturnValue(api);
     render(<NewMcpConnectionScreen />);
-
-    fireEvent.changeText(await screen.findByLabelText('Connection name'), 'gmail');
+    fireEvent.changeText(await screen.findByLabelText('Connection name'), 'tools');
     fireEvent.changeText(
       screen.getByLabelText('Remote HTTPS MCP URL'),
-      'https://gmailmcp.googleapis.com/mcp/v1',
+      'https://tools.example/mcp',
     );
     fireEvent.press(screen.getByText('Use OAuth 2.0'));
-
-    const authorize = await screen.findByLabelText('Authorization endpoint');
-    expect(authorize.props.value).toBe('https://accounts.google.com/o/oauth2/v2/auth');
-    expect(screen.getByLabelText('Token endpoint').props.value).toBe(
-      'https://oauth2.googleapis.com/token',
+    fireEvent.press(screen.getByText('Detect OAuth settings'));
+    expect(
+      await screen.findByText('OAuth detected. Verity can register a client automatically.'),
+    ).toBeOnTheScreen();
+    expect(screen.getByLabelText('Add MCP connection')).toBeEnabled();
+    fireEvent.press(screen.getByLabelText('Add MCP connection'));
+    await waitFor(() =>
+      expect(createHttpMcpConnection).toHaveBeenCalledWith({
+        name: 'tools',
+        url: 'https://tools.example/mcp',
+        authType: 'oauth',
+        oauthAuthorizationEndpoint: 'https://identity.example/authorize',
+        oauthTokenEndpoint: 'https://identity.example/token',
+        oauthScopes: 'read,write',
+      }),
     );
-    expect(String(screen.getByLabelText('OAuth scopes (space-separated)').props.value)).toContain(
-      'gmail.readonly',
-    );
-    // Scopes and endpoints are filled, but the client id is the operator's own.
-    expect(screen.getByLabelText('Add MCP connection')).toBeDisabled();
   });
 
-  it('will not submit an OAuth connection missing its client id', async () => {
-    mockCreateVerityClient.mockReturnValue(makeClient('unlocked'));
+  it('requires a client ID when the detected provider cannot register clients', async () => {
+    const api = makeClient('unlocked');
+    Object.assign(api, {
+      discoverHttpMcpOAuth: jest.fn().mockResolvedValue({
+        authorizationEndpoint: 'https://identity.example/authorize',
+        tokenEndpoint: 'https://identity.example/token',
+        scopes: '',
+        registrationAvailable: false,
+      }),
+    });
+    mockCreateVerityClient.mockReturnValue(api);
     render(<NewMcpConnectionScreen />);
-
-    fireEvent.changeText(await screen.findByLabelText('Connection name'), 'gmail');
+    fireEvent.changeText(await screen.findByLabelText('Connection name'), 'tools');
     fireEvent.changeText(
       screen.getByLabelText('Remote HTTPS MCP URL'),
-      'https://mcp.example.test/gmail',
+      'https://tools.example/mcp',
     );
     fireEvent.press(screen.getByText('Use OAuth 2.0'));
-    fireEvent.changeText(
-      await screen.findByLabelText('Authorization endpoint'),
-      'https://accounts.example.test/authorize',
-    );
-    fireEvent.changeText(
-      screen.getByLabelText('Token endpoint'),
-      'https://accounts.example.test/token',
-    );
-    fireEvent.changeText(screen.getByLabelText('OAuth scopes (space-separated)'), 'openid');
-
-    // An OAuth connection with no client id cannot authorize; it would be saved
-    // and then fail on the list screen with nothing to explain it.
+    fireEvent.press(screen.getByText('Detect OAuth settings'));
+    await screen.findByText('OAuth detected. This provider requires your own OAuth client ID.');
     expect(screen.getByLabelText('Add MCP connection')).toBeDisabled();
+    fireEvent.changeText(screen.getByLabelText('OAuth client ID'), 'client');
+    expect(screen.getByLabelText('Add MCP connection')).toBeEnabled();
+  });
+
+  it('keeps manual OAuth configuration available when discovery fails', async () => {
+    const api = makeClient('unlocked');
+    Object.assign(api, { discoverHttpMcpOAuth: jest.fn().mockRejectedValue(new Error('missing')) });
+    mockCreateVerityClient.mockReturnValue(api);
+    render(<NewMcpConnectionScreen />);
+    fireEvent.changeText(await screen.findByLabelText('Connection name'), 'tools');
+    fireEvent.changeText(
+      screen.getByLabelText('Remote HTTPS MCP URL'),
+      'https://tools.example/mcp',
+    );
+    fireEvent.press(screen.getByText('Use OAuth 2.0'));
+    fireEvent.press(screen.getByText('Detect OAuth settings'));
+    await screen.findByLabelText('Authorization endpoint');
+    expect(screen.getByLabelText('Add MCP connection')).toBeDisabled();
+    fireEvent.changeText(screen.getByLabelText('OAuth client ID'), 'client');
+    fireEvent.changeText(
+      screen.getByLabelText('Authorization endpoint'),
+      'https://identity.example/authorize',
+    );
+    fireEvent.changeText(screen.getByLabelText('Token endpoint'), 'https://identity.example/token');
+    expect(screen.getByLabelText('Add MCP connection')).toBeEnabled();
+    expect(screen.getByText('Copy callback URL')).toBeOnTheScreen();
   });
 
   it('explains a rejected connection instead of leaving the button silent', async () => {
@@ -396,9 +430,7 @@ describe('settings/services/mcp/new — adding one', () => {
     fireEvent.changeText(screen.getByLabelText('Remote HTTPS MCP URL'), 'http://10.0.0.1/mcp');
     fireEvent.press(screen.getByLabelText('Add MCP connection'));
 
-    expect(
-      await screen.findByText('Could not save the MCP connection. Use a public HTTPS URL.'),
-    ).toBeOnTheScreen();
+    expect(await screen.findByText('bad url')).toBeOnTheScreen();
     expect(mockBack).not.toHaveBeenCalled();
   });
 
