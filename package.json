@@ -57,7 +57,7 @@
   "devDependencies": {
     "@agentclientprotocol/claude-agent-acp": "0.99.0",
     "@agentclientprotocol/codex-acp": "2.3.0",
-    "@devcontainers/cli": "0.89.0",
+    "@devcontainers/cli": "0.90.0",
     "@eslint/js": "10.0.1",
     "@expo/plist": "0.10.1",
     "@modelcontextprotocol/ext-apps": "2.0.4",
