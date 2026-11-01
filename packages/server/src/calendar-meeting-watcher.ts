@@ -126,7 +126,12 @@ export function startCalendarMeetingWatcher(deps: CalendarMeetingDeps) {
   let stopped = false;
   let active: Promise<void> | undefined;
 
-  const refresh = async (at: number) => {
+  // Calendars whose events were read in this pass. Joining on its own acts only on those: after
+  // a revoked token or a failed read, a meeting may have been cancelled, declined or moved.
+  const calendarKey = (item: { accountId: string; calendarId: string }) =>
+    JSON.stringify([item.accountId, item.calendarId]);
+  const refresh = async (at: number): Promise<Set<string>> => {
+    const synced = new Set<string>();
     const window = { from: at - LOOK_BACK_MS, to: at + LOOK_AHEAD_MS };
     for (const calendar of await watch.list()) {
       try {
@@ -162,6 +167,7 @@ export function startCalendarMeetingWatcher(deps: CalendarMeetingDeps) {
               : [];
           }),
         );
+        synced.add(calendarKey(calendar));
       } catch (err) {
         deps.warn(
           { err, accountId: calendar.accountId, calendarId: calendar.calendarId },
@@ -170,9 +176,10 @@ export function startCalendarMeetingWatcher(deps: CalendarMeetingDeps) {
       }
     }
     await watch.pruneEvents(at - 24 * 60 * MINUTE_MS);
+    return synced;
   };
 
-  const act = async (at: number) => {
+  const act = async (at: number, synced: Set<string>) => {
     const calendars = await watch.list();
     for (const event of await watch.listEvents()) {
       if (event.decision !== null) continue;
@@ -183,8 +190,9 @@ export function startCalendarMeetingWatcher(deps: CalendarMeetingDeps) {
       const lastChance = Math.min(event.endsAt, event.startsAt + LATE_JOIN_MS);
       if (at >= lastChance) continue;
       try {
-        // An invitation not yet accepted is asked about even on an automatic calendar.
-        if (calendar.autoJoin && event.accepted) {
+        // An invitation not yet accepted is asked about even on an automatic calendar, and so
+        // is a meeting whose calendar could not be read just now.
+        if (calendar.autoJoin && event.accepted && synced.has(calendarKey(calendar))) {
           if (at >= event.startsAt)
             await joinCalendarMeeting(deps, event.key, null, { automatic: true });
         } else if (event.notifiedAt === null && at >= event.startsAt - UPCOMING_NOTICE_MS) {
@@ -213,9 +221,8 @@ export function startCalendarMeetingWatcher(deps: CalendarMeetingDeps) {
     if (stopped) return Promise.resolve();
     if (active) return active;
     active = (async () => {
-      const at = now();
-      await refresh(at);
-      await act(now());
+      const synced = await refresh(now());
+      await act(now(), synced);
     })()
       .catch((err: unknown) => deps.warn({ err }, 'calendar meeting watcher failed'))
       .finally(() => {

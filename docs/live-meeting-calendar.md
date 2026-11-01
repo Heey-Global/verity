@@ -59,7 +59,10 @@ declined or lost its link is forgotten.
   on such a calendar, so the bot never joins it on its own. The same applies to
   a meeting with guests that does not list you among them, such as someone
   else's meeting on a shared calendar; an event without guests counts as yours.
-  A meeting you skipped is never joined automatically afterwards.
+  A meeting you skipped is never joined automatically afterwards. When the
+  calendar could not be read in the current pass, for example after access was
+  revoked, its meetings are announced instead of joined, since they may have
+  been cancelled or moved meanwhile.
 - Nothing is announced or joined more than ten minutes after the start.
 - A failed automatic join is not retried. The meeting can still be joined by
   hand while it runs; a join you asked for that fails can simply be tried

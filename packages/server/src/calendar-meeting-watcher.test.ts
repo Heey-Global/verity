@@ -234,6 +234,17 @@ it('gives a claimed event back when looking for a running bot fails', async () =
   expect(start).toHaveBeenCalledTimes(1);
 });
 
+// After a revoked token the stored event may be cancelled or moved; a bot must not act on it.
+it('asks instead of joining when the calendar could not be read just now', async () => {
+  const { state, send, start, deps, run } = await fixture({ autoJoin: true });
+  await run();
+  deps.googleAccessToken = async () => undefined;
+  state.now = START;
+  await run();
+  expect(start).not.toHaveBeenCalled();
+  expect(categories(send)).toEqual(['MEETING_UPCOMING']);
+});
+
 // An unanswered invitation must not let an always-listening bot in on its own.
 it('asks about an unanswered invitation even on an automatic calendar', async () => {
   const { state, send, start, run } = await fixture({
