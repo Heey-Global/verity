@@ -386,7 +386,7 @@ try {
     });
     renewalControls.push(marker);
     await delay(150);
-    renewalEnd = (await hostProjectDeadlineEnforcer().clock()).bootBeforeNs;
+    renewalEnd = (await nativeDeadline.clock()).bootBeforeNs;
   }
   assert.ok(BigInt(renewalEnd) - BigInt(renewalStart) >= 2_000_000_000n);
   const pauseCases = [];
