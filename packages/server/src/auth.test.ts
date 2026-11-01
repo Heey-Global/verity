@@ -1297,6 +1297,49 @@ describe('global auth gate (onRequest)', () => {
     }
   });
 
+  it('keeps the existing device entry when a paired device unlocks with its bearer', async () => {
+    const cipher = createSealableSecretCipher();
+    const store = new EventStore(ctx.db, cipher);
+    const registry = await createAuthTokenRegistry(store, { enabled: true });
+    const pairing = {
+      consumeBootstrap: (token: string) => token === 'initialization-bootstrap',
+    } as unknown as DevicePairingManager;
+    const app = buildServer({
+      eventStore: store,
+      bus: new InMemoryEventBus(),
+      conductor,
+      secretCipher: cipher,
+      devicePairing: pairing,
+      authRegistry: registry,
+    });
+    try {
+      const init = await app.inject({
+        method: 'POST',
+        url: '/secret/init',
+        headers: { 'x-verity-pairing': 'initialization-bootstrap' },
+        payload: { password: PASSWORD, deviceLabel: 'iPhone' },
+      });
+      expect(init.statusCode).toBe(200);
+      const device = init.json<{ token: string; tokenId: string }>();
+      cipher.seal();
+
+      const unlock = await app.inject({
+        method: 'POST',
+        url: '/secret/unlock',
+        headers: { authorization: `Bearer ${device.token}` },
+        payload: { password: PASSWORD, deviceLabel: 'iPhone' },
+      });
+
+      // A fresh token here adds the same phone to the device list on every
+      // manual unlock, and the replaced entry lingers as an inactive duplicate.
+      expect(unlock.statusCode).toBe(200);
+      expect(unlock.json()).toMatchObject({ token: device.token, tokenId: device.tokenId });
+      expect((await registry.list()).map(({ id }) => id)).toEqual([device.tokenId]);
+    } finally {
+      await app.close();
+    }
+  });
+
   it('keeps managed-gateway unlock throttles separate per authenticated client', async () => {
     const cipher = createSealableSecretCipher();
     const store = new EventStore(ctx.db, cipher);
