@@ -506,6 +506,21 @@ describe('runtime service renewal independent of the builder', () => {
     });
     expect(renewHostRuntimeService).not.toHaveBeenCalled();
   });
+  it('accepts installer-registered runtimes without a systemd watcher', async () => {
+    const { docker } = daemon(both);
+    const dir = await requestDir({ ...renewed, trigger: 'none' });
+    const renewHostRuntimeService = vi.fn();
+    await reconcileHostRuntimes({
+      docker,
+      requirements: declared!,
+      requestId: 'registered-without-systemd',
+      requestDir: dir,
+      serviceRequirements,
+      renewHostRuntimeService,
+    });
+    expect(renewHostRuntimeService).not.toHaveBeenCalled();
+    await expect(readFile(join(dir, 'request.json'))).rejects.toThrow(/ENOENT/u);
+  });
   it('fails after one renewal if the installed service still lacks a declared capability', async () => {
     const { docker } = daemon(both);
     const dir = await requestDir(renewed);

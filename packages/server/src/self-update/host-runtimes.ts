@@ -312,7 +312,11 @@ export async function reconcileHostRuntimes(options: ReconcileHostRuntimesOption
   const dir = options.requestDir ?? HOST_RUNTIME_REQUEST_DIR;
   let agent = await readJson(join(dir, 'agent.json')).catch(() => undefined);
   const supports = (candidate: unknown): boolean => {
-    if (!isRecord(candidate) || candidate.version !== 1 || candidate.trigger !== 'systemd-path')
+    if (!isRecord(candidate) || candidate.version !== 1) return false;
+    if (
+      candidate.trigger !== 'systemd-path' &&
+      !(candidate.trigger === 'none' && missing.length === 0)
+    )
       return false;
     if (requirements.archiveSha512 !== undefined && !installsArchives(candidate)) return false;
     const wanted = options.serviceRequirements;
@@ -347,17 +351,17 @@ export async function reconcileHostRuntimes(options: ReconcileHostRuntimesOption
       `This release needs ${need}, and this host has no Verity host runtime service to register it. ${REPAIR}`,
     );
   }
+  if (options.serviceRequirements !== undefined && !supports(agent))
+    throw new HostRuntimeError(
+      `This release needs newer host runtime service capabilities. The current version keeps serving. ${REPAIR}`,
+    );
+  if ((await unsatisfiedHostRuntimes(docker, requirements)).length === 0) return;
   if (agent.trigger !== 'systemd-path') {
     throw new HostRuntimeError(
       `This release needs ${need}. This host has no systemd, so the host runtime service cannot ` +
         'run on request; re-run the Verity installer on the host, then retry the update.',
     );
   }
-  if (options.serviceRequirements !== undefined && !supports(agent))
-    throw new HostRuntimeError(
-      `This release needs newer host runtime service capabilities. The current version keeps serving. ${REPAIR}`,
-    );
-  if ((await unsatisfiedHostRuntimes(docker, requirements)).length === 0) return;
   await options.onProgress?.('registering');
   if (requirements.archiveSha512 !== undefined && !installsArchives(agent)) {
     // The builder service installs the bundle out of the verified target image, and that

@@ -70,7 +70,7 @@ function fixture() {
       [...jobs].map(([id, job]) => ({
         id,
         imageId: job.spec.image,
-        names: [job.spec.name!],
+        names: [job.spec.name],
         labels: job.spec.labels ?? {},
       })),
     ),

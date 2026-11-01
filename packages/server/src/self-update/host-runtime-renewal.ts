@@ -63,9 +63,7 @@ export class HostRuntimeRenewalError extends Error {
 async function runJob(docker: RenewalDocker, spec: ContainerSpec): Promise<string> {
   if (!docker.listContainers || !docker.waitContainer || !docker.inspectImageEnv)
     throw new Error('Runtime renewal requires Docker job lifecycle support');
-  const matches = (await docker.listContainers()).filter((item) =>
-    item.names?.includes(spec.name!),
-  );
+  const matches = (await docker.listContainers()).filter((item) => item.names?.includes(spec.name));
   if (matches.length > 1) throw new Error('Runtime renewal job ownership is ambiguous');
   let id = matches[0]?.id;
   if (id === undefined) {
@@ -74,7 +72,7 @@ async function runJob(docker: RenewalDocker, spec: ContainerSpec): Promise<strin
     } catch (error) {
       // Another recovering updater may have won create. Only a unique exact job is adoptable.
       const winners = (await docker.listContainers()).filter((item) =>
-        item.names?.includes(spec.name!),
+        item.names?.includes(spec.name),
       );
       if (winners.length !== 1) throw error;
       id = winners[0]!.id;
