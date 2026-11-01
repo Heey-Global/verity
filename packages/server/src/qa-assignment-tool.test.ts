@@ -175,6 +175,7 @@ it('does not mistake a successor terminal for the assigned attempt', async () =>
   const { service, propose } = setup();
   const p = await propose();
   await service.request(caller, 'p', p.assignmentId, 'one');
+  await ctx.store.clearRunningTurn('target');
   await ctx.store.appendEvent('target', { t: 'prompt', text: 'unrelated' });
   await ctx.store.appendEvent('target', { t: 'status', state: 'completed' });
   await service.sweep();
@@ -434,4 +435,35 @@ it('reports actual pending permissions even without a worker progress message', 
   deps.pendingPermissions = () => [];
   await service.sweep();
   expect(await service.status(caller, 'p', p.assignmentId)).toMatchObject({ status: 'running' });
+});
+
+it('releases ownership when the verification target is deleted', async () => {
+  const { service, propose, finish } = setup();
+  const p = await propose();
+  await service.request(caller, 'p', p.assignmentId, 'once');
+  await finish();
+  await ctx.store.deleteSession('target');
+  await service.sweep();
+  expect(await service.status(caller, 'p', p.assignmentId)).toMatchObject({ status: 'blocked' });
+});
+it('does not treat a terminal event as settled execution while its durable marker remains', async () => {
+  const { service, propose } = setup();
+  const p = await propose();
+  await service.request(caller, 'p', p.assignmentId, 'once');
+  await ctx.store.appendEvent('target', { t: 'status', state: 'completed' });
+  await service.sweep();
+  expect(await service.status(caller, 'p', p.assignmentId)).toMatchObject({ status: 'running' });
+  await ctx.store.clearRunningTurn('target');
+  await service.sweep();
+  expect(await service.status(caller, 'p', p.assignmentId)).toMatchObject({ status: 'verifying' });
+});
+it('retains stop ownership while a lost live handle still has an unsettled durable marker', async () => {
+  const { service, propose, deps } = setup();
+  const p = await propose();
+  await service.request(caller, 'p', p.assignmentId, 'once');
+  deps.cancel = async () => false;
+  expect(await service.stop(caller, 'p', p.assignmentId)).toMatchObject({ status: 'stopping' });
+  await ctx.store.clearRunningTurn('target');
+  await service.sweep();
+  expect(await service.status(caller, 'p', p.assignmentId)).toMatchObject({ status: 'stopped' });
 });

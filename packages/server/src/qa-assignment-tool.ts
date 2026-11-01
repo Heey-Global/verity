@@ -139,6 +139,18 @@ export function createQAAssignmentTool(deps: QAAssignmentDeps) {
     );
     if (accepted) await store.change(a.id, reserved.version, 'running', null);
   }
+  async function ownsUnsettledTurn(a: QAAssignment) {
+    if (!a.dispatch_id || !a.target_session_id) return false;
+    const receipt = await deps.store.repairs.dispatchReceipt(a.dispatch_id);
+    return (
+      receipt?.state === 'admitted' &&
+      receipt.prompt_seq !== null &&
+      (await deps.store.listRunningTurns()).some(
+        (turn) =>
+          turn.sessionId === a.target_session_id && turn.promptSeq === Number(receipt.prompt_seq),
+      )
+    );
+  }
   async function observe(a: QAAssignment) {
     if (!a.target_session_id || !a.dispatch_id) return;
     const target = await deps.store.getSession(a.target_session_id);
@@ -148,12 +160,13 @@ export function createQAAssignmentTool(deps: QAAssignmentDeps) {
       );
     const receipt = await deps.store.repairs.dispatchReceipt(a.dispatch_id);
     if (receipt?.state !== 'admitted' || receipt.prompt_seq === null) return;
+    const unsettled = await ownsUnsettledTurn(a);
     const page = await deps.store.getEventsBeforeSeq(a.target_session_id, 2000);
     if (page.hasMore && (page.events[0]?.seq ?? 0) > Number(receipt.prompt_seq)) {
       await store.change(
         a.id,
         a.version,
-        deps.busy(a.target_session_id) ? 'stopping' : 'blocked',
+        deps.busy(a.target_session_id) || unsettled ? 'stopping' : 'blocked',
         'Attempt history exceeds the bounded observation window; completion is unverified.',
       );
       return;
@@ -161,6 +174,7 @@ export function createQAAssignmentTool(deps: QAAssignmentDeps) {
     const events = page.events.filter((e) => e.seq > Number(receipt.prompt_seq));
     const successor = events.find((e) => e.event.t === 'prompt' && !e.event.steered);
     if (successor) {
+      if (unsettled) return;
       await store.change(
         a.id,
         a.version,
@@ -197,7 +211,7 @@ export function createQAAssignmentTool(deps: QAAssignmentDeps) {
       return;
     }
     // Never infer success from process completion or a worker's self-report.
-    if (terminal && !deps.busy(a.target_session_id)) {
+    if (terminal && !deps.busy(a.target_session_id) && !unsettled) {
       const evidence = await deps.inspect(a);
       const report = redactSecrets(
         own
@@ -368,13 +382,21 @@ export function createQAAssignmentTool(deps: QAAssignmentDeps) {
           if (a.state === 'stopping') {
             if (a.target_session_id && a.dispatch_id)
               await deps.cancel(a.target_session_id, a.dispatch_id);
-            if (!a.target_session_id || !deps.busy(a.target_session_id))
+            if (
+              (!a.target_session_id || !deps.busy(a.target_session_id)) &&
+              !(await ownsUnsettledTurn(a))
+            )
               await store.change(a.id, a.version, 'stopped', 'Assignment stopped.');
             continue;
           }
           await current(a);
           if (a.state === 'queued') await deliver(a);
           else if (a.state !== 'verifying') await observe(a);
+          else if (
+            !a.target_session_id ||
+            (await deps.store.getSession(a.target_session_id))?.projectId !== a.project_id
+          )
+            throw new ControlPlaneSessionToolError('The verification target disappeared or moved.');
         } catch (error) {
           // Transport failures remain retryable; only a confirmed authority/target failure fences work.
           if (
