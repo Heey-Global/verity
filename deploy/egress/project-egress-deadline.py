@@ -6,7 +6,6 @@ accepted. The trusted host adapter supplies its already registered binding.
 import ctypes
 import fcntl
 import hashlib
-import http.client
 import ipaddress
 import json
 import os
@@ -49,6 +48,7 @@ class DockerInspectionSocket(socket.socket):
 
 
 def docker_read(kind, identity):
+    import http.client
     if kind not in ('container', 'network') or not re.fullmatch(r'[a-f0-9]{64}', identity):
         raise ValueError('Invalid Docker inspection identity')
     connection = http.client.HTTPConnection('localhost', timeout=1)
@@ -148,7 +148,7 @@ class TestRunAttr(ctypes.Structure):
                 ('flags', ctypes.c_uint32), ('cpu', ctypes.c_uint32), ('batch_size', ctypes.c_uint32)]
 
 
-def renew_deadline(root, index, previous, deadline):
+def prepare_renewal(root):
     program = root / 'renew'
     if not program.exists():
         obj = OBJECT.with_name('project-egress-renew.bpf.o')
@@ -157,6 +157,11 @@ def renew_deadline(root, index, previous, deadline):
             raise ValueError('Untrusted deadline renewal object')
         run('/usr/sbin/bpftool', 'prog', 'load', str(obj), str(program),
             'map', 'name', 'deadline', 'pinned', str(root / 'maps/deadline'))
+
+
+def renew_deadline(root, index, previous, deadline):
+    # Loading is done while denied, never on the first live handoff.
+    program = root / 'renew'
     pathname = ctypes.create_string_buffer(str(program).encode())
     fd = bpf(7, ObjectAttr(ctypes.addressof(pathname), 0, 0))
     packet = bytearray(78)
@@ -440,6 +445,7 @@ def execute(request):
         run('/usr/sbin/bpftool', 'prog', 'load', str(OBJECT), str(root / 'guard'),
             'type', 'classifier', 'pinmaps', str(root / 'maps'))
         write_deadline(root, peer['index'], 0)
+        prepare_renewal(root)
         write_relay(root)
         # A dedicated veth with unknown classifiers is unsupported, not overwritten.
         qdisc = json.loads(run('/sbin/tc', '-j', 'qdisc', 'show', 'dev', peer['device']))
@@ -499,6 +505,8 @@ def execute(request):
         state['uncertainExpiry'] = True
         save(path, state)
         write_deadline(root, state['peer']['index'], 0)
+        if op == 'prepare':
+            prepare_renewal(root)
         remember_expiry(binding, state)
         candidate = request.get('lease') if op == 'revoke' else None
         if candidate is not None:

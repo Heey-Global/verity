@@ -960,9 +960,19 @@ try {
       await stop?.();
     }
   };
-  const packetTrace = spawn('/usr/bin/python3', ['/probe/packet-phases.py', bridge], {
-    stdio: 'inherit',
-  });
+  const traceTransport = await inspectEgressTransport(
+    binding,
+    { sandbox: containerId, relay: relayId },
+    true,
+  );
+  assert.ok(traceTransport);
+  const packetTrace = spawn(
+    '/usr/bin/python3',
+    ['/probe/packet-phases.py', traceTransport.sandbox.device],
+    {
+      stdio: 'inherit',
+    },
+  );
   packetTrace.unref();
   for (
     let i = 0;

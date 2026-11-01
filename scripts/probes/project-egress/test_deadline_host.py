@@ -1,6 +1,7 @@
 """Host admission contract tests; these do not substitute for native BPF proof."""
 import importlib.util
 import ctypes
+import http.client
 import json
 import os
 import struct
@@ -463,6 +464,20 @@ class RelayMapWriterTests(unittest.TestCase):
         self.assertEqual([c.args for c in close.call_args_list], [(42,), (42,)])
 
 
+    def test_preparation_loads_renewal_only_after_closing_access(self):
+        def prepare(root):
+            self.assertEqual(self.write.call_args.args[-1], 0)
+            self.assertTrue(json.loads(self.path.read_text())['uncertainExpiry'])
+        with patch.object(host, 'prepare_renewal', side_effect=prepare) as load:
+            self.assertEqual(host.execute({'operation': 'prepare', 'binding': self.binding}), {'state': 'denied'})
+            load.assert_called_once()
+
+    def test_failed_preload_remains_denied_and_uncertain(self):
+        with patch.object(host, 'prepare_renewal', side_effect=ValueError('load failed')):
+            with self.assertRaisesRegex(ValueError, 'load failed'):
+                host.execute({'operation': 'prepare', 'binding': self.binding})
+        self.assertEqual(self.write.call_args.args[-1], 0)
+        self.assertTrue(json.loads(self.path.read_text())['uncertainExpiry'])
 
 
 class DockerInspectionTests(unittest.TestCase):
@@ -486,7 +501,7 @@ class DockerInspectionTests(unittest.TestCase):
         response = connection.getresponse.return_value
         response.status = 200
         response.read.return_value = b'{"Id":"current"}'
-        with patch.object(host.http.client, 'HTTPConnection', return_value=connection), patch.object(host, 'DockerInspectionSocket') as sock:
+        with patch.object(http.client, 'HTTPConnection', return_value=connection), patch.object(host, 'DockerInspectionSocket') as sock:
             self.assertEqual(json.loads(host.docker_read('container', 'a' * 64)), [{'Id': 'current'}])
             sock.return_value.connect.assert_called_once_with('/var/run/docker.sock')
             connection.request.assert_called_once_with('GET', '/v1.52/containers/' + 'a' * 64 + '/json')
@@ -498,7 +513,7 @@ class DockerInspectionTests(unittest.TestCase):
             connection = MagicMock()
             connection.getresponse.return_value.status = status
             connection.getresponse.return_value.read.return_value = body
-            with patch.object(host.http.client, 'HTTPConnection', return_value=connection), patch.object(host, 'DockerInspectionSocket'):
+            with patch.object(http.client, 'HTTPConnection', return_value=connection), patch.object(host, 'DockerInspectionSocket'):
                 with self.assertRaises(ValueError):
                     host.docker_read('network', 'b' * 64)
                 connection.close.assert_called_once()
