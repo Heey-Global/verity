@@ -492,10 +492,15 @@ class FenceMutationOrderTests(unittest.TestCase):
                                   (lambda now: {'status': 200, 'fencesRemoved': True}, 'removal time'),
                                   (lambda now: {'status': 200, 'fencesRemoved': True,
                                                 'fencesRemovedNs': now - 60_000_000_000}, 'outside its control')):
+            (self.evidence / 'mutation-inflight.json').unlink(missing_ok=True)
             with self.subTest(message=message), self.assertRaisesRegex(AssertionError, message):
                 self.proof.remove_fences_mutation(self.vm(0, reported), 'guest ', self.evidence, 0)
             # The failing in-flight result is retained as evidence before the verdict.
-            self.assertIn('status', json.loads((self.evidence / 'mutation-inflight.json').read_text()))
+            retained = json.loads((self.evidence / 'mutation-inflight.json').read_text())
+            expected = reported(0)
+            if 'fencesRemovedNs' in expected:
+                expected['fencesRemovedNs'] = retained['fencesRemovedNs']
+            self.assertEqual(retained, expected)
 
 
 class GuestCommandEvidenceTests(unittest.TestCase):

@@ -236,8 +236,8 @@ def verify_bundle(directory):
     clock = json.loads((directory / 'mutation-clock.json').read_text())
     mutation = json.loads((directory / 'mutation-inflight.json').read_text())
     started = check_mutation_clock(clock, mutation.get('fencesRemovedNs'))
-    assert proof['mutation_started_ns'] == started > proof['protected_end_ns'], \
-        'Mutation window does not start at the reported fence removal'
+    assert proof['mutation_started_ns'] == started, 'Mutation window does not start at the reported fence removal'
+    assert started > proof['protected_end_ns'], 'Mutation window overlaps the protected window'
     verify_receipts(directory / 'external-receipts.jsonl', proof['protected_start_ns'], proof['protected_end_ns'], proof['mutation_started_ns'])
     verify_removed_fences(directory / 'external-receipts.jsonl', proof['mutation_started_ns'])
     receipts = [json.loads(line) for line in (directory / 'broker-receipts.jsonl').read_text().splitlines()]
