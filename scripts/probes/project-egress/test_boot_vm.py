@@ -26,6 +26,46 @@ boot_proof = importlib.util.module_from_spec(proof_spec)
 proof_spec.loader.exec_module(boot_proof)
 
 
+
+class BootstrapDenialTests(unittest.TestCase):
+    def fixture(self):
+        rows = []
+        for family in ('inet', 'bridge'):
+            base = {'family': family, 'table': 'verity_egress_boot'}
+            rows.append({'table': {'family': family, 'name': base['table']}})
+            for hook in ('forward', 'input'):
+                rows.append({'chain': {**base, 'name': hook, 'type': 'filter', 'hook': hook,
+                                       'prio': -220, 'policy': 'accept'}})
+                keys = ('iifname', 'oifname') if family == 'inet' else ('ibrname', 'obrname')
+                for key in keys[:1] if hook == 'input' else keys:
+                    rows.append({'rule': {**base, 'chain': hook, 'expr': [
+                        {'match': {'op': '==', 'left': {'meta': {'key': key}}, 'right': 'vep*'}},
+                        {'counter': {'packets': 1, 'bytes': 60}}, {'drop': None}]}})
+        # A stale table cannot bypass the earlier authoritative bootstrap denial.
+        rows.append({'rule': {'family': 'inet', 'table': 'verity_start_old', 'chain': 'forward',
+                              'expr': [{'mangle': {'key': {'ct': {'key': 'label'}}, 'value': 0}}]}})
+        return {'nftables': rows}
+
+    def test_requires_complete_bootstrap_denial_and_rejects_bypasses(self):
+        import copy
+        original = self.fixture()
+        boot_proof.verify_boot_denial(original)
+        for index, row in enumerate(original['nftables'][:-1]):
+            altered = copy.deepcopy(original)
+            del altered['nftables'][index]
+            with self.subTest(index=index), self.assertRaises(AssertionError):
+                boot_proof.verify_boot_denial(altered)
+        for expr in ([{'accept': None}], [{'return': None}]):
+            altered = copy.deepcopy(original)
+            altered['nftables'][2]['rule']['expr'] = expr
+            with self.assertRaises(AssertionError):
+                boot_proof.verify_boot_denial(altered)
+        altered = copy.deepcopy(original)
+        altered['nftables'][1]['chain']['prio'] = 0
+        with self.assertRaises(AssertionError):
+            boot_proof.verify_boot_denial(altered)
+
+
 class RetainedTopologyTests(unittest.TestCase):
     def fixture(self):
         return {'projectId': 'p', 'registry': {'generation': 'g'}, 'containers': [
@@ -105,6 +145,8 @@ class FullBundleTests(unittest.TestCase):
         facts = {'boot_id': '11111111-1111-1111-1111-111111111111', 'init': 'systemd', 'systemd': 259}
         events = []
         broker = []
+        for name in ('controller-kill', 'docker-stop-start', 'docker-crash', 'reboot'):
+            Path(directory, name + '-denied-rules.json').write_text(json.dumps(BootstrapDenialTests().fixture()))
         for index, name in enumerate(['controller-kill', 'server-kill', 'docker-stop-start', 'docker-crash', 'reboot']):
             when = (index + 1) * 10_000_000_000
             after = copy.deepcopy(facts)

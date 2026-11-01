@@ -52,6 +52,38 @@ def verify_removed_fences(path, started_ns):
     return len(observed)
 
 
+
+def verify_boot_denial(ruleset):
+    # Old per-generation label rules may remain, but neither bootstrap chain may
+    # contain a bypass before explicit lifecycle recovery.
+    rows = ruleset['nftables']
+    for family in ('inet', 'bridge'):
+        table = 'verity_egress_boot'
+        assert sum(row.get('table', {}).get('family') == family and row['table']['name'] == table
+                   for row in rows if 'table' in row) == 1, 'Missing bootstrap denial table'
+        for hook in ('forward', 'input'):
+            chains = [row['chain'] for row in rows if 'chain' in row
+                      and row['chain'].get('family') == family and row['chain'].get('table') == table
+                      and row['chain'].get('name') == hook]
+            assert len(chains) == 1, 'Missing bootstrap denial chain'
+            chain = chains[0]
+            assert (chain['type'], chain['hook'], chain['prio'], chain['policy']) == (
+                'filter', hook, -220, 'accept'), 'Changed bootstrap hook'
+            rules = [row['rule'] for row in rows if 'rule' in row
+                     and row['rule'].get('family') == family and row['rule'].get('table') == table
+                     and row['rule'].get('chain') == hook]
+            keys = ('iifname', 'oifname') if family == 'inet' else ('ibrname', 'obrname')
+            if hook == 'input':
+                keys = keys[:1]
+            assert len(rules) == len(keys), 'Bootstrap contains an admission or lacks denial'
+            for rule, key in zip(rules, keys):
+                expressions = rule['expr']
+                assert len(expressions) == 3, 'Changed bootstrap denial expression'
+                assert expressions[0] == {'match': {'op': '==', 'left': {'meta': {'key': key}},
+                                                   'right': 'vep*'}}, 'Changed bootstrap identity'
+                assert set(expressions[1]) == {'counter'} and expressions[2] == {'drop': None}, 'Missing bootstrap drop'
+
+
 def verify_packet(snapshot):
     spec = importlib.util.spec_from_file_location('deadline_guard', Path(__file__).resolve().parents[3] / 'deploy/egress/project-egress-deadline.py')
     deadline = importlib.util.module_from_spec(spec)
@@ -97,6 +129,8 @@ def verify_bundle(directory):
         assert proof['protected_start_ns'] <= event['event_time_ns'] <= proof['protected_end_ns']
         verify_retained(initial, event['retained'])
         verify_packet(event['retained'])
+        if event['event'] != 'server-kill':
+            verify_boot_denial(json.loads((directory / (event['event'] + '-denied-rules.json')).read_text()))
         assert event['recovery_ns'] > 0
         before = event['stream_before']
         after = event['stream_after']
@@ -202,8 +236,9 @@ def main():
             # real lifecycle wake has validated the retained identities and mounted secrets.
             vm.ssh('sudo systemctl reset-failed verity-boot-server.service; sudo systemctl start verity-egress-host.service', timeout=60)
             if event != 'server-kill':
-                rules = vm.ssh('sudo nft list ruleset')
-                assert 'ct label set' not in rules, 'Controller/daemon restored a prior admission'
+                rules = vm.ssh('sudo nft -j list ruleset')
+                (evidence / (event + '-denied-rules.json')).write_text(rules)
+                verify_boot_denial(json.loads(rules))
             time.sleep(2)
             stream_after = json.loads(vm.ssh(guest + f'stream-status {event}'))
             assert max(stream_after['last_success_ns'], stream_after['last_receipt_ns']) - event_time <= 2_000_000_000, 'Observed revocation exceeded two seconds'

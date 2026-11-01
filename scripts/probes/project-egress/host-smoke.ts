@@ -1264,14 +1264,14 @@ try {
     '/evidence/host-failure-tc.txt',
     await exec('/bin/sh', [
       '-c',
-      'for p in /sys/fs/bpf/verity_egress_deadline/*/maps/deadline; do /usr/sbin/bpftool map dump pinned "$p"; done',
+      'for p in /sys/fs/bpf/verity_egress_deadline/*/maps/*; do /usr/sbin/bpftool map dump pinned "$p"; done',
     ])
       .then((r) => r.stdout)
       .catch(String),
   );
   await writeFile(
     '/evidence/host-failure-rules.txt',
-    await exec('/usr/sbin/nft', ['list', 'ruleset'])
+    await exec('/usr/sbin/nft', ['-j', 'list', 'ruleset'])
       .then((r) => r.stdout)
       .catch(String),
   );
