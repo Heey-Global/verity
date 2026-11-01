@@ -48,12 +48,14 @@ describe.skipIf(process.env.VERITY_RUNTIME_RENEWAL_VM !== '1')(
         targetDigest,
       } as UpdateJournal;
       const containers: string[] = [];
-      const snapshot = (
-        id: string,
-      ): { State: { Running: boolean; StartedAt: string }; RestartCount: number } =>
+      type ContainerSnapshot = {
+        State: { Running: boolean; StartedAt: string };
+        RestartCount: number;
+      };
+      const snapshot = (id: string): ContainerSnapshot =>
         JSON.parse(
           execFileSync('docker', ['inspect', '--format', '{{json .}}', id], { encoding: 'utf8' }),
-        );
+        ) as ContainerSnapshot;
       try {
         for (const runtime of ['runc', 'runsc']) {
           const { id } = await docker.createContainer({
@@ -77,6 +79,7 @@ describe.skipIf(process.env.VERITY_RUNTIME_RENEWAL_VM !== '1')(
           docker,
           requirements: requirements!,
           requestId: updateId,
+          requestDir: '/var/lib/verity/host-runtime',
           serviceRequirements: serviceRequirements!,
           renewHostRuntimeService: () =>
             renewHostRuntimeService({
