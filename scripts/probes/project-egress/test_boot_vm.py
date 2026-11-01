@@ -1,5 +1,6 @@
 import importlib.util
 from pathlib import Path
+import json
 import unittest
 
 spec = importlib.util.spec_from_file_location('boot_vm', Path(__file__).with_name('boot-vm.py'))
@@ -204,7 +205,9 @@ class FullBundleTests(unittest.TestCase):
         for name, value in [('boot-proof', proof), ('topology-before', initial),
                             ('inflight', {'positive': {'status': 200, 'started_ns': 1, 'finished_ns': 2},
                                           'denied': {'status': None, 'started_ns': 1, 'finished_ns': 2}}),
-                            ('mutation-inflight', {'status': 200, 'fencesRemoved': True})]:
+                            ('mutation-inflight', {'status': 200, 'fencesRemoved': True,
+                                                   'fencesRemovedNs': 101_000_000_001}),
+                            ('mutation-clock', {'offsetNs': 0, 'uncertaintyNs': 1, 'removalNs': 101_000_000_001})]:
             Path(directory, name + '.json').write_text(json.dumps(value))
         Path(directory, 'protected-receipts.jsonl').write_text(protected)
         Path(directory, 'external-receipts.jsonl').write_text(full)
@@ -239,6 +242,17 @@ class FullBundleTests(unittest.TestCase):
             lines = path.read_text().splitlines()
             path.write_text('\n'.join(lines[:-1] + [json.dumps(leak)]) + '\n')
             with self.assertRaisesRegex(AssertionError, 'Unauthorized external receipt'):
+                boot_proof.verify_bundle(directory)
+
+    def test_readmission_before_reported_removal_remains_protected(self):
+        import json
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            proof, _ = self.fixture(directory)
+            # A start that covers the readmission phase instead of the removal is rejected.
+            proof['mutation_started_ns'] -= 2_000_000_000
+            Path(directory, 'boot-proof.json').write_text(json.dumps(proof))
+            with self.assertRaisesRegex(AssertionError, 'reported fence removal'):
                 boot_proof.verify_bundle(directory)
 
     def test_rejects_mutation_evidence_without_reported_fence_removal(self):
@@ -389,43 +403,62 @@ class ActualMemoryPersistenceTests(unittest.TestCase):
         import json
         for phase, removed in (('removed-fences', True), ('positive', False)):
             self.exercise(phase)
-            self.assertIs(json.loads(self.captured)['fencesRemoved'], removed)
+            reported = json.loads(self.captured)
+            self.assertIs(reported['fencesRemoved'], removed)
+            self.assertIs(type(reported['fencesRemovedNs']) is int, removed)
 
 
 class FenceMutationOrderTests(unittest.TestCase):
-    def test_inflight_readmission_runs_before_any_fence_removal(self):
-        import json
-        from unittest.mock import Mock
-        spec = importlib.util.spec_from_file_location('mutation_proof', Path(__file__).with_name('boot-proof.py'))
-        proof = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(proof)
-        vm = Mock()
-        clock = []
-        result = {'status': 200, 'fencesRemoved': True}
-        def ssh(command, **_):
-            clock.append(proof.time.time_ns())
-            output = json.dumps(result) if 'inflight' in command else ''
-            clock.append(proof.time.time_ns())
-            return output
-        vm.ssh.side_effect = ssh
+    def setUp(self):
         import tempfile
+        spec = importlib.util.spec_from_file_location('mutation_proof', Path(__file__).with_name('boot-proof.py'))
+        self.proof = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.proof)
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
-        evidence = Path(directory.name)
-        started, inflight = proof.remove_fences_mutation(vm, 'guest ', evidence)
-        self.assertEqual(json.loads((evidence / 'mutation-inflight.json').read_text()), result)
-        self.assertEqual([call.args[0] for call in vm.ssh.call_args_list],
-                         ['guest inflight removed-fences', 'guest external'])
-        self.assertEqual(vm.ssh.call_args_list[0].kwargs, {'timeout': 20})
-        self.assertEqual(inflight, result)
-        # The mutation window opens before the in-flight control removes the fences.
-        self.assertLessEqual(started, clock[0])
-        for reported in ({'status': 200}, {'status': 200, 'fencesRemoved': False}):
-            vm.ssh.side_effect = lambda command, **_: json.dumps(reported) if 'inflight' in command else ''
-            with self.assertRaisesRegex(AssertionError, 'did not remove'):
-                proof.remove_fences_mutation(vm, 'guest ', evidence)
+        self.evidence = Path(directory.name)
+
+    def vm(self, offset, inflight):
+        from unittest.mock import Mock
+        vm, self.calls = Mock(), []
+        def ssh(command, **_):
+            started = self.proof.time.time_ns()
+            self.calls.append((command, started))
+            if command == 'date +%s%N':
+                return str(started + offset)
+            if 'inflight' in command:
+                # Readmission with intact fences precedes the guest-reported removal.
+                self.proof.time.sleep(0.02)
+                return json.dumps(inflight(self.proof.time.time_ns() + offset))
+            return ''
+        vm.ssh.side_effect = ssh
+        return vm
+
+    def test_window_opens_at_reported_removal_after_readmission(self):
+        import json
+        offset = 7_000_000_000
+        result = lambda guest_now: {'status': 200, 'fencesRemoved': True, 'fencesRemovedNs': guest_now}
+        vm = self.vm(offset, result)
+        started, inflight = self.proof.remove_fences_mutation(vm, 'guest ', self.evidence)
+        self.assertEqual([command for command, _ in self.calls],
+                         ['date +%s%N', 'guest inflight removed-fences', 'guest external'])
+        self.assertEqual(vm.ssh.call_args_list[1].kwargs, {'timeout': 20})
+        self.assertEqual(json.loads((self.evidence / 'mutation-inflight.json').read_text()), inflight)
+        clock = json.loads((self.evidence / 'mutation-clock.json').read_text())
+        self.assertEqual(started, self.proof.mutation_start(clock, inflight['fencesRemovedNs']))
+        # The readmission phase of the control stays protected: the window opens after it.
+        control_ns, external_ns = self.calls[1][1], self.calls[2][1]
+        self.assertGreater(started, control_ns + 10_000_000)
+        self.assertLess(started, external_ns)
+
+    def test_rejects_missing_or_implausible_removal(self):
+        import json
+        for reported in (lambda now: {'status': 200}, lambda now: {'status': 200, 'fencesRemoved': False},
+                         lambda now: {'status': 200, 'fencesRemoved': True, 'fencesRemovedNs': now - 60_000_000_000}):
+            with self.subTest(), self.assertRaises(AssertionError):
+                self.proof.remove_fences_mutation(self.vm(0, reported), 'guest ', self.evidence)
             # The failing in-flight result is retained as evidence before the verdict.
-            self.assertEqual(json.loads((evidence / 'mutation-inflight.json').read_text()), reported)
+            self.assertIn('status', json.loads((self.evidence / 'mutation-inflight.json').read_text()))
 
 
 class GuestCommandEvidenceTests(unittest.TestCase):

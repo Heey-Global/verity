@@ -53,17 +53,35 @@ def verify_removed_fences(path, started_ns):
 
 
 
+def guest_clock(vm):
+    # Receipts carry host time; map guest timestamps with a bracketed offset.
+    before = time.time_ns()
+    guest = int(vm.ssh('date +%s%N').strip())
+    after = time.time_ns()
+    return {'offsetNs': guest - (before + after) // 2, 'uncertaintyNs': (after - before) // 2 + 1}
+
+
+def mutation_start(clock, removal_ns):
+    # Earliest host time the guest could have begun deleting the fences.
+    return removal_ns - clock['offsetNs'] - clock['uncertaintyNs']
+
+
 def remove_fences_mutation(vm, guest, evidence):
     # The in-flight control readmits while the kernel fences are intact and removes
     # them itself. Readmitting an already tampered generation is refused and contained
-    # by the TC attestation, so removal must not precede it. The mutation window
-    # opens before that control: receipts after removal are expected, and the
-    # offline verifier treats everything before this point as protected.
-    started_ns = time.time_ns()
+    # by the TC attestation, so removal must not precede it. Readmission stays inside
+    # the protected window; the mutation window opens at the reported removal.
+    clock = guest_clock(vm)
+    control_ns = time.time_ns()
     output = vm.ssh(guest + 'inflight removed-fences', timeout=20)
     (evidence / 'mutation-inflight.json').write_text(output)
+    returned_ns = time.time_ns()
     inflight = json.loads(output)
     assert inflight.get('fencesRemoved') is True, 'In-flight control did not remove the kernel fences'
+    clock['removalNs'] = inflight['fencesRemovedNs']
+    (evidence / 'mutation-clock.json').write_text(json.dumps(clock))
+    started_ns = mutation_start(clock, clock['removalNs'])
+    assert control_ns - clock['uncertaintyNs'] <= started_ns <= returned_ns, 'Fence removal outside its control'
     vm.ssh(guest + 'external')
     return started_ns, inflight
 
@@ -199,6 +217,11 @@ def verify_bundle(directory):
     verify_receipts(directory / 'protected-receipts.jsonl', proof['protected_start_ns'], proof['protected_end_ns'])
     full = (directory / 'external-receipts.jsonl').read_text()
     assert full.startswith((directory / 'protected-receipts.jsonl').read_text()), 'Protected evidence is not an original observation prefix'
+    clock = json.loads((directory / 'mutation-clock.json').read_text())
+    mutation = json.loads((directory / 'mutation-inflight.json').read_text())
+    assert clock['removalNs'] == mutation.get('fencesRemovedNs') and 0 < clock['uncertaintyNs'] <= 1_000_000_000
+    assert proof['mutation_started_ns'] == mutation_start(clock, clock['removalNs']) > proof['protected_end_ns'], \
+        'Mutation window does not start at the reported fence removal'
     verify_receipts(directory / 'external-receipts.jsonl', proof['protected_start_ns'], proof['protected_end_ns'], proof['mutation_started_ns'])
     verify_removed_fences(directory / 'external-receipts.jsonl', proof['mutation_started_ns'])
     receipts = [json.loads(line) for line in (directory / 'broker-receipts.jsonl').read_text().splitlines()]
@@ -212,7 +235,6 @@ def verify_bundle(directory):
         assert (result['status'] == 200) == (phase == 'positive')
         assert result['finished_ns'] - result['started_ns'] < 10_000_000_000
     assert set(inflight) == {'positive', 'denied'}
-    mutation = json.loads((directory / 'mutation-inflight.json').read_text())
     assert mutation['status'] == 200 and mutation.get('fencesRemoved') is True
     assert set(proof['faults']) == {'corrupt-registry-denied', 'nftables-failure-denied', 'unsupported-live-restore-denied'}
     return {'events': len(events), 'removed_fence_paths': 8, 'complete': True}

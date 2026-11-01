@@ -171,6 +171,8 @@ def inflight(phase):
     wait(lambda: (directory / f'.boot-inflight-{phase}-ready').exists(), 5)
     if phase in ('denied', 'removed-fences'):
         run('env', 'PROJECT_EGRESS_DISPOSABLE=yes', '/usr/bin/node', '/opt/verity-fixture/boot-server.mjs', 'readmit')
+    # Taken immediately before deletion: until here the fences are intact and protected.
+    removal_ns = time.time_ns() if phase == 'removed-fences' else None
     removed = remove_fences() if phase == 'removed-fences' else False
     (directory / f'.boot-inflight-{phase}-finish').touch()
     result = wait(lambda: json.loads((directory / f'.boot-inflight-{phase}-result').read_text())
@@ -183,7 +185,7 @@ def inflight(phase):
     memory = Path(config['dataRoot'], 'knowledge', descriptor()['projectId'], 'overview.md').read_text()
     assert (f'boot-inflight-{phase}' in memory) == expected, 'Actual Server memory disagrees with in-flight verdict'
     # Observed by remove_fences(); the outer proof requires it before its receipt window.
-    print(json.dumps({**result, 'fencesRemoved': removed}))
+    print(json.dumps({**result, 'fencesRemoved': removed, 'fencesRemovedNs': removal_ns}))
 
 
 def snapshot():
