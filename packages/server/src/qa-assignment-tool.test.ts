@@ -360,3 +360,46 @@ it('rediscovers only the current user project assignments after restart', async 
     assignments: [],
   });
 });
+
+it('delivers a changed question while the assignment is already waiting', async () => {
+  const { service, propose, deps } = setup();
+  deps.busy = (id) => id === 'qa';
+  const p = await propose();
+  await service.request(caller, 'p', p.assignmentId, 'once');
+  await ctx.store.appendEvent('target', {
+    t: 'session_progress',
+    summary: 'Need a decision',
+    outcomeDelivered: false,
+    requiredDecision: 'Choose the first option?',
+  });
+  await service.sweep();
+  const first = await service.status(caller, 'p', p.assignmentId);
+  await ctx.store.appendEvent('target', {
+    t: 'session_progress',
+    summary: 'Need a different decision',
+    outcomeDelivered: false,
+    requiredDecision: 'Choose the second option?',
+  });
+  await service.sweep();
+  const second = await service.status(caller, 'p', p.assignmentId);
+  expect(second).toMatchObject({ status: 'waiting', reason: 'Choose the second option?' });
+  expect(second.version).toBeGreaterThan(first.version);
+  deps.busy = () => false;
+  await service.sweep();
+  expect(
+    vi
+      .mocked(deps.dispatch)
+      .mock.calls.filter((c) => c[0] === 'qa')
+      .at(-1)?.[1],
+  ).toContain('Choose the second option?');
+});
+it('releases an assignment whose target session was deleted instead of holding capacity forever', async () => {
+  const { service, propose } = setup();
+  const p = await propose();
+  await service.request(caller, 'p', p.assignmentId, 'once');
+  await ctx.store.clearRunningTurn('target');
+  await ctx.store.deleteSession('target');
+  await service.sweep();
+  await service.sweep();
+  expect(await service.status(caller, 'p', p.assignmentId)).toMatchObject({ status: 'stopped' });
+});

@@ -350,7 +350,10 @@ export function registerServerMcpRoutes({
           lastPromptSeq,
         );
       }
-      return !(await branches.isDirty(session.worktree));
+      return (
+        !!(await branches.headRevision?.(session.worktree)) &&
+        !(await branches.isDirty(session.worktree))
+      );
     },
     dispatch: async (sessionId, prompt, dispatchId, userId, validate) =>
       (

@@ -140,6 +140,11 @@ export function createQAAssignmentTool(deps: QAAssignmentDeps) {
   }
   async function observe(a: QAAssignment) {
     if (!a.target_session_id || !a.dispatch_id) return;
+    const target = await deps.store.getSession(a.target_session_id);
+    if (!target || target.projectId !== a.project_id)
+      throw new ControlPlaneSessionToolError(
+        'The assigned session disappeared or moved; execution is unverified.',
+      );
     const receipt = await deps.store.repairs.dispatchReceipt(a.dispatch_id);
     if (receipt?.state !== 'admitted' || receipt.prompt_seq === null) return;
     const page = await deps.store.getEventsBeforeSeq(a.target_session_id, 2000);
@@ -196,7 +201,7 @@ export function createQAAssignmentTool(deps: QAAssignmentDeps) {
     } else if (
       progress?.event.t === 'session_progress' &&
       (progress.event.blocker || progress.event.requiredDecision) &&
-      a.state !== 'waiting'
+      (a.state !== 'waiting' || JSON.stringify(progress.event) !== a.evidence)
     ) {
       await store.change(
         a.id,
