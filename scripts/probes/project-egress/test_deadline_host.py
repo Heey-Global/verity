@@ -465,3 +465,41 @@ class RelayMapWriterTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class DockerInspectionTests(unittest.TestCase):
+    def test_rejects_untrusted_identity_before_connecting(self):
+        with patch.object(host, 'DockerInspectionSocket') as connect:
+            for kind, identity in [('container', '../info'), ('exec', 'a' * 64)]:
+                with self.assertRaises(ValueError):
+                    host.docker_read(kind, identity)
+            connect.assert_not_called()
+
+    def test_trickling_cannot_restart_budget(self):
+        with host.DockerInspectionSocket() as connection:
+            with patch.object(host.time, 'monotonic', return_value=connection.deadline + 1):
+                with self.assertRaises(TimeoutError):
+                    connection.recv_into(bytearray(1))
+
+    def test_read_keeps_fixed_endpoint_and_cli_shape(self):
+        from unittest.mock import MagicMock
+        connection = MagicMock()
+        response = connection.getresponse.return_value
+        response.status = 200
+        response.read.return_value = b'{"Id":"current"}'
+        with patch.object(host.http.client, 'HTTPConnection', return_value=connection), patch.object(host, 'DockerInspectionSocket') as sock:
+            self.assertEqual(json.loads(host.docker_read('container', 'a' * 64)), [{'Id': 'current'}])
+            sock.return_value.connect.assert_called_once_with('/var/run/docker.sock')
+            connection.request.assert_called_once_with('GET', '/v1.52/containers/' + 'a' * 64 + '/json')
+            connection.close.assert_called_once()
+
+    def test_bad_daemon_response_fails_closed(self):
+        from unittest.mock import MagicMock
+        for status, body in [(404, b'{}'), (200, b'invalid'), (200, b'x' * (2 * 1024 * 1024 + 1))]:
+            connection = MagicMock()
+            connection.getresponse.return_value.status = status
+            connection.getresponse.return_value.read.return_value = body
+            with patch.object(host.http.client, 'HTTPConnection', return_value=connection), patch.object(host, 'DockerInspectionSocket'):
+                with self.assertRaises(ValueError):
+                    host.docker_read('network', 'b' * 64)
+                connection.close.assert_called_once()

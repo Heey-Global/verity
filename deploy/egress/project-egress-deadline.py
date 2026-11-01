@@ -6,6 +6,7 @@ accepted. The trusted host adapter supplies its already registered binding.
 import ctypes
 import fcntl
 import hashlib
+import http.client
 import ipaddress
 import json
 import os
@@ -13,6 +14,7 @@ from pathlib import Path
 import platform
 import re
 import stat
+import socket
 import struct
 import subprocess
 import sys
@@ -24,7 +26,49 @@ OBJECT = Path('/opt/verity-egress/project-egress-deadline.bpf.o')
 BINDING_FIELDS = ('projectId', 'generation', 'containerId', 'networkId', 'endpointId', 'bridge', 'ipv4', 'ipv6')
 
 
+class DockerInspectionSocket(socket.socket):
+    """Keep header/body trickling inside the same inspection budget."""
+    def __init__(self):
+        super().__init__(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.deadline = time.monotonic() + 1
+        self.settimeout(1)
+
+    def remaining(self):
+        remaining = self.deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError('Docker inspection timed out')
+        self.settimeout(remaining)
+
+    def recv_into(self, *args, **kwargs):
+        self.remaining()
+        return super().recv_into(*args, **kwargs)
+
+    def sendall(self, *args, **kwargs):
+        self.remaining()
+        return super().sendall(*args, **kwargs)
+
+
+def docker_read(kind, identity):
+    if kind not in ('container', 'network') or not re.fullmatch(r'[a-f0-9]{64}', identity):
+        raise ValueError('Invalid Docker inspection identity')
+    connection = http.client.HTTPConnection('localhost', timeout=1)
+    try:
+        connection.sock = DockerInspectionSocket()
+        connection.sock.connect('/var/run/docker.sock')
+        path = '/v1.52/' + ('containers/' + identity + '/json' if kind == 'container' else 'networks/' + identity)
+        connection.request('GET', path)
+        response = connection.getresponse()
+        body = response.read(2 * 1024 * 1024 + 1)
+        if response.status != 200 or len(body) > 2 * 1024 * 1024:
+            raise ValueError('Invalid or oversized Docker inspection response')
+        return json.dumps([json.loads(body)])
+    finally:
+        connection.close()
+
+
 def run(*args):
+    if len(args) == 4 and args[0] == '/usr/bin/docker' and args[1] in ('container', 'network') and args[2] == 'inspect':
+        return docker_read(args[1], args[3])
     try:
         return subprocess.check_output(args, text=True, stderr=subprocess.STDOUT, timeout=5,
                                        env={'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'DOCKER_HOST': 'unix:///var/run/docker.sock'})
