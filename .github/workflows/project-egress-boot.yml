@@ -83,7 +83,7 @@ jobs:
           cache: npm
       - uses: ./.github/actions/reclaim-runner-disk
         with:
-          minimum-free-gib: '45'
+          minimum-free-gib: '40'
       - name: Prepare actual source and native guest assets
         env:
           PROBE_EVIDENCE: ${{ runner.temp }}/project-egress-boot-proof

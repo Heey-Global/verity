@@ -2248,7 +2248,7 @@ describe('GitHub-hosted runner boundary', () => {
     };
     for (const [name, minimum, marker] of [
       ['boot-vm-preflight', 20, 'Prepare disposable KVM guest tooling'],
-      ['boot-retained-topology', 45, 'Prepare actual source and native guest assets'],
+      ['boot-retained-topology', 40, 'Prepare actual source and native guest assets'],
     ] as const) {
       const steps = workflow.jobs[name]!.steps!;
       const prepare = steps.findIndex((step) => step.name === marker);

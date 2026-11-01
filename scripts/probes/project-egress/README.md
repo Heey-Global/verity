@@ -231,5 +231,5 @@ one-second deadline: late admission remains denied.
 Boot CI prepares disposable hosted-runner disk space before guest tooling and
 asset builds, then rechecks after building retained-topology assets. The 12 GiB
 preflight guest uses a 20 GiB preparation floor; the 32 GiB retained guest uses a
-45 GiB preparation floor and a 36 GiB post-build floor. These include working
+40 GiB preparation floor and a 36 GiB post-build floor. These include working
 headroom without weakening the VM's launch-time free-space check.
