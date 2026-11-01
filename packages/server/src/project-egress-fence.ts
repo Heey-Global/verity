@@ -508,14 +508,17 @@ export class ProjectEgressFence {
         if (!(await this.deps.policyCurrent(snapshot)))
           throw new Error('Project fence authority changed');
         if (leases.length) {
-          if (continuity)
-            await this.deps.deadline.renew!(
-              snapshot.binding,
-              admission,
-              continuity.lease.bootDeadlineNs,
-            );
-          else await this.deps.deadline.arm(snapshot.binding, admission);
-          observe('kernel-admission');
+          try {
+            if (continuity)
+              await this.deps.deadline.renew!(
+                snapshot.binding,
+                admission,
+                continuity.lease.bootDeadlineNs,
+              );
+            else await this.deps.deadline.arm(snapshot.binding, admission);
+          } finally {
+            observe('kernel-admission');
+          }
           if (!(await this.deps.policyCurrent(snapshot)))
             throw new Error('Project fence authority changed');
           observe('committed-policy');
