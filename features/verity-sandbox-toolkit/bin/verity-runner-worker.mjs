@@ -25331,6 +25331,7 @@ var window = {
 };
 var qaAnalysisRequestSchema = import_zod14.z.discriminatedUnion("action", [
   import_zod14.z.object({ action: import_zod14.z.literal("projects") }).strict(),
+  import_zod14.z.object({ action: import_zod14.z.literal("assignments"), projectId }).strict(),
   import_zod14.z.object({
     action: import_zod14.z.literal("propose_assignment"),
     projectId,

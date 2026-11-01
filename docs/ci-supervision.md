@@ -289,7 +289,8 @@ apply; the assignment does not authorize merging, deployment or broader access.
 Canonical session events wake reconciliation; a periodic pass recovers missed
 wakes. Completion is correlated to the admitted prompt and ends at a successor
 prompt. Durable notifications wait until QA is idle, and superseded notifications
-are discarded. `assignment_status` exposes confirmed state and bounded evidence;
+are discarded. `assignments` rediscovers the requesting user's project assignments after a restart;
+`assignment_status` exposes confirmed state and bounded evidence;
 `review_assignment` requires the current version. A successful process exit is
 only `verifying`, not `completed`. Completion requires current matching local HEAD
 and successful PR checks plus QA's assessment of the requested acceptance

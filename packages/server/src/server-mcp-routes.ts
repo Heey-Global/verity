@@ -382,6 +382,14 @@ export function registerServerMcpRoutes({
       const worktreeFingerprint = await branches?.worktreeFingerprint?.(session.worktree);
       const recent = await deps.eventStore.getEventsBeforeSeq(session.sessionId, 2000);
       const lastPromptSeq = recent.events.findLast((row) => row.event.t === 'prompt')?.seq;
+      const receipt = a.dispatch_id
+        ? await deps.eventStore.repairs.dispatchReceipt(a.dispatch_id)
+        : undefined;
+      if (receipt?.prompt_seq == null || lastPromptSeq !== Number(receipt.prompt_seq))
+        return {
+          verified: false,
+          reason: 'The session received a different prompt; new approval is required.',
+        };
       const project = await deps.eventStore.getProject(a.project_id);
       if (!project || !deps.repairDiscovery || !revision || !branch)
         return { verified: false, revision, branch, dirty, worktreeFingerprint, lastPromptSeq };
@@ -1649,6 +1657,11 @@ export function registerServerMcpRoutes({
         }
         if (input.toolName === 'verity_qa_analysis') {
           const request = qaAnalysisRequestSchema.parse(input.request);
+          if (request.action === 'assignments')
+            return qaAssignments.list(
+              await repairCaller(input.sessionId, input.turnId),
+              request.projectId,
+            );
           if (request.action === 'propose_assignment')
             return qaAssignments.propose(
               await repairCaller(input.sessionId, input.turnId),

@@ -307,3 +307,56 @@ it('rejects a follow-up when the captured worktree or prompt changed', async () 
     ),
   ).toMatchObject({ status: 'queued' });
 });
+
+it('waits for an occupied dirty target instead of failing its pending assignment', async () => {
+  const { service, propose, deps } = setup();
+  const p = await propose();
+  deps.busy = () => true;
+  deps.target = async () => false;
+  expect(await service.request(caller, 'p', p.assignmentId, 'once')).toMatchObject({
+    status: 'queued',
+  });
+  expect(vi.mocked(deps.dispatch).mock.calls).toHaveLength(0);
+  deps.busy = () => false;
+  deps.target = async () => true;
+  await service.sweep();
+  expect(await service.status(caller, 'p', p.assignmentId)).toMatchObject({ status: 'running' });
+});
+it('rejects terminal-then-successor history before capturing continuation evidence', async () => {
+  const { service, propose, deps } = setup();
+  const inspect = vi.fn(deps.inspect);
+  deps.inspect = inspect;
+  const p = await propose();
+  await service.request(caller, 'p', p.assignmentId, 'once');
+  await ctx.store.appendEvent('target', { t: 'status', state: 'completed' });
+  await ctx.store.clearRunningTurn('target');
+  await ctx.store.appendEvent('target', { t: 'prompt', text: 'unrelated new work' });
+  await ctx.store.appendEvent('target', { t: 'status', state: 'completed' });
+  await service.sweep();
+  expect(await service.status(caller, 'p', p.assignmentId)).toMatchObject({ status: 'blocked' });
+  expect(inspect).not.toHaveBeenCalled();
+});
+
+it('keeps waiting when unrelated work begins during target validation', async () => {
+  const { service, propose, deps } = setup();
+  const p = await propose();
+  deps.target = async () => {
+    deps.busy = () => true;
+    return false;
+  };
+  expect(await service.request(caller, 'p', p.assignmentId, 'once')).toMatchObject({
+    status: 'queued',
+  });
+  expect(deps.dispatch).not.toHaveBeenCalled();
+});
+
+it('rediscovers only the current user project assignments after restart', async () => {
+  const { service, propose, deps } = setup();
+  const p = await propose();
+  expect(await createQAAssignmentTool(deps).list(caller, 'p')).toMatchObject({
+    assignments: [{ assignmentId: p.assignmentId }],
+  });
+  expect(await service.list({ sessionId: 'qa', userId: 'other' }, 'p')).toEqual({
+    assignments: [],
+  });
+});

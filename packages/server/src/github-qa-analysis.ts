@@ -43,6 +43,7 @@ export type QARepositoryRequest = Exclude<
   QAAnalysisRequest,
   {
     action:
+      | 'assignments'
       | 'projects'
       | 'save_report'
       | 'resolve_repair'
