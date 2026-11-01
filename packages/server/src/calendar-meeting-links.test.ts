@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { joinableMeeting, meetingLinkFromEvent } from './calendar-meeting-links.js';
+import { joinableMeeting, meetingCallKey, meetingLinkFromEvent } from './calendar-meeting-links.js';
 import type { CalendarEventRecord } from './google-calendar.js';
 
 const event = (fields: Partial<CalendarEventRecord> = {}): CalendarEventRecord => ({
@@ -125,5 +125,23 @@ describe('joinableMeeting', () => {
         }),
       ),
     ).toBeDefined();
+  });
+});
+
+describe('meetingCallKey', () => {
+  // Two calendars rarely carry the same link byte for byte; the call must still match.
+  it('matches one call across query, case, trailing slash and Zoom subdomain', () => {
+    expect(meetingCallKey('https://meet.google.com/abc-defg-hij?authuser=1')).toBe(
+      meetingCallKey('https://meet.google.com/ABC-DEFG-HIJ/'),
+    );
+    expect(meetingCallKey('https://us02web.zoom.us/j/123?pwd=x')).toBe(
+      meetingCallKey('https://zoom.us/j/123'),
+    );
+  });
+
+  it('keeps different calls apart', () => {
+    expect(meetingCallKey('https://meet.google.com/abc-defg-hij')).not.toBe(
+      meetingCallKey('https://meet.google.com/xyz-defg-hij'),
+    );
   });
 });

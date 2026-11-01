@@ -163,3 +163,21 @@ it('discards an unassigned meeting without touching an assigned one', async () =
   expect(await service.discard('unknown')).toBe(false);
   expect(ingest).not.toHaveBeenCalled();
 });
+
+// The calendar watcher relies on this to keep a second bot out of a call that has one.
+it('finds the meeting whose bot is in a call, assigned or not, until it stops', async () => {
+  const url = 'https://meet.google.com/abc-defg-hij';
+  const { store } = memoryStore([
+    ['meeting:u', running('u', null, { meetingUrl: url })],
+    ['meeting:s', running('s', 'session', { meetingUrl: 'https://zoom.us/j/1' })],
+    ['meeting:e', running('e', null, { meetingUrl: 'https://zoom.us/j/2', phase: 'ended' })],
+    ['meeting:x', running('x', null, { meetingUrl: 'https://zoom.us/j/3', stopRequested: true })],
+    ['meeting:old', running('old', null)],
+  ]);
+  const service = new AttendeeMeetings({ store, ingest: vi.fn() });
+  expect(await service.runningFor(`${url}?authuser=1`)).toBe('u');
+  expect(await service.runningFor('https://us02web.zoom.us/j/1')).toBe('s');
+  expect(await service.runningFor('https://zoom.us/j/2')).toBeUndefined();
+  expect(await service.runningFor('https://zoom.us/j/3')).toBeUndefined();
+  expect(await service.runningFor('https://meet.google.com/other')).toBeUndefined();
+});

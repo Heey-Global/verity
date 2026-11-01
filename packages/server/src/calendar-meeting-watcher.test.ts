@@ -65,6 +65,7 @@ async function fixture(options: { autoJoin?: boolean; items?: unknown[] } = {}) 
     transportErrors: 0,
   }));
   const start = vi.fn(async () => ({ meetingId: 'meeting-1' }));
+  const runningFor = vi.fn<(url: string) => Promise<string | undefined>>(async () => undefined);
   const deps: CalendarMeetingDeps = {
     store: {
       calendarWatch: ctx.store.calendarWatch,
@@ -80,7 +81,7 @@ async function fixture(options: { autoJoin?: boolean; items?: unknown[] } = {}) 
         },
       ],
     } as unknown as CalendarMeetingDeps['store'],
-    meetings: { start } as unknown as CalendarMeetingDeps['meetings'],
+    meetings: { start, runningFor } as unknown as CalendarMeetingDeps['meetings'],
     sender: { send },
     googleAccessToken: async () => 'token',
     fetch: vi.fn(async () => ({
@@ -98,7 +99,7 @@ async function fixture(options: { autoJoin?: boolean; items?: unknown[] } = {}) 
     await watcher.runOnce();
     await watcher.stop();
   };
-  return { state, send, start, deps, run };
+  return { state, send, start, runningFor, deps, run };
 }
 
 const categories = (send: ReturnType<typeof vi.fn>) =>
@@ -198,6 +199,26 @@ it('joins an automatic calendar at the start, unassigned and only once', async (
     title: 'Verity joined Weekly sync',
     data: { kind: 'meeting-started', meetingId: 'meeting-1' },
   });
+});
+
+// The same call in two watched calendars, or again after watching was switched off and on,
+// would otherwise get a second bot transcribing it twice.
+it('does not send a second bot into a call that already has one', async () => {
+  const { state, send, start, runningFor, deps, run } = await fixture({ autoJoin: true });
+  runningFor.mockResolvedValue('meeting-0');
+  state.now = START;
+  await run();
+  expect(start).not.toHaveBeenCalled();
+  expect(runningFor).toHaveBeenCalledWith('https://meet.google.com/abc-defg-hij');
+  expect(send).not.toHaveBeenCalled();
+  const [event] = await ctx.store.calendarWatch.listEvents();
+  expect(event).toMatchObject({ decision: 'joined', meetingId: 'meeting-0' });
+  // Asked for by hand, it is reported as joined rather than started again.
+  await ctx.store.calendarWatch.releaseJoin(event!.key);
+  await expect(joinCalendarMeeting(deps, event!.key, 'session-1')).rejects.toBeInstanceOf(
+    CalendarEventAlreadyJoinedError,
+  );
+  expect(start).not.toHaveBeenCalled();
 });
 
 // An unanswered invitation must not let an always-listening bot in on its own.

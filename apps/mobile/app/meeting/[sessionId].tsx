@@ -858,6 +858,8 @@ export default function MeetingScreen() {
       if (meetingSource === 'online') {
         const client = createVerityClient();
         if (!client) throw new Error('Connect to the server.');
+        // A link typed earlier stays behind a collapsed field; never start from what is not shown.
+        if (!selectedEvent && !manualLink) throw new Error('Pick a meeting or enter its link.');
         const result = selectedEvent
           ? await client.joinCalendarMeeting(selectedEvent.eventKey, sessionId)
           : await client.startOnlineMeeting(
@@ -1885,7 +1887,7 @@ export default function MeetingScreen() {
             loading={busy}
             disabled={
               meetingSource === 'online' &&
-              (!attendeeConfigured || (!selectedEvent && !meetingUrl.trim()))
+              (!attendeeConfigured || (!selectedEvent && !(manualLink && meetingUrl.trim())))
             }
             onPress={start}
             fullWidth

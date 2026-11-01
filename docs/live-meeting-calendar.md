@@ -64,7 +64,11 @@ declined or lost its link is forgotten.
 
 Markers in the database keep a restart from repeating a notification or
 joining twice. Only one join per event succeeds, whether it comes from a
-notification, the app or the automatic join.
+notification, the app or the automatic join. A call that already has a Verity
+bot is not joined again, even when it appears in two watched calendars or
+watching was switched off and on: the event is recorded as joined by the
+running meeting. Links count as the same call regardless of query parameters,
+case, a trailing slash or the Zoom subdomain.
 
 ## Joining from the app
 

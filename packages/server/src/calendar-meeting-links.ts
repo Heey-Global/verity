@@ -15,6 +15,18 @@ export function isSupportedMeetingUrl(url: URL): boolean {
   );
 }
 
+/** Identifies the call behind a link, so the same call reached through two calendars, a
+ * Zoom subdomain or other query parameters is recognised as one. */
+export function meetingCallKey(meetingUrl: string): string {
+  try {
+    const url = new URL(meetingUrl);
+    const host = url.hostname.toLowerCase().endsWith('.zoom.us') ? 'zoom.us' : url.hostname;
+    return `${host.toLowerCase()}${url.pathname.toLowerCase().replace(/\/+$/, '')}`;
+  } catch {
+    return meetingUrl;
+  }
+}
+
 function supported(candidate: string): string | undefined {
   // Descriptions are often HTML; links there carry entity-encoded query separators.
   const text = candidate.replaceAll('&amp;', '&');

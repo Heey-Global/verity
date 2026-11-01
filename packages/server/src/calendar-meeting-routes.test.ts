@@ -71,6 +71,7 @@ function serve(start = vi.fn(async () => ({ meetingId: 'meeting-1' }))) {
     pruned: 0,
     transportErrors: 0,
   }));
+  const runningFor = vi.fn<(url: string) => Promise<string | undefined>>(async () => undefined);
   app = Fastify();
   registerCalendarMeetingRoutes(app, {
     store: {
@@ -80,7 +81,7 @@ function serve(start = vi.fn(async () => ({ meetingId: 'meeting-1' }))) {
       getSession: async (id: string) =>
         id === 'session-1' ? ({ sessionId: id } as never) : undefined,
     },
-    meetings: { start } as unknown as CalendarMeetingDeps['meetings'],
+    meetings: { start, runningFor } as unknown as CalendarMeetingDeps['meetings'],
     sender: { send },
     googleAccessToken: async () => undefined,
     warn: vi.fn(),

@@ -203,6 +203,8 @@ it('starts and stops the provider bot independently of the app', async () => {
       meeting_url: string;
     };
     expect(body.meeting_url).toBe('https://meet.google.com/abc-defg-hij');
+    // A second join of this call must find the bot already in it.
+    expect(await service.runningFor('https://meet.google.com/abc-defg-hij')).toBe(result.meetingId);
     const callback = new URL(body.webhooks[0]!.url);
     expect(callback.pathname).toBe('/webhooks/attendee');
     const { hashPreviewPin } = await import('@verity/preview-tunnel');

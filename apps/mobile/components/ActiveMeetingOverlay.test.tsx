@@ -445,6 +445,25 @@ describe('discovering meetings on the server', () => {
     expect(sync.clearFollowedRemoteMeeting).not.toHaveBeenCalled();
   });
 
+  it('lets go of an unsynced meeting the server no longer runs', async () => {
+    jest.mocked(subscribeMeeting).mockImplementation((listener) => {
+      listener(null);
+      return jest.fn();
+    });
+    jest.mocked(subscribeFollowedRemoteMeeting).mockImplementation((listener) => {
+      listener({ serverId: 'server-1', sessionId: 'session-9', meetingId: 'online-1' });
+      return jest.fn();
+    });
+    const sync = jest.requireMock('../lib/liveMeetingSync');
+    jest.mocked(listMeetings).mockResolvedValue([]);
+    jest.mocked(createVerityClient).mockReturnValue({
+      getActiveLiveMeetings: jest.fn().mockResolvedValue(activeMeetings({})),
+    } as unknown as NonNullable<ReturnType<typeof createVerityClient>>);
+    render(<ActiveMeetingOverlay />);
+    // Otherwise a follow that never syncs keeps the card from following any later meeting.
+    await waitFor(() => expect(sync.clearFollowedRemoteMeeting).toHaveBeenCalled());
+  });
+
   it('asks the new server after switching servers', async () => {
     jest.mocked(subscribeMeeting).mockImplementation((listener) => {
       listener(null);

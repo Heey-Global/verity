@@ -16,6 +16,7 @@ import {
   normalizeAttendeeTranscript,
   verifyAttendeeSignature,
 } from './attendee-client.js';
+import { meetingCallKey } from './calendar-meeting-links.js';
 
 interface MeetingStartDiagnostic {
   requestId?: string;
@@ -70,6 +71,8 @@ interface OnlineMeeting {
   botCreateAttempted?: boolean;
   /** Set by discard: the provider is stopped and the state deleted once it has ended. */
   discarded?: boolean;
+  /** The call the bot joined, so a second join of the same call can find it. */
+  meetingUrl?: string;
   error?: string;
 }
 function assigned(meeting: OwnedMeeting): LiveMeetingSyncRecord | undefined {
@@ -316,6 +319,7 @@ export class AttendeeMeetings {
           revision: 0,
         },
         pin: String(randomInt(100_000, 1_000_000)),
+        meetingUrl,
         credentials,
         identities: {},
         phase: 'preparing',
@@ -525,6 +529,19 @@ export class AttendeeMeetings {
       await this.finishDiscard(state).catch(() => undefined);
       return true;
     });
+  }
+
+  /** The meeting whose bot is in that call now, assigned or not. */
+  async runningFor(meetingUrl: string): Promise<string | undefined> {
+    const call = meetingCallKey(meetingUrl);
+    return (await this.records()).find(
+      (row) =>
+        row.state.meetingUrl !== undefined &&
+        meetingCallKey(row.state.meetingUrl) === call &&
+        row.state.phase !== 'ended' &&
+        !row.state.stopRequested &&
+        !row.state.discarded,
+    )?.state.meeting.id;
   }
 
   private async activeIn(sessionId: string): Promise<boolean> {

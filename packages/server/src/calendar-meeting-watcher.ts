@@ -41,7 +41,7 @@ export interface CalendarMeetingDeps {
     EventStore,
     'calendarWatch' | 'listActiveAdministratorIds' | 'listDevicePushTokensForUsers' | 'getSession'
   >;
-  meetings: Pick<AttendeeMeetings, 'start'>;
+  meetings: Pick<AttendeeMeetings, 'start' | 'runningFor'>;
   sender?: Pick<PushSender, 'send'> | undefined;
   googleAccessToken: (accountId?: string) => Promise<string | undefined>;
   fetch?: GoogleFetch;
@@ -80,6 +80,14 @@ export async function joinCalendarMeeting(
   const event = await watch.getEvent(key);
   if (!event) throw new CalendarEventNotFoundError();
   if (!(await watch.claimJoin(key))) throw new CalendarEventAlreadyJoinedError();
+  // The same call in a second watched calendar, or again after watching was switched off and
+  // on, already has a bot; a second one would transcribe it twice.
+  const running = await deps.meetings.runningFor(event.meetingUrl);
+  if (running !== undefined) {
+    await watch.setJoinResult(key, { meetingId: running });
+    if (options.automatic) return { meetingId: running };
+    throw new CalendarEventAlreadyJoinedError();
+  }
   let meetingId: string;
   try {
     ({ meetingId } = await deps.meetings.start(sessionId, event.meetingUrl, true, titleOf(event)));

@@ -66,6 +66,8 @@ export function ActiveMeetingOverlay() {
   // What the server reports as running, so a meeting started elsewhere (another device,
   // or Verity joining on its own) appears without first opening its session.
   const [discovered, setDiscovered] = useState<ActiveLiveMeetings | null>(null);
+  const discoveredRef = useRef(discovered);
+  discoveredRef.current = discovered;
   const [assigning, setAssigning] = useState<AssignableMeeting | null>(null);
   // A calendar meeting whose notification was tapped: asks Join / Skip.
   const [upcomingKey, setUpcomingKey] = useState<string | null>(null);
@@ -162,6 +164,8 @@ export function ActiveMeetingOverlay() {
     () =>
       subscribeVerityBaseUrl(() => {
         setDiscovered(null);
+        setAssigning(null);
+        setUpcomingKey(null);
         setServerEpoch((value) => value + 1);
       }),
     [],
@@ -228,9 +232,15 @@ export function ActiveMeetingOverlay() {
           null;
         if (!mounted) return;
         setRemoteMeeting(saved);
-        // Not synced to this device yet (or offline): keep following and look again on the
-        // next refresh. Clearing here would let discovery follow it again at once, in a loop.
-        if (!saved) return;
+        if (!saved) {
+          // Not synced to this device yet (or offline): while the server still lists it as
+          // running, keep following and look again on the next refresh. Clearing at once
+          // would let discovery follow it again, in a loop; once it is gone, let it go.
+          if (discoveredRef.current?.running.some((item) => item.id === followed.meetingId)) return;
+          settled.current.add(followed.meetingId);
+          clearFollowedRemoteMeeting();
+          return;
+        }
         if (!alive(saved)) settled.current.add(saved.id);
         if (!alive(saved)) {
           clearFollowedRemoteMeeting();
