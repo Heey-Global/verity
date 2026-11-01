@@ -41,9 +41,22 @@ export const HOST_RUNTIME_ALLOWED_ARGS = [
   '--host-uds=create',
 ] as const;
 
+interface ArchitectureSums {
+  readonly x86_64: string;
+  readonly aarch64: string;
+}
+
 export interface HostRuntimeRequirements {
   readonly release: string;
-  readonly sha512: { readonly x86_64: string; readonly aarch64: string };
+  /** The runsc binary, per architecture. */
+  readonly sha512: ArchitectureSums;
+  /**
+   * Present for a gVisor release that ships as `gvisor.tar.bz2` (runsc plus the sidecars in
+   * `gvisor-bin/` it cannot start a sandbox without) rather than as a single binary. Only a host
+   * component that advertises `archive` in agent.json can install one; an older one would
+   * refuse the shape, which is also why an older Updater refuses a release declaring it.
+   */
+  readonly archiveSha512?: ArchitectureSums;
   readonly runtimes: Readonly<Record<HostRuntimeName, readonly string[]>>;
 }
 
@@ -68,16 +81,28 @@ function exactKeys(value: Record<string, unknown>, keys: readonly string[]): boo
   return actual.length === expected.length && actual.every((key, i) => key === expected[i]);
 }
 
+function isArchitectureSums(value: unknown): value is ArchitectureSums {
+  return (
+    isRecord(value) &&
+    exactKeys(value, ['x86_64', 'aarch64']) &&
+    Object.values(value).every((sum) => typeof sum === 'string' && /^[a-f0-9]{128}$/u.test(sum))
+  );
+}
+
 /** Strict parse; the same shape `verity-host-runtime` validates before it touches the host. */
 export function parseHostRuntimeRequirements(value: unknown): HostRuntimeRequirements | null {
-  if (!isRecord(value) || !exactKeys(value, ['release', 'sha512', 'runtimes'])) return null;
-  const { release, sha512, runtimes } = value;
-  if (typeof release !== 'string' || !/^release-[0-9]{8}\.[0-9]+$/u.test(release)) return null;
-  if (!isRecord(sha512) || !exactKeys(sha512, ['x86_64', 'aarch64'])) return null;
   if (
-    !Object.values(sha512).every((sum) => typeof sum === 'string' && /^[a-f0-9]{128}$/u.test(sum))
+    !isRecord(value) ||
+    !(
+      exactKeys(value, ['release', 'sha512', 'runtimes']) ||
+      exactKeys(value, ['release', 'sha512', 'archiveSha512', 'runtimes'])
+    )
   )
     return null;
+  const { release, sha512, archiveSha512, runtimes } = value;
+  if (typeof release !== 'string' || !/^release-[0-9]{8}\.[0-9]+$/u.test(release)) return null;
+  if (!isArchitectureSums(sha512)) return null;
+  if ('archiveSha512' in value && !isArchitectureSums(archiveSha512)) return null;
   if (!isRecord(runtimes) || !exactKeys(runtimes, HOST_RUNTIME_NAMES)) return null;
   const allowed: readonly string[] = HOST_RUNTIME_ALLOWED_ARGS;
   for (const args of Object.values(runtimes)) {
@@ -116,6 +141,15 @@ export async function readTargetHostRuntimes(
 
 function hostRuntimePath(release: string): string {
   return `/opt/verity/runsc/${release}/runsc`;
+}
+
+/** Whether the installed host runtime service advertises that it installs archive pins. */
+function installsArchives(agent: unknown): boolean {
+  return (
+    isRecord(agent) &&
+    Array.isArray(agent.runtimeArtifacts) &&
+    agent.runtimeArtifacts.includes('archive')
+  );
 }
 
 /** Names of the declared runtimes dockerd does not currently report exactly as declared. */
@@ -244,6 +278,13 @@ export async function requestHostAnswer(
 export interface ReconcileHostRuntimesOptions {
   readonly docker: Pick<DockerClient, 'inspectRuntime'>;
   readonly requirements: HostRuntimeRequirements;
+  /**
+   * Bring the host components up to the target release through a path that already runs
+   * release-bundled code on the host (the devcontainer builder service), for a host whose
+   * runtime service predates archive pins. Resolves to why that did not happen, or `undefined`
+   * once it did. Without it such a host can only be moved forward by the installer.
+   */
+  readonly refreshHostComponents?: () => Promise<string | undefined>;
   /** Stable across a resumed operation, so a crash reuses the request and its answer. */
   readonly requestId: string;
   readonly requestDir?: string;
@@ -276,6 +317,22 @@ export async function reconcileHostRuntimes(options: ReconcileHostRuntimesOption
       `This release needs ${need}. This host has no systemd, so the host runtime service cannot ` +
         'run on request; re-run the Verity installer on the host, then retry the update.',
     );
+  }
+  if (requirements.archiveSha512 !== undefined && !installsArchives(agent)) {
+    // The builder service installs the bundle out of the verified target image, and that
+    // bundle both registers the target's runtimes and replaces the host runtime service. So
+    // afterwards either nothing is missing any more, or the service takes the request below.
+    await options.refreshHostComponents?.();
+    if ((await unsatisfiedHostRuntimes(docker, requirements)).length === 0) return;
+    const refreshed = await readJson(join(dir, 'agent.json')).catch(() => undefined);
+    if (!installsArchives(refreshed)) {
+      throw new HostRuntimeError(
+        `This release needs ${need}, which gVisor ships as a release archive, and this host's ` +
+          'runtime service predates archives. ' +
+          'The current version keeps serving. ' +
+          REPAIR,
+      );
+    }
   }
 
   const result = await requestHostAnswer({

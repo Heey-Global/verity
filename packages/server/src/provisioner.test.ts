@@ -2512,6 +2512,33 @@ describe('ProvisionerImpl (#174)', () => {
     expect(spec.portBindings).toBeUndefined();
   });
 
+  it('derives project limits from Docker host capacity and preserves overrides', async () => {
+    const id = await seedProject();
+    const { runner: git } = fakeGit([{ match: /\bclone\b/ }, { match: /remote set-url/ }]);
+    const { client: docker, calls } = fakeDocker();
+    docker.hostMemoryBytes = async () => 16 * 1024 ** 3;
+    const provisioner = createProvisioner({
+      store: ctx.store,
+      db: ctx.db,
+      docker,
+      git,
+      projectTokenMint: async () => 'tok',
+      defaultImageRef: 'ghcr.io/heey-global/dev-base:default',
+      hostCloneRoot: '/var/lib/verity-dev',
+      isDirectory: () => false,
+      sandboxMemoryReservationBytes: 3 * 1024 ** 3,
+      sandboxOomScoreAdj: 600,
+    });
+    await provisioner.provision(id);
+    const spec = calls.find((call) => call.method === 'createContainer')?.payload as ContainerSpec;
+    expect(spec).toMatchObject({
+      memoryBytes: 12 * 1024 ** 3,
+      memorySwapBytes: 12 * 1024 ** 3,
+      memoryReservationBytes: 3 * 1024 ** 3,
+      oomScoreAdj: 600,
+    });
+  });
+
   it('keeps the swap ceiling pinned to a configured memory ceiling', async () => {
     const id = await seedProject();
     const { runner: git } = fakeGit([{ match: /\bclone\b/ }, { match: /remote set-url/ }]);

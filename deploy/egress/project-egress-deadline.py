@@ -4,8 +4,10 @@ No command, program path, namespace path or interface supplied by a Sandbox is
 accepted. The trusted host adapter supplies its already registered binding.
 """
 import ctypes
+from concurrent.futures import ThreadPoolExecutor
 import fcntl
 import hashlib
+import http.client
 import ipaddress
 import json
 import os
@@ -13,10 +15,14 @@ from pathlib import Path
 import platform
 import re
 import stat
+import socket
+import threading
 import struct
 import subprocess
 import sys
 import time
+import signal
+import traceback
 
 STATE = Path('/var/lib/verity-egress/deadline')
 PINS = Path('/sys/fs/bpf/verity_egress_deadline')
@@ -24,7 +30,62 @@ OBJECT = Path('/opt/verity-egress/project-egress-deadline.bpf.o')
 BINDING_FIELDS = ('projectId', 'generation', 'containerId', 'networkId', 'endpointId', 'bridge', 'ipv4', 'ipv6')
 
 
+DOCKER_SOCKET = '/var/run/docker.sock'
+
+
+class DockerConnection(http.client.HTTPConnection):
+    def connect(self):
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.sock.settimeout(self.timeout)
+        self.sock.connect(DOCKER_SOCKET)
+
+
+def docker_inspect(kind, identity):
+    if kind not in ('container', 'network') or not re.fullmatch(r'[a-f0-9]{64}', identity):
+        raise ValueError('Invalid host Docker inspection identity')
+    path = f'/{"containers" if kind == "container" else "networks"}/{identity}'
+    if kind == 'container':
+        path += '/json'
+    connection = DockerConnection('localhost', timeout=1)
+    expired = threading.Event()
+    def expire():
+        expired.set()
+        channel = connection.sock
+        if channel is not None:
+            try:
+                channel.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+        connection.close()
+    timer = threading.Timer(1, expire)
+    timer.start()
+    try:
+        connection.request('GET', path, headers={'Connection': 'close'})
+        response = connection.getresponse()
+        if response.status != 200:
+            raise ValueError('Host Docker inspection returned HTTP ' + str(response.status))
+        body = response.read(2 * 1024 * 1024 + 1)
+        if len(body) > 2 * 1024 * 1024:
+            raise ValueError('Oversized host Docker inspection')
+        if response.length not in (None, 0):
+            raise ValueError('Truncated host Docker inspection')
+        value = json.loads(body.decode('utf-8'))
+        if expired.is_set():
+            raise TimeoutError('Host Docker inspection timed out')
+        if not isinstance(value, dict):
+            raise ValueError('Invalid host Docker inspection object')
+        return json.dumps([value])
+    finally:
+        timer.cancel()
+        connection.close()
+        timer.join()
+
+
 def run(*args):
+    if args[0] == '/usr/bin/docker':
+        if len(args) != 4 or args[2] != 'inspect':
+            raise ValueError('Unsupported host Docker inspection')
+        return docker_inspect(args[1], args[3])
     try:
         return subprocess.check_output(args, text=True, stderr=subprocess.STDOUT, timeout=5,
                                        env={'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'DOCKER_HOST': 'unix:///var/run/docker.sock'})
@@ -104,15 +165,28 @@ class TestRunAttr(ctypes.Structure):
                 ('flags', ctypes.c_uint32), ('cpu', ctypes.c_uint32), ('batch_size', ctypes.c_uint32)]
 
 
-def renew_deadline(root, index, previous, deadline):
+def prepare_renewal(root):
     program = root / 'renew'
+    obj = OBJECT.with_name('project-egress-renew.bpf.o')
+    value = obj.lstat()
+    if not stat.S_ISREG(value.st_mode) or value.st_uid != 0 or value.st_mode & 0o022:
+        raise ValueError('Untrusted deadline renewal object')
     if not program.exists():
-        obj = OBJECT.with_name('project-egress-renew.bpf.o')
-        value = obj.lstat()
-        if not stat.S_ISREG(value.st_mode) or value.st_uid != 0 or value.st_mode & 0o022:
-            raise ValueError('Untrusted deadline renewal object')
         run('/usr/sbin/bpftool', 'prog', 'load', str(obj), str(program),
             'map', 'name', 'deadline', 'pinned', str(root / 'maps/deadline'))
+    program_info = json.loads(run('/usr/sbin/bpftool', '-j', 'prog', 'show', 'pinned', str(program)))
+    map_info = json.loads(run('/usr/sbin/bpftool', '-j', 'map', 'show', 'pinned', str(root / 'maps/deadline')))
+    if isinstance(program_info, list):
+        program_info = program_info[0]
+    if isinstance(map_info, list):
+        map_info = map_info[0]
+    if program_info['type'] != 'socket_filter' or program_info['map_ids'] != [map_info['id']]:
+        raise ValueError('Renewal program is not bound to the deadline map')
+
+
+def renew_deadline(root, index, previous, deadline):
+    # Loading is denied-state preparation work, never part of a live handoff.
+    program = root / 'renew'
     pathname = ctypes.create_string_buffer(str(program).encode())
     fd = bpf(7, ObjectAttr(ctypes.addressof(pathname), 0, 0))
     packet = bytearray(78)
@@ -145,6 +219,14 @@ def write_relay(root, policy=None):
         os.close(fd)
 
 
+def read_commands(*commands):
+    # Read-only daemon/kernel snapshots only. Join every read before mutation or
+    # propagating a failure; never move deadline/map writes into this executor.
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(run, *command) for command in commands]
+        return [future.result() for future in futures]
+
+
 def relay_policy(binding, peer, registration):
     if (not isinstance(registration, dict)
             or set(registration) != {'containerId', 'endpointId', 'codex'}
@@ -153,11 +235,13 @@ def relay_policy(binding, peer, registration):
                    for k in ('containerId', 'endpointId'))
             or registration['containerId'] == binding['containerId']):
         raise ValueError('Invalid registered relay identity')
-    network = json.loads(run('/usr/bin/docker', 'network', 'inspect', binding['networkId']))[0]
+    replies = read_commands(
+        ('/usr/bin/docker', 'network', 'inspect', binding['networkId']),
+        ('/usr/bin/docker', 'container', 'inspect', binding['containerId']),
+        ('/usr/bin/docker', 'container', 'inspect', registration['containerId']))
+    network, sandbox, relay = [json.loads(reply)[0] for reply in replies]
     if set(network['Containers']) != {binding['containerId'], registration['containerId']}:
         raise ValueError('Relay requires exactly the registered project pair')
-    sandbox = json.loads(run('/usr/bin/docker', 'container', 'inspect', binding['containerId']))[0]
-    relay = json.loads(run('/usr/bin/docker', 'container', 'inspect', registration['containerId']))[0]
     sandbox_net = list(sandbox['NetworkSettings']['Networks'].values())[0]
     relay_nets = list(relay['NetworkSettings']['Networks'].values())
     if len(relay_nets) != 1:
@@ -195,8 +279,10 @@ def relay_policy(binding, peer, registration):
 
 
 def endpoint(binding):
-    container = json.loads(run('/usr/bin/docker', 'container', 'inspect', binding['containerId']))[0]
-    network = json.loads(run('/usr/bin/docker', 'network', 'inspect', binding['networkId']))[0]
+    replies = read_commands(
+        ('/usr/bin/docker', 'container', 'inspect', binding['containerId']),
+        ('/usr/bin/docker', 'network', 'inspect', binding['networkId']))
+    container, network = [json.loads(reply)[0] for reply in replies]
     entries = list(container['NetworkSettings']['Networks'].values())
     if (container['Id'] != binding['containerId'] or network['Id'] != binding['networkId']
             or network['Driver'] != 'bridge' or not container['State']['Running'] or len(entries) != 1
@@ -250,17 +336,21 @@ def attest_filters(filters, identity):
 
 
 def attest(root, peer, identity):
-    ruleset = json.loads(run('/usr/sbin/nft', '-j', 'list', 'ruleset'))
+    replies = read_commands(
+        ('/usr/sbin/nft', '-j', 'list', 'ruleset'),
+        ('/usr/sbin/bpftool', '-j', 'prog', 'show', 'pinned', str(root / 'guard')),
+        *[('/sbin/tc', '-j', 'filter', 'show', 'dev', peer['device'], direction)
+          for direction in ('ingress', 'egress')])
+    ruleset = json.loads(replies[0])
     if any('flowtable' in entry for entry in ruleset['nftables']):
         raise ValueError('Flow offload is unsupported by packet deadline enforcement')
-    program = json.loads(run('/usr/sbin/bpftool', '-j', 'prog', 'show', 'pinned', str(root / 'guard')))
+    program = json.loads(replies[1])
     if isinstance(program, list):
         program = program[0]
     if program['id'] != identity or program['type'] != 'sched_cls':
         raise ValueError('Deadline program identity changed')
-    for direction in ('ingress', 'egress'):
-        filters = json.loads(run('/sbin/tc', '-j', 'filter', 'show', 'dev', peer['device'], direction))
-        attest_filters(filters, identity)
+    for reply in replies[2:]:
+        attest_filters(json.loads(reply), identity)
 
 
 def save(path, value):
@@ -393,6 +483,7 @@ def execute(request):
         run('/usr/sbin/bpftool', 'prog', 'load', str(OBJECT), str(root / 'guard'),
             'type', 'classifier', 'pinmaps', str(root / 'maps'))
         write_deadline(root, peer['index'], 0)
+        prepare_renewal(root)
         write_relay(root)
         # A dedicated veth with unknown classifiers is unsupported, not overwritten.
         qdisc = json.loads(run('/sbin/tc', '-j', 'qdisc', 'show', 'dev', peer['device']))
@@ -449,6 +540,9 @@ def execute(request):
             raise
         return {'state': 'relay-configured'}
     if op in ('revoke', 'prepare'):
+        if op == 'prepare':
+            write_deadline(root, state['peer']['index'], 0)
+            prepare_renewal(root)
         state['uncertainExpiry'] = True
         save(path, state)
         write_deadline(root, state['peer']['index'], 0)
@@ -503,9 +597,7 @@ def execute(request):
     return {'state': 'armed', 'bootDeadlineNs': str(deadline)}
 
 
-if __name__ == '__main__':
-    if os.geteuid() != 0 or platform.machine() != 'x86_64':
-        raise RuntimeError('Deadline helper requires the supported rootful x86_64 host')
+def locked_execute(request):
     private_directory(STATE)
     lock = os.open(STATE / 'lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
     value = os.fstat(lock)
@@ -514,7 +606,56 @@ if __name__ == '__main__':
         raise ValueError('Untrusted deadline lock')
     with os.fdopen(lock, 'w') as held:
         fcntl.flock(held, fcntl.LOCK_EX)
+        return execute(request)
+
+
+def serve_worker(source, destination):
+    previous = 0
+    while True:
+        data = source.readline(65537)
+        if not data:
+            return
+        if len(data) > 65536 or not data.endswith(b'\n'):
+            raise ValueError('Oversized or incomplete deadline frame')
+        envelope = json.loads(data.decode('utf-8'))
+        if (not isinstance(envelope, dict) or set(envelope) != {'id', 'request'}
+                or type(envelope['id']) is not int or not previous < envelope['id'] <= 9007199254740991):
+            raise ValueError('Invalid deadline frame identity')
+        previous = envelope['id']
+        started = time.clock_gettime_ns(time.CLOCK_BOOTTIME)
+        try:
+            response = {'id': previous, 'result': locked_execute(envelope['request'])}
+        except Exception:
+            traceback.print_exc(file=sys.stderr)
+            response = {'id': previous, 'error': True}
+        response['startedBootNs'] = str(started)
+        response['finishedBootNs'] = str(time.clock_gettime_ns(time.CLOCK_BOOTTIME))
+        output = json.dumps(response).encode('utf-8') + b'\n'
+        if len(output) > 16384:
+            raise ValueError('Oversized deadline reply')
+        destination.write(output)
+        destination.flush()
+
+
+def bind_controller():
+    parent = os.getppid()
+    # Private pipes confer no authority to outlive the owning controller.
+    if ctypes.CDLL(None, use_errno=True).prctl(1, signal.SIGKILL, 0, 0, 0) != 0:
+        raise OSError(ctypes.get_errno(), 'Cannot bind deadline worker to controller')
+    if os.getppid() != parent or parent == 1:
+        raise RuntimeError('Deadline controller exited during worker startup')
+
+
+if __name__ == '__main__':
+    if os.geteuid() != 0 or platform.machine() != 'x86_64':
+        raise RuntimeError('Deadline helper requires the supported rootful x86_64 host')
+    if sys.argv[1:] == ['--worker']:
+        bind_controller()
+        serve_worker(sys.stdin.buffer, sys.stdout.buffer)
+    elif not sys.argv[1:]:
         data = sys.stdin.buffer.read(65537)
         if len(data) > 65536:
             raise ValueError('Oversized deadline request')
-        print(json.dumps(execute(json.loads(data))))
+        print(json.dumps(locked_execute(json.loads(data))))
+    else:
+        raise ValueError('Unsupported deadline helper mode')

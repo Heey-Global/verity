@@ -35,6 +35,8 @@ describe('sandbox sleep compatibility contract', () => {
       { networks: { ...running.networks, 'shared-network': {} } },
       { id: 'replacement-sandbox' },
       { image: 'sandbox:other' },
+      { memoryReservationBytes: 4 * 1024 ** 3 },
+      { oomScoreAdj: 500 },
     ]) {
       expect(sandboxSleepCompatibilityFingerprint({ ...running, ...drift })).not.toBe(fingerprint);
     }

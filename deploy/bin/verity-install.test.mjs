@@ -195,8 +195,8 @@ function makeHost({
     );
   }
   // The installer only checks these exist; the stub host runtime script is what would use
-  // them. The CI image (node:*-slim) ships neither, so a real one cannot be assumed.
-  for (const tool of ['curl', 'jq']) {
+  // them. The CI image (node:*-slim) ships none of them, so a real one cannot be assumed.
+  for (const tool of ['curl', 'jq', 'bzip2']) {
     writeFileSync(join(stubDir, tool), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
   }
   writeFileSync(join(stubDir, 'uname'), `#!/bin/sh\nprintf '%s\\n' ${shellQuote(architecture)}\n`, {
@@ -556,7 +556,7 @@ describe('verity-install', { skip: canFakeRoot ? false : 'user namespaces unavai
       JSON.parse(
         readFileSync(join(host.hostRuntime.VERITY_HOST_RUNTIME_DIR, 'agent.json'), 'utf8'),
       ),
-      { version: 1, trigger: 'none', builder: 'none' },
+      { version: 1, trigger: 'none', builder: 'none', runtimeArtifacts: ['binary', 'archive'] },
     );
     assert.equal(handoverEnv(host).argv, 'managed-up');
   });
@@ -610,7 +610,12 @@ describe('verity-install', { skip: canFakeRoot ? false : 'user namespaces unavai
       JSON.parse(
         readFileSync(join(host.hostRuntime.VERITY_HOST_RUNTIME_DIR, 'agent.json'), 'utf8'),
       ),
-      { version: 1, trigger: 'systemd-path', builder: 'systemd-path' },
+      {
+        version: 1,
+        trigger: 'systemd-path',
+        builder: 'systemd-path',
+        runtimeArtifacts: ['binary', 'archive'],
+      },
     );
   });
 

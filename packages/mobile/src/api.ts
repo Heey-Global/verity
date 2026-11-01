@@ -30,6 +30,7 @@ import {
 } from './runtimeDiagnostics.js';
 import { recordingDigest, type RecordingDigest } from './recording-digest.js';
 import {
+  recordingFailureReasonSchema,
   selectedEvidenceMetadataSchema,
   selectedEvidenceExportSchema,
   selectedEvidenceHashInput,
@@ -1319,6 +1320,13 @@ export type SelectedConnectionRecordingStatus = z.infer<
 
 export const connectionRecordingExportSchema = z
   .object({
+    failures: z
+      .object({
+        stop: recordingFailureReasonSchema.nullable(),
+        export: recordingFailureReasonSchema.nullable(),
+      })
+      .strict()
+      .optional(),
     version: z.literal(1),
     status: connectionRecordingStatusSchema,
     core: z
@@ -4185,6 +4193,7 @@ export class VerityClient {
       `/api/remote-control/recordings/${runId}/export`,
       {
         method: 'GET',
+        headers: { 'x-verity-recording-failure-details': '1' },
       },
       this.recordingFetchImpl,
     );

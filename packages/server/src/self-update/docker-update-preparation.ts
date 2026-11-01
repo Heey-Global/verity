@@ -378,6 +378,18 @@ export async function dockerUpdatePreparation(
     },
     runPreflight,
     reconcileHostRuntimes: async (journal) => {
+      // One request id for both calls below: a builder answer already on file for this update
+      // is reused rather than installed twice.
+      const reconcileBuilder = () =>
+        reconcileDevcontainerBuilder({
+          docker,
+          image: journal.targetDigest,
+          requestId: journal.updateId,
+          ...(options.hostRuntimeDir === undefined ? {} : { requestDir: options.hostRuntimeDir }),
+        }).catch((error: unknown) => ({
+          state: 'failed' as const,
+          message: error instanceof Error ? error.message : String(error),
+        }));
       const requirements = await readTargetHostRuntimes(docker, journal.targetDigest);
       if (requirements !== undefined) {
         await reconcileHostRuntimes({
@@ -385,19 +397,22 @@ export async function dockerUpdatePreparation(
           requirements,
           requestId: journal.updateId,
           ...(options.hostRuntimeDir === undefined ? {} : { requestDir: options.hostRuntimeDir }),
+          // A host whose runtime service predates archive pins gets the target's through the
+          // builder first: its bundle registers the runtimes and replaces that service.
+          refreshHostComponents: async () => {
+            const refreshed = await reconcileBuilder();
+            if (refreshed.state === 'reconciled') return undefined;
+            const detail = refreshed.state === 'skipped' ? refreshed.reason : refreshed.message;
+            (options.log ?? console.warn)(
+              `Host components not refreshed through the devcontainer builder. ${detail}`,
+            );
+            return detail;
+          },
         });
       }
       // After the runtimes: the builder runs its steps on the runsc they register.
       // Nothing about the builder may fail the update, an unexpected error included.
-      const builder = await reconcileDevcontainerBuilder({
-        docker,
-        image: journal.targetDigest,
-        requestId: journal.updateId,
-        ...(options.hostRuntimeDir === undefined ? {} : { requestDir: options.hostRuntimeDir }),
-      }).catch((error: unknown) => ({
-        state: 'failed' as const,
-        message: error instanceof Error ? error.message : String(error),
-      }));
+      const builder = await reconcileBuilder();
       if (builder.state === 'failed')
         (options.log ?? console.warn)(
           `Devcontainer builder not updated; the previous builder keeps running. ${builder.message}`,
