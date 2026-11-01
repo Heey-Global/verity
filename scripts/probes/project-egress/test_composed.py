@@ -15,7 +15,12 @@ class ComposedProof(unittest.TestCase):
         for phase, allowed in [('before-admission', False), ('admitted', True), ('lease-expired', False),
                                ('fresh-after-expiry', True), ('direct-revoked', False), ('authority-empty', False)]:
             for family in range(2):
-                cases.append({'phase': phase, 'family': family, 'expected': allowed, 'observed': allowed})
+                case = {'phase': phase, 'family': family, 'expected': allowed, 'observed': allowed}
+                if phase == 'before-admission':
+                    case['resolution'] = {'phase': f'{phase}-{family}', 'family': 4 if family == 0 else 6,
+                                          'terminal': 'EHOSTUNREACH', 'hostBeforeNs': str(1 + family * 2),
+                                          'hostAfterNs': str(2 + family * 2)}
+                cases.append(case)
                 if allowed:
                     for protocol in ('tcp', 'udp'):
                         records.append({'kind': protocol, 'marker': f'{phase}-{family}-{protocol}', 'boot_ns': '1000000000'})
@@ -38,6 +43,33 @@ class ComposedProof(unittest.TestCase):
             root = Path(directory)
             self.fixture(root)
             self.assertEqual(composed.verify(root)['cases'], 12)
+
+    def test_requires_both_terminal_results_and_ordered_host_boundaries(self):
+        for mutation in ['missing', 'timeout', 'family', 'phase', 'reversed', 'overlap']:
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                self.fixture(root)
+                path = root / 'composed-result.json'
+                report = json.loads(path.read_text())
+                evidence = report['cases'][1]['resolution']
+                if mutation == 'missing':
+                    del report['cases'][1]['resolution']
+                elif mutation == 'timeout': evidence['terminal'] = 'ETIMEDOUT'
+                elif mutation == 'family': evidence['family'] = 4
+                elif mutation == 'phase': evidence['phase'] = 'admitted-1'
+                elif mutation == 'reversed': evidence['hostAfterNs'] = '1'
+                else: evidence['hostBeforeNs'] = '1'
+                path.write_text(json.dumps(report))
+                with self.assertRaises((AssertionError, KeyError)):
+                    composed.verify(root)
+
+    def test_rejects_delayed_initial_udp_even_after_grant(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            _, records = self.fixture(root)
+            records.append({'kind': 'udp', 'marker': 'before-admission-1-udp', 'boot_ns': '1500000000'})
+            (root / 'composed-receiver.txt').write_text('\n'.join(map(json.dumps, records)))
+            with self.assertRaises(AssertionError): composed.verify(root)
 
     def test_rejects_missing_controls_unauthorized_receipts_and_late_kernel_acceptance(self):
         for mutation in ['missing-positive', 'unexpected-receipt', 'late-kernel', 'no-attempts', 'late-receipt', 'missing-case', 'stopped-sender', 'stopped-guest-clock', 'early-window', 'short-window']:
@@ -70,6 +102,34 @@ class ComposedProof(unittest.TestCase):
                 (root / 'composed-receiver.txt').write_text('\n'.join(map(json.dumps, records)))
                 with self.assertRaises(AssertionError):
                     composed.verify(root)
+
+
+class InitialResolution(unittest.TestCase):
+    def test_actual_sender_requires_terminal_host_unreachable_in_both_families(self):
+        import errno
+        import runpy
+        import socket
+        from unittest.mock import patch, MagicMock
+        for target in ['11.77.106.2', '2001:4860:feed:106::2']:
+            for outcome in [OSError(errno.EHOSTUNREACH, 'unreachable'), TimeoutError(),
+                            OSError(errno.ECONNREFUSED, 'refused'), None]:
+                with self.subTest(target=target, outcome=outcome):
+                    channel = MagicMock()
+                    channel.__enter__.return_value = channel
+                    channel.connect.side_effect = outcome
+                    channel.recv.return_value = b'external-positive'
+                    with patch('sys.argv', ['composed-client.py', target, 'before-admission-0', 'negative']), \
+                         patch('socket.socket', return_value=channel), patch('builtins.print') as printed:
+                        if isinstance(outcome, OSError) and outcome.errno == errno.EHOSTUNREACH:
+                            runpy.run_path(str(Path(__file__).with_name('composed-client.py')), run_name='__main__')
+                            result = json.loads(printed.call_args.args[0])
+                            self.assertEqual(result['terminal'], 'EHOSTUNREACH')
+                            self.assertEqual(result['family'], 6 if ':' in target else 4)
+                        else:
+                            with self.assertRaises(RuntimeError):
+                                runpy.run_path(str(Path(__file__).with_name('composed-client.py')), run_name='__main__')
+                            printed.assert_not_called()
+                    channel.settimeout.assert_called_once_with(4)
 
 
 class StreamLifetime(unittest.TestCase):

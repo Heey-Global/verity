@@ -17,6 +17,14 @@ def verify(directory):
     cases = report['cases']
     assert report['complete'] is True and len(cases) == len(expected)
     assert {f'{row["phase"]}-{row["family"]}' for row in cases} == expected.keys()
+    initial = [row for row in cases if row['phase'] == 'before-admission']
+    for row in initial:
+        evidence = row['resolution']
+        assert evidence['phase'] == f"before-admission-{row['family']}"
+        assert evidence['family'] == (4 if row['family'] == 0 else 6)
+        assert evidence['terminal'] == 'EHOSTUNREACH'
+        assert 0 < int(evidence['hostBeforeNs']) < int(evidence['hostAfterNs'])
+    assert int(initial[0]['resolution']['hostAfterNs']) <= int(initial[1]['resolution']['hostBeforeNs'])
     for key, allowed in expected.items():
         for protocol in ('tcp', 'udp'):
             assert any(r.get('kind') == protocol and r.get('marker') == key + '-' + protocol for r in records) is allowed, key

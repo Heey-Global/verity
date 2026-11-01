@@ -1,4 +1,5 @@
 """Project-UID sender for the composed startup/TC/nft path; receiver is independent."""
+import errno
 import json
 from pathlib import Path
 import time
@@ -30,12 +31,19 @@ if expectation == 'stream':
 with socket.socket(family, socket.SOCK_DGRAM) as channel:
     channel.sendto((phase + '-udp').encode(), (target, 8080))
 with socket.socket(family, socket.SOCK_STREAM) as channel:
-    channel.settimeout(0.4)
+    # A short timeout can leave UDP queued during gateway neighbor resolution.
+    initial_denial = expectation == 'negative' and phase.startswith('before-admission-')
+    channel.settimeout(4 if initial_denial else 0.4)
     try:
         channel.connect((target, 443))
         channel.sendall((phase + '-tcp').encode())
         assert b'external-positive' in channel.recv(1024)
-    except OSError:
+    except OSError as error:
+        if initial_denial:
+            if error.errno != errno.EHOSTUNREACH:
+                raise RuntimeError('Initial negative probe did not finish neighbor resolution') from error
+            print(json.dumps({'phase': phase, 'family': 6 if family == socket.AF_INET6 else 4,
+                              'terminal': 'EHOSTUNREACH'}))
         if expectation == 'positive':
             raise
     else:

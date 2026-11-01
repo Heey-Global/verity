@@ -936,12 +936,25 @@ try {
       await exited;
     };
   };
-  const directCases: { phase: string; family: number; expected: boolean; observed: boolean }[] = [];
+  const directCases: {
+    phase: string;
+    family: number;
+    expected: boolean;
+    observed: boolean;
+    resolution?: {
+      phase: string;
+      family: number;
+      terminal: string;
+      hostBeforeNs: string;
+      hostAfterNs: string;
+    };
+  }[] = [];
   const directProbe = async (phase: string, expected: boolean) => {
     const stop = expected ? await beginRenewal() : undefined;
     try {
       for (const [family, target] of composedTargets.entries()) {
-        await docker(
+        const before = phase === 'before-admission' ? await deadline.clock() : undefined;
+        const output = await docker(
           'exec',
           '--user',
           '1000:1000',
@@ -952,12 +965,35 @@ try {
           `${phase}-${family}`,
           expected ? 'positive' : 'negative',
         );
+        let resolution;
+        if (before) {
+          const after = await deadline.clock();
+          const result = JSON.parse(output.trim()) as {
+            phase: string;
+            family: number;
+            terminal: string;
+          };
+          assert.equal(result.phase, `${phase}-${family}`);
+          assert.equal(result.family, family === 0 ? 4 : 6);
+          assert.equal(result.terminal, 'EHOSTUNREACH');
+          resolution = {
+            ...result,
+            hostBeforeNs: before.bootBeforeNs,
+            hostAfterNs: after.bootAfterNs,
+          };
+        }
         const log = await docker('logs', 'veh-direct');
         const observed =
           log.includes(`${phase}-${family}-tcp`) && log.includes(`${phase}-${family}-udp`);
         assert.equal(observed, expected, `${phase}/${family}`);
         if (!expected) assert.ok(!log.includes(`${phase}-${family}-`));
-        directCases.push({ phase, family, expected, observed });
+        directCases.push({
+          phase,
+          family,
+          expected,
+          observed,
+          ...(resolution ? { resolution } : {}),
+        });
       }
     } finally {
       await stop?.();
