@@ -21,9 +21,12 @@ def run(*args):
 def report_failed_command(kind, error, trace):
     # Only an uncaught failure reaches the SSH evidence: the outer side merges stderr
     # into stdout, so expected, handled failures must never print here.
-    cause = error
-    while cause is not None and not isinstance(cause, subprocess.CalledProcessError):
+    cause, seen = error, set()
+    while cause is not None and id(cause) not in seen and not isinstance(cause, subprocess.CalledProcessError):
+        seen.add(id(cause))
         cause = cause.__cause__ or cause.__context__
+    if cause is not None and not isinstance(cause, subprocess.CalledProcessError):
+        cause = None
     if cause is not None:
         print((cause.output or '')[-4096:], file=sys.stderr)
     sys.__excepthook__(kind, error, trace)
