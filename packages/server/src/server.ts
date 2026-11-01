@@ -1533,7 +1533,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           }) {
             return {
               method: request.method,
-              url: request.url,
+              url:
+                request.url.split('?', 1)[0] === '/app/mcp/oauth/callback'
+                  ? '/app/mcp/oauth/callback'
+                  : request.url,
               hostname: request.hostname ?? '',
               remoteAddress: request.ip ?? '',
               remotePort: request.socket?.remotePort ?? 0,
@@ -4604,7 +4607,9 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       ? { extractImageText: (job: ImageTextJob) => void imageTextExtractor.enqueue(job) }
       : {}),
   });
-  registerHttpMcpConnectionRoutes(app, deps.eventStore);
+  registerHttpMcpConnectionRoutes(app, deps.eventStore, {
+    browserRequestOrigin: deps.browserRequestOrigin,
+  });
   registerProjectEgressRoutes(app, deps.eventStore.projectEgress);
   registerProjectDetailRoutes(app, {
     getDetail: async (id) => {

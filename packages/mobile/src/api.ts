@@ -4525,6 +4525,7 @@ export class VerityClient {
     authType?: 'none' | 'static' | 'oauth';
     oauthClientId?: string | null;
     oauthClientSecret?: string | null;
+    oauthTokenAuthMethod?: 'none' | 'client_secret_post' | 'client_secret_basic';
     oauthAuthorizationEndpoint?: string | null;
     oauthTokenEndpoint?: string | null;
     oauthScopes?: string | null;
@@ -4537,14 +4538,70 @@ export class VerityClient {
     return z.object({ connection: httpMcpConnectionSchema }).parse(await res.json()).connection;
   }
 
+  async discoverHttpMcpOAuth(url: string): Promise<{
+    authorizationEndpoint: string;
+    tokenEndpoint: string;
+    scopes: string;
+    registrationAvailable: boolean;
+  }> {
+    const res = await this.request('/mcp-connections/oauth/discover', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ url }),
+    });
+    return z
+      .object({
+        authorizationEndpoint: z.string(),
+        tokenEndpoint: z.string(),
+        scopes: z.string(),
+        registrationAvailable: z.boolean(),
+      })
+      .parse(await res.json());
+  }
+
+  async startHttpMcpOAuth(
+    connectionId: string,
+    platform: 'web' | 'native' | 'native-staging',
+  ): Promise<{
+    authorizationUrl: string;
+    state: string;
+    redirectUri: string;
+    expiresAt: number;
+  }> {
+    const res = await this.request(
+      `/mcp-connections/${encodeURIComponent(connectionId)}/oauth/start`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ platform }),
+      },
+    );
+    return z
+      .object({
+        authorizationUrl: z.string(),
+        state: z.string(),
+        redirectUri: z.string(),
+        expiresAt: z.number(),
+      })
+      .parse(await res.json());
+  }
+
+  async cancelHttpMcpOAuth(connectionId: string, state: string): Promise<void> {
+    await this.request(`/mcp-connections/${encodeURIComponent(connectionId)}/oauth/cancel`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ state }),
+    });
+  }
+
   async completeHttpMcpOAuth(
     connectionId: string,
-    input: { code: string; codeVerifier: string; redirectUri: string },
+    input: { code: string; state: string },
   ): Promise<void> {
     await this.request(`/mcp-connections/${encodeURIComponent(connectionId)}/oauth/complete`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(input),
+      body: JSON.stringify({ code: input.code, state: input.state }),
     });
   }
 

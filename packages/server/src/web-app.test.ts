@@ -102,3 +102,16 @@ describe('web app assets', () => {
     await app.close();
   });
 });
+
+it('serves the browser OAuth callback without caching or sending its code in a referrer', async () => {
+  const app = await fixture();
+  try {
+    const response = await app.inject('/app/mcp/oauth/callback?code=one-time&state=state');
+    expect(response.statusCode).toBe(200);
+    expect(response.headers['cache-control']).toBe('no-store');
+    expect(response.headers['referrer-policy']).toBe('no-referrer');
+    expect(response.body).toContain('shared Expo app');
+  } finally {
+    await app.close();
+  }
+});

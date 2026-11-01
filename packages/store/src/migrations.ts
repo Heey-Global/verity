@@ -5056,3 +5056,15 @@ migrations['0179_qa_manual_repairs'] = {
     await sql`drop table qa_manual_repairs`.execute(db);
   },
 };
+
+// Existing manually configured clients retain their form-post authentication.
+migrations['0180_mcp_oauth_token_auth_method'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table http_mcp_connections add column oauth_token_auth_method text not null default 'client_secret_post' check (oauth_token_auth_method in ('none', 'client_secret_post', 'client_secret_basic'))`.execute(
+      db,
+    );
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table http_mcp_connections drop column oauth_token_auth_method`.execute(db);
+  },
+};
