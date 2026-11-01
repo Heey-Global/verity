@@ -33,6 +33,49 @@ def run(*args):
         raise
 
 
+class InspectionFacts:
+    """Fresh, phase-local daemon and link inventory; never retained in registration state."""
+    def __init__(self, binding, relay_id=None):
+        binding_key(binding)
+        self.network_id = binding['networkId']
+        self.ids = [binding['containerId']]
+        if relay_id is not None:
+            if (not isinstance(relay_id, str) or not re.fullmatch(r'[a-f0-9]{64}', relay_id)
+                    or relay_id in self.ids):
+                raise ValueError('Invalid inspected relay identity')
+            self.ids.append(relay_id)
+        self._containers = None
+        self._network = None
+        self._host_links = None
+        self.peers = {}
+
+    def container(self, identity):
+        if identity not in self.ids:
+            raise ValueError('Container outside inspected phase')
+        if self._containers is None:
+            values = json.loads(run('/usr/bin/docker', 'container', 'inspect', *self.ids))
+            if (not isinstance(values, list) or len(values) != len(self.ids)
+                    or {value.get('Id') for value in values} != set(self.ids)):
+                raise ValueError('Deadline inspected container identity mismatch')
+            self._containers = {value['Id']: value for value in values}
+        return self._containers[identity]
+
+    def network(self, identity):
+        if identity != self.network_id:
+            raise ValueError('Network outside inspected phase')
+        if self._network is None:
+            values = json.loads(run('/usr/bin/docker', 'network', 'inspect', identity))
+            if not isinstance(values, list) or len(values) != 1 or values[0].get('Id') != identity:
+                raise ValueError('Deadline inspected network identity mismatch')
+            self._network = values[0]
+        return self._network
+
+    def host_links(self):
+        if self._host_links is None:
+            self._host_links = json.loads(run('/sbin/ip', '-j', '-d', 'link', 'show'))
+        return self._host_links
+
+
 def private_directory(path):
     path.mkdir(mode=0o700, parents=True, exist_ok=True)
     value = path.lstat()
@@ -145,7 +188,7 @@ def write_relay(root, policy=None):
         os.close(fd)
 
 
-def relay_policy(binding, peer, registration):
+def relay_policy(binding, peer, registration, facts=None):
     if (not isinstance(registration, dict)
             or set(registration) != {'containerId', 'endpointId', 'codex'}
             or type(registration['codex']) is not bool
@@ -153,11 +196,12 @@ def relay_policy(binding, peer, registration):
                    for k in ('containerId', 'endpointId'))
             or registration['containerId'] == binding['containerId']):
         raise ValueError('Invalid registered relay identity')
-    network = json.loads(run('/usr/bin/docker', 'network', 'inspect', binding['networkId']))[0]
+    facts = facts if facts is not None else InspectionFacts(binding, registration['containerId'])
+    network = facts.network(binding['networkId'])
     if set(network['Containers']) != {binding['containerId'], registration['containerId']}:
         raise ValueError('Relay requires exactly the registered project pair')
-    sandbox = json.loads(run('/usr/bin/docker', 'container', 'inspect', binding['containerId']))[0]
-    relay = json.loads(run('/usr/bin/docker', 'container', 'inspect', registration['containerId']))[0]
+    sandbox = facts.container(binding['containerId'])
+    relay = facts.container(registration['containerId'])
     sandbox_net = list(sandbox['NetworkSettings']['Networks'].values())[0]
     relay_nets = list(relay['NetworkSettings']['Networks'].values())
     if len(relay_nets) != 1:
@@ -168,9 +212,9 @@ def relay_policy(binding, peer, registration):
                      'ipv6': relay_net['GlobalIPv6Address']}
     binding_key(relay_binding)
     # Inspect both namespaces and their software veth/bridge membership.
-    if endpoint(binding) != peer:
+    if endpoint(binding, facts) != peer:
         raise ValueError('Relay sandbox interface changed')
-    relay_peer = endpoint(relay_binding)
+    relay_peer = endpoint(relay_binding, facts)
     if relay_peer['index'] == peer['index']:
         raise ValueError('Relay shares the sandbox interface')
     addresses = [ipaddress.IPv4Address(b['ipv4']) for b in (binding, relay_binding)]
@@ -194,9 +238,13 @@ def relay_policy(binding, peer, registration):
     return struct.pack('<II', 1, int(registration['codex'])) + b''.join(a.packed for a in addresses) + b''.join(macs)
 
 
-def endpoint(binding):
-    container = json.loads(run('/usr/bin/docker', 'container', 'inspect', binding['containerId']))[0]
-    network = json.loads(run('/usr/bin/docker', 'network', 'inspect', binding['networkId']))[0]
+def endpoint(binding, facts=None):
+    facts = facts if facts is not None else InspectionFacts(binding)
+    key = binding_key(binding)
+    if key in facts.peers:
+        return facts.peers[key]
+    container = facts.container(binding['containerId'])
+    network = facts.network(binding['networkId'])
     entries = list(container['NetworkSettings']['Networks'].values())
     if (container['Id'] != binding['containerId'] or network['Id'] != binding['networkId']
             or network['Driver'] != 'bridge' or not container['State']['Running'] or len(entries) != 1
@@ -214,7 +262,7 @@ def endpoint(binding):
     links = [link for link in links if link['ifname'] != 'lo']
     if len(links) != 1 or links[0]['address'] != net['MacAddress']:
         raise ValueError('Deadline namespace endpoint changed')
-    candidates = [v for v in json.loads(run('/sbin/ip', '-j', '-d', 'link', 'show'))
+    candidates = [v for v in facts.host_links()
                   if v['ifindex'] == links[0].get('link_index')]
     if len(candidates) != 1 or candidates[0].get('linkinfo', {}).get('info_kind') != 'veth':
         raise ValueError('Deadline requires an inspected software veth')
@@ -223,7 +271,9 @@ def endpoint(binding):
     if (int((path / 'iflink').read_text()) != links[0]['ifindex']
             or (path / 'master').resolve().name != binding['bridge']):
         raise ValueError('Deadline bridge peer changed')
-    return {'device': peer['ifname'], 'index': peer['ifindex']}
+    result = {'device': peer['ifname'], 'index': peer['ifindex']}
+    facts.peers[key] = result
+    return result
 
 
 def attest_filters(filters, identity):
@@ -476,10 +526,12 @@ def execute(request):
     lease = request['lease']
     deadline, captured, expiry = validate_lease(key, state, lease, pending=True)
     try:
-        if endpoint(binding) != state['peer']:
+        registration = state.get('relayRegistration')
+        facts = InspectionFacts(binding, registration['containerId'] if registration is not None else None)
+        if endpoint(binding, facts) != state['peer']:
             raise ValueError('Deadline interface changed')
         if state.get('relayRegistration') is not None:
-            if relay_policy(binding, state['peer'], state['relayRegistration']).hex() != state['relayPolicy']:
+            if relay_policy(binding, state['peer'], state['relayRegistration'], facts).hex() != state['relayPolicy']:
                 raise ValueError('Registered relay endpoints changed')
         attest(root, state['peer'], state['program'])
     except BaseException:

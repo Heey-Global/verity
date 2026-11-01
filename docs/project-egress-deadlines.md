@@ -211,6 +211,15 @@ updating the lease; a failed handoff closes direct access. Changed targets,
 revocation and expired leases require a fresh connection epoch. The lease is
 also capped by the earliest DNS/tuple budget.
 
+Direct refresh batches the exact registered container pair within each validation
+phase. Container, network, image and runtime facts are shared only inside that
+phase; subsequent phases and renewals inspect them again. The deadline helper
+likewise shares one container/network/link inventory while validating both
+endpoints, retaining namespace, veth, bridge and TC/BPF attestation. Disposable
+probes write `renewal-stages.jsonl` with host inspection, immutable lease capture,
+policy/DNS validation, nftables commit and kernel admission durations. These
+measurements do not alter the 1000 ms lease or authorize a longer handoff.
+
 Host records bind packet-enforced generations to the host boot ID. Every daemon
 pre-start restore retires old packet generations before Docker starts; a new
 host boot likewise retires them before readiness. Service-only reconstruction

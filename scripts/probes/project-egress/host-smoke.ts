@@ -1,3 +1,4 @@
+import { inspectEgressHostDirectTransport } from '../../../packages/server/src/project-egress-host-inspection.js';
 import { createProjectEgressHostEnforcement } from '../../../packages/server/src/project-egress-host-enforcement.js';
 import { hostProjectDeadlineEnforcer } from '../../../packages/server/src/project-egress-deadline.js';
 import { inspectProjectFenceAttachment } from '../../../packages/server/src/project-egress-attachment.js';
@@ -18,7 +19,16 @@ import { ProjectEgressLifecycle } from '../../../packages/server/src/project-egr
 /** Deny-before-first-instruction fixture; no production daemon or credentials. */
 import assert from 'node:assert/strict';
 import { createServer, request, type Server } from 'node:http';
-import { mkdtemp, readFile, writeFile, rm, mkdir, chmod, chown } from 'node:fs/promises';
+import {
+  mkdtemp,
+  readFile,
+  writeFile,
+  appendFile,
+  rm,
+  mkdir,
+  chmod,
+  chown,
+} from 'node:fs/promises';
 import {
   createServer as createNetServer,
   createConnection,
@@ -27,6 +37,7 @@ import {
 import { randomBytes } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { inspect, promisify } from 'node:util';
+import { appendFileSync } from 'node:fs';
 import { execFile, spawn } from 'node:child_process';
 import {
   ProjectEgressHost,
@@ -91,6 +102,11 @@ function createEnforcement() {
     },
     inspect: inspectEgressHostDirect,
     dependencies: {
+      observe: (stage, durationMs) =>
+        appendFileSync(
+          '/evidence/renewal-stages.jsonl',
+          JSON.stringify({ stage, durationMs }) + '\n',
+        ),
       inspect: inspectProjectFenceAttachment,
       apply: applyProjectFenceRules,
       directTargetAllowed: (host) => Promise.resolve(composedTargets.includes(host)),
@@ -109,6 +125,22 @@ function createEnforcement() {
 }
 const dependencies = {
   enforcement: createEnforcement(),
+  inspectDirectTransport: async (
+    binding: Parameters<typeof inspectEgressHostDirectTransport>[0],
+    ids: Parameters<typeof inspectEgressHostDirectTransport>[1],
+  ) => {
+    if (!relayPolicy) throw new Error('Missing relay policy');
+    const started = performance.now();
+    try {
+      return await inspectEgressHostDirectTransport(binding, ids, relayPolicy);
+    } finally {
+      await appendFile(
+        '/evidence/renewal-stages.jsonl',
+        JSON.stringify({ stage: 'host-inspection', durationMs: performance.now() - started }) +
+          '\n',
+      );
+    }
+  },
   inspectTransport: (
     binding: Parameters<typeof inspectEgressTransport>[0],
     ids: Parameters<typeof inspectEgressTransport>[1],

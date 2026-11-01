@@ -48,10 +48,9 @@ export async function inspectEgressTransport(
   ids: { sandbox: string; relay: string },
   codex: boolean,
   io = transportIO,
+  docker = io.docker,
 ): Promise<EgressTransport | undefined> {
-  const networkReply: unknown = JSON.parse(
-    await io.docker('network', 'inspect', binding.networkId),
-  );
+  const networkReply: unknown = JSON.parse(await docker('network', 'inspect', binding.networkId));
   verifyEgressHostNetwork(binding, networkReply, [ids.sandbox, ids.relay]);
   const topology = z
     .array(
@@ -66,7 +65,7 @@ export async function inspectEgressTransport(
     .parse(networkReply)[0]!;
   const result: Partial<Record<'sandbox' | 'relay', z.infer<typeof endpoint>>> = {};
   for (const role of ['sandbox', 'relay'] as const) {
-    const raw: unknown = JSON.parse(await io.docker('inspect', ids[role]));
+    const raw: unknown = JSON.parse(await docker('inspect', ids[role]));
     const state = z
       .array(z.object({ Id: z.string(), State: z.object({ Running: z.boolean() }) }))
       .length(1)

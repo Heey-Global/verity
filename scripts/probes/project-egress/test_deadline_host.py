@@ -339,17 +339,18 @@ class RelayIdentityTests(unittest.TestCase):
                         'GlobalIPv6Address': 'fd42:feed::2'}
         self.relay = {'MacAddress': '02:06:07:08:09:0a', 'IPAddress': '172.30.106.3',
                       'GlobalIPv6Address': 'fd42:feed::3'}
-        self.network = {'Containers': {identity: {'MacAddress': net['MacAddress'],
+        self.network = {'Id': self.binding['networkId'], 'Containers': {identity: {'MacAddress': net['MacAddress'],
                             'IPv4Address': net['IPAddress'] + '/24'}
                         for identity, net in ((self.binding['containerId'], self.sandbox),
                                               (self.registration['containerId'], self.relay))}}
         def daemon(*args):
             if args[1] == 'network':
                 return json.dumps([self.network])
-            net = self.sandbox if args[-1] == self.binding['containerId'] else self.relay
-            return json.dumps([{'NetworkSettings': {'Networks': {'project': net}}}])
+            return json.dumps([{'Id': identity, 'NetworkSettings': {'Networks': {'project':
+                self.sandbox if identity == self.binding['containerId'] else self.relay}}}
+                for identity in args[3:]])
         self.enterContext(patch.object(host, 'run', side_effect=daemon))
-        self.inspector = self.enterContext(patch.object(host, 'endpoint', side_effect=lambda binding:
+        self.inspector = self.enterContext(patch.object(host, 'endpoint', side_effect=lambda binding, facts=None:
             self.peer if binding['containerId'] == self.binding['containerId'] else {'device': 'vrelay', 'index': 6}))
 
     def policy(self):
@@ -398,6 +399,81 @@ class RelayIdentityTests(unittest.TestCase):
         self.inspector.return_value = {'device': 'different', 'index': 9}
         with self.assertRaisesRegex(ValueError, 'interface changed'):
             self.policy()
+
+
+class InspectionFactsTests(unittest.TestCase):
+    def setUp(self):
+        self.binding = dict(zip(host.BINDING_FIELDS, ['project', 'generation', 'a' * 64,
+                            'b' * 64, 'c' * 64, 've-test', '172.30.106.2', 'fd42:feed::2']))
+        self.registration = {'containerId': 'd' * 64, 'endpointId': 'e' * 64, 'codex': False}
+        self.containers = []
+        self.links = []
+        for index, identity, endpoint, address, address6, mac in (
+            (5, self.binding['containerId'], self.binding['endpointId'], '172.30.106.2', 'fd42:feed::2', '02:01:02:03:04:05'),
+            (6, self.registration['containerId'], self.registration['endpointId'], '172.30.106.3', 'fd42:feed::3', '02:06:07:08:09:0a')):
+            self.containers.append({'Id': identity, 'State': {'Running': True}, 'NetworkSettings': {
+                'SandboxKey': '/var/run/docker/netns/ns' + str(index), 'Networks': {'project': {
+                    'NetworkID': self.binding['networkId'], 'EndpointID': endpoint, 'IPAddress': address,
+                    'GlobalIPv6Address': address6, 'MacAddress': mac}}}})
+            self.links.append({'ifindex': index, 'ifname': 'veth' + str(index), 'linkinfo': {'info_kind': 'veth'}})
+        self.network = {'Id': self.binding['networkId'], 'Driver': 'bridge',
+            'Options': {'com.docker.network.bridge.name': 've-test'},
+            'Containers': {container['Id']: {'MacAddress': net['MacAddress'], 'IPv4Address': net['IPAddress'] + '/24'}
+                for container in self.containers for net in container['NetworkSettings']['Networks'].values()}}
+        def run(*args):
+            if args[0] == '/usr/bin/docker':
+                if args[1] == 'network': return json.dumps([self.network])
+                return json.dumps([container for container in self.containers if container['Id'] in args[3:]])
+            if args[0] == '/sbin/ip': return json.dumps(self.links)
+            if args[0] == '/usr/bin/nsenter':
+                index = int(args[1][-1])
+                return json.dumps([{'ifname': 'eth0', 'ifindex': index + 10, 'link_index': index,
+                    'address': self.containers[index - 5]['NetworkSettings']['Networks']['project']['MacAddress']}])
+            raise AssertionError(args)
+        self.run = self.enterContext(patch.object(host, 'run', side_effect=run))
+        self.enterContext(patch.object(Path, 'read_text', lambda path: str(int(path.parent.name[4:]) + 10)))
+        self.enterContext(patch.object(Path, 'resolve', lambda path: Path('/sys/class/net/ve-test')))
+
+    def test_one_phase_batches_exact_containers_and_reuses_each_inventory(self):
+        facts = host.InspectionFacts(self.binding, self.registration['containerId'])
+        peer = host.endpoint(self.binding, facts)
+        host.relay_policy(self.binding, peer, self.registration, facts)
+        self.assertEqual(peer, {'device': 'veth5', 'index': 5})
+        calls = [call.args for call in self.run.call_args_list]
+        self.assertEqual(calls.count(('/usr/bin/docker', 'container', 'inspect', self.binding['containerId'], self.registration['containerId'])), 1)
+        self.assertEqual(calls.count(('/usr/bin/docker', 'network', 'inspect', self.binding['networkId'])), 1)
+        self.assertEqual(calls.count(('/sbin/ip', '-j', '-d', 'link', 'show')), 1)
+        self.assertEqual(sum(call[0] == '/usr/bin/nsenter' for call in calls), 2)
+
+    def test_next_phase_rejects_changed_endpoint_and_does_not_reuse_facts(self):
+        peer = host.endpoint(self.binding)
+        host.relay_policy(self.binding, peer, self.registration)
+        self.containers[1]['NetworkSettings']['Networks']['project']['EndpointID'] = 'f' * 64
+        with self.assertRaisesRegex(ValueError, 'attachment changed'):
+            host.relay_policy(self.binding, peer, self.registration)
+
+    def test_next_phase_rejects_changed_host_inventory(self):
+        peer = host.endpoint(self.binding)
+        host.relay_policy(self.binding, peer, self.registration)
+        self.links[1]['linkinfo']['info_kind'] = 'dummy'
+        with self.assertRaisesRegex(ValueError, 'software veth'):
+            host.relay_policy(self.binding, peer, self.registration)
+
+    def test_aliased_missing_or_duplicate_batch_identity_is_rejected(self):
+        for identities in ([self.containers[0]], [self.containers[0], self.containers[0]],
+                           [{**self.containers[0], 'Id': 'f' * 64}, self.containers[1]]):
+            with self.subTest(ids=[value['Id'] for value in identities]):
+                with patch.object(host, 'run', return_value=json.dumps(identities)):
+                    with self.assertRaisesRegex(ValueError, 'container identity mismatch'):
+                        host.InspectionFacts(self.binding, self.registration['containerId']).container(self.binding['containerId'])
+
+    def test_phase_rejects_foreign_container_and_network_queries(self):
+        facts = host.InspectionFacts(self.binding, self.registration['containerId'])
+        with self.assertRaisesRegex(ValueError, 'outside inspected phase'):
+            facts.container('f' * 64)
+        with self.assertRaisesRegex(ValueError, 'outside inspected phase'):
+            facts.network('f' * 64)
+        self.run.assert_not_called()
 
 
 class RelayMapWriterTests(unittest.TestCase):
