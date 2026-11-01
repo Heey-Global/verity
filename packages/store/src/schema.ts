@@ -2007,6 +2007,8 @@ interface QAAssignmentsTable {
   expires_at: Generated<Date>;
 }
 interface QAAssignmentNotificationsTable {
+  attempt: Generated<number>;
+  acknowledged: Generated<boolean>;
   id: string;
   assignment_id: string;
   dispatch_id: string;

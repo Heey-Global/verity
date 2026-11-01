@@ -5086,7 +5086,8 @@ migrations['0181_qa_assignments'] = {
     );
     await sql`create table qa_assignment_notifications (
  id text primary key, assignment_id text not null references qa_assignments(id) on delete cascade,
- dispatch_id text not null unique, payload text not null
+ dispatch_id text not null unique, payload text not null,
+ attempt integer not null default 0, acknowledged boolean not null default false
  )`.execute(db);
   },
   async down(db: Kysely<unknown>): Promise<void> {

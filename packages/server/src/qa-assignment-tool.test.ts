@@ -467,3 +467,72 @@ it('retains stop ownership while a lost live handle still has an unsettled durab
   await service.sweep();
   expect(await service.status(caller, 'p', p.assignmentId)).toMatchObject({ status: 'stopped' });
 });
+
+it('redelivers an admitted notification after a confirmed interrupted QA turn on restart', async () => {
+  const { service, propose, deps, finish } = setup();
+  deps.busy = (id) => id === 'qa';
+  const p = await propose();
+  await service.request(caller, 'p', p.assignmentId, 'once');
+  await finish();
+  deps.busy = () => false;
+  await service.sweep();
+  const deliveries = () => vi.mocked(deps.dispatch).mock.calls.filter((c) => c[0] === 'qa');
+  expect(deliveries()).toHaveLength(1);
+  await ctx.store.appendEvent('qa', { t: 'interrupted' });
+  const restarted = createQAAssignmentTool(deps);
+  await restarted.sweep();
+  expect(deliveries()).toHaveLength(1);
+  await ctx.store.clearRunningTurn('qa');
+  await restarted.sweep();
+  await restarted.sweep();
+  expect(deliveries()).toHaveLength(2);
+  expect(deliveries()[1]?.[2]).not.toBe(deliveries()[0]?.[2]);
+  await ctx.store.appendEvent('qa', { t: 'status', state: 'completed' });
+  await ctx.store.clearRunningTurn('qa');
+  await restarted.sweep();
+  await restarted.sweep();
+  expect(deliveries()).toHaveLength(2);
+  expect(await ctx.store.qaAssignments.notifications()).toHaveLength(0);
+});
+it('limits repeated notification delivery failures without losing the failed verification state', async () => {
+  const { service, propose, deps, finish } = setup();
+  deps.busy = (id) => id === 'qa';
+  const p = await propose();
+  await service.request(caller, 'p', p.assignmentId, 'once');
+  await finish();
+  deps.busy = () => false;
+  await service.sweep();
+  for (let attempt = 0; attempt < 3; attempt++) {
+    await ctx.store.appendEvent('qa', { t: 'interrupted' });
+    await ctx.store.clearRunningTurn('qa');
+    await service.sweep();
+    if (attempt < 2) await service.sweep();
+  }
+  expect(await service.status(caller, 'p', p.assignmentId)).toMatchObject({
+    status: 'blocked',
+    reason: expect.stringContaining('delivery failed'),
+  });
+});
+
+it('does not acknowledge an unrelated completion when notification history was clipped', async () => {
+  const { service, propose, deps, finish } = setup();
+  deps.busy = (id) => id === 'qa';
+  const p = await propose();
+  await service.request(caller, 'p', p.assignmentId, 'once');
+  await finish();
+  deps.busy = () => false;
+  await service.sweep();
+  const previous = (await ctx.store.qaAssignments.notifications())[0]!;
+  await ctx.store.clearRunningTurn('qa');
+  const history = vi
+    .spyOn(ctx.store, 'getEventsBeforeSeq')
+    .mockResolvedValueOnce({
+      hasMore: true,
+      events: [{ seq: 100000, ts: Date.now(), event: { t: 'status', state: 'completed' } }],
+    });
+  await service.sweep();
+  history.mockRestore();
+  expect((await ctx.store.qaAssignments.notifications())[0]?.dispatch_id).not.toBe(
+    previous.dispatch_id,
+  );
+});

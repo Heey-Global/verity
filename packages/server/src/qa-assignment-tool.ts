@@ -254,6 +254,20 @@ export function createQAAssignmentTool(deps: QAAssignmentDeps) {
       await store.change(a.id, a.version, 'running', null, JSON.stringify(progress.event));
     }
   }
+  async function settleNotification(
+    n: { id: string; dispatch_id: string },
+    a: QAAssignment,
+    failed: boolean,
+  ) {
+    if (!failed) await store.acknowledgeNotification(n.id, n.dispatch_id);
+    else if (!(await store.retryNotification(n.id, n.dispatch_id)) && a.state === 'verifying')
+      await store.change(
+        a.id,
+        a.version,
+        'blocked',
+        'QA notification delivery failed repeatedly; verification remains incomplete.',
+      );
+  }
   return {
     owned,
     view,
@@ -422,12 +436,45 @@ export function createQAAssignmentTool(deps: QAAssignmentDeps) {
         if (!a) continue;
         if ((JSON.parse(n.payload) as QAAssignment).version !== a.version) {
           await deps.store.repairs.cancelReservedDispatch(n.dispatch_id);
+          await store.acknowledgeNotification(n.id, n.dispatch_id);
           continue;
         }
         try {
           await current(a);
         } catch {
           await deps.store.repairs.cancelReservedDispatch(n.dispatch_id);
+          await store.acknowledgeNotification(n.id, n.dispatch_id);
+          continue;
+        }
+        const receipt = await deps.store.repairs.dispatchReceipt(n.dispatch_id);
+        if (receipt?.state === 'admitted' && receipt.prompt_seq !== null) {
+          if (
+            (await deps.store.listRunningTurns()).some(
+              (t) =>
+                t.sessionId === a.source_session_id && t.promptSeq === Number(receipt.prompt_seq),
+            )
+          )
+            continue;
+          const page = await deps.store.getEventsBeforeSeq(a.source_session_id, 2000);
+          if (page.hasMore && (page.events[0]?.seq ?? 0) > Number(receipt.prompt_seq)) {
+            await settleNotification(n, a, true);
+            continue;
+          }
+          const after = page.events.filter((e) => e.seq > Number(receipt.prompt_seq));
+          const successor = after.find((e) => e.event.t === 'prompt' && !e.event.steered);
+          const terminal = after
+            .filter((e) => !successor || e.seq < successor.seq)
+            .findLast(
+              (e) =>
+                e.event.t === 'interrupted' ||
+                e.event.t === 'result' ||
+                (e.event.t === 'status' && ['completed', 'crashed'].includes(e.event.state)),
+            );
+          if (!terminal) continue;
+          const failed =
+            terminal.event.t === 'interrupted' ||
+            (terminal.event.t === 'status' && terminal.event.state === 'crashed');
+          await settleNotification(n, a, failed);
           continue;
         }
         if (deps.busy(a.source_session_id)) continue;

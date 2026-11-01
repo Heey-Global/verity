@@ -40,7 +40,7 @@ export class QAAssignmentStore {
   }
   async list(source?: string): Promise<QAAssignment[]> {
     return (
-      await sql<QAAssignment>`select * from qa_assignments where ((${source ?? null}::text is null and state in ('queued','running','waiting','verifying','stopping')) or source_session_id=${source ?? null}) order by created_at desc limit 200`.execute(
+      await sql<QAAssignment>`select * from qa_assignments where ((${source ?? null}::text is null and state in ('queued','running','waiting','verifying','stopping')) or source_session_id=${source ?? null}) order by case when state in ('queued','running','waiting','verifying','stopping') then 0 else 1 end, created_at desc limit 200`.execute(
         this.db,
       )
     ).rows;
@@ -155,6 +155,48 @@ export class QAAssignmentStore {
       return true;
     });
   }
+  async acknowledgeNotification(id: string, dispatchId: string): Promise<void> {
+    await sql`update qa_assignment_notifications set acknowledged=true where id=${id} and dispatch_id=${dispatchId}`.execute(
+      this.db,
+    );
+  }
+  async retryNotification(id: string, dispatchId: string): Promise<boolean> {
+    return this.db.transaction().execute(async (tx) => {
+      const n = await tx
+        .selectFrom('qa_assignment_notifications')
+        .selectAll()
+        .where('id', '=', id)
+        .where('dispatch_id', '=', dispatchId)
+        .where('acknowledged', '=', false)
+        .forUpdate()
+        .executeTakeFirst();
+      if (!n) return true;
+      if (n.attempt >= 2) {
+        await tx
+          .updateTable('qa_assignment_notifications')
+          .set({ acknowledged: true })
+          .where('id', '=', id)
+          .execute();
+        return false;
+      }
+      const receipt = await tx
+        .selectFrom('qa_dispatches')
+        .selectAll()
+        .where('id', '=', dispatchId)
+        .executeTakeFirst();
+      if (!receipt || receipt.state !== 'admitted') return true;
+      const next = `${id}:retry:${n.attempt + 1}`;
+      await sql`insert into qa_dispatches(id,session_id,state) values (${next},${receipt.session_id},'reserved')`.execute(
+        tx,
+      );
+      await tx
+        .updateTable('qa_assignment_notifications')
+        .set({ attempt: n.attempt + 1, dispatch_id: next })
+        .where('id', '=', id)
+        .execute();
+      return true;
+    });
+  }
   async notifications(): Promise<
     { id: string; assignment_id: string; dispatch_id: string; payload: string }[]
   > {
@@ -164,7 +206,7 @@ export class QAAssignmentStore {
         assignment_id: string;
         dispatch_id: string;
         payload: string;
-      }>`select n.* from qa_assignment_notifications n join qa_dispatches d on d.id=n.dispatch_id where d.state='reserved' order by d.created_at limit 50`.execute(
+      }>`select n.* from qa_assignment_notifications n join qa_dispatches d on d.id=n.dispatch_id where n.acknowledged=false and d.state in ('reserved','admitted') order by d.created_at limit 50`.execute(
         this.db,
       )
     ).rows;
