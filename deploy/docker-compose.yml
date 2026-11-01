@@ -580,8 +580,8 @@ services:
   # Managed topology is opt-in through docker-compose.managed.yml. Keeping these
   # services profiled means the legacy one-file deployment remains unchanged.
   verity-managed-gateway:
-    oom_score_adj: ${VERITY_MANAGED_GATEWAY_OOM_SCORE_ADJ:--250}
     profiles: [managed]
+    oom_score_adj: ${VERITY_MANAGED_GATEWAY_OOM_SCORE_ADJ:--250}
     image: ${VERITY_SERVER_IMAGE:?set the digest-pinned official server image}
     command: [managed-gateway]
     restart: unless-stopped
@@ -611,8 +611,8 @@ services:
       - ${VERITY_PAIRING_STATE_HOST_PATH:-/etc/verity}/tls-cert.pem:/run/verity-pairing/tls-cert.pem:ro
 
   verity-updater:
-    oom_score_adj: ${VERITY_UPDATER_OOM_SCORE_ADJ:--250}
     profiles: [managed]
+    oom_score_adj: ${VERITY_UPDATER_OOM_SCORE_ADJ:--250}
     image: ${VERITY_SERVER_IMAGE:?set the digest-pinned official server image}
     command: [managed-updater]
     restart: unless-stopped

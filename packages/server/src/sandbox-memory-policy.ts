@@ -1,5 +1,5 @@
 /** Docker host capacity, never the Server container's own memory view. */
-export const DEFAULT_SANDBOX_MEMORY_RESERVATION_BYTES = 4 * 1024 ** 3;
+const DEFAULT_SANDBOX_MEMORY_RESERVATION_BYTES = 4 * 1024 ** 3;
 export const DEFAULT_SANDBOX_HOST_RESERVE_BYTES = 4 * 1024 ** 3;
 export const FALLBACK_SANDBOX_MEMORY_BYTES = 6 * 1024 ** 3;
 export const DEFAULT_SANDBOX_OOM_SCORE_ADJ = 500;
