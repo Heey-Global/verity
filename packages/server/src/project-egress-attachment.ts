@@ -1,9 +1,7 @@
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
+import { readProjectEgressDocker } from './project-egress-docker-read.js';
 import { readFile } from 'node:fs/promises';
 import { z } from 'zod';
 import type { ProjectFenceBinding } from './project-egress-fence.js';
-const exec = promisify(execFile);
 const id = z.string().regex(/^[a-f0-9]{64}$/u);
 const endpoint = z.object({
   NetworkID: id,
@@ -62,20 +60,14 @@ export async function inspectProjectFenceAttachment(
 ): Promise<ProjectFenceBinding> {
   if (![binding.containerId, binding.networkId].every((value) => /^[a-f0-9]{64}$/u.test(value)))
     throw new Error('Invalid daemon object id');
-  const options = {
-    timeout: 1000,
-    maxBuffer: 2 * 1024 * 1024,
-    env: { PATH: '/usr/sbin:/usr/bin:/sbin:/bin', DOCKER_HOST: 'unix:///var/run/docker.sock' },
-  };
-  // Both daemon reads are independent; neither may reuse a previous refresh's facts.
   const [container, network] = await Promise.all([
-    exec('/usr/bin/docker', ['container', 'inspect', binding.containerId], options),
-    exec('/usr/bin/docker', ['network', 'inspect', binding.networkId], options),
+    readProjectEgressDocker(['container', 'inspect', binding.containerId]),
+    readProjectEgressDocker(['network', 'inspect', binding.networkId]),
   ]);
   const result = verifyProjectFenceAttachment(
     binding,
-    JSON.parse(container.stdout),
-    JSON.parse(network.stdout),
+    JSON.parse(container!),
+    JSON.parse(network!),
   );
   if (!/^[a-zA-Z0-9_-]{1,15}$/u.test(result.bridge)) throw new Error('Invalid bridge interface');
   // A daemon record alone is insufficient if its network device no longer exists.

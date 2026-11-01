@@ -7,6 +7,7 @@ import ctypes
 from concurrent.futures import ThreadPoolExecutor
 import fcntl
 import hashlib
+import http.client
 import ipaddress
 import json
 import os
@@ -14,6 +15,8 @@ from pathlib import Path
 import platform
 import re
 import stat
+import socket
+import threading
 import struct
 import subprocess
 import sys
@@ -25,7 +28,62 @@ OBJECT = Path('/opt/verity-egress/project-egress-deadline.bpf.o')
 BINDING_FIELDS = ('projectId', 'generation', 'containerId', 'networkId', 'endpointId', 'bridge', 'ipv4', 'ipv6')
 
 
+DOCKER_SOCKET = '/var/run/docker.sock'
+
+
+class DockerConnection(http.client.HTTPConnection):
+    def connect(self):
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.sock.settimeout(self.timeout)
+        self.sock.connect(DOCKER_SOCKET)
+
+
+def docker_inspect(kind, identity):
+    if kind not in ('container', 'network') or not re.fullmatch(r'[a-f0-9]{64}', identity):
+        raise ValueError('Invalid host Docker inspection identity')
+    path = f'/{"containers" if kind == "container" else "networks"}/{identity}'
+    if kind == 'container':
+        path += '/json'
+    connection = DockerConnection('localhost', timeout=1)
+    expired = threading.Event()
+    def expire():
+        expired.set()
+        channel = connection.sock
+        if channel is not None:
+            try:
+                channel.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+        connection.close()
+    timer = threading.Timer(1, expire)
+    timer.start()
+    try:
+        connection.request('GET', path, headers={'Connection': 'close'})
+        response = connection.getresponse()
+        if response.status != 200:
+            raise ValueError('Host Docker inspection returned HTTP ' + str(response.status))
+        body = response.read(2 * 1024 * 1024 + 1)
+        if len(body) > 2 * 1024 * 1024:
+            raise ValueError('Oversized host Docker inspection')
+        if response.length not in (None, 0):
+            raise ValueError('Truncated host Docker inspection')
+        value = json.loads(body.decode('utf-8'))
+        if expired.is_set():
+            raise TimeoutError('Host Docker inspection timed out')
+        if not isinstance(value, dict):
+            raise ValueError('Invalid host Docker inspection object')
+        return json.dumps([value])
+    finally:
+        timer.cancel()
+        connection.close()
+        timer.join()
+
+
 def run(*args):
+    if args[0] == '/usr/bin/docker':
+        if len(args) != 4 or args[2] != 'inspect':
+            raise ValueError('Unsupported host Docker inspection')
+        return docker_inspect(args[1], args[3])
     try:
         return subprocess.check_output(args, text=True, stderr=subprocess.STDOUT, timeout=5,
                                        env={'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'DOCKER_HOST': 'unix:///var/run/docker.sock'})

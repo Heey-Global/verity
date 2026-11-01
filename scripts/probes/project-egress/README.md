@@ -233,3 +233,11 @@ asset builds, then rechecks after building retained-topology assets. The 12 GiB
 preflight guest uses a 20 GiB preparation floor; the 32 GiB retained guest uses a
 40 GiB preparation floor and a 36 GiB post-build floor. These include working
 headroom without weakening the VM's launch-time free-space check.
+
+Host inspection reads use the fixed local Docker Unix socket directly in Node and
+the short-lived Python deadline helper. Supported inspection routes retain the
+Docker CLI's JSON shape for the existing validators; container lifecycle mutations
+still use the established command path. Each read has a one-second total deadline
+and a 2 MiB body limit, with no fallback after a failed HTTP inspection. Responses
+are never cached across validation boundaries. Kernel clock capture, authority
+checks, expiry rejection and sequential map writes retain their original order.

@@ -1,3 +1,4 @@
+import { readProjectEgressDocker } from './project-egress-docker-read.js';
 import { inspectEgressRelay, type EgressRelayPolicy } from './project-egress-relay-policy.js';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -18,6 +19,8 @@ const dockerOptions = {
   env: { PATH: '/usr/sbin:/usr/bin:/sbin:/bin', DOCKER_HOST: 'unix:///var/run/docker.sock' },
 };
 export async function projectEgressHostDocker(...args: string[]): Promise<string> {
+  const inspection = await readProjectEgressDocker(args);
+  if (inspection !== undefined) return inspection;
   return (await exec('/usr/bin/docker', args, dockerOptions)).stdout;
 }
 const network = z
