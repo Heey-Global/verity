@@ -12,7 +12,7 @@ import { readFileSync } from 'node:fs';
 const checkWorkflows = ['ci.yml', 'gitleaks-dispatch.yml'];
 
 /** @param {string[]} args @param {{input?: string}} [options] */
-export function gh(args, options = {}) {
+function gh(args, options = {}) {
   return execFileSync('gh', args, {
     encoding: 'utf8',
     stdio: [options.input === undefined ? 'ignore' : 'pipe', 'pipe', 'inherit'],
