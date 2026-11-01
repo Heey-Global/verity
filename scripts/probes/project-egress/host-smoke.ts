@@ -1095,7 +1095,14 @@ try {
   await revokeAndMeasure(() => lifecycle.retire(identity), 'retire');
   await assert.rejects(lifecycle.start(identity, 'sandbox', containerId));
   await assert.rejects(startRelay({ ...context, resumeExisting: true }));
-  assert.ok((await client('negative', relayAddress, 8080)).includes('transport-denied'));
+  // Retirement stops both peers. A denied exec in a stopped container is not
+  // evidence of packet filtering; verify the lifecycle outcome directly.
+  for (const id of [containerId, relayId]) {
+    const [peer] = JSON.parse(await docker('container', 'inspect', id)) as {
+      State: { Running: boolean };
+    }[];
+    assert.equal(peer?.State.Running, false, 'Retired peer must remain stopped');
+  }
   results.push('retired generation and its relay cannot restart or regain transport');
   const nextIdentity = { ...identity, containerGeneration: 'gen2' };
   const nextBinding = await lifecycle.create(nextIdentity);
