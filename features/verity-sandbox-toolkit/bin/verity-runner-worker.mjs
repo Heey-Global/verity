@@ -10321,8 +10321,8 @@ var require_lt = __commonJS({
     var capitalizeFirstCharacter = (text) => {
       return text.charAt(0).toUpperCase() + text.slice(1);
     };
-    function getUnitTypeFromNumber(number2) {
-      const abs = Math.abs(number2);
+    function getUnitTypeFromNumber(number3) {
+      const abs = Math.abs(number3);
       const last = abs % 10;
       const last2 = abs % 100;
       if (last2 >= 11 && last2 <= 19 || last === 0)
@@ -20122,7 +20122,7 @@ var require_schemas2 = __commonJS({
     exports.hex = hex;
     exports.currencyCode = currencyCode;
     exports.hash = hash3;
-    exports.number = number2;
+    exports.number = number3;
     exports.int = int2;
     exports.float32 = float32;
     exports.float64 = float64;
@@ -20808,7 +20808,7 @@ var require_schemas2 = __commonJS({
         }
       })
     );
-    function number2(params) {
+    function number3(params) {
       return core._number(exports.ZodNumber, params);
     }
     exports.ZodNumberFormat = core.$constructor("ZodNumberFormat", (inst, def) => {
@@ -21649,7 +21649,7 @@ var require_schemas2 = __commonJS({
     exports.stringbool = stringbool;
     function json(params) {
       const jsonSchema = lazy(() => {
-        return union3([string3(params), number2(), boolean2(), _null(), array3(jsonSchema), record3(string3(), jsonSchema)]);
+        return union3([string3(params), number3(), boolean2(), _null(), array3(jsonSchema), record3(string3(), jsonSchema)]);
       });
       return jsonSchema;
     }
@@ -23024,7 +23024,7 @@ var require_coerce = __commonJS({
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.string = string3;
-    exports.number = number2;
+    exports.number = number3;
     exports.boolean = boolean2;
     exports.bigint = bigint;
     exports.date = date;
@@ -23033,7 +23033,7 @@ var require_coerce = __commonJS({
     function string3(params) {
       return core._coercedString(schemas.ZodString, params);
     }
-    function number2(params) {
+    function number3(params) {
       return core._coercedNumber(schemas.ZodNumber, params);
     }
     function boolean2(params) {
@@ -25571,10 +25571,18 @@ function defaultOnErrorOptionalStringTag(schema, key) {
 function vecSkipError(itemSchema) {
   return z16.array(itemSchema.catch(skippedItem)).transform((items) => items.filter((item) => item !== skippedItem));
 }
+function defaultOnNull(schema, empty) {
+  return z16.preprocess((value) => value === null ? empty() : value, schema);
+}
+function wideInt() {
+  return z16.number().refine(Number.isInteger, {
+    error: "Invalid input: expected int, received number"
+  });
+}
 
 // node_modules/@agentclientprotocol/sdk/dist/v1/unstable/schema/zod.gen.js
 var z17 = __toESM(require_v4(), 1);
-var zRequestId = z17.union([z17.number(), z17.string()]).nullable();
+var zRequestId = z17.union([wideInt(), z17.string()]).nullable();
 var zSessionId = z17.string();
 var zWriteTextFileRequest = z17.object({
   sessionId: zSessionId,
@@ -25642,7 +25650,7 @@ var zResourceLink = z17.object({
   description: defaultOnError(z17.string().nullish(), () => void 0),
   mimeType: defaultOnError(z17.string().nullish(), () => void 0),
   name: z17.string(),
-  size: defaultOnError(z17.number().nullish(), () => void 0),
+  size: defaultOnError(wideInt().nullish(), () => void 0),
   title: defaultOnError(z17.string().nullish(), () => void 0),
   uri: z17.string(),
   _meta: defaultOnError(z17.record(z17.string(), z17.unknown()).nullish(), () => void 0)
@@ -25757,10 +25765,10 @@ var zEnvVariable = z17.object({
 var zCreateTerminalRequest = z17.object({
   sessionId: zSessionId,
   command: z17.string(),
-  args: z17.array(z17.string()).optional(),
-  env: z17.array(zEnvVariable).optional(),
+  args: defaultOnNull(z17.array(z17.string()), () => []).optional(),
+  env: defaultOnNull(z17.array(zEnvVariable), () => []).optional(),
   cwd: z17.string().nullish(),
-  outputByteLimit: z17.number().nullish(),
+  outputByteLimit: wideInt().gte(0).nullish(),
   _meta: defaultOnError(z17.record(z17.string(), z17.unknown()).nullish(), () => void 0)
 });
 var zTerminalOutputRequest = z17.object({
@@ -25830,9 +25838,9 @@ var zNumberPropertySchema = z17.object({
 var zIntegerPropertySchema = z17.object({
   title: defaultOnError(z17.string().nullish(), () => void 0),
   description: defaultOnError(z17.string().nullish(), () => void 0),
-  minimum: z17.number().nullish(),
-  maximum: z17.number().nullish(),
-  default: defaultOnError(z17.number().nullish(), () => void 0),
+  minimum: wideInt().nullish(),
+  maximum: wideInt().nullish(),
+  default: defaultOnError(wideInt().nullish(), () => void 0),
   _meta: defaultOnError(z17.record(z17.string(), z17.unknown()).nullish(), () => void 0)
 });
 var zBooleanPropertySchema = z17.object({
@@ -25861,8 +25869,8 @@ var zMultiSelectItems = preserveCustomPayload(z17.union([
 var zMultiSelectPropertySchema = z17.object({
   title: defaultOnError(z17.string().nullish(), () => void 0),
   description: defaultOnError(z17.string().nullish(), () => void 0),
-  minItems: z17.number().nullish(),
-  maxItems: z17.number().nullish(),
+  minItems: wideInt().gte(0).nullish(),
+  maxItems: wideInt().gte(0).nullish(),
   items: zMultiSelectItems,
   default: defaultOnError(vecSkipError(z17.string()).nullish(), () => void 0),
   _meta: defaultOnError(z17.record(z17.string(), z17.unknown()).nullish(), () => void 0)
@@ -26036,8 +26044,8 @@ var zAuthMethodTerminal = z17.object({
   id: zAuthMethodId,
   name: z17.string(),
   description: defaultOnError(z17.string().nullish(), () => void 0),
-  args: z17.array(z17.string()).optional(),
-  env: z17.record(z17.string(), z17.string()).optional(),
+  args: defaultOnNull(z17.array(z17.string()), () => []).optional(),
+  env: defaultOnNull(z17.record(z17.string(), z17.string()), () => ({})).optional(),
   _meta: defaultOnError(z17.record(z17.string(), z17.unknown()).nullish(), () => void 0)
 });
 var zAuthMethodAgent = z17.object({
@@ -26245,12 +26253,12 @@ var zStopReason = z17.union([
   z17.literal("cancelled")
 ]);
 var zUsage = z17.object({
-  totalTokens: z17.number(),
-  inputTokens: z17.number(),
-  outputTokens: z17.number(),
-  thoughtTokens: defaultOnError(z17.number().nullish(), () => void 0),
-  cachedReadTokens: defaultOnError(z17.number().nullish(), () => void 0),
-  cachedWriteTokens: defaultOnError(z17.number().nullish(), () => void 0),
+  totalTokens: wideInt().gte(0),
+  inputTokens: wideInt().gte(0),
+  outputTokens: wideInt().gte(0),
+  thoughtTokens: defaultOnError(wideInt().gte(0).nullish(), () => void 0),
+  cachedReadTokens: defaultOnError(wideInt().gte(0).nullish(), () => void 0),
+  cachedWriteTokens: defaultOnError(wideInt().gte(0).nullish(), () => void 0),
   _meta: defaultOnError(z17.record(z17.string(), z17.unknown()).nullish(), () => void 0)
 });
 var zPromptResponse = z17.object({
@@ -26414,8 +26422,8 @@ var zCost = z17.object({
   _meta: defaultOnError(z17.record(z17.string(), z17.unknown()).nullish(), () => void 0)
 });
 var zUsageUpdate = z17.object({
-  used: z17.number(),
-  size: z17.number(),
+  used: wideInt().gte(0),
+  size: wideInt().gte(0),
   cost: defaultOnError(zCost.nullish(), () => void 0),
   _meta: defaultOnError(z17.record(z17.string(), z17.unknown()).nullish(), () => void 0)
 });
@@ -26543,13 +26551,13 @@ var zSessionMessage = z17.object({
   messageId: zMessageId,
   senderSessionId: defaultOnError(zSessionId.nullish(), () => void 0),
   recipientSessionId: defaultOnError(zSessionId.nullish(), () => void 0),
+  senderMessageId: defaultOnError(zMessageId.nullish(), () => void 0),
+  recipientMessageId: defaultOnError(zMessageId.nullish(), () => void 0),
   content: defaultOnError(vecSkipError(zContentBlock).nullish(), () => void 0),
   _meta: defaultOnError(z17.record(z17.string(), z17.unknown()).nullish(), () => void 0)
 });
 var zSessionMessageChunk = z17.object({
   messageId: zMessageId,
-  senderSessionId: defaultOnError(zSessionId.nullish(), () => void 0),
-  recipientSessionId: defaultOnError(zSessionId.nullish(), () => void 0),
   content: zContentBlock,
   _meta: defaultOnError(z17.record(z17.string(), z17.unknown()).nullish(), () => void 0)
 });
@@ -26724,13 +26732,13 @@ var zHttpHeader = z17.object({
 var zMcpServerHttp = z17.object({
   name: z17.string(),
   url: z17.string(),
-  headers: z17.array(zHttpHeader),
+  headers: defaultOnNull(z17.array(zHttpHeader), () => []),
   _meta: defaultOnError(z17.record(z17.string(), z17.unknown()).nullish(), () => void 0)
 });
 var zMcpServerSse = z17.object({
   name: z17.string(),
   url: z17.string(),
-  headers: z17.array(zHttpHeader),
+  headers: defaultOnNull(z17.array(zHttpHeader), () => []),
   _meta: defaultOnError(z17.record(z17.string(), z17.unknown()).nullish(), () => void 0)
 });
 var zMcpServerAcp = z17.object({
@@ -26741,8 +26749,8 @@ var zMcpServerAcp = z17.object({
 var zMcpServerStdio = z17.object({
   name: z17.string(),
   command: z17.string(),
-  args: z17.array(z17.string()),
-  env: z17.array(zEnvVariable),
+  args: defaultOnNull(z17.array(z17.string()), () => []),
+  env: defaultOnNull(z17.array(zEnvVariable), () => []),
   _meta: defaultOnError(z17.record(z17.string(), z17.unknown()).nullish(), () => void 0)
 });
 var zMcpServer = z17.union([
@@ -26769,15 +26777,15 @@ var zSystemPrompt = z17.object({
 });
 var zNewSessionRequest = z17.object({
   cwd: z17.string(),
-  additionalDirectories: z17.array(z17.string()).optional(),
-  mcpServers: z17.array(zMcpServer),
+  additionalDirectories: defaultOnNull(z17.array(z17.string()), () => []).optional(),
+  mcpServers: defaultOnNull(z17.array(zMcpServer), () => []),
   systemPrompt: zSystemPrompt.nullish(),
   _meta: defaultOnError(z17.record(z17.string(), z17.unknown()).nullish(), () => void 0)
 });
 var zLoadSessionRequest = z17.object({
-  mcpServers: z17.array(zMcpServer),
+  mcpServers: defaultOnNull(z17.array(zMcpServer), () => []),
   cwd: z17.string(),
-  additionalDirectories: z17.array(z17.string()).optional(),
+  additionalDirectories: defaultOnNull(z17.array(z17.string()), () => []).optional(),
   sessionId: zSessionId,
   systemPrompt: zSystemPrompt.nullish(),
   _meta: defaultOnError(z17.record(z17.string(), z17.unknown()).nullish(), () => void 0)
@@ -26794,16 +26802,16 @@ var zDeleteSessionRequest = z17.object({
 var zForkSessionRequest = z17.object({
   sessionId: zSessionId,
   cwd: z17.string(),
-  additionalDirectories: z17.array(z17.string()).optional(),
-  mcpServers: z17.array(zMcpServer).optional(),
+  additionalDirectories: defaultOnNull(z17.array(z17.string()), () => []).optional(),
+  mcpServers: defaultOnNull(z17.array(zMcpServer), () => []).optional(),
   systemPrompt: zSystemPrompt.nullish(),
   _meta: defaultOnError(z17.record(z17.string(), z17.unknown()).nullish(), () => void 0)
 });
 var zResumeSessionRequest = z17.object({
   sessionId: zSessionId,
   cwd: z17.string(),
-  additionalDirectories: z17.array(z17.string()).optional(),
-  mcpServers: z17.array(zMcpServer).optional(),
+  additionalDirectories: defaultOnNull(z17.array(z17.string()), () => []).optional(),
+  mcpServers: defaultOnNull(z17.array(zMcpServer), () => []).optional(),
   systemPrompt: zSystemPrompt.nullish(),
   _meta: defaultOnError(z17.record(z17.string(), z17.unknown()).nullish(), () => void 0)
 });
@@ -26818,8 +26826,8 @@ var zSetSessionModeRequest = z17.object({
 });
 var zSetSessionConfigOptionRequest = z17.intersection(z17.union([
   z17.object({
-    value: z17.boolean(),
-    type: z17.literal("boolean")
+    type: z17.literal("boolean"),
+    value: z17.boolean()
   }),
   z17.object({
     value: zSessionConfigValueId
@@ -26912,7 +26920,7 @@ var zKillTerminalResponse = z17.object({
 });
 var zElicitationContentValue = z17.union([
   z17.string(),
-  z17.number(),
+  wideInt(),
   z17.number(),
   z17.boolean(),
   z17.array(z17.string())
@@ -27094,6 +27102,15 @@ function errorDetails(error) {
 function isZodError(error) {
   return typeof error === "object" && error !== null && "name" in error && error.name === "ZodError" && "issues" in error && Array.isArray(error.issues) && "format" in error && typeof error.format === "function";
 }
+function describeInvalidMessage(message) {
+  if (Array.isArray(message)) {
+    return { type: "array" };
+  }
+  if (isRecord(message)) {
+    return { type: "object", keys: Object.keys(message) };
+  }
+  return { type: message === null ? "null" : typeof message };
+}
 function errorToResult(error) {
   if (error instanceof RequestError) {
     return error.toResult();
@@ -27176,6 +27193,7 @@ var RequestResponder = class {
   }
 };
 var requestBatchSizes = /* @__PURE__ */ new WeakMap();
+var nullIdResponders = /* @__PURE__ */ new WeakSet();
 var HandlerRegistration = class {
   disposeHandler;
   active = true;
@@ -27368,9 +27386,13 @@ var Connection = class {
   /**
    * Sends a non-empty JSON-RPC batch in one transport message.
    *
-   * Requests and notifications are processed independently by the peer. The
-   * returned tuple preserves the input order: request entries resolve to their
-   * mapped response, while notification entries resolve to `undefined`.
+   * Requests and notifications are processed independently by the peer, and
+   * array position does not establish processing order. Callers **MUST NOT**
+   * batch messages whose correctness depends on their relative order, such as
+   * two `session/update` notifications for the same entity; send those as
+   * separate messages instead. The returned tuple preserves the input order:
+   * request entries resolve to their mapped response, while notification
+   * entries resolve to `undefined`.
    */
   sendBatch(entries) {
     if (this.abortController.signal.aborted) {
@@ -27608,7 +27630,7 @@ var Connection = class {
       return Promise.resolve();
     }
     if (!isRecord(message)) {
-      console.error("Invalid message", { message });
+      console.error("Invalid message", describeInvalidMessage(message));
       return Promise.resolve();
     }
     if ("method" in message) {
@@ -27619,7 +27641,7 @@ var Connection = class {
     } else if ("id" in message) {
       this.handleResponse(message);
     } else {
-      console.error("Invalid message", { message });
+      console.error("Invalid message", describeInvalidMessage(message));
     }
     return Promise.resolve();
   }
@@ -27661,7 +27683,11 @@ var Connection = class {
       } else {
         const response = errorToResult(error);
         if ("error" in response) {
-          console.error("Error handling notification", message.raw, response.error);
+          console.error("Error handling notification", {
+            method: message.method,
+            code: response.error.code,
+            message: response.error.message
+          });
         }
       }
     }
@@ -27678,7 +27704,7 @@ var Connection = class {
       const responder = new RequestResponder(message.id, (result3) => {
         const response = {
           jsonrpc: "2.0",
-          id: message.id,
+          id: nullIdResponders.has(responder) ? null : message.id,
           ...result3
         };
         return sendResponse ? sendResponse(response) : this.sendWireMessage(response);
@@ -27901,11 +27927,33 @@ var RequestError = class _RequestError extends Error {
     return new _RequestError(-32e3, `Authentication required${additionalMessage ? `: ${additionalMessage}` : ""}`, data);
   }
   /**
-   * Resource, such as a file, was not found
+   * A referenced resource, such as a session or file, does not exist.
+   *
+   * For an unknown or inactive session, prefer
+   * {@link RequestError.sessionNotFound}, which sets `data.sessionId` as the
+   * protocol expects.
    */
   static resourceNotFound(uri) {
     return new _RequestError(-32002, `Resource not found${uri ? `: ${uri}` : ""}`, uri && { uri });
   }
+  /**
+   * The session named by a session-scoped request does not exist or is not
+   * active on this connection.
+   *
+   * Produces a `-32002` (Resource not found) error with `data.sessionId` set
+   * to the requested session ID.
+   */
+  static sessionNotFound(sessionId2) {
+    return new _RequestError(-32002, "Resource not found", {
+      sessionId: sessionId2
+    });
+  }
+  /**
+   * No supported protocol version is at or below the requested version.
+   *
+   * Produces a `-32022` error whose data lists the `requested` version and the
+   * `supported` versions.
+   */
   static unsupportedProtocolVersion(requested, supported) {
     return new _RequestError(-32022, "Unsupported protocol version", {
       requested,
@@ -28248,8 +28296,8 @@ function registerAppRequest(builder, spec, context, handler, serializeResponse, 
     try {
       const response = await handler(context(params, cx, responder.signal, responder.id, method));
       const sentResponse = serializeResponse ? serializeResponse(response) : response;
+      lifecycle?.beforeResponse(params, sentResponse, cx);
       await responder.respond(sentResponse);
-      lifecycle?.afterResponse(params, sentResponse, cx);
     } catch (error) {
       lifecycle?.onError(cx, error);
       throw error;
@@ -28283,9 +28331,36 @@ function registerAppNotification(builder, spec, context, handler) {
   }
 }
 
+// node_modules/@agentclientprotocol/sdk/dist/core/connection-access.js
+var connectionContextOf = /* @__PURE__ */ Symbol("connectionContextOf");
+
 // node_modules/@agentclientprotocol/sdk/dist/v1/acp.js
 function ndJsonStream2(output, input, options) {
   return ndJsonStream(output, input, options);
+}
+var initializedConnections = /* @__PURE__ */ new WeakSet();
+function agentInitializationGate(enabled) {
+  return {
+    handleMessage(message, cx) {
+      if (message.kind !== "request" || !enabled() || initializedConnections.has(cx)) {
+        return Handled.no(message);
+      }
+      if (message.method !== AGENT_METHODS.initialize) {
+        return message.responder.respondWithError(RequestError.invalidRequest(void 0, `ACP connection must be initialized before '${message.method}'`)).then(() => Handled.yes());
+      }
+      const { responder } = message;
+      return Handled.no({
+        ...message,
+        responder: new RequestResponder(responder.id, (result3) => {
+          if ("result" in result3) {
+            initializedConnections.add(cx);
+          }
+          return responder.respondWithResult(result3);
+        }, responder.signal)
+      });
+    },
+    describe: () => "agent-initialization"
+  };
 }
 function emptyObjectResponse(response) {
   return response ?? {};
@@ -28329,6 +28404,9 @@ var methods = {
       setConfigOption: AGENT_METHODS.session_set_config_option,
       prompt: AGENT_METHODS.session_prompt,
       cancel: AGENT_METHODS.session_cancel
+    },
+    mcp: {
+      message: AGENT_METHODS.mcp_message
     }
   },
   client: {
@@ -28346,6 +28424,9 @@ var methods = {
       release: CLIENT_METHODS.terminal_release,
       waitForExit: CLIENT_METHODS.terminal_wait_for_exit,
       kill: CLIENT_METHODS.terminal_kill
+    },
+    mcp: {
+      message: CLIENT_METHODS.mcp_message
     },
     elicitation: {
       create: CLIENT_METHODS.elicitation_create,
@@ -28376,6 +28457,10 @@ var AcpContext = class {
   }
   /** @internal */
   get connectionContext() {
+    return this.cx;
+  }
+  /** @hidden SDK helpers use this to identify the connection. */
+  [connectionContextOf]() {
     return this.cx;
   }
   /** @internal */
@@ -28813,7 +28898,8 @@ var agentRequestSpecs = {
   prompt: requestSpec(AGENT_METHODS.session_prompt, zPromptRequest)
 };
 var agentNotificationSpecs = {
-  cancel: notificationSpec(AGENT_METHODS.session_cancel, zCancelNotification)
+  cancel: notificationSpec(AGENT_METHODS.session_cancel, zCancelNotification),
+  unstable_messageMcp: notificationSpec(AGENT_METHODS.mcp_message, zMessageMcpNotification)
 };
 var clientRequestSpecs = {
   requestPermission: requestSpec(CLIENT_METHODS.session_request_permission, zRequestPermissionRequest),
@@ -28824,7 +28910,8 @@ var clientRequestSpecs = {
   releaseTerminal: requestSpec(CLIENT_METHODS.terminal_release, zReleaseTerminalRequest, emptyObjectResponse),
   waitForTerminalExit: requestSpec(CLIENT_METHODS.terminal_wait_for_exit, zWaitForTerminalExitRequest),
   killTerminal: requestSpec(CLIENT_METHODS.terminal_kill, zKillTerminalRequest, emptyObjectResponse),
-  createElicitation: requestSpec(CLIENT_METHODS.elicitation_create, zCreateElicitationRequest)
+  createElicitation: requestSpec(CLIENT_METHODS.elicitation_create, zCreateElicitationRequest),
+  unstable_messageMcp: requestSpec(CLIENT_METHODS.mcp_message, zMessageMcpRequest)
 };
 var clientNotificationSpecs = {
   sessionUpdate: notificationSpec(CLIENT_METHODS.session_update, zSessionNotification),
@@ -28931,7 +29018,9 @@ var AgentApp = class {
   builder = Connection.builder();
   connectHandlers = [];
   fallbackKinds = /* @__PURE__ */ new Set();
+  hasInitializeHandler = false;
   constructor(options = {}) {
+    this.builder.withHandler(agentInitializationGate(() => this.hasInitializeHandler));
     if (options.name) {
       this.builder.name(options.name);
     }
@@ -28996,6 +29085,9 @@ var AgentApp = class {
     const spec = agentRequestSpecsByMethod[method];
     if (!spec) {
       throw new Error(`Unknown ACP request method '${method}'. Pass a params parser for custom methods.`);
+    }
+    if (method === AGENT_METHODS.initialize) {
+      this.hasInitializeHandler = true;
     }
     return this.request(spec, handlerOrParams);
   }

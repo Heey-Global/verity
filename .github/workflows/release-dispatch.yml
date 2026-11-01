@@ -94,7 +94,7 @@ jobs:
       # renovate: datasource=github-actions depName=actions/setup-node
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '26.12.1'
+          node-version: '26.13.0'
       # Release PRs merged since the release app exists carry its `<slug>[bot]`
       # login. The slug is an output of minting a token, so mint one that can
       # only read metadata; scripts/release-bot-logins.mjs trusts it next to
@@ -138,7 +138,7 @@ jobs:
       # renovate: datasource=github-actions depName=actions/setup-node
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '26.12.1'
+          node-version: '26.13.0'
       # Release PRs merged since the release app exists carry its `<slug>[bot]`
       # login. The slug is an output of minting a token, so mint one that can
       # only read metadata; scripts/release-bot-logins.mjs trusts it next to
@@ -182,7 +182,7 @@ jobs:
       # renovate: datasource=github-actions depName=actions/setup-node
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '26.12.1'
+          node-version: '26.13.0'
       # Release PRs merged since the release app exists carry its `<slug>[bot]`
       # login. The slug is an output of minting a token, so mint one that can
       # only read metadata; scripts/release-bot-logins.mjs trusts it next to
@@ -359,7 +359,7 @@ jobs:
       # renovate: datasource=github-actions depName=actions/setup-node
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '26.12.1'
+          node-version: '26.13.0'
       - name: Resume once on current main
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
