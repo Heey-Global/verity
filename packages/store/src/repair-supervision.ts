@@ -30,6 +30,7 @@ export interface RepairIncident {
 }
 
 export interface ManualRepairProposal {
+  consent_key: string | null;
   requires_card: boolean;
   id: string;
   project_id: string;
@@ -63,7 +64,7 @@ export interface QAState {
 export class RepairSupervisionStore {
   constructor(private readonly db: Kysely<Database>) {}
   async proposeManualRepair(
-    p: Omit<ManualRepairProposal, 'dispatch_id' | 'reason'>,
+    p: Omit<ManualRepairProposal, 'dispatch_id' | 'reason' | 'consent_key'>,
   ): Promise<void> {
     await sql`insert into qa_manual_repairs(id,project_id,source_session_id,user_id,target_session_id,number,branch,revision,qa_revision,mandate_revision,requires_card) values (${p.id},${p.project_id},${p.source_session_id},${p.user_id},${p.target_session_id},${p.number},${p.branch},${p.revision},${p.qa_revision},${p.mandate_revision},${p.requires_card})`.execute(
       this.db,
@@ -87,6 +88,15 @@ export class RepairSupervisionStore {
     const p = await this.manualRepair(id);
     if (p?.dispatch_id && (await this.cancelReservedDispatch(p.dispatch_id)))
       await sql`update qa_manual_repairs set reason=${reason} where id=${id}`.execute(this.db);
+  }
+  async manualConsentAvailable(id: string, key: string): Promise<boolean> {
+    return (
+      (
+        await sql`select id from qa_manual_repairs where consent_key=${key} and id<>${id}`.execute(
+          this.db,
+        )
+      ).rows.length === 0
+    );
   }
   async manualRepairValid(id: string): Promise<boolean> {
     return (
@@ -403,6 +413,7 @@ export class RepairSupervisionStore {
     mandateRevision: number,
     qaRevision?: number,
     manualProposalId?: string,
+    consentKey?: string,
   ): Promise<RepairIncident | undefined> {
     return this.db.transaction().execute(async (trx) => {
       // The lock covers the global limit as well as a project's exclusive owner.
@@ -415,6 +426,15 @@ export class RepairSupervisionStore {
           )
         ).rows[0];
         if (!manual) return undefined;
+        if (
+          consentKey &&
+          (
+            await sql`select id from qa_manual_repairs where consent_key=${consentKey} and id<>${manual.id}`.execute(
+              trx,
+            )
+          ).rows.length
+        )
+          return undefined;
         const incident = (
           await sql<RepairIncident>`select * from repair_incidents where id=${id}`.execute(trx)
         ).rows[0];
@@ -433,7 +453,7 @@ export class RepairSupervisionStore {
       const claim = result.rows[0];
       if (claim?.dispatch_id) {
         if (manual)
-          await sql`update qa_manual_repairs set dispatch_id=${claim.dispatch_id} where id=${manual.id}`.execute(
+          await sql`update qa_manual_repairs set dispatch_id=${claim.dispatch_id},consent_key=${consentKey ?? null} where id=${manual.id}`.execute(
             trx,
           );
         await sql`insert into repair_attempts (dispatch_id, incident_id, session_id) values (${claim.dispatch_id}, ${claim.id}, ${sessionId})`.execute(

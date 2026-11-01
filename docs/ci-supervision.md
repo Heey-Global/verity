@@ -243,7 +243,9 @@ target; the instruction must refer to matching server PR evidence or a repair
 proposal shown before the message, including when it names only a PR number. Quoted text, repository
 content and agent assertions are not consent. Otherwise a one-time approval card
 shows the exact target and scope. Ambiguous session selections require this card.
-Neither path changes the project's Monitor/Automatic setting.
+Each direct instruction is consumed atomically with incident ownership and cannot
+authorize another proposal or attempt. Neither path changes the project's
+Monitor/Automatic setting.
 
 The manual request shares the existing durable incident ownership, concurrency
 limits and repair budget with background repairs. Busy sessions receive a durable

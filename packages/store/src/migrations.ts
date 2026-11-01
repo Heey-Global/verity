@@ -5049,7 +5049,7 @@ migrations['0179_qa_manual_repairs'] = {
       number integer not null, branch text not null, revision text not null, requires_card boolean not null default false,
       qa_revision integer not null, mandate_revision integer not null,
       expires_at timestamptz not null default now() + interval '1 hour',
-      dispatch_id text unique, reason text
+      dispatch_id text unique, consent_key text unique, reason text
     )`.execute(db);
   },
   async down(db: Kysely<unknown>): Promise<void> {

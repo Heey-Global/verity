@@ -1,4 +1,8 @@
-import { createQARepairTool, trustedQARepairInstruction } from './qa-repair-tool.js';
+import {
+  createQARepairTool,
+  trustedQARepairInstruction,
+  trustedQARepairConsent,
+} from './qa-repair-tool.js';
 import { saveQAReport } from './qa-report.js';
 import { executeQAAnalysis } from './qa-analysis-tool.js';
 import {
@@ -1530,7 +1534,7 @@ export function registerServerMcpRoutes({
               input.approvedByCard
                 ? undefined
                 : () =>
-                    trustedQARepairInstruction(
+                    trustedQARepairConsent(
                       deps.eventStore,
                       input.sessionId,
                       input.turnId,

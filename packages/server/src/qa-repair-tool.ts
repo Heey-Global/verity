@@ -226,6 +226,7 @@ export function createQARepairTool(deps: QARepairDeps) {
         qa_revision: qa.revision,
         mandate_revision: mandate.revision,
         dispatch_id: null,
+        consent_key: null,
         reason: null,
       };
       await store.proposeManualRepair(p);
@@ -237,7 +238,12 @@ export function createQARepairTool(deps: QARepairDeps) {
       };
     },
     status,
-    async request(caller: Caller, projectId: string, id: string, consent?: () => Promise<boolean>) {
+    async request(
+      caller: Caller,
+      projectId: string,
+      id: string,
+      consent?: () => Promise<string | undefined>,
+    ) {
       let p = await proposal(caller, projectId, id);
       if (p.dispatch_id) return status(caller, projectId, id);
       const observed = await current(p, !deps.busy(p.target_session_id));
@@ -247,7 +253,8 @@ export function createQARepairTool(deps: QARepairDeps) {
         p.revision,
         JSON.stringify({ ...observed, observedAt: new Date().toISOString() }),
       );
-      if (consent && !(await consent()))
+      const consentKey = consent ? await consent() : undefined;
+      if (consent && !consentKey)
         throw new ControlPlaneSessionAuthorityError(
           'The direct repair instruction changed; request approval again.',
         );
@@ -257,6 +264,7 @@ export function createQARepairTool(deps: QARepairDeps) {
         p.mandate_revision,
         p.qa_revision,
         p.id,
+        consentKey,
       );
       if (!claim) {
         p = await proposal(caller, projectId, id);
@@ -294,6 +302,14 @@ export async function trustedQARepairInstruction(
   turnId: string,
   proposalId: string,
 ): Promise<boolean> {
+  return (await trustedQARepairConsent(store, sessionId, turnId, proposalId)) !== undefined;
+}
+export async function trustedQARepairConsent(
+  store: EventStore,
+  sessionId: string,
+  turnId: string,
+  proposalId: string,
+): Promise<string | undefined> {
   const p = await store.repairs.manualRepair(proposalId);
   if (
     !p ||
@@ -301,11 +317,11 @@ export async function trustedQARepairInstruction(
     p.source_session_id !== sessionId ||
     !(await store.repairs.manualRepairValid(proposalId))
   )
-    return false;
+    return undefined;
   const running = (await store.listRunningTurns()).find(
     (t) => t.sessionId === sessionId && t.turnId === turnId,
   );
-  if (!running) return false;
+  if (!running) return undefined;
   const prompts = (await store.getEventsAfter(sessionId, running.promptSeq - 1)).filter(
     (r) => r.event.t === 'prompt',
   );
@@ -317,7 +333,10 @@ export async function trustedQARepairInstruction(
     latest.event.initiatedBy?.userId !== p.user_id ||
     (latest.seq !== running.promptSeq && !latest.event.steered)
   )
-    return false;
+    return undefined;
+  const key = `${sessionId}:${latest.seq}`;
+  const consumable = async () =>
+    (await store.repairs.manualConsentAvailable(proposalId, key)) ? key : undefined;
   const text = latest.event.text.trim();
   const explicit = new RegExp(
     `^(?:please |bitte )?(?:fix|repair|repariere) (?:PR ?#?)?${p.number}[.!]?$`,
@@ -329,7 +348,7 @@ export async function trustedQARepairInstruction(
       text,
     )
   )
-    return false;
+    return undefined;
   // An implicit "fix it" must refer to exactly the server proposal shown before the prompt.
   const { events } = await store.getEventsBeforeSeq(sessionId, 200, latest.seq);
   const calls = new Map(
@@ -343,14 +362,17 @@ export async function trustedQARepairInstruction(
     if (event.t !== 'tool_result' || event.isError || !calls.has(event.id)) continue;
     const input = calls.get(event.id) as { action?: string; projectId?: string; number?: number };
     if (!['resolve_repair', 'pull_status'].includes(input.action ?? '')) continue;
-    if (input.projectId !== p.project_id || input.number !== p.number) return false;
+    if (input.projectId !== p.project_id || input.number !== p.number) return undefined;
     const output = unwrapQAResult(event.output);
-    if (input.action === 'resolve_repair') return output?.proposalId === proposalId;
+    if (input.action === 'resolve_repair')
+      return output?.proposalId === proposalId ? consumable() : undefined;
     const data = output?.data as
       { pull?: { number?: number; head?: { sha?: string } } } | undefined;
-    return data?.pull?.number === p.number && data.pull.head?.sha === p.revision;
+    return data?.pull?.number === p.number && data.pull.head?.sha === p.revision
+      ? consumable()
+      : undefined;
   }
-  return false;
+  return undefined;
 }
 function unwrapQAResult(value: unknown): Record<string, unknown> | undefined {
   if (!value || typeof value !== 'object') return undefined;

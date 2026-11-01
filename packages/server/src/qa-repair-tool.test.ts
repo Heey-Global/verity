@@ -5,6 +5,7 @@ import { sql } from 'kysely';
 import {
   createQARepairTool,
   trustedQARepairInstruction,
+  trustedQARepairConsent,
   type QARepairDeps,
 } from './qa-repair-tool.js';
 let ctx: TestDb;
@@ -244,7 +245,7 @@ it('accepts the screenshot instruction only after matching server PR evidence', 
 it('rejects consent revoked during preparation before taking ownership', async () => {
   const { deps, service, resolve } = setup();
   const id = await resolve();
-  await expect(service.request(caller, 'p', id, async () => false)).rejects.toThrow(
+  await expect(service.request(caller, 'p', id, async () => undefined)).rejects.toThrow(
     'instruction changed',
   );
   expect(deps.dispatch).not.toHaveBeenCalled();
@@ -352,4 +353,56 @@ it('allows a newly approved monitor-mode retry after supervisor completion, with
   expect(deps.dispatch).toHaveBeenCalledTimes(2);
   expect((await ctx.store.repairs.mandate('p'))?.mode).toBe('monitor');
   await supervisor.stop();
+});
+
+it('consumes a chat instruction once across distinct proposals and permits a fresh instruction', async () => {
+  const { deps, service, resolve } = setup();
+  await ctx.store.appendEvent('qa', {
+    t: 'tool_call',
+    id: 'read',
+    name: 'verity_qa_analysis',
+    input: { action: 'pull_status', projectId: 'p', number: 2120 },
+  });
+  await ctx.store.appendEvent('qa', {
+    t: 'tool_result',
+    id: 'read',
+    isError: false,
+    output: { data: { pull: { number: 2120, head: { sha: 'sha' } } } },
+  });
+  const instruct = async () => {
+    const row = await ctx.store.appendEvent('qa', {
+      t: 'prompt',
+      text: 'ok lass die session das fixen',
+      initiatedBy: { userId: 'user' },
+    });
+    await ctx.store.markTurnRunning({ sessionId: 'qa', promptSeq: row.seq });
+    await ctx.store.bindTurnIdentity('qa', { turnId: 'turn', startCommandId: 'start' });
+  };
+  await instruct();
+  const first = await resolve();
+  const key = await trustedQARepairConsent(ctx.store, 'qa', 'turn', first);
+  expect(key).toEqual(expect.any(String));
+  await service.request(caller, 'p', first, async () => key);
+  const incident = (await ctx.store.repairs.incidents('p'))[0]!;
+  await ctx.store.clearRunningTurn('target');
+  await ctx.store.repairs.finishAttempt(
+    incident.id,
+    incident.dispatch_id!,
+    'verifying',
+    incident.evidence,
+  );
+  const second = await resolve();
+  expect(await trustedQARepairInstruction(ctx.store, 'qa', 'turn', second)).toBe(false);
+  // Even a previously checked key is fenced atomically after the first claim consumed it.
+  expect(await service.request(caller, 'p', second, async () => key)).toMatchObject({
+    status: 'blocked',
+  });
+  expect(deps.dispatch).toHaveBeenCalledOnce();
+  await instruct();
+  expect(
+    await service.request(caller, 'p', second, () =>
+      trustedQARepairConsent(ctx.store, 'qa', 'turn', second),
+    ),
+  ).toMatchObject({ status: 'accepted' });
+  expect(deps.dispatch).toHaveBeenCalledTimes(2);
 });
