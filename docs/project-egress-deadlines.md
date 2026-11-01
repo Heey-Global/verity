@@ -269,3 +269,37 @@ existing controller-reconstruction and generation-replacement fixture. The
 legacy boot fixture, whose relay policy does not select packet enforcement,
 continues to certify its existing startup fence only; its reboot results must
 not be presented as combined TC/nftables reboot acceptance.
+
+## Kernel inspection readers
+
+The supported little-endian x86_64 host uses `libnftables.so.1` JSON output for
+fixed ruleset/table reads, BPF object-info syscalls for pinned program identity,
+and read-only rtnetlink dumps for links and ingress/egress classifiers. The
+implementation follows the Linux UAPI layouts in
+[`rtnetlink.h`](https://github.com/torvalds/linux/blob/master/include/uapi/linux/rtnetlink.h),
+[`if_link.h`](https://github.com/torvalds/linux/blob/master/include/uapi/linux/if_link.h)
+and [`pkt_cls.h`](https://github.com/torvalds/linux/blob/master/include/uapi/linux/pkt_cls.h).
+Python must provide `os.setns`; disposable image and VM preparation check this
+and the library before starting protected fixtures. Missing capabilities fail
+closed without a CLI fallback. Provisioning-only loaders remain unchanged.
+
+Each route socket is private to one fresh query. Replies require the kernel
+sender, matching sequence/port, complete multipart termination, valid lengths
+and supported classifier attributes. Interrupted dumps, offload, unexpected
+hooks, duplicate attributes and truncated messages are rejected. Reads allow at
+most 2 MiB and 4,096 route records with a one-second socket deadline. Nft output
+is capped at 2 MiB and 10,000 entries and rejected after a one-second elapsed
+read; the outer helper operation watchdog terminates a stuck library call within
+five seconds. These limits never extend a kernel lease.
+
+Namespace inspection opens only the daemon-derived namespace, checks its
+network-namespace type, and restores the saved host namespace descriptor on
+success or failure. Failed restoration terminates the resident helper. No
+inspection facts or namespace descriptors persist across requests.
+
+The previous native baseline, run 41321104315 at c4ad67059, failed continuous
+handoff despite the resident Python helper and Docker API reads: approximately
+415 ms after the first capture plus the next inspection, validation and failed
+453 ms kernel phase exceeded the immutable 1,000 ms lease. Replacing readers
+requires new native continuity, failure and combined recovery evidence; local
+parser tests alone do not establish acceptance.

@@ -90,11 +90,261 @@ def docker_inspect(kind, identities):
     return json.dumps(values)
 
 
+# Linux UAPI layouts are restricted to the existing supported little-endian x86_64 host.
+# Sources: include/uapi/linux/{rtnetlink,if_link,pkt_cls,bpf}.h in the Linux tree.
+MAX_KERNEL_BYTES = 2 * 1024 * 1024
+
+
+def kernel_abi():
+    if platform.machine() != 'x86_64' or sys.byteorder != 'little' or ctypes.sizeof(ctypes.c_void_p) != 8:
+        raise ValueError('Unsupported deadline kernel ABI')
+
+
+def nft_read(table=None):
+    started = time.monotonic()
+    kernel_abi()
+    if table is not None and not re.fullmatch(r'verity_egress_[a-f0-9]{24}', table):
+        raise ValueError('Invalid deadline nft table')
+    library = ctypes.CDLL('libnftables.so.1')
+    library.nft_ctx_new.argtypes = [ctypes.c_uint32]
+    library.nft_ctx_new.restype = ctypes.c_void_p
+    library.nft_ctx_free.argtypes = [ctypes.c_void_p]
+    library.nft_ctx_free.restype = None
+    library.nft_ctx_output_set_flags.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+    library.nft_ctx_output_set_flags.restype = None
+    for name in ('nft_ctx_buffer_output', 'nft_ctx_buffer_error'):
+        getattr(library, name).argtypes = [ctypes.c_void_p]
+        getattr(library, name).restype = ctypes.c_int
+    library.nft_run_cmd_from_buffer.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+    library.nft_run_cmd_from_buffer.restype = ctypes.c_int
+    library.nft_ctx_get_output_buffer.argtypes = [ctypes.c_void_p]
+    library.nft_ctx_get_output_buffer.restype = ctypes.c_char_p
+    context = library.nft_ctx_new(0)
+    if not context:
+        raise ValueError('Cannot create deadline nft context')
+    try:
+        library.nft_ctx_output_set_flags(context, 1 << 4)  # NFT_CTX_OUTPUT_JSON
+        if library.nft_ctx_buffer_output(context) != 0 or library.nft_ctx_buffer_error(context) != 0:
+            raise ValueError('Cannot buffer deadline nft inspection')
+        command = 'list ruleset' if table is None else 'list table inet ' + table
+        if library.nft_run_cmd_from_buffer(context, command.encode()) != 0:
+            raise ValueError('Deadline nft inspection failed')
+        if time.monotonic() - started > 1:
+            raise TimeoutError('Deadline nft read timed out')
+        output = library.nft_ctx_get_output_buffer(context)
+        if not output or len(output) > MAX_KERNEL_BYTES:
+            raise ValueError('Invalid or oversized deadline nft inspection')
+        value = json.loads(output)
+        if not isinstance(value, dict) or not isinstance(value.get('nftables'), list) or len(value['nftables']) > 10000:
+            raise ValueError('Invalid deadline nft JSON')
+        return value
+    finally:
+        library.nft_ctx_free(context)
+
+
+def route_attributes(data):
+    result = {}
+    offset = 0
+    while offset < len(data):
+        if len(data) - offset < 4:
+            raise ValueError('Truncated route attribute header')
+        size, raw_kind = struct.unpack_from('<HH', data, offset)
+        kind = raw_kind & 0x3fff
+        if size < 4 or offset + size > len(data) or raw_kind & 0x4000 or kind in result:
+            raise ValueError('Invalid or duplicate route attribute')
+        result[kind] = data[offset + 4:offset + size]
+        offset += (size + 3) & ~3
+        if offset > len(data):
+            raise ValueError('Truncated route attribute padding')
+    return result
+
+
+def route_string(value):
+    if not value or value[-1:] != b'\0' or b'\0' in value[:-1] or len(value) > 256:
+        raise ValueError('Invalid route string')
+    return value[:-1].decode('ascii')
+
+
+def route_u32(value):
+    if len(value) != 4:
+        raise ValueError('Invalid route integer')
+    return struct.unpack('<I', value)[0]
+
+
+def route_frames(data, sequence, port, expected):
+    records = []
+    offset = 0
+    done = False
+    while offset < len(data):
+        if len(data) - offset < 16 or done:
+            raise ValueError('Truncated or trailing route message')
+        size, kind, flags, seq, pid = struct.unpack_from('<IHHII', data, offset)
+        if size < 16 or offset + size > len(data) or seq != sequence or pid != port or flags & ~0x22:
+            raise ValueError('Invalid, interrupted or foreign route message')
+        body = data[offset + 16:offset + size]
+        if kind == 3:
+            if body not in (b'', bytes(4)):
+                raise ValueError('Failed route multipart dump')
+            done = True
+        elif kind != expected or not flags & 2:
+            raise ValueError('Unexpected route response')
+        else:
+            records.append(body)
+        offset += (size + 3) & ~3
+        if offset > len(data):
+            raise ValueError('Truncated route message padding')
+    return records, done
+
+
+def route_dump(kind, body):
+    kernel_abi()
+    if kind not in (18, 46):
+        raise ValueError('Unsupported deadline route query')
+    started = time.monotonic()
+    sequence = int.from_bytes(os.urandom(4), 'little') or 1
+    with socket.socket(socket.AF_NETLINK, socket.SOCK_RAW, socket.NETLINK_ROUTE) as channel:
+        channel.settimeout(1)
+        channel.bind((0, 0))
+        port = channel.getsockname()[0]
+        channel.sendto(struct.pack('<IHHII', 16 + len(body), kind, 0x301, sequence, port) + body, (0, 0))
+        records, count = [], 0
+        while True:
+            remaining = 1 - (time.monotonic() - started)
+            if remaining <= 0:
+                raise TimeoutError('Deadline route read timed out')
+            channel.settimeout(remaining)
+            data, ancillary, flags, sender = channel.recvmsg(65536)
+            count += len(data)
+            if not data or ancillary or flags or sender != (0, 0) or count > MAX_KERNEL_BYTES:
+                raise ValueError('Truncated, oversized or foreign route dump')
+            batch, done = route_frames(data, sequence, port, kind - 2)
+            records.extend(batch)
+            if len(records) > 4096:
+                raise ValueError('Too many deadline route objects')
+            if done:
+                return records
+
+
+def kernel_links():
+    result = []
+    for body in route_dump(18, bytes(16)):
+        if len(body) < 16:
+            raise ValueError('Truncated deadline link')
+        family, pad, link_type, index, flags, change = struct.unpack_from('<BBHiII', body)
+        if family != 0 or pad != 0 or index <= 0:
+            raise ValueError('Unsupported deadline link layout')
+        attrs = route_attributes(body[16:])
+        name = route_string(attrs[3])
+        address = attrs.get(1, b'')
+        if len(address) > 32 or not re.fullmatch(r'[a-zA-Z0-9_.:-]{1,15}', name):
+            raise ValueError('Unsupported deadline link identity')
+        link = {'ifindex': index, 'ifname': name, 'address': address.hex(':')}
+        if 5 in attrs:
+            link['link_index'] = route_u32(attrs[5])
+        if 18 in attrs:
+            nested = route_attributes(attrs[18])
+            if 1 in nested:
+                link['linkinfo'] = {'info_kind': route_string(nested[1])}
+        result.append(link)
+    return result
+
+
+def namespace_links(namespace):
+    if not re.fullmatch(r'/var/run/docker/netns/[a-zA-Z0-9_-]+', namespace):
+        raise ValueError('Invalid deadline namespace path')
+    original = os.open('/proc/self/ns/net', os.O_RDONLY | os.O_CLOEXEC)
+    target = None
+    try:
+        target = os.open(namespace, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        for fd in (original, target):
+            if fcntl.ioctl(fd, 0xb703) != 0x40000000:  # NS_GET_NSTYPE, CLONE_NEWNET
+                raise ValueError('Not a network namespace descriptor')
+        before = os.fstat(original)
+        try:
+            os.setns(target, 0x40000000)
+            return kernel_links()
+        finally:
+            try:
+                os.setns(original, 0x40000000)
+                after = os.stat('/proc/self/ns/net')
+                if (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino):
+                    raise ValueError('Deadline host namespace restoration mismatch')
+            except BaseException as error:
+                # The resident process must never accept another request in a project namespace.
+                raise SystemExit('Deadline host namespace restoration failed') from error
+    finally:
+        if target is not None:
+            os.close(target)
+        os.close(original)
+
+
+def kernel_filters(index, direction):
+    if type(index) is not int or not 0 < index < (1 << 31) or direction not in ('ingress', 'egress'):
+        raise ValueError('Invalid deadline hook query')
+    parent = 0xfffffff2 if direction == 'ingress' else 0xfffffff3
+    result = []
+    for body in route_dump(46, struct.pack('<BBHiIII', 0, 0, 0, index, 0, parent, 0)):
+        if len(body) < 20:
+            raise ValueError('Truncated deadline classifier')
+        family, pad, pad2, actual, handle, owner, info = struct.unpack_from('<BBHiIII', body)
+        if family != 0 or pad or pad2 or actual != index or owner != parent:
+            raise ValueError('Foreign deadline classifier')
+        attrs = route_attributes(body[20:])
+        if set(attrs) - {1, 2, 3, 4, 6, 7, 9, 11, 12, 16}:
+            raise ValueError('Unsupported deadline classifier attributes')
+        entry = {'kind': route_string(attrs[1]), 'pref': info >> 16,
+                 'protocol': 'all' if socket.ntohs(info & 65535) == 3 else 'unsupported',
+                 'chain': route_u32(attrs[11]) if 11 in attrs else 0}
+        if 2 in attrs:
+            options = route_attributes(attrs[2])
+            if set(options) - {7, 8, 9, 10, 11}:
+                raise ValueError('Unsupported deadline BPF classifier options')
+            direct = route_u32(options[8])
+            generic = route_u32(options[9])
+            if direct & ~1 or generic & ~0x1f:
+                raise ValueError('Unsupported deadline BPF flags')
+            entry['options'] = {'id': route_u32(options[11]), 'direct-action': bool(direct & 1),
+                                'skip_hw': bool(generic & 1), 'skip_sw': bool(generic & 2),
+                                'in_hw': bool(generic & 4)}
+        result.append(entry)
+    return result
+
+
+class InfoAttr(ctypes.Structure):
+    _fields_ = [('fd', ctypes.c_uint32), ('info_len', ctypes.c_uint32), ('info', ctypes.c_uint64)]
+
+
+def kernel_program(root):
+    kernel_abi()
+    pathname = ctypes.create_string_buffer(str(root / 'guard').encode())
+    fd = bpf(7, ObjectAttr(ctypes.addressof(pathname), 0, 0))
+    info = ctypes.create_string_buffer(256)
+    attr = InfoAttr(fd, len(info), ctypes.addressof(info))
+    try:
+        bpf(15, attr)  # BPF_OBJ_GET_INFO_BY_FD
+        if attr.info_len < 8:
+            raise ValueError('Truncated deadline program identity')
+        kind, identity = struct.unpack_from('<II', info.raw)
+        return {'id': identity, 'type': 'sched_cls' if kind == 3 else 'unsupported'}
+    finally:
+        os.close(fd)
+
+
 def run(*args):
     if args[0] == '/usr/bin/docker':
         if len(args) < 4 or args[2] != 'inspect':
             raise ValueError('Unsupported deadline Docker operation')
         return docker_inspect(args[1], args[3:])
+    if args == ('/sbin/ip', '-j', '-d', 'link', 'show'):
+        return json.dumps(kernel_links())
+    if len(args) == 6 and args[:1] == ('/usr/bin/nsenter',) and args[2:] == ('/sbin/ip', '-j', 'link', 'show'):
+        if not args[1].startswith('--net='):
+            raise ValueError('Invalid deadline namespace read')
+        return json.dumps(namespace_links(args[1][6:]))
+    if args == ('/usr/sbin/nft', '-j', 'list', 'ruleset'):
+        return json.dumps(nft_read())
+    if len(args) == 6 and args[:5] == ('/usr/sbin/nft', '-j', 'list', 'table', 'inet'):
+        return json.dumps(nft_read(args[5]))
     try:
         return subprocess.check_output(args, text=True, stderr=subprocess.STDOUT, timeout=5,
                                        env={'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'DOCKER_HOST': 'unix:///var/run/docker.sock'})
@@ -373,13 +623,13 @@ def attest(root, peer, identity):
     ruleset = json.loads(run('/usr/sbin/nft', '-j', 'list', 'ruleset'))
     if any('flowtable' in entry for entry in ruleset['nftables']):
         raise ValueError('Flow offload is unsupported by packet deadline enforcement')
-    program = json.loads(run('/usr/sbin/bpftool', '-j', 'prog', 'show', 'pinned', str(root / 'guard')))
+    program = kernel_program(root)
     if isinstance(program, list):
         program = program[0]
     if program['id'] != identity or program['type'] != 'sched_cls':
         raise ValueError('Deadline program identity changed')
     for direction in ('ingress', 'egress'):
-        filters = json.loads(run('/sbin/tc', '-j', 'filter', 'show', 'dev', peer['device'], direction))
+        filters = kernel_filters(peer['index'], direction)
         attest_filters(filters, identity)
 
 
@@ -522,7 +772,7 @@ def execute(request):
         for direction in ('ingress', 'egress'):
             run('/sbin/tc', 'filter', 'add', 'dev', peer['device'], direction, 'pref', '1',
                 'handle', '1', 'bpf', 'da', 'pinned', str(root / 'guard'), 'skip_hw')
-        program = json.loads(run('/usr/sbin/bpftool', '-j', 'prog', 'show', 'pinned', str(root / 'guard')))
+        program = kernel_program(root)
         if isinstance(program, list):
             program = program[0]
         state = {'binding': binding, 'peer': peer, 'bootId': clocks()['bootId'],

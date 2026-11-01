@@ -966,6 +966,8 @@ try {
   };
   await directProbe('before-admission', false);
   await directProbe('admitted', true);
+  const kernelComparison = await exec('/usr/bin/python3', ['/probe/kernel-read-proof.py']);
+  await writeFile('/evidence/kernel-read-comparison.json', kernelComparison.stdout);
   // Stopping renewal must close direct access while the independent relay stays usable.
   await delay(1200);
   await directProbe('lease-expired', false);

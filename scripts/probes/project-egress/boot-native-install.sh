@@ -7,7 +7,8 @@ set -euo pipefail
 assets=/opt/verity-fixture
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install -y --no-install-recommends nftables iptables conntrack iproute2 util-linux acl python3 libatomic1 libstdc++6
+apt-get install -y --no-install-recommends nftables libnftables1 iptables conntrack iproute2 util-linux acl python3 libatomic1 libstdc++6
+python3 -c "import ctypes, os; lib=ctypes.CDLL('libnftables.so.1'); assert hasattr(lib, 'nft_ctx_buffer_output') and hasattr(os, 'setns')"
 cp -a "$assets/runtime/bin/." /usr/local/bin/
 cp -a "$assets/runtime/opt/." /opt/
 install -m 0755 "$assets/node" /usr/bin/node
