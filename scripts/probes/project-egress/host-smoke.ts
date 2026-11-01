@@ -1053,7 +1053,19 @@ try {
   await revokeAndMeasure(() => lifecycle.retire(identity), 'retire');
   await assert.rejects(lifecycle.start(identity, 'sandbox', containerId));
   await assert.rejects(startRelay({ ...context, resumeExisting: true }));
-  assert.ok((await client('negative', relayAddress, 8080)).includes('transport-denied'));
+  // Retire stops both endpoints. An exec failure is not a network-denial receipt.
+  const retired = Object.fromEntries(
+    await Promise.all(
+      Object.entries({ sandbox: containerId, relay: relayId }).map(async ([role, id]) => {
+        const running: unknown = JSON.parse(
+          await docker('inspect', '--format', '{{json .State.Running}}', id),
+        );
+        assert.equal(running, false, `retired ${role} must remain stopped after refused restart`);
+        return [role, { id, running }] as const;
+      }),
+    ),
+  );
+  await writeFile('/evidence/retired-containers.json', JSON.stringify(retired));
   results.push('retired generation and its relay cannot restart or regain transport');
   const nextIdentity = { ...identity, containerGeneration: 'gen2' };
   const nextBinding = await lifecycle.create(nextIdentity);
