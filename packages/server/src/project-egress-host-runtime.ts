@@ -1,4 +1,4 @@
-import { readProjectEgressDocker } from './project-egress-docker-read.js';
+import { readEgressDocker } from './project-egress-docker-read.js';
 import { inspectEgressRelay, type EgressRelayPolicy } from './project-egress-relay-policy.js';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -19,9 +19,9 @@ const dockerOptions = {
   env: { PATH: '/usr/sbin:/usr/bin:/sbin:/bin', DOCKER_HOST: 'unix:///var/run/docker.sock' },
 };
 export async function projectEgressHostDocker(...args: string[]): Promise<string> {
-  const inspection = await readProjectEgressDocker(args);
-  if (inspection !== undefined) return inspection;
-  return (await exec('/usr/bin/docker', args, dockerOptions)).stdout;
+  if (args[0] === 'container' && (args[1] === 'start' || args[1] === 'stop'))
+    return (await exec('/usr/bin/docker', args, dockerOptions)).stdout;
+  return readEgressDocker(...args);
 }
 const network = z
   .array(
@@ -103,10 +103,11 @@ export function verifyEgressHostContainer(
 export async function inspectEgressHostNetwork(
   binding: ProjectEgressNetworkBinding,
   allowed: readonly string[],
+  docker = projectEgressHostDocker,
 ): Promise<void> {
   verifyEgressHostNetwork(
     binding,
-    JSON.parse(await projectEgressHostDocker('network', 'inspect', binding.networkId)),
+    JSON.parse(await docker('network', 'inspect', binding.networkId)),
     allowed,
   );
   const device = await lstat(`/sys/class/net/${binding.bridge}`);
@@ -142,19 +143,17 @@ export async function inspectEgressHostContainer(
   role: 'sandbox' | 'relay',
   relayPolicy?: EgressRelayPolicy,
   restoring = false,
+  docker = projectEgressHostDocker,
 ): Promise<void> {
-  verifyEgressHostRuntime(
-    JSON.parse(await projectEgressHostDocker('info', '--format', '{{json .Runtimes}}')),
-    role,
-  );
+  verifyEgressHostRuntime(JSON.parse(await docker('info', '--format', '{{json .Runtimes}}')), role);
   if (role === 'relay') {
     if (!relayPolicy) throw new Error('Relay host policy is not configured');
-    await inspectEgressRelay(binding, id, relayPolicy, projectEgressHostDocker, restoring);
+    await inspectEgressRelay(binding, id, relayPolicy, docker, restoring);
   }
   verifyEgressHostContainer(
     binding,
     id,
-    JSON.parse(await projectEgressHostDocker('container', 'inspect', id)),
+    JSON.parse(await docker('container', 'inspect', id)),
     role,
   );
 }

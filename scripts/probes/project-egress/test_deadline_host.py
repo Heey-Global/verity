@@ -2,12 +2,13 @@
 import importlib.util
 import ctypes
 import json
+import io
 import os
 import struct
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 source = Path(__file__).resolve().parents[3] / 'deploy/egress/project-egress-deadline.py'
 spec = importlib.util.spec_from_file_location('deadline_host', source)
@@ -52,6 +53,8 @@ class DeadlineHostTests(unittest.TestCase):
             {'set': {'name': name}} for name in host.expiry_set_names(None)]})))
         self.write = self.enter(patch.object(host, 'write_deadline'))
         self.relay_write = self.enter(patch.object(host, 'write_relay'))
+        self.refresh = self.enter(patch.object(host, 'neighbor_refresh', return_value=[b'probe']))
+        self.send = self.enter(patch.object(host, 'send_neighbor_refresh'))
 
     def arm(self):
         return host.execute({'operation': 'arm', 'binding': self.binding, 'lease': self.lease})
@@ -59,6 +62,31 @@ class DeadlineHostTests(unittest.TestCase):
     def test_delayed_commit_preserves_expired_absolute_value(self):
         self.assertEqual(self.arm()['bootDeadlineNs'], '1000000020')
         self.assertEqual([c.args[-1] for c in self.write.call_args_list], [0, 1000000020])
+
+    def test_neighbor_refresh_follows_the_armed_kernel_deadline_on_the_bound_veth(self):
+        order = []
+        self.write.side_effect = lambda *args: order.append(('write', args[-1]))
+        self.send.side_effect = lambda *args: order.append(('send',) + args)
+        self.arm()
+        self.assertEqual(order, [('write', 0), ('write', 1000000020), ('send', 'vtest', [b'probe'])])
+
+    def test_empty_neighbor_refresh_opens_no_packet_socket(self):
+        self.refresh.return_value = []
+        self.arm()
+        self.send.assert_not_called()
+
+    def test_neighbor_refresh_failure_keeps_the_decided_lease(self):
+        self.send.side_effect = OSError('transmit failed')
+        with patch.object(host.sys, 'stderr', io.StringIO()):
+            self.assertEqual(self.arm()['state'], 'armed')
+        self.assertEqual(self.write.call_args.args[-1], 1000000020)
+
+    def test_invalid_refresh_facts_fail_before_any_kernel_admission(self):
+        self.refresh.side_effect = ValueError('Invalid inspected neighbor gateway')
+        with self.assertRaisesRegex(ValueError, 'neighbor gateway'):
+            self.arm()
+        self.assertEqual([c.args[-1] for c in self.write.call_args_list], [0])
+        self.send.assert_not_called()
 
     def test_replayed_admission_starts_denied_and_cannot_rearm(self):
         self.arm()
@@ -339,17 +367,18 @@ class RelayIdentityTests(unittest.TestCase):
                         'GlobalIPv6Address': 'fd42:feed::2'}
         self.relay = {'MacAddress': '02:06:07:08:09:0a', 'IPAddress': '172.30.106.3',
                       'GlobalIPv6Address': 'fd42:feed::3'}
-        self.network = {'Containers': {identity: {'MacAddress': net['MacAddress'],
+        self.network = {'Id': self.binding['networkId'], 'Containers': {identity: {'MacAddress': net['MacAddress'],
                             'IPv4Address': net['IPAddress'] + '/24'}
                         for identity, net in ((self.binding['containerId'], self.sandbox),
                                               (self.registration['containerId'], self.relay))}}
         def daemon(*args):
             if args[1] == 'network':
                 return json.dumps([self.network])
-            net = self.sandbox if args[-1] == self.binding['containerId'] else self.relay
-            return json.dumps([{'NetworkSettings': {'Networks': {'project': net}}}])
+            return json.dumps([{'Id': identity, 'NetworkSettings': {'Networks': {'project':
+                self.sandbox if identity == self.binding['containerId'] else self.relay}}}
+                for identity in args[3:]])
         self.enterContext(patch.object(host, 'run', side_effect=daemon))
-        self.inspector = self.enterContext(patch.object(host, 'endpoint', side_effect=lambda binding:
+        self.inspector = self.enterContext(patch.object(host, 'endpoint', side_effect=lambda binding, facts=None:
             self.peer if binding['containerId'] == self.binding['containerId'] else {'device': 'vrelay', 'index': 6}))
 
     def policy(self):
@@ -400,6 +429,164 @@ class RelayIdentityTests(unittest.TestCase):
             self.policy()
 
 
+class InspectionFactsTests(unittest.TestCase):
+    def setUp(self):
+        self.binding = dict(zip(host.BINDING_FIELDS, ['project', 'generation', 'a' * 64,
+                            'b' * 64, 'c' * 64, 've-test', '172.30.106.2', 'fd42:feed::2']))
+        self.registration = {'containerId': 'd' * 64, 'endpointId': 'e' * 64, 'codex': False}
+        self.containers = []
+        self.links = []
+        for index, identity, endpoint, address, address6, mac in (
+            (5, self.binding['containerId'], self.binding['endpointId'], '172.30.106.2', 'fd42:feed::2', '02:01:02:03:04:05'),
+            (6, self.registration['containerId'], self.registration['endpointId'], '172.30.106.3', 'fd42:feed::3', '02:06:07:08:09:0a')):
+            self.containers.append({'Id': identity, 'State': {'Running': True}, 'NetworkSettings': {
+                'SandboxKey': '/var/run/docker/netns/ns' + str(index), 'Networks': {'project': {
+                    'NetworkID': self.binding['networkId'], 'EndpointID': endpoint, 'IPAddress': address,
+                    'GlobalIPv6Address': address6, 'MacAddress': mac}}}})
+            self.links.append({'ifindex': index, 'ifname': 'veth' + str(index), 'linkinfo': {'info_kind': 'veth'}})
+        self.network = {'Id': self.binding['networkId'], 'Driver': 'bridge',
+            'Options': {'com.docker.network.bridge.name': 've-test'},
+            'Containers': {container['Id']: {'MacAddress': net['MacAddress'], 'IPv4Address': net['IPAddress'] + '/24'}
+                for container in self.containers for net in container['NetworkSettings']['Networks'].values()}}
+        def run(*args):
+            if args[0] == '/usr/bin/docker':
+                if args[1] == 'network': return json.dumps([self.network])
+                return json.dumps([container for container in self.containers if container['Id'] in args[3:]])
+            if args[0] == '/sbin/ip': return json.dumps(self.links)
+            if args[0] == '/usr/bin/nsenter':
+                index = int(args[1][-1])
+                return json.dumps([{'ifname': 'eth0', 'ifindex': index + 10, 'link_index': index,
+                    'address': self.containers[index - 5]['NetworkSettings']['Networks']['project']['MacAddress']}])
+            raise AssertionError(args)
+        self.run = self.enterContext(patch.object(host, 'run', side_effect=run))
+        self.enterContext(patch.object(Path, 'read_text', lambda path: str(int(path.parent.name[4:]) + 10)))
+        self.enterContext(patch.object(Path, 'resolve', lambda path: Path('/sys/class/net/ve-test')))
+
+    def test_one_phase_batches_exact_containers_and_reuses_each_inventory(self):
+        facts = host.InspectionFacts(self.binding, self.registration['containerId'])
+        peer = host.endpoint(self.binding, facts)
+        host.relay_policy(self.binding, peer, self.registration, facts)
+        self.assertEqual(peer, {'device': 'veth5', 'index': 5})
+        calls = [call.args for call in self.run.call_args_list]
+        self.assertEqual(calls.count(('/usr/bin/docker', 'container', 'inspect', self.binding['containerId'], self.registration['containerId'])), 1)
+        self.assertEqual(calls.count(('/usr/bin/docker', 'network', 'inspect', self.binding['networkId'])), 1)
+        self.assertEqual(calls.count(('/sbin/ip', '-j', '-d', 'link', 'show')), 1)
+        self.assertEqual(sum(call[0] == '/usr/bin/nsenter' for call in calls), 2)
+
+    def test_next_phase_rejects_changed_endpoint_and_does_not_reuse_facts(self):
+        peer = host.endpoint(self.binding)
+        host.relay_policy(self.binding, peer, self.registration)
+        self.containers[1]['NetworkSettings']['Networks']['project']['EndpointID'] = 'f' * 64
+        with self.assertRaisesRegex(ValueError, 'attachment changed'):
+            host.relay_policy(self.binding, peer, self.registration)
+
+    def test_next_phase_rejects_changed_host_inventory(self):
+        peer = host.endpoint(self.binding)
+        host.relay_policy(self.binding, peer, self.registration)
+        self.links[1]['linkinfo']['info_kind'] = 'dummy'
+        with self.assertRaisesRegex(ValueError, 'software veth'):
+            host.relay_policy(self.binding, peer, self.registration)
+
+    def test_aliased_missing_or_duplicate_batch_identity_is_rejected(self):
+        for identities in ([self.containers[0]], [self.containers[0], self.containers[0]],
+                           [{**self.containers[0], 'Id': 'f' * 64}, self.containers[1]]):
+            with self.subTest(ids=[value['Id'] for value in identities]):
+                with patch.object(host, 'run', return_value=json.dumps(identities)):
+                    with self.assertRaisesRegex(ValueError, 'container identity mismatch'):
+                        host.InspectionFacts(self.binding, self.registration['containerId']).container(self.binding['containerId'])
+
+    def test_phase_rejects_foreign_container_and_network_queries(self):
+        facts = host.InspectionFacts(self.binding, self.registration['containerId'])
+        with self.assertRaisesRegex(ValueError, 'outside inspected phase'):
+            facts.container('f' * 64)
+        with self.assertRaisesRegex(ValueError, 'outside inspected phase'):
+            facts.network('f' * 64)
+        self.run.assert_not_called()
+
+
+class NeighborRefreshTests(unittest.TestCase):
+    def setUp(self):
+        self.binding = dict(zip(host.BINDING_FIELDS, ['project', 'generation', 'a' * 64,
+                            'b' * 64, 'c' * 64, 've-test', '172.30.106.2', 'fd42:feed::2']))
+        self.net = {'MacAddress': '02:01:02:03:04:05', 'IPAddress': '172.30.106.2',
+                    'GlobalIPv6Address': 'fd42:feed::2', 'Gateway': '172.30.106.1', 'IPPrefixLen': 24,
+                    'IPv6Gateway': 'fd42:feed::1', 'GlobalIPv6PrefixLen': 64}
+        self.links = [{'ifindex': 3, 'ifname': 've-test', 'address': '02:aa:bb:cc:dd:ee'},
+                      {'ifindex': 4, 'ifname': 'other', 'address': '02:11:11:11:11:11'}]
+        self.facts = Mock()
+        self.facts.container.return_value = {'NetworkSettings': {'Networks': {'project': self.net}}}
+        self.facts.host_links.return_value = self.links
+
+    def frames(self):
+        return host.neighbor_refresh(self.binding, self.facts)
+
+    def test_arp_probe_carries_gateway_link_address_to_the_sandbox_only(self):
+        frame = self.frames()[0]
+        self.facts.container.assert_called_once_with('a' * 64)
+        self.assertEqual(len(frame), 60)
+        self.assertEqual(frame[:14], bytes.fromhex('020102030405' '02aabbccddee' '0806'))
+        self.assertEqual(frame[14:42], bytes.fromhex('0001080006040001' '02aabbccddee' 'ac1e6a01'
+                                                     '000000000000' 'ac1e6a02'))
+
+    def test_ipv6_solicitation_is_valid_and_carries_source_link_address(self):
+        import ipaddress
+        frame = self.frames()[1]
+        self.assertEqual(frame[:14], bytes.fromhex('020102030405' '02aabbccddee' '86dd'))
+        header, icmp = frame[14:54], frame[54:]
+        self.assertEqual(header[:8], bytes.fromhex('60000000' '0020' '3a' 'ff'))
+        self.assertEqual(header[8:24], ipaddress.IPv6Address('fd42:feed::1').packed)
+        self.assertEqual(header[24:40], ipaddress.IPv6Address('fd42:feed::2').packed)
+        self.assertEqual((icmp[0], icmp[1]), (135, 0))
+        self.assertEqual(icmp[8:24], ipaddress.IPv6Address('fd42:feed::2').packed)
+        self.assertEqual(icmp[24:], bytes.fromhex('0101' '02aabbccddee'))
+        data = header[8:40] + struct.pack('!I3xB', len(icmp), 58) + icmp
+        total = sum(struct.unpack(f'!{len(data) // 2}H', data))
+        while total >> 16:
+            total = (total & 0xffff) + (total >> 16)
+        self.assertEqual(total, 0xffff)
+
+    def test_family_without_inspected_gateway_is_skipped(self):
+        self.net['IPv6Gateway'] = ''
+        self.assertEqual([frame[12:14] for frame in self.frames()], [b'\x08\x06'])
+
+    def test_inconsistent_or_ambiguous_facts_are_rejected(self):
+        for field, value in (('Gateway', '10.0.0.1'), ('Gateway', '172.30.106.2'),
+                             ('IPv6Gateway', 'ff02::1'), ('MacAddress', '01:00:00:00:00:01'),
+                             ('MacAddress', '00:00:00:00:00:00')):
+            with self.subTest(field=field, value=value), patch.dict(self.net, {field: value}):
+                with self.assertRaises(ValueError):
+                    self.frames()
+        for field, value in (('IPPrefixLen', None), ('IPAddress', '172.30.106.9')):
+            with self.subTest(field=field), patch.dict(self.net, {field: value}):
+                with self.assertRaises(ValueError):
+                    self.frames()
+        with patch.dict(self.net):
+            del self.net['MacAddress']
+            with self.assertRaisesRegex(ValueError, 'Malformed'):
+                self.frames()
+        networks = self.facts.container.return_value['NetworkSettings']['Networks']
+        networks['other'] = dict(self.net)
+        with self.assertRaisesRegex(ValueError, 'attachment changed'):
+            self.frames()
+        del networks['other']
+        self.links[1]['ifname'] = 've-test'
+        with self.assertRaisesRegex(ValueError, 'inspected bridge'):
+            self.frames()
+
+    def test_ipv6_only_attachment_yields_only_a_solicitation(self):
+        self.binding['ipv4'] = ''
+        self.net['IPAddress'] = ''
+        self.assertEqual([frame[12:14] for frame in self.frames()], [b'\x86\xdd'])
+
+    def test_transmission_is_bound_to_the_given_device(self):
+        with patch.object(host.socket, 'socket') as factory:
+            host.send_neighbor_refresh('vtest', [b'one', b'two'])
+        factory.assert_called_once_with(host.socket.AF_PACKET, host.socket.SOCK_RAW, 0)
+        channel = factory.return_value.__enter__.return_value
+        channel.bind.assert_called_once_with(('vtest', 0))
+        self.assertEqual([c.args[0] for c in channel.send.call_args_list], [b'one', b'two'])
+
+
 class RelayMapWriterTests(unittest.TestCase):
     def test_enabled_and_disabled_map_values_use_the_kernel_layout(self):
         writes = []
@@ -419,40 +606,6 @@ class RelayMapWriterTests(unittest.TestCase):
         self.assertEqual([c.args for c in close.call_args_list], [(42,), (42,)])
 
 
-
-
-class ConcurrentInspectionTests(unittest.TestCase):
-    def test_read_commands_overlap_without_reordering_results(self):
-        from threading import Barrier
-        started = Barrier(2)
-        def read(command):
-            started.wait(timeout=2)
-            return command
-        with patch.object(host, 'run', side_effect=read):
-            self.assertEqual(host.read_commands(('first',), ('second',)), ['first', 'second'])
-
-    def test_read_failure_joins_other_reads_before_returning(self):
-        from threading import Event
-        from concurrent.futures import ThreadPoolExecutor
-        started, release, finished = Event(), Event(), Event()
-        def read(command):
-            if command == 'fail':
-                self.assertTrue(started.wait(timeout=2))
-                raise ValueError('read failed')
-            started.set()
-            self.assertTrue(release.wait(timeout=2))
-            finished.set()
-            return command
-        with patch.object(host, 'run', side_effect=read), ThreadPoolExecutor(max_workers=1) as runner:
-            result = runner.submit(host.read_commands, ('fail',), ('pending',))
-            try:
-                self.assertTrue(started.wait(timeout=2))
-                self.assertFalse(result.done())
-            finally:
-                release.set()
-            with self.assertRaisesRegex(ValueError, 'read failed'):
-                result.result(timeout=2)
-            self.assertTrue(finished.is_set())
 
 
 if __name__ == '__main__':

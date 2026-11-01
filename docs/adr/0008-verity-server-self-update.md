@@ -1450,3 +1450,79 @@ the builder component (Amendment 4), or without systemd, need one installer run,
 
 **Limits.** Running containers keep the runtime they started with. Rolling back re-registers the
 previous release, whose directory is still installed.
+
+## Amendment 6 — runtime service renewal is independent of builder admission
+
+The archive transition exposed a coupling in Amendment 5: the builder bridge checks
+build admission before executing its bundle installer, so an unknown builder client
+can prevent replacement of the runtime service even though no builder change is
+needed. Keep that admission fence. Runtime service renewal has its own bounded path.
+
+The installed Updater runs the pinned cosign verifier from the installed Server image
+in a separate container with outbound networking, no host mounts, no socket, no
+credentials, a read-only root filesystem and a daemon-owned timeout. Only a successful
+verification of the exact official target digest and release workflow identity permits
+the host-writing stage. The target cannot establish its own trust. The ordinary
+offline Updater image check is not a substitute for this signature verification.
+
+The target digest then runs a runtime-only installer with networking disabled,
+explicit `runc`, dropped capabilities with only the required filesystem capabilities,
+a read-only root filesystem, fixed resource limits and a daemon-owned timeout. Its
+host mounts are the runtime request/private transaction directories, the runtime
+libexec directory, systemd unit/manager directories, and the installer **lock file**.
+Installer credentials, project data, the Docker data root, and the host root are not
+mounted. Host PID visibility is needed for the systemd manager's peer credentials,
+as in backup provisioning. No blanket privileged mode or Docker socket is needed
+inside either stage. This explicitly supersedes Amendment 2's rejection of a bounded
+host helper; it does not grant a general host command API.
+
+`deploy/host/install-runtime-service.sh` is shared by the installer and renewal helper.
+It serializes with runtime registration through the private runtime lock; renewal
+also holds the existing installer lock. It installs only the runtime script and its
+path/service units, preserving builder state. A durable checkpoint retains original
+files, absence, permissions, agent metadata and watcher state before publication.
+Interrupted installation restores that checkpoint before a retry takes another
+backup. Capabilities and a deployment/update/digest-bound receipt are published last.
+Failure to verify restoration retains the checkpoint and reports recovery required.
+A service renewal that committed successfully remains installed if later runtime
+registration or Server activation fails: this service retains the version-1 protocol.
+
+`org.verity.host-runtime-service` declares a service revision, renewal protocol and
+required feature names separately from the existing runtime pin label. `agent.json`
+advertises installed capabilities and script hash. Unknown required capabilities
+cause one renewal attempt and a fresh capability check, never silent acceptance.
+The host service still downloads and verifies runtime artifacts, preserves old
+versioned directories and unrelated Docker configuration, validates the merged file,
+and reloads Docker. It never restarts Docker, containerd, builders or projects. Its
+configuration checkpoint now survives process death and rollback verifies the previous
+live registrations. A restart-only transition fails with recovery guidance.
+
+Helper names and ownership labels bind each stage to deployment, operation and digest.
+Recovery adopts only the exact authorized container configuration. A disconnected
+Updater leaves daemon-owned work running and reconnects on resume. A separate durable
+host-preparation sidecar and optional authenticated status route preserve the closed
+journal/operation formats consumed by old Servers. The normal Update action covers
+this bounded runtime preparation. The app distinguishes restored state from recovery
+that could not be verified and does not promise that a failed update made no changes.
+
+### Delivery and qualification gates
+
+An installed old Updater performs preparation before replacing itself. Putting this
+implementation only in an archive-requiring target therefore does **not** recover a
+host already blocked on that archive requirement. The schema-bridge recovery API is
+not a generic runtime transition mechanism. No runtime requirement or gVisor pin is
+weakened by this amendment.
+
+Before rollout, prove an ordinary signed compatibility release can preserve the old
+Server/runtime contract while delivering this Updater, followed by the intended
+successor. Retaining an older runtime temporarily requires explicit release/security
+approval; implementation approval does not authorize publishing that release. If no
+acceptable compatibility release exists, a separately authorized updater recovery
+channel is required. Do not claim existing blocked hosts are recovered until that
+actual old-Updater transition is exercised.
+
+Qualify in disposable systemd VMs on both supported architectures and supported Docker
+engines, with existing `runc` and old `runsc` containers alive throughout renewal,
+registration and rollback fault injection. Fake-host tests establish transaction and
+message behavior, not running-container continuity on a real engine. Neither a live
+host mutation nor release publication is part of implementing this amendment.

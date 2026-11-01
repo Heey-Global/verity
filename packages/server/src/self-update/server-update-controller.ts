@@ -11,6 +11,7 @@ import {
   readUpdaterHandoff,
   readUpdaterAgentSeed,
   readUpdaterAttempt,
+  readUpdaterHostPreparation,
   readUpdaterOperation,
   readUpdaterStandby,
   requestUpdaterOperation,
@@ -81,6 +82,9 @@ export async function createServerUpdateController(
     },
     async setChannel(value) {
       return updaterUpdateChannel(await channel(), value);
+    },
+    async readHostPreparation() {
+      return readUpdaterHostPreparation(await channel()).catch(() => null);
     },
     async readOperation() {
       return readUpdaterOperation(await channel());

@@ -15,8 +15,19 @@ binding = json.loads(sys.argv[1])
 identity = host.binding_key(binding)
 state = json.loads((host.STATE / (identity + '.json')).read_text())
 assert state['binding'] == binding
-assert host.endpoint(binding) == state['peer']
-host.attest(host.PINS / identity, state['peer'], state['program'])
+containers = None
+if sys.argv[2:] == ['--containment']:
+    ids = [binding['containerId'], state['relayRegistration']['containerId']]
+    containers = [json.loads(host.docker_inspect('container', value))[0] for value in ids]
+    assert [row['Id'] for row in containers] == ids
+    assert host.kernel_program(host.PINS / identity)['id'] == state['program']
+    if all(row['State']['Running'] for row in containers):
+        assert host.endpoint(binding) == state['peer']
+        host.attest(host.PINS / identity, state['peer'], state['program'])
+else:
+    assert not sys.argv[2:]
+    assert host.endpoint(binding) == state['peer']
+    host.attest(host.PINS / identity, state['peer'], state['program'])
 
 
 def read(name, size):
@@ -38,7 +49,7 @@ rows = [struct.unpack_from('<QQQQ', data, i * 32)
 deadline, index, reserved = struct.unpack('<QII', read('deadline', 16))
 assert reserved == 0 and index == state['peer']['index']
 print(json.dumps({'identity': identity, 'state': state, 'clocks': host.clocks(),
-                  'deadline_ns': str(deadline), 'accepted': sum(v[0] for v in rows),
+                  'containers': containers, 'deadline_ns': str(deadline), 'accepted': sum(v[0] for v in rows),
                   'denied': sum(v[1] for v in rows),
                   'last_accepted_boot_ns': str(max(v[2] for v in rows)),
                   'last_denied_boot_ns': str(max(v[3] for v in rows))}))

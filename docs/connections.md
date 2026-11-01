@@ -211,3 +211,49 @@ merge support permanently.
 
 Acceptance against a live instance remains necessary. Git LFS and signed
 bootstrap commits are separate follow-ups.
+
+## HTTP MCP OAuth setup
+
+In Settings, Connections, MCP, enter the remote MCP server's public HTTPS URL and
+turn on OAuth. **Detect OAuth settings** reads the server's protected-resource
+metadata and its authorization server's OAuth or OpenID metadata. Verity can
+register a client when the provider offers Dynamic Client Registration. Otherwise,
+enter the client ID and optional secret from your own OAuth application. Advanced
+settings retain manual endpoints, scopes and token authentication methods. Scopes
+are sent unchanged; use the syntax required by the provider.
+
+The callback depends on where you run Verity:
+
+- Native app: `https://verity.build/mcp/oauth/callback`. iOS uses a Universal Link;
+  the website can also return to the registered Verity app scheme.
+- Browser: `/app/mcp/oauth/callback` on the exact origin where Verity is open. The
+  sign-in popup returns its result only to its originating Verity window. Allow
+  popups and use HTTPS; HTTP is supported only for localhost development.
+
+The form displays a copyable callback URL. When configuring your own OAuth client,
+register that exact URL with the provider. Automatic registration includes the
+native callback and the HTTPS web callback derived from the server's trusted
+browser origin. If you change the web hostname later, update your provider's
+registered callbacks or recreate the automatically registered connection.
+
+A Tailscale hostname or private address for the Verity server does not need to be
+reachable by the OAuth provider: your device follows the redirect, then contacts
+your server. Your device must still be able to reach Verity, and your server must
+be able to reach the public OAuth and MCP endpoints. Browser OAuth requires an
+HTTPS hostname accepted by the provider; a private HTTP IP address is insufficient.
+
+OAuth state and PKCE are bound to a user, connection and exact callback on your
+Verity server. Access and refresh tokens stay encrypted on that server. Pending
+sign-ins expire after ten minutes and do not survive a server or app restart;
+choose **Connect OAuth** again rather than reusing an old code. Missing or revoked
+OAuth authority returns an actionable reconnect error to sessions.
+
+### Manual acceptance checks
+
+Automated tests cover discovery, registration, callback validation, token
+persistence and proxy errors. Before release, also verify the complete flow with
+a real provider on an iPad and in a browser using a Tailscale HTTPS hostname:
+complete consent, cancel and retry, reconnect an account, and return after an app
+or server restart. Confirm that the connection becomes Authorized and a session
+can call an enabled MCP tool. Repeat a browser sign-in with popups blocked and
+check that Verity explains how to proceed.

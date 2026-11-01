@@ -50,6 +50,8 @@ export interface ProjectFenceDependencies {
   /** Must commit within 1000 ms of invocation or prevent the transaction entirely. */
   apply(script: string): Promise<void>;
   now?: () => number;
+  /** Disposable timing evidence only; observations never select authorization. */
+  observe?: (stage: string, durationMs: number) => void;
 }
 const LEASE_MS = 1000;
 const APPLY_BUDGET_MS = 1000;
@@ -368,6 +370,12 @@ export class ProjectEgressFence {
         snapshot.grants.length > 1000
       )
         throw new Error('Stale or invalid project fence policy');
+      let observed = performance.now();
+      const observe = (stage: string) => {
+        const now = performance.now();
+        this.deps.observe?.(stage, now - observed);
+        observed = now;
+      };
       // Capture before inspection, classification, DNS or either executor can pause.
       let admission: ProjectDeadlineLease;
       let capturedRealNs: bigint;
@@ -412,13 +420,16 @@ export class ProjectEgressFence {
         await this.deny(current.binding);
         throw error;
       }
+      observe('lease-capture');
       // Close old access before inspecting or resolving. A failing refresh cannot
       // keep its previous grants alive; kernel timeouts also bound a killed process.
       if (!continuity) await this.deny(current.binding, admission);
+      observe('prior-denial');
       current.revision = snapshot.revision;
       await this.verify(snapshot.binding);
       if (!(await this.deps.policyCurrent(snapshot)))
         throw new Error('Project fence authority changed');
+      observe('initial-inspection-policy');
       const leases: Lease[] = [];
       // Never reconsider excluded grants after an asynchronous wall-clock rollback.
       for (const grant of authority) {
@@ -473,10 +484,12 @@ export class ProjectEgressFence {
         if (tupleDeadline < BigInt(admission.bootDeadlineNs))
           admission = Object.freeze({ ...admission, bootDeadlineNs: tupleDeadline.toString() });
       }
+      observe('resolution-classification');
       // Resolution may yield while Docker replaces an attachment. Recheck before admission.
       await this.verify(snapshot.binding);
       if (!(await this.deps.policyCurrent(snapshot)))
         throw new Error('Project fence authority changed');
+      observe('final-inspection-policy');
       await this.deps.apply(
         projectFenceRules(
           snapshot.binding,
@@ -488,21 +501,27 @@ export class ProjectEgressFence {
           continuity?.flowLabel ?? admission.nonce,
         ),
       );
+      observe('nft-commit');
       try {
         // A lifecycle change can arrive while the kernel transaction is pending.
         // Do not arm its TC guard after that transaction lost its authority.
         if (!(await this.deps.policyCurrent(snapshot)))
           throw new Error('Project fence authority changed');
         if (leases.length) {
-          if (continuity)
-            await this.deps.deadline.renew!(
-              snapshot.binding,
-              admission,
-              continuity.lease.bootDeadlineNs,
-            );
-          else await this.deps.deadline.arm(snapshot.binding, admission);
+          try {
+            if (continuity)
+              await this.deps.deadline.renew!(
+                snapshot.binding,
+                admission,
+                continuity.lease.bootDeadlineNs,
+              );
+            else await this.deps.deadline.arm(snapshot.binding, admission);
+          } finally {
+            observe('kernel-admission');
+          }
           if (!(await this.deps.policyCurrent(snapshot)))
             throw new Error('Project fence authority changed');
+          observe('committed-policy');
           current.continuity = {
             lease: admission,
             flowLabel: continuity?.flowLabel ?? admission.nonce,
