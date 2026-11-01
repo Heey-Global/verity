@@ -1206,8 +1206,17 @@ try {
   // retained-stream revocation can only be measured after fresh starts.
   await recovered.restore();
   await recovered.revalidate();
-  await recovered.execute({ operation: 'start', ...identity, role: 'sandbox', containerId });
-  await recovered.execute({ operation: 'start', ...identity, role: 'relay', containerId: relayId });
+  for (const [role, id] of [
+    ['sandbox', containerId],
+    ['relay', relayId],
+  ] as const)
+    await recovered.execute({
+      operation: 'start',
+      projectId: identity.projectId,
+      generation: identity.containerGeneration,
+      role,
+      containerId: id,
+    } satisfies ProjectEgressHostRequest);
   server = await listenProjectEgressHost({ directory, token, controller: recovered });
   await lifecycle.connect(identity);
   await revokeAndMeasure(() => recovered.restore(), 'controller-restore');
