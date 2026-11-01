@@ -16,6 +16,7 @@ export function createDeadlineChannel(
       ['/opt/verity-egress/project-egress-deadline.py', '--serve', String(process.pid)],
       {
         stdio: ['pipe', 'pipe', 'pipe'],
+        detached: true,
         env: { PATH: '/usr/sbin:/usr/bin:/sbin:/bin', TZ: 'UTC' },
       },
     ),
@@ -29,6 +30,7 @@ export function createDeadlineChannel(
   let pending:
     | {
         id: number;
+        validate(value: unknown): unknown;
         queuedAt: number;
         dispatchedAt: number;
         observe?: (timing: DeadlineChannelTiming) => void;
@@ -42,7 +44,13 @@ export function createDeadlineChannel(
   const close = (error = new Error('Host deadline channel closed')) => {
     failure ??= error;
     process.removeListener('exit', onExit);
-    child?.kill('SIGKILL');
+    if (child?.pid) {
+      try {
+        process.kill(-child.pid, 'SIGKILL');
+      } catch {
+        child.kill('SIGKILL');
+      }
+    } else child?.kill('SIGKILL');
     child?.stdin.destroy();
     child?.stdout.destroy();
     child?.stderr.destroy();
@@ -101,6 +109,10 @@ export function createDeadlineChannel(
           throw new Error('Invalid host deadline response');
         if ('error' in reply && typeof reply.error !== 'string')
           throw new Error('Invalid host deadline error');
+        const result =
+          'error' in reply
+            ? undefined
+            : pending.validate('result' in reply ? reply.result : undefined);
         const current = pending;
         if (timed)
           current.observe?.({
@@ -117,7 +129,7 @@ export function createDeadlineChannel(
           current.reject(
             new Error('Host packet deadline operation failed: ' + String(reply.error)),
           );
-        else current.resolve('result' in reply ? reply.result : undefined);
+        else current.resolve(result);
       } catch (error) {
         close(error instanceof Error ? error : new Error('Invalid host deadline response'));
       }
@@ -128,6 +140,7 @@ export function createDeadlineChannel(
     request: (
       input: unknown,
       observe?: (timing: DeadlineChannelTiming) => void,
+      validate: (value: unknown) => unknown = (value) => value,
     ): Promise<unknown> => {
       const queuedAt = performance.now();
       if (failure) return Promise.reject(failure);
@@ -140,6 +153,11 @@ export function createDeadlineChannel(
       const data = Buffer.from(JSON.stringify({ id, input }) + '\n');
       if (data.length > 65536) return Promise.reject(new Error('Oversized host deadline request'));
       queued++;
+      // Containment must not wait behind a full queue of individually slow operations.
+      const timer = setTimeout(
+        () => close(new Error('Host deadline operation timed out')),
+        timeoutMs,
+      );
       const operation = queue.then(() => {
         if (failure) throw failure;
         if (!child) {
@@ -155,21 +173,20 @@ export function createDeadlineChannel(
         return new Promise<unknown>((resolve, reject) => {
           pending = {
             id,
+            validate,
             queuedAt,
             dispatchedAt: performance.now(),
             ...(observe ? { observe } : {}),
             resolve,
             reject,
-            timer: setTimeout(
-              () => close(new Error('Host deadline operation timed out')),
-              timeoutMs,
-            ),
+            timer,
           };
           child!.stdin.write(data);
         });
       });
       queue = operation.catch(() => undefined);
       return operation.finally(() => {
+        clearTimeout(timer);
         queued--;
       });
     },

@@ -153,6 +153,26 @@ export function hostProjectDeadlineEnforcer(
             });
           }
         : undefined,
+      (value) => {
+        if (input.operation === 'clock') return clockSchema.parse(value);
+        const state =
+          input.operation === 'configure-relay'
+            ? 'relay-configured'
+            : input.operation === 'clear-relay'
+              ? 'relay-denied'
+              : ['arm', 'renew'].includes(input.operation)
+                ? 'armed'
+                : 'denied';
+        if (state === 'armed') {
+          const result = z
+            .strictObject({ state: z.literal('armed'), bootDeadlineNs: decimal })
+            .parse(value);
+          if (result.bootDeadlineNs !== (input.lease as ProjectDeadlineLease).bootDeadlineNs)
+            throw new Error('Host changed immutable packet deadline');
+          return result;
+        }
+        return z.strictObject({ state: z.literal(state) }).parse(value);
+      },
     );
   const denied = z.strictObject({ state: z.literal('denied') });
   return {

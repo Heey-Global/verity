@@ -10,12 +10,12 @@ const channels: ReturnType<typeof createDeadlineChannel>[] = [];
 afterEach(() => {
   for (const channel of channels.splice(0)) channel.close();
 });
-function fixture(body: string, timeout = 2000) {
+function fixture(body: string, timeout = 5000) {
   let launches = 0;
   let child: ChildProcessWithoutNullStreams | undefined;
   const channel = createDeadlineChannel(() => {
     launches++;
-    child = spawn('/usr/bin/python3', ['-u', '-c', body]);
+    child = spawn('/usr/bin/python3', ['-u', '-c', body], { detached: true });
     return child;
   }, timeout);
   channels.push(channel);
@@ -55,7 +55,7 @@ it('kills a hung helper at the operation budget and rejects queued work', async 
   const f = fixture('import time\ntime.sleep(10)', 100);
   const results = await Promise.allSettled([f.channel.request(1), f.channel.request(2)]);
   expect(results.every((r) => r.status === 'rejected')).toBe(true);
-  expect(f.child().killed).toBe(true);
+  await expect.poll(() => f.child().signalCode).toBe('SIGKILL');
   await expect(f.channel.request(3)).rejects.toThrow('timed out');
   expect(f.launches()).toBe(1);
 });
@@ -89,7 +89,7 @@ it('explicit close terminates the helper and rejects all future operations', asy
   const f = fixture(echo);
   await f.channel.request(1);
   f.channel.close();
-  expect(f.child().killed).toBe(true);
+  await expect.poll(() => f.child().signalCode).toBe('SIGKILL');
   await expect(f.channel.request(2)).rejects.toThrow('closed');
 });
 
@@ -123,4 +123,50 @@ it('rejects missing timing when required by the native evidence observer', async
     'Missing host deadline timing',
   );
   await expect(f.channel.request('clock')).rejects.toThrow('Missing host deadline timing');
+});
+
+it('terminates the process group during a blocked mutating subprocess', async () => {
+  const f = fixture(`import sys,subprocess,json,os
+f=json.loads(sys.stdin.readline())
+p=subprocess.Popen([sys.executable,'-c','import time; time.sleep(30)'])
+print(json.dumps({'id':f['id'],'result':p.pid}),flush=True)
+for line in sys.stdin: p.wait()
+`);
+  const pid = (await f.channel.request(1)) as number;
+  f.channel.close();
+  const { readFile } = await import('node:fs/promises');
+  await expect
+    .poll(async () => {
+      try {
+        return (await readFile('/proc/' + pid + '/stat', 'utf8')).split(' ')[2];
+      } catch {
+        return 'gone';
+      }
+    })
+    .toMatch(/^(Z|gone)$/u);
+});
+it('bounds time from enqueue even when earlier operations finish within their own budget', async () => {
+  const f = fixture(
+    `import sys,json,time
+for line in sys.stdin:
+ f=json.loads(line);time.sleep(.6);print(json.dumps({'id':f['id'],'result':True}),flush=True)
+`,
+    1800,
+  );
+  const values = await Promise.allSettled(
+    Array.from({ length: 5 }, (_, i) => f.channel.request(i)),
+  );
+  expect(values[0]!.status).toBe('fulfilled');
+  expect(values[4]!.status).toBe('rejected');
+  await expect(f.channel.request(6)).rejects.toThrow('timed out');
+});
+it('poisons the channel before queued operations on result validation failure', async () => {
+  const f = fixture(echo);
+  const first = f.channel.request('bad', undefined, () => {
+    throw new Error('immutable deadline changed');
+  });
+  const next = f.channel.request('queued');
+  await expect(first).rejects.toThrow('immutable deadline changed');
+  await expect(next).rejects.toThrow('immutable deadline changed');
+  await expect(f.channel.request('later')).rejects.toThrow('immutable deadline changed');
 });
