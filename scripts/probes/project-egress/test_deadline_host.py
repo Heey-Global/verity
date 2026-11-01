@@ -463,8 +463,6 @@ class RelayMapWriterTests(unittest.TestCase):
         self.assertEqual([c.args for c in close.call_args_list], [(42,), (42,)])
 
 
-if __name__ == '__main__':
-    unittest.main()
 
 
 class DockerInspectionTests(unittest.TestCase):
@@ -503,3 +501,7 @@ class DockerInspectionTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     host.docker_read('network', 'b' * 64)
                 connection.close.assert_called_once()
+
+
+if __name__ == '__main__':
+    unittest.main()
