@@ -106,3 +106,32 @@ describe('knowledge discovery context', () => {
     },
   );
 });
+
+it('refreshes the decision directory on fresh and resumed turns and reports unavailable storage', async () => {
+  const seen: string[] = [];
+  let directory = 'Decision record: retention-30 /knowledge/insights/decisions/retention.md';
+  const load = vi.fn(async () => directory);
+  const backend: Backend = {
+    run: async (opts) => {
+      seen.push(opts.appendSystemPrompt ?? '');
+      await opts.onSession?.('decision-thread');
+      return { sessionId: opts.storeSessionId, exitCode: 0, stderr: '', aborted: false };
+    },
+  };
+  const conductor = new Conductor({
+    store: ctx.store,
+    backend,
+    worktreeExists: async () => true,
+    projectDecisionDirectory: load,
+  });
+  await conductor.sendTurn('s', 'How long do we keep exports?');
+  directory = 'Decision record: retention-60 supersedes retention-30';
+  await conductor.sendTurn('s', 'What applies now?');
+  expect(seen[0]).toContain('retention-30 /knowledge');
+  expect(seen[1]).toContain(directory);
+  expect(seen[1]).not.toContain('retention-30 /knowledge');
+  load.mockRejectedValueOnce(new Error('Storage unavailable'));
+  await conductor.sendTurn('s', 'Check again');
+  expect(seen[2]).toContain('directory unavailable');
+  expect(load).toHaveBeenCalledTimes(3);
+});
