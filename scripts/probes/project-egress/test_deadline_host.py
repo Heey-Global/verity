@@ -419,8 +419,6 @@ class RelayMapWriterTests(unittest.TestCase):
         self.assertEqual([c.args for c in close.call_args_list], [(42,), (42,)])
 
 
-if __name__ == '__main__':
-    unittest.main()
 
 
 class ConcurrentInspectionTests(unittest.TestCase):
@@ -455,3 +453,7 @@ class ConcurrentInspectionTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'read failed'):
                 result.result(timeout=2)
             self.assertTrue(finished.is_set())
+
+
+if __name__ == '__main__':
+    unittest.main()
