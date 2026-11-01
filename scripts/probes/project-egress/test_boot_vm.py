@@ -89,6 +89,19 @@ class FullBundleTests(unittest.TestCase):
         import copy
         import json
         initial = RetainedTopologyTests().fixture()
+        import hashlib
+        binding = dict(zip(('projectId', 'generation', 'containerId', 'networkId', 'endpointId', 'bridge', 'ipv4', 'ipv6'),
+                           ['p', 'g', 'sandbox', 'b' * 64, 'c' * 64, 've-test', '172.30.1.2', 'fd42::2']))
+        # The test topology uses the same wire identity structure as the raw helper evidence.
+        binding['containerId'] = 'a' * 64
+        initial['containers'][0]['id'] = binding['containerId']
+        identity = hashlib.sha256(json.dumps(list(binding.values()), separators=(',', ':')).encode()).hexdigest()
+        hooks = [{'kind': 'bpf', 'pref': 1, 'protocol': 'all', 'options': {'id': 42, 'direct-action': True, 'skip_hw': True}}]
+        initial['packet'] = [{'raw': {'identity': identity, 'deadline_ns': '0', 'clocks': {'bootId': 'boot'},
+                                    'state': {'binding': binding, 'program': 42, 'relayPolicy': '01', 'bootId': 'boot'}},
+                              'program': {'id': 42, 'type': 'sched_cls'}, 'hooks': {'ingress': hooks, 'egress': hooks}}]
+        initial['tables'] = [{'table': {'family': family, 'name': 'verity_start_test'}} for family in ('inet', 'bridge')]
+
         facts = {'boot_id': '11111111-1111-1111-1111-111111111111', 'init': 'systemd', 'systemd': 259}
         events = []
         broker = []
@@ -177,6 +190,26 @@ class FullBundleTests(unittest.TestCase):
             Path(directory, 'broker-receipts.jsonl').write_text(''.join(json.dumps(row) + '\n' for row in broker))
             with self.assertRaisesRegex(AssertionError, 'no actual handler evidence'):
                 boot_proof.verify_bundle(directory)
+
+    def test_rejects_boot_evidence_without_both_kernel_hooks_and_nft_fences(self):
+        import json
+        import tempfile
+        for change in ('missing-packet', 'wrong-hook', 'direct-admission', 'missing-nft'):
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as directory:
+                proof, _ = self.fixture(directory)
+                snapshot = proof['events'][0]['retained']
+                if change == 'missing-packet':
+                    snapshot['packet'] = []
+                elif change == 'wrong-hook':
+                    snapshot['packet'][0]['hooks']['ingress'][0]['options']['id'] = 43
+                elif change == 'direct-admission':
+                    snapshot['packet'][0]['raw']['deadline_ns'] = '1000'
+                else:
+                    snapshot['tables'] = []
+                Path(directory, 'boot-proof.json').write_text(json.dumps(proof))
+                with self.assertRaises((AssertionError, ValueError)):
+                    boot_proof.verify_bundle(directory)
+
 
 
 class ActualMemoryPersistenceTests(unittest.TestCase):

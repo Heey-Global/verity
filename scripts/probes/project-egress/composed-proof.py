@@ -25,16 +25,16 @@ def verify(directory):
     markers.add('stream-retained')
     assert all(row.get('marker') in markers for row in records if 'marker' in row), 'Unauthorized receipt'
     live, expired, attempted = (proof[k] for k in ('live', 'expired', 'attempted'))
-    deadline = int(live['deadline_ns'])
-    assert deadline > 0 and live['accepted'] > 0
-    assert int(expired['clocks']['bootBeforeNs']) >= deadline
+    stream_deadline = int(live['deadline_ns'])
+    assert stream_deadline > 0 and live['accepted'] > 0
+    assert int(expired['clocks']['bootBeforeNs']) >= stream_deadline
     assert int(attempted['clocks']['bootBeforeNs']) > int(expired['clocks']['bootBeforeNs'])
     assert expired['accepted'] == attempted['accepted'] and attempted['denied'] > expired['denied']
-    assert int(attempted['last_accepted_boot_ns']) < deadline
+    assert int(attempted['last_accepted_boot_ns']) < stream_deadline
     retained = [int(row['boot_ns']) for row in records if row.get('marker') == 'stream-retained']
     assert retained and max(retained) - min(retained) >= 2_000_000_000
-    assert max(retained) - deadline <= 2_000_000_000
-    assert proof['heartbeat']['attempts'] > 10 and int(proof['heartbeat']['boot_ns']) > deadline + 2_000_000_000
+    assert max(retained) - stream_deadline <= 2_000_000_000
+    assert proof['heartbeat']['attempts'] > 10 and int(proof['heartbeat']['boot_ns']) > stream_deadline + 2_000_000_000
     helper = json.loads((root / 'composed-helper-proof.json').read_text())
     assert helper['afterKillState'] in ('gone', 'Z')
     assert helper['signal'] == 'SIGKILL' and helper['helper']['pid'] > 1
@@ -48,7 +48,7 @@ def verify(directory):
     assert attempted['accepted'] == expired['accepted'] and attempted['denied'] > expired['denied']
     assert int(attempted['last_accepted_boot_ns']) < deadline
     return {'complete': True, 'cases': len(cases), 'kernel_late_acceptance': False,
-            'receiver_tail_seconds': max(0, (max(retained) - deadline) / 1_000_000_000)}
+            'receiver_tail_seconds': max(0, (max(retained) - stream_deadline) / 1_000_000_000)}
 
 
 if __name__ == '__main__':

@@ -7,7 +7,7 @@ set -euo pipefail
 assets=/opt/verity-fixture
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install -y --no-install-recommends nftables libnftables1 iptables conntrack iproute2 util-linux acl python3 libatomic1 libstdc++6
+apt-get install -y --no-install-recommends nftables libnftables1 clang llvm bpftool linux-libc-dev iptables conntrack iproute2 util-linux acl python3 libatomic1 libstdc++6
 python3 -c "import ctypes, os; lib=ctypes.CDLL('libnftables.so.1'); assert hasattr(lib, 'nft_ctx_buffer_output') and hasattr(os, 'setns')"
 cp -a "$assets/runtime/bin/." /usr/local/bin/
 cp -a "$assets/runtime/opt/." /opt/
@@ -33,6 +33,24 @@ c['runtimes']['runsc-relay']['runtimeArgs'] = ['--platform=systrap','--network=s
 p.write_text(json.dumps(c))
 PY
 install -m 0644 "$assets/project-egress-host-main.mjs" /opt/verity-egress/
+install -m 0644 "$assets/units/project-egress-deadline.py" "$assets/units/project-egress-deadline.bpf.c" "$assets/units/project-egress-renew.bpf.c" /opt/verity-egress/
+for object in project-egress-deadline project-egress-renew; do
+  clang -O2 -g -target bpf -I/usr/include/x86_64-linux-gnu -c "/opt/verity-egress/$object.bpf.c" -o "/opt/verity-egress/$object.bpf.o"
+done
+# The disposable guest recreates its writable pin directory before controller readiness.
+if ! grep -q '^bpf /sys/fs/bpf ' /etc/fstab; then
+  echo 'bpf /sys/fs/bpf bpf nosuid,nodev,noexec,mode=0700 0 0' >> /etc/fstab
+fi
+mountpoint -q /sys/fs/bpf || mount /sys/fs/bpf
+mkdir -p /sys/fs/bpf/verity_egress_deadline
+chmod 0700 /sys/fs/bpf/verity_egress_deadline
+printf '%s\n' 'd /sys/fs/bpf/verity_egress_deadline 0700 root root -' > /etc/tmpfiles.d/verity-egress-fixture.conf
+mkdir -p /etc/systemd/system/verity-egress-host.service.d
+cat > /etc/systemd/system/verity-egress-host.service.d/packet-fixture.conf <<'UNIT'
+[Unit]
+RequiresMountsFor=/sys/fs/bpf
+After=systemd-tmpfiles-setup.service
+UNIT
 install -m 0644 "$assets/units/verity-egress-bootstrap.service" "$assets/units/verity-egress-host.service" /etc/systemd/system/
 mkdir -p /etc/systemd/system/docker.service.d
 install -m 0644 "$assets/units/docker-egress.conf" /etc/systemd/system/docker.service.d/egress.conf

@@ -52,6 +52,28 @@ def verify_removed_fences(path, started_ns):
     return len(observed)
 
 
+def verify_packet(snapshot):
+    spec = importlib.util.spec_from_file_location('deadline_guard', Path(__file__).resolve().parents[3] / 'deploy/egress/project-egress-deadline.py')
+    deadline = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(deadline)
+    packets = snapshot['packet']
+    assert len(packets) == 1, 'Missing combined packet guard'
+    packet = packets[0]
+    raw, program = packet['raw'], packet['program']
+    state = raw['state']
+    assert raw['identity'] == deadline.binding_key(state['binding'])
+    assert state['binding']['containerId'] in {row['id'] for row in snapshot['containers']}
+    assert raw['deadline_ns'] == '0', 'Boot recovery unexpectedly admitted direct traffic'
+    assert program['type'] == 'sched_cls' and program['id'] == state['program'] and program['id'] > 0
+    assert state['relayPolicy'] and raw['clocks']['bootId'] == state['bootId']
+    assert set(packet['hooks']) == {'ingress', 'egress'}
+    for hooks in packet['hooks'].values():
+        deadline.attest_filters(hooks, program['id'])
+    tables = [row['table'] for row in snapshot['tables'] if 'table' in row]
+    for family in ('inet', 'bridge'):
+        assert any(row['family'] == family and row['name'].startswith('verity_start_') for row in tables), 'Missing startup nft fence'
+
+
 def verify_retained(before, after):
     assert before['projectId'] == after['projectId']
     assert before['registry'] == after['registry'], 'Registry generation or container identities changed'
@@ -68,11 +90,13 @@ def verify_bundle(directory):
     proof = json.loads((directory / 'boot-proof.json').read_text())
     assert proof['complete'] is True and proof['removed_fences_detected'] is True
     initial = json.loads((directory / 'topology-before.json').read_text())
+    verify_packet(initial)
     events = proof['events']
     assert [event['event'] for event in events] == ['controller-kill', 'server-kill', 'docker-stop-start', 'docker-crash', 'reboot']
     for event in events:
         assert proof['protected_start_ns'] <= event['event_time_ns'] <= proof['protected_end_ns']
         verify_retained(initial, event['retained'])
+        verify_packet(event['retained'])
         assert event['recovery_ns'] > 0
         before = event['stream_before']
         after = event['stream_after']

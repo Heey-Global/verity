@@ -87,7 +87,7 @@ def setup():
     (ROOT / 'config.json').write_text(json.dumps(config))
     os.chmod(ROOT / 'config.json', 0o600)
     os.chown(ROOT / 'config.json', 1000, 1000)
-    policy = {'image': refs['relay'], 'dataVolume': 'verity-boot-data', 'socketOwnerUid': 1000,
+    policy = {'packetEnforcement': True, 'image': refs['relay'], 'dataVolume': 'verity-boot-data', 'socketOwnerUid': 1000,
               'relayGid': 1102, 'brokerSubpath': 'relay/broker', 'claudeSubpath': 'relay/claude', 'codexSubpath': 'relay/codex'}
     Path('/etc/verity-egress/relay.json').write_text(json.dumps(policy))
     os.chmod('/etc/verity-egress/relay.json', 0o600)
@@ -161,7 +161,25 @@ def snapshot():
         facts.append({'id': container['Id'], 'image': container['Image'], 'running': container['State']['Running'],
                       'restart': container['HostConfig']['RestartPolicy']['Name'],
                       'mounts': [{k: mount[k] for k in ('Source', 'Destination')} for mount in container['Mounts']]})
-    return {'projectId': descriptor()['projectId'], 'registry': registry, 'containers': facts}
+    packet = []
+    identities = {container['id'] for container in facts}
+    for path in Path('/var/lib/verity-egress/deadline').glob('*.json'):
+        state = json.loads(path.read_text())
+        if state['binding']['containerId'] not in identities:
+            continue
+        raw = json.loads(run('env', 'PROJECT_EGRESS_DISPOSABLE=yes', 'python3',
+            '/opt/verity-fixture/probe/deadline-observe.py', json.dumps(state['binding'])))
+        program = json.loads(run('bpftool', '-j', 'prog', 'show', 'pinned',
+            '/sys/fs/bpf/verity_egress_deadline/' + raw['identity'] + '/guard'))
+        if isinstance(program, list):
+            program = program[0]
+        hooks = {direction: json.loads(run('tc', '-j', 'filter', 'show', 'dev', raw['state']['peer']['device'], direction))
+                 for direction in ('ingress', 'egress')}
+        packet.append({'raw': raw, 'program': program, 'hooks': hooks})
+    assert len(packet) == 1, 'Missing combined TC/nft packet evidence'
+    assert json.loads(Path('/etc/verity-egress/relay.json').read_text())['packetEnforcement'] is True
+    return {'projectId': descriptor()['projectId'], 'registry': registry, 'containers': facts, 'packet': packet,
+            'tables': json.loads(run('nft', '-j', 'list', 'tables'))['nftables']}
 
 
 def observer_positive(phase):
@@ -181,10 +199,16 @@ def remove_fences():
     assert Path('/var/lib/cloud/data/instance-id').read_text().strip() == 'verity-boot-probe'
     tables = json.loads(run('nft', '--json', 'list', 'tables'))['nftables']
     names = [entry['table'] for entry in tables if 'table' in entry and
-             (entry['table']['name'] == 'verity_egress_boot' or entry['table']['name'].startswith('verity_start_'))]
+             (entry['table']['name'].startswith(('verity_egress_', 'verity_start_')))]
     assert len(names) >= 4
     for table in names:
         run('nft', 'delete', 'table', table['family'], table['name'])
+    # Both layers must be removed for the destructive positive control.
+    for path in Path('/var/lib/verity-egress/deadline').glob('*.json'):
+        state = json.loads(path.read_text())
+        device = state['peer']['device']
+        assert device and all(c.isalnum() or c in '_-.' for c in device)
+        run('tc', 'qdisc', 'del', 'dev', device, 'clsact')
 
 
 def faults():

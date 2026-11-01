@@ -28,7 +28,7 @@ class ComposedProof(unittest.TestCase):
                  'heartbeat': {'attempts': 30, 'boot_ns': '5000000000'}}
         helper = {'afterKillState': 'gone', 'signal': 'SIGKILL', 'helper': {'pid': 123, 'command': '/usr/bin/python3\0/opt/verity-egress/project-egress-deadline.py\0--serve'},
                   'beforeKill': {'clocks': {'bootBeforeNs': '1300000000'}},
-                  'live': {'deadline_ns': '2000000000', 'accepted': 10, 'clocks': {'bootBeforeNs': '1400000000'}},
+                  'live': {'deadline_ns': '2500000000', 'accepted': 10, 'clocks': {'bootBeforeNs': '1400000000'}},
                   'expired': proof['expired'], 'attempted': proof['attempted']}
         (root / 'composed-helper-proof.json').write_text(json.dumps(helper))
         (root / 'composed-result.json').write_text(json.dumps({'complete': True, 'cases': cases}))
@@ -40,7 +40,9 @@ class ComposedProof(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             self.fixture(root)
-            self.assertEqual(composed.verify(root)['cases'], 16)
+            result = composed.verify(root)
+            self.assertEqual(result['cases'], 16)
+            self.assertEqual(result['receiver_tail_seconds'], 0.3)
 
     def test_rejects_missing_controls_unauthorized_receipts_and_late_kernel_acceptance(self):
         for mutation in ['missing-positive', 'unexpected-receipt', 'late-kernel', 'no-attempts', 'late-receipt', 'missing-case']:
