@@ -737,55 +737,66 @@ describe('ProvisionerImpl (#174)', () => {
     },
   );
 
-  it('sleeps an owned active Sandbox only after revoking its relay and egress identity', async () => {
-    const id = await seedProject('active');
-    const inspections = [
-      {
-        id: 'container-1',
-        running: true,
-        image: 'sandbox:test',
-        labels: { [PROJECT_ID_LABEL]: id, [CONTAINER_GENERATION_LABEL]: 'generation-1' },
-      },
-      {
-        id: 'container-1',
-        running: false,
-        image: 'sandbox:test',
-        labels: { [PROJECT_ID_LABEL]: id, [CONTAINER_GENERATION_LABEL]: 'generation-1' },
-      },
-    ];
-    const { client: docker, calls } = fakeDocker({
-      inspectContainer: vi.fn(async () => inspections.shift()!),
-    });
-    const slept: string[] = [];
-    const relay = defaultProjectRelay();
-    relay.sleep = async (projectId) => void slept.push(projectId);
-    const egress = fakeEgressIdentity();
-    const lifecycle = vi.fn(() => {
-      throw new Error('telemetry sink unavailable');
-    });
-    const provisioner = createProvisioner({
-      store: ctx.store,
-      db: ctx.db,
-      docker,
-      projectTokenMint: async () => undefined,
-      defaultImageRef: 'sandbox:test',
-      hostCloneRoot: '/work',
-      projectRelay: relay,
-      claudeEgressIdentity: egress.service,
-      onSandboxLifecycle: lifecycle,
-    });
+  it.each([false, true])(
+    'sleeps an owned active Sandbox after revocation (scan restoration=%s)',
+    async (scanRestore) => {
+      const id = await seedProject('active');
+      const inspections = [
+        {
+          id: 'container-1',
+          running: true,
+          image: 'sandbox:test',
+          labels: { [PROJECT_ID_LABEL]: id, [CONTAINER_GENERATION_LABEL]: 'generation-1' },
+        },
+        {
+          id: 'container-1',
+          running: false,
+          image: 'sandbox:test',
+          labels: { [PROJECT_ID_LABEL]: id, [CONTAINER_GENERATION_LABEL]: 'generation-1' },
+        },
+      ];
+      const { client: docker, calls } = fakeDocker({
+        inspectContainer: vi.fn(async () => inspections.shift()!),
+      });
+      const slept: string[] = [];
+      const relay = defaultProjectRelay();
+      relay.sleep = async (projectId) => void slept.push(projectId);
+      const egress = fakeEgressIdentity();
+      const lifecycle = vi.fn(() => {
+        throw new Error('telemetry sink unavailable');
+      });
+      const provisioner = createProvisioner({
+        store: ctx.store,
+        db: ctx.db,
+        docker,
+        projectTokenMint: async () => undefined,
+        defaultImageRef: 'sandbox:test',
+        hostCloneRoot: '/work',
+        projectRelay: relay,
+        claudeEgressIdentity: egress.service,
+        onSandboxLifecycle: lifecycle,
+      });
 
-    const result = await provisioner.sleepProject(id);
+      const previousSleep = new Date('2026-10-01T00:00:00Z');
+      const result = await provisioner.sleepProject(
+        id,
+        scanRestore
+          ? { shouldRestore: () => true, restoreSleepingSince: previousSleep }
+          : undefined,
+      );
+      if (scanRestore) expect(result.sleepingSince).toEqual(previousSleep);
+      else expect(result.sleepingSince!.getTime()).toBeGreaterThan(previousSleep.getTime());
 
-    expect(result).toMatchObject({ state: 'sleeping' });
-    expect(result.sleepCompatibilityFingerprint).toMatch(/^[a-f0-9]{64}$/u);
-    expect(slept).toEqual([id]);
-    expect(egress.revoked).toEqual([id]);
-    expect(calls.find((call) => call.method === 'stopContainer')).toBeDefined();
-    expect(lifecycle).toHaveBeenCalledWith(
-      expect.objectContaining({ projectId: id, operation: 'sleep', outcome: 'succeeded' }),
-    );
-  });
+      expect(result).toMatchObject({ state: 'sleeping' });
+      expect(result.sleepCompatibilityFingerprint).toMatch(/^[a-f0-9]{64}$/u);
+      expect(slept).toEqual([id]);
+      expect(egress.revoked).toEqual([id]);
+      expect(calls.find((call) => call.method === 'stopContainer')).toBeDefined();
+      expect(lifecycle).toHaveBeenCalledWith(
+        expect.objectContaining({ projectId: id, operation: 'sleep', outcome: 'succeeded' }),
+      );
+    },
+  );
 
   it('cancels temporary scan sleep when activity changes during Docker inspection', async () => {
     const id = await seedProject('active');
@@ -1031,8 +1042,8 @@ describe('ProvisionerImpl (#174)', () => {
     );
   });
 
-  it.each([false, true])(
-    'wakes the exact retained generation with fresh relay capabilities (host: %s)',
+  it.each([false, true, 'packet'] as const)(
+    'wakes with the host-required generation and fresh relay capabilities (host: %s)',
     async (protectedStart) => {
       const id = await seedProject('active');
       const retained = {
@@ -1079,6 +1090,9 @@ describe('ProvisionerImpl (#174)', () => {
       const egress = new ProjectEgressLifecycle(async () => {
         throw new Error('unexpected host command');
       }, {});
+      vi.spyOn(egress, 'requiresFreshWakeGeneration').mockResolvedValue(
+        protectedStart === 'packet',
+      );
       const hostStart = vi.spyOn(egress, 'start').mockResolvedValue(undefined);
       vi.spyOn(egress, 'connect').mockResolvedValue('172.20.0.2');
       const provisioner = createProvisioner({
@@ -1101,6 +1115,25 @@ describe('ProvisionerImpl (#174)', () => {
       );
       provisioner.attachProjectBusyProbe(busyProbe);
 
+      if (protectedStart === 'packet') {
+        const replace = vi.spyOn(provisioner, 'recreateContainer').mockImplementation(async () => {
+          await ctx.store.updateProjectState(id, 'active');
+          return (await ctx.store.getProject(id))!;
+        });
+        const result = await provisioner.ensureProjectSandboxAwake(id, requestingSessionIds);
+        expect(result.state).toBe('active');
+        expect(replace).toHaveBeenCalledWith(
+          id,
+          expect.objectContaining({
+            confirmWarnings: true,
+            initiator: { kind: 'system', trigger: 'sandbox_wake' },
+          }),
+        );
+        expect(hostStart).not.toHaveBeenCalled();
+        expect(bindings).toEqual([]);
+        expect(calls.some((call) => call.method === 'startContainer')).toBe(false);
+        return;
+      }
       const result = await provisioner.ensureProjectSandboxAwake(id, requestingSessionIds);
 
       expect(result).toMatchObject({
@@ -2262,6 +2295,110 @@ describe('ProvisionerImpl (#174)', () => {
       provisioner.linkCloneToGitHub(project, { owner: 'acme', repo: 'code' }, undefined),
     ).rejects.toThrow('requires configured document storage');
     expect(calls).toEqual([]);
+  });
+
+  it.each(['provision', 'recreateContainer'] as const)(
+    'keeps %s ownership pending through asynchronous image-reference cleanup',
+    async (method) => {
+      const references = new DerivedImageReferences(async () => ({
+        refs: new Set(),
+        repositories: new Set(),
+      }));
+      let release!: () => void;
+      let entered!: () => void;
+      const cleaning = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      vi.spyOn(references, 'releaseProject').mockImplementation(async () => {
+        entered();
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+      });
+      const provisioner = createProvisioner({
+        store: ctx.store,
+        db: ctx.db,
+        docker: fakeDocker().client,
+        projectTokenMint: async () => undefined,
+        defaultImageRef: 'image:test',
+        hostCloneRoot: '/data/dev',
+        imageReferences: references,
+      });
+      // An unknown project ends the Docker phase immediately, but cleanup still owns the gate.
+      const id = randomUUID();
+      const operation = provisioner[method](id).catch(() => undefined);
+      await cleaning;
+      let ran = false;
+      const controller = new AbortController();
+      const waiting = provisioner.withProjectExclusiveMutation(
+        id,
+        async () => {
+          ran = true;
+        },
+        undefined,
+        controller.signal,
+      );
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      expect(ran).toBe(false);
+      controller.abort();
+      await expect(waiting).rejects.toThrow('timed out waiting');
+      expect(provisioner.isProjectProvisioning(id)).toBe(true);
+      release();
+      await operation;
+      expect(provisioner.isProjectProvisioning(id)).toBe(false);
+      await provisioner.withProjectExclusiveMutation(id, async () => {
+        ran = true;
+      });
+      expect(ran).toBe(true);
+    },
+  );
+
+  it('serializes storage mutations and leaves an existing owner fenced on timeout', async () => {
+    const provisioner = createProvisioner({
+      store: ctx.store,
+      db: ctx.db,
+      docker: fakeDocker().client,
+      projectTokenMint: async () => undefined,
+      defaultImageRef: 'image:test',
+      hostCloneRoot: '/data/dev',
+    });
+    let release!: () => void;
+    const first = provisioner.withProjectExclusiveMutation(
+      'storage-p',
+      () =>
+        new Promise<void>((resolve) => {
+          release = resolve;
+        }),
+    );
+    const controller = new AbortController();
+    let ran = false;
+    const second = provisioner.withProjectExclusiveMutation(
+      'storage-p',
+      async () => {
+        ran = true;
+      },
+      undefined,
+      controller.signal,
+    );
+    await Promise.resolve();
+    expect(ran).toBe(false);
+    controller.abort();
+    await expect(second).rejects.toThrow('timed out waiting');
+    expect(provisioner.tryBeginProjectSandboxActivity('storage-p')).toBe(false);
+    const next = provisioner.withProjectExclusiveMutation(
+      'storage-p',
+      async () => {
+        ran = true;
+      },
+      undefined,
+      new AbortController().signal,
+    );
+    release();
+    await first;
+    await next;
+    expect(ran).toBe(true);
+    expect(provisioner.tryBeginProjectSandboxActivity('storage-p')).toBe(true);
+    provisioner.endProjectSandboxActivity('storage-p');
   });
 
   it('holds the turn admission barrier for an exclusive project mutation', async () => {

@@ -95,6 +95,7 @@ describe('buildManifest', () => {
       // CI visibility plus run administration (`gh run view/watch/rerun/cancel`).
       checks: 'read',
       statuses: 'read',
+      deployments: 'read',
       actions: 'write',
       // Push .github/workflows/* files (GitHub blocks bot workflow-file pushes otherwise).
       workflows: 'write',
@@ -976,4 +977,15 @@ describe('POST /settings/github/disconnect', () => {
       await app.close();
     }
   });
+});
+
+it('keeps the shared PR token independent of optional legacy status access', () => {
+  const source = readFileSync(new URL('./embedded.ts', import.meta.url), 'utf8');
+  const mint = source.slice(
+    source.indexOf('const repositoryStatusTokenMint ='),
+    source.indexOf('const analysisChecksMint ='),
+  );
+  expect(mint).toContain("checks: 'read'");
+  expect(mint).toContain("actions: 'read'");
+  expect(mint).not.toMatch(/statuses:\s*'read'/);
 });

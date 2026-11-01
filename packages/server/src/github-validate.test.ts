@@ -9,7 +9,7 @@
 import type { Conductor } from '@verity/session';
 import { InMemoryEventBus } from '@verity/session';
 import { EventStore, createSealableSecretCipher, type SealableSecretCipher } from '@verity/store';
-import { createTestDb, truncateAll, type TestDb } from '@verity/store/testing';
+import { createIsolatedTestDb, truncateAll, type TestDb } from '@verity/store/testing';
 import { generateKeyPairSync } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -22,7 +22,9 @@ const conductor = {} as unknown as Conductor;
 
 let ctx: TestDb;
 beforeAll(async () => {
-  ctx = await createTestDb();
+  // Server background readers can race TRUNCATE on a shared PostgreSQL pool.
+  // Keep these route cases on the isolated serialized database.
+  ctx = await createIsolatedTestDb();
 });
 afterAll(async () => {
   await ctx.close();

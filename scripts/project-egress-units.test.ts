@@ -29,7 +29,11 @@ it('requires an every-start fence even when the bootstrap oneshot is already act
   const docker = unit('docker-egress.conf');
   const host = unit('verity-egress-host.service');
   const preflight = docker.find((line) => line.startsWith('ExecStartPre='));
-  expect(preflight).toContain('flock --exclusive --nonblock');
+  expect(preflight).toContain('flock --exclusive --timeout 15');
+  const stopTimeout = Number(
+    host.find((line) => line.startsWith('TimeoutStopSec='))?.split('=')[1],
+  );
+  expect(stopTimeout).toBeLessThan(15);
   expect(preflight).toContain('project-egress-host-main.mjs restore');
   expect(docker).toContain('Upholds=verity-egress-host.service');
   expect(host).toContain('After=verity-egress-bootstrap.service docker.service');
@@ -106,4 +110,21 @@ it('keeps native generation-bound broker sockets within Linux path limits', () =
     'broker.sock',
   );
   expect(Buffer.byteLength(socket)).toBeLessThan(108);
+});
+
+it('keeps deadline evidence outside the disposable control socket directory and bounds writable pins', () => {
+  const helper = readFileSync(
+    new URL('../deploy/egress/project-egress-deadline.py', import.meta.url),
+    'utf8',
+  );
+  const state = /^STATE = Path\('([^']+)'\)/mu.exec(helper)?.[1];
+  const pins = /^PINS = Path\('([^']+)'\)/mu.exec(helper)?.[1];
+  const host = unit('verity-egress-host.service');
+  const writable = host.find((line) => line.startsWith('ReadWritePaths='));
+  expect(state).toBeDefined();
+  expect(state).toMatch(/^\/var\/lib\/verity-egress\//u);
+  expect(host).toContain('RuntimeDirectory=verity-egress');
+  expect(host).not.toContain('RuntimeDirectoryPreserve=yes');
+  expect(writable).toContain(`-${pins}`);
+  expect(writable).not.toMatch(/(?:=|\s)\/?sys\/fs\/bpf(?:\s|$)/u);
 });

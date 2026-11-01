@@ -1,11 +1,16 @@
 import { APP_HELP_TOPICS } from '@verity/events';
 import { MasterPasswordRoute } from './onboarding/master-password';
 import { router, useLocalSearchParams } from 'expo-router';
-import { useEffect, useState } from 'react';
-import { ActivityIndicator, View } from 'react-native';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { ActivityIndicator, AppState, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
-import { unlockAuthTokenWithBiometrics, unlockServerSecretWithBiometrics } from '../lib/authToken';
+import {
+  canUseBiometricUnlock,
+  isBiometricUnlockEnabled,
+  unlockAuthTokenWithBiometrics,
+  unlockServerSecretWithBiometrics,
+} from '../lib/authToken';
 import { createVerityClient, getVerityBaseUrl } from '../lib/client';
 import { safeReturnTo } from '../lib/safeReturnTo';
 
@@ -14,20 +19,16 @@ export default function UnlockDevice() {
   const params = useLocalSearchParams<{ returnTo?: string; serverSecret?: string }>();
   const returnTo = safeReturnTo(params.returnTo, '/') ?? '/';
   const mustUnlockServerSecret = params.serverSecret === '1';
-  const tryBiometricTokenUnlock = !mustUnlockServerSecret;
-  const tryBiometricSecretUnlock = mustUnlockServerSecret;
-  const [checkingBiometrics, setCheckingBiometrics] = useState(
-    tryBiometricTokenUnlock || tryBiometricSecretUnlock,
-  );
+  const [checkingBiometrics, setCheckingBiometrics] = useState(true);
+  const [biometricRetry, setBiometricRetry] = useState(false);
+  const attemptRef = useRef(0);
 
-  useEffect(() => {
-    if (!tryBiometricTokenUnlock && !tryBiometricSecretUnlock) {
-      setCheckingBiometrics(false);
-      return;
-    }
-    let active = true;
+  const attemptBiometrics = useCallback(() => {
+    const attemptId = ++attemptRef.current;
+    const current = () => attemptRef.current === attemptId;
+    setCheckingBiometrics(true);
     const baseUrl = getVerityBaseUrl();
-    const attempt = tryBiometricSecretUnlock
+    const attempt = mustUnlockServerSecret
       ? (async () => {
           const client = createVerityClient();
           const unlocked =
@@ -47,21 +48,49 @@ export default function UnlockDevice() {
         })()
       : unlockAuthTokenWithBiometrics(baseUrl);
     void attempt
-      .then((unlocked) => {
-        if (!active) return;
+      .catch(() => false)
+      .then(async (unlocked) => {
+        if (!current()) return;
         if (unlocked) {
           router.replace(returnTo);
           return;
         }
+        // One failed read (a cancelled prompt, an unmatched face, an interrupted
+        // launch) must not strand the device on a password form that cannot
+        // prove it: offer the read again instead of requiring an app restart.
+        const retry = await Promise.all([
+          isBiometricUnlockEnabled(baseUrl),
+          canUseBiometricUnlock(),
+        ]).then(
+          ([enabled, canUse]) => enabled && canUse,
+          () => false,
+        );
+        if (!current()) return;
+        setBiometricRetry(retry);
         setCheckingBiometrics(false);
-      })
-      .catch(() => {
-        if (active) setCheckingBiometrics(false);
       });
+  }, [mustUnlockServerSecret, returnTo]);
+
+  useEffect(() => {
+    attemptBiometrics();
     return () => {
-      active = false;
+      attemptRef.current++;
     };
-  }, [returnTo, tryBiometricSecretUnlock, tryBiometricTokenUnlock]);
+  }, [attemptBiometrics]);
+
+  // Returning from the background retries the read. Only a real background
+  // transition counts: the Face ID sheet itself moves the app through
+  // `inactive`, and retrying on that would re-open a prompt the user cancelled.
+  useEffect(() => {
+    if (!biometricRetry || checkingBiometrics) return;
+    let previous = AppState.currentState;
+    const subscription = AppState.addEventListener('change', (next) => {
+      const fromBackground = previous === 'background';
+      previous = next;
+      if (next === 'active' && fromBackground) attemptBiometrics();
+    });
+    return () => subscription.remove();
+  }, [attemptBiometrics, biometricRetry, checkingBiometrics]);
 
   if (checkingBiometrics) {
     return (
@@ -79,6 +108,7 @@ export default function UnlockDevice() {
           ? APP_HELP_TOPICS.find((topic) => topic.id === 'secrets-storage')?.emptyState
           : undefined
       }
+      onBiometricUnlock={biometricRetry ? attemptBiometrics : undefined}
     />
   );
 }

@@ -270,7 +270,7 @@ export const RUNNER_BROKER_CAPABILITIES = ['CHOWN', 'SETUID', 'SETGID', 'KILL', 
 // Digest verified against the public OCI manifest; mutable aliases never enter builds.
 export const DEVCONTAINER_NODE_FEATURE_REF =
   'ghcr.io/devcontainers/features/node@sha256:8c0de46939b61958041700ee89e3493f3b2e4131a06dc46b4d9423427d06e5f6';
-const DEVCONTAINER_NODE_FEATURE_OPTIONS = { version: '26.12.1' } as const;
+const DEVCONTAINER_NODE_FEATURE_OPTIONS = { version: '26.13.0' } as const;
 const DEVCONTAINER_TOOLKIT_FEATURE_OPTIONS = { installRunnerSupervisor: true } as const;
 const DEVCONTAINER_TOOLKIT_ENTRYPOINT = ['/bin/sh', '-lc'];
 const DEVCONTAINER_POST_CREATE_READY_FILE = '/tmp/verity-post-create-complete';
@@ -1910,11 +1910,12 @@ export interface Provisioner {
     projectId: string,
     mutation: () => Promise<T>,
     exceptSessionIds?: ReadonlySet<string>,
+    waitForMutation?: AbortSignal,
   ): Promise<T>;
   /** Stop and retain an idle Sandbox, revoking all of its live authority first. */
   sleepProject?(
     projectId: string,
-    options?: { shouldRestore?: () => boolean },
+    options?: { shouldRestore?: () => boolean; restoreSleepingSince?: Date | null },
   ): Promise<ProjectRecord>;
   /** Finish authority cleanup after a process died during an explicit sleep. */
   recoverInterruptedSleep?(projectId: string): Promise<ProjectRecord>;
@@ -3159,10 +3160,33 @@ export class ProvisionerImpl implements Provisioner {
     projectId: string,
     mutation: () => Promise<T>,
     exceptSessionIds?: ReadonlySet<string>,
+    waitForMutation?: AbortSignal,
   ): Promise<T> {
-    if (this.turnSandboxRepairs.has(projectId) || this.inFlightProvisions.has(projectId)) {
-      throw new ProvisioningError(`project ${projectId} already has a mutation in progress`);
+    for (;;) {
+      const owner =
+        this.turnSandboxRepairs.get(projectId)?.promise ?? this.inFlightProvisions.get(projectId);
+      if (!owner) break;
+      if (!waitForMutation)
+        throw new ProvisioningError(`project ${projectId} already has a mutation in progress`);
+      waitForMutation.throwIfAborted();
+      // Wait for the actual owner; a timeout must never release its barrier.
+      await new Promise<void>((resolve, reject) => {
+        const abort = () =>
+          reject(
+            new ProvisioningError(
+              `project ${projectId} storage maintenance timed out waiting for an existing mutation`,
+            ),
+          );
+        waitForMutation.addEventListener('abort', abort, { once: true });
+        void owner
+          .catch(() => undefined)
+          .then(() => {
+            waitForMutation.removeEventListener('abort', abort);
+            resolve();
+          });
+      });
     }
+    waitForMutation?.throwIfAborted();
     let releaseBarrier!: (result: boolean) => void;
     const barrier = new Promise<boolean>((resolve) => {
       releaseBarrier = resolve;
@@ -3190,7 +3214,7 @@ export class ProvisionerImpl implements Provisioner {
 
   async sleepProject(
     projectId: string,
-    options?: { shouldRestore?: () => boolean },
+    options?: { shouldRestore?: () => boolean; restoreSleepingSince?: Date | null },
   ): Promise<ProjectRecord> {
     const startedAt = Date.now();
     try {
@@ -3230,7 +3254,15 @@ export class ProvisionerImpl implements Provisioner {
           await this.confirmSandboxStopped(project.containerName);
           return (await this.opts.store.updateProjectSleepState(project.id, 'sleeping', {
             sleepCompatibilityFingerprint: fingerprint,
-            sleepingSince: new Date(),
+            // A scan-owned wake must not renew the idle-container grace.
+            sleepingSince:
+              options?.shouldRestore &&
+              options.restoreSleepingSince &&
+              Number.isFinite(options.restoreSleepingSince.getTime()) &&
+              options.restoreSleepingSince.getTime() > 0 &&
+              options.restoreSleepingSince.getTime() <= Date.now()
+                ? options.restoreSleepingSince
+                : new Date(),
             wakeStartedAt: null,
           })) as ProjectRecord;
         } catch (cause) {
@@ -3552,6 +3584,12 @@ export class ProvisionerImpl implements Provisioner {
               throw cause;
             }
           };
+          if (await this.opts.projectEgress?.requiresFreshWakeGeneration(project.id)) {
+            // Docker allocates new veth attachments after a stopped Sandbox.
+            // Packet registrations are immutable: cold wake retains project data
+            // but retires the old network and creates a fresh protected generation.
+            return await replaceRetained('contract_mismatch');
+          }
           if (fallbackReason !== undefined) {
             // The retained object is no longer the exact Sandbox we put to sleep.
             // Reuse the established replacement path rather than starting unknown
@@ -4406,13 +4444,24 @@ export class ProvisionerImpl implements Provisioner {
     const running = this.inFlightProvisions.get(projectId);
     if (running !== undefined) return running;
     const attempt = this.provisionOnce(projectId, opts);
-    this.inFlightProvisions.set(projectId, attempt);
-    try {
-      return await attempt;
-    } finally {
-      await this.opts.imageReferences?.releaseProject(projectId);
-      this.inFlightProvisions.delete(projectId);
-    }
+    return this.trackProvision(projectId, attempt);
+  }
+
+  /** The ownership promise settles only after reference cleanup has released the gate. */
+  private trackProvision(
+    projectId: string,
+    attempt: Promise<ProjectRecord>,
+  ): Promise<ProjectRecord> {
+    const owned = attempt.finally(async () => {
+      try {
+        await this.opts.imageReferences?.releaseProject(projectId);
+      } finally {
+        if (this.inFlightProvisions.get(projectId) === owned)
+          this.inFlightProvisions.delete(projectId);
+      }
+    });
+    this.inFlightProvisions.set(projectId, owned);
+    return owned;
   }
 
   private async provisionOnce(projectId: string, opts: ProvisionOptions): Promise<ProjectRecord> {
@@ -4449,13 +4498,7 @@ export class ProvisionerImpl implements Provisioner {
       throw new ProvisioningError(`project ${projectId} is already provisioning`);
     }
     const attempt = this.recreateContainerOnce(projectId, opts);
-    this.inFlightProvisions.set(projectId, attempt);
-    try {
-      return await attempt;
-    } finally {
-      await this.opts.imageReferences?.releaseProject(projectId);
-      this.inFlightProvisions.delete(projectId);
-    }
+    return this.trackProvision(projectId, attempt);
   }
 
   /** Whether this process still owns provisioning/replacement work for a project.

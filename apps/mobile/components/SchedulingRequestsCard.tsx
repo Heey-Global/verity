@@ -37,7 +37,8 @@ export function schedulingStatus(request: SchedulingRequestView): {
   }
 }
 
-function when(iso: string, timeZone: string): string {
+/** A time in the request's own zone, e.g. "Thu 5 Nov, 13:00". */
+export function schedulingTime(iso: string, timeZone: string): string {
   const options = {
     weekday: 'short',
     day: 'numeric',
@@ -58,9 +59,9 @@ export function schedulingGuestName(request: SchedulingRequestView): string {
 }
 
 export function schedulingSubtitle(request: SchedulingRequestView): string {
-  if (request.booked) return `Booked ${when(request.booked.start, request.timeZone)}`;
+  if (request.booked) return `Booked ${schedulingTime(request.booked.start, request.timeZone)}`;
   if (request.state === 'open')
-    return `${request.title} · closes ${when(request.closesAt, request.timeZone)}`;
+    return `${request.title} · closes ${schedulingTime(request.closesAt, request.timeZone)}`;
   return request.failure ?? request.title;
 }
 

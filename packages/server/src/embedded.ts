@@ -1,4 +1,9 @@
-import { StorageReclamation, requestNativeReclamation } from './storage-reclamation.js';
+import { createGitHubQAAnalysis } from './github-qa-analysis.js';
+import {
+  StorageReclamation,
+  requestNativeReclamation,
+  readNativeReclamation,
+} from './storage-reclamation.js';
 import { registerStorageReclamationRoutes } from './storage-reclamation-routes.js';
 import { startNativeRetirementEvidence } from './native-buildkit.js';
 import type { GitOutput } from './branches.js';
@@ -112,7 +117,7 @@ export async function resolveRepoWorktreeFetchAuthHeader(
 }
 
 import { buildControlPlane } from './app.js';
-import { createRuntimeDiagnostics, nativeRetirementSchema } from './runtime-diagnostics.js';
+import { createRuntimeDiagnostics } from './runtime-diagnostics.js';
 import { createProjectListCache } from './project-list-cache.js';
 import type { ServerDeps, ServerUpdateController } from './server.js';
 import { createAuthTokenRegistry } from './auth.js';
@@ -2054,6 +2059,7 @@ export async function buildEmbeddedServer(
             'verity_end_planning',
             'verity_tasks',
             'verity_repairs',
+            'verity_qa_analysis',
             'verity_app_help',
             'verity_vulnerabilities',
             'verity_google_slides',
@@ -2077,6 +2083,7 @@ export async function buildEmbeddedServer(
             'verity_end_planning',
             'verity_tasks',
             'verity_repairs',
+            'verity_qa_analysis',
             'verity_app_help',
             'verity_vulnerabilities',
             'verity_google_slides',
@@ -2450,14 +2457,80 @@ export async function buildEmbeddedServer(
       ...baseMintOpts,
       permissions: {
         metadata: 'read',
-        contents: 'read',
-        pull_requests: 'read',
-        checks: 'read',
         actions: 'read',
       },
     }),
     { authorityKey: githubAppAuthorityKey },
   );
+  const discoveryPrTokenMint = createCachedProjectTokenMint(
+    createGitHubAppProjectTokenMint({
+      ...baseMintOpts,
+      permissions: { metadata: 'read', pull_requests: 'read' },
+    }),
+    { authorityKey: githubAppAuthorityKey },
+  );
+  const repositoryStatusTokenMint = createCachedProjectTokenMint(
+    createGitHubAppProjectTokenMint({
+      ...baseMintOpts,
+      // Optional legacy statuses must not prevent minting the shared PR reader.
+      // QA analysis uses a separate statuses token and reports missing access.
+      permissions: { metadata: 'read', pull_requests: 'read', checks: 'read', actions: 'read' },
+    }),
+    { authorityKey: githubAppAuthorityKey },
+  );
+  const analysisChecksMint = createCachedProjectTokenMint(
+    createGitHubAppProjectTokenMint({
+      ...baseMintOpts,
+      permissions: { metadata: 'read', checks: 'read' },
+    }),
+    { authorityKey: githubAppAuthorityKey },
+  );
+  const analysisStatusesMint = createCachedProjectTokenMint(
+    createGitHubAppProjectTokenMint({
+      ...baseMintOpts,
+      permissions: { metadata: 'read', statuses: 'read' },
+    }),
+    { authorityKey: githubAppAuthorityKey },
+  );
+  const analysisContentsMint = createCachedProjectTokenMint(
+    createGitHubAppProjectTokenMint({
+      ...baseMintOpts,
+      permissions: { metadata: 'read', contents: 'read', actions: 'read' },
+    }),
+    { authorityKey: githubAppAuthorityKey },
+  );
+  const analysisReleaseMint = createCachedProjectTokenMint(
+    createGitHubAppProjectTokenMint({
+      ...baseMintOpts,
+      permissions: { metadata: 'read', contents: 'read' },
+    }),
+    { authorityKey: githubAppAuthorityKey },
+  );
+  const analysisDeploymentMint = createCachedProjectTokenMint(
+    createGitHubAppProjectTokenMint({
+      ...baseMintOpts,
+      permissions: { metadata: 'read', deployments: 'read' },
+    }),
+    { authorityKey: githubAppAuthorityKey },
+  );
+  const githubQAAnalysis = createGitHubQAAnalysis((ref, action) => {
+    const mint =
+      config.githubProjectTokenMint ??
+      (action === 'checks'
+        ? analysisChecksMint
+        : action === 'statuses'
+          ? analysisStatusesMint
+          : action === 'pulls' || action === 'pull_status'
+            ? discoveryPrTokenMint
+            : action === 'releases'
+              ? analysisReleaseMint
+              : action === 'deployments' || action === 'deployment_statuses'
+                ? analysisDeploymentMint
+                : action === 'workflow'
+                  ? analysisContentsMint
+                  : discoveryTokenMint);
+    return mint(ref);
+  });
   const issuesTokenMint = createGitHubAppProjectTokenMint({
     ...baseMintOpts,
     permissions: { metadata: 'read', issues: 'read' },
@@ -2487,6 +2560,8 @@ export async function buildEmbeddedServer(
   // /projects` reads it synchronously and it refreshes in the background on a TTL.
   const githubForge = createGitHubForgeProvider({
     discoveryTokenMint: config.githubProjectTokenMint ?? discoveryTokenMint,
+    discoveryPrTokenMint: config.githubProjectTokenMint ?? discoveryPrTokenMint,
+    repositoryStatusTokenMint: config.githubProjectTokenMint ?? repositoryStatusTokenMint,
     projectTokenMint: cachedProjectTokenMint,
     issuesTokenMint,
     installationToken: async () => {
@@ -4662,11 +4737,13 @@ export async function buildEmbeddedServer(
           activity: async (id) =>
             (await eventStore.listSessionProjectionFacts([id], 0)).get(id)?.lastActivityAt ?? null,
           root: (project) => projectClonePath(config.hostCloneRoot!, project),
-          mutate: (projectId, sessionId, operation) =>
-            withStorageProjectMutation(projectId, () =>
-              provisioner.withProjectExclusiveMutation(
-                projectId,
-                async () => {
+          mutate: (projectId, sessionId, operation, signal) =>
+            // Wait for the project owner before taking preview locks: that owner
+            // may itself need preview teardown in order to finish.
+            provisioner.withProjectExclusiveMutation(
+              projectId,
+              () =>
+                withStorageProjectMutation(projectId, async () => {
                   if (managedDevServerManager?.hasRunningServers(projectId))
                     throw new Error('Managed dev server is active');
                   if (
@@ -4677,9 +4754,9 @@ export async function buildEmbeddedServer(
                   )
                     throw new Error('Public preview is active');
                   await operation();
-                },
-                sessionId ? new Set([sessionId]) : undefined,
-              ),
+                }),
+              sessionId ? new Set([sessionId]) : undefined,
+              signal,
             ),
           withGit: async (project, operation) => {
             if (config.dataVolume && !dataVolumeRoot)
@@ -4968,21 +5045,7 @@ export async function buildEmbeddedServer(
         } catch {
           /* Database usage is unknown, not zero. */
         }
-        let nativeBuildkit: ReturnType<typeof nativeRetirementSchema.parse> | null = null;
-        try {
-          const value = nativeRetirementSchema.parse(
-            JSON.parse(
-              await readFile('/run/verity-buildkit/native-retirement.json', 'utf8'),
-            ) as unknown,
-          );
-          if (
-            Date.now() - Date.parse(value.observedAt) >= 0 &&
-            (value.state === 'completed' || Date.now() - Date.parse(value.observedAt) < 120_000)
-          )
-            nativeBuildkit = value;
-        } catch {
-          /* Host inventory may not yet exist. */
-        }
+        const nativeBuildkit = await readNativeReclamation();
         return {
           accounting:
             'Image and dependency sizes are estimates with shared layers/reflinks; do not sum categories. Unknown measurements are null. No freed-byte claim is inferred from apparent sizes.',
@@ -5075,6 +5138,43 @@ export async function buildEmbeddedServer(
     repairPullRequest: async (project, number) => {
       const provider = await projectForgeProvider(eventStore, githubForge, project);
       return (await provider?.repositoryOperations(project).findPullRequest({ number })) ?? null;
+    },
+    qaAnalysisRead: async (project, request, authorize) => {
+      if (project.kind === 'forgejo') {
+        await authorize();
+        const provider = await projectForgeProvider(eventStore, githubForge, project);
+        if (request.action === 'pulls' && provider?.discover) {
+          const page = await provider.discover(project, request.page);
+          await authorize();
+          return {
+            data: page.pulls,
+            nextPage: page.nextPage,
+            checkedAt: new Date().toISOString(),
+            untrusted: true,
+          };
+        }
+        if (request.action === 'pull_status' && provider) {
+          const pull = await provider
+            .repositoryOperations(project)
+            .findPullRequest({ number: request.number });
+          await authorize();
+          const status = pull ? await readProjectStatus(project, pull.head) : null;
+          await authorize();
+          return {
+            data: status?.number === request.number ? status : null,
+            checkedAt: new Date().toISOString(),
+            untrusted: true,
+          };
+        }
+        return {
+          available: false,
+          reason:
+            'This Forgejo integration supports PR reads, not historical Actions/release analysis',
+        };
+      }
+      if (project.kind !== 'github')
+        return { available: false, reason: 'This project has no supported repository provider' };
+      return githubQAAnalysis(project, request, authorize);
     },
     repairDiscovery: async (project, pageNumber) => {
       const provider = await projectForgeProvider(eventStore, githubForge, project);
@@ -6043,6 +6143,7 @@ export async function buildEmbeddedServer(
     app.addHook('onClose', () => clearInterval(buildStorageTimer));
   }
   app.addHook('onClose', () => listenerDiscovery?.close());
+  app.addHook('onClose', () => config.projectEgress?.close());
   if (!localPreviewManager) previewRecoveryReady = true;
   managedDevServerLog.current = (message, detail) => app.log.info(detail ?? {}, message);
   app.addHook('onClose', () => managedDevServerManager?.close());

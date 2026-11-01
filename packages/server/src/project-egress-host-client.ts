@@ -89,9 +89,13 @@ export function createProjectEgressHostClient(options: {
                     ? ['started-denied', 'started-connected']
                     : command.operation === 'connect'
                       ? ['connected']
-                      : command.operation === 'retire'
-                        ? ['retired']
-                        : ['denied'];
+                      : command.operation === 'refresh-direct'
+                        ? ['direct-refreshed']
+                        : command.operation === 'revoke-direct'
+                          ? ['direct-revoked']
+                          : command.operation === 'retire'
+                            ? ['retired']
+                            : ['denied'];
                 if (
                   !expectedStates.includes(result.state) ||
                   result.state === 'current' ||
