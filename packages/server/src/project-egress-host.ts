@@ -94,6 +94,11 @@ interface Dependencies {
     role: 'sandbox' | 'relay',
     restoring?: boolean,
   ): Promise<void>;
+  /** A fresh, phase-local batch that performs all role, network and transport checks. */
+  inspectDirectTransport?(
+    binding: ProjectEgressNetworkBinding,
+    ids: { sandbox: string; relay: string },
+  ): Promise<EgressTransport | undefined>;
   inspectTransport?(
     binding: ProjectEgressNetworkBinding,
     ids: { sandbox: string; relay: string },
@@ -402,22 +407,22 @@ export class ProjectEgressHost {
         if (!this.deps.enforcement || !this.transports.has(key(record.binding)))
           throw new Error('Direct enforcement is not ready');
         const verifyTransport = async () => {
-          // These checks only read daemon state. Await every result before admission
-          // or containment so a failed check cannot leave an unobserved sibling.
-          const checks = await Promise.allSettled([
-            ...(['sandbox', 'relay'] as const).map((role) =>
-              this.deps.inspectContainer(record.binding, record.containers[role]!, role),
-            ),
-            this.deps.inspectNetwork(record.binding, containerIds(record)),
-            this.deps.inspectTransport?.(record.binding, {
-              sandbox: record.containers.sandbox!,
-              relay: record.containers.relay!,
-            }),
-          ]);
-          for (const check of checks) if (check.status === 'rejected') throw check.reason;
-          const transportCheck = checks[3]!;
-          const transport =
-            transportCheck.status === 'fulfilled' ? transportCheck.value : undefined;
+          const ids = { sandbox: record.containers.sandbox!, relay: record.containers.relay! };
+          const transport = this.deps.inspectDirectTransport
+            ? await this.deps.inspectDirectTransport(record.binding, ids)
+            : await (async () => {
+                // Await every reader before admission or containment, including failures.
+                const checks = await Promise.allSettled([
+                  ...(['sandbox', 'relay'] as const).map((role) =>
+                    this.deps.inspectContainer(record.binding, record.containers[role]!, role),
+                  ),
+                  this.deps.inspectNetwork(record.binding, containerIds(record)),
+                  this.deps.inspectTransport?.(record.binding, ids),
+                ]);
+                for (const check of checks) if (check.status === 'rejected') throw check.reason;
+                const result = checks[3]!;
+                return result.status === 'fulfilled' ? result.value : undefined;
+              })();
           if (
             JSON.stringify(transport) !==
             JSON.stringify(this.transports.get(key(record.binding))!.transport)

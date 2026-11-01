@@ -73,7 +73,25 @@ class WorkerProtocolTests(unittest.TestCase):
                 host.fcntl.flock(other, host.fcntl.LOCK_EX | host.fcntl.LOCK_NB)
 
 
+def process_exited(pid):
+    try:
+        return Path('/proc', str(pid), 'stat').read_text().split(') ')[1].startswith('Z')
+    except (FileNotFoundError, ProcessLookupError):
+        # procfs can lose the task after open and before read when reaping wins.
+        return True
+
+
 class ControllerLifetimeTests(unittest.TestCase):
+    def test_reaping_during_procfs_read_counts_as_exited(self):
+        for error in (FileNotFoundError(), ProcessLookupError()):
+            with self.subTest(error=error), patch.object(Path, 'read_text', side_effect=error):
+                self.assertTrue(process_exited(123))
+        with patch.object(Path, 'read_text', return_value='123 (worker) S 1'):
+            self.assertFalse(process_exited(123))
+        with patch.object(Path, 'read_text', side_effect=PermissionError()):
+            with self.assertRaises(PermissionError):
+                process_exited(123)
+
     @unittest.skipUnless(host.sys.platform == 'linux', 'Parent death signal requires Linux')
     def test_worker_dies_when_its_controller_is_killed(self):
         import subprocess
@@ -92,8 +110,7 @@ class ControllerLifetimeTests(unittest.TestCase):
             owner.wait(timeout=2)
             limit = time.monotonic() + 2
             while time.monotonic() < limit:
-                status = Path('/proc', str(worker_pid), 'stat')
-                if not status.exists() or status.read_text().split(') ')[1].startswith('Z'):
+                if process_exited(worker_pid):
                     break
                 time.sleep(0.01)
             else:

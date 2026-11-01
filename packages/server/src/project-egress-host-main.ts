@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { inspectEgressHostDirectTransport } from './project-egress-host-inspection.js';
 import { createPostgresDb, ProjectEgressStore } from '@verity/store';
 import {
   readEgressHostConfiguration,
@@ -107,6 +108,10 @@ const controller = new ProjectEgressHost(await store.load(), {
   inspectNetwork: inspectEgressHostNetwork,
   inspectContainer: (binding, id, role, restoring) =>
     inspectEgressHostContainer(binding, id, role, relayPolicy, restoring),
+  inspectDirectTransport: (binding, ids) => {
+    if (!relayPolicy) throw new Error('Relay host policy is not configured');
+    return inspectEgressHostDirectTransport(binding, ids, relayPolicy);
+  },
   inspectTransport: (binding, ids) => {
     if (!relayPolicy) throw new Error('Relay host policy is not configured');
     return inspectEgressTransport(binding, ids, relayPolicy.codexSubpath !== undefined);

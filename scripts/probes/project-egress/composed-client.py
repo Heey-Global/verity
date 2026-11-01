@@ -1,5 +1,6 @@
 """Project-UID sender for the composed startup/TC/nft path; receiver is independent."""
 import json
+import errno
 from pathlib import Path
 import time
 import socket
@@ -11,31 +12,43 @@ if expectation == 'stream':
     with socket.socket(family, socket.SOCK_STREAM) as channel:
         channel.settimeout(0.1)
         channel.connect((target, 443))
-        end = time.monotonic() + 60
-        stop = Path('/work/composed-stream-stop')
+        end = time.monotonic() + 9
         attempts = 0
-        while time.monotonic() < end and not stop.exists():
+        while time.monotonic() < end:
             attempts += 1
             try:
                 channel.sendall((phase + '-retained').encode())
                 channel.recv(1024)
             except OSError:
                 pass
-            temporary = Path('/work/composed-stream.pending')
+            heartbeat = Path(f'/work/composed-{phase}.json')
+            temporary = heartbeat.with_suffix('.tmp')
             temporary.write_text(json.dumps({
                 'attempts': attempts, 'boot_ns': str(time.clock_gettime_ns(time.CLOCK_BOOTTIME))}))
-            temporary.replace('/work/composed-stream.json')
+            temporary.replace(heartbeat)
             time.sleep(0.05)
     raise SystemExit(0)
 with socket.socket(family, socket.SOCK_DGRAM) as channel:
     channel.sendto((phase + '-udp').encode(), (target, 8080))
 with socket.socket(family, socket.SOCK_STREAM) as channel:
-    channel.settimeout(0.4)
+    # The pinned netstack resolves a missing gateway with three 1-second probes.
+    # A short application timeout leaves queued UDP behind for the next admission.
+    # Require terminal resolution failure, not just elapsed observation time.
+    initial_denial = expectation == 'negative' and phase.startswith('before-admission-')
+    # Admission does not reset that netstack's retry timer after a denied resolution:
+    # queued UDP/SYN leave only on its next 1-second probe, so a positive control
+    # must outlast one full probe interval instead of racing it.
+    channel.settimeout(4 if initial_denial else 3 if expectation == 'positive' else 0.4)
     try:
         channel.connect((target, 443))
         channel.sendall((phase + '-tcp').encode())
         assert b'external-positive' in channel.recv(1024)
-    except OSError:
+    except OSError as error:
+        if initial_denial:
+            if error.errno != errno.EHOSTUNREACH:
+                raise RuntimeError('Initial negative probe did not finish neighbor resolution') from error
+            print(json.dumps({'phase': phase, 'family': 6 if family == socket.AF_INET6 else 4,
+                              'terminal': 'EHOSTUNREACH'}))
         if expectation == 'positive':
             raise
     else:

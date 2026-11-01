@@ -12,8 +12,12 @@ const command = createProjectEgressHostClient({
 });
 const lifecycle = new ProjectEgressLifecycle(async (request) => {
   const started = performance.now();
+  let failure: string | undefined;
   try {
     return await command(request);
+  } catch (error) {
+    failure = String(error);
+    throw error;
   } finally {
     await appendFile(
       `${directory}/renewal-trace.jsonl`,
@@ -23,6 +27,7 @@ const lifecycle = new ProjectEgressLifecycle(async (request) => {
         startedAtMs: started,
         finishedAtMs: performance.now(),
         durationMs: performance.now() - started,
+        ...(failure === undefined ? {} : { failure }),
       }) + '\n',
     );
   }

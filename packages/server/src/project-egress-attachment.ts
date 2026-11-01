@@ -1,4 +1,4 @@
-import { readProjectEgressDocker } from './project-egress-docker-read.js';
+import { readEgressDockerObject } from './project-egress-docker-read.js';
 import { readFile } from 'node:fs/promises';
 import { z } from 'zod';
 import type { ProjectFenceBinding } from './project-egress-fence.js';
@@ -57,23 +57,29 @@ export function verifyProjectFenceAttachment(
 /** Host-side only. No Docker socket or command endpoint is exposed to a project. */
 export async function inspectProjectFenceAttachment(
   binding: ProjectFenceBinding,
+  io = {
+    inspect: async (containerId: string, networkId: string) =>
+      JSON.stringify(
+        await Promise.all([
+          readEgressDockerObject('container', containerId),
+          readEgressDockerObject('network', networkId),
+        ]),
+      ),
+    ifindex: (bridge: string) => readFile(`/sys/class/net/${bridge}/ifindex`, 'utf8'),
+  },
 ): Promise<ProjectFenceBinding> {
   if (![binding.containerId, binding.networkId].every((value) => /^[a-f0-9]{64}$/u.test(value)))
     throw new Error('Invalid daemon object id');
-  const [container, network] = await Promise.all([
-    readProjectEgressDocker(['container', 'inspect', binding.containerId]),
-    readProjectEgressDocker(['network', 'inspect', binding.networkId]),
-  ]);
-  const result = verifyProjectFenceAttachment(
-    binding,
-    JSON.parse(container!),
-    JSON.parse(network!),
-  );
+  const replies = z
+    .array(z.object({ Id: id }).passthrough())
+    .length(2)
+    .parse(JSON.parse(await io.inspect(binding.containerId, binding.networkId)));
+  const container = replies.filter((value) => value.Id === binding.containerId);
+  const network = replies.filter((value) => value.Id === binding.networkId);
+  const result = verifyProjectFenceAttachment(binding, container, network);
   if (!/^[a-zA-Z0-9_-]{1,15}$/u.test(result.bridge)) throw new Error('Invalid bridge interface');
   // A daemon record alone is insufficient if its network device no longer exists.
-  const ifindex = Number(
-    (await readFile(`/sys/class/net/${result.bridge}/ifindex`, 'utf8')).trim(),
-  );
+  const ifindex = Number((await io.ifindex(result.bridge)).trim());
   if (!Number.isSafeInteger(ifindex) || ifindex < 1) throw new Error('Missing host bridge');
   return result;
 }
