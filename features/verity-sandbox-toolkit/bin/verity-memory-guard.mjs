@@ -46,6 +46,7 @@
 import {
   closeSync,
   constants,
+  fstatSync,
   openSync,
   readdirSync,
   readFileSync,
@@ -83,6 +84,9 @@ export function notifyMemoryKill(pid) {
   let fd;
   try {
     fd = openSync(`/proc/${pid}/fd/2`, constants.O_WRONLY | constants.O_NONBLOCK);
+    // Validate the opened target: a process can redirect stderr to a read-only
+    // file descriptor which this root process could otherwise reopen for writing.
+    if (!fstatSync(fd).isFIFO()) return;
     writeSync(fd, '\nVERITY_MEMORY_GUARD_KILL\n');
   } catch {
     // A closed/full stderr pipe must never block pressure relief.

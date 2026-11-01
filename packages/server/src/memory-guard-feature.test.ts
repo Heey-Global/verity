@@ -1,5 +1,6 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, open, readFile, rm, writeFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
+import { once } from 'node:events';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -7,6 +8,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   chooseVictim,
+  notifyMemoryKill,
   createMemoryGuard,
   DEFAULT_MINIMUM_RESERVE_BYTES,
   descendantsOf,
@@ -1008,3 +1010,27 @@ it('holds off daemon launches before stale-file recovery while the lifetime lock
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+it.runIf(process.platform === 'linux')(
+  'refuses to write a guard notice through a read-only file stderr descriptor',
+  async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'guard-stderr-'));
+    const path = join(directory, 'protected-file');
+    await writeFile(path, 'original file contents');
+    const file = await open(path, 'r');
+    const child = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], {
+      stdio: ['ignore', 'ignore', file.fd],
+    });
+    try {
+      await once(child, 'spawn');
+      notifyMemoryKill(child.pid!);
+      expect(await readFile(path, 'utf8')).toBe('original file contents');
+    } finally {
+      const exited = once(child, 'close');
+      child.kill('SIGKILL');
+      await exited;
+      await file.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  },
+);
