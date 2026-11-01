@@ -370,6 +370,12 @@ it.each(['monitor', 'automatic'] as const)(
   'observes session-owned failures in %s without granting or delegating repair',
   async (mode) => {
     const incident = await enroll(mode);
+    await ctx.store.createSession({
+      sessionId: 'origin',
+      projectId: 'a',
+      worktree: '/wt/origin',
+      model: 'm',
+    });
     await ctx.store.repairs.registerSessionOrigin('a', 'pr:42', 'origin');
     const { deps, coordinator } = harness();
     await coordinator.tick();

@@ -554,3 +554,33 @@ it('serializes competing QA and session claims under the same ownership lock', a
     originating_session_id: 'origin',
   });
 });
+
+it('releases deleted session responsibility without releasing an uncertain active repair', async () => {
+  await ctx.store.createSession({
+    sessionId: 'origin',
+    projectId: 'a',
+    worktree: '/wt/origin',
+    model: 'm',
+  });
+  await ctx.store.repairs.configure('a', 'admin', 'automatic');
+  await ctx.store.repairs.registerSessionOrigin('a', 'pr:1', 'origin');
+  const incident = await ctx.store.repairs.observe('a', 'pr:1', 'sha', '{}');
+  const claim = await ctx.store.repairs.claimSessionRepair(incident.id, 'origin', 'ci:sha');
+  await ctx.store.deleteSession('origin');
+  expect(await ctx.store.repairs.sessionOrigin('a', 'pr:1')).toBeUndefined();
+  expect(await ctx.store.repairs.claim(incident.id, 'qa', 1)).toBeUndefined();
+  await ctx.store.repairs.finishAttempt(incident.id, claim!.dispatch_id!, 'verifying', '{}');
+  await ctx.store.createSession({
+    sessionId: 'replacement',
+    projectId: 'a',
+    worktree: '/wt/replacement',
+    model: 'm',
+  });
+  expect(await ctx.store.repairs.registerSessionOrigin('a', 'pr:1', 'replacement')).toBe(
+    'replacement',
+  );
+  expect(
+    (await ctx.store.repairs.claimSessionRepair(incident.id, 'replacement', 'ci:sha'))
+      ?.owner_session_id,
+  ).toBe('replacement');
+});

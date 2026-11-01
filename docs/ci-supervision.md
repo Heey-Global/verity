@@ -310,3 +310,9 @@ action requires an explicit approval card and current project execution permissi
 it saves an unassigned project task with evidence, baseline and success criterion.
 Task creation does not authorize execution: implementation is handed to an ordinary
 project session after a separate instruction. Analysis does not enable automatic QA repairs.
+
+Deleting an originating session removes its responsibility record, allowing a new
+session to register responsibility or an explicitly authorized QA repair. An active
+repair claim is retained until termination is confirmed; deletion alone is not proof
+that execution stopped. Session reconciliation never consumes QA worker completion: the
+supervisor retains its workflow repair PR and awaiting-merge handoff.

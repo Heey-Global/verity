@@ -2504,11 +2504,9 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       )
         continue;
       if (preparingRepairDispatches.has(incident.dispatch_id)) continue;
-      if (
-        (await deps.eventStore.repairs.sessionAutomationMarker(incident.dispatch_id)) &&
-        (await deps.eventStore.repairs.cancelReservedDispatch(incident.dispatch_id))
-      )
-        continue;
+      // QA owns its terminal handoff, including awaiting-merge workflow repairs.
+      if (!(await deps.eventStore.repairs.sessionAutomationMarker(incident.dispatch_id))) continue;
+      if (await deps.eventStore.repairs.cancelReservedDispatch(incident.dispatch_id)) continue;
       if (await repairTerminated(incident.owner_session_id, incident.dispatch_id))
         await deps.eventStore.repairs.finishAttempt(
           incident.id,

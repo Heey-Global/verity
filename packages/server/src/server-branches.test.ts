@@ -2769,3 +2769,44 @@ it('waits for confirmed termination across restart before repairing the next ses
     await server.close();
   }
 });
+
+it('leaves terminated QA workflow ownership to the supervisor merge handoff', async () => {
+  await ctx.store.upsertProject({
+    id: 'qa-project',
+    owner: 'team',
+    repo: 'app',
+    containerName: 'app',
+    state: 'active',
+  });
+  await createExistingSession('s1');
+  await ctx.store.setSessionProject('s1', 'qa-project');
+  await ctx.store.repairs.configure('qa-project', 'admin', 'automatic');
+  const incident = await ctx.store.repairs.observe('qa-project', 'workflow:ci.yml', 'sha', '{}');
+  const claim = await ctx.store.repairs.claim(incident.id, 's1', 1);
+  await ctx.store.admitBackgroundDispatch(claim!.dispatch_id!, 's1', {
+    t: 'prompt',
+    text: 'QA workflow repair',
+  });
+  await ctx.store.appendEvent('s1', { t: 'status', state: 'completed' });
+  await ctx.store.clearRunningTurn('s1');
+  const status = vi.fn(async () => null);
+  const server = buildServer({
+    eventStore: ctx.store,
+    bus,
+    conductor,
+    branches: branchSvc as unknown as NonNullable<ServerDeps['branches']>,
+    branchPrStatus: status,
+    pullRequestRepairPollMs: 20,
+  });
+  try {
+    await server.ready();
+    await vi.waitFor(() => expect(status).toHaveBeenCalled());
+    expect((await ctx.store.repairs.incidents('qa-project'))[0]).toMatchObject({
+      state: 'working',
+      owner_session_id: 's1',
+      dispatch_id: claim!.dispatch_id,
+    });
+  } finally {
+    await server.close();
+  }
+});
