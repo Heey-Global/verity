@@ -345,6 +345,7 @@ class ActualMemoryPersistenceTests(unittest.TestCase):
                 self.assertEqual(calls[-1][-1], 'readmit')
                 self.assertFalse((root / f'.boot-inflight-{phase}-finish').exists())
                 calls.append(('remove-fences',))
+                return True
             with patch.object(guest, 'ROOT', root), patch.object(guest, 'worktree', return_value=root), \
                     patch.object(guest, 'sandbox', return_value='sandbox'), \
                     patch.object(guest, 'descriptor', return_value={'projectId': 'project'}), \
@@ -402,20 +403,64 @@ class FenceMutationOrderTests(unittest.TestCase):
 
 
 class GuestCommandEvidenceTests(unittest.TestCase):
-    def test_failed_command_output_reaches_ssh_evidence(self):
+    def guest(self):
+        spec = importlib.util.spec_from_file_location('evidence_guest', Path(__file__).with_name('boot-guest.py'))
+        guest = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(guest)
+        return guest
+
+    def test_uncaught_command_failure_output_reaches_ssh_evidence(self):
         import contextlib
         import io
         import subprocess
         from unittest.mock import patch
-        spec = importlib.util.spec_from_file_location('evidence_guest', Path(__file__).with_name('boot-guest.py'))
-        guest = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(guest)
+        guest = self.guest()
         error = subprocess.CalledProcessError(1, ['node'], output='Deadline hook identity changed')
+        try:
+            try:
+                raise error
+            except subprocess.CalledProcessError as failure:
+                raise TimeoutError('wrapped') from failure
+        except TimeoutError as wrapped:
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr), patch.object(guest.sys, '__excepthook__') as default:
+                guest.report_failed_command(TimeoutError, wrapped, None)
+        self.assertIn('Deadline hook identity changed', stderr.getvalue())
+        default.assert_called_once()
+
+    def test_fence_removal_reports_observed_kernel_state(self):
+        import json
+        from unittest.mock import patch
+        guest = self.guest()
+        tables = [{'table': {'family': family, 'name': name}} for family, name in
+                  [('inet', 'verity_egress_a'), ('bridge', 'verity_egress_b'), ('inet', 'verity_start_a'),
+                   ('bridge', 'verity_start_b'), ('inet', 'docker')]]
+        for leftover_table, leftover_qdisc, expected in ((False, False, True), (True, False, False), (False, True, False)):
+            listings = [tables, [tables[0]] if leftover_table else [tables[4]]]
+            def run(*args):
+                if args[:4] == ('nft', '--json', 'list', 'tables'):
+                    return json.dumps({'nftables': listings.pop(0)})
+                if args[:4] == ('tc', '-j', 'qdisc', 'show'):
+                    return json.dumps([{'kind': 'clsact'}] if leftover_qdisc else [{'kind': 'noqueue'}])
+                return ''
+            with self.subTest(table=leftover_table, qdisc=leftover_qdisc), \
+                    patch.object(guest, 'run', side_effect=run), \
+                    patch.object(guest, 'snapshot', return_value={'packet': [{'raw': {'state': {'peer': {'device': 'veth1'}}}}]}), \
+                    patch.object(guest.Path, 'read_text', return_value='verity-boot-probe'):
+                self.assertIs(guest.remove_fences(), expected)
+
+    def test_handled_command_failures_print_nothing(self):
+        import contextlib
+        import io
+        import subprocess
+        from unittest.mock import patch
+        guest = self.guest()
         stderr = io.StringIO()
+        error = subprocess.CalledProcessError(1, ['node'], output='expected denial')
         with patch.object(guest.subprocess, 'check_output', side_effect=error), contextlib.redirect_stderr(stderr):
             with self.assertRaises(subprocess.CalledProcessError):
                 guest.run('node')
-        self.assertIn('Deadline hook identity changed', stderr.getvalue())
+        self.assertEqual(stderr.getvalue(), '')
 
 
 class ReplacementRecoveryTests(unittest.TestCase):
