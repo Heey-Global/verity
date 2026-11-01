@@ -82,6 +82,9 @@ describe('workflow token least privilege', () => {
       'renovate-notices.yml': {
         notices: { actions: 'write', contents: 'write' },
       },
+      'renovate-gvisor.yml': {
+        derive: { actions: 'write', contents: 'write' },
+      },
       'release.yml': {
         // contents: write reads draft releases for the lifecycle steps.
         'release-please': { contents: 'write', 'pull-requests': 'read' },
@@ -2579,7 +2582,8 @@ describe('GitHub-hosted runner boundary', () => {
     // And what it yields has to survive the step's own shape check, which is the
     // thing standing between a candidate-supplied value and a path comparison.
     expect(run).toContain('=~ ^[A-Za-z0-9._-]+$');
-    expect(run.match(/=~ \^\[a-f0-9\]\{128\}\$/g)).toHaveLength(2);
+    // The binary pins, and the archive pins a release shipped as gVisor's archive adds.
+    expect(run.match(/=~ \^\[a-f0-9\]\{128\}\$/g)).toHaveLength(4);
     expect(extracted).toMatch(/^[A-Za-z0-9._-]+$/);
 
     const template = PINNED_RUNSC_PATH.replaceAll(PINNED_RUNSC_RELEASE, '$runsc_release');

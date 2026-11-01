@@ -1397,3 +1397,55 @@ is intended for rollbacks, and it is the same latitude Amendment 2 gives runtime
 registration that the builder installer performs is not part of the rollback, because it equals
 the release's runtime pins, which Amendment 2 reconciles anyway. Hosts without systemd get the
 builder at install time only.
+
+## Amendment 5 — gVisor release archives reach hosts through updates (2026-10-31)
+
+**Context.** Starting with `release-20260831.0`, gVisor no longer publishes a standalone `runsc`
+binary. Each release ships `gvisor.tar.bz2` per architecture, and its `runsc` cannot start a sandbox
+without the sidecar binaries in `gvisor-bin/` next to it. The `verity-host-runtime` installed on a
+host (Amendment 2) only downloads a single binary and accepts only that pin shape. Moving to a
+fixed gVisor release, CVE-2026-95702 for example, would therefore fail on every existing host.
+A Server image alone cannot change that component.
+
+**Decision.**
+
+1. A pin may name an archive. `versions.env` then carries `RUNSC_ARCHIVE_SHA512_*` beside
+   `RUNSC_SHA512_*`, which keeps pinning the `runsc` binary. The `org.verity.host-runtimes` label
+   gains `archiveSha512`. The host component verifies the archive before it lists or unpacks it,
+   accepts only the expected members, checks `runsc` against its own pin and version, and requires
+   the Sentry sidecar. It assembles the release directory in a staging directory on the same
+   filesystem and renames it into place, recording a checksum of every installed file so a later
+   run can tell an intact installation from a damaged one. The registration path is unchanged
+   (`/opt/verity/runsc/<release>/runsc`), and other release directories are never touched.
+2. `agent.json` gains `runtimeArtifacts`. The Updater sends an archive pin only to a component
+   that lists `archive`, and an older Updater refuses the extended label as malformed before it
+   changes anything on the host.
+3. The component reaches existing hosts through Amendment 4. The builder bundle's installer, run
+   out of the signature-verified target image, already registers the release's runtimes with the
+   bundled `verity-host-runtime`. Afterwards it runs that copy's `install-self`, which replaces
+   the installed component and updates `agent.json`. The trust anchor is again the release
+   signature, and no code runs that the builder path did not already run as root.
+4. When the target pins an archive and the host's component predates archives, the Updater asks
+   the builder before it asks the runtime service. That one request also registers the target's
+   runtimes. If the builder cannot run (no builder installed, builds still running, no systemd),
+   the update stops before the standby is created, says why, and the current version keeps
+   serving.
+5. A gVisor bump is a change of `RUNSC_RELEASE` alone. Renovate tracks it, and
+   `scripts/gvisor-pins.mjs` derives every other pin from what gVisor published. For archive releases it
+   cross-checks the release bucket against the GitHub release checksums; older single-binary
+   releases publish only the bucket checksum, which the download must match. On Renovate branches,
+   `.github/workflows/renovate-gvisor.yml` commits the derived pins. On every other pull request
+   it fails pins that do not match.
+
+**Transition.** Release A ships points 1 to 5 while still pinning a single-binary gVisor. Its
+update changes nothing on hosts except the component itself, through point 3. Release B then
+switches the pin to an archive. A host that runs A but whose component was not replaced (the
+builder was busy, for example) reaches B through point 4. A host still on a release before A
+updates with the older Updater, which refuses B's label and changes nothing (point 2). Such a host
+has to run A first, so B is published only after A has reached the hosts. Until then the gVisor
+rule in `renovate.json` holds bumps for approval on the Dependency Dashboard, so Renovate cannot
+publish B right behind A; the hold is lifted once B has shipped. Hosts installed before
+the builder component (Amendment 4), or without systemd, need one installer run, as before.
+
+**Limits.** Running containers keep the runtime they started with. Rolling back re-registers the
+previous release, whose directory is still installed.
