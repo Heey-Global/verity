@@ -237,7 +237,9 @@ export function ActiveMeetingOverlay() {
           // running, keep following and look again on the next refresh. Clearing at once
           // would let discovery follow it again, in a loop; once it is gone, let it go.
           if (discoveredRef.current?.running.some((item) => item.id === followed.meetingId)) return;
-          settled.current.add(followed.meetingId);
+          // Before discovery has answered (a cold start) the server may still run it; let
+          // discovery follow it again then, rather than settling it for good.
+          if (discoveredRef.current) settled.current.add(followed.meetingId);
           clearFollowedRemoteMeeting();
           return;
         }

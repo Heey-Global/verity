@@ -91,6 +91,9 @@ export function useUnassignedMeetings(): [ActiveLiveMeetings['unassigned'], () =
   };
   useEffect(() => {
     void load();
+    // A meeting Verity joins while this screen is open shows up without leaving it.
+    const timer = setInterval(() => void load(), REFRESH_MS);
+    return () => clearInterval(timer);
   }, []);
   return [unassigned, load];
 }

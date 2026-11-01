@@ -253,6 +253,17 @@ export class CalendarWatchStore {
       .execute();
   }
 
+  /** Gives back joins claimed by a process that stopped before the bot started; nothing
+   * else would ever resolve them. Run before anything in this process claims. */
+  async releaseUnfinishedJoins(): Promise<void> {
+    await this.db
+      .updateTable('calendar_watch_events')
+      .set({ decision: null, updated_at: new Date().toISOString() })
+      .where('decision', '=', 'joined')
+      .where('meeting_id', 'is', null)
+      .execute();
+  }
+
   /** Gives a claimed join back after the bot could not start, so it can be tried again. */
   async releaseJoin(key: string): Promise<void> {
     await this.db

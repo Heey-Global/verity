@@ -138,7 +138,12 @@ describe('watched events', () => {
     await watch.releaseJoin(key);
     expect(await watch.getEvent(key)).toMatchObject({ decision: null });
     expect(await watch.claimJoin(key)).toBe(true);
+    // A process that stopped before the bot started leaves a claim nothing else resolves.
+    await watch.releaseUnfinishedJoins();
+    expect(await watch.getEvent(key)).toMatchObject({ decision: null });
+    expect(await watch.claimJoin(key)).toBe(true);
     await watch.setJoinResult(key, { meetingId: 'meeting-1' });
+    await watch.releaseUnfinishedJoins();
     expect(await watch.getEvent(key)).toMatchObject({ decision: 'joined', meetingId: 'meeting-1' });
   });
 
