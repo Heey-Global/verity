@@ -4,7 +4,7 @@ import { completeHttpMcpOAuth } from './http-mcp-oauth.js';
 import { parseHttpMcpUpstream } from './http-mcp-proxy.js';
 
 export const NATIVE_MCP_CALLBACK = 'https://verity.build/mcp/oauth/callback';
-export const WEB_MCP_CALLBACK_PATH = '/app/mcp/oauth/callback';
+const WEB_MCP_CALLBACK_PATH = '/app/mcp/oauth/callback';
 export type McpOAuthPlatform = 'web' | 'native' | 'native-staging';
 
 export function mcpWebCallback(origin: string): string {

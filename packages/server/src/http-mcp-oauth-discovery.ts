@@ -113,7 +113,7 @@ const authorizationSchema = z.object({
   grant_types_supported: z.array(z.string()).optional(),
   response_types_supported: z.array(z.string()).optional(),
 });
-export interface McpOAuthDiscovery {
+interface McpOAuthDiscovery {
   authorizationEndpoint: string;
   tokenEndpoint: string;
   scopes: string;
