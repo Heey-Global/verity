@@ -71,10 +71,16 @@ class DockerReadTests(unittest.TestCase):
                         host.docker_inspect('container', self.identity)
 
     def test_deadline_is_not_restarted_by_trickling_body_bytes(self):
+        self.trickling_deadline(b'')
+
+    def test_deadline_retains_socket_after_connection_close_response(self):
+        self.trickling_deadline(b'Connection: close\r\n')
+
+    def trickling_deadline(self, headers):
         stopped = threading.Event()
         def reply(handler, request):
             try:
-                handler.wfile.write(b'HTTP/1.1 200 OK\r\nContent-Length: 100000\r\n\r\n')
+                handler.wfile.write(b'HTTP/1.1 200 OK\r\nContent-Length: 100000\r\n' + headers + b'\r\n')
                 for _ in range(300):
                     handler.wfile.write(b' ')
                     time.sleep(0.01)

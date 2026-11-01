@@ -36,6 +36,8 @@ DOCKER_SOCKET = '/var/run/docker.sock'
 class DockerConnection(http.client.HTTPConnection):
     def connect(self):
         self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        # HTTPResponse can own the socket after getresponse clears self.sock.
+        self.transport_socket = self.sock
         self.sock.settimeout(self.timeout)
         self.sock.connect(DOCKER_SOCKET)
 
@@ -50,7 +52,7 @@ def docker_inspect(kind, identity):
     expired = threading.Event()
     def expire():
         expired.set()
-        channel = connection.sock
+        channel = getattr(connection, 'transport_socket', None)
         if channel is not None:
             try:
                 channel.shutdown(socket.SHUT_RDWR)
@@ -59,6 +61,7 @@ def docker_inspect(kind, identity):
         connection.close()
     timer = threading.Timer(1, expire)
     timer.start()
+    response = None
     try:
         connection.request('GET', path, headers={'Connection': 'close'})
         response = connection.getresponse()
@@ -79,6 +82,11 @@ def docker_inspect(kind, identity):
         timer.cancel()
         connection.close()
         timer.join()
+        if response is not None:
+            response.close()
+        channel = getattr(connection, 'transport_socket', None)
+        if channel is not None:
+            channel.close()
 
 
 def run(*args):
