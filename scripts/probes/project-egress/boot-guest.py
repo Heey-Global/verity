@@ -29,7 +29,7 @@ def api(path, body=None, token=None, timeout=15):
             return json.load(response)
     except urllib.error.HTTPError as error:
         detail = error.read(4096).decode('utf-8', errors='replace')
-        raise RuntimeError(f'Guest API {path} failed ({error.code}): {detail}') from error
+        raise ValueError(f'Guest API {path} failed ({error.code}): {detail}') from error
 
 
 def wait(check, timeout=120):

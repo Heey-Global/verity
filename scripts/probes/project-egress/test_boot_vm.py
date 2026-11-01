@@ -372,3 +372,21 @@ class ReplacementRecoveryTests(unittest.TestCase):
             api.assert_any_call('/verity-control/projects/p/recreate-container', {'confirmWarnings': True}, token='disposable-token', timeout=180)
             run.assert_any_call('docker', 'start', 'verity-boot-registry')
             self.assertFalse(any('readmit' in call.args for call in run.call_args_list))
+
+
+class ApiReadinessTests(unittest.TestCase):
+    def test_http_failure_keeps_bounded_details_and_remains_retryable(self):
+        import io
+        import urllib.error
+        from unittest.mock import patch
+        spec = importlib.util.spec_from_file_location('api_guest', Path(__file__).with_name('boot-guest.py'))
+        guest = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(guest)
+        error = urllib.error.HTTPError('http://127.0.0.1/healthz', 503, 'not ready', {}, io.BytesIO(b'{"error":"not ready"}'))
+        with patch.object(guest.urllib.request, 'urlopen', side_effect=[error, io.BytesIO(b'{"ready":true}')]), patch.object(guest.time, 'sleep') as sleep:
+            self.assertEqual(guest.wait(lambda: guest.api('/healthz')), {'ready': True})
+            sleep.assert_called_once()
+        error = urllib.error.HTTPError('http://127.0.0.1/action', 409, 'conflict', {}, io.BytesIO(b'conflict-detail'))
+        with patch.object(guest.urllib.request, 'urlopen', side_effect=error):
+            with self.assertRaisesRegex(ValueError, '409.*conflict-detail'):
+                guest.api('/action')
