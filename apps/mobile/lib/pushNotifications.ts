@@ -254,6 +254,14 @@ export async function handlePushResponse(
       meeting.deviceId === expectedDeviceId;
     if (intent.type === 'reply') {
       if (paired) await outbox.enqueue(intent.action);
+      // A Join or Discard from a killed app can arrive before the device id is loaded. Rather
+      // than dropping it, show the meeting's sheet so the answer is given there.
+      else if (!expectedDeviceId)
+        openMeetingPrompt?.(
+          meeting.kind === 'meeting-upcoming'
+            ? { kind: 'upcoming', eventKey: meeting.eventKey }
+            : { kind: 'started', meetingId: meeting.meetingId },
+        );
     } else if (intent.type === 'show-upcoming')
       openMeetingPrompt?.({ kind: 'upcoming', eventKey: intent.eventKey });
     else openMeetingPrompt?.({ kind: 'started', meetingId: intent.meetingId });

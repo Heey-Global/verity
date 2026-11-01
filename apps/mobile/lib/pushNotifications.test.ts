@@ -475,6 +475,23 @@ describe('calendar meeting pushes', () => {
     expect(box.enqueue).not.toHaveBeenCalled();
   });
 
+  // Join from a killed app is the main path; the device id may not be loaded yet.
+  it('asks in the sheet when Join arrives before the device id is known', async () => {
+    const box = outbox();
+    const prompt = jest.fn();
+    await handlePushResponse(
+      respond('VERITY_MEETING_JOIN', upcoming),
+      box,
+      jest.fn(),
+      undefined,
+      undefined,
+      undefined,
+      prompt,
+    );
+    expect(box.enqueue).not.toHaveBeenCalled();
+    expect(prompt).toHaveBeenCalledWith({ kind: 'upcoming', eventKey: upcoming.eventKey });
+  });
+
   // On a cold start the device id may not be loaded yet; a tap must still lead somewhere.
   it('opens the sheet for a plain tap before the pairing is known', async () => {
     const prompt = jest.fn();

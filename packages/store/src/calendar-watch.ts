@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
-import type { Kysely } from 'kysely';
+import type { Kysely, Selectable } from 'kysely';
 import type { SecretCipher } from './crypto.js';
-import type { Database } from './schema.js';
+import type { CalendarWatchEventsTable, Database } from './schema.js';
 
 /** A Google calendar Verity watches for online meetings. */
 export interface WatchedCalendar {
@@ -183,7 +183,21 @@ export class CalendarWatchStore {
       .orderBy('starts_at')
       .orderBy('event_key')
       .execute();
-    return rows.map((row) => ({
+    return rows.map((row) => this.toEvent(row));
+  }
+
+  /** Reads one event without decrypting the others, so one unreadable row breaks only itself. */
+  async getEvent(key: string): Promise<CalendarWatchEvent | undefined> {
+    const row = await this.db
+      .selectFrom('calendar_watch_events')
+      .selectAll()
+      .where('event_key', '=', key)
+      .executeTakeFirst();
+    return row ? this.toEvent(row) : undefined;
+  }
+
+  private toEvent(row: Selectable<CalendarWatchEventsTable>): CalendarWatchEvent {
+    return {
       key: row.event_key,
       accountId: row.account_id,
       calendarId: row.calendar_id,
@@ -197,11 +211,7 @@ export class CalendarWatchStore {
       decision: row.decision,
       meetingId: row.meeting_id,
       startedNotifiedAt: row.started_notified_at?.getTime() ?? null,
-    }));
-  }
-
-  async getEvent(key: string): Promise<CalendarWatchEvent | undefined> {
-    return (await this.listEvents()).find((event) => event.key === key);
+    };
   }
 
   async markNotified(key: string): Promise<void> {
