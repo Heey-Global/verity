@@ -1,3 +1,4 @@
+import { completeMcpOAuthPopup } from '../lib/mcpOAuth';
 import { startRuntimeDiagnostics, setRuntimeDiagnosticsScreen } from '../lib/runtimeDiagnostics';
 // Root layout mounts the provider stack (gesture handler + safe area) and the themed router
 // Stack. The header colors come from the live theme via useUnistyles; the app is
@@ -66,6 +67,9 @@ import { NO_WINDOW_CONTROLS_INSET, type WindowControlsInset } from '../lib/windo
 if (Platform.OS !== 'web') Appearance.setColorScheme('dark');
 
 installBrowserAlerts();
+
+// Complete the popup before setup/auth redirects can discard the OAuth callback.
+completeMcpOAuthPopup();
 
 const FOREGROUND_UPDATE_POLL_MS = 30_000;
 

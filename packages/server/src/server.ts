@@ -3,7 +3,11 @@ import { SchedulingPageListeners } from './scheduling-page.js';
 import { registerSchedulingRoutes } from './scheduling-routes.js';
 import { startSchedulingScheduler, type SchedulingScheduler } from './scheduling-scheduler.js';
 import { SchedulingService } from './scheduling-service.js';
-import { schedulingNoticeText, schedulingPush } from './scheduling-notices.js';
+import {
+  assistantNoticeTarget,
+  schedulingNoticeText,
+  schedulingPush,
+} from './scheduling-notices.js';
 import { createSchedulingTool } from './scheduling-tool.js';
 import compressPlugin from '@fastify/compress';
 import rateLimitPlugin from '@fastify/rate-limit';
@@ -1529,7 +1533,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           }) {
             return {
               method: request.method,
-              url: request.url,
+              url:
+                request.url.split('?', 1)[0] === '/app/mcp/oauth/callback'
+                  ? '/app/mcp/oauth/callback'
+                  : request.url,
               hostname: request.hostname ?? '',
               remoteAddress: request.ip ?? '',
               remotePort: request.socket?.remotePort ?? 0,
@@ -1996,6 +2003,18 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       } catch (err) {
         app.log.warn({ err, sessionId }, 'scheduling notice failed');
       }
+      try {
+        const assistant = await assistantNoticeTarget(deps.eventStore, notification.request);
+        if (assistant)
+          await emitNotice({
+            eventStore: deps.eventStore,
+            bus: deps.bus,
+            sessionId: assistant.sessionId,
+            text: `${assistant.prefix}${schedulingNoticeText(notification)}`,
+          });
+      } catch (err) {
+        app.log.warn({ err, sessionId }, 'assistant scheduling notice failed');
+      }
       const push = schedulingPush(notification);
       if (push && pushRouter)
         try {
@@ -2019,7 +2038,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     });
   });
   app.addHook('onClose', async () => {
-    schedulingScheduler?.stop();
+    await schedulingScheduler?.stop();
     schedulingService.close();
     await schedulingPages.close();
   });
@@ -3014,7 +3033,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   );
   app.get('/api/remote-control/recordings/:runId/export', async (request, reply) =>
     recordingRequest(request, reply, (manager) =>
-      manager.export((request.params as { runId: string }).runId),
+      manager.export(
+        (request.params as { runId: string }).runId,
+        request.headers['x-verity-recording-failure-details'] === '1',
+      ),
     ),
   );
   app.addHook('onClose', (_instance, done) => {
@@ -4585,7 +4607,9 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       ? { extractImageText: (job: ImageTextJob) => void imageTextExtractor.enqueue(job) }
       : {}),
   });
-  registerHttpMcpConnectionRoutes(app, deps.eventStore);
+  registerHttpMcpConnectionRoutes(app, deps.eventStore, {
+    browserRequestOrigin: deps.browserRequestOrigin,
+  });
   registerProjectEgressRoutes(app, deps.eventStore.projectEgress);
   registerProjectDetailRoutes(app, {
     getDetail: async (id) => {

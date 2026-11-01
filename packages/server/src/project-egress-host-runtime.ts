@@ -1,3 +1,4 @@
+import { readEgressDocker } from './project-egress-docker-read.js';
 import { inspectEgressRelay, type EgressRelayPolicy } from './project-egress-relay-policy.js';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -18,7 +19,9 @@ const dockerOptions = {
   env: { PATH: '/usr/sbin:/usr/bin:/sbin:/bin', DOCKER_HOST: 'unix:///var/run/docker.sock' },
 };
 export async function projectEgressHostDocker(...args: string[]): Promise<string> {
-  return (await exec('/usr/bin/docker', args, dockerOptions)).stdout;
+  if (args[0] === 'container' && (args[1] === 'start' || args[1] === 'stop'))
+    return (await exec('/usr/bin/docker', args, dockerOptions)).stdout;
+  return readEgressDocker(...args);
 }
 const network = z
   .array(
@@ -100,10 +103,11 @@ export function verifyEgressHostContainer(
 export async function inspectEgressHostNetwork(
   binding: ProjectEgressNetworkBinding,
   allowed: readonly string[],
+  docker = projectEgressHostDocker,
 ): Promise<void> {
   verifyEgressHostNetwork(
     binding,
-    JSON.parse(await projectEgressHostDocker('network', 'inspect', binding.networkId)),
+    JSON.parse(await docker('network', 'inspect', binding.networkId)),
     allowed,
   );
   const device = await lstat(`/sys/class/net/${binding.bridge}`);
@@ -139,19 +143,17 @@ export async function inspectEgressHostContainer(
   role: 'sandbox' | 'relay',
   relayPolicy?: EgressRelayPolicy,
   restoring = false,
+  docker = projectEgressHostDocker,
 ): Promise<void> {
-  verifyEgressHostRuntime(
-    JSON.parse(await projectEgressHostDocker('info', '--format', '{{json .Runtimes}}')),
-    role,
-  );
+  verifyEgressHostRuntime(JSON.parse(await docker('info', '--format', '{{json .Runtimes}}')), role);
   if (role === 'relay') {
     if (!relayPolicy) throw new Error('Relay host policy is not configured');
-    await inspectEgressRelay(binding, id, relayPolicy, projectEgressHostDocker, restoring);
+    await inspectEgressRelay(binding, id, relayPolicy, docker, restoring);
   }
   verifyEgressHostContainer(
     binding,
     id,
-    JSON.parse(await projectEgressHostDocker('container', 'inspect', id)),
+    JSON.parse(await docker('container', 'inspect', id)),
     role,
   );
 }
@@ -215,5 +217,63 @@ export async function openProjectEgressHostStore(directory: string): Promise<{
         });
       }
     },
+  };
+}
+
+/** Daemon facts from the already role-validated registered pair, never labels. */
+export async function inspectEgressHostDirect(
+  binding: import('./project-egress-host.js').ProjectEgressNetworkBinding,
+  ids: { sandbox: string; relay: string },
+): Promise<{
+  corridor: import('./project-egress-transport.js').EgressDirectCorridor;
+  relayEndpointId: string;
+}> {
+  const replies = [];
+  const endpointSchema = z.object({
+    NetworkID: z.string(),
+    EndpointID: z.string().regex(/^[a-f0-9]{64}$/u),
+    IPAddress: z.ipv4(),
+    GlobalIPv6Address: z.ipv6(),
+    Gateway: z.ipv4(),
+    IPv6Gateway: z.ipv6(),
+  });
+  for (const id of [ids.sandbox, ids.relay]) {
+    const value = z
+      .array(
+        z.object({
+          Id: z.literal(id),
+          NetworkSettings: z.object({
+            Networks: z.record(z.string(), endpointSchema),
+          }),
+        }),
+      )
+      .length(1)
+      .parse(JSON.parse(await projectEgressHostDocker('inspect', id)))[0]!;
+    const networks = Object.entries(value.NetworkSettings.Networks);
+    if (
+      networks.length !== 1 ||
+      networks[0]![0] !== binding.networkName ||
+      networks[0]![1].NetworkID !== binding.networkId
+    )
+      throw new Error('Host direct network mismatch');
+    replies.push(networks[0]![1]);
+  }
+  const sandbox = replies[0]!;
+  return {
+    corridor: {
+      binding: {
+        projectId: binding.projectId,
+        generation: binding.generation,
+        containerId: ids.sandbox,
+        networkId: binding.networkId,
+        endpointId: sandbox.EndpointID,
+        bridge: binding.bridge,
+        ipv4: sandbox.IPAddress,
+        ipv6: sandbox.GlobalIPv6Address,
+      },
+      gateway4: sandbox.Gateway,
+      gateway6: sandbox.IPv6Gateway,
+    },
+    relayEndpointId: replies[1]!.EndpointID,
   };
 }

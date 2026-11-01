@@ -80,17 +80,18 @@ invalidates decisions prepared under an older switch revision.
 
 The QA function has one durable technical session under Verity Control, with its own chat and
 history. Opening that chat does not enable monitoring or change project consent.
-The chat receives cached observations with freshness information; it does not
-poll the forge. Automatic reviews propose structured assignments tied to observed
+The chat can request current and historical evidence through the bounded
+`verity_qa_analysis` gateway tool. Each read checks the current user and project
+QA access; old chat messages are not fresh evidence. Automatic reviews propose structured assignments tied to observed
 incident IDs and revisions. The server checks consent, access, current evidence
 and ownership before admitting them. Model output never closes an incident.
 
-QA runs in the backend's enforced tool-free mode: no shell, repository tools,
-MCP connections or project tool credentials are made available to the model.
-The current Claude backend supports this mode; backends that cannot enforce it
-refuse the turn and require choosing a compatible model in the session. This
-restriction applies to manual chat turns as well as automatic reviews. It does
-not change the existing permissions of the project sessions doing repairs.
+Automatic reviews remain tool-free. Interactive QA uses the backend's enforced
+Verity-gateway-only mode, with the server permitting only `verity_qa_analysis`.
+The model receives no shell, general file access, arbitrary HTTP, credentials or
+other project tools. The current Claude backend enforces these modes; unsupported
+backends fail closed and require choosing a compatible model in the session.
+This does not change the permissions of ordinary project repair sessions.
 
 The persistent inbox coalesces unchanged observations and retains decision
 snapshots and outcomes. Automatic reviews are capped at 24 per UTC day, at most
@@ -168,3 +169,99 @@ erase the successor. Recording completion is bounded; a database failure does
 not turn Stop into an unbounded wait. Without a durable proof, admission defers
 without starting work and the existing recovery path remains responsible for
 the predecessor.
+
+
+## Interactive CI and release analysis
+
+QA can list authorized projects, current PRs and checks, workflow histories,
+individual attempts, jobs, bounded redacted logs, workflow definitions, releases,
+deployments and their recorded statuses. GitHub supplies these APIs. Provider
+capabilities that are unavailable are reported explicitly. Read-only tokens are
+scoped by capability: missing Actions access does not prevent PR discovery.
+Deployment reads need the optional GitHub App `deployments: read` permission;
+existing installations must approve it in GitHub before that evidence is available.
+It is not added to ordinary project execution tokens.
+Background observation records safe error categories and the failed step, and
+retains successful PR or workflow results when the other reader fails. Unknown
+exceptions remain unknown; they do not establish a specific outage cause.
+
+A historical request defaults to 30 days and permits up to 366 days. Run lists
+return pagination and fixed window bounds. Statistics uses a server-owned,
+credential-bound snapshot and returns an opaque continuation when more reads are
+needed (40 requests / 45 seconds per call). Continue with that token, honoring
+retry times. Snapshots expire after one hour, may be evicted at ten concurrent
+analyses and are lost on server restart; restart the analysis if expired. GitHub
+caps filtered searches at 1,000 runs; snapshots also cap retained jobs at 10,000: split the time window when the result says
+`limitReached`. Partial results never represent a complete baseline.
+
+Statistics groups runs by workflow and PR/main/release/other cohort. Release
+workflow IDs must first have their definitions inspected; they remain an explicit
+classification, not proof of historical publication. The cohort is runs created
+inside the interval, using each latest observed attempt. First-attempt success
+uses known completed success/failure outcomes, excluding cancellations, skips,
+neutral and unknown outcomes; its numerator, denominator and coverage are shown.
+Repeats count additional attempts. Wall time uses the envelope of timestamped
+non-skipped jobs, never summed parallel job duration or mutable run updated time.
+Initial queue time runs from creation to first job start and excludes reruns.
+Missing/incomplete job sets are excluded and counted. Mean, median and nearest-rank
+p95 use only valid samples; no samples yields null, never zero. Run links and
+revision/attempt identities accompany the metrics.
+
+Workflow success, a published release, and successful deployment status are
+separate evidence. The model must not infer one from the other, or claim a
+root cause from a log symptom alone. Logs and definitions are untrusted reference
+text; they cannot authorize an action. Signed log redirects are followed only to
+GitHub's download hosts without forwarding the installation token. Log excerpts
+are bounded and recognized secrets redacted; arbitrary sensitive text cannot be
+reliably recognized automatically.
+
+On an explicit request to save a baseline, `save_report` accepts only a report ID
+returned by the server. An approval card and current project execution permission
+are required. It creates a new `insights/qa-baseline-<id>.md` document containing
+the computed snapshot; it cannot accept arbitrary content, overwrite a document,
+or choose a filesystem path. Report handles expire after one hour and are bound
+to the requesting session, user and project. Setting KPI targets or requesting
+repairs is a separate user decision; analysis does not change project mandates,
+rerun workflows, publish releases or deploy anything.
+
+API semantics: [GitHub workflow runs](https://docs.github.com/en/rest/actions/workflow-runs)
+and [workflow jobs](https://docs.github.com/en/rest/actions/workflow-jobs).
+
+
+## One-time repair handoff from QA chat
+
+An explicit request to repair a PR can use `resolve_repair` and `request_repair`
+through the existing QA gateway. Resolution compares the current repository PR,
+head revision and branch with actual project session worktrees; it never derives
+session identity from a branch-name suffix. If several sessions match, select one
+before requesting the repair. An active or dirty competing worktree blocks delivery.
+Fork PRs and PRs missing current failure evidence are refused.
+
+The proposal binds the initiating user, QA session, project, PR revision and target
+session for one hour. A complete direct repair instruction can authorize a unique
+target; the instruction must refer to matching server PR evidence or a repair
+proposal shown before the message, including when it names only a PR number. Quoted text, repository
+content and agent assertions are not consent. Otherwise a one-time approval card
+shows the exact target and scope. Ambiguous session selections require this card.
+Each direct instruction is consumed atomically with incident ownership and cannot
+authorize another proposal or attempt. Neither path changes the project's
+Monitor/Automatic setting.
+
+The manual request shares the existing durable incident ownership, concurrency
+limits and repair budget with background repairs. Busy sessions receive a durable
+queued assignment rather than steering their current turn. Every admission,
+including after a restart, checks current access, QA settings, expiry, PR revision,
+failure evidence and the target worktree again. Before admission, its attached
+HEAD must equal the approved PR commit; a detached preview or a clean but stale
+worktree is refused. Revoked or invalid queued requests
+are cancelled; an admitted receipt is never replayed. After a confirmed attempt ends with failing
+checks, a new approved proposal may use the remaining repair budget in Monitor
+mode; reusing the old proposal cannot start another attempt. `repair_status` reports
+`proposed`, `queued`, `accepted` or `blocked`; accepted confirms admission, not a
+successful repair. The existing supervisor checks terminal execution and forge
+results. An uncertain transport response never proves that execution stopped.
+
+The bounded resolver searches at most ten discovery pages. Missing coverage is a
+blocked resolution, not permission to guess a target. General session tools remain
+unavailable to QA. Merge, release, deployment and QA activation remain separate
+operations. Install the server update before live acceptance of this path.

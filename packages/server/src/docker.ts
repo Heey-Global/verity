@@ -192,6 +192,8 @@ export interface DockerClient {
    *  Optional so pre-existing test fakes stay valid; the real
    *  {@link createDockerClient} always provides it. */
   hostCpuCount?(): Promise<number | undefined>;
+  /** Physical memory reported by the Docker daemon, not this process. */
+  hostMemoryBytes?(): Promise<number | undefined>;
   /** List images on the daemon (Engine `GET /images/json`). Read by the disk GC
    *  to find superseded devcontainer image generations. Optional so pre-existing
    *  test fakes stay valid; the real {@link createDockerClient} always provides it. */
@@ -340,6 +342,8 @@ export interface ContainerSpec {
   /** OCI runtime registered with the Docker daemon (`HostConfig.Runtime`). Secret jobs set this
    *  explicitly to `runsc`; omitting it preserves the daemon default for ordinary sandboxes. */
   runtime?: string;
+  /** Host PID visibility for the bounded host-systemd provisioning helper only. */
+  pidMode?: 'host';
   /** Mount the image root filesystem read-only (`HostConfig.ReadonlyRootfs`). */
   readOnlyRootfs?: boolean;
   /** Ephemeral in-memory mounts keyed by their absolute container path (`HostConfig.Tmpfs`). */
@@ -362,6 +366,10 @@ export interface ContainerSpec {
   pidsLimit?: number;
   /** Hard memory ceiling in bytes (`HostConfig.Memory`). Omit/0 → unlimited. */
   memoryBytes?: number;
+  /** Best-effort soft protection; not a guaranteed allocation. */
+  memoryReservationBytes?: number;
+  /** Host OOM preference (-1000..1000); positive favours eviction. */
+  oomScoreAdj?: number;
   /**
    * Combined memory+swap ceiling in bytes (`HostConfig.MemorySwap`). Setting it
    * equal to {@link memoryBytes} disables swap, which is what a Compose
@@ -472,12 +480,15 @@ export interface ContainerInspect {
   extraHosts?: string[] | undefined;
   sysctls?: Record<string, string> | undefined;
   networkMode?: string | undefined;
+  pidMode?: string | undefined;
   readOnlyRootfs?: boolean | undefined;
   tmpfs?: Record<string, string> | undefined;
   capDrop?: string[] | undefined;
   securityOpt?: string[] | undefined;
   pidsLimit?: number | undefined;
   memoryBytes?: number | undefined;
+  memoryReservationBytes?: number | undefined;
+  oomScoreAdj?: number | undefined;
   /** `HostConfig.MemorySwap`. Reported so a caller can tell a container Docker
    *  gave the default swap allowance (twice {@link memoryBytes}) from one whose
    *  combined ceiling matches its memory ceiling and therefore cannot swap. */
@@ -1463,6 +1474,7 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
           : {}),
         ...(spec.extraHosts?.length ? { ExtraHosts: spec.extraHosts } : {}),
         ...(spec.runtime !== undefined ? { Runtime: spec.runtime } : {}),
+        ...(spec.pidMode !== undefined ? { PidMode: spec.pidMode } : {}),
         ...(spec.groupAdd?.length ? { GroupAdd: spec.groupAdd } : {}),
         ...(spec.readOnlyRootfs !== undefined ? { ReadonlyRootfs: spec.readOnlyRootfs } : {}),
         ...(spec.tmpfs !== undefined ? { Tmpfs: spec.tmpfs } : {}),
@@ -1476,6 +1488,10 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
         ...(spec.memoryBytes !== undefined && spec.memoryBytes > 0
           ? { Memory: spec.memoryBytes }
           : {}),
+        ...(spec.memoryReservationBytes !== undefined
+          ? { MemoryReservation: spec.memoryReservationBytes }
+          : {}),
+        ...(spec.oomScoreAdj !== undefined ? { OomScoreAdj: spec.oomScoreAdj } : {}),
         // Only alongside `Memory`: a swap ceiling on its own is not a weaker limit, it
         // is a create the daemon refuses ("You should always set the Memory limit when
         // using Memoryswap limit"). Dropping it keeps a half-specified spec from
@@ -2103,6 +2119,7 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
           PortBindings?: ContainerReplacementConfig['portBindings'];
           Runtime?: unknown;
           NetworkMode?: unknown;
+          PidMode?: unknown;
           ExtraHosts?: unknown;
           Sysctls?: unknown;
           ReadonlyRootfs?: unknown;
@@ -2112,6 +2129,8 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
           PidsLimit?: unknown;
           Memory?: unknown;
           MemorySwap?: unknown;
+          MemoryReservation?: unknown;
+          OomScoreAdj?: unknown;
           NanoCpus?: unknown;
           CpuShares?: unknown;
           Privileged?: unknown;
@@ -2189,6 +2208,9 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
         ...(typeof json.State?.Health?.Status === 'string'
           ? { healthStatus: json.State.Health.Status }
           : {}),
+        ...(typeof json.HostConfig?.PidMode === 'string'
+          ? { pidMode: json.HostConfig.PidMode }
+          : {}),
         ...(typeof json.HostConfig?.NetworkMode === 'string'
           ? { networkMode: json.HostConfig.NetworkMode }
           : {}),
@@ -2214,6 +2236,12 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
           : {}),
         ...(typeof json.HostConfig?.MemorySwap === 'number'
           ? { memorySwapBytes: json.HostConfig.MemorySwap }
+          : {}),
+        ...(typeof json.HostConfig?.MemoryReservation === 'number'
+          ? { memoryReservationBytes: json.HostConfig.MemoryReservation }
+          : {}),
+        ...(typeof json.HostConfig?.OomScoreAdj === 'number'
+          ? { oomScoreAdj: json.HostConfig.OomScoreAdj }
           : {}),
         ...(typeof json.HostConfig?.NanoCpus === 'number'
           ? { nanoCpus: json.HostConfig.NanoCpus }
@@ -2298,6 +2326,16 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
         });
       }
       return { path: candidate.path, args: candidate.runtimeArgs };
+    },
+    hostMemoryBytes: async () => {
+      const res = await callDocker(doFetch, `${base}/info`, 'GET', timeoutMs);
+      if (!res.ok) throw await toDockerError(res);
+      const json = (await res.json()) as { MemTotal?: unknown };
+      return typeof json.MemTotal === 'number' &&
+        Number.isSafeInteger(json.MemTotal) &&
+        json.MemTotal > 0
+        ? json.MemTotal
+        : undefined;
     },
     hostCpuCount: async () => {
       const res = await callDocker(doFetch, `${base}/info`, 'GET', timeoutMs);

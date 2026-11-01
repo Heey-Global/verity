@@ -43,6 +43,10 @@ else
 fi
 # Reuse the host installer's checksum verification and release-version checks.
 "$source_dir/../gvisor/install-runsc-host.sh"
+# This bundle's runtime service just registered the pinned gVisor; install that same copy as
+# the host's, so the Updater can ask it for pin shapes the installed one predates (a release
+# archive) without a manual installer run. A host the installer never set up is left alone.
+"$source_dir/../host/verity-host-runtime" install-self
 source "$source_dir/../gvisor/versions.env"
 install -d -m 0755 /usr/local/libexec/verity-buildkit /etc/verity-buildkit
 container=
@@ -60,7 +64,7 @@ chmod 0755 /usr/local/libexec/verity-buildkit/buildkitd.new
 /usr/local/libexec/verity-buildkit/buildkitd.new --version
 mv /usr/local/libexec/verity-buildkit/buildkitd.new /usr/local/libexec/verity-buildkit/buildkitd
 ln -sfn "/opt/verity/runsc/$RUNSC_RELEASE/runsc" /usr/local/libexec/verity-buildkit/runsc-real
-install -m 0755 "$source_dir/runsc" "$source_dir/runsc-buildkit-args.sh" "$source_dir/runsc-netns.sh" "$source_dir/network.sh" "$source_dir/storage-report.sh" "$source_dir/publish-storage-report.sh" "$source_dir/snapshotter-migrate.sh" /usr/local/libexec/verity-buildkit/
+install -m 0755 "$source_dir/runsc" "$source_dir/runsc-buildkit-args.sh" "$source_dir/runsc-netns.sh" "$source_dir/network.sh" "$source_dir/storage-report.sh" "$source_dir/publish-storage-report.sh" "$source_dir/snapshotter-migrate.sh" "$source_dir/native-retire.sh" /usr/local/libexec/verity-buildkit/
 # CNI plugins for the per-step build network. The pinned archive is verified and
 # extracted afresh every run, replacing any earlier or partial copy as a whole,
 # so a hand-installed or interrupted directory is adopted rather than trusted.

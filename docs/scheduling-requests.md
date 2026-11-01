@@ -91,7 +91,10 @@ Requests outlive their chat: deleting a session leaves its requests running unti
 they are booked, expire or are withdrawn there.
 
 Bookings, requests without remaining times, unconfirmed emails and holds that could
-not be removed are posted into the session and sent as push notifications.
+not be removed are posted into the session and sent as push notifications. For
+projects granted to the assistant, the notices are also posted into the assistant
+session, which lists the open requests above its composer (see
+[assistant](assistant.md#scheduling-overview)).
 
 ## Limits
 

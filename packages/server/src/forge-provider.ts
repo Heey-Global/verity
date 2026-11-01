@@ -130,6 +130,7 @@ export interface ForgeRepositoryOperations {
 }
 
 export interface ForgeDiscoveryPage {
+  errors?: { category: string; step: string; checkedAt: string; retryAt?: string | undefined }[];
   pulls: { number: number; branch: string; sha: string; fork: boolean }[];
   runs: {
     id: string;

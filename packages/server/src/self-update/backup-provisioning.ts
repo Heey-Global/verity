@@ -157,10 +157,17 @@ export async function provisionBackupHost(
       '/run/systemd:/run/systemd',
     ],
     capAdd: ['CHOWN', 'FOWNER', 'DAC_OVERRIDE'],
+    // systemctl checks SO_PEERCRED on the host's private manager socket. In a
+    // child PID namespace the host manager has PID 0, rejected as ENODATA.
+    // Only this bounded host-writing job needs visibility of the manager PID.
+    pidMode: 'host',
     // The daemon-owned helper remains bounded even if the Updater dies.
     entrypoint: ['timeout', '--kill-after=5s', '110s', 'bash'],
     command: ['/opt/verity-install/deploy/host/verity-backup-provision'],
     env: [
+      // The helper targets the mounted host manager, not an offline container
+      // root. With host PIDs, systemctl otherwise mistakes that root for chroot.
+      'SYSTEMD_IGNORE_CHROOT=1',
       `VERITY_STATE_DIR=${plan.statePath}`,
       `VERITY_BACKUP_DIR=${plan.backupPath}`,
       `VERITY_BACKUP_IDENTITY_DIR=${plan.identityPath}`,

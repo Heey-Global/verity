@@ -110,11 +110,21 @@ describe('bounded release-owned backup provisioning', () => {
       entrypoint: ['timeout', '--kill-after=5s', '110s', 'bash'],
       command: ['/opt/verity-install/deploy/host/verity-backup-provision'],
       capAdd: ['CHOWN', 'FOWNER', 'DAC_OVERRIDE'],
+      pidMode: 'host',
+      capDrop: ['ALL'],
+      securityOpt: ['no-new-privileges=true'],
+      readOnlyRootfs: true,
+      pidsLimit: 64,
+      memoryBytes: 256 * 1024 * 1024,
     });
     expect(client.createContainer.mock.calls[0]?.[0].binds).toContain(
       '/srv/archives:/srv/archives',
     );
+    expect(client.createContainer.mock.calls[0]?.[0].env).toContain('SYSTEMD_IGNORE_CHROOT=1');
     expect(client.removeContainer).toHaveBeenCalledTimes(3);
+    // Read-only planning and unprivileged write probes keep their PID isolation.
+    for (const [job] of client.createContainer.mock.calls.slice(1))
+      expect(job.pidMode).toBeUndefined();
   });
   it('fails closed if provisioning exits unsuccessfully, without leaking logs', async () => {
     const client = docker();

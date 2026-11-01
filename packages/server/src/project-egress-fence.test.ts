@@ -46,7 +46,7 @@ function fixture() {
     inspect: vi.fn(async (value: ProjectFenceBinding) => ({ ...value })),
     directTargetAllowed: vi.fn(async () => true),
     destinationAllowed: vi.fn(async () => true),
-    resolve: vi.fn(async () => ['8.8.8.8']),
+    resolve: vi.fn(async () => ({ addresses: ['8.8.8.8'], expiresAt: now + 10000 })),
     policyCurrent: vi.fn(async () => true),
     apply: vi.fn(async (script: string) => {
       void script;
@@ -101,7 +101,7 @@ it('closes previous access before failed resolution, including private and mixed
   for (const addresses of [[], ['127.0.0.1'], ['8.8.8.8', '::ffff:127.0.0.1'], ['fd42::2']]) {
     const { deps, fence } = fixture();
     await fence.prepare(binding);
-    deps.resolve.mockResolvedValue(addresses);
+    deps.resolve.mockResolvedValue({ addresses, expiresAt: 11000 });
     await expect(fence.refresh({ binding, revision: 1, grants: [grant] })).rejects.toThrow(
       'resolution',
     );
@@ -117,7 +117,7 @@ it('does not resolve before policy classification and rejects attachment changes
   deps.directTargetAllowed.mockResolvedValue(true);
   deps.resolve.mockImplementation(async () => {
     deps.inspect.mockResolvedValue({ ...binding, endpointId: 'd'.repeat(64) });
-    return ['8.8.8.8'];
+    return { addresses: ['8.8.8.8'], expiresAt: 11000 };
   });
   await expect(fence.refresh({ binding, revision: 2, grants: [grant] })).rejects.toThrow(
     'attachment',
@@ -194,10 +194,23 @@ it('rechecks revocation after asynchronous DNS work', async () => {
   await fence.prepare(binding);
   deps.resolve.mockImplementation(async () => {
     deps.policyCurrent.mockResolvedValue(false);
-    return ['8.8.8.8'];
+    return { addresses: ['8.8.8.8'], expiresAt: 11000 };
   });
   await expect(fence.refresh({ binding, revision: 1, grants: [grant] })).rejects.toThrow(
     'authority changed',
+  );
+  expect(deps.apply.mock.calls.at(-1)![0]).not.toContain('elements =');
+});
+
+it('bounds destination leases by DNS expiry and denies stale answers', async () => {
+  const { deps, fence } = fixture();
+  await fence.prepare(binding);
+  deps.resolve.mockResolvedValue({ addresses: ['8.8.8.8'], expiresAt: 2500 });
+  await fence.refresh({ binding, revision: 1, grants: [grant] });
+  expect(deps.apply.mock.calls.at(-1)![0]).toContain('8.8.8.8 . tcp . 443 timeout 500ms');
+  deps.resolve.mockResolvedValue({ addresses: ['8.8.8.8'], expiresAt: 1000 });
+  await expect(fence.refresh({ binding, revision: 2, grants: [grant] })).rejects.toThrow(
+    'resolution',
   );
   expect(deps.apply.mock.calls.at(-1)![0]).not.toContain('elements =');
 });
@@ -251,7 +264,7 @@ it('captures immutable BOOTTIME before DNS and keeps a delayed apply expired', a
   await fence.prepare(binding);
   deps.resolve.mockImplementation(async () => {
     setNow(5000);
-    return ['8.8.8.8'];
+    return { addresses: ['8.8.8.8'], expiresAt: 11000 };
   });
   await fence.refresh({ binding, revision: 1, grants: [{ ...grant, expiresAt: 10000 }] });
   expect(deps.deadline.arm.mock.calls[0]).toEqual([
@@ -376,4 +389,44 @@ it('captures and latches every overlapping expiry before an earlier expiry can d
   expect(firstDrop).toBeGreaterThan(lastLatch);
   expect(rules).toContain('{ 172.30.1.2 }');
   expect(rules).toContain('{ fd42::2 }');
+});
+
+it('preserves live connection labels only through a kernel-checked same-policy handoff', async () => {
+  const { fence, deps, setNow } = fixture();
+  const renew = vi.fn(async () => undefined);
+  Object.assign(deps.deadline, { renew });
+  await fence.prepare(binding);
+  await fence.refresh({ binding, revision: 1, grants: [grant] });
+  const first = deps.apply.mock.calls.at(-1)![0];
+  const label = first.match(/ct label set (.+)/u)![1];
+  setNow(1250);
+  await fence.refresh({ binding, revision: 1, grants: [grant] });
+  expect(renew).toHaveBeenCalledOnce();
+  expect(renew.mock.calls[0]).toHaveLength(3);
+  expect(deps.apply.mock.calls.at(-1)![0]).toContain(`ct label set ${label}`);
+  // An expired controller epoch is replaced, even with an unchanged policy.
+  setNow(3000);
+  await fence.refresh({ binding, revision: 1, grants: [grant] });
+  expect(renew).toHaveBeenCalledOnce();
+  expect(deps.apply.mock.calls.at(-1)![0]).not.toContain(`ct label set ${label}`);
+  await fence.revoke(binding);
+  setNow(3100);
+  await fence.refresh({ binding, revision: 1, grants: [grant] });
+  expect(renew).toHaveBeenCalledOnce();
+});
+
+it('closes direct authority when the kernel rejects a delayed continuity handoff', async () => {
+  const { fence, deps, setNow } = fixture();
+  const renew = vi.fn(async () => {
+    throw new Error('kernel epoch expired');
+  });
+  Object.assign(deps.deadline, { renew });
+  await fence.prepare(binding);
+  await fence.refresh({ binding, revision: 1, grants: [grant] });
+  setNow(1250);
+  await expect(fence.refresh({ binding, revision: 1, grants: [grant] })).rejects.toThrow(
+    'kernel epoch expired',
+  );
+  expect(deps.apply.mock.calls.at(-1)![0]).not.toContain('elements =');
+  expect(deps.deadline.revoke).toHaveBeenCalled();
 });

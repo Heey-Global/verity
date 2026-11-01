@@ -723,6 +723,7 @@ describe('createDockerClient (#174)', () => {
     expect(body.HostConfig.CpuShares).toBeUndefined();
     expect(body.HostConfig.Ulimits).toBeUndefined();
     expect(body.HostConfig.Runtime).toBeUndefined();
+    expect(body.HostConfig.PidMode).toBeUndefined();
     expect(body.HostConfig.ReadonlyRootfs).toBeUndefined();
     expect(body.HostConfig.Tmpfs).toBeUndefined();
     expect(body.HostConfig.Annotations).toBeUndefined();
@@ -743,6 +744,16 @@ describe('createDockerClient (#174)', () => {
     expect(body.Annotations).toBeUndefined();
   });
 
+  it('passes explicit host PID visibility to the daemon for host provisioning', async () => {
+    const fetch = fakeFetch([
+      { match: /\/containers\/create\?name=/, method: 'POST', resp: res({ Id: 'abc123' }) },
+    ]);
+    const docker = createDockerClient({ baseUrl: 'http://127.0.0.1:9234/v1.41', fetch });
+    await docker.createContainer({ ...sampleSpec, pidMode: 'host' });
+    const body = JSON.parse(fetch.calls[0]?.init?.body ?? '{}');
+    expect(body.HostConfig.PidMode).toBe('host');
+  });
+
   it('emits runtime-hardening HostConfig fields when the spec sets them (C1)', async () => {
     const fetch = fakeFetch([
       { match: /\/containers\/create\?name=/, method: 'POST', resp: res({ Id: 'abc123' }) },
@@ -756,6 +767,8 @@ describe('createDockerClient (#174)', () => {
       pidsLimit: 512,
       memoryBytes: 2 * 1024 ** 3,
       memorySwapBytes: 2 * 1024 ** 3,
+      memoryReservationBytes: 1024 ** 3,
+      oomScoreAdj: 500,
       nanoCpus: 1_500_000_000,
       cpuShares: 512,
       ulimits: [{ name: 'core', soft: 0, hard: 0 }],
@@ -772,6 +785,8 @@ describe('createDockerClient (#174)', () => {
     // Pinned to `Memory`: the swap ceiling is what stops a capped container from
     // thrashing instead of OOMing, and Docker's default is twice the memory limit.
     expect(body.HostConfig.MemorySwap).toBe(2 * 1024 ** 3);
+    expect(body.HostConfig.MemoryReservation).toBe(1024 ** 3);
+    expect(body.HostConfig.OomScoreAdj).toBe(500);
     expect(body.HostConfig.NanoCpus).toBe(1_500_000_000);
     // Alongside NanoCpus, not instead of it: the quota bounds this container on an
     // idle host, the weight decides who yields when several of them plus the
@@ -1269,6 +1284,8 @@ describe('createDockerClient (#174)', () => {
             PidsLimit: 128,
             Memory: 536_870_912,
             MemorySwap: 536_870_912,
+            MemoryReservation: 268_435_456,
+            OomScoreAdj: 500,
             NanoCpus: 1_000_000_000,
             CpuShares: 512,
             Privileged: false,
@@ -1328,6 +1345,8 @@ describe('createDockerClient (#174)', () => {
       // because the difference from Docker's default (twice the memory limit) is
       // invisible otherwise.
       memorySwapBytes: 536_870_912,
+      memoryReservationBytes: 268_435_456,
+      oomScoreAdj: 500,
       nanoCpus: 1_000_000_000,
       // Reported for the same reason as MemorySwap above: the daemon's "unset" is
       // 0, not 1024, so a container left at the default CPU weight and one weighted
@@ -1538,6 +1557,19 @@ describe('createDockerClient (#174)', () => {
     });
     await expect(docker.inspectRuntime?.('missing')).resolves.toBeUndefined();
   });
+
+  it.each([16 * 1024 ** 3, 0, -1, 1.5, 'invalid', undefined])(
+    'reads valid Docker host memory: %s',
+    async (MemTotal) => {
+      const docker = createDockerClient({
+        baseUrl: 'http://docker:2375/v1.41',
+        fetch: fakeFetch([{ match: /\/info$/, method: 'GET', resp: res({ MemTotal }) }]),
+      });
+      await expect(docker.hostMemoryBytes?.()).resolves.toBe(
+        MemTotal === 16 * 1024 ** 3 ? MemTotal : undefined,
+      );
+    },
+  );
 
   it('hostCpuCount reads the daemon CPU count from /info', async () => {
     const docker = createDockerClient({
@@ -3153,4 +3185,20 @@ it('GC removal never forces a running container or deletes volumes', async () =>
   const docker = createDockerClient({ baseUrl: 'http://docker', fetch });
   await docker.removeStoppedContainer!('stopped');
   expect(fetch.calls[0]?.url).toContain('force=false&v=false');
+});
+
+it('retains host PID visibility when inspecting a recoverable host helper', async () => {
+  const fetch = fakeFetch([
+    {
+      match: /\/containers\/helper\/json/,
+      method: 'GET',
+      resp: res({
+        Id: 'helper',
+        State: { Running: false, Status: 'exited', ExitCode: 0 },
+        HostConfig: { PidMode: 'host' },
+      }),
+    },
+  ]);
+  const docker = createDockerClient({ baseUrl: 'http://127.0.0.1:9234/v1.41', fetch });
+  expect(await docker.inspectContainer('helper')).toMatchObject({ pidMode: 'host', exitCode: 0 });
 });

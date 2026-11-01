@@ -6,6 +6,92 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.72.0](https://github.com/Heey-Global/verity/compare/v4.71.1...v4.72.0) (2026-11-01)
+
+
+### Features
+
+* **sandbox:** add elastic memory limits and resilient OOM handling ([#2142](https://github.com/Heey-Global/verity/issues/2142)) ([923158f](https://github.com/Heey-Global/verity/commit/923158f56f4481aef0055a5a7fe506cd4adee739))
+
+
+### Bug Fixes
+
+* **diagnostics:** preserve safe stop and export failure reasons ([#2147](https://github.com/Heey-Global/verity/issues/2147)) ([daa9c27](https://github.com/Heey-Global/verity/commit/daa9c27788d24312dd07541056874ec4624d741b))
+* **self-update:** keep builder detail out of host runtime error ([#2154](https://github.com/Heey-Global/verity/issues/2154)) ([718a93d](https://github.com/Heey-Global/verity/commit/718a93ddcbabb2a327830bc6d60e1f1429f5b720))
+
+## [4.71.1](https://github.com/Heey-Global/verity/compare/v4.71.0...v4.71.1) (2026-11-01)
+
+
+### Bug Fixes
+
+* **deploy:** move gVisor to release-20261026.0 ([#2148](https://github.com/Heey-Global/verity/issues/2148)) ([0ae1771](https://github.com/Heey-Global/verity/commit/0ae17715ca0b1ac4e82bead9c3f35a27e35b4ebf))
+
+## [4.71.0](https://github.com/Heey-Global/verity/compare/v4.70.0...v4.71.0) (2026-11-01)
+
+
+### Features
+
+* **egress:** compose host lifecycle and direct network admission ([#2117](https://github.com/Heey-Global/verity/issues/2117)) ([aa0cfb8](https://github.com/Heey-Global/verity/commit/aa0cfb8c7947791588834aa5301ffabe8f1d7756))
+* **qa:** support one-time PR repair handoffs ([#2136](https://github.com/Heey-Global/verity/issues/2136)) ([899afe3](https://github.com/Heey-Global/verity/commit/899afe3e82fd7a9215952b861de068c5f263cc06))
+* **self-update:** install archive-only gVisor releases through the update path ([#2140](https://github.com/Heey-Global/verity/issues/2140)) ([cb981b0](https://github.com/Heey-Global/verity/commit/cb981b014341a07ab3e57128f8f79621e056da79))
+
+
+### Bug Fixes
+
+* **deps:** update agent clis ([#2130](https://github.com/Heey-Global/verity/issues/2130)) ([c0c6937](https://github.com/Heey-Global/verity/commit/c0c69379a4a6a997f5c4d38393e1931fa493c59c))
+* **deps:** update dependency @agentclientprotocol/sdk to v2.1.0 ([#2131](https://github.com/Heey-Global/verity/issues/2131)) ([80043be](https://github.com/Heey-Global/verity/commit/80043bee6f1964ac92e221ce61e9d7dca1c9bcd0))
+* **deps:** update dependency @devcontainers/cli to v0.90.0 ([#2132](https://github.com/Heey-Global/verity/issues/2132)) ([5db0902](https://github.com/Heey-Global/verity/commit/5db0902a52bb14db8b996b475d8eea0bcc56b4d7))
+* **deps:** update dependency minimatch to v11.0.3 ([#2128](https://github.com/Heey-Global/verity/issues/2128)) ([d45c9d8](https://github.com/Heey-Global/verity/commit/d45c9d820988f229643187ddab205eae9bb38b88))
+* **egress:** preserve routed admission and crash recovery ([#2122](https://github.com/Heey-Global/verity/issues/2122)) ([60e368e](https://github.com/Heey-Global/verity/commit/60e368e5feb6be426dd9b21c9635ef3add9565a0))
+* **mobile:** recover device unlock after a failed Face ID read ([#2123](https://github.com/Heey-Global/verity/issues/2123)) ([7de2492](https://github.com/Heey-Global/verity/commit/7de249235af63fcb4560c2ecf026170f9b5c34d4))
+* **mobile:** request JSON for OTA manifest validation ([#2141](https://github.com/Heey-Global/verity/issues/2141)) ([cafeec6](https://github.com/Heey-Global/verity/commit/cafeec607b184325a66ce2671c4112a3c438043e))
+* **storage:** preserve idle retention across scans and wait for mutations ([#2120](https://github.com/Heey-Global/verity/issues/2120)) ([dce79e1](https://github.com/Heey-Global/verity/commit/dce79e1b0af2f9a7fc18741a8ab1fc3fc17dadd8))
+
+
+### Performance Improvements
+
+* **lint:** cache classifications and automate push preparation ([#2125](https://github.com/Heey-Global/verity/issues/2125)) ([c89aa25](https://github.com/Heey-Global/verity/commit/c89aa25420c18ced8c2f05180a761b03947b3b5f))
+
+## [4.70.0](https://github.com/Heey-Global/verity/compare/v4.69.0...v4.70.0) (2026-10-31)
+
+
+### Features
+
+* **assistant:** show open scheduling requests of granted projects ([#2112](https://github.com/Heey-Global/verity/issues/2112)) ([32f0f90](https://github.com/Heey-Global/verity/commit/32f0f9035e756ee072ee71d4121aed050597533f))
+* **egress:** bind admission to current policy and sponsor ([#2108](https://github.com/Heey-Global/verity/issues/2108)) ([a25683c](https://github.com/Heey-Global/verity/commit/a25683ce4cebe039557e31d15356b20b50a1a1d2))
+* **qa:** add bounded CI and release analysis ([#2111](https://github.com/Heey-Global/verity/issues/2111)) ([702760b](https://github.com/Heey-Global/verity/commit/702760bba7c640d680422c37d60753eb6bbd837e))
+
+
+### Bug Fixes
+
+* **server:** drain scheduling work before shutdown ([#2109](https://github.com/Heey-Global/verity/issues/2109)) ([7666b70](https://github.com/Heey-Global/verity/commit/7666b7058b1ea25a373dfb46899f1507f047bb8c))
+
+## [4.69.0](https://github.com/Heey-Global/verity/compare/v4.68.0...v4.69.0) (2026-10-31)
+
+
+### Features
+
+* **egress:** bound host DNS answers and destination leases ([#2107](https://github.com/Heey-Global/verity/issues/2107)) ([bc6b703](https://github.com/Heey-Global/verity/commit/bc6b70385527234fcadf3bdac990c75651595387))
+* **egress:** enforce immutable host packet deadlines ([#2081](https://github.com/Heey-Global/verity/issues/2081)) ([752d53a](https://github.com/Heey-Global/verity/commit/752d53a11a7269a20cb68894cdd733e350ff6596))
+* **mobile:** enable CPU recording in regular OTA staging ([#2098](https://github.com/Heey-Global/verity/issues/2098)) ([f7e41dc](https://github.com/Heey-Global/verity/commit/f7e41dc77015ff0a5e5e95fd89fbde52f21d97a1))
+* **scheduling:** guide meeting requests and edit them on the approval card ([#2097](https://github.com/Heey-Global/verity/issues/2097)) ([cb1c086](https://github.com/Heey-Global/verity/commit/cb1c086532208315bab592cf504098875dbd818a))
+* **storage:** reclaim idle dependencies and native BuildKit state on demand ([#2094](https://github.com/Heey-Global/verity/issues/2094)) ([fc5a829](https://github.com/Heey-Global/verity/commit/fc5a8293c248a184cf1d6e2cd0320ad7283a2126))
+
+
+### Bug Fixes
+
+* **deps:** update agent clis ([#2101](https://github.com/Heey-Global/verity/issues/2101)) ([3bf7784](https://github.com/Heey-Global/verity/commit/3bf77841d552c8d2d49125206776594e744c047e))
+* **deps:** update dependency @fastify/compress to v9.3.0 ([#2102](https://github.com/Heey-Global/verity/issues/2102)) ([15b59c1](https://github.com/Heey-Global/verity/commit/15b59c14977d69e9d5cb77f2932c0fe7f3078b37))
+* **deps:** update dependency @modelcontextprotocol/ext-apps to v2.0.4 ([#2100](https://github.com/Heey-Global/verity/issues/2100)) ([e7aeb2d](https://github.com/Heey-Global/verity/commit/e7aeb2d4cb6ef915a84a740d1227a8efe0bdf1dc))
+* **deps:** update dependency minimatch to v11 ([#2103](https://github.com/Heey-Global/verity/issues/2103)) ([5d5adef](https://github.com/Heey-Global/verity/commit/5d5adefc3fbeded890bf7fd32435d731e258fb32))
+* **github:** isolate discovery failures from PR status reads ([#2095](https://github.com/Heey-Global/verity/issues/2095)) ([56a4652](https://github.com/Heey-Global/verity/commit/56a4652207fb3189b75e813ace34280440eee24e))
+* **lint:** bound memory and reuse dependency-aware results ([#2084](https://github.com/Heey-Global/verity/issues/2084)) ([293839c](https://github.com/Heey-Global/verity/commit/293839c5f6c73fda508e8207c45aa132eb9bf748))
+* **release:** compare plain tar toolkit Feature archives ([#2089](https://github.com/Heey-Global/verity/issues/2089)) ([8fe0604](https://github.com/Heey-Global/verity/commit/8fe06040fc81b66e23666d1cf22e0173333796a0))
+* **release:** reuse equivalent toolkit payloads on retry ([#2088](https://github.com/Heey-Global/verity/issues/2088)) ([112ddb8](https://github.com/Heey-Global/verity/commit/112ddb87c5e85af77e1c2adf2c864359ebbce0e9))
+* **release:** support corrected source recovery without candidate collisions ([#2085](https://github.com/Heey-Global/verity/issues/2085)) ([92b46fb](https://github.com/Heey-Global/verity/commit/92b46fb2984557eb2ca2a1a851ad723836864e22))
+* **updater:** connect backup provisioning to host systemd ([#2104](https://github.com/Heey-Global/verity/issues/2104)) ([03f0732](https://github.com/Heey-Global/verity/commit/03f0732f54c847e32494b1e9173a7a1ce0518680))
+* **updater:** resume standby failures and explain retry outcomes ([#2093](https://github.com/Heey-Global/verity/issues/2093)) ([257dde1](https://github.com/Heey-Global/verity/commit/257dde1e1d51c52bc90880b603ed187b377d488f))
+
 ## [4.68.0](https://github.com/Heey-Global/verity/compare/v4.67.0...v4.68.0) (2026-10-30)
 
 

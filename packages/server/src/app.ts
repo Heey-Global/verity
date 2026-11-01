@@ -1,3 +1,4 @@
+import type { QAAnalysisDeps } from './qa-analysis-tool.js';
 import type { RepairDiscovery } from './repair-supervisor.js';
 import { documentWorkspace, documentViewForSession } from './document-workspace.js';
 import type { ProjectGitHubIssues } from './project-github-issues.js';
@@ -189,6 +190,7 @@ export interface ControlPlaneDeps {
     project: ProjectRecord,
     number: number,
   ) => Promise<{ state: 'open' | 'closed' | 'merged' } | null>;
+  qaAnalysisRead?: QAAnalysisDeps['read'];
   repairDiscovery?: (project: ProjectRecord, page: number) => Promise<RepairDiscovery>;
   branchPrStatus?:
     ((branch: string, worktree: string) => Promise<PullRequestStatus | null>) | undefined;
@@ -468,6 +470,7 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
       ? { invalidateProjectPrStatus: deps.invalidateProjectPrStatus }
       : {}),
     ...(deps.repairPullRequest ? { repairPullRequest: deps.repairPullRequest } : {}),
+    ...(deps.qaAnalysisRead !== undefined ? { qaAnalysisRead: deps.qaAnalysisRead } : {}),
     ...(deps.repairDiscovery !== undefined ? { repairDiscovery: deps.repairDiscovery } : {}),
     ...(deps.branchPr !== undefined ? { branchPr: deps.branchPr } : {}),
     ...(deps.branchPrStatus !== undefined ? { branchPrStatus: deps.branchPrStatus } : {}),

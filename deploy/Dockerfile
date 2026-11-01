@@ -17,7 +17,7 @@
 # Stage 1: builder — compile the TypeScript monorepo.
 # ---------------------------------------------------------------------------
 # renovate: datasource=docker depName=node
-FROM node:26.12.1-bookworm-slim@sha256:3041f464442defe6de36c20b6904b125a6178cfa0a7fc7cc99c0bb5120586f70 AS builder-deps
+FROM node:26.13.0-bookworm-slim@sha256:bc0a2afd3b74ce12222fc8bab99271e66257f021078f5f4a5d687a77d280c1d9 AS builder-deps
 
 WORKDIR /app
 
@@ -86,7 +86,7 @@ RUN CI=1 EXPO_NO_TELEMETRY=1 npm run build:web --workspace @verity/mobile-app --
 # runtime image stays lean. --include-workspace-root keeps root-level runtime
 # deps (there are none today, but it is correct if any are added).
 # renovate: datasource=docker depName=node
-FROM node:26.12.1-bookworm-slim@sha256:3041f464442defe6de36c20b6904b125a6178cfa0a7fc7cc99c0bb5120586f70 AS deps
+FROM node:26.13.0-bookworm-slim@sha256:bc0a2afd3b74ce12222fc8bab99271e66257f021078f5f4a5d687a77d280c1d9 AS deps
 
 WORKDIR /app
 
@@ -115,7 +115,7 @@ RUN npm ci --omit=dev --ignore-scripts --workspace=@verity/server --include-work
 # the client binary from the static bundle and the buildx/compose CLI plugins
 # are needed — not dockerd/containerd.
 # renovate: datasource=docker depName=node
-FROM node:26.12.1-bookworm-slim@sha256:3041f464442defe6de36c20b6904b125a6178cfa0a7fc7cc99c0bb5120586f70 AS docker-cli
+FROM node:26.13.0-bookworm-slim@sha256:bc0a2afd3b74ce12222fc8bab99271e66257f021078f5f4a5d687a77d280c1d9 AS docker-cli
 
 # The static CLI download version tracks Docker Engine (moby) releases, whose
 # GitHub tags are `docker-v<x.y.z>` — the extractVersion strips that prefix and
@@ -196,7 +196,7 @@ RUN set -eux; \
 # Stage 4: runtime — the shipped image.
 # ---------------------------------------------------------------------------
 # renovate: datasource=docker depName=node
-FROM node:26.12.1-bookworm-slim@sha256:3041f464442defe6de36c20b6904b125a6178cfa0a7fc7cc99c0bb5120586f70 AS runtime
+FROM node:26.13.0-bookworm-slim@sha256:bc0a2afd3b74ce12222fc8bab99271e66257f021078f5f4a5d687a77d280c1d9 AS runtime
 
 # git: the provisioner clones project repos on the Server.
 # ca-certificates: TLS to github.com and Docker registries.
@@ -387,13 +387,14 @@ LABEL org.verity.postgres-image=${VERITY_BUNDLED_POSTGRES_IMAGE}
 # a new runtime can never be activated on a host that does not have it. A literal and not a
 # build-arg on purpose: every build of this Dockerfile, release or not, declares the same
 # pins its own code verifies against; gvisor-runtime-config.test.ts keeps the three in step.
-LABEL org.verity.host-runtimes="{\"release\":\"release-20260714.0\",\"sha512\":{\"x86_64\":\"75c092fe87d84078f06ac40937cb5207fb5a1a92511b38b4790c915801555daadc59fef33de8db4dd92e1892a6de390c8a2e390a7a3bd0e2d3731d9ed6a3a6e8\",\"aarch64\":\"ee39fa48121797db60919dacb77145d604c9a54616323a00304f8482fca87af20e8e78b079cb193ab7bef7230ad3f79096a3491e12c09ba11625c7be5130e084\"},\"runtimes\":{\"runsc\":[\"--platform=systrap\",\"--network=none\"],\"runsc-project\":[\"--platform=systrap\",\"--network=sandbox\",\"--host-uds=create\"]}}"
+LABEL org.verity.host-runtimes="{\"release\":\"release-20261026.0\",\"sha512\":{\"x86_64\":\"e656d169e5761482b5cfd081e73e0014158843fe82366274d0bfa5d9716d6352514617fb680d28b7a11e6e2796f4790a3262b75f0cc6414207c4012a2139fa21\",\"aarch64\":\"88a647ecebed1731d6718c76681427a1f44ea4528018f79314706ff1b3d1369d067038587c2e49be8ab106b8021469c4bb5d45cd97d525f02eb803b325108f91\"},\"archiveSha512\":{\"x86_64\":\"26e4a327565f5da0f73261a6387e2c20f4695a232e330095a3111b70efd604fdf09d734e8cc8f714dbb5c5607ce8c87ea80b26df549d83a146f2efd5a1af448a\",\"aarch64\":\"da177d9bcfd9ac23899ecfedc6fd47358e9684a1f7e3f5f8ffb8bf7c0ca65f4c08730c0c503b9231b522db28b04c132a06d04d6719e0d8c04c9f82edaf03d8ae\"},\"runtimes\":{\"runsc\":[\"--platform=systrap\",\"--network=none\"],\"runsc-project\":[\"--platform=systrap\",\"--network=sandbox\",\"--host-uds=create\"]}}"
 
 # This image carries the devcontainer builder bundle under /opt/verity-install/deploy in the
 # form deploy/host/verity-host-builder installs from. During an update the Updater names this
 # image to that host component, which verifies the release signature itself and installs the
 # bundle when it differs from the installed builder. devcontainer-builder.test.ts keeps the
 # contract value equal in all three places.
+LABEL org.verity.host-runtime-service="{\"revision\":1,\"renewalProtocol\":1,\"features\":[\"binary\",\"archive\"]}"
 LABEL org.verity.devcontainer-builder="2"
 LABEL org.verity.build-admission="1"
 LABEL org.verity.recovery="1"

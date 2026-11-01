@@ -1,5 +1,37 @@
 # Changelog
 
+## [1.83.0](https://github.com/Heey-Global/verity/compare/mobile-v1.82.0...mobile-v1.83.0) (2026-11-01)
+
+
+### Features
+
+* **assistant:** show open scheduling requests of granted projects ([#2112](https://github.com/Heey-Global/verity/issues/2112)) ([32f0f90](https://github.com/Heey-Global/verity/commit/32f0f9035e756ee072ee71d4121aed050597533f))
+* **qa:** support one-time PR repair handoffs ([#2136](https://github.com/Heey-Global/verity/issues/2136)) ([899afe3](https://github.com/Heey-Global/verity/commit/899afe3e82fd7a9215952b861de068c5f263cc06))
+
+
+### Bug Fixes
+
+* **mobile:** recover device unlock after a failed Face ID read ([#2123](https://github.com/Heey-Global/verity/issues/2123)) ([7de2492](https://github.com/Heey-Global/verity/commit/7de249235af63fcb4560c2ecf026170f9b5c34d4))
+* **storage:** preserve idle retention across scans and wait for mutations ([#2120](https://github.com/Heey-Global/verity/issues/2120)) ([dce79e1](https://github.com/Heey-Global/verity/commit/dce79e1b0af2f9a7fc18741a8ab1fc3fc17dadd8))
+
+## [1.82.0](https://github.com/Heey-Global/verity/compare/mobile-v1.81.0...mobile-v1.82.0) (2026-10-31)
+
+
+### Features
+
+* **mobile:** enable CPU recording in regular OTA staging ([#2098](https://github.com/Heey-Global/verity/issues/2098)) ([f7e41dc](https://github.com/Heey-Global/verity/commit/f7e41dc77015ff0a5e5e95fd89fbde52f21d97a1))
+* **scheduling:** guide meeting requests and edit them on the approval card ([#2097](https://github.com/Heey-Global/verity/issues/2097)) ([cb1c086](https://github.com/Heey-Global/verity/commit/cb1c086532208315bab592cf504098875dbd818a))
+* **scheduling:** offer meeting times through booking links ([#2080](https://github.com/Heey-Global/verity/issues/2080)) ([b06f9e9](https://github.com/Heey-Global/verity/commit/b06f9e91b7b46c7e107b33ce1f2a33a095d07957))
+* **storage:** reclaim idle dependencies and native BuildKit state on demand ([#2094](https://github.com/Heey-Global/verity/issues/2094)) ([fc5a829](https://github.com/Heey-Global/verity/commit/fc5a8293c248a184cf1d6e2cd0320ad7283a2126))
+
+
+### Bug Fixes
+
+* **deps:** update dependency @modelcontextprotocol/ext-apps to v2.0.4 ([#2100](https://github.com/Heey-Global/verity/issues/2100)) ([e7aeb2d](https://github.com/Heey-Global/verity/commit/e7aeb2d4cb6ef915a84a740d1227a8efe0bdf1dc))
+* **mobile:** clear keyboard gap after interrupted opening ([#2086](https://github.com/Heey-Global/verity/issues/2086)) ([9dc532d](https://github.com/Heey-Global/verity/commit/9dc532d78b3d26d94f47cef4713a6a8f67c65120))
+* **mobile:** keep iPhone sessions single-pane across rotation ([#2087](https://github.com/Heey-Global/verity/issues/2087)) ([40ab27f](https://github.com/Heey-Global/verity/commit/40ab27f074f073dcf351a7bcc4480bc9c60a0c82))
+* **updater:** resume standby failures and explain retry outcomes ([#2093](https://github.com/Heey-Global/verity/issues/2093)) ([257dde1](https://github.com/Heey-Global/verity/commit/257dde1e1d51c52bc90880b603ed187b377d488f))
+
 ## [1.81.0](https://github.com/Heey-Global/verity/compare/mobile-v1.80.0...mobile-v1.81.0) (2026-10-30)
 
 

@@ -219,6 +219,7 @@ export interface HttpMcpConnectionsTable {
   authorization: string | null;
   auth_type: ColumnType<string, string | undefined, string>;
   oauth_client_id: string | null;
+  oauth_token_auth_method: ColumnType<string, string | undefined, string>;
   oauth_client_secret: string | null;
   oauth_authorization_endpoint: string | null;
   oauth_token_endpoint: string | null;
@@ -1595,6 +1596,7 @@ export interface VulnDigestsTable {
 }
 export interface Database {
   qa_dispatches: QADispatchesTable;
+  qa_manual_repairs: QAManualRepairsTable;
   repair_resource_budgets: RepairResourceBudgetsTable;
   repair_mandates: RepairMandatesTable;
   repair_incidents: RepairIncidentsTable;
@@ -1798,6 +1800,7 @@ interface ProjectEgressPolicyTable {
 }
 
 interface RepairMandatesTable {
+  observation_error: string | null;
   project_id: string;
   sponsor_user_id: string;
   mode: import('./repair-supervision.js').RepairMode;
@@ -1945,6 +1948,24 @@ interface QADecisionsTable {
   snapshot: string;
   outcome: string | null;
   created_at: Generated<Date>;
+}
+
+interface QAManualRepairsTable {
+  id: string;
+  project_id: string;
+  source_session_id: string;
+  user_id: string;
+  target_session_id: string;
+  number: number;
+  branch: string;
+  revision: string;
+  requires_card: Generated<boolean>;
+  qa_revision: number;
+  mandate_revision: number;
+  expires_at: Generated<Date>;
+  dispatch_id: string | null;
+  consent_key: string | null;
+  reason: string | null;
 }
 
 interface QADispatchesTable {

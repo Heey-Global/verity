@@ -1,7 +1,9 @@
+import { transportRules, type EgressTransport } from './project-egress-transport.js';
 import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { isIP } from 'node:net';
 import ipaddr from 'ipaddr.js';
+import type { ProjectEgressResolution } from './project-egress-resolver.js';
 import { canonicalEgressTarget, type EgressGrant } from '@verity/store';
 import {
   projectDeadlineLease,
@@ -24,7 +26,15 @@ export interface ProjectFenceSnapshot {
   revision: number;
   grants: readonly EgressGrant[];
 }
+export interface ProjectFenceRelay {
+  transport: EgressTransport;
+  flowLabel: string;
+}
 export interface ProjectFenceDependencies {
+  /** Only the trusted lifecycle owner may install this exact relay pair. */
+  relay?: () => ProjectFenceRelay | undefined;
+  /** Host restart must replace chains while retaining kernel expiry tombstones. */
+  existing?: (binding: ProjectFenceBinding) => Promise<boolean>;
   /** Required suspend-aware guard; absence must never select a weaker executor. */
   deadline: ProjectDeadlineEnforcer;
   /** Trusted daemon inspection, not labels or a sandbox-provided attachment. */
@@ -32,7 +42,7 @@ export interface ProjectFenceDependencies {
   /** Must deny broker/system/overlapping destinations; absent classification denies. */
   directTargetAllowed(host: string): Promise<boolean>;
   /** Host-owned resolver called only for a valid, explicitly granted target. */
-  resolve(host: string): Promise<readonly string[]>;
+  resolve(host: string): Promise<ProjectEgressResolution>;
   /** Excludes host addresses and every project network, including public ranges. */
   destinationAllowed(address: string): Promise<boolean>;
   /** Recheck durable revision, current generation and sponsor authority at admission. */
@@ -40,6 +50,8 @@ export interface ProjectFenceDependencies {
   /** Must commit within 1000 ms of invocation or prevent the transaction entirely. */
   apply(script: string): Promise<void>;
   now?: () => number;
+  /** Disposable timing evidence only; observations never select authorization. */
+  observe?: (stage: string, durationMs: number) => void;
 }
 const LEASE_MS = 1000;
 const APPLY_BUDGET_MS = 1000;
@@ -48,6 +60,10 @@ const tableName = (projectId: string): string =>
 const generationKey = (binding: ProjectFenceBinding): string =>
   binding.projectId + ':' + binding.generation;
 const hexId = /^[a-f0-9]{64}$/u;
+export function projectFenceTable(binding: ProjectFenceBinding): string {
+  validateBinding(binding);
+  return tableName(binding.projectId + ':' + binding.generation);
+}
 function validateBinding(binding: ProjectFenceBinding): void {
   if (
     !/^[a-zA-Z0-9_-]{1,128}$/u.test(binding.projectId) ||
@@ -92,6 +108,8 @@ export function projectFenceRules(
   now: number,
   replace: boolean,
   admission?: ProjectDeadlineLease,
+  relay?: ProjectFenceRelay,
+  flowLabel = admission?.nonce,
 ): string {
   validateBinding(binding);
   const table = tableName(binding.projectId + ':' + binding.generation);
@@ -107,6 +125,11 @@ export function projectFenceRules(
         `delete table bridge ${table}`,
       ]
     : [];
+  if (relay && relay.transport.sandbox.address !== binding.ipv4)
+    throw new Error('Relay sandbox does not match direct binding');
+  const network = { ...binding, networkName: '' };
+  const relayRules = (family: 'inet' | 'bridge') =>
+    relay ? transportRules(network, relay.transport, family, relay.flowLabel) : '';
   const unique = new Map<string, Lease>();
   for (const lease of leases) {
     if (
@@ -138,11 +161,14 @@ export function projectFenceRules(
     })
     .join('\n');
   if (leases.length && !admission) throw new Error('Packet deadline is required for admission');
-  if (admission && (!/^[a-f0-9]{32}$/u.test(admission.nonce) || /^0+$/u.test(admission.nonce)))
+  if (
+    admission &&
+    (flowLabel === undefined || !/^[a-f0-9]{32}$/u.test(flowLabel) || /^0+$/u.test(flowLabel))
+  )
     throw new Error('Invalid packet admission identity');
   // Numeric ct-label tokens name bit indices, not a raw bitmap literal.
   const bits = Array.from({ length: 128 }, (_, bit) => bit).filter(
-    (bit) => (BigInt(`0x${admission?.nonce ?? '0'}`) & (1n << BigInt(bit))) !== 0n,
+    (bit) => (BigInt(`0x${flowLabel ?? '0'}`) & (1n << BigInt(bit))) !== 0n,
   );
   const label = bits.length ? `(${bits.join(' | ')})` : '(0 & 1)';
   const wall = admission?.authorityExpiresAt;
@@ -224,7 +250,7 @@ chain reply {
  ct direction reply ct label == ${label} ip6 saddr . meta l4proto . th sport @allow6 accept
  counter drop
 }
-chain forward { type filter hook forward priority -200; policy accept; iifname "${binding.bridge}" jump fence; oifname "${binding.bridge}" jump reply; }
+chain forward { type filter hook forward priority -200; policy accept; ${relayRules('inet')} iifname "${binding.bridge}" jump fence; oifname "${binding.bridge}" jump reply; }
 chain output { type filter hook output priority -200; policy accept;
  oifname "${binding.bridge}" ip6 hoplimit 255 icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert } accept
  oifname "${binding.bridge}" jump reply
@@ -236,7 +262,7 @@ chain input { type filter hook input priority -200; policy accept;
 }`);
   // Routed inet hooks alone do not cover packets switched between bridge ports.
   commands.push(`table bridge ${table} {
-chain forward { type filter hook forward priority -200; policy accept; meta ibrname "${binding.bridge}" counter drop; }
+chain forward { type filter hook forward priority -200; policy accept; ${relayRules('bridge')} meta ibrname "${binding.bridge}" counter drop; }
 }`);
   return commands.join('\n') + '\n';
 }
@@ -246,7 +272,20 @@ chain forward { type filter hook forward priority -200; policy accept; meta ibrn
  * denial before daemon restart. This adapter alone does not supply that boot gate.
  */
 export class ProjectEgressFence {
-  private readonly active = new Map<string, { binding: ProjectFenceBinding; revision: number }>();
+  private readonly active = new Map<
+    string,
+    {
+      binding: ProjectFenceBinding;
+      revision: number;
+      continuity?: {
+        lease: ProjectDeadlineLease;
+        flowLabel: string;
+        grants: string;
+        validUntil: number;
+        targets: string;
+      };
+    }
+  >();
   private readonly retired = new Set<string>();
   private readonly bridges = new Map<string, string>();
   private queue: Promise<unknown> = Promise.resolve();
@@ -264,10 +303,14 @@ export class ProjectEgressFence {
       throw new Error('Project fence attachment changed');
   }
   private async deny(binding: ProjectFenceBinding, next?: ProjectDeadlineLease): Promise<void> {
+    const active = this.active.get(binding.projectId);
+    if (active) delete active.continuity;
     try {
       await this.deps.deadline.revoke(binding, next);
     } finally {
-      await this.deps.apply(projectFenceRules(binding, [], this.now(), true));
+      await this.deps.apply(
+        projectFenceRules(binding, [], this.now(), true, undefined, this.deps.relay?.()),
+      );
     }
   }
   prepare(binding: ProjectFenceBinding): Promise<void> {
@@ -296,7 +339,10 @@ export class ProjectEgressFence {
             binding,
             [],
             this.now(),
-            old !== undefined && bindingKey(old.binding) === key,
+            (old !== undefined && bindingKey(old.binding) === key) ||
+              ((await this.deps.existing?.(binding)) ?? false),
+            undefined,
+            this.deps.relay?.(),
           ),
         );
       }
@@ -324,12 +370,31 @@ export class ProjectEgressFence {
         snapshot.grants.length > 1000
       )
         throw new Error('Stale or invalid project fence policy');
+      let observed = performance.now();
+      const observe = (stage: string) => {
+        const now = performance.now();
+        this.deps.observe?.(stage, now - observed);
+        observed = now;
+      };
       // Capture before inspection, classification, DNS or either executor can pause.
       let admission: ProjectDeadlineLease;
+      let capturedRealNs: bigint;
+      let continuity: (typeof current)['continuity'];
       let authority: ProjectFenceSnapshot['grants'];
       try {
         const sample = await this.deps.deadline.clock();
-        const capturedAt = Number(BigInt(sample.realNs) / 1_000_000n);
+        capturedRealNs = BigInt(sample.realNs);
+        const capturedAt = Number(capturedRealNs / 1_000_000n);
+        continuity =
+          this.deps.deadline.renew &&
+          current.continuity &&
+          current.revision === snapshot.revision &&
+          current.continuity.grants === JSON.stringify(snapshot.grants) &&
+          current.continuity.lease.bootId === sample.bootId &&
+          current.continuity.validUntil > capturedAt &&
+          BigInt(current.continuity.lease.bootDeadlineNs) > BigInt(sample.bootAfterNs)
+            ? current.continuity
+            : undefined;
         authority = snapshot.grants.filter(
           (grant) =>
             grant.revokedAt === undefined &&
@@ -355,13 +420,16 @@ export class ProjectEgressFence {
         await this.deny(current.binding);
         throw error;
       }
+      observe('lease-capture');
       // Close old access before inspecting or resolving. A failing refresh cannot
       // keep its previous grants alive; kernel timeouts also bound a killed process.
-      await this.deny(current.binding, admission);
+      if (!continuity) await this.deny(current.binding, admission);
+      observe('prior-denial');
       current.revision = snapshot.revision;
       await this.verify(snapshot.binding);
       if (!(await this.deps.policyCurrent(snapshot)))
         throw new Error('Project fence authority changed');
+      observe('initial-inspection-policy');
       const leases: Lease[] = [];
       // Never reconsider excluded grants after an asynchronous wall-clock rollback.
       for (const grant of authority) {
@@ -375,11 +443,16 @@ export class ProjectEgressFence {
         const target = canonicalEgressTarget(grant.target);
         if (!(await this.deps.directTargetAllowed(target.host)))
           throw new Error('Destination requires a broker or system route');
-        const addresses = isIP(target.host) ? [target.host] : await this.deps.resolve(target.host);
+        const resolution = isIP(target.host)
+          ? { addresses: [target.host], expiresAt: Infinity }
+          : await this.deps.resolve(target.host);
+        const { addresses } = resolution;
         if (
           !addresses.length ||
           addresses.length > 32 ||
-          addresses.some((address) => !publicAddress(address))
+          addresses.some((address) => !publicAddress(address)) ||
+          (!isIP(target.host) &&
+            (!Number.isSafeInteger(resolution.expiresAt) || resolution.expiresAt <= this.now()))
         )
           throw new Error('Nonpublic project fence resolution');
         for (const address of addresses)
@@ -387,20 +460,76 @@ export class ProjectEgressFence {
             throw new Error('Protected project or host destination');
         const expiresAt = Math.min(
           (grant.expiresAt ?? Infinity) - APPLY_BUDGET_MS,
+          resolution.expiresAt - APPLY_BUDGET_MS,
           this.now() + LEASE_MS,
         );
         for (const address of addresses)
           leases.push({ address, protocol: target.protocol, port: target.port, expiresAt });
       }
+      const targets = JSON.stringify(
+        leases.map((lease) => [lease.address, lease.protocol, lease.port]).sort(),
+      );
+      if (continuity && continuity.targets !== targets) {
+        continuity = undefined;
+        await this.deny(current.binding, admission);
+      }
+      if (this.deps.deadline.renew && leases.length) {
+        // A continuous epoch must not outlive its earliest DNS/tuple budget.
+        // Make that budget part of the kernel lease, not a userspace precheck.
+        const tupleBudget =
+          BigInt(Math.floor(Math.min(...leases.map((lease) => lease.expiresAt)))) * 1_000_000n -
+          capturedRealNs;
+        const tupleDeadline =
+          tupleBudget > 0n ? BigInt(admission.capturedBootNs) + tupleBudget : 0n;
+        if (tupleDeadline < BigInt(admission.bootDeadlineNs))
+          admission = Object.freeze({ ...admission, bootDeadlineNs: tupleDeadline.toString() });
+      }
+      observe('resolution-classification');
       // Resolution may yield while Docker replaces an attachment. Recheck before admission.
       await this.verify(snapshot.binding);
       if (!(await this.deps.policyCurrent(snapshot)))
         throw new Error('Project fence authority changed');
+      observe('final-inspection-policy');
       await this.deps.apply(
-        projectFenceRules(snapshot.binding, leases, this.now(), true, admission),
+        projectFenceRules(
+          snapshot.binding,
+          leases,
+          this.now(),
+          true,
+          admission,
+          this.deps.relay?.(),
+          continuity?.flowLabel ?? admission.nonce,
+        ),
       );
+      observe('nft-commit');
       try {
-        if (leases.length) await this.deps.deadline.arm(snapshot.binding, admission);
+        // A lifecycle change can arrive while the kernel transaction is pending.
+        // Do not arm its TC guard after that transaction lost its authority.
+        if (!(await this.deps.policyCurrent(snapshot)))
+          throw new Error('Project fence authority changed');
+        if (leases.length) {
+          try {
+            if (continuity)
+              await this.deps.deadline.renew!(
+                snapshot.binding,
+                admission,
+                continuity.lease.bootDeadlineNs,
+              );
+            else await this.deps.deadline.arm(snapshot.binding, admission);
+          } finally {
+            observe('kernel-admission');
+          }
+          if (!(await this.deps.policyCurrent(snapshot)))
+            throw new Error('Project fence authority changed');
+          observe('committed-policy');
+          current.continuity = {
+            lease: admission,
+            flowLabel: continuity?.flowLabel ?? admission.nonce,
+            grants: JSON.stringify(snapshot.grants),
+            validUntil: Math.min(...leases.map((lease) => lease.expiresAt)),
+            targets,
+          };
+        }
       } catch (error) {
         await this.deny(snapshot.binding);
         throw error;
@@ -416,6 +545,20 @@ export class ProjectEgressFence {
       await this.deny(binding);
       this.retired.add(generationKey(binding));
       // Keep the deny-only table and attachment reservation until explicit host cleanup.
+    });
+  }
+  /** Close access before loading replacement authority, without retiring identity. */
+  revoke(binding: ProjectFenceBinding): Promise<void> {
+    binding = { ...binding };
+    return this.serialize(async () => {
+      const current = this.active.get(binding.projectId);
+      if (
+        !current ||
+        bindingKey(current.binding) !== bindingKey(binding) ||
+        this.retired.has(generationKey(binding))
+      )
+        throw new Error('Inactive project fence generation');
+      await this.deny(binding);
     });
   }
 }

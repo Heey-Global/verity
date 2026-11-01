@@ -1,3 +1,4 @@
+import { parseOomScoreAdj } from '../sandbox-memory-policy.js';
 import { normalizeSecurityOptions } from '../docker-security-options.js';
 import { readFile } from 'node:fs/promises';
 import type { ContainerInspect, ContainerSpec, DockerClient } from '../docker.js';
@@ -257,9 +258,13 @@ function effectiveEnvironment(
 const ceiling = (value: number | undefined): number =>
   value === undefined || value <= 0 ? 0 : value;
 
-/** Whether a container carries exactly the four host ceilings a spec states. */
+/** Whether a container carries the host ceilings and OOM preference a spec states. */
 function hostLimitsMatch(inspect: ContainerInspect, desired: ContainerSpec): boolean {
   return (
+    // Pre-priority Servers used Docker's zero default. Retain them when adopting
+    // the new default; replacement containers receive the protected priority.
+    ((inspect.oomScoreAdj ?? 0) === (desired.oomScoreAdj ?? 0) ||
+      ((inspect.oomScoreAdj ?? 0) === 0 && desired.oomScoreAdj === -250)) &&
     ceiling(inspect.memoryBytes) === ceiling(desired.memoryBytes) &&
     ceiling(inspect.memorySwapBytes) === ceiling(desired.memorySwapBytes) &&
     ceiling(inspect.nanoCpus) === ceiling(desired.nanoCpus) &&
@@ -709,6 +714,10 @@ function containerSpecFrom(spec: ServerDeploymentSpec, env: string[]): Container
     // A spec sealed before the field existed carries no value, and the fallback is
     // exactly what Compose states, so an old spec and a new one build the same
     // container.
+    oomScoreAdj:
+      parseOomScoreAdj(
+        env.find((entry) => entry.startsWith('VERITY_SERVER_OOM_SCORE_ADJ='))?.split('=')[1],
+      ) ?? -250,
     memoryBytes: resources.memoryBytes,
     // Set, not omitted: Docker's default is twice the memory limit, so leaving it
     // out would quietly grant the Server swap that Compose's matching

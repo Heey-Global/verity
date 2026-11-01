@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { join, resolve } from 'node:path';
@@ -15,6 +15,84 @@ if (process.env.CI && !supported)
   );
 const script = resolve('deploy/host/verity-backup-provision');
 const image = `ghcr.io/heey-global/verity/verity-server@sha256:${'a'.repeat(64)}`;
+const systemctl = process.env.VERITY_TEST_SYSTEMCTL ?? 'systemctl';
+const hasSystemctl = spawnSync(systemctl, ['--version']).status === 0;
+if (process.env.CI && !hasSystemctl)
+  throw new Error('systemctl is required for the peer PID regression');
+
+test(
+  'systemctl needs the manager peer visible in its PID namespace',
+  { skip: !supported || !hasSystemctl },
+  async () => {
+    const root = mkdtempSync(join('/tmp', 'backup-peer-'));
+    mkdirSync(join(root, 'systemd/system'), { recursive: true });
+    // This socket deliberately rejects D-Bus authentication. Reaching that error
+    // proves the real systemctl passed its earlier kernel peer-credential check;
+    // it does not pretend to be a running systemd manager.
+    const server = createServer((socket) => {
+      socket.on('error', () => {});
+      socket.on('data', () => socket.end('REJECTED\r\n'));
+    });
+    await new Promise((resolve) => server.listen(join(root, 'systemd/private'), resolve));
+    const run = (flags, offlineRoot = false, ignoreChroot = false) =>
+      new Promise((resolve, reject) => {
+        const child = spawn(
+          'unshare',
+          [
+            flags,
+            'bash',
+            '-c',
+            offlineRoot
+              ? `set -e
+# Model the different host root inode without a chroot syscall: the CI
+# fixture has SYS_ADMIN for bind mounts, but deliberately no SYS_CHROOT.
+mkdir -p "$1/proc/1" "$1/host-root"
+ln -sfn "$1/host-root" "$1/proc/1/root"
+mount --bind "$1/proc" /proc
+mount --bind "$1" /run
+exec timeout 5 "$2" daemon-reload`
+              : 'mount --bind "$1" /run && exec timeout 5 "$2" daemon-reload',
+            'fixture',
+            root,
+            systemctl,
+          ],
+          {
+            stdio: ['ignore', 'pipe', 'pipe'],
+            env: { ...process.env, LC_ALL: 'C', SYSTEMD_IGNORE_CHROOT: ignoreChroot ? '1' : '0' },
+          },
+        );
+        let output = '';
+        child.stdout.on('data', (bytes) => {
+          output += bytes;
+        });
+        child.stderr.on('data', (bytes) => {
+          output += bytes;
+        });
+        child.on('error', reject);
+        child.on('close', (status) => resolve({ status, output }));
+      });
+    try {
+      const isolated = await run(`${namespaceFlags}pf`);
+      assert.equal(isolated.status, 1, isolated.output);
+      assert.match(isolated.output, /Failed to connect to bus: No data available/);
+      const shared = await run(namespaceFlags);
+      assert.equal(shared.status, 1, shared.output);
+      assert.match(shared.output, /Reload daemon failed:/);
+      assert.doesNotMatch(shared.output, /Failed to connect to bus:/);
+      // Host PID visibility with a container filesystem also trips systemctl's
+      // offline-root heuristic. A successful no-op must not pass as provisioning.
+      const offline = await run(namespaceFlags, true);
+      assert.equal(offline.status, 0, offline.output);
+      assert.match(offline.output, /chroot.*ignoring|ignoring.*chroot/i);
+      const online = await run(namespaceFlags, true, true);
+      assert.equal(online.status, 1, online.output);
+      assert.match(online.output, /Reload daemon failed:/);
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
 test(
   'legacy provisioning preserves archives and credentials, retries and receipts only after success',
   { skip: !supported },

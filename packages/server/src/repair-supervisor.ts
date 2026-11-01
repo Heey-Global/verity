@@ -1,3 +1,4 @@
+import { observationFailure } from './forge-observation-error.js';
 import type { AgentEvent } from '@verity/events';
 import { randomUUID } from 'node:crypto';
 import type { EventStore, ProjectRecord, RepairIncident, RepairMandate } from '@verity/store';
@@ -264,7 +265,8 @@ export function createRepairSupervisor(deps: RepairSupervisorDeps) {
           }
           await store.health(
             project.id,
-            (page.nextPage ?? 0) > 100 ||
+            (page.errors?.length ?? 0) > 0 ||
+              (page.nextPage ?? 0) > 100 ||
               page.pulls.some((p) => p.fork) ||
               statuses.some((row) => row.status.pipeline === 'unknown') ||
               page.pulls.some(
@@ -278,6 +280,7 @@ export function createRepairSupervisor(deps: RepairSupervisorDeps) {
                 ? 'healthy'
                 : 'workflow-monitoring-unsupported',
             page.nextPage && page.nextPage <= 100 ? String(page.nextPage) : null,
+            page.errors ?? null,
           );
           for (const incident of await store.incidents(project.id)) {
             if (incident.owner_session_id) await store.flagStalled(incident.id);
@@ -332,7 +335,7 @@ export function createRepairSupervisor(deps: RepairSupervisorDeps) {
               );
             } else if (!deps.coordinate) await delegate(mandate, incident);
           }
-        } catch {
+        } catch (error) {
           // A forge outage cannot keep a confirmed terminated worker holding capacity.
           for (const incident of await store.incidents(project.id)) {
             if (
@@ -348,7 +351,7 @@ export function createRepairSupervisor(deps: RepairSupervisorDeps) {
                 incident.evidence,
               );
           }
-          await store.health(project.id, 'unavailable', mandate.cursor);
+          await store.health(project.id, 'unavailable', mandate.cursor, observationFailure(error));
         }
         const current = await store.mandate(project.id);
         const fingerprint = JSON.stringify([

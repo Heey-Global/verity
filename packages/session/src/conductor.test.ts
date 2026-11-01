@@ -405,7 +405,7 @@ describe('formatBrokeredSecretAliases', () => {
 });
 
 describe('Conductor.sendTurn', () => {
-  it('enforces tool-free QA turns even when a caller requests execution tools', async () => {
+  it('limits interactive QA to gateway tools even when a caller requests execution tools', async () => {
     await ctx.store.repairs.configureQA(false, 'admin');
     await ctx.store.repairs.qaSession('qa');
     await ctx.store.repairs.configureQA(true, 'admin');
@@ -422,9 +422,12 @@ describe('Conductor.sendTurn', () => {
       permissionMode: 'bypassPermissions',
       allowedTools: ['Bash'],
     });
-    expect(fake.last().toolless).toBe(true);
+    expect(fake.last().gatewayToolsOnly).toBe(true);
+    expect(fake.last().toolless).toBe(false);
     expect(fake.last().resumeSessionId).toBeUndefined();
-    expect(fake.last().appendSystemPrompt).toContain('You are Verity, acting in the QA function');
+    expect(fake.last().appendSystemPrompt).toContain('verity_qa_analysis');
+    expect(fake.last().prompt).toContain('resolve_repair and request_repair');
+    expect(fake.last().prompt).not.toContain('only scheduled decision reviews');
   });
 
   it('gives the assistant session its standing prompt without taking its tools away', async () => {
@@ -829,6 +832,34 @@ describe('Conductor.sendTurn', () => {
     expect(events.some((event) => event.t === 'error' && event.kind === 'crashed')).toBe(true);
     expect(events).not.toContainEqual({ t: 'status', state: 'completed' });
   });
+
+  it.each(['Memory limit reached', '\nVERITY_MEMORY_GUARD_KILL\n'])(
+    'keeps SIGKILL distinct from provider limits when no terminal event survives: %s',
+    async (stderr) => {
+      await ctx.store.createSession({ sessionId: 's-kill', worktree: '/wt/x', model: 'm' });
+      const backend: Backend = {
+        run: async (opts) => ({
+          sessionId: opts.storeSessionId,
+          exitCode: 137,
+          stderr,
+          aborted: false,
+        }),
+      };
+      const conductor = new Conductor({
+        store: ctx.store,
+        backend,
+        worktreeExists: async () => true,
+      });
+      await conductor.sendTurn('s-kill', 'go');
+      expect(await ctx.store.getEvents('s-kill')).toContainEqual({
+        t: 'error',
+        kind: stderr.includes('VERITY_MEMORY_GUARD_KILL') ? 'memory_limit' : 'crashed',
+        message: stderr.includes('VERITY_MEMORY_GUARD_KILL')
+          ? 'Memory limit reached — the memory guard stopped the agent.'
+          : 'Agent was killed (SIGKILL, exit 137); possible memory pressure.',
+      });
+    },
+  );
 
   it('settles a SIGTERM exit without a terminal event as interrupted, not crashed', async () => {
     await ctx.store.createSession({ sessionId: 's-term', worktree: '/wt/x', model: 'm' });

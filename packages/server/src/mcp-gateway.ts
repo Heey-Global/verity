@@ -1,3 +1,4 @@
+import { qaAnalysisRequestSchema, QA_ANALYSIS_DESCRIPTION } from '@verity/events';
 import {
   vulnerabilityRequestSchema,
   VULNERABILITY_TOOL_DESCRIPTION,
@@ -241,6 +242,17 @@ export interface McpGatewayDeps {
       invocationId: string;
     },
   ): Promise<boolean>;
+  /**
+   * Accept content the operator edited on the card, for the few tools whose card offers an
+   * editor. Return the validated edits, which reach {@link invokeTool} as `approvedEdits` beside
+   * the unchanged request; throw to refuse. Omitted, or for any other tool, an edited approval
+   * is refused.
+   */
+  approvedEdits?(input: {
+    toolName: GatewayToolName;
+    request: unknown;
+    updatedInput: Record<string, unknown>;
+  }): unknown;
   /** Execute the approved call. Resolves with the tool's result, or throws if the server
    *  could not serve it (sealed store, missing binding, transport failure). */
   invokeTool(
@@ -251,6 +263,8 @@ export interface McpGatewayDeps {
       invocationId: string;
       /** Whether this invocation passed a fresh permission card. */
       approvedByCard?: boolean;
+      /** Content the operator edited on that card, as returned by {@link approvedEdits}. */
+      approvedEdits?: unknown;
       authorizationSnapshot?: string;
       toolName: GatewayToolName;
       request: unknown;
@@ -320,6 +334,7 @@ const TOOL_SCHEMAS = {
   verity_end_planning: z.object({ action: z.enum(['implement', 'discard']).optional() }).strict(),
   verity_repairs: z.object({ action: z.literal('status') }).strict(),
   verity_assistant: assistantRequestSchema,
+  verity_qa_analysis: qaAnalysisRequestSchema,
   verity_tasks: tasksRequestSchema,
   verity_app_help: appHelpRequestSchema,
   verity_vulnerabilities: vulnerabilityRequestSchema,
@@ -480,6 +495,7 @@ const TOOL_DESCRIPTIONS: Record<GatewayToolName, string> = {
   verity_repairs:
     'Read the current project repair mandate and incidents, including assigned sessions and verification state. This tool grants no execution rights and cannot mark a repair successful.',
   verity_assistant: ASSISTANT_TOOL_DESCRIPTION,
+  verity_qa_analysis: QA_ANALYSIS_DESCRIPTION,
   verity_tasks: TASKS_TOOL_DESCRIPTION,
   verity_app_help: APP_HELP_TOOL_DESCRIPTION,
   verity_vulnerabilities: VULNERABILITY_TOOL_DESCRIPTION,
@@ -930,18 +946,33 @@ export function createMcpGateway(deps: McpGatewayDeps): McpGateway {
         ),
       );
     }
+    let approvedEdits: unknown;
     if (answer.decision.updatedInput !== undefined) {
-      // An edited approval is an approval of a different request than the one keyed and
-      // recorded. Serving it would put a record in the trail that does not describe what
-      // ran, so the edit is refused rather than silently reconciled.
-      return reject(
-        projectId,
-        callId,
-        'denied',
-        keyed,
-        toolName,
-        toolError(id, 'The approved request was edited; edits are not supported here.'),
-      );
+      // An edited approval must not become an approval of a different request than the one
+      // keyed and recorded: that would put a record in the trail that does not describe what
+      // ran. A tool whose card offers an editor takes the edits as a separate, validated
+      // argument instead, and the request itself stays exactly as keyed; every other edit is
+      // refused rather than silently reconciled.
+      try {
+        // Only the operator's own card edits; a grant or any other decider never rewrites.
+        if (answer.decidedBy !== 'card') throw new Error('not edited on a card');
+        if (deps.approvedEdits === undefined) throw new Error('no editor');
+        approvedEdits = deps.approvedEdits({
+          toolName,
+          request: request.data,
+          updatedInput: answer.decision.updatedInput,
+        });
+        if (approvedEdits === undefined) throw new Error('no editor');
+      } catch {
+        return reject(
+          projectId,
+          callId,
+          'denied',
+          keyed,
+          toolName,
+          toolError(id, 'The approved request was edited; edits are not supported here.'),
+        );
+      }
     }
     let result: unknown;
     try {
@@ -981,6 +1012,7 @@ export function createMcpGateway(deps: McpGatewayDeps): McpGateway {
         callId,
         invocationId,
         approvedByCard: !standingAuthorization,
+        ...(approvedEdits === undefined ? {} : { approvedEdits }),
         ...(authorizationSnapshot === undefined ? {} : { authorizationSnapshot }),
         toolName: toolName,
         request: request.data,

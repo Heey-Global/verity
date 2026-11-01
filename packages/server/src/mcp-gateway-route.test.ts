@@ -76,6 +76,7 @@ interface Harness {
 
 function build(
   options: {
+    qaAnalysisRead?: Parameters<typeof buildServer>[0]['qaAnalysisRead'];
     wire?: boolean;
     allow?: boolean;
     trustedCli?: boolean;
@@ -131,6 +132,7 @@ function build(
                   'verity_end_planning',
                   'verity_tasks',
                   'verity_repairs',
+                  'verity_qa_analysis',
                   'verity_app_help',
                   'verity_http_request',
                 ]
@@ -276,6 +278,7 @@ function build(
       : {}),
   } as unknown as Conductor;
   const app = buildServer({
+    ...(options.qaAnalysisRead ? { qaAnalysisRead: options.qaAnalysisRead } : {}),
     eventStore: store,
     runtimeDiagnostics: options.runtimeDiagnostics,
     bus: new InMemoryEventBus(),
@@ -2565,3 +2568,160 @@ it('rejects forged project/generation headers at the real relay before broker ex
     expect(harness.invocations).toEqual([]);
   });
 });
+
+it('lets QA read authorized CI evidence through the gateway but refuses all other tools', async () => {
+  const h = build({
+    planningTools: true,
+    allow: true,
+    qaAnalysisRead: async (_project, _request, authorize) => {
+      await authorize();
+      return { groups: [{ group: 'main:10', runs: 12 }], complete: true, continuation: null };
+    },
+  });
+  await h.store.createProject({
+    id: 'p1',
+    kind: 'github',
+    owner: 'team',
+    repo: 'app',
+    cloneDir: 'team-app',
+    containerName: 'app',
+    state: 'active',
+  });
+  await h.store.createSession({
+    sessionId: 'qa',
+    projectId: 'p1',
+    worktree: '/tmp/qa',
+    model: 'claude-opus-5',
+  });
+  await h.store.repairs.configureQA(true, 'admin');
+  await h.store.repairs.qaSession('qa');
+  await h.store.repairs.configure('p1', 'admin', 'monitor');
+  const token = h.tokens.issue({ projectId: 'p1', sessionId: 'qa', turnId: 't1' });
+  await withListener(h, async (socketPath) => {
+    let id = 0;
+    const call = async (name: string, args: object) => {
+      const r = await postUnix(socketPath, `Bearer ${token}`, {
+        jsonrpc: '2.0',
+        id: ++id,
+        method: 'tools/call',
+        params: { name, arguments: args },
+      });
+      return JSON.parse(r.body) as { result: { isError?: boolean; content: { text: string }[] } };
+    };
+    const listed = await call('verity_qa_analysis', { action: 'projects' });
+    expect(listed.result, JSON.stringify(listed)).toBeDefined();
+    expect(listed.result.isError).toBeUndefined();
+    expect(JSON.stringify(listed)).toContain('team/app');
+    const baseline = await call('verity_qa_analysis', { action: 'statistics', projectId: 'p1' });
+    expect(baseline.result.isError).toBeUndefined();
+    expect(JSON.stringify(baseline)).toContain('main:10');
+    const reportId = (JSON.parse(baseline.result.content[0]!.text) as { reportId: string })
+      .reportId;
+    await call('verity_qa_analysis', { action: 'save_report', projectId: 'p1', reportId });
+    expect(h.approvals).toEqual([
+      expect.objectContaining({ toolName: 'verity_qa_analysis', allowStandingGrant: false }),
+    ]);
+
+    for (const name of ['verity_tasks', 'verity_app_help', 'verity_http_request']) {
+      const args =
+        name === 'verity_tasks'
+          ? { action: 'list' }
+          : name === 'verity_app_help'
+            ? { topic: 'github' }
+            : {
+                secretAlias: 'ATTENDEE_API_KEY',
+                method: 'GET',
+                url: 'https://example.com',
+                auth: { kind: 'static', header: 'authorization', scheme: 'Bearer' },
+              };
+      expect(JSON.stringify(await call(name, args))).toContain(
+        'QA uses server-validated decisions',
+      );
+    }
+    await h.store.repairs.configure('p1', 'admin', 'off');
+    expect(
+      (await call('verity_qa_analysis', { action: 'pulls', projectId: 'p1' })).result.isError,
+    ).toBe(true);
+  });
+});
+
+it.each([false, true])(
+  'gates one-time QA repair requests on trusted instruction or a non-standing card (instruction=%s)',
+  async (explicit) => {
+    const h = build({ planningTools: true, allow: false });
+    await h.store.createProject({
+      id: 'p1',
+      kind: 'github',
+      owner: 'team',
+      repo: 'app',
+      cloneDir: 'team-app',
+      containerName: 'app',
+      state: 'active',
+    });
+    await h.store.createSession({
+      sessionId: 'qa',
+      projectId: 'p1',
+      worktree: '/tmp/qa',
+      model: 'claude',
+    });
+    await h.store.repairs.configureQA(true, '00000000-0000-4000-8000-000000000001');
+    await h.store.repairs.qaSession('qa');
+    await h.store.repairs.configure('p1', '00000000-0000-4000-8000-000000000001', 'monitor');
+    const id = crypto.randomUUID();
+    await h.store.repairs.proposeManualRepair({
+      id,
+      project_id: 'p1',
+      source_session_id: 'qa',
+      user_id: '00000000-0000-4000-8000-000000000001',
+      target_session_id: 'target',
+      number: 2120,
+      branch: 'fix/ci',
+      revision: 'sha',
+      qa_revision: 1,
+      mandate_revision: 1,
+      requires_card: false,
+    });
+    await h.store.appendEvent('qa', {
+      t: 'tool_call',
+      id: 'resolve',
+      name: 'verity_qa_analysis',
+      input: { action: 'resolve_repair', projectId: 'p1', number: 2120 },
+    });
+    await h.store.appendEvent('qa', {
+      t: 'tool_result',
+      id: 'resolve',
+      isError: false,
+      output: { proposalId: id },
+    });
+    const row = await h.store.appendEvent('qa', {
+      t: 'prompt',
+      text: explicit ? 'fix PR #2120' : 'What failed?',
+      initiatedBy: { userId: '00000000-0000-4000-8000-000000000001' },
+    });
+    await h.store.markTurnRunning({ sessionId: 'qa', promptSeq: row.seq });
+    await h.store.bindTurnIdentity('qa', { turnId: 't1', startCommandId: 'start' });
+    const token = h.tokens.issue({ projectId: 'p1', sessionId: 'qa', turnId: 't1' });
+    await withListener(h, async (socketPath) => {
+      const reply = await postUnix(socketPath, `Bearer ${token}`, {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: {
+          name: 'verity_qa_analysis',
+          arguments: { action: 'request_repair', projectId: 'p1', proposalId: id },
+        },
+      });
+      // No discovery provider exists in this harness: authorized execution must still fail
+      // closed, while a request lacking chat consent must hit the card before execution.
+      expect(JSON.parse(reply.body)).toHaveProperty('result.isError', true);
+      if (explicit) expect(reply.body).toContain('PR revision or failure evidence changed');
+      expect(h.approvals, reply.body).toHaveLength(explicit ? 0 : 1);
+      if (!explicit)
+        expect(h.approvals[0]).toMatchObject({
+          toolName: 'verity_qa_analysis',
+          allowStandingGrant: false,
+        });
+      expect((await h.store.repairs.manualRepair(id))?.dispatch_id).toBeNull();
+    });
+  },
+);

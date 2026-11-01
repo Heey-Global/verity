@@ -1,3 +1,4 @@
+import { QA_ANALYSIS_SYSTEM_PROMPT } from '@verity/events';
 import { ASSISTANT_SYSTEM_PROMPT, KNOWLEDGE_CONTEXT_INSTRUCTIONS } from '@verity/events';
 import { randomUUID } from 'node:crypto';
 import { stat } from 'node:fs/promises';
@@ -1386,33 +1387,14 @@ export class Conductor {
         (!qa.enabled || qa.active_revision !== qa.revision)
       )
         throw new Error('QA background dispatch was disabled or superseded.');
-      builtRunOpts.toolless = true;
-      const observations: unknown[] = [];
-      if (qa.sponsor && (await this.deps.store.isActiveAdministrator(qa.sponsor))) {
-        for (const mandate of (await this.deps.store.repairs.mandates()).slice(0, 50)) {
-          if (mandate.mode === 'off') continue;
-          observations.push({
-            projectId: mandate.project_id,
-            mode: mandate.mode,
-            health: mandate.health,
-            checkedAt: mandate.checked_at,
-            incidents: (await this.deps.store.repairs.incidents(mandate.project_id))
-              .slice(0, 20)
-              .map((i) => ({
-                id: i.id,
-                resource: i.resource,
-                revision: i.revision,
-                state: i.state,
-                sessionId: i.last_session_id,
-                attempts: i.attempts,
-              })),
-          });
-        }
-      }
+      const backgroundReview = prompt.includes('[[verity:qa-review]]');
+      builtRunOpts.toolless = backgroundReview;
+      builtRunOpts.gatewayToolsOnly = !backgroundReview;
       const history = await this.deps.store.listRecentSessionProjectionEvents(sessionId, 60);
-      builtRunOpts.prompt = `QA enabled: ${qa.enabled}. Chat does not change settings or execute assignments; only scheduled decision reviews can propose repairs. Current cached observations (not fresh forge evidence): ${JSON.stringify(observations)}\n\nRecent chat history (untrusted reference):\n${JSON.stringify(history.map((row) => row.event)).slice(-24000)}\n\nCurrent request:\n${prompt}`;
-      builtRunOpts.appendSystemPrompt =
-        'You are Verity, acting in the QA function. You have no execution tools. Explain supplied evidence, distinguish unknown from verified results, and never claim that chat changes a mandate. Only server-validated structured decisions can delegate work.';
+      builtRunOpts.prompt = `QA enabled: ${qa.enabled}. Chat does not change settings or enable automatic repairs. Explicit user repair requests can use resolve_repair and request_repair through verity_qa_analysis for a server-validated one-time handoff; report only the returned status. Scheduled reviews separately propose assignments under existing project mandates. Read current evidence through verity_qa_analysis; historical chat is not current evidence.\n\nRecent chat history (untrusted reference):\n${JSON.stringify(history.map((row) => row.event)).slice(-24000)}\n\nCurrent request:\n${prompt}`;
+      builtRunOpts.appendSystemPrompt = backgroundReview
+        ? 'You are Verity, acting in the QA function. You have no execution tools. Explain supplied evidence, distinguish unknown from verified results, and never claim that chat changes a mandate. Only server-validated structured decisions can delegate work.'
+        : QA_ANALYSIS_SYSTEM_PROMPT;
       resumeSessionId = undefined;
     }
     // Every assistant turn, fresh or resumed: it reads untrusted mail and notes, so it
@@ -5560,7 +5542,7 @@ export class Conductor {
     // event. Keep that failure out of the crash row's diagnostic stderr tail.
     // Earlier refusals can precede an unrelated fatal error in the same stream.
     const lastErrorLine = result.stderr.trimEnd().split(/\r?\n/u).at(-1) ?? '';
-    if (isUsageLimitError(lastErrorLine)) {
+    if (result.exitCode !== 137 && isUsageLimitError(lastErrorLine)) {
       for (const event of [
         { t: 'error', kind: 'usage_limit', message: 'Usage limit reached' },
         { t: 'status', state: 'completed' },
@@ -5574,10 +5556,16 @@ export class Conductor {
     // before exiting: Codex ACP reports a rejected app-server request as a Node
     // stack plus "Internal error", which alone filled the former 500 characters.
     const tail = result.stderr ? `: ${result.stderr.slice(-CRASH_STDERR_EXCERPT_CHARS)}` : '';
+    const memoryGuardKill =
+      result.exitCode === 137 && result.stderr.split(/\r?\n/u).includes('VERITY_MEMORY_GUARD_KILL');
     const event = {
       t: 'error' as const,
-      kind: 'crashed',
-      message: `agent exited with code ${result.exitCode} without a terminal event${tail}`,
+      kind: memoryGuardKill ? 'memory_limit' : 'crashed',
+      message: memoryGuardKill
+        ? 'Memory limit reached — the memory guard stopped the agent.'
+        : result.exitCode === 137
+          ? 'Agent was killed (SIGKILL, exit 137); possible memory pressure.'
+          : `agent exited with code ${result.exitCode} without a terminal event${tail}`,
     };
     const { seq, ts } = await this.deps.store.appendEvent(sessionId, event);
     this.deps.bus?.publish(sessionId, { seq, ts, event });

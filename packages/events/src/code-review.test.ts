@@ -28,15 +28,10 @@ describe('CODE_REVIEW_SYSTEM_PROMPT', () => {
     );
   });
 
-  it('hands the dependency question to the operator as two Quick Actions', () => {
-    // The hook's banner wording, so an agent recognises the situation it is
-    // being told about, and the two labels it is to offer rather than deciding
-    // alone whether registry code gets installed.
-    expect(CODE_REVIEW_SYSTEM_PROMPT).toContain(
-      "lint and format checks can't run: dependencies are not installed",
-    );
-    expect(CODE_REVIEW_SYSTEM_PROMPT).toContain('"Install and run checks"');
-    expect(CODE_REVIEW_SYSTEM_PROMPT).toContain('"Skip lint/format this session"');
+  it('authorizes automatic dependency preparation for a requested push', () => {
+    expect(CODE_REVIEW_SYSTEM_PROMPT).toContain('without another confirmation');
+    expect(CODE_REVIEW_SYSTEM_PROMPT).toContain('verity-dependencies install');
+    expect(CODE_REVIEW_SYSTEM_PROMPT).toContain('installation failures stop the push');
     expect(CODE_REVIEW_SYSTEM_PROMPT).toMatch(/on every branch/);
     expect(CODE_REVIEW_SYSTEM_PROMPT).toMatch(/git wrapper refuses/);
   });

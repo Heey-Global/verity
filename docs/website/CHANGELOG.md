@@ -1,5 +1,19 @@
 # Changelog
 
+## [2.7.0](https://github.com/Heey-Global/verity/compare/website-v2.6.0...website-v2.7.0) (2026-11-01)
+
+
+### Features
+
+* **self-update:** install archive-only gVisor releases through the update path ([#2140](https://github.com/Heey-Global/verity/issues/2140)) ([cb981b0](https://github.com/Heey-Global/verity/commit/cb981b014341a07ab3e57128f8f79621e056da79))
+
+## [2.6.0](https://github.com/Heey-Global/verity/compare/website-v2.5.3...website-v2.6.0) (2026-10-31)
+
+
+### Features
+
+* **qa:** add bounded CI and release analysis ([#2111](https://github.com/Heey-Global/verity/issues/2111)) ([702760b](https://github.com/Heey-Global/verity/commit/702760bba7c640d680422c37d60753eb6bbd837e))
+
 ## [2.5.3](https://github.com/Heey-Global/verity/compare/website-v2.5.2...website-v2.5.3) (2026-10-25)
 
 

@@ -1,3 +1,4 @@
+import ipaddr from 'ipaddr.js';
 import { z } from 'zod';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -47,10 +48,9 @@ export async function inspectEgressTransport(
   ids: { sandbox: string; relay: string },
   codex: boolean,
   io = transportIO,
+  docker = io.docker,
 ): Promise<EgressTransport | undefined> {
-  const networkReply: unknown = JSON.parse(
-    await io.docker('network', 'inspect', binding.networkId),
-  );
+  const networkReply: unknown = JSON.parse(await docker('network', 'inspect', binding.networkId));
   verifyEgressHostNetwork(binding, networkReply, [ids.sandbox, ids.relay]);
   const topology = z
     .array(
@@ -64,77 +64,90 @@ export async function inspectEgressTransport(
     .length(1)
     .parse(networkReply)[0]!;
   const result: Partial<Record<'sandbox' | 'relay', z.infer<typeof endpoint>>> = {};
-  for (const role of ['sandbox', 'relay'] as const) {
-    const raw: unknown = JSON.parse(await io.docker('inspect', ids[role]));
-    const state = z
-      .array(z.object({ Id: z.string(), State: z.object({ Running: z.boolean() }) }))
-      .length(1)
-      .parse(raw)[0]!;
-    if (state.Id !== ids[role]) throw new Error('Transport container identity mismatch');
-    if (!state.State.Running) return undefined;
-    const value = inspected.parse(raw)[0]!;
-    if (value.Id !== ids[role]) throw new Error('Transport container identity mismatch');
-    if (!value.State.Running) return undefined;
-    const entries = Object.entries(value.NetworkSettings.Networks);
-    const net = entries[0]?.[1];
-    if (
-      entries.length !== 1 ||
-      entries[0]?.[0] !== binding.networkName ||
-      net?.NetworkID !== binding.networkId
-    )
-      throw new Error('Transport network mismatch');
-    const args = ['--net=' + value.NetworkSettings.SandboxKey, '/sbin/ip', '-j', 'address', 'show'];
-    const links = z
-      .array(
-        z.object({
-          ifindex: z.number().int().positive(),
-          ifname: z.string(),
-          link_index: z.number().int().positive().optional(),
-          address: z.string(),
-          addr_info: z.array(z.object({ family: z.string(), local: z.string() })),
-        }),
+  const peers = await Promise.allSettled(
+    (['sandbox', 'relay'] as const).map(async (role) => {
+      const raw: unknown = JSON.parse(await docker('inspect', ids[role]));
+      const state = z
+        .array(z.object({ Id: z.string(), State: z.object({ Running: z.boolean() }) }))
+        .length(1)
+        .parse(raw)[0]!;
+      if (state.Id !== ids[role]) throw new Error('Transport container identity mismatch');
+      if (!state.State.Running) return undefined;
+      const value = inspected.parse(raw)[0]!;
+      if (value.Id !== ids[role]) throw new Error('Transport container identity mismatch');
+      if (!value.State.Running) return undefined;
+      const entries = Object.entries(value.NetworkSettings.Networks);
+      const net = entries[0]?.[1];
+      if (
+        entries.length !== 1 ||
+        entries[0]?.[0] !== binding.networkName ||
+        net?.NetworkID !== binding.networkId
       )
-      .parse(JSON.parse(await io.run('/usr/bin/nsenter', args)));
-    const assignment = topology.Containers[ids[role]];
-    if (
-      !assignment ||
-      assignment.IPv4Address.split('/')[0] !== net.IPAddress ||
-      assignment.MacAddress !== net.MacAddress
-    )
-      throw new Error('Transport daemon endpoint disagreement');
-    // runsc transfers IP addresses from the Linux NIC to netstack at startup.
-    // The daemon owns the address assignment; the kernel proves the veth peer.
-    const candidates = links.filter((link) => link.ifname !== 'lo');
-    if (
-      candidates.some(
-        (link) =>
-          link.address !== net.MacAddress ||
-          link.addr_info.some((a) => a.family === 'inet' && a.local !== net.IPAddress),
+        throw new Error('Transport network mismatch');
+      const args = [
+        '--net=' + value.NetworkSettings.SandboxKey,
+        '/sbin/ip',
+        '-j',
+        'address',
+        'show',
+      ];
+      const links = z
+        .array(
+          z.object({
+            ifindex: z.number().int().positive(),
+            ifname: z.string(),
+            link_index: z.number().int().positive().optional(),
+            address: z.string(),
+            addr_info: z.array(z.object({ family: z.string(), local: z.string() })),
+          }),
+        )
+        .parse(JSON.parse(await io.run('/usr/bin/nsenter', args)));
+      const assignment = topology.Containers[ids[role]];
+      if (
+        !assignment ||
+        assignment.IPv4Address.split('/')[0] !== net.IPAddress ||
+        assignment.MacAddress !== net.MacAddress
       )
-    )
-      throw new Error('Unexpected transport namespace interface');
-    if (candidates.length !== 1 || candidates[0]!.link_index === undefined)
-      throw new Error('Transport namespace endpoint mismatch');
-    const link = candidates[0]!;
-    const hosts = z
-      .array(z.object({ ifindex: z.number(), ifname: z.string() }))
-      .parse(JSON.parse(await io.run('/sbin/ip', ['-j', 'link', 'show'])))
-      .filter((item) => item.ifindex === link.link_index);
-    if (hosts.length !== 1) throw new Error('Transport host peer missing');
-    const peer = endpoint.parse({
-      address: net.IPAddress,
-      mac: net.MacAddress,
-      device: hosts[0]!.ifname,
-      index: hosts[0]!.ifindex,
-    });
-    const root = `/sys/class/net/${peer.device}`;
-    if (
-      Number(await io.readFile(`${root}/iflink`)) !== link.ifindex ||
-      Number(await io.readFile(`${root}/ifindex`)) !== peer.index ||
-      !(await io.readlink(`${root}/master`)).endsWith('/' + binding.bridge)
-    )
-      throw new Error('Transport host bridge peer mismatch');
-    result[role] = peer;
+        throw new Error('Transport daemon endpoint disagreement');
+      // runsc transfers IP addresses from the Linux NIC to netstack at startup.
+      // The daemon owns the address assignment; the kernel proves the veth peer.
+      const candidates = links.filter((link) => link.ifname !== 'lo');
+      if (
+        candidates.some(
+          (link) =>
+            link.address !== net.MacAddress ||
+            link.addr_info.some((a) => a.family === 'inet' && a.local !== net.IPAddress),
+        )
+      )
+        throw new Error('Unexpected transport namespace interface');
+      if (candidates.length !== 1 || candidates[0]!.link_index === undefined)
+        throw new Error('Transport namespace endpoint mismatch');
+      const link = candidates[0]!;
+      const hosts = z
+        .array(z.object({ ifindex: z.number(), ifname: z.string() }))
+        .parse(JSON.parse(await io.run('/sbin/ip', ['-j', 'link', 'show'])))
+        .filter((item) => item.ifindex === link.link_index);
+      if (hosts.length !== 1) throw new Error('Transport host peer missing');
+      const peer = endpoint.parse({
+        address: net.IPAddress,
+        mac: net.MacAddress,
+        device: hosts[0]!.ifname,
+        index: hosts[0]!.ifindex,
+      });
+      const root = `/sys/class/net/${peer.device}`;
+      if (
+        Number(await io.readFile(`${root}/iflink`)) !== link.ifindex ||
+        Number(await io.readFile(`${root}/ifindex`)) !== peer.index ||
+        !(await io.readlink(`${root}/master`)).endsWith('/' + binding.bridge)
+      )
+        throw new Error('Transport host bridge peer mismatch');
+      return { role, peer };
+    }),
+  );
+  for (const entry of peers) if (entry.status === 'rejected') throw entry.reason;
+  for (const entry of peers) {
+    if (entry.status !== 'fulfilled' || entry.value === undefined) return undefined;
+    result[entry.value.role] = entry.value.peer;
   }
   const transport = egressTransportSchema.parse({ ...result, codex });
   if (
@@ -186,4 +199,92 @@ export function transportRules(
     }
   }
   return rules;
+}
+
+/** A routing corridor is selected only after the host installed the direct fence.
+ * `return` continues through its later base chain; it never authorizes a target.
+ * Switched project-to-project traffic has no corridor.
+ */
+export interface EgressDirectCorridor {
+  binding: import('./project-egress-fence.js').ProjectFenceBinding;
+  gateway4: string;
+  gateway6: string;
+}
+export function directCorridorRules(
+  network: ProjectEgressNetworkBinding,
+  transport: EgressTransport,
+  direct: EgressDirectCorridor | undefined,
+  hook: 'forward' | 'input',
+  family: 'inet' | 'bridge',
+): string {
+  if (!direct) return '';
+  const b = direct.binding;
+  const t = egressTransportSchema.parse(transport);
+  z.ipv4().parse(b.ipv4);
+  z.ipv6().parse(b.ipv6);
+  z.ipv4().parse(direct.gateway4);
+  z.ipv6().parse(direct.gateway6);
+  if (
+    b.projectId !== network.projectId ||
+    b.generation !== network.generation ||
+    b.networkId !== network.networkId ||
+    b.bridge !== network.bridge ||
+    b.ipv4 !== t.sandbox.address
+  )
+    throw new Error('Direct corridor binding mismatch');
+  if (family === 'inet' && hook === 'forward')
+    return `
+ iifname "${network.bridge}" oifname != "${network.bridge}" ip saddr ${b.ipv4} return;
+ iifname "${network.bridge}" oifname != "${network.bridge}" ip6 saddr ${b.ipv6} return;
+ oifname "${network.bridge}" iifname != "${network.bridge}" ip daddr ${b.ipv4} return;
+ oifname "${network.bridge}" iifname != "${network.bridge}" ip6 daddr ${b.ipv6} return;
+`;
+  if (hook !== 'input') return '';
+  const raw = (address: string) =>
+    '0x' +
+    ipaddr
+      .parse(address)
+      .toByteArray()
+      .map((byte) => byte.toString(16).padStart(2, '0'))
+      .join('');
+  const mac = t.sandbox.mac.split(':').map((byte) => Number.parseInt(byte, 16));
+  const linkLocal = ipaddr
+    .fromByteArray([
+      0xfe,
+      0x80,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      mac[0]! ^ 2,
+      mac[1]!,
+      mac[2]!,
+      0xff,
+      0xfe,
+      mac[3]!,
+      mac[4]!,
+      mac[5]!,
+    ])
+    .toString();
+  // NS normally targets a solicited-node multicast address. Match its ICMPv6
+  // target field, not the IPv6 destination, and never accept router advertisements.
+  const prefix =
+    family === 'inet'
+      ? `iifname "${network.bridge}"`
+      : `meta ibrname "${network.bridge}" meta iif ${t.sandbox.index} iifname "${t.sandbox.device}" ether saddr ${t.sandbox.mac}`;
+  const nd = `
+ ${prefix} ip6 saddr { ${b.ipv6}, ${linkLocal} } ip6 hoplimit 255 icmpv6 type nd-neighbor-solicit @th,64,128 ${raw(direct.gateway6)} return;
+ ${prefix} ip6 saddr { ${b.ipv6}, ${linkLocal} } ip6 hoplimit 255 icmpv6 type nd-neighbor-advert @th,64,128 ${raw(b.ipv6)} return;
+`;
+  if (family === 'inet') return nd;
+  // Routed IP frames first cross bridge input. Preserve their exact source
+  // binding here; the inet forward fence checks targets and inet input denies host access.
+  return `
+ ${prefix} ip saddr ${b.ipv4} return;
+ ${prefix} ip6 saddr ${b.ipv6} return;
+ ${prefix} arp operation { request, reply } arp saddr ether ${t.sandbox.mac} arp saddr ip ${b.ipv4} arp daddr ip ${direct.gateway4} return;
+ ${nd}
+`;
 }

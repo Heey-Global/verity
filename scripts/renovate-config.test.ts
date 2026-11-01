@@ -19,6 +19,9 @@ interface RenovateConfig {
     description?: string;
     managerFilePatterns?: string[];
     matchStrings?: string[];
+    datasourceTemplate?: string;
+    depNameTemplate?: string;
+    versioningTemplate?: string;
   }>;
   packageRules: Array<{
     description?: string;
@@ -880,5 +883,44 @@ describe('Supply-chain cooldown', () => {
       npmrcSettings.map(({ key }) => key).sort(),
       "a setting was added to .npmrc that Renovate's empty npmrc now hides from it",
     ).toEqual(['engine-strict', 'min-release-age']);
+  });
+});
+
+describe('Renovate gVisor runtime pin', () => {
+  const pins = 'deploy/gvisor/versions.env';
+
+  function patternMatches(pattern: string, path: string): boolean {
+    const regex = /^\/(.*)\/$/.exec(pattern);
+    return regex !== null && new RegExp(regex[1]).test(path);
+  }
+
+  it('is reached by a manager that reads the release every host installs', () => {
+    const config = JSON.parse(readFileSync('renovate.json', 'utf8')) as RenovateConfig;
+    const source = readFileSync(pins, 'utf8');
+    const release = /^RUNSC_RELEASE=(\S+)$/m.exec(source)?.[1];
+    const managers = config.customManagers.filter((manager) =>
+      (manager.managerFilePatterns ?? []).some((pattern) => patternMatches(pattern, pins)),
+    );
+    expect(managers).toHaveLength(1);
+    const [manager] = managers;
+    expect(manager).toMatchObject({
+      datasourceTemplate: 'github-releases',
+      depNameTemplate: 'google/gvisor',
+    });
+    const captured = (manager?.matchStrings ?? []).map(
+      (matchString) => new RegExp(matchString).exec(source)?.groups?.currentValue,
+    );
+    expect(captured).toEqual([release]);
+    // gVisor names releases by date; the versioning has to order them, or no bump is offered.
+    const versioning = new RegExp(manager?.versioningTemplate?.replace(/^regex:/, '') ?? '$^');
+    expect(versioning.exec(release ?? '')?.groups).toMatchObject({ major: expect.any(String) });
+    expect(versioning.test('release-20261026.0')).toBe(true);
+  });
+
+  it('types a gVisor bump as a fix, so that it releases', () => {
+    const config = JSON.parse(readFileSync('renovate.json', 'utf8')) as RenovateConfig;
+    expect(
+      config.packageRules.find((rule) => rule.matchPackageNames?.includes('google/gvisor')),
+    ).toMatchObject({ semanticCommitType: 'fix' });
   });
 });

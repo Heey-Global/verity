@@ -575,3 +575,16 @@ protocol; snapshotter convergence itself always requires the compatible-client
 fence. A failed migration revision is latched until its versioned policy or helper
 changes, rather than restarting the builder every minute. Periodic timer retries
 of a deferred transaction do not restart it.
+
+### Native worker retirement
+
+The matching Server and host-helper release can reclaim retired native worker
+state automatically or through the administrator storage action. The transaction,
+independent reservation challenge, refusal cases and recovery guarantees are
+specified in [storage reclamation](../../docs/operations/storage-reclamation.md).
+This supersedes inventory-only behavior in earlier releases: overlay convergence
+alone still grants no deletion authority. Persisted reservation evidence, remote
+operations and unknown consumers remain authoritative blockers. After the durable
+native-retired marker is written, native configuration rollback is unavailable;
+the overlay worker and shared daemon metadata are preserved. A host helper update
+is required; updating only the Server does not enable host-root cleanup.

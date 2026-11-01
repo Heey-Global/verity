@@ -14,6 +14,8 @@ export const egressRelayPolicy = z.strictObject({
   brokerSubpath: subpath,
   claudeSubpath: subpath,
   codexSubpath: subpath.optional(),
+  /** Explicit experimental host selection; legacy fixtures do not claim deadlines. */
+  packetEnforcement: z.boolean().optional(),
 });
 export type EgressRelayPolicy = z.infer<typeof egressRelayPolicy>;
 const mount = z.object({
@@ -179,9 +181,11 @@ export async function inspectEgressRelay(
     JSON.parse(await docker('image', 'inspect', policy.image)),
     JSON.parse(await docker('volume', 'inspect', policy.dataVolume)),
   );
+  // Shared ancestors belong to the same current inspection, not a later refresh.
+  const ancestors = new Set<string>();
   for (const { directory, socket } of paths) {
     // Every ancestor is checked: a safe leaf below a writable/symlinked root is not a binding.
-    for (let path = resolve(directory); ; path = dirname(path)) {
+    for (let path = resolve(directory); !ancestors.has(path); path = dirname(path)) {
       const stat = await lstat(path);
       if (
         !stat.isDirectory() ||
@@ -192,6 +196,7 @@ export async function inspectEgressRelay(
       ) {
         throw new Error('Untrusted relay socket ancestor');
       }
+      ancestors.add(path);
       if (path === '/') break;
     }
     const dir = await lstat(directory);

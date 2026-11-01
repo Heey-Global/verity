@@ -269,7 +269,7 @@ jobs:
       # renovate: datasource=github-actions depName=actions/setup-node
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '26.12.1'
+          node-version: '26.13.0'
 
       # The harness needs nothing from the registry pull, the isolated daemon or the
       # previous release, so it builds while those three run instead of after them.
@@ -613,7 +613,7 @@ jobs:
           # runs on. It is read from the staged WORKFLOW revision — this build is the
           # one host-daemon build in the job and its output runs `--privileged` there.
           # Its context is isolated from the CANDIDATE checkout as well: the candidate
-          # chooses the three pins below, but none of its text is executed by the
+          # chooses the pins below, but none of its text is executed by the
           # Dockerfile.
           #
           # Extracted, never sourced. `deploy/gvisor/versions.env` comes from the
@@ -626,16 +626,27 @@ jobs:
           runsc_release="$(sed -n 's/^RUNSC_RELEASE=//p' deploy/gvisor/versions.env | head -n 1)"
           runsc_sha512_x86_64="$(sed -n 's/^RUNSC_SHA512_X86_64=//p' deploy/gvisor/versions.env | head -n 1)"
           runsc_sha512_aarch64="$(sed -n 's/^RUNSC_SHA512_AARCH64=//p' deploy/gvisor/versions.env | head -n 1)"
+          # Present only for a release that ships as an archive; both or neither.
+          runsc_archive_x86_64="$(sed -n 's/^RUNSC_ARCHIVE_SHA512_X86_64=//p' deploy/gvisor/versions.env | head -n 1)"
+          runsc_archive_aarch64="$(sed -n 's/^RUNSC_ARCHIVE_SHA512_AARCH64=//p' deploy/gvisor/versions.env | head -n 1)"
           if [[ ! "$runsc_release" =~ ^[A-Za-z0-9._-]+$ ]] \
             || [[ ! "$runsc_sha512_x86_64" =~ ^[a-f0-9]{128}$ ]] \
-            || [[ ! "$runsc_sha512_aarch64" =~ ^[a-f0-9]{128}$ ]]; then
+            || [[ ! "$runsc_sha512_aarch64" =~ ^[a-f0-9]{128}$ ]] \
+            || { [[ -n "$runsc_archive_x86_64$runsc_archive_aarch64" ]] \
+              && { [[ ! "$runsc_archive_x86_64" =~ ^[a-f0-9]{128}$ ]] \
+                || [[ ! "$runsc_archive_aarch64" =~ ^[a-f0-9]{128}$ ]]; }; }; then
             echo "deploy/gvisor/versions.env contains an unusable runtime pin." >&2
             exit 1
           fi
           mkdir -p "$RUNNER_TEMP/verity-self-update-harness/gvisor-context/deploy/gvisor"
-          printf 'RUNSC_RELEASE=%s\nRUNSC_SHA512_X86_64=%s\nRUNSC_SHA512_AARCH64=%s\n' \
-            "$runsc_release" "$runsc_sha512_x86_64" "$runsc_sha512_aarch64" \
-            >"$RUNNER_TEMP/verity-self-update-harness/gvisor-context/deploy/gvisor/versions.env"
+          {
+            printf 'RUNSC_RELEASE=%s\nRUNSC_SHA512_X86_64=%s\nRUNSC_SHA512_AARCH64=%s\n' \
+              "$runsc_release" "$runsc_sha512_x86_64" "$runsc_sha512_aarch64"
+            if [[ -n "$runsc_archive_x86_64" ]]; then
+              printf 'RUNSC_ARCHIVE_SHA512_X86_64=%s\nRUNSC_ARCHIVE_SHA512_AARCH64=%s\n' \
+                "$runsc_archive_x86_64" "$runsc_archive_aarch64"
+            fi
+          } >"$RUNNER_TEMP/verity-self-update-harness/gvisor-context/deploy/gvisor/versions.env"
           docker build \
             --file "$RUNNER_TEMP/verity-self-update-harness/gvisor-context/Dockerfile" \
             --tag "$VERITY_SMOKE_DIND_IMAGE" \

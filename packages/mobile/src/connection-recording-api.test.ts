@@ -40,6 +40,9 @@ it('uses authenticated bounded run-scoped start/status/stop/export calls', async
   await client.getConnectionRecording(runId);
   await client.stopConnectionRecording(runId);
   await client.exportConnectionRecording(runId);
+  expect(fetch.mock.calls[3]?.[1]?.headers).toMatchObject({
+    'x-verity-recording-failure-details': '1',
+  });
   expect(fetch.mock.calls.map((call) => call[1]?.method)).toEqual(['POST', 'GET', 'DELETE', 'GET']);
   expect(fetch.mock.calls[0]?.[1]?.body).toBe(JSON.stringify({ runId, durationMs: 120_000 }));
   expect(fetch.mock.calls[0]?.[1]?.headers).toMatchObject({ authorization: 'Bearer paired-token' });
@@ -306,4 +309,29 @@ it('rejects a correctly hashed foreign-run export inside a matching envelope', a
   await expect(client.exportConnectionRecording(requestedRun, 2)).rejects.toThrow(
     'does not match run',
   );
+});
+
+it('accepts legacy reports and retains only allowlisted failure details', async () => {
+  const { connectionRecordingExportSchema } = await import('./api.js');
+  const report = {
+    version: 1,
+    status,
+    core: { records: [], dropped: 0 },
+    uplink: { available: false, data: null, error: 'uplink_export_failed' },
+  };
+  expect(connectionRecordingExportSchema.parse(report)).not.toHaveProperty('failures');
+  const failures = { stop: 'control_timeout', export: 'diagnostics_not_found' };
+  expect(connectionRecordingExportSchema.parse({ ...report, failures }).failures).toEqual(failures);
+  expect(() =>
+    connectionRecordingExportSchema.parse({
+      ...report,
+      failures: { ...failures, export: 'private-token' },
+    }),
+  ).toThrow();
+  expect(() =>
+    connectionRecordingExportSchema.parse({
+      ...report,
+      failures: { ...failures, message: 'private-token' },
+    }),
+  ).toThrow();
 });

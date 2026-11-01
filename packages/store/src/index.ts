@@ -253,6 +253,7 @@ export {
   type SchedulingHold,
   type SchedulingHoldState,
   type SchedulingRequest,
+  type SchedulingDraftContent,
   type SchedulingRequestPatch,
   type SchedulingRequestState,
   type SchedulingShareBinding,
@@ -261,6 +262,7 @@ export {
 export {
   RepairSupervisionStore,
   type RepairMandate,
+  type ManualRepairProposal,
   type RepairIncident,
   type RepairMode,
 } from './repair-supervision.js';

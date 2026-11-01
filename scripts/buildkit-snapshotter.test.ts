@@ -56,6 +56,7 @@ case "$1" in
  build) ${options.failProbe ? 'exit 1' : 'exit 0'} ;;
 esac\n`,
   );
+  writeFileSync(join(bin, 'native-retire.sh'), readFileSync('deploy/buildkit/native-retire.sh'));
   const env = {
     ...process.env,
     PATH: `${bin}:${process.env.PATH ?? ''}`,
@@ -82,8 +83,8 @@ esac\n`,
     expect(f.invoke().status).toBe(0);
     expect(existsSync(join(f.state, 'pending.json'))).toBe(false);
     const inventory = JSON.parse(readFileSync(join(f.run, 'native-retirement.json'), 'utf8'));
-    expect(inventory).toMatchObject({ dryRun: true, eligible: false, reclaimableBytes: null });
-    expect(inventory.blockers).toContain('shared-metadata-and-rollback-retirement-not-approved');
+    expect(inventory).toMatchObject({ dryRun: false, eligible: false, reclaimableBytes: null });
+    expect(inventory.blockers).toContain('unsupported-or-symlinked-state-root');
   });
   it.each([{ legacy: true }, { busy: true }])(
     'defers unknown clients or active work: %j',
@@ -144,6 +145,17 @@ esac\n`,
     expect(f.invoke('recover-verify').status).toBe(0);
     expect(f.status().state).toBe('rolled-back');
     expect(existsSync(join(f.state, 'pending.json'))).toBe(false);
+  });
+  it.each(['{}', 'invalid'])('restores the native recovery fence after reboot: %s', (journal) => {
+    const f = fixture();
+    writeFileSync(join(f.state, 'native-retirement.json'), journal);
+    expect(existsSync(join(f.run, 'migration-pending'))).toBe(false);
+    expect(f.invoke('recover').status).toBe(0);
+    expect(existsSync(join(f.run, 'migration-pending'))).toBe(true);
+    expect(f.invoke('recover-verify').status).toBe(0);
+    expect(existsSync(join(f.run, 'migration-pending'))).toBe(true);
+    expect(f.invoke('drained').status).not.toBe(0);
+    expect(readFileSync(join(f.state, 'native-retirement.json'), 'utf8')).toBe(journal);
   });
   it('retains recovery state and admission blocking when the restored service cannot restart', () => {
     const f = fixture({ crash: true });
