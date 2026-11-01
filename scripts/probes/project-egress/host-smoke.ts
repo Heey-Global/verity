@@ -1202,11 +1202,16 @@ try {
   deadlineHelper!.close?.();
   dependencies.enforcement = createEnforcement();
   const recovered = new ProbeHost(await store.load(), dependencies);
-  await revokeAndMeasure(() => recovered.restore(), 'controller-restore');
+  // Helper-failure containment already stopped both senders. Restore first;
+  // retained-stream revocation can only be measured after fresh starts.
+  await recovered.restore();
   await recovered.revalidate();
   await recovered.execute({ operation: 'start', ...identity, role: 'sandbox', containerId });
   await recovered.execute({ operation: 'start', ...identity, role: 'relay', containerId: relayId });
   server = await listenProjectEgressHost({ directory, token, controller: recovered });
+  await lifecycle.connect(identity);
+  await revokeAndMeasure(() => recovered.restore(), 'controller-restore');
+  await recovered.revalidate();
   await delay(500);
   assert.ok(!(await docker('logs', 'veh-receiver')).includes('host-startup-marker'));
   assert.deepEqual(await lifecycle.current(binding.projectId), binding);
