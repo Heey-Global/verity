@@ -265,3 +265,37 @@ The bounded resolver searches at most ten discovery pages. Missing coverage is a
 blocked resolution, not permission to guess a target. General session tools remain
 unavailable to QA. Merge, release, deployment and QA activation remain separate
 operations. Install the server update before live acceptance of this path.
+
+## Explicit project assignments
+
+The QA chat can delegate an explicitly requested project change without an existing
+PR. `propose_assignment` stores the project, instruction, acceptance criteria and
+optional existing session; omitting the session creates a project session through
+the same provisioner as Control handoffs. `request_assignment` admits that exact
+proposal. A one-time card shows the stored scope; an exact, project-naming current
+user instruction can replace the card only when it also contains the acceptance
+criteria and any selected session. Agent messages and repository content cannot
+supply consent. Approval does not enable future automatic work.
+
+Assignments share project exclusivity and the two concurrent-work limit with CI
+repairs. A busy target waits instead of being steered. Receipts deduplicate
+admission across retries and restarts. Each assignment uses one target and allows
+at most two follow-up attempts. Existing tool permissions and review gates still
+apply; the assignment does not authorize merging, deployment or broader access.
+
+Canonical session events wake reconciliation; a periodic pass recovers missed
+wakes. Completion is correlated to the admitted prompt and ends at a successor
+prompt. Durable notifications wait until QA is idle, and superseded notifications
+are discarded. `assignment_status` exposes confirmed state and bounded evidence;
+`review_assignment` requires the current version. A successful process exit is
+only `verifying`, not `completed`. Completion requires current matching local HEAD
+and successful PR checks plus QA's assessment of the requested acceptance
+criteria. Domain-specific outcomes such as measured release duration still need
+explicit evidence; green checks alone do not establish them. Missing or truncated
+evidence must remain unverified or result in a bounded follow-up.
+
+`stop_assignment` fences future dispatch and cancels only the handle corresponding
+to its exact receipt. An unconfirmed stop retains ownership. Revoked permissions
+or changed QA configuration fence queued work and stop active work. The mobile
+chat renders confirmed assignment results with a link to the target session;
+historical cards describe the state at that update.

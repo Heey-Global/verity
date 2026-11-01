@@ -5068,3 +5068,29 @@ migrations['0180_mcp_oauth_token_auth_method'] = {
     await sql`alter table http_mcp_connections drop column oauth_token_auth_method`.execute(db);
   },
 };
+
+migrations['0181_qa_assignments'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`create table qa_assignments (
+ id text primary key, project_id text not null references projects(id) on delete cascade,
+ source_session_id text not null, user_id text not null, target_session_id text,
+ state text not null, title text not null, instruction text not null, criteria text not null,
+ qa_revision integer not null, mandate_revision integer not null,
+ consent_key text unique, attempt integer not null default 0, dispatch_id text,
+ feedback text not null default '', evidence text not null default '', reason text,
+ version integer not null default 1, created_at timestamptz not null default now(),
+ expires_at timestamptz not null default now() + interval '1 hour'
+ )`.execute(db);
+    await sql`create unique index qa_assignment_project_owner on qa_assignments(project_id) where state in ('queued','running','waiting','verifying','stopping')`.execute(
+      db,
+    );
+    await sql`create table qa_assignment_notifications (
+ id text primary key, assignment_id text not null references qa_assignments(id) on delete cascade,
+ dispatch_id text not null unique, payload text not null
+ )`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table qa_assignment_notifications`.execute(db);
+    await sql`drop table qa_assignments`.execute(db);
+  },
+};

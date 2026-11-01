@@ -1597,6 +1597,8 @@ export interface VulnDigestsTable {
 export interface Database {
   qa_dispatches: QADispatchesTable;
   qa_manual_repairs: QAManualRepairsTable;
+  qa_assignments: QAAssignmentsTable;
+  qa_assignment_notifications: QAAssignmentNotificationsTable;
   repair_resource_budgets: RepairResourceBudgetsTable;
   repair_mandates: RepairMandatesTable;
   repair_incidents: RepairIncidentsTable;
@@ -1980,4 +1982,33 @@ interface RepairResourceBudgetsTable {
   resource: string;
   used: Generated<number>;
   cycle: Generated<number>;
+}
+
+interface QAAssignmentsTable {
+  id: string;
+  project_id: string;
+  source_session_id: string;
+  user_id: string;
+  target_session_id: string | null;
+  state: string;
+  title: string;
+  instruction: string;
+  criteria: string;
+  qa_revision: number;
+  mandate_revision: number;
+  consent_key: string | null;
+  attempt: Generated<number>;
+  dispatch_id: string | null;
+  feedback: Generated<string>;
+  evidence: Generated<string>;
+  reason: string | null;
+  version: Generated<number>;
+  created_at: Generated<Date>;
+  expires_at: Generated<Date>;
+}
+interface QAAssignmentNotificationsTable {
+  id: string;
+  assignment_id: string;
+  dispatch_id: string;
+  payload: string;
 }
