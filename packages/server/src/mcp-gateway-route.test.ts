@@ -2664,15 +2664,15 @@ it.each([false, true])(
       worktree: '/tmp/qa',
       model: 'claude',
     });
-    await h.store.repairs.configureQA(true, 'u1');
+    await h.store.repairs.configureQA(true, '00000000-0000-4000-8000-000000000001');
     await h.store.repairs.qaSession('qa');
-    await h.store.repairs.configure('p1', 'u1', 'monitor');
+    await h.store.repairs.configure('p1', '00000000-0000-4000-8000-000000000001', 'monitor');
     const id = crypto.randomUUID();
     await h.store.repairs.proposeManualRepair({
       id,
       project_id: 'p1',
       source_session_id: 'qa',
-      user_id: 'u1',
+      user_id: '00000000-0000-4000-8000-000000000001',
       target_session_id: 'target',
       number: 2120,
       branch: 'fix/ci',
@@ -2681,10 +2681,22 @@ it.each([false, true])(
       mandate_revision: 1,
       requires_card: false,
     });
+    await h.store.appendEvent('qa', {
+      t: 'tool_call',
+      id: 'resolve',
+      name: 'verity_qa_analysis',
+      input: { action: 'resolve_repair', projectId: 'p1', number: 2120 },
+    });
+    await h.store.appendEvent('qa', {
+      t: 'tool_result',
+      id: 'resolve',
+      isError: false,
+      output: { proposalId: id },
+    });
     const row = await h.store.appendEvent('qa', {
       t: 'prompt',
       text: explicit ? 'fix PR #2120' : 'What failed?',
-      initiatedBy: { userId: 'u1' },
+      initiatedBy: { userId: '00000000-0000-4000-8000-000000000001' },
     });
     await h.store.markTurnRunning({ sessionId: 'qa', promptSeq: row.seq });
     await h.store.bindTurnIdentity('qa', { turnId: 't1', startCommandId: 'start' });
@@ -2702,7 +2714,8 @@ it.each([false, true])(
       // No discovery provider exists in this harness: authorized execution must still fail
       // closed, while a request lacking chat consent must hit the card before execution.
       expect(JSON.parse(reply.body)).toHaveProperty('result.isError', true);
-      expect(h.approvals).toHaveLength(explicit ? 0 : 1);
+      if (explicit) expect(reply.body).toContain('PR revision or failure evidence changed');
+      expect(h.approvals, reply.body).toHaveLength(explicit ? 0 : 1);
       if (!explicit)
         expect(h.approvals[0]).toMatchObject({
           toolName: 'verity_qa_analysis',

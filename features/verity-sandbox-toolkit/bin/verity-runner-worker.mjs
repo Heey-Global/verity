@@ -25331,6 +25331,14 @@ var window = {
 };
 var qaAnalysisRequestSchema = import_zod14.z.discriminatedUnion("action", [
   import_zod14.z.object({ action: import_zod14.z.literal("projects") }).strict(),
+  import_zod14.z.object({
+    action: import_zod14.z.literal("resolve_repair"),
+    projectId,
+    number: id2,
+    sessionId: projectId.optional()
+  }).strict(),
+  import_zod14.z.object({ action: import_zod14.z.literal("request_repair"), projectId, proposalId: import_zod14.z.string().uuid() }).strict(),
+  import_zod14.z.object({ action: import_zod14.z.literal("repair_status"), projectId, proposalId: import_zod14.z.string().uuid() }).strict(),
   import_zod14.z.object({ action: import_zod14.z.literal("save_report"), projectId, reportId: import_zod14.z.string().uuid() }).strict(),
   import_zod14.z.object({ action: import_zod14.z.literal("pulls"), projectId, page }).strict(),
   import_zod14.z.object({ action: import_zod14.z.literal("pull_status"), projectId, number: id2 }).strict(),

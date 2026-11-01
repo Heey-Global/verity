@@ -54,7 +54,7 @@ function setup() {
     }),
     branch: async (s) => ({ branch: s.sessionId === 'qa' ? 'main' : 'fix/ci', dirty: false }),
     busy: () => false,
-    dispatch: vi.fn(async (sessionId, prompt, id, userId, validate) => {
+    dispatch: vi.fn<QARepairDeps['dispatch']>(async (sessionId, prompt, id, userId, validate) => {
       if (!(await validate())) return false;
       return !!(await ctx.store.admitBackgroundDispatch(id, sessionId, {
         t: 'prompt',
@@ -154,7 +154,7 @@ it('shares the ownership transaction with automatic claims', async () => {
   const { deps, service, resolve } = setup();
   deps.busy = () => true;
   const id = await resolve();
-  const incident = await ctx.store.repairs.observe('p', 'pr:2120', 'sha', '{}');
+  const incident = await ctx.store.repairs.observe('p', 'pr:2121', 'other-sha', '{}');
   const mandate = (await ctx.store.repairs.mandate('p'))!;
   const qa = await ctx.store.repairs.qa();
   const outcomes = await Promise.all([
@@ -163,7 +163,9 @@ it('shares the ownership transaction with automatic claims', async () => {
   ]);
   const manual = outcomes[0].status === 'queued';
   expect(Number(manual) + Number(!!outcomes[1])).toBe(1);
-  expect(await ctx.store.repairs.budgetUsed('p', 'pr:2120')).toBe(1);
+  expect((await ctx.store.repairs.incidents('p')).filter((i) => i.owner_session_id)).toHaveLength(
+    1,
+  );
 });
 it('does not invent acceptance when delivery is uncertain', async () => {
   const { deps, service, resolve } = setup();
@@ -177,6 +179,18 @@ it('does not invent acceptance when delivery is uncertain', async () => {
 it('requires trusted current-user instruction rather than model arguments or quoted evidence', async () => {
   const { resolve } = setup();
   const id = await resolve();
+  await ctx.store.appendEvent('qa', {
+    t: 'tool_call',
+    id: 'resolve',
+    name: 'verity_qa_analysis',
+    input: { action: 'resolve_repair', projectId: 'p', number: 2120 },
+  });
+  await ctx.store.appendEvent('qa', {
+    t: 'tool_result',
+    id: 'resolve',
+    isError: false,
+    output: { proposalId: id },
+  });
   const setPrompt = async (text: string, userId = 'user') => {
     const row = await ctx.store.appendEvent('qa', { t: 'prompt', text, initiatedBy: { userId } });
     await ctx.store.markTurnRunning({ sessionId: 'qa', promptSeq: row.seq });
@@ -203,6 +217,7 @@ it('accepts the screenshot instruction only after matching server PR evidence', 
   await ctx.store.appendEvent('qa', {
     t: 'tool_result',
     id: 'read',
+    isError: false,
     output: { data: { pull: { number: 2120, head: { sha: 'sha' } } } },
   });
   const row = await ctx.store.appendEvent('qa', {
@@ -243,4 +258,34 @@ it('requires a target choice for multiple matches and blocks a competing active 
   deps.busy = (id) => id === 'second';
   await expect(service.request(caller, 'p', p.proposalId)).rejects.toThrow('Target session');
   expect(deps.dispatch).not.toHaveBeenCalled();
+});
+
+it('does not treat a bare PR number or untrusted log result as project-bound consent', async () => {
+  const { resolve } = setup();
+  const id = await resolve();
+  const prompt = async () => {
+    const row = await ctx.store.appendEvent('qa', {
+      t: 'prompt',
+      text: 'fix PR #2120',
+      initiatedBy: { userId: 'user' },
+    });
+    await ctx.store.markTurnRunning({ sessionId: 'qa', promptSeq: row.seq });
+    await ctx.store.bindTurnIdentity('qa', { turnId: 'turn', startCommandId: 'start' });
+  };
+  await prompt();
+  expect(await trustedQARepairInstruction(ctx.store, 'qa', 'turn', id)).toBe(false);
+  await ctx.store.appendEvent('qa', {
+    t: 'tool_call',
+    id: 'log',
+    name: 'verity_qa_analysis',
+    input: { action: 'job_log', projectId: 'p', jobId: 1 },
+  });
+  await ctx.store.appendEvent('qa', {
+    t: 'tool_result',
+    id: 'log',
+    isError: false,
+    output: { proposalId: id },
+  });
+  await prompt();
+  expect(await trustedQARepairInstruction(ctx.store, 'qa', 'turn', id)).toBe(false);
 });

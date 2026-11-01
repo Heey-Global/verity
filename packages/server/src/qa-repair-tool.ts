@@ -1,18 +1,26 @@
 import { randomUUID } from 'node:crypto';
 import type { EventStore, ManualRepairProposal, SessionRecord } from '@verity/store';
 import type { PullRequestStatus } from './forge-provider.js';
-import { ControlPlaneSessionAuthorityError } from './session-handoff-tool.js';
+import {
+  ControlPlaneSessionAuthorityError,
+  ControlPlaneSessionToolError,
+} from './session-handoff-tool.js';
 
 export interface QARepairDeps {
   store: EventStore;
-  permitted(userId: string, projectId: string): Promise<boolean>;
+  permitted(this: void, userId: string, projectId: string): Promise<boolean>;
   inspect(
+    this: void,
     projectId: string,
     number: number,
   ): Promise<{ branch: string; fork: boolean; status: PullRequestStatus } | undefined>;
-  branch(session: SessionRecord): Promise<{ branch: string; dirty: boolean } | undefined>;
-  busy(sessionId: string): boolean;
+  branch(
+    this: void,
+    session: SessionRecord,
+  ): Promise<{ branch: string; dirty: boolean } | undefined>;
+  busy(this: void, sessionId: string): boolean;
   dispatch(
+    this: void,
     sessionId: string,
     prompt: string,
     dispatchId: string,
@@ -28,7 +36,10 @@ export function createQARepairTool(deps: QARepairDeps) {
     const qa = await store.qa();
     const mandate = await store.mandate(projectId);
     const project = await deps.store.getProject(projectId);
+    const source = await deps.store.getSession(caller.sessionId);
     if (
+      !source ||
+      source.planning === 'active' ||
       !qa.enabled ||
       qa.session_id !== caller.sessionId ||
       !mandate ||
@@ -65,7 +76,9 @@ export function createQARepairTool(deps: QARepairDeps) {
       mandate.revision !== p.mandate_revision ||
       !(await store.manualRepairValid(p.id))
     )
-      throw new Error('Repair approval expired or QA settings changed; resolve the PR again.');
+      throw new ControlPlaneSessionToolError(
+        'Repair approval expired or QA settings changed; resolve the PR again.',
+      );
     const observed = await deps.inspect(p.project_id, p.number);
     if (
       !observed ||
@@ -76,7 +89,9 @@ export function createQARepairTool(deps: QARepairDeps) {
       observed.status.phase !== 'open' ||
       observed.status.pipeline !== 'failure'
     )
-      throw new Error('PR revision or failure evidence changed; resolve the PR again.');
+      throw new ControlPlaneSessionToolError(
+        'PR revision or failure evidence changed; resolve the PR again.',
+      );
     const matches = [];
     for (const session of await deps.store.listSessions()) {
       if (session.projectId !== p.project_id) continue;
@@ -94,10 +109,21 @@ export function createQARepairTool(deps: QARepairDeps) {
       target.session.planning === 'active' ||
       (requireClean && target.facts.dirty)
     )
-      throw new Error(
+      throw new ControlPlaneSessionToolError(
         'Target session is missing, ambiguous, planning, or has uncommitted changes.',
       );
-    await authorize({ sessionId: p.source_session_id, userId: p.user_id }, p.project_id);
+    const final = await authorize(
+      { sessionId: p.source_session_id, userId: p.user_id },
+      p.project_id,
+    );
+    if (
+      final.qa.revision !== p.qa_revision ||
+      final.mandate.revision !== p.mandate_revision ||
+      !(await store.manualRepairValid(p.id))
+    )
+      throw new ControlPlaneSessionToolError(
+        'Repair approval changed during validation; resolve the PR again.',
+      );
     return observed;
   }
   async function status(caller: Caller, projectId: string, id: string) {
@@ -297,8 +323,8 @@ export async function trustedQARepairInstruction(
     `^(?:please |bitte )?(?:fix|repair|repariere) (?:PR ?#?)?${p.number}[.!]?$`,
     'iu',
   ).test(text);
-  if (explicit) return true;
   if (
+    !explicit &&
     !/^(?:(?:ok|okay|ja|yes)[,.!]?\s+)?(?:lass die session das fixen|beauftrage die session|start the repair|fix it|reparatur starten)[.!]?$/iu.test(
       text,
     )

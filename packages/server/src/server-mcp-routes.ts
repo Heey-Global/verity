@@ -173,7 +173,6 @@ export function registerServerMcpRoutes({
   // turn-bound prompt (D2). The `acp` channel is stated by the caller rather than read off a
   // live turn, because a gateway call routinely arrives with none (ADR 0014 D3).
   const controlHandoffSessionCreates = new Map<string, Promise<{ sessionId: string }>>();
-  const qaChatConsents = new WeakSet<object>();
   const qaRepair = createQARepairTool({
     store: deps.eventStore,
     permitted: canExecuteAs,
@@ -1189,14 +1188,12 @@ export function registerServerMcpRoutes({
           toolName === 'verity_qa_analysis' &&
           (request as { action: string }).action === 'request_repair'
         ) {
-          const allowed = await trustedQARepairInstruction(
+          return trustedQARepairInstruction(
             deps.eventStore,
             sessionId,
             turnId,
             (request as { proposalId: string }).proposalId,
           );
-          if (allowed) qaChatConsents.add(request as object);
-          return allowed;
         }
         if (toolName === 'verity_vulnerabilities') {
           await vulnerabilityTool.authorize({ projectId, sessionId, turnId, request });
@@ -1529,17 +1526,15 @@ export function registerServerMcpRoutes({
               await repairCaller(input.sessionId, input.turnId),
               r.projectId,
               r.proposalId,
-              ...(qaChatConsents.has(input.request as object)
-                ? [
-                    () =>
-                      trustedQARepairInstruction(
-                        deps.eventStore,
-                        input.sessionId,
-                        input.turnId,
-                        r.proposalId,
-                      ),
-                  ]
-                : []),
+              input.approvedByCard
+                ? undefined
+                : () =>
+                    trustedQARepairInstruction(
+                      deps.eventStore,
+                      input.sessionId,
+                      input.turnId,
+                      r.proposalId,
+                    ),
             );
           if (r.action === 'repair_status')
             return qaRepair.status(
