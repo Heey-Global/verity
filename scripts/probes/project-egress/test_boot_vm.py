@@ -362,12 +362,18 @@ class FenceMutationOrderTests(unittest.TestCase):
         proof = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(proof)
         vm = Mock()
-        vm.ssh.side_effect = lambda command, **_: json.dumps({'status': 200}) if 'inflight' in command else ''
+        clock = []
+        def ssh(command, **_):
+            clock.append((command, proof.time.time_ns()))
+            return json.dumps({'status': 200}) if 'inflight' in command else ''
+        vm.ssh.side_effect = ssh
         started, inflight = proof.remove_fences_mutation(vm, 'guest ')
         self.assertEqual([call.args[0] for call in vm.ssh.call_args_list],
                          ['guest inflight removed-fences', 'guest external'])
+        self.assertEqual(vm.ssh.call_args_list[0].kwargs, {'timeout': 20})
         self.assertEqual(inflight, {'status': 200})
-        self.assertGreater(started, 0)
+        # The receipt window opens after removal returned and before external probes.
+        self.assertTrue(clock[0][1] <= started <= clock[1][1])
 
 
 class GuestCommandEvidenceTests(unittest.TestCase):
