@@ -171,10 +171,9 @@
       "enabled": false
     },
     {
-      "description": "gVisor is the sandbox boundary of every project and Secret job, so a bump is a security update for the hosts: typed `fix` so that it cuts a release. Its releases are named by date, which the versioning in its custom manager reads as a major version, so every new release is a major update; that is expected and not a reason to hold it back. Held for approval on the Dependency Dashboard until Release B (the first archive-only release) has shipped: hosts need the archive-capable host runtime service from Release A first (ADR 0008 Amendment 5), and an unattended bump would publish B right behind A. Drop `dependencyDashboardApproval` once B is out.",
+      "description": "gVisor is the sandbox boundary of every project and Secret job, so a bump is a security update for the hosts: typed `fix` so that it cuts a release. Its releases are named by date, which the versioning in its custom manager reads as a major version, so every new release is a major update; that is expected and not a reason to hold it back. Bumps were held for Dependency Dashboard approval only until the first archive-only release had shipped (ADR 0008 Amendment 5); every host on that release installs archives.",
       "matchFileNames": ["deploy/gvisor/versions.env"],
       "matchPackageNames": ["google/gvisor"],
-      "dependencyDashboardApproval": true,
       "semanticCommitType": "fix",
       "commitMessageTopic": "gVisor runtime"
     }
