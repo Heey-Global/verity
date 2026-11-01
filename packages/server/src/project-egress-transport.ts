@@ -267,7 +267,11 @@ export function directCorridorRules(
  ${prefix} ip6 saddr { ${b.ipv6}, ${linkLocal} } ip6 hoplimit 255 icmpv6 type nd-neighbor-advert @th,64,128 ${raw(b.ipv6)} return;
 `;
   if (family === 'inet') return nd;
+  // Routed IP frames first cross bridge input. Preserve their exact source
+  // binding here; the inet forward fence checks targets and inet input denies host access.
   return `
+ ${prefix} ip saddr ${b.ipv4} return;
+ ${prefix} ip6 saddr ${b.ipv6} return;
  ${prefix} arp operation { request, reply } arp saddr ether ${t.sandbox.mac} arp saddr ip ${b.ipv4} arp daddr ip ${direct.gateway4} return;
  ${nd}
 `;

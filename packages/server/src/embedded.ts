@@ -1,5 +1,9 @@
 import { createGitHubQAAnalysis } from './github-qa-analysis.js';
-import { StorageReclamation, requestNativeReclamation } from './storage-reclamation.js';
+import {
+  StorageReclamation,
+  requestNativeReclamation,
+  readNativeReclamation,
+} from './storage-reclamation.js';
 import { registerStorageReclamationRoutes } from './storage-reclamation-routes.js';
 import { startNativeRetirementEvidence } from './native-buildkit.js';
 import type { GitOutput } from './branches.js';
@@ -113,7 +117,7 @@ export async function resolveRepoWorktreeFetchAuthHeader(
 }
 
 import { buildControlPlane } from './app.js';
-import { createRuntimeDiagnostics, nativeRetirementSchema } from './runtime-diagnostics.js';
+import { createRuntimeDiagnostics } from './runtime-diagnostics.js';
 import { createProjectListCache } from './project-list-cache.js';
 import type { ServerDeps, ServerUpdateController } from './server.js';
 import { createAuthTokenRegistry } from './auth.js';
@@ -4733,11 +4737,13 @@ export async function buildEmbeddedServer(
           activity: async (id) =>
             (await eventStore.listSessionProjectionFacts([id], 0)).get(id)?.lastActivityAt ?? null,
           root: (project) => projectClonePath(config.hostCloneRoot!, project),
-          mutate: (projectId, sessionId, operation) =>
-            withStorageProjectMutation(projectId, () =>
-              provisioner.withProjectExclusiveMutation(
-                projectId,
-                async () => {
+          mutate: (projectId, sessionId, operation, signal) =>
+            // Wait for the project owner before taking preview locks: that owner
+            // may itself need preview teardown in order to finish.
+            provisioner.withProjectExclusiveMutation(
+              projectId,
+              () =>
+                withStorageProjectMutation(projectId, async () => {
                   if (managedDevServerManager?.hasRunningServers(projectId))
                     throw new Error('Managed dev server is active');
                   if (
@@ -4748,9 +4754,9 @@ export async function buildEmbeddedServer(
                   )
                     throw new Error('Public preview is active');
                   await operation();
-                },
-                sessionId ? new Set([sessionId]) : undefined,
-              ),
+                }),
+              sessionId ? new Set([sessionId]) : undefined,
+              signal,
             ),
           withGit: async (project, operation) => {
             if (config.dataVolume && !dataVolumeRoot)
@@ -5039,21 +5045,7 @@ export async function buildEmbeddedServer(
         } catch {
           /* Database usage is unknown, not zero. */
         }
-        let nativeBuildkit: ReturnType<typeof nativeRetirementSchema.parse> | null = null;
-        try {
-          const value = nativeRetirementSchema.parse(
-            JSON.parse(
-              await readFile('/run/verity-buildkit/native-retirement.json', 'utf8'),
-            ) as unknown,
-          );
-          if (
-            Date.now() - Date.parse(value.observedAt) >= 0 &&
-            (value.state === 'completed' || Date.now() - Date.parse(value.observedAt) < 120_000)
-          )
-            nativeBuildkit = value;
-        } catch {
-          /* Host inventory may not yet exist. */
-        }
+        const nativeBuildkit = await readNativeReclamation();
         return {
           accounting:
             'Image and dependency sizes are estimates with shared layers/reflinks; do not sum categories. Unknown measurements are null. No freed-byte claim is inferred from apparent sizes.',

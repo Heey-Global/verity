@@ -32,6 +32,7 @@ export class ProjectEgressLifecycle {
     this.renewals.set(identity.projectId, state);
     const tick = async () => {
       if (this.renewals.get(identity.projectId) !== state || this.closed) return;
+      const started = performance.now();
       try {
         await this.refreshDirect(identity);
       } catch (error) {
@@ -42,9 +43,12 @@ export class ProjectEgressLifecycle {
         throw error;
       }
       if (this.renewals.get(identity.projectId) !== state || this.closed) return;
-      state.timer = setTimeout(() => {
-        void tick().catch(() => undefined);
-      }, 250);
+      state.timer = setTimeout(
+        () => {
+          void tick().catch(() => undefined);
+        },
+        Math.max(0, 250 - (performance.now() - started)),
+      );
       state.timer.unref();
     };
     await tick();
