@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.8.0](https://github.com/Heey-Global/verity/compare/website-v2.7.0...website-v2.8.0) (2026-11-01)
+
+
+### Features
+
+* **mcp:** discover OAuth and complete native/web sign-ins ([#2160](https://github.com/Heey-Global/verity/issues/2160)) ([d23b893](https://github.com/Heey-Global/verity/commit/d23b893d390210052c61477f08efb84c982c65b2))
+
 ## [2.7.0](https://github.com/Heey-Global/verity/compare/website-v2.6.0...website-v2.7.0) (2026-11-01)
 
 
