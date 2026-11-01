@@ -332,6 +332,22 @@ class DeadlineHostTests(unittest.TestCase):
                               'lease': self.lease, 'previousBootDeadlineNs': '1000000000'})
         renew.assert_not_called()
 
+    def test_preparation_loads_renewal_only_after_closing_access(self):
+        def prepare(root):
+            self.assertEqual(self.write.call_args.args[-1], 0)
+            self.assertTrue(json.loads(self.path.read_text())['uncertainExpiry'])
+        with patch.object(host, 'prepare_renewal', side_effect=prepare) as load:
+            self.assertEqual(host.execute({'operation': 'prepare', 'binding': self.binding}), {'state': 'denied'})
+            load.assert_called_once()
+
+    def test_failed_preload_remains_denied_and_uncertain(self):
+        with patch.object(host, 'prepare_renewal', side_effect=ValueError('load failed')):
+            with self.assertRaisesRegex(ValueError, 'load failed'):
+                host.execute({'operation': 'prepare', 'binding': self.binding})
+        self.assertEqual(self.write.call_args.args[-1], 0)
+        self.assertTrue(json.loads(self.path.read_text())['uncertainExpiry'])
+
+
 class RelayIdentityTests(unittest.TestCase):
     def setUp(self):
         self.binding = dict(zip(host.BINDING_FIELDS, ['project', 'generation', 'a' * 64,
@@ -464,20 +480,6 @@ class RelayMapWriterTests(unittest.TestCase):
         self.assertEqual([c.args for c in close.call_args_list], [(42,), (42,)])
 
 
-    def test_preparation_loads_renewal_only_after_closing_access(self):
-        def prepare(root):
-            self.assertEqual(self.write.call_args.args[-1], 0)
-            self.assertTrue(json.loads(self.path.read_text())['uncertainExpiry'])
-        with patch.object(host, 'prepare_renewal', side_effect=prepare) as load:
-            self.assertEqual(host.execute({'operation': 'prepare', 'binding': self.binding}), {'state': 'denied'})
-            load.assert_called_once()
-
-    def test_failed_preload_remains_denied_and_uncertain(self):
-        with patch.object(host, 'prepare_renewal', side_effect=ValueError('load failed')):
-            with self.assertRaisesRegex(ValueError, 'load failed'):
-                host.execute({'operation': 'prepare', 'binding': self.binding})
-        self.assertEqual(self.write.call_args.args[-1], 0)
-        self.assertTrue(json.loads(self.path.read_text())['uncertainExpiry'])
 
 
 class DockerInspectionTests(unittest.TestCase):
