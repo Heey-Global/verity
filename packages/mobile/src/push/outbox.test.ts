@@ -122,7 +122,7 @@ describe('createPushOutbox', () => {
     const label = (action: PushReplyAction): string => {
       if (action.type === 'send-turn') return action.prompt;
       if (action.type === 'decide-permission') return action.toolUseId;
-      return action.sessionId;
+      return 'sessionId' in action ? action.sessionId : action.type;
     };
     // A slow perform so both operations overlap in wall-clock; serialization must
     // still deliver each action exactly once.

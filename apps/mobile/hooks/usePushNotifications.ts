@@ -12,6 +12,7 @@ import {
 import { getAuthTokenId, getStoredAuthTokenId } from '../lib/authToken';
 import { createPushRegistrationAttempt } from '../lib/pushRegistrationAttempt';
 import { isDemoMode } from '../lib/demoMode';
+import { requestMeetingPrompt } from '../lib/meetingPrompts';
 
 /**
  * Mount push notifications once from the root authenticated screen. Registers this
@@ -71,6 +72,7 @@ export function usePushNotifications(client: VerityClient | null, baseUrl: strin
             });
           else router.push('/');
         },
+        requestMeetingPrompt,
       );
     };
 

@@ -29,7 +29,9 @@ import {
   subscribeFollowedRemoteMeeting,
   syncMeetingSession,
 } from '../lib/liveMeetingSync';
+import { subscribeMeetingPrompt } from '../lib/meetingPrompts';
 import { AssignMeetingSheet, type AssignableMeeting } from './meeting/AssignMeetingSheet';
+import { CalendarMeetingPrompt } from './meeting/CalendarMeetingPrompt';
 import { Button, Text, useConfirm } from './ui';
 import { Dot } from './ui/Status';
 
@@ -61,6 +63,8 @@ export function ActiveMeetingOverlay() {
   // or Verity joining on its own) appears without first opening its session.
   const [discovered, setDiscovered] = useState<ActiveLiveMeetings | null>(null);
   const [assigning, setAssigning] = useState<AssignableMeeting | null>(null);
+  // A calendar meeting whose notification was tapped: asks Join / Skip.
+  const [upcomingKey, setUpcomingKey] = useState<string | null>(null);
   const [confirm, confirmSheet] = useConfirm();
   // Meetings seen ending: the server list may still name one until it refreshes, and
   // following it again would bounce between follow and clear.
@@ -117,6 +121,36 @@ export function ActiveMeetingOverlay() {
     [localMeeting?.id],
   );
   useEffect(() => subscribeFollowedRemoteMeeting(setFollowed), []);
+  useEffect(
+    () =>
+      subscribeMeetingPrompt((prompt) => {
+        if (prompt.kind === 'upcoming') {
+          setUpcomingKey(prompt.eventKey);
+          return;
+        }
+        // "Verity joined …": open the meeting where it runs, or assign it first.
+        void (async () => {
+          try {
+            const client = createVerityClient();
+            if (!client) throw new Error('Connect to the server to open this meeting.');
+            const active = await client.getActiveLiveMeetings();
+            setDiscovered(active);
+            const running = active.running.find((item) => item.id === prompt.meetingId);
+            const unassigned = active.unassigned.find((item) => item.id === prompt.meetingId);
+            if (running)
+              router.push({
+                pathname: '/meeting/[sessionId]',
+                params: { sessionId: running.sessionId },
+              });
+            else if (unassigned) setAssigning(unassigned);
+            else setError('This meeting has ended or was discarded.');
+          } catch (reason) {
+            setError(reason instanceof Error ? reason.message : String(reason));
+          }
+        })();
+      }),
+    [],
+  );
   useEffect(() => {
     const client = createVerityClient();
     if (!client) return;
@@ -255,6 +289,14 @@ export function ActiveMeetingOverlay() {
           const target = assigning;
           setAssigning(null);
           if (target) discardUnassigned(target.id);
+        }}
+      />
+      <CalendarMeetingPrompt
+        eventKey={upcomingKey}
+        onClose={() => setUpcomingKey(null)}
+        onJoined={() => {
+          setUpcomingKey(null);
+          void discoverRef.current();
         }}
       />
       {confirmSheet}

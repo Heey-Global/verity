@@ -603,6 +603,12 @@ export {
   type PushOutboxOptions,
   type PushOutboxStorage,
 } from './push/outbox.js';
+export {
+  parseMeetingPush,
+  resolveMeetingPushResponse,
+  type MeetingPush,
+  type MeetingPushIntent,
+} from './push/meeting.js';
 
 export {
   type KnowledgeSource,

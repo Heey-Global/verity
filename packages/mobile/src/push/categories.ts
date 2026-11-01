@@ -11,6 +11,10 @@ export const PUSH_CATEGORY = {
    * buttons carry the options' own labels, so it is registered per alert
    * ({@link choiceCategorySpec}) rather than at launch. */
   agentQuestionChoices: 'AGENT_QUESTION_CHOICES',
+  /** A meeting of a watched calendar starts soon (`calendar-meeting-watcher.ts`). */
+  meetingUpcoming: 'MEETING_UPCOMING',
+  /** Verity joined a calendar meeting that has no project yet. */
+  meetingStarted: 'MEETING_STARTED',
 } as const;
 export type PushCategoryId = (typeof PUSH_CATEGORY)[keyof typeof PUSH_CATEGORY];
 
@@ -23,6 +27,10 @@ export const PUSH_ACTION = {
   reply: 'VERITY_REPLY',
   mergePullRequest: 'VERITY_MERGE_PULL_REQUEST',
   openSession: 'VERITY_OPEN_SESSION',
+  joinMeeting: 'VERITY_MEETING_JOIN',
+  skipMeeting: 'VERITY_MEETING_SKIP',
+  openMeeting: 'VERITY_MEETING_OPEN',
+  discardMeeting: 'VERITY_MEETING_DISCARD',
 } as const;
 /** One action per offered option, by position. */
 export const PUSH_CHOICE_ACTIONS = [
@@ -44,6 +52,9 @@ export interface PushCategoryAction {
    * never be tapped straight off a locked screen (KONZEPT §5b; ADR 0008 §202-208).
    * Maps to expo's `isAuthenticationRequired` + `opensAppToForeground`. */
   authenticationRequired?: boolean;
+  /** Bring the app to the foreground, for an action that shows a screen rather than
+   * replying in the background. Implied by `authenticationRequired`. */
+  opensApp?: boolean;
   /** Render the button as destructive (red). Maps to expo's `isDestructive`. */
   destructive?: boolean;
   /** Present a free-text field instead of a plain button (AGENT_QUESTION reply).
@@ -106,6 +117,27 @@ export const PUSH_NOTIFICATION_CATEGORIES: readonly PushCategorySpec[] = [
         authenticationRequired: true,
       },
       { identifier: PUSH_ACTION.openSession, buttonTitle: 'Open' },
+    ],
+  },
+  {
+    identifier: PUSH_CATEGORY.meetingUpcoming,
+    actions: [
+      // Joining sends a bot that records the call, so it needs the device unlocked.
+      { identifier: PUSH_ACTION.joinMeeting, buttonTitle: 'Join', authenticationRequired: true },
+      { identifier: PUSH_ACTION.skipMeeting, buttonTitle: 'Skip' },
+    ],
+  },
+  {
+    identifier: PUSH_CATEGORY.meetingStarted,
+    actions: [
+      { identifier: PUSH_ACTION.openMeeting, buttonTitle: 'Open', opensApp: true },
+      // Discarding deletes the transcript for good.
+      {
+        identifier: PUSH_ACTION.discardMeeting,
+        buttonTitle: 'Discard',
+        destructive: true,
+        authenticationRequired: true,
+      },
     ],
   },
 ];

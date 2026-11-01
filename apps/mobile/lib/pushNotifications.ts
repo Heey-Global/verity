@@ -6,6 +6,7 @@
 // the core outbox. Everything is fail-safe: a deployment with push disabled skips
 // the permission prompt and degrades to today's in-app behaviour.
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import type { MeetingPrompt } from './meetingPrompts';
 import * as Notifications from 'expo-notifications';
 import { Platform } from 'react-native';
 import {
@@ -14,7 +15,9 @@ import {
   createPushOutbox,
   createPushReplyPerformer,
   parsePushPayload,
+  parseMeetingPush,
   parseServerUpdatePush,
+  resolveMeetingPushResponse,
   parseVulnerabilityPush,
   resolvePushResponse,
   type VerityClient,
@@ -56,7 +59,7 @@ export function toExpoActions(spec: PushCategorySpec): ExpoActions {
     identifier: action.identifier,
     buttonTitle: action.buttonTitle,
     options: {
-      opensAppToForeground: action.authenticationRequired === true,
+      opensAppToForeground: action.authenticationRequired === true || action.opensApp === true,
       isAuthenticationRequired: action.authenticationRequired === true,
       isDestructive: action.destructive === true,
     },
@@ -210,7 +213,9 @@ const REACTION_PUSH_KINDS: ReadonlySet<string> = new Set(['permission', 'questio
  */
 export function foregroundPushBehavior(data: unknown): Notifications.NotificationBehavior {
   const payload = parsePushPayload(data);
-  const surface = payload !== null && REACTION_PUSH_KINDS.has(payload.kind);
+  // A meeting about to start is as time-bound as a prompt: shown in the foreground too.
+  const surface =
+    (payload !== null && REACTION_PUSH_KINDS.has(payload.kind)) || parseMeetingPush(data) !== null;
   return {
     shouldShowBanner: surface,
     shouldShowList: surface,
@@ -232,8 +237,22 @@ export async function handlePushResponse(
   expectedDeviceId?: string | null,
   navigateToSettings?: () => void,
   navigateToVulnerabilities?: (projectId: string | null) => void,
+  openMeetingPrompt?: (prompt: MeetingPrompt) => void,
 ): Promise<void> {
   const data: unknown = response.notification.request.content.data;
+  // Calendar meetings carry no `sessionId` either. The pairing check matters more here:
+  // a Join left in the tray from a former server would send a bot through the current one.
+  const meeting = parseMeetingPush(data);
+  if (meeting !== null) {
+    if (meeting.deviceId !== expectedDeviceId) return;
+    const intent = resolveMeetingPushResponse(response.actionIdentifier, meeting);
+    if (intent === null) return;
+    if (intent.type === 'reply') await outbox.enqueue(intent.action);
+    else if (intent.type === 'show-upcoming')
+      openMeetingPrompt?.({ kind: 'upcoming', eventKey: intent.eventKey });
+    else openMeetingPrompt?.({ kind: 'started', meetingId: intent.meetingId });
+    return;
+  }
   // Handled before the session parser, and never through it: this push carries no
   // `sessionId`, so `parsePushPayload` rejects it by design. Without this branch a
   // tap on "Verity update available" would fall out at the null check below and the

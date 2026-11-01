@@ -406,3 +406,70 @@ describe('foregroundPushBehavior', () => {
     expect(surfaced({ sessionId: 's1', kind: 'permission' })).toBe(false);
   });
 });
+
+describe('calendar meeting pushes', () => {
+  const outbox = () =>
+    ({
+      queue: jest.fn().mockResolvedValue(undefined),
+      enqueue: jest.fn().mockResolvedValue(undefined),
+      flush: jest.fn().mockResolvedValue(undefined),
+      pending: jest.fn().mockResolvedValue([]),
+    }) as unknown as PushOutbox & { enqueue: jest.Mock };
+  const respond = (actionIdentifier: string, data: unknown) =>
+    ({
+      actionIdentifier,
+      notification: { request: { content: { data } } },
+    }) as unknown as import('expo-notifications').NotificationResponse;
+  const upcoming = { kind: 'meeting-upcoming', eventKey: 'k1', deviceId: 'current' };
+  const started = { kind: 'meeting-started', meetingId: 'm1', deviceId: 'current' };
+  const handle = async (actionIdentifier: string, data: unknown) => {
+    const box = outbox();
+    const prompt = jest.fn();
+    const session = jest.fn();
+    await handlePushResponse(
+      respond(actionIdentifier, data),
+      box,
+      session,
+      'current',
+      undefined,
+      undefined,
+      prompt,
+    );
+    return { box, prompt, session };
+  };
+
+  it('queues Join, Skip and Discard as outbox replies', async () => {
+    expect((await handle('VERITY_MEETING_JOIN', upcoming)).box.enqueue).toHaveBeenCalledWith({
+      type: 'join-calendar-meeting',
+      eventKey: 'k1',
+    });
+    expect((await handle('VERITY_MEETING_SKIP', upcoming)).box.enqueue).toHaveBeenCalledWith({
+      type: 'skip-calendar-meeting',
+      eventKey: 'k1',
+    });
+    expect((await handle('VERITY_MEETING_DISCARD', started)).box.enqueue).toHaveBeenCalledWith({
+      type: 'discard-live-meeting',
+      meetingId: 'm1',
+    });
+  });
+
+  it('hands a tap to the meeting card instead of opening a session', async () => {
+    const tapUpcoming = await handle('expo.modules.notifications.actions.DEFAULT', upcoming);
+    expect(tapUpcoming.prompt).toHaveBeenCalledWith({ kind: 'upcoming', eventKey: 'k1' });
+    const openStarted = await handle('VERITY_MEETING_OPEN', started);
+    expect(openStarted.prompt).toHaveBeenCalledWith({ kind: 'started', meetingId: 'm1' });
+    expect(openStarted.session).not.toHaveBeenCalled();
+    expect(openStarted.box.enqueue).not.toHaveBeenCalled();
+  });
+
+  // A Join left in the tray by a former server must not send a bot through the current one.
+  it('ignores meeting pushes from another pairing', async () => {
+    const { box, prompt } = await handle('VERITY_MEETING_JOIN', { ...upcoming, deviceId: 'old' });
+    expect(box.enqueue).not.toHaveBeenCalled();
+    expect(prompt).not.toHaveBeenCalled();
+  });
+
+  it('shows a meeting about to start while the app is open', () => {
+    expect(foregroundPushBehavior(upcoming).shouldShowBanner).toBe(true);
+  });
+});

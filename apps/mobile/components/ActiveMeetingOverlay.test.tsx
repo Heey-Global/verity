@@ -1,8 +1,9 @@
-import { act, fireEvent, render, screen } from '@testing-library/react-native';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
 import { router, usePathname } from 'expo-router';
 import { createVerityClient } from '../lib/client';
 import { listMeetings } from '../lib/liveMeetingStore';
 import { subscribeFollowedRemoteMeeting } from '../lib/liveMeetingSync';
+import { requestMeetingPrompt } from '../lib/meetingPrompts';
 
 import { ActiveMeetingOverlay } from './ActiveMeetingOverlay';
 import {
@@ -309,5 +310,94 @@ describe('a meeting without a project', () => {
     const confirmButtons = screen.getAllByText('Discard');
     await act(async () => fireEvent.press(confirmButtons[confirmButtons.length - 1]!));
     expect(discardLiveMeeting).toHaveBeenCalledWith('unassigned-1');
+  });
+});
+
+describe('a tapped calendar meeting notification', () => {
+  const upcoming = {
+    eventKey: 'k1',
+    title: 'Weekly sync',
+    startsAt: Date.now() + 5 * 60_000,
+    endsAt: Date.now() + 35 * 60_000,
+    calendar: 'Work',
+    provider: 'meet',
+    decision: null,
+    meetingId: null,
+  };
+
+  it('asks whether to join and joins without a project', async () => {
+    noLocalMeeting();
+    const joinCalendarMeeting = jest.fn().mockResolvedValue({ meetingId: 'm1' });
+    const getActiveLiveMeetings = jest.fn().mockResolvedValue(activeMeetings({}));
+    jest.mocked(createVerityClient).mockReturnValue({
+      getActiveLiveMeetings,
+      getUpcomingMeetings: jest.fn().mockResolvedValue([upcoming]),
+      joinCalendarMeeting,
+    } as unknown as NonNullable<ReturnType<typeof createVerityClient>>);
+    render(<ActiveMeetingOverlay />);
+    act(() => requestMeetingPrompt({ kind: 'upcoming', eventKey: 'k1' }));
+    expect(await screen.findByText('Weekly sync')).toBeOnTheScreen();
+    const join = await screen.findByLabelText('Join meeting with Verity');
+    await act(async () => fireEvent.press(join));
+    expect(joinCalendarMeeting).toHaveBeenCalledWith('k1');
+    // The card looks again, so the new unassigned meeting appears with Assign.
+    expect(getActiveLiveMeetings.mock.calls.length).toBeGreaterThan(1);
+  });
+
+  it('opens a started meeting for assignment when it has no project yet', async () => {
+    noLocalMeeting();
+    jest.mocked(createVerityClient).mockReturnValue({
+      getActiveLiveMeetings: jest.fn().mockResolvedValue(
+        activeMeetings({
+          unassigned: [
+            {
+              id: 'm1',
+              title: 'Weekly sync',
+              startedAt: Date.now(),
+              endedAt: null,
+              state: 'active',
+              captureStatus: 'listening',
+              people: 3,
+            },
+          ],
+        }),
+      ),
+      listProjects: jest.fn().mockResolvedValue([]),
+      listSessions: jest.fn().mockResolvedValue([]),
+    } as unknown as NonNullable<ReturnType<typeof createVerityClient>>);
+    render(<ActiveMeetingOverlay />);
+    await act(async () => requestMeetingPrompt({ kind: 'started', meetingId: 'm1' }));
+    expect(await screen.findByText('Assign meeting')).toBeOnTheScreen();
+  });
+
+  it('opens a started meeting where it runs once it has a session', async () => {
+    noLocalMeeting();
+    jest.mocked(createVerityClient).mockReturnValue({
+      getActiveLiveMeetings: jest.fn().mockResolvedValue(
+        activeMeetings({
+          running: [
+            {
+              sessionId: 'session-4',
+              id: 'm1',
+              title: 'Weekly sync',
+              engine: 'attendee',
+              startedAt: Date.now(),
+              state: 'active',
+              captureStatus: 'listening',
+              sessionName: 'Weekly sync',
+              projectId: 'website',
+            },
+          ],
+        }),
+      ),
+    } as unknown as NonNullable<ReturnType<typeof createVerityClient>>);
+    render(<ActiveMeetingOverlay />);
+    await act(async () => requestMeetingPrompt({ kind: 'started', meetingId: 'm1' }));
+    await waitFor(() =>
+      expect(router.push).toHaveBeenCalledWith({
+        pathname: '/meeting/[sessionId]',
+        params: { sessionId: 'session-4' },
+      }),
+    );
   });
 });

@@ -15,6 +15,12 @@ import {
   resolvePushResponse,
 } from './response.js';
 
+const meetingMethods = () => ({
+  joinCalendarMeeting: vi.fn(),
+  skipCalendarMeeting: vi.fn(),
+  discardLiveMeeting: vi.fn(),
+});
+
 describe('resolvePushResponse', () => {
   const permission = { sessionId: 's1', kind: 'permission', toolUseId: 't1' } as const;
 
@@ -134,6 +140,7 @@ describe('createPushReplyPerformer', () => {
       decidePermission,
       sendTurn,
       mergePullRequest: vi.fn(),
+      ...meetingMethods(),
     });
     expect(await perform(permissionAction, 'r1')).toBe('done');
     expect(decidePermission).toHaveBeenCalledWith('s1', 't1', { behavior: 'allow' });
@@ -146,6 +153,7 @@ describe('createPushReplyPerformer', () => {
       decidePermission,
       sendTurn,
       mergePullRequest: vi.fn(),
+      ...meetingMethods(),
     });
     expect(await perform({ type: 'send-turn', sessionId: 's1', prompt: 'hi' }, 'reply-9')).toBe(
       'done',
@@ -160,6 +168,7 @@ describe('createPushReplyPerformer', () => {
       decidePermission: vi.fn(),
       sendTurn,
       mergePullRequest: vi.fn(),
+      ...meetingMethods(),
     });
     expect(await perform({ type: 'send-turn', sessionId: 's1', prompt: 'hi' }, 'reply-9')).toBe(
       'retry',
@@ -177,6 +186,7 @@ describe('createPushReplyPerformer', () => {
       decidePermission,
       sendTurn: vi.fn(),
       mergePullRequest: vi.fn(),
+      ...meetingMethods(),
     });
     expect(await perform(permissionAction, 'r1')).toBe('stale');
     expect(settled).toHaveBeenCalledWith('s1', 't1');
@@ -190,6 +200,7 @@ describe('createPushReplyPerformer', () => {
       decidePermission: vi.fn().mockRejectedValue(new VerityApiError(503, 'down')),
       sendTurn: vi.fn(),
       mergePullRequest: vi.fn(),
+      ...meetingMethods(),
     });
     expect(await perform500(permissionAction, 'r1')).toBe('retry');
 
@@ -197,6 +208,7 @@ describe('createPushReplyPerformer', () => {
       decidePermission: vi.fn().mockRejectedValue(new VerityApiError(429, 'slow down')),
       sendTurn: vi.fn(),
       mergePullRequest: vi.fn(),
+      ...meetingMethods(),
     });
     expect(await perform429(permissionAction, 'r1')).toBe('retry');
 
@@ -204,6 +216,7 @@ describe('createPushReplyPerformer', () => {
       decidePermission: vi.fn().mockRejectedValue(new Error('network down')),
       sendTurn: vi.fn(),
       mergePullRequest: vi.fn(),
+      ...meetingMethods(),
     });
     expect(await performNet(permissionAction, 'r1')).toBe('retry');
   });
@@ -216,6 +229,7 @@ describe('createPushReplyPerformer', () => {
         decidePermission: vi.fn().mockRejectedValue(new VerityApiError(status, 'unauthorized')),
         sendTurn: vi.fn(),
         mergePullRequest: vi.fn(),
+        ...meetingMethods(),
       });
       expect(await perform(permissionAction, 'r1')).toBe('retry');
     }
@@ -228,6 +242,7 @@ describe('createPushReplyPerformer', () => {
       decidePermission: vi.fn().mockRejectedValue(new VerityApiError(404, 'not pending')),
       sendTurn: vi.fn(),
       mergePullRequest: vi.fn(),
+      ...meetingMethods(),
     });
     expect(await perform(permissionAction, 'r1')).toBe('stale');
     expect(settled).toHaveBeenCalledWith('s1', 't1');
@@ -238,7 +253,12 @@ describe('createPushReplyPerformer', () => {
     const decidePermission = vi.fn();
     const sendTurn = vi.fn();
     const mergePullRequest = vi.fn();
-    const perform = createPushReplyPerformer({ decidePermission, sendTurn, mergePullRequest });
+    const perform = createPushReplyPerformer({
+      decidePermission,
+      sendTurn,
+      mergePullRequest,
+      ...meetingMethods(),
+    });
     expect(await perform({ type: 'open-session', sessionId: 's1' }, 'r1')).toBe('done');
     expect(decidePermission).not.toHaveBeenCalled();
     expect(sendTurn).not.toHaveBeenCalled();
@@ -253,6 +273,7 @@ describe('createPushReplyPerformer', () => {
       decidePermission: vi.fn(),
       sendTurn: vi.fn(),
       mergePullRequest,
+      ...meetingMethods(),
     });
     const action = { type: 'merge-pull-request', sessionId: 's1', pullRequestNumber: 831 } as const;
     expect(await perform(action, 'r1')).toBe('done');
