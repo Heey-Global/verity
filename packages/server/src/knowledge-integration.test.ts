@@ -149,6 +149,7 @@ async function setup() {
   };
   return {
     app,
+    userId,
     agent,
     token,
     tokens,
@@ -443,3 +444,83 @@ it.each(['documents', 'code'] as const)(
     }
   },
 );
+
+it('records a decision through the project gateway and returns persisted evidence on later lookup', async () => {
+  const h = await setup();
+  try {
+    const request = {
+      operation: 'record_decision',
+      requestId: 'exports-30',
+      title: 'Export retention',
+      decision: 'Retain exports for 30 days.',
+    };
+    const response = await h.agent(request);
+    expect(response.isError).not.toBe(true);
+    const receipt = JSON.parse(response.content[0]!.text) as {
+      id: string;
+      digest: string;
+      saved: boolean;
+      confirmation: { sessionId: string; confirmationMessageSeq: number };
+    };
+    expect(receipt.saved).toBe(true);
+    expect(receipt.confirmation.sessionId).toBe('s');
+    expect(
+      readFileSync(join(h.dataRoot, 'knowledge/p/insights/decisions', `${receipt.id}.md`), 'utf8'),
+    ).toContain('30 days');
+    const freshCaller = async (sessionId: string) => {
+      await ctx.store.createSession({
+        sessionId,
+        projectId: 'p',
+        worktree: join(sessionWorktree, sessionId),
+        model: 'test',
+      });
+      const prompt = await ctx.store.appendEvent(sessionId, {
+        t: 'prompt',
+        text: 'How long should exports be retained?',
+        initiatedBy: { userId: h.userId },
+      });
+      await ctx.store.markTurnRunning({ sessionId, promptSeq: prompt.seq });
+      await ctx.store.bindTurnIdentity(sessionId, {
+        turnId: `turn-${sessionId}`,
+        startCommandId: `start-${sessionId}`,
+      });
+      return h.tokens.issue({ projectId: 'p', sessionId, turnId: `turn-${sessionId}` });
+    };
+    const fresh = await h.agent(
+      { operation: 'lookup_decisions', id: receipt.id },
+      await freshCaller('fresh-before-revision'),
+    );
+    expect(fresh.isError).not.toBe(true);
+    expect(fresh.content[0]!.text).toContain('30 days');
+    expect((await h.agent(request)).isError).not.toBe(true);
+    const replacement = await h.agent({
+      ...request,
+      requestId: 'exports-60',
+      decision: 'Retain exports for 60 days.',
+      predecessor: { id: receipt.id, digest: receipt.digest },
+    });
+    expect(replacement.isError).not.toBe(true);
+    const lookup = await h.agent(
+      { operation: 'lookup_decisions', query: 'exports' },
+      await freshCaller('fresh-after-revision'),
+    );
+    expect(lookup.isError).not.toBe(true);
+    const data = JSON.parse(lookup.content[0]!.text) as {
+      records: { status: string; markdown: string }[];
+    };
+    expect(data.records.find((record) => record.status === 'current')?.markdown).toContain(
+      '60 days',
+    );
+    expect(data.records.find((record) => record.status === 'superseded')?.markdown).toContain(
+      '30 days',
+    );
+    expect(
+      (await h.agent({ ...request, requestId: 'forged-message', confirmationMessageSeq: 99999 }))
+        .isError,
+    ).toBe(true);
+    expect(h.permission).not.toHaveBeenCalled();
+    expect(h.fallback).not.toHaveBeenCalled();
+  } finally {
+    await h.close();
+  }
+});

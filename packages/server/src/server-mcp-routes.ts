@@ -65,6 +65,7 @@ import {
 } from './knowledge-import.js';
 import { publishSharedInsight } from './knowledge-publish.js';
 import { knowledgeToolRequestSchema } from './knowledge-tool.js';
+import { lookupProjectDecisions, recordProjectDecision } from './knowledge-decisions.js';
 import { readMatrixDiagnosticSnapshot } from './matrix-diagnostic-snapshot.js';
 import { createMatrixTool, matrixRequestSchema } from './matrix-tool.js';
 import { registerMcpAppsRoutes } from './mcp-apps-routes.js';
@@ -1381,6 +1382,34 @@ export function registerServerMcpRoutes({
               return importProjectSource(deps.dataRoot, input.projectId, session.worktree, request);
             if (request.operation === 'create_source_folder')
               return createProjectSourceFolder(deps.dataRoot, input.projectId, request);
+            if (request.operation === 'lookup_decisions')
+              return lookupProjectDecisions(deps.dataRoot, input.projectId, request);
+            if (request.operation === 'record_decision') {
+              const running = (await deps.eventStore.listRunningTurns()).find(
+                (turn) => turn.sessionId === input.sessionId,
+              );
+              if (!running) throw new Error('A decision requires an active confirmation prompt');
+              const seq = request.confirmationMessageSeq ?? running.promptSeq;
+              const events = await deps.eventStore.getEventsAfter(input.sessionId, seq - 1, 1);
+              const confirmation = events[0];
+              if (
+                confirmation?.seq !== seq ||
+                confirmation.event.t !== 'prompt' ||
+                seq > running.promptSeq
+              )
+                throw new Error(
+                  'Decision confirmation must reference a user prompt in the calling session',
+                );
+              return recordProjectDecision(
+                deps.dataRoot,
+                input.projectId,
+                {
+                  sessionId: input.sessionId,
+                  confirmationMessageSeq: seq,
+                },
+                request,
+              );
+            }
             return moveProjectSource(deps.dataRoot, input.projectId, request);
           }
           const session = await deps.eventStore.getSession(input.sessionId);

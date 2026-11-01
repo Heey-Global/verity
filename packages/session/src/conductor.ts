@@ -467,6 +467,8 @@ export interface ConductorDeps {
   onSessionChanged?: ((sessionId: string, change: 'activity' | 'name') => void) | undefined;
   /** Project overview.md contents for a fresh backend context. */
   projectOverview?: ((projectId: string) => Promise<string | undefined>) | undefined;
+  /** Bounded decision references refreshed on every turn, including resumed contexts. */
+  projectDecisionDirectory?: ((projectId: string) => Promise<string>) | undefined;
   /** Durable Verity-owned system context selected from the persisted session.
    * Evaluated whenever a fresh backend context starts, so an empty session can
    * receive hidden capabilities on its first real turn without a synthetic turn. */
@@ -1425,7 +1427,7 @@ export class Conductor {
       if (assistantSession) runOpts.appendSystemPrompt += `\n\n${ASSISTANT_SYSTEM_PROMPT}`;
       runOpts.appendSystemPrompt += await this.projectMemoryPrompt(session);
     }
-    runOpts.appendSystemPrompt += this.projectKnowledgePrompt(session);
+    runOpts.appendSystemPrompt += await this.projectKnowledgePrompt(session);
     runOpts.appendSystemPrompt += await this.assignedTasksPrompt(session);
     runOpts.appendSystemPrompt = withBackendSystemPrompt(
       runOpts.appendSystemPrompt,
@@ -5022,7 +5024,7 @@ export class Conductor {
           const session = await this.deps.store.getSession(opts.sessionId);
           if (session !== undefined) {
             runOpts.appendSystemPrompt += await this.projectMemoryPrompt(session);
-            runOpts.appendSystemPrompt += this.projectKnowledgePrompt(session);
+            runOpts.appendSystemPrompt += await this.projectKnowledgePrompt(session);
             runOpts.appendSystemPrompt += await this.assignedTasksPrompt(session);
             contextProjectId = session.projectId;
           }
@@ -5790,7 +5792,7 @@ export class Conductor {
     return prompt ? `\n\n${prompt}` : '';
   }
 
-  private projectKnowledgePrompt(session: SessionRecord): string {
+  private async projectKnowledgePrompt(session: SessionRecord): Promise<string> {
     if (session.projectId === null) return '';
     // Keep the mount instructions present on resumed turns without re-injecting
     // the project's curated overview.
@@ -5805,7 +5807,16 @@ export class Conductor {
       documentPath === undefined
         ? ''
         : `\n\nYour durable Documents working copy is ${documentPath}, relative to your working directory. Write project documents there. /knowledge/insights is the read-only canonical Documents collection. Changes from your working copy are published automatically after the turn, with concurrent changes preserved as conflicts. Sources and Global remain read-only. These working-copy instructions replace direct-write guidance for /knowledge/insights above.`;
-    return `\n\n## Project knowledge\n${KNOWLEDGE_CONTEXT_INSTRUCTIONS}${documents}`;
+    let decisions = '';
+    if (this.deps.projectDecisionDirectory) {
+      try {
+        decisions = await this.deps.projectDecisionDirectory(session.projectId);
+      } catch {
+        decisions =
+          '\n\nProject decision directory unavailable. Do not assume there are no decisions; report the unavailable knowledge and retry lookup_decisions.';
+      }
+    }
+    return `\n\n## Project knowledge\n${KNOWLEDGE_CONTEXT_INSTRUCTIONS}${documents}${decisions}`;
   }
 
   /** Whether this session's project was created without a GitHub repository, so

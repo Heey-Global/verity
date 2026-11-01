@@ -1,6 +1,17 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
-import { mkdir, open, readdir, readFile, rename, unlink, link, mkdtemp } from 'node:fs/promises';
+import {
+  mkdir,
+  open,
+  readdir,
+  readFile,
+  rename,
+  unlink,
+  link,
+  mkdtemp,
+  lstat,
+  realpath,
+} from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { acquireKnowledgeMutationLock } from './knowledge-mutation-lock.js';
 import { FILE_HISTORY_DIR, openFileHistory } from './session-file-history.js';
@@ -23,6 +34,24 @@ const ignored = new Set([FILE_HISTORY_DIR, '.git']);
 const oversizedVersion = 'snapshot-too-large';
 const isOversized = (error: unknown) =>
   (error as NodeJS.ErrnoException).code === 'DOCUMENT_SNAPSHOT_TOO_LARGE';
+
+async function pinnedDirectory(path: string) {
+  const before = await lstat(path);
+  if (!before.isDirectory() || before.isSymbolicLink())
+    throw Object.assign(new Error('unsafe document directory'), {
+      code: before.isSymbolicLink() ? 'ELOOP' : 'ENOTDIR',
+    });
+  const directory = await open(
+    path,
+    constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+  );
+  const after = await directory.stat();
+  if (before.dev !== after.dev || before.ino !== after.ino) {
+    await directory.close();
+    throw new Error('document directory changed');
+  }
+  return directory;
+}
 
 async function durableWrite(path: string, bytes: string | Buffer): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
@@ -49,23 +78,23 @@ async function parentSlot(root: string, path: string, create: boolean) {
   const parts = path.split('/');
   if (parts.some((p) => !p || p === '.' || p === '..' || p.includes('\\') || p.includes('\0')))
     throw new Error('invalid document path');
-  let directory = await open(
-    root,
-    constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
-  );
+  const actualRoot = await realpath(root);
+  let directory = await pinnedDirectory(root);
   try {
     for (const part of parts.slice(0, -1)) {
       const next = `/proc/self/fd/${directory.fd}/${part}`;
-      if (create)
+      if (create) {
         await mkdir(next).catch((error: NodeJS.ErrnoException) => {
           if (error.code !== 'EEXIST') throw error;
         });
-      const child = await open(
-        next,
-        constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
-      );
+        await directory.sync();
+      }
+      const child = await pinnedDirectory(next);
       await directory.close();
       directory = child;
+      const actual = await realpath(`/proc/self/fd/${directory.fd}`);
+      if (actual !== actualRoot && !actual.startsWith(`${actualRoot}/`))
+        throw new Error('document directory escaped its root');
     }
     return {
       directory,
@@ -78,27 +107,35 @@ async function parentSlot(root: string, path: string, create: boolean) {
   }
 }
 
-async function readDocument(
+export async function readDocument(
   root: string,
   path: string,
   absentAfterReplacement = false,
+  maxBytes = 64 * 1024 * 1024,
 ): Promise<Buffer | undefined> {
   let slot;
   try {
     slot = await parentSlot(root, path, false);
+    const expected = await lstat(slot.path);
+    if (!expected.isFile() || expected.isSymbolicLink())
+      throw Object.assign(new Error('unsafe document file'), {
+        code: expected.isDirectory() ? 'EISDIR' : 'ELOOP',
+      });
     const file = await open(
       slot.path,
       constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
     );
     try {
       const before = await file.stat();
+      if (before.dev !== expected.dev || before.ino !== expected.ino)
+        throw new Error('document file changed');
       if (!before.isFile())
         throw Object.assign(new Error(`document is not a regular file: ${path}`), {
           code: 'EISDIR',
         });
       // Bound one snapshot; large files stay visible in the view rather than
       // allowing an agent to exhaust the server's memory during publication.
-      if (before.size > 64 * 1024 * 1024)
+      if (before.size > maxBytes)
         throw Object.assign(new Error(`document exceeds snapshot limit: ${path}`), {
           code: 'DOCUMENT_SNAPSHOT_TOO_LARGE',
         });
@@ -135,6 +172,37 @@ async function readDocument(
   } finally {
     await slot?.directory.close();
   }
+}
+
+/** Caller holds the project Knowledge mutation lock. New immutable records never
+ * replace an editor's file, even if the pathname appeared during the write. */
+export async function createCanonicalDocument(root: string, path: string, bytes: Buffer) {
+  const slot = await parentSlot(root, path, true);
+  const temporary = `/proc/self/fd/${slot.directory.fd}/.document-${randomUUID()}`;
+  try {
+    const file = await open(temporary, 'wx', 0o644);
+    try {
+      await file.writeFile(bytes);
+      await file.sync();
+    } finally {
+      await file.close();
+    }
+    await link(temporary, slot.path);
+    await slot.directory.sync();
+  } finally {
+    try {
+      await unlink(temporary).catch((error: unknown) => {
+        if (!missing(error)) throw error;
+      });
+    } finally {
+      await slot.directory.close();
+    }
+  }
+}
+
+/** Pin the directory before enumerating; never follow an agent-authored symlink. */
+export async function openDocumentDirectory(root: string, path: string) {
+  return (await parentSlot(root, `${path}/placeholder`, false)).directory;
 }
 
 async function inventory(root: string): Promise<Versions> {
