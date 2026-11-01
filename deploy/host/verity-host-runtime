@@ -237,9 +237,11 @@ desired_runtimes() {
 }
 
 live_runtimes() {
-  docker info --format '{{json .Runtimes}}' 2>/dev/null |
-    jq -ceS --argjson want "$1" 'with_entries(select(.key as $k | $want | has($k)))
-      | with_entries(.value = {path: .value.path, runtimeArgs: (.value.runtimeArgs // [])})'
+  local snapshot
+  snapshot=$(docker info --format '{{json .Runtimes}}' 2>/dev/null) || return 1
+  [[ -n $snapshot ]] || return 1
+  jq -ceS --argjson want "$1" 'with_entries(select(.key as $k | $want | has($k)))
+      | with_entries(.value = {path: .value.path, runtimeArgs: (.value.runtimeArgs // [])})' <<<"$snapshot"
 }
 
 reload_docker() {
@@ -272,8 +274,12 @@ await_live() {
 # Durable recovery covers a crash between daemon.json publication and Docker reload.
 recover_daemon() {
   local transaction="$PRIVATE_DIR/daemon-install" temporary deadline expected live
-  [[ -e $transaction/pending ]] || return 0
+  if [[ ! -e $transaction/pending ]]; then
+    rm -f "$STATE_DIR/daemon-install.pending"
+    return 0
+  fi
   expected="$(jq -ceS 'select(type == "object")' "$transaction/live")" || return 1
+  [[ -n $expected ]] || return 1
   if [[ -f $transaction/previous ]]; then
     temporary="$(mktemp "$(dirname "$DAEMON_JSON")/.daemon.restore.XXXXXX")"
     cp -p "$transaction/previous" "$temporary" || return 1
@@ -291,6 +297,8 @@ recover_daemon() {
     if live="$(live_runtimes '{"runsc":null,"runsc-project":null}')" && [[ $live == "$expected" ]]; then
       rm -rf "$transaction"
       sync -f "$PRIVATE_DIR"
+      rm -f "$STATE_DIR/daemon-install.pending"
+      sync -f "$STATE_DIR"
       return 0
     fi
     sleep 1
@@ -353,6 +361,9 @@ apply_requirements() {
       die 'could not inspect current Docker runtime registrations; nothing was changed'
     fi
     sync -f "$transaction"
+    install -d -m 0700 "$STATE_DIR"
+    touch "$STATE_DIR/daemon-install.pending"
+    sync -f "$STATE_DIR"
     touch "$transaction/pending"
     sync -f "$transaction"
     sync -f "$tmp"
@@ -378,6 +389,8 @@ apply_requirements() {
     sync -f "$PRIVATE_DIR/daemon-install"
     rm -rf "$PRIVATE_DIR/daemon-install"
     sync -f "$PRIVATE_DIR"
+    rm -f "$STATE_DIR/daemon-install.pending"
+    sync -f "$STATE_DIR"
   fi
   log "runtimes runsc and runsc-project are registered for $release"
 }

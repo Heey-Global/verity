@@ -83,6 +83,8 @@ restore() {
   (( failed == 0 )) || return 1
   rm -rf -- "$transaction"
   sync -f "$private"
+  rm -f "$state/service-install.pending"
+  sync -f "$state"
 }
 # A SIGKILL leaves the original backup intact. Recover it before taking a new backup.
 if [[ -e $transaction/pending ]]; then
@@ -107,6 +109,8 @@ fi
 jq -cn --arg deployment "${VERITY_RENEW_DEPLOYMENT:-}" --arg id "${VERITY_RENEW_ID:-}" --arg image "${VERITY_RENEW_IMAGE:-}" \
   '{version:1,deploymentId:$deployment,updateId:$id,targetDigest:$image}' >"$transaction/intent.json"
 sync -f "$transaction"
+touch "$state/service-install.pending"
+sync -f "$state"
 touch "$transaction/pending"
 sync -f "$transaction"
 rollback_on_exit() {
@@ -161,3 +165,5 @@ sync -f "$transaction"
 trap - EXIT
 rm -rf -- "$transaction"
 sync -f "$private"
+rm -f "$state/service-install.pending"
+sync -f "$state"

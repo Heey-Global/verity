@@ -131,10 +131,12 @@ describe.skipIf(!hasTools)('runtime-only service installation transaction', () =
     writeFileSync(`${h.root}/crash`, '');
     expect(h.run().signal).toBe('SIGKILL');
     expect(existsSync(`${h.root}/private/service-install/pending`)).toBe(true);
+    expect(existsSync(`${h.root}/state/service-install.pending`)).toBe(true);
     expect(readFileSync(`${h.root}/state/agent.json`, 'utf8')).toBe(h.initialAgent);
     const result = h.run();
     expect(result.status, result.stderr).toBe(0);
     expect(existsSync(`${h.root}/private/service-install`)).toBe(false);
+    expect(existsSync(`${h.root}/state/service-install.pending`)).toBe(false);
   }, 60_000);
   it('rejects symlinked destinations before mutating any service', () => {
     const h = fixture();

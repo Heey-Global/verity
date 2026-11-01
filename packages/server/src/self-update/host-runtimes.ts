@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { mkdir, open, readFile, rename, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
@@ -306,13 +307,29 @@ export interface ReconcileHostRuntimesOptions {
 export async function reconcileHostRuntimes(options: ReconcileHostRuntimesOptions): Promise<void> {
   const { docker, requirements, requestId } = options;
   const missing = await unsatisfiedHostRuntimes(docker, requirements);
-  if (missing.length === 0 && options.serviceRequirements === undefined) return;
+  const dir = options.requestDir ?? HOST_RUNTIME_REQUEST_DIR;
+  const pending = async (name: string): Promise<boolean> =>
+    stat(join(dir, `${name}-install.pending`)).then(
+      () => true,
+      (error: unknown) => {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+        throw error;
+      },
+    );
+  let servicePending = await pending('service');
+  const daemonPending = await pending('daemon');
+  if (
+    missing.length === 0 &&
+    options.serviceRequirements === undefined &&
+    !servicePending &&
+    !daemonPending
+  )
+    return;
   const need = `Docker runtime ${(missing.length === 0 ? HOST_RUNTIME_NAMES : missing).join(' and ')} (${requirements.release})`;
 
-  const dir = options.requestDir ?? HOST_RUNTIME_REQUEST_DIR;
   let agent = await readJson(join(dir, 'agent.json')).catch(() => undefined);
   const supports = (candidate: unknown): boolean => {
-    if (!isRecord(candidate) || candidate.version !== 1) return false;
+    if (servicePending || !isRecord(candidate) || candidate.version !== 1) return false;
     if (
       candidate.trigger !== 'systemd-path' &&
       !(candidate.trigger === 'none' && missing.length === 0)
@@ -341,6 +358,7 @@ export async function reconcileHostRuntimes(options: ReconcileHostRuntimesOption
       );
     }
     agent = await readJson(join(dir, 'agent.json')).catch(() => undefined);
+    servicePending = await pending('service');
     if (!supports(agent))
       throw new HostRuntimeError(
         `This release needs ${need}, but the renewed host runtime service does not advertise the required capabilities. The current version keeps serving. ${REPAIR}`,
@@ -355,7 +373,9 @@ export async function reconcileHostRuntimes(options: ReconcileHostRuntimesOption
     throw new HostRuntimeError(
       `This release needs newer host runtime service capabilities. The current version keeps serving. ${REPAIR}`,
     );
-  if ((await unsatisfiedHostRuntimes(docker, requirements)).length === 0) return;
+  if (servicePending)
+    throw new HostRuntimeError(`Host runtime service installation needs recovery. ${REPAIR}`);
+  if (!daemonPending && (await unsatisfiedHostRuntimes(docker, requirements)).length === 0) return;
   if (agent.trigger !== 'systemd-path') {
     throw new HostRuntimeError(
       `This release needs ${need}. This host has no systemd, so the host runtime service cannot ` +
@@ -380,12 +400,14 @@ export async function reconcileHostRuntimes(options: ReconcileHostRuntimesOption
     }
   }
 
+  const answerId = daemonPending ? `${requestId}:recovery:${randomUUID()}` : requestId;
   const result = await requestHostAnswer({
     dir,
     request: 'request.json',
     result: 'result.json',
-    id: requestId,
-    body: { version: 1, id: requestId, requirements },
+    // A prior successful answer must not bypass an unfinished host transaction.
+    id: answerId,
+    body: { version: 1, id: answerId, requirements },
     timeoutMs: options.timeoutMs ?? 15 * 60_000,
     ...(options.pollMs === undefined ? {} : { pollMs: options.pollMs }),
     ...(options.sleep === undefined ? {} : { sleep: options.sleep }),
@@ -405,6 +427,8 @@ export async function reconcileHostRuntimes(options: ReconcileHostRuntimesOption
         'The current version keeps serving; fix the cause on the host, then retry the update.',
     );
   }
+  if (await pending('daemon'))
+    throw new HostRuntimeError(`Host runtime registration needs recovery. ${REPAIR}`);
   const still = await unsatisfiedHostRuntimes(docker, requirements);
   if (still.length > 0) {
     throw new HostRuntimeError(

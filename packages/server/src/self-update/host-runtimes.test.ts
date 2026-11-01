@@ -506,6 +506,53 @@ describe('runtime service renewal independent of the builder', () => {
     });
     expect(renewHostRuntimeService).not.toHaveBeenCalled();
   });
+  it('recovers an uncommitted service despite matching advertised capabilities', async () => {
+    const { docker } = daemon(both);
+    const dir = await requestDir(renewed);
+    await writeFile(join(dir, 'service-install.pending'), '');
+    const renewHostRuntimeService = vi.fn(async () => {
+      await rm(join(dir, 'service-install.pending'));
+    });
+    await reconcileHostRuntimes({
+      docker,
+      requirements: declared!,
+      requestId: 'pending-service',
+      requestDir: dir,
+      serviceRequirements,
+      renewHostRuntimeService,
+    });
+    expect(renewHostRuntimeService).toHaveBeenCalledOnce();
+  });
+  it('resolves a pending daemon transaction even with matching live registrations and an old success', async () => {
+    const { docker } = daemon(both);
+    const dir = await requestDir(renewed);
+    await writeFile(join(dir, 'daemon-install.pending'), '');
+    await writeFile(
+      join(dir, 'result.json'),
+      JSON.stringify({ version: 1, id: 'pending-daemon', ok: true, message: 'old success' }),
+    );
+    await reconcileHostRuntimes({
+      docker,
+      requirements: declared!,
+      requestId: 'pending-daemon',
+      requestDir: dir,
+      serviceRequirements,
+      timeoutMs: 2_000,
+      pollMs: 5,
+      sleep: async () => {
+        const request = JSON.parse(await readFile(join(dir, 'request.json'), 'utf8')) as {
+          id: string;
+        };
+        expect(request.id).not.toBe('pending-daemon');
+        await rm(join(dir, 'daemon-install.pending'), { force: true });
+        await writeFile(
+          join(dir, 'result.json'),
+          JSON.stringify({ version: 1, id: request.id, ok: true, message: 'recovered' }),
+        );
+      },
+    });
+    await expect(readFile(join(dir, 'daemon-install.pending'))).rejects.toThrow(/ENOENT/u);
+  });
   it('accepts installer-registered runtimes without a systemd watcher', async () => {
     const { docker } = daemon(both);
     const dir = await requestDir({ ...renewed, trigger: 'none' });

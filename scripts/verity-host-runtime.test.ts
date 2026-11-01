@@ -691,10 +691,12 @@ describeHost('durable Docker runtime configuration recovery', () => {
     );
     expect(h.run('apply-pins', h.pins).signal).toBe('SIGKILL');
     expect(existsSync(join(h.root, 'private/daemon-install/pending'))).toBe(true);
+    expect(existsSync(join(h.state, 'daemon-install.pending'))).toBe(true);
     writeFileSync(systemctl, original, { mode: 0o755 });
     const result = h.run('apply-pins', h.pins);
     expect(result.status, result.stderr).toBe(0);
     expect(existsSync(join(h.root, 'private/daemon-install'))).toBe(false);
+    expect(existsSync(join(h.state, 'daemon-install.pending'))).toBe(false);
     expect(h.daemon()).toMatchObject({ runtimes: { runsc: { path: h.runtimePath } } });
   });
   it('keeps its checkpoint when restoration cannot be verified', () => {
