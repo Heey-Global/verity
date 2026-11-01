@@ -1,5 +1,5 @@
 # renovate: datasource=docker depName=node
-FROM node:26.12.1-bookworm-slim@sha256:3041f464442defe6de36c20b6904b125a6178cfa0a7fc7cc99c0bb5120586f70 AS build
+FROM node:26.13.0-bookworm-slim@sha256:bc0a2afd3b74ce12222fc8bab99271e66257f021078f5f4a5d687a77d280c1d9 AS build
 WORKDIR /src
 COPY vendor/expo-router-query-string ./vendor/expo-router-query-string
 COPY package.json package-lock.json tsconfig.json tsconfig.base.json ./
@@ -9,7 +9,7 @@ RUN npm ci --ignore-scripts
 RUN npm run build --workspace @verity/preview-tunnel
 
 # renovate: datasource=docker depName=node
-FROM node:26.12.1-bookworm-slim@sha256:3041f464442defe6de36c20b6904b125a6178cfa0a7fc7cc99c0bb5120586f70
+FROM node:26.13.0-bookworm-slim@sha256:bc0a2afd3b74ce12222fc8bab99271e66257f021078f5f4a5d687a77d280c1d9
 ENV NODE_ENV=production
 WORKDIR /app
 COPY --from=build /src/packages/preview-tunnel/package.json ./package.json
