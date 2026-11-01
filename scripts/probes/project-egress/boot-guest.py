@@ -18,13 +18,13 @@ def run(*args):
     return subprocess.check_output(args, text=True, stderr=subprocess.STDOUT).strip()
 
 
-def api(path, body=None, token=None):
+def api(path, body=None, token=None, timeout=15):
     headers = {'Content-Type': 'application/json'}
     if token:
         headers['Authorization'] = f'Bearer {token}'
     request = urllib.request.Request('http://127.0.0.1:9000' + path,
                                      data=None if body is None else json.dumps(body).encode(), headers=headers)
-    with urllib.request.urlopen(request, timeout=15) as response:
+    with urllib.request.urlopen(request, timeout=timeout) as response:
         return json.load(response)
 
 
@@ -49,14 +49,15 @@ def descriptor():
 def containers():
     project = descriptor()['projectId']
     registry = json.loads(Path('/var/lib/verity-egress/registry.json').read_text())
-    ids = [value for record in registry['records'] if record['binding']['projectId'] == project
+    ids = [value for record in registry['records'] if not record['retired'] and record['binding']['projectId'] == project
            for value in record['containers'].values()]
     return json.loads(run('docker', 'inspect', *ids)) if ids else []
 
 
 def sandbox():
     registry = json.loads(Path('/var/lib/verity-egress/registry.json').read_text())
-    record = next(record for record in registry['records'] if record['binding']['projectId'] == descriptor()['projectId'])
+    records = [record for record in registry['records'] if record['binding']['projectId'] == descriptor()['projectId']]
+    record = next((record for record in records if not record['retired']), records[-1])
     return record['containers']['sandbox']
 
 
@@ -106,7 +107,7 @@ def setup():
     Path(data_root, 'boot-retained-marker').write_text('retained actual project data')
 
 
-def recover():
+def recover(replace=False):
     run('systemctl', 'start', 'verity-boot-gateway.service', 'verity-boot-server.service')
     wait(lambda: api('/healthz'))
     token = api('/secret/unlock', {'password': PASSWORD, 'deviceLabel': 'boot recovery'})['token']
@@ -114,7 +115,13 @@ def recover():
     # alone never counts as project transport readiness.
     # Explicit trusted host readmission keeps the original sandbox process alive.
     # Actual Server listeners/capabilities are recovered by its normal project poll.
-    run('env', 'PROJECT_EGRESS_DISPOSABLE=yes', '/usr/bin/node', '/opt/verity-fixture/boot-server.mjs', 'readmit')
+    if replace:
+        # Stopped packet registrations are immutable. Use the actual authenticated
+        # replacement lifecycle rather than restarting an attested old endpoint.
+        api('/verity-control/projects/' + descriptor()['projectId'] + '/recreate-container',
+            {'confirmWarnings': True}, token=token, timeout=180)
+    else:
+        run('env', 'PROJECT_EGRESS_DISPOSABLE=yes', '/usr/bin/node', '/opt/verity-fixture/boot-server.mjs', 'readmit')
     api('/projects', token=token)
     wait(positive, 180)
     config = json.loads((ROOT / 'config.json').read_text())
@@ -262,7 +269,7 @@ if __name__ == '__main__':
     if operation == 'setup':
         setup()
     elif operation == 'recover':
-        recover()
+        recover(sys.argv[2:] == ['replace'])
     elif operation == 'positive':
         positive()
     elif operation == 'observer-positive':

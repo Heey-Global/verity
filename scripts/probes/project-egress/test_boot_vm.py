@@ -123,6 +123,26 @@ class RemovedFenceSensitivityTests(unittest.TestCase):
                 boot_proof.verify_removed_fences(path, 1)
 
 
+def replace_topology(before, suffix):
+    import copy
+    import hashlib
+    import json
+    after = copy.deepcopy(before)
+    binding = after['packet'][0]['raw']['state']['binding']
+    old_generation = binding['generation']
+    binding.update(generation='generation-' + suffix, networkId=suffix * 64,
+                   endpointId=suffix * 64, containerId=suffix * 64)
+    after['containers'][0]['id'] = binding['containerId']
+    after['containers'][1]['id'] = suffix.upper() * 64
+    after['packet'][0]['raw']['identity'] = hashlib.sha256(json.dumps(list(binding.values()), separators=(',', ':')).encode()).hexdigest()
+    for row in after['registry']['records']:
+        if row['binding']['generation'] == old_generation:
+            row['retired'] = True
+    after['registry']['records'].append({'binding': {'projectId': after['projectId'], 'generation': binding['generation']},
+                                         'retired': False, 'containers': {str(i): row['id'] for i, row in enumerate(after['containers'])}})
+    return after
+
+
 class FullBundleTests(unittest.TestCase):
     def fixture(self, directory):
         import base64
@@ -142,6 +162,10 @@ class FullBundleTests(unittest.TestCase):
                               'program': {'id': 42, 'type': 'sched_cls'}, 'hooks': {'ingress': hooks, 'egress': hooks}}]
         initial['tables'] = [{'table': {'family': family, 'name': 'verity_start_test'}} for family in ('inet', 'bridge')]
 
+        initial['containers'][0]['mounts'] = [{'Source': '/data/project', 'Destination': '/work'}, {'Source': '/data/knowledge', 'Destination': '/knowledge'}]
+        initial['registry'] = {'records': [{'binding': {'projectId': 'p', 'generation': 'g'}, 'retired': False,
+                                           'containers': {'sandbox': initial['containers'][0]['id'], 'relay': initial['containers'][1]['id']}}]}
+        previous = initial
         facts = {'boot_id': '11111111-1111-1111-1111-111111111111', 'init': 'systemd', 'systemd': 259}
         events = []
         broker = []
@@ -152,8 +176,10 @@ class FullBundleTests(unittest.TestCase):
             after = copy.deepcopy(facts)
             if name == 'reboot':
                 after['boot_id'] = '22222222-2222-2222-2222-222222222222'
+            topology = replace_topology(previous, str(index)) if name in ('docker-stop-start', 'docker-crash', 'reboot') else copy.deepcopy(previous)
+            previous = topology
             events.append({'event': name, 'before': facts, 'after': after, 'event_time_ns': when,
-                           'retained': copy.deepcopy(initial), 'recovery_ns': 1,
+                           'retained': topology, 'recovery_ns': 1,
                            'process_before': {'docker': 10, 'controller': 20, 'server': 30},
                            'process_after': {'docker': 11, 'controller': 21, 'server': 31},
                            'stream_before': {'attempts': 4, 'successes': 3, 'last_success_ns': when - 1,
@@ -233,6 +259,35 @@ class FullBundleTests(unittest.TestCase):
             with self.assertRaisesRegex(AssertionError, 'no actual handler evidence'):
                 boot_proof.verify_bundle(directory)
 
+    def test_replacement_requires_fresh_generation_retirement_and_preserved_data(self):
+        import copy
+        import json
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            self.fixture(directory)
+            before = json.loads(Path(directory, 'topology-before.json').read_text())
+            after = replace_topology(before, '9')
+            boot_proof.verify_replacement(before, after)
+            with self.assertRaises(AssertionError):
+                boot_proof.verify_replacement(before, before)
+            for mutation in ('generation', 'network', 'endpoint', 'retirement', 'data', 'image', 'running'):
+                changed = copy.deepcopy(after)
+                binding = changed['packet'][0]['raw']['state']['binding']
+                old = before['packet'][0]['raw']['state']['binding']
+                if mutation in ('generation', 'network', 'endpoint'):
+                    key = {'generation': 'generation', 'network': 'networkId', 'endpoint': 'endpointId'}[mutation]
+                    binding[key] = old[key]
+                elif mutation == 'retirement':
+                    changed['registry']['records'][0]['retired'] = False
+                elif mutation == 'data':
+                    changed['containers'][0]['mounts'][0]['Source'] = '/lost-data'
+                elif mutation == 'image':
+                    changed['containers'][0]['image'] = 'untrusted-image'
+                else:
+                    changed['containers'][0]['running'] = False
+                with self.subTest(mutation=mutation), self.assertRaises(AssertionError):
+                    boot_proof.verify_replacement(before, changed)
+
     def test_rejects_boot_evidence_without_both_kernel_hooks_and_nft_fences(self):
         import json
         import tempfile
@@ -297,3 +352,22 @@ class ActualMemoryPersistenceTests(unittest.TestCase):
     def test_removed_fence_control_repeats_readmission_before_completion(self):
         calls = self.exercise('removed-fences')
         self.assertEqual(calls[-1], ('remove-fences',))
+
+
+class ReplacementRecoveryTests(unittest.TestCase):
+    def test_stopped_packet_generation_uses_authenticated_replacement(self):
+        import json
+        import tempfile
+        from unittest.mock import Mock, patch
+        spec = importlib.util.spec_from_file_location('replacement_guest', Path(__file__).with_name('boot-guest.py'))
+        guest = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(guest)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'config.json').write_text(json.dumps({'dataRoot': directory}))
+            (root / 'boot-retained-marker').write_text('retained actual project data')
+            api = Mock(return_value={'token': 'disposable-token'})
+            with patch.object(guest, 'ROOT', root), patch.object(guest, 'api', api), patch.object(guest, 'wait'), patch.object(guest, 'run') as run, patch.object(guest, 'descriptor', return_value={'projectId': 'p'}):
+                guest.recover(replace=True)
+            api.assert_any_call('/verity-control/projects/p/recreate-container', {'confirmWarnings': True}, token='disposable-token', timeout=180)
+            self.assertFalse(any('readmit' in call.args for call in run.call_args_list))

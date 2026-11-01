@@ -117,6 +117,33 @@ def verify_retained(before, after):
         assert container['mounts'] == prior[identity]['mounts'] and container['image'] == prior[identity]['image']
 
 
+
+def verify_replacement(before, after):
+    assert before['projectId'] == after['projectId']
+    old = before['packet'][0]['raw']['state']['binding']
+    new = after['packet'][0]['raw']['state']['binding']
+    assert old['generation'] != new['generation'] and old['networkId'] != new['networkId']
+    assert old['containerId'] != new['containerId'] and old['endpointId'] != new['endpointId']
+    records = after['registry']['records']
+    assert any(row['retired'] and row['binding']['generation'] == old['generation'] for row in records)
+    active = [row for row in records if not row['retired'] and row['binding']['projectId'] == after['projectId']]
+    assert len(active) == 1 and active[0]['binding']['generation'] == new['generation']
+    prior = before['containers']
+    current = after['containers']
+    assert len(prior) == len(current) == 2
+    assert {c['id'] for c in prior}.isdisjoint(c['id'] for c in current)
+    assert set(active[0]['containers'].values()) == {c['id'] for c in current}
+    # Generation-specific credentials and sockets must change. Project data stays
+    # mounted from the same source and both trusted image identities are retained.
+    assert sorted(c['image'] for c in prior) == sorted(c['image'] for c in current)
+    for container in current:
+        assert container['restart'] == 'no' and container['running']
+    def data_mounts(rows):
+        return sorted((m['Destination'], m['Source']) for row in rows for m in row['mounts']
+                      if isinstance(m, dict) and m['Destination'] in ('/work', '/knowledge'))
+    assert data_mounts(prior) and data_mounts(prior) == data_mounts(current)
+
+
 def verify_bundle(directory):
     directory = Path(directory)
     proof = json.loads((directory / 'boot-proof.json').read_text())
@@ -125,9 +152,14 @@ def verify_bundle(directory):
     verify_packet(initial)
     events = proof['events']
     assert [event['event'] for event in events] == ['controller-kill', 'server-kill', 'docker-stop-start', 'docker-crash', 'reboot']
+    previous = initial
     for event in events:
         assert proof['protected_start_ns'] <= event['event_time_ns'] <= proof['protected_end_ns']
-        verify_retained(initial, event['retained'])
+        if event['event'] in ('docker-stop-start', 'docker-crash', 'reboot'):
+            verify_replacement(previous, event['retained'])
+        else:
+            verify_retained(previous, event['retained'])
+        previous = event['retained']
         verify_packet(event['retained'])
         if event['event'] != 'server-kill':
             verify_boot_denial(json.loads((directory / (event['event'] + '-denied-rules.json')).read_text()))
@@ -207,6 +239,7 @@ def main():
         time.sleep(2)
         inflight = {phase: json.loads(vm.ssh(guest + f'inflight {phase}', timeout=20)) for phase in ('positive', 'denied')}
         (evidence / 'inflight.json').write_text(json.dumps(inflight))
+        previous = initial
         for event in ('controller-kill', 'server-kill', 'docker-stop-start', 'docker-crash', 'reboot'):
             vm.ssh(guest + f'stream {event}')
             time.sleep(1)
@@ -248,12 +281,17 @@ def main():
             vm.ssh(guest + f'stop-poll {event}')
             recovery_start = time.monotonic_ns()
             try:
-                vm.ssh(guest + 'recover', timeout=240)
+                replace = event in ('docker-stop-start', 'docker-crash', 'reboot')
+                vm.ssh(guest + ('recover replace' if replace else 'recover'), timeout=240)
             except subprocess.CalledProcessError as error:
                 (evidence / (event + '-recovery-error.txt')).write_text(str(error.output))
                 raise
             after = json.loads(vm.ssh(guest + 'snapshot'))
-            verify_retained(initial, after)
+            if replace:
+                verify_replacement(previous, after)
+            else:
+                verify_retained(previous, after)
+            previous = after
             vm.ssh(guest + 'external')
             events.append({'event': event, 'event_time_ns': event_time, 'before': before, 'after': vm.facts(),
                            'recovery_ns': time.monotonic_ns() - recovery_start, 'retained': after,
@@ -262,8 +300,8 @@ def main():
             (evidence / 'events.json').write_text(json.dumps(events, indent=2))
         faults = json.loads(vm.ssh(guest + 'faults', timeout=180))
         (evidence / 'faults.json').write_text(json.dumps(faults))
-        vm.ssh(guest + 'recover', timeout=240)
-        verify_retained(initial, json.loads(vm.ssh(guest + 'snapshot')))
+        vm.ssh(guest + 'recover replace', timeout=240)
+        verify_replacement(previous, json.loads(vm.ssh(guest + 'snapshot')))
         vm.ssh(guest + 'observer-positive after')
         end_ns = time.time_ns()
         time.sleep(0.2)
