@@ -252,7 +252,9 @@ including after a restart, checks current access, QA settings, expiry, PR revisi
 failure evidence and the target worktree again. Before admission, its attached
 HEAD must equal the approved PR commit; a detached preview or a clean but stale
 worktree is refused. Revoked or invalid queued requests
-are cancelled; an admitted receipt is never replayed. `repair_status` reports
+are cancelled; an admitted receipt is never replayed. After a confirmed attempt ends with failing
+checks, a new approved proposal may use the remaining repair budget in Monitor
+mode; reusing the old proposal cannot start another attempt. `repair_status` reports
 `proposed`, `queued`, `accepted` or `blocked`; accepted confirms admission, not a
 successful repair. The existing supervisor checks terminal execution and forge
 results. An uncertain transport response never proves that execution stopped.

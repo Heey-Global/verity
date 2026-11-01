@@ -1,3 +1,4 @@
+import { createRepairSupervisor } from './repair-supervisor.js';
 import { beforeAll, afterAll, beforeEach, it, expect, vi } from 'vitest';
 import { createTestDb, truncateAll, type TestDb } from '@verity/store/testing';
 import { sql } from 'kysely';
@@ -305,4 +306,50 @@ it('rejects a clean matching branch at a different commit before consuming repai
   await expect(service.request(caller, 'p', id)).rejects.toThrow('approved commit');
   expect(await ctx.store.repairs.budgetUsed('p', 'pr:2120')).toBe(0);
   expect(deps.dispatch).not.toHaveBeenCalled();
+});
+
+it('allows a newly approved monitor-mode retry after supervisor completion, within the shared budget', async () => {
+  const { deps, service, resolve } = setup();
+  const first = await resolve();
+  await service.request(caller, 'p', first);
+  const observed = (await deps.inspect('p', 2120))!;
+  const supervisor = createRepairSupervisor({
+    store: ctx.store,
+    discover: async () => ({
+      page: {
+        pulls: [{ number: 2120, branch: observed.branch, sha: 'sha', fork: false }],
+        runs: [],
+        nextPage: null,
+        workflowsSupported: true,
+      },
+      statuses: [observed],
+    }),
+    authorized: async () => true,
+    busy: () => false,
+    terminated: async (_sessionId, dispatchId) =>
+      (await ctx.store.repairs.dispatchReceipt(dispatchId))?.state === 'admitted',
+    result: async () => null,
+    target: async () => ({ blocked: true }),
+    spawn: async () => {
+      throw new Error('Monitor must not spawn');
+    },
+    dispatch: async () => {
+      throw new Error('Monitor must not dispatch automatically');
+    },
+  });
+  await ctx.store.clearRunningTurn('target');
+  await supervisor.sweep();
+  expect((await ctx.store.repairs.incidents('p'))[0]?.state).toBe('verifying');
+  await service.request(caller, 'p', first);
+  expect(deps.dispatch).toHaveBeenCalledOnce();
+  const second = await resolve();
+  expect(await service.request(caller, 'p', second)).toMatchObject({ status: 'accepted' });
+  expect(deps.dispatch).toHaveBeenCalledTimes(2);
+  await ctx.store.clearRunningTurn('target');
+  await supervisor.sweep();
+  const exhausted = await resolve();
+  expect(await service.request(caller, 'p', exhausted)).toMatchObject({ status: 'blocked' });
+  expect(deps.dispatch).toHaveBeenCalledTimes(2);
+  expect((await ctx.store.repairs.mandate('p'))?.mode).toBe('monitor');
+  await supervisor.stop();
 });
