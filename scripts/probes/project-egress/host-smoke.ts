@@ -17,7 +17,6 @@ import { createProjectEgressHostClient } from '../../../packages/server/src/proj
 import { ProjectEgressLifecycle } from '../../../packages/server/src/project-egress-lifecycle.js';
 /** Deny-before-first-instruction fixture; no production daemon or credentials. */
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import { createServer, request, type Server } from 'node:http';
 import { mkdtemp, readFile, writeFile, rm, mkdir, chmod, chown } from 'node:fs/promises';
 import {
@@ -61,41 +60,9 @@ let relayPolicy: EgressRelayPolicy | undefined;
 const starts: string[] = [];
 const composedTargets = ['11.77.106.2', '2001:4860:feed:106::2'];
 let directEnabled = true;
-// Diagnostic-only BOOTTIME samples (procfs precision is 10 ms); flush after the run.
-let profiling = false;
-const phaseEvents: unknown[] = [];
-const bootTime = () => {
-  const [seconds, fraction = ''] = readFileSync('/proc/uptime', 'utf8').split(' ')[0]!.split('.');
-  return (BigInt(seconds!) * 1_000_000_000n + BigInt(fraction.padEnd(9, '0'))).toString();
-};
-function measured<A extends unknown[], R>(phase: string, operation: (...args: A) => Promise<R>) {
-  return async (...args: A): Promise<R> => {
-    if (!profiling) return operation(...args);
-    const started = bootTime();
-    let result: R | undefined;
-    try {
-      result = await operation(...args);
-      return result;
-    } finally {
-      phaseEvents.push({
-        phase,
-        started,
-        ended: bootTime(),
-        ...(phase.startsWith('deadline:') ? { args, result } : {}),
-      });
-    }
-  };
-}
 function createEnforcement() {
-  const deadline = hostProjectDeadlineEnforcer();
   return createProjectEgressHostEnforcement({
-    deadline: {
-      ...deadline,
-      clock: measured('deadline:clock', deadline.clock.bind(deadline)),
-      arm: measured('deadline:arm', deadline.arm.bind(deadline)),
-      renew: measured('deadline:renew', deadline.renew!.bind(deadline)),
-      revoke: measured('deadline:revoke', deadline.revoke.bind(deadline)),
-    },
+    deadline: hostProjectDeadlineEnforcer(),
     sponsor: () => 'fixture-sponsor',
     directAuthority: () => true,
     store: {
@@ -122,10 +89,10 @@ function createEnforcement() {
         });
       },
     },
-    inspect: measured('direct:inspect', inspectEgressHostDirect),
+    inspect: inspectEgressHostDirect,
     dependencies: {
-      inspect: measured('fence:inspect', inspectProjectFenceAttachment),
-      apply: measured('fence:apply', applyProjectFenceRules),
+      inspect: inspectProjectFenceAttachment,
+      apply: applyProjectFenceRules,
       directTargetAllowed: (host) => Promise.resolve(composedTargets.includes(host)),
       destinationAllowed: (address) => Promise.resolve(composedTargets.includes(address)),
       resolve: () => Promise.reject(new Error('Exact address fixture')),
@@ -146,15 +113,13 @@ const dependencies = {
     binding: Parameters<typeof inspectEgressTransport>[0],
     ids: Parameters<typeof inspectEgressTransport>[1],
   ) =>
-    measured('host:transport', inspectEgressTransport)(
-      binding,
-      ids,
-      relayPolicy?.codexSubpath !== undefined,
-    ).catch(async (error: unknown) => {
-      process.stderr.write(`Transport inspection failed: ${String(error)}\n`);
-      await writeFile('/evidence/transport-inspection-error.txt', String(error));
-      throw error;
-    }),
+    inspectEgressTransport(binding, ids, relayPolicy?.codexSubpath !== undefined).catch(
+      async (error: unknown) => {
+        process.stderr.write(`Transport inspection failed: ${String(error)}\n`);
+        await writeFile('/evidence/transport-inspection-error.txt', String(error));
+        throw error;
+      },
+    ),
   save: (state: Parameters<typeof store.save>[0]) => store.save(state),
   apply: async (script: string) => {
     try {
@@ -172,14 +137,14 @@ const dependencies = {
       throw error;
     }
   },
-  inspectNetwork: measured('host:network', inspectEgressHostNetwork),
+  inspectNetwork: inspectEgressHostNetwork,
   inspectContainer: async (
     binding: Parameters<typeof inspectEgressHostContainer>[0],
     id: string,
     role: 'sandbox' | 'relay',
   ) => {
     try {
-      await measured('host:container', inspectEgressHostContainer)(binding, id, role, relayPolicy);
+      await inspectEgressHostContainer(binding, id, role, relayPolicy);
     } catch (error) {
       // This fixture contains no credentials; retain daemon facts before rollback removes them.
       process.stderr.write(`Host inspection refused: ${String(error)}\n`);
@@ -857,7 +822,6 @@ try {
   assert.ok(!(await docker('logs', 'veh-receiver')).includes('transferred-startup-marker'));
   assert.ok(!(await docker('logs', 'veh-receiver')).includes('host-startup-marker'));
   results.push('no receiver observation during Runner/relay startup and denied-state revalidation');
-  profiling = true;
   // Compose the actual startup, direct nft and TC paths, with an independent receiver.
   await docker(
     'network',
@@ -1022,6 +986,30 @@ try {
   assert.equal(expired.accepted, attempted.accepted);
   assert.ok(attempted.denied > expired.denied);
   assert.ok(BigInt(attempted.last_accepted_boot_ns) < BigInt(live.deadline_ns));
+  // gVisor's BOOTTIME has its own origin. Compare counters after a host-clock
+  // barrier instead of comparing the guest's absolute timestamp to a host lease.
+  const lateBarrier = BigInt(live.deadline_ns) + 2_000_000_000n;
+  await delay(
+    Math.max(
+      0,
+      Math.ceil(Number(lateBarrier - BigInt(attempted.clocks.bootBeforeNs)) / 1_000_000),
+    ) + 20,
+  );
+  const late = await kernel();
+  assert.ok(BigInt(late.clocks.bootBeforeNs) > lateBarrier);
+  const readHeartbeat = async () =>
+    JSON.parse(await readFile(`${worktree}/composed-stream.json`, 'utf8')) as {
+      attempts: number;
+      boot_ns: string;
+    };
+  const beforeHeartbeat = await readHeartbeat();
+  await delay(300);
+  const heartbeat = {
+    ...(await readHeartbeat()),
+    lateAttempts: beforeHeartbeat.attempts,
+    hostBootBeforeNs: late.clocks.bootBeforeNs,
+  };
+  assert.ok(heartbeat.attempts > 10 && heartbeat.attempts > heartbeat.lateAttempts);
   await directProbe('fresh-after-expiry', true);
   await lifecycle.revokeDirect(identity);
   await directProbe('direct-revoked', false);
@@ -1031,14 +1019,6 @@ try {
   await directProbe('authority-empty', false);
   directEnabled = true;
   await delay(2500);
-  const heartbeat = JSON.parse(await readFile(`${worktree}/composed-stream.json`, 'utf8')) as {
-    attempts: number;
-    boot_ns: string;
-  };
-  assert.ok(
-    heartbeat.attempts > 10 &&
-      BigInt(heartbeat.boot_ns) > BigInt(live.deadline_ns) + 2_000_000_000n,
-  );
   await writeFile(
     '/evidence/composed-stream-proof.json',
     JSON.stringify({ live, expired, attempted, heartbeat }),
@@ -1226,7 +1206,6 @@ try {
   );
   throw error;
 } finally {
-  await writeFile('/evidence/admission-phases.json', JSON.stringify(phaseEvents));
   if (server)
     await new Promise<void>((resolve, reject) =>
       server.close((error) => (error ? reject(error) : resolve())),

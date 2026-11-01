@@ -33,7 +33,9 @@ def verify(directory):
     retained = [int(row['boot_ns']) for row in records if row.get('marker') == 'stream-retained']
     assert retained and max(retained) - min(retained) >= 2_000_000_000
     assert max(retained) - deadline <= 2_000_000_000
-    assert proof['heartbeat']['attempts'] > 10 and int(proof['heartbeat']['boot_ns']) > deadline + 2_000_000_000
+    heartbeat = proof['heartbeat']
+    assert heartbeat['attempts'] > 10 and heartbeat['attempts'] > heartbeat['lateAttempts']
+    assert int(heartbeat['hostBootBeforeNs']) > deadline + 2_000_000_000
     return {'complete': True, 'cases': len(cases), 'kernel_late_acceptance': False,
             'receiver_tail_seconds': max(0, (max(retained) - deadline) / 1_000_000_000)}
 

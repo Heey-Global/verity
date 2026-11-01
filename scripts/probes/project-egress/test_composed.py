@@ -24,7 +24,7 @@ class ComposedProof(unittest.TestCase):
         proof = {'live': {'deadline_ns': '2000000000', 'accepted': 10},
                  'expired': {'accepted': 12, 'denied': 1, 'clocks': {'bootBeforeNs': '3000000000'}},
                  'attempted': {'accepted': 12, 'denied': 2, 'last_accepted_boot_ns': '1500000000', 'clocks': {'bootBeforeNs': '3300000000'}},
-                 'heartbeat': {'attempts': 30, 'boot_ns': '5000000000'}}
+                 'heartbeat': {'attempts': 30, 'boot_ns': '100', 'lateAttempts': 25, 'hostBootBeforeNs': '4100000000'}}
         (root / 'composed-result.json').write_text(json.dumps({'complete': True, 'cases': cases}))
         (root / 'composed-stream-proof.json').write_text(json.dumps(proof))
         (root / 'composed-receiver.txt').write_text('\n'.join(map(json.dumps, records)))
@@ -37,7 +37,7 @@ class ComposedProof(unittest.TestCase):
             self.assertEqual(composed.verify(root)['cases'], 12)
 
     def test_rejects_missing_controls_unauthorized_receipts_and_late_kernel_acceptance(self):
-        for mutation in ['missing-positive', 'unexpected-receipt', 'late-kernel', 'no-attempts', 'late-receipt', 'missing-case']:
+        for mutation in ['missing-positive', 'unexpected-receipt', 'late-kernel', 'no-attempts', 'late-receipt', 'missing-case', 'frozen-heartbeat', 'early-host-barrier']:
             with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 proof, records = self.fixture(root)
@@ -51,6 +51,10 @@ class ComposedProof(unittest.TestCase):
                     proof['attempted']['denied'] = proof['expired']['denied']
                 elif mutation == 'late-receipt':
                     records[-1]['boot_ns'] = '5000000000'
+                elif mutation == 'frozen-heartbeat':
+                    proof['heartbeat']['lateAttempts'] = proof['heartbeat']['attempts']
+                elif mutation == 'early-host-barrier':
+                    proof['heartbeat']['hostBootBeforeNs'] = '3999999999'
                 else:
                     report = json.loads((root / 'composed-result.json').read_text())
                     report['cases'].pop()
