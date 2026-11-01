@@ -1,3 +1,4 @@
+import { parseOomScoreAdj } from '../sandbox-memory-policy.js';
 import { normalizeSecurityOptions } from '../docker-security-options.js';
 import { readFile } from 'node:fs/promises';
 import type { ContainerInspect, ContainerSpec, DockerClient } from '../docker.js';
@@ -709,6 +710,10 @@ function containerSpecFrom(spec: ServerDeploymentSpec, env: string[]): Container
     // A spec sealed before the field existed carries no value, and the fallback is
     // exactly what Compose states, so an old spec and a new one build the same
     // container.
+    oomScoreAdj:
+      parseOomScoreAdj(
+        env.find((entry) => entry.startsWith('VERITY_SERVER_OOM_SCORE_ADJ='))?.split('=')[1],
+      ) ?? -250,
     memoryBytes: resources.memoryBytes,
     // Set, not omitted: Docker's default is twice the memory limit, so leaving it
     // out would quietly grant the Server swap that Compose's matching

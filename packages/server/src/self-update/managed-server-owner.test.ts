@@ -284,6 +284,7 @@ describe('managed Server host limits', () => {
     // container is still built with what Compose gave the `verity` service.
     expect(Object.hasOwn(spec, 'resources')).toBe(false);
     expect(await containerSpec(spec)).toMatchObject({
+      oomScoreAdj: -250,
       memoryBytes: 4 * 1024 ** 3,
       memorySwapBytes: 4 * 1024 ** 3,
       nanoCpus: 4_000_000_000,
@@ -315,6 +316,22 @@ describe('managed Server host limits', () => {
     nanoCpus: 4_000_000_000,
     pidsLimit: 512,
     ...overrides,
+  });
+
+  it('resolves an explicit OOM priority from sealed environment sources', async () => {
+    const spec = sealed(undefined, [
+      {
+        name: 'VERITY_SERVER_OOM_SCORE_ADJ',
+        source: { kind: 'env', name: 'VERITY_SERVER_OOM_SCORE_ADJ' },
+      },
+    ]);
+    expect(
+      await managedServerContainerSpec(
+        spec,
+        { ...runtimeOptions('', docker()).environment, VERITY_SERVER_OOM_SCORE_ADJ: '-100' },
+        async () => 'secret',
+      ),
+    ).toMatchObject({ oomScoreAdj: -100 });
   });
 
   it('accepts a candidate whose ceilings are the sealed ones', async () => {

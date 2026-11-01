@@ -170,6 +170,7 @@ describe('victim selection', () => {
       rssBytes: 950 * MIB,
       name: 'node',
       startTime: '6102',
+      commandLine: '',
     });
   });
 
@@ -211,15 +212,14 @@ describe('victim selection', () => {
     });
   });
 
-  it('kills the agent CLI only when it, not a command, holds the memory, and never the adapter', () => {
+  it('prefers a substantial command even when the CLI owns most memory, and never kills the adapter', () => {
     const files = sandbox();
     // A 3 GiB CLI over a 2.3 GiB command: the command is less than half of the
-    // CLI's tree, so killing it would leave the bulk. The CLI goes, and its whole
-    // tree with it — one session lost rather than the container.
+    // CLI's tree, but killing that command first gives the agent a chance to recover.
     files['/proc/5867/status'] = status('claude', 5574, 1000, 3 * GIB);
     expect(
       chooseVictim(listProcesses(guestReader(files), listPids(files)), { agentUid: 1000 }),
-    ).toMatchObject({ pid: 5867, tier: 'session' });
+    ).toMatchObject({ pid: 6000, tier: 'command' });
     // The adapter the broker started is the session's anchor: never a candidate,
     // however large. Its child, the CLI, still is.
     files['/proc/5867/status'] = status('claude', 5574, 1000, 500 * MIB);
@@ -227,6 +227,62 @@ describe('victim selection', () => {
     expect(
       chooseVictim(listProcesses(guestReader(files), listPids(files)), { agentUid: 1000 })?.pid,
     ).toBe(6000);
+  });
+
+  it('recognizes nested ACP agent executables despite truncated proc names', () => {
+    const files = sandbox();
+    files['/proc/5867/status'] = status('codex-acp', 5574, 1000, 4 * GIB);
+    files['/proc/5867/cmdline'] = '/usr/bin/codex-acp\0';
+    files['/proc/5990/status'] = status('node', 5867, 1000, 100 * MIB);
+    files['/proc/5990/cmdline'] = 'node\0/opt/node_modules/@anthropic-ai/claude-code/cli.js\0';
+    files['/proc/6000/status'] = status('bash', 5990, 1000, 5 * MIB);
+    expect(
+      chooseVictim(listProcesses(guestReader(files), listPids(files)), {
+        agentUid: 1000,
+        minimumSessionRssBytes: GIB,
+      }),
+    ).toMatchObject({ pid: 6000, tier: 'command' });
+  });
+
+  it('prefers another session command over a larger runaway CLI', () => {
+    const files = sandbox();
+    for (const pid of [6000, 6100, 6101, 6102]) delete files[`/proc/${pid}/status`];
+    files['/proc/5867/status'] = status('codex', 5574, 1000, 4 * GIB);
+    expect(
+      chooseVictim(listProcesses(guestReader(files), listPids(files)), {
+        agentUid: 1000,
+        minimumSessionRssBytes: GIB,
+      }),
+    ).toMatchObject({ pid: 7000, tier: 'detached' });
+  });
+
+  it('announces a fenced agent eviction and leaves command kills unannounced', () => {
+    const files = sandbox();
+    for (const pid of [6000, 6100, 6101, 6102, 7000]) delete files[`/proc/${pid}/status`];
+    files['/proc/5867/status'] = status('codex', 5574, 1000, 4 * GIB);
+    files['/sys/fs/cgroup/memory.max'] = String(6 * GIB);
+    files['/sys/fs/cgroup/memory.current'] = String(5.5 * GIB);
+    const notifyMemoryKill = vi.fn();
+    const kill = vi.fn();
+    const guard = createMemoryGuard({
+      readFile: guestReader(files),
+      listPids: listPids(files),
+      notifyMemoryKill,
+      kill,
+    });
+    expect(guard.tick().outcome).toBe('kill');
+    expect(notifyMemoryKill).toHaveBeenCalledExactlyOnceWith(5867);
+    const snapshot = sandbox();
+    snapshot['/sys/fs/cgroup/memory.max'] = String(6 * GIB);
+    snapshot['/sys/fs/cgroup/memory.current'] = String(5.5 * GIB);
+    notifyMemoryKill.mockClear();
+    createMemoryGuard({
+      readFile: guestReader(snapshot),
+      listPids: listPids(snapshot),
+      notifyMemoryKill,
+      kill,
+    }).tick();
+    expect(notifyMemoryKill).not.toHaveBeenCalled();
   });
 
   it('never takes a process started by docker exec, only what it started', () => {

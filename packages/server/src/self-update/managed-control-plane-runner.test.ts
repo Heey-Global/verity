@@ -267,6 +267,7 @@ describe('managed control-plane Runner ownership', () => {
         // Omitting it would default to twice the limit, so taking ownership from
         // Compose — whose `memswap_limit` matched its `mem_limit` — would
         // silently hand the Runner a swap allowance Compose denied it.
+        oomScoreAdj: -250,
         memoryBytes: 4 * 1024 * 1024 * 1024,
         memorySwapBytes: 4 * 1024 * 1024 * 1024,
         env: expect.arrayContaining([
@@ -276,6 +277,19 @@ describe('managed control-plane Runner ownership', () => {
       }),
     );
     expect(docker.startContainer).toHaveBeenCalledWith('created');
+  });
+
+  it('uses the configured control-plane OOM priority on creation', async () => {
+    const docker = client();
+    await reconcileManagedControlPlaneRunner({
+      managedRoot: await authority(),
+      docker,
+      environment: { ...environment, VERITY_CONTROL_PLANE_RUNNER_OOM_SCORE_ADJ: '-100' },
+      ...immediate,
+    });
+    expect(docker.createContainer).toHaveBeenCalledWith(
+      expect.objectContaining({ name: MANAGED_CONTROL_PLANE_RUNNER_NAME, oomScoreAdj: -100 }),
+    );
   });
 
   it('retires the stale Compose companion before starting the managed one', async () => {
