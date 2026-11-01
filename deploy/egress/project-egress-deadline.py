@@ -144,6 +144,10 @@ def program_identity(root):
     info = ProgramInfo()
     try:
         bpf(15, InfoAttr(fd, ctypes.sizeof(info), ctypes.addressof(info)))
+        # Map info has a colliding numeric prefix; require a program descriptor too.
+        fields = dict(line.split(':', 1) for line in Path('/proc/self/fdinfo/' + str(fd)).read_text().splitlines() if ':' in line)
+        if fields.get('prog_type', '').strip() != str(info.type) or fields.get('prog_id', '').strip() != str(info.id):
+            raise ValueError('Deadline pin is not the inspected program')
         if info.type != 3 or info.id == 0:  # BPF_PROG_TYPE_SCHED_CLS
             raise ValueError('Deadline program type changed')
         return {'id': info.id, 'type': 'sched_cls'}

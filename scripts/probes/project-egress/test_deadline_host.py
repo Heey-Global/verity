@@ -522,6 +522,9 @@ class DockerInspectionTests(unittest.TestCase):
 
 
 class ProgramIdentityTests(unittest.TestCase):
+    def setUp(self):
+        self.enterContext(patch.object(Path, 'read_text', return_value='prog_type: 3\nprog_id: 42\n'))
+
     def inspect(self, kind=3, identity=42, fail=False):
         def syscall(command, attr):
             if command == 7:
@@ -545,10 +548,16 @@ class ProgramIdentityTests(unittest.TestCase):
 
     def test_wrong_type_missing_identity_and_failed_inspection_fail_closed(self):
         for kind, identity, fail in [(6, 42, False), (3, 0, False), (3, 42, True)]:
-            with self.subTest(kind=kind, identity=identity, fail=fail), patch.object(host, 'bpf', side_effect=self.inspect(kind, identity, fail)), patch.object(host.os, 'close') as close:
+            with self.subTest(kind=kind, identity=identity, fail=fail), patch.object(host, 'bpf', side_effect=self.inspect(kind, identity, fail)), patch.object(Path, 'read_text', return_value=f'prog_type: {kind}\nprog_id: {identity}\n'), patch.object(host.os, 'close') as close:
                 with self.assertRaises((ValueError, OSError)):
                     host.program_identity(Path('/pins'))
                 close.assert_called_once_with(17)
+
+    def test_map_descriptor_with_colliding_prefix_is_rejected(self):
+        with patch.object(host, 'bpf', side_effect=self.inspect()), patch.object(Path, 'read_text', return_value='map_type: 3\nmap_id: 42\n'), patch.object(host.os, 'close') as close:
+            with self.assertRaisesRegex(ValueError, 'not the inspected program'):
+                host.program_identity(Path('/pins'))
+            close.assert_called_once_with(17)
 
     def test_attestation_rejects_replaced_pinned_program(self):
         with patch.object(host, 'run', return_value='{"nftables":[]}'), patch.object(host, 'program_identity', return_value={'id': 99, 'type': 'sched_cls'}):
