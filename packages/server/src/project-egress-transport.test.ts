@@ -192,3 +192,18 @@ it('passes only the bound routed source from bridge input to the later inet fenc
   expect(directCorridorRules(binding, transport, direct, 'forward', 'bridge')).toBe('');
   expect(directCorridorRules(binding, transport, undefined, 'input', 'bridge')).toBe('');
 });
+
+it('reads both transport endpoints before waiting for either namespace', async () => {
+  const f = fixture();
+  const original = f.io.docker.getMockImplementation()!;
+  let release!: () => void;
+  const waiting = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  f.io.docker.mockImplementation(async (...args: string[]) => {
+    if (args[0] === 'inspect' && args[1] === ids.sandbox) await waiting;
+    if (args[0] === 'inspect' && args[1] === ids.relay) release();
+    return original(...args);
+  });
+  await expect(inspectEgressTransport(binding, ids, true, f.io)).resolves.toBeDefined();
+});

@@ -421,3 +421,37 @@ class RelayMapWriterTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class ConcurrentInspectionTests(unittest.TestCase):
+    def test_read_commands_overlap_without_reordering_results(self):
+        from threading import Barrier
+        started = Barrier(2)
+        def read(command):
+            started.wait(timeout=2)
+            return command
+        with patch.object(host, 'run', side_effect=read):
+            self.assertEqual(host.read_commands(('first',), ('second',)), ['first', 'second'])
+
+    def test_read_failure_joins_other_reads_before_returning(self):
+        from threading import Event
+        from concurrent.futures import ThreadPoolExecutor
+        started, release, finished = Event(), Event(), Event()
+        def read(command):
+            if command == 'fail':
+                self.assertTrue(started.wait(timeout=2))
+                raise ValueError('read failed')
+            started.set()
+            self.assertTrue(release.wait(timeout=2))
+            finished.set()
+            return command
+        with patch.object(host, 'run', side_effect=read), ThreadPoolExecutor(max_workers=1) as runner:
+            result = runner.submit(host.read_commands, ('fail',), ('pending',))
+            try:
+                self.assertTrue(started.wait(timeout=2))
+                self.assertFalse(result.done())
+            finally:
+                release.set()
+            with self.assertRaisesRegex(ValueError, 'read failed'):
+                result.result(timeout=2)
+            self.assertTrue(finished.is_set())

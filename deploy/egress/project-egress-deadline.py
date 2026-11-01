@@ -4,6 +4,7 @@ No command, program path, namespace path or interface supplied by a Sandbox is
 accepted. The trusted host adapter supplies its already registered binding.
 """
 import ctypes
+from concurrent.futures import ThreadPoolExecutor
 import fcntl
 import hashlib
 import ipaddress
@@ -145,6 +146,14 @@ def write_relay(root, policy=None):
         os.close(fd)
 
 
+def read_commands(*commands):
+    # Read-only daemon/kernel snapshots only. Join every read before mutation or
+    # propagating a failure; never move deadline/map writes into this executor.
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(run, *command) for command in commands]
+        return [future.result() for future in futures]
+
+
 def relay_policy(binding, peer, registration):
     if (not isinstance(registration, dict)
             or set(registration) != {'containerId', 'endpointId', 'codex'}
@@ -153,11 +162,13 @@ def relay_policy(binding, peer, registration):
                    for k in ('containerId', 'endpointId'))
             or registration['containerId'] == binding['containerId']):
         raise ValueError('Invalid registered relay identity')
-    network = json.loads(run('/usr/bin/docker', 'network', 'inspect', binding['networkId']))[0]
+    replies = read_commands(
+        ('/usr/bin/docker', 'network', 'inspect', binding['networkId']),
+        ('/usr/bin/docker', 'container', 'inspect', binding['containerId']),
+        ('/usr/bin/docker', 'container', 'inspect', registration['containerId']))
+    network, sandbox, relay = [json.loads(reply)[0] for reply in replies]
     if set(network['Containers']) != {binding['containerId'], registration['containerId']}:
         raise ValueError('Relay requires exactly the registered project pair')
-    sandbox = json.loads(run('/usr/bin/docker', 'container', 'inspect', binding['containerId']))[0]
-    relay = json.loads(run('/usr/bin/docker', 'container', 'inspect', registration['containerId']))[0]
     sandbox_net = list(sandbox['NetworkSettings']['Networks'].values())[0]
     relay_nets = list(relay['NetworkSettings']['Networks'].values())
     if len(relay_nets) != 1:
@@ -195,8 +206,10 @@ def relay_policy(binding, peer, registration):
 
 
 def endpoint(binding):
-    container = json.loads(run('/usr/bin/docker', 'container', 'inspect', binding['containerId']))[0]
-    network = json.loads(run('/usr/bin/docker', 'network', 'inspect', binding['networkId']))[0]
+    replies = read_commands(
+        ('/usr/bin/docker', 'container', 'inspect', binding['containerId']),
+        ('/usr/bin/docker', 'network', 'inspect', binding['networkId']))
+    container, network = [json.loads(reply)[0] for reply in replies]
     entries = list(container['NetworkSettings']['Networks'].values())
     if (container['Id'] != binding['containerId'] or network['Id'] != binding['networkId']
             or network['Driver'] != 'bridge' or not container['State']['Running'] or len(entries) != 1
@@ -250,17 +263,21 @@ def attest_filters(filters, identity):
 
 
 def attest(root, peer, identity):
-    ruleset = json.loads(run('/usr/sbin/nft', '-j', 'list', 'ruleset'))
+    replies = read_commands(
+        ('/usr/sbin/nft', '-j', 'list', 'ruleset'),
+        ('/usr/sbin/bpftool', '-j', 'prog', 'show', 'pinned', str(root / 'guard')),
+        *[('/sbin/tc', '-j', 'filter', 'show', 'dev', peer['device'], direction)
+          for direction in ('ingress', 'egress')])
+    ruleset = json.loads(replies[0])
     if any('flowtable' in entry for entry in ruleset['nftables']):
         raise ValueError('Flow offload is unsupported by packet deadline enforcement')
-    program = json.loads(run('/usr/sbin/bpftool', '-j', 'prog', 'show', 'pinned', str(root / 'guard')))
+    program = json.loads(replies[1])
     if isinstance(program, list):
         program = program[0]
     if program['id'] != identity or program['type'] != 'sched_cls':
         raise ValueError('Deadline program identity changed')
-    for direction in ('ingress', 'egress'):
-        filters = json.loads(run('/sbin/tc', '-j', 'filter', 'show', 'dev', peer['device'], direction))
-        attest_filters(filters, identity)
+    for reply in replies[2:]:
+        attest_filters(json.loads(reply), identity)
 
 
 def save(path, value):
