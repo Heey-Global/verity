@@ -151,3 +151,13 @@ function repoIdentity(
       : { host: { provider: host.provider, baseUrl: host.baseUrl } }),
   };
 }
+
+/** Keep unrelated selection changes outside a project's memoized subtree. */
+export function projectGroupSessionId(
+  group: { sessions: readonly Pick<SessionSummary, 'sessionId'>[] },
+  sessionId: string | null | undefined,
+): string | null {
+  return sessionId && group.sessions.some((session) => session.sessionId === sessionId)
+    ? sessionId
+    : null;
+}
