@@ -79,9 +79,11 @@ let relayPolicy: EgressRelayPolicy | undefined;
 const starts: string[] = [];
 const composedTargets = ['11.77.106.2', '2001:4860:feed:106::2'];
 let directEnabled = true;
+let deadlineHelper: ReturnType<typeof hostProjectDeadlineEnforcer>;
 function createEnforcement() {
+  deadlineHelper = hostProjectDeadlineEnforcer();
   return createProjectEgressHostEnforcement({
-    deadline: hostProjectDeadlineEnforcer(),
+    deadline: deadlineHelper,
     sponsor: () => 'fixture-sponsor',
     directAuthority: () => true,
     store: {
@@ -1049,7 +1051,7 @@ try {
     '/evidence/composed-stream-proof.json',
     JSON.stringify({ live, expired, attempted, heartbeat }),
   );
-  await writeFile('/evidence/composed-receiver.txt', await docker('logs', 'veh-direct'));
+
   await writeFile(
     '/evidence/composed-result.json',
     JSON.stringify({ complete: true, cases: directCases }),
@@ -1057,11 +1059,57 @@ try {
   results.push(
     'actual startup/TC/nft composition admits only current direct grants and retains the relay after direct expiry/revoke',
   );
+  // Kill the actual resident helper while a separate Server continues requesting renewals.
+  const stopAfterHelperFailure = await beginRenewal();
+  const children = (await readFile(`/proc/self/task/${process.pid}/children`, 'utf8'))
+    .trim()
+    .split(/\s+/u);
+  const helpers: { pid: number; command: string }[] = [];
+  for (const pid of children) {
+    const command = await readFile(`/proc/${pid}/cmdline`, 'utf8').catch(() => '');
+    if (command.includes('/opt/verity-egress/project-egress-deadline.py\0--serve'))
+      helpers.push({ pid: Number(pid), command });
+  }
+  assert.equal(helpers.length, 1, 'Exactly one actual resident deadline helper must be present');
+  const helperBeforeKill = await kernel();
+  process.kill(helpers[0]!.pid, 'SIGKILL');
+  const helperLive = await kernel();
+  const helperAfterKillState = await readFile(`/proc/${helpers[0]!.pid}/stat`, 'utf8')
+    .then((value) => value.split(') ')[1]!.split(' ')[0]!)
+    .catch(() => 'gone');
+  assert.ok(['gone', 'Z'].includes(helperAfterKillState));
+  await delay(1100);
+  const helperExpired = await kernel();
+  await delay(300);
+  const helperAttempted = await kernel();
+  await stopAfterHelperFailure();
+  assert.ok(BigInt(helperExpired.clocks.bootBeforeNs) >= BigInt(helperLive.deadline_ns));
+  assert.ok(
+    BigInt(helperAttempted.clocks.bootBeforeNs) - BigInt(helperBeforeKill.clocks.bootBeforeNs) <=
+      2_000_000_000n,
+  );
+  assert.equal(helperExpired.accepted, helperAttempted.accepted);
+  assert.ok(helperAttempted.denied > helperExpired.denied);
+  assert.ok(BigInt(helperAttempted.last_accepted_boot_ns) < BigInt(helperLive.deadline_ns));
+  await directProbe('helper-expired', false);
+  await writeFile(
+    '/evidence/composed-helper-proof.json',
+    JSON.stringify({
+      helper: helpers[0],
+      beforeKill: helperBeforeKill,
+      signal: 'SIGKILL',
+      afterKillState: helperAfterKillState,
+      live: helperLive,
+      expired: helperExpired,
+      attempted: helperAttempted,
+    }),
+  );
   // Reconstruct the host controller from its real fsynced state while traffic continues.
   await new Promise<void>((resolve, reject) =>
     server!.close((error) => (error ? reject(error) : resolve())),
   );
   server = undefined;
+  deadlineHelper!.close?.();
   dependencies.enforcement = createEnforcement();
   const recovered = new ProbeHost(await store.load(), dependencies);
   await revokeAndMeasure(() => recovered.restore(), 'controller-restore');
@@ -1072,6 +1120,13 @@ try {
   assert.deepEqual(await lifecycle.current(binding.projectId), binding);
   assert.ok((await client('negative', relayAddress, 8080)).includes('transport-denied'));
   await verifyNoRevival('controller-restore');
+  await directProbe('fresh-after-helper', true);
+  await lifecycle.revokeDirect(identity);
+  await writeFile('/evidence/composed-receiver.txt', await docker('logs', 'veh-direct'));
+  await writeFile(
+    '/evidence/composed-result.json',
+    JSON.stringify({ complete: true, cases: directCases }),
+  );
   results.push('registry recovery denies old transports and requires explicit revalidation');
   const directBinding = (
     await inspectEgressHostDirect(binding, { sandbox: containerId, relay: relayId })

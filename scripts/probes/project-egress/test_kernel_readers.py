@@ -34,6 +34,7 @@ class RouteReaders(unittest.TestCase):
         data = message(16, b'link') + message(3, bytes(4))
         self.assertEqual(host.route_frames(data, 7, 9, 16), ([b'link'], True))
         self.assertEqual(host.route_frames(message(16, b'link'), 7, 9, 16), ([b'link'], False))
+        self.assertEqual(host.route_frames(message(3, bytes(8)), 7, 9, 16), ([], True))
 
     def test_rejects_interrupted_truncated_foreign_or_failed_messages(self):
         valid = message(16, b'link')

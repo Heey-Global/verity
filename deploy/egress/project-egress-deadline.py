@@ -183,7 +183,7 @@ def route_frames(data, sequence, port, expected):
             raise ValueError('Invalid, interrupted or foreign route message')
         body = data[offset + 16:offset + size]
         if kind == 3:
-            if body not in (b'', bytes(4)):
+            if body not in (b'', bytes(4), bytes(8)):
                 raise ValueError('Failed route multipart dump')
             done = True
         elif kind != expected or not flags & 2:

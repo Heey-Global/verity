@@ -12,7 +12,8 @@ def verify(directory):
     expected = {f'{phase}-{family}': allowed
                 for phase, allowed in [('before-admission', False), ('admitted', True),
                                        ('lease-expired', False), ('fresh-after-expiry', True),
-                                       ('direct-revoked', False), ('authority-empty', False)]
+                                       ('direct-revoked', False), ('authority-empty', False),
+                                       ('helper-expired', False), ('fresh-after-helper', True)]
                 for family in range(2)}
     cases = report['cases']
     assert report['complete'] is True and len(cases) == len(expected)
@@ -34,6 +35,18 @@ def verify(directory):
     assert retained and max(retained) - min(retained) >= 2_000_000_000
     assert max(retained) - deadline <= 2_000_000_000
     assert proof['heartbeat']['attempts'] > 10 and int(proof['heartbeat']['boot_ns']) > deadline + 2_000_000_000
+    helper = json.loads((root / 'composed-helper-proof.json').read_text())
+    assert helper['afterKillState'] in ('gone', 'Z')
+    assert helper['signal'] == 'SIGKILL' and helper['helper']['pid'] > 1
+    assert '/opt/verity-egress/project-egress-deadline.py\0--serve' in helper['helper']['command']
+    live, expired, attempted = (helper[k] for k in ('live', 'expired', 'attempted'))
+    deadline = int(live['deadline_ns'])
+    assert live['accepted'] > 0 and deadline > int(live['clocks']['bootBeforeNs'])
+    assert int(expired['clocks']['bootBeforeNs']) >= deadline
+    assert int(attempted['clocks']['bootBeforeNs']) > int(expired['clocks']['bootBeforeNs'])
+    assert int(attempted['clocks']['bootBeforeNs']) - int(helper['beforeKill']['clocks']['bootBeforeNs']) <= 2_000_000_000
+    assert attempted['accepted'] == expired['accepted'] and attempted['denied'] > expired['denied']
+    assert int(attempted['last_accepted_boot_ns']) < deadline
     return {'complete': True, 'cases': len(cases), 'kernel_late_acceptance': False,
             'receiver_tail_seconds': max(0, (max(retained) - deadline) / 1_000_000_000)}
 
