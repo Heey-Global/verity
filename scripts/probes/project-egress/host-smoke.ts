@@ -1167,21 +1167,13 @@ try {
     .then((value) => value.split(') ')[1]!.split(' ')[0]!)
     .catch(() => 'gone');
   assert.ok(['gone', 'Z'].includes(helperAfterKillState));
-  await delay(1100);
+  // Sample against this host's actual captured deadline, leaving observation time
+  // inside the unchanged two-second bound rather than adding fixed sleeps to it.
+  const helperRemainingNs = BigInt(helperLive.deadline_ns) - BigInt(helperLive.clocks.bootBeforeNs);
+  await delay(Math.max(0, Number(helperRemainingNs) / 1_000_000) + 50);
   const helperExpired = await kernel(true);
-  await delay(300);
+  await delay(200);
   const helperAttempted = await kernel(true);
-  await stopAfterHelperFailure();
-  assert.ok(BigInt(helperExpired.clocks.bootBeforeNs) >= BigInt(helperLive.deadline_ns));
-  assert.ok(
-    BigInt(helperAttempted.clocks.bootBeforeNs) - BigInt(helperBeforeKill.clocks.bootBeforeNs) <=
-      2_000_000_000n,
-  );
-  assert.equal(helperExpired.accepted, helperAttempted.accepted);
-  assert.ok(helperAttempted.containers?.every((row) => row.State.Running === false));
-  assert.ok(BigInt(helperAttempted.last_accepted_boot_ns) < BigInt(helperLive.deadline_ns));
-  for (const family of [0, 1])
-    directCases.push({ phase: 'helper-expired', family, expected: false, observed: false });
   await writeFile(
     '/evidence/composed-helper-proof.json',
     JSON.stringify({
@@ -1194,6 +1186,17 @@ try {
       attempted: helperAttempted,
     }),
   );
+  await stopAfterHelperFailure();
+  assert.ok(BigInt(helperExpired.clocks.bootBeforeNs) >= BigInt(helperLive.deadline_ns));
+  assert.ok(
+    BigInt(helperAttempted.clocks.bootBeforeNs) - BigInt(helperBeforeKill.clocks.bootBeforeNs) <=
+      2_000_000_000n,
+  );
+  assert.equal(helperExpired.accepted, helperAttempted.accepted);
+  assert.ok(helperAttempted.containers?.every((row) => row.State.Running === false));
+  assert.ok(BigInt(helperAttempted.last_accepted_boot_ns) < BigInt(helperLive.deadline_ns));
+  for (const family of [0, 1])
+    directCases.push({ phase: 'helper-expired', family, expected: false, observed: false });
   // Reconstruct the host controller from its real fsynced state while traffic continues.
   await new Promise<void>((resolve, reject) =>
     server!.close((error) => (error ? reject(error) : resolve())),
