@@ -53,6 +53,16 @@ def verify_removed_fences(path, started_ns):
 
 
 
+def remove_fences_mutation(vm, guest):
+    # The in-flight control readmits while the kernel fences are intact and removes
+    # them itself. Readmitting an already tampered generation is refused and contained
+    # by the TC attestation, so removal must not precede it.
+    started_ns = time.time_ns()
+    inflight = json.loads(vm.ssh(guest + 'inflight removed-fences', timeout=20))
+    vm.ssh(guest + 'external')
+    return started_ns, inflight
+
+
 def verify_boot_denial(ruleset):
     # Old per-generation label rules may remain, but neither bootstrap chain may
     # contain a bypass before explicit lifecycle recovery.
@@ -310,10 +320,7 @@ def main():
         verify_receipts(protected, start_ns, end_ns)
         # Removing the real kernel fences must turn independent receiver silence
         # into a failed verdict; a synthetic verifier test is insufficient here.
-        mutation_started_ns = time.time_ns()
-        vm.ssh(guest + 'remove-fences')
-        vm.ssh(guest + 'external')
-        mutation_inflight = json.loads(vm.ssh(guest + 'inflight removed-fences', timeout=20))
+        mutation_started_ns, mutation_inflight = remove_fences_mutation(vm, guest)
         (evidence / 'mutation-inflight.json').write_text(json.dumps(mutation_inflight))
         time.sleep(1)
         verify_removed_fences(receipts, mutation_started_ns)
