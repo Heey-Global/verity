@@ -5040,3 +5040,19 @@ migrations['0178_qa_observation_diagnostics'] = {
     await sql`alter table repair_mandates drop column observation_error`.execute(db);
   },
 };
+
+migrations['0179_qa_manual_repairs'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`create table qa_manual_repairs (
+      id text primary key, project_id text not null references projects(id) on delete cascade,
+      source_session_id text not null, user_id text not null, target_session_id text not null,
+      number integer not null, branch text not null, revision text not null, requires_card boolean not null default false,
+      qa_revision integer not null, mandate_revision integer not null,
+      expires_at timestamptz not null default now() + interval '1 hour',
+      dispatch_id text unique, reason text
+    )`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table qa_manual_repairs`.execute(db);
+  },
+};

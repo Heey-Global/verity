@@ -1,3 +1,4 @@
+import { createQARepairTool, trustedQARepairInstruction } from './qa-repair-tool.js';
 import { saveQAReport } from './qa-report.js';
 import { executeQAAnalysis } from './qa-analysis-tool.js';
 import {
@@ -172,6 +173,84 @@ export function registerServerMcpRoutes({
   // turn-bound prompt (D2). The `acp` channel is stated by the caller rather than read off a
   // live turn, because a gateway call routinely arrives with none (ADR 0014 D3).
   const controlHandoffSessionCreates = new Map<string, Promise<{ sessionId: string }>>();
+  const qaChatConsents = new WeakSet<object>();
+  const qaRepair = createQARepairTool({
+    store: deps.eventStore,
+    permitted: canExecuteAs,
+    busy: (id) => conductor.isBusy(id),
+    branch: async (session) => {
+      if (!(await sessionResumable(session))) return undefined;
+      const branches = await branchesForSession(session);
+      if (!branches) return undefined;
+      try {
+        return {
+          branch: await branches.current(session.worktree),
+          dirty: await branches.isDirty(session.worktree),
+        };
+      } catch {
+        return undefined;
+      }
+    },
+    inspect: async (projectId, number) => {
+      const project = await deps.eventStore.getProject(projectId);
+      if (!project || !deps.repairDiscovery) return undefined;
+      deps.invalidateProjectPrStatus?.(projectId);
+      let pageNumber: number | undefined = 1;
+      for (let pages = 0; pageNumber !== undefined && pages < 10; pages++) {
+        const { page, statuses } = await deps.repairDiscovery(project, pageNumber);
+        const pull = page.pulls.find((p) => p.number === number);
+        const observed = statuses.find((p) => p.status.number === number);
+        if (
+          pull &&
+          observed &&
+          pull.sha === observed.status.headSha &&
+          pull.branch === observed.branch
+        )
+          return { ...observed, fork: pull.fork };
+        pageNumber = page.nextPage ?? undefined;
+      }
+      return undefined;
+    },
+    dispatch: async (sessionId, prompt, dispatchId, userId, validate) => {
+      const result = await conductor.dispatchTurnWhenIdle(
+        sessionId,
+        prompt,
+        {},
+        {
+          durableDispatchId: dispatchId,
+          initiatedBy: { userId },
+          displayPrompt: prompt,
+          validateSession: validate,
+        },
+      );
+      return result.accepted;
+    },
+  });
+  let repairTimer: ReturnType<typeof setInterval> | undefined;
+  let repairSweep: Promise<void> | undefined;
+  app.addHook('onReady', () => {
+    repairTimer = setInterval(() => {
+      repairSweep ??= qaRepair
+        .sweep()
+        .catch((error) => app.log.warn({ error }, 'manual QA repair reconciliation failed'))
+        .finally(() => {
+          repairSweep = undefined;
+        });
+    }, 10_000);
+    repairTimer.unref();
+  });
+  app.addHook('onClose', async () => {
+    if (repairTimer) clearInterval(repairTimer);
+    await repairSweep;
+  });
+  const repairCaller = async (sessionId: string, turnId: string) => {
+    const user = await runningTurnInitiator(sessionId, turnId);
+    if (!user)
+      throw new ControlPlaneSessionAuthorityError(
+        'A repair requires an authenticated initiating user.',
+      );
+    return { sessionId, userId: user.userId };
+  };
 
   let decidePendingLinkedMessage:
     | ((
@@ -1026,6 +1105,28 @@ export function registerServerMcpRoutes({
         await controlPlaneSessionTools.authorizeCaller({ projectId, sessionId });
       },
       authorizationSnapshot: async ({ sessionId, turnId, projectId, toolName, request }) => {
+        if (
+          toolName === 'verity_qa_analysis' &&
+          (request as { action: string }).action === 'request_repair'
+        ) {
+          const r = request as { projectId: string; proposalId: string };
+          const p = await qaRepair.proposal(
+            await repairCaller(sessionId, turnId),
+            r.projectId,
+            r.proposalId,
+          );
+          return JSON.stringify({
+            proposalId: p.id,
+            projectId: p.project_id,
+            number: p.number,
+            revision: p.revision,
+            branch: p.branch,
+            sessionId: p.target_session_id,
+            qaRevision: p.qa_revision,
+            mandateRevision: p.mandate_revision,
+          });
+        }
+
         if (toolName === 'verity_http_request' || toolName === 'verity_secret_run') {
           const snapshot = await gatewayDeps.authorizationSnapshot?.({
             sessionId,
@@ -1084,6 +1185,19 @@ export function registerServerMcpRoutes({
         request,
         invocationId,
       }) => {
+        if (
+          toolName === 'verity_qa_analysis' &&
+          (request as { action: string }).action === 'request_repair'
+        ) {
+          const allowed = await trustedQARepairInstruction(
+            deps.eventStore,
+            sessionId,
+            turnId,
+            (request as { proposalId: string }).proposalId,
+          );
+          if (allowed) qaChatConsents.add(request as object);
+          return allowed;
+        }
         if (toolName === 'verity_vulnerabilities') {
           await vulnerabilityTool.authorize({ projectId, sessionId, turnId, request });
           return true;
@@ -1395,6 +1509,45 @@ export function registerServerMcpRoutes({
             documentViewForSession(session),
           );
         }
+        if (input.toolName === 'verity_qa_analysis') {
+          const r = input.request as {
+            action: string;
+            projectId: string;
+            number: number;
+            sessionId?: string;
+            proposalId: string;
+          };
+          if (r.action === 'resolve_repair')
+            return qaRepair.resolve(
+              await repairCaller(input.sessionId, input.turnId),
+              r.projectId,
+              r.number,
+              r.sessionId,
+            );
+          if (r.action === 'request_repair')
+            return qaRepair.request(
+              await repairCaller(input.sessionId, input.turnId),
+              r.projectId,
+              r.proposalId,
+              ...(qaChatConsents.has(input.request as object)
+                ? [
+                    () =>
+                      trustedQARepairInstruction(
+                        deps.eventStore,
+                        input.sessionId,
+                        input.turnId,
+                        r.proposalId,
+                      ),
+                  ]
+                : []),
+            );
+          if (r.action === 'repair_status')
+            return qaRepair.status(
+              await repairCaller(input.sessionId, input.turnId),
+              r.projectId,
+              r.proposalId,
+            );
+        }
         if (input.toolName === 'verity_qa_analysis')
           return executeQAAnalysis(
             {
@@ -1492,7 +1645,20 @@ export function registerServerMcpRoutes({
             sessionId,
             toolUseId: callId,
             toolName,
-            input: { ...input, ...(googleAccount ? { googleAccount } : {}), ...scheduling },
+            input: {
+              ...input,
+              ...(googleAccount ? { googleAccount } : {}),
+              ...scheduling,
+              ...(toolName === 'verity_qa_analysis' &&
+              (input as { action?: string }).action === 'request_repair' &&
+              authorizationSnapshot
+                ? {
+                    repair: JSON.parse(authorizationSnapshot) as Record<string, unknown>,
+                    scope:
+                      'One repair of this PR revision in this session. Does not enable future automatic repairs.',
+                  }
+                : {}),
+            },
             channel: 'acp',
             ...((toolName === 'verity_http_request' || toolName === 'verity_secret_run') &&
             authorizationSnapshot !== undefined

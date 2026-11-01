@@ -2644,3 +2644,71 @@ it('lets QA read authorized CI evidence through the gateway but refuses all othe
     ).toBe(true);
   });
 });
+
+it.each([false, true])(
+  'gates one-time QA repair requests on trusted instruction or a non-standing card (instruction=%s)',
+  async (explicit) => {
+    const h = build({ planningTools: true, allow: false });
+    await h.store.createProject({
+      id: 'p1',
+      kind: 'github',
+      owner: 'team',
+      repo: 'app',
+      cloneDir: 'team-app',
+      containerName: 'app',
+      state: 'active',
+    });
+    await h.store.createSession({
+      sessionId: 'qa',
+      projectId: 'p1',
+      worktree: '/tmp/qa',
+      model: 'claude',
+    });
+    await h.store.repairs.configureQA(true, 'u1');
+    await h.store.repairs.qaSession('qa');
+    await h.store.repairs.configure('p1', 'u1', 'monitor');
+    const id = crypto.randomUUID();
+    await h.store.repairs.proposeManualRepair({
+      id,
+      project_id: 'p1',
+      source_session_id: 'qa',
+      user_id: 'u1',
+      target_session_id: 'target',
+      number: 2120,
+      branch: 'fix/ci',
+      revision: 'sha',
+      qa_revision: 1,
+      mandate_revision: 1,
+      requires_card: false,
+    });
+    const row = await h.store.appendEvent('qa', {
+      t: 'prompt',
+      text: explicit ? 'fix PR #2120' : 'What failed?',
+      initiatedBy: { userId: 'u1' },
+    });
+    await h.store.markTurnRunning({ sessionId: 'qa', promptSeq: row.seq });
+    await h.store.bindTurnIdentity('qa', { turnId: 't1', startCommandId: 'start' });
+    const token = h.tokens.issue({ projectId: 'p1', sessionId: 'qa', turnId: 't1' });
+    await withListener(h, async (socketPath) => {
+      const reply = await postUnix(socketPath, `Bearer ${token}`, {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: {
+          name: 'verity_qa_analysis',
+          arguments: { action: 'request_repair', projectId: 'p1', proposalId: id },
+        },
+      });
+      // No discovery provider exists in this harness: authorized execution must still fail
+      // closed, while a request lacking chat consent must hit the card before execution.
+      expect(JSON.parse(reply.body)).toHaveProperty('result.isError', true);
+      expect(h.approvals).toHaveLength(explicit ? 0 : 1);
+      if (!explicit)
+        expect(h.approvals[0]).toMatchObject({
+          toolName: 'verity_qa_analysis',
+          allowStandingGrant: false,
+        });
+      expect((await h.store.repairs.manualRepair(id))?.dispatch_id).toBeNull();
+    });
+  },
+);
