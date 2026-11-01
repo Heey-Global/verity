@@ -15,12 +15,18 @@ PASSWORD = 'disposable-boot-proof-password'
 
 
 def run(*args):
-    try:
-        return subprocess.check_output(args, text=True, stderr=subprocess.STDOUT).strip()
-    except subprocess.CalledProcessError as error:
-        # Keep the refused command's own diagnosis in the outer SSH failure evidence.
-        print((error.output or '')[-4096:], file=sys.stderr)
-        raise
+    return subprocess.check_output(args, text=True, stderr=subprocess.STDOUT).strip()
+
+
+def report_failed_command(kind, error, trace):
+    # Only an uncaught failure reaches the SSH evidence: the outer side merges stderr
+    # into stdout, so expected, handled failures must never print here.
+    cause = error
+    while cause is not None and not isinstance(cause, subprocess.CalledProcessError):
+        cause = cause.__cause__ or cause.__context__
+    if cause is not None:
+        print((cause.output or '')[-4096:], file=sys.stderr)
+    sys.__excepthook__(kind, error, trace)
 
 
 def api(path, body=None, token=None, timeout=15):
@@ -162,8 +168,7 @@ def inflight(phase):
     wait(lambda: (directory / f'.boot-inflight-{phase}-ready').exists(), 5)
     if phase in ('denied', 'removed-fences'):
         run('env', 'PROJECT_EGRESS_DISPOSABLE=yes', '/usr/bin/node', '/opt/verity-fixture/boot-server.mjs', 'readmit')
-    if phase == 'removed-fences':
-        remove_fences()
+    removed = remove_fences() if phase == 'removed-fences' else False
     (directory / f'.boot-inflight-{phase}-finish').touch()
     result = wait(lambda: json.loads((directory / f'.boot-inflight-{phase}-result').read_text())
                   if (directory / f'.boot-inflight-{phase}-result').exists() else None, 5)
@@ -174,8 +179,8 @@ def inflight(phase):
     config = json.loads((ROOT / 'config.json').read_text())
     memory = Path(config['dataRoot'], 'knowledge', descriptor()['projectId'], 'overview.md').read_text()
     assert (f'boot-inflight-{phase}' in memory) == expected, 'Actual Server memory disagrees with in-flight verdict'
-    # The outer proof requires this before trusting its removed-fence receipt window.
-    print(json.dumps({**result, 'fencesRemoved': phase == 'removed-fences'}))
+    # Observed by remove_fences(); the outer proof requires it before its receipt window.
+    print(json.dumps({**result, 'fencesRemoved': removed}))
 
 
 def snapshot():
@@ -231,10 +236,18 @@ def remove_fences():
     for table in names:
         run('nft', 'delete', 'table', table['family'], table['name'])
     # Both layers must be removed for the destructive positive control.
+    devices = []
     for guard in packet:
         device = guard['raw']['state']['peer']['device']
         assert device and all(c.isalnum() or c in '_-.' for c in device)
         run('tc', 'qdisc', 'del', 'dev', device, 'clsact')
+        devices.append(device)
+    # Report the observed kernel state, not the requested mutation.
+    remaining = [entry['table']['name'] for entry in json.loads(run('nft', '--json', 'list', 'tables'))['nftables']
+                 if 'table' in entry and entry['table']['name'].startswith(('verity_egress_', 'verity_start_'))]
+    qdiscs = [q for device in devices for q in json.loads(run('tc', '-j', 'qdisc', 'show', 'dev', device))
+              if q.get('kind') == 'clsact']
+    return not remaining and not qdiscs and bool(devices)
 
 
 def faults():
@@ -282,6 +295,7 @@ def faults():
 
 
 if __name__ == '__main__':
+    sys.excepthook = report_failed_command
     operation = sys.argv[1]
     if operation == 'setup':
         setup()
