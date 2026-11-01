@@ -10,6 +10,7 @@ export interface QAAssignmentDeps {
   store: EventStore;
   permitted(this: void, userId: string, projectId: string): Promise<boolean>;
   busy(this: void, sessionId: string): boolean;
+  pendingPermissions(this: void, sessionId: string): readonly string[];
   target(this: void, session: SessionRecord, assignment?: QAAssignment): Promise<boolean>;
   create(
     this: void,
@@ -176,9 +177,34 @@ export function createQAAssignmentTool(deps: QAAssignmentDeps) {
         e.event.t === 'result' ||
         (e.event.t === 'status' && ['completed', 'crashed'].includes(e.event.state)),
     );
+    const pending = deps
+      .pendingPermissions(a.target_session_id)
+      .filter((id) => own.some((row) => row.event.t === 'permission' && row.event.id === id));
+    if (!terminal && pending.length) {
+      const evidence = JSON.stringify({ kind: 'permissions', ids: [...pending].sort() });
+      if (a.state !== 'waiting' || a.evidence !== evidence)
+        await store.change(
+          a.id,
+          a.version,
+          'waiting',
+          'The project session needs your approval. Open the linked session to decide.',
+          evidence,
+        );
+      return;
+    }
+    if (!terminal && a.state === 'waiting' && a.evidence.startsWith('{"kind":"permissions"')) {
+      await store.change(a.id, a.version, 'running', null);
+      return;
+    }
     // Never infer success from process completion or a worker's self-report.
     if (terminal && !deps.busy(a.target_session_id)) {
       const evidence = await deps.inspect(a);
+      const report = redactSecrets(
+        own
+          .filter((row) => row.event.t === 'text' && !row.event.parentToolId)
+          .map((row) => (row.event.t === 'text' ? row.event.delta : ''))
+          .join(''),
+      );
       await store.change(
         a.id,
         a.version,
@@ -188,14 +214,9 @@ export function createQAAssignmentTool(deps: QAAssignmentDeps) {
           repository: evidence,
           progress: progress?.event ?? null,
           terminal: terminal.event,
-          report: redactSecrets(
-            own
-              .filter((row) => row.event.t === 'text' && !row.event.parentToolId)
-              .map((row) => (row.event.t === 'text' ? row.event.delta : ''))
-              .join('')
-              .slice(-16000),
-          ),
-          truncated: page.hasMore,
+          report: report.slice(-16000),
+          reportTruncated: report.length > 16000,
+          truncated: report.length > 16000,
         }),
       );
     } else if (
@@ -296,7 +317,10 @@ export function createQAAssignmentTool(deps: QAAssignmentDeps) {
       if (a.state !== 'verifying' || a.version !== version)
         throw new ControlPlaneSessionToolError('Read the current verification evidence first.');
       const evidence = await deps.inspect(a);
-      const previous = JSON.parse(a.evidence) as { repository?: Record<string, unknown> };
+      const previous = JSON.parse(a.evidence) as {
+        repository?: Record<string, unknown>;
+        reportTruncated?: boolean;
+      };
       if (
         outcome === 'retry' &&
         previous.repository &&
@@ -306,7 +330,10 @@ export function createQAAssignmentTool(deps: QAAssignmentDeps) {
         throw new ControlPlaneSessionToolError(
           'The worktree or session changed after this attempt; a new assignment approval is required.',
         );
-      if (outcome === 'completed' && (evidence.verified !== true || !assessment.trim()))
+      if (
+        outcome === 'completed' &&
+        (evidence.verified !== true || previous.reportTruncated || !assessment.trim())
+      )
         throw new ControlPlaneSessionToolError(
           'Current repository evidence does not establish successful completion.',
         );

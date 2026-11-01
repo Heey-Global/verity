@@ -2310,6 +2310,7 @@ export class Conductor {
     if (
       !turn ||
       receipt?.state !== 'admitted' ||
+      receipt.session_id !== sessionId ||
       receipt.prompt_seq === null ||
       turn.markerSeq !== Number(receipt.prompt_seq)
     )

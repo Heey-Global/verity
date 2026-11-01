@@ -38,6 +38,7 @@ function setup() {
     store: ctx.store,
     permitted: async () => true,
     busy: () => false,
+    pendingPermissions: () => [],
     target: async () => true,
     create: vi.fn(async () => ({ sessionId: 'target' })),
     cancel: vi.fn(async () => true),
@@ -402,4 +403,35 @@ it('releases an assignment whose target session was deleted instead of holding c
   await service.sweep();
   await service.sweep();
   expect(await service.status(caller, 'p', p.assignmentId)).toMatchObject({ status: 'stopped' });
+});
+
+it('marks clipped reports incomplete and refuses completion until evidence is complete', async () => {
+  const { service, propose, finish } = setup();
+  const p = await propose();
+  await service.request(caller, 'p', p.assignmentId, 'once');
+  await ctx.store.appendEvent('target', { t: 'text', delta: 'x'.repeat(17000) });
+  await finish();
+  const a = await service.status(caller, 'p', p.assignmentId);
+  expect(JSON.parse(a.evidence)).toMatchObject({ reportTruncated: true, truncated: true });
+  await expect(
+    service.review(caller, 'p', p.assignmentId, a.version, 'completed', 'Looks good'),
+  ).rejects.toThrow('evidence');
+});
+it('reports actual pending permissions even without a worker progress message', async () => {
+  const { service, propose, deps } = setup();
+  const p = await propose();
+  await service.request(caller, 'p', p.assignmentId, 'once');
+  await ctx.store.appendEvent('target', {
+    t: 'permission',
+    id: 'permission-1',
+    tool: 'Bash',
+    input: {},
+    riskClass: 'ask',
+  });
+  deps.pendingPermissions = () => ['permission-1'];
+  await service.sweep();
+  expect(await service.status(caller, 'p', p.assignmentId)).toMatchObject({ status: 'waiting' });
+  deps.pendingPermissions = () => [];
+  await service.sweep();
+  expect(await service.status(caller, 'p', p.assignmentId)).toMatchObject({ status: 'running' });
 });

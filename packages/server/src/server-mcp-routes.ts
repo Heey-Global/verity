@@ -336,6 +336,7 @@ export function registerServerMcpRoutes({
     store: deps.eventStore,
     permitted: canExecuteAs,
     busy: (id) => conductor.isBusy(id),
+    pendingPermissions: (id) => conductor.pendingPermissions(id),
     create: createHandoffSession,
     target: async (session, assignment) => {
       if (!(await sessionResumable(session)) || session.planning === 'active') return false;
@@ -437,7 +438,7 @@ export function registerServerMcpRoutes({
       });
   };
   const unsubscribeAssignments = deps.bus.subscribeAll((_id, { event }) => {
-    if (['session_progress', 'result', 'interrupted', 'status'].includes(event.t))
+    if (['session_progress', 'permission', 'result', 'interrupted', 'status'].includes(event.t))
       wakeAssignments();
   });
   app.addHook('onReady', () => {

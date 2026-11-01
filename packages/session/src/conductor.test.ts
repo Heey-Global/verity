@@ -11103,6 +11103,12 @@ it('cancels only the live turn matching an assignment receipt', async () => {
   expect(await conductor.cancelAssignmentTurn('assignment-target', 'old')).toBe(false);
   expect(conductor.isBusy('assignment-target')).toBe(true);
   receipt.mockResolvedValue({
+    session_id: 'different-session',
+    state: 'admitted',
+    prompt_seq: String(marker.promptSeq),
+  });
+  expect(await conductor.cancelAssignmentTurn('assignment-target', 'foreign')).toBe(false);
+  receipt.mockResolvedValue({
     session_id: 'assignment-target',
     state: 'admitted',
     prompt_seq: String(marker.promptSeq),

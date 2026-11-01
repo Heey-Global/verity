@@ -286,7 +286,7 @@ admission across retries and restarts. Each assignment uses one target and allow
 at most two follow-up attempts. Existing tool permissions and review gates still
 apply; the assignment does not authorize merging, deployment or broader access.
 
-Canonical session events wake reconciliation; a periodic pass recovers missed
+Canonical session events and pending tool approvals wake reconciliation; a periodic pass recovers missed
 wakes. Completion is correlated to the admitted prompt and ends at a successor
 prompt. Durable notifications wait until QA is idle, and superseded notifications
 are discarded. `assignments` rediscovers the requesting user's project assignments after a restart;
@@ -296,7 +296,9 @@ only `verifying`, not `completed`. Completion requires current matching local HE
 and successful PR checks plus QA's assessment of the requested acceptance
 criteria. Domain-specific outcomes such as measured release duration still need
 explicit evidence; green checks alone do not establish them. Missing or truncated
-evidence must remain unverified or result in a bounded follow-up.
+evidence must remain unverified or result in a bounded follow-up. Report clipping
+is explicitly flagged and prevents completion until a subsequent attempt supplies
+complete evidence.
 
 `stop_assignment` fences future dispatch and cancels only the handle corresponding
 to its exact receipt. An unconfirmed stop retains ownership. Revoked permissions
