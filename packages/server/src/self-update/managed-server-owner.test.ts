@@ -340,6 +340,25 @@ describe('managed Server host limits', () => {
     expect(managedContainerMatchesSpec(limited(), desired, IMAGE_ENV, false, 'exact')).toBe(true);
   });
 
+  it.each([0, undefined])(
+    'accepts the pre-priority Server default %s with sealed ceilings',
+    async (oomScoreAdj) => {
+      const desired = await containerSpec(sealed());
+      expect(
+        managedContainerMatchesSpec(limited({ oomScoreAdj }), desired, IMAGE_ENV, false, 'exact'),
+      ).toBe(true);
+      expect(
+        managedContainerMatchesSpec(
+          limited({ oomScoreAdj }),
+          { ...desired, oomScoreAdj: -100 },
+          IMAGE_ENV,
+          false,
+          'exact',
+        ),
+      ).toBe(false);
+    },
+  );
+
   it.each([
     // The whole point of the guardrail: a candidate created before the ceilings
     // existed reports Docker's "unlimited" for each of them.
@@ -352,7 +371,6 @@ describe('managed Server host limits', () => {
     ['unlimited swap', { memorySwapBytes: -1 }],
     ['more CPU', { nanoCpus: 8_000_000_000 }],
     ['no fork-bomb guard', { pidsLimit: -1 }],
-    ['an unprotected OOM preference', { oomScoreAdj: 0 }],
     ['a different protected OOM preference', { oomScoreAdj: -100 }],
   ])('refuses a candidate with %s', async (_label, drift) => {
     const legacy = sealed();

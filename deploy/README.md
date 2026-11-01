@@ -666,6 +666,10 @@ supported deployment-spec refresh before they reach the managed Server. Built-in
 defaults apply when those sources are absent; an existing explicit 6 GiB source still
 wins over automatic sizing. Companion gateway/updater replacements retain existing
 Docker settings, so their OOM preference changes require deployment reconciliation.
+Existing managed Servers with Docker's legacy zero OOM priority remain compatible
+with the new -250 default, including sealed-resource deployments; replacement
+Servers receive -250. Explicit non-default priorities still require a matching
+container when sealed host limits are enforced.
 
 Under gVisor, the default project runtime, the ceiling is hit harder than it
 looks. The whole Sandbox is one gVisor Sentry process, and its guest memory is a

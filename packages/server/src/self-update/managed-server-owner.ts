@@ -261,7 +261,10 @@ const ceiling = (value: number | undefined): number =>
 /** Whether a container carries the host ceilings and OOM preference a spec states. */
 function hostLimitsMatch(inspect: ContainerInspect, desired: ContainerSpec): boolean {
   return (
-    (inspect.oomScoreAdj ?? 0) === (desired.oomScoreAdj ?? 0) &&
+    // Pre-priority Servers used Docker's zero default. Retain them when adopting
+    // the new default; replacement containers receive the protected priority.
+    ((inspect.oomScoreAdj ?? 0) === (desired.oomScoreAdj ?? 0) ||
+      ((inspect.oomScoreAdj ?? 0) === 0 && desired.oomScoreAdj === -250)) &&
     ceiling(inspect.memoryBytes) === ceiling(desired.memoryBytes) &&
     ceiling(inspect.memorySwapBytes) === ceiling(desired.memorySwapBytes) &&
     ceiling(inspect.nanoCpus) === ceiling(desired.nanoCpus) &&
