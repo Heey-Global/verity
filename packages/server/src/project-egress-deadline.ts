@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { spawn } from 'node:child_process';
+import { createDeadlineChannel } from './project-egress-deadline-channel.js';
 import { z } from 'zod';
 import type { ProjectFenceBinding } from './project-egress-fence.js';
 
@@ -113,6 +113,7 @@ export interface ProjectDeadlineEnforcer {
 }
 
 export interface ProjectDeadlineRelayEnforcer extends ProjectDeadlineEnforcer {
+  close?(): void;
   configureRelay(
     binding: ProjectFenceBinding,
     relay: { containerId: string; endpointId: string; codex: boolean },
@@ -122,43 +123,11 @@ export interface ProjectDeadlineRelayEnforcer extends ProjectDeadlineEnforcer {
 
 /** Fixed root-owned helper; no executable or namespace comes from a project. */
 export function hostProjectDeadlineEnforcer(): ProjectDeadlineRelayEnforcer {
-  const request = (input: unknown): Promise<unknown> =>
-    new Promise((resolve, reject) => {
-      const child = spawn('/usr/bin/python3', ['/opt/verity-egress/project-egress-deadline.py'], {
-        stdio: ['pipe', 'pipe', 'pipe'],
-        timeout: 5000,
-        killSignal: 'SIGKILL',
-        env: { PATH: '/usr/sbin:/usr/bin:/sbin:/bin', TZ: 'UTC' },
-      });
-      let output = '';
-      let diagnostic = '';
-      child.stderr.setEncoding('utf8');
-      child.stderr.on('data', (chunk: string) => {
-        diagnostic = (diagnostic + chunk).slice(-8192);
-      });
-      child.stdout.setEncoding('utf8');
-      child.stdout.on('data', (chunk: string) => {
-        output += chunk;
-        if (output.length > 16384) {
-          child.kill('SIGKILL');
-          reject(new Error('Oversized host deadline response'));
-        }
-      });
-      child.once('error', reject);
-      child.stdin.once('error', reject);
-      child.once('close', (code) => {
-        if (code !== 0)
-          return reject(new Error('Host packet deadline operation failed: ' + diagnostic));
-        try {
-          resolve(JSON.parse(output) as unknown);
-        } catch (error) {
-          reject(error instanceof Error ? error : new Error('Invalid host deadline response'));
-        }
-      });
-      child.stdin.end(JSON.stringify(input));
-    });
+  const channel = createDeadlineChannel();
+  const request = (input: unknown) => channel.request(input);
   const denied = z.strictObject({ state: z.literal('denied') });
   return {
+    close: () => channel.close(),
     async configureRelay(binding, relay) {
       z.strictObject({ state: z.literal('relay-configured') }).parse(
         await request({ operation: 'configure-relay', binding, relay }),

@@ -48,7 +48,6 @@ import {
   openProjectEgressHostStore,
   inspectEgressHostContainer,
   inspectEgressHostNetwork,
-  projectEgressHostDocker as docker,
 } from '../../../packages/server/src/project-egress-host-runtime.js';
 import { listenProjectEgressHost } from '../../../packages/server/src/project-egress-host-control.js';
 import { applyProjectFenceRules } from '../../../packages/server/src/project-egress-fence.js';
@@ -62,6 +61,15 @@ class ProbeHost extends ProjectEgressHost {
   }
 }
 const exec = promisify(execFile);
+// Disposable fixture management retains CLI operations; enforcement uses the actual API reader.
+const docker = async (...args: string[]) =>
+  (
+    await exec('/usr/bin/docker', args, {
+      timeout: 5000,
+      maxBuffer: 2 * 1024 * 1024,
+      env: { PATH: '/usr/sbin:/usr/bin:/sbin:/bin', DOCKER_HOST: 'unix:///var/run/docker.sock' },
+    })
+  ).stdout;
 let bridge = '';
 let generationNetwork = '';
 const directory = await mkdtemp('/tmp/egress-host-');

@@ -211,6 +211,26 @@ updating the lease; a failed handoff closes direct access. Changed targets,
 revocation and expired leases require a fresh connection epoch. The lease is
 also capped by the earliest DNS/tuple budget.
 
+The host owns a resident root-only Python deadline child over private stdio; no
+helper socket, executable path or protocol endpoint is exposed to projects.
+Newline-delimited JSON frames carry a strictly increasing safe-integer `id` and
+one existing `request`; replies carry the same ID and either `result` or a bounded
+`error`. Requests are limited to 65,536 bytes including the newline, replies to
+16,384 bytes, the queue to 32 operations and each operation to five seconds.
+Malformed, replayed, oversized, missing or mismatched transport replies terminate
+the channel without replay or automatic replacement. Operation errors still allow
+an explicit denial request. Idle helpers do not renew permissions. Every request
+locks the existing state file and reloads registration state; the lock is released
+between requests so recovery is not blocked by an idle child. Controller exit
+closes the child; helper loss leaves the unchanged kernel expiry as the bound.
+
+Inspection uses only allowlisted GETs on `/var/run/docker.sock`, with fixed
+[Docker API 1.47](https://docs.docker.com/reference/api/engine/version/v1.47/)
+paths, no redirects or environment-selected daemon, a one-second read budget and
+2 MiB response limits. Unsupported APIs, non-success responses, substituted IDs
+and malformed or truncated replies fail closed. Docker mutations remain in the
+existing host lifecycle path. API connections do not cache authorization facts.
+
 Direct refresh batches the exact registered container pair within each validation
 phase. Container, network, image and runtime facts are shared only inside that
 phase; subsequent phases and renewals inspect them again. The deadline helper

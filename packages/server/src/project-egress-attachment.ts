@@ -1,9 +1,7 @@
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
+import { readEgressDockerObject } from './project-egress-docker-read.js';
 import { readFile } from 'node:fs/promises';
 import { z } from 'zod';
 import type { ProjectFenceBinding } from './project-egress-fence.js';
-const exec = promisify(execFile);
 const id = z.string().regex(/^[a-f0-9]{64}$/u);
 const endpoint = z.object({
   NetworkID: id,
@@ -61,16 +59,10 @@ export async function inspectProjectFenceAttachment(
   binding: ProjectFenceBinding,
   io = {
     inspect: async (containerId: string, networkId: string) =>
-      (
-        await exec('/usr/bin/docker', ['inspect', containerId, networkId], {
-          timeout: 1000,
-          maxBuffer: 2 * 1024 * 1024,
-          env: {
-            PATH: '/usr/sbin:/usr/bin:/sbin:/bin',
-            DOCKER_HOST: 'unix:///var/run/docker.sock',
-          },
-        })
-      ).stdout,
+      JSON.stringify([
+        await readEgressDockerObject('container', containerId),
+        await readEgressDockerObject('network', networkId),
+      ]),
     ifindex: (bridge: string) => readFile(`/sys/class/net/${bridge}/ifindex`, 'utf8'),
   },
 ): Promise<ProjectFenceBinding> {

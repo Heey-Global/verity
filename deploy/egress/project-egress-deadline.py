@@ -6,6 +6,7 @@ accepted. The trusted host adapter supplies its already registered binding.
 import ctypes
 import fcntl
 import hashlib
+import http.client
 import ipaddress
 import json
 import os
@@ -13,6 +14,7 @@ from pathlib import Path
 import platform
 import re
 import stat
+import socket
 import struct
 import subprocess
 import sys
@@ -24,7 +26,73 @@ OBJECT = Path('/opt/verity-egress/project-egress-deadline.bpf.o')
 BINDING_FIELDS = ('projectId', 'generation', 'containerId', 'networkId', 'endpointId', 'bridge', 'ipv4', 'ipv6')
 
 
+class DeadlineSocket(socket.socket):
+    def __init__(self):
+        super().__init__(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.expires = time.monotonic() + 1
+
+    def recv_into(self, *args):
+        remaining = self.expires - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError('Deadline Docker response timed out')
+        self.settimeout(remaining)
+        return super().recv_into(*args)
+
+
+class DockerConnection(http.client.HTTPConnection):
+    def __init__(self):
+        super().__init__('localhost', timeout=1)
+
+    def connect(self):
+        self.sock = DeadlineSocket()
+        self.sock.settimeout(1)
+        self.sock.connect('/var/run/docker.sock')
+
+
+def docker_inspect(kind, identities):
+    if kind not in ('container', 'network') or not 1 <= len(identities) <= 2:
+        raise ValueError('Unsupported deadline Docker read')
+    values = []
+    for identity in identities:
+        if not re.fullmatch(r'[a-f0-9]{64}', identity):
+            raise ValueError('Invalid deadline Docker identity')
+        connection = DockerConnection()
+        started = time.monotonic()
+        try:
+            suffix = '/json' if kind == 'container' else ''
+            connection.request('GET', '/v1.47/' + kind + 's/' + identity + suffix)
+            channel = connection.sock
+            response = connection.getresponse()
+            if response.status != 200:
+                raise ValueError('Deadline Docker read refused or API 1.47 unsupported')
+            data = bytearray()
+            while True:
+                remaining = 1 - (time.monotonic() - started)
+                if remaining <= 0:
+                    raise TimeoutError('Deadline Docker read timed out')
+                channel.settimeout(remaining)
+                block = response.read1(65536)
+                if not block:
+                    break
+                data.extend(block)
+                if len(data) > 2 * 1024 * 1024:
+                    raise ValueError('Oversized deadline Docker read')
+                if response.isclosed():
+                    break
+            value = json.loads(data)
+            if not isinstance(value, dict) or value.get('Id') != identity:
+                raise ValueError('Deadline Docker identity mismatch')
+            values.append(value)
+        finally:
+            connection.close()
+    return json.dumps(values)
+
+
 def run(*args):
+    if args[0] == '/usr/bin/docker':
+        if len(args) < 4 or args[2] != 'inspect':
+            raise ValueError('Unsupported deadline Docker operation')
+        return docker_inspect(args[1], args[3:])
     try:
         return subprocess.check_output(args, text=True, stderr=subprocess.STDOUT, timeout=5,
                                        env={'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'DOCKER_HOST': 'unix:///var/run/docker.sock'})
@@ -555,6 +623,34 @@ def execute(request):
     return {'state': 'armed', 'bootDeadlineNs': str(deadline)}
 
 
+def serve_deadline_requests(incoming, outgoing, held):
+    expected = 1
+    while True:
+        data = incoming.readline(65537)
+        if not data:
+            break
+        if len(data) > 65536 or not data.endswith(b'\n'):
+            raise ValueError('Oversized or incomplete deadline frame')
+        frame = json.loads(data)
+        if (not isinstance(frame, dict) or set(frame) != {'id', 'request'}
+                or type(frame['id']) is not int or frame['id'] != expected
+                or expected > (1 << 53) - 1 or not isinstance(frame['request'], dict)):
+            raise ValueError('Invalid deadline frame sequence')
+        expected += 1
+        fcntl.flock(held, fcntl.LOCK_EX)
+        try:
+            try:
+                reply = {'id': frame['id'], 'result': execute(frame['request'])}
+            except Exception as error:
+                reply = {'id': frame['id'], 'error': str(error)[:4096]}
+        finally:
+            fcntl.flock(held, fcntl.LOCK_UN)
+        encoded = json.dumps(reply, separators=(',', ':'))
+        if len(encoded.encode()) > 16383:
+            raise ValueError('Oversized deadline response')
+        print(encoded, file=outgoing, flush=True)
+
+
 if __name__ == '__main__':
     if os.geteuid() != 0 or platform.machine() != 'x86_64':
         raise RuntimeError('Deadline helper requires the supported rootful x86_64 host')
@@ -565,8 +661,13 @@ if __name__ == '__main__':
         os.close(lock)
         raise ValueError('Untrusted deadline lock')
     with os.fdopen(lock, 'w') as held:
-        fcntl.flock(held, fcntl.LOCK_EX)
-        data = sys.stdin.buffer.read(65537)
-        if len(data) > 65536:
-            raise ValueError('Oversized deadline request')
-        print(json.dumps(execute(json.loads(data))))
+        if sys.argv[1:] == ['--serve']:
+            serve_deadline_requests(sys.stdin.buffer, sys.stdout, held)
+        elif not sys.argv[1:]:
+            fcntl.flock(held, fcntl.LOCK_EX)
+            data = sys.stdin.buffer.read(65537)
+            if len(data) > 65536:
+                raise ValueError('Oversized deadline request')
+            print(json.dumps(execute(json.loads(data))))
+        else:
+            raise ValueError('Invalid deadline helper mode')
