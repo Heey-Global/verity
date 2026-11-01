@@ -1444,7 +1444,8 @@ builder was busy, for example) reaches B through point 4. A host still on a rele
 updates with the older Updater, which refuses B's label and changes nothing (point 2). Such a host
 has to run A first, so B is published only after A has reached the hosts. Until then the gVisor
 rule in `renovate.json` holds bumps for approval on the Dependency Dashboard, so Renovate cannot
-publish B right behind A; the hold is lifted once B has shipped. Hosts installed before
+publish B right behind A. B (`release-20261026.0`) lifts the hold itself, since every host that
+runs B installs archives. Hosts installed before
 the builder component (Amendment 4), or without systemd, need one installer run, as before.
 
 **Limits.** Running containers keep the runtime they started with. Rolling back re-registers the
