@@ -47,10 +47,12 @@ function fixture() {
           pidsLimit: spec.pidsLimit,
           memoryBytes: spec.memoryBytes,
           memorySwapBytes: spec.memorySwapBytes,
-          mounts: (spec.binds ?? []).map((bind) => {
-            const [source, destination, mode] = bind.split(':');
-            return { type: 'bind', source, destination, readWrite: mode !== 'ro' };
-          }),
+          mounts: (spec.binds ?? [])
+            .map((bind) => {
+              const [source, destination, mode] = bind.split(':');
+              return { type: 'bind', source, destination, readWrite: mode !== 'ro' };
+            })
+            .concat([{ type: 'tmpfs', source: '', destination: '/tmp', readWrite: true }]),
         },
       });
       return { id, warnings: [] };
@@ -74,6 +76,7 @@ function fixture() {
     ),
     inspectContainer: vi.fn(async (id: string) => jobs.get(id)!.inspect),
     inspectImageEnv: vi.fn(async () => []),
+    containerLogs: vi.fn(async () => ''),
     removeContainer: vi.fn(async (id: string) => {
       jobs.delete(id);
     }),
@@ -196,6 +199,46 @@ describe('authenticated runtime service renewal', () => {
     Object.assign(install.inspect, { [field]: replacement });
     await expect(h.run()).rejects.toThrow(/authorized configuration/u);
     expect(h.verifyInstalled).not.toHaveBeenCalled();
+  });
+  it('rejects unexpected tmpfs mounts in Docker inspection', async () => {
+    const h = fixture();
+    const original = h.docker.inspectContainer.getMockImplementation()!;
+    h.docker.inspectContainer.mockImplementation(async (id) => {
+      const inspect = await original(id);
+      return {
+        ...inspect,
+        mounts: [
+          ...(inspect.mounts ?? []),
+          { type: 'tmpfs', destination: '/extra', readWrite: true },
+        ],
+      };
+    });
+    await expect(h.run()).rejects.toThrow(/authorized configuration/u);
+    expect(h.docker.startContainer).not.toHaveBeenCalled();
+  });
+  it('relays only a digest-bound verified rollback disposition', async () => {
+    const h = fixture();
+    h.docker.waitContainer.mockResolvedValueOnce(0).mockResolvedValueOnce(1);
+    h.docker.containerLogs.mockResolvedValue(
+      JSON.stringify({
+        version: 1,
+        updateId: journal.updateId,
+        targetDigest: journal.targetDigest,
+        outcome: 'restored',
+      }),
+    );
+    await expect(h.run()).rejects.toMatchObject({ recovery: 'restored' });
+    const other = fixture();
+    other.docker.waitContainer.mockResolvedValueOnce(0).mockResolvedValueOnce(1);
+    other.docker.containerLogs.mockResolvedValue(
+      JSON.stringify({
+        version: 1,
+        updateId: 'old-update',
+        targetDigest: journal.targetDigest,
+        outcome: 'restored',
+      }),
+    );
+    await expect(other.run()).rejects.toMatchObject({ recovery: 'recovery-required' });
   });
   it('retains stopped helper evidence until installed receipt verification succeeds', async () => {
     const h = fixture();

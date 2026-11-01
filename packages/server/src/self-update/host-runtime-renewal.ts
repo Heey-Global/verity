@@ -82,8 +82,24 @@ async function runJob(docker: RenewalDocker, spec: ContainerSpec): Promise<strin
   }
   const inspect = await docker.inspectContainer(id);
   const imageEnv = (await docker.inspectImageEnv(spec.image)) ?? [];
+  // Docker may report tmpfs in Mounts as well as HostConfig.Tmpfs. The shared Server
+  // matcher handles binds/volumes only; validate the tmpfs view before excluding it.
+  const tmpfsMounts = (inspect.mounts ?? []).filter((mount) => mount.type === 'tmpfs');
+  const expectedTmpfs = Object.keys(spec.tmpfs ?? {}).sort();
+  const tmpfsMatches =
+    tmpfsMounts.length === 0 ||
+    (JSON.stringify(tmpfsMounts.map((mount) => mount.destination).sort()) ===
+      JSON.stringify(expectedTmpfs) &&
+      tmpfsMounts.every(
+        (mount) => mount.readWrite === true && (mount.source === undefined || mount.source === ''),
+      ));
+  const comparable = {
+    ...inspect,
+    mounts: (inspect.mounts ?? []).filter((mount) => mount.type !== 'tmpfs'),
+  };
   if (
-    !managedContainerMatchesSpec(inspect, spec, imageEnv, false, 'exact') ||
+    !tmpfsMatches ||
+    !managedContainerMatchesSpec(comparable, spec, imageEnv, false, 'exact') ||
     inspect.runtime !== 'runc' ||
     (inspect.pidMode ?? '') !== (spec.pidMode ?? '') ||
     JSON.stringify(inspect.tmpfs ?? {}) !== JSON.stringify(spec.tmpfs ?? {}) ||
