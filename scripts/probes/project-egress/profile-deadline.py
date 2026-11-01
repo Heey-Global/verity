@@ -16,7 +16,7 @@ def _profile(name, operation):
                 'end': str(time.clock_gettime_ns(time.CLOCK_BOOTTIME)),
                 'args': list(args) if name == 'run' else []})
     return call
-for _name in ('run', 'docker_read', 'endpoint', 'attest', 'save', 'renew_deadline', 'prepare_renewal'):
+for _name in ('run', 'docker_read', 'endpoint', 'attest', 'save', 'renew_deadline', 'prepare_renewal', 'program_identity'):
     globals()[_name] = _profile(_name, globals()[_name])
 os.fsync = _profile('fsync', os.fsync)
 def _flush_profile():

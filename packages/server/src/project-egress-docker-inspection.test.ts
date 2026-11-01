@@ -15,7 +15,10 @@ async function fixture(body = '{}', status = 200) {
   const server = createServer((req, res) => {
     paths.push(`${req.method} ${req.url}`);
     res.writeHead(status);
-    res.end(body);
+    if (body === 'trickle') {
+      const timer = setInterval(() => res.write(' '), 100);
+      res.on('close', () => clearInterval(timer));
+    } else res.end(body);
   });
   const socket = join(dir, 's');
   await new Promise<void>((resolve, reject) => {
@@ -82,3 +85,8 @@ it('bounds a daemon that never responds', async () => {
     createProjectEgressDockerInspector(socket)(['inspect', 'a'.repeat(64)]),
   ).rejects.toThrow('timed out');
 });
+
+it('keeps trickling responses inside the absolute budget', async () => {
+  const { inspect } = await fixture('trickle');
+  await expect(inspect(['inspect', 'a'.repeat(64)])).rejects.toThrow('timed out');
+}, 3000);

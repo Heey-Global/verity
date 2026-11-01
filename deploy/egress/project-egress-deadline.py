@@ -127,6 +127,30 @@ def bpf(command, attr):
     return result
 
 
+
+class ProgramInfo(ctypes.Structure):
+    # Stable prefix of Linux bpf_prog_info; no BTF/disassembly is needed here.
+    _fields_ = [('type', ctypes.c_uint32), ('id', ctypes.c_uint32)]
+
+
+class InfoAttr(ctypes.Structure):
+    _fields_ = [('fd', ctypes.c_uint32), ('info_len', ctypes.c_uint32),
+                ('info', ctypes.c_uint64)]
+
+
+def program_identity(root):
+    pathname = ctypes.create_string_buffer(str(root / 'guard').encode())
+    fd = bpf(7, ObjectAttr(ctypes.addressof(pathname), 0, 0))
+    info = ProgramInfo()
+    try:
+        bpf(15, InfoAttr(fd, ctypes.sizeof(info), ctypes.addressof(info)))
+        if info.type != 3 or info.id == 0:  # BPF_PROG_TYPE_SCHED_CLS
+            raise ValueError('Deadline program type changed')
+        return {'id': info.id, 'type': 'sched_cls'}
+    finally:
+        os.close(fd)
+
+
 def write_deadline(root, index, deadline):
     pathname = ctypes.create_string_buffer(str(root / 'maps/deadline').encode())
     fd = bpf(7, ObjectAttr(ctypes.addressof(pathname), 0, 0))
@@ -305,9 +329,7 @@ def attest(root, peer, identity):
     ruleset = json.loads(run('/usr/sbin/nft', '-j', 'list', 'ruleset'))
     if any('flowtable' in entry for entry in ruleset['nftables']):
         raise ValueError('Flow offload is unsupported by packet deadline enforcement')
-    program = json.loads(run('/usr/sbin/bpftool', '-j', 'prog', 'show', 'pinned', str(root / 'guard')))
-    if isinstance(program, list):
-        program = program[0]
+    program = program_identity(root)
     if program['id'] != identity or program['type'] != 'sched_cls':
         raise ValueError('Deadline program identity changed')
     for direction in ('ingress', 'egress'):
@@ -455,9 +477,7 @@ def execute(request):
         for direction in ('ingress', 'egress'):
             run('/sbin/tc', 'filter', 'add', 'dev', peer['device'], direction, 'pref', '1',
                 'handle', '1', 'bpf', 'da', 'pinned', str(root / 'guard'), 'skip_hw')
-        program = json.loads(run('/usr/sbin/bpftool', '-j', 'prog', 'show', 'pinned', str(root / 'guard')))
-        if isinstance(program, list):
-            program = program[0]
+        program = program_identity(root)
         state = {'binding': binding, 'peer': peer, 'bootId': clocks()['bootId'],
                  'program': program['id'], 'revision': -1,
                  'invalidBeforeNs': clocks()['bootAfterNs'], 'lastCapturedNs': '0',

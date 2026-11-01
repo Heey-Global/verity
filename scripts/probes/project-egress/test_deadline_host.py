@@ -521,5 +521,40 @@ class DockerInspectionTests(unittest.TestCase):
                 connection.close.assert_called_once()
 
 
+class ProgramIdentityTests(unittest.TestCase):
+    def inspect(self, kind=3, identity=42, fail=False):
+        def syscall(command, attr):
+            if command == 7:
+                self.assertTrue(ctypes.string_at(attr.pathname).endswith(b'/guard'))
+                return 17
+            self.assertEqual(command, 15)
+            self.assertEqual(attr.fd, 17)
+            self.assertEqual(attr.info_len, 8)
+            if fail:
+                raise OSError('inspection failed')
+            info = host.ProgramInfo.from_address(attr.info)
+            info.type, info.id = kind, identity
+            return 0
+        return syscall
+
+    def test_reads_current_pinned_identity_without_external_process(self):
+        with patch.object(host, 'bpf', side_effect=self.inspect()), patch.object(host.os, 'close') as close, patch.object(host, 'run') as external:
+            self.assertEqual(host.program_identity(Path('/pins')), {'id': 42, 'type': 'sched_cls'})
+            external.assert_not_called()
+            close.assert_called_once_with(17)
+
+    def test_wrong_type_missing_identity_and_failed_inspection_fail_closed(self):
+        for kind, identity, fail in [(6, 42, False), (3, 0, False), (3, 42, True)]:
+            with self.subTest(kind=kind, identity=identity, fail=fail), patch.object(host, 'bpf', side_effect=self.inspect(kind, identity, fail)), patch.object(host.os, 'close') as close:
+                with self.assertRaises((ValueError, OSError)):
+                    host.program_identity(Path('/pins'))
+                close.assert_called_once_with(17)
+
+    def test_attestation_rejects_replaced_pinned_program(self):
+        with patch.object(host, 'run', return_value='{"nftables":[]}'), patch.object(host, 'program_identity', return_value={'id': 99, 'type': 'sched_cls'}):
+            with self.assertRaisesRegex(ValueError, 'identity changed'):
+                host.attest(Path('/pins'), {'device': 'vtest'}, 42)
+
+
 if __name__ == '__main__':
     unittest.main()
