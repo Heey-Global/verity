@@ -148,6 +148,12 @@ function inspectFromSpec(spec: ContainerSpec, status: string): ContainerInspect 
     restartPolicy: spec.restartPolicy,
     securityOpt: spec.securityOpt,
     capAdd: spec.capAdd,
+    capDrop: spec.capDrop,
+    runtime: spec.runtime,
+    pidMode: spec.pidMode,
+    tmpfs: spec.tmpfs,
+    privileged: false,
+    deviceCount: 0,
     env: [...env].map(([name, value]) => `${name}=${value}`),
     entrypoint: spec.entrypoint,
     command: spec.command,
@@ -1438,4 +1444,133 @@ describe('backup preparation before standby activation', () => {
       expect(docker.removeContainer.mock.calls.every(([id]) => id === 'a'.repeat(64))).toBe(true);
     },
   );
+});
+
+it('renews a legacy host service through a bounded helper before sending archive requirements', async () => {
+  const { root, journal } = await setup({ pairing: true });
+  const hostRuntimeDir = await mkdtemp(join(tmpdir(), 'runtime-renewal-integration-'));
+  const jobs = new Map<string, { spec: ContainerSpec; status: string }>();
+  const docker = fakeDocker();
+  const runtimes = new Map<string, { path: string; args: string[] }>();
+  const requirements = {
+    release: 'release-20261026.0',
+    sha512: { x86_64: 'a'.repeat(128), aarch64: 'b'.repeat(128) },
+    archiveSha512: { x86_64: 'c'.repeat(128), aarch64: 'd'.repeat(128) },
+    runtimes: {
+      runsc: ['--platform=systrap', '--network=none'],
+      'runsc-project': ['--platform=systrap', '--network=sandbox', '--host-uds=create'],
+    },
+  };
+  const service = { revision: 1, renewalProtocol: 1, features: ['binary', 'archive'] };
+  docker.inspectImageLabels.mockResolvedValue({
+    'org.verity.host-runtimes': JSON.stringify(requirements),
+    'org.verity.host-runtime-service': JSON.stringify(service),
+    'org.verity.devcontainer-builder': DEVCONTAINER_BUILDER_CONTRACT,
+  });
+  docker.listContainers.mockImplementation(async () => [
+    {
+      id: 'updater',
+      imageId: oldImage,
+      names: ['updater'],
+      labels: {
+        'verity.managed-deployment-id': journal.deploymentId,
+        'verity.managed-role': 'updater',
+      },
+    },
+    ...[...jobs].map(([id, job]) => ({
+      id,
+      imageId: job.spec.image,
+      names: [job.spec.name],
+      labels: job.spec.labels ?? {},
+    })),
+  ]);
+  docker.inspectContainer.mockImplementation(async (id) =>
+    id === 'updater'
+      ? {
+          id,
+          running: true,
+          image: oldImage,
+          mounts: [
+            {
+              type: 'bind',
+              source: '/var/lib/verity/host-runtime',
+              destination: '/run/verity-host-runtime',
+            },
+          ],
+        }
+      : { ...inspectFromSpec(jobs.get(id)!.spec, jobs.get(id)!.status), id },
+  );
+  docker.createContainer.mockImplementation(async (spec) => {
+    const id = String(jobs.size + 1).repeat(64);
+    jobs.set(id, { spec, status: 'created' });
+    return { id, warnings: [] };
+  });
+  docker.startContainer.mockImplementation(async (id) => {
+    jobs.get(id)!.status = 'running';
+  });
+  docker.waitContainer.mockImplementation(async (id) => {
+    const job = jobs.get(id)!;
+    job.status = 'exited';
+    if (job.spec.labels?.['verity.renewal-stage'] === 'install') {
+      await writeFile(
+        join(hostRuntimeDir, 'agent.json'),
+        JSON.stringify({
+          version: 1,
+          trigger: 'systemd-path',
+          builder: 'none',
+          runtimeArtifacts: ['binary', 'archive'],
+          runtimeService: {
+            ...service,
+            sha512: 'f'.repeat(128),
+            receipt: {
+              deploymentId: journal.deploymentId,
+              updateId: journal.updateId,
+              targetDigest: journal.targetDigest,
+            },
+          },
+        }),
+      );
+    }
+    return 0;
+  });
+  docker.removeContainer.mockImplementation(async (id) => {
+    jobs.delete(id);
+  });
+  const host = setInterval(() => {
+    void readFile(join(hostRuntimeDir, 'request.json'), 'utf8').then(
+      async (body) => {
+        const request = JSON.parse(body) as { id: string };
+        for (const [name, args] of Object.entries(requirements.runtimes))
+          runtimes.set(name, { path: `/opt/verity/runsc/${requirements.release}/runsc`, args });
+        await writeFile(
+          join(hostRuntimeDir, 'result.json'),
+          JSON.stringify({ version: 1, id: request.id, ok: true }),
+        );
+      },
+      () => undefined,
+    );
+  }, 5);
+  try {
+    await writeFile(
+      join(hostRuntimeDir, 'agent.json'),
+      JSON.stringify({ version: 1, trigger: 'systemd-path', builder: 'none' }),
+    );
+    const actions = await dockerUpdatePreparation({
+      managedRoot: root,
+      docker: { ...docker, inspectRuntime: async (name) => runtimes.get(name) },
+      environment: { DATABASE_URL: 'postgres://db', DEPLOYMENT_ID: 'deployment-1' },
+      verifyImage: async () => undefined,
+      hostRuntimeDir,
+    });
+    await actions.reconcileHostRuntimes!(journal);
+    expect(
+      docker.createContainer.mock.calls.map(([spec]) => spec.labels?.['verity.renewal-stage']),
+    ).toEqual(['verify', 'install']);
+    await expect(readFile(join(hostRuntimeDir, 'builder-request.json'))).rejects.toThrow(/ENOENT/u);
+    expect(runtimes.get('runsc')?.path).toContain(requirements.release);
+  } finally {
+    clearInterval(host);
+    await rm(hostRuntimeDir, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true });
+  }
 });

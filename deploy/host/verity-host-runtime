@@ -269,6 +269,34 @@ await_live() {
   return 1
 }
 
+# Durable recovery covers a crash between daemon.json publication and Docker reload.
+recover_daemon() {
+  local transaction="$PRIVATE_DIR/daemon-install" temporary deadline
+  [[ -e $transaction/pending ]] || return 0
+  if [[ -f $transaction/previous ]]; then
+    temporary="$(mktemp "$(dirname "$DAEMON_JSON")/.daemon.restore.XXXXXX")"
+    cp -p "$transaction/previous" "$temporary" || return 1
+    sync -f "$temporary" || return 1
+    mv -fT "$temporary" "$DAEMON_JSON" || return 1
+  elif [[ -f $transaction/absent ]]; then
+    rm -f "$DAEMON_JSON" || return 1
+  else
+    return 1
+  fi
+  sync -f "$(dirname "$DAEMON_JSON")" || return 1
+  reload_docker || return 1
+  deadline=$((SECONDS + RELOAD_TIMEOUT_SECONDS))
+  while ((SECONDS < deadline)); do
+    if [[ $(live_runtimes '{"runsc":null,"runsc-project":null}') == "$(cat "$transaction/live")" ]]; then
+      rm -rf "$transaction"
+      sync -f "$PRIVATE_DIR"
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
 apply_requirements() {
   local requirements=$1 arch release sha archive_sha path want current merged backup='' changed=0
   need_tools curl docker dockerd jq sha512sum flock
@@ -285,6 +313,8 @@ apply_requirements() {
   install -d -m 0700 "$PRIVATE_DIR"
   exec 9>"$PRIVATE_DIR/lock"
   flock -w 900 9 || die 'another host runtime reconciliation is still running'
+  [[ ! -e $PRIVATE_DIR/service-install/pending ]] || die 'recovery-required: runtime service installation is pending'
+  recover_daemon || die 'recovery-required: the previous Docker runtime registrations could not be restored'
 
   if [[ -n $archive_sha ]]; then
     ensure_archive "$release" "$sha" "$archive_sha" "$arch"
@@ -312,7 +342,17 @@ apply_requirements() {
       backup="$PRIVATE_DIR/daemon.json.previous"
       cp -p "$DAEMON_JSON" "$backup"
     fi
+    local transaction="$PRIVATE_DIR/daemon-install"
+    rm -rf "$transaction"
+    mkdir -m 0700 "$transaction"
+    if [[ -e $DAEMON_JSON ]]; then cp -p "$DAEMON_JSON" "$transaction/previous"; else touch "$transaction/absent"; fi
+    live_runtimes '{"runsc":null,"runsc-project":null}' >"$transaction/live"
+    sync -f "$transaction"
+    touch "$transaction/pending"
+    sync -f "$transaction"
+    sync -f "$tmp"
     mv -f "$tmp" "$DAEMON_JSON"
+    sync -f "$(dirname "$DAEMON_JSON")"
     changed=1
   fi
 
@@ -322,12 +362,17 @@ apply_requirements() {
     log 'reloading Docker to register the runtimes (running containers are not restarted)'
     if ! { reload_docker && await_live "$want"; }; then
       if ((changed)); then
-        if [[ -n $backup ]]; then cp -p "$backup" "$DAEMON_JSON"; else rm -f "$DAEMON_JSON"; fi
-        reload_docker || true
+        recover_daemon || die 'recovery-required: Docker runtime rollback could not be verified'
         die "Docker did not register the runtimes after a reload; the previous $DAEMON_JSON was restored"
       fi
       die "Docker does not report the runtimes $DAEMON_JSON declares, even after a reload; check dockerd's log (other daemon flags may override runtimes)"
     fi
+  fi
+  if [[ -e $PRIVATE_DIR/daemon-install/pending ]]; then
+    rm "$PRIVATE_DIR/daemon-install/pending"
+    sync -f "$PRIVATE_DIR/daemon-install"
+    rm -rf "$PRIVATE_DIR/daemon-install"
+    sync -f "$PRIVATE_DIR"
   fi
   log "runtimes runsc and runsc-project are registered for $release"
 }
@@ -373,7 +418,12 @@ install_self() {
     log "no installed host runtime service at $target; nothing to replace"
     return 0
   fi
-  need_tools jq sha512sum
+  need_tools jq sha512sum flock
+  [[ ! -L $PRIVATE_DIR ]] || die 'unsafe runtime private directory'
+  install -d -m 0700 "$PRIVATE_DIR"
+  exec 9>"$PRIVATE_DIR/lock"
+  flock -w 60 9 || die 'another host runtime operation is running'
+  [[ ! -e $PRIVATE_DIR/service-install/pending ]] || die 'runtime service recovery is pending'
   # sha512sum rather than cmp: every host already has it, and a missing tool here would fail
   # the builder install that runs this.
   if [[ $(sha512sum <"${BASH_SOURCE[0]}") != $(sha512sum <"$target") ]]; then
@@ -390,8 +440,8 @@ install_self() {
   # Only after the copy above: the Updater must never be told about a shape the installed
   # copy cannot take yet.
   [[ -f $agent && ! -L $agent ]] || return 0
-  write_json_atomically "$agent" "$(jq -c --argjson artifacts "$RUNTIME_ARTIFACTS" \
-    '. + {runtimeArtifacts: $artifacts}' "$agent")" || die "could not update $agent"
+  write_json_atomically "$agent" "$(jq -c --argjson artifacts "$RUNTIME_ARTIFACTS" --arg hash "$(sha512sum <"$target" | cut -d' ' -f1)" \
+    '. + {runtimeArtifacts: $artifacts} | if has("runtimeService") then .runtimeService += {revision:1,renewalProtocol:1,features:$artifacts,sha512:$hash} else . end' "$agent")" || die "could not update $agent"
 }
 
 [[ $(id -u) -eq 0 || ${VERITY_HOST_RUNTIME_TEST:-} == 1 ]] || die 'must run as root'

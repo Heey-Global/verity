@@ -983,7 +983,13 @@ const serverUpdateAttemptSchema = z.object({
 });
 export type ServerUpdateAttempt = z.infer<typeof serverUpdateAttemptSchema>;
 
+const hostPreparationSchema = z.object({
+  updateId: z.string().min(1),
+  targetDigest: z.string().min(1),
+  stage: z.enum(['renewing', 'registering', 'ready', 'restored', 'recovery-required', 'unchanged']),
+});
 const serverUpdateRecoverySchema = z.object({
+  hostPreparation: hostPreparationSchema.optional().catch(undefined),
   installed: z
     .object({
       version: z.string().min(1),
@@ -1001,6 +1007,7 @@ export type ServerUpdateStatus = z.infer<typeof serverUpdateStatusSchema> & {
 } & Partial<{
     installed: { version: string; generation: number | null };
     attempt: ServerUpdateAttempt | null;
+    hostPreparation: z.infer<typeof hostPreparationSchema>;
     stalled: boolean;
     recovery: { retry: boolean; supersede: boolean };
   }>;
@@ -3454,6 +3461,9 @@ export class VerityClient {
     return {
       ...serverUpdateStatusSchema.parse(body),
       ...serverUpdateEnvelopeSchema.parse(body),
+      ...(recovery.hostPreparation === undefined
+        ? {}
+        : { hostPreparation: recovery.hostPreparation }),
       ...(recovery.installed === undefined ? {} : { installed: recovery.installed }),
       ...(recovery.attempt === undefined ? {} : { attempt: recovery.attempt }),
       ...(recovery.stalled === undefined ? {} : { stalled: recovery.stalled }),

@@ -84,7 +84,7 @@ function host(options: { daemon?: object; live?: object; reloadWorks?: boolean }
     `case "$1" in is-active) exit 0 ;; reload) ${
       options.reloadWorks === false
         ? 'exit 0'
-        : `jq -c '.runtimes // {}' '${daemonJson}' > '${live}.tmp' && mv '${live}.tmp' '${live}'`
+        : `if [[ -f '${daemonJson}' ]]; then jq -c '.runtimes // {}' '${daemonJson}'; else echo '{"runc":{"path":"runc"}}'; fi > '${live}.tmp' && mv '${live}.tmp' '${live}'`
     } ;; esac`,
   );
   const systemd = join(root, 'run-systemd');
@@ -624,5 +624,36 @@ describeHost('verity-host-runtime install-self', () => {
     expect(h.run().status).toBe(0);
     expect(readFileSync(h.target, 'utf8')).toBe(readFileSync(script, 'utf8'));
     expect(existsSync(h.agent)).toBe(false);
+  });
+});
+
+describeHost('durable Docker runtime configuration recovery', () => {
+  it('recovers a killed configuration publication before reconciling forward', () => {
+    const h = host();
+    const systemctl = join(h.root, 'bin/systemctl');
+    const original = readFileSync(systemctl, 'utf8');
+    writeFileSync(
+      systemctl,
+      '#!/bin/bash\nif [[ $1 == reload ]]; then kill -KILL "$PPID"; exit 1; fi\nexit 0\n',
+      { mode: 0o755 },
+    );
+    expect(h.run('apply-pins', h.pins).signal).toBe('SIGKILL');
+    expect(existsSync(join(h.root, 'private/daemon-install/pending'))).toBe(true);
+    writeFileSync(systemctl, original, { mode: 0o755 });
+    const result = h.run('apply-pins', h.pins);
+    expect(result.status, result.stderr).toBe(0);
+    expect(existsSync(join(h.root, 'private/daemon-install'))).toBe(false);
+    expect(h.daemon()).toMatchObject({ runtimes: { runsc: { path: h.runtimePath } } });
+  });
+  it('keeps its checkpoint when restoration cannot be verified', () => {
+    const h = host();
+    writeFileSync(join(h.root, 'bin/systemctl'), '#!/bin/bash\n[[ $1 == is-active ]]\n', {
+      mode: 0o755,
+    });
+    const result = h.run('apply-pins', h.pins);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('recovery-required');
+    expect(result.stderr).not.toContain('was restored');
+    expect(existsSync(join(h.root, 'private/daemon-install/pending'))).toBe(true);
   });
 });

@@ -2,6 +2,7 @@ import { mkdir, open, readFile, rename, stat, writeFile } from 'node:fs/promises
 import { join } from 'node:path';
 
 import type { DockerClient } from '../docker.js';
+import type { RuntimeServiceRequirements } from './host-runtime-renewal.js';
 
 /**
  * Docker runtime registrations a Server release needs on its host (ADR 0008 Amendment 2).
@@ -284,6 +285,9 @@ export interface ReconcileHostRuntimesOptions {
    * runtime service predates archive pins. Resolves to why that did not happen, or `undefined`
    * once it did. Without it such a host can only be moved forward by the installer.
    */
+  readonly serviceRequirements?: RuntimeServiceRequirements;
+  readonly renewHostRuntimeService?: () => Promise<void>;
+  readonly onProgress?: (stage: 'renewing' | 'registering' | 'recovery-required') => Promise<void>;
   readonly refreshHostComponents?: () => Promise<string | undefined>;
   /** Stable across a resumed operation, so a crash reuses the request and its answer. */
   readonly requestId: string;
@@ -302,11 +306,42 @@ export interface ReconcileHostRuntimesOptions {
 export async function reconcileHostRuntimes(options: ReconcileHostRuntimesOptions): Promise<void> {
   const { docker, requirements, requestId } = options;
   const missing = await unsatisfiedHostRuntimes(docker, requirements);
-  if (missing.length === 0) return;
-  const need = `Docker runtime ${missing.join(' and ')} (${requirements.release})`;
+  if (missing.length === 0 && options.serviceRequirements === undefined) return;
+  const need = `Docker runtime ${(missing.length === 0 ? HOST_RUNTIME_NAMES : missing).join(' and ')} (${requirements.release})`;
 
   const dir = options.requestDir ?? HOST_RUNTIME_REQUEST_DIR;
-  const agent = await readJson(join(dir, 'agent.json')).catch(() => undefined);
+  let agent = await readJson(join(dir, 'agent.json')).catch(() => undefined);
+  const supports = (candidate: unknown): boolean => {
+    if (!isRecord(candidate) || candidate.version !== 1 || candidate.trigger !== 'systemd-path')
+      return false;
+    if (requirements.archiveSha512 !== undefined && !installsArchives(candidate)) return false;
+    const wanted = options.serviceRequirements;
+    if (wanted === undefined) return true;
+    const service = candidate.runtimeService;
+    return (
+      isRecord(service) &&
+      typeof service.revision === 'number' &&
+      service.revision >= wanted.revision &&
+      service.renewalProtocol === wanted.renewalProtocol &&
+      Array.isArray(service.features) &&
+      wanted.features.every((feature) => (service.features as unknown[]).includes(feature))
+    );
+  };
+  if (!supports(agent) && options.renewHostRuntimeService !== undefined) {
+    await options.onProgress?.('renewing');
+    try {
+      await options.renewHostRuntimeService();
+    } catch (error) {
+      throw new HostRuntimeError(
+        `This release needs ${need}. ${error instanceof Error ? error.message : 'Host runtime service renewal failed.'} The current version keeps serving.`,
+      );
+    }
+    agent = await readJson(join(dir, 'agent.json')).catch(() => undefined);
+    if (!supports(agent))
+      throw new HostRuntimeError(
+        `This release needs ${need}, but the renewed host runtime service does not advertise the required capabilities. The current version keeps serving. ${REPAIR}`,
+      );
+  }
   if (!isRecord(agent) || agent.version !== 1) {
     throw new HostRuntimeError(
       `This release needs ${need}, and this host has no Verity host runtime service to register it. ${REPAIR}`,
@@ -318,6 +353,12 @@ export async function reconcileHostRuntimes(options: ReconcileHostRuntimesOption
         'run on request; re-run the Verity installer on the host, then retry the update.',
     );
   }
+  if (options.serviceRequirements !== undefined && !supports(agent))
+    throw new HostRuntimeError(
+      `This release needs newer host runtime service capabilities. The current version keeps serving. ${REPAIR}`,
+    );
+  if ((await unsatisfiedHostRuntimes(docker, requirements)).length === 0) return;
+  await options.onProgress?.('registering');
   if (requirements.archiveSha512 !== undefined && !installsArchives(agent)) {
     // The builder service installs the bundle out of the verified target image, and that
     // bundle both registers the target's runtimes and replaces the host runtime service. So
@@ -353,6 +394,8 @@ export async function reconcileHostRuntimes(options: ReconcileHostRuntimesOption
     );
   }
   if (!result.ok) {
+    if (result.message.startsWith('recovery-required:'))
+      await options.onProgress?.('recovery-required');
     throw new HostRuntimeError(
       `This release needs ${need}, and the host could not register it: ${result.message}. ` +
         'The current version keeps serving; fix the cause on the host, then retry the update.',
