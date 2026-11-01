@@ -33,7 +33,13 @@ def verify(directory):
     retained = [int(row['boot_ns']) for row in records if row.get('marker') == 'stream-retained']
     assert retained and max(retained) - min(retained) >= 2_000_000_000
     assert max(retained) - deadline <= 2_000_000_000
-    assert proof['heartbeat']['attempts'] > 10 and int(proof['heartbeat']['boot_ns']) > deadline + 2_000_000_000
+    start = int(proof['heartbeatWindowStart']['clocks']['bootBeforeNs'])
+    end = int(proof['heartbeatWindowEnd']['clocks']['bootBeforeNs'])
+    assert start > deadline + 2_000_000_000 and end - start >= 200_000_000
+    before, after = proof['heartbeatBefore'], proof['heartbeat']
+    assert before['attempts'] > 10 and after['attempts'] > before['attempts']
+    # Compare guest timestamps only with guest timestamps, never host BOOTTIME.
+    assert int(after['boot_ns']) > int(before['boot_ns'])
     return {'complete': True, 'cases': len(cases), 'kernel_late_acceptance': False,
             'receiver_tail_seconds': max(0, (max(retained) - deadline) / 1_000_000_000)}
 

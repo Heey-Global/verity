@@ -1,5 +1,8 @@
 import { createProjectEgressHostEnforcement } from '../../../packages/server/src/project-egress-host-enforcement.js';
-import { hostProjectDeadlineEnforcer } from '../../../packages/server/src/project-egress-deadline.js';
+import {
+  hostProjectDeadlineEnforcer,
+  type ProjectDeadlineTiming,
+} from '../../../packages/server/src/project-egress-deadline.js';
 import { inspectProjectFenceAttachment } from '../../../packages/server/src/project-egress-attachment.js';
 import { projectFenceTable } from '../../../packages/server/src/project-egress-fence.js';
 import { inspectEgressHostDirect } from '../../../packages/server/src/project-egress-host-runtime.js';
@@ -60,13 +63,47 @@ let relayPolicy: EgressRelayPolicy | undefined;
 const starts: string[] = [];
 const composedTargets = ['11.77.106.2', '2001:4860:feed:106::2'];
 let directEnabled = true;
+// Fixed stage names only: no targets, policy contents, identifiers or per-call growth.
+const stageTimings = new Map<
+  string,
+  { count: number; totalMs: number; maxMs: number; failures: number }
+>();
+function measured<A extends unknown[], R>(stage: string, operation: (...args: A) => Promise<R>) {
+  return async (...args: A): Promise<R> => {
+    const started = performance.now();
+    let failed = true;
+    try {
+      const result = await operation(...args);
+      failed = false;
+      return result;
+    } finally {
+      const durationMs = performance.now() - started;
+      const summary = stageTimings.get(stage) ?? { count: 0, totalMs: 0, maxMs: 0, failures: 0 };
+      summary.count++;
+      summary.totalMs += durationMs;
+      summary.maxMs = Math.max(summary.maxMs, durationMs);
+      summary.failures += Number(failed);
+      stageTimings.set(stage, summary);
+    }
+  };
+}
+const leaseBudget: ProjectDeadlineTiming[] = [];
+const deadline = hostProjectDeadlineEnforcer((timing) => {
+  if (leaseBudget.length < 256) leaseBudget.push(timing);
+});
 function createEnforcement() {
   return createProjectEgressHostEnforcement({
-    deadline: hostProjectDeadlineEnforcer(),
+    deadline: {
+      ...deadline,
+      clock: measured('kernel-clock', () => deadline.clock()),
+      arm: measured('kernel-arm', deadline.arm.bind(deadline)),
+      renew: measured('kernel-renew', deadline.renew!.bind(deadline)),
+      revoke: measured('kernel-revoke', deadline.revoke.bind(deadline)),
+    },
     sponsor: () => 'fixture-sponsor',
     directAuthority: () => true,
     store: {
-      readForAdmission: (projectId, sponsor) => {
+      readForAdmission: measured('authority', (projectId, sponsor) => {
         assert.equal(projectId, 'host-smoke');
         assert.equal(sponsor, 'fixture-sponsor');
         return Promise.resolve({
@@ -87,12 +124,12 @@ function createEnforcement() {
               )
             : [],
         });
-      },
+      }),
     },
-    inspect: inspectEgressHostDirect,
+    inspect: measured('direct-inspection', inspectEgressHostDirect),
     dependencies: {
-      inspect: inspectProjectFenceAttachment,
-      apply: applyProjectFenceRules,
+      inspect: measured('attachment', inspectProjectFenceAttachment),
+      apply: measured('kernel-rules', applyProjectFenceRules),
       directTargetAllowed: (host) => Promise.resolve(composedTargets.includes(host)),
       destinationAllowed: (address) => Promise.resolve(composedTargets.includes(address)),
       resolve: () => Promise.reject(new Error('Exact address fixture')),
@@ -113,13 +150,15 @@ const dependencies = {
     binding: Parameters<typeof inspectEgressTransport>[0],
     ids: Parameters<typeof inspectEgressTransport>[1],
   ) =>
-    inspectEgressTransport(binding, ids, relayPolicy?.codexSubpath !== undefined).catch(
-      async (error: unknown) => {
-        process.stderr.write(`Transport inspection failed: ${String(error)}\n`);
-        await writeFile('/evidence/transport-inspection-error.txt', String(error));
-        throw error;
-      },
-    ),
+    measured('transport', inspectEgressTransport)(
+      binding,
+      ids,
+      relayPolicy?.codexSubpath !== undefined,
+    ).catch(async (error: unknown) => {
+      process.stderr.write(`Transport inspection failed: ${String(error)}\n`);
+      await writeFile('/evidence/transport-inspection-error.txt', String(error));
+      throw error;
+    }),
   save: (state: Parameters<typeof store.save>[0]) => store.save(state),
   apply: async (script: string) => {
     try {
@@ -137,7 +176,7 @@ const dependencies = {
       throw error;
     }
   },
-  inspectNetwork: inspectEgressHostNetwork,
+  inspectNetwork: measured('network', inspectEgressHostNetwork),
   inspectContainer: async (
     binding: Parameters<typeof inspectEgressHostContainer>[0],
     id: string,
@@ -930,6 +969,7 @@ try {
   await delay(1200);
   await directProbe('lease-expired', false);
   assert.ok((await client('positive', relayAddress)).includes('transport-positive'));
+  await rm(`${worktree}/composed-stream-stop`, { force: true });
   const stopRenewalProcess = await beginRenewal();
   await docker(
     'exec',
@@ -995,18 +1035,36 @@ try {
   await directProbe('authority-empty', false);
   directEnabled = true;
   await delay(2500);
-  const heartbeat = JSON.parse(await readFile(`${worktree}/composed-stream.json`, 'utf8')) as {
-    attempts: number;
-    boot_ns: string;
-  };
-  assert.ok(
-    heartbeat.attempts > 10 &&
-      BigInt(heartbeat.boot_ns) > BigInt(live.deadline_ns) + 2_000_000_000n,
-  );
+  const readHeartbeat = async () =>
+    JSON.parse(await readFile(`${worktree}/composed-stream.json`, 'utf8')) as {
+      attempts: number;
+      boot_ns: string;
+    };
+  // The gVisor sender and host need not share a BOOTTIME origin. Observe sender
+  // progress inside a host-clock window instead of comparing their timestamps.
+  const heartbeatWindowStart = await kernel();
+  const heartbeatBefore = await readHeartbeat();
+  await delay(300);
+  const heartbeat = await readHeartbeat();
+  const heartbeatWindowEnd = await kernel();
   await writeFile(
     '/evidence/composed-stream-proof.json',
-    JSON.stringify({ live, expired, attempted, heartbeat }),
+    JSON.stringify({
+      live,
+      expired,
+      attempted,
+      heartbeatBefore,
+      heartbeat,
+      heartbeatWindowStart,
+      heartbeatWindowEnd,
+    }),
   );
+  assert.ok(
+    BigInt(heartbeatWindowStart.clocks.bootBeforeNs) > BigInt(live.deadline_ns) + 2_000_000_000n,
+  );
+  assert.ok(heartbeatBefore.attempts > 10 && heartbeat.attempts > heartbeatBefore.attempts);
+  assert.ok(BigInt(heartbeat.boot_ns) > BigInt(heartbeatBefore.boot_ns));
+  await writeFile(`${worktree}/composed-stream-stop`, 'stop');
   await writeFile('/evidence/composed-receiver.txt', await docker('logs', 'veh-direct'));
   await writeFile(
     '/evidence/composed-result.json',
@@ -1037,7 +1095,14 @@ try {
   await revokeAndMeasure(() => lifecycle.retire(identity), 'retire');
   await assert.rejects(lifecycle.start(identity, 'sandbox', containerId));
   await assert.rejects(startRelay({ ...context, resumeExisting: true }));
-  assert.ok((await client('negative', relayAddress, 8080)).includes('transport-denied'));
+  // Retirement stops both peers. A denied exec in a stopped container is not
+  // evidence of packet filtering; verify the lifecycle outcome directly.
+  for (const id of [containerId, relayId]) {
+    const [peer] = JSON.parse(await docker('container', 'inspect', id)) as {
+      State: { Running: boolean };
+    }[];
+    assert.equal(peer?.State.Running, false, 'Retired peer must remain stopped');
+  }
   results.push('retired generation and its relay cannot restart or regain transport');
   const nextIdentity = { ...identity, containerGeneration: 'gen2' };
   const nextBinding = await lifecycle.create(nextIdentity);
@@ -1190,6 +1255,12 @@ try {
   );
   throw error;
 } finally {
+  deadline.close();
+  await writeFile('/evidence/lease-budget.json', JSON.stringify(leaseBudget, null, 2));
+  await writeFile(
+    '/evidence/renewal-stages.json',
+    JSON.stringify(Object.fromEntries(stageTimings), null, 2),
+  );
   if (server)
     await new Promise<void>((resolve, reject) =>
       server.close((error) => (error ? reject(error) : resolve())),

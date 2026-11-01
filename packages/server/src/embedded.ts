@@ -886,6 +886,9 @@ export interface EmbeddedServerConfig {
    *  tune it. See main.ts for the `VERITY_SANDBOX_*` env mapping. */
   sandboxPidsLimit?: number | undefined;
   sandboxMemoryBytes?: number | undefined;
+  sandboxMemoryReservationBytes?: number | undefined;
+  sandboxHostReserveBytes?: number | undefined;
+  sandboxOomScoreAdj?: number | undefined;
   sandboxSwapBytes?: number | undefined;
   sandboxNanoCpus?: number | undefined;
   sandboxCpuShares?: number | undefined;
@@ -4056,6 +4059,15 @@ export async function buildEmbeddedServer(
         : {}),
       ...(config.sandboxMemoryBytes !== undefined
         ? { sandboxMemoryBytes: config.sandboxMemoryBytes }
+        : {}),
+      ...(config.sandboxMemoryReservationBytes !== undefined
+        ? { sandboxMemoryReservationBytes: config.sandboxMemoryReservationBytes }
+        : {}),
+      ...(config.sandboxHostReserveBytes !== undefined
+        ? { sandboxHostReserveBytes: config.sandboxHostReserveBytes }
+        : {}),
+      ...(config.sandboxOomScoreAdj !== undefined
+        ? { sandboxOomScoreAdj: config.sandboxOomScoreAdj }
         : {}),
       ...(config.sandboxSwapBytes !== undefined
         ? { sandboxSwapBytes: config.sandboxSwapBytes }

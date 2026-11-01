@@ -42,7 +42,7 @@ policy. The packaging is described in
 
 For one active project sandbox, plan for **16 GiB of RAM and 4 CPU cores**.
 This is a sizing recommendation, not a tested minimum. The default per-sandbox
-limits are 6 GiB of RAM and a CPU quota of 4 cores, shared against the host's
+limits are host RAM minus 4 GiB (12 GiB on a 16 GiB host) and a CPU quota of 4 cores, shared against the host's
 available CPU capacity rather than reserved cores. The Server, PostgreSQL,
 other services, and the host also need memory. For smaller hosts, lower the
 [resource limits](#resource-guardrails); allow additional capacity for multiple
@@ -573,7 +573,11 @@ dependency or build cannot consume the whole machine by default. Tune them in
 ```dotenv
 VERITY_SERVER_MEMORY=2g
 VERITY_POSTGRES_MEMORY=1g
-VERITY_SANDBOX_MEMORY=6g
+# Empty hard limit: Docker host RAM minus the host reserve (12 GiB on 16 GiB).
+VERITY_SANDBOX_MEMORY=
+VERITY_SANDBOX_MEMORY_RESERVATION=4g
+VERITY_SANDBOX_HOST_RESERVE=4g
+VERITY_SANDBOX_OOM_SCORE_ADJ=500
 VERITY_SANDBOX_SWAP=0
 VERITY_SANDBOX_CPUS=4
 VERITY_SANDBOX_CPU_SHARES=512
@@ -633,13 +637,39 @@ the same 512, so the protection is in place either way, but a deliberate overrid
 will not take. Hosts bootstrapped from this release onward seal the name and
 honour it.
 
-Memory has no equivalent weight, and deliberately so: `VERITY_SANDBOX_MEMORY` is a
-hard cgroup ceiling, so an over-large workload is stopped inside its own container
-rather than being allowed to page the host. Oversubscribing memory across many
-concurrent sandboxes still costs reclaim pressure. If a host runs enough projects
-at once to feel it, lower `VERITY_SANDBOX_MEMORY` or run fewer projects. Sleep
-already keeps idle projects from counting toward this; what is left is the
-projects genuinely working at once.
+Project memory is elastic: the hard ceiling defaults to Docker's reported host
+RAM minus `VERITY_SANDBOX_HOST_RESERVE` (4 GiB). `VERITY_SANDBOX_MEMORY` overrides
+that ceiling. If Docker cannot report capacity, the fallback is 6 GiB; the Server's
+own container memory view is never used as host capacity. A host at or below the
+reserve must configure a smaller reserve or an explicit hard ceiling. An explicit
+ceiling above known host capacity is rejected.
+
+`VERITY_SANDBOX_MEMORY_RESERVATION` defaults to 4 GiB, clamped to the hard ceiling
+only when the reservation is unset. An explicit reservation above the hard ceiling
+is rejected. Docker reservations are best-effort soft protection, **not guaranteed
+allocations**. They neither limit the sum of project memory nor reserve 4 GiB for
+infrastructure. Concurrent projects and CI runners can still exhaust the host.
+See [Docker resource constraints](https://docs.docker.com/engine/containers/resource_constraints/).
+
+Project containers default to `oom_score_adj=500`; core Compose services and managed
+Server/control-plane Runner containers default to -250. The respective
+`VERITY_SANDBOX_OOM_SCORE_ADJ`, `VERITY_SERVER_OOM_SCORE_ADJ`,
+`VERITY_CONTROL_PLANE_RUNNER_OOM_SCORE_ADJ`, `VERITY_POSTGRES_OOM_SCORE_ADJ`,
+`VERITY_AGENT_GATEWAY_OOM_SCORE_ADJ`, `VERITY_MANAGED_GATEWAY_OOM_SCORE_ADJ` and
+`VERITY_UPDATER_OOM_SCORE_ADJ` overrides tune these preferences. OOM killing remains
+enabled; priorities favour infrastructure survival without guaranteeing it.
+
+New sandbox settings apply on creation/recreation, not by mutating running containers.
+Sleeping sandbox fingerprints include reservation and OOM priority. Existing managed
+deployments keep their sealed environment sources; newly added overrides require a
+supported deployment-spec refresh before they reach the managed Server. Built-in
+defaults apply when those sources are absent; an existing explicit 6 GiB source still
+wins over automatic sizing. Companion gateway/updater replacements retain existing
+Docker settings, so their OOM preference changes require deployment reconciliation.
+Existing managed Servers with Docker's legacy zero OOM priority remain compatible
+with the new -250 default, including sealed-resource deployments; replacement
+Servers receive -250. Explicit non-default priorities still require a matching
+container when sealed host limits are enforced.
 
 Under gVisor, the default project runtime, the ceiling is hit harder than it
 looks. The whole Sandbox is one gVisor Sentry process, and its guest memory is a
@@ -649,8 +679,7 @@ it kills the Sentry, and every session of the project goes down together. The
 guest cannot even be asked to behave: the cgroup limits gVisor exposes inside the
 Sandbox are unenforced, and its platform processes are created to die together
 with the Sentry, so any OOM kill in the container's cgroup ends the whole
-Sandbox. That is why the default is 6 GiB rather than 4 GiB: the ceiling has to
-fit every turn the project runs at once, not a single process.
+Sandbox. The hard ceiling must fit every turn the project runs at once, not a single process.
 
 Because nothing in the runtime uses the margin below the limit, the Sandbox
 toolkit runs a memory guard (`verity-memory-guard`) that stands in for the
@@ -662,8 +691,8 @@ most memory. A tree is ranked by the memory of all its processes, because a
 worker pool respawns a single killed worker. Under a Claude or Codex session the guard
 narrows from the agent CLI to the command it ran — the tool shell with `npm
 test`, the test runner and its workers — and, when several commands run at once,
-to the largest of them. The CLI itself goes only when its own memory is most of
-its tree and that tree holds at least the reserve, so an ordinary idle CLI is
+to the largest of them. The CLI itself is a fallback only when no substantial tool command remains
+and its tree holds at least the reserve, so an ordinary idle CLI is
 never killed for cache pressure. For adapters that run commands directly,
 what they start is a command like any other. The ACP adapter the broker started is never a candidate; one orphaned to init by a
 broker restart counts as a detached tree. A process tree detached under init (a
@@ -674,8 +703,8 @@ cure, logs `suspended`, and kills nothing more until usage drops below the
 threshold or grows by another quarter of the reserve (closer to the ceiling, by
 half the remaining room), so it never works through the sessions one by one. The
 reserve is a fifth of the ceiling, at least 1 GiB and at most half the ceiling,
-because the guest cannot see the Sentry's own memory; at the 6 GiB default the
-guard acts at about 4.8 GiB. Usage includes the guest page cache and tmpfs,
+because the guest cannot see the Sentry's own memory; at a 12 GiB ceiling the
+guard acts at about 9.6 GiB. Usage includes the guest page cache and tmpfs,
 which live in the same host-charged memory file and therefore count against the
 ceiling too. The victim's command ends with exit 137 and no kernel message, the
 session that ran it sees that failure, and the other sessions of the project
@@ -700,10 +729,9 @@ process at the ceiling and the container survives, so a guard would only kill
 builds a reserve early. The guard recognizes gVisor by the kernel version it
 reports.
 
-The 6 GiB default assumes a host with room for it. Unlike the CPU ceiling it is
-not capped to the host, so on a small machine (8 GiB or less) set
-`VERITY_SANDBOX_MEMORY` to what one sandbox can actually get next to the Server
-and Postgres.
+On smaller hosts, tune `VERITY_SANDBOX_MEMORY` or the host reserve to leave room
+for the Server, PostgreSQL, CI runners and other projects. The host reserve used
+in the sizing formula is not an aggregate workload limit.
 
 `VERITY_SANDBOX_SWAP` lets a sandbox use that much swap on top of
 `VERITY_SANDBOX_MEMORY`. It defaults to `0` (no swap). Unset, Docker would allow
@@ -1037,3 +1065,19 @@ Repository devcontainers can be disabled per project through
 `PATCH /projects/:id/settings` with `{"devcontainerEnabled":false}`. This skips
 repository build and lifecycle configuration and uses the configured base image
 on the next provisioning/recreation. Existing running containers are unaffected.
+
+### Verify elastic memory on a host
+
+The pinned runsc release is recorded in `deploy/gvisor/versions.env`. Its host cgroup
+implementation maps OCI memory reservation to `memory.soft_limit_in_bytes` on v1
+and `memory.low` on v2 (systemd: `MemoryLow`); these are host settings, not guest
+accounting guarantees. See [runsc cgroups](https://github.com/google/gvisor/tree/release-20260714.0/runsc/cgroup)
+and [gVisor resource accounting](https://gvisor.dev/docs/architecture_guide/resources/).
+After an approved rollout, inspect Docker `HostConfig.Memory`, `MemoryReservation`,
+`MemorySwap` and `OomScoreAdj`, then verify the corresponding host cgroup values
+(`memory.max`, `memory.low`, `memory.swap.max`) and Sentry `/proc/<pid>/oom_score_adj`.
+Read guard `armed` logs to confirm it uses the new hard ceiling and reserve.
+Guest files alone cannot verify host enforcement. Guard headroom remains one fifth
+of the hard limit (minimum 1 GiB, maximum half), so at 12 GiB it acts near 9.6 GiB.
+A guard eviction writes a best-effort nonblocking stderr notice before stopping an agent; ACP uses that notice with exit 137 to report a memory-limit failure. Without that notice, SIGKILL/137 is reported as possible memory pressure, not proof of OOM.
+The ACP result now retains the real process exit instead of replacing it with 1.

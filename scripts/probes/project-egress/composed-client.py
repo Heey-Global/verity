@@ -11,17 +11,20 @@ if expectation == 'stream':
     with socket.socket(family, socket.SOCK_STREAM) as channel:
         channel.settimeout(0.1)
         channel.connect((target, 443))
-        end = time.monotonic() + 9
+        end = time.monotonic() + 60
+        stop = Path('/work/composed-stream-stop')
         attempts = 0
-        while time.monotonic() < end:
+        while time.monotonic() < end and not stop.exists():
             attempts += 1
             try:
                 channel.sendall((phase + '-retained').encode())
                 channel.recv(1024)
             except OSError:
                 pass
-            Path('/work/composed-stream.json').write_text(json.dumps({
+            temporary = Path('/work/composed-stream.pending')
+            temporary.write_text(json.dumps({
                 'attempts': attempts, 'boot_ns': str(time.clock_gettime_ns(time.CLOCK_BOOTTIME))}))
+            temporary.replace('/work/composed-stream.json')
             time.sleep(0.05)
     raise SystemExit(0)
 with socket.socket(family, socket.SOCK_DGRAM) as channel:

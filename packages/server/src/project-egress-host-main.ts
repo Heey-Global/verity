@@ -62,8 +62,9 @@ const resolve =
         servers: authority.dnsServers,
         destinationAllowed: egressHostDestinationAllowed,
       });
+const deadline = hostProjectDeadlineEnforcer();
 const enforcement = createProjectEgressHostEnforcement({
-  deadline: hostProjectDeadlineEnforcer(),
+  deadline,
   store: policyStore,
   directAuthority: (binding) => authority?.projectSponsors[binding.projectId] !== undefined,
   sponsor: (binding) => authority?.projectSponsors[binding.projectId] ?? '__unconfigured__',
@@ -119,6 +120,7 @@ const controller = new ProjectEgressHost(await store.load(), {
 });
 if (mode === 'restore') {
   await controller.restore(relayPolicy?.packetEnforcement === true);
+  deadline.close();
   await database?.destroy();
 } else {
   const service = await serveProjectEgressHost({
@@ -146,10 +148,14 @@ if (mode === 'restore') {
   const stop = () => {
     void service.stop().then(
       async () => {
+        deadline.close();
         await database?.destroy();
         process.exit(0);
       },
-      () => process.exit(1),
+      () => {
+        deadline.close();
+        process.exit(1);
+      },
     );
   };
   process.once('SIGTERM', stop);

@@ -5542,7 +5542,7 @@ export class Conductor {
     // event. Keep that failure out of the crash row's diagnostic stderr tail.
     // Earlier refusals can precede an unrelated fatal error in the same stream.
     const lastErrorLine = result.stderr.trimEnd().split(/\r?\n/u).at(-1) ?? '';
-    if (isUsageLimitError(lastErrorLine)) {
+    if (result.exitCode !== 137 && isUsageLimitError(lastErrorLine)) {
       for (const event of [
         { t: 'error', kind: 'usage_limit', message: 'Usage limit reached' },
         { t: 'status', state: 'completed' },
@@ -5556,10 +5556,16 @@ export class Conductor {
     // before exiting: Codex ACP reports a rejected app-server request as a Node
     // stack plus "Internal error", which alone filled the former 500 characters.
     const tail = result.stderr ? `: ${result.stderr.slice(-CRASH_STDERR_EXCERPT_CHARS)}` : '';
+    const memoryGuardKill =
+      result.exitCode === 137 && result.stderr.split(/\r?\n/u).includes('VERITY_MEMORY_GUARD_KILL');
     const event = {
       t: 'error' as const,
-      kind: 'crashed',
-      message: `agent exited with code ${result.exitCode} without a terminal event${tail}`,
+      kind: memoryGuardKill ? 'memory_limit' : 'crashed',
+      message: memoryGuardKill
+        ? 'Memory limit reached — the memory guard stopped the agent.'
+        : result.exitCode === 137
+          ? 'Agent was killed (SIGKILL, exit 137); possible memory pressure.'
+          : `agent exited with code ${result.exitCode} without a terminal event${tail}`,
     };
     const { seq, ts } = await this.deps.store.appendEvent(sessionId, event);
     this.deps.bus?.publish(sessionId, { seq, ts, event });

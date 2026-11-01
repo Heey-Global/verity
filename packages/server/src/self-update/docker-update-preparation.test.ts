@@ -153,6 +153,7 @@ function inspectFromSpec(spec: ContainerSpec, status: string): ContainerInspect 
     command: spec.command,
     ...(spec.memoryBytes === undefined ? {} : { memoryBytes: spec.memoryBytes }),
     ...(spec.memorySwapBytes === undefined ? {} : { memorySwapBytes: spec.memorySwapBytes }),
+    ...(spec.oomScoreAdj === undefined ? {} : { oomScoreAdj: spec.oomScoreAdj }),
     ...(spec.nanoCpus === undefined ? {} : { nanoCpus: spec.nanoCpus }),
     ...(spec.pidsLimit === undefined ? {} : { pidsLimit: spec.pidsLimit }),
     mounts: [
