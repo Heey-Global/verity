@@ -244,12 +244,17 @@ export async function handlePushResponse(
   // a Join left in the tray from a former server would send a bot through the current one.
   const meeting = parseMeetingPush(data);
   if (meeting !== null) {
-    // Both must be known: two missing ids would match and let any meeting push act.
-    if (!meeting.deviceId || !expectedDeviceId || meeting.deviceId !== expectedDeviceId) return;
     const intent = resolveMeetingPushResponse(response.actionIdentifier, meeting);
     if (intent === null) return;
-    if (intent.type === 'reply') await outbox.enqueue(intent.action);
-    else if (intent.type === 'show-upcoming')
+    // Both must be known: two missing ids would match and let any meeting push act. A plain
+    // tap only opens a sheet that asks the current server, so it works before the id is known.
+    const paired =
+      Boolean(meeting.deviceId) &&
+      Boolean(expectedDeviceId) &&
+      meeting.deviceId === expectedDeviceId;
+    if (intent.type === 'reply') {
+      if (paired) await outbox.enqueue(intent.action);
+    } else if (intent.type === 'show-upcoming')
       openMeetingPrompt?.({ kind: 'upcoming', eventKey: intent.eventKey });
     else openMeetingPrompt?.({ kind: 'started', meetingId: intent.meetingId });
     return;

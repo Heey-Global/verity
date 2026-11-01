@@ -290,7 +290,12 @@ export function ActiveMeetingOverlay() {
       detach();
     };
   }, [followed?.serverId, followed?.sessionId, followed?.meetingId, pathname, pendingCommand]);
-  const unassigned = discovered?.unassigned.find((item) => item.state !== 'ended') ?? null;
+  // An ended one stays offered too: a meeting joined automatically can end before anyone opens
+  // the app, and it is deleted after the retention period unless assigned or discarded.
+  const unassigned =
+    discovered?.unassigned.find((item) => item.state !== 'ended') ??
+    discovered?.unassigned[0] ??
+    null;
   const showMeeting = alive(meeting);
   useEffect(() => {
     if (!showMeeting && !unassigned) return;
@@ -365,9 +370,22 @@ export function ActiveMeetingOverlay() {
           style={[styles.card, { top, width: WIDTH, transform: position.getTranslateTransform() }]}
         >
           <View style={styles.titleRow}>
-            <Dot intent={unassigned.state === 'interrupted' ? 'optional' : 'needsSetup'} />
+            <Dot
+              intent={
+                unassigned.state === 'ended'
+                  ? 'optional'
+                  : unassigned.state === 'interrupted'
+                    ? 'optional'
+                    : 'needsSetup'
+              }
+            />
             <Text variant="row" style={styles.title}>
-              Online · {Math.max(0, Math.floor((now - unassigned.startedAt) / 60000))} min
+              {unassigned.state === 'ended' ? 'Ended' : 'Online'} ·{' '}
+              {Math.max(
+                0,
+                Math.floor(((unassigned.endedAt ?? now) - unassigned.startedAt) / 60000),
+              )}{' '}
+              min
             </Text>
           </View>
           <Text variant="row" numberOfLines={1}>

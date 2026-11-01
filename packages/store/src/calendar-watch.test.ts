@@ -142,8 +142,12 @@ describe('watched events', () => {
     await watch.releaseUnfinishedJoins();
     expect(await watch.getEvent(key)).toMatchObject({ decision: null });
     expect(await watch.claimJoin(key)).toBe(true);
-    await watch.setJoinResult(key, { meetingId: 'meeting-1' });
+    // A claim lost while its bot was starting is locked again by the started bot.
     await watch.releaseUnfinishedJoins();
+    await watch.setJoinResult(key, { meetingId: 'meeting-1' });
+    expect(await watch.claimJoin(key, { automatic: true })).toBe(false);
+    await watch.releaseUnfinishedJoins();
+    expect(await watch.claimJoin(key)).toBe(false);
     expect(await watch.getEvent(key)).toMatchObject({ decision: 'joined', meetingId: 'meeting-1' });
   });
 

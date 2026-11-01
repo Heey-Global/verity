@@ -317,6 +317,25 @@ describe('a meeting without a project', () => {
     return value;
   };
 
+  // An automatic join can end before anyone opens the app; hidden, it would be deleted unseen.
+  it('still offers a meeting that ended before anyone assigned it', async () => {
+    noLocalMeeting();
+    const startedAt = Date.now() - 60 * 60_000;
+    client({
+      getActiveLiveMeetings: jest.fn().mockResolvedValue(
+        activeMeetings({
+          unassigned: [
+            { ...unassignedMeeting, state: 'ended', startedAt, endedAt: startedAt + 25 * 60_000 },
+          ],
+        }),
+      ),
+    });
+    render(<ActiveMeetingOverlay />);
+    expect(await screen.findByText('Not in a project yet')).toBeOnTheScreen();
+    expect(screen.getByText(/Ended · 25/)).toBeOnTheScreen();
+    expect(screen.getByLabelText('Assign meeting to a project')).toBeOnTheScreen();
+  });
+
   it('assigns it to the tapped project and opens the meeting there', async () => {
     noLocalMeeting();
     const assignLiveMeeting = jest

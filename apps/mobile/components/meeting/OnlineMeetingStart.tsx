@@ -84,7 +84,8 @@ export function useUnassignedMeetings(): [ActiveLiveMeetings['unassigned'], () =
     if (!client) return;
     try {
       const active = await client.getActiveLiveMeetings();
-      setUnassigned(active.unassigned.filter((item) => item.state !== 'ended'));
+      // Ended ones too: they are kept until the retention period and can still be continued.
+      setUnassigned(active.unassigned);
     } catch {
       setUnassigned([]);
     }
@@ -188,13 +189,17 @@ export function UnassignedMeetingCard({
   onContinue: () => void;
   onDiscard: () => void;
 }) {
-  const minutes = Math.max(0, Math.floor((now - meeting.startedAt) / 60_000));
+  const minutes = Math.max(0, Math.floor(((meeting.endedAt ?? now) - meeting.startedAt) / 60_000));
   return (
     <Card stacked>
       <CardHead
         title={meeting.title || 'Online meeting'}
         subtitle={[
-          meeting.state === 'interrupted' ? 'Reconnecting' : `Live · ${String(minutes)} min`,
+          meeting.state === 'ended'
+            ? `Ended · ${String(minutes)} min`
+            : meeting.state === 'interrupted'
+              ? 'Reconnecting'
+              : `Live · ${String(minutes)} min`,
           meeting.people > 0
             ? `${String(meeting.people)} ${meeting.people === 1 ? 'person' : 'people'}`
             : null,

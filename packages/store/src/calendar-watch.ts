@@ -162,6 +162,8 @@ export class CalendarWatchStore {
           .where('event_key', 'in', gone)
           .where('ends_at', '>', new Date(window.from))
           .where('starts_at', '<', new Date(window.to))
+          // Checked again here: a join can claim the event after `existing` was read.
+          .where((eb) => eb.or([eb('decision', 'is', null), eb('decision', '!=', 'joined')]))
           .execute();
     });
   }
@@ -227,6 +229,7 @@ export class CalendarWatchStore {
       .updateTable('calendar_watch_events')
       .set({ decision: 'joined', updated_at: new Date().toISOString() })
       .where('event_key', '=', key)
+      .where('meeting_id', 'is', null)
       // Someone may join a meeting they skipped earlier; the automatic join must not, even
       // when the Skip lands between the watcher reading the event and claiming it.
       .where((eb) =>
@@ -245,8 +248,9 @@ export class CalendarWatchStore {
     await this.db
       .updateTable('calendar_watch_events')
       .set(
+        // A started bot locks the event again even if its claim was lost meanwhile.
         'meetingId' in result
-          ? { meeting_id: result.meetingId }
+          ? { decision: 'joined', meeting_id: result.meetingId }
           : { decision: 'failed', meeting_id: null },
       )
       .where('event_key', '=', key)

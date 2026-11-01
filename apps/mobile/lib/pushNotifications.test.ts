@@ -464,9 +464,8 @@ describe('calendar meeting pushes', () => {
 
   // A Join left in the tray by a former server must not send a bot through the current one.
   it('ignores meeting pushes from another pairing', async () => {
-    const { box, prompt } = await handle('VERITY_MEETING_JOIN', { ...upcoming, deviceId: 'old' });
+    const { box } = await handle('VERITY_MEETING_JOIN', { ...upcoming, deviceId: 'old' });
     expect(box.enqueue).not.toHaveBeenCalled();
-    expect(prompt).not.toHaveBeenCalled();
   });
 
   it('ignores a meeting push when the pairing cannot be checked', async () => {
@@ -474,6 +473,21 @@ describe('calendar meeting pushes', () => {
     const { deviceId: _omitted, ...unstamped } = upcoming;
     await handlePushResponse(respond('VERITY_MEETING_JOIN', unstamped), box, jest.fn(), undefined);
     expect(box.enqueue).not.toHaveBeenCalled();
+  });
+
+  // On a cold start the device id may not be loaded yet; a tap must still lead somewhere.
+  it('opens the sheet for a plain tap before the pairing is known', async () => {
+    const prompt = jest.fn();
+    await handlePushResponse(
+      respond('expo.modules.notifications.actions.DEFAULT', upcoming),
+      outbox(),
+      jest.fn(),
+      undefined,
+      undefined,
+      undefined,
+      prompt,
+    );
+    expect(prompt).toHaveBeenCalledWith({ kind: 'upcoming', eventKey: upcoming.eventKey });
   });
 
   it('shows a meeting about to start while the app is open', () => {
