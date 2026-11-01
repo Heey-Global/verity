@@ -8,5 +8,6 @@ RUN clang -O2 -g -target bpf -c /opt/verity-egress/project-egress-renew.bpf.c -o
 RUN node -e 'const fs=require("fs");const p="/etc/docker/daemon.json";const c=JSON.parse(fs.readFileSync(p));c.runtimes["runsc-relay"]={path:c.runtimes["runsc-project"].path,runtimeArgs:["--platform=systrap","--network=sandbox","--host-uds=open"]};c.runtimes["runsc-relay-debug"]={path:c.runtimes["runsc-relay"].path,runtimeArgs:[...c.runtimes["runsc-relay"].runtimeArgs,"--debug","--debug-log=/evidence/runsc-debug/","--panic-log=/evidence/runsc-panic/"]};fs.writeFileSync(p,JSON.stringify(c));'
 RUN ln -sf /usr/local/bin/docker /usr/bin/docker
 COPY scripts/probes/project-egress /probe
+RUN python3 /probe/profile-deadline.py
 COPY deploy/gvisor/versions.env /probe/runtime-pins.env
 ENTRYPOINT ["/bin/sh", "/probe/host-entrypoint.sh"]
