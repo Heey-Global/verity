@@ -12,8 +12,10 @@ const source = `
 const {createInterface} = require('node:readline');
 const {appendFileSync} = require('node:fs');
 let pending = 0;
+let sequence = 0;
 createInterface({input:process.stdin}).on('line', line => {
  const {id,request:r} = JSON.parse(line);
+ if (id !== ++sequence) process.exit(12);
  if (process.env.MARKER) appendFileSync(process.env.MARKER, JSON.stringify(r)+'\\n');
  if (++pending > 1) process.exit(11);
  const response = {id,result:{pid:process.pid,value:r.value},startedBootNs:'100',finishedBootNs:'200'};
@@ -107,6 +109,12 @@ it('applies deadlines from enqueue time, including time behind another operation
   expect(results[0].status).toBe('fulfilled');
   expect(results[1].status).toBe('rejected');
   if (results[1].status === 'rejected') expect(String(results[1].reason)).toContain('timed out');
+});
+it('allocates contiguous wire IDs only after a frame passes validation', async () => {
+  const { worker, children } = fixture();
+  await expect(worker.request({ value: 'x'.repeat(65536) })).rejects.toThrow('Oversized');
+  await expect(worker.request({ value: 'valid' })).resolves.toMatchObject({ value: 'valid' });
+  expect(children).toHaveLength(1);
 });
 it('bounds requests and the queue even when pipe output never completes', async () => {
   const { worker } = fixture(150);

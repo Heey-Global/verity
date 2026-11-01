@@ -42,7 +42,7 @@ for path in host.STATE.glob('*.json'):
     state = json.loads(path.read_text())
     binding = state['binding']
     root = host.PINS / host.binding_key(binding)
-    namespace = host.docker_inspect('container', [binding['containerId']])
+    namespace = host.docker_inspect('container', binding['containerId'])
     namespace = json.loads(namespace)[0]['NetworkSettings']['SandboxKey']
     assert links(measured('namespace-links', lambda: host.namespace_links(namespace))) == links(cli('/usr/bin/nsenter', '--net=' + namespace, '/sbin/ip', '-j', '-d', 'link', 'show'))
     checks.append('namespace-links')

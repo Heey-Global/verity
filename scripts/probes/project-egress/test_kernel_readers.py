@@ -1,4 +1,5 @@
 """Wire-derived Linux UAPI checks for the narrowly scoped deadline readers."""
+import ast
 import ctypes
 import importlib.util
 import json
@@ -174,3 +175,20 @@ class ProgramReaders(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class ComparisonProbe(unittest.TestCase):
+    def test_registered_container_comparison_uses_the_bounded_reader_interface(self):
+        tree = ast.parse(Path(__file__).with_name('kernel-read-proof.py').read_text())
+        reads = [node for node in ast.walk(tree) if isinstance(node, ast.Call)
+                 and isinstance(node.func, ast.Attribute) and node.func.attr == 'docker_inspect']
+        self.assertEqual(len(reads), 1)
+        identity = 'a' * 64
+        def inspect(kind, value):
+            self.assertEqual(kind, 'container')
+            self.assertEqual(value, identity)
+            return 'reply'
+        expression = ast.Expression(body=reads[0])
+        self.assertEqual(eval(compile(expression, '<comparison>', 'eval'),
+                              {'host': types.SimpleNamespace(docker_inspect=inspect),
+                               'binding': {'containerId': identity}}), 'reply')
