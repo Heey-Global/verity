@@ -354,6 +354,39 @@ class ActualMemoryPersistenceTests(unittest.TestCase):
         self.assertEqual(calls[-1], ('remove-fences',))
 
 
+class FenceMutationOrderTests(unittest.TestCase):
+    def test_inflight_readmission_runs_before_any_fence_removal(self):
+        import json
+        from unittest.mock import Mock
+        spec = importlib.util.spec_from_file_location('mutation_proof', Path(__file__).with_name('boot-proof.py'))
+        proof = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(proof)
+        vm = Mock()
+        vm.ssh.side_effect = lambda command, **_: json.dumps({'status': 200}) if 'inflight' in command else ''
+        started, inflight = proof.remove_fences_mutation(vm, 'guest ')
+        self.assertEqual([call.args[0] for call in vm.ssh.call_args_list],
+                         ['guest inflight removed-fences', 'guest external'])
+        self.assertEqual(inflight, {'status': 200})
+        self.assertGreater(started, 0)
+
+
+class GuestCommandEvidenceTests(unittest.TestCase):
+    def test_failed_command_output_reaches_ssh_evidence(self):
+        import contextlib
+        import io
+        import subprocess
+        from unittest.mock import patch
+        spec = importlib.util.spec_from_file_location('evidence_guest', Path(__file__).with_name('boot-guest.py'))
+        guest = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(guest)
+        error = subprocess.CalledProcessError(1, ['node'], output='Deadline hook identity changed')
+        stderr = io.StringIO()
+        with patch.object(guest.subprocess, 'check_output', side_effect=error), contextlib.redirect_stderr(stderr):
+            with self.assertRaises(subprocess.CalledProcessError):
+                guest.run('node')
+        self.assertIn('Deadline hook identity changed', stderr.getvalue())
+
+
 class ReplacementRecoveryTests(unittest.TestCase):
     def test_stopped_packet_generation_uses_authenticated_replacement(self):
         import json

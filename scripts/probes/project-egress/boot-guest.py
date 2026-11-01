@@ -15,7 +15,12 @@ PASSWORD = 'disposable-boot-proof-password'
 
 
 def run(*args):
-    return subprocess.check_output(args, text=True, stderr=subprocess.STDOUT).strip()
+    try:
+        return subprocess.check_output(args, text=True, stderr=subprocess.STDOUT).strip()
+    except subprocess.CalledProcessError as error:
+        # Keep the refused command's own diagnosis in the outer SSH failure evidence.
+        print((error.output or '')[-4096:], file=sys.stderr)
+        raise
 
 
 def api(path, body=None, token=None, timeout=15):
