@@ -54,6 +54,26 @@ class ComposedProof(unittest.TestCase):
             self.assertEqual(result['cases'], 16)
             self.assertEqual(result['receiver_tail_seconds'], 0.3)
 
+    def test_rejects_missing_running_substituted_or_duplicate_helper_containment(self):
+        for mutation in ('missing', 'running', 'substituted', 'duplicate'):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                self.fixture(root)
+                path = root / 'composed-helper-proof.json'
+                report = json.loads(path.read_text())
+                rows = report['attempted']['containers']
+                if mutation == 'missing':
+                    rows.pop()
+                elif mutation == 'running':
+                    rows[0]['State']['Running'] = True
+                elif mutation == 'substituted':
+                    rows[0]['Id'] = 'other-generation'
+                else:
+                    rows.append(rows[0])
+                path.write_text(json.dumps(report))
+                with self.assertRaises(AssertionError):
+                    composed.verify(root)
+
     def test_requires_both_terminal_results_and_ordered_host_boundaries(self):
         for mutation in ['missing', 'timeout', 'family', 'phase', 'reversed', 'overlap']:
             with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as directory:
