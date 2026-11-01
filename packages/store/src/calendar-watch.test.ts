@@ -129,6 +129,8 @@ describe('watched events', () => {
     await watch.syncEvents(accountId, 'cal', window, [event('c', 30 * MIN)]);
     const key = calendarEventKey(accountId, 'cal', 'c');
     expect(await watch.skip(key)).toBe(true);
+    // A Skip landing just before the automatic join wins; a person may still change their mind.
+    expect(await watch.claimJoin(key, { automatic: true })).toBe(false);
     const claims = await Promise.all([watch.claimJoin(key), watch.claimJoin(key)]);
     expect(claims.filter(Boolean)).toHaveLength(1);
     expect(await watch.skip(key)).toBe(false);

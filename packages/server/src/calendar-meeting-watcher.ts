@@ -79,19 +79,21 @@ export async function joinCalendarMeeting(
   const watch = deps.store.calendarWatch;
   const event = await watch.getEvent(key);
   if (!event) throw new CalendarEventNotFoundError();
-  if (!(await watch.claimJoin(key))) throw new CalendarEventAlreadyJoinedError();
-  // The same call in a second watched calendar, or again after watching was switched off and
-  // on, already has a bot; a second one would transcribe it twice.
-  const running = await deps.meetings.runningFor(event.meetingUrl);
-  if (running !== undefined) {
-    await watch.setJoinResult(key, { meetingId: running });
-    if (options.automatic) return { meetingId: running };
+  if (!(await watch.claimJoin(key, { automatic: options.automatic === true })))
     throw new CalendarEventAlreadyJoinedError();
-  }
   let meetingId: string;
   try {
+    // The same call in a second watched calendar, or again after watching was switched off
+    // and on, already has a bot; a second one would transcribe it twice.
+    const running = await deps.meetings.runningFor(event.meetingUrl);
+    if (running !== undefined) {
+      await watch.setJoinResult(key, { meetingId: running });
+      if (options.automatic) return { meetingId: running };
+      throw new CalendarEventAlreadyJoinedError();
+    }
     ({ meetingId } = await deps.meetings.start(sessionId, event.meetingUrl, true, titleOf(event)));
   } catch (error) {
+    if (error instanceof CalendarEventAlreadyJoinedError) throw error;
     // An automatic join is not retried behind the operator's back; a join someone asked for
     // gives the meeting back, so the next tap or the scheduled join can try again.
     if (options.automatic) await watch.setJoinResult(key, { failed: true });

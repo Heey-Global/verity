@@ -79,6 +79,10 @@ export function joinableMeeting(
   if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return undefined;
   const link = meetingLinkFromEvent(event);
   const self = event.attendees?.find((attendee) => attendee.self);
-  const accepted = !self || self.organizer === true || self.responseStatus === 'accepted';
+  // Google lists the owner among the guests of any event that has guests. Guests without the
+  // owner mean someone else's meeting on a shared calendar: asked about, never joined alone.
+  const accepted = self
+    ? self.organizer === true || self.responseStatus === 'accepted'
+    : !event.attendees?.length;
   return link ? { link, start, end, accepted } : undefined;
 }

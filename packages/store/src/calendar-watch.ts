@@ -138,16 +138,20 @@ export class CalendarWatchStore {
             .execute();
           continue;
         }
-        const moved =
-          previous.starts_at.getTime() !== event.startsAt && previous.decision !== 'joined';
         await tx
           .updateTable('calendar_watch_events')
-          .set({
-            ...fields,
-            ...(moved ? { notified_at: null, decision: null, started_notified_at: null } : {}),
-          })
+          .set(fields)
           .where('event_key', '=', key)
           .execute();
+        // A moved meeting is asked about again. The condition is checked again in the update,
+        // since a join can claim the event after `previous` was read.
+        if (previous.starts_at.getTime() !== event.startsAt && previous.decision !== 'joined')
+          await tx
+            .updateTable('calendar_watch_events')
+            .set({ notified_at: null, decision: null, started_notified_at: null })
+            .where('event_key', '=', key)
+            .where((eb) => eb.or([eb('decision', 'is', null), eb('decision', '!=', 'joined')]))
+            .execute();
       }
       const gone = existing
         .filter((row) => !seen.has(row.event_key) && row.decision !== 'joined')
@@ -218,12 +222,18 @@ export class CalendarWatchStore {
    * Claims the event for joining. Only one caller wins: a notification action, the app and
    * the automatic join can race, and a meeting must never get two bots.
    */
-  async claimJoin(key: string): Promise<boolean> {
+  async claimJoin(key: string, options: { automatic?: boolean } = {}): Promise<boolean> {
     const result = await this.db
       .updateTable('calendar_watch_events')
       .set({ decision: 'joined', updated_at: new Date().toISOString() })
       .where('event_key', '=', key)
-      .where((eb) => eb.or([eb('decision', 'is', null), eb('decision', '!=', 'joined')]))
+      // Someone may join a meeting they skipped earlier; the automatic join must not, even
+      // when the Skip lands between the watcher reading the event and claiming it.
+      .where((eb) =>
+        options.automatic
+          ? eb('decision', 'is', null)
+          : eb.or([eb('decision', 'is', null), eb('decision', '!=', 'joined')]),
+      )
       .executeTakeFirst();
     return result.numUpdatedRows > 0n;
   }

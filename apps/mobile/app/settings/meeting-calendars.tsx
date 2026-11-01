@@ -37,18 +37,21 @@ function MeetingCalendarsContent({ client }: { client: VerityClient }) {
   const [choosingRetention, setChoosingRetention] = useState(false);
   const loadId = useRef(0);
   // Loaded on focus and after each change only: every read asks Google for the calendar list.
-  const load = useCallback(async () => {
-    const id = ++loadId.current;
-    try {
-      const next = await client.getCalendarWatch();
-      if (id !== loadId.current) return;
-      setWatch(next);
-      setError(undefined);
-    } catch (reason) {
-      if (id === loadId.current)
-        setError(reason instanceof Error ? reason.message : 'Could not load calendars.');
-    }
-  }, [client]);
+  const load = useCallback(
+    async (keepError = false) => {
+      const id = ++loadId.current;
+      try {
+        const next = await client.getCalendarWatch();
+        if (id !== loadId.current) return;
+        setWatch(next);
+        if (!keepError) setError(undefined);
+      } catch (reason) {
+        if (id === loadId.current)
+          setError(reason instanceof Error ? reason.message : 'Could not load calendars.');
+      }
+    },
+    [client],
+  );
   useFocusEffect(
     useCallback(() => {
       void load();
@@ -61,14 +64,17 @@ function MeetingCalendarsContent({ client }: { client: VerityClient }) {
     if (saving || !watch) return;
     setSaving(true);
     setWatch(optimistic(watch));
+    let failed = false;
     try {
       await change();
       setError(undefined);
     } catch (reason) {
+      failed = true;
       setError(reason instanceof Error ? reason.message : 'Could not save the change.');
     } finally {
       setSaving(false);
-      await load();
+      // Reloading undoes the optimistic toggle; the reason it snapped back must stay visible.
+      await load(failed);
     }
   };
   const choose = (accountId: string, calendar: Calendar, watched: boolean, autoJoin: boolean) =>

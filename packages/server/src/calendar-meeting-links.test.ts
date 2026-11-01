@@ -91,6 +91,7 @@ describe('joinableMeeting', () => {
     ['tentative', { email: 'me@example.com', self: true, responseStatus: 'tentative' }, false],
     ['accepted', { email: 'me@example.com', self: true, responseStatus: 'accepted' }, true],
     ['organized', { email: 'me@example.com', self: true, organizer: true }, true],
+    ["someone else's", { email: 'colleague@example.com', responseStatus: 'accepted' }, false],
   ] as const)('marks an %s invitation as accepted: %s', (_, self, accepted) => {
     expect(joinableMeeting(event({ ...linked, attendees: [{ ...self }] }))?.accepted).toBe(
       accepted,

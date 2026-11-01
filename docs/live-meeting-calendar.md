@@ -56,7 +56,10 @@ declined or lost its link is forgotten.
   meetings you accepted or organize, and sends `MEETING_STARTED`: "Verity joined Weekly sync", with **Open** and
   **Discard**. The same notification follows every join that starts without a session.
 - An invitation you have not accepted yet is announced with Join and Skip even
-  on such a calendar, so the bot never joins it on its own.
+  on such a calendar, so the bot never joins it on its own. The same applies to
+  a meeting with guests that does not list you among them, such as someone
+  else's meeting on a shared calendar; an event without guests counts as yours.
+  A meeting you skipped is never joined automatically afterwards.
 - Nothing is announced or joined more than ten minutes after the start.
 - A failed automatic join is not retried. The meeting can still be joined by
   hand while it runs; a join you asked for that fails can simply be tried

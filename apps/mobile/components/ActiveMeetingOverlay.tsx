@@ -433,14 +433,14 @@ export function ActiveMeetingOverlay() {
     if (busy || activePendingCommand === 'stop') return;
     setBusy(true);
     try {
+      if (remote && (!meeting.serverId || meeting.serverId !== getActiveMeetingServerId()))
+        throw new Error('This meeting belongs to another server.');
       if (remote && online) {
         const client = createVerityClient();
         if (!client) throw new Error('Connect to the server to stop this meeting.');
         await client.stopOnlineMeeting(meeting.sessionId, meeting.id);
         void discoverRef.current();
       } else if (remote) {
-        if (!meeting.serverId || meeting.serverId !== getActiveMeetingServerId())
-          throw new Error('This meeting belongs to another server.');
         const client = createVerityClient();
         if (!client) throw new Error('Connect to the server to stop this recording.');
         await client.requestLiveMeetingCommand(meeting.sessionId, meeting.id, 'stop');

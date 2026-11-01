@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
 import { router, usePathname } from 'expo-router';
-import { createVerityClient } from '../lib/client';
+import { createVerityClient, getActiveMeetingServerId } from '../lib/client';
 import { listMeetings } from '../lib/liveMeetingStore';
 import { subscribeFollowedRemoteMeeting } from '../lib/liveMeetingSync';
 import { requestMeetingPrompt } from '../lib/meetingPrompts';
@@ -245,6 +245,44 @@ it('stops a followed online meeting on the server instead of commanding a record
   await act(async () => fireEvent.press(screen.getByLabelText('Stop meeting')));
   expect(stopOnlineMeeting).toHaveBeenCalledWith('session-1', 'online-1');
   expect(requestLiveMeetingCommand).not.toHaveBeenCalled();
+});
+
+// After a server switch the card can still show the old meeting for a moment; its ids mean
+// nothing to the new server.
+it('does not stop an online meeting of another server', async () => {
+  const meeting: MeetingRecord = {
+    id: 'online-1',
+    sessionId: 'session-1',
+    serverId: 'server-1',
+    engine: 'attendee',
+    title: 'Weekly sync',
+    startedAt: Date.now(),
+    endedAt: null,
+    state: 'active',
+    captureStatus: 'listening',
+    transcript: '',
+    error: null,
+  };
+  jest.mocked(subscribeMeeting).mockImplementation((listener) => {
+    listener(null);
+    return jest.fn();
+  });
+  jest.mocked(subscribeFollowedRemoteMeeting).mockImplementation((listener) => {
+    listener({ serverId: 'server-1', sessionId: 'session-1', meetingId: meeting.id });
+    return jest.fn();
+  });
+  jest.mocked(listMeetings).mockResolvedValue([meeting]);
+  const stopOnlineMeeting = jest.fn().mockResolvedValue(undefined);
+  jest.mocked(createVerityClient).mockReturnValue({
+    getActiveLiveMeetings: jest.fn().mockResolvedValue(activeMeetings({})),
+    stopOnlineMeeting,
+  } as unknown as NonNullable<ReturnType<typeof createVerityClient>>);
+  render(<ActiveMeetingOverlay />);
+  expect(await screen.findByText('Weekly sync')).toBeOnTheScreen();
+  jest.mocked(getActiveMeetingServerId).mockReturnValue('server-2');
+  await act(async () => fireEvent.press(screen.getByLabelText('Stop meeting')));
+  expect(stopOnlineMeeting).not.toHaveBeenCalled();
+  jest.mocked(getActiveMeetingServerId).mockReturnValue('server-1');
 });
 
 describe('a meeting without a project', () => {

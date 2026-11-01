@@ -83,3 +83,14 @@ it('changes how long unassigned meetings are kept', async () => {
     }),
   );
 });
+
+// Reloading after a failed save snaps the switch back; without the reason it looks ignored.
+it('keeps the reason a change could not be saved', async () => {
+  const methods = client(watch(false));
+  methods.setCalendarWatch.mockRejectedValueOnce(new Error('Calendar access was revoked.'));
+  render(<MeetingCalendarsScreen />);
+  await screen.findByText('Work · you@company.com');
+  fireEvent(screen.getByRole('switch', { name: /Watch for meetings/ }), 'valueChange', true);
+  await waitFor(() => expect(methods.getCalendarWatch).toHaveBeenCalledTimes(2));
+  expect(await screen.findByText(/Calendar access was revoked\./)).toBeTruthy();
+});

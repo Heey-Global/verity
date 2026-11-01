@@ -221,6 +221,19 @@ it('does not send a second bot into a call that already has one', async () => {
   expect(start).not.toHaveBeenCalled();
 });
 
+// A claim that is never resolved would block the event: no automatic join, 409 on every tap.
+it('gives a claimed event back when looking for a running bot fails', async () => {
+  const { state, start, runningFor, deps, run } = await fixture();
+  await run();
+  const key = calendarEventKey(accountId, 'primary', 'weekly');
+  state.now = START;
+  runningFor.mockRejectedValueOnce(new Error('store unavailable'));
+  await expect(joinCalendarMeeting(deps, key, null)).rejects.toThrow('store unavailable');
+  expect(await ctx.store.calendarWatch.getEvent(key)).toMatchObject({ decision: null });
+  await expect(joinCalendarMeeting(deps, key, null)).resolves.toEqual({ meetingId: 'meeting-1' });
+  expect(start).toHaveBeenCalledTimes(1);
+});
+
 // An unanswered invitation must not let an always-listening bot in on its own.
 it('asks about an unanswered invitation even on an automatic calendar', async () => {
   const { state, send, start, run } = await fixture({
