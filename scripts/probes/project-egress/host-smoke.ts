@@ -969,6 +969,7 @@ try {
   await delay(1200);
   await directProbe('lease-expired', false);
   assert.ok((await client('positive', relayAddress)).includes('transport-positive'));
+  await rm(`${worktree}/composed-stream-stop`, { force: true });
   const stopRenewalProcess = await beginRenewal();
   await docker(
     'exec',
@@ -1034,18 +1035,36 @@ try {
   await directProbe('authority-empty', false);
   directEnabled = true;
   await delay(2500);
-  const heartbeat = JSON.parse(await readFile(`${worktree}/composed-stream.json`, 'utf8')) as {
-    attempts: number;
-    boot_ns: string;
-  };
-  assert.ok(
-    heartbeat.attempts > 10 &&
-      BigInt(heartbeat.boot_ns) > BigInt(live.deadline_ns) + 2_000_000_000n,
-  );
+  const readHeartbeat = async () =>
+    JSON.parse(await readFile(`${worktree}/composed-stream.json`, 'utf8')) as {
+      attempts: number;
+      boot_ns: string;
+    };
+  // The gVisor sender and host need not share a BOOTTIME origin. Observe sender
+  // progress inside a host-clock window instead of comparing their timestamps.
+  const heartbeatWindowStart = await kernel();
+  const heartbeatBefore = await readHeartbeat();
+  await delay(300);
+  const heartbeat = await readHeartbeat();
+  const heartbeatWindowEnd = await kernel();
   await writeFile(
     '/evidence/composed-stream-proof.json',
-    JSON.stringify({ live, expired, attempted, heartbeat }),
+    JSON.stringify({
+      live,
+      expired,
+      attempted,
+      heartbeatBefore,
+      heartbeat,
+      heartbeatWindowStart,
+      heartbeatWindowEnd,
+    }),
   );
+  assert.ok(
+    BigInt(heartbeatWindowStart.clocks.bootBeforeNs) > BigInt(live.deadline_ns) + 2_000_000_000n,
+  );
+  assert.ok(heartbeatBefore.attempts > 10 && heartbeat.attempts > heartbeatBefore.attempts);
+  assert.ok(BigInt(heartbeat.boot_ns) > BigInt(heartbeatBefore.boot_ns));
+  await writeFile(`${worktree}/composed-stream-stop`, 'stop');
   await writeFile('/evidence/composed-receiver.txt', await docker('logs', 'veh-direct'));
   await writeFile(
     '/evidence/composed-result.json',
