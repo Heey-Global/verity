@@ -157,7 +157,9 @@ def inflight(phase):
 def snapshot():
     registry = json.loads(Path('/var/lib/verity-egress/registry.json').read_text())
     facts = []
-    for container in containers():
+    live_containers = containers()
+    endpoints = {net['EndpointID'] for container in live_containers for net in container['NetworkSettings']['Networks'].values()}
+    for container in live_containers:
         facts.append({'id': container['Id'], 'image': container['Image'], 'running': container['State']['Running'],
                       'restart': container['HostConfig']['RestartPolicy']['Name'],
                       'mounts': [{k: mount[k] for k in ('Source', 'Destination')} for mount in container['Mounts']]})
@@ -165,7 +167,7 @@ def snapshot():
     identities = {container['id'] for container in facts}
     for path in Path('/var/lib/verity-egress/deadline').glob('*.json'):
         state = json.loads(path.read_text())
-        if state['binding']['containerId'] not in identities:
+        if state['binding']['containerId'] not in identities or state['binding']['endpointId'] not in endpoints:
             continue
         raw = json.loads(run('env', 'PROJECT_EGRESS_DISPOSABLE=yes', 'python3',
             '/opt/verity-fixture/probe/deadline-observe.py', json.dumps(state['binding'])))
@@ -197,6 +199,7 @@ def observer_positive(phase):
 def remove_fences():
     # Destructive mutation is restricted to this disposable guest's own tables.
     assert Path('/var/lib/cloud/data/instance-id').read_text().strip() == 'verity-boot-probe'
+    packet = snapshot()['packet']
     tables = json.loads(run('nft', '--json', 'list', 'tables'))['nftables']
     names = [entry['table'] for entry in tables if 'table' in entry and
              (entry['table']['name'].startswith(('verity_egress_', 'verity_start_')))]
@@ -204,9 +207,8 @@ def remove_fences():
     for table in names:
         run('nft', 'delete', 'table', table['family'], table['name'])
     # Both layers must be removed for the destructive positive control.
-    for path in Path('/var/lib/verity-egress/deadline').glob('*.json'):
-        state = json.loads(path.read_text())
-        device = state['peer']['device']
+    for guard in packet:
+        device = guard['raw']['state']['peer']['device']
         assert device and all(c.isalnum() or c in '_-.' for c in device)
         run('tc', 'qdisc', 'del', 'dev', device, 'clsact')
 
