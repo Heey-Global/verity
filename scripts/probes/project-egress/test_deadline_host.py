@@ -8,6 +8,7 @@ import struct
 from pathlib import Path
 import tempfile
 import unittest
+import unittest.mock
 from unittest.mock import patch
 
 source = Path(__file__).resolve().parents[3] / 'deploy/egress/project-egress-deadline.py'
@@ -53,6 +54,8 @@ class DeadlineHostTests(unittest.TestCase):
             {'set': {'name': name}} for name in host.expiry_set_names(None)]})))
         self.write = self.enter(patch.object(host, 'write_deadline'))
         self.relay_write = self.enter(patch.object(host, 'write_relay'))
+        self.refresh = self.enter(patch.object(host, 'neighbor_refresh', return_value=[b'probe']))
+        self.send = self.enter(patch.object(host, 'send_neighbor_refresh'))
 
     def arm(self):
         return host.execute({'operation': 'arm', 'binding': self.binding, 'lease': self.lease})
@@ -60,6 +63,26 @@ class DeadlineHostTests(unittest.TestCase):
     def test_delayed_commit_preserves_expired_absolute_value(self):
         self.assertEqual(self.arm()['bootDeadlineNs'], '1000000020')
         self.assertEqual([c.args[-1] for c in self.write.call_args_list], [0, 1000000020])
+
+    def test_neighbor_refresh_follows_the_armed_kernel_deadline_on_the_bound_veth(self):
+        order = []
+        self.write.side_effect = lambda *args: order.append(('write', args[-1]))
+        self.send.side_effect = lambda *args: order.append(('send',) + args)
+        self.arm()
+        self.assertEqual(order, [('write', 0), ('write', 1000000020), ('send', 'vtest', [b'probe'])])
+
+    def test_neighbor_refresh_failure_keeps_the_decided_lease(self):
+        self.send.side_effect = OSError('transmit failed')
+        with patch.object(host.sys, 'stderr', io.StringIO()):
+            self.assertEqual(self.arm()['state'], 'armed')
+        self.assertEqual(self.write.call_args.args[-1], 1000000020)
+
+    def test_invalid_refresh_facts_fail_before_any_kernel_admission(self):
+        self.refresh.side_effect = ValueError('Invalid inspected neighbor gateway')
+        with self.assertRaisesRegex(ValueError, 'neighbor gateway'):
+            self.arm()
+        self.assertEqual([c.args[-1] for c in self.write.call_args_list], [0])
+        self.send.assert_not_called()
 
     def test_replayed_admission_starts_denied_and_cannot_rearm(self):
         self.arm()
@@ -475,6 +498,70 @@ class InspectionFactsTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'outside inspected phase'):
             facts.network('f' * 64)
         self.run.assert_not_called()
+
+
+class NeighborRefreshTests(unittest.TestCase):
+    def setUp(self):
+        self.binding = dict(zip(host.BINDING_FIELDS, ['project', 'generation', 'a' * 64,
+                            'b' * 64, 'c' * 64, 've-test', '172.30.106.2', 'fd42:feed::2']))
+        self.net = {'MacAddress': '02:01:02:03:04:05', 'Gateway': '172.30.106.1', 'IPPrefixLen': 24,
+                    'IPv6Gateway': 'fd42:feed::1', 'GlobalIPv6PrefixLen': 64}
+        self.links = [{'ifindex': 3, 'ifname': 've-test', 'address': '02:aa:bb:cc:dd:ee'},
+                      {'ifindex': 4, 'ifname': 'other', 'address': '02:11:11:11:11:11'}]
+        self.facts = unittest.mock.Mock()
+        self.facts.container.return_value = {'NetworkSettings': {'Networks': {'project': self.net}}}
+        self.facts.host_links.return_value = self.links
+
+    def frames(self):
+        return host.neighbor_refresh(self.binding, self.facts)
+
+    def test_arp_probe_carries_gateway_link_address_to_the_sandbox_only(self):
+        frame = self.frames()[0]
+        self.facts.container.assert_called_once_with('a' * 64)
+        self.assertEqual(len(frame), 60)
+        self.assertEqual(frame[:14], bytes.fromhex('020102030405' '02aabbccddee' '0806'))
+        self.assertEqual(frame[14:42], bytes.fromhex('0001080006040001' '02aabbccddee' 'ac1e6a01'
+                                                     '000000000000' 'ac1e6a02'))
+
+    def test_ipv6_solicitation_is_valid_and_carries_source_link_address(self):
+        import ipaddress
+        frame = self.frames()[1]
+        self.assertEqual(frame[:14], bytes.fromhex('020102030405' '02aabbccddee' '86dd'))
+        header, icmp = frame[14:54], frame[54:]
+        self.assertEqual(header[:8], bytes.fromhex('60000000' '0020' '3a' 'ff'))
+        self.assertEqual(header[8:24], ipaddress.IPv6Address('fd42:feed::1').packed)
+        self.assertEqual(header[24:40], ipaddress.IPv6Address('fd42:feed::2').packed)
+        self.assertEqual((icmp[0], icmp[1]), (135, 0))
+        self.assertEqual(icmp[8:24], ipaddress.IPv6Address('fd42:feed::2').packed)
+        self.assertEqual(icmp[24:], bytes.fromhex('0101' '02aabbccddee'))
+        data = header[8:40] + struct.pack('!I3xB', len(icmp), 58) + icmp
+        total = sum(struct.unpack(f'!{len(data) // 2}H', data))
+        while total >> 16:
+            total = (total & 0xffff) + (total >> 16)
+        self.assertEqual(total, 0xffff)
+
+    def test_family_without_inspected_gateway_is_skipped(self):
+        self.net['IPv6Gateway'] = ''
+        self.assertEqual([frame[12:14] for frame in self.frames()], [b'\x08\x06'])
+
+    def test_inconsistent_or_ambiguous_facts_are_rejected(self):
+        for field, value in (('Gateway', '10.0.0.1'), ('Gateway', '172.30.106.2'),
+                             ('IPv6Gateway', 'ff02::1'), ('MacAddress', '01:00:00:00:00:01'),
+                             ('MacAddress', '00:00:00:00:00:00')):
+            with self.subTest(field=field, value=value), patch.dict(self.net, {field: value}):
+                with self.assertRaises(ValueError):
+                    self.frames()
+        self.links[1]['ifname'] = 've-test'
+        with self.assertRaisesRegex(ValueError, 'inspected bridge'):
+            self.frames()
+
+    def test_transmission_is_bound_to_the_given_device(self):
+        with patch.object(host.socket, 'socket') as factory:
+            host.send_neighbor_refresh('vtest', [b'one', b'two'])
+        factory.assert_called_once_with(host.socket.AF_PACKET, host.socket.SOCK_RAW, 0)
+        channel = factory.return_value.__enter__.return_value
+        channel.bind.assert_called_once_with(('vtest', 0))
+        self.assertEqual([c.args[0] for c in channel.send.call_args_list], [b'one', b'two'])
 
 
 class RelayMapWriterTests(unittest.TestCase):

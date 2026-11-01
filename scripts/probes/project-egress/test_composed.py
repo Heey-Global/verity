@@ -21,6 +21,9 @@ class ComposedProof(unittest.TestCase):
                     case['resolution'] = {'phase': f'{phase}-{family}', 'family': 4 if family == 0 else 6,
                                           'terminal': 'EHOSTUNREACH', 'hostBeforeNs': str(1 + family * 2),
                                           'hostAfterNs': str(2 + family * 2)}
+                if allowed:
+                    case['connect'] = {'phase': f'{phase}-{family}', 'family': 4 if family == 0 else 6,
+                                       'connectNs': '2000000'}
                 cases.append(case)
                 if allowed:
                     for protocol in ('tcp', 'udp'):
@@ -53,6 +56,27 @@ class ComposedProof(unittest.TestCase):
             result = composed.verify(root)
             self.assertEqual(result['cases'], 16)
             self.assertEqual(result['receiver_tail_seconds'], 0.3)
+
+    def test_rejects_admitted_connections_that_waited_for_neighbor_retry(self):
+        for mutation in ('slow', 'missing', 'mislabeled', 'negative'):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                self.fixture(root)
+                path = root / 'composed-result.json'
+                report = json.loads(path.read_text())
+                row = next(r for r in report['cases'] if r['phase'] == 'fresh-after-helper')
+                if mutation == 'slow':
+                    row['connect']['connectNs'] = '1000000000'
+                elif mutation == 'missing':
+                    del row['connect']
+                elif mutation == 'mislabeled':
+                    row['connect']['phase'] = 'admitted-0'
+                else:
+                    denied = next(r for r in report['cases'] if r['phase'] == 'lease-expired')
+                    denied['connect'] = dict(row['connect'])
+                path.write_text(json.dumps(report))
+                with self.assertRaises((AssertionError, KeyError)):
+                    composed.verify(root)
 
     def test_rejects_missing_running_substituted_or_duplicate_helper_containment(self):
         for mutation in ('missing', 'running', 'substituted', 'duplicate'):

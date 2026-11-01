@@ -607,6 +607,56 @@ def endpoint(binding, facts=None):
     return result
 
 
+def neighbor_refresh(binding, facts):
+    """Gateway probes for exactly this Sandbox, derived only from inspected daemon/link facts.
+
+    Pre-admission traffic leaves the Sandbox netstack with a denied gateway resolution
+    whose failure would otherwise land on the first admitted connection. A probe that
+    carries the gateway's link address completes or replaces that resolution at once.
+    """
+    net = list(facts.container(binding['containerId'])['NetworkSettings']['Networks'].values())[0]
+    bridges = [link for link in facts.host_links() if link['ifname'] == binding['bridge']]
+    if len(bridges) != 1:
+        raise ValueError('Neighbor refresh requires the inspected bridge')
+    macs = [bytes.fromhex(value.replace(':', '')) for value in (bridges[0]['address'], net['MacAddress'])]
+    if any(len(mac) != 6 or mac == bytes(6) or mac[0] & 1 for mac in macs):
+        raise ValueError('Invalid neighbor refresh hardware address')
+    gateway_mac, sandbox_mac = macs
+    frames = []
+    for family, address, gateway, prefix in ((4, binding['ipv4'], net.get('Gateway'), net.get('IPPrefixLen')),
+                                             (6, binding['ipv6'], net.get('IPv6Gateway'), net.get('GlobalIPv6PrefixLen'))):
+        if not address or not gateway:
+            continue
+        sandbox = ipaddress.ip_interface(f'{address}/{prefix}')
+        gateway = ipaddress.ip_address(gateway)
+        if (sandbox.version != family or gateway.version != family or gateway not in sandbox.network
+                or gateway == sandbox.ip or gateway.is_multicast or gateway.is_unspecified):
+            raise ValueError('Invalid inspected neighbor gateway')
+        if family == 4:
+            body = (struct.pack('!HHBBH', 1, 0x0800, 6, 4, 1) + gateway_mac + gateway.packed
+                    + bytes(6) + sandbox.ip.packed)
+            frames.append((sandbox_mac + gateway_mac + b'\x08\x06' + body).ljust(60, b'\0'))
+            continue
+        # Unicast neighbor solicitation with the source link-layer address option.
+        icmp = struct.pack('!BBHI', 135, 0, 0, 0) + sandbox.ip.packed + b'\x01\x01' + gateway_mac
+        pseudo = gateway.packed + sandbox.ip.packed + struct.pack('!I3xB', len(icmp), 58)
+        total = sum(struct.unpack(f'!{len(pseudo + icmp) // 2}H', pseudo + icmp))
+        while total >> 16:
+            total = (total & 0xffff) + (total >> 16)
+        icmp = icmp[:2] + struct.pack('!H', ~total & 0xffff) + icmp[4:]
+        header = struct.pack('!IHBB', 6 << 28, len(icmp), 58, 255) + gateway.packed + sandbox.ip.packed
+        frames.append(sandbox_mac + gateway_mac + b'\x86\xdd' + header + icmp)
+    return frames
+
+
+def send_neighbor_refresh(device, frames):
+    # Transmitted on the Sandbox's own veth, so the armed TC guard still decides delivery.
+    with socket.socket(socket.AF_PACKET, socket.SOCK_RAW, 0) as channel:
+        channel.bind((device, 0))
+        for frame in frames:
+            channel.send(frame)
+
+
 def attest_filters(filters, identity):
     # tc may emit a separate protocol/chain header before the concrete filter.
     programs = []
@@ -865,6 +915,7 @@ def execute(request):
         facts = InspectionFacts(binding, registration['containerId'] if registration is not None else None)
         if endpoint(binding, facts) != state['peer']:
             raise ValueError('Deadline interface changed')
+        refresh = neighbor_refresh(binding, facts) if op == 'arm' else []
         if state.get('relayRegistration') is not None:
             if relay_policy(binding, state['peer'], state['relayRegistration'], facts).hex() != state['relayPolicy']:
                 raise ValueError('Registered relay endpoints changed')
@@ -887,6 +938,11 @@ def execute(request):
         renew_deadline(root, state['peer']['index'], int(previous), deadline)
     else:
         write_deadline(root, state['peer']['index'], deadline)
+        try:
+            send_neighbor_refresh(state['peer']['device'], refresh)
+        except OSError:
+            # Liveness aid only: the armed lease and its enforcement are already decided.
+            traceback.print_exc(file=sys.stderr)
     return {'state': 'armed', 'bootDeadlineNs': str(deadline)}
 
 

@@ -37,6 +37,17 @@ class InitialDenialTests(unittest.TestCase):
                 runpy.run_path(str(Path(__file__).with_name('composed-client.py')))
         channel.settimeout.assert_called_once_with(3)
 
+    def test_positive_control_reports_its_connect_duration(self):
+        import contextlib, io, json
+        output = io.StringIO()
+        with patch('socket.socket') as factory, contextlib.redirect_stdout(output):
+            factory.return_value.__enter__.return_value.recv.return_value = b'external-positive'
+            with patch('sys.argv', ['composed-client.py', '2001:4860:feed:106::2', 'admitted-1', 'positive']):
+                runpy.run_path(str(Path(__file__).with_name('composed-client.py')))
+        result = json.loads(output.getvalue())
+        self.assertEqual((result['phase'], result['family']), ('admitted-1', 6))
+        self.assertGreaterEqual(int(result['connectNs']), 0)
+
     def test_later_denial_keeps_short_observation(self):
         channel = self.run_client(TimeoutError('denied'), 'negative', 'lease-expired-0')
         channel.settimeout.assert_called_once_with(0.4)
