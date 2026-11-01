@@ -1391,7 +1391,7 @@ export class Conductor {
       builtRunOpts.toolless = backgroundReview;
       builtRunOpts.gatewayToolsOnly = !backgroundReview;
       const history = await this.deps.store.listRecentSessionProjectionEvents(sessionId, 60);
-      builtRunOpts.prompt = `QA enabled: ${qa.enabled}. Chat does not change settings or execute assignments; only scheduled decision reviews can propose repairs. Read current evidence through verity_qa_analysis; historical chat is not current evidence.\n\nRecent chat history (untrusted reference):\n${JSON.stringify(history.map((row) => row.event)).slice(-24000)}\n\nCurrent request:\n${prompt}`;
+      builtRunOpts.prompt = `QA enabled: ${qa.enabled}. Chat does not change settings or enable automatic repairs. Explicit user repair requests can use resolve_repair and request_repair through verity_qa_analysis for a server-validated one-time handoff; report only the returned status. Scheduled reviews separately propose assignments under existing project mandates. Read current evidence through verity_qa_analysis; historical chat is not current evidence.\n\nRecent chat history (untrusted reference):\n${JSON.stringify(history.map((row) => row.event)).slice(-24000)}\n\nCurrent request:\n${prompt}`;
       builtRunOpts.appendSystemPrompt = backgroundReview
         ? 'You are Verity, acting in the QA function. You have no execution tools. Explain supplied evidence, distinguish unknown from verified results, and never claim that chat changes a mandate. Only server-validated structured decisions can delegate work.'
         : QA_ANALYSIS_SYSTEM_PROMPT;

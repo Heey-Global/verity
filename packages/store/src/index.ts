@@ -262,6 +262,7 @@ export {
 export {
   RepairSupervisionStore,
   type RepairMandate,
+  type ManualRepairProposal,
   type RepairIncident,
   type RepairMode,
 } from './repair-supervision.js';

@@ -281,7 +281,7 @@ select_pairing_host() {
 command -v docker >/dev/null || die 'docker is required'
 command -v flock >/dev/null || die 'the host flock utility is required'
 # The host runtime service registers the gVisor runtimes with these; refuse before any state changes.
-for tool in curl jq sha512sum; do
+for tool in curl jq sha512sum tar bzip2; do
   command -v "$tool" >/dev/null || die "the host $tool utility is required (the gVisor runtime registration uses it)"
 done
 
@@ -1041,8 +1041,11 @@ else
 fi
 agent_tmp="$(mktemp "$HOST_RUNTIME_DIR/.agent.json.XXXXXX")"
 # `builder` tells the Updater it may ask verity-host-builder; hosts installed before it
-# existed lack the key, and their Updater asks for this installer instead.
-printf '{"version":1,"trigger":"%s","builder":"%s"}\n' "$host_runtime_trigger" "$host_runtime_trigger" >"$agent_tmp"
+# existed lack the key, and their Updater asks for this installer instead. `runtimeArtifacts`
+# names the gVisor pin shapes the host runtime service just installed can take (a release
+# archive as well as a single binary); a later bundle refreshes it through install-self.
+printf '{"version":1,"trigger":"%s","builder":"%s","runtimeArtifacts":["binary","archive"]}\n' \
+  "$host_runtime_trigger" "$host_runtime_trigger" >"$agent_tmp"
 chmod 0644 "$agent_tmp"
 mv -f "$agent_tmp" "$HOST_RUNTIME_DIR/agent.json"
 note 'Registering the gVisor runtimes runsc and runsc-project (running containers are not restarted)'

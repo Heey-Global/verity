@@ -326,6 +326,17 @@ describe('paired device management', () => {
       admin.mockRestore();
       expect((await app.inject({ ...operations[2], headers })).json().phase).toBe('stopped');
       expect((await app.inject({ ...operations[3], headers })).json().status.runId).toBe(runId);
+      expect((await app.inject({ ...operations[3], headers })).json()).not.toHaveProperty(
+        'failures',
+      );
+      expect(
+        (
+          await app.inject({
+            ...operations[3],
+            headers: { ...headers, 'x-verity-recording-failure-details': '1' },
+          })
+        ).json().failures,
+      ).toEqual({ stop: null, export: null });
       const v2Id = '11234567-0123-4123-8123-0123456789ab';
       expect(
         (

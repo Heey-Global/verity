@@ -1595,6 +1595,7 @@ export interface VulnDigestsTable {
 }
 export interface Database {
   qa_dispatches: QADispatchesTable;
+  qa_manual_repairs: QAManualRepairsTable;
   repair_resource_budgets: RepairResourceBudgetsTable;
   repair_mandates: RepairMandatesTable;
   repair_incidents: RepairIncidentsTable;
@@ -1946,6 +1947,24 @@ interface QADecisionsTable {
   snapshot: string;
   outcome: string | null;
   created_at: Generated<Date>;
+}
+
+interface QAManualRepairsTable {
+  id: string;
+  project_id: string;
+  source_session_id: string;
+  user_id: string;
+  target_session_id: string;
+  number: number;
+  branch: string;
+  revision: string;
+  requires_card: Generated<boolean>;
+  qa_revision: number;
+  mandate_revision: number;
+  expires_at: Generated<Date>;
+  dispatch_id: string | null;
+  consent_key: string | null;
+  reason: string | null;
 }
 
 interface QADispatchesTable {

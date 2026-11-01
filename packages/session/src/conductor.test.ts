@@ -426,6 +426,8 @@ describe('Conductor.sendTurn', () => {
     expect(fake.last().toolless).toBe(false);
     expect(fake.last().resumeSessionId).toBeUndefined();
     expect(fake.last().appendSystemPrompt).toContain('verity_qa_analysis');
+    expect(fake.last().prompt).toContain('resolve_repair and request_repair');
+    expect(fake.last().prompt).not.toContain('only scheduled decision reviews');
   });
 
   it('gives the assistant session its standing prompt without taking its tools away', async () => {
