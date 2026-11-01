@@ -207,7 +207,8 @@ class FullBundleTests(unittest.TestCase):
                                           'denied': {'status': None, 'started_ns': 1, 'finished_ns': 2}}),
                             ('mutation-inflight', {'status': 200, 'fencesRemoved': True,
                                                    'fencesRemovedNs': 101_000_000_001}),
-                            ('mutation-clock', {'offsetNs': 0, 'uncertaintyNs': 1, 'removalNs': 101_000_000_001})]:
+                            ('mutation-clock', {'offsetNs': 0, 'uncertaintyNs': 1, 'removalNs': 101_000_000_001,
+                                                'controlNs': 100_500_000_000, 'returnedNs': 101_500_000_000})]:
             Path(directory, name + '.json').write_text(json.dumps(value))
         Path(directory, 'protected-receipts.jsonl').write_text(protected)
         Path(directory, 'external-receipts.jsonl').write_text(full)
@@ -253,6 +254,19 @@ class FullBundleTests(unittest.TestCase):
             proof['mutation_started_ns'] -= 2_000_000_000
             Path(directory, 'boot-proof.json').write_text(json.dumps(proof))
             with self.assertRaisesRegex(AssertionError, 'reported fence removal'):
+                boot_proof.verify_bundle(directory)
+        with tempfile.TemporaryDirectory() as directory:
+            proof, _ = self.fixture(directory)
+            # Consistently moving the removal back over readmission leaves the control bracket.
+            moved = 100_000_000_001
+            proof['mutation_started_ns'] = moved - 1
+            Path(directory, 'boot-proof.json').write_text(json.dumps(proof))
+            for name in ('mutation-inflight', 'mutation-clock'):
+                path = Path(directory, name + '.json')
+                value = json.loads(path.read_text())
+                value['fencesRemovedNs' if name == 'mutation-inflight' else 'removalNs'] = moved
+                path.write_text(json.dumps(value))
+            with self.assertRaisesRegex(AssertionError, 'outside its control'):
                 boot_proof.verify_bundle(directory)
 
     def test_rejects_mutation_evidence_without_reported_fence_removal(self):
@@ -453,9 +467,12 @@ class FenceMutationOrderTests(unittest.TestCase):
 
     def test_rejects_missing_or_implausible_removal(self):
         import json
-        for reported in (lambda now: {'status': 200}, lambda now: {'status': 200, 'fencesRemoved': False},
-                         lambda now: {'status': 200, 'fencesRemoved': True, 'fencesRemovedNs': now - 60_000_000_000}):
-            with self.subTest(), self.assertRaises(AssertionError):
+        for reported, message in ((lambda now: {'status': 200}, 'did not remove'),
+                                  (lambda now: {'status': 200, 'fencesRemoved': False}, 'did not remove'),
+                                  (lambda now: {'status': 200, 'fencesRemoved': True}, 'removal time'),
+                                  (lambda now: {'status': 200, 'fencesRemoved': True,
+                                                'fencesRemovedNs': now - 60_000_000_000}, 'outside its control')):
+            with self.subTest(message=message), self.assertRaisesRegex(AssertionError, message):
                 self.proof.remove_fences_mutation(self.vm(0, reported), 'guest ', self.evidence)
             # The failing in-flight result is retained as evidence before the verdict.
             self.assertIn('status', json.loads((self.evidence / 'mutation-inflight.json').read_text()))

@@ -58,7 +58,17 @@ def guest_clock(vm):
     before = time.time_ns()
     guest = int(vm.ssh('date +%s%N').strip())
     after = time.time_ns()
-    return {'offsetNs': guest - (before + after) // 2, 'uncertaintyNs': (after - before) // 2 + 1}
+    uncertainty = (after - before) // 2 + 1
+    assert uncertainty <= 1_000_000_000, 'Guest clock offset is too uncertain'
+    return {'offsetNs': guest - (before + after) // 2, 'uncertaintyNs': uncertainty}
+
+
+def check_mutation_clock(clock, removal_ns):
+    assert type(removal_ns) is int and clock.get('removalNs') == removal_ns, 'Missing reported fence removal time'
+    assert 0 < clock['uncertaintyNs'] <= 1_000_000_000, 'Guest clock offset is too uncertain'
+    started = mutation_start(clock, removal_ns)
+    assert clock['controlNs'] - clock['uncertaintyNs'] <= started <= clock['returnedNs'], 'Fence removal outside its control'
+    return started
 
 
 def mutation_start(clock, removal_ns):
@@ -78,10 +88,9 @@ def remove_fences_mutation(vm, guest, evidence):
     returned_ns = time.time_ns()
     inflight = json.loads(output)
     assert inflight.get('fencesRemoved') is True, 'In-flight control did not remove the kernel fences'
-    clock['removalNs'] = inflight['fencesRemovedNs']
+    clock.update(removalNs=inflight.get('fencesRemovedNs'), controlNs=control_ns, returnedNs=returned_ns)
     (evidence / 'mutation-clock.json').write_text(json.dumps(clock))
-    started_ns = mutation_start(clock, clock['removalNs'])
-    assert control_ns - clock['uncertaintyNs'] <= started_ns <= returned_ns, 'Fence removal outside its control'
+    started_ns = check_mutation_clock(clock, inflight.get('fencesRemovedNs'))
     vm.ssh(guest + 'external')
     return started_ns, inflight
 
@@ -219,8 +228,8 @@ def verify_bundle(directory):
     assert full.startswith((directory / 'protected-receipts.jsonl').read_text()), 'Protected evidence is not an original observation prefix'
     clock = json.loads((directory / 'mutation-clock.json').read_text())
     mutation = json.loads((directory / 'mutation-inflight.json').read_text())
-    assert clock['removalNs'] == mutation.get('fencesRemovedNs') and 0 < clock['uncertaintyNs'] <= 1_000_000_000
-    assert proof['mutation_started_ns'] == mutation_start(clock, clock['removalNs']) > proof['protected_end_ns'], \
+    started = check_mutation_clock(clock, mutation.get('fencesRemovedNs'))
+    assert proof['mutation_started_ns'] == started > proof['protected_end_ns'], \
         'Mutation window does not start at the reported fence removal'
     verify_receipts(directory / 'external-receipts.jsonl', proof['protected_start_ns'], proof['protected_end_ns'], proof['mutation_started_ns'])
     verify_removed_fences(directory / 'external-receipts.jsonl', proof['mutation_started_ns'])
