@@ -251,3 +251,14 @@ existing controller-reconstruction and generation-replacement fixture. The
 legacy boot fixture, whose relay policy does not select packet enforcement,
 continues to certify its existing startup fence only; its reboot results must
 not be presented as combined TC/nftables reboot acceptance.
+
+
+The host controller owns a single root-only Python deadline worker over private
+pipes. It accepts bounded, sequential, explicitly requested operations, holds the
+trusted state lock per operation, and never renews authority autonomously. A
+whole-request watchdog includes queue time; transport failures kill the worker
+process group and reject pending operations without replay. Linux parent-death
+signaling kills the worker with its controller. All authority, endpoint and hook
+checks remain fresh, and absolute lease capture still precedes asynchronous
+admission work. The compare-and-renew program is prepared against the exact
+deadline map while denied, removing its load from the first live handoff.

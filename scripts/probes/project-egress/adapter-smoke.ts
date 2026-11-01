@@ -512,6 +512,7 @@ host.run('/sbin/tc', 'qdisc', 'del', 'dev', state['peer']['device'], 'clsact')
   );
   throw error;
 } finally {
+  nativeDeadline.close();
   for (const name of ['ve-receiver', 've-peer']) {
     const logs = await docker('logs', name).catch(() => 'unavailable');
     await writeFile(`/evidence/adapter-${name}-exit.jsonl`, logs);

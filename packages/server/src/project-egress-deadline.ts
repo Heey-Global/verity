@@ -1,5 +1,8 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { createDeadlineChannel } from './project-egress-deadline-channel.js';
+import {
+  createDeadlineChannel,
+  type DeadlineChannelTiming,
+} from './project-egress-deadline-channel.js';
 import { z } from 'zod';
 import type { ProjectFenceBinding } from './project-egress-fence.js';
 
@@ -121,8 +124,36 @@ export interface ProjectDeadlineRelayEnforcer extends ProjectDeadlineEnforcer {
 }
 
 /** Fixed root-owned helper; no executable or namespace comes from a project. */
-export function hostProjectDeadlineEnforcer(): ProjectDeadlineRelayEnforcer & { close(): void } {
-  const { request, close } = createDeadlineChannel();
+export interface ProjectDeadlineTiming extends DeadlineChannelTiming {
+  operation: string;
+  capturedBootNs?: string;
+  bootDeadlineNs?: string;
+  previousBootDeadlineNs?: string;
+}
+export function hostProjectDeadlineEnforcer(
+  observe?: (timing: ProjectDeadlineTiming) => void,
+): ProjectDeadlineRelayEnforcer & { close(): void } {
+  const channel = createDeadlineChannel();
+  const close = channel.close;
+  const request = (input: { operation: string; [key: string]: unknown }) =>
+    channel.request(
+      input,
+      observe
+        ? (timing) => {
+            const lease = input.lease as ProjectDeadlineLease | undefined;
+            observe({
+              ...timing,
+              operation: input.operation,
+              ...(lease
+                ? { capturedBootNs: lease.capturedBootNs, bootDeadlineNs: lease.bootDeadlineNs }
+                : {}),
+              ...(typeof input.previousBootDeadlineNs === 'string'
+                ? { previousBootDeadlineNs: input.previousBootDeadlineNs }
+                : {}),
+            });
+          }
+        : undefined,
+    );
   const denied = z.strictObject({ state: z.literal('denied') });
   return {
     close,

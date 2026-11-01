@@ -41,7 +41,7 @@ const releaseSchema = z.object({
 });
 export type QARepositoryRequest = Exclude<
   QAAnalysisRequest,
-  { action: 'projects' | 'save_report' }
+  { action: 'projects' | 'save_report' | 'resolve_repair' | 'request_repair' | 'repair_status' }
 >;
 export function createGitHubQAAnalysis(
   mint: (

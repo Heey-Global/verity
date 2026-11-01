@@ -120,6 +120,7 @@ const controller = new ProjectEgressHost(await store.load(), {
 });
 if (mode === 'restore') {
   await controller.restore(relayPolicy?.packetEnforcement === true);
+  deadline.close();
   await database?.destroy();
 } else {
   const service = await serveProjectEgressHost({
@@ -151,7 +152,10 @@ if (mode === 'restore') {
         await database?.destroy();
         process.exit(0);
       },
-      () => process.exit(1),
+      () => {
+        deadline.close();
+        process.exit(1);
+      },
     );
   };
   process.once('SIGTERM', stop);

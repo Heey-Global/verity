@@ -6,6 +6,39 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.71.1](https://github.com/Heey-Global/verity/compare/v4.71.0...v4.71.1) (2026-11-01)
+
+
+### Bug Fixes
+
+* **deploy:** move gVisor to release-20261026.0 ([#2148](https://github.com/Heey-Global/verity/issues/2148)) ([0ae1771](https://github.com/Heey-Global/verity/commit/0ae17715ca0b1ac4e82bead9c3f35a27e35b4ebf))
+
+## [4.71.0](https://github.com/Heey-Global/verity/compare/v4.70.0...v4.71.0) (2026-11-01)
+
+
+### Features
+
+* **egress:** compose host lifecycle and direct network admission ([#2117](https://github.com/Heey-Global/verity/issues/2117)) ([aa0cfb8](https://github.com/Heey-Global/verity/commit/aa0cfb8c7947791588834aa5301ffabe8f1d7756))
+* **qa:** support one-time PR repair handoffs ([#2136](https://github.com/Heey-Global/verity/issues/2136)) ([899afe3](https://github.com/Heey-Global/verity/commit/899afe3e82fd7a9215952b861de068c5f263cc06))
+* **self-update:** install archive-only gVisor releases through the update path ([#2140](https://github.com/Heey-Global/verity/issues/2140)) ([cb981b0](https://github.com/Heey-Global/verity/commit/cb981b014341a07ab3e57128f8f79621e056da79))
+
+
+### Bug Fixes
+
+* **deps:** update agent clis ([#2130](https://github.com/Heey-Global/verity/issues/2130)) ([c0c6937](https://github.com/Heey-Global/verity/commit/c0c69379a4a6a997f5c4d38393e1931fa493c59c))
+* **deps:** update dependency @agentclientprotocol/sdk to v2.1.0 ([#2131](https://github.com/Heey-Global/verity/issues/2131)) ([80043be](https://github.com/Heey-Global/verity/commit/80043bee6f1964ac92e221ce61e9d7dca1c9bcd0))
+* **deps:** update dependency @devcontainers/cli to v0.90.0 ([#2132](https://github.com/Heey-Global/verity/issues/2132)) ([5db0902](https://github.com/Heey-Global/verity/commit/5db0902a52bb14db8b996b475d8eea0bcc56b4d7))
+* **deps:** update dependency minimatch to v11.0.3 ([#2128](https://github.com/Heey-Global/verity/issues/2128)) ([d45c9d8](https://github.com/Heey-Global/verity/commit/d45c9d820988f229643187ddab205eae9bb38b88))
+* **egress:** preserve routed admission and crash recovery ([#2122](https://github.com/Heey-Global/verity/issues/2122)) ([60e368e](https://github.com/Heey-Global/verity/commit/60e368e5feb6be426dd9b21c9635ef3add9565a0))
+* **mobile:** recover device unlock after a failed Face ID read ([#2123](https://github.com/Heey-Global/verity/issues/2123)) ([7de2492](https://github.com/Heey-Global/verity/commit/7de249235af63fcb4560c2ecf026170f9b5c34d4))
+* **mobile:** request JSON for OTA manifest validation ([#2141](https://github.com/Heey-Global/verity/issues/2141)) ([cafeec6](https://github.com/Heey-Global/verity/commit/cafeec607b184325a66ce2671c4112a3c438043e))
+* **storage:** preserve idle retention across scans and wait for mutations ([#2120](https://github.com/Heey-Global/verity/issues/2120)) ([dce79e1](https://github.com/Heey-Global/verity/commit/dce79e1b0af2f9a7fc18741a8ab1fc3fc17dadd8))
+
+
+### Performance Improvements
+
+* **lint:** cache classifications and automate push preparation ([#2125](https://github.com/Heey-Global/verity/issues/2125)) ([c89aa25](https://github.com/Heey-Global/verity/commit/c89aa25420c18ced8c2f05180a761b03947b3b5f))
+
 ## [4.70.0](https://github.com/Heey-Global/verity/compare/v4.69.0...v4.70.0) (2026-10-31)
 
 

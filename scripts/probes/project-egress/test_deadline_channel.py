@@ -24,7 +24,7 @@ class DeadlineChannelTests(unittest.TestCase):
         sink = io.BytesIO()
         with tempfile.TemporaryFile() as held:
             host.serve(source, sink, held)
-        return [json.loads(v) for v in sink.getvalue().splitlines()]
+        return [{k: value for k, value in json.loads(v).items() if k not in ('startedBootNs', 'finishedBootNs')} for v in sink.getvalue().splitlines()]
 
     def test_fresh_execution_and_lock_per_operation(self):
         with patch.object(host, 'clocks', side_effect=[{'sample': 1}, {'sample': 2}]), patch.object(host.fcntl, 'flock') as lock:

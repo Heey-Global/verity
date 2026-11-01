@@ -82,6 +82,9 @@ describe('workflow token least privilege', () => {
       'renovate-notices.yml': {
         notices: { actions: 'write', contents: 'write' },
       },
+      'renovate-gvisor.yml': {
+        derive: { actions: 'write', contents: 'write' },
+      },
       'release.yml': {
         // contents: write reads draft releases for the lifecycle steps.
         'release-please': { contents: 'write', 'pull-requests': 'read' },
@@ -2242,6 +2245,33 @@ describe('GitHub-hosted runner boundary', () => {
     }
   });
 
+  it('prepares free disk before both boot VMs and rechecks after asset builds', () => {
+    const workflow = parse(readFileSync('.github/workflows/project-egress-boot.yml', 'utf8')) as {
+      jobs: Record<string, Job>;
+    };
+    for (const [name, minimum, marker] of [
+      ['boot-vm-preflight', 20, 'Prepare disposable KVM guest tooling'],
+      ['boot-retained-topology', 40, 'Prepare actual source and native guest assets'],
+    ] as const) {
+      const steps = workflow.jobs[name]!.steps!;
+      const prepare = steps.findIndex((step) => step.name === marker);
+      const reclaim = steps.findIndex(
+        (step) => step.uses === './.github/actions/reclaim-runner-disk',
+      );
+      expect(reclaim).toBeGreaterThan(
+        steps.findIndex((step) => step.uses?.startsWith('actions/checkout@')),
+      );
+      expect(reclaim).toBeLessThan(prepare);
+      expect(Number(steps[reclaim]?.with?.['minimum-free-gib'])).toBeGreaterThanOrEqual(minimum);
+    }
+    const steps = workflow.jobs['boot-retained-topology']!.steps!;
+    const run = steps.findIndex(
+      (step) => step.name === 'Retain actual topology across kernel, daemon and process events',
+    );
+    expect(steps[run - 1]?.uses).toBe('./.github/actions/reclaim-runner-disk');
+    expect(Number(steps[run - 1]?.with?.['minimum-free-gib'])).toBeGreaterThanOrEqual(36);
+  });
+
   it('reclaims only known hosted-image SDKs before disk-heavy builds', () => {
     const selfUpdate = parse(readFileSync('.github/workflows/self-update.yml', 'utf8')) as {
       jobs: Record<string, Job>;
@@ -2579,7 +2609,8 @@ describe('GitHub-hosted runner boundary', () => {
     // And what it yields has to survive the step's own shape check, which is the
     // thing standing between a candidate-supplied value and a path comparison.
     expect(run).toContain('=~ ^[A-Za-z0-9._-]+$');
-    expect(run.match(/=~ \^\[a-f0-9\]\{128\}\$/g)).toHaveLength(2);
+    // The binary pins, and the archive pins a release shipped as gVisor's archive adds.
+    expect(run.match(/=~ \^\[a-f0-9\]\{128\}\$/g)).toHaveLength(4);
     expect(extracted).toMatch(/^[A-Za-z0-9._-]+$/);
 
     const template = PINNED_RUNSC_PATH.replaceAll(PINNED_RUNSC_RELEASE, '$runsc_release');

@@ -286,3 +286,44 @@ it('contains admission failures to direct access but closes both paths on topolo
   ).rejects.toThrow('endpoint changed');
   expect(f.deadline.clearRelay).toHaveBeenCalled();
 });
+
+it('checks fresh transport facts concurrently and waits for every read before containment', async () => {
+  const f = fixture();
+  const inspectContainer = vi.fn(async (): Promise<void> => undefined);
+  const inspectNetwork = vi.fn(async () => undefined);
+  const inspectTransport = vi.fn(async () => relay.transport);
+  const host = new ProjectEgressHost(
+    { version: 1, records: [{ binding: network, containers: ids, retired: false }] },
+    {
+      enforcement: f.enforcement,
+      save: async () => undefined,
+      apply: async () => undefined,
+      inspectContainer,
+      inspectNetwork,
+      inspectTransport,
+      startContainer: async () => undefined,
+      stopContainer: async () => undefined,
+    },
+  );
+  await host.execute({ operation: 'connect', projectId: 'a', generation: 'g1' });
+  inspectContainer.mockClear();
+  inspectNetwork.mockClear();
+  inspectTransport.mockClear();
+  let release!: () => void;
+  inspectContainer.mockImplementationOnce(
+    () =>
+      new Promise<void>((resolve) => {
+        release = resolve;
+      }),
+  );
+  inspectTransport.mockRejectedValueOnce(new Error('changed transport'));
+  const refresh = host.execute({ operation: 'refresh-direct', projectId: 'a', generation: 'g1' });
+  const rejected = expect(refresh).rejects.toThrow('changed transport');
+  await vi.waitFor(() => expect(inspectTransport).toHaveBeenCalledTimes(1));
+  expect(inspectContainer).toHaveBeenCalledTimes(2);
+  expect(inspectNetwork).toHaveBeenCalledTimes(1);
+  expect(f.deadline.clearRelay).not.toHaveBeenCalled();
+  release();
+  await rejected;
+  expect(f.deadline.clearRelay).toHaveBeenCalled();
+});

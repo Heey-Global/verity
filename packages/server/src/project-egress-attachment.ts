@@ -1,4 +1,4 @@
-import { inspectProjectEgressDocker } from './project-egress-docker-inspection.js';
+import { readProjectEgressDocker } from './project-egress-docker-read.js';
 import { readFile } from 'node:fs/promises';
 import { z } from 'zod';
 import type { ProjectFenceBinding } from './project-egress-fence.js';
@@ -60,11 +60,15 @@ export async function inspectProjectFenceAttachment(
 ): Promise<ProjectFenceBinding> {
   if (![binding.containerId, binding.networkId].every((value) => /^[a-f0-9]{64}$/u.test(value)))
     throw new Error('Invalid daemon object id');
-  const container = await inspectProjectEgressDocker(['container', 'inspect', binding.containerId]);
-  const network = await inspectProjectEgressDocker(['network', 'inspect', binding.networkId]);
-  if (container === undefined || network === undefined)
-    throw new Error('Missing Docker inspection');
-  const result = verifyProjectFenceAttachment(binding, JSON.parse(container), JSON.parse(network));
+  const [container, network] = await Promise.all([
+    readProjectEgressDocker(['container', 'inspect', binding.containerId]),
+    readProjectEgressDocker(['network', 'inspect', binding.networkId]),
+  ]);
+  const result = verifyProjectFenceAttachment(
+    binding,
+    JSON.parse(container!),
+    JSON.parse(network!),
+  );
   if (!/^[a-zA-Z0-9_-]{1,15}$/u.test(result.bridge)) throw new Error('Invalid bridge interface');
   // A daemon record alone is insufficient if its network device no longer exists.
   const ifindex = Number(

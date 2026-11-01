@@ -112,6 +112,37 @@ afterEach(() => {
 });
 
 describe('deploy/bin/verity-compose', () => {
+  it('favours core infrastructure over project workloads under host OOM pressure', () => {
+    const base = parse(readFileSync('deploy/docker-compose.yml', 'utf8')) as {
+      services: Record<string, { oom_score_adj?: string; environment?: Record<string, string> }>;
+    };
+    const overlay = parse(
+      readFileSync('deploy/docker-compose.runner-supervisor.yml', 'utf8'),
+    ) as typeof base;
+    const score = (value: string | undefined): number => {
+      const match = /^\$\{\w+:-(-?\d+)\}$/.exec(value ?? '');
+      expect(match).not.toBeNull();
+      return Number(match?.[1]);
+    };
+    const projectScore = score(
+      base.services['verity']?.environment?.['VERITY_SANDBOX_OOM_SCORE_ADJ'],
+    );
+    expect(projectScore).toBeGreaterThan(0);
+    for (const name of [
+      'verity',
+      'postgres',
+      'verity-agent-gateway',
+      'verity-managed-gateway',
+      'verity-updater',
+    ]) {
+      expect(score(base.services[name]?.oom_score_adj)).toBeLessThan(projectScore);
+      expect(score(base.services[name]?.oom_score_adj)).toBeGreaterThan(-1000);
+    }
+    expect(score(overlay.services['verity-control-runner']?.oom_score_adj)).toBe(
+      desiredSpec('image', 'deployment', 'amd64', '1101').oomScoreAdj,
+    );
+  });
+
   it('keeps the Compose sandbox PID default aligned with the provisioner', () => {
     const compose = parse(readFileSync('deploy/docker-compose.yml', 'utf8')) as {
       services: Record<string, { environment?: Record<string, string> }>;
@@ -243,6 +274,14 @@ describe('deploy/bin/verity-compose', () => {
     // Same failure for the swap allowance: excluded, the documented opt-in would be
     // inert on every managed host while Compose hosts honoured it.
     expect(excluded).not.toContain('VERITY_SANDBOX_SWAP');
+    for (const name of [
+      'VERITY_SANDBOX_MEMORY_RESERVATION',
+      'VERITY_SANDBOX_HOST_RESERVE',
+      'VERITY_SANDBOX_OOM_SCORE_ADJ',
+      'VERITY_SERVER_OOM_SCORE_ADJ',
+      'VERITY_CONTROL_PLANE_RUNNER_OOM_SCORE_ADJ',
+    ])
+      expect(excluded).not.toContain(name);
   });
 
   it('gives bootstrap and the Updater the same managed ACP environment sources', () => {

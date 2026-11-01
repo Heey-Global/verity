@@ -20,6 +20,8 @@ const lifecycle = new ProjectEgressLifecycle(async (request) => {
       JSON.stringify({
         operation: request.operation,
         pid: process.pid,
+        startedAtMs: started,
+        finishedAtMs: performance.now(),
         durationMs: performance.now() - started,
       }) + '\n',
     );

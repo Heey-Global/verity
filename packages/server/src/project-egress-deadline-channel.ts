@@ -1,5 +1,13 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 
+export interface DeadlineChannelTiming {
+  queueMs: number;
+  durationMs: number;
+  startedBootNs: string;
+  finishedBootNs: string;
+  failed: boolean;
+}
+
 /** One private pipe pair; a broken channel is terminal until denied-state startup. */
 export function createDeadlineChannel(
   launch: () => ChildProcessWithoutNullStreams = () =>
@@ -21,6 +29,9 @@ export function createDeadlineChannel(
   let pending:
     | {
         id: number;
+        queuedAt: number;
+        dispatchedAt: number;
+        observe?: (timing: DeadlineChannelTiming) => void;
         resolve(value: unknown): void;
         reject(error: Error): void;
         timer: ReturnType<typeof setTimeout>;
@@ -71,12 +82,34 @@ export function createDeadlineChannel(
         const reply: unknown = JSON.parse(output.subarray(0, end).toString('utf8'));
         if (!reply || typeof reply !== 'object' || !('id' in reply) || reply.id !== pending.id)
           throw new Error('Mismatched host deadline response');
-        const keys = Object.keys(reply).sort().join(',');
+        const timed = 'startedBootNs' in reply && 'finishedBootNs' in reply;
+        if (
+          timed &&
+          (typeof reply.startedBootNs !== 'string' ||
+            typeof reply.finishedBootNs !== 'string' ||
+            !/^[0-9]{1,20}$/u.test(reply.startedBootNs) ||
+            !/^[0-9]{1,20}$/u.test(reply.finishedBootNs) ||
+            BigInt(reply.finishedBootNs) < BigInt(reply.startedBootNs))
+        )
+          throw new Error('Invalid host deadline timing');
+        if (pending.observe && !timed) throw new Error('Missing host deadline timing');
+        const keys = Object.keys(reply)
+          .filter((key) => !timed || !['startedBootNs', 'finishedBootNs'].includes(key))
+          .sort()
+          .join(',');
         if (keys !== 'id,result' && keys !== 'error,id')
           throw new Error('Invalid host deadline response');
         if ('error' in reply && typeof reply.error !== 'string')
           throw new Error('Invalid host deadline error');
         const current = pending;
+        if (timed)
+          current.observe?.({
+            queueMs: current.dispatchedAt - current.queuedAt,
+            durationMs: performance.now() - current.queuedAt,
+            startedBootNs: String(reply.startedBootNs),
+            finishedBootNs: String(reply.finishedBootNs),
+            failed: 'error' in reply,
+          });
         pending = undefined;
         output = Buffer.alloc(0);
         clearTimeout(current.timer);
@@ -92,7 +125,11 @@ export function createDeadlineChannel(
   };
   return {
     close: () => close(),
-    request: (input: unknown): Promise<unknown> => {
+    request: (
+      input: unknown,
+      observe?: (timing: DeadlineChannelTiming) => void,
+    ): Promise<unknown> => {
+      const queuedAt = performance.now();
       if (failure) return Promise.reject(failure);
       if (queued >= 64) {
         const error = new Error('Host deadline queue capacity exceeded');
@@ -118,6 +155,9 @@ export function createDeadlineChannel(
         return new Promise<unknown>((resolve, reject) => {
           pending = {
             id,
+            queuedAt,
+            dispatchedAt: performance.now(),
+            ...(observe ? { observe } : {}),
             resolve,
             reject,
             timer: setTimeout(

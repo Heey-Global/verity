@@ -29,6 +29,23 @@ export interface RepairIncident {
   updated_at: string;
 }
 
+export interface ManualRepairProposal {
+  consent_key: string | null;
+  requires_card: boolean;
+  id: string;
+  project_id: string;
+  source_session_id: string;
+  user_id: string;
+  target_session_id: string;
+  number: number;
+  branch: string;
+  revision: string;
+  qa_revision: number;
+  mandate_revision: number;
+  dispatch_id: string | null;
+  reason: string | null;
+}
+
 export interface QAState {
   enabled: boolean;
   revision: number;
@@ -46,6 +63,50 @@ export interface QAState {
 /** Claims are installation-wide; a timeout alone never releases a live executor. */
 export class RepairSupervisionStore {
   constructor(private readonly db: Kysely<Database>) {}
+  async proposeManualRepair(
+    p: Omit<ManualRepairProposal, 'dispatch_id' | 'reason' | 'consent_key'>,
+  ): Promise<void> {
+    await sql`insert into qa_manual_repairs(id,project_id,source_session_id,user_id,target_session_id,number,branch,revision,qa_revision,mandate_revision,requires_card) values (${p.id},${p.project_id},${p.source_session_id},${p.user_id},${p.target_session_id},${p.number},${p.branch},${p.revision},${p.qa_revision},${p.mandate_revision},${p.requires_card})`.execute(
+      this.db,
+    );
+  }
+  async manualRepair(id: string): Promise<ManualRepairProposal | undefined> {
+    return (
+      await sql<ManualRepairProposal>`select * from qa_manual_repairs where id=${id}`.execute(
+        this.db,
+      )
+    ).rows[0];
+  }
+  async pendingManualRepairs(): Promise<ManualRepairProposal[]> {
+    return (
+      await sql<ManualRepairProposal>`select m.* from qa_manual_repairs m join qa_dispatches d on d.id=m.dispatch_id where d.state='reserved' order by d.created_at limit 50`.execute(
+        this.db,
+      )
+    ).rows;
+  }
+  async cancelManualRepair(id: string, reason: string): Promise<void> {
+    const p = await this.manualRepair(id);
+    if (p?.dispatch_id && (await this.cancelReservedDispatch(p.dispatch_id)))
+      await sql`update qa_manual_repairs set reason=${reason} where id=${id}`.execute(this.db);
+  }
+  async manualConsentAvailable(id: string, key: string): Promise<boolean> {
+    return (
+      (
+        await sql`select id from qa_manual_repairs where consent_key=${key} and id<>${id}`.execute(
+          this.db,
+        )
+      ).rows.length === 0
+    );
+  }
+  async manualRepairValid(id: string): Promise<boolean> {
+    return (
+      (
+        await sql`select id from qa_manual_repairs where id=${id} and expires_at > now() and reason is null`.execute(
+          this.db,
+        )
+      ).rows.length > 0
+    );
+  }
   async qa(): Promise<QAState> {
     const row = (await sql<QAState>`select * from qa_coordinator where id = 1`.execute(this.db))
       .rows[0];
@@ -268,7 +329,9 @@ export class RepairSupervisionStore {
       await sql<{
         id: string;
         session_id: string;
-      }>`select id,session_id from qa_dispatches where state='reserved'`.execute(this.db)
+      }>`select id,session_id from qa_dispatches d where state='reserved' and not exists(select 1 from qa_manual_repairs m where m.dispatch_id=d.id)`.execute(
+        this.db,
+      )
     ).rows;
   }
   async cancelReservedDispatch(id: string): Promise<boolean> {
@@ -349,16 +412,50 @@ export class RepairSupervisionStore {
     sessionId: string,
     mandateRevision: number,
     qaRevision?: number,
+    manualProposalId?: string,
+    consentKey?: string,
   ): Promise<RepairIncident | undefined> {
     return this.db.transaction().execute(async (trx) => {
       // The lock covers the global limit as well as a project's exclusive owner.
       await sql`select pg_advisory_xact_lock(712843, 1)`.execute(trx);
+      let manual: ManualRepairProposal | undefined;
+      if (manualProposalId) {
+        manual = (
+          await sql<ManualRepairProposal>`select * from qa_manual_repairs where id=${manualProposalId} and target_session_id=${sessionId} and dispatch_id is null and reason is null and expires_at > now() and qa_revision=${qaRevision ?? -1} and mandate_revision=${mandateRevision} for update`.execute(
+            trx,
+          )
+        ).rows[0];
+        if (!manual) return undefined;
+        if (
+          consentKey &&
+          (
+            await sql`select id from qa_manual_repairs where consent_key=${consentKey} and id<>${manual.id}`.execute(
+              trx,
+            )
+          ).rows.length
+        )
+          return undefined;
+        const incident = (
+          await sql<RepairIncident>`select * from repair_incidents where id=${id}`.execute(trx)
+        ).rows[0];
+        if (
+          !incident ||
+          incident.project_id !== manual.project_id ||
+          incident.resource !== `pr:${manual.number}` ||
+          incident.revision !== manual.revision
+        )
+          return undefined;
+      }
       const result =
-        await sql<RepairIncident>`update repair_incidents i set state = 'working', owner_session_id = ${sessionId}, last_session_id = ${sessionId}, attempts = attempts + 1, dispatch_id = ${randomUUID()}, updated_at = now() where i.id = ${id} and (${qaRevision === undefined} or exists (select 1 from qa_coordinator c where c.id = 1 and c.enabled = true and c.revision = ${qaRevision ?? -1})) and i.state = 'open' and coalesce((select used from repair_resource_budgets b where b.project_id=i.project_id and b.resource=i.resource),0) < 2 and exists (select 1 from repair_mandates m where m.project_id = i.project_id and m.mode = 'automatic' and m.revision = ${mandateRevision}) and not exists (select 1 from repair_incidents other where other.project_id = i.project_id and other.owner_session_id is not null) and (select count(*) from repair_incidents where owner_session_id is not null) < 2 returning i.*`.execute(
+        await sql<RepairIncident>`update repair_incidents i set state = 'working', owner_session_id = ${sessionId}, last_session_id = ${sessionId}, attempts = attempts + 1, dispatch_id = ${randomUUID()}, updated_at = now() where i.id = ${id} and (${qaRevision === undefined} or exists (select 1 from qa_coordinator c where c.id = 1 and c.enabled = true and c.revision = ${qaRevision ?? -1})) and (i.state = 'open' or (${manual !== undefined} and i.state = 'verifying' and i.owner_session_id is null)) and coalesce((select used from repair_resource_budgets b where b.project_id=i.project_id and b.resource=i.resource),0) < 2 and exists (select 1 from repair_mandates m where m.project_id = i.project_id and (m.mode = 'automatic' or (${manual !== undefined} and m.mode = 'monitor')) and m.revision = ${mandateRevision}) and not exists (select 1 from repair_incidents other where other.project_id = i.project_id and other.owner_session_id is not null) and (select count(*) from repair_incidents where owner_session_id is not null) < 2 returning i.*`.execute(
           trx,
         );
       const claim = result.rows[0];
       if (claim?.dispatch_id) {
+        if (manual)
+          await sql`update qa_manual_repairs set dispatch_id=${claim.dispatch_id},consent_key=${consentKey ?? null} where id=${manual.id}`.execute(
+            trx,
+          );
         await sql`insert into repair_attempts (dispatch_id, incident_id, session_id) values (${claim.dispatch_id}, ${claim.id}, ${sessionId})`.execute(
           trx,
         );

@@ -1,7 +1,10 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { resolve } from 'node:path';
 import { afterEach, expect, it } from 'vitest';
-import { createDeadlineChannel } from './project-egress-deadline-channel.js';
+import {
+  createDeadlineChannel,
+  type DeadlineChannelTiming,
+} from './project-egress-deadline-channel.js';
 
 const channels: ReturnType<typeof createDeadlineChannel>[] = [];
 afterEach(() => {
@@ -99,11 +102,25 @@ h.bind_parent(os.getppid())
 with tempfile.TemporaryFile() as held:
  h.serve(sys.stdin.buffer,sys.stdout.buffer,held)
 `);
-  const first = (await f.channel.request({ operation: 'clock' })) as {
+  const timings: DeadlineChannelTiming[] = [];
+  const first = (await f.channel.request({ operation: 'clock' }, (timing) =>
+    timings.push(timing),
+  )) as {
     bootBeforeNs: string;
     bootAfterNs: string;
   };
+  expect(timings).toHaveLength(1);
+  expect(BigInt(timings[0]!.startedBootNs)).toBeLessThanOrEqual(BigInt(first.bootBeforeNs));
+  expect(BigInt(timings[0]!.finishedBootNs)).toBeGreaterThanOrEqual(BigInt(first.bootAfterNs));
   const second = (await f.channel.request({ operation: 'clock' })) as typeof first;
   expect(BigInt(second.bootBeforeNs)).toBeGreaterThan(BigInt(first.bootAfterNs));
   expect(f.launches()).toBe(1);
+});
+
+it('rejects missing timing when required by the native evidence observer', async () => {
+  const f = fixture(echo);
+  await expect(f.channel.request('clock', () => undefined)).rejects.toThrow(
+    'Missing host deadline timing',
+  );
+  await expect(f.channel.request('clock')).rejects.toThrow('Missing host deadline timing');
 });
