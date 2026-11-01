@@ -126,7 +126,14 @@ fi
     cwd,
     encoding: 'utf8',
     input: opts.input,
-    env: { ...process.env, ...hermeticGit, PATH: opts.path ?? process.env.PATH, ...opts.env },
+    env: {
+      ...process.env,
+      ...hermeticGit,
+      // A copied hook cannot rely on a globally installed seed scanner in CI.
+      VERITY_SECRET_SCAN_BIN: passingSecretScan(),
+      PATH: opts.path ?? process.env.PATH,
+      ...opts.env,
+    },
   });
 }
 
