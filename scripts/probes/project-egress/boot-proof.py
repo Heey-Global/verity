@@ -58,8 +58,9 @@ def remove_fences_mutation(vm, guest, evidence):
     # them itself. Readmitting an already tampered generation is refused and contained
     # by the TC attestation, so removal must not precede it. The receipt window
     # starts only after that removal has returned.
-    inflight = json.loads(vm.ssh(guest + 'inflight removed-fences', timeout=20))
-    (evidence / 'mutation-inflight.json').write_text(json.dumps(inflight))
+    output = vm.ssh(guest + 'inflight removed-fences', timeout=20)
+    (evidence / 'mutation-inflight.json').write_text(output)
+    inflight = json.loads(output)
     assert inflight.get('fencesRemoved') is True, 'In-flight control did not remove the kernel fences'
     started_ns = time.time_ns()
     vm.ssh(guest + 'external')
