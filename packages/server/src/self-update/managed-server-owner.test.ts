@@ -311,6 +311,7 @@ describe('managed Server host limits', () => {
    *  ceilings a daemon would report for one created from it. */
   const limited = (overrides: Partial<ContainerInspect> = {}): ContainerInspect => ({
     ...owned(true),
+    oomScoreAdj: -250,
     memoryBytes: 4 * 1024 ** 3,
     memorySwapBytes: 4 * 1024 ** 3,
     nanoCpus: 4_000_000_000,
@@ -351,6 +352,8 @@ describe('managed Server host limits', () => {
     ['unlimited swap', { memorySwapBytes: -1 }],
     ['more CPU', { nanoCpus: 8_000_000_000 }],
     ['no fork-bomb guard', { pidsLimit: -1 }],
+    ['an unprotected OOM preference', { oomScoreAdj: 0 }],
+    ['a different protected OOM preference', { oomScoreAdj: -100 }],
   ])('refuses a candidate with %s', async (_label, drift) => {
     const legacy = sealed();
     const desired = await containerSpec(legacy);

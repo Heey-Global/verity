@@ -258,9 +258,10 @@ function effectiveEnvironment(
 const ceiling = (value: number | undefined): number =>
   value === undefined || value <= 0 ? 0 : value;
 
-/** Whether a container carries exactly the four host ceilings a spec states. */
+/** Whether a container carries the host ceilings and OOM preference a spec states. */
 function hostLimitsMatch(inspect: ContainerInspect, desired: ContainerSpec): boolean {
   return (
+    (inspect.oomScoreAdj ?? 0) === (desired.oomScoreAdj ?? 0) &&
     ceiling(inspect.memoryBytes) === ceiling(desired.memoryBytes) &&
     ceiling(inspect.memorySwapBytes) === ceiling(desired.memorySwapBytes) &&
     ceiling(inspect.nanoCpus) === ceiling(desired.nanoCpus) &&

@@ -500,6 +500,8 @@ export async function reconcileManagedControlPlaneRunner(
     throw new Error(`managed Server authority unavailable: ${deployment.reason}`);
   const environment = options.environment ?? process.env;
   if (!enabled(deployment.spec.mounts, environment)) return;
+  const oomScoreAdj =
+    parseOomScoreAdj(environment.VERITY_CONTROL_PLANE_RUNNER_OOM_SCORE_ADJ) ?? -250;
   const runtimeGid = environment.VERITY_RUNNER_RUNTIME_GID?.trim() || '1101';
   if (!/^[1-9][0-9]{0,9}$/.test(runtimeGid))
     throw new Error('VERITY_RUNNER_RUNTIME_GID must be a positive group ID');
@@ -592,6 +594,7 @@ export async function reconcileManagedControlPlaneRunner(
     if (
       current.image === deployment.spec.image &&
       current.running &&
+      (current.oomScoreAdj ?? 0) === oomScoreAdj &&
       socketMatches(current) &&
       knowledgeMatches(current)
     ) {
@@ -616,7 +619,7 @@ export async function reconcileManagedControlPlaneRunner(
     deployment.spec.platform.architecture,
     runtimeGid,
     dockerSocket,
-    parseOomScoreAdj(environment.VERITY_CONTROL_PLANE_RUNNER_OOM_SCORE_ADJ) ?? -250,
+    oomScoreAdj,
   );
   const createdId = await create(options, desired);
 
