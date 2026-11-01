@@ -180,3 +180,11 @@ it('bounds an input pipe whose worker never reads requests', async () => {
   });
   await expect(worker.request({ value: 'x'.repeat(65000) })).rejects.toThrow('timed out');
 });
+
+it('waits for confirmed worker exit before dispatching a fresh containment request', async () => {
+  const { worker, children } = fixture();
+  await expect(worker.request({ mode: 'malformed' })).rejects.toThrow();
+  await expect(worker.request({ value: 'deny' })).resolves.toMatchObject({ value: 'deny' });
+  expect(children).toHaveLength(2);
+  expect(children[0]!.exitCode !== null || children[0]!.signalCode !== null).toBe(true);
+});

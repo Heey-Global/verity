@@ -83,9 +83,15 @@ export function createProjectDeadlineWorker(
       worker.stderr.on('data', (chunk: string) => {
         diagnostic = (diagnostic + chunk).slice(-8192);
       });
-      worker.once('error', (error) => fail(error));
-      worker.stdin.on('error', (error) => fail(error));
-      worker.stdout.on('error', (error) => fail(error));
+      worker.once('error', (error) => {
+        if (!retiring && child === worker) fail(error);
+      });
+      worker.stdin.on('error', (error) => {
+        if (!retiring && child === worker) fail(error);
+      });
+      worker.stdout.on('error', (error) => {
+        if (!retiring && child === worker) fail(error);
+      });
       worker.stdout.once('end', () => {
         if (!retiring) fail(new Error('Host deadline worker output ended'));
       });
@@ -144,8 +150,9 @@ export function createProjectDeadlineWorker(
     active = queue.shift()!;
     active.dispatchedAt = performance.now();
     // No second frame is written until the reply arrives, bounding pipe backpressure.
-    child.stdin.write(active.frame, (error) => {
-      if (error) fail(error);
+    const writer = child;
+    writer.stdin.write(active.frame, (error) => {
+      if (error && !retiring && child === writer) fail(error);
     });
   };
   return {
@@ -154,8 +161,7 @@ export function createProjectDeadlineWorker(
       validate: (value: unknown) => unknown = (value) => value,
       observe?: (timing: DeadlineWorkerTiming) => void,
     ): Promise<unknown> {
-      if (stopped || retiring)
-        return Promise.reject(new Error('Host deadline worker is unavailable'));
+      if (stopped) return Promise.reject(new Error('Host deadline worker is unavailable'));
       if (queue.length + Number(active !== undefined) >= 16)
         return Promise.reject(new Error('Host deadline worker queue is full'));
       const id = ++sequence;
