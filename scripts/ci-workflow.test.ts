@@ -1310,7 +1310,7 @@ describe('mobile OTA promotion', () => {
     };
     const stageCommands = stage.jobs.update.steps.map((step) => step.run ?? '').join('\n');
     const promoteCommands = promotion.jobs.promote.steps.map((step) => step.run ?? '').join('\n');
-    expect(stageCommands).toContain('scripts/mobile-ota-release.ts stage');
+    expect(stageCommands).toContain('node "$OTA_RELEASE_TOOLS/mobile-ota-release.ts" stage');
     expect(stageCommands).toContain('scripts/mobile-native-compatibility.mjs');
     expect(promoteCommands).toContain('scripts/mobile-ota-release.ts promote');
     expect(promotion.concurrency).toMatchObject({

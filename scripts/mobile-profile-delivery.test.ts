@@ -118,6 +118,55 @@ with tempfile.TemporaryDirectory() as tmp:
       rmSync(root, { recursive: true, force: true });
     }
   });
+  it('runs repaired release tooling while preserving the immutable app checkout', () => {
+    const workflow = parse(readFileSync('.github/workflows/mobile-ota.yml', 'utf8'));
+    const steps = workflow.jobs.update.steps as { name?: string; run?: string }[];
+    const checkout = steps.find(
+      (step) => step.name === 'Check out the immutable merged release source',
+    );
+    const prepare = steps.find(
+      (step) => step.name === 'Prepare immutable candidate and validate exact CPU map',
+    );
+    const deliver = steps.find(
+      (step) => step.name === 'Stage immutable candidate and update rolling promotion PR',
+    );
+    execFileSync('python3', [
+      '-c',
+      String.raw`
+import json, os, pathlib, subprocess, sys, tempfile
+checkout, prepare, deliver = json.loads(sys.argv[1])
+with tempfile.TemporaryDirectory() as directory:
+    root = pathlib.Path(directory)
+    repo = root / 'repo'
+    repo.mkdir()
+    env = dict(os.environ, RUNNER_TEMP=str(root), GITHUB_ENV=str(root / 'env'))
+    def run(*args):
+        return subprocess.check_output(args, cwd=repo, env=env, text=True).strip()
+    run('git', 'init', '-q')
+    (repo / 'scripts').mkdir()
+    (repo / 'app.txt').write_text('immutable app')
+    (repo / 'scripts/mobile-ota-release.ts').write_text("throw Error('old broken tooling')")
+    run('git', 'add', '.')
+    run('git', '-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'source')
+    source = run('git', 'rev-parse', 'HEAD')
+    (repo / 'scripts/release-bot-logins.mjs').write_text("export const marker = 'repaired';")
+    (repo / 'scripts/mobile-ota-release.ts').write_text("import {marker} from './release-bot-logins.mjs'; import {readFileSync} from 'node:fs'; console.log(marker + ':' + readFileSync('app.txt', 'utf8'));")
+    (repo / 'app.txt').write_text('newer unapproved app')
+    run('git', 'add', '.')
+    run('git', '-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'repair')
+    # Replace GitHub expressions as the runner does, but execute the real shell.
+    import re
+    run('bash', '-euc', re.sub(r'\$\{\{.*?\}\}', source, checkout))
+    assert run('git', 'rev-parse', 'HEAD') == source
+    assert (repo / 'scripts/mobile-ota-release.ts').read_text() == "throw Error('old broken tooling')"
+    key, value = pathlib.Path(env['GITHUB_ENV']).read_text().strip().split('=', 1)
+    env[key] = value
+    for command in (prepare, deliver):
+        assert run('bash', '-euc', re.sub(r'\$\{\{.*?\}\}', 'fixture', command)) == 'repaired:immutable app'
+`,
+      JSON.stringify([checkout?.run, prepare?.run, deliver?.run]),
+    ]);
+  });
   it('uploads recoverable OTA maps before channel delivery', () => {
     const workflow = parse(readFileSync('.github/workflows/mobile-ota.yml', 'utf8')) as {
       jobs: Record<
@@ -128,13 +177,13 @@ with tempfile.TemporaryDirectory() as tmp:
     const jobs = Object.values(workflow.jobs);
     const steps = jobs.flatMap((job) => job.steps);
     const prepare = steps.findIndex((step) =>
-      step.run?.includes('mobile-ota-release.ts stage-map '),
+      step.run?.includes('mobile-ota-release.ts" stage-map '),
     );
     const retain = steps.findIndex(
       (step) =>
         typeof step.with?.path === 'string' && step.with.path.includes('profiling-artifacts/ota-'),
     );
-    const deliver = steps.findIndex((step) => step.run?.includes('mobile-ota-release.ts stage '));
+    const deliver = steps.findIndex((step) => step.run?.includes('mobile-ota-release.ts" stage '));
     expect(prepare).toBeGreaterThan(-1);
     expect(retain).toBeGreaterThan(prepare);
     expect(deliver).toBeGreaterThan(retain);
