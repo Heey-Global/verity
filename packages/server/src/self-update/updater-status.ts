@@ -1,3 +1,8 @@
+import {
+  readHostPreparation,
+  parseHostPreparation,
+  type HostPreparation,
+} from './host-preparation.js';
 import { releaseChannelFromEnv } from './release-channel.js';
 import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { createServer, request, type Server } from 'node:http';
@@ -848,6 +853,7 @@ export const UPDATER_CONTROL_ROUTES = [
   'POST /v1/update-channel',
   'POST /v1/update',
   'GET /v1/update/attempt',
+  'GET /v1/update/host-preparation',
   'POST /v1/update/retry',
   'POST /v1/matrix-connector/configured',
   'GET /v1/handoff',
@@ -1000,6 +1006,14 @@ async function serveUpdaterRequest(
         stamp,
       }),
     );
+    return;
+  }
+  if (path === '/v1/update/host-preparation') {
+    const root = options.journalRoot ?? options.managedRoot;
+    const journal = await readUpdateJournal(root);
+    res
+      .writeHead(200)
+      .end(JSON.stringify({ hostPreparation: await readHostPreparation(root, journal) }));
     return;
   }
   if (path === '/v1/update/attempt') {
@@ -1647,4 +1661,17 @@ export async function updaterUpdateChannel(
   if (value !== 'stable' && value !== 'staging')
     throw new Error('invalid updater channel response');
   return value;
+}
+
+/** Optional sidecar route: old Updaters return 404 without breaking the closed operation wire. */
+export async function readUpdaterHostPreparation(
+  options: UpdaterCallOptions,
+): Promise<HostPreparation | null> {
+  const { status, value } = await call(options, {
+    method: 'GET',
+    path: '/v1/update/host-preparation',
+  });
+  if (status !== 200 || value === null || typeof value !== 'object' || Array.isArray(value))
+    return null;
+  return parseHostPreparation((value as Record<string, unknown>).hostPreparation);
 }

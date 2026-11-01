@@ -480,6 +480,7 @@ export interface ContainerInspect {
   extraHosts?: string[] | undefined;
   sysctls?: Record<string, string> | undefined;
   networkMode?: string | undefined;
+  pidMode?: string | undefined;
   readOnlyRootfs?: boolean | undefined;
   tmpfs?: Record<string, string> | undefined;
   capDrop?: string[] | undefined;
@@ -2118,6 +2119,7 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
           PortBindings?: ContainerReplacementConfig['portBindings'];
           Runtime?: unknown;
           NetworkMode?: unknown;
+          PidMode?: unknown;
           ExtraHosts?: unknown;
           Sysctls?: unknown;
           ReadonlyRootfs?: unknown;
@@ -2205,6 +2207,9 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
         ...(typeof json.RestartCount === 'number' ? { restartCount: json.RestartCount } : {}),
         ...(typeof json.State?.Health?.Status === 'string'
           ? { healthStatus: json.State.Health.Status }
+          : {}),
+        ...(typeof json.HostConfig?.PidMode === 'string'
+          ? { pidMode: json.HostConfig.PidMode }
           : {}),
         ...(typeof json.HostConfig?.NetworkMode === 'string'
           ? { networkMode: json.HostConfig.NetworkMode }

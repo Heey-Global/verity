@@ -3186,3 +3186,19 @@ it('GC removal never forces a running container or deletes volumes', async () =>
   await docker.removeStoppedContainer!('stopped');
   expect(fetch.calls[0]?.url).toContain('force=false&v=false');
 });
+
+it('retains host PID visibility when inspecting a recoverable host helper', async () => {
+  const fetch = fakeFetch([
+    {
+      match: /\/containers\/helper\/json/,
+      method: 'GET',
+      resp: res({
+        Id: 'helper',
+        State: { Running: false, Status: 'exited', ExitCode: 0 },
+        HostConfig: { PidMode: 'host' },
+      }),
+    },
+  ]);
+  const docker = createDockerClient({ baseUrl: 'http://127.0.0.1:9234/v1.41', fetch });
+  expect(await docker.inspectContainer('helper')).toMatchObject({ pidMode: 'host', exitCode: 0 });
+});
