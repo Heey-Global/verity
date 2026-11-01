@@ -628,6 +628,58 @@ describeHost('verity-host-runtime install-self', () => {
 });
 
 describeHost('durable Docker runtime configuration recovery', () => {
+  it.each([0, 1])(
+    'refuses an empty live snapshot with Docker exit %i before publication',
+    (status) => {
+      const h = host({ daemon: { 'log-level': 'debug' } });
+      const before = readFileSync(h.daemonJson, 'utf8');
+      writeFileSync(join(h.root, 'bin/docker'), `#!/bin/bash\nexit ${String(status)}\n`, {
+        mode: 0o755,
+      });
+      mkdirSync(h.state, { recursive: true });
+      writeFileSync(
+        join(h.state, 'request.json'),
+        JSON.stringify({
+          version: 1,
+          id: 'snapshot-failure',
+          requirements: {
+            release,
+            sha512: {
+              x86_64: createHash('sha512')
+                .update(readFileSync(join(h.root, 'runsc.download')))
+                .digest('hex'),
+              aarch64: 'b'.repeat(128),
+            },
+            runtimes: { runsc: runscArgs, 'runsc-project': projectArgs },
+          },
+        }),
+      );
+      const result = h.run('apply-request');
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('could not inspect current Docker runtime registrations');
+      expect(readFileSync(h.daemonJson, 'utf8')).toBe(before);
+      expect(existsSync(join(h.root, 'private/daemon-install/pending'))).toBe(false);
+      expect(h.callsOf('systemctl').some((call) => call.includes('reload'))).toBe(false);
+    },
+  );
+
+  it.each(['{}', ''])(
+    'retains recovery intent when Docker inspection fails (snapshot %j)',
+    (live) => {
+      const h = host();
+      const transaction = join(h.root, 'private/daemon-install');
+      mkdirSync(transaction, { recursive: true });
+      writeFileSync(join(transaction, 'pending'), '');
+      writeFileSync(join(transaction, 'absent'), '');
+      writeFileSync(join(transaction, 'live'), live);
+      writeFileSync(join(h.root, 'bin/docker'), '#!/bin/bash\nexit 1\n', { mode: 0o755 });
+      const result = h.run('apply-pins', h.pins);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('recovery-required');
+      expect(existsSync(join(transaction, 'pending'))).toBe(true);
+    },
+  );
+
   it('recovers a killed configuration publication before reconciling forward', () => {
     const h = host();
     const systemctl = join(h.root, 'bin/systemctl');
