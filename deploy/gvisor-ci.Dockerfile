@@ -30,7 +30,7 @@ RUN set -eu; \
       tar -xjf /tmp/gvisor.tar.bz2 -C "$(dirname "$install_path")" --no-same-owner runsc gvisor-bin; \
       rm -f /tmp/gvisor.tar.bz2; \
       test -f "$(dirname "$install_path")/gvisor-bin/gvisor_sentry"; \
-      (cd "$(dirname "$install_path")" && find runsc gvisor-bin -type f | LC_ALL=C sort | \
+      (set -o pipefail; cd "$(dirname "$install_path")" && find runsc gvisor-bin -type f | LC_ALL=C sort | \
         while IFS= read -r file; do sha512sum -- "$file"; done) >"$(dirname "$install_path")/.verity-files.sha512"; \
       printf '%s\n' "$archive_checksum" >"$(dirname "$install_path")/.verity-archive-sha512"; \
       chmod 0644 "$(dirname "$install_path")/.verity-files.sha512" "$(dirname "$install_path")/.verity-archive-sha512"; \
