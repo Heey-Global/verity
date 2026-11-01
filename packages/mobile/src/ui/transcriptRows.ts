@@ -1,3 +1,4 @@
+import { qaAssignmentView } from './qaAssignment.js';
 import type { Message, ToolCallMessage } from '../happy/message.js';
 import { PRESENT_PLAN_TOOL, START_PLANNING_TOOL, planningToolName } from '@verity/events';
 
@@ -124,6 +125,11 @@ function buildRows(
 
   for (const m of messages) {
     if (m.kind !== 'tool-call') {
+      flushAll();
+      rows.push({ kind: 'message', message: m });
+      continue;
+    }
+    if (qaAssignmentView(m.tool)) {
       flushAll();
       rows.push({ kind: 'message', message: m });
       continue;

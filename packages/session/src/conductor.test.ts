@@ -11079,3 +11079,41 @@ it.each(['existing', 'fresh'] as const)(
     }
   },
 );
+
+it('cancels only the live turn matching an assignment receipt', async () => {
+  await ctx.store.createSession({
+    sessionId: 'assignment-target',
+    worktree: '/wt/assignment',
+    model: 'm',
+  });
+  const conductor = new Conductor({
+    store: ctx.store,
+    backend: { run: (opts) => runScript(opts, { abortable: true }) },
+    worktreeExists: async () => true,
+  });
+  await conductor.dispatchTurn('assignment-target', 'work');
+  await vi.waitFor(async () => expect((await ctx.store.listRunningTurns()).length).toBe(1));
+  const marker = (await ctx.store.listRunningTurns())[0]!;
+  const receipt = vi.spyOn(ctx.store.repairs, 'dispatchReceipt');
+  receipt.mockResolvedValue({
+    session_id: 'assignment-target',
+    state: 'admitted',
+    prompt_seq: String(marker.promptSeq - 1),
+  });
+  expect(await conductor.cancelAssignmentTurn('assignment-target', 'old')).toBe(false);
+  expect(conductor.isBusy('assignment-target')).toBe(true);
+  receipt.mockResolvedValue({
+    session_id: 'different-session',
+    state: 'admitted',
+    prompt_seq: String(marker.promptSeq),
+  });
+  expect(await conductor.cancelAssignmentTurn('assignment-target', 'foreign')).toBe(false);
+  receipt.mockResolvedValue({
+    session_id: 'assignment-target',
+    state: 'admitted',
+    prompt_seq: String(marker.promptSeq),
+  });
+  expect(await conductor.cancelAssignmentTurn('assignment-target', 'current')).toBe(true);
+  await vi.waitFor(() => expect(conductor.isBusy('assignment-target')).toBe(false));
+  receipt.mockRestore();
+});
