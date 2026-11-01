@@ -204,9 +204,13 @@ def renew_deadline(root, index, previous, deadline):
     attr = TestRunAttr(prog_fd=fd, data_size_in=len(packet), data_size_out=len(packet),
                        data_in=ctypes.addressof(data), data_out=ctypes.addressof(output), repeat=1)
     try:
+        before = time.clock_gettime_ns(time.CLOCK_BOOTTIME)
         bpf(10, attr)
+        after = time.clock_gettime_ns(time.CLOCK_BOOTTIME)
         if attr.retval != 1:
-            raise ValueError('Kernel deadline continuity expired or changed')
+            raise ValueError('Kernel deadline continuity expired or changed: ' + json.dumps({
+                'previous': str(previous), 'next': str(deadline),
+                'testBeforeNs': str(before), 'testAfterNs': str(after), 'result': attr.retval}))
     finally:
         os.close(fd)
 
