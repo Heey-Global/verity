@@ -402,13 +402,22 @@ export class ProjectEgressHost {
         if (!this.deps.enforcement || !this.transports.has(key(record.binding)))
           throw new Error('Direct enforcement is not ready');
         const verifyTransport = async () => {
-          for (const role of ['sandbox', 'relay'] as const)
-            await this.deps.inspectContainer(record.binding, record.containers[role]!, role);
-          await this.deps.inspectNetwork(record.binding, containerIds(record));
-          const transport = await this.deps.inspectTransport?.(record.binding, {
-            sandbox: record.containers.sandbox!,
-            relay: record.containers.relay!,
-          });
+          // These checks only read daemon state. Await every result before admission
+          // or containment so a failed check cannot leave an unobserved sibling.
+          const checks = await Promise.allSettled([
+            ...(['sandbox', 'relay'] as const).map((role) =>
+              this.deps.inspectContainer(record.binding, record.containers[role]!, role),
+            ),
+            this.deps.inspectNetwork(record.binding, containerIds(record)),
+            this.deps.inspectTransport?.(record.binding, {
+              sandbox: record.containers.sandbox!,
+              relay: record.containers.relay!,
+            }),
+          ]);
+          for (const check of checks) if (check.status === 'rejected') throw check.reason;
+          const transportCheck = checks[3]!;
+          const transport =
+            transportCheck.status === 'fulfilled' ? transportCheck.value : undefined;
           if (
             JSON.stringify(transport) !==
             JSON.stringify(this.transports.get(key(record.binding))!.transport)

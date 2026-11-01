@@ -67,12 +67,11 @@ export async function inspectProjectFenceAttachment(
     maxBuffer: 2 * 1024 * 1024,
     env: { PATH: '/usr/sbin:/usr/bin:/sbin:/bin', DOCKER_HOST: 'unix:///var/run/docker.sock' },
   };
-  const container = await exec(
-    '/usr/bin/docker',
-    ['container', 'inspect', binding.containerId],
-    options,
-  );
-  const network = await exec('/usr/bin/docker', ['network', 'inspect', binding.networkId], options);
+  // Both daemon reads are independent; neither may reuse a previous refresh's facts.
+  const [container, network] = await Promise.all([
+    exec('/usr/bin/docker', ['container', 'inspect', binding.containerId], options),
+    exec('/usr/bin/docker', ['network', 'inspect', binding.networkId], options),
+  ]);
   const result = verifyProjectFenceAttachment(
     binding,
     JSON.parse(container.stdout),

@@ -60,13 +60,44 @@ let relayPolicy: EgressRelayPolicy | undefined;
 const starts: string[] = [];
 const composedTargets = ['11.77.106.2', '2001:4860:feed:106::2'];
 let directEnabled = true;
+// Fixed stage names only: no targets, policy contents, identifiers or per-call growth.
+const stageTimings = new Map<
+  string,
+  { count: number; totalMs: number; maxMs: number; failures: number }
+>();
+function measured<A extends unknown[], R>(stage: string, operation: (...args: A) => Promise<R>) {
+  return async (...args: A): Promise<R> => {
+    const started = performance.now();
+    let failed = true;
+    try {
+      const result = await operation(...args);
+      failed = false;
+      return result;
+    } finally {
+      const durationMs = performance.now() - started;
+      const summary = stageTimings.get(stage) ?? { count: 0, totalMs: 0, maxMs: 0, failures: 0 };
+      summary.count++;
+      summary.totalMs += durationMs;
+      summary.maxMs = Math.max(summary.maxMs, durationMs);
+      summary.failures += Number(failed);
+      stageTimings.set(stage, summary);
+    }
+  };
+}
 function createEnforcement() {
+  const deadline = hostProjectDeadlineEnforcer();
   return createProjectEgressHostEnforcement({
-    deadline: hostProjectDeadlineEnforcer(),
+    deadline: {
+      ...deadline,
+      clock: measured('kernel-clock', () => deadline.clock()),
+      arm: measured('kernel-arm', deadline.arm.bind(deadline)),
+      renew: measured('kernel-renew', deadline.renew!.bind(deadline)),
+      revoke: measured('kernel-revoke', deadline.revoke.bind(deadline)),
+    },
     sponsor: () => 'fixture-sponsor',
     directAuthority: () => true,
     store: {
-      readForAdmission: (projectId, sponsor) => {
+      readForAdmission: measured('authority', (projectId, sponsor) => {
         assert.equal(projectId, 'host-smoke');
         assert.equal(sponsor, 'fixture-sponsor');
         return Promise.resolve({
@@ -87,12 +118,12 @@ function createEnforcement() {
               )
             : [],
         });
-      },
+      }),
     },
-    inspect: inspectEgressHostDirect,
+    inspect: measured('direct-inspection', inspectEgressHostDirect),
     dependencies: {
-      inspect: inspectProjectFenceAttachment,
-      apply: applyProjectFenceRules,
+      inspect: measured('attachment', inspectProjectFenceAttachment),
+      apply: measured('kernel-rules', applyProjectFenceRules),
       directTargetAllowed: (host) => Promise.resolve(composedTargets.includes(host)),
       destinationAllowed: (address) => Promise.resolve(composedTargets.includes(address)),
       resolve: () => Promise.reject(new Error('Exact address fixture')),
@@ -113,13 +144,15 @@ const dependencies = {
     binding: Parameters<typeof inspectEgressTransport>[0],
     ids: Parameters<typeof inspectEgressTransport>[1],
   ) =>
-    inspectEgressTransport(binding, ids, relayPolicy?.codexSubpath !== undefined).catch(
-      async (error: unknown) => {
-        process.stderr.write(`Transport inspection failed: ${String(error)}\n`);
-        await writeFile('/evidence/transport-inspection-error.txt', String(error));
-        throw error;
-      },
-    ),
+    measured('transport', inspectEgressTransport)(
+      binding,
+      ids,
+      relayPolicy?.codexSubpath !== undefined,
+    ).catch(async (error: unknown) => {
+      process.stderr.write(`Transport inspection failed: ${String(error)}\n`);
+      await writeFile('/evidence/transport-inspection-error.txt', String(error));
+      throw error;
+    }),
   save: (state: Parameters<typeof store.save>[0]) => store.save(state),
   apply: async (script: string) => {
     try {
@@ -137,7 +170,7 @@ const dependencies = {
       throw error;
     }
   },
-  inspectNetwork: inspectEgressHostNetwork,
+  inspectNetwork: measured('network', inspectEgressHostNetwork),
   inspectContainer: async (
     binding: Parameters<typeof inspectEgressHostContainer>[0],
     id: string,
@@ -1190,6 +1223,10 @@ try {
   );
   throw error;
 } finally {
+  await writeFile(
+    '/evidence/renewal-stages.json',
+    JSON.stringify(Object.fromEntries(stageTimings), null, 2),
+  );
   if (server)
     await new Promise<void>((resolve, reject) =>
       server.close((error) => (error ? reject(error) : resolve())),

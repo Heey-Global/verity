@@ -218,3 +218,18 @@ verdict with `python3 scripts/probes/project-egress/boot-proof.py verify <direct
 The verifier checks original receiver observations, actual handler receipts,
 retained identities, required events, changed boot ID, failure controls and
 removed-fence sensitivity; it does not trust the `complete` flag alone.
+
+## Renewal timing and boot capacity
+
+The composed host probe writes `renewal-stages.json` on success or failure. It
+contains bounded count, total/max duration and failure summaries for fixed
+inspection, authority and kernel stages; it records no policy contents or
+identifiers. Compare these with `composed-renewal-trace.jsonl` when a positive
+control misses its lease. A slow refresh must not restart or extend the immutable
+one-second deadline: late admission remains denied.
+
+Boot CI prepares disposable hosted-runner disk space before guest tooling and
+asset builds, then rechecks after building retained-topology assets. The 12 GiB
+preflight guest uses a 20 GiB preparation floor; the 32 GiB retained guest uses a
+45 GiB preparation floor and a 36 GiB post-build floor. These include working
+headroom without weakening the VM's launch-time free-space check.
