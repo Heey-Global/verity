@@ -389,7 +389,11 @@ class FenceMutationOrderTests(unittest.TestCase):
             clock.append(proof.time.time_ns())
             return output
         vm.ssh.side_effect = ssh
-        started, inflight = proof.remove_fences_mutation(vm, 'guest ')
+        import tempfile
+        evidence = Path(tempfile.mkdtemp())
+        self.addCleanup(__import__('shutil').rmtree, evidence)
+        started, inflight = proof.remove_fences_mutation(vm, 'guest ', evidence)
+        self.assertEqual(json.loads((evidence / 'mutation-inflight.json').read_text()), result)
         self.assertEqual([call.args[0] for call in vm.ssh.call_args_list],
                          ['guest inflight removed-fences', 'guest external'])
         self.assertEqual(vm.ssh.call_args_list[0].kwargs, {'timeout': 20})
@@ -399,7 +403,9 @@ class FenceMutationOrderTests(unittest.TestCase):
         for reported in ({'status': 200}, {'status': 200, 'fencesRemoved': False}):
             vm.ssh.side_effect = lambda command, **_: json.dumps(reported) if 'inflight' in command else ''
             with self.assertRaisesRegex(AssertionError, 'did not remove'):
-                proof.remove_fences_mutation(vm, 'guest ')
+                proof.remove_fences_mutation(vm, 'guest ', evidence)
+            # The failing in-flight result is retained as evidence before the verdict.
+            self.assertEqual(json.loads((evidence / 'mutation-inflight.json').read_text()), reported)
 
 
 class GuestCommandEvidenceTests(unittest.TestCase):
