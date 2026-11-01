@@ -55,7 +55,7 @@
     "render:app-screens": "node scripts/render-app-screens.mjs"
   },
   "devDependencies": {
-    "@agentclientprotocol/claude-agent-acp": "0.98.0",
+    "@agentclientprotocol/claude-agent-acp": "0.99.0",
     "@agentclientprotocol/codex-acp": "2.3.0",
     "@devcontainers/cli": "0.89.0",
     "@eslint/js": "10.0.1",
