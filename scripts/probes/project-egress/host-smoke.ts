@@ -944,7 +944,8 @@ try {
   };
   packetCapture = spawn(
     '/usr/bin/tcpdump',
-    ['-i', bridge, '-U', '-s', '256', '-w', '/evidence/composed-packets.pcap'],
+    // Immediate mode keeps the final pre-failure packets that a buffered ring loses on SIGINT.
+    ['-i', bridge, '--immediate-mode', '-U', '-s', '256', '-w', '/evidence/composed-packets.pcap'],
     { stdio: 'ignore' },
   );
   await new Promise<void>((resolve, reject) => {

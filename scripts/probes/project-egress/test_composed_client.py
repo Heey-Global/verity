@@ -29,6 +29,18 @@ class InitialDenialTests(unittest.TestCase):
         with self.assertRaises(TimeoutError):
             self.run_client(TimeoutError('application deadline'), 'positive', 'admitted-0')
 
+    def test_positive_control_outlasts_one_neighbor_probe_interval(self):
+        with patch('socket.socket') as factory:
+            channel = factory.return_value.__enter__.return_value
+            channel.recv.return_value = b'external-positive'
+            with patch('sys.argv', ['composed-client.py', '11.77.106.2', 'admitted-0', 'positive']):
+                runpy.run_path(str(Path(__file__).with_name('composed-client.py')))
+        channel.settimeout.assert_called_once_with(3)
+
+    def test_later_denial_keeps_short_observation(self):
+        channel = self.run_client(TimeoutError('denied'), 'negative', 'lease-expired-0')
+        channel.settimeout.assert_called_once_with(0.4)
+
 
 if __name__ == '__main__':
     unittest.main()

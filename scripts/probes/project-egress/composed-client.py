@@ -35,7 +35,10 @@ with socket.socket(family, socket.SOCK_STREAM) as channel:
     # A short application timeout leaves queued UDP behind for the next admission.
     # Require terminal resolution failure, not just elapsed observation time.
     initial_denial = expectation == 'negative' and phase.startswith('before-admission-')
-    channel.settimeout(4 if initial_denial else 0.4)
+    # Admission does not reset that netstack's retry timer after a denied resolution:
+    # queued UDP/SYN leave only on its next 1-second probe, so a positive control
+    # must outlast one full probe interval instead of racing it.
+    channel.settimeout(4 if initial_denial else 3 if expectation == 'positive' else 0.4)
     try:
         channel.connect((target, 443))
         channel.sendall((phase + '-tcp').encode())
