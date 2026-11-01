@@ -53,6 +53,20 @@ def verify_removed_fences(path, started_ns):
 
 
 
+def remove_fences_mutation(vm, guest, evidence):
+    # The in-flight control readmits while the kernel fences are intact and removes
+    # them itself. Readmitting an already tampered generation is refused and contained
+    # by the TC attestation, so removal must not precede it. The receipt window
+    # starts only after that removal has returned.
+    output = vm.ssh(guest + 'inflight removed-fences', timeout=20)
+    (evidence / 'mutation-inflight.json').write_text(output)
+    inflight = json.loads(output)
+    assert inflight.get('fencesRemoved') is True, 'In-flight control did not remove the kernel fences'
+    started_ns = time.time_ns()
+    vm.ssh(guest + 'external')
+    return started_ns, inflight
+
+
 def verify_boot_denial(ruleset):
     # Old per-generation label rules may remain, but neither bootstrap chain may
     # contain a bypass before explicit lifecycle recovery.
@@ -197,7 +211,8 @@ def verify_bundle(directory):
         assert (result['status'] == 200) == (phase == 'positive')
         assert result['finished_ns'] - result['started_ns'] < 10_000_000_000
     assert set(inflight) == {'positive', 'denied'}
-    assert json.loads((directory / 'mutation-inflight.json').read_text())['status'] == 200
+    mutation = json.loads((directory / 'mutation-inflight.json').read_text())
+    assert mutation['status'] == 200 and mutation.get('fencesRemoved') is True
     assert set(proof['faults']) == {'corrupt-registry-denied', 'nftables-failure-denied', 'unsupported-live-restore-denied'}
     return {'events': len(events), 'removed_fence_paths': 8, 'complete': True}
 
@@ -310,11 +325,7 @@ def main():
         verify_receipts(protected, start_ns, end_ns)
         # Removing the real kernel fences must turn independent receiver silence
         # into a failed verdict; a synthetic verifier test is insufficient here.
-        mutation_started_ns = time.time_ns()
-        vm.ssh(guest + 'remove-fences')
-        vm.ssh(guest + 'external')
-        mutation_inflight = json.loads(vm.ssh(guest + 'inflight removed-fences', timeout=20))
-        (evidence / 'mutation-inflight.json').write_text(json.dumps(mutation_inflight))
+        mutation_started_ns, _ = remove_fences_mutation(vm, guest, evidence)
         time.sleep(1)
         verify_removed_fences(receipts, mutation_started_ns)
         try:

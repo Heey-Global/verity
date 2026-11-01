@@ -204,7 +204,7 @@ class FullBundleTests(unittest.TestCase):
         for name, value in [('boot-proof', proof), ('topology-before', initial),
                             ('inflight', {'positive': {'status': 200, 'started_ns': 1, 'finished_ns': 2},
                                           'denied': {'status': None, 'started_ns': 1, 'finished_ns': 2}}),
-                            ('mutation-inflight', {'status': 200})]:
+                            ('mutation-inflight', {'status': 200, 'fencesRemoved': True})]:
             Path(directory, name + '.json').write_text(json.dumps(value))
         Path(directory, 'protected-receipts.jsonl').write_text(protected)
         Path(directory, 'external-receipts.jsonl').write_text(full)
@@ -221,6 +221,16 @@ class FullBundleTests(unittest.TestCase):
             Path(directory, 'broker-receipts.jsonl').write_text(''.join(json.dumps(row) + '\n' for row in broker))
             with self.assertRaisesRegex(AssertionError, 'Actual handler committed'):
                 boot_proof.verify_bundle(directory)
+
+    def test_rejects_mutation_evidence_without_reported_fence_removal(self):
+        import json
+        import tempfile
+        for value in ({'status': 200}, {'status': 200, 'fencesRemoved': False}):
+            with self.subTest(value=value), tempfile.TemporaryDirectory() as directory:
+                self.fixture(directory)
+                Path(directory, 'mutation-inflight.json').write_text(json.dumps(value))
+                with self.assertRaises(AssertionError):
+                    boot_proof.verify_bundle(directory)
 
     def test_rejects_a_missing_event_even_when_complete_is_true(self):
         import json
@@ -335,13 +345,16 @@ class ActualMemoryPersistenceTests(unittest.TestCase):
                 self.assertEqual(calls[-1][-1], 'readmit')
                 self.assertFalse((root / f'.boot-inflight-{phase}-finish').exists())
                 calls.append(('remove-fences',))
+                return True
             with patch.object(guest, 'ROOT', root), patch.object(guest, 'worktree', return_value=root), \
                     patch.object(guest, 'sandbox', return_value='sandbox'), \
                     patch.object(guest, 'descriptor', return_value={'projectId': 'project'}), \
                     patch.object(guest, 'api', return_value={'token': 'test'}), \
                     patch.object(guest, 'run', side_effect=run), patch.object(guest, 'positive'), \
-                    patch.object(guest, 'remove_fences', side_effect=remove), contextlib.redirect_stdout(io.StringIO()):
+                    patch.object(guest, 'remove_fences', side_effect=remove), \
+                    contextlib.redirect_stdout(io.StringIO()) as printed:
                 guest.inflight(phase)
+            self.captured = printed.getvalue()
             return calls
 
     def test_requires_committed_canonical_overview_marker(self):
@@ -352,6 +365,109 @@ class ActualMemoryPersistenceTests(unittest.TestCase):
     def test_removed_fence_control_repeats_readmission_before_completion(self):
         calls = self.exercise('removed-fences')
         self.assertEqual(calls[-1], ('remove-fences',))
+
+    def test_inflight_reports_whether_it_removed_fences(self):
+        import json
+        for phase, removed in (('removed-fences', True), ('positive', False)):
+            self.exercise(phase)
+            self.assertIs(json.loads(self.captured)['fencesRemoved'], removed)
+
+
+class FenceMutationOrderTests(unittest.TestCase):
+    def test_inflight_readmission_runs_before_any_fence_removal(self):
+        import json
+        from unittest.mock import Mock
+        spec = importlib.util.spec_from_file_location('mutation_proof', Path(__file__).with_name('boot-proof.py'))
+        proof = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(proof)
+        vm = Mock()
+        clock = []
+        result = {'status': 200, 'fencesRemoved': True}
+        def ssh(command, **_):
+            clock.append(proof.time.time_ns())
+            output = json.dumps(result) if 'inflight' in command else ''
+            clock.append(proof.time.time_ns())
+            return output
+        vm.ssh.side_effect = ssh
+        import tempfile
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        evidence = Path(directory.name)
+        started, inflight = proof.remove_fences_mutation(vm, 'guest ', evidence)
+        self.assertEqual(json.loads((evidence / 'mutation-inflight.json').read_text()), result)
+        self.assertEqual([call.args[0] for call in vm.ssh.call_args_list],
+                         ['guest inflight removed-fences', 'guest external'])
+        self.assertEqual(vm.ssh.call_args_list[0].kwargs, {'timeout': 20})
+        self.assertEqual(inflight, result)
+        # The receipt window opens after the in-flight removal returned, before external probes.
+        self.assertTrue(clock[1] <= started <= clock[2])
+        for reported in ({'status': 200}, {'status': 200, 'fencesRemoved': False}):
+            vm.ssh.side_effect = lambda command, **_: json.dumps(reported) if 'inflight' in command else ''
+            with self.assertRaisesRegex(AssertionError, 'did not remove'):
+                proof.remove_fences_mutation(vm, 'guest ', evidence)
+            # The failing in-flight result is retained as evidence before the verdict.
+            self.assertEqual(json.loads((evidence / 'mutation-inflight.json').read_text()), reported)
+
+
+class GuestCommandEvidenceTests(unittest.TestCase):
+    def guest(self):
+        spec = importlib.util.spec_from_file_location('evidence_guest', Path(__file__).with_name('boot-guest.py'))
+        guest = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(guest)
+        return guest
+
+    def test_uncaught_command_failure_output_reaches_ssh_evidence(self):
+        import contextlib
+        import io
+        import subprocess
+        from unittest.mock import patch
+        guest = self.guest()
+        error = subprocess.CalledProcessError(1, ['node'], output='Deadline hook identity changed')
+        try:
+            try:
+                raise error
+            except subprocess.CalledProcessError as failure:
+                raise TimeoutError('wrapped') from failure
+        except TimeoutError as wrapped:
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr), patch.object(guest.sys, '__excepthook__') as default:
+                guest.report_failed_command(TimeoutError, wrapped, None)
+        self.assertIn('Deadline hook identity changed', stderr.getvalue())
+        default.assert_called_once()
+
+    def test_fence_removal_reports_observed_kernel_state(self):
+        import json
+        from unittest.mock import patch
+        guest = self.guest()
+        tables = [{'table': {'family': family, 'name': name}} for family, name in
+                  [('inet', 'verity_egress_a'), ('bridge', 'verity_egress_b'), ('inet', 'verity_start_a'),
+                   ('bridge', 'verity_start_b'), ('inet', 'docker')]]
+        for leftover_table, leftover_qdisc, expected in ((False, False, True), (True, False, False), (False, True, False)):
+            listings = [tables, [tables[0]] if leftover_table else [tables[4]]]
+            def run(*args):
+                if args[:4] == ('nft', '--json', 'list', 'tables'):
+                    return json.dumps({'nftables': listings.pop(0)})
+                if args[:4] == ('tc', '-j', 'qdisc', 'show'):
+                    return json.dumps([{'kind': 'clsact'}] if leftover_qdisc else [{'kind': 'noqueue'}])
+                return ''
+            with self.subTest(table=leftover_table, qdisc=leftover_qdisc), \
+                    patch.object(guest, 'run', side_effect=run), \
+                    patch.object(guest, 'snapshot', return_value={'packet': [{'raw': {'state': {'peer': {'device': 'veth1'}}}}]}), \
+                    patch.object(guest.Path, 'read_text', return_value='verity-boot-probe'):
+                self.assertIs(guest.remove_fences(), expected)
+
+    def test_handled_command_failures_print_nothing(self):
+        import contextlib
+        import io
+        import subprocess
+        from unittest.mock import patch
+        guest = self.guest()
+        stderr = io.StringIO()
+        error = subprocess.CalledProcessError(1, ['node'], output='expected denial')
+        with patch.object(guest.subprocess, 'check_output', side_effect=error), contextlib.redirect_stderr(stderr):
+            with self.assertRaises(subprocess.CalledProcessError):
+                guest.run('node')
+        self.assertEqual(stderr.getvalue(), '')
 
 
 class ReplacementRecoveryTests(unittest.TestCase):
