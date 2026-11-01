@@ -390,8 +390,9 @@ class FenceMutationOrderTests(unittest.TestCase):
             return output
         vm.ssh.side_effect = ssh
         import tempfile
-        evidence = Path(tempfile.mkdtemp())
-        self.addCleanup(__import__('shutil').rmtree, evidence)
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        evidence = Path(directory.name)
         started, inflight = proof.remove_fences_mutation(vm, 'guest ', evidence)
         self.assertEqual(json.loads((evidence / 'mutation-inflight.json').read_text()), result)
         self.assertEqual([call.args[0] for call in vm.ssh.call_args_list],
