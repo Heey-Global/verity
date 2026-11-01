@@ -57,7 +57,8 @@ describe('generic MCP OAuth discovery', () => {
       'https://tools.example/metadata',
       'https://identity.example/.well-known/oauth-authorization-server/tenant',
     ]);
-    expect(send.mock.calls.every((call) => call.length === 1)).toBe(true);
+    expect(send).toHaveBeenNthCalledWith(1, resourceUrl, undefined, undefined, undefined, true);
+    expect(send.mock.calls.slice(1).every((call) => call.length === 1)).toBe(true);
   });
   it('falls back to path and root resource metadata and OpenID discovery', async () => {
     const urls: string[] = [];

@@ -13,10 +13,17 @@ export type OAuthHttpRequest = (
   body?: string,
   contentType?: string,
   authorization?: string,
+  headersOnly?: boolean,
 ) => Promise<OAuthHttpResponse>;
 
 /** No redirects, cookies or ambient credentials; DNS is checked on the actual socket. */
-export const oauthHttpRequest: OAuthHttpRequest = async (url, body, contentType, authorization) => {
+export const oauthHttpRequest: OAuthHttpRequest = async (
+  url,
+  body,
+  contentType,
+  authorization,
+  headersOnly,
+) => {
   const target = parseHttpMcpUpstream(url);
   return new Promise((resolve, reject) => {
     const req = request(
@@ -48,9 +55,23 @@ export const oauthHttpRequest: OAuthHttpRequest = async (url, body, contentType,
         },
       },
       (response) => {
+        response.on('error', reject);
+        const status = response.statusCode ?? 500;
+        const headers = Object.fromEntries(
+          Object.entries(response.headers).map(([key, value]) => [
+            key,
+            Array.isArray(value) ? value.join(', ') : value,
+          ]),
+        );
+        // A Streamable HTTP GET can remain open indefinitely. Discovery needs
+        // only its challenge headers, so release the socket before reading data.
+        if (headersOnly) {
+          resolve({ status, headers, body: '' });
+          response.destroy();
+          return;
+        }
         let size = 0;
         const chunks: Buffer[] = [];
-        response.on('error', reject);
         response.on('data', (chunk: Buffer) => {
           size += chunk.length;
           if (size > 1024 * 1024) response.destroy(new Error('MCP OAuth response too large'));
@@ -58,13 +79,8 @@ export const oauthHttpRequest: OAuthHttpRequest = async (url, body, contentType,
         });
         response.on('end', () =>
           resolve({
-            status: response.statusCode ?? 500,
-            headers: Object.fromEntries(
-              Object.entries(response.headers).map(([key, value]) => [
-                key,
-                Array.isArray(value) ? value.join(', ') : value,
-              ]),
-            ),
+            status,
+            headers,
             body: Buffer.concat(chunks).toString('utf8'),
           }),
         );
@@ -111,7 +127,7 @@ function challengeParameter(header: string | undefined, parameter: string): stri
 
 export async function discoverMcpOAuth(url: string, send: OAuthHttpRequest = oauthHttpRequest) {
   const target = parseHttpMcpUpstream(url);
-  const probe = await send(target.href);
+  const probe = await send(target.href, undefined, undefined, undefined, true);
   if (probe.status >= 300 && probe.status < 400)
     throw new Error('MCP discovery redirects are not supported');
   const challenge = probe.headers['www-authenticate'];
