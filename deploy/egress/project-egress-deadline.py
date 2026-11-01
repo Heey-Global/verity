@@ -168,9 +168,9 @@ def relay_policy(binding, peer, registration):
                      'ipv6': relay_net['GlobalIPv6Address']}
     binding_key(relay_binding)
     # Inspect both namespaces and their software veth/bridge membership.
-    if endpoint(binding) != peer:
+    if endpoint(binding, container=sandbox, network=network) != peer:
         raise ValueError('Relay sandbox interface changed')
-    relay_peer = endpoint(relay_binding)
+    relay_peer = endpoint(relay_binding, container=relay, network=network)
     if relay_peer['index'] == peer['index']:
         raise ValueError('Relay shares the sandbox interface')
     addresses = [ipaddress.IPv4Address(b['ipv4']) for b in (binding, relay_binding)]
@@ -194,9 +194,12 @@ def relay_policy(binding, peer, registration):
     return struct.pack('<II', 1, int(registration['codex'])) + b''.join(a.packed for a in addresses) + b''.join(macs)
 
 
-def endpoint(binding):
-    container = json.loads(run('/usr/bin/docker', 'container', 'inspect', binding['containerId']))[0]
-    network = json.loads(run('/usr/bin/docker', 'network', 'inspect', binding['networkId']))[0]
+def endpoint(binding, *, container=None, network=None):
+    # Daemon facts are shared only within one relay inspection, never across requests.
+    if container is None:
+        container = json.loads(run('/usr/bin/docker', 'container', 'inspect', binding['containerId']))[0]
+    if network is None:
+        network = json.loads(run('/usr/bin/docker', 'network', 'inspect', binding['networkId']))[0]
     entries = list(container['NetworkSettings']['Networks'].values())
     if (container['Id'] != binding['containerId'] or network['Id'] != binding['networkId']
             or network['Driver'] != 'bridge' or not container['State']['Running'] or len(entries) != 1
@@ -476,11 +479,11 @@ def execute(request):
     lease = request['lease']
     deadline, captured, expiry = validate_lease(key, state, lease, pending=True)
     try:
-        if endpoint(binding) != state['peer']:
-            raise ValueError('Deadline interface changed')
         if state.get('relayRegistration') is not None:
             if relay_policy(binding, state['peer'], state['relayRegistration']).hex() != state['relayPolicy']:
                 raise ValueError('Registered relay endpoints changed')
+        elif endpoint(binding) != state['peer']:
+            raise ValueError('Deadline interface changed')
         attest(root, state['peer'], state['program'])
     except BaseException:
         write_relay(root)

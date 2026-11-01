@@ -15,6 +15,8 @@ host = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(host)
 
 
+real_endpoint = host.endpoint
+
 class DeadlineHostTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
@@ -349,7 +351,7 @@ class RelayIdentityTests(unittest.TestCase):
             net = self.sandbox if args[-1] == self.binding['containerId'] else self.relay
             return json.dumps([{'NetworkSettings': {'Networks': {'project': net}}}])
         self.enterContext(patch.object(host, 'run', side_effect=daemon))
-        self.inspector = self.enterContext(patch.object(host, 'endpoint', side_effect=lambda binding:
+        self.inspector = self.enterContext(patch.object(host, 'endpoint', side_effect=lambda binding, **_facts:
             self.peer if binding['containerId'] == self.binding['containerId'] else {'device': 'vrelay', 'index': 6}))
 
     def policy(self):
@@ -364,6 +366,48 @@ class RelayIdentityTests(unittest.TestCase):
                          'endpointId': self.registration['endpointId'], 'ipv4': '172.30.106.3', 'ipv6': 'fd42:feed::3'})
         self.registration['codex'] = True
         self.assertEqual(struct.unpack('<II', self.policy()[:8]), (1, 1))
+
+    def test_shared_daemon_snapshot_still_checks_both_actual_namespace_peers(self):
+        self.network.update({'Id': self.binding['networkId'], 'Driver': 'bridge',
+                             'Options': {'com.docker.network.bridge.name': self.binding['bridge']}})
+        containers = {}
+        for identity, net, endpoint, device in [
+                (self.binding['containerId'], self.sandbox, self.binding['endpointId'], 'sandbox'),
+                (self.registration['containerId'], self.relay, self.registration['endpointId'], 'relay')]:
+            net.update({'NetworkID': self.binding['networkId'], 'EndpointID': endpoint})
+            containers[identity] = {'Id': identity, 'State': {'Running': True},
+                'NetworkSettings': {'Networks': {'project': net},
+                                    'SandboxKey': '/var/run/docker/netns/' + device}}
+        calls = []
+        def daemon(*args):
+            calls.append(args)
+            if args[0] == '/usr/bin/docker':
+                return json.dumps([self.network if args[1] == 'network' else containers[args[-1]]])
+            if args[0] == '/usr/bin/nsenter':
+                sandbox = args[1].endswith('/sandbox')
+                return json.dumps([{'ifname': 'eth0', 'address': (self.sandbox if sandbox else self.relay)['MacAddress'],
+                                    'ifindex': 2, 'link_index': 5 if sandbox else 6}])
+            return json.dumps([{'ifindex': index, 'ifname': name, 'linkinfo': {'info_kind': 'veth'}}
+                               for index, name in [(5, 'vtest'), (6, 'vrelay')]])
+        original_read, original_resolve = Path.read_text, Path.resolve
+        def read(path, *args, **kwargs):
+            return '2' if str(path).startswith('/sys/class/net/') else original_read(path, *args, **kwargs)
+        def resolve(path, *args, **kwargs):
+            return Path('/sys/class/net/' + self.binding['bridge']) if path.name == 'master' else original_resolve(path, *args, **kwargs)
+        with patch.object(host, 'endpoint', wraps=real_endpoint), patch.object(host, 'run', side_effect=daemon), \
+                patch.object(Path, 'read_text', read), patch.object(Path, 'resolve', resolve):
+            self.policy()
+            self.assertEqual(sum(args[0] == '/usr/bin/docker' for args in calls), 3)
+            for container, field, value in [(containers[self.binding['containerId']], 'Id', 'f' * 64),
+                                            (self.relay, 'EndpointID', 'f' * 64)]:
+                previous = container[field]
+                container[field] = value
+                with self.assertRaisesRegex(ValueError, 'identity mismatch|attachment changed'):
+                    self.policy()
+                container[field] = previous
+            with patch.object(Path, 'read_text', lambda path: '99'):
+                with self.assertRaisesRegex(ValueError, 'bridge peer changed'):
+                    self.policy()
 
     def test_caller_cannot_supply_destinations_or_non_boolean_codex(self):
         for changed in ({**self.registration, 'ipv4': '1.1.1.1'},
