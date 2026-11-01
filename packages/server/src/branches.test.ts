@@ -1823,3 +1823,34 @@ describe('mergeIntoLocalBase against a hostile repository (real git)', () => {
     }
   });
 });
+
+it('reads the exact attached repair revision through the scoped git runner', async () => {
+  const repo = mkdtempSync(join(tmpdir(), 'verity-repair-head-'));
+  const git = (...args: string[]) =>
+    execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8' });
+  try {
+    git('init', '-q', '-b', 'main');
+    git('config', 'user.email', 'test@example.com');
+    git('config', 'user.name', 'Test');
+    git('config', 'commit.gpgsign', 'false');
+    git('commit', '--allow-empty', '-qm', 'initial');
+    const svc = createGitBranchService({
+      git: async () => {
+        throw new Error('unscoped git must not run');
+      },
+      withGit: async (worktree, read) => {
+        expect(worktree).toBe(repo);
+        return read(async (args) => execFileSync('git', [...args], { encoding: 'utf8' }));
+      },
+    });
+    const initial = git('rev-parse', 'HEAD').trim();
+    expect(await svc.headRevision!(repo)).toBe(initial);
+    git('commit', '--allow-empty', '-qm', 'next');
+    expect(await svc.headRevision!(repo)).toBe(git('rev-parse', 'HEAD').trim());
+    expect(await svc.headRevision!(repo)).not.toBe(initial);
+    git('checkout', '--detach', '-q', initial);
+    expect(await svc.headRevision!(repo)).toBeUndefined();
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});

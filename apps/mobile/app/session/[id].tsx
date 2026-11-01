@@ -7000,7 +7000,7 @@ function AgentMarkdown({
 }) {
   const { theme } = useUnistyles();
   const searchHighlightQuery = useContext(SearchHighlightContext);
-  const blocks = useMemo(() => splitRichText(text), [text]);
+  const blocks = useMemo(() => splitRichText(text, { hideQADecisions: true }), [text]);
   const openSessionFile = useContext(SessionFileOpenContext);
   const openAppLink = useContext(AppLinkOpenContext);
   const sessionFileImageSource = useContext(SessionFileImageSourceContext);
