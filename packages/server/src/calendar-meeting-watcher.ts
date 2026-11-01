@@ -39,7 +39,7 @@ export class CalendarEventNotFoundError extends Error {
 export interface CalendarMeetingDeps {
   store: Pick<
     EventStore,
-    'calendarWatch' | 'listActiveAdministratorIds' | 'listDevicePushTokensForUsers'
+    'calendarWatch' | 'listActiveAdministratorIds' | 'listDevicePushTokensForUsers' | 'getSession'
   >;
   meetings: Pick<AttendeeMeetings, 'start'>;
   sender?: Pick<PushSender, 'send'> | undefined;
@@ -74,6 +74,7 @@ export async function joinCalendarMeeting(
   deps: CalendarMeetingDeps,
   key: string,
   sessionId: string | null,
+  options: { automatic?: boolean } = {},
 ): Promise<{ meetingId: string }> {
   const watch = deps.store.calendarWatch;
   const event = await watch.getEvent(key);
@@ -83,7 +84,10 @@ export async function joinCalendarMeeting(
   try {
     ({ meetingId } = await deps.meetings.start(sessionId, event.meetingUrl, true, titleOf(event)));
   } catch (error) {
-    await watch.setJoinResult(key, { failed: true });
+    // An automatic join is not retried behind the operator's back; a join someone asked for
+    // gives the meeting back, so the next tap or the scheduled join can try again.
+    if (options.automatic) await watch.setJoinResult(key, { failed: true });
+    else await watch.releaseJoin(key);
     throw error;
   }
   await watch.setJoinResult(key, { meetingId });
@@ -142,6 +146,7 @@ export function startCalendarMeetingWatcher(deps: CalendarMeetingDeps) {
                     meetingUrl: meeting.link,
                     startsAt: meeting.start,
                     endsAt: meeting.end,
+                    accepted: meeting.accepted,
                   },
                 ]
               : [];
@@ -168,8 +173,10 @@ export function startCalendarMeetingWatcher(deps: CalendarMeetingDeps) {
       const lastChance = Math.min(event.endsAt, event.startsAt + LATE_JOIN_MS);
       if (at >= lastChance) continue;
       try {
-        if (calendar.autoJoin) {
-          if (at >= event.startsAt) await joinCalendarMeeting(deps, event.key, null);
+        // An invitation not yet accepted is asked about even on an automatic calendar.
+        if (calendar.autoJoin && event.accepted) {
+          if (at >= event.startsAt)
+            await joinCalendarMeeting(deps, event.key, null, { automatic: true });
         } else if (event.notifiedAt === null && at >= event.startsAt - UPCOMING_NOTICE_MS) {
           const minutes = Math.round((event.startsAt - at) / MINUTE_MS);
           const sent = await notifyAdministrators(deps, {

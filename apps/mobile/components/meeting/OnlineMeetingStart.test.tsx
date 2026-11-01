@@ -27,7 +27,8 @@ const meeting = (eventKey: string, startsAt: number, fields: Partial<UpcomingMee
 describe('useCalendarMeetingChoice', () => {
   it('picks the first meeting, and a typed link wins over it', () => {
     const { result, rerender } = renderHook(
-      ({ upcoming }: { upcoming: UpcomingMeeting[] | null }) => useCalendarMeetingChoice(upcoming),
+      ({ upcoming }: { upcoming: UpcomingMeeting[] | null }) =>
+        useCalendarMeetingChoice(upcoming, NOW),
       { initialProps: { upcoming: null as UpcomingMeeting[] | null } },
     );
     expect(result.current.selectedEvent).toBeNull();
@@ -41,9 +42,34 @@ describe('useCalendarMeetingChoice', () => {
     expect(result.current.selectedEvent).toBeNull();
   });
 
+  // "Join …" must never point at a meeting hours away or one the operator did not pick.
+  it('preselects only a meeting that is on now, and never swaps in another', () => {
+    const later = meeting('later', NOW + 3_600_000);
+    const now = meeting('now', NOW - 60_000);
+    const { result, rerender } = renderHook(
+      ({ upcoming }: { upcoming: UpcomingMeeting[] | null }) =>
+        useCalendarMeetingChoice(upcoming, NOW),
+      { initialProps: { upcoming: null as UpcomingMeeting[] | null } },
+    );
+    rerender({ upcoming: [later] });
+    expect(result.current.selectedEvent).toBeNull();
+    rerender({ upcoming: [later, now] });
+    expect(result.current.selectedEvent).toBeNull();
+
+    const fresh = renderHook(
+      ({ upcoming }: { upcoming: UpcomingMeeting[] | null }) =>
+        useCalendarMeetingChoice(upcoming, NOW),
+      { initialProps: { upcoming: [now, meeting('next', NOW + 5 * 60_000)] } },
+    );
+    expect(fresh.result.current.selectedEvent?.eventKey).toBe('now');
+    fresh.rerender({ upcoming: [meeting('next', NOW + 5 * 60_000)] });
+    expect(fresh.result.current.selectedEvent).toBeNull();
+  });
+
   it('opens the link field when the calendar has nothing to pick', () => {
     const { result, rerender } = renderHook(
-      ({ upcoming }: { upcoming: UpcomingMeeting[] | null }) => useCalendarMeetingChoice(upcoming),
+      ({ upcoming }: { upcoming: UpcomingMeeting[] | null }) =>
+        useCalendarMeetingChoice(upcoming, NOW),
       { initialProps: { upcoming: null as UpcomingMeeting[] | null } },
     );
     rerender({ upcoming: [] });
@@ -95,7 +121,10 @@ describe('CalendarMeetingPicker', () => {
     expect(screen.getByText('Started 6 min ago · Google Meet')).toBeOnTheScreen();
     expect(screen.queryByLabelText('Online meeting link')).toBeNull();
     fireEvent.press(screen.getByText('Meeting b'));
-    expect(props.onSelect).toHaveBeenCalledWith('b');
+    // Starts in more than 15 minutes: listed, but not joinable yet.
+    expect(props.onSelect).not.toHaveBeenCalled();
+    fireEvent.press(screen.getByText('Meeting a'));
+    expect(props.onSelect).toHaveBeenCalledWith('a');
     fireEvent.press(screen.getByText('Enter link manually'));
     expect(props.onManualChange).toHaveBeenCalledWith(true);
   });

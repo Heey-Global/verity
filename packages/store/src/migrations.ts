@@ -5086,6 +5086,7 @@ migrations['0181_calendar_watch_events'] = {
       meeting_url text not null,
       starts_at timestamptz not null,
       ends_at timestamptz not null,
+      accepted boolean not null default true,
       notified_at timestamptz,
       decision text check (decision in ('joined', 'skipped', 'failed')),
       meeting_id text,

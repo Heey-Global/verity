@@ -26,7 +26,10 @@ function supported(candidate: string): string | undefined {
 }
 
 function linksIn(text: string | undefined): string[] {
-  return text?.match(/https:\/\/[^\s"'<>()[\]]+/gu) ?? [];
+  // A link that ends a sentence must not carry the full stop into the bot's URL.
+  return (text?.match(/https:\/\/[^\s"'<>()[\]]+/gu) ?? []).map((link) =>
+    link.replace(/[.,;:!?]+$/u, ''),
+  );
 }
 
 /**
@@ -52,15 +55,18 @@ export function meetingLinkFromEvent(event: CalendarEventRecord): string | undef
 
 /**
  * A meeting the watcher may announce or join: confirmed, timed (not all-day), not declined by
- * the calendar's owner, and with a link the bot can join.
+ * the calendar's owner, and with a link the bot can join. `accepted` tells whether the owner
+ * said yes or organizes it; only such meetings are joined without asking.
  */
 export function joinableMeeting(
   event: CalendarEventRecord,
-): { link: string; start: number; end: number } | undefined {
+): { link: string; start: number; end: number; accepted: boolean } | undefined {
   if (event.status !== 'confirmed' || declinedBySelf(event)) return undefined;
   const start = Date.parse(event.start.dateTime ?? '');
   const end = Date.parse(event.end.dateTime ?? '');
   if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return undefined;
   const link = meetingLinkFromEvent(event);
-  return link ? { link, start, end } : undefined;
+  const self = event.attendees?.find((attendee) => attendee.self);
+  const accepted = !self || self.organizer === true || self.responseStatus === 'accepted';
+  return link ? { link, start, end, accepted } : undefined;
 }

@@ -49,6 +49,12 @@ describe('meetingLinkFromEvent', () => {
     ).toBe('https://teams.microsoft.com/l/meetup-join/19%3a?context=1&tenant=2');
   });
 
+  it('drops sentence punctuation after a link', () => {
+    expect(
+      meetingLinkFromEvent(event({ description: 'Join at https://zoom.us/j/123. Thanks' })),
+    ).toBe('https://zoom.us/j/123');
+  });
+
   it('reads the location field', () => {
     expect(meetingLinkFromEvent(event({ location: 'Online: https://zoom.us/j/9 (Zoom)' }))).toBe(
       'https://zoom.us/j/9',
@@ -75,7 +81,20 @@ describe('joinableMeeting', () => {
       link: 'https://meet.google.com/abc-defg-hij',
       start: Date.parse('2026-11-02T09:00:00Z'),
       end: Date.parse('2026-11-02T09:30:00Z'),
+      accepted: true,
     });
+  });
+
+  // An invitation nobody answered yet must not let an always-listening bot in on its own.
+  it.each([
+    ['unanswered', { email: 'me@example.com', self: true, responseStatus: 'needsAction' }, false],
+    ['tentative', { email: 'me@example.com', self: true, responseStatus: 'tentative' }, false],
+    ['accepted', { email: 'me@example.com', self: true, responseStatus: 'accepted' }, true],
+    ['organized', { email: 'me@example.com', self: true, organizer: true }, true],
+  ] as const)('marks an %s invitation as accepted: %s', (_, self, accepted) => {
+    expect(joinableMeeting(event({ ...linked, attendees: [{ ...self }] }))?.accepted).toBe(
+      accepted,
+    );
   });
 
   it.each([

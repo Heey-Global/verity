@@ -166,10 +166,11 @@ export default function MeetingScreen() {
   const [engines, setEngines] = useState<STTEngine[]>([]);
   const [meetingSource, setMeetingSource] = useState<'presence' | 'online'>('presence');
   const [meetingUrl, setMeetingUrl] = useState('');
+  const [now, setNow] = useState(Date.now());
   // A meeting from a watched calendar replaces typing its link; the field stays as a fallback.
   const upcoming = useUpcomingMeetings(meetingSource === 'online');
   const { selectedEventKey, setSelectedEventKey, manualLink, setManualLink, selectedEvent } =
-    useCalendarMeetingChoice(upcoming);
+    useCalendarMeetingChoice(upcoming, now);
   const [unassignedMeetings, reloadUnassigned] = useUnassignedMeetings();
   const [continuing, setContinuing] = useState<string | null>(null);
   const [confirm, confirmSheet] = useConfirm();
@@ -196,7 +197,6 @@ export default function MeetingScreen() {
   const [selectedEngine, setSelectedEngine] = useState<STTEngineId>('fluid-nemotron');
   const [expectedParticipants, setExpectedParticipants] = useState<number | null>(null);
   const [showNewMeeting, setShowNewMeeting] = useState(false);
-  const [now, setNow] = useState(Date.now());
   const [syncError, setSyncError] = useState(false);
   // Every save is briefly pending; only a backlog that lasts is worth showing.
   const [syncPendingSince, setSyncPendingSince] = useState<number | null>(null);
@@ -1754,14 +1754,17 @@ export default function MeetingScreen() {
               onDiscard={() => discardUnassigned(item.id)}
             />
           ))}
-          <TextField
-            label="Title"
-            accessibilityLabel="Meeting title"
-            value={meetingTitle}
-            onChangeText={setMeetingTitle}
-            maxLength={200}
-            placeholder="Optional"
-          />
+          {/* A calendar meeting brings its own title. */}
+          {meetingSource === 'online' && selectedEvent ? null : (
+            <TextField
+              label="Title"
+              accessibilityLabel="Meeting title"
+              value={meetingTitle}
+              onChangeText={setMeetingTitle}
+              maxLength={200}
+              placeholder="Optional"
+            />
+          )}
           <View style={styles.setupSection}>
             <SectionHeader title="Meeting source" />
             <Group>

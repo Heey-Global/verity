@@ -22,7 +22,11 @@ import {
   subscribeVoiceMeetingRequest,
 } from '../lib/liveMeetingSession';
 import { listMeetings, type MeetingRecord } from '../lib/liveMeetingStore';
-import { createVerityClient, getActiveMeetingServerId } from '../lib/client';
+import {
+  createVerityClient,
+  getActiveMeetingServerId,
+  subscribeVerityBaseUrl,
+} from '../lib/client';
 import {
   clearFollowedRemoteMeeting,
   followRemoteMeeting,
@@ -151,6 +155,17 @@ export function ActiveMeetingOverlay() {
       }),
     [],
   );
+  // A pairing made after launch or a switch to another server starts discovery over, so the
+  // card never shows, assigns or discards meetings of the previous server.
+  const [serverEpoch, setServerEpoch] = useState(0);
+  useEffect(
+    () =>
+      subscribeVerityBaseUrl(() => {
+        setDiscovered(null);
+        setServerEpoch((value) => value + 1);
+      }),
+    [],
+  );
   useEffect(() => {
     const client = createVerityClient();
     if (!client) return;
@@ -179,7 +194,7 @@ export function ActiveMeetingOverlay() {
       detach();
       foreground.remove();
     };
-  }, []);
+  }, [serverEpoch]);
   useEffect(() => {
     if (!discovered || followed || alive(localMeeting)) return;
     const next = discovered.running.find(
@@ -213,7 +228,10 @@ export function ActiveMeetingOverlay() {
           null;
         if (!mounted) return;
         setRemoteMeeting(saved);
-        if (saved && !alive(saved)) settled.current.add(saved.id);
+        // Not synced to this device yet (or offline): keep following and look again on the
+        // next refresh. Clearing here would let discovery follow it again at once, in a loop.
+        if (!saved) return;
+        if (!alive(saved)) settled.current.add(saved.id);
         if (!alive(saved)) {
           clearFollowedRemoteMeeting();
           setPendingCommand(null);

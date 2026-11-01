@@ -13,6 +13,8 @@ import {
 
 /** How far ahead the start screen lists meetings. */
 export const UPCOMING_HORIZON_MS = 12 * 60 * 60 * 1000;
+/** How early a meeting can be joined; a bot sent hours ahead would only wait in the lobby. */
+export const JOIN_EARLY_MS = 15 * 60 * 1000;
 
 const eventParams = z.object({ eventKey: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/u) });
 const joinBody = z
@@ -67,6 +69,12 @@ export function registerCalendarMeetingRoutes(
     const event = await deps.store.calendarWatch.getEvent(eventKey);
     if (!event) return reply.code(404).send({ error: new CalendarEventNotFoundError().message });
     if (event.endsAt <= now()) return reply.code(409).send({ error: 'This meeting has ended.' });
+    if (event.startsAt - now() > JOIN_EARLY_MS)
+      return reply
+        .code(409)
+        .send({ error: 'This meeting starts later. Join it shortly before it begins.' });
+    if (body?.sessionId && !(await deps.store.getSession(body.sessionId)))
+      return reply.code(404).send({ error: 'Session not found.' });
     try {
       return await joinCalendarMeeting(deps, eventKey, body?.sessionId ?? null);
     } catch (error) {

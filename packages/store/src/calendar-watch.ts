@@ -20,6 +20,8 @@ export interface CalendarWatchEventInput {
   meetingUrl: string;
   startsAt: number;
   endsAt: number;
+  /** The owner accepted or organizes it; only then is it joined without asking. */
+  accepted: boolean;
 }
 
 /** A joinable event and what Verity already did about it. */
@@ -120,6 +122,7 @@ export class CalendarWatchStore {
           meeting_url: this.cipher.encrypt(event.meetingUrl),
           starts_at: iso(event.startsAt),
           ends_at: iso(event.endsAt),
+          accepted: event.accepted,
           updated_at: new Date().toISOString(),
         };
         if (!previous) {
@@ -183,6 +186,7 @@ export class CalendarWatchStore {
       meetingUrl: this.cipher.decrypt(row.meeting_url),
       startsAt: row.starts_at.getTime(),
       endsAt: row.ends_at.getTime(),
+      accepted: row.accepted,
       notifiedAt: row.notified_at?.getTime() ?? null,
       decision: row.decision,
       meetingId: row.meeting_id,
@@ -236,6 +240,17 @@ export class CalendarWatchStore {
           : { decision: 'failed', meeting_id: null },
       )
       .where('event_key', '=', key)
+      .execute();
+  }
+
+  /** Gives a claimed join back after the bot could not start, so it can be tried again. */
+  async releaseJoin(key: string): Promise<void> {
+    await this.db
+      .updateTable('calendar_watch_events')
+      .set({ decision: null, meeting_id: null, updated_at: new Date().toISOString() })
+      .where('event_key', '=', key)
+      .where('decision', '=', 'joined')
+      .where('meeting_id', 'is', null)
       .execute();
   }
 

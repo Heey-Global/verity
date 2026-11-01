@@ -69,6 +69,7 @@ describe('watched events', () => {
     meetingUrl: `https://meet.google.com/${eventId}?pwd=secret`,
     startsAt,
     endsAt: startsAt + 30 * MIN,
+    accepted: true,
   });
   let watch: CalendarWatchStore;
   let accountId: string;
@@ -131,6 +132,10 @@ describe('watched events', () => {
     const claims = await Promise.all([watch.claimJoin(key), watch.claimJoin(key)]);
     expect(claims.filter(Boolean)).toHaveLength(1);
     expect(await watch.skip(key)).toBe(false);
+    // A bot that could not start gives the meeting back for another try.
+    await watch.releaseJoin(key);
+    expect(await watch.getEvent(key)).toMatchObject({ decision: null });
+    expect(await watch.claimJoin(key)).toBe(true);
     await watch.setJoinResult(key, { meetingId: 'meeting-1' });
     expect(await watch.getEvent(key)).toMatchObject({ decision: 'joined', meetingId: 'meeting-1' });
   });

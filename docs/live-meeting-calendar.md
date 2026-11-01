@@ -53,11 +53,14 @@ declined or lost its link is forgotten.
   administrator receives `MEETING_UPCOMING`: "Weekly sync starts in 5 min",
   with **Join** and **Skip**.
 - For a calendar set to join automatically, Verity joins at the start time
-  and sends `MEETING_STARTED`: "Verity joined Weekly sync", with **Open** and
+  meetings you accepted or organize, and sends `MEETING_STARTED`: "Verity joined Weekly sync", with **Open** and
   **Discard**. The same notification follows every join that starts without a session.
+- An invitation you have not accepted yet is announced with Join and Skip even
+  on such a calendar, so the bot never joins it on its own.
 - Nothing is announced or joined more than ten minutes after the start.
 - A failed automatic join is not retried. The meeting can still be joined by
-  hand while it runs.
+  hand while it runs; a join you asked for that fails can simply be tried
+  again.
 
 Markers in the database keep a restart from repeating a notification or
 joining twice. Only one join per event succeeds, whether it comes from a
@@ -70,14 +73,16 @@ notification, the app or the automatic join.
   the link out; joining reads it on the server.
 - `POST /live-meetings/calendar/:eventKey/join` joins. With `{ "sessionId" }`
   the meeting starts in that session, otherwise unassigned. A second join is
-  refused with 409 and the running meeting's id; an ended meeting is refused
-  with 409.
+  refused with 409 and the running meeting's id. A meeting that ended, or that
+  starts more than 15 minutes from now, is refused with 409; an unknown
+  session with 404.
 - `POST /live-meetings/calendar/:eventKey/skip` skips a meeting. A skipped
   meeting can still be joined.
 
 These are administrator routes, like the calendar settings. In the app, the
 online source of a session's meeting screen lists these meetings under "From
-your calendar"; picking one replaces typing the link, which stays available
+your calendar"; a meeting that is on or starts within 15 minutes is picked
+automatically, and picking one replaces typing the link, which stays available
 behind "Enter link manually". Meetings that run without a project appear there
 with "Continue here", which moves them into the session with everything said
 so far.

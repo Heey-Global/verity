@@ -1,5 +1,5 @@
 import type { ActiveLiveMeetings, UpcomingMeeting } from '@verity/mobile';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 
@@ -10,6 +10,11 @@ import { StatusTag } from '../ui/Status';
 
 const PROVIDER = { meet: 'Google Meet', teams: 'Teams', zoom: 'Zoom' } as const;
 const REFRESH_MS = 30_000;
+/** Matches the server's limit on joining early (`calendar-meeting-routes.ts`). */
+export const JOIN_EARLY_MS = 15 * 60_000;
+
+export const canJoinNow = (meeting: UpcomingMeeting, now: number) =>
+  meeting.startsAt - now <= JOIN_EARLY_MS;
 
 const clock = (ms: number) =>
   new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -47,18 +52,24 @@ export function useUpcomingMeetings(enabled: boolean): UpcomingMeeting[] | null 
  * Which calendar meeting the start button joins. The first one is picked by default; with
  * none to pick, the link field opens, since typing the link is then the only way forward.
  */
-export function useCalendarMeetingChoice(upcoming: UpcomingMeeting[] | null) {
+export function useCalendarMeetingChoice(upcoming: UpcomingMeeting[] | null, now: number) {
   const [selectedEventKey, setSelectedEventKey] = useState<string | null>(null);
   const [manualLink, setManualLink] = useState(false);
+  const preselected = useRef(false);
   useEffect(() => {
     if (upcoming === null) return;
-    if (upcoming.length === 0) {
-      setManualLink(true);
+    if (upcoming.length === 0) setManualLink(true);
+    // Picked once, and only a meeting that is on now: a refresh must never swap in another
+    // meeting behind the operator's back, and one hours ahead cannot be joined yet.
+    if (!preselected.current) {
+      preselected.current = true;
+      const soon = upcoming.find((item) => canJoinNow(item, now));
+      if (soon) setSelectedEventKey(soon.eventKey);
       return;
     }
-    if (!upcoming.some((item) => item.eventKey === selectedEventKey))
-      setSelectedEventKey(upcoming[0]!.eventKey);
-  }, [upcoming, selectedEventKey]);
+    if (selectedEventKey && !upcoming.some((item) => item.eventKey === selectedEventKey))
+      setSelectedEventKey(null);
+  }, [upcoming, selectedEventKey, now]);
   const selectedEvent = manualLink
     ? null
     : (upcoming?.find((item) => item.eventKey === selectedEventKey) ?? null);
@@ -126,6 +137,7 @@ export function CalendarMeetingPicker({
               title={meeting.title || 'Online meeting'}
               subtitle={`${when(meeting)} · ${PROVIDER[meeting.provider]}`}
               selected={!manual && selectedKey === meeting.eventKey}
+              disabled={!canJoinNow(meeting, now)}
               onPress={() => {
                 onSelect(meeting.eventKey);
                 onManualChange(false);

@@ -200,6 +200,24 @@ it('joins an automatic calendar at the start, unassigned and only once', async (
   });
 });
 
+// An unanswered invitation must not let an always-listening bot in on its own.
+it('asks about an unanswered invitation even on an automatic calendar', async () => {
+  const { state, send, start, run } = await fixture({
+    autoJoin: true,
+    items: [
+      meetingEvent({
+        attendees: [{ email: 'me@example.com', self: true, responseStatus: 'needsAction' }],
+      }),
+    ],
+  });
+  state.now = START - 5 * MIN;
+  await run();
+  state.now = START;
+  await run();
+  expect(start).not.toHaveBeenCalled();
+  expect(categories(send)).toEqual(['MEETING_UPCOMING']);
+});
+
 // A failed start must not turn into a bot retrying every minute behind the operator's back.
 it('does not retry an automatic join that failed', async () => {
   const { state, start, run } = await fixture({ autoJoin: true });

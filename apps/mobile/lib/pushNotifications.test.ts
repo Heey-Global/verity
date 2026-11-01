@@ -469,6 +469,13 @@ describe('calendar meeting pushes', () => {
     expect(prompt).not.toHaveBeenCalled();
   });
 
+  it('ignores a meeting push when the pairing cannot be checked', async () => {
+    const box = outbox();
+    const { deviceId: _omitted, ...unstamped } = upcoming;
+    await handlePushResponse(respond('VERITY_MEETING_JOIN', unstamped), box, jest.fn(), undefined);
+    expect(box.enqueue).not.toHaveBeenCalled();
+  });
+
   it('shows a meeting about to start while the app is open', () => {
     expect(foregroundPushBehavior(upcoming).shouldShowBanner).toBe(true);
   });

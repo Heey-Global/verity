@@ -57,6 +57,7 @@ function event(eventId: string, startsAt: number, meetingUrl: string) {
     meetingUrl,
     startsAt,
     endsAt: startsAt + 30 * MIN,
+    accepted: true,
   };
 }
 const key = (eventId: string) => calendarEventKey(accountId, 'primary', eventId);
@@ -76,6 +77,8 @@ function serve(start = vi.fn(async () => ({ meetingId: 'meeting-1' }))) {
       calendarWatch: ctx.store.calendarWatch,
       listActiveAdministratorIds: async () => [],
       listDevicePushTokensForUsers: async () => [],
+      getSession: async (id: string) =>
+        id === 'session-1' ? ({ sessionId: id } as never) : undefined,
     },
     meetings: { start } as unknown as CalendarMeetingDeps['meetings'],
     sender: { send },
@@ -158,6 +161,7 @@ it('skips a meeting, and joining afterwards is still possible', async () => {
 it.each([
   ['an unknown meeting', 'unknown', 404],
   ['a meeting that ended', 'ended', 409],
+  ['a meeting many hours ahead', 'tomorrow', 409],
 ])('refuses to join %s', async (_, eventId, status) => {
   const { app, start } = serve();
   const response = await app.inject({
@@ -166,6 +170,28 @@ it.each([
   });
   expect(response.statusCode).toBe(status);
   expect(start).not.toHaveBeenCalled();
+});
+
+it('refuses to join into a session that does not exist, leaving the meeting open', async () => {
+  const { app, start } = serve();
+  const url = `/live-meetings/calendar/${key('soon')}/join`;
+  const response = await app.inject({ method: 'POST', url, payload: { sessionId: 'gone' } });
+  expect(response.statusCode).toBe(404);
+  expect(start).not.toHaveBeenCalled();
+  expect((await app.inject({ method: 'POST', url })).statusCode).toBe(200);
+});
+
+// A failure on a join someone asked for must not lock the meeting like a failed auto-join.
+it('gives the meeting back when the bot fails for any reason', async () => {
+  const start = vi
+    .fn()
+    .mockRejectedValueOnce(new Error('An online meeting is already active in this session.'))
+    .mockResolvedValueOnce({ meetingId: 'meeting-3' });
+  const { app } = serve(start);
+  const url = `/live-meetings/calendar/${key('soon')}/join`;
+  expect((await app.inject({ method: 'POST', url })).statusCode).toBe(500);
+  expect(await ctx.store.calendarWatch.getEvent(key('soon'))).toMatchObject({ decision: null });
+  expect((await app.inject({ method: 'POST', url })).json()).toEqual({ meetingId: 'meeting-3' });
 });
 
 it('answers 503 when the bot cannot start, and the meeting can be joined again', async () => {

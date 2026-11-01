@@ -143,6 +143,7 @@ export interface CalendarWatchEventsTable {
   meeting_url: string;
   starts_at: ColumnType<Date, string, string>;
   ends_at: ColumnType<Date, string, string>;
+  accepted: ColumnType<boolean, boolean | undefined, boolean>;
   notified_at: ColumnType<Date | null, string | null | undefined, string | null>;
   decision: 'joined' | 'skipped' | 'failed' | null;
   meeting_id: string | null;

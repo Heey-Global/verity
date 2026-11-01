@@ -46,6 +46,7 @@ jest.mock('../lib/liveMeetingSync', () => ({
 jest.mock('../lib/client', () => ({
   createVerityClient: jest.fn().mockReturnValue(null),
   getActiveMeetingServerId: jest.fn().mockReturnValue('server-1'),
+  subscribeVerityBaseUrl: jest.fn().mockReturnValue(jest.fn()),
 }));
 
 beforeEach(() => {
@@ -399,5 +400,77 @@ describe('a tapped calendar meeting notification', () => {
         params: { sessionId: 'session-4' },
       }),
     );
+  });
+});
+
+describe('discovering meetings on the server', () => {
+  const running = {
+    sessionId: 'session-9',
+    id: 'online-1',
+    title: 'Weekly sync',
+    engine: 'attendee',
+    startedAt: Date.now(),
+    state: 'active',
+    captureStatus: 'listening',
+    sessionName: 'Weekly sync',
+    projectId: 'website',
+  };
+
+  // The local copy may not have arrived yet; clearing the follow would make discovery
+  // follow the same meeting again at once, over and over.
+  it('keeps following a meeting this device has not synced yet', async () => {
+    jest.mocked(subscribeMeeting).mockImplementation((listener) => {
+      listener(null);
+      return jest.fn();
+    });
+    let notifyFollowed!: (value: unknown) => void;
+    jest.mocked(subscribeFollowedRemoteMeeting).mockImplementation((listener) => {
+      notifyFollowed = listener as (value: unknown) => void;
+      listener(null);
+      return jest.fn();
+    });
+    const sync = jest.requireMock('../lib/liveMeetingSync');
+    sync.followRemoteMeeting.mockImplementation((sessionId: string, meetingId: string) =>
+      notifyFollowed({ serverId: 'server-1', sessionId, meetingId }),
+    );
+    jest.mocked(listMeetings).mockResolvedValue([]);
+    jest.mocked(createVerityClient).mockReturnValue({
+      getActiveLiveMeetings: jest.fn().mockResolvedValue(activeMeetings({ running: [running] })),
+    } as unknown as NonNullable<ReturnType<typeof createVerityClient>>);
+    render(<ActiveMeetingOverlay />);
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    });
+    expect(sync.followRemoteMeeting).toHaveBeenCalledTimes(1);
+    expect(sync.clearFollowedRemoteMeeting).not.toHaveBeenCalled();
+  });
+
+  it('asks the new server after switching servers', async () => {
+    jest.mocked(subscribeMeeting).mockImplementation((listener) => {
+      listener(null);
+      return jest.fn();
+    });
+    let switchServer!: () => void;
+    const { subscribeVerityBaseUrl } = jest.requireMock('../lib/client');
+    subscribeVerityBaseUrl.mockImplementation((listener: () => void) => {
+      switchServer = listener;
+      return jest.fn();
+    });
+    const first = jest.fn().mockResolvedValue(activeMeetings({}));
+    const second = jest.fn().mockResolvedValue(activeMeetings({}));
+    jest
+      .mocked(createVerityClient)
+      .mockReturnValueOnce({ getActiveLiveMeetings: first } as never)
+      .mockReturnValue({ getActiveLiveMeetings: second } as never);
+    render(<ActiveMeetingOverlay />);
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    });
+    expect(first).toHaveBeenCalled();
+    act(() => switchServer());
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    });
+    expect(second).toHaveBeenCalled();
   });
 });
