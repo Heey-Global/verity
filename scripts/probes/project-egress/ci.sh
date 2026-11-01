@@ -83,6 +83,7 @@ docker save "$runner_image" "$relay_image" | docker exec -i "$name" docker load 
 docker exec "$name" docker tag "$runner_image" project-egress-runner:local
 docker exec "$name" docker tag "$relay_image" project-egress-relay:local
 timeout 240 docker exec "$name" node /probe/host-smoke.mjs > "$PROBE_EVIDENCE/host-smoke.txt" 2>&1
+python3 "$probe_dir/composed-proof.py" "$PROBE_EVIDENCE" > "$PROBE_EVIDENCE/composed-verification.json"
 timeout 240 docker exec "$name" node /probe/adapter-smoke.mjs > "$PROBE_EVIDENCE/adapter-smoke.txt" 2>&1
 python3 "$probe_dir/deadline-adapter-proof.py" "$PROBE_EVIDENCE" > "$PROBE_EVIDENCE/adapter-deadline-verification.json"
 # No project probe receives the outer/inner Docker socket or evidence mount.

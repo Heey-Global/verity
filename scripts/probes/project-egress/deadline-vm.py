@@ -78,8 +78,9 @@ def verify(directory):
     guard = result['mutations']['guard']
     assert guard['map']['deadline_ns'] == 0
     assert not any(q['kind'] in ('clsact', 'ingress') for q in guard['removed']['qdiscs'])
-    assert guard['before']['accepted'] == guard['after']['accepted']
-    assert guard['before']['denied'] == guard['after']['denied']
+    assert guard['before']['accepted'] == guard['removed']['stats']['accepted']
+    assert guard['removed']['stats']['accepted'] == guard['after']['accepted']
+    assert guard['removed']['stats']['denied'] == guard['after']['denied']
     return {'cases': len(expected), 'complete': True}
 
 
@@ -120,11 +121,21 @@ def main():
         with tempfile.NamedTemporaryFile(suffix='.tar') as archive:
             with tarfile.open(archive.name, 'w') as bundle:
                 bundle.add(probe / 'deadline-guest.py', arcname='deadline-guest.py')
+                for filename in ('deadline-relay-kernel.py', 'test_deadline_relay.py'):
+                    bundle.add(probe / filename, arcname=filename)
                 bundle.add(probe.parents[2] / 'deploy/egress/project-egress-deadline.bpf.c', arcname='project-egress-deadline.bpf.c')
+                bundle.add(probe.parents[2] / 'deploy/egress/project-egress-deadline.py', arcname='project-egress-deadline.py')
             vm.upload(archive.name)
         vm.ssh('sudo apt-get update && sudo apt-get install -y --no-install-recommends clang llvm libbpf-dev bpftool nftables iproute2 util-linux', timeout=300)
         setup = call('setup', timeout=60)
         (root / 'setup.json').write_text(json.dumps(setup))
+        try:
+            relay = vm.ssh('sudo env PROJECT_EGRESS_DISPOSABLE=yes python3 '
+                           '/opt/verity-fixture/deadline-relay-kernel.py', timeout=180)
+        except subprocess.CalledProcessError as error:
+            (root / 'relay-kernel.txt').write_text(error.output)
+            raise
+        (root / 'relay-kernel.txt').write_text(relay)
         zero = {'baseline': call('stats')}
         call('arm 3000')
         send('positive-zero')

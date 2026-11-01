@@ -112,9 +112,14 @@ export async function retireStoppedContainers(input: {
         )
           return;
         const since =
-          inspect.status === 'created'
-            ? (current.created ?? NaN) * 1000
-            : Date.parse(inspect.finishedAt ?? '');
+          !maintenance &&
+          inspect.status !== 'created' &&
+          latestProject?.state === 'sleeping' &&
+          latestProject.sleepingSince
+            ? latestProject.sleepingSince.getTime()
+            : inspect.status === 'created'
+              ? (current.created ?? NaN) * 1000
+              : Date.parse(inspect.finishedAt ?? '');
         const grace = latestProject && !maintenance ? DAY : 7 * DAY;
         if (!Number.isFinite(since) || since <= 0) {
           keep(current, 'Stop time is unknown');

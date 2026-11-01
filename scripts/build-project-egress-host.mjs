@@ -7,5 +7,8 @@ await build({
   platform: 'node',
   format: 'esm',
   target: 'node26',
-  alias: { '@verity/store': resolve('packages/store/src/project-egress.ts') },
+  banner: {
+    js: "import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);",
+  },
+  alias: { '@verity/store': resolve('packages/store/src/index.ts') },
 });

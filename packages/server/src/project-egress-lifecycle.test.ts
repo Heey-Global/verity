@@ -67,3 +67,155 @@ it('does not retry failed network creation or register a guessed network ID', as
   expect(await h.lifecycle.current(identity.projectId)).toBeUndefined();
   expect(h.createEgressNetwork).toHaveBeenCalledTimes(1);
 });
+
+it('renews only a host-acknowledged direct authority and stops on prepare or Server shutdown', async () => {
+  vi.useFakeTimers();
+  const commands: string[] = [];
+  const binding = {
+    projectId: 'p1',
+    generation: 'g1',
+    networkId: 'a'.repeat(64),
+    networkName: 'p1-g1',
+    bridge: 'vep0123456789ab',
+  };
+  const lifecycle = new ProjectEgressLifecycle(async (input) => {
+    commands.push(input.operation);
+    if (input.operation === 'current') return { state: 'current', projectId: 'p1', binding };
+    if (input.operation === 'connect')
+      return {
+        state: 'connected',
+        generation: 'g1',
+        relayAddress: '172.30.1.3',
+        directAuthority: true,
+      };
+    if (input.operation === 'refresh-direct')
+      return { state: 'direct-refreshed', generation: 'g1' };
+    if (input.operation === 'revoke-direct') return { state: 'direct-revoked', generation: 'g1' };
+    return { state: 'denied', generation: 'g1' };
+  }, {});
+  try {
+    await lifecycle.connect(identity);
+    expect(commands.filter((command) => command === 'refresh-direct')).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(500);
+    expect(commands.filter((command) => command === 'refresh-direct')).toHaveLength(3);
+    await lifecycle.prepare(identity);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(commands.filter((command) => command === 'refresh-direct')).toHaveLength(3);
+    await lifecycle.connect(identity);
+    await lifecycle.close();
+    expect(commands.at(-1)).toBe('revoke-direct');
+    const count = commands.length;
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(commands).toHaveLength(count);
+    await expect(lifecycle.connect(identity)).rejects.toThrow('closed');
+  } finally {
+    await lifecycle.close();
+    vi.useRealTimers();
+  }
+});
+
+it('stops renewing after an ambiguous host failure and attempts direct revocation without retrying admission', async () => {
+  vi.useFakeTimers();
+  let calls = 0;
+  const operations: string[] = [];
+  const lifecycle = new ProjectEgressLifecycle(async (input) => {
+    operations.push(input.operation);
+    if (input.operation === 'connect')
+      return {
+        state: 'connected',
+        generation: 'g1',
+        relayAddress: '172.30.1.3',
+        directAuthority: true,
+      };
+    if (input.operation === 'refresh-direct') {
+      if (++calls > 1) throw new Error('unknown execution outcome');
+      return { state: 'direct-refreshed', generation: 'g1' };
+    }
+    return { state: 'direct-revoked', generation: 'g1' };
+  }, {});
+  try {
+    await lifecycle.connect(identity);
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(calls).toBe(2);
+    expect(operations.at(-1)).toBe('revoke-direct');
+  } finally {
+    await lifecycle.close();
+    vi.useRealTimers();
+  }
+});
+
+it('does not let an obsolete failed refresh cancel a replacement renewal', async () => {
+  vi.useFakeTimers();
+  let rejectOld!: (error: Error) => void;
+  let calls = 0;
+  const operations: string[] = [];
+  const lifecycle = new ProjectEgressLifecycle(async (input) => {
+    operations.push(input.operation);
+    if (input.operation === 'connect')
+      return {
+        state: 'connected',
+        generation: 'g1',
+        relayAddress: '172.30.1.3',
+        directAuthority: true,
+      };
+    if (input.operation === 'refresh-direct') {
+      if (++calls === 2)
+        await new Promise<void>((_resolve, reject) => {
+          rejectOld = reject;
+        });
+      return { state: 'direct-refreshed', generation: 'g1' };
+    }
+    return { state: 'direct-revoked', generation: 'g1' };
+  }, {});
+  try {
+    await lifecycle.connect(identity);
+    await vi.advanceTimersByTimeAsync(250);
+    expect(calls).toBe(2);
+    await lifecycle.connect(identity);
+    rejectOld(new Error('obsolete request failed'));
+    await vi.advanceTimersByTimeAsync(500);
+    expect(calls).toBe(5);
+    expect(operations).not.toContain('revoke-direct');
+  } finally {
+    await lifecycle.close();
+    vi.useRealTimers();
+  }
+});
+
+it('counts refresh work toward renewal cadence without overlapping requests', async () => {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
+  let active = 0;
+  let maximum = 0;
+  const starts: number[] = [];
+  const lifecycle = new ProjectEgressLifecycle(async (input) => {
+    if (input.operation === 'connect')
+      return {
+        state: 'connected',
+        generation: 'g1',
+        relayAddress: '172.30.1.3',
+        directAuthority: true,
+      };
+    if (input.operation === 'refresh-direct') {
+      starts.push(performance.now());
+      maximum = Math.max(maximum, ++active);
+      await new Promise<void>((resolve) => setTimeout(resolve, 400));
+      active--;
+      return { state: 'direct-refreshed', generation: 'g1' };
+    }
+    return { state: 'direct-revoked', generation: 'g1' };
+  }, {});
+  try {
+    const connected = lifecycle.connect(identity);
+    await vi.advanceTimersByTimeAsync(400);
+    await connected;
+    await vi.advanceTimersByTimeAsync(402);
+    expect(starts).toHaveLength(3);
+    expect(starts[1]! - starts[0]!).toBeLessThanOrEqual(401);
+    expect(starts[2]! - starts[1]!).toBeLessThanOrEqual(401);
+    expect(maximum).toBe(1);
+  } finally {
+    await lifecycle.close();
+    await vi.advanceTimersByTimeAsync(400);
+    vi.useRealTimers();
+  }
+});

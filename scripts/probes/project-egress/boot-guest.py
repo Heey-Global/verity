@@ -18,14 +18,18 @@ def run(*args):
     return subprocess.check_output(args, text=True, stderr=subprocess.STDOUT).strip()
 
 
-def api(path, body=None, token=None):
+def api(path, body=None, token=None, timeout=15):
     headers = {'Content-Type': 'application/json'}
     if token:
         headers['Authorization'] = f'Bearer {token}'
     request = urllib.request.Request('http://127.0.0.1:9000' + path,
                                      data=None if body is None else json.dumps(body).encode(), headers=headers)
-    with urllib.request.urlopen(request, timeout=15) as response:
-        return json.load(response)
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return json.load(response)
+    except urllib.error.HTTPError as error:
+        detail = error.read(4096).decode('utf-8', errors='replace')
+        raise ValueError(f'Guest API {path} failed ({error.code}): {detail}') from error
 
 
 def wait(check, timeout=120):
@@ -49,14 +53,15 @@ def descriptor():
 def containers():
     project = descriptor()['projectId']
     registry = json.loads(Path('/var/lib/verity-egress/registry.json').read_text())
-    ids = [value for record in registry['records'] if record['binding']['projectId'] == project
+    ids = [value for record in registry['records'] if not record['retired'] and record['binding']['projectId'] == project
            for value in record['containers'].values()]
     return json.loads(run('docker', 'inspect', *ids)) if ids else []
 
 
 def sandbox():
     registry = json.loads(Path('/var/lib/verity-egress/registry.json').read_text())
-    record = next(record for record in registry['records'] if record['binding']['projectId'] == descriptor()['projectId'])
+    records = [record for record in registry['records'] if record['binding']['projectId'] == descriptor()['projectId']]
+    record = next((record for record in records if not record['retired']), records[-1])
     return record['containers']['sandbox']
 
 
@@ -66,13 +71,15 @@ def positive():
     return value
 
 
+def registry_ready():
+    with urllib.request.urlopen('http://127.0.0.1:5000/v2/', timeout=2) as response:
+        return response.status == 200
+
+
 def setup():
     assert os.getuid() == 0 and Path('/var/lib/cloud/data/instance-id').read_text().strip() == 'verity-boot-probe'
     run('docker', 'run', '-d', '--name', 'verity-boot-registry', '--network', 'host', '--restart', 'no',
         '-e', 'REGISTRY_HTTP_ADDR=127.0.0.1:5000', 'verity-boot-registry:local')
-    def registry_ready():
-        with urllib.request.urlopen('http://127.0.0.1:5000/v2/', timeout=2) as response:
-            return response.status == 200
     wait(registry_ready, 30)
     refs = {}
     for role, image in [('runner', 'verity-boot-observed-runner:local'), ('relay', 'verity-boot-relay:local')]:
@@ -87,7 +94,7 @@ def setup():
     (ROOT / 'config.json').write_text(json.dumps(config))
     os.chmod(ROOT / 'config.json', 0o600)
     os.chown(ROOT / 'config.json', 1000, 1000)
-    policy = {'image': refs['relay'], 'dataVolume': 'verity-boot-data', 'socketOwnerUid': 1000,
+    policy = {'packetEnforcement': True, 'image': refs['relay'], 'dataVolume': 'verity-boot-data', 'socketOwnerUid': 1000,
               'relayGid': 1102, 'brokerSubpath': 'relay/broker', 'claudeSubpath': 'relay/claude', 'codexSubpath': 'relay/codex'}
     Path('/etc/verity-egress/relay.json').write_text(json.dumps(policy))
     os.chmod('/etc/verity-egress/relay.json', 0o600)
@@ -106,7 +113,7 @@ def setup():
     Path(data_root, 'boot-retained-marker').write_text('retained actual project data')
 
 
-def recover():
+def recover(replace=False):
     run('systemctl', 'start', 'verity-boot-gateway.service', 'verity-boot-server.service')
     wait(lambda: api('/healthz'))
     token = api('/secret/unlock', {'password': PASSWORD, 'deviceLabel': 'boot recovery'})['token']
@@ -114,7 +121,18 @@ def recover():
     # alone never counts as project transport readiness.
     # Explicit trusted host readmission keeps the original sandbox process alive.
     # Actual Server listeners/capabilities are recovered by its normal project poll.
-    run('env', 'PROJECT_EGRESS_DISPOSABLE=yes', '/usr/bin/node', '/opt/verity-fixture/boot-server.mjs', 'readmit')
+    if replace:
+        # The disposable registry deliberately has no automatic restart policy.
+        # Image retrieval is a real part of replacement, so restore its fixture
+        # dependency explicitly after Docker restart and host reboot.
+        run('docker', 'start', 'verity-boot-registry')
+        wait(registry_ready, 30)
+        # Stopped packet registrations are immutable. Use the actual authenticated
+        # replacement lifecycle rather than restarting an attested old endpoint.
+        api('/verity-control/projects/' + descriptor()['projectId'] + '/recreate-container',
+            {'confirmWarnings': True}, token=token, timeout=180)
+    else:
+        run('env', 'PROJECT_EGRESS_DISPOSABLE=yes', '/usr/bin/node', '/opt/verity-fixture/boot-server.mjs', 'readmit')
     api('/projects', token=token)
     wait(positive, 180)
     config = json.loads((ROOT / 'config.json').read_text())
@@ -157,11 +175,31 @@ def inflight(phase):
 def snapshot():
     registry = json.loads(Path('/var/lib/verity-egress/registry.json').read_text())
     facts = []
-    for container in containers():
+    live_containers = containers()
+    endpoints = {net['EndpointID'] for container in live_containers for net in container['NetworkSettings']['Networks'].values()}
+    for container in live_containers:
         facts.append({'id': container['Id'], 'image': container['Image'], 'running': container['State']['Running'],
                       'restart': container['HostConfig']['RestartPolicy']['Name'],
                       'mounts': [{k: mount[k] for k in ('Source', 'Destination')} for mount in container['Mounts']]})
-    return {'projectId': descriptor()['projectId'], 'registry': registry, 'containers': facts}
+    packet = []
+    identities = {container['id'] for container in facts}
+    for path in Path('/var/lib/verity-egress/deadline').glob('*.json'):
+        state = json.loads(path.read_text())
+        if state['binding']['containerId'] not in identities or state['binding']['endpointId'] not in endpoints:
+            continue
+        raw = json.loads(run('env', 'PROJECT_EGRESS_DISPOSABLE=yes', 'python3',
+            '/opt/verity-fixture/probe/deadline-observe.py', json.dumps(state['binding'])))
+        program = json.loads(run('bpftool', '-j', 'prog', 'show', 'pinned',
+            '/sys/fs/bpf/verity_egress_deadline/' + raw['identity'] + '/guard'))
+        if isinstance(program, list):
+            program = program[0]
+        hooks = {direction: json.loads(run('tc', '-j', 'filter', 'show', 'dev', raw['state']['peer']['device'], direction))
+                 for direction in ('ingress', 'egress')}
+        packet.append({'raw': raw, 'program': program, 'hooks': hooks})
+    assert len(packet) == 1, 'Missing combined TC/nft packet evidence'
+    assert json.loads(Path('/etc/verity-egress/relay.json').read_text())['packetEnforcement'] is True
+    return {'projectId': descriptor()['projectId'], 'registry': registry, 'containers': facts, 'packet': packet,
+            'tables': json.loads(run('nft', '-j', 'list', 'tables'))['nftables']}
 
 
 def observer_positive(phase):
@@ -179,12 +217,18 @@ def observer_positive(phase):
 def remove_fences():
     # Destructive mutation is restricted to this disposable guest's own tables.
     assert Path('/var/lib/cloud/data/instance-id').read_text().strip() == 'verity-boot-probe'
+    packet = snapshot()['packet']
     tables = json.loads(run('nft', '--json', 'list', 'tables'))['nftables']
     names = [entry['table'] for entry in tables if 'table' in entry and
-             (entry['table']['name'] == 'verity_egress_boot' or entry['table']['name'].startswith('verity_start_'))]
+             (entry['table']['name'].startswith(('verity_egress_', 'verity_start_')))]
     assert len(names) >= 4
     for table in names:
         run('nft', 'delete', 'table', table['family'], table['name'])
+    # Both layers must be removed for the destructive positive control.
+    for guard in packet:
+        device = guard['raw']['state']['peer']['device']
+        assert device and all(c.isalnum() or c in '_-.' for c in device)
+        run('tc', 'qdisc', 'del', 'dev', device, 'clsact')
 
 
 def faults():
@@ -236,7 +280,7 @@ if __name__ == '__main__':
     if operation == 'setup':
         setup()
     elif operation == 'recover':
-        recover()
+        recover(sys.argv[2:] == ['replace'])
     elif operation == 'positive':
         positive()
     elif operation == 'observer-positive':

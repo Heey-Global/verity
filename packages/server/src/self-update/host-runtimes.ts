@@ -1,7 +1,9 @@
+import { randomUUID } from 'node:crypto';
 import { mkdir, open, readFile, rename, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import type { DockerClient } from '../docker.js';
+import type { RuntimeServiceRequirements } from './host-runtime-renewal.js';
 
 /**
  * Docker runtime registrations a Server release needs on its host (ADR 0008 Amendment 2).
@@ -41,9 +43,22 @@ export const HOST_RUNTIME_ALLOWED_ARGS = [
   '--host-uds=create',
 ] as const;
 
+interface ArchitectureSums {
+  readonly x86_64: string;
+  readonly aarch64: string;
+}
+
 export interface HostRuntimeRequirements {
   readonly release: string;
-  readonly sha512: { readonly x86_64: string; readonly aarch64: string };
+  /** The runsc binary, per architecture. */
+  readonly sha512: ArchitectureSums;
+  /**
+   * Present for a gVisor release that ships as `gvisor.tar.bz2` (runsc plus the sidecars in
+   * `gvisor-bin/` it cannot start a sandbox without) rather than as a single binary. Only a host
+   * component that advertises `archive` in agent.json can install one; an older one would
+   * refuse the shape, which is also why an older Updater refuses a release declaring it.
+   */
+  readonly archiveSha512?: ArchitectureSums;
   readonly runtimes: Readonly<Record<HostRuntimeName, readonly string[]>>;
 }
 
@@ -68,16 +83,28 @@ function exactKeys(value: Record<string, unknown>, keys: readonly string[]): boo
   return actual.length === expected.length && actual.every((key, i) => key === expected[i]);
 }
 
+function isArchitectureSums(value: unknown): value is ArchitectureSums {
+  return (
+    isRecord(value) &&
+    exactKeys(value, ['x86_64', 'aarch64']) &&
+    Object.values(value).every((sum) => typeof sum === 'string' && /^[a-f0-9]{128}$/u.test(sum))
+  );
+}
+
 /** Strict parse; the same shape `verity-host-runtime` validates before it touches the host. */
 export function parseHostRuntimeRequirements(value: unknown): HostRuntimeRequirements | null {
-  if (!isRecord(value) || !exactKeys(value, ['release', 'sha512', 'runtimes'])) return null;
-  const { release, sha512, runtimes } = value;
-  if (typeof release !== 'string' || !/^release-[0-9]{8}\.[0-9]+$/u.test(release)) return null;
-  if (!isRecord(sha512) || !exactKeys(sha512, ['x86_64', 'aarch64'])) return null;
   if (
-    !Object.values(sha512).every((sum) => typeof sum === 'string' && /^[a-f0-9]{128}$/u.test(sum))
+    !isRecord(value) ||
+    !(
+      exactKeys(value, ['release', 'sha512', 'runtimes']) ||
+      exactKeys(value, ['release', 'sha512', 'archiveSha512', 'runtimes'])
+    )
   )
     return null;
+  const { release, sha512, archiveSha512, runtimes } = value;
+  if (typeof release !== 'string' || !/^release-[0-9]{8}\.[0-9]+$/u.test(release)) return null;
+  if (!isArchitectureSums(sha512)) return null;
+  if ('archiveSha512' in value && !isArchitectureSums(archiveSha512)) return null;
   if (!isRecord(runtimes) || !exactKeys(runtimes, HOST_RUNTIME_NAMES)) return null;
   const allowed: readonly string[] = HOST_RUNTIME_ALLOWED_ARGS;
   for (const args of Object.values(runtimes)) {
@@ -116,6 +143,15 @@ export async function readTargetHostRuntimes(
 
 function hostRuntimePath(release: string): string {
   return `/opt/verity/runsc/${release}/runsc`;
+}
+
+/** Whether the installed host runtime service advertises that it installs archive pins. */
+function installsArchives(agent: unknown): boolean {
+  return (
+    isRecord(agent) &&
+    Array.isArray(agent.runtimeArtifacts) &&
+    agent.runtimeArtifacts.includes('archive')
+  );
 }
 
 /** Names of the declared runtimes dockerd does not currently report exactly as declared. */
@@ -244,6 +280,16 @@ export async function requestHostAnswer(
 export interface ReconcileHostRuntimesOptions {
   readonly docker: Pick<DockerClient, 'inspectRuntime'>;
   readonly requirements: HostRuntimeRequirements;
+  /**
+   * Bring the host components up to the target release through a path that already runs
+   * release-bundled code on the host (the devcontainer builder service), for a host whose
+   * runtime service predates archive pins. Resolves to why that did not happen, or `undefined`
+   * once it did. Without it such a host can only be moved forward by the installer.
+   */
+  readonly serviceRequirements?: RuntimeServiceRequirements;
+  readonly renewHostRuntimeService?: () => Promise<void>;
+  readonly onProgress?: (stage: 'renewing' | 'registering' | 'recovery-required') => Promise<void>;
+  readonly refreshHostComponents?: () => Promise<string | undefined>;
   /** Stable across a resumed operation, so a crash reuses the request and its answer. */
   readonly requestId: string;
   readonly requestDir?: string;
@@ -261,29 +307,107 @@ export interface ReconcileHostRuntimesOptions {
 export async function reconcileHostRuntimes(options: ReconcileHostRuntimesOptions): Promise<void> {
   const { docker, requirements, requestId } = options;
   const missing = await unsatisfiedHostRuntimes(docker, requirements);
-  if (missing.length === 0) return;
-  const need = `Docker runtime ${missing.join(' and ')} (${requirements.release})`;
-
   const dir = options.requestDir ?? HOST_RUNTIME_REQUEST_DIR;
-  const agent = await readJson(join(dir, 'agent.json')).catch(() => undefined);
+  const pending = async (name: string): Promise<boolean> =>
+    stat(join(dir, `${name}-install.pending`)).then(
+      () => true,
+      (error: unknown) => {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+        throw error;
+      },
+    );
+  let servicePending = await pending('service');
+  const daemonPending = await pending('daemon');
+  if (
+    missing.length === 0 &&
+    options.serviceRequirements === undefined &&
+    !servicePending &&
+    !daemonPending
+  )
+    return;
+  const need = `Docker runtime ${(missing.length === 0 ? HOST_RUNTIME_NAMES : missing).join(' and ')} (${requirements.release})`;
+
+  let agent = await readJson(join(dir, 'agent.json')).catch(() => undefined);
+  const supports = (candidate: unknown): boolean => {
+    if (servicePending || !isRecord(candidate) || candidate.version !== 1) return false;
+    if (
+      candidate.trigger !== 'systemd-path' &&
+      !(candidate.trigger === 'none' && missing.length === 0)
+    )
+      return false;
+    if (requirements.archiveSha512 !== undefined && !installsArchives(candidate)) return false;
+    const wanted = options.serviceRequirements;
+    if (wanted === undefined) return true;
+    const service = candidate.runtimeService;
+    return (
+      isRecord(service) &&
+      typeof service.revision === 'number' &&
+      service.revision >= wanted.revision &&
+      service.renewalProtocol === wanted.renewalProtocol &&
+      Array.isArray(service.features) &&
+      wanted.features.every((feature) => (service.features as unknown[]).includes(feature))
+    );
+  };
+  if (!supports(agent) && options.renewHostRuntimeService !== undefined) {
+    await options.onProgress?.('renewing');
+    try {
+      await options.renewHostRuntimeService();
+    } catch (error) {
+      throw new HostRuntimeError(
+        `This release needs ${need}. ${error instanceof Error ? error.message : 'Host runtime service renewal failed.'} The current version keeps serving.`,
+      );
+    }
+    agent = await readJson(join(dir, 'agent.json')).catch(() => undefined);
+    servicePending = await pending('service');
+    if (!supports(agent))
+      throw new HostRuntimeError(
+        `This release needs ${need}, but the renewed host runtime service does not advertise the required capabilities. The current version keeps serving. ${REPAIR}`,
+      );
+  }
   if (!isRecord(agent) || agent.version !== 1) {
     throw new HostRuntimeError(
       `This release needs ${need}, and this host has no Verity host runtime service to register it. ${REPAIR}`,
     );
   }
+  if (options.serviceRequirements !== undefined && !supports(agent))
+    throw new HostRuntimeError(
+      `This release needs newer host runtime service capabilities. The current version keeps serving. ${REPAIR}`,
+    );
+  if (servicePending)
+    throw new HostRuntimeError(`Host runtime service installation needs recovery. ${REPAIR}`);
+  if (!daemonPending && (await unsatisfiedHostRuntimes(docker, requirements)).length === 0) return;
   if (agent.trigger !== 'systemd-path') {
     throw new HostRuntimeError(
       `This release needs ${need}. This host has no systemd, so the host runtime service cannot ` +
         'run on request; re-run the Verity installer on the host, then retry the update.',
     );
   }
+  await options.onProgress?.('registering');
+  if (requirements.archiveSha512 !== undefined && !installsArchives(agent)) {
+    // The builder service installs the bundle out of the verified target image, and that
+    // bundle both registers the target's runtimes and replaces the host runtime service. So
+    // afterwards either nothing is missing any more, or the service takes the request below.
+    await options.refreshHostComponents?.();
+    if ((await unsatisfiedHostRuntimes(docker, requirements)).length === 0) return;
+    const refreshed = await readJson(join(dir, 'agent.json')).catch(() => undefined);
+    if (!installsArchives(refreshed)) {
+      throw new HostRuntimeError(
+        `This release needs ${need}, which gVisor ships as a release archive, and this host's ` +
+          'runtime service predates archives. ' +
+          'The current version keeps serving. ' +
+          REPAIR,
+      );
+    }
+  }
 
+  const answerId = daemonPending ? `${requestId}:recovery:${randomUUID()}` : requestId;
   const result = await requestHostAnswer({
     dir,
     request: 'request.json',
     result: 'result.json',
-    id: requestId,
-    body: { version: 1, id: requestId, requirements },
+    // A prior successful answer must not bypass an unfinished host transaction.
+    id: answerId,
+    body: { version: 1, id: answerId, requirements },
     timeoutMs: options.timeoutMs ?? 15 * 60_000,
     ...(options.pollMs === undefined ? {} : { pollMs: options.pollMs }),
     ...(options.sleep === undefined ? {} : { sleep: options.sleep }),
@@ -296,11 +420,15 @@ export async function reconcileHostRuntimes(options: ReconcileHostRuntimesOption
     );
   }
   if (!result.ok) {
+    if (result.message.startsWith('recovery-required:'))
+      await options.onProgress?.('recovery-required');
     throw new HostRuntimeError(
       `This release needs ${need}, and the host could not register it: ${result.message}. ` +
         'The current version keeps serving; fix the cause on the host, then retry the update.',
     );
   }
+  if (await pending('daemon'))
+    throw new HostRuntimeError(`Host runtime registration needs recovery. ${REPAIR}`);
   const still = await unsatisfiedHostRuntimes(docker, requirements);
   if (still.length > 0) {
     throw new HostRuntimeError(

@@ -1,5 +1,8 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { spawn } from 'node:child_process';
+import {
+  createProjectDeadlineWorker,
+  type DeadlineWorkerTiming,
+} from './project-egress-deadline-worker.js';
 import { z } from 'zod';
 import type { ProjectFenceBinding } from './project-egress-fence.js';
 
@@ -101,55 +104,98 @@ export interface ProjectDeadlineEnforcer {
   /** Attach and attest both software hooks in a denied state. */
   prepare(binding: ProjectFenceBinding): Promise<void>;
   clock(): Promise<ProjectDeadlineClock>;
+  /** Kernel-side compare-and-renew; a late handoff must fail without reviving old flows. */
+  renew?(
+    binding: ProjectFenceBinding,
+    lease: ProjectDeadlineLease,
+    previousBootDeadlineNs: string,
+  ): Promise<void>;
   /** Must preserve the given absolute deadline even after arbitrarily late commit. */
   arm(binding: ProjectFenceBinding, lease: ProjectDeadlineLease): Promise<void>;
   revoke(binding: ProjectFenceBinding, next?: ProjectDeadlineLease): Promise<void>;
 }
 
+export interface ProjectDeadlineRelayEnforcer extends ProjectDeadlineEnforcer {
+  configureRelay(
+    binding: ProjectFenceBinding,
+    relay: { containerId: string; endpointId: string; codex: boolean },
+  ): Promise<void>;
+  clearRelay(binding: ProjectFenceBinding): Promise<void>;
+}
+
 /** Fixed root-owned helper; no executable or namespace comes from a project. */
-export function hostProjectDeadlineEnforcer(): ProjectDeadlineEnforcer {
-  const request = (input: unknown): Promise<unknown> =>
-    new Promise((resolve, reject) => {
-      const child = spawn('/usr/bin/python3', ['/opt/verity-egress/project-egress-deadline.py'], {
-        stdio: ['pipe', 'pipe', 'pipe'],
-        timeout: 5000,
-        killSignal: 'SIGKILL',
-        env: { PATH: '/usr/sbin:/usr/bin:/sbin:/bin', TZ: 'UTC' },
-      });
-      let output = '';
-      let diagnostic = '';
-      child.stderr.setEncoding('utf8');
-      child.stderr.on('data', (chunk: string) => {
-        diagnostic = (diagnostic + chunk).slice(-8192);
-      });
-      child.stdout.setEncoding('utf8');
-      child.stdout.on('data', (chunk: string) => {
-        output += chunk;
-        if (output.length > 16384) {
-          child.kill('SIGKILL');
-          reject(new Error('Oversized host deadline response'));
+export interface ProjectDeadlineTiming extends DeadlineWorkerTiming {
+  operation: string;
+  capturedBootNs?: string;
+  bootDeadlineNs?: string;
+  previousBootDeadlineNs?: string;
+}
+export function hostProjectDeadlineEnforcer(
+  observe?: (timing: ProjectDeadlineTiming) => void,
+): ProjectDeadlineRelayEnforcer & { close(): void } {
+  const worker = createProjectDeadlineWorker();
+  const request = (input: { operation: string; [key: string]: unknown }): Promise<unknown> =>
+    worker.request(
+      input,
+      (value) => {
+        if (input.operation === 'clock') return clockSchema.parse(value);
+        const state =
+          input.operation === 'configure-relay'
+            ? 'relay-configured'
+            : input.operation === 'clear-relay'
+              ? 'relay-denied'
+              : ['arm', 'renew'].includes(input.operation)
+                ? 'armed'
+                : 'denied';
+        if (state === 'armed') {
+          const result = z
+            .strictObject({ state: z.literal('armed'), bootDeadlineNs: decimal })
+            .parse(value);
+          if (result.bootDeadlineNs !== (input.lease as ProjectDeadlineLease).bootDeadlineNs)
+            throw new Error('Host changed immutable packet deadline');
+          return result;
         }
-      });
-      child.once('error', reject);
-      child.stdin.once('error', reject);
-      child.once('close', (code) => {
-        if (code !== 0)
-          return reject(new Error('Host packet deadline operation failed: ' + diagnostic));
-        try {
-          resolve(JSON.parse(output) as unknown);
-        } catch (error) {
-          reject(error instanceof Error ? error : new Error('Invalid host deadline response'));
-        }
-      });
-      child.stdin.end(JSON.stringify(input));
-    });
+        return z.strictObject({ state: z.literal(state) }).parse(value);
+      },
+      (timing) => {
+        const lease = input.lease as ProjectDeadlineLease | undefined;
+        observe?.({
+          ...timing,
+          operation: input.operation,
+          ...(lease
+            ? { capturedBootNs: lease.capturedBootNs, bootDeadlineNs: lease.bootDeadlineNs }
+            : {}),
+          ...(typeof input.previousBootDeadlineNs === 'string'
+            ? { previousBootDeadlineNs: input.previousBootDeadlineNs }
+            : {}),
+        });
+      },
+    );
   const denied = z.strictObject({ state: z.literal('denied') });
   return {
+    close: () => worker.close(),
+    async configureRelay(binding, relay) {
+      z.strictObject({ state: z.literal('relay-configured') }).parse(
+        await request({ operation: 'configure-relay', binding, relay }),
+      );
+    },
+    async clearRelay(binding) {
+      z.strictObject({ state: z.literal('relay-denied') }).parse(
+        await request({ operation: 'clear-relay', binding }),
+      );
+    },
     async prepare(binding) {
       denied.parse(await request({ operation: 'prepare', binding }));
     },
     async clock() {
       return clockSchema.parse(await request({ operation: 'clock' }));
+    },
+    async renew(binding, lease, previousBootDeadlineNs) {
+      const result = z
+        .strictObject({ state: z.literal('armed'), bootDeadlineNs: decimal })
+        .parse(await request({ operation: 'renew', binding, lease, previousBootDeadlineNs }));
+      if (result.bootDeadlineNs !== lease.bootDeadlineNs)
+        throw new Error('Host changed immutable packet deadline');
     },
     async arm(binding, lease) {
       const result = z

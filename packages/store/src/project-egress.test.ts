@@ -48,6 +48,37 @@ it('canonicalizes exact targets and rejects URL or ambiguous syntax', () => {
   ])
     expect(() => canonicalEgressTarget({ ...target, host })).toThrow();
 });
+it('requires current execution authority and the exact revision for admission', async () => {
+  const policy = await store.readForAdmission('a', 'member');
+  expect(await store.readForAdmission('a', 'member', policy.revision)).toEqual(policy);
+  await expect(store.readForAdmission('a', 'member', policy.revision + 1)).rejects.toMatchObject({
+    code: 'stale',
+  });
+  expect(() => store.readForAdmission('a', 'member', -1)).toThrow('invalid');
+  await expect(store.readForAdmission('b', 'member')).rejects.toMatchObject({ code: 'forbidden' });
+  await sql`update project_memberships set can_execute = false where project_id = 'a' and user_id = 'member'`.execute(
+    ctx.db,
+  );
+  try {
+    expect(await store.read('a', 'member')).toEqual(policy);
+    await expect(store.readForAdmission('a', 'member', policy.revision)).rejects.toMatchObject({
+      code: 'forbidden',
+    });
+  } finally {
+    await sql`update project_memberships set can_execute = true where project_id = 'a' and user_id = 'member'`.execute(
+      ctx.db,
+    );
+  }
+  await sql`update users set status = 'disabled' where id = 'member'`.execute(ctx.db);
+  try {
+    await expect(store.readForAdmission('a', 'member', policy.revision)).rejects.toMatchObject({
+      code: 'forbidden',
+    });
+  } finally {
+    await sql`update users set status = 'active' where id = 'member'`.execute(ctx.db);
+  }
+  expect(await store.read('a', admin)).toEqual(policy);
+});
 it('serializes duplicate requests, rechecks authority and keeps project scope', async () => {
   const replies = await Promise.all([
     store.request('a', admin, target),

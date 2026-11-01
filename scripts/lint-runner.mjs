@@ -52,9 +52,10 @@ function workerHeapLimit() {
  * @param {string[]} files
  * @param {number} heapMiB
  * @param {boolean} cache
+ * @param {boolean} ambientCache
  * @returns {WorkerResult}
  */
-function executeLint(files, heapMiB, cache) {
+function executeLint(files, heapMiB, cache, ambientCache) {
   // Disable core dumps before Node starts: an expected heap abort must not write
   // a potentially large dump. File names are positional arguments, never shell code.
   return spawnSync(
@@ -66,6 +67,7 @@ function executeLint(files, heapMiB, cache) {
       '--expose-gc',
       resolve(import.meta.dirname, 'lint-files.mjs'),
       ...(cache ? ['--local-cache'] : []),
+      ...(!ambientCache ? ['--no-ambient-cache'] : []),
       '--',
       ...files,
     ],
@@ -75,14 +77,16 @@ function executeLint(files, heapMiB, cache) {
 
 /**
  * @param {string[]} files
- * @param {{ cache?: boolean, heapMiB?: number, execute?: (files: string[], heapMiB: number) => WorkerResult,
+ * @param {{ cache?: boolean, ambientCache?: boolean, heapMiB?: number, execute?: (files: string[], heapMiB: number) => WorkerResult,
  * output?: (text: string) => void, error?: (text: string) => void }} [options]
  */
 export function runLint(files, options = {}) {
   if (!files.length) throw new Error('Provide explicit file paths to lint.');
   const heapMiB = options.heapMiB ?? workerHeapLimit();
   const execute =
-    options.execute ?? ((batch, heap) => executeLint(batch, heap, options.cache ?? false));
+    options.execute ??
+    ((batch, heap) =>
+      executeLint(batch, heap, options.cache ?? false, options.ambientCache ?? true));
   const output = options.output ?? ((text) => process.stdout.write(text));
   const error = options.error ?? ((text) => process.stderr.write(text));
   /** @param {string[]} batch @returns {number} */
@@ -146,7 +150,7 @@ if (process.argv[1] && resolve(process.argv[1]) === import.meta.filename) {
     const cache = !process.env.CI && !args.includes('--no-cache');
     process.exitCode = runLint(
       args.filter((argument) => argument !== '--' && argument !== '--no-cache'),
-      { cache },
+      { cache, ambientCache: !args.includes('--no-cache') },
     );
   } catch (error) {
     process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);

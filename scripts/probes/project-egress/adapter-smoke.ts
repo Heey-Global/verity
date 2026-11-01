@@ -386,7 +386,7 @@ try {
     });
     renewalControls.push(marker);
     await delay(150);
-    renewalEnd = (await hostProjectDeadlineEnforcer().clock()).bootBeforeNs;
+    renewalEnd = (await nativeDeadline.clock()).bootBeforeNs;
   }
   assert.ok(BigInt(renewalEnd) - BigInt(renewalStart) >= 2_000_000_000n);
   const pauseCases = [];
@@ -512,6 +512,7 @@ host.run('/sbin/tc', 'qdisc', 'del', 'dev', state['peer']['device'], 'clsact')
   );
   throw error;
 } finally {
+  nativeDeadline.close();
   for (const name of ['ve-receiver', 've-peer']) {
     const logs = await docker('logs', name).catch(() => 'unavailable');
     await writeFile(`/evidence/adapter-${name}-exit.jsonl`, logs);

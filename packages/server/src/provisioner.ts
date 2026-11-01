@@ -1,3 +1,8 @@
+import {
+  resolveSandboxMemory,
+  DEFAULT_SANDBOX_OOM_SCORE_ADJ,
+  FALLBACK_SANDBOX_MEMORY_BYTES,
+} from './sandbox-memory-policy.js';
 import { stripTrailingSlashes } from './path-text.js';
 import type { ProjectEgressLifecycle } from './project-egress-lifecycle.js';
 import { backupLifecycle } from './backup/lifecycle.js';
@@ -197,29 +202,12 @@ export interface ProjectRelayControl {
 
 const execFileAsync = promisify(execFile);
 
-// Default hard memory ceiling per project sandbox (HostConfig.Memory). Sandboxes
-// are UNTRUSTED and run arbitrary agent workloads (builds, tests, memory-leaky
-// tooling); without a cap a single runaway can exhaust host RAM and trigger a
-// GLOBAL OOM that thrashes the whole box unreachable (observed in prod: one
-// sandbox process ballooned and took the dev-server down). Capping each sandbox
-// keeps an OOM contained to that container's cgroup — the box stays healthy.
-//
-// Sized for gVisor, the default project runtime. Under runsc the whole guest is
-// one Sentry process whose memory is a host shmem file charged to this cgroup,
-// and there is no guest OOM killer: when the ceiling is hit the HOST kills the
-// Sentry, and every session of the project dies with it rather than one runaway
-// build. 4 GiB was hit that way four times in one evening (memcg 3.80 of 3.94 GB
-// shmem), and 6 GiB the same way on 2026-10-08, so the ceiling has to fit all of
-// a project's concurrent turns, not a single process. The toolkit's memory guard
-// (features/verity-sandbox-toolkit/bin/verity-memory-guard.mjs) stands in for
-// the missing guest OOM killer: it kills the largest agent-owned command a
-// reserve below this ceiling, so the common overrun costs one build rather than
-// the project. Override per-host with VERITY_SANDBOX_MEMORY (server-main.ts)
-// where the available RAM differs.
+// The hard limit is derived from Docker host capacity. The 6 GiB constant below
+// is only the fallback for daemons that cannot report capacity.
 // gVisor counts Sentry host threads as well as guest workload threads.
 export const DEFAULT_SANDBOX_PIDS_LIMIT = 4096;
 
-export const DEFAULT_SANDBOX_MEMORY_BYTES = 6 * 1024 * 1024 * 1024; // 6 GiB
+export const DEFAULT_SANDBOX_MEMORY_BYTES = FALLBACK_SANDBOX_MEMORY_BYTES;
 // Swap allowed per sandbox ON TOP of the memory ceiling (VERITY_SANDBOX_SWAP).
 // Off by default; see the `memorySwapBytes` comment at the container spec.
 export const DEFAULT_SANDBOX_SWAP_BYTES = 0;
@@ -270,7 +258,7 @@ export const RUNNER_BROKER_CAPABILITIES = ['CHOWN', 'SETUID', 'SETGID', 'KILL', 
 // Digest verified against the public OCI manifest; mutable aliases never enter builds.
 export const DEVCONTAINER_NODE_FEATURE_REF =
   'ghcr.io/devcontainers/features/node@sha256:8c0de46939b61958041700ee89e3493f3b2e4131a06dc46b4d9423427d06e5f6';
-const DEVCONTAINER_NODE_FEATURE_OPTIONS = { version: '26.12.1' } as const;
+const DEVCONTAINER_NODE_FEATURE_OPTIONS = { version: '26.13.0' } as const;
 const DEVCONTAINER_TOOLKIT_FEATURE_OPTIONS = { installRunnerSupervisor: true } as const;
 const DEVCONTAINER_TOOLKIT_ENTRYPOINT = ['/bin/sh', '-lc'];
 const DEVCONTAINER_POST_CREATE_READY_FILE = '/tmp/verity-post-create-complete';
@@ -926,8 +914,13 @@ export interface ProvisionerOptions {
    *  a project whose devcontainer legitimately needs more. */
   /** Max PIDs per sandbox (fork-bomb guard). Default 512. */
   sandboxPidsLimit?: number | undefined;
-  /** Hard memory ceiling per sandbox, in bytes. Default 6 GiB. */
+  /** Explicit hard ceiling; unset derives Docker host RAM minus the host reserve. */
   sandboxMemoryBytes?: number | undefined;
+  /** Soft protection, default 4 GiB clamped to the resolved hard ceiling. */
+  sandboxMemoryReservationBytes?: number | undefined;
+  /** Amount subtracted from Docker host capacity, default 4 GiB. */
+  sandboxHostReserveBytes?: number | undefined;
+  sandboxOomScoreAdj?: number | undefined;
   /** Swap a sandbox may use beyond {@link sandboxMemoryBytes}, in bytes. Default 0
    *  (swap disabled). Only takes effect on a host that has swap configured. */
   sandboxSwapBytes?: number | undefined;
@@ -1910,11 +1903,12 @@ export interface Provisioner {
     projectId: string,
     mutation: () => Promise<T>,
     exceptSessionIds?: ReadonlySet<string>,
+    waitForMutation?: AbortSignal,
   ): Promise<T>;
   /** Stop and retain an idle Sandbox, revoking all of its live authority first. */
   sleepProject?(
     projectId: string,
-    options?: { shouldRestore?: () => boolean },
+    options?: { shouldRestore?: () => boolean; restoreSleepingSince?: Date | null },
   ): Promise<ProjectRecord>;
   /** Finish authority cleanup after a process died during an explicit sleep. */
   recoverInterruptedSleep?(projectId: string): Promise<ProjectRecord>;
@@ -2534,6 +2528,8 @@ export function sandboxSleepCompatibilityFingerprint(inspect: ContainerInspect):
     pidsLimit: inspect.pidsLimit ?? null,
     memoryBytes: inspect.memoryBytes ?? null,
     memorySwapBytes: inspect.memorySwapBytes ?? null,
+    memoryReservationBytes: inspect.memoryReservationBytes ?? null,
+    oomScoreAdj: inspect.oomScoreAdj ?? null,
     nanoCpus: inspect.nanoCpus ?? null,
     env: [...(inspect.env ?? [])].sort(),
     mounts: [...(inspect.mounts ?? [])].sort((a, b) =>
@@ -3159,10 +3155,33 @@ export class ProvisionerImpl implements Provisioner {
     projectId: string,
     mutation: () => Promise<T>,
     exceptSessionIds?: ReadonlySet<string>,
+    waitForMutation?: AbortSignal,
   ): Promise<T> {
-    if (this.turnSandboxRepairs.has(projectId) || this.inFlightProvisions.has(projectId)) {
-      throw new ProvisioningError(`project ${projectId} already has a mutation in progress`);
+    for (;;) {
+      const owner =
+        this.turnSandboxRepairs.get(projectId)?.promise ?? this.inFlightProvisions.get(projectId);
+      if (!owner) break;
+      if (!waitForMutation)
+        throw new ProvisioningError(`project ${projectId} already has a mutation in progress`);
+      waitForMutation.throwIfAborted();
+      // Wait for the actual owner; a timeout must never release its barrier.
+      await new Promise<void>((resolve, reject) => {
+        const abort = () =>
+          reject(
+            new ProvisioningError(
+              `project ${projectId} storage maintenance timed out waiting for an existing mutation`,
+            ),
+          );
+        waitForMutation.addEventListener('abort', abort, { once: true });
+        void owner
+          .catch(() => undefined)
+          .then(() => {
+            waitForMutation.removeEventListener('abort', abort);
+            resolve();
+          });
+      });
     }
+    waitForMutation?.throwIfAborted();
     let releaseBarrier!: (result: boolean) => void;
     const barrier = new Promise<boolean>((resolve) => {
       releaseBarrier = resolve;
@@ -3190,7 +3209,7 @@ export class ProvisionerImpl implements Provisioner {
 
   async sleepProject(
     projectId: string,
-    options?: { shouldRestore?: () => boolean },
+    options?: { shouldRestore?: () => boolean; restoreSleepingSince?: Date | null },
   ): Promise<ProjectRecord> {
     const startedAt = Date.now();
     try {
@@ -3230,7 +3249,15 @@ export class ProvisionerImpl implements Provisioner {
           await this.confirmSandboxStopped(project.containerName);
           return (await this.opts.store.updateProjectSleepState(project.id, 'sleeping', {
             sleepCompatibilityFingerprint: fingerprint,
-            sleepingSince: new Date(),
+            // A scan-owned wake must not renew the idle-container grace.
+            sleepingSince:
+              options?.shouldRestore &&
+              options.restoreSleepingSince &&
+              Number.isFinite(options.restoreSleepingSince.getTime()) &&
+              options.restoreSleepingSince.getTime() > 0 &&
+              options.restoreSleepingSince.getTime() <= Date.now()
+                ? options.restoreSleepingSince
+                : new Date(),
             wakeStartedAt: null,
           })) as ProjectRecord;
         } catch (cause) {
@@ -3552,6 +3579,12 @@ export class ProvisionerImpl implements Provisioner {
               throw cause;
             }
           };
+          if (await this.opts.projectEgress?.requiresFreshWakeGeneration(project.id)) {
+            // Docker allocates new veth attachments after a stopped Sandbox.
+            // Packet registrations are immutable: cold wake retains project data
+            // but retires the old network and creates a fresh protected generation.
+            return await replaceRetained('contract_mismatch');
+          }
           if (fallbackReason !== undefined) {
             // The retained object is no longer the exact Sandbox we put to sleep.
             // Reuse the established replacement path rather than starting unknown
@@ -4406,13 +4439,24 @@ export class ProvisionerImpl implements Provisioner {
     const running = this.inFlightProvisions.get(projectId);
     if (running !== undefined) return running;
     const attempt = this.provisionOnce(projectId, opts);
-    this.inFlightProvisions.set(projectId, attempt);
-    try {
-      return await attempt;
-    } finally {
-      await this.opts.imageReferences?.releaseProject(projectId);
-      this.inFlightProvisions.delete(projectId);
-    }
+    return this.trackProvision(projectId, attempt);
+  }
+
+  /** The ownership promise settles only after reference cleanup has released the gate. */
+  private trackProvision(
+    projectId: string,
+    attempt: Promise<ProjectRecord>,
+  ): Promise<ProjectRecord> {
+    const owned = attempt.finally(async () => {
+      try {
+        await this.opts.imageReferences?.releaseProject(projectId);
+      } finally {
+        if (this.inFlightProvisions.get(projectId) === owned)
+          this.inFlightProvisions.delete(projectId);
+      }
+    });
+    this.inFlightProvisions.set(projectId, owned);
+    return owned;
   }
 
   private async provisionOnce(projectId: string, opts: ProvisionOptions): Promise<ProjectRecord> {
@@ -4449,13 +4493,7 @@ export class ProvisionerImpl implements Provisioner {
       throw new ProvisioningError(`project ${projectId} is already provisioning`);
     }
     const attempt = this.recreateContainerOnce(projectId, opts);
-    this.inFlightProvisions.set(projectId, attempt);
-    try {
-      return await attempt;
-    } finally {
-      await this.opts.imageReferences?.releaseProject(projectId);
-      this.inFlightProvisions.delete(projectId);
-    }
+    return this.trackProvision(projectId, attempt);
   }
 
   /** Whether this process still owns provisioning/replacement work for a project.
@@ -5637,7 +5675,18 @@ export class ProvisionerImpl implements Provisioner {
     // Bound once, then used for BOTH `Memory` and `MemorySwap` below, so the swap
     // allowance cannot drift away from the ceiling it is added to when someone
     // changes where the ceiling comes from.
-    const sandboxMemoryBytes = this.opts.sandboxMemoryBytes ?? DEFAULT_SANDBOX_MEMORY_BYTES;
+    let hostMemoryBytes: number | undefined;
+    try {
+      hostMemoryBytes = await this.opts.docker.hostMemoryBytes?.();
+    } catch {
+      // A transient daemon-info failure must not produce an unlimited sandbox.
+    }
+    const { memoryBytes: sandboxMemoryBytes, memoryReservationBytes } = resolveSandboxMemory({
+      hostMemoryBytes,
+      memoryBytes: this.opts.sandboxMemoryBytes,
+      reservationBytes: this.opts.sandboxMemoryReservationBytes,
+      hostReserveBytes: this.opts.sandboxHostReserveBytes,
+    });
     const hostCpus = await this.resolveHostCpuCount();
     // Dependencies get their own volume (see nodeModulesMountHint). Only on the
     // Runner runtime path, because its root stack start is what hands the fresh,
@@ -5821,6 +5870,8 @@ export class ProvisionerImpl implements Provisioner {
         this.opts.sandboxAllowPrivilegeEscalation === true ? [] : ['no-new-privileges=true'],
       pidsLimit: this.opts.sandboxPidsLimit ?? DEFAULT_SANDBOX_PIDS_LIMIT,
       memoryBytes: sandboxMemoryBytes,
+      memoryReservationBytes,
+      oomScoreAdj: this.opts.sandboxOomScoreAdj ?? DEFAULT_SANDBOX_OOM_SCORE_ADJ,
       // `MemorySwap` is the COMBINED memory+swap ceiling, so it is always derived
       // from the memory ceiling: equal to it means no swap. Leaving it out is not
       // neutral: Docker then grants twice the memory limit as the combined ceiling,

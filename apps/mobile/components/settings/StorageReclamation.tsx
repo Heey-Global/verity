@@ -71,7 +71,7 @@ export function StorageReclamation({ client }: { client: VerityClient }) {
         {pending ? (
           <Text>Host builder cleanup is pending; refreshes while this screen is open.</Text>
         ) : null}
-        {status?.nativeBuildkit && !pending ? (
+        {status?.nativeBuildkit ? (
           <>
             <Text>{`Native builder: ${status.nativeBuildkit.state ?? 'inventory only'}.`}</Text>
             {status.nativeBuildkit.lastCompletedAt ? (

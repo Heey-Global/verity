@@ -52,6 +52,60 @@ def verify_removed_fences(path, started_ns):
     return len(observed)
 
 
+
+def verify_boot_denial(ruleset):
+    # Old per-generation label rules may remain, but neither bootstrap chain may
+    # contain a bypass before explicit lifecycle recovery.
+    rows = ruleset['nftables']
+    for family in ('inet', 'bridge'):
+        table = 'verity_egress_boot'
+        assert sum(row.get('table', {}).get('family') == family and row['table']['name'] == table
+                   for row in rows if 'table' in row) == 1, 'Missing bootstrap denial table'
+        for hook in ('forward', 'input'):
+            chains = [row['chain'] for row in rows if 'chain' in row
+                      and row['chain'].get('family') == family and row['chain'].get('table') == table
+                      and row['chain'].get('name') == hook]
+            assert len(chains) == 1, 'Missing bootstrap denial chain'
+            chain = chains[0]
+            assert (chain['type'], chain['hook'], chain['prio'], chain['policy']) == (
+                'filter', hook, -220, 'accept'), 'Changed bootstrap hook'
+            rules = [row['rule'] for row in rows if 'rule' in row
+                     and row['rule'].get('family') == family and row['rule'].get('table') == table
+                     and row['rule'].get('chain') == hook]
+            keys = ('iifname', 'oifname') if family == 'inet' else ('ibrname', 'obrname')
+            if hook == 'input':
+                keys = keys[:1]
+            assert len(rules) == len(keys), 'Bootstrap contains an admission or lacks denial'
+            for rule, key in zip(rules, keys):
+                expressions = rule['expr']
+                assert len(expressions) == 3, 'Changed bootstrap denial expression'
+                assert expressions[0] == {'match': {'op': '==', 'left': {'meta': {'key': key}},
+                                                   'right': 'vep*'}}, 'Changed bootstrap identity'
+                assert set(expressions[1]) == {'counter'} and expressions[2] == {'drop': None}, 'Missing bootstrap drop'
+
+
+def verify_packet(snapshot):
+    spec = importlib.util.spec_from_file_location('deadline_guard', Path(__file__).resolve().parents[3] / 'deploy/egress/project-egress-deadline.py')
+    deadline = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(deadline)
+    packets = snapshot['packet']
+    assert len(packets) == 1, 'Missing combined packet guard'
+    packet = packets[0]
+    raw, program = packet['raw'], packet['program']
+    state = raw['state']
+    assert raw['identity'] == deadline.binding_key(state['binding'])
+    assert state['binding']['containerId'] in {row['id'] for row in snapshot['containers']}
+    assert raw['deadline_ns'] == '0', 'Boot recovery unexpectedly admitted direct traffic'
+    assert program['type'] == 'sched_cls' and program['id'] == state['program'] and program['id'] > 0
+    assert state['relayPolicy'] and raw['clocks']['bootId'] == state['bootId']
+    assert set(packet['hooks']) == {'ingress', 'egress'}
+    for hooks in packet['hooks'].values():
+        deadline.attest_filters(hooks, program['id'])
+    tables = [row['table'] for row in snapshot['tables'] if 'table' in row]
+    for family in ('inet', 'bridge'):
+        assert any(row['family'] == family and row['name'].startswith('verity_start_') for row in tables), 'Missing startup nft fence'
+
+
 def verify_retained(before, after):
     assert before['projectId'] == after['projectId']
     assert before['registry'] == after['registry'], 'Registry generation or container identities changed'
@@ -63,16 +117,52 @@ def verify_retained(before, after):
         assert container['mounts'] == prior[identity]['mounts'] and container['image'] == prior[identity]['image']
 
 
+
+def verify_replacement(before, after):
+    assert before['projectId'] == after['projectId']
+    old = before['packet'][0]['raw']['state']['binding']
+    new = after['packet'][0]['raw']['state']['binding']
+    assert old['generation'] != new['generation'] and old['networkId'] != new['networkId']
+    assert old['containerId'] != new['containerId'] and old['endpointId'] != new['endpointId']
+    records = after['registry']['records']
+    assert any(row['retired'] and row['binding']['generation'] == old['generation'] for row in records)
+    active = [row for row in records if not row['retired'] and row['binding']['projectId'] == after['projectId']]
+    assert len(active) == 1 and active[0]['binding']['generation'] == new['generation']
+    prior = before['containers']
+    current = after['containers']
+    assert len(prior) == len(current) == 2
+    assert {c['id'] for c in prior}.isdisjoint(c['id'] for c in current)
+    assert set(active[0]['containers'].values()) == {c['id'] for c in current}
+    # Generation-specific credentials and sockets must change. Project data stays
+    # mounted from the same source and both trusted image identities are retained.
+    assert sorted(c['image'] for c in prior) == sorted(c['image'] for c in current)
+    for container in current:
+        assert container['restart'] == 'no' and container['running']
+    def data_mounts(rows):
+        return sorted((m['Destination'], m['Source']) for row in rows for m in row['mounts']
+                      if isinstance(m, dict) and m['Destination'] in ('/work', '/knowledge'))
+    assert data_mounts(prior) and data_mounts(prior) == data_mounts(current)
+
+
 def verify_bundle(directory):
     directory = Path(directory)
     proof = json.loads((directory / 'boot-proof.json').read_text())
     assert proof['complete'] is True and proof['removed_fences_detected'] is True
     initial = json.loads((directory / 'topology-before.json').read_text())
+    verify_packet(initial)
     events = proof['events']
     assert [event['event'] for event in events] == ['controller-kill', 'server-kill', 'docker-stop-start', 'docker-crash', 'reboot']
+    previous = initial
     for event in events:
         assert proof['protected_start_ns'] <= event['event_time_ns'] <= proof['protected_end_ns']
-        verify_retained(initial, event['retained'])
+        if event['event'] in ('docker-stop-start', 'docker-crash', 'reboot'):
+            verify_replacement(previous, event['retained'])
+        else:
+            verify_retained(previous, event['retained'])
+        previous = event['retained']
+        verify_packet(event['retained'])
+        if event['event'] != 'server-kill':
+            verify_boot_denial(json.loads((directory / (event['event'] + '-denied-rules.json')).read_text()))
         assert event['recovery_ns'] > 0
         before = event['stream_before']
         after = event['stream_after']
@@ -149,6 +239,7 @@ def main():
         time.sleep(2)
         inflight = {phase: json.loads(vm.ssh(guest + f'inflight {phase}', timeout=20)) for phase in ('positive', 'denied')}
         (evidence / 'inflight.json').write_text(json.dumps(inflight))
+        previous = initial
         for event in ('controller-kill', 'server-kill', 'docker-stop-start', 'docker-crash', 'reboot'):
             vm.ssh(guest + f'stream {event}')
             time.sleep(1)
@@ -178,8 +269,9 @@ def main():
             # real lifecycle wake has validated the retained identities and mounted secrets.
             vm.ssh('sudo systemctl reset-failed verity-boot-server.service; sudo systemctl start verity-egress-host.service', timeout=60)
             if event != 'server-kill':
-                rules = vm.ssh('sudo nft list ruleset')
-                assert 'ct label set' not in rules, 'Controller/daemon restored a prior admission'
+                rules = vm.ssh('sudo nft -j list ruleset')
+                (evidence / (event + '-denied-rules.json')).write_text(rules)
+                verify_boot_denial(json.loads(rules))
             time.sleep(2)
             stream_after = json.loads(vm.ssh(guest + f'stream-status {event}'))
             assert max(stream_after['last_success_ns'], stream_after['last_receipt_ns']) - event_time <= 2_000_000_000, 'Observed revocation exceeded two seconds'
@@ -188,9 +280,18 @@ def main():
                 assert now - stream_after['heartbeat_ns'] < 2_000_000_000, 'Project poll stopped attempting authenticated requests'
             vm.ssh(guest + f'stop-poll {event}')
             recovery_start = time.monotonic_ns()
-            vm.ssh(guest + 'recover', timeout=240)
+            try:
+                replace = event in ('docker-stop-start', 'docker-crash', 'reboot')
+                vm.ssh(guest + ('recover replace' if replace else 'recover'), timeout=240)
+            except subprocess.CalledProcessError as error:
+                (evidence / (event + '-recovery-error.txt')).write_text(str(error.output))
+                raise
             after = json.loads(vm.ssh(guest + 'snapshot'))
-            verify_retained(initial, after)
+            if replace:
+                verify_replacement(previous, after)
+            else:
+                verify_retained(previous, after)
+            previous = after
             vm.ssh(guest + 'external')
             events.append({'event': event, 'event_time_ns': event_time, 'before': before, 'after': vm.facts(),
                            'recovery_ns': time.monotonic_ns() - recovery_start, 'retained': after,
@@ -199,8 +300,8 @@ def main():
             (evidence / 'events.json').write_text(json.dumps(events, indent=2))
         faults = json.loads(vm.ssh(guest + 'faults', timeout=180))
         (evidence / 'faults.json').write_text(json.dumps(faults))
-        vm.ssh(guest + 'recover', timeout=240)
-        verify_retained(initial, json.loads(vm.ssh(guest + 'snapshot')))
+        vm.ssh(guest + 'recover replace', timeout=240)
+        verify_replacement(previous, json.loads(vm.ssh(guest + 'snapshot')))
         vm.ssh(guest + 'observer-positive after')
         end_ns = time.time_ns()
         time.sleep(0.2)

@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.83.0](https://github.com/Heey-Global/verity/compare/mobile-v1.82.0...mobile-v1.83.0) (2026-11-01)
+
+
+### Features
+
+* **assistant:** show open scheduling requests of granted projects ([#2112](https://github.com/Heey-Global/verity/issues/2112)) ([32f0f90](https://github.com/Heey-Global/verity/commit/32f0f9035e756ee072ee71d4121aed050597533f))
+* **qa:** support one-time PR repair handoffs ([#2136](https://github.com/Heey-Global/verity/issues/2136)) ([899afe3](https://github.com/Heey-Global/verity/commit/899afe3e82fd7a9215952b861de068c5f263cc06))
+
+
+### Bug Fixes
+
+* **mobile:** recover device unlock after a failed Face ID read ([#2123](https://github.com/Heey-Global/verity/issues/2123)) ([7de2492](https://github.com/Heey-Global/verity/commit/7de249235af63fcb4560c2ecf026170f9b5c34d4))
+* **storage:** preserve idle retention across scans and wait for mutations ([#2120](https://github.com/Heey-Global/verity/issues/2120)) ([dce79e1](https://github.com/Heey-Global/verity/commit/dce79e1b0af2f9a7fc18741a8ab1fc3fc17dadd8))
+
 ## [1.82.0](https://github.com/Heey-Global/verity/compare/mobile-v1.81.0...mobile-v1.82.0) (2026-10-31)
 
 

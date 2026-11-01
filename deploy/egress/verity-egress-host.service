@@ -26,5 +26,5 @@ UMask=0027
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
-ReadWritePaths=/var/lib/verity-egress /run/verity-egress
+ReadWritePaths=/var/lib/verity-egress /run/verity-egress -/sys/fs/bpf/verity_egress_deadline
 RestrictAddressFamilies=AF_UNIX AF_NETLINK AF_INET AF_INET6

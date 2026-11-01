@@ -214,6 +214,8 @@ interface SwitchOptions {
 }
 
 export interface GitBranchService {
+  /** Exact attached HEAD for revision-bound repair admission; detached or unreadable is unavailable. */
+  headRevision?(worktreePath: string): Promise<string | undefined>;
   metadata?(worktreePath: string): Promise<{
     current: string;
     switchable: string[];
@@ -1200,6 +1202,23 @@ export function createGitBranchService(opts: GitBranchServiceOptions): GitBranch
   }
 
   return {
+    async headRevision(worktreePath) {
+      if (opts.withGit) {
+        const { withGit, ...scopedOptions } = opts;
+        return withGit(worktreePath, (scopedGit) =>
+          createGitBranchService({ ...scopedOptions, git: scopedGit }).headRevision!(worktreePath),
+        );
+      }
+      try {
+        await git(['-C', worktreePath, 'symbolic-ref', '--quiet', 'HEAD']);
+        const revision = (
+          await git(['-C', worktreePath, 'rev-parse', '--verify', 'HEAD^{commit}'])
+        ).trim();
+        return /^[0-9a-f]{40,64}$/i.test(revision) ? revision : undefined;
+      } catch {
+        return undefined;
+      }
+    },
     metadata,
     current,
     sessionBranches,

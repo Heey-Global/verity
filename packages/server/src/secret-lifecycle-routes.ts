@@ -179,6 +179,20 @@ export function registerSecretLifecycleRoutes(
     return { status: 'unlocked' as const, ...(browser ? { tokenId: auth?.tokenId } : auth) };
   };
 
+  // A paired app that already proved itself with its bearer keeps that bearer.
+  // Minting another one listed the same phone again after every manual unlock,
+  // while the replaced entry stayed behind as an inactive duplicate.
+  const existingDeviceAuth = (
+    request: FastifyRequest,
+  ): { token: string; tokenId: string } | undefined => {
+    if (cookieCredential(request) !== undefined) return undefined;
+    const token = requestCredential(request);
+    const tokenId = deps.authRegistry?.resolveId(token);
+    if (token === undefined || tokenId === undefined) return undefined;
+    if (deps.authRegistry?.isBrowserToken(token) === true) return undefined;
+    return { token, tokenId };
+  };
+
   const unlock = (browser: boolean) => async (request: FastifyRequest, reply: FastifyReply) => {
     if (browser && !browserOriginAllowed(request, deps.browserRequestOrigin?.(request)))
       return reply.code(403).send({ error: 'invalid origin' });
@@ -266,7 +280,7 @@ export function registerSecretLifecycleRoutes(
           ? await deps.authRegistry
               .mint(deviceLabel ?? null, true)
               .then(({ token, id }) => ({ token, tokenId: id }))
-          : await mintDeviceToken(deviceLabel);
+          : (existingDeviceAuth(request) ?? (await mintDeviceToken(deviceLabel)));
     if (browser && auth !== undefined) setBrowserSession(reply, auth.token);
     deps.recoverQueuedTurns('secret-unlock');
     return { status: 'unlocked' as const, ...(browser ? { tokenId: auth?.tokenId } : auth) };

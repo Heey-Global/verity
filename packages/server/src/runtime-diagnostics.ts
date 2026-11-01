@@ -1,5 +1,4 @@
 import { nativeRetirementSchema } from '@verity/events';
-export { nativeRetirementSchema } from '@verity/events';
 import {
   builderAdmissionMessage,
   readBuilderAdmissionState,

@@ -1,3 +1,4 @@
+import type { HostPreparation } from './self-update/host-preparation.js';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import type { AuthTokenRegistry } from './auth.js';
@@ -24,6 +25,7 @@ import { UpdaterRequestError } from './self-update/updater-status.js';
 export interface ServerUpdateController {
   readChannel?(): Promise<'stable' | 'staging'>;
   setChannel?(channel: 'stable' | 'staging'): Promise<'stable' | 'staging'>;
+  readHostPreparation?(): Promise<HostPreparation | null>;
   readOperation(): Promise<UpdateOperation | null>;
   /** Why the operation's last attempt failed; `null` when nothing is recorded,
    *  `undefined` when the Updater predates the record (and with it, retry). */
@@ -176,8 +178,14 @@ export function registerServerUpdateRoutes(
         : // A failed read cannot vouch that this Updater supports recovery, and
           // offering an action it may refuse is a dead button: report neither.
           await controller.readAttempt().catch(() => undefined);
+    const hostPreparation = await controller.readHostPreparation?.().catch(() => null);
     return {
       ...availability,
+      ...(hostPreparation?.updateId === operation?.updateId &&
+      hostPreparation?.targetDigest === operation?.targetDigest &&
+      (operation?.phase === 'preflight' || operation?.failureCode === 'host-runtime-failed')
+        ? { hostPreparation }
+        : {}),
       operation,
       ...describeRecovery(availability, operation, attempt ?? null, {
         serverVersion,

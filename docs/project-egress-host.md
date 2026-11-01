@@ -81,7 +81,9 @@ revalidation to daemon transitions. `Type=notify` reports readiness only after
 denial, host checks, binding revalidation and control-socket creation. Shutdown
 rejects queued admissions before fencing after in-flight writes; independent
 `ExecStopPost` denial also runs after crashes or failed startup, without needing
-the registry or Docker. Both preflight and cleanup share the controller lock.
+the registry or Docker. Both preflight and cleanup share the controller lock. The daemon preflight waits
+up to 15 seconds for crash-triggered controller teardown (bounded by its
+10-second stop timeout); lock timeout prevents daemon startup.
 Kernel-denial failure attempts registered-container containment during graceful
 shutdown; systemd ordering alone cannot guarantee containment if the kernel and
 container stop operations both fail.

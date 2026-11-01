@@ -1,15 +1,16 @@
 {
   "schema": 1,
-  "version": "1.80.2",
-  "runtime": "1.80.0",
+  "version": "1.81.1",
+  "runtime": "1.81.0",
   "channel": "production",
-  "commit": "05d5726cef342dcd66eadc1e4ee68312dcff7ddf",
-  "tag": "mobile-v1.80.2",
-  "branch": "staging-mobile-v1.80.2-05d5726cef342dcd66eadc1e4ee68312dcff7ddf",
-  "baseline": "mobile-v1.80.1",
-  "group": "2b46ddfd-aea3-4ede-8704-5ea3b395c72b",
+  "commit": "77ec3ea295cebbbae3c3a025592bbb5b73ab1d0a",
+  "tag": "mobile-v1.81.1",
+  "branch": "staging-mobile-v1.81.1-77ec3ea295cebbbae3c3a025592bbb5b73ab1d0a",
+  "baseline": "mobile-v1.81.0",
+  "group": "154fc640-006c-42cc-a4db-f368ae88bab3",
   "notes": [
-    "recover oversized events in bounded chunks (#2007)",
-    "group features and app administration settings (#2005)"
+    "keep iPhone sessions single-pane across rotation (#2087)",
+    "clear keyboard gap after interrupted opening (#2086)",
+    "offer meeting times through booking links (#2080)"
   ]
 }

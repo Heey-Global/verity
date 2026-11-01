@@ -8,6 +8,7 @@ import {
   readdirSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -83,7 +84,7 @@ function host(options: { daemon?: object; live?: object; reloadWorks?: boolean }
     `case "$1" in is-active) exit 0 ;; reload) ${
       options.reloadWorks === false
         ? 'exit 0'
-        : `jq -c '.runtimes // {}' '${daemonJson}' > '${live}.tmp' && mv '${live}.tmp' '${live}'`
+        : `if [[ -f '${daemonJson}' ]]; then jq -c '.runtimes // {}' '${daemonJson}'; else echo '{"runc":{"path":"runc"}}'; fi > '${live}.tmp' && mv '${live}.tmp' '${live}'`
     } ;; esac`,
   );
   const systemd = join(root, 'run-systemd');
@@ -292,5 +293,421 @@ describeHost('deploy/host/verity-host-runtime', () => {
     expect(h.run('apply-request').status).toBe(0);
     expect(h.callsOf('systemctl')).toHaveLength(reloads);
     expect(readdirSync(h.state).filter((name) => name.startsWith('.result'))).toEqual([]);
+  });
+});
+
+// Newer gVisor releases ship `gvisor.tar.bz2`: runsc plus the sidecars in gvisor-bin/ it needs
+// next to it. These run the real script against archives built here with the real tar.
+const hostHasArchiveTools =
+  hostHasTools &&
+  ['tar', 'bzip2', 'cmp'].every(
+    (tool) => spawnSync('sh', ['-c', `command -v ${tool}`]).status === 0,
+  );
+const describeArchive = hostHasArchiveTools ? describe : describe.skip;
+
+const archiveRelease = 'release-20261026.0';
+const sha512 = (data: string | Buffer) => createHash('sha512').update(data).digest('hex');
+
+describeArchive('deploy/host/verity-host-runtime with a gVisor release archive', () => {
+  function archiveHost(
+    options: {
+      runsc?: string;
+      sidecars?: Record<string, string>;
+      extra?: (dir: string) => void;
+    } = {},
+  ) {
+    const h = host();
+    const runsc = options.runsc ?? `#!/bin/sh\necho 'runsc version ${archiveRelease}'\n`;
+    const content = join(h.root, 'archive-content');
+    mkdirSync(join(content, 'gvisor-bin'), { recursive: true });
+    writeFileSync(join(content, 'runsc'), runsc, { mode: 0o755 });
+    writeFileSync(join(content, 'containerd-shim-runsc-v1'), 'shim', { mode: 0o755 });
+    for (const [name, body] of Object.entries(
+      options.sidecars ?? { gvisor_sentry: 'sentry', 'runsc-metric-server': 'metrics' },
+    ))
+      writeFileSync(join(content, 'gvisor-bin', name), body, { mode: 0o755 });
+    options.extra?.(content);
+    const archive = join(h.root, 'runsc.download');
+    const members = readdirSync(content);
+    const tar = spawnSync('tar', ['-cjf', archive, '-C', content, ...members], {
+      encoding: 'utf8',
+    });
+    expect(tar.status, tar.stderr).toBe(0);
+    const archiveSha = sha512(readFileSync(archive));
+    const writePins = (pins: { runsc?: string; archive?: string } = {}) =>
+      writeFileSync(
+        h.pins,
+        [
+          `RUNSC_RELEASE=${archiveRelease}`,
+          `RUNSC_SHA512_X86_64=${pins.runsc ?? sha512(runsc)}`,
+          `RUNSC_SHA512_AARCH64=${'b'.repeat(128)}`,
+          `RUNSC_ARCHIVE_SHA512_X86_64=${pins.archive ?? archiveSha}`,
+          `RUNSC_ARCHIVE_SHA512_AARCH64=${'c'.repeat(128)}`,
+          `RUNSC_ARGS='${JSON.stringify(runscArgs)}'`,
+          `RUNSC_PROJECT_ARGS='${JSON.stringify(projectArgs)}'`,
+          '',
+        ].join('\n'),
+      );
+    writePins();
+    const releaseDir = join(h.root, 'runsc', archiveRelease);
+    return { ...h, archive, archiveSha, runscSha: sha512(runsc), writePins, releaseDir };
+  }
+
+  const previousDaemon = JSON.stringify({ runtimes: secretOnly('/opt/verity/runsc/old/runsc') });
+
+  it('installs runsc with its sidecars and registers both runtimes on the release path', () => {
+    const h = archiveHost();
+    const result = h.run('apply-pins', h.pins);
+    expect(result.status, result.stderr).toBe(0);
+
+    const runtimePath = join(h.releaseDir, 'runsc');
+    expect(h.daemon()).toEqual({
+      runtimes: {
+        runsc: { path: runtimePath, runtimeArgs: runscArgs },
+        'runsc-project': { path: runtimePath, runtimeArgs: projectArgs },
+      },
+    });
+    expect(readdirSync(join(h.releaseDir, 'gvisor-bin')).sort()).toEqual([
+      'gvisor_sentry',
+      'runsc-metric-server',
+    ]);
+    // Docker never runs the shim; only what runsc needs is unpacked.
+    expect(existsSync(join(h.releaseDir, 'containerd-shim-runsc-v1'))).toBe(false);
+    expect(statSync(join(h.releaseDir, 'gvisor-bin', 'gvisor_sentry')).mode & 0o777).toBe(0o755);
+    expect(readFileSync(join(h.releaseDir, '.verity-archive-sha512'), 'utf8').trim()).toBe(
+      h.archiveSha,
+    );
+    // No staging directory survives a successful install.
+    expect(readdirSync(join(h.root, 'runsc'))).toEqual([archiveRelease]);
+    expect(h.callsOf('curl')[0]).toContain(`/20261026.0/x86_64/gvisor.tar.bz2`);
+  });
+
+  it('does not download again once the release is installed and unchanged', () => {
+    const h = archiveHost();
+    expect(h.run('apply-pins', h.pins).status).toBe(0);
+    const downloads = h.callsOf('curl').length;
+    const result = h.run('apply-pins', h.pins);
+    expect(result.status, result.stderr).toBe(0);
+    expect(h.callsOf('curl')).toHaveLength(downloads);
+  });
+
+  it.each([
+    [
+      'a corrupted archive',
+      (h: ReturnType<typeof archiveHost>) => h.writePins({ archive: 'd'.repeat(128) }),
+    ],
+    [
+      'a truncated download',
+      (h: ReturnType<typeof archiveHost>) =>
+        writeFileSync(h.archive, readFileSync(h.archive).subarray(0, 64)),
+    ],
+  ])('refuses %s and leaves the host as it was', (_label, damage) => {
+    const h = archiveHost();
+    writeFileSync(h.daemonJson, previousDaemon);
+    damage(h);
+    const result = h.run('apply-pins', h.pins);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('does not match the pinned');
+    expect(readFileSync(h.daemonJson, 'utf8')).toBe(previousDaemon);
+    expect(readdirSync(join(h.root, 'runsc'))).toEqual([]);
+  });
+
+  it('refuses an archive without the Sentry sidecar runsc needs', () => {
+    const h = archiveHost({ sidecars: { 'runsc-metric-server': 'metrics' } });
+    writeFileSync(h.daemonJson, previousDaemon);
+    const result = h.run('apply-pins', h.pins);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('lacks gvisor-bin/gvisor_sentry');
+    expect(readFileSync(h.daemonJson, 'utf8')).toBe(previousDaemon);
+    expect(readdirSync(join(h.root, 'runsc'))).toEqual([]);
+  });
+
+  it('refuses an archive whose runsc is not the pinned binary', () => {
+    const h = archiveHost();
+    h.writePins({ runsc: 'e'.repeat(128) });
+    const result = h.run('apply-pins', h.pins);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('runsc in the gVisor release-20261026.0 archive');
+    expect(existsSync(h.releaseDir)).toBe(false);
+  });
+
+  it.each([
+    [
+      'a path outside the expected layout',
+      (dir: string) => writeFileSync(join(dir, 'install.sh'), 'x'),
+    ],
+    [
+      'a symbolic link',
+      (dir: string) => symlinkSync('/etc/shadow', join(dir, 'gvisor-bin', 'gvisor-link')),
+    ],
+  ])('refuses an archive containing %s before unpacking it', (_label, extra) => {
+    const h = archiveHost({ extra });
+    const result = h.run('apply-pins', h.pins);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('unexpected layout');
+    expect(readdirSync(join(h.root, 'runsc'))).toEqual([]);
+  });
+
+  it('replaces a release directory changed since it was verified, and keeps every other release', () => {
+    const h = archiveHost();
+    const older = join(h.root, 'runsc', 'release-20260714.0');
+    mkdirSync(older, { recursive: true });
+    writeFileSync(join(older, 'runsc'), 'previous release still used by running containers');
+    expect(h.run('apply-pins', h.pins).status).toBe(0);
+    writeFileSync(join(h.releaseDir, 'gvisor-bin', 'gvisor_sentry'), 'tampered');
+
+    const result = h.run('apply-pins', h.pins);
+    expect(result.status, result.stderr).toBe(0);
+    expect(readFileSync(join(h.releaseDir, 'gvisor-bin', 'gvisor_sentry'), 'utf8')).toBe('sentry');
+    expect(readFileSync(join(older, 'runsc'), 'utf8')).toBe(
+      'previous release still used by running containers',
+    );
+    expect(readdirSync(join(h.root, 'runsc')).sort()).toEqual([
+      'release-20260714.0',
+      archiveRelease,
+    ]);
+  });
+
+  it('rolls back to the previous single-binary release without a download', () => {
+    const h = archiveHost();
+    const legacy = `#!/bin/sh\necho 'runsc version ${release}'\n`;
+    const legacyPath = join(h.root, 'runsc', release, 'runsc');
+    mkdirSync(join(h.root, 'runsc', release), { recursive: true });
+    writeFileSync(legacyPath, legacy, { mode: 0o755 });
+    const legacyPins = join(h.root, 'legacy.env');
+    writeFileSync(
+      legacyPins,
+      [
+        `RUNSC_RELEASE=${release}`,
+        `RUNSC_SHA512_X86_64=${sha512(legacy)}`,
+        `RUNSC_SHA512_AARCH64=${'b'.repeat(128)}`,
+        `RUNSC_ARGS='${JSON.stringify(runscArgs)}'`,
+        `RUNSC_PROJECT_ARGS='${JSON.stringify(projectArgs)}'`,
+        '',
+      ].join('\n'),
+    );
+    expect(h.run('apply-pins', h.pins).status).toBe(0);
+    const downloads = h.callsOf('curl').length;
+
+    const result = h.run('apply-pins', legacyPins);
+    expect(result.status, result.stderr).toBe(0);
+    expect(h.callsOf('curl')).toHaveLength(downloads);
+    expect(h.daemon()).toEqual({
+      runtimes: {
+        runsc: { path: legacyPath, runtimeArgs: runscArgs },
+        'runsc-project': { path: legacyPath, runtimeArgs: projectArgs },
+      },
+    });
+    // The newer release stays installed for the next attempt.
+    expect(existsSync(join(h.releaseDir, 'gvisor-bin', 'gvisor_sentry'))).toBe(true);
+  });
+
+  it('finishes from a run interrupted halfway through unpacking', () => {
+    const h = archiveHost();
+    // What a killed run leaves: a staging directory, and a release directory without a record.
+    mkdirSync(join(h.root, 'runsc', '.stage.abc123', 'tree', 'gvisor-bin'), { recursive: true });
+    mkdirSync(join(h.releaseDir, 'gvisor-bin'), { recursive: true });
+    writeFileSync(
+      join(h.releaseDir, 'runsc'),
+      readFileSync(join(h.root, 'archive-content', 'runsc')),
+      {
+        mode: 0o755,
+      },
+    );
+    const result = h.run('apply-pins', h.pins);
+    expect(result.status, result.stderr).toBe(0);
+    expect(existsSync(join(h.releaseDir, 'gvisor-bin', 'gvisor_sentry'))).toBe(true);
+    expect(existsSync(join(h.releaseDir, '.verity-files.sha512'))).toBe(true);
+    // Each killed run would otherwise leave a full archive behind for good.
+    expect(readdirSync(join(h.root, 'runsc')).filter((name) => name.startsWith('.stage.'))).toEqual(
+      [],
+    );
+  });
+
+  it('answers an Updater request that pins an archive', () => {
+    const h = archiveHost();
+    mkdirSync(h.state, { recursive: true });
+    writeFileSync(
+      join(h.state, 'request.json'),
+      JSON.stringify({
+        version: 1,
+        id: 'update-archive',
+        requirements: {
+          release: archiveRelease,
+          sha512: { x86_64: h.runscSha, aarch64: 'b'.repeat(128) },
+          archiveSha512: { x86_64: h.archiveSha, aarch64: 'c'.repeat(128) },
+          runtimes: { runsc: runscArgs, 'runsc-project': projectArgs },
+        },
+      }),
+    );
+    const result = h.run('apply-request');
+    expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(readFileSync(join(h.state, 'result.json'), 'utf8'))).toMatchObject({
+      id: 'update-archive',
+      ok: true,
+    });
+    expect(existsSync(join(h.releaseDir, 'gvisor-bin', 'gvisor_sentry'))).toBe(true);
+  });
+
+  it('rejects a request whose archive pin is malformed before downloading', () => {
+    const h = archiveHost();
+    mkdirSync(h.state, { recursive: true });
+    writeFileSync(
+      join(h.state, 'request.json'),
+      JSON.stringify({
+        version: 1,
+        id: 'update-bad',
+        requirements: {
+          release: archiveRelease,
+          sha512: { x86_64: h.runscSha, aarch64: 'b'.repeat(128) },
+          archiveSha512: { x86_64: 'not-a-sum', aarch64: 'c'.repeat(128) },
+          runtimes: { runsc: runscArgs, 'runsc-project': projectArgs },
+        },
+      }),
+    );
+    expect(h.run('apply-request').status).toBe(1);
+    expect(h.callsOf('curl')).toEqual([]);
+  });
+});
+
+describeHost('verity-host-runtime install-self', () => {
+  function installed(options: { agent?: object | null; copy?: string | null } = {}) {
+    const h = host();
+    const libexec = join(h.root, 'libexec');
+    mkdirSync(libexec);
+    mkdirSync(h.state, { recursive: true });
+    const target = join(libexec, 'verity-host-runtime');
+    if (options.copy !== null)
+      writeFileSync(target, options.copy ?? '#!/bin/sh\necho old\n', { mode: 0o755 });
+    const agent = join(h.state, 'agent.json');
+    if (options.agent !== null)
+      writeFileSync(
+        agent,
+        JSON.stringify(
+          options.agent ?? { version: 1, trigger: 'systemd-path', builder: 'systemd-path' },
+        ),
+      );
+    const run = () =>
+      spawnSync(script, ['install-self'], {
+        env: { ...h.env, VERITY_HOST_RUNTIME_LIBEXEC: libexec },
+        encoding: 'utf8',
+      });
+    return { ...h, target, agent, run };
+  }
+
+  it('replaces the installed copy and only then advertises archive pins', () => {
+    const h = installed();
+    const result = h.run();
+    expect(result.status, result.stderr).toBe(0);
+    expect(readFileSync(h.target, 'utf8')).toBe(readFileSync(script, 'utf8'));
+    expect(statSync(h.target).mode & 0o777).toBe(0o755);
+    // Every key the installer wrote stays; the Updater reads trigger and builder from it.
+    expect(JSON.parse(readFileSync(h.agent, 'utf8'))).toEqual({
+      version: 1,
+      trigger: 'systemd-path',
+      builder: 'systemd-path',
+      runtimeArtifacts: ['binary', 'archive'],
+    });
+    expect(readdirSync(join(h.root, 'libexec'))).toEqual(['verity-host-runtime']);
+  });
+
+  it('leaves a host the installer never set up alone', () => {
+    const h = installed({ copy: null, agent: null });
+    const result = h.run();
+    expect(result.status, result.stderr).toBe(0);
+    expect(existsSync(h.target)).toBe(false);
+    expect(existsSync(h.agent)).toBe(false);
+  });
+
+  it('does not create an agent record the installer did not write', () => {
+    const h = installed({ agent: null });
+    expect(h.run().status).toBe(0);
+    expect(readFileSync(h.target, 'utf8')).toBe(readFileSync(script, 'utf8'));
+    expect(existsSync(h.agent)).toBe(false);
+  });
+});
+
+describeHost('durable Docker runtime configuration recovery', () => {
+  it.each([0, 1])(
+    'refuses an empty live snapshot with Docker exit %i before publication',
+    (status) => {
+      const h = host({ daemon: { 'log-level': 'debug' } });
+      const before = readFileSync(h.daemonJson, 'utf8');
+      writeFileSync(join(h.root, 'bin/docker'), `#!/bin/bash\nexit ${String(status)}\n`, {
+        mode: 0o755,
+      });
+      mkdirSync(h.state, { recursive: true });
+      writeFileSync(
+        join(h.state, 'request.json'),
+        JSON.stringify({
+          version: 1,
+          id: 'snapshot-failure',
+          requirements: {
+            release,
+            sha512: {
+              x86_64: createHash('sha512')
+                .update(readFileSync(join(h.root, 'runsc.download')))
+                .digest('hex'),
+              aarch64: 'b'.repeat(128),
+            },
+            runtimes: { runsc: runscArgs, 'runsc-project': projectArgs },
+          },
+        }),
+      );
+      const result = h.run('apply-request');
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('could not inspect current Docker runtime registrations');
+      expect(readFileSync(h.daemonJson, 'utf8')).toBe(before);
+      expect(existsSync(join(h.root, 'private/daemon-install/pending'))).toBe(false);
+      expect(h.callsOf('systemctl').some((call) => call.includes('reload'))).toBe(false);
+    },
+  );
+
+  it.each(['{}', ''])(
+    'retains recovery intent when Docker inspection fails (snapshot %j)',
+    (live) => {
+      const h = host();
+      const transaction = join(h.root, 'private/daemon-install');
+      mkdirSync(transaction, { recursive: true });
+      writeFileSync(join(transaction, 'pending'), '');
+      writeFileSync(join(transaction, 'absent'), '');
+      writeFileSync(join(transaction, 'live'), live);
+      writeFileSync(join(h.root, 'bin/docker'), '#!/bin/bash\nexit 1\n', { mode: 0o755 });
+      const result = h.run('apply-pins', h.pins);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('recovery-required');
+      expect(existsSync(join(transaction, 'pending'))).toBe(true);
+    },
+  );
+
+  it('recovers a killed configuration publication before reconciling forward', () => {
+    const h = host();
+    const systemctl = join(h.root, 'bin/systemctl');
+    const original = readFileSync(systemctl, 'utf8');
+    writeFileSync(
+      systemctl,
+      '#!/bin/bash\nif [[ $1 == reload ]]; then kill -KILL "$PPID"; exit 1; fi\nexit 0\n',
+      { mode: 0o755 },
+    );
+    expect(h.run('apply-pins', h.pins).signal).toBe('SIGKILL');
+    expect(existsSync(join(h.root, 'private/daemon-install/pending'))).toBe(true);
+    expect(existsSync(join(h.state, 'daemon-install.pending'))).toBe(true);
+    writeFileSync(systemctl, original, { mode: 0o755 });
+    const result = h.run('apply-pins', h.pins);
+    expect(result.status, result.stderr).toBe(0);
+    expect(existsSync(join(h.root, 'private/daemon-install'))).toBe(false);
+    expect(existsSync(join(h.state, 'daemon-install.pending'))).toBe(false);
+    expect(h.daemon()).toMatchObject({ runtimes: { runsc: { path: h.runtimePath } } });
+  });
+  it('keeps its checkpoint when restoration cannot be verified', () => {
+    const h = host();
+    writeFileSync(join(h.root, 'bin/systemctl'), '#!/bin/bash\n[[ $1 == is-active ]]\n', {
+      mode: 0o755,
+    });
+    const result = h.run('apply-pins', h.pins);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('recovery-required');
+    expect(result.stderr).not.toContain('was restored');
+    expect(existsSync(join(h.root, 'private/daemon-install/pending'))).toBe(true);
   });
 });

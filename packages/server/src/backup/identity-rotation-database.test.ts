@@ -51,7 +51,21 @@ it.skipIf(!adminUrl)(
     } finally {
       await pool.end();
       await database.destroy();
-      await admin.query(`DROP DATABASE "${name}" WITH (FORCE)`);
+      // Pool shutdown can resolve before PostgreSQL has processed every disconnect.
+      // FORCE would terminate a closing client and surface an uncaught idle error.
+      await expect
+        .poll(
+          async () =>
+            (
+              await admin.query<{ n: number }>(
+                'SELECT count(*)::int AS n FROM pg_stat_activity WHERE datname = $1',
+                [name],
+              )
+            ).rows[0]!.n,
+          { timeout: 5000, interval: 20 },
+        )
+        .toBe(0);
+      await admin.query(`DROP DATABASE "${name}"`);
       await admin.end();
     }
   },

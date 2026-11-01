@@ -239,3 +239,46 @@ it('retains Fastify request types without rooting the server runtime', () => {
     'string | null',
   );
 });
+
+it('uses only validated classification metadata while rechecking unchanged consumers', async () => {
+  const { root, write } = fixture();
+  const target = write('src/target.ts', 'export const result: string = globalValue;');
+  write('src/global.ts', 'export const ignored = 1;');
+  write('src/initial.d.ts', 'declare const globalValue: string;');
+  const check = () => lintFiles([target], root, { cache: false });
+  expect((await check()).results.flatMap((r) => r.messages)).toEqual([]);
+  expect((await check()).results.map((r) => r.filePath)).toEqual([target]);
+  write('src/initial.d.ts', 'export {};');
+  write('src/global.ts', 'declare const globalValue: any;');
+  expect((await check()).results.flatMap((r) => r.messages.map((m) => m.ruleId))).toContain(
+    '@typescript-eslint/no-unsafe-assignment',
+  );
+  write('src/global.ts', 'export {};');
+  write('src/new.d.ts', 'declare const globalValue: any;');
+  expect((await check()).results.flatMap((r) => r.messages.map((m) => m.ruleId))).toContain(
+    '@typescript-eslint/no-unsafe-assignment',
+  );
+  write('tsconfig.json', JSON.stringify({ include: ['src/new.d.ts'] }));
+  await expect(check()).rejects.toThrow('is not included');
+});
+
+it('bypasses both caches with --no-cache and still checks every typed input in CI', () => {
+  const { root, write } = fixture();
+  const target = write('src/target.ts', 'export const result: string = globalValue;');
+  write('src/global.d.ts', 'declare const globalValue: string;');
+  const run = (args: string[]) =>
+    spawnSync(process.execPath, [resolve('scripts/lint-runner.mjs'), ...args, '--', target], {
+      cwd: root,
+      env: { ...process.env, CI: 'true' },
+      encoding: 'utf8',
+    });
+  expect(run(['--no-cache']).status).toBe(0);
+  expect(existsSync(join(root, '.cache/lint-ambient'))).toBe(false);
+  expect(run([]).status).toBe(0);
+  expect(existsSync(join(root, '.cache/lint-ambient'))).toBe(true);
+  write('src/global.d.ts', 'declare const globalValue: any;');
+  const changed = run([]);
+  expect(changed.status).toBe(1);
+  expect(changed.stdout).toContain('@typescript-eslint/no-unsafe-assignment');
+  expect(changed.stdout).not.toContain('Reused clean lint results');
+});

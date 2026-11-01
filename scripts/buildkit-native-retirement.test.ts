@@ -63,6 +63,9 @@ function fixture(
     writeFileSync(join(bin, name), '#!/usr/bin/env bash\nset -euo pipefail\n' + source, {
       mode: 0o755,
     });
+  const observeAt = (value: string) => writeFileSync(join(dir, 'observed-at'), value);
+  observeAt('2026-10-31T12:00:00.000Z');
+  tool('date', `cat '${dir}/observed-at'\n`);
   tool(
     'docker',
     `if [[ $1 == ps ]]; then echo server; else echo '{"mounts":[{"Source":"${run}"}],"identity":"server","running":${!options.stopped}}'; fi\n`,
@@ -95,29 +98,34 @@ function fixture(
     nativeRetirementSchema.parse(
       JSON.parse(readFileSync(join(run, 'native-retirement.json'), 'utf8')),
     );
-  return { dir, root, state, run, invoke, report };
+  return { dir, root, state, run, invoke, report, observeAt };
 }
 (available ? describe : describe.skip)('native BuildKit retirement', () => {
-  it('retires only native data after overlay verification, preserving shared metadata', () => {
-    const f = fixture();
-    const result = f.invoke();
-    expect(result.stderr, result.error?.message).not.toContain('failed');
-    expect(result.status).toBe(0);
-    expect(existsSync(join(f.root, 'runc-native'))).toBe(false);
-    expect(readFileSync(join(f.root, 'cache.db'), 'utf8')).toBe('keep shared metadata');
-    expect(readFileSync(join(f.root, 'runc-overlayfs', 'active'), 'utf8')).toBe('keep overlay');
-    expect(f.report()).toMatchObject({ state: 'completed', dryRun: false, blockers: [] });
-    expect(f.report().allocatedBytes).toBeGreaterThan(0);
-    expect(existsSync(join(f.run, 'migration-pending'))).toBe(false);
-    const completedAt = f.report().observedAt;
-    const overlayBytes = f.report().overlayAllocatedBytes;
-    if (overlayBytes === null) throw new Error('Expected measured overlay allocation');
-    writeFileSync(join(f.root, 'runc-overlayfs', 'new-allocation'), Buffer.alloc(65536));
-    expect(f.invoke().status).toBe(0);
-    expect(f.report().observedAt >= completedAt).toBe(true);
-    expect(f.report().lastCompletedAt).toBe(completedAt);
-    expect(f.report().overlayAllocatedBytes).toBeGreaterThan(overlayBytes);
-  });
+  it.each(['2026-10-31T11:59:59.000Z', '2026-10-31T12:00:01.000Z'])(
+    'retires only native data and refreshes observations at %s, preserving completion metadata',
+    (observedAt) => {
+      const f = fixture();
+      const result = f.invoke();
+      expect(result.stderr, result.error?.message).not.toContain('failed');
+      expect(result.status).toBe(0);
+      expect(existsSync(join(f.root, 'runc-native'))).toBe(false);
+      expect(readFileSync(join(f.root, 'cache.db'), 'utf8')).toBe('keep shared metadata');
+      expect(readFileSync(join(f.root, 'runc-overlayfs', 'active'), 'utf8')).toBe('keep overlay');
+      expect(f.report()).toMatchObject({ state: 'completed', dryRun: false, blockers: [] });
+      expect(f.report().allocatedBytes).toBeGreaterThan(0);
+      expect(existsSync(join(f.run, 'migration-pending'))).toBe(false);
+      const completedAt = f.report().observedAt;
+      const overlayBytes = f.report().overlayAllocatedBytes;
+      if (overlayBytes === null) throw new Error('Expected measured overlay allocation');
+      writeFileSync(join(f.root, 'runc-overlayfs', 'new-allocation'), Buffer.alloc(65536));
+      // Wall-clock corrections can move observation time behind completion time.
+      f.observeAt(observedAt);
+      expect(f.invoke().status).toBe(0);
+      expect(f.report().observedAt).toBe(observedAt);
+      expect(f.report().lastCompletedAt).toBe(completedAt);
+      expect(f.report().overlayAllocatedBytes).toBeGreaterThan(overlayBytes);
+    },
+  );
   it.each([
     [{ reserved: true }, 'persistent-reservations-not-proven-empty'],
     [{ stale: true }, 'persistent-reservations-not-proven-empty'],

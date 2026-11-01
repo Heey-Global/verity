@@ -33,6 +33,33 @@ describe('agentEventDescriptor', () => {
     expect(d).not.toHaveProperty('detail');
   });
 
+  it('distinguishes confirmed guard eviction from a possible memory kill', () => {
+    expect(
+      agentEventDescriptor({
+        t: 'error',
+        kind: 'memory_limit',
+        message: 'Memory limit reached — the memory guard stopped the agent.',
+      }),
+    ).toMatchObject({ kind: 'memory-limit', label: 'Memory limit reached', action: 'retry' });
+    for (const message of [
+      'Agent was killed (SIGKILL, exit 137); possible memory pressure.',
+      'agent exited with code 137 without a terminal event',
+    ]) {
+      expect(agentEventDescriptor({ t: 'error', kind: 'acp', message })).toMatchObject({
+        kind: 'agent-killed',
+        label: 'Agent was killed',
+        detail: expect.stringContaining('Possible memory pressure'),
+      });
+    }
+    expect(
+      agentEventDescriptor({
+        t: 'error',
+        kind: 'crashed',
+        message: 'agent exited with code 1 without a terminal event',
+      }).kind,
+    ).toBe('agent-stopped');
+  });
+
   it('keeps a short adapter diagnostic readable without a details section', () => {
     expect(agentEventDescriptor({ t: 'error', kind: 'parse_error', message: 'bad line' })).toEqual({
       kind: 'error',

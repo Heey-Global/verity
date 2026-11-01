@@ -337,3 +337,26 @@ Hand-assembled deployments without a sealed installer identity continue updating
 cannot be provisioned automatically. Plain unmanaged Compose does not support app
 updates; adopt it through the existing managed migration first. Hosts without systemd
 need an explicit supported host migration rather than an automatic watcher setup.
+
+### Host runtime service renewal
+
+Updates can renew an older runtime service independently of devcontainer builder
+maintenance. The update panel reports host runtime renewal and runtime registration;
+the current Server keeps serving until normal activation. Renewal verifies the target
+release independently before granting its runtime-only installer bounded host writes.
+It reloads Docker to register runtimes and never automatically restarts the daemon or
+running projects.
+
+A failed renewal can report that the previous service was restored, in which case
+retrying is safe, or that restoration could not be verified. For the latter, inspect
+`journalctl -u verity-host-runtime` and the private host runtime transaction state;
+re-running the Verity installer is the fallback after resolving the reported cause.
+Do not delete transaction backups or old versioned gVisor directories as a workaround.
+A successfully renewed, backward-compatible runtime service can remain installed even
+if later update preparation or Server activation fails.
+
+Older installed Updaters do not gain this behavior simply by selecting a newer image:
+they perform runtime preparation before their own replacement. Delivery to such hosts
+requires a qualified signed compatibility release or a separately authorized recovery
+procedure. A schema bridge is not a runtime-service bootstrap. The runtime requirement
+must not be removed to force activation.

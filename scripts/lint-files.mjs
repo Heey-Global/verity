@@ -3,6 +3,7 @@ import ts from 'typescript';
 import { dirname, relative, resolve } from 'node:path';
 import { setImmediate } from 'node:timers/promises';
 import { LocalLintCache } from './lint-cache.mjs';
+import { AmbientClassificationCache } from './lint-ambient-cache.mjs';
 
 // Keep type graphs small even when a scoped invocation names many files.
 const typeBatchSize = 16;
@@ -16,10 +17,10 @@ function diagnosticError(diagnostic) {
  * Keep ambient declarations and augmentations even when their file is not imported.
  * Removing these roots would silently change the types seen by type-aware rules.
  * @param {string} file
+ * @param {string | undefined} [text]
  */
-function contributesAmbientTypes(file) {
+function contributesAmbientTypes(file, text = ts.sys.readFile(file)) {
   if (/\.d\.[cm]?ts$/.test(file)) return true;
-  const text = ts.sys.readFile(file);
   if (text === undefined) throw new Error(`Cannot read ${file}`);
   const source = ts.createSourceFile(file, text, {
     languageVersion: ts.ScriptTarget.Latest,
@@ -37,8 +38,9 @@ function contributesAmbientTypes(file) {
  * so lint never relies on potentially stale generated declarations.
  * @param {string} configPath
  * @param {LocalLintCache} [cache]
+ * @param {AmbientClassificationCache} [classifications]
  */
-function createLintProject(configPath, cache) {
+function createLintProject(configPath, cache, classifications) {
   /** @type {ts.ParseConfigFileHost} */
   const configHost = {
     ...ts.sys,
@@ -55,11 +57,16 @@ function createLintProject(configPath, cache) {
   const [error] = config.errors;
   if (error) throw diagnosticError(error);
   const included = new Set(config.fileNames.map((file) => resolve(file)));
-  const ambient = config.fileNames.filter((file) =>
-    cache
-      ? cache.ambient(file, () => contributesAmbientTypes(file))
-      : contributesAmbientTypes(file),
-  );
+  const ambient = config.fileNames.filter((file) => {
+    const classify = () => {
+      if (!classifications) return contributesAmbientTypes(file);
+      const text = ts.sys.readFile(file);
+      if (text === undefined) throw new Error(`Cannot read ${file}`);
+      return classifications.classify(file, text, () => contributesAmbientTypes(file, text));
+    };
+    return cache ? cache.ambient(file, classify) : classify();
+  });
+  classifications?.save();
   cache?.context.push([configPath, config.fileNames, ambient]);
   /** @param {string[]} files */
   return (files) => {
@@ -117,7 +124,7 @@ async function lintBatch(batch, program, cwd) {
  * Explicit file paths only, matching the scoped npm command and lint.sh batches.
  * @param {string[]} files
  * @param {string} [cwd]
- * @param {{ cache?: boolean }} [options]
+ * @param {{ cache?: boolean, ambientCache?: boolean }} [options]
  */
 export async function lintFiles(files, cwd = process.cwd(), options = {}) {
   if (!files.length) throw new Error('Provide explicit file paths to lint.');
@@ -155,7 +162,11 @@ export async function lintFiles(files, cwd = process.cwd(), options = {}) {
   for (const file of files) cache?.readInput(resolve(cwd, file));
   const typedProjects = [...projects].map(([configPath, roots]) => ({
     roots,
-    createProgram: createLintProject(configPath, cache),
+    createProgram: createLintProject(
+      configPath,
+      cache,
+      options.ambientCache === false ? undefined : new AmbientClassificationCache(configPath, cwd),
+    ),
   }));
   if (cache?.hit()) return { eslint: base, results, cached: true };
   for (const { roots, createProgram } of typedProjects) {
@@ -176,9 +187,15 @@ export async function lintFiles(files, cwd = process.cwd(), options = {}) {
 if (process.argv[1] && resolve(process.argv[1]) === import.meta.filename) {
   const files = process.argv
     .slice(2)
-    .filter((argument) => argument !== '--' && argument !== '--local-cache');
+    .filter(
+      (argument) =>
+        argument !== '--' && argument !== '--local-cache' && argument !== '--no-ambient-cache',
+    );
   const cache = process.argv.includes('--local-cache') && !process.env.CI;
-  const { eslint, results, cached } = await lintFiles(files, process.cwd(), { cache });
+  const { eslint, results, cached } = await lintFiles(files, process.cwd(), {
+    cache,
+    ambientCache: !process.argv.includes('--no-ambient-cache'),
+  });
   if (cached) process.stdout.write(`Reused clean lint results for ${files.length} files.\n`);
   process.stdout.write((await eslint.loadFormatter('stylish')).format(results));
   process.exitCode = results.some((result) => result.errorCount > 0) ? 1 : 0;

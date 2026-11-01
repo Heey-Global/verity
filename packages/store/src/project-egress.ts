@@ -158,6 +158,31 @@ export class ProjectEgressStore {
   read(projectId: string, userId: string): Promise<EgressPolicy> {
     return this.access(projectId, userId, 'read', (state) => state, false);
   }
+  /** Trusted admission path: viewing a policy is not permission to run a workload.
+   * Call again immediately before admission; this read never renews grants.
+   */
+  readForAdmission(
+    projectId: string,
+    sponsorUserId: string,
+    expectedRevision?: number,
+  ): Promise<EgressPolicy> {
+    if (
+      expectedRevision !== undefined &&
+      (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0)
+    )
+      throw new ProjectEgressError('invalid');
+    return this.access(
+      projectId,
+      sponsorUserId,
+      'execute',
+      (state) => {
+        if (expectedRevision !== undefined && state.revision !== expectedRevision)
+          throw new ProjectEgressError('stale');
+        return state;
+      },
+      false,
+    );
+  }
   request(
     projectId: string,
     userId: string,

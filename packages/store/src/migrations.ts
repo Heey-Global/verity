@@ -5041,7 +5041,35 @@ migrations['0178_qa_observation_diagnostics'] = {
   },
 };
 
-migrations['0179_unassigned_meeting_retention'] = {
+migrations['0179_qa_manual_repairs'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`create table qa_manual_repairs (
+      id text primary key, project_id text not null references projects(id) on delete cascade,
+      source_session_id text not null, user_id text not null, target_session_id text not null,
+      number integer not null, branch text not null, revision text not null, requires_card boolean not null default false,
+      qa_revision integer not null, mandate_revision integer not null,
+      expires_at timestamptz not null default now() + interval '1 hour',
+      dispatch_id text unique, consent_key text unique, reason text
+    )`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table qa_manual_repairs`.execute(db);
+  },
+};
+
+// Existing manually configured clients retain their form-post authentication.
+migrations['0180_mcp_oauth_token_auth_method'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table http_mcp_connections add column oauth_token_auth_method text not null default 'client_secret_post' check (oauth_token_auth_method in ('none', 'client_secret_post', 'client_secret_basic'))`.execute(
+      db,
+    );
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table http_mcp_connections drop column oauth_token_auth_method`.execute(db);
+  },
+};
+
+migrations['0181_unassigned_meeting_retention'] = {
   async up(db: Kysely<unknown>): Promise<void> {
     // Null keeps the default in code, so changing the default needs no migration.
     await sql`alter table verity_settings add column unassigned_meeting_retention_days integer
@@ -5054,7 +5082,7 @@ migrations['0179_unassigned_meeting_retention'] = {
   },
 };
 
-migrations['0180_calendar_watch_calendars'] = {
+migrations['0182_calendar_watch_calendars'] = {
   async up(db: Kysely<unknown>): Promise<void> {
     // Calendars Verity watches for online meetings. A calendar carries no project: meetings
     // joined from it start unassigned. Disconnecting the account drops its choices.
@@ -5072,7 +5100,7 @@ migrations['0180_calendar_watch_calendars'] = {
   },
 };
 
-migrations['0181_calendar_watch_events'] = {
+migrations['0183_calendar_watch_events'] = {
   async up(db: Kysely<unknown>): Promise<void> {
     // Joinable events of watched calendars and what Verity already did about them, so a
     // restart neither repeats a notification nor joins a meeting twice. Title and link are

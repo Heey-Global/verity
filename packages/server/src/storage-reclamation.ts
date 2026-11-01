@@ -27,22 +27,11 @@ export class StorageReclamation {
     },
   ) {}
   async status(): Promise<StorageReclamationAction> {
-    let nativeBuildkit = null;
-    try {
-      nativeBuildkit = nativeRetirementSchema.parse(
-        JSON.parse(
-          await readFile(
-            join(this.deps.directory ?? '/run/verity-buildkit', 'native-retirement.json'),
-            'utf8',
-          ),
-        ),
-      );
-    } catch {
-      /* Missing host receipts remain unknown. */
-    }
+    const nativeBuildkit = await readNativeReclamation(this.deps.directory);
     this.value.nativePending =
       this.value.nativePending &&
       (!nativeBuildkit ||
+        nativeBuildkit.blockers.some((b) => b.includes('receipt is')) ||
         Date.parse(nativeBuildkit.observedAt) < Date.parse(this.nativeRequestedAt!));
     return { ...this.value, nativeBuildkit };
   }
@@ -140,4 +129,46 @@ export async function requestNativeReclamation(
   await writeFile(temp, JSON.stringify({ version: 1, requestedAt }), { flag: 'wx', mode: 0o600 });
   await rename(temp, join(evidence, 'request.json'));
   return requestedAt;
+}
+
+/** Receipt visibility is separate from deletion authority; missing evidence never means zero bytes. */
+export async function readNativeReclamation(
+  directory = '/run/verity-buildkit',
+  now = Date.now(),
+): Promise<ReturnType<typeof nativeRetirementSchema.parse>> {
+  try {
+    const value = nativeRetirementSchema.parse(
+      JSON.parse(await readFile(join(directory, 'native-retirement.json'), 'utf8')),
+    );
+    const age = now - Date.parse(value.observedAt);
+    if (age < 0 || (value.state !== 'completed' && age >= 120_000))
+      return {
+        ...value,
+        state: 'blocked',
+        eligible: false,
+        blockers: [
+          ...value.blockers.slice(0, 99),
+          'Native host receipt is stale or future-dated; verify the matching host helper and timer.',
+        ],
+      };
+    return value;
+  } catch (error) {
+    const missing = (error as NodeJS.ErrnoException).code === 'ENOENT';
+    return {
+      version: 1,
+      observedAt: new Date(0).toISOString(),
+      path: '/var/lib/verity-buildkit/runc-native',
+      dryRun: true,
+      eligible: false,
+      state: 'blocked',
+      allocatedBytes: null,
+      overlayAllocatedBytes: null,
+      reclaimableBytes: null,
+      blockers: [
+        missing
+          ? 'Native host receipt is missing; helper installation or execution is unverified. Check the host helper, timer and server receipt mount.'
+          : 'Native host receipt is unreadable or invalid; check host helper compatibility and receipt permissions.',
+      ],
+    };
+  }
 }

@@ -17,6 +17,7 @@ export interface GuardedProcess {
   uid: number;
   rssBytes: number;
   name: string;
+  commandLine?: string;
   /** Field 22 of `/proc/<pid>/stat` at snapshot time; `''` when unreadable. */
   startTime: string;
 }
@@ -49,6 +50,7 @@ export interface MemoryGuardOptions {
   protectedPids?: Iterable<number>;
   cgroupRoot?: string;
   dryRun?: boolean;
+  notifyMemoryKill?: (pid: number) => void;
 }
 
 export interface MemoryGuardTick {
@@ -85,3 +87,5 @@ export function chooseVictim(
 export function descendantsOf(pid: number, processes: readonly GuardedProcess[]): GuardedProcess[];
 export function createMemoryGuard(options: MemoryGuardOptions): { tick(): MemoryGuardTick };
 export function probeMemoryGuard(controlDir: string, readFile?: ReadFile): boolean;
+
+export function notifyMemoryKill(pid: number): void;

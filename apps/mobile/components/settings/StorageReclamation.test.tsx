@@ -66,3 +66,29 @@ it('keeps the action unavailable when administrator status cannot be loaded', as
   expect(screen.getByRole('button', { name: 'Reclaim now' })).toBeDisabled();
   expect(start).not.toHaveBeenCalled();
 });
+
+it('shows native receipt blockers while host maintenance is pending', async () => {
+  render(
+    <StorageReclamation
+      client={makeClient('unlocked', {
+        getStorageReclamation: jest.fn().mockResolvedValue({
+          ...idle,
+          nativePending: true,
+          nativeBuildkit: {
+            version: 1,
+            observedAt: new Date(0).toISOString(),
+            path: '/var/lib/verity-buildkit/runc-native',
+            dryRun: true,
+            eligible: false,
+            state: 'blocked',
+            allocatedBytes: null,
+            overlayAllocatedBytes: null,
+            reclaimableBytes: null,
+            blockers: ['Native host receipt is missing'],
+          },
+        }),
+      })}
+    />,
+  );
+  expect(await screen.findByText('Native host receipt is missing')).toBeOnTheScreen();
+});
