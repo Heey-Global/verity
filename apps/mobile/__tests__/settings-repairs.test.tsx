@@ -100,3 +100,35 @@ it('shows accessible project incidents when global settings are denied', async (
   await screen.findByText('team/app');
   expect(screen.getByRole('button', { name: 'Enable QA' })).toBeDisabled();
 });
+
+it('opens the originating session without offering QA takeover or retry', async () => {
+  const projectRepairs = jest.fn().mockResolvedValue({
+    mandate: { mode: 'monitor', health: 'healthy', checked_at: null },
+    incidents: [
+      {
+        id: 'i',
+        resource: 'pr:42',
+        state: 'verifying',
+        attempts: 1,
+        originating_session_id: 'origin',
+        owner_session_id: null,
+        last_session_id: 'origin',
+        evidence: '{}',
+      },
+    ],
+  });
+  mockCreateVerityClient.mockReturnValue({
+    listProjects: jest
+      .fn()
+      .mockResolvedValue([{ id: 'p', owner: 'team', repo: 'app', kind: 'github' }]),
+    projectRepairs,
+    qaSettings: jest.fn().mockResolvedValue({ enabled: true, health: 'healthy', session_id: 'qa' }),
+  } as unknown as VerityClient);
+  render(<RepairsScreen />);
+  const open = await screen.findByRole('button', { name: 'Open originating session' });
+  expect(screen.queryByRole('button', { name: 'Take over' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Retry repair' })).toBeNull();
+  fireEvent.press(open);
+  expect(mockPush).toHaveBeenCalledWith('/session/origin');
+  expect(projectRepairs).not.toHaveBeenCalledWith('p', 'off');
+});

@@ -5965,6 +5965,7 @@ export class VerityClient {
               resource: z.string(),
               revision: z.string(),
               state: z.string(),
+              originating_session_id: z.string().nullable().optional(),
               owner_session_id: z.string().nullable(),
               last_session_id: z.string().nullable(),
               attempts: z.number(),

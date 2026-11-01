@@ -4322,3 +4322,23 @@ it('loads MCP app documents and sends tool actions through authenticated session
     body: JSON.stringify({ name: 'refresh', arguments: {} }),
   });
 });
+
+it('preserves originating PR session responsibility while accepting older repair responses', async () => {
+  const incident = {
+    id: 'i',
+    resource: 'pr:42',
+    revision: 'sha',
+    state: 'open',
+    owner_session_id: null,
+    last_session_id: null,
+    attempts: 0,
+    evidence: '{}',
+  };
+  const { fetch } = fakeFetchSequence(
+    json({ mandate: null, incidents: [{ ...incident, originating_session_id: 'origin' }] }),
+    json({ mandate: null, incidents: [incident] }),
+  );
+  const client = new VerityClient({ baseUrl: 'http://host', fetch });
+  expect((await client.projectRepairs('p')).incidents?.[0]?.originating_session_id).toBe('origin');
+  expect((await client.projectRepairs('p')).incidents?.[0]?.originating_session_id).toBeUndefined();
+});

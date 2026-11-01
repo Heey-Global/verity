@@ -20,6 +20,7 @@ const runSchema = z.object({
   updated_at: z.iso.datetime({ offset: true }),
   html_url: z.string().max(2048),
   name: z.string().max(2048).nullable(),
+  pull_requests: z.array(z.object({ number: z.number().int().positive() })).optional(),
 });
 const jobSchema = z.object({
   id: z.number(),
@@ -41,7 +42,15 @@ const releaseSchema = z.object({
 });
 export type QARepositoryRequest = Exclude<
   QAAnalysisRequest,
-  { action: 'projects' | 'save_report' | 'resolve_repair' | 'request_repair' | 'repair_status' }
+  {
+    action:
+      | 'projects'
+      | 'save_report'
+      | 'create_followup'
+      | 'resolve_repair'
+      | 'request_repair'
+      | 'repair_status';
+  }
 >;
 export function createGitHubQAAnalysis(
   mint: (
@@ -69,6 +78,8 @@ export function createGitHubQAAnalysis(
     expires: number;
     since: string;
     until: string;
+    collectionSince: string;
+    comparePrevious: boolean;
     branch: string;
     releaseIds: number[];
     releaseDefinitions: unknown[];
@@ -469,6 +480,10 @@ export function createGitHubQAAnalysis(
               expires: Date.now() + 3600000,
               since,
               until,
+              comparePrevious: request.comparePrevious === true,
+              collectionSince: request.comparePrevious
+                ? new Date(2 * Date.parse(since) - Date.parse(until)).toISOString()
+                : since,
               branch: repository.default_branch,
               releaseIds: request.releaseWorkflowIds,
               releaseDefinitions: request.releaseWorkflowIds.map(
@@ -489,7 +504,9 @@ export function createGitHubQAAnalysis(
           }
           if (state.busy)
             throw new ForgeObservationError('unavailable', 'analysis-already-running');
-          since = state.since;
+          if (Date.parse(state.until) - Date.parse(state.collectionSince) > 366 * 86400000)
+            throw new ForgeObservationError('unavailable', 'comparison-window-exceeds-366-days');
+          since = state.collectionSince;
           until = state.until;
           state.busy = true;
           try {
@@ -574,7 +591,7 @@ export function createGitHubQAAnalysis(
             await authorize();
             return {
               checkedAt,
-              since,
+              since: state.since,
               until,
               complete: false,
               continuation: id,
@@ -587,9 +604,28 @@ export function createGitHubQAAnalysis(
           }
           const pending = state.next !== null || state.cursor < state.runs.length;
           await authorize();
+          const inCurrent = (r: AnalysisRun) => Date.parse(r.created_at) >= Date.parse(state.since);
+          const currentRuns = state.runs.filter(inCurrent);
+          const previousRuns = state.runs.filter((r) => !inCurrent(r));
+          const currentGroups = computeQAStatistics(
+            currentRuns,
+            state.first,
+            state.jobs,
+            state.branch,
+            state.releaseIds,
+          );
+          const previousGroups = state.comparePrevious
+            ? computeQAStatistics(
+                previousRuns,
+                state.first,
+                state.jobs,
+                state.branch,
+                state.releaseIds,
+              )
+            : [];
           const result = {
             checkedAt,
-            since,
+            since: state.since,
             until,
             untrusted: true,
             complete: !pending && !state.limited && state.gaps.length === 0,
@@ -602,15 +638,34 @@ export function createGitHubQAAnalysis(
             runCount: state.runs.length,
             jobCoverage: state.jobs.size,
             releaseWorkflowEvidence: state.releaseDefinitions,
-            groups: computeQAStatistics(
-              state.runs,
-              state.first,
-              state.jobs,
-              state.branch,
-              state.releaseIds,
-            ),
+            groups: currentGroups,
+            comparison: state.comparePrevious
+              ? {
+                  since: state.collectionSince,
+                  untilExclusive: state.since,
+                  groups: previousGroups,
+                  firstAttemptSuccessRateChanges: [
+                    ...new Set([...currentGroups, ...previousGroups].map((g) => g.group)),
+                  ].map((group) => {
+                    const current = currentGroups.find((g) => g.group === group)?.firstAttempt;
+                    const previous = previousGroups.find((g) => g.group === group)?.firstAttempt;
+                    return {
+                      group,
+                      current: current ?? null,
+                      previous: previous ?? null,
+                      percentagePoints:
+                        current?.successRate != null && previous?.successRate != null
+                          ? 100 * (current.successRate - previous.successRate)
+                          : null,
+                    };
+                  }),
+                }
+              : null,
             definitions: {
-              cohort: 'runs created in the interval; latest attempt observed during collection',
+              cohort:
+                'runs created in the interval; latest attempt observed during collection; comparison excludes the current interval boundary',
+              patterns:
+                'latest-attempt job outcomes only; inspect first-attempt jobs separately for recovered reruns; missing jobs are not clean results',
               duration: 'completed attempt job envelope; excludes missing jobs',
               queue: 'first attempt creation to first job start; reruns excluded',
               success: 'completed first attempts excluding cancelled, skipped and neutral',

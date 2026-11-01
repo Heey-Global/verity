@@ -367,9 +367,13 @@ describe('GET /sessions/:id/branches', () => {
     },
   );
 
-  it.each(['monitor', 'automatic', 'off'] as const)(
-    'does not run a second session poller for a supervised project in %s mode',
-    async (mode) => {
+  it.each(
+    (['monitor', 'automatic', 'off'] as const).flatMap((mode) =>
+      [false, true].map((enabled) => ({ mode, enabled })),
+    ),
+  )(
+    'repairs in the originating session with QA mode $mode and enabled=$enabled',
+    async ({ mode, enabled }) => {
       await createExistingSession('s1');
       await ctx.store.upsertProject({
         id: 'supervised',
@@ -380,8 +384,26 @@ describe('GET /sessions/:id/branches', () => {
       });
       await ctx.store.setSessionProject('s1', 'supervised');
       await ctx.store.repairs.configure('supervised', 'user', mode);
-      const mandates = vi.spyOn(ctx.store.repairs, 'mandates');
-      const branchPrStatus = vi.fn(() => Promise.resolve(null));
+      await ctx.store.repairs.configureQA(enabled, 'admin');
+      dispatchTurnWhenIdle.mockImplementation(async (sessionId, text, _options, options) => {
+        const id = (options as { durableDispatchId: string }).durableDispatchId;
+        return {
+          accepted: !!(await ctx.store.admitBackgroundDispatch(id, sessionId, {
+            t: 'prompt',
+            text,
+          })),
+        };
+      });
+      const branchPrStatus = vi.fn(async () => ({
+        number: 119,
+        title: 'Session repair',
+        url: 'https://example.test/pr/119',
+        phase: 'open' as const,
+        headSha: 'sha',
+        pipeline: 'failure' as const,
+        checks: { completed: 1, total: 1, successful: 0, failed: 1, pending: 0 },
+        mergeable: true,
+      }));
       const backgroundApp = buildServer({
         eventStore: ctx.store,
         bus,
@@ -392,13 +414,19 @@ describe('GET /sessions/:id/branches', () => {
       });
       try {
         await backgroundApp.ready();
-        await vi.waitFor(() => expect(mandates).toHaveBeenCalled());
+        await vi.waitFor(() => expect(dispatchTurnWhenIdle).toHaveBeenCalledTimes(1));
+        expect(await ctx.store.repairs.sessionOrigin('supervised', 'pr:119')).toBe('s1');
+        const incident = (await ctx.store.repairs.incidents('supervised'))[0]!;
+        expect(incident.owner_session_id).toBe('s1');
+        expect((await ctx.store.repairs.dispatchReceipt(incident.dispatch_id!))?.state).toBe(
+          'admitted',
+        );
+        expect(await ctx.store.repairs.claim(incident.id, 'qa-worker', 1)).toBeUndefined();
+        expect((await ctx.store.repairs.qa()).enabled).toBe(enabled);
+        expect((await ctx.store.repairs.mandate('supervised'))?.mode).toBe(mode);
       } finally {
         await backgroundApp.close();
-        mandates.mockRestore();
       }
-      expect(branchPrStatus).not.toHaveBeenCalled();
-      expect(dispatchTurnWhenIdle).not.toHaveBeenCalled();
     },
   );
   // Nobody asks for a repair turn, so without an initiator an authenticated server refuses
@@ -2643,4 +2671,101 @@ describe('POST /sessions/:id/branch', () => {
       ).statusCode,
     ).toBe(400);
   });
+});
+
+it('waits for confirmed termination across restart before repairing the next session revision', async () => {
+  await createExistingSession('s1');
+  await ctx.store.upsertProject({
+    id: 'origin-project',
+    owner: 'team',
+    repo: 'app',
+    containerName: 'app',
+    state: 'active',
+  });
+  await ctx.store.setSessionProject('s1', 'origin-project');
+  await ctx.store.repairs.registerSessionOrigin('origin-project', 'pr:119', 's1');
+  const old = await ctx.store.repairs.observe('origin-project', 'pr:119', 'old-sha', '{}');
+  const claim = await ctx.store.repairs.claimSessionRepair(old.id, 's1', 'ci:old-sha');
+  await ctx.store.admitBackgroundDispatch(claim!.dispatch_id!, 's1', {
+    t: 'prompt',
+    text: 'old repair',
+  });
+  await ctx.store.clearRunningTurn('s1');
+  let now = 0;
+  let headSha = 'new-sha';
+  let pipeline: 'success' | 'failure' = 'failure';
+  const status = vi.fn(async () => ({
+    number: 119,
+    title: 'Session PR',
+    url: 'https://example.test/pr/119',
+    phase: 'open' as const,
+    headSha,
+    pipeline,
+    mergeable: true,
+    checks: {
+      completed: 1,
+      total: 1,
+      failed: pipeline === 'failure' ? 1 : 0,
+      successful: pipeline === 'success' ? 1 : 0,
+      pending: 0,
+    },
+  }));
+  dispatchTurnWhenIdle.mockImplementation(async (id, text, _opts, options) => {
+    const opts = options as {
+      durableDispatchId: string;
+      validateSession: (
+        s: NonNullable<Awaited<ReturnType<typeof ctx.store.getSession>>>,
+      ) => Promise<boolean>;
+    };
+    const session = (await ctx.store.getSession(id))!;
+    if (!(await opts.validateSession(session))) return { accepted: false };
+    return {
+      accepted: !!(await ctx.store.admitBackgroundDispatch(opts.durableDispatchId, id, {
+        t: 'prompt',
+        text,
+      })),
+    };
+  });
+  const makeApp = () =>
+    buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      branches: branchSvc as unknown as NonNullable<ServerDeps['branches']>,
+      branchPrStatus: status,
+      pullRequestRepairPollMs: 20,
+      pullRequestCacheNow: () => now,
+    });
+  let server = makeApp();
+  try {
+    await server.ready();
+    await vi.waitFor(() => expect(status).toHaveBeenCalled());
+    expect(dispatchTurnWhenIdle).not.toHaveBeenCalled();
+    await ctx.store.appendEvent('s1', { t: 'status', state: 'completed' });
+    now += 120000;
+    await vi.waitFor(() => expect(dispatchTurnWhenIdle).toHaveBeenCalledTimes(1));
+    await server.close();
+    server = makeApp();
+    await server.ready();
+    await server.inject({ method: 'GET', url: '/sessions/s1/branches' });
+    expect(dispatchTurnWhenIdle).toHaveBeenCalledTimes(1);
+    expect(
+      (await ctx.store.repairs.incidents('origin-project')).find((i) => i.revision === 'new-sha')
+        ?.owner_session_id,
+    ).toBe('s1');
+    await ctx.store.appendEvent('s1', { t: 'status', state: 'completed' });
+    await ctx.store.clearRunningTurn('s1');
+    headSha = 'verified-sha';
+    pipeline = 'success';
+    now += 120000;
+    await vi.waitFor(async () =>
+      expect(await ctx.store.repairs.budgetUsed('origin-project', 'pr:119')).toBe(0),
+    );
+    headSha = 'third-sha';
+    pipeline = 'failure';
+    now += 120000;
+    await vi.waitFor(() => expect(dispatchTurnWhenIdle).toHaveBeenCalledTimes(2));
+  } finally {
+    await server.close();
+  }
 });

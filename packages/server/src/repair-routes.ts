@@ -76,6 +76,7 @@ export function registerRepairRoutes(app: FastifyInstance, store: EventStore): v
     if (
       !incident ||
       incident.owner_session_id ||
+      (await store.repairs.sessionOrigin(id, incident.resource)) ||
       !hasFreshRepairEvidence(incident) ||
       !(await store.repairs.qa()).enabled ||
       (await store.repairs.budgetUsed(id, incident.resource)) >= 2

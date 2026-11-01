@@ -2572,6 +2572,7 @@ it('rejects forged project/generation headers at the real relay before broker ex
 it('lets QA read authorized CI evidence through the gateway but refuses all other tools', async () => {
   const h = build({
     planningTools: true,
+    unlocked: true,
     allow: true,
     qaAnalysisRead: async (_project, _request, authorize) => {
       await authorize();
@@ -2596,6 +2597,19 @@ it('lets QA read authorized CI evidence through the gateway but refuses all othe
   await h.store.repairs.configureQA(true, 'admin');
   await h.store.repairs.qaSession('qa');
   await h.store.repairs.configure('p1', 'admin', 'monitor');
+  await sql`insert into users (id, role, status) values ('qa-reader', 'member', 'active')`.execute(
+    ctx.db,
+  );
+  await sql`insert into project_memberships(project_id,user_id,can_read,can_execute,can_manage) values ('p1','qa-reader',true,true,false)`.execute(
+    ctx.db,
+  );
+  const prompt = await h.store.appendEvent('qa', {
+    t: 'prompt',
+    text: 'Save the agreed prevention task',
+    initiatedBy: { userId: 'qa-reader' },
+  });
+  await h.store.markTurnRunning({ sessionId: 'qa', promptSeq: prompt.seq });
+  await h.store.bindTurnIdentity('qa', { turnId: 't1', startCommandId: 'qa-start' });
   const token = h.tokens.issue({ projectId: 'p1', sessionId: 'qa', turnId: 't1' });
   await withListener(h, async (socketPath) => {
     let id = 0;
@@ -2618,7 +2632,20 @@ it('lets QA read authorized CI evidence through the gateway but refuses all othe
     const reportId = (JSON.parse(baseline.result.content[0]!.text) as { reportId: string })
       .reportId;
     await call('verity_qa_analysis', { action: 'save_report', projectId: 'p1', reportId });
+    const followup = await call('verity_qa_analysis', {
+      action: 'create_followup',
+      projectId: 'p1',
+      taskId: '10000000-0000-4000-8000-000000000042',
+      title: 'Prevent recurring typecheck failures',
+      detail:
+        'Inspect the failing jobs and move a matching scoped check before push; measure first-attempt success.',
+    });
+    expect(followup.result.isError, JSON.stringify(followup)).toBeUndefined();
+    expect(
+      (await h.store.tasks.get('10000000-0000-4000-8000-000000000042', 'qa-reader'))?.sessionId,
+    ).toBeNull();
     expect(h.approvals).toEqual([
+      expect.objectContaining({ toolName: 'verity_qa_analysis', allowStandingGrant: false }),
       expect.objectContaining({ toolName: 'verity_qa_analysis', allowStandingGrant: false }),
     ]);
 

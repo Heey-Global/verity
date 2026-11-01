@@ -406,3 +406,151 @@ it('upgrades pre-receipt ownership conservatively and round-trips the recovery m
   expect(await ctx.store.repairs.cancelReservedDispatch(claim.dispatch_id!)).toBe(false);
   expect(await ctx.store.repairs.budgetUsed('a', 'pr:1')).toBe(1);
 });
+
+describe('originating session repairs', () => {
+  it.each(['off', 'monitor', 'automatic'] as const)(
+    'does not borrow QA consent in %s mode',
+    async (mode) => {
+      await ctx.store.createSession({
+        sessionId: 'origin',
+        projectId: 'a',
+        worktree: '/tmp/origin',
+        model: 'claude',
+      });
+      await ctx.store.repairs.configure('a', 'user', mode);
+      await ctx.store.repairs.registerSessionOrigin('a', 'pr:1', 'origin');
+      const incident = await ctx.store.repairs.observe('a', 'pr:1', 'sha', '{}');
+      expect(await ctx.store.repairs.claim(incident.id, 'qa-worker', 1)).toBeUndefined();
+      const claim = await ctx.store.repairs.claim(
+        incident.id,
+        'origin',
+        0,
+        undefined,
+        undefined,
+        undefined,
+        true,
+        'ci:1:sha',
+      );
+      expect(claim?.owner_session_id).toBe('origin');
+      expect(await ctx.store.hasSessionAutomationMarker('origin', 'ci:1:sha')).toBe(true);
+      // A second store view cannot bypass the durable owner or transfer origin.
+      expect(await ctx.store.repairs.registerSessionOrigin('a', 'pr:1', 'other')).toBe('origin');
+      expect(
+        await ctx.store.repairs.claim(
+          incident.id,
+          'origin',
+          0,
+          undefined,
+          undefined,
+          undefined,
+          true,
+          'ci:1:sha',
+        ),
+      ).toBeUndefined();
+      expect((await ctx.store.repairs.qa()).enabled).toBe(false);
+      expect((await ctx.store.repairs.mandate('a'))?.mode).toBe(mode);
+    },
+  );
+  it('rolls back unadmitted work and permits retry without losing the marker after admission', async () => {
+    await ctx.store.createSession({
+      sessionId: 'origin',
+      projectId: 'a',
+      worktree: '/tmp/origin',
+      model: 'claude',
+    });
+    await ctx.store.repairs.registerSessionOrigin('a', 'pr:1', 'origin');
+    const incident = await ctx.store.repairs.observe('a', 'pr:1', 'sha', '{}');
+    const reserve = () =>
+      ctx.store.repairs.claim(
+        incident.id,
+        'origin',
+        0,
+        undefined,
+        undefined,
+        undefined,
+        true,
+        'ci:1:sha',
+      );
+    const first = await reserve();
+    expect(await ctx.store.repairs.cancelReservedDispatch(first!.dispatch_id!)).toBe(true);
+    expect(await ctx.store.hasSessionAutomationMarker('origin', 'ci:1:sha')).toBe(false);
+    expect(await ctx.store.repairs.budgetUsed('a', 'pr:1')).toBe(0);
+    const second = await reserve();
+    await ctx.store.admitBackgroundDispatch(second!.dispatch_id!, 'origin', {
+      t: 'prompt',
+      text: 'repair',
+    });
+    expect(await ctx.store.repairs.cancelReservedDispatch(second!.dispatch_id!)).toBe(false);
+    await ctx.store.repairs.finishAttempt(incident.id, second!.dispatch_id!, 'verifying', '{}');
+    expect(await reserve()).toBeUndefined();
+    const next = await ctx.store.repairs.observe('a', 'pr:1', 'new-sha', '{}');
+    expect(
+      (
+        await ctx.store.repairs.claim(
+          next.id,
+          'origin',
+          0,
+          undefined,
+          undefined,
+          undefined,
+          true,
+          'ci:1:new-sha',
+        )
+      )?.owner_session_id,
+    ).toBe('origin');
+  });
+  it('waits for a pre-existing QA owner and never transfers responsibility after exhaustion', async () => {
+    await ctx.store.createSession({
+      sessionId: 'origin',
+      projectId: 'a',
+      worktree: '/tmp/origin',
+      model: 'claude',
+    });
+    await ctx.store.repairs.configure('a', 'user', 'automatic');
+    const incident = await ctx.store.repairs.observe('a', 'pr:1', 'sha', '{}');
+    const qa = await ctx.store.repairs.claim(incident.id, 'old-worker', 1);
+    await ctx.store.repairs.registerSessionOrigin('a', 'pr:1', 'origin');
+    const reserve = (marker: string) =>
+      ctx.store.repairs.claim(
+        incident.id,
+        'origin',
+        0,
+        undefined,
+        undefined,
+        undefined,
+        true,
+        marker,
+      );
+    expect(await reserve('ci:sha')).toBeUndefined();
+    await ctx.store.repairs.finishAttempt(incident.id, qa!.dispatch_id!, 'verifying', '{}');
+    const owned = await reserve('ci:sha');
+    expect(owned?.owner_session_id).toBe('origin');
+    await ctx.store.repairs.finishAttempt(incident.id, owned!.dispatch_id!, 'verifying', '{}');
+    expect(await reserve('conflict:sha')).toBeUndefined();
+    expect(await ctx.store.repairs.claim(incident.id, 'another-qa', 1)).toBeUndefined();
+  });
+});
+
+it('serializes competing QA and session claims under the same ownership lock', async () => {
+  await ctx.store.createSession({
+    sessionId: 'origin',
+    projectId: 'a',
+    worktree: '/wt/origin',
+    model: 'm',
+  });
+  await ctx.store.repairs.configure('a', 'admin', 'automatic');
+  await ctx.store.repairs.registerSessionOrigin('a', 'pr:1', 'origin');
+  const incident = await ctx.store.repairs.observe('a', 'pr:1', 'sha', '{}');
+  const [qa, first, second] = await Promise.all([
+    ctx.store.repairs.claim(incident.id, 'qa', 1),
+    ctx.store.repairs.claimSessionRepair(incident.id, 'origin', 'ci:sha'),
+    ctx.store.repairs.claimSessionRepair(incident.id, 'origin', 'ci:sha'),
+  ]);
+  expect(qa).toBeUndefined();
+  expect([first, second].filter(Boolean)).toHaveLength(1);
+  expect(await ctx.store.repairs.budgetUsed('a', 'pr:1')).toBe(1);
+  expect((await ctx.store.repairs.incidents('a'))[0]).toMatchObject({
+    owner_session_id: 'origin',
+    originating_session_id: 'origin',
+  });
+});

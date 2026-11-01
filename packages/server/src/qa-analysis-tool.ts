@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { qaAnalysisRequestSchema } from '@verity/events';
+import { qaAnalysisRequestSchema, type AgentEvent } from '@verity/events';
 import type { ProjectRecord } from '@verity/store';
 import type { AssistantToolDeps } from './assistant-tool.js';
 import type { QARepositoryRequest } from './github-qa-analysis.js';
@@ -13,6 +13,7 @@ type Report = {
 };
 const reports = new WeakMap<AssistantToolDeps['eventStore'], Map<string, Report>>();
 export interface QAAnalysisDeps extends AssistantToolDeps {
+  publishSessionEvent?(this: void, sessionId: string, event: AgentEvent): Promise<void>;
   saveReport?(
     this: void,
     projectId: string,
@@ -29,7 +30,12 @@ export interface QAAnalysisDeps extends AssistantToolDeps {
 }
 export async function executeQAAnalysis(
   deps: QAAnalysisDeps,
-  input: { sessionId: string; turnId: string; request: unknown },
+  input: {
+    sessionId: string;
+    turnId: string;
+    request: unknown;
+    approvedByCard?: boolean | undefined;
+  },
 ) {
   const request = qaAnalysisRequestSchema.parse(input.request);
   const requireRole = async () => {
@@ -87,6 +93,72 @@ export async function executeQAAnalysis(
   )
     throw new Error('Repair requests require the dedicated QA repair gateway.');
   const userId = (await deps.initiator(input.sessionId, input.turnId))?.userId;
+  if (request.action === 'create_followup') {
+    if (!input.approvedByCard || !userId)
+      throw new ControlPlaneSessionAuthorityError(
+        'Saving a QA follow-up requires explicit approval from the current user.',
+      );
+    const check = async () => {
+      await authorize(project.id);
+      if ((await deps.initiator(input.sessionId, input.turnId))?.userId !== userId)
+        throw new ControlPlaneSessionAuthorityError(
+          'The requesting user changed during follow-up approval.',
+        );
+      if (!(await deps.permitted(userId, project.id, 'execute')))
+        throw new ControlPlaneSessionAuthorityError(
+          'Saving a follow-up requires project execution permission.',
+        );
+    };
+    await check();
+    const tasks = await deps.eventStore.tasks.list({ ownerUserId: userId, projectId: project.id });
+    const duplicate = tasks.find(
+      (task) =>
+        ['open', 'in_progress'].includes(task.status) &&
+        task.title === request.title &&
+        task.detail === request.detail,
+    );
+    const existing = duplicate ?? (await deps.eventStore.tasks.get(request.taskId, userId));
+    if (
+      existing &&
+      !duplicate &&
+      (existing.projectId !== project.id ||
+        existing.sourceSessionId !== input.sessionId ||
+        existing.title !== request.title ||
+        existing.detail !== request.detail)
+    )
+      throw new Error(
+        'This task ID is already in use; list existing tasks before creating a follow-up.',
+      );
+    await check();
+    const task =
+      existing ??
+      (await deps.eventStore.tasks.upsert(
+        {
+          id: request.taskId,
+          ownerUserId: userId,
+          projectId: project.id,
+          sourceSessionId: input.sessionId,
+          origin: 'agent',
+          title: request.title,
+          detail: request.detail,
+          status: 'open',
+        },
+        0,
+      ));
+    await deps.publishSessionEvent?.(input.sessionId, {
+      t: 'tasks_updated',
+      origin: 'agent',
+      change: 'added',
+      taskIds: [task.id],
+    });
+    return {
+      taskId: task.id,
+      projectId: project.id,
+      status: task.status,
+      executionAuthorized: false,
+    };
+  }
+
   let cache = reports.get(deps.eventStore);
   if (!cache) {
     cache = new Map();

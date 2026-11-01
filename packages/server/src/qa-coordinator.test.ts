@@ -365,3 +365,33 @@ it('shares live QA preparation with repair recovery during slow session creation
       ?.state,
   ).toBe('admitted');
 });
+
+it.each(['monitor', 'automatic'] as const)(
+  'observes session-owned failures in %s without granting or delegating repair',
+  async (mode) => {
+    const incident = await enroll(mode);
+    await ctx.store.repairs.registerSessionOrigin('a', 'pr:42', 'origin');
+    const { deps, coordinator } = harness();
+    await coordinator.tick();
+    expect(deps.dispatch).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.stringContaining('"sessionResponsibility":"origin"'),
+      expect.any(Function),
+      'admin',
+      expect.any(String),
+    );
+    await answer(
+      incident,
+      '```qa:decision\n' +
+        JSON.stringify({
+          summary: 'Repeated failures',
+          requests: [{ projectId: 'a', incidentId: incident.id, revision: 'sha' }],
+          assignments: [{ projectId: 'a', incidentId: incident.id, revision: 'sha' }],
+        }) +
+        '\n```',
+    );
+    await coordinator.tick();
+    expect(deps.delegate).not.toHaveBeenCalled();
+    expect(await ctx.store.repairs.qaProposals()).toEqual([]);
+  },
+);

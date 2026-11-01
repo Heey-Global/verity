@@ -5056,3 +5056,18 @@ migrations['0179_qa_manual_repairs'] = {
     await sql`drop table qa_manual_repairs`.execute(db);
   },
 };
+
+migrations['0180_session_pr_repair_origins'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table repair_attempts add column automation_marker text`.execute(db);
+    await sql`create table repair_session_origins (
+      project_id text not null references projects(id) on delete cascade,
+      resource text not null, session_id text not null,
+      primary key (project_id, resource)
+    )`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table repair_session_origins`.execute(db);
+    await sql`alter table repair_attempts drop column automation_marker`.execute(db);
+  },
+};

@@ -14,6 +14,7 @@ export interface RepairMandate {
   checked_at: string | null;
 }
 export interface RepairIncident {
+  originating_session_id?: string | null;
   repair_pr: number | null;
   id: string;
   project_id: string;
@@ -151,7 +152,7 @@ export class RepairSupervisionStore {
         owner: string;
         repo: string;
         resource: string;
-      }>`select p.id,p.project_id,r.owner,r.repo,i.resource from qa_proposals p join projects r on r.id=p.project_id join repair_incidents i on i.id=p.incident_id join repair_mandates m on m.project_id=p.project_id join qa_coordinator q on q.id=1 where p.state='pending' and q.enabled=true and q.revision=p.qa_revision and m.mode='monitor' and m.revision=p.mandate_revision and i.state='open' and r.kind in ('github','forgejo') order by p.created_at limit 20`.execute(
+      }>`select p.id,p.project_id,r.owner,r.repo,i.resource from qa_proposals p join projects r on r.id=p.project_id join repair_incidents i on i.id=p.incident_id join repair_mandates m on m.project_id=p.project_id join qa_coordinator q on q.id=1 where p.state='pending' and q.enabled=true and q.revision=p.qa_revision and m.mode='monitor' and m.revision=p.mandate_revision and i.state='open' and not exists(select 1 from repair_session_origins o where o.project_id=i.project_id and o.resource=i.resource) and r.kind in ('github','forgejo') order by p.created_at limit 20`.execute(
         this.db,
       )
     ).rows;
@@ -159,7 +160,7 @@ export class RepairSupervisionStore {
   async qaApprove(id: string, projectId: string, userId: string, allow: boolean): Promise<boolean> {
     return this.db.transaction().execute(async (trx) => {
       const result =
-        await sql`update qa_proposals p set state=${allow ? 'approved' : 'declined'}, decided_by=${userId} where p.id=${id} and p.project_id=${projectId} and p.state='pending' and exists(select 1 from qa_coordinator q where q.enabled=true and q.revision=p.qa_revision) and exists(select 1 from repair_mandates m where m.project_id=p.project_id and m.mode='monitor' and m.revision=p.mandate_revision) and exists(select 1 from repair_incidents i where i.id=p.incident_id and i.state='open') returning mandate_revision`.execute(
+        await sql`update qa_proposals p set state=${allow ? 'approved' : 'declined'}, decided_by=${userId} where p.id=${id} and p.project_id=${projectId} and p.state='pending' and exists(select 1 from qa_coordinator q where q.enabled=true and q.revision=p.qa_revision) and exists(select 1 from repair_mandates m where m.project_id=p.project_id and m.mode='monitor' and m.revision=p.mandate_revision) and exists(select 1 from repair_incidents i where i.id=p.incident_id and i.state='open' and not exists(select 1 from repair_session_origins o where o.project_id=i.project_id and o.resource=i.resource)) returning mandate_revision`.execute(
           trx,
         );
       if (!result.rows.length) return false;
@@ -278,7 +279,7 @@ export class RepairSupervisionStore {
   }
   async incidents(projectId: string): Promise<RepairIncident[]> {
     return (
-      await sql<RepairIncident>`select * from repair_incidents where project_id = ${projectId} and (state not in ('resolved','superseded') or owner_session_id is not null or id in (select id from repair_incidents where project_id = ${projectId} order by updated_at desc limit 200)) order by updated_at desc`.execute(
+      await sql<RepairIncident>`select *, (select o.session_id from repair_session_origins o where o.project_id=repair_incidents.project_id and o.resource=repair_incidents.resource) as originating_session_id from repair_incidents where project_id = ${projectId} and (state not in ('resolved','superseded') or owner_session_id is not null or id in (select id from repair_incidents where project_id = ${projectId} order by updated_at desc limit 200)) order by updated_at desc`.execute(
         this.db,
       )
     ).rows;
@@ -354,6 +355,9 @@ export class RepairSupervisionStore {
         await sql`update repair_resource_budgets set used=greatest(0,used-1) where project_id=${incident.project_id} and resource=${incident.resource}`.execute(
           trx,
         );
+      await sql`delete from session_automation_marker m using repair_attempts a where a.dispatch_id=${id} and m.session_id=a.session_id and m.marker=a.automation_marker`.execute(
+        trx,
+      );
       await sql`update repair_attempts set ended_at=now(),outcome='not-dispatched' where dispatch_id=${id} and ended_at is null`.execute(
         trx,
       );
@@ -385,6 +389,17 @@ export class RepairSupervisionStore {
       this.db,
     );
   }
+  async sessionAutomationMarker(dispatchId: string): Promise<string | undefined> {
+    return (
+      (
+        await sql<{
+          automation_marker: string | null;
+        }>`select automation_marker from repair_attempts where dispatch_id=${dispatchId}`.execute(
+          this.db,
+        )
+      ).rows[0]?.automation_marker ?? undefined
+    );
+  }
   async attemptBoundary(dispatchId: string): Promise<number | undefined> {
     const row = (
       await sql<{
@@ -392,6 +407,35 @@ export class RepairSupervisionStore {
       }>`select start_seq from repair_attempts where dispatch_id=${dispatchId}`.execute(this.db)
     ).rows[0];
     return row?.start_seq == null ? undefined : Number(row.start_seq);
+  }
+  /** Origin is durable responsibility, not an active repair claim or QA history. */
+  async registerSessionOrigin(
+    projectId: string,
+    resource: string,
+    sessionId: string,
+  ): Promise<string> {
+    return this.db.transaction().execute(async (trx) => {
+      await sql`select pg_advisory_xact_lock(712843, 1)`.execute(trx);
+      await sql`insert into repair_session_origins(project_id,resource,session_id) values (${projectId},${resource},${sessionId}) on conflict do nothing`.execute(
+        trx,
+      );
+      return (
+        await sql<{
+          session_id: string;
+        }>`select session_id from repair_session_origins where project_id=${projectId} and resource=${resource}`.execute(
+          trx,
+        )
+      ).rows[0]!.session_id;
+    });
+  }
+  async sessionOrigin(projectId: string, resource: string): Promise<string | undefined> {
+    return (
+      await sql<{
+        session_id: string;
+      }>`select session_id from repair_session_origins where project_id=${projectId} and resource=${resource}`.execute(
+        this.db,
+      )
+    ).rows[0]?.session_id;
   }
   async associate(projectId: string, resource: string, sessionId: string): Promise<void> {
     await sql`insert into repair_session_history (project_id, resource, session_id) values (${projectId}, ${resource}, ${sessionId}) on conflict do nothing`.execute(
@@ -407,6 +451,13 @@ export class RepairSupervisionStore {
       )
     ).rows.map((row) => row.session_id);
   }
+  async claimSessionRepair(
+    id: string,
+    sessionId: string,
+    marker: string,
+  ): Promise<RepairIncident | undefined> {
+    return this.claim(id, sessionId, 0, undefined, undefined, undefined, true, marker);
+  }
   async claim(
     id: string,
     sessionId: string,
@@ -414,10 +465,23 @@ export class RepairSupervisionStore {
     qaRevision?: number,
     manualProposalId?: string,
     consentKey?: string,
+    sessionOrigin = false,
+    automationMarker?: string,
   ): Promise<RepairIncident | undefined> {
     return this.db.transaction().execute(async (trx) => {
       // The lock covers the global limit as well as a project's exclusive owner.
       await sql`select pg_advisory_xact_lock(712843, 1)`.execute(trx);
+      if (sessionOrigin && !automationMarker)
+        throw new Error('A session repair requires a durable automation marker');
+      if (
+        sessionOrigin &&
+        (
+          await sql`select 1 from session_automation_marker where session_id=${sessionId} and marker=${automationMarker}`.execute(
+            trx,
+          )
+        ).rows.length
+      )
+        return undefined;
       let manual: ManualRepairProposal | undefined;
       if (manualProposalId) {
         manual = (
@@ -446,17 +510,26 @@ export class RepairSupervisionStore {
         )
           return undefined;
       }
+      const notSessionOrigin = !sessionOrigin;
       const result =
-        await sql<RepairIncident>`update repair_incidents i set state = 'working', owner_session_id = ${sessionId}, last_session_id = ${sessionId}, attempts = attempts + 1, dispatch_id = ${randomUUID()}, updated_at = now() where i.id = ${id} and (${qaRevision === undefined} or exists (select 1 from qa_coordinator c where c.id = 1 and c.enabled = true and c.revision = ${qaRevision ?? -1})) and (i.state = 'open' or (${manual !== undefined} and i.state = 'verifying' and i.owner_session_id is null)) and coalesce((select used from repair_resource_budgets b where b.project_id=i.project_id and b.resource=i.resource),0) < 2 and exists (select 1 from repair_mandates m where m.project_id = i.project_id and (m.mode = 'automatic' or (${manual !== undefined} and m.mode = 'monitor')) and m.revision = ${mandateRevision}) and not exists (select 1 from repair_incidents other where other.project_id = i.project_id and other.owner_session_id is not null) and (select count(*) from repair_incidents where owner_session_id is not null) < 2 returning i.*`.execute(
+        await sql<RepairIncident>`update repair_incidents i set state = 'working', owner_session_id = ${sessionId}, last_session_id = ${sessionId}, attempts = attempts + 1, dispatch_id = ${randomUUID()}, updated_at = now() where i.id = ${id} and ((${sessionOrigin} and exists(select 1 from repair_session_origins o where o.project_id=i.project_id and o.resource=i.resource and o.session_id=${sessionId})) or (${notSessionOrigin} and not exists(select 1 from repair_session_origins o where o.project_id=i.project_id and o.resource=i.resource))) and (${qaRevision === undefined} or exists (select 1 from qa_coordinator c where c.id = 1 and c.enabled = true and c.revision = ${qaRevision ?? -1})) and (i.state = 'open' or ((${sessionOrigin} or ${manual !== undefined}) and i.state = 'verifying' and i.owner_session_id is null)) and coalesce((select used from repair_resource_budgets b where b.project_id=i.project_id and b.resource=i.resource),0) < 2 and (${sessionOrigin} or exists (select 1 from repair_mandates m where m.project_id = i.project_id and (m.mode = 'automatic' or (${manual !== undefined} and m.mode = 'monitor')) and m.revision = ${mandateRevision})) and not exists (select 1 from repair_incidents other where other.project_id = i.project_id and other.owner_session_id is not null) and (select count(*) from repair_incidents where owner_session_id is not null) < 2 returning i.*`.execute(
           trx,
         );
       const claim = result.rows[0];
+      if (!claim && sessionOrigin)
+        await sql`update repair_incidents i set state='blocked',updated_at=now() where i.id=${id} and i.state='open' and i.owner_session_id is null and coalesce((select used from repair_resource_budgets b where b.project_id=i.project_id and b.resource=i.resource),0)>=2`.execute(
+          trx,
+        );
       if (claim?.dispatch_id) {
         if (manual)
           await sql`update qa_manual_repairs set dispatch_id=${claim.dispatch_id},consent_key=${consentKey ?? null} where id=${manual.id}`.execute(
             trx,
           );
-        await sql`insert into repair_attempts (dispatch_id, incident_id, session_id) values (${claim.dispatch_id}, ${claim.id}, ${sessionId})`.execute(
+        if (sessionOrigin)
+          await sql`insert into session_automation_marker(session_id,marker) values (${sessionId},${automationMarker})`.execute(
+            trx,
+          );
+        await sql`insert into repair_attempts (dispatch_id, incident_id, session_id, automation_marker) values (${claim.dispatch_id}, ${claim.id}, ${sessionId}, ${automationMarker ?? null})`.execute(
           trx,
         );
         await sql`insert into qa_dispatches(id,session_id,state) values (${claim.dispatch_id},${sessionId},'reserved')`.execute(

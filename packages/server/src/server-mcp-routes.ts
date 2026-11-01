@@ -1229,7 +1229,7 @@ export function registerServerMcpRoutes({
         // reads a static catalog and touches no data at all.
         if (
           toolName === 'verity_qa_analysis' &&
-          (request as { action?: string }).action === 'save_report'
+          ['save_report', 'create_followup'].includes((request as { action?: string }).action ?? '')
         )
           return false;
         if (
@@ -1552,6 +1552,7 @@ export function registerServerMcpRoutes({
           return executeQAAnalysis(
             {
               ...assistantToolDeps,
+              publishSessionEvent,
               saveReport: (projectId, id, report, authorize) => {
                 if (!deps.dataRoot) throw new Error('Document storage unavailable');
                 return saveQAReport(deps.dataRoot, projectId, id, report, authorize);

@@ -12,6 +12,7 @@ export interface AnalysisRun {
   updated_at: string;
   html_url: string;
   name: string | null;
+  pull_requests?: { number: number }[] | undefined;
 }
 export interface AnalysisJob {
   id: number;
@@ -41,6 +42,12 @@ export function computeQAStatistics(
   defaultBranch: string,
   releaseWorkflowIds: number[],
 ) {
+  // Pagination and repeated observations must not inflate the denominator.
+  runs = [
+    ...new Map(
+      [...runs].sort((a, b) => a.run_attempt - b.run_attempt).map((r) => [r.id, r]),
+    ).values(),
+  ];
   const groups = new Map<string, AnalysisRun[]>();
   for (const run of runs) {
     const category = ['pull_request', 'pull_request_target', 'merge_group'].includes(run.event)
@@ -80,8 +87,55 @@ export function computeQAStatistics(
       if (r.run_attempt === 1 && Number.isFinite(start) && start >= Date.parse(r.created_at))
         waits.push((start - Date.parse(r.created_at)) / 1000);
     }
+    const failures = new Map<string, { run: AnalysisRun; job: AnalysisJob }[]>();
+    for (const r of rows) {
+      for (const j of jobs.get(r.id) ?? []) {
+        if (!['failure', 'timed_out', 'action_required'].includes(j.conclusion ?? '')) continue;
+        const key = `${j.name}:${j.conclusion}`;
+        const existing = failures.get(key) ?? [];
+        if (!existing.some((item) => item.run.id === r.id)) existing.push({ run: r, job: j });
+        failures.set(key, existing);
+      }
+    }
     return {
       group,
+      recurringFailures: [...failures.values()]
+        .map((items) => ({
+          job: items[0]!.job.name,
+          conclusion: items[0]!.job.conclusion,
+          runs: items.length,
+          revisions: [...new Set(items.map(({ run }) => run.head_sha))],
+          pullRequests: [
+            ...new Set(items.flatMap(({ run }) => (run.pull_requests ?? []).map((p) => p.number))),
+          ],
+          branches: [...new Set(items.map(({ run }) => run.head_branch))],
+          sources: items.map(({ run, job }) => ({
+            runId: run.id,
+            jobId: job.id,
+            attempt: run.run_attempt,
+            sha: run.head_sha,
+            runUrl: run.html_url,
+            jobUrl: job.html_url,
+          })),
+          interpretation:
+            'Repeated job outcomes are observations, not proof of a shared root cause.',
+        }))
+        .sort((a, b) => b.runs - a.runs || a.job.localeCompare(b.job)),
+      recoveryCandidates: rows
+        .filter(
+          (r) =>
+            r.run_attempt > 1 &&
+            r.conclusion === 'success' &&
+            firstAttempts.get(r.id)?.conclusion === 'failure',
+        )
+        .map((r) => ({
+          runId: r.id,
+          sha: r.head_sha,
+          url: r.html_url,
+          interpretation:
+            'Failure followed by success on the same run; inspect attempt evidence before classifying flakiness.',
+        })),
+      missingJobRuns: rows.filter((r) => !jobs.has(r.id)).map((r) => r.id),
       runs: rows.length,
       completed: completed.length,
       pending: rows.length - completed.length,

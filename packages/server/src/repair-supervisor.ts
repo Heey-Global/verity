@@ -40,6 +40,7 @@ export interface RepairSupervisorDeps {
     this: void,
     projectId: string,
     branch: string,
+    resource: string,
   ): Promise<{ sessionId?: string; blocked: boolean }>;
   spawn(this: void, projectId: string, sessionId: string): Promise<void>;
   dispatch(
@@ -69,6 +70,7 @@ export function createRepairSupervisor(deps: RepairSupervisorDeps) {
       incident.state !== 'open'
     )
       return;
+    if (await store.sessionOrigin(incident.project_id, incident.resource)) return;
     if (!(await deps.authorized(mandate.sponsor_user_id, mandate.project_id))) return;
     const globalRevision = deps.enabled ? (await store.qa()).revision : undefined;
     const attempts = await store.budgetUsed(incident.project_id, incident.resource);
@@ -80,7 +82,7 @@ export function createRepairSupervisor(deps: RepairSupervisorDeps) {
     if (evidence.fork) return;
     const target =
       incident.resource.startsWith('pr:') && evidence.branch
-        ? await deps.target(incident.project_id, evidence.branch)
+        ? await deps.target(incident.project_id, evidence.branch, incident.resource)
         : { blocked: false };
     if (target.blocked) return;
     const sessionId = target.sessionId ?? randomUUID();
