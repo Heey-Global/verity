@@ -53,7 +53,7 @@ the app, speaker mapping, final transcript reconciliation and connector restart.
 ## Unassigned meetings
 
 Core can run an online meeting before anyone has chosen a project, for example
-when it joins a calendar meeting on its own. Such a meeting has no session. Core
+when it joins a calendar meeting on its own ([Calendar meetings](live-meeting-calendar.md)). Such a meeting has no session. Core
 keeps transcribing it in its encrypted Attendee state but publishes nothing:
 there is no live meeting record, no analysis and no answer to a spoken request
 until the meeting is assigned. Requests addressed to Verity wait in the state.
@@ -80,3 +80,9 @@ Unassigned meetings are discarded automatically once they have been over for
 the retention period, `unassignedMeetingRetentionDays` in the server settings
 (seven days when unset). A meeting that is still running is never discarded by
 the retention job.
+
+The app finds running and unassigned meetings through `GET /live-meetings/active`
+when it opens and on live refresh. The floating meeting card offers **Assign**,
+which picks a project from the recently used ones, and **Discard** after a
+confirmation. A session's meeting screen offers **Continue here** for an
+unassigned meeting.

@@ -93,6 +93,15 @@ connected calendar and Google account. Contacts lookup is optional: email
 addresses supplied or confirmed by you also work without an address book.
 
 
+## Meeting calendars
+
+Verity can watch calendars for online meetings and join them; see
+[Calendar meetings](live-meeting-calendar.md). Watching uses the same Calendar
+scopes: `calendar.calendarlist.readonly` to list the calendars you can choose
+and `calendar.events` to read their events. It never changes an event. An
+account connected without Calendar access is listed in the settings with a
+prompt to grant it.
+
 ## Scheduling requests
 
 `verity_scheduling` builds on the same Calendar and Gmail connections: it holds
