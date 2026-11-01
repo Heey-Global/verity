@@ -24,8 +24,12 @@ def api(path, body=None, token=None, timeout=15):
         headers['Authorization'] = f'Bearer {token}'
     request = urllib.request.Request('http://127.0.0.1:9000' + path,
                                      data=None if body is None else json.dumps(body).encode(), headers=headers)
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        return json.load(response)
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return json.load(response)
+    except urllib.error.HTTPError as error:
+        detail = error.read(4096).decode('utf-8', errors='replace')
+        raise RuntimeError(f'Guest API {path} failed ({error.code}): {detail}') from error
 
 
 def wait(check, timeout=120):
@@ -67,13 +71,15 @@ def positive():
     return value
 
 
+def registry_ready():
+    with urllib.request.urlopen('http://127.0.0.1:5000/v2/', timeout=2) as response:
+        return response.status == 200
+
+
 def setup():
     assert os.getuid() == 0 and Path('/var/lib/cloud/data/instance-id').read_text().strip() == 'verity-boot-probe'
     run('docker', 'run', '-d', '--name', 'verity-boot-registry', '--network', 'host', '--restart', 'no',
         '-e', 'REGISTRY_HTTP_ADDR=127.0.0.1:5000', 'verity-boot-registry:local')
-    def registry_ready():
-        with urllib.request.urlopen('http://127.0.0.1:5000/v2/', timeout=2) as response:
-            return response.status == 200
     wait(registry_ready, 30)
     refs = {}
     for role, image in [('runner', 'verity-boot-observed-runner:local'), ('relay', 'verity-boot-relay:local')]:
@@ -116,6 +122,11 @@ def recover(replace=False):
     # Explicit trusted host readmission keeps the original sandbox process alive.
     # Actual Server listeners/capabilities are recovered by its normal project poll.
     if replace:
+        # The disposable registry deliberately has no automatic restart policy.
+        # Image retrieval is a real part of replacement, so restore its fixture
+        # dependency explicitly after Docker restart and host reboot.
+        run('docker', 'start', 'verity-boot-registry')
+        wait(registry_ready, 30)
         # Stopped packet registrations are immutable. Use the actual authenticated
         # replacement lifecycle rather than restarting an attested old endpoint.
         api('/verity-control/projects/' + descriptor()['projectId'] + '/recreate-container',

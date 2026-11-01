@@ -370,4 +370,5 @@ class ReplacementRecoveryTests(unittest.TestCase):
             with patch.object(guest, 'ROOT', root), patch.object(guest, 'api', api), patch.object(guest, 'wait'), patch.object(guest, 'run') as run, patch.object(guest, 'descriptor', return_value={'projectId': 'p'}):
                 guest.recover(replace=True)
             api.assert_any_call('/verity-control/projects/p/recreate-container', {'confirmWarnings': True}, token='disposable-token', timeout=180)
+            run.assert_any_call('docker', 'start', 'verity-boot-registry')
             self.assertFalse(any('readmit' in call.args for call in run.call_args_list))
