@@ -333,7 +333,13 @@ export async function unlockAuthTokenWithBiometrics(baseUrl: string | null): Pro
     notifyAuthTokenChanged();
     currentTokenId = await getStoredAuthTokenId(baseUrl);
     return true;
-  } catch {
+  } catch (error) {
+    // Cancellation, an unmatched face and a non-interactive app state all land
+    // here; without the reason a stuck unlock cannot be told apart afterwards.
+    console.warn('verity: biometric device unlock failed', {
+      code: (error as { code?: unknown } | null)?.code,
+      message: error instanceof Error ? error.message : String(error),
+    });
     return false;
   }
 }
