@@ -4,7 +4,7 @@ from pathlib import Path
 import runpy
 import socket
 import unittest
-from unittest.mock import MagicMock, mock_open, patch
+from unittest.mock import MagicMock, patch
 
 SOURCE = Path(__file__).with_name('composed-client.py')
 
@@ -14,7 +14,7 @@ class ComposedClientTests(unittest.TestCase):
         channel = MagicMock()
         channel.__enter__.return_value = channel
         channel.connect.side_effect = error
-        with patch('socket.socket', return_value=channel), patch('sys.argv', [str(SOURCE), '11.77.106.2', phase, expectation]), patch('builtins.open', mock_open()):
+        with patch('socket.socket', return_value=channel), patch('sys.argv', [str(SOURCE), '11.77.106.2', phase, expectation]):
             runpy.run_path(str(SOURCE), run_name='__main__')
         return channel
 
