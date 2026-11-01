@@ -586,9 +586,55 @@ def execute(request):
     return {'state': 'armed', 'bootDeadlineNs': str(deadline)}
 
 
+def serve(source, sink, held):
+    """Serial framed operations; only execute() owns admission and renewal."""
+    previous = 0
+    while True:
+        data = source.readline(65537)
+        if not data:
+            return
+        if len(data) > 65536 or not data.endswith(b'\n'):
+            raise ValueError('Oversized or incomplete deadline request')
+        frame = json.loads(data)
+        if (not isinstance(frame, dict) or set(frame) != {'id', 'input'} or
+                type(frame['id']) is not int or frame['id'] <= previous or
+                frame['id'] > 9007199254740991):
+            raise ValueError('Invalid deadline request frame')
+        previous = frame['id']
+        fcntl.flock(held, fcntl.LOCK_EX)
+        try:
+            try:
+                reply = {'id': previous, 'result': execute(frame['input'])}
+            except Exception as error:
+                reply = {'id': previous, 'error': str(error)[:8192]}
+        finally:
+            fcntl.flock(held, fcntl.LOCK_UN)
+        encoded = (json.dumps(reply) + '\n').encode()
+        if len(encoded) > 16384:
+            raise ValueError('Oversized deadline response')
+        sink.write(encoded)
+        sink.flush()
+
+
+def bind_parent(expected):
+    # EOF cannot interrupt an operation blocked in a syscall. Parent death must.
+    import signal
+    if expected <= 1 or os.getppid() != expected:
+        raise ValueError('Missing deadline helper parent')
+    if ctypes.CDLL(None, use_errno=True).prctl(1, signal.SIGKILL, 0, 0, 0) != 0:
+        raise OSError(ctypes.get_errno(), 'Cannot bind deadline helper lifetime')
+    if os.getppid() != expected:
+        raise ValueError('Deadline helper parent changed')
+
+
 if __name__ == '__main__':
     if os.geteuid() != 0 or platform.machine() != 'x86_64':
         raise RuntimeError('Deadline helper requires the supported rootful x86_64 host')
+    persistent = len(sys.argv) == 3 and sys.argv[1] == '--serve'
+    if persistent:
+        bind_parent(int(sys.argv[2]))
+    elif len(sys.argv) != 1:
+        raise ValueError('Invalid deadline helper mode')
     private_directory(STATE)
     lock = os.open(STATE / 'lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
     value = os.fstat(lock)
@@ -596,8 +642,11 @@ if __name__ == '__main__':
         os.close(lock)
         raise ValueError('Untrusted deadline lock')
     with os.fdopen(lock, 'w') as held:
-        fcntl.flock(held, fcntl.LOCK_EX)
-        data = sys.stdin.buffer.read(65537)
-        if len(data) > 65536:
-            raise ValueError('Oversized deadline request')
-        print(json.dumps(execute(json.loads(data))))
+        if persistent:
+            serve(sys.stdin.buffer, sys.stdout.buffer, held)
+        else:
+            fcntl.flock(held, fcntl.LOCK_EX)
+            data = sys.stdin.buffer.read(65537)
+            if len(data) > 65536:
+                raise ValueError('Oversized deadline request')
+            print(json.dumps(execute(json.loads(data))))

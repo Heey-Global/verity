@@ -62,8 +62,9 @@ const resolve =
         servers: authority.dnsServers,
         destinationAllowed: egressHostDestinationAllowed,
       });
+const deadline = hostProjectDeadlineEnforcer();
 const enforcement = createProjectEgressHostEnforcement({
-  deadline: hostProjectDeadlineEnforcer(),
+  deadline,
   store: policyStore,
   directAuthority: (binding) => authority?.projectSponsors[binding.projectId] !== undefined,
   sponsor: (binding) => authority?.projectSponsors[binding.projectId] ?? '__unconfigured__',
@@ -146,6 +147,7 @@ if (mode === 'restore') {
   const stop = () => {
     void service.stop().then(
       async () => {
+        deadline.close();
         await database?.destroy();
         process.exit(0);
       },
