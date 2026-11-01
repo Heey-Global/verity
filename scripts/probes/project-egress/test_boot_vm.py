@@ -222,6 +222,25 @@ class FullBundleTests(unittest.TestCase):
             with self.assertRaisesRegex(AssertionError, 'Actual handler committed'):
                 boot_proof.verify_bundle(directory)
 
+    def test_receipts_after_mutation_start_are_not_protected_evidence(self):
+        import base64
+        import json
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            proof, _ = self.fixture(directory)
+            path = Path(directory, 'external-receipts.jsonl')
+            # Continuous startup emitters reach the receiver as soon as removal returns,
+            # before the external probes; that is mutation evidence, not a leak.
+            leak = {'kind': 'received', 'time_ns': proof['mutation_started_ns'] + 1,
+                    'data': base64.b64encode(b'host-startup-marker').decode()}
+            path.write_text(path.read_text() + json.dumps(leak) + '\n')
+            self.assertTrue(boot_proof.verify_bundle(directory)['complete'])
+            leak['time_ns'] = proof['mutation_started_ns'] - 1
+            lines = path.read_text().splitlines()
+            path.write_text('\n'.join(lines[:-1] + [json.dumps(leak)]) + '\n')
+            with self.assertRaisesRegex(AssertionError, 'Unauthorized external receipt'):
+                boot_proof.verify_bundle(directory)
+
     def test_rejects_mutation_evidence_without_reported_fence_removal(self):
         import json
         import tempfile
@@ -399,8 +418,8 @@ class FenceMutationOrderTests(unittest.TestCase):
                          ['guest inflight removed-fences', 'guest external'])
         self.assertEqual(vm.ssh.call_args_list[0].kwargs, {'timeout': 20})
         self.assertEqual(inflight, result)
-        # The receipt window opens after the in-flight removal returned, before external probes.
-        self.assertTrue(clock[1] <= started <= clock[2])
+        # The mutation window opens before the in-flight control removes the fences.
+        self.assertLessEqual(started, clock[0])
         for reported in ({'status': 200}, {'status': 200, 'fencesRemoved': False}):
             vm.ssh.side_effect = lambda command, **_: json.dumps(reported) if 'inflight' in command else ''
             with self.assertRaisesRegex(AssertionError, 'did not remove'):

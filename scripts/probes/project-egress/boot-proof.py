@@ -56,13 +56,14 @@ def verify_removed_fences(path, started_ns):
 def remove_fences_mutation(vm, guest, evidence):
     # The in-flight control readmits while the kernel fences are intact and removes
     # them itself. Readmitting an already tampered generation is refused and contained
-    # by the TC attestation, so removal must not precede it. The receipt window
-    # starts only after that removal has returned.
+    # by the TC attestation, so removal must not precede it. The mutation window
+    # opens before that control: receipts after removal are expected, and the
+    # offline verifier treats everything before this point as protected.
+    started_ns = time.time_ns()
     output = vm.ssh(guest + 'inflight removed-fences', timeout=20)
     (evidence / 'mutation-inflight.json').write_text(output)
     inflight = json.loads(output)
     assert inflight.get('fencesRemoved') is True, 'In-flight control did not remove the kernel fences'
-    started_ns = time.time_ns()
     vm.ssh(guest + 'external')
     return started_ns, inflight
 
