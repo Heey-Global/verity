@@ -531,6 +531,7 @@ class DockerApiTests(unittest.TestCase):
     def connection(self, payload, status=200):
         response = unittest.mock.Mock()
         response.status = status
+        response.length = 0
         response.read1.side_effect = [payload, b'']
         response.isclosed.return_value = False
         connection = unittest.mock.Mock()
@@ -563,3 +564,13 @@ class DockerApiTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     host.docker_inspect(kind, identities)
             connect.assert_not_called()
+
+
+    def test_rejects_valid_json_prefix_when_content_length_is_not_consumed(self):
+        identity = 'a' * 64
+        connection = self.connection(json.dumps({'Id': identity}).encode())
+        connection.getresponse.return_value.length = 10
+        with patch.object(host, 'DockerConnection', return_value=connection):
+            with self.assertRaisesRegex(ValueError, 'Truncated'):
+                host.docker_inspect('container', [identity])
+        connection.close.assert_called_once()

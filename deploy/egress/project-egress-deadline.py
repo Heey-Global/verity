@@ -79,6 +79,8 @@ def docker_inspect(kind, identities):
                     raise ValueError('Oversized deadline Docker read')
                 if response.isclosed():
                     break
+            if response.length is not None and response.length != 0:
+                raise ValueError('Truncated deadline Docker read')
             value = json.loads(data)
             if not isinstance(value, dict) or value.get('Id') != identity:
                 raise ValueError('Deadline Docker identity mismatch')
