@@ -524,15 +524,52 @@ it('does not acknowledge an unrelated completion when notification history was c
   await service.sweep();
   const previous = (await ctx.store.qaAssignments.notifications())[0]!;
   await ctx.store.clearRunningTurn('qa');
-  const history = vi
-    .spyOn(ctx.store, 'getEventsBeforeSeq')
-    .mockResolvedValueOnce({
-      hasMore: true,
-      events: [{ seq: 100000, ts: Date.now(), event: { t: 'status', state: 'completed' } }],
-    });
+  const history = vi.spyOn(ctx.store, 'getEventsBeforeSeq').mockResolvedValueOnce({
+    hasMore: true,
+    events: [{ seq: 100000, ts: Date.now(), event: { t: 'status', state: 'completed' } }],
+  });
   await service.sweep();
   history.mockRestore();
   expect((await ctx.store.qaAssignments.notifications())[0]?.dispatch_id).not.toBe(
     previous.dispatch_id,
   );
 });
+
+it.each(['revision', 'branch', 'worktreeFingerprint', 'lastPromptSeq'])(
+  'requires a new assessment when reviewed %s changes',
+  async (key) => {
+    const { service, propose, deps, finish } = setup();
+    const original = {
+      verified: true,
+      revision: 'sha',
+      branch: 'feature',
+      worktreeFingerprint: 'one',
+      lastPromptSeq: 1,
+    };
+    deps.inspect = async () => original;
+    const p = await propose();
+    await service.request(caller, 'p', p.assignmentId, 'one');
+    await finish();
+    const reviewed = await service.status(caller, 'p', p.assignmentId);
+    deps.inspect = async () => ({ ...original, [key]: key === 'lastPromptSeq' ? 2 : 'changed' });
+    await expect(
+      service.review(caller, 'p', p.assignmentId, reviewed.version, 'completed', 'Old assessment'),
+    ).rejects.toThrow('evidence changed');
+    const refreshed = await service.status(caller, 'p', p.assignmentId);
+    expect(refreshed.status).toBe('verifying');
+    expect(refreshed.version).toBeGreaterThan(reviewed.version);
+    await expect(
+      service.review(caller, 'p', p.assignmentId, reviewed.version, 'completed', 'Old assessment'),
+    ).rejects.toThrow('current');
+    expect(
+      await service.review(
+        caller,
+        'p',
+        p.assignmentId,
+        refreshed.version,
+        'completed',
+        'Reassessed current evidence',
+      ),
+    ).toMatchObject({ status: 'completed' });
+  },
+);

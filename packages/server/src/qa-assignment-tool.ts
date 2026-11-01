@@ -360,6 +360,25 @@ export function createQAAssignmentTool(deps: QAAssignmentDeps) {
         );
       if (
         outcome === 'completed' &&
+        evidence.verified === true &&
+        (!previous.repository ||
+          ['revision', 'branch', 'worktreeFingerprint', 'lastPromptSeq'].some(
+            (key) => previous.repository?.[key] !== evidence[key],
+          ))
+      ) {
+        await store.change(
+          id,
+          version,
+          'verifying',
+          'Repository evidence changed; review the current verification evidence again.',
+          JSON.stringify({ ...previous, repository: evidence }),
+        );
+        throw new ControlPlaneSessionToolError(
+          'Repository evidence changed; read the current verification evidence and reassess completion.',
+        );
+      }
+      if (
+        outcome === 'completed' &&
         (evidence.verified !== true || previous.reportTruncated || !assessment.trim())
       )
         throw new ControlPlaneSessionToolError(
