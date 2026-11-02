@@ -255,6 +255,8 @@ export interface UpdaterStatusServerOptions {
   readonly onRetryRequested?: (journal: UpdateJournal) => boolean | Promise<boolean>;
   /** Clock for the stall rule; defaults to `Date.now`. */
   readonly now?: () => number;
+  /** Read-only target-specific readiness after an external host Repair. */
+  readonly hostRuntimeReady?: (targetDigest: string) => Promise<boolean>;
   /** Persist Matrix activation and reconcile its worker after account setup. */
   readonly onMatrixConfigured?: () => Promise<void>;
   /**
@@ -1011,9 +1013,13 @@ async function serveUpdaterRequest(
   if (path === '/v1/update/host-preparation') {
     const root = options.journalRoot ?? options.managedRoot;
     const journal = await readUpdateJournal(root);
-    res
-      .writeHead(200)
-      .end(JSON.stringify({ hostPreparation: await readHostPreparation(root, journal) }));
+    let hostPreparation = await readHostPreparation(root, journal);
+    if (
+      hostPreparation?.stage === 'recovery-required' &&
+      (await options.hostRuntimeReady?.(hostPreparation.targetDigest).catch(() => false))
+    )
+      hostPreparation = { ...hostPreparation, stage: 'ready' };
+    res.writeHead(200).end(JSON.stringify({ hostPreparation }));
     return;
   }
   if (path === '/v1/update/attempt') {
