@@ -1,5 +1,7 @@
 /** Disposable boot fixture: the real EmbeddedServer with persistent test PostgreSQL. */
 import assert from 'node:assert/strict';
+import { EventStore, migrateToLatest, migrationProvider } from '@verity/store';
+import { createEmbeddedDb } from '@verity/store/testing';
 import { readFile, appendFile } from 'node:fs/promises';
 import { buildTestEmbeddedServer } from '../../../packages/server/src/testing.js';
 import { createDockerClient } from '../../../packages/server/src/docker.js';
@@ -70,7 +72,13 @@ if (process.argv[2] === 'gateway') {
     socketPath: '/run/verity-egress/control.sock',
     token: config.controlToken,
   });
+  // This fixture proves protected boot recovery. Enable it before the Server
+  // provisions its first project; production deliberately defaults to off.
+  const db = createEmbeddedDb(`${root}/database`);
+  await migrateToLatest(db, migrationProvider);
+  await new EventStore(db).updateVeritySettings({ projectEgressEnabled: true });
   const server = await buildTestEmbeddedServer({
+    openDatabase: () => db,
     logger: true,
     dataDir: `${root}/database`,
     dataVolume: 'verity-boot-data',
