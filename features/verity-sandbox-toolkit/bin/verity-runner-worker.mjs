@@ -25340,6 +25340,13 @@ var qaAnalysisRequestSchema = import_zod14.z.discriminatedUnion("action", [
   import_zod14.z.object({ action: import_zod14.z.literal("request_repair"), projectId, proposalId: import_zod14.z.string().uuid() }).strict(),
   import_zod14.z.object({ action: import_zod14.z.literal("repair_status"), projectId, proposalId: import_zod14.z.string().uuid() }).strict(),
   import_zod14.z.object({ action: import_zod14.z.literal("save_report"), projectId, reportId: import_zod14.z.string().uuid() }).strict(),
+  import_zod14.z.object({
+    action: import_zod14.z.literal("create_followup"),
+    projectId,
+    taskId: import_zod14.z.string().uuid(),
+    title: import_zod14.z.string().trim().min(1).max(200),
+    detail: import_zod14.z.string().trim().min(1).max(16e3)
+  }).strict(),
   import_zod14.z.object({ action: import_zod14.z.literal("pulls"), projectId, page }).strict(),
   import_zod14.z.object({ action: import_zod14.z.literal("pull_status"), projectId, number: id2 }).strict(),
   import_zod14.z.object({ action: import_zod14.z.literal("runs"), projectId, page, ...window }).strict(),
@@ -25352,6 +25359,7 @@ var qaAnalysisRequestSchema = import_zod14.z.discriminatedUnion("action", [
   import_zod14.z.object({ action: import_zod14.z.literal("deployment_statuses"), projectId, deploymentId: id2, page }).strict(),
   import_zod14.z.object({
     action: import_zod14.z.literal("statistics"),
+    comparePrevious: import_zod14.z.boolean().optional(),
     continuation: import_zod14.z.string().uuid().optional(),
     projectId,
     ...window,
