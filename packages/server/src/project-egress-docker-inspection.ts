@@ -71,4 +71,3 @@ export function createProjectEgressDockerInspector(socketPath = '/var/run/docker
     return JSON.stringify([await read(`/${paths[kind]}/${encodeURIComponent(id)}${suffix}`)]);
   };
 }
-export const inspectProjectEgressDocker = createProjectEgressDockerInspector();
