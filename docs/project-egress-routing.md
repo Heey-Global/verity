@@ -296,8 +296,10 @@ rules. Offline approvers, timeouts and broker failure leave access blocked.
 
 Network protection is one administrator setting, `projectEgressEnabled`, default
 off, exposed through `GET /settings` and administrator-only `PATCH /settings`.
-The planned app control is Settings → App & Server → Network protection; it is
-not included in this increment. The Server reaches
+The app control is Settings → App & Server → Network protection. It saves the
+confirmed setting without requesting container recreation; an unavailable host
+blocks enabling, while disabling remains available. Older servers show an update
+requirement. The Server reaches
 the host egress service only when `VERITY_PROJECT_EGRESS_SOCKET` and
 `VERITY_PROJECT_EGRESS_KEY_PATH` are set (`deploy/docker-compose.egress.yml`);
 otherwise the setting reports unavailable and refuses to be enabled (409).
