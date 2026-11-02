@@ -4,6 +4,7 @@ import React from 'react';
 import { Pressable, Text, View } from 'react-native';
 import { fireEvent, render } from '@testing-library/react-native';
 import ts from 'typescript';
+import { projectGroupSessionId } from '../lib/projectGroups';
 import { ProjectSessionsCollapse } from '../components/ProjectSessionsCollapse';
 
 // Execute the production group in isolation from the authenticated screen and
@@ -98,4 +99,29 @@ it('updates selection and drag eligibility even while rows are retained', () => 
 it('passes stable action callbacks through the overview memo boundary', () => {
   expect(source).toContain('onToggle={toggleProjectGroup}');
   expect(source).toContain('onRepairProject={repairProjectRow}');
+});
+
+it('keeps unrelated selections and rename changes out of mounted drag subtrees', () => {
+  const group = props.group;
+  const renderGroup = (selectedId: string | null, renamingId: string | null) => (
+    <ProjectGroup
+      {...props}
+      selectedId={projectGroupSessionId(group, selectedId)}
+      renamingId={projectGroupSessionId(group, renamingId)}
+    />
+  );
+  const view = render(renderGroup('other-a', null));
+  view.rerender(renderGroup('other-b', 'other-b'));
+  expect(groupRender).toHaveBeenCalledTimes(1);
+  expect(slotRender).toHaveBeenCalledTimes(1);
+  view.rerender(renderGroup('s', null));
+  expect(view.getByText('Selected row')).toBeTruthy();
+  expect(groupRender).toHaveBeenCalledTimes(2);
+  view.rerender(renderGroup('other-b', 's'));
+  expect(view.getByText('Row')).toBeTruthy();
+  expect(groupRender).toHaveBeenCalledTimes(3);
+  view.rerender(renderGroup(null, null));
+  expect(groupRender).toHaveBeenCalledTimes(4);
+  expect(source).toContain('selectedId={wide ? projectGroupSessionId(item, selectedId) : null}');
+  expect(source).toContain('renamingId={projectGroupSessionId(item, renaming?.sessionId)}');
 });

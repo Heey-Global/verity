@@ -26,6 +26,16 @@ def verify(directory):
         assert evidence['terminal'] == 'EHOSTUNREACH'
         assert 0 < int(evidence['hostBeforeNs']) < int(evidence['hostAfterNs'])
     assert int(initial[0]['resolution']['hostAfterNs']) <= int(initial[1]['resolution']['hostBeforeNs'])
+    # Admitted connections must not wait for the netstack's next 1-second neighbor
+    # probe: the host refresh after arming has to complete denied resolution at once.
+    for row in cases:
+        key = f'{row["phase"]}-{row["family"]}'
+        if expected[key]:
+            connect = row['connect']
+            assert connect['phase'] == key and connect['family'] == (4 if row['family'] == 0 else 6)
+            assert 0 < int(connect['connectNs']) < 500_000_000, key
+        else:
+            assert 'connect' not in row, key
     for key, allowed in expected.items():
         for protocol in ('tcp', 'udp'):
             assert any(r.get('kind') == protocol and r.get('marker') == key + '-' + protocol for r in records) is allowed, key

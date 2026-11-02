@@ -135,6 +135,21 @@ function makeHost({
       `exit ${String(hostRuntimeStatus)}\n`,
     { mode: 0o755 },
   );
+  // Runtime installation has its own real-script transaction suite.
+  writeFileSync(
+    join(checkout, 'deploy', 'host', 'install-runtime-service.sh'),
+    `#!/bin/bash
+install -m 0755 "$(dirname "$0")/verity-host-runtime" "$VERITY_HOST_RUNTIME_LIBEXEC/verity-host-runtime"
+if [ -d "$VERITY_SYSTEMD_RUN_DIR" ]; then
+  for unit in verity-host-runtime.service verity-host-runtime.path; do
+    install -m 0644 "$(dirname "$0")/$unit" "$VERITY_SYSTEMD_UNIT_DIR/$unit"
+  done
+  systemctl daemon-reload
+  systemctl enable --now verity-host-runtime.path
+fi
+printf '{"version":1,"trigger":"%s","builder":"%s","runtimeArtifacts":["binary","archive"]}\\n' "$VERITY_HOST_BUILDER_TRIGGER" "$VERITY_HOST_BUILDER_TRIGGER" >"$VERITY_HOST_RUNTIME_DIR/agent.json"
+`,
+  );
   writeFileSync(
     join(checkout, 'deploy', 'host', 'verity-host-diagnostics'),
     '#!/usr/bin/env bash\nexit 0\n',

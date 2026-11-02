@@ -964,6 +964,7 @@ try {
       hostBeforeNs: string;
       hostAfterNs: string;
     };
+    connect?: { phase: string; family: number; connectNs: string };
   }[] = [];
   const directProbe = async (phase: string, expected: boolean) => {
     const stop = expected ? await beginRenewal() : undefined;
@@ -998,6 +999,16 @@ try {
             hostAfterNs: after.bootAfterNs,
           };
         }
+        let connect;
+        if (expected) {
+          connect = JSON.parse(output.trim()) as {
+            phase: string;
+            family: number;
+            connectNs: string;
+          };
+          assert.equal(connect.phase, `${phase}-${family}`);
+          assert.equal(connect.family, family === 0 ? 4 : 6);
+        }
         const log = await docker('logs', 'veh-direct');
         const observed =
           log.includes(`${phase}-${family}-tcp`) && log.includes(`${phase}-${family}-udp`);
@@ -1009,6 +1020,7 @@ try {
           expected,
           observed,
           ...(resolution ? { resolution } : {}),
+          ...(connect ? { connect } : {}),
         });
       }
     } finally {

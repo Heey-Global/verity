@@ -1,4 +1,11 @@
 import { readFile } from 'node:fs/promises';
+import {
+  HostRuntimeRenewalError,
+  HOST_RUNTIME_SERVICE_LABEL,
+  parseRuntimeServiceRequirements,
+  renewHostRuntimeService,
+} from './host-runtime-renewal.js';
+import { writeHostPreparation } from './host-preparation.js';
 import { backupProvisionPlan, provisionBackupHost } from './backup-provisioning.js';
 import type { ContainerInspect, DockerClient } from '../docker.js';
 import { DEVCONTAINER_BUILDER_SOCKET_DIRECTORY } from './deployment-spec.js';
@@ -392,7 +399,112 @@ export async function dockerUpdatePreparation(
         }));
       const requirements = await readTargetHostRuntimes(docker, journal.targetDigest);
       if (requirements !== undefined) {
+        const rawService = (await docker.inspectImageLabels?.(journal.targetDigest))?.[
+          HOST_RUNTIME_SERVICE_LABEL
+        ];
+        let serviceRequirements;
+        if (rawService !== undefined) {
+          try {
+            serviceRequirements = parseRuntimeServiceRequirements(JSON.parse(rawService));
+          } catch {
+            serviceRequirements = null;
+          }
+          if (serviceRequirements === null)
+            throw new Error('Malformed target host runtime service requirements');
+        }
         await reconcileHostRuntimes({
+          ...(serviceRequirements === undefined
+            ? {}
+            : {
+                serviceRequirements,
+                renewHostRuntimeService: async () => {
+                  if (state.spec.image !== journal.previousDigest)
+                    throw new Error('Runtime renewal previous image differs from sealed authority');
+                  const updaters = (await docker.listContainers!()).filter(
+                    (item) =>
+                      item.labels?.[MANAGED_DEPLOYMENT_LABEL] === journal.deploymentId &&
+                      item.labels?.[MANAGED_ROLE_LABEL] === 'updater',
+                  );
+                  // Compose installations retain their service label and deployment identity in env.
+                  const candidates =
+                    updaters.length > 0
+                      ? updaters
+                      : (await docker.listContainers!()).filter(
+                          (item) =>
+                            item.labels?.['com.docker.compose.service'] === 'verity-updater',
+                        );
+                  const owned = [];
+                  for (const item of candidates) {
+                    const inspect = await docker.inspectContainer(item.id);
+                    if (
+                      item.labels?.[MANAGED_DEPLOYMENT_LABEL] === journal.deploymentId ||
+                      inspect.env?.includes(`VERITY_MANAGED_DEPLOYMENT_ID=${journal.deploymentId}`)
+                    )
+                      owned.push(inspect);
+                  }
+                  if (owned.length !== 1 || owned[0]?.image !== journal.previousDigest)
+                    throw new Error('Runtime renewal requires one trusted installed updater');
+                  const runtimeMount = owned[0].mounts?.find(
+                    (mount) =>
+                      mount.type === 'bind' && mount.destination === '/run/verity-host-runtime',
+                  );
+                  const installerMount = state.spec.mounts.find(
+                    (mount) =>
+                      mount.target === '/run/verity-pairing' && mount.source.kind === 'bind',
+                  );
+                  if (!runtimeMount?.source || installerMount?.source.kind !== 'bind')
+                    throw new Error(
+                      'Runtime renewal requires the installed host runtime and installer state mounts',
+                    );
+                  try {
+                    await renewHostRuntimeService({
+                      docker,
+                      journal,
+                      runtimeHostPath: runtimeMount.source,
+                      installerStatePath: installerMount.source.path,
+                      verifyInstalled: async () => {
+                        const agent = JSON.parse(
+                          await readFile(
+                            `${options.hostRuntimeDir ?? '/run/verity-host-runtime'}/agent.json`,
+                            'utf8',
+                          ),
+                        ) as {
+                          runtimeService?: {
+                            sha512?: string;
+                            receipt?: {
+                              deploymentId?: string;
+                              updateId?: string;
+                              targetDigest?: string;
+                            };
+                          };
+                        };
+                        const receipt = agent.runtimeService?.receipt;
+                        if (
+                          receipt?.deploymentId !== journal.deploymentId ||
+                          receipt.updateId !== journal.updateId ||
+                          receipt.targetDigest !== journal.targetDigest ||
+                          !/^[a-f0-9]{128}$/u.test(agent.runtimeService?.sha512 ?? '')
+                        )
+                          throw new Error(
+                            'Installed host runtime service has no matching renewal receipt',
+                          );
+                      },
+                    });
+                  } catch (error) {
+                    await writeHostPreparation(
+                      options.managedRoot,
+                      journal,
+                      error instanceof HostRuntimeRenewalError
+                        ? error.recovery
+                        : 'recovery-required',
+                    );
+                    throw error;
+                  }
+                },
+              }),
+          onProgress: async (stage) => {
+            await writeHostPreparation(options.managedRoot, journal, stage);
+          },
           docker,
           requirements,
           requestId: journal.updateId,
@@ -410,6 +522,7 @@ export async function dockerUpdatePreparation(
           },
         });
       }
+      await writeHostPreparation(options.managedRoot, journal, 'ready');
       // After the runtimes: the builder runs its steps on the runsc they register.
       // Nothing about the builder may fail the update, an unexpected error included.
       const builder = await reconcileBuilder();

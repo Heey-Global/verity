@@ -219,6 +219,7 @@ export interface HttpMcpConnectionsTable {
   authorization: string | null;
   auth_type: ColumnType<string, string | undefined, string>;
   oauth_client_id: string | null;
+  oauth_token_auth_method: ColumnType<string, string | undefined, string>;
   oauth_client_secret: string | null;
   oauth_authorization_endpoint: string | null;
   oauth_token_endpoint: string | null;

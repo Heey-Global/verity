@@ -6,6 +6,25 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.73.0](https://github.com/Heey-Global/verity/compare/v4.72.0...v4.73.0) (2026-11-01)
+
+
+### Features
+
+* **mcp:** discover OAuth and complete native/web sign-ins ([#2160](https://github.com/Heey-Global/verity/issues/2160)) ([d23b893](https://github.com/Heey-Global/verity/commit/d23b893d390210052c61477f08efb84c982c65b2))
+* **self-update:** renew host runtime services independently of builder admission ([#2159](https://github.com/Heey-Global/verity/issues/2159)) ([6ff2410](https://github.com/Heey-Global/verity/commit/6ff2410d2b159a4134fb115202c2c9e7583ffa27))
+
+
+### Bug Fixes
+
+* **egress:** refresh sandbox gateway neighbor after admission ([#2161](https://github.com/Heey-Global/verity/issues/2161)) ([d8dfcbd](https://github.com/Heey-Global/verity/commit/d8dfcbd8e70c6c38b93fdfc4f7ec011ea8bf0fc2))
+* **mobile:** parse multipart OTA manifest responses ([#2155](https://github.com/Heey-Global/verity/issues/2155)) ([04199d6](https://github.com/Heey-Global/verity/commit/04199d682dc442b160634d95dcd6abc16fc6a403))
+
+
+### Performance Improvements
+
+* **egress:** batch fresh host renewal inspections ([#2135](https://github.com/Heey-Global/verity/issues/2135)) ([f673769](https://github.com/Heey-Global/verity/commit/f67376935851b6f3a7737e1ae34fe61d92899126))
+
 ## [4.72.0](https://github.com/Heey-Global/verity/compare/v4.71.1...v4.72.0) (2026-11-01)
 
 

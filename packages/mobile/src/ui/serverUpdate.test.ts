@@ -87,7 +87,7 @@ describe('server update panel', () => {
   it('falls back to a generic explanation for a code this build does not know', () => {
     const failed = operation({ state: 'failed', phase: 'failed', failureCode: 'unknown' });
     expect(describeServerUpdate(status({ operation: failed })).detail).toBe(
-      'The update was stopped before anything changed.',
+      'The new version was not activated. Your current version keeps serving.',
     );
   });
 
@@ -471,4 +471,58 @@ describe('server update screen', () => {
       serverUpdateAwaitsAttention(stuck({ recovery: { retry: true, supersede: false } })),
     ).toBe(false);
   });
+});
+
+describe('host runtime preparation progress', () => {
+  it.each([
+    ['renewing', 'Updating host runtime support'],
+    ['registering', 'Registering required runtimes'],
+  ] as const)('shows %s without changing the operation phase', (stage, title) => {
+    const view = describeServerUpdate(
+      status({
+        operation: operation({ phase: 'preflight' }),
+        hostPreparation: { updateId: 'update-1', targetDigest: release.serverImage, stage },
+      }),
+    );
+    expect(view).toMatchObject({
+      title,
+      detail: 'Your current version remains available.',
+      busy: true,
+      action: null,
+    });
+  });
+  it('ignores progress from a different update', () => {
+    expect(
+      describeServerUpdate(
+        status({
+          operation: operation({ phase: 'preflight' }),
+          hostPreparation: {
+            updateId: 'old-update',
+            targetDigest: release.serverImage,
+            stage: 'renewing',
+          },
+        }),
+      ).title,
+    ).toBe('Preparing update');
+  });
+});
+
+it('withholds retry when host restoration could not be verified', () => {
+  const failed = operation({
+    state: 'failed',
+    phase: 'failed',
+    failureCode: 'host-runtime-failed',
+  });
+  const view = describeServerUpdate(
+    status({
+      operation: failed,
+      hostPreparation: {
+        updateId: failed.updateId,
+        targetDigest: failed.targetDigest,
+        stage: 'recovery-required',
+      },
+    }),
+  );
+  expect(view.action).toBeNull();
+  expect(view.detail).toContain('Restoration could not be verified');
 });

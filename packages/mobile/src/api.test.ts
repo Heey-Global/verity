@@ -4342,3 +4342,41 @@ it('preserves originating PR session responsibility while accepting older repair
   expect((await client.projectRepairs('p')).incidents?.[0]?.originating_session_id).toBe('origin');
   expect((await client.projectRepairs('p')).incidents?.[0]?.originating_session_id).toBeUndefined();
 });
+
+it('uses server-bound MCP OAuth and sends only state and code on completion', async () => {
+  const discovery = {
+    authorizationEndpoint: 'https://identity.example/authorize',
+    tokenEndpoint: 'https://identity.example/token',
+    scopes: 'read',
+    registrationAvailable: true,
+  };
+  const flow = {
+    authorizationUrl: 'https://identity.example/authorize?state=state',
+    state: 'state',
+    redirectUri: 'https://host/app/mcp/oauth/callback',
+    expiresAt: 12345,
+  };
+  const { fetch, calls } = fakeFetchSequence(
+    json(discovery),
+    json(flow),
+    json({ connected: true }),
+    new Response(null, { status: 204 }),
+  );
+  const client = new VerityClient({ baseUrl: 'https://host', fetch });
+  expect(await client.discoverHttpMcpOAuth('https://tools.example/mcp')).toEqual(discovery);
+  expect(await client.startHttpMcpOAuth('tools/1', 'web')).toEqual(flow);
+  await client.completeHttpMcpOAuth('tools/1', {
+    code: 'code',
+    state: 'state',
+    kind: 'success',
+  } as { code: string; state: string });
+  await client.cancelHttpMcpOAuth('tools/1', 'state');
+  expect(calls.map((call) => call.url)).toEqual([
+    'https://host/mcp-connections/oauth/discover',
+    'https://host/mcp-connections/tools%2F1/oauth/start',
+    'https://host/mcp-connections/tools%2F1/oauth/complete',
+    'https://host/mcp-connections/tools%2F1/oauth/cancel',
+  ]);
+  expect(jsonBody(calls[2])).toEqual({ code: 'code', state: 'state' });
+  expect(jsonBody(calls[3])).toEqual({ state: 'state' });
+});

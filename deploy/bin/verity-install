@@ -1017,8 +1017,6 @@ SYSTEMD_RUN_DIR="${VERITY_SYSTEMD_RUN_DIR:-/run/systemd/system}"
 heading 'Container runtimes'
 [ ! -L "$HOST_RUNTIME_DIR" ] || die "$HOST_RUNTIME_DIR must not be a symlink"
 install -d -m 0755 -o root -g root "$HOST_RUNTIME_LIBEXEC"
-install -m 0755 -o root -g root "$repo_root/deploy/host/verity-host-runtime" \
-  "$HOST_RUNTIME_LIBEXEC/verity-host-runtime"
 # Its sibling for the devcontainer builder: later updates install the builder their release
 # ships through it, after verifying that release's signature on the host.
 install -m 0755 -o root -g root "$repo_root/deploy/host/verity-host-builder" \
@@ -1026,28 +1024,20 @@ install -m 0755 -o root -g root "$repo_root/deploy/host/verity-host-builder" \
 install -d -m 0700 -o root -g root "$HOST_RUNTIME_DIR"
 host_runtime_trigger=none
 if [ -d "$SYSTEMD_RUN_DIR" ] && command -v systemctl >/dev/null; then
-  for unit in verity-host-runtime.path verity-host-runtime.service \
-    verity-host-builder.path verity-host-builder.service; do
+  for unit in verity-host-builder.path verity-host-builder.service; do
     install -m 0644 -o root -g root "$repo_root/deploy/host/$unit" "$SYSTEMD_UNIT_DIR/$unit"
   done
   systemctl daemon-reload
-  systemctl enable --now verity-host-runtime.path >/dev/null 2>&1 \
-    || die 'could not enable verity-host-runtime.path — see `systemctl status verity-host-runtime.path`'
   systemctl enable --now verity-host-builder.path >/dev/null 2>&1 \
     || die 'could not enable verity-host-builder.path — see `systemctl status verity-host-builder.path`'
   host_runtime_trigger=systemd-path
 else
   note 'No systemd on this host: runtime migrations that a later release needs will ask you to re-run the Verity installer'
 fi
-agent_tmp="$(mktemp "$HOST_RUNTIME_DIR/.agent.json.XXXXXX")"
-# `builder` tells the Updater it may ask verity-host-builder; hosts installed before it
-# existed lack the key, and their Updater asks for this installer instead. `runtimeArtifacts`
-# names the gVisor pin shapes the host runtime service just installed can take (a release
-# archive as well as a single binary); a later bundle refreshes it through install-self.
-printf '{"version":1,"trigger":"%s","builder":"%s","runtimeArtifacts":["binary","archive"]}\n' \
-  "$host_runtime_trigger" "$host_runtime_trigger" >"$agent_tmp"
-chmod 0644 "$agent_tmp"
-mv -f "$agent_tmp" "$HOST_RUNTIME_DIR/agent.json"
+VERITY_HOST_RUNTIME_DIR="$HOST_RUNTIME_DIR" VERITY_HOST_RUNTIME_LIBEXEC="$HOST_RUNTIME_LIBEXEC" \
+  VERITY_HOST_BUILDER_TRIGGER="$host_runtime_trigger" \
+  VERITY_SYSTEMD_UNIT_DIR="$SYSTEMD_UNIT_DIR" VERITY_SYSTEMD_RUN_DIR="$SYSTEMD_RUN_DIR" \
+  bash "$repo_root/deploy/host/install-runtime-service.sh" || die 'could not install the host runtime service'
 note 'Registering the gVisor runtimes runsc and runsc-project (running containers are not restarted)'
 VERITY_HOST_RUNTIME_DIR="$HOST_RUNTIME_DIR" \
   "$HOST_RUNTIME_LIBEXEC/verity-host-runtime" apply-pins "$repo_root/deploy/gvisor/versions.env" \
