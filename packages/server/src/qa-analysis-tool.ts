@@ -81,6 +81,12 @@ export async function executeQAAnalysis(
   }
   const project = await authorize(request.projectId);
   if (
+    request.action === 'assignments' ||
+    request.action === 'propose_assignment' ||
+    request.action === 'request_assignment' ||
+    request.action === 'assignment_status' ||
+    request.action === 'review_assignment' ||
+    request.action === 'stop_assignment' ||
     request.action === 'resolve_repair' ||
     request.action === 'request_repair' ||
     request.action === 'repair_status'

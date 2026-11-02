@@ -694,3 +694,5 @@ export type {
   AuditOperationQuery,
   AuditOperationSummary,
 } from './audit.js';
+
+export { qaAssignmentView } from './ui/qaAssignment.js';
