@@ -6,6 +6,23 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.75.0](https://github.com/Heey-Global/verity/compare/v4.74.0...v4.75.0) (2026-11-02)
+
+
+### Features
+
+* **egress:** admit OpenCode's Exa search endpoint as a fenced system target ([#2186](https://github.com/Heey-Global/verity/issues/2186)) ([22d34c1](https://github.com/Heey-Global/verity/commit/22d34c185f1bdde9ca6059021e47e40f53f0146d))
+* **egress:** answer sandbox DNS only with host-admitted direct names ([#2184](https://github.com/Heey-Global/verity/issues/2184)) ([0d73862](https://github.com/Heey-Global/verity/commit/0d738627d6170d19d527e36dee2a4502d72a34f1))
+* **egress:** keep broker and system destinations out of direct grants ([#2181](https://github.com/Heey-Global/verity/issues/2181)) ([eac6eaa](https://github.com/Heey-Global/verity/commit/eac6eaa406ea2fda0452fd5eab09340c0b7fcc54))
+* **egress:** route Git and gh through the Forge broker under the project fence ([#2182](https://github.com/Heey-Global/verity/issues/2182)) ([4c37c2b](https://github.com/Heey-Global/verity/commit/4c37c2b43b432e794e24b13779668ce5078e919b))
+* **meetings:** join online meetings from watched Google calendars ([#2167](https://github.com/Heey-Global/verity/issues/2167)) ([b0cd9fe](https://github.com/Heey-Global/verity/commit/b0cd9fec970bb1df48cc405a92e79d188b09af1b))
+
+
+### Bug Fixes
+
+* **deps:** update agent clis ([#2172](https://github.com/Heey-Global/verity/issues/2172)) ([55d5886](https://github.com/Heey-Global/verity/commit/55d5886f21a777bb8ef36b4eb7008e9d33b31010))
+* **meetings:** show ongoing recordings on other devices ([#2185](https://github.com/Heey-Global/verity/issues/2185)) ([2b7eb75](https://github.com/Heey-Global/verity/commit/2b7eb754d031bc1f0bbe3b4ff50636a0c33e1dd1))
+
 ## [4.74.0](https://github.com/Heey-Global/verity/compare/v4.73.0...v4.74.0) (2026-11-02)
 
 
