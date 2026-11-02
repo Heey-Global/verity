@@ -29,6 +29,9 @@ afterAll(async () => {
   await ctx.close();
 });
 it('defaults network protection off and persists the global switch', async () => {
+  await sql`insert into verity_settings (id) values ('global') on conflict (id) do nothing`.execute(
+    ctx.db,
+  );
   expect((await ctx.store.getVeritySettingsRaw())?.projectEgressEnabled).toBe(false);
   await ctx.store.updateVeritySettings({ projectEgressEnabled: true });
   expect((await ctx.store.getVeritySettingsRaw())?.projectEgressEnabled).toBe(true);
