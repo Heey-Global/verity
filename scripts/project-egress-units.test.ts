@@ -1,4 +1,9 @@
 import { readFileSync } from 'node:fs';
+import { mkdtemp, mkdir, writeFile, readFile, rm, stat } from 'node:fs/promises';
+import { execFile, spawn } from 'node:child_process';
+import { once } from 'node:events';
+import { tmpdir } from 'node:os';
+import { promisify } from 'node:util';
 import { join } from 'node:path';
 import { projectSocketBindingName } from '../packages/server/src/project-relay-identity.js';
 import { expect, it } from 'vitest';
@@ -128,4 +133,47 @@ it('keeps deadline evidence outside the runtime control socket directory and bou
   expect(host).toContain('RuntimeDirectoryPreserve=yes');
   expect(writable).toContain(`-${pins}`);
   expect(writable).not.toMatch(/(?:=|\s)\/?sys\/fs\/bpf(?:\s|$)/u);
+});
+
+it('cleans a stale socket without replacing its directory or stealing an active controller lock', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'egress-unit-'));
+  const directory = join(root, 'runtime');
+  const lock = join(root, 'service.lock');
+  const socket = join(directory, 'control.sock');
+  await mkdir(directory);
+  await writeFile(socket, 'stale socket');
+  const before = await stat(directory);
+  const cleanup = unit('verity-egress-host.service').find((line) =>
+    line.startsWith('ExecStartPre='),
+  )!;
+  const [command, ...args] = cleanup
+    .slice('ExecStartPre='.length)
+    .split(/\s+/u)
+    .map((arg) =>
+      arg
+        .replace('/var/lib/verity-egress/service.lock', lock)
+        .replace('/run/verity-egress/control.sock', socket),
+    );
+  const owner = spawn('/usr/bin/flock', [
+    '--exclusive',
+    '--no-fork',
+    lock,
+    process.execPath,
+    '-e',
+    "process.stdout.write('locked'); setInterval(() => {}, 1000)",
+  ]);
+  try {
+    await once(owner.stdout, 'data');
+    await expect(promisify(execFile)(command!, args)).rejects.toThrow();
+    expect(await readFile(socket, 'utf8')).toBe('stale socket');
+    const exited = once(owner, 'exit');
+    owner.kill();
+    await exited;
+    await promisify(execFile)(command!, args);
+    await expect(stat(socket)).rejects.toMatchObject({ code: 'ENOENT' });
+    expect((await stat(directory)).ino).toBe(before.ino);
+  } finally {
+    owner.kill();
+    await rm(root, { recursive: true, force: true });
+  }
 });
