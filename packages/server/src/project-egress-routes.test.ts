@@ -109,6 +109,12 @@ it('refuses to approve a stored request for a broker destination', async () => {
     payload: { requestId: created.id, revision: created.revision, allow: false },
   });
   expect(deny.statusCode).toBe(200);
+  const unknown = await app.inject({
+    method: 'POST',
+    url: '/projects/a/egress/decisions',
+    payload: { requestId: '00000000-0000-4000-8000-0000000000ff', revision: 0, allow: true },
+  });
+  expect(unknown.statusCode).toBe(404);
 });
 it('creates and approves a draft rule without advertising enforcement or replay', async () => {
   const created = await app.inject({

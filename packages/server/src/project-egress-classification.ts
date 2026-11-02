@@ -112,6 +112,7 @@ export interface ProtectedAddressInventory {
  * private answers contribute none. Timeouts and oversized answers stay transient.
  */
 function establishedPublic(error: unknown): readonly string[] | undefined {
+  if (typeof error !== 'object' || error === null) return undefined;
   const { code, publicAddresses } = error as NodeJS.ErrnoException & {
     publicAddresses?: readonly string[];
   };
