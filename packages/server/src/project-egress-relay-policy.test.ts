@@ -318,11 +318,18 @@ it('accepts only the brokered Forge route settings in the relay environment', ()
       'VERITY_FORGE_AUTHORITIES=["github.com:443","api.github.com:443","forge.example.org:443"]',
     ])(),
   ).toHaveLength(3);
+  // Forgejo instances may use another port; a project without a connection gets none.
+  expect(
+    check(['VERITY_FORGE_PROXY=github', 'VERITY_FORGE_AUTHORITIES=["forge.example.org:3000"]'])(),
+  ).toHaveLength(3);
+  expect(check(['VERITY_FORGE_PROXY=github', 'VERITY_FORGE_AUTHORITIES=[]'])()).toHaveLength(3);
   for (const env of [
     ['VERITY_FORGE_PROXY=anything'],
-    ['VERITY_FORGE_AUTHORITIES=["github.com:22"]'],
+    ['VERITY_FORGE_AUTHORITIES=["github.com:0"]'],
+    ['VERITY_FORGE_AUTHORITIES=["github.com:65536"]'],
+    ['VERITY_FORGE_AUTHORITIES=["GitHub.com:443"]'],
+    ['VERITY_FORGE_AUTHORITIES=["github.com"]'],
     ['VERITY_FORGE_AUTHORITIES=["10.0.0.1:443"]'],
-    ['VERITY_FORGE_AUTHORITIES=[]'],
     ['VERITY_FORGE_AUTHORITIES=not-json'],
     [
       'VERITY_FORGE_AUTHORITIES=["evil.example.org:443"]',

@@ -99,15 +99,20 @@ function forgeRelayEnvironment(entry: string): boolean {
   } catch {
     return false;
   }
+  // Matches the Server's emitter: lowercase URL hostnames with an explicit port, or
+  // an empty list for a Forgejo project without a connection (Forge route closed).
   return (
     Array.isArray(authorities) &&
-    authorities.length > 0 &&
     authorities.length <= 16 &&
-    authorities.every(
-      (authority) =>
-        typeof authority === 'string' &&
-        /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,62}:443$/u.test(authority),
-    )
+    authorities.every((authority) => {
+      const match =
+        typeof authority === 'string'
+          ? /^((?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,62}):([1-9][0-9]{0,4})$/u.exec(
+              authority,
+            )
+          : null;
+      return match !== null && Number(match[2]) <= 65535;
+    })
   );
 }
 
