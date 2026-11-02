@@ -24882,6 +24882,24 @@ var import_zod7 = __toESM(require_zod(), 1);
 var sourcePath = import_zod7.z.string().trim().min(1).max(512).refine((path) => path.split("/").every((part) => part !== "" && part !== "." && part !== ".." && !part.startsWith(".") && !part.includes("\\") && !part.includes("\0")));
 var knowledgeToolRequestSchema = import_zod7.z.discriminatedUnion("operation", [
   import_zod7.z.object({
+    operation: import_zod7.z.literal("record_decision"),
+    requestId: import_zod7.z.string().regex(/^[A-Za-z0-9_-]{1,100}$/u),
+    title: import_zod7.z.string().trim().min(1).max(160),
+    decision: import_zod7.z.string().trim().min(1).max(8e3),
+    rationale: import_zod7.z.string().trim().max(4e3).optional(),
+    confirmationMessageSeq: import_zod7.z.number().int().positive().optional(),
+    predecessor: import_zod7.z.object({
+      id: import_zod7.z.string().regex(/^[a-f0-9]{32}$/u),
+      digest: import_zod7.z.string().regex(/^[a-f0-9]{64}$/u)
+    }).strict().optional()
+  }).strict(),
+  import_zod7.z.object({
+    operation: import_zod7.z.literal("lookup_decisions"),
+    id: import_zod7.z.string().regex(/^[a-f0-9]{32}$/u).optional(),
+    query: import_zod7.z.string().trim().max(300).optional(),
+    offset: import_zod7.z.number().int().min(0).max(500).optional()
+  }).strict(),
+  import_zod7.z.object({
     operation: import_zod7.z.literal("import_source"),
     sourcePath: import_zod7.z.string().trim().min(1).max(512),
     destination: import_zod7.z.enum(["meetings", "documents"]),

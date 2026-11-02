@@ -1,4 +1,5 @@
 import { createGitHubQAAnalysis } from './github-qa-analysis.js';
+import { projectDecisionDirectory } from './knowledge-decisions.js';
 import {
   StorageReclamation,
   requestNativeReclamation,
@@ -5466,6 +5467,8 @@ export async function buildEmbeddedServer(
                 return (await eventStore.getProjectSettingsRaw(projectId))?.memory ?? undefined;
               });
             },
+            projectDecisionDirectory: (projectId: string) =>
+              projectDecisionDirectory(config.dataVolumeRoot!, projectId),
           }
         : {}),
       // ADR 0011 D3: expose the project's secret alias names to every turn whose
