@@ -1,0 +1,78 @@
+import { expect, it } from 'vitest';
+import {
+  createProtectedAddressInventory,
+  mandatoryEgressRoute,
+  PROTECTED_ADDRESS_HOSTS,
+} from './project-egress-classification.js';
+
+it('classifies broker and system domains including subdomains, not lookalikes', () => {
+  expect(mandatoryEgressRoute('github.com')).toBe('forge');
+  expect(mandatoryEgressRoute('API.GitHub.com.')).toBe('forge');
+  expect(mandatoryEgressRoute('objects.githubusercontent.com')).toBe('forge');
+  expect(mandatoryEgressRoute('www.googleapis.com')).toBe('google');
+  expect(mandatoryEgressRoute('api.anthropic.com')).toBe('model');
+  expect(mandatoryEgressRoute('chatgpt.com')).toBe('model');
+  expect(mandatoryEgressRoute('api.doppler.com')).toBe('secrets');
+  expect(mandatoryEgressRoute('mcp.exa.ai')).toBe('search');
+  expect(mandatoryEgressRoute('registry.npmjs.org')).toBe('packages');
+  expect(mandatoryEgressRoute('repo.maven.apache.org')).toBe('packages');
+  for (const host of [
+    'evilgithub.com',
+    'github.com.evil.net',
+    'downloads.example.com',
+    'apache.org',
+  ])
+    expect(mandatoryEgressRoute(host)).toBeUndefined();
+  expect(mandatoryEgressRoute('203.0.113.10')).toBeUndefined();
+  expect(mandatoryEgressRoute('chat.example.org', ['example.org'])).toBe('configured');
+  expect(mandatoryEgressRoute('example.org.evil.net', ['example.org'])).toBeUndefined();
+  // Every representative address host is itself classified.
+  for (const host of PROTECTED_ADDRESS_HOSTS) expect(mandatoryEgressRoute(host)).toBeDefined();
+});
+
+it('denies every address until a complete inventory exists and again once it is stale', async () => {
+  let now = 1_000;
+  const answers: Record<string, string[]> = {
+    'api.github.com': ['140.82.112.6'],
+    'registry.npmjs.org': ['104.16.0.34', '2606:4700::6810:22'],
+  };
+  const inventory = createProtectedAddressInventory({
+    hosts: Object.keys(answers),
+    now: () => now,
+    maxAgeMs: 100,
+    resolve: async (host) => ({ addresses: answers[host]!, expiresAt: now + 1_000 }),
+  });
+  expect(inventory.allows('198.51.100.7')).toBe(false);
+  await inventory.refresh();
+  expect(inventory.allows('198.51.100.7')).toBe(true);
+  for (const address of ['140.82.112.6', '104.16.0.34', '2606:4700:0:0:0:0:6810:22'])
+    expect(inventory.allows(address)).toBe(false);
+  now += 101;
+  expect(inventory.allows('198.51.100.7')).toBe(false);
+});
+
+it('keeps the previous complete inventory when a refresh is partial', async () => {
+  let now = 0;
+  let fail = false;
+  const inventory = createProtectedAddressInventory({
+    hosts: ['api.github.com', 'pypi.org'],
+    now: () => now,
+    maxAgeMs: 100,
+    resolve: async (host) => {
+      if (fail && host === 'pypi.org') throw new Error('timeout');
+      return {
+        addresses: [host === 'pypi.org' ? '151.101.0.223' : '140.82.112.6'],
+        expiresAt: 1e9,
+      };
+    },
+  });
+  await inventory.refresh();
+  fail = true;
+  now = 50;
+  await expect(inventory.refresh()).rejects.toThrow('timeout');
+  expect(inventory.allows('151.101.0.223')).toBe(false);
+  expect(inventory.allows('198.51.100.7')).toBe(true);
+  // The failed refresh did not extend the old inventory's age.
+  now = 101;
+  expect(inventory.allows('198.51.100.7')).toBe(false);
+});

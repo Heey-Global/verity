@@ -7,6 +7,10 @@ import ipaddr from 'ipaddr.js';
 import { z } from 'zod';
 import { canonicalEgressTarget, type ProjectEgressStore } from '@verity/store';
 import { projectEgressHostDocker } from './project-egress-host-runtime.js';
+import {
+  mandatoryEgressRoute,
+  type ProtectedAddressInventory,
+} from './project-egress-classification.js';
 
 /** Fixed installation files only. No path comes from the control protocol. */
 export async function readEgressHostConfiguration(path: string): Promise<unknown> {
@@ -44,24 +48,35 @@ export async function readEgressHostConfiguration(path: string): Promise<unknown
   }
 }
 const name = z.string().min(1).max(128);
-export const egressHostAuthority = z.strictObject({
-  databaseUrl: z
-    .string()
-    .url()
-    .refine((value) => ['postgres:', 'postgresql:'].includes(new URL(value).protocol)),
-  dnsServers: z
-    .array(z.union([z.ipv4(), z.ipv6()]))
-    .min(1)
-    .max(3),
-  /** An explicit host-reviewed route inventory; unclassified hosts stay unavailable. */
-  directHosts: z
+const canonicalHosts = (limit: number) =>
+  z
     .array(z.string())
-    .max(1000)
+    .max(limit)
     .transform((hosts) =>
       hosts.map((host) => canonicalEgressTarget({ host, protocol: 'tcp', port: 443 }).host),
-    ),
-  projectSponsors: z.record(name, name),
-});
+    );
+export const egressHostAuthority = z
+  .strictObject({
+    databaseUrl: z
+      .string()
+      .url()
+      .refine((value) => ['postgres:', 'postgresql:'].includes(new URL(value).protocol)),
+    dnsServers: z
+      .array(z.union([z.ipv4(), z.ipv6()]))
+      .min(1)
+      .max(3),
+    /** An explicit host-reviewed route inventory; unclassified hosts stay unavailable. */
+    directHosts: canonicalHosts(1000),
+    /** Deployment-specific broker/system hosts (Matrix, OpenCode, private MCP). */
+    mandatoryHosts: canonicalHosts(100).default([]),
+    projectSponsors: z.record(name, name),
+  })
+  // A configuration that lists a broker-only destination as direct is rejected,
+  // not silently narrowed: the operator must see the conflict.
+  .refine(
+    (value) => value.directHosts.every((host) => !mandatoryEgressRoute(host, value.mandatoryHosts)),
+    { message: 'Direct hosts must not include broker or system destinations' },
+  );
 
 /** Re-read all host addresses and every Docker subnet on each admission check.
  * Public project CIDRs and publicly addressed host control sockets are protected too.
@@ -123,3 +138,25 @@ export async function egressHostDestinationAllowed(
 export const unavailableEgressAuthority: Pick<ProjectEgressStore, 'readForAdmission'> = {
   readForAdmission: () => Promise.reject(new Error('Host admission authority is not configured')),
 };
+
+/** Direct admission checks: an inventoried host that is not broker-only, at an
+ * address that is neither a host/project destination nor a protected front end.
+ */
+export function egressHostDirectChecks(
+  authority: z.infer<typeof egressHostAuthority> | undefined,
+  protectedAddresses: Pick<ProtectedAddressInventory, 'allows'>,
+  destinationAllowed: (address: string) => Promise<boolean> = egressHostDestinationAllowed,
+): {
+  directTargetAllowed(host: string): Promise<boolean>;
+  destinationAllowed(address: string): Promise<boolean>;
+} {
+  return {
+    directTargetAllowed: (host) =>
+      Promise.resolve(
+        authority?.directHosts.includes(host) === true &&
+          mandatoryEgressRoute(host, authority.mandatoryHosts) === undefined,
+      ),
+    destinationAllowed: async (address) =>
+      protectedAddresses.allows(address) && (await destinationAllowed(address)),
+  };
+}

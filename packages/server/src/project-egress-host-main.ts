@@ -5,12 +5,14 @@ import {
   readEgressHostConfiguration,
   egressHostAuthority,
   egressHostDestinationAllowed,
+  egressHostDirectChecks,
   unavailableEgressAuthority,
 } from './project-egress-host-authority.js';
 import { createProjectEgressHostEnforcement } from './project-egress-host-enforcement.js';
 import { hostProjectDeadlineEnforcer } from './project-egress-deadline.js';
 import { inspectProjectFenceAttachment } from './project-egress-attachment.js';
 import { createProjectEgressResolver } from './project-egress-resolver.js';
+import { createProtectedAddressInventory } from './project-egress-classification.js';
 import { inspectEgressTransport } from './project-egress-transport.js';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -63,6 +65,8 @@ const resolve =
         servers: authority.dnsServers,
         destinationAllowed: egressHostDestinationAllowed,
       });
+// Addresses of broker/system destinations are never direct, whatever name points at them.
+const protectedAddresses = createProtectedAddressInventory({ resolve });
 const deadline = hostProjectDeadlineEnforcer();
 const enforcement = createProjectEgressHostEnforcement({
   deadline,
@@ -73,8 +77,7 @@ const enforcement = createProjectEgressHostEnforcement({
   dependencies: {
     inspect: inspectProjectFenceAttachment,
     apply: applyProjectFenceRules,
-    directTargetAllowed: (host) => Promise.resolve(authority?.directHosts.includes(host) === true),
-    destinationAllowed: egressHostDestinationAllowed,
+    ...egressHostDirectChecks(authority, protectedAddresses),
     resolve,
     existing: async (binding) => {
       const tables = z
@@ -128,6 +131,15 @@ if (mode === 'restore') {
   deadline.close();
   await database?.destroy();
 } else {
+  const refreshProtected = () =>
+    protectedAddresses.refresh().catch((error: unknown) => {
+      // The previous complete inventory ages out; direct admission then fails closed.
+      console.error('Protected destination inventory refresh failed', error);
+    });
+  if (authority !== undefined) await refreshProtected();
+  const inventoryTimer =
+    authority === undefined ? undefined : setInterval(() => void refreshProtected(), 60_000);
+  inventoryTimer?.unref();
   const service = await serveProjectEgressHost({
     restore: () => controller.restore(),
     deny: () => controller.shutdown(),
@@ -151,6 +163,7 @@ if (mode === 'restore') {
     },
   });
   const stop = () => {
+    clearInterval(inventoryTimer);
     void service.stop().then(
       async () => {
         deadline.close();
