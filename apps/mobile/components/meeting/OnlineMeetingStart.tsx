@@ -11,9 +11,9 @@ import { StatusTag } from '../ui/Status';
 const PROVIDER = { meet: 'Google Meet', teams: 'Teams', zoom: 'Zoom' } as const;
 const REFRESH_MS = 30_000;
 /** Matches the server's limit on joining early (`calendar-meeting-routes.ts`). */
-export const JOIN_EARLY_MS = 15 * 60_000;
+const JOIN_EARLY_MS = 15 * 60_000;
 
-export const canJoinNow = (meeting: UpcomingMeeting, now: number) =>
+const canJoinNow = (meeting: UpcomingMeeting, now: number) =>
   meeting.startsAt - now <= JOIN_EARLY_MS;
 
 const clock = (ms: number) =>

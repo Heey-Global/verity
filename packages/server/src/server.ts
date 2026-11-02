@@ -5692,9 +5692,11 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   let calendarMeetingWatcher: ReturnType<typeof startCalendarMeetingWatcher> | undefined;
   app.addHook('onReady', async () => {
     // Before the server takes requests: no join of this process is under way yet.
-    await deps.eventStore.calendarWatch
-      .releaseUnfinishedJoins()
-      .catch((err: unknown) => app.log.warn({ err }, 'releasing unfinished calendar joins failed'));
+    try {
+      await deps.eventStore.calendarWatch.releaseUnfinishedJoins();
+    } catch (err) {
+      app.log.warn({ err }, 'releasing unfinished calendar joins failed');
+    }
     calendarMeetingWatcher = startCalendarMeetingWatcher(calendarMeetings);
   });
   app.addHook('onClose', async () => {

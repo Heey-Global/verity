@@ -12,9 +12,9 @@ import {
 } from './calendar-meeting-watcher.js';
 
 /** How far ahead the start screen lists meetings. */
-export const UPCOMING_HORIZON_MS = 12 * 60 * 60 * 1000;
+const UPCOMING_HORIZON_MS = 12 * 60 * 60 * 1000;
 /** How early a meeting can be joined; a bot sent hours ahead would only wait in the lobby. */
-export const JOIN_EARLY_MS = 15 * 60 * 1000;
+const JOIN_EARLY_MS = 15 * 60 * 1000;
 
 const eventParams = z.object({ eventKey: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/u) });
 const joinBody = z

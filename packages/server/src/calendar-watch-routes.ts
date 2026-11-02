@@ -22,7 +22,7 @@ export interface CalendarWatchRouteDeps {
   log: { warn(obj: unknown, msg?: string): void };
 }
 
-export interface CalendarWatchAccountView {
+interface CalendarWatchAccountView {
   id: string;
   email: string;
   displayName: string | null;

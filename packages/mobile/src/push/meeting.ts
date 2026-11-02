@@ -8,7 +8,7 @@ import { PUSH_ACTION } from './categories.js';
  * than through {@link import('./payload.js').pushPayloadSchema}, whose required `sessionId`
  * keeps every session reply bound to its session.
  */
-export const meetingPushSchema = z.discriminatedUnion('kind', [
+const meetingPushSchema = z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('meeting-upcoming'),
     eventKey: z.string().min(1).max(64),
