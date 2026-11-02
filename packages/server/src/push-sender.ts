@@ -208,8 +208,14 @@ class DefaultPushSender implements PushSender {
     for (const [token, failure] of this.failures) {
       if (failure.retryAt + FAILURE_RETENTION_MS < this.now()) this.failures.delete(token);
     }
+    const payloadKey = (token: string) =>
+      createHash('sha256')
+        .update(JSON.stringify([token, notification]))
+        .digest('hex');
     const eligible = tokens.filter(
-      (token) => (this.failures.get(token.expoToken)?.retryAt ?? 0) <= this.now(),
+      (token) =>
+        (this.failures.get(token.expoToken)?.retryAt ?? 0) <= this.now() &&
+        (this.failures.get(payloadKey(token.expoToken))?.retryAt ?? 0) <= this.now(),
     );
     const result: PushSendResult = {
       targets: tokens.length,
@@ -261,7 +267,10 @@ class DefaultPushSender implements PushSender {
         }
         if (ticket.status === 'error') {
           result.ticketErrors += 1;
-          this.defer(expoToken, ticket.details?.error);
+          this.defer(
+            ticket.details?.error === 'MessageTooBig' ? payloadKey(expoToken) : expoToken,
+            ticket.details?.error,
+          );
           if (
             ticket.details?.error === 'DeviceNotRegistered' &&
             (await this.options.store.deleteDevicePushToken(expoToken))
@@ -341,7 +350,10 @@ class DefaultPushSender implements PushSender {
           continue;
         }
         result.receiptErrors += 1;
-        this.defer(record.expoToken, receipt.details?.error);
+        // Receipts do not retain the payload; a payload rejection does not
+        // establish that the device is unavailable.
+        if (receipt.details?.error !== 'MessageTooBig')
+          this.defer(record.expoToken, receipt.details?.error);
         if (
           receipt.details?.error === 'DeviceNotRegistered' &&
           (await this.options.store.deleteDevicePushToken(record.expoToken))

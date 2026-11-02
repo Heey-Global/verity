@@ -351,6 +351,22 @@ describe('PushSender', () => {
     expect(closed).toBe(true);
   });
 
+  it('contains oversized payload retries without blocking valid notifications', async () => {
+    const store = new FakeStore('ExpoPushToken[one]');
+    const transport = new FakeTransport();
+    transport.tickets = [
+      { status: 'error', message: 'large', details: { error: 'MessageTooBig' } },
+    ];
+    const sender = createPushSender({ store, transport, now: () => 0 });
+    await sender.send(notification);
+    await expect(sender.send(notification)).resolves.toMatchObject({ deferred: 1 });
+    transport.tickets = [{ status: 'ok', id: 'valid' }];
+    await expect(sender.send({ ...notification, body: 'smaller' })).resolves.toMatchObject({
+      ticketsAccepted: 1,
+    });
+    expect(transport.sent).toHaveLength(2);
+  });
+
   it('fans out in chunks, persists accepted tickets, and prunes immediate dead tokens', async () => {
     const store = new FakeStore('ExpoPushToken[one]', 'ExpoPushToken[two]', 'ExpoPushToken[dead]');
     const transport = new FakeTransport();
