@@ -35,7 +35,7 @@ const FAILURE_DETAIL: Record<string, string> = {
   'verifying-image-failed': 'The new version failed signature verification.',
   'preflight-failed': 'The new version failed its readiness check.',
   'host-runtime-failed':
-    'Host runtime preparation did not complete. Your current version keeps serving. Retry the update; if it still fails, inspect the host runtime service journal or re-run the Verity installer.',
+    'Host runtime preparation did not complete. Your current version keeps serving. Inspect the host runtime service journal or re-run the Verity installer if the problem persists.',
   'creating-standby-failed': 'The new version could not be prepared.',
 };
 
@@ -170,7 +170,12 @@ export function describeServerUpdate(status: ServerUpdateStatus): ServerUpdateVi
         outcome = {
           ...outcome,
           detail:
-            'Host runtime release verification failed. No host changes were made and your current version keeps serving.',
+            'Host runtime preparation failed. No host changes were made and your current version keeps serving.',
+        };
+      if (host.stage === 'ready')
+        outcome = {
+          ...outcome,
+          detail: 'Host runtime support is ready. Your current version keeps serving.',
         };
       if (host.stage === 'recovery-required')
         return {

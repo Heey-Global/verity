@@ -1600,7 +1600,7 @@ describe('self-update release gate', () => {
       options: ['full', 'release'],
       type: 'choice',
     });
-    expect(workflow.on.schedule).toEqual([{ cron: '17 3 * * 1' }]);
+    expect(workflow.on.schedule).toEqual([{ cron: '17 3 * * *' }]);
   });
 
   it('checks out and serializes by the exact release candidate', () => {

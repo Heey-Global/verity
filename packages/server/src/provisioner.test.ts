@@ -125,15 +125,16 @@ const verifiedNodeVersion = readFileSync(
 /** The start failure runsc reports for a filestore left by an unclean teardown,
  *  as worded in runsc/container/container.go (createGoferFilestoreInSelf) of the
  *  release pinned in deploy/gvisor/versions.env, wrapped the way dockerd relays it. */
-function staleFilestoreError(containerId: string): DockerError {
+function staleFilestoreError(containerId: string, docker29 = false): DockerError {
   const filestore = `/proc/4242/root/var/lib/docker/overlay2/layer/merged/.gvisor.filestore.${containerId}`;
   return new DockerError({
     kind: 'other',
     status: 500,
-    message:
-      `failed to create task for container: OCI runtime create failed: runsc-project: ` +
-      `"/var/lib/docker/overlay2/layer/merged" mount source already has a filestore file at ` +
-      `"${filestore}"; repeated submounts are not supported with overlay optimizations`,
+    message: docker29
+      ? `OCI runtime create failed: creating container: cannot create gofer process: creating gofer filestore files: "/var/lib/docker/rootfs/overlayfs/layer" mount source already has a filestore file ".gvisor.filestore.${containerId}"; repeated submounts are not supported with overlay optimizations`
+      : `failed to create task for container: OCI runtime create failed: runsc-project: ` +
+        `"/var/lib/docker/overlay2/layer/merged" mount source already has a filestore file at ` +
+        `"${filestore}"; repeated submounts are not supported with overlay optimizations`,
   });
 }
 
@@ -1378,52 +1379,55 @@ describe('ProvisionerImpl (#174)', () => {
     expect(fallback).not.toHaveBeenCalled();
   });
 
-  it('replaces a retained sleeping Sandbox whose stale gVisor filestore blocks its start', async () => {
-    // Returning it to sleep would fail every later wake the same way.
-    const id = await seedProject('active');
-    const retained = {
-      id: 'container-1',
-      running: false,
-      image: 'sandbox:test',
-      labels: { [PROJECT_ID_LABEL]: id, [CONTAINER_GENERATION_LABEL]: 'generation-1' },
-    };
-    await ctx.store.updateProjectSleepState(id, 'sleeping', {
-      sleepCompatibilityFingerprint: sandboxSleepCompatibilityFingerprint(retained),
-      sleepingSince: new Date(),
-      wakeStartedAt: null,
-    });
-    const { client: docker, calls } = fakeDocker({
-      createdContainerId: 'container-2',
-      inspectContainer: vi
-        .fn()
-        .mockResolvedValueOnce(retained)
-        .mockResolvedValue({ ...retained, id: 'container-2', running: true }),
-      startContainer: vi.fn(async (containerId: string) => {
-        if (containerId === 'container-1') throw staleFilestoreError('container-1');
-      }),
-    });
-    const relay = defaultProjectRelay();
-    relay.reactivate = vi.fn(async () => ({
-      identity: { projectId: id, containerGeneration: 'generation-1' },
-      signingCapability: 'fresh-signing',
-      githubCapability: 'fresh-github',
-    }));
-    const fallback = vi.fn();
-    const provisioner = createProvisioner({
-      store: ctx.store,
-      db: ctx.db,
-      docker,
-      projectTokenMint: async () => undefined,
-      defaultImageRef: 'sandbox:test',
-      hostCloneRoot: '/work',
-      projectRelay: relay,
-      onSandboxWakeFallback: fallback,
-    });
+  it.each([false, true])(
+    'replaces a retained sleeping Sandbox with a stale filestore (Docker 29=%s)',
+    async (docker29) => {
+      // Returning it to sleep would fail every later wake the same way.
+      const id = await seedProject('active');
+      const retained = {
+        id: 'container-1',
+        running: false,
+        image: 'sandbox:test',
+        labels: { [PROJECT_ID_LABEL]: id, [CONTAINER_GENERATION_LABEL]: 'generation-1' },
+      };
+      await ctx.store.updateProjectSleepState(id, 'sleeping', {
+        sleepCompatibilityFingerprint: sandboxSleepCompatibilityFingerprint(retained),
+        sleepingSince: new Date(),
+        wakeStartedAt: null,
+      });
+      const { client: docker, calls } = fakeDocker({
+        createdContainerId: 'container-2',
+        inspectContainer: vi
+          .fn()
+          .mockResolvedValueOnce(retained)
+          .mockResolvedValue({ ...retained, id: 'container-2', running: true }),
+        startContainer: vi.fn(async (containerId: string) => {
+          if (containerId === 'container-1') throw staleFilestoreError('container-1', docker29);
+        }),
+      });
+      const relay = defaultProjectRelay();
+      relay.reactivate = vi.fn(async () => ({
+        identity: { projectId: id, containerGeneration: 'generation-1' },
+        signingCapability: 'fresh-signing',
+        githubCapability: 'fresh-github',
+      }));
+      const fallback = vi.fn();
+      const provisioner = createProvisioner({
+        store: ctx.store,
+        db: ctx.db,
+        docker,
+        projectTokenMint: async () => undefined,
+        defaultImageRef: 'sandbox:test',
+        hostCloneRoot: '/work',
+        projectRelay: relay,
+        onSandboxWakeFallback: fallback,
+      });
 
-    expect((await provisioner.ensureProjectSandboxAwake(id)).state).toBe('active');
-    expect(fallback).toHaveBeenCalledWith({ projectId: id, reason: 'stale_runtime_state' });
-    expect(calls.some((call) => call.method === 'createContainer')).toBe(true);
-  });
+      expect((await provisioner.ensureProjectSandboxAwake(id)).state).toBe('active');
+      expect(fallback).toHaveBeenCalledWith({ projectId: id, reason: 'stale_runtime_state' });
+      expect(calls.some((call) => call.method === 'createContainer')).toBe(true);
+    },
+  );
 
   it('marks no activity after a scan wake but on every joining wake', async () => {
     const id = await seedProject('active');

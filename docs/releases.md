@@ -15,6 +15,32 @@ merges do not approve a release.
 | Mobile native | Release Please PR, then production promotion PR | Separate Staging and production TestFlight binaries; approved production build verified for internal TestFlight testing |
 | Mobile OTA | Staging Release Please PR, then rolling production promotion PR per runtime | Separate Staging OTA and a specific approved production EAS update group |
 
+## Runtime renewal recovery compatibility
+
+The runtime renewal fix explicitly authorizes Docker's `label=disable` security
+option for the bounded host-PID install helper. Other security options still
+require an exact match. An owned helper that has never started can be replaced;
+started helpers remain available for recovery after a disconnected Updater.
+
+Renewal executes in the **already-installed** release, so updating the target
+image cannot repair the installed Updater's authorization check. Hosts running
+an affected release (including 4.74.0 and 4.75.0) need one run of the official
+installer in Repair mode to refresh host runtime support before retrying the
+update. Subsequent updates from a corrected installed release can renew it
+automatically. This fix does not alter already-installed images.
+
+Failures before the install job starts report that the host is unchanged.
+Failures after a possible start remain recovery-required unless restoration is
+verified. After an external Repair, update status rechecks the target's declared
+service capabilities and exact Docker runtime registrations before offering a
+fresh attempt. The journal's failure record remains intact.
+
+Startup recovery refuses to create a bootstrap Server beside an existing managed
+generation. If the Gateway has lost its persisted selection, a promoted or
+rolled-back journal can restore its confirmed Server identity after validating
+it against the sealed deployment; ambiguous state remains an explicit error.
+The Gateway already restores its persisted backend before opening its listener.
+
 ## Release ownership
 
 Backend, native mobile, and website retain separate Release Please configurations
