@@ -550,6 +550,27 @@ expect_client_done() {
 
 export VERITY_SMOKE_DOCKER_SOCKET="$socket"
 export VERITY_SMOKE_MANAGED_ROOT="$managed_root"
+# BEGIN installed runtime fixture
+# This host-side harness has no systemd service or real installed Updater.
+# Exercise the already-installed-service path with the shipped installer, while
+# Docker runtime registration remains subject to the production checks.
+# Renewal of an old service is covered separately on disposable systemd hosts.
+runtime_fixture="$managed_root/runtime-service-fixture"
+install -d -m 0700 "$runtime_fixture"
+# Historical targets without the runtime-service protocol have no installer.
+# Leave their fixture empty; preparation still rejects any target that declares
+# required capabilities without supplying the matching installer.
+if [[ -f "$repo_root/deploy/host/install-runtime-service.sh" ]]; then
+  VERITY_HOST_RUNTIME_TEST=1 \
+  VERITY_HOST_RUNTIME_DIR="$runtime_fixture/state" \
+  VERITY_HOST_RUNTIME_PRIVATE_DIR="$runtime_fixture/private" \
+  VERITY_HOST_RUNTIME_LIBEXEC="$runtime_fixture/libexec" \
+  VERITY_SYSTEMD_UNIT_DIR="$runtime_fixture/units" \
+  VERITY_SYSTEMD_RUN_DIR="$runtime_fixture/no-systemd" \
+  bash "$repo_root/deploy/host/install-runtime-service.sh"
+fi
+export VERITY_SMOKE_HOST_RUNTIME_DIR="$runtime_fixture/state"
+# END installed runtime fixture
 export VERITY_SMOKE_PREVIOUS_DIGEST="$previous_digest"
 export VERITY_SMOKE_TARGET_DIGEST="$target_digest"
 export VERITY_SMOKE_DAEMON_CPUS="$(docker info --format '{{.NCPU}}')"
