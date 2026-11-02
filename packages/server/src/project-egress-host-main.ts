@@ -56,8 +56,8 @@ const authority = rawAuthority === undefined ? undefined : egressHostAuthority.p
 if (authority !== undefined && relayPolicy?.packetEnforcement !== true)
   throw new Error('Direct authority requires host packet enforcement');
 const database = authority === undefined ? undefined : createPostgresDb(authority.databaseUrl);
-const policyStore =
-  database === undefined ? unavailableEgressAuthority : new ProjectEgressStore(database);
+const projectPolicy = database === undefined ? undefined : new ProjectEgressStore(database);
+const policyStore = projectPolicy ?? unavailableEgressAuthority;
 const resolve =
   authority === undefined
     ? () => Promise.reject(new Error('Host DNS authority is not configured'))
@@ -77,6 +77,8 @@ const deadline = hostProjectDeadlineEnforcer();
 const enforcement = createProjectEgressHostEnforcement({
   deadline,
   store: policyStore,
+  ...(projectPolicy ? { requests: projectPolicy } : {}),
+  reportRequestFailure: (error) => console.error('Destination request was not recorded', error),
   directAuthority: (binding) => authority?.projectSponsors[binding.projectId] !== undefined,
   sponsor: (binding) => authority?.projectSponsors[binding.projectId] ?? '__unconfigured__',
   inspect: inspectEgressHostDirect,

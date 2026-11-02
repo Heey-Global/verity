@@ -290,3 +290,59 @@ it.each([false, true])(
     expect(f.deadline.clearRelay).toHaveBeenCalled();
   },
 );
+
+it('records one sponsor-attributed HTTPS request for an inventoried ungranted name', async () => {
+  vi.useFakeTimers({ now: 1_000_000 });
+  try {
+    const f = fixture();
+    const request = vi.fn(async () => ({ covered: true as const }));
+    const reportRequestFailure = vi.fn();
+    let authority = true;
+    const enforcement = createProjectEgressHostEnforcement({
+      deadline: f.deadline,
+      store: { readForAdmission: f.readForAdmission },
+      requests: { request },
+      reportRequestFailure,
+      sponsor: () => 'sponsor',
+      directAuthority: () => authority,
+      inspect: f.inspect,
+      dependencies: {
+        inspect: async (b) => ({ ...b }),
+        apply: f.apply,
+        directTargetAllowed: async (host) => ['api.example.com', 'down.example.com'].includes(host),
+        destinationAllowed: async () => true,
+        resolve: async () => {
+          throw new Error('Unexpected DNS');
+        },
+      },
+    });
+    const settle = () => vi.advanceTimersByTimeAsync(0);
+    enforcement.requestDirect!(network, 'api.example.com');
+    enforcement.requestDirect!(network, 'api.example.com');
+    // Names outside the host inventory never become cards that could not take effect.
+    enforcement.requestDirect!(network, 'random.example.com');
+    await settle();
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(request).toHaveBeenCalledWith('a', 'sponsor', {
+      host: 'api.example.com',
+      protocol: 'tcp',
+      port: 443,
+    });
+    await vi.advanceTimersByTimeAsync(60_001);
+    enforcement.requestDirect!(network, 'api.example.com');
+    await settle();
+    expect(request).toHaveBeenCalledTimes(2);
+    // Without configured direct authority there is no sponsor to attribute a request to.
+    authority = false;
+    enforcement.requestDirect!(network, 'down.example.com');
+    await settle();
+    expect(request).toHaveBeenCalledTimes(2);
+    authority = true;
+    request.mockRejectedValueOnce(new Error('store down'));
+    enforcement.requestDirect!(network, 'down.example.com');
+    await settle();
+    expect(reportRequestFailure).toHaveBeenCalledWith(new Error('store down'));
+  } finally {
+    vi.useRealTimers();
+  }
+});

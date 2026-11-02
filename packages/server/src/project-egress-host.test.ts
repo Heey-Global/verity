@@ -548,6 +548,7 @@ it('answers names read-only from enforcement, never for unknown or retired gener
     refresh: vi.fn(async () => undefined),
     revoke: vi.fn(async () => undefined),
     admitted,
+    requestDirect: vi.fn(),
   };
   const { deps } = fixture();
   const host = new ProjectEgressHost(
@@ -569,6 +570,12 @@ it('answers names read-only from enforcement, never for unknown or retired gener
     state: 'unresolved',
     generation: 'gen2',
   });
+  // Only an ungranted name of the current generation becomes a destination request.
+  expect(enforcement.requestDirect).toHaveBeenCalledTimes(1);
+  expect(enforcement.requestDirect).toHaveBeenCalledWith(
+    expect.objectContaining({ projectId: binding.projectId, generation: 'gen1' }),
+    'other.example.com',
+  );
   // Reading never invalidates pending admission or alters rules.
   expect(invalidate).not.toHaveBeenCalled();
   expect(enforcement.refresh).not.toHaveBeenCalled();
@@ -583,4 +590,5 @@ it('answers names read-only from enforcement, never for unknown or retired gener
     ).toThrow();
   await host.execute({ operation: 'retire', projectId: binding.projectId, generation: 'gen1' });
   expect(await ask('downloads.example.com')).toEqual({ state: 'unresolved', generation: 'gen1' });
+  expect(enforcement.requestDirect).toHaveBeenCalledTimes(1);
 });

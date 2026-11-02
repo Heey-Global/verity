@@ -99,6 +99,9 @@ export interface ProjectEgressHostEnforcement {
     binding: ProjectEgressNetworkBinding,
     name: string,
   ): { addresses: readonly string[]; ttlSeconds: number } | undefined;
+  /** A name the Sandbox asked for without a grant becomes a pending destination request.
+   * Never awaited: the DNS answer stays a refusal and does not wait on the policy store. */
+  requestDirect?(binding: ProjectEgressNetworkBinding, name: string): void;
 }
 interface Dependencies {
   bootId?: string;
@@ -354,6 +357,7 @@ export class ProjectEgressHost {
         (record) => !record.retired && key(record.binding) === key(request),
       );
       const answer = record && this.deps.enforcement?.admitted(record.binding, request.name);
+      if (record && !answer) this.deps.enforcement?.requestDirect?.(record.binding, request.name);
       return Promise.resolve(
         answer
           ? {
