@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { ProjectEgressError, type ProjectEgressStore } from '@verity/store';
 import { isPublicEgressTarget } from './project-egress-policy.js';
+import { mandatoryEgressRoute } from './project-egress-classification.js';
 
 const params = z.object({ id: z.string().min(1) });
 const target = z
@@ -23,6 +24,21 @@ const revoke = z
   .object({ grantId: z.string().uuid(), revision: z.number().int().nonnegative() })
   .strict();
 
+/** Built-in broker/system hostnames never become direct rules or cards. IP literals
+ * and deployment-specific mandatoryHosts are only known to the host, which refuses
+ * them at admission; such requests can still be recorded here but never take effect.
+ */
+class BrokerRequiredError extends Error {
+  constructor(readonly route: string) {
+    super('broker required');
+  }
+}
+const directEligible = (input: z.infer<typeof target>): void => {
+  if (!isPublicEgressTarget(input)) throw new ProjectEgressError('invalid');
+  const route = mandatoryEgressRoute(input.host);
+  if (route) throw new BrokerRequiredError(route);
+};
+
 /** Draft management only. There is intentionally no protected-mode activation endpoint. */
 export function registerProjectEgressRoutes(app: FastifyInstance, store: ProjectEgressStore): void {
   const user = (request: FastifyRequest): string => {
@@ -37,6 +53,8 @@ export function registerProjectEgressRoutes(app: FastifyInstance, store: Project
         ];
         return reply.code(status).send({ error: error.code });
       }
+      if (error instanceof BrokerRequiredError)
+        return reply.code(403).send({ error: 'broker_required', route: error.route });
       if (error instanceof z.ZodError)
         return reply.code(400).send({ error: 'invalid egress input' });
       throw error;
@@ -47,7 +65,7 @@ export function registerProjectEgressRoutes(app: FastifyInstance, store: Project
     }));
     app.post('/projects/:id/egress/requests', async (request) => {
       const input = target.parse(request.body);
-      if (!isPublicEgressTarget(input)) throw new ProjectEgressError('invalid');
+      directEligible(input);
       return {
         enforcement: 'unavailable',
         request: await store.request(params.parse(request.params).id, user(request), input),
@@ -55,6 +73,13 @@ export function registerProjectEgressRoutes(app: FastifyInstance, store: Project
     });
     app.post('/projects/:id/egress/decisions', async (request) => {
       const input = decision.parse(request.body);
+      if (input.allow) {
+        // Requests stored before classification existed cannot be approved either.
+        const policy = await store.read(params.parse(request.params).id, user(request));
+        const pending = Object.values(policy.requests).find((r) => r.id === input.requestId);
+        if (!pending) throw new ProjectEgressError('missing');
+        directEligible(pending.target);
+      }
       return {
         enforcement: 'unavailable',
         request: await store.decide(
@@ -68,7 +93,7 @@ export function registerProjectEgressRoutes(app: FastifyInstance, store: Project
     });
     app.post('/projects/:id/egress/reopen', async (request) => {
       const input = reopen.parse(request.body);
-      if (!isPublicEgressTarget(input.target)) throw new ProjectEgressError('invalid');
+      directEligible(input.target);
       return {
         enforcement: 'unavailable',
         request: await store.reopen(
@@ -91,7 +116,7 @@ export function registerProjectEgressRoutes(app: FastifyInstance, store: Project
     });
     app.post('/projects/:id/egress/permanent', async (request) => {
       const input = reopen.parse(request.body);
-      if (!isPublicEgressTarget(input.target)) throw new ProjectEgressError('invalid');
+      directEligible(input.target);
       return {
         enforcement: 'unavailable',
         grant: await store.setPermanent(
