@@ -1340,6 +1340,7 @@ describe('ProvisionerImpl (#174)', () => {
       writeFileSync(join(keyDir, `egress_ca.${id}.crt`), 'OLD-CA');
       writeFileSync(join(keyDir, `egress_client.${id}.crt`), 'OLD-CERT');
       const retained = {
+        networks: { [projectNetworkName(id)]: {} },
         id: 'container-1',
         running: false,
         image: 'sandbox:test',
@@ -1418,6 +1419,7 @@ describe('ProvisionerImpl (#174)', () => {
       writeFileSync(certPath, created.clientCertPem);
       writeFileSync(keyPath, created.clientKeyPem, { mode: 0o600 });
       const running = {
+        networks: { [projectNetworkName(id)]: {} },
         id: 'container-1',
         running: true,
         image: 'sandbox:test',
@@ -1541,6 +1543,7 @@ describe('ProvisionerImpl (#174)', () => {
     // Returning it to sleep would fail every later wake the same way.
     const id = await seedProject('active');
     const retained = {
+      networks: { [projectNetworkName(id)]: {} },
       id: 'container-1',
       running: false,
       image: 'sandbox:test',
