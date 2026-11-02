@@ -134,6 +134,7 @@ class DefaultPushSender implements PushSender {
   // Process-local cooldowns: pending producers retry after expiry; one-shot
   // notifications are not queued. Restarting the server clears the cooldowns.
   private readonly failures = new Map<string, { attempts: number; retryAt: number }>();
+  private readonly activeSends = new Set<Promise<PushSendResult>>();
   private readonly sends = new Map<string, Promise<PushSendResult>>();
   private sendTail: Promise<unknown> = Promise.resolve();
   private timer: NodeJS.Timeout | undefined;
@@ -147,7 +148,22 @@ class DefaultPushSender implements PushSender {
     this.maxReceiptAttempts = options.maxReceiptAttempts ?? DEFAULT_MAX_RECEIPT_ATTEMPTS;
   }
 
-  async send(
+  send(
+    notification: PushNotification,
+    targets?: readonly DevicePushTokenRecord[],
+  ): Promise<PushSendResult> {
+    // Track before token lookup yields, so shutdown also drains broadcasts that
+    // have not reached the serialized transport queue yet.
+    const active = this.enqueueSend(notification, targets);
+    this.activeSends.add(active);
+    void active.then(
+      () => this.activeSends.delete(active),
+      () => this.activeSends.delete(active),
+    );
+    return active;
+  }
+
+  private async enqueueSend(
     notification: PushNotification,
     targets?: readonly DevicePushTokenRecord[],
   ): Promise<PushSendResult> {
@@ -377,7 +393,7 @@ class DefaultPushSender implements PushSender {
   async close(): Promise<void> {
     if (this.timer !== undefined) clearInterval(this.timer);
     this.timer = undefined;
-    await this.sendTail;
+    await Promise.allSettled(this.activeSends);
     await this.receiptCycle;
   }
 

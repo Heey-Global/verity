@@ -325,6 +325,32 @@ describe('PushSender', () => {
     expect(closed).toBe(true);
   });
 
+  it('drains broadcasts still looking up tokens before closing', async () => {
+    const store = new FakeStore('ExpoPushToken[one]');
+    let finishLookup!: (tokens: DevicePushTokenRecord[]) => void;
+    vi.spyOn(store, 'listDevicePushTokens').mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishLookup = resolve;
+        }),
+    );
+    const transport = new FakeTransport();
+    transport.tickets = [{ status: 'ok', id: 'broadcast' }];
+    const sender = createPushSender({ store, transport });
+    const broadcast = sender.send(notification);
+    let closed = false;
+    const closing = sender.close().then(() => {
+      closed = true;
+    });
+    await vi.waitFor(() => expect(finishLookup).toBeTypeOf('function'));
+    expect(closed).toBe(false);
+    finishLookup(store.tokens);
+    await Promise.all([broadcast, closing]);
+    expect(transport.sent).toHaveLength(1);
+    expect(store.receipts).toHaveLength(1);
+    expect(closed).toBe(true);
+  });
+
   it('fans out in chunks, persists accepted tickets, and prunes immediate dead tokens', async () => {
     const store = new FakeStore('ExpoPushToken[one]', 'ExpoPushToken[two]', 'ExpoPushToken[dead]');
     const transport = new FakeTransport();
