@@ -37,7 +37,11 @@ export function createProjectEgressAdmission(options: {
     expiresAt: null,
   }));
   // Both admission reads append the same system grants, so currency still compares equal.
-  const withSystem = (grants: readonly EgressGrant[]) => [...grants, ...system];
+  // A persisted grant can never claim a system id and its exemptions.
+  const withSystem = (grants: readonly EgressGrant[]) => [
+    ...grants.filter((grant) => !grant.id.startsWith('system:')),
+    ...system,
+  ];
   let lifecycle = Symbol();
   let refreshing: symbol | undefined;
   let queue: Promise<unknown> = Promise.resolve();
@@ -86,7 +90,7 @@ export function createProjectEgressAdmission(options: {
             revision: policy.revision,
             grants: withSystem(policy.grants),
             // An unreachable system target excludes only itself, never the project's grants.
-            optional: system.map((grant) => grant.id),
+            system: system.map((grant) => grant.id),
           });
         } catch (error) {
           await fence.revoke(binding);

@@ -10,7 +10,6 @@ import { canonicalEgressTarget, type ProjectEgressStore } from '@verity/store';
 import { projectEgressHostDocker } from './project-egress-host-runtime.js';
 import {
   mandatoryEgressRoute,
-  systemDirectHost,
   type ProtectedAddressInventory,
 } from './project-egress-classification.js';
 
@@ -159,9 +158,8 @@ export function egressHostDirectChecks(
   return {
     directTargetAllowed: (host) =>
       Promise.resolve(
-        (authority !== undefined && systemDirectHost(host)) ||
-          (authority?.directHosts.includes(host) === true &&
-            mandatoryEgressRoute(host, authority.mandatoryHosts) === undefined),
+        authority?.directHosts.includes(host) === true &&
+          mandatoryEgressRoute(host, authority.mandatoryHosts) === undefined,
       ),
     destinationAllowed: async (address) =>
       protectedAddresses.allows(address) && (await destinationAllowed(address)),

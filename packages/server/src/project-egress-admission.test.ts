@@ -238,6 +238,10 @@ it('admits host-owned system targets beside project grants without breaking curr
     systemTargets: [{ host: 'mcp.exa.ai', protocol: 'tcp', port: 443 }],
     dependencies: f.dependencies,
   });
+  // The project inventory refuses exa.ai; only the host-owned grant id is exempt.
+  f.dependencies.directTargetAllowed.mockImplementation(
+    async (...args: unknown[]) => args[0] !== 'mcp.exa.ai',
+  );
   await admission.prepare();
   await admission.refresh();
   expect(f.dependencies.resolve.mock.calls.map((call) => (call as unknown[])[0])).toEqual([
@@ -246,11 +250,25 @@ it('admits host-owned system targets beside project grants without breaking curr
   ]);
   expect(f.dependencies.deadline.arm).toHaveBeenCalledOnce();
   expect(admission.admitted('mcp.exa.ai')?.addresses).toEqual(['8.8.8.8']);
-  // Without project grants the system target alone is still admitted.
-  f.setPolicy({ revision: 2, requests: {}, grants: [] });
+  // A persisted grant claiming a system id is dropped, not exempted.
+  f.setPolicy({
+    revision: 2,
+    requests: {},
+    grants: [
+      {
+        id: 'system:tcp:evil.example.com:443',
+        target: { host: 'evil.example.com', protocol: 'tcp', port: 443 },
+        approvedBy: 'manager',
+        approvedAt: 0,
+        expiresAt: null,
+      },
+    ],
+  });
   await admission.refresh();
   expect(admission.admitted('mcp.exa.ai')?.addresses).toEqual(['8.8.8.8']);
   expect(admission.admitted('downloads.example.com')).toBeUndefined();
+  expect(admission.admitted('evil.example.com')).toBeUndefined();
+  expect(f.dependencies.resolve).not.toHaveBeenCalledWith('evil.example.com');
 });
 
 it('drops only an unreachable system target, never the project grants', async () => {

@@ -25,8 +25,9 @@ export interface ProjectFenceSnapshot {
   binding: ProjectFenceBinding;
   revision: number;
   grants: readonly EgressGrant[];
-  /** Grant ids that a failed check excludes alone instead of failing the refresh. */
-  optional?: readonly string[];
+  /** Host-owned system grant ids: exempt from the project target inventory, and a
+   * failed check excludes that grant alone instead of failing the refresh. */
+  system?: readonly string[];
 }
 export interface ProjectFenceRelay {
   transport: EgressTransport;
@@ -436,7 +437,7 @@ export class ProjectEgressFence {
       observe('initial-inspection-policy');
       const leases: Lease[] = [];
       const names = new Map<string, string[]>();
-      const optional = new Set(snapshot.optional ?? []);
+      const system = new Set(snapshot.system ?? []);
       // Never reconsider excluded grants after an asynchronous wall-clock rollback.
       for (const grant of authority) {
         const admitted: Lease[] = [];
@@ -450,7 +451,7 @@ export class ProjectEgressFence {
           if (grant.expiresAt !== null && !Number.isFinite(grant.expiresAt))
             throw new Error('Invalid grant expiry');
           const target = canonicalEgressTarget(grant.target);
-          if (!(await this.deps.directTargetAllowed(target.host)))
+          if (!system.has(grant.id) && !(await this.deps.directTargetAllowed(target.host)))
             throw new Error('Destination requires a broker or system route');
           const resolution = isIP(target.host)
             ? { addresses: [target.host], expiresAt: Infinity }
@@ -476,8 +477,8 @@ export class ProjectEgressFence {
             admitted.push({ address, protocol: target.protocol, port: target.port, expiresAt });
           if (!isIP(target.host)) named.push(target.host, ...addresses);
         } catch (error) {
-          // A host-owned optional target never takes the project's own grants down.
-          if (optional.has(grant.id)) continue;
+          // A host-owned system target never takes the project's own grants down.
+          if (system.has(grant.id)) continue;
           throw error;
         }
         leases.push(...admitted);
