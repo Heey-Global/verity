@@ -1,6 +1,6 @@
 import { isIP } from 'node:net';
 import ipaddr from 'ipaddr.js';
-import { canonicalEgressTarget } from '@verity/store';
+import { canonicalEgressTarget, type EgressTarget } from '@verity/store';
 import {
   EGRESS_DNS_MIXED,
   EGRESS_DNS_NOT_PUBLIC,
@@ -68,7 +68,6 @@ export const PROTECTED_ADDRESS_HOSTS: readonly string[] = [
   'api.openai.com',
   'chatgpt.com',
   'api.doppler.com',
-  'mcp.exa.ai',
   'registry.npmjs.org',
   'pypi.org',
   'files.pythonhosted.org',
@@ -82,6 +81,17 @@ export const PROTECTED_ADDRESS_HOSTS: readonly string[] = [
   'rubygems.org',
   'repo.packagist.org',
 ];
+
+/**
+ * System destinations every fenced project reaches without a grant or card. Interim:
+ * OpenCode's built-in web search calls this fixed endpoint, and its addresses are
+ * therefore not protected. Projects still cannot grant `exa.ai` names themselves.
+ */
+export const SYSTEM_DIRECT_TARGETS: readonly EgressTarget[] = [
+  { host: 'mcp.exa.ai', protocol: 'tcp', port: 443 },
+];
+export const systemDirectHost = (host: string): boolean =>
+  SYSTEM_DIRECT_TARGETS.some((target) => target.host === host);
 
 const covers = (domain: string, host: string): boolean =>
   host === domain || host.endsWith(`.${domain}`);

@@ -292,6 +292,32 @@ an application mutation. Do not buffer or forward unapproved request payloads.
 For uncertain external outcomes, preserve the adapter's idempotency and recovery
 rules. Offline approvers, timeouts and broker failure leave access blocked.
 
+## Web search under the fence
+
+Web search works without a card:
+
+- Claude and Codex search is provider-hosted. It travels inside the model request
+  through the model gateway (`/v1/messages`, `/codex/responses`,
+  `/codex/alpha/search`), which passes tool definitions unchanged.
+- OpenCode's built-in Exa search calls the fixed endpoint `https://mcp.exa.ai/mcp`
+  from the Sandbox. Interim decision: the host admits `mcp.exa.ai` TCP 443 as a
+  system target (`SYSTEM_DIRECT_TARGETS`) for every fenced project with direct
+  authority, beside its grants, and controlled DNS answers it. Projects still
+  cannot grant `exa.ai` names; its addresses are no longer address-protected.
+
+Page fetches (Claude `WebFetch`, OpenCode `webfetch`) leave from the Sandbox to
+arbitrary destinations; they are ordinary direct targets and need a destination
+grant.
+
+Residual risk, accepted for now and to be tightened later:
+
+- Provider-hosted search and fetches leave from Anthropic/OpenAI infrastructure;
+  the fence neither sees nor bounds them, and query text can carry data.
+- Admission is by address. Names sharing `mcp.exa.ai`'s front-end addresses are
+  reachable too, and the Exa MCP endpoint offers more than search, including
+  page retrieval, to any process in the Sandbox. A server-side Verity search tool
+  over the MCP gateway would remove the direct path.
+
 ## Bounded implementation sequence and gates
 
 1. Implement a project-policy domain with canonical target matching, separate

@@ -228,3 +228,27 @@ it('rejects same-revision grant tampering and does not reactivate a retired gene
   await f.admission.retire();
   await expect(f.admission.refresh()).rejects.toThrow('Inactive');
 });
+
+it('admits host-owned system targets beside project grants without breaking currency checks', async () => {
+  const f = fixture();
+  const admission = createProjectEgressAdmission({
+    binding: f.binding,
+    sponsorUserId: 'sponsor',
+    store: f.store,
+    systemTargets: [{ host: 'mcp.exa.ai', protocol: 'tcp', port: 443 }],
+    dependencies: f.dependencies,
+  });
+  await admission.prepare();
+  await admission.refresh();
+  expect(f.dependencies.resolve.mock.calls.map((call) => (call as unknown[])[0])).toEqual([
+    'downloads.example.com',
+    'mcp.exa.ai',
+  ]);
+  expect(f.dependencies.deadline.arm).toHaveBeenCalledOnce();
+  expect(admission.admitted('mcp.exa.ai')?.addresses).toEqual(['8.8.8.8']);
+  // Without project grants the system target alone is still admitted.
+  f.setPolicy({ revision: 2, requests: {}, grants: [] });
+  await admission.refresh();
+  expect(admission.admitted('mcp.exa.ai')?.addresses).toEqual(['8.8.8.8']);
+  expect(admission.admitted('downloads.example.com')).toBeUndefined();
+});
