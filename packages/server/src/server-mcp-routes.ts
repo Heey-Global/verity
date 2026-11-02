@@ -1,3 +1,14 @@
+import {
+  createQAAssignmentTool,
+  trustedQAAssignmentConsent,
+  matchesQAAssignmentContinuation,
+} from './qa-assignment-tool.js';
+import { qaAnalysisRequestSchema } from '@verity/events';
+import {
+  createQARepairTool,
+  trustedQARepairInstruction,
+  trustedQARepairConsent,
+} from './qa-repair-tool.js';
 import { saveQAReport } from './qa-report.js';
 import { executeQAAnalysis } from './qa-analysis-tool.js';
 import {
@@ -173,6 +184,289 @@ export function registerServerMcpRoutes({
   // turn-bound prompt (D2). The `acp` channel is stated by the caller rather than read off a
   // live turn, because a gateway call routinely arrives with none (ADR 0014 D3).
   const controlHandoffSessionCreates = new Map<string, Promise<{ sessionId: string }>>();
+  const createHandoffSession = async ({
+    projectId,
+    name,
+    idempotencyKey,
+  }: {
+    projectId: string;
+    name: string;
+    idempotencyKey: string;
+  }) => {
+    const existing = controlHandoffSessionCreates.get(idempotencyKey);
+    if (existing !== undefined) return existing;
+    const creating = (async (): Promise<{ sessionId: string }> => {
+      const digest = createHash('sha256').update(idempotencyKey).digest();
+      digest[6] = (digest[6]! & 0x0f) | 0x40;
+      digest[8] = (digest[8]! & 0x3f) | 0x80;
+      const hex = digest.subarray(0, 16).toString('hex');
+      const sessionId = `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+      const prior = await deps.eventStore.getSession(sessionId);
+      if (prior !== undefined) {
+        if (prior.projectId !== projectId) {
+          throw new ControlPlaneSessionToolError('new-session handoff key collision');
+        }
+        return { sessionId };
+      }
+      const project = await deps.eventStore.getProject(projectId);
+      if (
+        project === undefined ||
+        project.hiddenAt !== null ||
+        project.state !== 'active' ||
+        isControlPlaneProject(project)
+      ) {
+        throw new ControlPlaneSessionToolError('new-session handoff target is unavailable');
+      }
+      if (deps.projectCloneRoot === undefined || deps.projectBackend === undefined) {
+        throw new ControlPlaneSessionToolError('new-session handoff is not configured');
+      }
+      if (projectsBeingDeleted.has(project.id)) {
+        throw new ControlPlaneSessionToolError('new-session handoff target is unavailable');
+      }
+      if (isLocalProject(project) && !deps.dataRoot)
+        throw new ControlPlaneSessionToolError(
+          'Local projects require configured document storage.',
+        );
+      await deps.provisioner?.prepareLocalDocuments?.(project.id);
+      const releaseSpawn = beginProjectSpawn(project.id);
+      try {
+        const settings = await projectSettingsStore(deps.eventStore).getProjectSettings(project.id);
+        const model = resolveProjectDefaultModel(
+          await availableModels({ allowLegacyCodexFallback: true }),
+          settings,
+          isProjectSessionModel,
+        );
+        if (model === undefined || !(await isConfiguredProjectSessionModel(model))) {
+          throw new ControlPlaneSessionToolError('project has no eligible default model');
+        }
+        const selectedModel = model;
+        const projectClone = projectClonePath(deps.projectCloneRoot, project);
+        const worktreeOpts = {
+          refreshBase: true,
+          ...(settings?.defaultBranch == null ? {} : { baseBranch: settings.defaultBranch }),
+        };
+        const provisioner =
+          isLocalProject(project) && deps.dataRoot
+            ? createDocumentWorkspaceProvisioner(deps.dataRoot, project.id, projectClone)
+            : (deps.projectWorktrees?.(project, projectClone, worktreeOpts) ??
+              createGitWorktreeProvisioner({
+                repoDir: projectClone,
+                worktreeRoot: join(projectClone, '.verity-sessions'),
+                ...worktreeOpts,
+              }));
+        await deps.refreshProjectToken?.(project);
+        const worktree = await provisioner.add(makeBranch(name));
+        try {
+          await deps.eventStore.createSession({
+            sessionId,
+            projectId: project.id,
+            worktree,
+            model: selectedModel,
+            name,
+          });
+        } catch (error) {
+          await provisioner.remove(worktree).catch(() => undefined);
+          throw error;
+        }
+        return { sessionId };
+      } finally {
+        releaseSpawn();
+      }
+    })();
+    controlHandoffSessionCreates.set(idempotencyKey, creating);
+    try {
+      return await creating;
+    } finally {
+      controlHandoffSessionCreates.delete(idempotencyKey);
+    }
+  };
+  const qaRepair = createQARepairTool({
+    store: deps.eventStore,
+    permitted: canExecuteAs,
+    busy: (id) => conductor.isBusy(id),
+    branch: async (session) => {
+      if (!(await sessionResumable(session))) return undefined;
+      const branches = await branchesForSession(session);
+      if (!branches) return undefined;
+      try {
+        return {
+          branch: await branches.current(session.worktree),
+          dirty: await branches.isDirty(session.worktree),
+          revision: await branches.headRevision?.(session.worktree),
+        };
+      } catch {
+        return undefined;
+      }
+    },
+    inspect: async (projectId, number) => {
+      const project = await deps.eventStore.getProject(projectId);
+      if (!project || !deps.repairDiscovery) return undefined;
+      deps.invalidateProjectPrStatus?.(projectId);
+      let pageNumber: number | undefined = 1;
+      for (let pages = 0; pageNumber !== undefined && pages < 10; pages++) {
+        const { page, statuses } = await deps.repairDiscovery(project, pageNumber);
+        const pull = page.pulls.find((p) => p.number === number);
+        const observed = statuses.find((p) => p.status.number === number);
+        if (
+          pull &&
+          observed &&
+          pull.sha === observed.status.headSha &&
+          pull.branch === observed.branch
+        )
+          return { ...observed, fork: pull.fork };
+        pageNumber = page.nextPage ?? undefined;
+      }
+      return undefined;
+    },
+    dispatch: async (sessionId, prompt, dispatchId, userId, validate) => {
+      const result = await conductor.dispatchTurnWhenIdle(
+        sessionId,
+        prompt,
+        {},
+        {
+          durableDispatchId: dispatchId,
+          initiatedBy: { userId },
+          displayPrompt: prompt,
+          validateSession: validate,
+        },
+      );
+      return result.accepted;
+    },
+  });
+  const qaAssignments = createQAAssignmentTool({
+    store: deps.eventStore,
+    permitted: canExecuteAs,
+    busy: (id) => conductor.isBusy(id),
+    pendingPermissions: (id) => conductor.pendingPermissions(id),
+    create: createHandoffSession,
+    target: async (session, assignment) => {
+      if (!(await sessionResumable(session)) || session.planning === 'active') return false;
+      const branches = await branchesForSession(session);
+      if (!branches) return false;
+      if (assignment && assignment.attempt > 0) {
+        const latest = await deps.eventStore.getEventsBeforeSeq(session.sessionId, 2000);
+        const lastPromptSeq = latest.events.findLast((row) => row.event.t === 'prompt')?.seq;
+        return matchesQAAssignmentContinuation(
+          assignment.evidence,
+          await branches.worktreeFingerprint?.(session.worktree),
+          lastPromptSeq,
+        );
+      }
+      return (
+        !!(await branches.headRevision?.(session.worktree)) &&
+        !(await branches.isDirty(session.worktree))
+      );
+    },
+    dispatch: async (sessionId, prompt, dispatchId, userId, validate) =>
+      (
+        await conductor.dispatchTurnWhenIdle(
+          sessionId,
+          prompt,
+          {},
+          {
+            durableDispatchId: dispatchId,
+            initiatedBy: { userId },
+            displayPrompt: dispatchId.includes(':notification:')
+              ? 'QA assignment status update'
+              : prompt,
+            validateSession: validate,
+          },
+        )
+      ).accepted,
+    cancel: (sessionId, dispatchId) => conductor.cancelAssignmentTurn(sessionId, dispatchId),
+    inspect: async (a) => {
+      const session = a.target_session_id
+        ? await deps.eventStore.getSession(a.target_session_id)
+        : undefined;
+      if (!session || session.projectId !== a.project_id)
+        return { verified: false, reason: 'Target unavailable' };
+      const branches = await branchesForSession(session);
+      const revision = await branches?.headRevision?.(session.worktree);
+      const branch = await branches?.current(session.worktree);
+      const dirty = await branches?.isDirty(session.worktree);
+      const worktreeFingerprint = await branches?.worktreeFingerprint?.(session.worktree);
+      const recent = await deps.eventStore.getEventsBeforeSeq(session.sessionId, 2000);
+      const lastPromptSeq = recent.events.findLast((row) => row.event.t === 'prompt')?.seq;
+      const receipt = a.dispatch_id
+        ? await deps.eventStore.repairs.dispatchReceipt(a.dispatch_id)
+        : undefined;
+      if (receipt?.prompt_seq == null || lastPromptSeq !== Number(receipt.prompt_seq))
+        return {
+          verified: false,
+          reason: 'The session received a different prompt; new approval is required.',
+        };
+      const project = await deps.eventStore.getProject(a.project_id);
+      if (!project || !deps.repairDiscovery || !revision || !branch)
+        return { verified: false, revision, branch, dirty, worktreeFingerprint, lastPromptSeq };
+      deps.invalidateProjectPrStatus?.(a.project_id);
+      let pageNumber: number | undefined = 1;
+      for (let pages = 0; pageNumber !== undefined && pages < 10; pages++) {
+        const { page, statuses } = await deps.repairDiscovery(project, pageNumber);
+        const pr = statuses.find((p) => p.branch === branch && p.status.headSha === revision);
+        const pull = page.pulls.find((p) => p.branch === branch && p.sha === revision && !p.fork);
+        if (pr && pull)
+          return {
+            verified:
+              dirty === false && pr.status.pipeline === 'success' && pr.status.checks.total > 0,
+            revision,
+            branch,
+            dirty,
+            worktreeFingerprint,
+            lastPromptSeq,
+            pull: pr.status,
+          };
+        pageNumber = page.nextPage ?? undefined;
+      }
+      return {
+        verified: false,
+        revision,
+        branch,
+        dirty,
+        worktreeFingerprint,
+        lastPromptSeq,
+        reason: 'No matching current PR evidence',
+      };
+    },
+  });
+  let repairTimer: ReturnType<typeof setInterval> | undefined;
+  let repairSweep: Promise<void> | undefined;
+  const wakeAssignments = () => {
+    repairSweep ??= qaAssignments
+      .sweep()
+      .catch((error) => app.log.warn({ error }, 'QA assignment reconciliation failed'))
+      .finally(() => {
+        repairSweep = undefined;
+      });
+  };
+  const unsubscribeAssignments = deps.bus.subscribeAll((_id, { event }) => {
+    if (['session_progress', 'permission', 'result', 'interrupted', 'status'].includes(event.t))
+      wakeAssignments();
+  });
+  app.addHook('onReady', () => {
+    repairTimer = setInterval(() => {
+      repairSweep ??= qaRepair
+        .sweep()
+        .then(() => qaAssignments.sweep())
+        .catch((error) => app.log.warn({ error }, 'manual QA repair reconciliation failed'))
+        .finally(() => {
+          repairSweep = undefined;
+        });
+    }, 10_000);
+    repairTimer.unref();
+  });
+  app.addHook('onClose', async () => {
+    unsubscribeAssignments();
+    if (repairTimer) clearInterval(repairTimer);
+    await repairSweep;
+  });
+  const repairCaller = async (sessionId: string, turnId: string) => {
+    const user = await runningTurnInitiator(sessionId, turnId);
+    if (!user)
+      throw new ControlPlaneSessionAuthorityError(
+        'A repair requires an authenticated initiating user.',
+      );
+    return { sessionId, userId: user.userId };
+  };
 
   let decidePendingLinkedMessage:
     | ((
@@ -511,96 +805,7 @@ export function registerServerMcpRoutes({
           },
         );
       },
-      createSession: async ({ projectId, name, idempotencyKey }) => {
-        const existing = controlHandoffSessionCreates.get(idempotencyKey);
-        if (existing !== undefined) return existing;
-        const creating = (async (): Promise<{ sessionId: string }> => {
-          const digest = createHash('sha256').update(idempotencyKey).digest();
-          digest[6] = (digest[6]! & 0x0f) | 0x40;
-          digest[8] = (digest[8]! & 0x3f) | 0x80;
-          const hex = digest.subarray(0, 16).toString('hex');
-          const sessionId = `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
-          const prior = await deps.eventStore.getSession(sessionId);
-          if (prior !== undefined) {
-            if (prior.projectId !== projectId) {
-              throw new ControlPlaneSessionToolError('new-session handoff key collision');
-            }
-            return { sessionId };
-          }
-          const project = await deps.eventStore.getProject(projectId);
-          if (
-            project === undefined ||
-            project.hiddenAt !== null ||
-            project.state !== 'active' ||
-            isControlPlaneProject(project)
-          ) {
-            throw new ControlPlaneSessionToolError('new-session handoff target is unavailable');
-          }
-          if (deps.projectCloneRoot === undefined || deps.projectBackend === undefined) {
-            throw new ControlPlaneSessionToolError('new-session handoff is not configured');
-          }
-          if (projectsBeingDeleted.has(project.id)) {
-            throw new ControlPlaneSessionToolError('new-session handoff target is unavailable');
-          }
-          if (isLocalProject(project) && !deps.dataRoot)
-            throw new ControlPlaneSessionToolError(
-              'Local projects require configured document storage.',
-            );
-          await deps.provisioner?.prepareLocalDocuments?.(project.id);
-          const releaseSpawn = beginProjectSpawn(project.id);
-          try {
-            const settings = await projectSettingsStore(deps.eventStore).getProjectSettings(
-              project.id,
-            );
-            const model = resolveProjectDefaultModel(
-              await availableModels({ allowLegacyCodexFallback: true }),
-              settings,
-              isProjectSessionModel,
-            );
-            if (model === undefined || !(await isConfiguredProjectSessionModel(model))) {
-              throw new ControlPlaneSessionToolError('project has no eligible default model');
-            }
-            const selectedModel = model;
-            const projectClone = projectClonePath(deps.projectCloneRoot, project);
-            const worktreeOpts = {
-              refreshBase: true,
-              ...(settings?.defaultBranch == null ? {} : { baseBranch: settings.defaultBranch }),
-            };
-            const provisioner =
-              isLocalProject(project) && deps.dataRoot
-                ? createDocumentWorkspaceProvisioner(deps.dataRoot, project.id, projectClone)
-                : (deps.projectWorktrees?.(project, projectClone, worktreeOpts) ??
-                  createGitWorktreeProvisioner({
-                    repoDir: projectClone,
-                    worktreeRoot: join(projectClone, '.verity-sessions'),
-                    ...worktreeOpts,
-                  }));
-            await deps.refreshProjectToken?.(project);
-            const worktree = await provisioner.add(makeBranch(name));
-            try {
-              await deps.eventStore.createSession({
-                sessionId,
-                projectId: project.id,
-                worktree,
-                model: selectedModel,
-                name,
-              });
-            } catch (error) {
-              await provisioner.remove(worktree).catch(() => undefined);
-              throw error;
-            }
-            return { sessionId };
-          } finally {
-            releaseSpawn();
-          }
-        })();
-        controlHandoffSessionCreates.set(idempotencyKey, creating);
-        try {
-          return await creating;
-        } finally {
-          controlHandoffSessionCreates.delete(idempotencyKey);
-        }
-      },
+      createSession: createHandoffSession,
       readProgress: async (sessionId) => {
         const session = await deps.eventStore.getSession(sessionId);
         if (session === undefined)
@@ -1027,6 +1232,42 @@ export function registerServerMcpRoutes({
         await controlPlaneSessionTools.authorizeCaller({ projectId, sessionId });
       },
       authorizationSnapshot: async ({ sessionId, turnId, projectId, toolName, request }) => {
+        if (
+          toolName === 'verity_qa_analysis' &&
+          (request as { action: string }).action === 'request_assignment'
+        ) {
+          const r = request as { projectId: string; assignmentId: string };
+          return JSON.stringify(
+            await qaAssignments.owned(
+              await repairCaller(sessionId, turnId),
+              r.projectId,
+              r.assignmentId,
+            ),
+          );
+        }
+
+        if (
+          toolName === 'verity_qa_analysis' &&
+          (request as { action: string }).action === 'request_repair'
+        ) {
+          const r = request as { projectId: string; proposalId: string };
+          const p = await qaRepair.proposal(
+            await repairCaller(sessionId, turnId),
+            r.projectId,
+            r.proposalId,
+          );
+          return JSON.stringify({
+            proposalId: p.id,
+            projectId: p.project_id,
+            number: p.number,
+            revision: p.revision,
+            branch: p.branch,
+            sessionId: p.target_session_id,
+            qaRevision: p.qa_revision,
+            mandateRevision: p.mandate_revision,
+          });
+        }
+
         if (toolName === 'verity_http_request' || toolName === 'verity_secret_run') {
           const snapshot = await gatewayDeps.authorizationSnapshot?.({
             sessionId,
@@ -1085,6 +1326,29 @@ export function registerServerMcpRoutes({
         request,
         invocationId,
       }) => {
+        if (
+          toolName === 'verity_qa_analysis' &&
+          (request as { action: string }).action === 'request_repair'
+        ) {
+          return trustedQARepairInstruction(
+            deps.eventStore,
+            sessionId,
+            turnId,
+            (request as { proposalId: string }).proposalId,
+          );
+        }
+        if (
+          toolName === 'verity_qa_analysis' &&
+          (request as { action: string }).action === 'request_assignment'
+        )
+          return (
+            (await trustedQAAssignmentConsent(
+              deps.eventStore,
+              sessionId,
+              turnId,
+              (request as { assignmentId: string }).assignmentId,
+            )) !== undefined
+          );
         if (toolName === 'verity_vulnerabilities') {
           await vulnerabilityTool.authorize({ projectId, sessionId, turnId, request });
           return true;
@@ -1454,6 +1718,98 @@ export function registerServerMcpRoutes({
             documentViewForSession(session),
           );
         }
+        if (input.toolName === 'verity_qa_analysis') {
+          const request = qaAnalysisRequestSchema.parse(input.request);
+          if (request.action === 'assignments')
+            return qaAssignments.list(
+              await repairCaller(input.sessionId, input.turnId),
+              request.projectId,
+            );
+          if (request.action === 'propose_assignment')
+            return qaAssignments.propose(
+              await repairCaller(input.sessionId, input.turnId),
+              request,
+              input.invocationId,
+            );
+          if (request.action === 'assignment_status')
+            return qaAssignments.status(
+              await repairCaller(input.sessionId, input.turnId),
+              request.projectId,
+              request.assignmentId,
+            );
+          if (request.action === 'stop_assignment')
+            return qaAssignments.stop(
+              await repairCaller(input.sessionId, input.turnId),
+              request.projectId,
+              request.assignmentId,
+            );
+          if (request.action === 'review_assignment')
+            return qaAssignments.review(
+              await repairCaller(input.sessionId, input.turnId),
+              request.projectId,
+              request.assignmentId,
+              request.version,
+              request.outcome,
+              request.assessment,
+            );
+          if (request.action === 'request_assignment') {
+            const consent = input.approvedByCard
+              ? `card:${request.assignmentId}`
+              : await trustedQAAssignmentConsent(
+                  deps.eventStore,
+                  input.sessionId,
+                  input.turnId,
+                  request.assignmentId,
+                );
+            if (!consent)
+              throw new ControlPlaneSessionAuthorityError(
+                'An explicit assignment approval is required.',
+              );
+            return qaAssignments.request(
+              await repairCaller(input.sessionId, input.turnId),
+              request.projectId,
+              request.assignmentId,
+              consent,
+            );
+          }
+        }
+        if (input.toolName === 'verity_qa_analysis') {
+          const r = input.request as {
+            action: string;
+            projectId: string;
+            number: number;
+            sessionId?: string;
+            proposalId: string;
+          };
+          if (r.action === 'resolve_repair')
+            return qaRepair.resolve(
+              await repairCaller(input.sessionId, input.turnId),
+              r.projectId,
+              r.number,
+              r.sessionId,
+            );
+          if (r.action === 'request_repair')
+            return qaRepair.request(
+              await repairCaller(input.sessionId, input.turnId),
+              r.projectId,
+              r.proposalId,
+              input.approvedByCard
+                ? undefined
+                : () =>
+                    trustedQARepairConsent(
+                      deps.eventStore,
+                      input.sessionId,
+                      input.turnId,
+                      r.proposalId,
+                    ),
+            );
+          if (r.action === 'repair_status')
+            return qaRepair.status(
+              await repairCaller(input.sessionId, input.turnId),
+              r.projectId,
+              r.proposalId,
+            );
+        }
         if (input.toolName === 'verity_qa_analysis')
           return executeQAAnalysis(
             {
@@ -1551,7 +1907,29 @@ export function registerServerMcpRoutes({
             sessionId,
             toolUseId: callId,
             toolName,
-            input: { ...input, ...(googleAccount ? { googleAccount } : {}), ...scheduling },
+            input: {
+              ...input,
+              ...(googleAccount ? { googleAccount } : {}),
+              ...scheduling,
+              ...(toolName === 'verity_qa_analysis' &&
+              (input as { action?: string }).action === 'request_assignment' &&
+              authorizationSnapshot
+                ? {
+                    assignment: JSON.parse(authorizationSnapshot) as Record<string, unknown>,
+                    scope:
+                      'One project assignment, one executing session, at most two follow-ups within the same goal. No merge, deployment, additional access, or future automatic work.',
+                  }
+                : {}),
+              ...(toolName === 'verity_qa_analysis' &&
+              (input as { action?: string }).action === 'request_repair' &&
+              authorizationSnapshot
+                ? {
+                    repair: JSON.parse(authorizationSnapshot) as Record<string, unknown>,
+                    scope:
+                      'One repair of this PR revision in this session. Does not enable future automatic repairs.',
+                  }
+                : {}),
+            },
             channel: 'acp',
             ...((toolName === 'verity_http_request' || toolName === 'verity_secret_run') &&
             authorizationSnapshot !== undefined

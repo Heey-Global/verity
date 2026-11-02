@@ -172,7 +172,8 @@ if __name__ == '__main__':
         result = disarm()
     elif action == 'remove-guard':
         run('tc', 'qdisc', 'del', 'dev', PEER, 'clsact')
-        result = {'qdiscs': json.loads(run('tc', '-j', 'qdisc', 'show', 'dev', PEER))}
+        result = {'qdiscs': json.loads(run('tc', '-j', 'qdisc', 'show', 'dev', PEER)),
+                  'stats': stats()}
     elif action == 'stats':
         result = stats()
     elif action == 'nft':

@@ -80,6 +80,18 @@ export async function executeQAAnalysis(
     return { projects };
   }
   const project = await authorize(request.projectId);
+  if (
+    request.action === 'assignments' ||
+    request.action === 'propose_assignment' ||
+    request.action === 'request_assignment' ||
+    request.action === 'assignment_status' ||
+    request.action === 'review_assignment' ||
+    request.action === 'stop_assignment' ||
+    request.action === 'resolve_repair' ||
+    request.action === 'request_repair' ||
+    request.action === 'repair_status'
+  )
+    throw new Error('Repair requests require the dedicated QA repair gateway.');
   const userId = (await deps.initiator(input.sessionId, input.turnId))?.userId;
   let cache = reports.get(deps.eventStore);
   if (!cache) {

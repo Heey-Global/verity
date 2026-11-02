@@ -245,3 +245,5 @@ export {
   QA_ANALYSIS_SYSTEM_PROMPT,
   type QAAnalysisRequest,
 } from './qa-analysis.js';
+
+export { recordingFailureReasonSchema, type RecordingFailureReason } from './recording-failure.js';

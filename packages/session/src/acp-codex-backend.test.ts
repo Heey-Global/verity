@@ -649,6 +649,7 @@ describe('AcpCodexBackend', () => {
 
   it.each([
     { code: 1, signal: null },
+    { code: 137, signal: null },
     { code: null, signal: 'SIGKILL' as const },
     { code: 0, signal: null },
   ])(
@@ -684,7 +685,13 @@ describe('AcpCodexBackend', () => {
       expect(JSON.stringify(diagnostic)).not.toContain(opaque);
       expect(JSON.stringify(diagnostic)).not.toContain('private-setting');
       expect(diagnostic).toHaveProperty('stderrTail', expect.stringContaining('last failure'));
-      expect(result.exitCode).toBe(1);
+      expect(result.exitCode).toBe(processExit.signal === 'SIGKILL' ? 137 : processExit.code || 1);
+      if (result.exitCode === 137)
+        expect(events).toContainEqual({
+          t: 'error',
+          kind: 'acp',
+          message: 'Agent was killed (SIGKILL, exit 137); possible memory pressure.',
+        });
       const persisted = append.mock.calls.findLast(([, event]) => event.t === 'diagnostic')?.[1];
       // Older frame readers hash schema output, so new diagnostics must keep its field order.
       expect(JSON.stringify(persisted)).toBe(JSON.stringify(agentEventSchema.parse(persisted)));
@@ -694,6 +701,26 @@ describe('AcpCodexBackend', () => {
       append.mockRestore();
     },
   );
+
+  it('reports an explicit memory guard kill without calling it a provider usage limit', async () => {
+    const fake = acpSpawner({
+      promptFailure: '\nVERITY_MEMORY_GUARD_KILL\n',
+      processExit: { code: 137, signal: null },
+    });
+    const result = await new AcpCodexBackend().run({
+      store: ctx.store,
+      worktree: '/work',
+      cwd: '/work',
+      prompt: 'Run',
+      spawner: fake.spawner,
+    });
+    expect(result.exitCode).toBe(137);
+    expect(await ctx.store.getEvents('codex-session-1')).toContainEqual({
+      t: 'error',
+      kind: 'memory_limit',
+      message: 'Memory limit reached — the memory guard stopped the agent.',
+    });
+  });
 
   it.each([false, true])(
     'omits process failure details for an intentional stop (disconnect=%s)',

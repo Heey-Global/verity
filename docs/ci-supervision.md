@@ -226,3 +226,84 @@ rerun workflows, publish releases or deploy anything.
 
 API semantics: [GitHub workflow runs](https://docs.github.com/en/rest/actions/workflow-runs)
 and [workflow jobs](https://docs.github.com/en/rest/actions/workflow-jobs).
+
+
+## One-time repair handoff from QA chat
+
+An explicit request to repair a PR can use `resolve_repair` and `request_repair`
+through the existing QA gateway. Resolution compares the current repository PR,
+head revision and branch with actual project session worktrees; it never derives
+session identity from a branch-name suffix. If several sessions match, select one
+before requesting the repair. An active or dirty competing worktree blocks delivery.
+Fork PRs and PRs missing current failure evidence are refused.
+
+The proposal binds the initiating user, QA session, project, PR revision and target
+session for one hour. A complete direct repair instruction can authorize a unique
+target; the instruction must refer to matching server PR evidence or a repair
+proposal shown before the message, including when it names only a PR number. Quoted text, repository
+content and agent assertions are not consent. Otherwise a one-time approval card
+shows the exact target and scope. Ambiguous session selections require this card.
+Each direct instruction is consumed atomically with incident ownership and cannot
+authorize another proposal or attempt. Neither path changes the project's
+Monitor/Automatic setting.
+
+The manual request shares the existing durable incident ownership, concurrency
+limits and repair budget with background repairs. Busy sessions receive a durable
+queued assignment rather than steering their current turn. Every admission,
+including after a restart, checks current access, QA settings, expiry, PR revision,
+failure evidence and the target worktree again. Before admission, its attached
+HEAD must equal the approved PR commit; a detached preview or a clean but stale
+worktree is refused. Revoked or invalid queued requests
+are cancelled; an admitted receipt is never replayed. After a confirmed attempt ends with failing
+checks, a new approved proposal may use the remaining repair budget in Monitor
+mode; reusing the old proposal cannot start another attempt. `repair_status` reports
+`proposed`, `queued`, `accepted` or `blocked`; accepted confirms admission, not a
+successful repair. The existing supervisor checks terminal execution and forge
+results. An uncertain transport response never proves that execution stopped.
+
+The bounded resolver searches at most ten discovery pages. Missing coverage is a
+blocked resolution, not permission to guess a target. General session tools remain
+unavailable to QA. Merge, release, deployment and QA activation remain separate
+operations. Install the server update before live acceptance of this path.
+
+## Explicit project assignments
+
+The QA chat can delegate an explicitly requested project change without an existing
+PR. `propose_assignment` stores the project, instruction, acceptance criteria and
+optional existing session; omitting the session creates a project session through
+the same provisioner as Control handoffs. `request_assignment` admits that exact
+proposal. A one-time card shows the stored scope; an exact, project-naming current
+user instruction can replace the card only when it also contains the acceptance
+criteria and any selected session. Agent messages and repository content cannot
+supply consent. Approval does not enable future automatic work.
+
+Assignments share project exclusivity and the two concurrent-work limit with CI
+repairs. A busy target waits instead of being steered. Follow-ups may continue unfinished
+changes only when tracked, staged and untracked contents and the last prompt still
+match the captured attempt boundary; unrelated edits require a new approval.
+Submodule worktrees are not eligible for this continuation shortcut. Receipts deduplicate
+admission across retries and restarts. Each assignment uses one target and allows
+at most two follow-up attempts. Existing tool permissions and review gates still
+apply; the assignment does not authorize merging, deployment or broader access.
+
+Canonical session events and pending tool approvals wake reconciliation; a periodic pass recovers missed
+wakes. Completion is correlated to the admitted prompt and ends at a successor
+prompt. Durable notifications wait until QA is idle, and superseded notifications
+are discarded. Admission alone does not acknowledge delivery: an interrupted or
+failed QA notification turn can be retried twice after its durable running marker
+is cleared. Repeated delivery failure leaves verification explicitly blocked. `assignments` rediscovers the requesting user's project assignments after a restart;
+`assignment_status` exposes confirmed state and bounded evidence;
+`review_assignment` requires the current version. A successful process exit is
+only `verifying`, not `completed`. Completion requires current matching local HEAD
+and successful PR checks plus QA's assessment of the requested acceptance
+criteria. Domain-specific outcomes such as measured release duration still need
+explicit evidence; green checks alone do not establish them. Missing or truncated
+evidence must remain unverified or result in a bounded follow-up. Report clipping
+is explicitly flagged and prevents completion until a subsequent attempt supplies
+complete evidence.
+
+`stop_assignment` fences future dispatch and cancels only the handle corresponding
+to its exact receipt. An unconfirmed stop retains ownership. Revoked permissions
+or changed QA configuration fence queued work and stop active work. The mobile
+chat renders confirmed assignment results with a link to the target session;
+historical cards describe the state at that update.

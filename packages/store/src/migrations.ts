@@ -5040,3 +5040,58 @@ migrations['0178_qa_observation_diagnostics'] = {
     await sql`alter table repair_mandates drop column observation_error`.execute(db);
   },
 };
+
+migrations['0179_qa_manual_repairs'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`create table qa_manual_repairs (
+      id text primary key, project_id text not null references projects(id) on delete cascade,
+      source_session_id text not null, user_id text not null, target_session_id text not null,
+      number integer not null, branch text not null, revision text not null, requires_card boolean not null default false,
+      qa_revision integer not null, mandate_revision integer not null,
+      expires_at timestamptz not null default now() + interval '1 hour',
+      dispatch_id text unique, consent_key text unique, reason text
+    )`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table qa_manual_repairs`.execute(db);
+  },
+};
+
+// Existing manually configured clients retain their form-post authentication.
+migrations['0180_mcp_oauth_token_auth_method'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table http_mcp_connections add column oauth_token_auth_method text not null default 'client_secret_post' check (oauth_token_auth_method in ('none', 'client_secret_post', 'client_secret_basic'))`.execute(
+      db,
+    );
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table http_mcp_connections drop column oauth_token_auth_method`.execute(db);
+  },
+};
+
+migrations['0181_qa_assignments'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`create table qa_assignments (
+ id text primary key, project_id text not null references projects(id) on delete cascade,
+ source_session_id text not null, user_id text not null, target_session_id text,
+ state text not null, title text not null, instruction text not null, criteria text not null,
+ qa_revision integer not null, mandate_revision integer not null,
+ consent_key text unique, attempt integer not null default 0, dispatch_id text,
+ feedback text not null default '', evidence text not null default '', reason text,
+ version integer not null default 1, created_at timestamptz not null default now(),
+ expires_at timestamptz not null default now() + interval '1 hour'
+ )`.execute(db);
+    await sql`create unique index qa_assignment_project_owner on qa_assignments(project_id) where state in ('queued','running','waiting','verifying','stopping')`.execute(
+      db,
+    );
+    await sql`create table qa_assignment_notifications (
+ id text primary key, assignment_id text not null references qa_assignments(id) on delete cascade,
+ dispatch_id text not null unique, payload text not null,
+ attempt integer not null default 0, acknowledged boolean not null default false
+ )`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table qa_assignment_notifications`.execute(db);
+    await sql`drop table qa_assignments`.execute(db);
+  },
+};

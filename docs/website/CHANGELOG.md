@@ -1,5 +1,19 @@
 # Changelog
 
+## [2.8.0](https://github.com/Heey-Global/verity/compare/website-v2.7.0...website-v2.8.0) (2026-11-01)
+
+
+### Features
+
+* **mcp:** discover OAuth and complete native/web sign-ins ([#2160](https://github.com/Heey-Global/verity/issues/2160)) ([d23b893](https://github.com/Heey-Global/verity/commit/d23b893d390210052c61477f08efb84c982c65b2))
+
+## [2.7.0](https://github.com/Heey-Global/verity/compare/website-v2.6.0...website-v2.7.0) (2026-11-01)
+
+
+### Features
+
+* **self-update:** install archive-only gVisor releases through the update path ([#2140](https://github.com/Heey-Global/verity/issues/2140)) ([cb981b0](https://github.com/Heey-Global/verity/commit/cb981b014341a07ab3e57128f8f79621e056da79))
+
 ## [2.6.0](https://github.com/Heey-Global/verity/compare/website-v2.5.3...website-v2.6.0) (2026-10-31)
 
 

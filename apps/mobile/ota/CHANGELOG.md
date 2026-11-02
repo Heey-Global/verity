@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.83.1](https://github.com/Heey-Global/verity/compare/mobile-v1.83.0...mobile-v1.83.1) (2026-11-01)
+
+
+### Features
+
+* **sandbox:** add elastic memory limits and resilient OOM handling ([#2142](https://github.com/Heey-Global/verity/issues/2142)) ([923158f](https://github.com/Heey-Global/verity/commit/923158f56f4481aef0055a5a7fe506cd4adee739))
+
+
+### Bug Fixes
+
+* **diagnostics:** preserve safe stop and export failure reasons ([#2147](https://github.com/Heey-Global/verity/issues/2147)) ([daa9c27](https://github.com/Heey-Global/verity/commit/daa9c27788d24312dd07541056874ec4624d741b))
+
 ## [1.82.1](https://github.com/Heey-Global/verity/compare/mobile-v1.82.0...mobile-v1.82.1) (2026-10-31)
 
 

@@ -1,3 +1,4 @@
+import { writeHostPreparation } from './host-preparation.js';
 import { createServer as createHttpServer, request as httpRequest, type Server } from 'node:http';
 import {
   chmod,
@@ -42,6 +43,7 @@ import {
   publishUpdaterHandoff,
   readUpdaterAgentSeed,
   readUpdaterAttempt,
+  readUpdaterHostPreparation,
   readUpdaterDeployment,
   readUpdaterHandoff,
   readUpdaterOperation,
@@ -1803,5 +1805,30 @@ describe('managed Updater stuck-operation recovery', () => {
     expect(await readUpdaterAttempt({ socketPath, token })).toEqual(record);
     await writeUpdateAttempt(managedRoot, { ...record, updateId: 'update-earlier' });
     expect(await readUpdaterAttempt({ socketPath, token })).toBeNull();
+  });
+});
+
+describe('optional host preparation status', () => {
+  it('reports only current progress over the authenticated sidecar route', async () => {
+    const { socketPath, token, managedRoot } = await fixture({ managed: true });
+    await requestUpdaterOperation({
+      socketPath,
+      token,
+      idempotencyKey: 'runtime-progress',
+      targetDigest: image('b'),
+    });
+    await advanceUpdate(managedRoot, 'requested', 'pulling');
+    await advanceUpdate(managedRoot, 'pulling', 'verifying-image');
+    const journal = await advanceUpdate(managedRoot, 'verifying-image', 'preflight');
+    await writeHostPreparation(managedRoot, journal, 'renewing');
+    expect(await readUpdaterHostPreparation({ socketPath, token })).toMatchObject({
+      updateId: journal.updateId,
+      stage: 'renewing',
+    });
+    expect(await readUpdaterHostPreparation({ socketPath, token: 'wrong-token' })).toBeNull();
+    await writeHostPreparation(managedRoot, { ...journal, updateId: 'old-operation' }, 'renewing');
+    expect(await readUpdaterHostPreparation({ socketPath, token })).toBeNull();
+    // The original exact operation contract remains consumable while the sidecar is present.
+    expect(await readUpdaterOperation({ socketPath, token })).toMatchObject({ phase: 'preflight' });
   });
 });

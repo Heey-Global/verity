@@ -111,6 +111,7 @@ services:
   verity-control-runner:
     image: ${VERITY_SERVER_IMAGE:?set the digest-pinned server image containing the agent gateway}
     restart: unless-stopped
+    oom_score_adj: ${VERITY_CONTROL_PLANE_RUNNER_OOM_SCORE_ADJ:--250}
     mem_limit: ${VERITY_CONTROL_PLANE_RUNNER_MEMORY:-4g}
     memswap_limit: ${VERITY_CONTROL_PLANE_RUNNER_MEMORY_SWAP:-4g}
     cpus: ${VERITY_CONTROL_PLANE_RUNNER_CPUS:-4}

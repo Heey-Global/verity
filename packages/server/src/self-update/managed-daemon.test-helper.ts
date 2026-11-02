@@ -83,6 +83,7 @@ function inspectFromSpec(id: string, spec: ContainerSpec, status: string): Conta
     // Missing daemon ceilings falsely reject an exact standby after a crash.
     ...(spec.memoryBytes === undefined ? {} : { memoryBytes: spec.memoryBytes }),
     ...(spec.memorySwapBytes === undefined ? {} : { memorySwapBytes: spec.memorySwapBytes }),
+    ...(spec.oomScoreAdj === undefined ? {} : { oomScoreAdj: spec.oomScoreAdj }),
     ...(spec.nanoCpus === undefined ? {} : { nanoCpus: spec.nanoCpus }),
     ...(spec.pidsLimit === undefined ? {} : { pidsLimit: spec.pidsLimit }),
     mounts: [

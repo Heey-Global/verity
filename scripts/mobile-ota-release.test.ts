@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  parsePublishedManifest,
   fixedCandidate,
   planCandidate,
   proposalBaseForSource,
@@ -315,7 +316,11 @@ const onMain = () => {
   const previous = parts[0]+'.'+parts[1]+'.'+(Number(parts[2])-1);
   return {...candidate, version, tag:'mobile-v'+version, branch:'staging-mobile-v'+version+'-'+sha, baseline:'mobile-v'+previous};
 };
-if(tool === 'curl') out({id:candidate.group,runtimeVersion:'staging-'+candidate.runtime,launchAsset:{hash:require('node:crypto').createHash('sha256').update(s.wrongBundle?'different export':'hermes').digest('base64url')}});
+if(tool === 'curl') {
+  if (!args.includes('Accept: multipart/mixed')) { process.stderr.write('HTTP 406: EAS Update clients must accept multipart/mixed'); fail(); }
+  const manifest = {id:candidate.group,runtimeVersion:'staging-'+candidate.runtime,launchAsset:{hash:require('node:crypto').createHash('sha256').update(s.wrongBundle?'different export':'hermes').digest('base64url')}};
+  out(['--ExpoManifestBoundary-real','Content-Disposition: form-data; name="manifest"','Content-Type: application/json','',JSON.stringify(manifest),'--ExpoManifestBoundary-real--',''].join('\\r\\n'));
+}
 if(tool === 'git') {
   if(args[0] === 'rev-parse') {if(args[1]==='origin/main'){s.baseReads=(s.baseReads??0)+1;out(s.moveProposalBase && s.baseReads>1?'e'.repeat(40):(s.proposalBase??sha));}out(sha);}
   if(args[0] === 'merge-base' || args[0] === 'fetch') out('');
@@ -970,4 +975,30 @@ it('recovers a proposal on delivered main without conflicts or reverting newer a
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }
+});
+
+describe('published Expo multipart manifest', () => {
+  const manifest = { id: group, launchAsset: { hash: 'published-hash' } };
+  const part = (name = 'manifest', type = 'application/json', value = JSON.stringify(manifest)) =>
+    `Content-Disposition: form-data; name="${name}"\r\nContent-Type: ${type}\r\n\r\n${value}`;
+  const response = (...parts: string[]) =>
+    `--ExpoManifestBoundary-real\r\n${parts.join('\r\n--ExpoManifestBoundary-real\r\n')}\r\n--ExpoManifestBoundary-real--\r\n`;
+  it('extracts the manifest alongside extensions from the real Expo MIME structure', () => {
+    expect(parsePublishedManifest(response(part('extensions'), part()))).toEqual(manifest);
+  });
+  it.each([
+    ['missing manifest', response(part('extensions'))],
+    ['duplicate manifests', response(part(), part())],
+    ['wrong content type', response(part('manifest', 'text/plain'))],
+    ['invalid JSON', response(part('manifest', 'application/json', '{'))],
+    ['non-object JSON', response(part('manifest', 'application/json', 'null'))],
+    ['truncated body', response(part()).slice(0, -8)],
+    ['bare JSON', JSON.stringify(manifest)],
+    [
+      'duplicate headers',
+      response(part().replace('Content-Type:', 'Content-Type: text/plain\r\nContent-Type:')),
+    ],
+  ])('rejects %s', (_name, body) => {
+    expect(() => parsePublishedManifest(body)).toThrow();
+  });
 });

@@ -33,6 +33,9 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '26.13.0'
+      - uses: ./.github/actions/reclaim-runner-disk
+        with:
+          minimum-free-gib: '20'
       - name: Prepare disposable KVM guest tooling
         run: |
           mkdir -p "$RUNNER_TEMP/project-egress-boot-evidence"
@@ -78,6 +81,9 @@ jobs:
         with:
           node-version: '26.13.0'
           cache: npm
+      - uses: ./.github/actions/reclaim-runner-disk
+        with:
+          minimum-free-gib: '40'
       - name: Prepare actual source and native guest assets
         env:
           PROBE_EVIDENCE: ${{ runner.temp }}/project-egress-boot-proof
@@ -91,6 +97,9 @@ jobs:
           npm ci --ignore-scripts
           npx tsc -b packages/server
           bash scripts/probes/project-egress/boot-build.sh
+      - uses: ./.github/actions/reclaim-runner-disk
+        with:
+          minimum-free-gib: '36'
       - name: Retain actual topology across kernel, daemon and process events
         env:
           PROBE_EVIDENCE: ${{ runner.temp }}/project-egress-boot-proof

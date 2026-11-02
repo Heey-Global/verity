@@ -219,6 +219,7 @@ export interface HttpMcpConnectionsTable {
   authorization: string | null;
   auth_type: ColumnType<string, string | undefined, string>;
   oauth_client_id: string | null;
+  oauth_token_auth_method: ColumnType<string, string | undefined, string>;
   oauth_client_secret: string | null;
   oauth_authorization_endpoint: string | null;
   oauth_token_endpoint: string | null;
@@ -1595,6 +1596,9 @@ export interface VulnDigestsTable {
 }
 export interface Database {
   qa_dispatches: QADispatchesTable;
+  qa_manual_repairs: QAManualRepairsTable;
+  qa_assignments: QAAssignmentsTable;
+  qa_assignment_notifications: QAAssignmentNotificationsTable;
   repair_resource_budgets: RepairResourceBudgetsTable;
   repair_mandates: RepairMandatesTable;
   repair_incidents: RepairIncidentsTable;
@@ -1948,6 +1952,24 @@ interface QADecisionsTable {
   created_at: Generated<Date>;
 }
 
+interface QAManualRepairsTable {
+  id: string;
+  project_id: string;
+  source_session_id: string;
+  user_id: string;
+  target_session_id: string;
+  number: number;
+  branch: string;
+  revision: string;
+  requires_card: Generated<boolean>;
+  qa_revision: number;
+  mandate_revision: number;
+  expires_at: Generated<Date>;
+  dispatch_id: string | null;
+  consent_key: string | null;
+  reason: string | null;
+}
+
 interface QADispatchesTable {
   id: string;
   session_id: string;
@@ -1960,4 +1982,35 @@ interface RepairResourceBudgetsTable {
   resource: string;
   used: Generated<number>;
   cycle: Generated<number>;
+}
+
+interface QAAssignmentsTable {
+  id: string;
+  project_id: string;
+  source_session_id: string;
+  user_id: string;
+  target_session_id: string | null;
+  state: string;
+  title: string;
+  instruction: string;
+  criteria: string;
+  qa_revision: number;
+  mandate_revision: number;
+  consent_key: string | null;
+  attempt: Generated<number>;
+  dispatch_id: string | null;
+  feedback: Generated<string>;
+  evidence: Generated<string>;
+  reason: string | null;
+  version: Generated<number>;
+  created_at: Generated<Date>;
+  expires_at: Generated<Date>;
+}
+interface QAAssignmentNotificationsTable {
+  attempt: Generated<number>;
+  acknowledged: Generated<boolean>;
+  id: string;
+  assignment_id: string;
+  dispatch_id: string;
+  payload: string;
 }

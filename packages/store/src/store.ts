@@ -1,5 +1,6 @@
 import { AssistantStore } from './assistant.js';
 import { SchedulingStore } from './scheduling.js';
+import { QAAssignmentStore } from './qa-assignments.js';
 import { RepairSupervisionStore } from './repair-supervision.js';
 import { ProjectEgressStore } from './project-egress.js';
 import { VulnerabilityScanStore } from './vulnerability-scan.js';
@@ -476,6 +477,7 @@ export interface HttpMcpConnectionRecord {
   authType?: 'none' | 'static' | 'oauth';
   oauthClientId?: string | null;
   oauthClientSecret?: string | null;
+  oauthTokenAuthMethod?: 'none' | 'client_secret_post' | 'client_secret_basic';
   oauthAuthorizationEndpoint?: string | null;
   oauthTokenEndpoint?: string | null;
   oauthScopes?: string | null;
@@ -1423,6 +1425,7 @@ export class EventStore implements EventSink {
     this.vulnerabilityScans = new VulnerabilityScanStore(db);
     this.tasks = new TaskStore(db, cipher);
     this.repairs = new RepairSupervisionStore(db);
+    this.qaAssignments = new QAAssignmentStore(db);
     this.assistant = new AssistantStore(db);
     this.scheduling = new SchedulingStore(db, cipher);
   }
@@ -1433,6 +1436,7 @@ export class EventStore implements EventSink {
   readonly liveMeetings: LiveMeetingStore;
   readonly tasks: TaskStore;
   readonly repairs: RepairSupervisionStore;
+  readonly qaAssignments: QAAssignmentStore;
   readonly assistant: AssistantStore;
   readonly scheduling: SchedulingStore;
   readonly managedDevServers: ManagedDevServerStore;
@@ -8699,6 +8703,7 @@ export class EventStore implements EventSink {
         authorization: this.encryptSecret(record.authorization),
         auth_type: record.authType ?? (record.authorization === null ? 'none' : 'static'),
         oauth_client_id: record.oauthClientId ?? null,
+        oauth_token_auth_method: record.oauthTokenAuthMethod ?? 'client_secret_post',
         oauth_client_secret: this.encryptSecret(record.oauthClientSecret ?? null),
         oauth_authorization_endpoint: record.oauthAuthorizationEndpoint ?? null,
         oauth_token_endpoint: record.oauthTokenEndpoint ?? null,
@@ -8715,6 +8720,7 @@ export class EventStore implements EventSink {
           authorization: this.encryptSecret(record.authorization),
           auth_type: record.authType ?? (record.authorization === null ? 'none' : 'static'),
           oauth_client_id: record.oauthClientId ?? null,
+          oauth_token_auth_method: record.oauthTokenAuthMethod ?? 'client_secret_post',
           oauth_client_secret: this.encryptSecret(record.oauthClientSecret ?? null),
           oauth_authorization_endpoint: record.oauthAuthorizationEndpoint ?? null,
           oauth_token_endpoint: record.oauthTokenEndpoint ?? null,
@@ -8744,6 +8750,9 @@ export class EventStore implements EventSink {
       authorization: this.decryptSecret(row.authorization),
       authType: row.auth_type as NonNullable<HttpMcpConnectionRecord['authType']>,
       oauthClientId: row.oauth_client_id,
+      oauthTokenAuthMethod: row.oauth_token_auth_method as NonNullable<
+        HttpMcpConnectionRecord['oauthTokenAuthMethod']
+      >,
       oauthClientSecret: this.decryptSecret(row.oauth_client_secret),
       oauthAuthorizationEndpoint: row.oauth_authorization_endpoint,
       oauthTokenEndpoint: row.oauth_token_endpoint,

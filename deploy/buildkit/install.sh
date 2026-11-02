@@ -43,6 +43,10 @@ else
 fi
 # Reuse the host installer's checksum verification and release-version checks.
 "$source_dir/../gvisor/install-runsc-host.sh"
+# This bundle's runtime service just registered the pinned gVisor; install that same copy as
+# the host's, so the Updater can ask it for pin shapes the installed one predates (a release
+# archive) without a manual installer run. A host the installer never set up is left alone.
+"$source_dir/../host/verity-host-runtime" install-self
 source "$source_dir/../gvisor/versions.env"
 install -d -m 0755 /usr/local/libexec/verity-buildkit /etc/verity-buildkit
 container=

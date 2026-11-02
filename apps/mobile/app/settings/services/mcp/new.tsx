@@ -1,15 +1,11 @@
-// Adding one remote HTTP MCP connection.
-//
-// A full screen rather than a form wedged under the list: OAuth needs five more
-// fields than a static header does, and the operator is pasting endpoints from
-// another app while filling it in.
+// Remote HTTP MCP setup uses metadata discovery, with manual OAuth as a fallback.
 import { type VerityClient } from '@verity/mobile';
+import * as Clipboard from 'expo-clipboard';
 import { router } from 'expo-router';
-import { useCallback, useMemo, useRef, useState } from 'react';
-import { Platform, Text, TextInput, View } from 'react-native';
-import { useUnistyles } from 'react-native-unistyles';
-
+import { useMemo, useRef, useState } from 'react';
+import { Platform, Text } from 'react-native';
 import {
+  SettingsChoiceRow,
   SettingsGroup,
   SettingsMessage,
   SettingsPanel,
@@ -17,12 +13,12 @@ import {
 } from '../../../../components/settings/SettingsChrome';
 import { settingsStyles as styles } from '../../../../components/settings/settingsStyles';
 import { createVerityClient } from '../../../../lib/client';
-import { isOfficialGmailMcpUrl } from '../../../../lib/mcpOAuth';
-import { Button, Card, ToggleRow } from '../../../../components/ui';
+import { mcpOAuthCallbackUri } from '../../../../lib/mcpOAuth';
+import { Button, Card, TextField, ToggleRow } from '../../../../components/ui';
 
 export default function NewMcpConnectionScreen() {
   const client = useMemo(() => createVerityClient(), []);
-  if (!client) {
+  if (!client)
     return (
       <SettingsMessage
         title="Not connected"
@@ -30,26 +26,64 @@ export default function NewMcpConnectionScreen() {
         screenTitle="Add MCP connection"
       />
     );
-  }
   return <NewMcpConnectionView client={client} />;
 }
 
 function NewMcpConnectionView({ client }: { client: VerityClient }) {
-  const { theme } = useUnistyles();
   const [name, setName] = useState('');
   const [url, setUrl] = useState('');
   const [authorization, setAuthorization] = useState('');
   const [useOAuth, setUseOAuth] = useState(false);
+  const [manual, setManual] = useState(false);
   const [oauthClientId, setOauthClientId] = useState('');
   const [oauthClientSecret, setOauthClientSecret] = useState('');
   const [oauthAuthorizationEndpoint, setOauthAuthorizationEndpoint] = useState('');
   const [oauthTokenEndpoint, setOauthTokenEndpoint] = useState('');
   const [oauthScopes, setOauthScopes] = useState('');
+  const [tokenAuthMethod, setTokenAuthMethod] = useState<
+    'none' | 'client_secret_post' | 'client_secret_basic'
+  >('client_secret_post');
+  const [discoveredUrl, setDiscoveredUrl] = useState<string | undefined>();
+  const [registrationAvailable, setRegistrationAvailable] = useState(false);
+  const [discovering, setDiscovering] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | undefined>(undefined);
+  const [error, setError] = useState<string | undefined>();
   const submissionInFlight = useRef(false);
+  const discoveryRevision = useRef(0);
+  const callback = mcpOAuthCallbackUri();
+  const unsupportedWeb =
+    Platform.OS === 'web' &&
+    typeof window !== 'undefined' &&
+    window.location.protocol !== 'https:' &&
+    !['localhost', '127.0.0.1', '[::1]'].includes(window.location.hostname);
+  const detected = discoveredUrl === url.trim();
 
-  const add = useCallback(() => {
+  const discover = async () => {
+    const requestedUrl = url.trim();
+    const revision = ++discoveryRevision.current;
+    setDiscovering(true);
+    setError(undefined);
+    try {
+      const result = await client.discoverHttpMcpOAuth(requestedUrl);
+      if (revision !== discoveryRevision.current) return;
+      setOauthAuthorizationEndpoint(result.authorizationEndpoint);
+      setOauthTokenEndpoint(result.tokenEndpoint);
+      setOauthScopes(result.scopes);
+      setRegistrationAvailable(result.registrationAvailable);
+      setDiscoveredUrl(requestedUrl);
+    } catch {
+      if (revision === discoveryRevision.current) {
+        setManual(true);
+        setError(
+          'OAuth could not be detected. Check the URL or enter the provider settings under Advanced.',
+        );
+      }
+    } finally {
+      if (revision === discoveryRevision.current) setDiscovering(false);
+    }
+  };
+
+  const add = () => {
     if (submissionInFlight.current) return;
     submissionInFlight.current = true;
     setBusy(true);
@@ -61,187 +95,217 @@ function NewMcpConnectionView({ client }: { client: VerityClient }) {
         authType: useOAuth ? 'oauth' : authorization.trim() === '' ? 'none' : 'static',
         ...(useOAuth
           ? {
-              oauthClientId: oauthClientId.trim(),
-              ...(oauthClientSecret.trim() === ''
-                ? {}
-                : { oauthClientSecret: oauthClientSecret.trim() }),
-              oauthAuthorizationEndpoint: oauthAuthorizationEndpoint.trim(),
-              oauthTokenEndpoint: oauthTokenEndpoint.trim(),
-              oauthScopes: oauthScopes.trim(),
+              ...(oauthClientId.trim()
+                ? { oauthClientId: oauthClientId.trim(), oauthTokenAuthMethod: tokenAuthMethod }
+                : {}),
+              ...(oauthClientSecret.trim() ? { oauthClientSecret: oauthClientSecret.trim() } : {}),
+              ...((detected || manual) && oauthAuthorizationEndpoint.trim()
+                ? { oauthAuthorizationEndpoint: oauthAuthorizationEndpoint.trim() }
+                : {}),
+              ...((detected || manual) && oauthTokenEndpoint.trim()
+                ? { oauthTokenEndpoint: oauthTokenEndpoint.trim() }
+                : {}),
+              ...(detected || manual ? { oauthScopes: oauthScopes.trim() } : {}),
             }
-          : authorization.trim() === ''
-            ? {}
-            : { authorization: authorization.trim() }),
+          : authorization.trim()
+            ? { authorization: authorization.trim() }
+            : {}),
       })
-      // Back to the list, which reloads on focus and shows the new connection —
-      // including its "Connect OAuth" action, which is the next step.
       .then(() => router.back())
-      .catch(() => setError('Could not save the MCP connection. Use a public HTTPS URL.'))
+      .catch((caught: unknown) =>
+        setError(
+          caught instanceof Error
+            ? caught.message
+            : 'Could not save the MCP connection. Use a public HTTPS URL.',
+        ),
+      )
       .finally(() => {
         submissionInFlight.current = false;
         setBusy(false);
       });
-  }, [
-    authorization,
-    client,
-    name,
-    oauthAuthorizationEndpoint,
-    oauthClientId,
-    oauthClientSecret,
-    oauthScopes,
-    oauthTokenEndpoint,
-    url,
-    useOAuth,
-  ]);
-
-  const oauthFields: {
-    label: string;
-    value: string;
-    onChangeText: (next: string) => void;
-    placeholder: string;
-    secure?: boolean;
-  }[] = [
-    {
-      label: 'OAuth client ID',
-      value: oauthClientId,
-      onChangeText: setOauthClientId,
-      placeholder: 'Client ID',
-    },
-    {
-      label: 'OAuth client secret (optional)',
-      value: oauthClientSecret,
-      onChangeText: setOauthClientSecret,
-      placeholder: 'Client secret',
-      secure: true,
-    },
-    {
-      label: 'Authorization endpoint',
-      value: oauthAuthorizationEndpoint,
-      onChangeText: setOauthAuthorizationEndpoint,
-      placeholder: 'https://accounts.example.com/oauth/authorize',
-    },
-    {
-      label: 'Token endpoint',
-      value: oauthTokenEndpoint,
-      onChangeText: setOauthTokenEndpoint,
-      placeholder: 'https://accounts.example.com/oauth/token',
-    },
-    {
-      label: 'OAuth scopes (space-separated)',
-      value: oauthScopes,
-      onChangeText: setOauthScopes,
-      placeholder: 'openid profile',
-    },
-  ];
-
+  };
   const incomplete =
     name.trim() === '' ||
     url.trim() === '' ||
     (useOAuth &&
-      (oauthClientId.trim() === '' ||
-        oauthAuthorizationEndpoint.trim() === '' ||
-        oauthTokenEndpoint.trim() === '' ||
-        oauthScopes.trim() === ''));
+      (unsupportedWeb ||
+        (manual &&
+          (((!detected || !registrationAvailable) && !oauthClientId.trim()) ||
+            !oauthAuthorizationEndpoint.trim() ||
+            !oauthTokenEndpoint.trim())) ||
+        (detected && !registrationAvailable && !oauthClientId.trim())));
 
   return (
     <SettingsScaffold title="Add MCP connection" detail>
       <SettingsGroup title="Server">
         <SettingsPanel>
-          <View style={styles.pathContent}>
-            <Text style={styles.pathLabel}>Connection name</Text>
-            <TextInput
-              style={styles.pathInput}
-              value={name}
-              onChangeText={setName}
-              placeholder="gmail"
-              placeholderTextColor={theme.colors.textFaint}
-              autoCapitalize="none"
-              accessibilityLabel="Connection name"
-            />
-          </View>
-          <View style={styles.pathContent}>
-            <Text style={styles.pathLabel}>Remote HTTPS MCP URL</Text>
-            <TextInput
-              style={styles.pathInput}
-              value={url}
-              onChangeText={setUrl}
-              placeholder="https://mcp.example.com/gmail"
-              placeholderTextColor={theme.colors.textFaint}
-              autoCapitalize="none"
-              autoCorrect={false}
-              keyboardType="url"
-              accessibilityLabel="Remote HTTPS MCP URL"
-            />
-          </View>
+          <TextField
+            label="Connection name"
+            value={name}
+            onChangeText={setName}
+            placeholder="my-tools"
+            literal
+            disabled={busy}
+          />
+          <TextField
+            label="Remote HTTPS MCP URL"
+            value={url}
+            onChangeText={(value) => {
+              ++discoveryRevision.current;
+              setDiscovering(false);
+              setDiscoveredUrl(undefined);
+              setRegistrationAvailable(false);
+              if (!manual) {
+                setOauthAuthorizationEndpoint('');
+                setOauthTokenEndpoint('');
+                setOauthScopes('');
+              }
+              setUrl(value);
+            }}
+            keyboardType="url"
+            placeholder="https://mcp.example.com/mcp"
+            disabled={busy}
+          />
         </SettingsPanel>
       </SettingsGroup>
-
       <SettingsGroup title="Authentication">
         <SettingsPanel>
           <Card flush>
             <ToggleRow
               title="Use OAuth 2.0"
-              subtitle={Platform.OS !== 'ios' ? 'Requires Verity for iOS' : undefined}
               value={useOAuth}
-              disabled={Platform.OS !== 'ios'}
-              onValueChange={(next) => {
-                setUseOAuth(next);
-                // Google's endpoints are not discoverable from the MCP URL, and
-                // typing them by hand is where this flow usually fails.
-                if (next && isOfficialGmailMcpUrl(url.trim())) {
-                  setOauthAuthorizationEndpoint('https://accounts.google.com/o/oauth2/v2/auth');
-                  setOauthTokenEndpoint('https://oauth2.googleapis.com/token');
-                  setOauthScopes(
-                    'https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.compose',
-                  );
-                }
-              }}
+              disabled={busy}
+              onValueChange={setUseOAuth}
             />
           </Card>
-
           {useOAuth ? (
-            oauthFields.map((field) => (
-              <View style={styles.pathContent} key={field.label}>
-                <Text style={styles.pathLabel}>{field.label}</Text>
-                <TextInput
-                  style={styles.pathInput}
-                  value={field.value}
-                  onChangeText={field.onChangeText}
-                  placeholder={field.placeholder}
-                  placeholderTextColor={theme.colors.textFaint}
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  secureTextEntry={field.secure === true}
-                  accessibilityLabel={field.label}
-                />
-              </View>
-            ))
-          ) : (
-            <View style={styles.pathContent}>
-              <Text style={styles.pathLabel}>Authorization header (optional)</Text>
-              <TextInput
-                style={styles.pathInput}
-                value={authorization}
-                onChangeText={setAuthorization}
-                placeholder="Bearer …"
-                placeholderTextColor={theme.colors.textFaint}
-                autoCapitalize="none"
-                autoCorrect={false}
-                secureTextEntry
-                accessibilityLabel="Authorization header"
+            <>
+              {unsupportedWeb ? (
+                <Text style={styles.fieldError}>
+                  Web OAuth requires HTTPS or localhost. Open Verity through an HTTPS address, such
+                  as your Tailscale HTTPS hostname.
+                </Text>
+              ) : null}
+              <Button
+                label="Detect OAuth settings"
+                disabled={!url.trim() || busy}
+                loading={discovering}
+                onPress={() => {
+                  void discover();
+                }}
               />
-            </View>
+              {detected ? (
+                <Text style={styles.pathLabel}>
+                  {registrationAvailable
+                    ? 'OAuth detected. Verity can register a client automatically.'
+                    : 'OAuth detected. This provider requires your own OAuth client ID.'}
+                </Text>
+              ) : null}
+              <TextField
+                label="OAuth client ID"
+                value={oauthClientId}
+                onChangeText={setOauthClientId}
+                placeholder="Leave empty for automatic registration"
+                literal
+                disabled={busy}
+              />
+              <TextField
+                label="OAuth client secret (optional)"
+                value={oauthClientSecret}
+                onChangeText={setOauthClientSecret}
+                secret
+                disabled={busy}
+              />
+              <Text style={styles.pathLabel}>OAuth callback URL</Text>
+              <Text selectable style={styles.pathLabel}>
+                {callback}
+              </Text>
+              <Button
+                label="Copy callback URL"
+                variant="secondary"
+                onPress={() => {
+                  void Clipboard.setStringAsync(callback);
+                }}
+              />
+              <Text style={styles.pathLabel}>
+                When using your own OAuth app, register this exact callback URL with the provider.
+                Automatic registration configures it for you.
+              </Text>
+              <Card flush>
+                <ToggleRow
+                  title="Advanced OAuth settings"
+                  value={manual}
+                  disabled={busy}
+                  onValueChange={setManual}
+                />
+              </Card>
+              {manual ? (
+                <>
+                  <Card flush>
+                    {(
+                      [
+                        ['client_secret_post', 'Client secret in request body'],
+                        ['client_secret_basic', 'Client secret via HTTP Basic'],
+                        ['none', 'Public client (PKCE only)'],
+                      ] as const
+                    ).map(([method, title]) => (
+                      <SettingsChoiceRow
+                        key={method}
+                        title={title}
+                        selected={tokenAuthMethod === method}
+                        disabled={busy}
+                        onPress={() => setTokenAuthMethod(method)}
+                      />
+                    ))}
+                  </Card>
+                  <TextField
+                    label="Authorization endpoint"
+                    value={oauthAuthorizationEndpoint}
+                    onChangeText={setOauthAuthorizationEndpoint}
+                    keyboardType="url"
+                    disabled={busy}
+                  />
+                  <TextField
+                    label="Token endpoint"
+                    value={oauthTokenEndpoint}
+                    onChangeText={setOauthTokenEndpoint}
+                    keyboardType="url"
+                    disabled={busy}
+                  />
+                  <TextField
+                    label="OAuth scopes"
+                    value={oauthScopes}
+                    onChangeText={setOauthScopes}
+                    placeholder="Provider scopes, passed unchanged"
+                    literal
+                    disabled={busy}
+                  />
+                </>
+              ) : null}
+            </>
+          ) : (
+            <TextField
+              label="Authorization header (optional)"
+              accessibilityLabel="Authorization header"
+              value={authorization}
+              onChangeText={setAuthorization}
+              placeholder="Bearer …"
+              secret
+              disabled={busy}
+            />
           )}
         </SettingsPanel>
       </SettingsGroup>
-
-      {error !== undefined ? <Text style={styles.fieldError}>{error}</Text> : null}
-
+      {error !== undefined ? (
+        <Text style={styles.fieldError} accessibilityRole="alert">
+          {error}
+        </Text>
+      ) : null}
       <Button
         label="Add connection"
         accessibilityLabel="Add MCP connection"
         loading={busy}
-        disabled={incomplete}
+        disabled={incomplete || discovering}
         onPress={add}
         fullWidth
       />
