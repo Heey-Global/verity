@@ -117,14 +117,28 @@ export default function RepairSettingsScreen() {
                   }}
                 />
               ) : null}
-              {incident.last_session_id ? (
+              {incident.originating_session_id ? (
+                <>
+                  <Text variant="footnote">
+                    The originating session handles this PR. QA observes recurring causes; changing
+                    QA access does not pause session repairs. Open the session to inspect or stop
+                    its work.
+                  </Text>
+                  <Button
+                    variant="secondary"
+                    label="Open originating session"
+                    onPress={() => router.push(`/session/${incident.originating_session_id}`)}
+                  />
+                </>
+              ) : null}
+              {incident.last_session_id && !incident.originating_session_id ? (
                 <Button
                   variant="secondary"
                   label="Open repair session"
                   onPress={() => router.push(`/session/${incident.last_session_id}`)}
                 />
               ) : null}
-              {incident.last_session_id ? (
+              {incident.last_session_id && !incident.originating_session_id ? (
                 <Button
                   variant="secondary"
                   label="Take over"
@@ -140,6 +154,7 @@ export default function RepairSettingsScreen() {
               ) : null}
               {['blocked', 'verifying'].includes(incident.state) &&
               !incident.owner_session_id &&
+              !incident.originating_session_id &&
               incident.attempts < 2 ? (
                 <Button
                   variant="secondary"

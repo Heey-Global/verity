@@ -39,14 +39,16 @@ export default function ProjectRepairSettingsScreen() {
         <Text>{resource.data?.mandate?.mode ?? 'off'}</Text>
         {!resource.data?.qaEnabled ? (
           <Text variant="footnote">
-            QA is disabled in system settings. Enable QA there before allowing monitoring or
-            automatic repairs here.
+            QA is disabled in system settings. Enable QA there before allowing monitoring or QA
+            repairs here. Session PR repairs continue independently.
           </Text>
         ) : null}
         <Text variant="footnote">
           Off is the default: QA receives no new observations and cannot assign work in this
           project. Monitor allows observation only. Automatic repairs also allows QA to assign
-          existing or new project sessions without asking each time.
+          repairs for resources without an originating session, without asking each time. Session
+          PRs repair automatically in their originating session in every QA mode. QA analyzes
+          recurring failures across PRs to propose preventive improvements.
         </Text>
         <Group>
           <Button

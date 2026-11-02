@@ -406,3 +406,20 @@ it('consumes a chat instruction once across distinct proposals and permits a fre
   ).toMatchObject({ status: 'accepted' });
   expect(deps.dispatch).toHaveBeenCalledTimes(2);
 });
+
+it('returns session responsibility without creating another repair proposal', async () => {
+  const { service, deps } = setup();
+  await ctx.store.repairs.registerSessionOrigin('p', 'pr:2120', 'target');
+  expect(await service.resolve(caller, 'p', 2120)).toMatchObject({
+    status: 'session-managed',
+    sessionId: 'target',
+  });
+  expect(deps.dispatch).not.toHaveBeenCalled();
+});
+it('rejects a manual proposal if origin responsibility appeared before admission', async () => {
+  const { service, resolve, deps } = setup();
+  const id = await resolve();
+  await ctx.store.repairs.registerSessionOrigin('p', 'pr:2120', 'target');
+  await expect(service.request(caller, 'p', id)).rejects.toThrow('originating session');
+  expect(deps.dispatch).not.toHaveBeenCalled();
+});
