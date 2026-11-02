@@ -372,6 +372,7 @@ describe('PushSender', () => {
       }),
     ).resolves.toEqual({
       targets: 3,
+      deferred: 0,
       ticketsAccepted: 1,
       ticketErrors: 2,
       receiptsQueued: 1,

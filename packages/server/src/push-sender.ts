@@ -53,6 +53,8 @@ export interface PushNotification {
 export interface PushSendResult {
   /** Unique selected devices, including those deferred by a failure cooldown. */
   targets: number;
+  /** Selected devices awaiting a failure cooldown; omitted by legacy senders. */
+  deferred?: number;
   ticketsAccepted: number;
   ticketErrors: number;
   receiptsQueued: number;
@@ -211,6 +213,7 @@ class DefaultPushSender implements PushSender {
     );
     const result: PushSendResult = {
       targets: tokens.length,
+      deferred: tokens.length - eligible.length,
       ticketsAccepted: 0,
       ticketErrors: 0,
       receiptsQueued: 0,
