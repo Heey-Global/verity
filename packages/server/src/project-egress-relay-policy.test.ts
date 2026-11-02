@@ -327,6 +327,8 @@ it('accepts only the brokered Forge route settings in the relay environment', ()
     ['VERITY_FORGE_PROXY=anything'],
     ['VERITY_FORGE_AUTHORITIES=["github.com:0"]'],
     ['VERITY_FORGE_AUTHORITIES=["github.com:65536"]'],
+    ['VERITY_FORGE_AUTHORITIES=["github.com:0443"]'],
+    ['VERITY_FORGE_AUTHORITIES=["github.com:100000"]'],
     ['VERITY_FORGE_AUTHORITIES=["GitHub.com:443"]'],
     ['VERITY_FORGE_AUTHORITIES=["github.com"]'],
     ['VERITY_FORGE_AUTHORITIES=["10.0.0.1:443"]'],
