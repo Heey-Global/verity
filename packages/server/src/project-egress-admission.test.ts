@@ -252,3 +252,26 @@ it('admits host-owned system targets beside project grants without breaking curr
   expect(admission.admitted('mcp.exa.ai')?.addresses).toEqual(['8.8.8.8']);
   expect(admission.admitted('downloads.example.com')).toBeUndefined();
 });
+
+it('drops only an unreachable system target, never the project grants', async () => {
+  const f = fixture();
+  const admission = createProjectEgressAdmission({
+    binding: f.binding,
+    sponsorUserId: 'sponsor',
+    store: f.store,
+    systemTargets: [{ host: 'mcp.exa.ai', protocol: 'tcp', port: 443 }],
+    dependencies: f.dependencies,
+  });
+  f.dependencies.resolve.mockImplementation(async (...args: unknown[]) => {
+    if (args[0] === 'mcp.exa.ai') throw new Error('Exa DNS outage');
+    return { addresses: ['8.8.8.8'], expiresAt: 30000 };
+  });
+  await admission.prepare();
+  await admission.refresh();
+  expect(admission.admitted('downloads.example.com')?.addresses).toEqual(['8.8.8.8']);
+  expect(admission.admitted('mcp.exa.ai')).toBeUndefined();
+  // A failing project grant still fails the whole refresh closed.
+  f.dependencies.resolve.mockRejectedValue(new Error('project DNS outage'));
+  await expect(admission.refresh()).rejects.toThrow('project DNS outage');
+  expect(f.dependencies.apply.mock.calls.at(-1)![0]).not.toContain('elements =');
+});

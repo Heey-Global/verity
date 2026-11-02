@@ -85,6 +85,8 @@ export function createProjectEgressAdmission(options: {
             binding,
             revision: policy.revision,
             grants: withSystem(policy.grants),
+            // An unreachable system target excludes only itself, never the project's grants.
+            optional: system.map((grant) => grant.id),
           });
         } catch (error) {
           await fence.revoke(binding);
