@@ -1209,23 +1209,31 @@ describe('deploy/bin/verity-compose', () => {
   });
 
   it.each([
-    { interrupted: false, abort: false, foreign: false, cleanup: false },
-    { interrupted: true, abort: false, foreign: false, cleanup: false },
-    { interrupted: true, abort: true, foreign: false, cleanup: false },
-    { interrupted: true, abort: false, foreign: true, cleanup: false },
-    { interrupted: true, abort: false, foreign: false, cleanup: true },
+    { interrupted: false, abort: false, foreign: false, cleanup: false, network: 'normal' },
+    { interrupted: true, abort: false, foreign: false, cleanup: false, network: 'normal' },
+    { interrupted: true, abort: true, foreign: false, cleanup: false, network: 'normal' },
+    { interrupted: true, abort: false, foreign: true, cleanup: false, network: 'normal' },
+    { interrupted: true, abort: false, foreign: false, cleanup: true, network: 'normal' },
+    { interrupted: true, abort: false, foreign: false, cleanup: false, network: 'fail-once' },
+    { interrupted: true, abort: false, foreign: false, cleanup: false, network: 'detached' },
+    { interrupted: true, abort: false, foreign: false, cleanup: false, network: 'fail-cycle' },
   ])(
     'adopts a self-replaced updater and keeps PostgreSQL running ($interrupted, abort=$abort)',
-    async ({ interrupted, abort, foreign, cleanup }) => {
+    async ({ interrupted, abort, foreign, cleanup, network }) => {
       tempRoot = mkdtempSync(join(tmpdir(), 'verity-compose-recovery-'));
       const bin = join(tempRoot, 'bin');
       const calls = join(tempRoot, 'calls');
       const running = join(tempRoot, 'db-running');
       const removed = join(tempRoot, 'replacement-removed');
       const token = join(tempRoot, 'updater-token');
+      const attached = join(tempRoot, 'network-attached');
+      const aliased = join(tempRoot, 'network-aliased');
+      const attempts = join(tempRoot, 'network-attempts');
       mkdirSync(bin);
       writeFileSync(token, 'a'.repeat(64), { mode: 0o600 });
       if (!interrupted || foreign) writeFileSync(running, 'running');
+      if (network !== 'detached') writeFileSync(attached, 'attached');
+      if (network === 'normal') writeFileSync(aliased, 'aliased');
       writeFileSync(
         join(bin, 'docker'),
         `#!/bin/sh
@@ -1238,12 +1246,25 @@ case "$*" in
     if [ '${interrupted}' = true ] && [ ! -f '${removed}' ]; then echo pg-created; fi ;;
   inspect*' pg-old')
     case "$*" in
-      *Aliases*) echo postgres ;;
-      *) if [ -f '${running}' ]; then state=running; else state=exited; fi
-         echo "deploy|postgres|$state|/deploy-postgres-1|deploy_verity-db|verity-net||" ;;
+      *Aliases*) if [ -f '${aliased}' ]; then echo postgres; fi ;;
+      *com.docker.compose.project*)
+         if [ -f '${running}' ]; then state=running; else state=exited; fi
+         if [ -f '${attached}' ]; then net=verity-net; else net=''; fi
+         echo "deploy|postgres|$state|/deploy-postgres-1|deploy_verity-db|$net||" ;;
+      *) if [ -f '${attached}' ]; then echo verity-net; fi ;;
+
     esac ;;
   inspect*' pg-created') echo 'deploy|postgres|created|/pg-old_deploy-postgres-1|${foreign ? 'foreign-data' : 'deploy_verity-db'}|verity-net|pg-old|' ;;
   'start pg-old') echo running > '${running}' ;;
+  'network inspect -f '*verity-net) echo 'deploy|default' ;;
+  'network disconnect verity-net pg-old') rm -f '${attached}' '${aliased}' ;;
+  'network connect --alias postgres verity-net pg-old')
+    if [ -f '${attempts}' ]; then count="$(cat '${attempts}')"; else count=0; fi
+    count=$((count + 1)); echo "$count" > '${attempts}'
+    if [ '${network}' = fail-once ] && [ "$count" -eq 1 ]; then exit 55; fi
+    if [ '${network}' = fail-cycle ] && [ "$count" -le 3 ]; then exit 55; fi
+    echo attached > '${attached}'; echo aliased > '${aliased}' ;;
+
   'rm pg-created') [ '${cleanup}' = false ] || exit 24; echo removed > '${removed}' ;;
   'ps -aq --filter label=com.docker.compose.project=deploy --filter label=com.docker.compose.service=verity-updater') echo updater-live ;;
   inspect*' updater-live') echo 'deploy|verity-updater|running|none|verity-managed-deployment|deployment' ;;
@@ -1284,7 +1305,8 @@ esac
         });
       // Rerunning must neither lose the database nor recreate the adopted updater.
       for (let run = 0; run < 2; run++) {
-        if (abort || foreign || cleanup) await expect(repair()).rejects.toMatchObject({ code: 70 });
+        if (abort || foreign || cleanup || (network === 'fail-cycle' && run === 0))
+          await expect(repair()).rejects.toMatchObject({ code: 70 });
         else await repair();
         expect(readFileSync(running, 'utf8').trim()).toBe('running');
         if (interrupted && !foreign && !cleanup)
@@ -1296,6 +1318,10 @@ esac
         expect(invocations.indexOf('start pg-old')).toBeLessThan(
           invocations.indexOf('rm pg-created'),
         );
+      if (network !== 'normal') {
+        expect(readFileSync(aliased, 'utf8').trim()).toBe('aliased');
+        if (network === 'detached') expect(invocations).not.toContain('network disconnect');
+      }
       expect(invocations).not.toContain('stop updater-live');
       expect(invocations).not.toContain('start updater-live');
       if (!foreign && !cleanup)

@@ -270,7 +270,7 @@ if [ "${1:-}" = "managed-up" ]; then
       IFS='|' read -r pg_project pg_service pg_status pg_name pg_volume pg_network pg_replaces pg_runtime_replacement <<EOF
 $pg_meta
 EOF
-      if [ "$pg_project" != "$repair_project" ] || [ "$pg_service" != postgres ] || [ "$pg_volume" != "${repair_project}_verity-db" ] || [ "$pg_network" != verity-net ]; then
+      if [ "$pg_project" != "$repair_project" ] || [ "$pg_service" != postgres ] || [ "$pg_volume" != "${repair_project}_verity-db" ] || { [ -n "$pg_network" ] && [ "$pg_network" != verity-net ]; }; then
         printf '%s\n' 'verity-compose: PostgreSQL identity or storage conflicts; refusing destructive recovery' >&2
         return 1
       fi
@@ -301,13 +301,6 @@ EOF
       # the predecessor running. The replacement is proven never-started.
       docker start "$pg_old" >/dev/null || return 1
       if [ -n "$pg_created" ]; then docker rm "$pg_created" >/dev/null || return 1; fi
-      # A Compose replacement may have renamed the predecessor. Restore service
-      # discovery explicitly without relying on its temporary container name.
-      pg_alias="$(docker inspect -f '{{range $name, $network := .NetworkSettings.Networks}}{{if eq $name "verity-net"}}{{range $network.Aliases}}{{if eq . "postgres"}}postgres{{end}}{{end}}{{end}}{{end}}' "$pg_old")" || return 1
-      if [ "$pg_alias" != postgres ]; then
-        docker network disconnect verity-net "$pg_old" || return 1
-        docker network connect --alias postgres verity-net "$pg_old" || return 1
-      fi
       repair_pg="$pg_old"
     elif [ -n "$pg_created" ]; then
       docker start "$pg_created" >/dev/null || return 1
@@ -316,6 +309,24 @@ EOF
       compose_managed --profile managed up -d --no-deps postgres || return 1
       repair_pg="$(compose_managed --profile managed ps -q postgres)" || return 1
       [ -n "$repair_pg" ] || return 1
+    fi
+    # Re-enter safely after a previous alias repair disconnected the endpoint.
+    # Project/service labels and storage identify the container even detached;
+    # the destination network must independently belong to this Compose project.
+    pg_alias="$(docker inspect -f '{{range $name, $network := .NetworkSettings.Networks}}{{if eq $name "verity-net"}}{{range $network.Aliases}}{{if eq . "postgres"}}postgres{{end}}{{end}}{{end}}{{end}}' "$repair_pg")" || return 1
+    if [ "$pg_alias" != postgres ]; then
+      network_owner="$(docker network inspect -f '{{index .Labels "com.docker.compose.project"}}|{{index .Labels "com.docker.compose.network"}}' verity-net)" || return 1
+      [ "$network_owner" = "$repair_project|default" ] || return 1
+      pg_connected="$(docker inspect -f '{{range $name, $network := .NetworkSettings.Networks}}{{if eq $name "verity-net"}}verity-net{{end}}{{end}}' "$repair_pg")" || return 1
+      if [ "$pg_connected" = verity-net ]; then
+        docker network disconnect verity-net "$repair_pg" || return 1
+      fi
+      connect_attempt=0
+      until docker network connect --alias postgres verity-net "$repair_pg"; do
+        connect_attempt=$((connect_attempt + 1))
+        [ "$connect_attempt" -lt 3 ] || return 1
+        sleep 1
+      done
     fi
     pg_attempt=0
     until docker exec "$repair_pg" pg_isready -U verity -d verity >/dev/null 2>&1; do
