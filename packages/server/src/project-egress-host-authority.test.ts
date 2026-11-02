@@ -27,6 +27,9 @@ it('requires explicit DNS, canonical direct route inventory and a root-selected 
     { directHosts: ['matrix.example.org'], mandatoryHosts: ['example.org'] },
   ])
     expect(() => egressHostAuthority.parse({ ...config, ...patch })).toThrow(/broker or system/);
+  expect(() => egressHostAuthority.parse({ ...config, mandatoryHosts: ['198.51.100.20'] })).toThrow(
+    /names, not addresses/,
+  );
   expect(
     egressHostAuthority.parse({ ...config, mandatoryHosts: ['Matrix.Example.net'] }).mandatoryHosts,
   ).toEqual(['matrix.example.net']);

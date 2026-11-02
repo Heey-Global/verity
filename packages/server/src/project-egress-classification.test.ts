@@ -4,7 +4,7 @@ import {
   mandatoryEgressRoute,
   PROTECTED_ADDRESS_HOSTS,
 } from './project-egress-classification.js';
-import { EGRESS_DNS_NOT_PUBLIC } from './project-egress-resolver.js';
+import { EGRESS_DNS_MIXED, EGRESS_DNS_NOT_PUBLIC } from './project-egress-resolver.js';
 
 it('classifies broker and system domains including subdomains, not lookalikes', () => {
   expect(mandatoryEgressRoute('github.com')).toBe('forge');
@@ -178,4 +178,24 @@ it('keeps configured broker addresses through transient failures and only an ove
   mode = 'gone';
   await inventory.refresh();
   expect(inventory.allows('198.51.100.20')).toBe(true);
+});
+
+it('keeps the public front ends of a mixed protected answer and reports configured outages', async () => {
+  const reported: string[] = [];
+  const inventory = createProtectedAddressInventory({
+    hosts: ['registry.npmjs.org'],
+    configuredHosts: ['matrix.example.net'],
+    reportConfiguredFailure: (host) => reported.push(host),
+    resolve: async (host) => {
+      if (host === 'matrix.example.net') throw new Error('Project DNS deadline exceeded');
+      throw Object.assign(new Error('Forbidden project DNS answer'), {
+        code: EGRESS_DNS_MIXED,
+        publicAddresses: ['104.16.0.34'],
+      });
+    },
+  });
+  await inventory.refresh();
+  expect(inventory.allows('104.16.0.34')).toBe(false);
+  expect(inventory.allows('198.51.100.7')).toBe(true);
+  expect(reported).toEqual(['matrix.example.net']);
 });

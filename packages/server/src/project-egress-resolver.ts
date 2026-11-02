@@ -5,8 +5,10 @@ import { canonicalEgressTarget } from '@verity/store';
 
 /** A complete answer established that the name has no public unicast address. */
 export const EGRESS_DNS_NOT_PUBLIC = 'EGRESS_DNS_NOT_PUBLIC';
-const notPublic = (message: string): Error =>
-  Object.assign(new Error(message), { code: EGRESS_DNS_NOT_PUBLIC });
+/** A complete answer mixed public and non-public addresses; `publicAddresses` lists the former. */
+export const EGRESS_DNS_MIXED = 'EGRESS_DNS_MIXED';
+const forbidden = (code: string, publicAddresses: readonly string[] = []): Error =>
+  Object.assign(new Error('Forbidden project DNS answer'), { code, publicAddresses });
 
 export interface ProjectEgressResolution {
   addresses: readonly string[];
@@ -70,8 +72,12 @@ export function createProjectEgressResolver(options: {
         }),
       ]);
       const records = results.flat();
-      if (!records.length) throw notPublic('Invalid project DNS answer count');
+      if (!records.length)
+        throw Object.assign(new Error('Invalid project DNS answer count'), {
+          code: EGRESS_DNS_NOT_PUBLIC,
+        });
       if (records.length > 32) throw new Error('Invalid project DNS answer count');
+      // Structure first, for every record, so the outcome never depends on record order.
       for (const [family, answers] of results.entries())
         for (const record of answers)
           if (
@@ -80,12 +86,18 @@ export function createProjectEgressResolver(options: {
             record.ttl <= 0
           )
             throw new Error('Forbidden project DNS answer');
-          // Sinkholed, private and host/project addresses are definitive, not outages.
-          else if (
-            ipaddr.parse(record.address).range() !== 'unicast' ||
-            !(await options.destinationAllowed(record.address))
-          )
-            throw notPublic('Forbidden project DNS answer');
+      // Sinkholed, private and host/project addresses are definitive, not outages.
+      const publicAddresses: string[] = [];
+      for (const record of records)
+        if (
+          ipaddr.parse(record.address).range() === 'unicast' &&
+          (await options.destinationAllowed(record.address))
+        )
+          publicAddresses.push(ipaddr.parse(record.address).toString());
+      if (publicAddresses.length !== records.length)
+        throw forbidden(publicAddresses.length ? EGRESS_DNS_MIXED : EGRESS_DNS_NOT_PUBLIC, [
+          ...new Set(publicAddresses),
+        ]);
       const expiresAt = startedAt + Math.min(...records.map((record) => record.ttl), 86400) * 1000;
       if (now() >= expiresAt) throw new Error('Project DNS answer expired');
       return {

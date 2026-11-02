@@ -1,7 +1,11 @@
 import { isIP } from 'node:net';
 import ipaddr from 'ipaddr.js';
 import { canonicalEgressTarget } from '@verity/store';
-import { EGRESS_DNS_NOT_PUBLIC, type ProjectEgressResolution } from './project-egress-resolver.js';
+import {
+  EGRESS_DNS_MIXED,
+  EGRESS_DNS_NOT_PUBLIC,
+  type ProjectEgressResolution,
+} from './project-egress-resolver.js';
 
 export type MandatoryEgressClass =
   'forge' | 'google' | 'model' | 'secrets' | 'search' | 'packages' | 'configured';
@@ -103,13 +107,17 @@ export interface ProtectedAddressInventory {
   allows(address: string): boolean;
 }
 
-/** The resolver established that a name has no public address (NXDOMAIN, empty,
- * sinkholed or private answer). Timeouts, oversized answers and inventory failures
- * stay transient.
+/** Public addresses a complete answer established, or undefined for a transient
+ * failure. Mixed answers keep their public subset; NXDOMAIN, empty, sinkholed or
+ * private answers contribute none. Timeouts and oversized answers stay transient.
  */
-function definitelyNotPublic(error: unknown): boolean {
-  const { code } = error as NodeJS.ErrnoException;
-  return code === 'ENOTFOUND' || code === 'ENODATA' || code === EGRESS_DNS_NOT_PUBLIC;
+function establishedPublic(error: unknown): readonly string[] | undefined {
+  const { code, publicAddresses } = error as NodeJS.ErrnoException & {
+    publicAddresses?: readonly string[];
+  };
+  if (code === EGRESS_DNS_MIXED) return publicAddresses ?? [];
+  if (code === 'ENOTFOUND' || code === 'ENODATA' || code === EGRESS_DNS_NOT_PUBLIC) return [];
+  return undefined;
 }
 
 /** Host-owned inventory. Unknown or stale state denies every direct address. */
@@ -118,6 +126,8 @@ export function createProtectedAddressInventory(options: {
   hosts?: readonly string[];
   /** Deployment-configured names: a failed, empty or private answer adds nothing. */
   configuredHosts?: readonly string[];
+  /** Persistent configured-host failures leave that host without address protection. */
+  reportConfiguredFailure?(host: string, error: unknown): void;
   now?: () => number;
   maxAgeMs?: number;
 }): ProtectedAddressInventory {
@@ -140,9 +150,11 @@ export function createProtectedAddressInventory(options: {
           const result = await options.resolve(host);
           entries.set(host, { addresses: result.addresses.map(normalize), at: startedAt });
         } catch (error) {
-          // A name without public addresses contributes none; a transient failure keeps
+          // A complete answer contributes its public subset; a transient failure keeps
           // the last confirmed addresses until they age out.
-          if (definitelyNotPublic(error)) entries.set(host, { addresses: [], at: startedAt });
+          const established = establishedPublic(error);
+          if (established)
+            entries.set(host, { addresses: established.map(normalize), at: startedAt });
           else failures.push(error);
         }
       }),
@@ -155,7 +167,9 @@ export function createProtectedAddressInventory(options: {
         try {
           configured.set(host, (await options.resolve(host)).addresses.map(normalize));
         } catch (error) {
-          if (definitelyNotPublic(error)) configured.set(host, []);
+          const established = establishedPublic(error);
+          if (established) configured.set(host, established.map(normalize));
+          else options.reportConfiguredFailure?.(host, error);
         }
       }),
     );

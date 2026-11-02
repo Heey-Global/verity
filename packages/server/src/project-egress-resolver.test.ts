@@ -1,7 +1,11 @@
 import { expect, it, vi } from 'vitest';
 import { Resolver } from 'node:dns/promises';
 import { createSocket } from 'node:dgram';
-import { createProjectEgressResolver, EGRESS_DNS_NOT_PUBLIC } from './project-egress-resolver.js';
+import {
+  createProjectEgressResolver,
+  EGRESS_DNS_MIXED,
+  EGRESS_DNS_NOT_PUBLIC,
+} from './project-egress-resolver.js';
 
 function fixture() {
   let now = 1000;
@@ -150,6 +154,7 @@ it('marks only complete non-public answers as definitive for protected inventori
       (error: NodeJS.ErrnoException) => error.code,
     );
   const f = fixture();
+  f.resolver.resolve6.mockResolvedValue([]);
   f.resolver.resolve4.mockResolvedValue([{ address: '0.0.0.0', ttl: 30 }]);
   expect(await code(f.resolve('downloads.example.com'))).toBe(EGRESS_DNS_NOT_PUBLIC);
   f.resolver.resolve4.mockResolvedValue([{ address: '10.0.0.8', ttl: 30 }]);
@@ -171,4 +176,25 @@ it('marks only complete non-public answers as definitive for protected inventori
   expect(await code(f.resolve('downloads.example.com'))).toBeUndefined();
   f.resolver.resolve4.mockRejectedValue(Object.assign(new Error(), { code: 'ETIMEOUT' }));
   expect(await code(f.resolve('downloads.example.com'))).toBe('ETIMEOUT');
+});
+
+it('reports the public subset of a mixed answer and classifies independent of record order', async () => {
+  const f = fixture();
+  f.resolver.resolve6.mockResolvedValue([]);
+  f.resolver.resolve4.mockResolvedValue([
+    { address: '10.0.0.8', ttl: 30 },
+    { address: '8.8.8.8', ttl: 30 },
+  ]);
+  const mixed = await f.resolve('downloads.example.com').then(
+    () => undefined,
+    (error: NodeJS.ErrnoException & { publicAddresses?: string[] }) => error,
+  );
+  expect(mixed?.code).toBe(EGRESS_DNS_MIXED);
+  expect(mixed?.publicAddresses).toEqual(['8.8.8.8']);
+  // A malformed record makes the answer transient wherever it appears.
+  f.resolver.resolve4.mockResolvedValue([
+    { address: '10.0.0.8', ttl: 30 },
+    { address: '8.8.4.4', ttl: 0 },
+  ]);
+  await expect(f.resolve('downloads.example.com')).rejects.not.toHaveProperty('code');
 });

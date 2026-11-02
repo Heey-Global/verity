@@ -1,6 +1,7 @@
 import { constants } from 'node:fs';
 import { open, lstat, realpath } from 'node:fs/promises';
 import { dirname } from 'node:path';
+import { isIP } from 'node:net';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import ipaddr from 'ipaddr.js';
@@ -67,8 +68,12 @@ export const egressHostAuthority = z
       .max(3),
     /** An explicit host-reviewed route inventory; unclassified hosts stay unavailable. */
     directHosts: canonicalHosts(1000),
-    /** Deployment-specific broker/system hosts (Matrix, OpenCode, private MCP). */
-    mandatoryHosts: canonicalHosts(100).default([]),
+    /** Deployment-specific broker/system host names (Matrix, OpenCode, private MCP). */
+    mandatoryHosts: canonicalHosts(100)
+      .refine((hosts) => hosts.every((host) => isIP(host) === 0), {
+        message: 'Broker and system hosts must be names, not addresses',
+      })
+      .default([]),
     projectSponsors: z.record(name, name),
   })
   // A configuration that lists a broker-only destination as direct is rejected,

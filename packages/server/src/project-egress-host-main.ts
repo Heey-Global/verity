@@ -69,6 +69,9 @@ const resolve =
 const protectedAddresses = createProtectedAddressInventory({
   resolve,
   configuredHosts: authority?.mandatoryHosts ?? [],
+  reportConfiguredFailure: (host, error) => {
+    console.error(`Configured broker host ${host} could not be resolved`, error);
+  },
 });
 const deadline = hostProjectDeadlineEnforcer();
 const enforcement = createProjectEgressHostEnforcement({
