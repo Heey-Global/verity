@@ -1081,3 +1081,23 @@ Guest files alone cannot verify host enforcement. Guard headroom remains one fif
 of the hard limit (minimum 1 GiB, maximum half), so at 12 GiB it acts near 9.6 GiB.
 A guard eviction writes a best-effort nonblocking stderr notice before stopping an agent; ACP uses that notice with exit 137 to report a memory-limit failure. Without that notice, SIGKILL/137 is reported as possible memory pressure, not proof of OOM.
 The ACP result now retains the real process exit instead of replacing it with 1.
+
+### Repair on an existing managed installation
+
+Repair preserves the existing PostgreSQL container and its runtime configuration.
+Database image changes run through the Updater's maintenance workflow, which
+quiesces the Server and can restore the previous image after failed validation.
+Repair does not use Compose configuration hashes to replace the database.
+
+A valid existing Updater is adopted without being stopped or recreated, including
+an Updater that replaced itself outside Compose. Gateway reconciliation uses
+explicit services with dependencies disabled. If an interrupted Compose operation
+left a stopped PostgreSQL predecessor and an unstarted replacement, Repair
+validates ownership, named storage and network identity before removing the
+proven replacement and restarting the predecessor. It waits for PostgreSQL
+readiness before proceeding, and later reconciliation failures leave it running.
+Ambiguous ownership is refused without deleting containers or volumes.
+
+These guarantees apply to the installer bundled with the fixed release. Repair
+uses the installed release's installer; running an older installed installer
+does not acquire these fixes automatically.

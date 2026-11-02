@@ -5173,7 +5173,25 @@ migrations['0185_calendar_watch_events'] = {
   },
 };
 
-migrations['0186_project_egress_switch'] = {
+migrations['0186_pr_ready_delivery'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`create table pr_ready_delivery (
+      session_id text not null references sessions(session_id) on delete cascade,
+      marker text not null,
+      attempts integer not null default 0 check (attempts between 0 and 3),
+      next_attempt_at bigint not null default 0,
+      claim_id text,
+      lease_until bigint not null default 0,
+      completed boolean not null default false,
+      primary key (session_id, marker)
+    )`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table pr_ready_delivery`.execute(db);
+  },
+};
+
+migrations['0187_project_egress_switch'] = {
   async up(db: Kysely<unknown>): Promise<void> {
     // Default off: network protection only applies once an administrator enables it.
     await db.schema

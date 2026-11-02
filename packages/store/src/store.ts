@@ -3519,6 +3519,43 @@ export class EventStore implements EventSink {
     return (result.numInsertedOrUpdatedRows ?? 0n) > 0n;
   }
 
+  /** Reserve before transport: a crash spends a bounded attempt instead of resetting it. */
+  async claimPrReadyDelivery(
+    sessionId: string,
+    marker: string,
+    now: number,
+  ): Promise<string | undefined> {
+    const claim = randomUUID();
+    const result = await sql<{ claim_id: string }>`
+      insert into pr_ready_delivery(session_id, marker, attempts, next_attempt_at, claim_id, lease_until)
+      values (${sessionId}, ${marker}, 1, ${now + 60_000}, ${claim}, ${now + 300_000})
+      on conflict (session_id, marker) do update set
+        attempts = pr_ready_delivery.attempts + 1,
+        next_attempt_at = case when pr_ready_delivery.attempts = 0 then ${now + 60_000}::bigint else ${now + 300_000}::bigint end, claim_id = ${claim}, lease_until = ${now + 300_000}
+      where not pr_ready_delivery.completed and pr_ready_delivery.attempts < 3
+        and pr_ready_delivery.next_attempt_at <= ${now} and pr_ready_delivery.lease_until <= ${now}
+      returning claim_id
+    `.execute(this.db);
+    return result.rows[0]?.claim_id;
+  }
+
+  async finishPrReadyDelivery(
+    sessionId: string,
+    marker: string,
+    claim: string,
+    outcome: 'done' | 'failed' | 'unattempted',
+    now: number,
+  ): Promise<void> {
+    // Claim identity fences a slow former sender after its lease expired.
+    await sql`update pr_ready_delivery set
+      attempts = attempts - ${outcome === 'unattempted' ? 1 : 0},
+      next_attempt_at = case when ${outcome === 'unattempted'} then ${now + 30_000} else next_attempt_at end,
+      completed = ${outcome === 'done'}, claim_id = null, lease_until = 0
+      where session_id = ${sessionId} and marker = ${marker} and claim_id = ${claim}`.execute(
+      this.db,
+    );
+  }
+
   async hasSessionAutomationMarker(sessionId: string, marker: string): Promise<boolean> {
     const row = await this.db
       .selectFrom('session_automation_marker')
@@ -5072,6 +5109,50 @@ export class EventStore implements EventSink {
     if (slices.size === 0) return slices;
     await this.readProjectionSlices(idChunks([...slices.keys()]), slices, this.db, throughSeq);
     return slices;
+  }
+
+  /** Batched fallback with one connection and at most one hydrated history plus a page.
+   * Keyset pages bound decoding bursts without a connection checkout per session. */
+  async visitSessionProjectionEvents(
+    boundaries: ReadonlyMap<string, number>,
+    visit: (sessionId: string, events: SequencedEvent[]) => Promise<void>,
+  ): Promise<void> {
+    if (boundaries.size === 0) return;
+    const input = JSON.stringify([...boundaries].map(([session_id, seq]) => ({ session_id, seq })));
+    await this.db.connection().execute(async (db) => {
+      let afterSession = '';
+      let afterSeq = 0;
+      let currentId: string | undefined;
+      let current: SequencedEvent[] = [];
+      for (;;) {
+        const page = await sql<{
+          session_id: string;
+          id: string | number;
+          payload: unknown;
+          created_at: Date;
+        }>`
+          select e.session_id, e.id, e.payload, e.created_at
+          from jsonb_to_recordset(${input}::jsonb) as boundary(session_id text, seq bigint)
+          join events e on e.session_id = boundary.session_id and e.id <= boundary.seq
+          where e.type = any(${[...SESSION_PROJECTION_EVENT_TYPES]}::text[])
+            and (e.session_id, e.id) > (${afterSession}, ${afterSeq}::bigint)
+          order by e.session_id, e.id limit 500
+        `.execute(db);
+        for (const row of page.rows) {
+          if (currentId !== undefined && currentId !== row.session_id) {
+            await visit(currentId, current);
+            current = [];
+          }
+          currentId = row.session_id;
+          current.push(sequencedEvent(row.session_id, row.id, row.payload, row.created_at));
+          afterSession = row.session_id;
+          afterSeq = Number(row.id);
+        }
+        if (page.rows.length < 500) break;
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+      if (currentId !== undefined) await visit(currentId, current);
+    });
   }
 
   /**
