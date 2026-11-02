@@ -123,7 +123,11 @@ import { createSessionConfirmingWarnings } from '../lib/startSession';
 import { repairProject } from '../lib/projectRepair';
 import { sessionLoadError } from '../lib/sessionLoadError';
 import type { ProjectOverviewStatus } from '../lib/projectSetup';
-import { projectGroups, type SessionProjectGroup } from '../lib/projectGroups';
+import {
+  projectGroups,
+  projectGroupSessionId,
+  type SessionProjectGroup,
+} from '../lib/projectGroups';
 import { formatResetDisplay } from '../lib/time';
 import { SessionChat } from './session/[id]';
 import { toneColor } from '../theme/tokens';
@@ -699,8 +703,8 @@ function SessionList({ client }: { client: VerityClient }) {
           unread={unread}
           previewUrls={previewUrls}
           publicPreviews={publicPreviews}
-          selectedId={wide ? selectedId : null}
-          renamingId={renaming?.sessionId ?? null}
+          selectedId={wide ? projectGroupSessionId(item, selectedId) : null}
+          renamingId={projectGroupSessionId(item, renaming?.sessionId)}
           updatingProjectIds={updatingProjectIds}
           repairingProjectIds={repairingProjectIds}
         />

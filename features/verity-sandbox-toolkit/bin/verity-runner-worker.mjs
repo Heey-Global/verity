@@ -25331,6 +25331,38 @@ var window = {
 };
 var qaAnalysisRequestSchema = import_zod14.z.discriminatedUnion("action", [
   import_zod14.z.object({ action: import_zod14.z.literal("projects") }).strict(),
+  import_zod14.z.object({ action: import_zod14.z.literal("assignments"), projectId }).strict(),
+  import_zod14.z.object({
+    action: import_zod14.z.literal("propose_assignment"),
+    projectId,
+    title: import_zod14.z.string().min(1).max(100),
+    instruction: import_zod14.z.string().min(1).max(12e3),
+    criteria: import_zod14.z.string().min(1).max(4e3),
+    sessionId: projectId.optional()
+  }).strict(),
+  import_zod14.z.object({
+    action: import_zod14.z.literal("request_assignment"),
+    projectId,
+    assignmentId: import_zod14.z.string().regex(/^[a-f0-9]{64}$/)
+  }).strict(),
+  import_zod14.z.object({
+    action: import_zod14.z.literal("assignment_status"),
+    projectId,
+    assignmentId: import_zod14.z.string().regex(/^[a-f0-9]{64}$/)
+  }).strict(),
+  import_zod14.z.object({
+    action: import_zod14.z.literal("stop_assignment"),
+    projectId,
+    assignmentId: import_zod14.z.string().regex(/^[a-f0-9]{64}$/)
+  }).strict(),
+  import_zod14.z.object({
+    action: import_zod14.z.literal("review_assignment"),
+    projectId,
+    assignmentId: import_zod14.z.string().regex(/^[a-f0-9]{64}$/),
+    version: import_zod14.z.number().int().positive(),
+    outcome: import_zod14.z.enum(["completed", "retry", "blocked"]),
+    assessment: import_zod14.z.string().min(1).max(8e3)
+  }).strict(),
   import_zod14.z.object({
     action: import_zod14.z.literal("resolve_repair"),
     projectId,

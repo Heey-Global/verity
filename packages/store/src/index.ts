@@ -267,3 +267,5 @@ export {
   type RepairIncident,
   type RepairMode,
 } from './repair-supervision.js';
+
+export { QAAssignmentStore, type QAAssignment, type QAAssignmentState } from './qa-assignments.js';
