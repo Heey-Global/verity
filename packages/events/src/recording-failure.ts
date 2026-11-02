@@ -17,6 +17,12 @@ export const recordingFailureReasonSchema = z.enum([
   'diagnostics_limit_reached',
   'diagnostics_invalid_cursor',
   'invalid_diagnostics_response',
+  'invalid_diagnostics_response_size',
+  'invalid_diagnostics_response_version',
+  'invalid_diagnostics_response_schema',
+  'invalid_diagnostics_response_run_id',
+  'invalid_diagnostics_response_lifecycle',
+
   'invalid_diagnostics_export',
   'diagnostics_export_changed',
   'diagnostics_export_limit',
