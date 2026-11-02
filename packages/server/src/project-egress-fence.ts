@@ -563,9 +563,12 @@ export class ProjectEgressFence {
       return undefined;
     const addresses = continuity.names.get(host);
     if (!addresses?.length) return undefined;
-    // Several grants for one name may union beyond one DNS answer; any subset is admitted.
+    // Several grants for one name may union beyond one DNS answer; any subset is
+    // admitted, so keep up to 16 of each family rather than starving one of them.
     return {
-      addresses: addresses.slice(0, 32),
+      addresses: [4, 6].flatMap((family) =>
+        addresses.filter((address) => isIP(address) === family).slice(0, 16),
+      ),
       ttlSeconds: Math.max(1, Math.min(5, Math.floor(remaining / 1000))),
     };
   }

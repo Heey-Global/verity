@@ -477,5 +477,22 @@ it('caps a name answer at one DNS answer worth of admitted addresses', async () 
     revision: 1,
     grants: [grant, { ...grant, id: 'alt', target: { ...grant.target, port: 8443 } }],
   });
-  expect(fence.admitted(binding, 'downloads.example.com')?.addresses).toHaveLength(32);
+  const answer = fence.admitted(binding, 'downloads.example.com')!.addresses;
+  expect(answer).toHaveLength(16);
+  for (const address of answer) expect(address).toMatch(/^8\.8\.[12]\.\d+$/u);
+});
+it('keeps both address families when one name admits many addresses', async () => {
+  const { deps, fence } = fixture();
+  await fence.prepare(binding);
+  deps.resolve.mockResolvedValue({
+    addresses: [
+      ...Array.from({ length: 20 }, (_, i) => `8.8.4.${i + 1}`),
+      ...Array.from({ length: 12 }, (_, i) => `2001:4860:4860::${i + 1}`),
+    ],
+    expiresAt: 11000,
+  });
+  await fence.refresh({ binding, revision: 1, grants: [grant] });
+  const answer = fence.admitted(binding, 'downloads.example.com')!.addresses;
+  expect(answer.filter((address) => address.includes(':'))).toHaveLength(12);
+  expect(answer.filter((address) => !address.includes(':'))).toHaveLength(16);
 });
