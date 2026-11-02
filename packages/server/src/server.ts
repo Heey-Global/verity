@@ -2688,6 +2688,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         if (
           pr.headSha &&
           pr.pipeline === 'success' &&
+          !MERGE_CONFLICT_REPAIR.applies(pr) &&
           pr.checks.total > 0 &&
           pr.checks.pending === 0 &&
           pr.checks.failed === 0 &&

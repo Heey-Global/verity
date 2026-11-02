@@ -2694,6 +2694,7 @@ it('waits for confirmed termination across restart before repairing the next ses
   let now = 0;
   let headSha = 'new-sha';
   let pipeline: 'success' | 'failure' = 'failure';
+  let mergeState: 'clean' | 'dirty' = 'clean';
   const status = vi.fn(async () => ({
     number: 119,
     title: 'Session PR',
@@ -2701,7 +2702,8 @@ it('waits for confirmed termination across restart before repairing the next ses
     phase: 'open' as const,
     headSha,
     pipeline,
-    mergeable: true,
+    mergeable: mergeState === 'clean',
+    mergeState,
     checks: {
       completed: 1,
       total: 1,
@@ -2755,8 +2757,17 @@ it('waits for confirmed termination across restart before repairing the next ses
     ).toBe('s1');
     await ctx.store.appendEvent('s1', { t: 'status', state: 'completed' });
     await ctx.store.clearRunningTurn('s1');
-    headSha = 'verified-sha';
     pipeline = 'success';
+    mergeState = 'dirty';
+    now += 120000;
+    await server.inject({ method: 'GET', url: '/sessions/s1/branches' });
+    expect(await ctx.store.repairs.budgetUsed('origin-project', 'pr:119')).toBe(2);
+    expect(
+      (await ctx.store.repairs.incidents('origin-project')).find((i) => i.revision === headSha)
+        ?.state,
+    ).not.toBe('resolved');
+    mergeState = 'clean';
+    headSha = 'verified-sha';
     now += 120000;
     await vi.waitFor(async () =>
       expect(await ctx.store.repairs.budgetUsed('origin-project', 'pr:119')).toBe(0),

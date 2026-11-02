@@ -204,6 +204,7 @@ export function createRepairSupervisor(deps: RepairSupervisorDeps) {
               await store.observe(project.id, resource, sha, evidence);
             if (
               status.pipeline === 'success' &&
+              status.mergeState !== 'dirty' &&
               status.checks.total > 0 &&
               status.checks.pending === 0 &&
               status.checks.failed === 0 &&
