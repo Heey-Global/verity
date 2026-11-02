@@ -690,11 +690,9 @@ export class LiveMeetingStore {
     });
   }
 
-  /** Meetings that are running now: online meetings until the server ends them (including
-   * interrupted ones it is still recovering), device recordings while their recorder still
-   * reports in. A device recording whose app died stays `active` in the table, so the
-   * heartbeat decides rather than the state. */
-  async running(recorderWindowMs = 60_000): Promise<
+  /** Keep open device recordings discoverable when screen lock suspends their heartbeat.
+   * Reachability describes freshness; only a terminal recorder state ends discovery. */
+  async running(): Promise<
     Array<{
       sessionId: string;
       id: string;
@@ -703,18 +701,25 @@ export class LiveMeetingStore {
       startedAt: number;
       state: 'active' | 'interrupted';
       captureStatus: string;
+      recorderLastSeenAt: number | null;
     }>
   > {
     const rows = await this.db
       .selectFrom('live_meetings')
-      .select(['session_id', 'id', 'title', 'engine', 'started_at', 'state', 'capture_status'])
+      .select([
+        'session_id',
+        'id',
+        'title',
+        'engine',
+        'started_at',
+        'state',
+        'capture_status',
+        'recorder_last_seen_at',
+      ])
       .where((eb) =>
         eb.or([
           eb.and([eb('engine', '=', 'attendee'), eb('state', '<>', 'ended')]),
-          eb.and([
-            eb('state', '=', 'active'),
-            eb('recorder_last_seen_at', '>', Date.now() - recorderWindowMs),
-          ]),
+          eb('state', '=', 'active'),
         ]),
       )
       .orderBy('started_at', 'desc')
@@ -727,6 +732,7 @@ export class LiveMeetingStore {
       startedAt: Number(row.started_at),
       state: row.state === 'interrupted' ? 'interrupted' : 'active',
       captureStatus: row.capture_status,
+      recorderLastSeenAt: row.engine === 'attendee' ? null : Number(row.recorder_last_seen_at),
     }));
   }
 

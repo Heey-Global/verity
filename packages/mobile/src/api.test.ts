@@ -4397,7 +4397,20 @@ describe('VerityClient calendar meetings', () => {
 
   it('reads running, unassigned and upcoming meetings', async () => {
     const active = {
-      running: [],
+      running: [
+        {
+          id: 'device',
+          sessionId: 'session',
+          title: null,
+          engine: 'fluid-nemotron',
+          startedAt: 1,
+          state: 'active',
+          captureStatus: 'listening',
+          sessionName: null,
+          projectId: null,
+          recorderLastSeenAt: 2,
+        },
+      ],
       unassigned: [
         {
           id: 'm1',
