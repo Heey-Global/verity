@@ -1603,6 +1603,7 @@ describe('ProvisionerImpl (#174)', () => {
     const id = await seedProject('active');
     const retained = {
       id: 'container-1',
+      networks: { [projectNetworkName(id)]: {} },
       running: false,
       image: 'sandbox:test',
       labels: { [PROJECT_ID_LABEL]: id, [CONTAINER_GENERATION_LABEL]: 'generation-1' },
@@ -1745,6 +1746,7 @@ describe('ProvisionerImpl (#174)', () => {
     const id = await seedProject('active');
     const retained = {
       id: 'container-1',
+      networks: { [projectNetworkName(id)]: {} },
       running: false,
       image: 'sandbox:test',
       labels: { [PROJECT_ID_LABEL]: id, [CONTAINER_GENERATION_LABEL]: 'generation-1' },

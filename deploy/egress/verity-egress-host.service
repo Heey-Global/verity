@@ -15,6 +15,8 @@ StateDirectory=verity-egress
 StateDirectoryMode=0700
 RuntimeDirectory=verity-egress
 RuntimeDirectoryMode=0750
+# The Server bind-mounts this directory; replacing its inode strands the socket mount.
+RuntimeDirectoryPreserve=yes
 ExecStart=/usr/bin/flock --exclusive --nonblock --no-fork /var/lib/verity-egress/service.lock /usr/bin/node /opt/verity-egress/project-egress-host-main.mjs serve
 ExecStopPost=/usr/bin/flock --exclusive --nonblock /var/lib/verity-egress/service.lock /usr/bin/node /opt/verity-egress/project-egress-host-main.mjs deny
 KillMode=control-group

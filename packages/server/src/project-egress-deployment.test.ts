@@ -3,6 +3,12 @@ import { describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
 
 describe('network protection deployment', () => {
+  it('preserves the bind-mounted socket directory across host-service restarts', async () => {
+    const unit = await readFile('deploy/egress/verity-egress-host.service', 'utf8');
+    expect(unit).toMatch(/^RuntimeDirectory=verity-egress$/m);
+    expect(unit).toMatch(/^RuntimeDirectoryPreserve=yes$/m);
+  });
+
   it('keeps the base stack free of the host egress service', async () => {
     const compose = await readFile('deploy/docker-compose.yml', 'utf8');
     expect(compose).not.toContain('VERITY_PROJECT_EGRESS_SOCKET');
