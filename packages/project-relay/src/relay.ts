@@ -43,8 +43,6 @@ export const BROKER_RELAY_ROUTES: ReadonlySet<string> = new Set([
   'POST /internal/mcp-proxy',
   'GET /internal/mcp-proxy',
   'DELETE /internal/mcp-proxy',
-  // The controlled DNS answerer's name lookup; the relay's own DNS listener uses it too.
-  'POST /internal/dns',
 ]);
 /**
  * Routes the Server does not answer from its own state but parks on an operator decision.

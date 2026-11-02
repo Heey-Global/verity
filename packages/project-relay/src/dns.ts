@@ -194,7 +194,7 @@ function answerTcp(socket: Socket, answer: (query: Buffer) => Promise<Buffer | u
   let buffered = Buffer.alloc(0);
   let busy = false;
   const next = (): void => {
-    if (busy || buffered.length < 2) return;
+    if (busy || socket.destroyed || buffered.length < 2) return;
     const length = buffered.readUInt16BE(0);
     if (length < MIN_MESSAGE_BYTES || length > MAX_UDP_MESSAGE_BYTES) {
       socket.destroy();

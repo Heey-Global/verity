@@ -55,7 +55,7 @@ export function parseDnsQuery(message: Buffer): DnsQuestion | undefined {
     if (!/^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$/u.test(label)) return undefined;
     labels.push(label.toLowerCase());
     total += length + 1;
-    if (total > 253) return undefined;
+    if (total > 254) return undefined;
     offset += length;
   }
   if (!labels.length || offset + 4 > message.length) return undefined;
@@ -151,7 +151,9 @@ export function brokerNameLookup(
                 typeof value.granted !== 'boolean' ||
                 !Array.isArray(value.addresses) ||
                 value.addresses.length > 32 ||
-                value.addresses.some((address) => isIP(address) !== family) ||
+                (value.addresses as unknown[]).some(
+                  (address) => typeof address !== 'string' || isIP(address) !== family,
+                ) ||
                 !Number.isInteger(value.ttlSeconds) ||
                 value.ttlSeconds < 1 ||
                 value.ttlSeconds > 5
@@ -159,7 +161,7 @@ export function brokerNameLookup(
                 throw new Error('Invalid name answer');
               resolve(value);
             } catch (error) {
-              reject(error as Error);
+              reject(error instanceof Error ? error : new Error('Invalid name answer'));
             }
           });
         },
@@ -177,8 +179,8 @@ export async function answerDnsQuery(
 ): Promise<Buffer | undefined> {
   const query = parseDnsQuery(message);
   if (!query) {
-    // A reply needs at least the header to carry the client's ID.
-    if (message.length < 12) return undefined;
+    // A reply needs at least the header to carry the client's ID; responses are dropped.
+    if (message.length < 12 || message.readUInt16BE(2) & 0x8000) return undefined;
     const header = Buffer.from(message.subarray(0, 12));
     header.writeUInt16BE(0x8080 | RCODE_FORMERR, 2);
     header.fill(0, 4, 12);
@@ -191,7 +193,9 @@ export async function answerDnsQuery(
     // Other record types of a granted name exist only as empty answers.
     if (query.type !== TYPE_A && query.type !== TYPE_AAAA) return buildDnsResponse(query, 0);
     // A subset of admitted addresses keeps every answer within a classic 512-byte reply.
-    const limit = query.type === TYPE_A ? 16 : 8;
+    const limit = Math.floor(
+      (512 - 12 - query.question.length) / (query.type === TYPE_A ? 16 : 28),
+    );
     return buildDnsResponse(query, 0, answer.addresses.slice(0, limit), answer.ttlSeconds);
   } catch {
     return buildDnsResponse(query, RCODE_SERVFAIL);

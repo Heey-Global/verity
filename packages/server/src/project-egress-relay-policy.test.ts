@@ -42,7 +42,7 @@ function fixture(root = '/var/lib/docker/volumes/data/_data') {
           User: `65532:${policy.relayGid}`,
           Entrypoint: ['/nodejs/bin/node', '/app/dist/main.js'],
           Cmd: null as string[] | null,
-          Env: ['PATH=/usr/bin', 'NODE_OPTIONS=--max-old-space-size=96'],
+          Env: ['PATH=/usr/bin', 'NODE_OPTIONS=--max-old-space-size=96', 'VERITY_DNS_CONTROLLED=1'],
         },
         HostConfig: {
           Runtime: 'runsc-relay',
@@ -305,7 +305,7 @@ it('accepts absent listeners only for deny-only restoration of a stopped relay',
   await expect(inspectEgressRelay(binding, f.reply[0]!.Id, policy, docker, true)).rejects.toThrow();
 });
 
-it('accepts only the controlled DNS setting beyond the image environment', () => {
+it('requires the controlled DNS answerer and accepts nothing else beyond the image', () => {
   const check = (env: string[]) => {
     const f = fixture();
     f.reply[0]!.Config.Env = ['PATH=/usr/bin', 'NODE_OPTIONS=--max-old-space-size=96', ...env];
@@ -313,6 +313,7 @@ it('accepts only the controlled DNS setting beyond the image environment', () =>
   };
   expect(check(['VERITY_DNS_CONTROLLED=1'])()).toHaveLength(3);
   for (const env of [
+    [],
     ['VERITY_DNS_CONTROLLED=0'],
     ['VERITY_DNS_CONTROLLED=1', 'VERITY_DNS_CONTROLLED=1'],
     ['VERITY_DNS_UPSTREAM=203.0.113.1'],

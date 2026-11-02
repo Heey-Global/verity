@@ -117,6 +117,24 @@ it('answers only from the authority: refused, empty, addresses or failure', asyn
   expect(await answerDnsQuery(Buffer.alloc(8), lookup)).toBeUndefined();
 });
 
+it('keeps answers for the longest names within a classic UDP reply', async () => {
+  const long = Array.from({ length: 4 }, () => 'a'.repeat(61)).join('.') + '.example.com';
+  const many = async (_name: string, type: 'A' | 'AAAA'): Promise<DirectNameAnswer> => ({
+    granted: true,
+    addresses: Array.from({ length: 32 }, (_, i) =>
+      type === 'A' ? `8.8.8.${i + 1}` : `2001:db8::${i + 1}`,
+    ),
+    ttlSeconds: 1,
+  });
+  for (const type of [1, 28]) {
+    const reply = (await answerDnsQuery(query(long.slice(-253), type), many))!;
+    expect(reply.length).toBeLessThanOrEqual(512);
+    expect(decode(reply).addresses.length).toBeGreaterThan(0);
+  }
+  // A response arriving at the answerer is dropped, not answered.
+  const response = query('example.com', 1, 9, (m) => m.writeUInt16BE(0x8180, 2));
+  expect(await answerDnsQuery(response, many)).toBeUndefined();
+});
 it('keeps answers within a classic UDP reply', () => {
   const parsed = parseDnsQuery(query('downloads.example.com', 28))!;
   const reply = buildDnsResponse(
