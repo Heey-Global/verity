@@ -6,6 +6,22 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.74.0](https://github.com/Heey-Global/verity/compare/v4.73.0...v4.74.0) (2026-11-02)
+
+
+### Features
+
+* **knowledge:** remember confirmed project decisions across chats ([#2165](https://github.com/Heey-Global/verity/issues/2165)) ([6b8cc1d](https://github.com/Heey-Global/verity/commit/6b8cc1d16877949f4d957d147e4025f0e5227764))
+* **qa:** delegate and supervise project assignments ([#2171](https://github.com/Heey-Global/verity/issues/2171)) ([cb7d6d8](https://github.com/Heey-Global/verity/commit/cb7d6d8f310a2b6a89763968ce40d69b51ef89d2))
+
+
+### Bug Fixes
+
+* **build-storage:** reclaim orphaned builder admission leases ([#2180](https://github.com/Heey-Global/verity/issues/2180)) ([3464033](https://github.com/Heey-Global/verity/commit/34640330d0370a6da56b5932c8f77ebc610035c9))
+* **ci:** restore session repairs and analyze recurring failures ([#2168](https://github.com/Heey-Global/verity/issues/2168)) ([0a167fa](https://github.com/Heey-Global/verity/commit/0a167fab989fd33724799c7fd279740ff4ae3385))
+* **installer:** apply server GID without requiring a named host group ([#2179](https://github.com/Heey-Global/verity/issues/2179)) ([03c27cb](https://github.com/Heey-Global/verity/commit/03c27cb39229de7a71ac60058f1e84e2878227cc))
+* **mobile:** retain repaired OTA tooling across source checkout ([#2164](https://github.com/Heey-Global/verity/issues/2164)) ([ef3133b](https://github.com/Heey-Global/verity/commit/ef3133be9209712390eb2f4d3131188517cdbf6c))
+
 ## [4.73.0](https://github.com/Heey-Global/verity/compare/v4.72.0...v4.73.0) (2026-11-01)
 
 
