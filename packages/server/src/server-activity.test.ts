@@ -5,6 +5,8 @@ import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { gunzipSync } from 'node:zlib';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { PgliteDriver } from '../../store/src/pglite.js';
+import { SessionStorage } from './session-storage.js';
 import { createAuthTokenRegistry } from './auth.js';
 import type { ReleaseSummary } from './github.js';
 import { ResourceObserver } from './live/resource-observer.js';
@@ -902,6 +904,7 @@ describe('GET /sessions', () => {
       sessionStorage: {
         bind: () => {},
         canRestore: async (session: { sessionId: string }) => session.sessionId === 'retired',
+        canRestoreMany: async () => new Map([['retired', true]]),
       } as unknown as import('./session-storage.js').SessionStorage,
     });
     try {
@@ -1846,6 +1849,61 @@ describe('overview projections read only the narrow event slice', () => {
     }
   });
 
+  it('keeps actual connection acquisitions constant for growing lists with missing worktrees and fallback histories', async () => {
+    const storage = new SessionStorage({
+      listProjects: () => ctx.store.listProjects(),
+      root: () => worktreeRoot,
+      listSessions: () => ctx.store.listSessions(),
+      activity: async () => null,
+      withGit: async () => {
+        throw new Error('unused');
+      },
+      mutate: async (_projectId, _sessionId, run) => run(),
+      pr: async () => null,
+    });
+    const server = buildServer({ eventStore: ctx.store, bus, conductor, sessionStorage: storage });
+    await server.ready();
+    const original = ctx.store.listSessionProjectionFacts.bind(ctx.store);
+    const facts = vi
+      .spyOn(ctx.store, 'listSessionProjectionFacts')
+      .mockImplementation(async (...args) => {
+        const result = await original(...args);
+        for (const entry of result.values()) {
+          entry.eventsTruncated = true;
+          entry.events = entry.events.filter(({ event }) => event.t !== 'prompt');
+        }
+        return result;
+      });
+    const acquire = vi.spyOn(PgliteDriver.prototype, 'acquireConnection');
+    const seed = async (n: number) => {
+      await ctx.store.createSession({
+        sessionId: `pool-${n}`,
+        worktree: `/missing/pool-${n}`,
+        model: 'm',
+      });
+      await ctx.store.appendEvent(`pool-${n}`, { t: 'prompt', text: 'go' });
+      await ctx.store.appendEvent(`pool-${n}`, { t: 'status', state: 'running' });
+    };
+    try {
+      await seed(0);
+      acquire.mockClear();
+      expect((await server.inject('/sessions')).statusCode).toBe(200);
+      const small = acquire.mock.calls.length;
+      expect(small).toBeGreaterThan(0);
+      for (let n = 1; n < 40; n++) await seed(n);
+      acquire.mockClear();
+      const large = await server.inject('/sessions');
+      expect(large.statusCode).toBe(200);
+      expect(large.json()).toHaveLength(40);
+      expect(acquire.mock.calls.length).toBeLessThanOrEqual(small);
+      expect(acquire.mock.calls.length).toBeLessThanOrEqual(12);
+    } finally {
+      acquire.mockRestore();
+      facts.mockRestore();
+      await server.close();
+    }
+  });
+
   it('bounds full projection reads across overlapping overview requests', async () => {
     for (let i = 0; i < 12; i += 1) {
       await ctx.store.createSession({
@@ -1867,11 +1925,11 @@ describe('overview projections read only the narrow event slice', () => {
         }
         return result;
       });
-    const originalRead = ctx.store.listSessionProjectionEvents.bind(ctx.store);
+    const originalRead = ctx.store.visitSessionProjectionEvents.bind(ctx.store);
     let active = 0;
     let peak = 0;
     const reads = vi
-      .spyOn(ctx.store, 'listSessionProjectionEvents')
+      .spyOn(ctx.store, 'visitSessionProjectionEvents')
       .mockImplementation(async (...args) => {
         active += 1;
         peak = Math.max(peak, active);
@@ -1897,14 +1955,15 @@ describe('overview projections read only the narrow event slice', () => {
         ).toBe(true);
       }
       // Identical badges would hide a queue large enough to monopolize the pool.
-      expect(reads).toHaveBeenCalledTimes(24);
+      expect(reads).toHaveBeenCalledTimes(1);
+      expect(facts).toHaveBeenCalledTimes(1);
       expect(peak).toBe(1);
       reads.mockRejectedValueOnce(new Error('projection read failed'));
-      const failed = await app.inject({ method: 'GET', url: '/sessions/fallback-0' });
+      const failed = await app.inject({ method: 'GET', url: '/sessions' });
       expect(failed.statusCode).toBe(500);
-      const recovered = await app.inject({ method: 'GET', url: '/sessions/fallback-0' });
+      const recovered = await app.inject({ method: 'GET', url: '/sessions' });
       expect(recovered.statusCode).toBe(200);
-      expect(recovered.json()).toMatchObject({ status: 'running' });
+      expect(recovered.json()[0]).toMatchObject({ status: 'running' });
     } finally {
       facts.mockRestore();
       reads.mockRestore();

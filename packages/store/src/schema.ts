@@ -950,6 +950,17 @@ interface SessionAutomationMarkerTable {
   created_at: ColumnType<Date, string | undefined, never>;
 }
 
+/** Durable attempt budget and fenced transport claims for PR-ready notifications. */
+interface PrReadyDeliveryTable {
+  session_id: string;
+  marker: string;
+  attempts: number;
+  next_attempt_at: ColumnType<string, number, number>;
+  claim_id: string | null;
+  lease_until: ColumnType<string, number, number>;
+  completed: boolean;
+}
+
 /** GitHub-token-broker capabilities (security review #662). One row per project:
  *  the SHA-256 HASH of the opaque per-container capability (never the raw secret)
  *  → the project binding minted-tokens are scoped to. Persisted (not in-memory) so
@@ -1723,6 +1734,7 @@ export interface Database {
   session_backend_state: SessionBackendStateTable;
   session_pending_note: SessionPendingNoteTable;
   session_automation_marker: SessionAutomationMarkerTable;
+  pr_ready_delivery: PrReadyDeliveryTable;
   forge_connections: ForgeConnectionsTable;
   gh_token_capabilities: GhTokenCapabilitiesTable;
   signing_capabilities: SigningCapabilitiesTable;

@@ -256,6 +256,92 @@ if [ "${1:-}" = "managed-up" ]; then
     fi
     compose_base up -d verity
   }
+  # Repair adopts durable services by identity, never by Compose's config hash.
+  # Database image changes belong to the Updater's quiesced maintenance step.
+  repair_infrastructure() {
+    repair_project="${COMPOSE_PROJECT_NAME:-deploy}"
+    pg_ids="$(docker ps -aq --no-trunc --filter "label=com.docker.compose.project=$repair_project" --filter label=com.docker.compose.service=postgres)" || return 1
+    pg_old=''
+    pg_created=''
+    pg_created_replaces=''
+    pg_created_name=''
+    for pg_id in $pg_ids; do
+      pg_meta="$(docker inspect -f '{{index .Config.Labels "com.docker.compose.project"}}|{{index .Config.Labels "com.docker.compose.service"}}|{{.State.Status}}|{{.Name}}|{{range .Mounts}}{{if and (eq .Type "volume") (eq .Destination "/var/lib/postgresql")}}{{.Name}}{{end}}{{end}}|{{range $name, $network := .NetworkSettings.Networks}}{{if eq $name "verity-net"}}verity-net{{end}}{{end}}|{{index .Config.Labels "com.docker.compose.replace"}}|{{index .Config.Labels "verity.replacement-for"}}' "$pg_id")" || return 1
+      IFS='|' read -r pg_project pg_service pg_status pg_name pg_volume pg_network pg_replaces pg_runtime_replacement <<EOF
+$pg_meta
+EOF
+      if [ "$pg_project" != "$repair_project" ] || [ "$pg_service" != postgres ] || [ "$pg_volume" != "${repair_project}_verity-db" ] || [ "$pg_network" != verity-net ]; then
+        printf '%s\n' 'verity-compose: PostgreSQL identity or storage conflicts; refusing destructive recovery' >&2
+        return 1
+      fi
+      case "$pg_status" in
+        created)
+          [ -z "$pg_created" ] || return 1
+          [ -z "$pg_runtime_replacement" ] || return 1
+          pg_created="$pg_id"
+          pg_created_replaces="$pg_replaces"
+          pg_created_name="$pg_name" ;;
+        running|exited)
+          [ -z "$pg_old" ] || return 1
+          pg_old="$pg_id" ;;
+        *) return 1 ;;
+      esac
+    done
+    if [ -n "$pg_old" ]; then
+      # Validate every candidate first. Removing only an unstarted replacement
+      # preserves the previous container, its image and its named data volume.
+      if [ -n "$pg_created" ]; then
+        pg_short="$(printf '%.12s' "$pg_old")"
+        case "$pg_created_replaces:$pg_created_name" in
+          "$pg_old:"*|":/${pg_old}_"*|":/${pg_short}_"*) ;;
+          *) printf '%s\n' 'verity-compose: unproven PostgreSQL replacement; preserving both containers' >&2; return 1 ;;
+        esac
+      fi
+      # Recover availability before cleanup, so even a failed removal leaves
+      # the predecessor running. The replacement is proven never-started.
+      docker start "$pg_old" >/dev/null || return 1
+      if [ -n "$pg_created" ]; then docker rm "$pg_created" >/dev/null || return 1; fi
+      # A Compose replacement may have renamed the predecessor. Restore service
+      # discovery explicitly without relying on its temporary container name.
+      pg_alias="$(docker inspect -f '{{range $name, $network := .NetworkSettings.Networks}}{{if eq $name "verity-net"}}{{range $network.Aliases}}{{if eq . "postgres"}}postgres{{end}}{{end}}{{end}}{{end}}' "$pg_old")" || return 1
+      if [ "$pg_alias" != postgres ]; then
+        docker network disconnect verity-net "$pg_old" || return 1
+        docker network connect --alias postgres verity-net "$pg_old" || return 1
+      fi
+      repair_pg="$pg_old"
+    elif [ -n "$pg_created" ]; then
+      docker start "$pg_created" >/dev/null || return 1
+      repair_pg="$pg_created"
+    else
+      compose_managed --profile managed up -d --no-deps postgres || return 1
+      repair_pg="$(compose_managed --profile managed ps -q postgres)" || return 1
+      [ -n "$repair_pg" ] || return 1
+    fi
+    pg_attempt=0
+    until docker exec "$repair_pg" pg_isready -U verity -d verity >/dev/null 2>&1; do
+      pg_attempt=$((pg_attempt + 1))
+      [ "$pg_attempt" -lt 30 ] || return 1
+      sleep 2
+    done
+    updater_ids="$(docker ps -aq --filter "label=com.docker.compose.project=$repair_project" --filter label=com.docker.compose.service=verity-updater)" || return 1
+    repair_updater=''
+    for updater_id in $updater_ids; do
+      [ -z "$repair_updater" ] || return 1
+      updater_meta="$(docker inspect -f '{{index .Config.Labels "com.docker.compose.project"}}|{{index .Config.Labels "com.docker.compose.service"}}|{{.State.Status}}|{{.HostConfig.NetworkMode}}|{{range .Mounts}}{{if eq .Destination "/var/lib/verity/updater/managed-deployment"}}{{.Name}}{{end}}{{end}}|{{range .Config.Env}}{{if eq . "VERITY_MANAGED_DEPLOYMENT_ID='"$VERITY_MANAGED_DEPLOYMENT_ID"'"}}deployment{{end}}{{end}}' "$updater_id")" || return 1
+      case "$updater_meta" in
+        "$repair_project|verity-updater|running|none|verity-managed-deployment|deployment") ;;
+        "$repair_project|verity-updater|exited|none|verity-managed-deployment|deployment")
+          docker start "$updater_id" >/dev/null || return 1 ;;
+        *) printf '%s\n' 'verity-compose: existing Updater identity conflicts; refusing replacement' >&2; return 1 ;;
+      esac
+      repair_updater="$updater_id"
+    done
+    compose_managed --profile managed up -d --no-deps verity-agent-gateway verity-agent-seed || return 1
+    compose_managed --profile managed up -d --no-deps --force-recreate verity-managed-gateway || return 1
+    if [ -z "$repair_updater" ]; then
+      compose_managed --profile managed up -d --no-deps verity-updater || return 1
+    fi
+  }
   transition_active=0
   transition_exit() {
     status=$?
@@ -324,21 +410,17 @@ if [ "${1:-}" = "managed-up" ]; then
       exit 70
     fi
     if [ -n "$legacy_running" ]; then
-      trap transition_exit EXIT
-      trap transition_signal HUP INT TERM
       if ! compose_base stop verity; then
         printf '%s\n' 'verity-compose: legacy Server could not be fenced before managed reconciliation' >&2
         compose_base up -d verity || true
         transition_active=0
         exit 70
       fi
-      transition_active=1
     fi
     # TLS material may have renewed without changing Compose configuration. Force
     # the terminator to reopen the mounted key/certificate before advertising the
     # freshly generated pairing URI.
-    if ! compose_managed --profile managed up -d --force-recreate verity-managed-gateway \
-      || ! compose_managed --profile managed up -d; then
+    if ! repair_infrastructure; then
       printf '%s\n' 'verity-compose: existing managed topology could not be reconciled' >&2
       if [ "$transition_active" -eq 1 ]; then rollback_managed || exit 71; fi
       exit 70
