@@ -49,6 +49,9 @@ describe('web app assets', () => {
       expect(response.statusCode).toBe(200);
       expect(response.body).toContain('shared Expo app');
       expect(response.headers['content-security-policy']).toContain("frame-ancestors 'none'");
+      // Safari does not include blob URLs in connect-src 'self'. Attachments
+      // fetched from picker/drop object URLs must remain readable under the CSP.
+      expect(response.headers['content-security-policy']).toContain("connect-src 'self' blob:;");
       expect(response.headers['x-content-type-options']).toBe('nosniff');
     }
     expect((await app.inject('/app/bundle.js')).headers['content-type']).toContain('javascript');
@@ -98,4 +101,17 @@ describe('web app assets', () => {
     expect((await app.inject('/app/')).statusCode).toBe(404);
     await app.close();
   });
+});
+
+it('serves the browser OAuth callback without caching or sending its code in a referrer', async () => {
+  const app = await fixture();
+  try {
+    const response = await app.inject('/app/mcp/oauth/callback?code=one-time&state=state');
+    expect(response.statusCode).toBe(200);
+    expect(response.headers['cache-control']).toBe('no-store');
+    expect(response.headers['referrer-policy']).toBe('no-referrer');
+    expect(response.body).toContain('shared Expo app');
+  } finally {
+    await app.close();
+  }
 });

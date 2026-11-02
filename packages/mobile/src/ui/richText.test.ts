@@ -9,6 +9,25 @@ import {
 } from './richText.js';
 
 describe('splitRichText', () => {
+  it.each(['', '\n```\nafter'])(
+    'hides QA protocol blocks in chat even while streaming: %s',
+    (suffix) => {
+      const input = 'before\n```qa:decision\n{"assignments":[]}' + suffix;
+      const visible = splitRichText(input, { hideQADecisions: true });
+      expect(visible).toEqual([
+        { type: 'text', content: 'before' },
+        ...(suffix ? [{ type: 'text', content: 'after' }] : []),
+      ]);
+      expect(splitRichText(input).some((block) => block.type === 'code')).toBe(true);
+    },
+  );
+
+  it('keeps ordinary code beside hidden QA decisions', () => {
+    expect(
+      splitRichText('```qa:decision\n{}\n```\n```json\n{}\n```', { hideQADecisions: true }),
+    ).toEqual([{ type: 'code', lang: 'json', content: '{}' }]);
+  });
+
   it('returns a single text block for plain prose', () => {
     expect(splitRichText('hello world')).toEqual([{ type: 'text', content: 'hello world' }]);
   });

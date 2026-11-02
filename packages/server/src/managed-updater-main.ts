@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { AGENT_SEED_MOUNT_PATH } from './self-update/agent-seed-stamp.js';
 import { createDockerClient } from './docker.js';
 import { recoverManagedUpdater } from './self-update/update-runner.js';
+import { scheduleLegacyBackupUpgrade } from './self-update/backup-upgrade.js';
 import {
   enableManagedMatrixConnector,
   reconcileManagedMatrixConnector,
@@ -48,7 +49,14 @@ export async function startManagedUpdaterMain(): Promise<void> {
     throw new Error('Updater control token file must be a private regular file');
   }
   const token = (await readFile(tokenFile, 'utf8')).trim();
-  const docker = createDockerClient({ baseUrl: 'unix:///var/run/docker.sock' });
+  const docker = createDockerClient({
+    baseUrl: 'unix:///var/run/docker.sock',
+    // Pulls outside update preparation (companions, the control-plane runner)
+    // narrate their progress too; preparation passes its own log per call.
+    pullLog: (message) => {
+      console.log(`[self-update] ${message}`);
+    },
+  });
   // An Updater that died mid-update left durable intent behind, and the
   // journal is the only thing that knows how far it got. Finish that, then
   // reconcile — both before the boundary opens, so a restart continues the
@@ -149,6 +157,16 @@ export async function startManagedUpdaterMain(): Promise<void> {
   });
   // Connector failures must not keep the update control socket offline.
   scheduleMatrixReconcile();
+  // Open the control boundary first: the repair uses the normal standby and
+  // quiesce exchange. It never recreates a live Server outside that lifecycle.
+  void runner
+    .enqueueExclusive(async () => {
+      if (await scheduleLegacyBackupUpgrade({ managedRoot: MANAGED_DEPLOYMENT_ROOT, docker }))
+        runner.start();
+    })
+    .catch((error: unknown) => {
+      console.error('Automatic backup preparation could not be scheduled', error);
+    });
   const stop = async (): Promise<void> => {
     stopping = true;
     if (matrixRetry !== undefined) clearTimeout(matrixRetry);

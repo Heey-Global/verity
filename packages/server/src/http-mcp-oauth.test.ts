@@ -197,3 +197,33 @@ describe('HTTP MCP OAuth', () => {
     ).rejects.toThrow(/removed/u);
   });
 });
+
+it('uses the registered token authentication method for code exchange and refresh', async () => {
+  for (const method of ['none', 'client_secret_post', 'client_secret_basic'] as const) {
+    const current = { ...connection, oauthTokenAuthMethod: method };
+    const store = {
+      listHttpMcpConnections: async () => [current],
+      updateHttpMcpOAuthTokens: async () => true,
+    } as unknown as EventStore;
+    const request = vi.fn().mockResolvedValue({ access_token: 'access', expires_in: 3600 });
+    await completeHttpMcpOAuth(
+      store,
+      current,
+      {
+        code: 'code',
+        codeVerifier: 'v'.repeat(43),
+        redirectUri: 'https://verity.build/mcp/oauth/callback',
+      },
+      request,
+    );
+    await httpMcpAuthorization(store, current, request);
+    for (const call of request.mock.calls) {
+      const body = call[1] as URLSearchParams;
+      expect(body.has('client_secret')).toBe(method === 'client_secret_post');
+      if (method === 'client_secret_basic') {
+        expect(body.has('client_id')).toBe(false);
+        expect(call[2]).toBe(`Basic ${Buffer.from('client-id:client-secret').toString('base64')}`);
+      } else expect(call[2]).toBeUndefined();
+    }
+  }
+});

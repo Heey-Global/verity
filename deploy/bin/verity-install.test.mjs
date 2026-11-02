@@ -135,6 +135,21 @@ function makeHost({
       `exit ${String(hostRuntimeStatus)}\n`,
     { mode: 0o755 },
   );
+  // Runtime installation has its own real-script transaction suite.
+  writeFileSync(
+    join(checkout, 'deploy', 'host', 'install-runtime-service.sh'),
+    `#!/bin/bash
+install -m 0755 "$(dirname "$0")/verity-host-runtime" "$VERITY_HOST_RUNTIME_LIBEXEC/verity-host-runtime"
+if [ -d "$VERITY_SYSTEMD_RUN_DIR" ]; then
+  for unit in verity-host-runtime.service verity-host-runtime.path; do
+    install -m 0644 "$(dirname "$0")/$unit" "$VERITY_SYSTEMD_UNIT_DIR/$unit"
+  done
+  systemctl daemon-reload
+  systemctl enable --now verity-host-runtime.path
+fi
+printf '{"version":1,"trigger":"%s","builder":"%s","runtimeArtifacts":["binary","archive"]}\\n' "$VERITY_HOST_BUILDER_TRIGGER" "$VERITY_HOST_BUILDER_TRIGGER" >"$VERITY_HOST_RUNTIME_DIR/agent.json"
+`,
+  );
   writeFileSync(
     join(checkout, 'deploy', 'host', 'verity-host-diagnostics'),
     '#!/usr/bin/env bash\nexit 0\n',
@@ -155,6 +170,12 @@ function makeHost({
   ]) {
     writeFileSync(join(checkout, 'deploy', 'host', unit), `# ${unit}\n`);
   }
+  for (const helper of ['verity-backup-prerequisites', 'verity-backup-identity']) {
+    writeFileSync(
+      join(checkout, 'deploy', 'host', helper),
+      readFileSync(join(here, '..', 'host', helper)),
+    );
+  }
   const builderRunDir = join(root, 'run-verity-buildkit');
   const builderLog = join(root, 'builder.log');
   if (builder !== undefined) {
@@ -171,6 +192,8 @@ function makeHost({
   }
   const hostRuntime = {
     VERITY_BUILDKIT_RUN_DIR: builderRunDir,
+    VERITY_BACKUP_DIR: join(root, 'backups'),
+    VERITY_BACKUP_IDENTITY_DIR: join(root, 'backup-identity'),
     VERITY_HOST_RUNTIME_LIBEXEC: join(root, 'libexec'),
     VERITY_HOST_RUNTIME_DIR: join(root, 'host-runtime'),
     VERITY_HOST_DIAGNOSTIC_DIR: join(root, 'host-diagnostics'),
@@ -187,8 +210,8 @@ function makeHost({
     );
   }
   // The installer only checks these exist; the stub host runtime script is what would use
-  // them. The CI image (node:*-slim) ships neither, so a real one cannot be assumed.
-  for (const tool of ['curl', 'jq']) {
+  // them. The CI image (node:*-slim) ships none of them, so a real one cannot be assumed.
+  for (const tool of ['curl', 'jq', 'bzip2']) {
     writeFileSync(join(stubDir, tool), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
   }
   writeFileSync(join(stubDir, 'uname'), `#!/bin/sh\nprintf '%s\\n' ${shellQuote(architecture)}\n`, {
@@ -213,7 +236,7 @@ printf '%s\\n' '2: eth0 inet 10.0.0.10/24 scope global eth0' '3: eth1 inet 192.1
     join(binDir, 'verity-compose'),
     `#!/usr/bin/env bash\n{\n` +
       `  printf 'argv=%s\\n' "$*"\n` +
-      `  for v in VERITY_SERVER_IMAGE VERITY_MANAGED_DEPLOYMENT_ID VERITY_UPDATER_TOKEN_HOST_PATH VERITY_RUNNER_SUPERVISOR VERITY_GVISOR_REQUIRED VERITY_GVISOR_SMOKE_IMAGE VERITY_HOST_ARCHITECTURE VERITY_PAIRING_STATE_HOST_PATH VERITY_POSTGRES_PASSWORD VERITY_BOOTSTRAP_ADVANCE_IMAGE_FROM VERITY_DEVCONTAINER_BUILDER_GID COMPOSE_PROJECT_NAME; do\n` +
+      `  for v in VERITY_BACKUP_DIR VERITY_BACKUP_IDENTITY_DIR VERITY_SERVER_IMAGE VERITY_MANAGED_DEPLOYMENT_ID VERITY_UPDATER_TOKEN_HOST_PATH VERITY_RUNNER_SUPERVISOR VERITY_GVISOR_REQUIRED VERITY_GVISOR_SMOKE_IMAGE VERITY_HOST_ARCHITECTURE VERITY_PAIRING_STATE_HOST_PATH VERITY_POSTGRES_PASSWORD VERITY_BOOTSTRAP_ADVANCE_IMAGE_FROM VERITY_DEVCONTAINER_BUILDER_GID COMPOSE_PROJECT_NAME; do\n` +
       `    printf '%s=%s\\n' "$v" "\${!v-}"\n` +
       `  done\n} > ${JSON.stringify(handover)}\n`,
     { mode: 0o755 },
@@ -464,10 +487,32 @@ describe('verity-install', { skip: canFakeRoot ? false : 'user namespaces unavai
     assert.throws(() => stateFile(host, 'runner-supervisor'));
     assert.match(stateFile(host, 'postgres-password'), /^[a-f0-9]{64}$/);
     assert.equal(statSync(join(host.stateDir, 'postgres-password')).mode & 0o777, 0o600);
+    const installationId = stateFile(host, 'installation-id');
+    assert.match(installationId, /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/);
+    assert.notEqual(installationId, stateFile(host, 'deployment-id'));
+    const backupPassword = stateFile(host, 'backup-postgres-password');
+    assert.match(backupPassword, /^[a-f0-9]{64}$/);
+    assert.equal(statSync(join(host.stateDir, 'backup-postgres-password')).mode & 0o777, 0o600);
+    assert.match(
+      readFileSync(
+        join(host.hostRuntime.VERITY_BACKUP_DIR, '.verity-backup-target'),
+        'utf8',
+      ).trim(),
+      /^[a-f0-9-]{36}$/,
+    );
+    assert.equal(
+      statSync(join(host.hostRuntime.VERITY_HOST_RUNTIME_LIBEXEC, 'verity-backup-identity')).mode &
+        0o777,
+      0o755,
+    );
+    assert.equal(readFileSync(host.dockerLog, 'utf8').includes(backupPassword), false);
+    assert.equal(result.output.includes(backupPassword), false);
 
     const env = handoverEnv(host);
     assert.equal(env.argv, 'managed-up');
     assert.equal(env.VERITY_SERVER_IMAGE, DIGEST_A);
+    assert.equal(env.VERITY_BACKUP_DIR, host.hostRuntime.VERITY_BACKUP_DIR);
+    assert.equal(env.VERITY_BACKUP_IDENTITY_DIR, host.hostRuntime.VERITY_BACKUP_IDENTITY_DIR);
     assert.equal(env.VERITY_GVISOR_SMOKE_IMAGE, DIGEST_A);
     assert.equal(env.VERITY_RUNNER_SUPERVISOR, '1');
     assert.equal(env.VERITY_POSTGRES_PASSWORD, stateFile(host, 'postgres-password'));
@@ -526,7 +571,7 @@ describe('verity-install', { skip: canFakeRoot ? false : 'user namespaces unavai
       JSON.parse(
         readFileSync(join(host.hostRuntime.VERITY_HOST_RUNTIME_DIR, 'agent.json'), 'utf8'),
       ),
-      { version: 1, trigger: 'none', builder: 'none' },
+      { version: 1, trigger: 'none', builder: 'none', runtimeArtifacts: ['binary', 'archive'] },
     );
     assert.equal(handoverEnv(host).argv, 'managed-up');
   });
@@ -580,7 +625,12 @@ describe('verity-install', { skip: canFakeRoot ? false : 'user namespaces unavai
       JSON.parse(
         readFileSync(join(host.hostRuntime.VERITY_HOST_RUNTIME_DIR, 'agent.json'), 'utf8'),
       ),
-      { version: 1, trigger: 'systemd-path', builder: 'systemd-path' },
+      {
+        version: 1,
+        trigger: 'systemd-path',
+        builder: 'systemd-path',
+        runtimeArtifacts: ['binary', 'archive'],
+      },
     );
   });
 

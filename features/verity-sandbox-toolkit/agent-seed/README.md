@@ -51,15 +51,14 @@ Project containers mount `/opt/agent-seed` read-only and prepend
   declares them, then the review marker — the push is blocked until the pushed
   tip is covered by that marker or each pending commit is explicitly tagged
   `[skip review]`. When the repository declares lint or format checks but
-  `node_modules` is missing, the hook stops and asks instead of installing:
-  installing runs code from the registry, so the operator chooses between
-  `npm ci --ignore-scripts` (or `npm install --ignore-scripts` without a
-  lockfile) and skipping the two checks for the session.
-- `bin/verity-local-checks` records that skip: `skip` writes
+  compatible dependencies are missing, the hook automatically prepares them with
+  `verity-dependencies install`, then runs the checks. Older seeds fall back to
+  `npm ci --ignore-scripts` (or `npm install --ignore-scripts` without a lockfile).
+  Installation errors block the push; no additional confirmation is required.
+- `bin/verity-local-checks` records an explicit skip: `skip` writes
   `.agents/.local-checks-skip` with a fingerprint of `package.json` and the
-  lockfile, `reset` forgets it, `status` reports whether it still applies. The
-  hook honours the marker only while `node_modules` is missing and only while
-  the fingerprint matches; a changed manifest or lockfile makes it ask again.
+  lockfile, `reset` forgets it, `status` reports whether it still applies.
+  Changed dependency inputs invalidate the skip and trigger automatic preparation.
   Secret scan and code review are never skipped.
 
   The gate is a local early warning, not the enforced boundary. It runs inside

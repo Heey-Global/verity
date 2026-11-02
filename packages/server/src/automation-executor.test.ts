@@ -270,3 +270,44 @@ describe('automation executor', () => {
     });
   });
 });
+
+it('blocks script execution when sponsor rights change while preparing the project', async () => {
+  let authorized = true;
+  const { executor, runScript, dispatch } = harness({
+    isAuthorized: async () => authorized,
+    prepareProject: async () => {
+      authorized = false;
+      return project;
+    },
+  });
+  expect((await executor.run({ ...automation, script: 'exit 10' })).outcome).toBe('skipped');
+  expect(runScript).not.toHaveBeenCalled();
+  expect(dispatch).not.toHaveBeenCalled();
+});
+
+it('blocks the prompt when sponsor rights are revoked during the script', async () => {
+  let authorized = true;
+  const dispatch = vi.fn(async () => ({ accepted: true }));
+  const { executor } = harness({
+    isAuthorized: async () => authorized,
+    runScript: async () => {
+      authorized = false;
+      return { exitCode: 10, stdout: '', stderr: '', timedOut: false };
+    },
+    dispatchTurnWhenIdle: dispatch,
+  });
+  expect((await executor.run({ ...automation, script: 'exit 10' })).outcome).toBe('skipped');
+  expect(dispatch).not.toHaveBeenCalled();
+});
+
+it('rechecks sponsor rights at queued turn admission', async () => {
+  let authorized = true;
+  const { executor } = harness({
+    isAuthorized: async () => authorized,
+    dispatchTurnWhenIdle: async (_id, _prompt, opts) => {
+      authorized = false;
+      return { accepted: await opts.validateSession(session) };
+    },
+  });
+  expect((await executor.run(automation)).outcome).toBe('skipped');
+});

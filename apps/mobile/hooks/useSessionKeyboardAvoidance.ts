@@ -68,14 +68,20 @@ export function useSessionKeyboardAvoidance() {
           ) ||
             (opening && TextInput.State.currentlyFocusedInput() != null),
         );
+      const onShow = (event: 'keyboardWillShow' | 'keyboardDidShow') => {
+        // Navigation can interrupt opening before a queued show event reaches JS.
+        // Without a focused field, the retained animation height is a blank gap.
+        const focused = TextInput.State.currentlyFocusedInput() != null;
+        opening = focused && event === 'keyboardWillShow';
+        setEnabled(focused);
+      };
       const show = (
         Platform.OS === 'ios' ? ['keyboardWillShow', 'keyboardDidShow'] : ['keyboardDidShow']
       ).map((event) =>
         Keyboard.addListener(event as 'keyboardWillShow' | 'keyboardDidShow', () => {
           // RN's cached visibility stays false until did-show. A pending
           // navigation reconciliation must not disable an opening keyboard.
-          opening = event === 'keyboardWillShow';
-          setEnabled(true);
+          onShow(event as 'keyboardWillShow' | 'keyboardDidShow');
         }),
       );
       // The controller can receive native opening events that RN misses. Read
@@ -84,8 +90,7 @@ export function useSessionKeyboardAvoidance() {
       const controllerShow = (['keyboardWillShow', 'keyboardDidShow'] as const).map((event) =>
         KeyboardEvents.addListener(event, () => {
           controllerObserved.current = true;
-          opening = event === 'keyboardWillShow';
-          setEnabled(true);
+          onShow(event);
         }),
       );
       // Keep following the controller throughout the closing animation.

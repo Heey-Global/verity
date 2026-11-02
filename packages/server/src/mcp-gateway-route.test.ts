@@ -1,9 +1,11 @@
+import { createBrokerRelayServer } from '../../project-relay/src/relay.js';
 import { secretAuditEventInputSchema } from '@verity/secret-contracts';
 import type { Backend, Conductor } from '@verity/session';
 import { InMemoryEventBus } from '@verity/session';
 import { EventStore, createSealableSecretCipher } from '@verity/store';
 import { createTestDb, truncateAll, type TestDb } from '@verity/store/testing';
 import type { FastifyInstance } from 'fastify';
+import { sql } from 'kysely';
 import { createHash } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { createServer, request } from 'node:http';
@@ -74,6 +76,7 @@ interface Harness {
 
 function build(
   options: {
+    qaAnalysisRead?: Parameters<typeof buildServer>[0]['qaAnalysisRead'];
     wire?: boolean;
     allow?: boolean;
     trustedCli?: boolean;
@@ -128,6 +131,8 @@ function build(
                   'verity_present_plan',
                   'verity_end_planning',
                   'verity_tasks',
+                  'verity_repairs',
+                  'verity_qa_analysis',
                   'verity_app_help',
                   'verity_http_request',
                 ]
@@ -273,6 +278,7 @@ function build(
       : {}),
   } as unknown as Conductor;
   const app = buildServer({
+    ...(options.qaAnalysisRead ? { qaAnalysisRead: options.qaAnalysisRead } : {}),
     eventStore: store,
     runtimeDiagnostics: options.runtimeDiagnostics,
     bus: new InMemoryEventBus(),
@@ -307,20 +313,25 @@ function build(
   return { app, store, tokens, records, invocations, approvals, dispatches };
 }
 
+const relayPorts = new Map<string, number>();
 function postUnix(
   socketPath: string,
   authorization: string | undefined,
   payload: unknown,
+  extraHeaders: Record<string, string> = {},
 ): Promise<{ status: number; body: string }> {
   return new Promise((resolve, reject) => {
     const body = JSON.stringify(payload);
     const req = request(
       {
-        socketPath,
+        ...(relayPorts.has(socketPath)
+          ? { host: '127.0.0.1', port: relayPorts.get(socketPath)! }
+          : { socketPath }),
         method: 'POST',
         path: '/internal/mcp',
         headers: {
           ...(authorization !== undefined ? { authorization } : {}),
+          ...extraHeaders,
           'content-type': 'application/json',
           'content-length': Buffer.byteLength(body),
         },
@@ -344,7 +355,9 @@ function getUnix(
   return new Promise((resolve, reject) => {
     const req = request(
       {
-        socketPath,
+        ...(relayPorts.has(socketPath)
+          ? { host: '127.0.0.1', port: relayPorts.get(socketPath)! }
+          : { socketPath }),
         method: 'GET',
         path: '/internal/mcp',
         headers: { accept: 'text/event-stream' },
@@ -369,6 +382,7 @@ function getUnix(
 async function withListener(
   harness: Harness,
   run: (socketPath: string) => Promise<void>,
+  throughRelay = true,
 ): Promise<void> {
   const dir = mkdtempSync(join(tmpdir(), 'verity-mcp-route-'));
   await harness.app.ready();
@@ -378,9 +392,15 @@ async function withListener(
     ownerUid: TEST_UID,
     relayGid: TEST_GID,
   });
+  const relay = createBrokerRelayServer({ socketPath: listener.socketPath });
+  await new Promise<void>((resolve) => relay.listen(0, '127.0.0.1', resolve));
+  if (throughRelay) relayPorts.set(listener.socketPath, (relay.address() as AddressInfo).port);
   try {
     await run(listener.socketPath);
   } finally {
+    relayPorts.delete(listener.socketPath);
+    relay.closeAllConnections();
+    await new Promise<void>((resolve) => relay.close(() => resolve()));
     await listener.close();
     await harness.app.close();
     rmSync(dir, { recursive: true, force: true });
@@ -404,6 +424,10 @@ it('implements a submitted plan on the user instruction without another approval
     worktree: '/tmp/verity-planning-s1',
     model: 'claude-opus-5',
   });
+  await sql`insert into users (id, role, status) values ('u1', 'member', 'active')`.execute(ctx.db);
+  await sql`insert into project_memberships (project_id, user_id, can_read, can_execute, can_manage) values ('p1', 'u1', true, true, false)`.execute(
+    ctx.db,
+  );
   const prompt = await harness.store.appendEvent('s1', {
     t: 'prompt',
     text: 'Passt, leg los',
@@ -465,6 +489,83 @@ it('implements a submitted plan on the user instruction without another approval
   ]);
 });
 
+it('runs an approved plan for the approving user and still refuses them once revoked', async () => {
+  const harness = build({ planningTools: true, unlocked: true, enforceAuth: true });
+  await harness.store.createProject({
+    id: 'p1',
+    kind: 'local',
+    owner: '__local__',
+    repo: 'alpha',
+    cloneDir: '__local__-alpha',
+    containerName: 'verity-alpha',
+    state: 'active',
+  });
+  await harness.store.createSession({
+    sessionId: 's1',
+    projectId: 'p1',
+    worktree: '/tmp/verity-planning-s1',
+    model: 'claude-opus-5',
+  });
+  await sql`insert into users (id, role, status) values ('u1', 'member', 'active')`.execute(ctx.db);
+  await sql`insert into project_memberships (project_id, user_id, can_read, can_execute, can_manage) values ('p1', 'u1', true, true, false)`.execute(
+    ctx.db,
+  );
+  const planning = await harness.store.appendEvent('s1', {
+    t: 'prompt',
+    text: 'Plan it first',
+    initiatedBy: { userId: 'u1' },
+  });
+  await harness.store.markTurnRunning({ sessionId: 's1', promptSeq: planning.seq });
+  await harness.store.bindTurnIdentity('s1', { turnId: 't1', startCommandId: 'c1' });
+  await withListener(harness, async (socketPath) => {
+    let id = 0;
+    const call = async (turnId: string, name: string, args: object) => {
+      const token = harness.tokens.issue({ projectId: 'p1', sessionId: 's1', turnId });
+      const response = await postUnix(socketPath, `Bearer ${token}`, {
+        jsonrpc: '2.0',
+        id: (id += 1),
+        method: 'tools/call',
+        params: { name, arguments: args },
+      });
+      return {
+        body: response.body,
+        result: (JSON.parse(response.body) as { result: { isError?: boolean } }).result,
+      };
+    };
+    expect((await call('t1', 'verity_start_planning', {})).result.isError).toBeUndefined();
+    expect(
+      (await call('t1', 'verity_present_plan', { plan: '1. Do it' })).result.isError,
+    ).toBeUndefined();
+    const ended = await call('t1', 'verity_end_planning', {});
+    expect(ended.result.isError, ended.body).toBeUndefined();
+    expect(harness.dispatches).toHaveLength(1);
+
+    // The implementation turn opens with the prompt the conductor writes from these options.
+    // Without an initiator on it, every tool call of the approved plan was refused as if the
+    // user had lost access.
+    await harness.store.clearRunningTurn('s1', planning.seq);
+    const { initiatedBy } = harness.dispatches[0]!.dispatchOpts as {
+      initiatedBy?: { userId: string };
+    };
+    const implementation = await harness.store.appendEvent('s1', {
+      t: 'prompt',
+      text: harness.dispatches[0]!.prompt,
+      ...(initiatedBy ? { initiatedBy } : {}),
+    });
+    await harness.store.markTurnRunning({ sessionId: 's1', promptSeq: implementation.seq });
+    await harness.store.bindTurnIdentity('s1', { turnId: 't2', startCommandId: 'c2' });
+    const allowed = await call('t2', 'verity_tasks', { action: 'list' });
+    expect(allowed.result.isError, allowed.body).toBeUndefined();
+
+    await sql`update project_memberships set can_execute = false where user_id = 'u1'`.execute(
+      ctx.db,
+    );
+    const revoked = await call('t2', 'verity_tasks', { action: 'list' });
+    expect(revoked.result.isError).toBe(true);
+    expect(revoked.body).toContain('no longer has project execution permission');
+  });
+});
+
 it('keeps the session task list available while planning, unlike external tools', async () => {
   const harness = build({ planningTools: true });
   await harness.store.createProject({
@@ -503,6 +604,9 @@ it('keeps the session task list available while planning, unlike external tools'
     const tasks = await call('verity_tasks', { action: 'list' });
     expect(tasks.result.isError).toBeUndefined();
     expect(tasks.body).not.toContain('planning mode');
+    const repairs = await call('verity_repairs', { action: 'status' });
+    expect(repairs.result.isError).toBeUndefined();
+    expect(repairs.body).toContain('incidents');
     // Explaining the app is read-only and belongs to planning as much as to any turn;
     // refusing it would leave the agent answering setup questions from memory.
     const help = await call('verity_app_help', { topic: 'github' });
@@ -661,6 +765,10 @@ it('does not open an extra approval even when another card would have revised th
       ],
     },
   });
+  await sql`insert into users (id, role, status) values ('u1', 'member', 'active')`.execute(ctx.db);
+  await sql`insert into project_memberships (project_id, user_id, can_read, can_execute, can_manage) values ('p1', 'u1', true, true, false)`.execute(
+    ctx.db,
+  );
   const prompt = await harness.store.appendEvent('s1', {
     t: 'prompt',
     text: 'So umsetzen',
@@ -851,6 +959,70 @@ it('hands a linked message for a sleeping project to the turn that wakes it', as
   ]);
 });
 
+it('delivers a linked message as a turn of the user behind the sending turn', async () => {
+  const harness = build({ linkedTools: true });
+  for (const [id, repo] of [
+    ['p1', 'alpha'],
+    ['p2', 'beta'],
+  ] as const) {
+    await harness.store.createProject({
+      id,
+      kind: 'local',
+      owner: '__local__',
+      repo,
+      cloneDir: `__local__-${repo}`,
+      containerName: `verity-${repo}`,
+      state: 'active',
+    });
+  }
+  for (const [sessionId, projectId] of [
+    ['s1', 'p1'],
+    ['s2', 'p2'],
+  ] as const)
+    await harness.store.createSession({
+      sessionId,
+      projectId,
+      worktree: `/tmp/verity-linked-${sessionId}`,
+      model: 'claude-opus-5',
+    });
+  await harness.store.createSessionLink('s1', 's2');
+  await sql`insert into users (id, role, status) values ('u1', 'member', 'active')`.execute(ctx.db);
+  await sql`insert into project_memberships (project_id, user_id, can_read, can_execute, can_manage) values ('p1', 'u1', true, true, false)`.execute(
+    ctx.db,
+  );
+  const prompt = await harness.store.appendEvent('s1', {
+    t: 'prompt',
+    text: 'Ask the other session',
+    initiatedBy: { userId: 'u1' },
+  });
+  await harness.store.markTurnRunning({ sessionId: 's1', promptSeq: prompt.seq });
+  await harness.store.bindTurnIdentity('s1', { turnId: 't1', startCommandId: 'c1' });
+  const token = harness.tokens.issue({ projectId: 'p1', sessionId: 's1', turnId: 't1' });
+  await withListener(harness, async (socketPath) => {
+    const response = await postUnix(socketPath, `Bearer ${token}`, {
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'tools/call',
+      params: {
+        name: 'verity_send_session_message',
+        arguments: { targetSessionId: 's2', message: 'Are you there?' },
+      },
+    });
+    expect(
+      (JSON.parse(response.body) as { result: { isError?: boolean } }).result.isError,
+      response.body,
+    ).toBeUndefined();
+  });
+  // Without an initiator the peer's turn belongs to nobody, and an authenticated server
+  // refuses every gateway call in it.
+  expect(harness.dispatches).toEqual([
+    expect.objectContaining({
+      sessionId: 's2',
+      dispatchOpts: expect.objectContaining({ initiatedBy: { userId: 'u1' } }),
+    }),
+  ]);
+});
+
 it('keeps an expired linked-message approval until a later decision sends it once', async () => {
   const harness = build({ linkedTools: true, deferLinkedApproval: true });
   for (const [id, repo] of [
@@ -1012,26 +1184,32 @@ describe('POST /internal/mcp (loopback MCP gateway)', () => {
   it('accepts an escaped 256 KiB payload within the route byte limit', async () => {
     const harness = build({ allow: true });
     const token = harness.tokens.issue({ projectId: 'p1', sessionId: 's1', turnId: 't1' });
-    await withListener(harness, async (socketPath) => {
-      const text = '\u0001'.repeat(256 * 1024);
-      const res = await postUnix(socketPath, `Bearer ${token}`, {
-        jsonrpc: '2.0',
-        id: 1,
-        method: 'tools/call',
-        params: {
-          name: 'verity_http_request',
-          arguments: {
-            method: 'POST',
-            url: 'https://api.example.com/documents',
-            secretAlias: 'API_TOKEN',
-            auth: { kind: 'static', header: 'authorization', scheme: 'Bearer' },
-            body: { text },
+    await withListener(
+      harness,
+      async (socketPath) => {
+        const text = '\u0001'.repeat(256 * 1024);
+        const res = await postUnix(socketPath, `Bearer ${token}`, {
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'tools/call',
+          params: {
+            name: 'verity_http_request',
+            arguments: {
+              method: 'POST',
+              url: 'https://api.example.com/documents',
+              secretAlias: 'API_TOKEN',
+              auth: { kind: 'static', header: 'authorization', scheme: 'Bearer' },
+              body: { text },
+            },
           },
-        },
-      });
-      expect(res.status).toBe(200);
-      expect(harness.records.some((record) => record.kind === 'gateway_call_received')).toBe(true);
-    });
+        });
+        expect(res.status).toBe(200);
+        expect(harness.records.some((record) => record.kind === 'gateway_call_received')).toBe(
+          true,
+        );
+      },
+      false,
+    ); // This tests the Server route byte ceiling; the relay has its own smaller bound.
   });
 
   it('serves a tool call for the session and turn the bearer was minted for', async () => {
@@ -1856,6 +2034,96 @@ describe('POST /internal/control-plane/mcp (control-plane gateway)', () => {
     });
   });
 
+  it('hands a briefing to the target as a turn of the Control user who sent it', async () => {
+    const harness = build({ sessionTools: true, enforceAuth: true });
+    await harness.store.createProject({
+      id: VERITY_CONTROL_PROJECT_ID,
+      kind: 'control_plane',
+      owner: 'verity',
+      repo: 'control',
+      containerName: 'verity-control',
+      state: 'active',
+    });
+    await harness.store.createSession({
+      sessionId: 'control-s1',
+      projectId: VERITY_CONTROL_PROJECT_ID,
+      worktree: join(process.cwd(), 'packages'),
+      model: 'claude-opus-5',
+    });
+    await harness.store.createProject({
+      id: 'website',
+      kind: 'local',
+      owner: '__local__',
+      repo: 'website',
+      cloneDir: '__local__-website',
+      containerName: 'verity-__local__--website',
+      state: 'active',
+    });
+    await ctx.db
+      .deleteFrom('project_knowledge_spaces')
+      .where('project_id', 'in', [VERITY_CONTROL_PROJECT_ID, 'website'])
+      .execute();
+    await harness.store.createSession({
+      sessionId: 'sess-web',
+      projectId: 'website',
+      worktree: process.cwd(),
+      model: 'claude-opus-5',
+    });
+    await sql`insert into users (id, role, status) values ('admin', 'administrator', 'active')`.execute(
+      ctx.db,
+    );
+    await sql`update projects set created_by_user_id = 'admin' where id = ${VERITY_CONTROL_PROJECT_ID}`.execute(
+      ctx.db,
+    );
+    await sql`insert into project_memberships (project_id, user_id, can_read, can_execute, can_manage)
+      values (${VERITY_CONTROL_PROJECT_ID}, 'admin', true, true, true), ('website', 'admin', true, true, false)`.execute(
+      ctx.db,
+    );
+    const prompt = await harness.store.appendEvent('control-s1', {
+      t: 'prompt',
+      text: 'Hand this to the website session',
+      initiatedBy: { userId: 'admin' },
+    });
+    await harness.store.markTurnRunning({ sessionId: 'control-s1', promptSeq: prompt.seq });
+    await harness.store.bindTurnIdentity('control-s1', {
+      turnId: 'control-t1',
+      startCommandId: 'start',
+    });
+    const token = harness.tokens.issue({
+      projectId: VERITY_CONTROL_PROJECT_ID,
+      sessionId: 'control-s1',
+      turnId: 'control-t1',
+    });
+    await withInternalTcpListener(harness, async (port) => {
+      const handed = await postTcp(port, '/internal/control-plane/mcp', `Bearer ${token}`, {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: {
+          name: 'verity_session_handoff',
+          arguments: {
+            target: { sessionId: 'sess-web' },
+            title: 'Overlay for the new site',
+            briefing: 'Digest sha256:abc, port 8080.',
+          },
+        },
+      });
+      expect(
+        (JSON.parse(handed.body) as { result: { isError?: boolean } }).result.isError,
+        handed.body,
+      ).toBeUndefined();
+    });
+    // Without an initiator the delivered turn belongs to nobody, and an authenticated server
+    // refuses every tool call in it as if the sender had lost access to the target project.
+    // The target's own execution check then judges this user against that project.
+    expect(harness.dispatches).toEqual([
+      expect.objectContaining({
+        sessionId: 'sess-web',
+        dispatchOpts: expect.objectContaining({ initiatedBy: { userId: 'admin' } }),
+      }),
+    ]);
+  });
+
   // The audit split `ControlPlaneSessionAuthorityError` exists for, asserted where it is
   // actually written: a caller reaching for a tool it may not use must not be recorded the
   // way an outage is.
@@ -2283,3 +2551,177 @@ it('serves vulnerability reads through the audited gateway and refuses foreign r
     ),
   ).toBe(true);
 });
+
+it('rejects forged project/generation headers at the real relay before broker execution', async () => {
+  const harness = build();
+  await withListener(harness, async (socketPath) => {
+    const reply = await postUnix(
+      socketPath,
+      undefined,
+      { jsonrpc: '2.0', id: 1, method: 'tools/list' },
+      {
+        'x-verity-project-id': 'forged-project',
+        'x-verity-container-generation': 'forged-generation',
+      },
+    );
+    expect(reply.status).toBe(400);
+    expect(harness.invocations).toEqual([]);
+  });
+});
+
+it('lets QA read authorized CI evidence through the gateway but refuses all other tools', async () => {
+  const h = build({
+    planningTools: true,
+    allow: true,
+    qaAnalysisRead: async (_project, _request, authorize) => {
+      await authorize();
+      return { groups: [{ group: 'main:10', runs: 12 }], complete: true, continuation: null };
+    },
+  });
+  await h.store.createProject({
+    id: 'p1',
+    kind: 'github',
+    owner: 'team',
+    repo: 'app',
+    cloneDir: 'team-app',
+    containerName: 'app',
+    state: 'active',
+  });
+  await h.store.createSession({
+    sessionId: 'qa',
+    projectId: 'p1',
+    worktree: '/tmp/qa',
+    model: 'claude-opus-5',
+  });
+  await h.store.repairs.configureQA(true, 'admin');
+  await h.store.repairs.qaSession('qa');
+  await h.store.repairs.configure('p1', 'admin', 'monitor');
+  const token = h.tokens.issue({ projectId: 'p1', sessionId: 'qa', turnId: 't1' });
+  await withListener(h, async (socketPath) => {
+    let id = 0;
+    const call = async (name: string, args: object) => {
+      const r = await postUnix(socketPath, `Bearer ${token}`, {
+        jsonrpc: '2.0',
+        id: ++id,
+        method: 'tools/call',
+        params: { name, arguments: args },
+      });
+      return JSON.parse(r.body) as { result: { isError?: boolean; content: { text: string }[] } };
+    };
+    const listed = await call('verity_qa_analysis', { action: 'projects' });
+    expect(listed.result, JSON.stringify(listed)).toBeDefined();
+    expect(listed.result.isError).toBeUndefined();
+    expect(JSON.stringify(listed)).toContain('team/app');
+    const baseline = await call('verity_qa_analysis', { action: 'statistics', projectId: 'p1' });
+    expect(baseline.result.isError).toBeUndefined();
+    expect(JSON.stringify(baseline)).toContain('main:10');
+    const reportId = (JSON.parse(baseline.result.content[0]!.text) as { reportId: string })
+      .reportId;
+    await call('verity_qa_analysis', { action: 'save_report', projectId: 'p1', reportId });
+    expect(h.approvals).toEqual([
+      expect.objectContaining({ toolName: 'verity_qa_analysis', allowStandingGrant: false }),
+    ]);
+
+    for (const name of ['verity_tasks', 'verity_app_help', 'verity_http_request']) {
+      const args =
+        name === 'verity_tasks'
+          ? { action: 'list' }
+          : name === 'verity_app_help'
+            ? { topic: 'github' }
+            : {
+                secretAlias: 'ATTENDEE_API_KEY',
+                method: 'GET',
+                url: 'https://example.com',
+                auth: { kind: 'static', header: 'authorization', scheme: 'Bearer' },
+              };
+      expect(JSON.stringify(await call(name, args))).toContain(
+        'QA uses server-validated decisions',
+      );
+    }
+    await h.store.repairs.configure('p1', 'admin', 'off');
+    expect(
+      (await call('verity_qa_analysis', { action: 'pulls', projectId: 'p1' })).result.isError,
+    ).toBe(true);
+  });
+});
+
+it.each([false, true])(
+  'gates one-time QA repair requests on trusted instruction or a non-standing card (instruction=%s)',
+  async (explicit) => {
+    const h = build({ planningTools: true, allow: false });
+    await h.store.createProject({
+      id: 'p1',
+      kind: 'github',
+      owner: 'team',
+      repo: 'app',
+      cloneDir: 'team-app',
+      containerName: 'app',
+      state: 'active',
+    });
+    await h.store.createSession({
+      sessionId: 'qa',
+      projectId: 'p1',
+      worktree: '/tmp/qa',
+      model: 'claude',
+    });
+    await h.store.repairs.configureQA(true, '00000000-0000-4000-8000-000000000001');
+    await h.store.repairs.qaSession('qa');
+    await h.store.repairs.configure('p1', '00000000-0000-4000-8000-000000000001', 'monitor');
+    const id = crypto.randomUUID();
+    await h.store.repairs.proposeManualRepair({
+      id,
+      project_id: 'p1',
+      source_session_id: 'qa',
+      user_id: '00000000-0000-4000-8000-000000000001',
+      target_session_id: 'target',
+      number: 2120,
+      branch: 'fix/ci',
+      revision: 'sha',
+      qa_revision: 1,
+      mandate_revision: 1,
+      requires_card: false,
+    });
+    await h.store.appendEvent('qa', {
+      t: 'tool_call',
+      id: 'resolve',
+      name: 'verity_qa_analysis',
+      input: { action: 'resolve_repair', projectId: 'p1', number: 2120 },
+    });
+    await h.store.appendEvent('qa', {
+      t: 'tool_result',
+      id: 'resolve',
+      isError: false,
+      output: { proposalId: id },
+    });
+    const row = await h.store.appendEvent('qa', {
+      t: 'prompt',
+      text: explicit ? 'fix PR #2120' : 'What failed?',
+      initiatedBy: { userId: '00000000-0000-4000-8000-000000000001' },
+    });
+    await h.store.markTurnRunning({ sessionId: 'qa', promptSeq: row.seq });
+    await h.store.bindTurnIdentity('qa', { turnId: 't1', startCommandId: 'start' });
+    const token = h.tokens.issue({ projectId: 'p1', sessionId: 'qa', turnId: 't1' });
+    await withListener(h, async (socketPath) => {
+      const reply = await postUnix(socketPath, `Bearer ${token}`, {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: {
+          name: 'verity_qa_analysis',
+          arguments: { action: 'request_repair', projectId: 'p1', proposalId: id },
+        },
+      });
+      // No discovery provider exists in this harness: authorized execution must still fail
+      // closed, while a request lacking chat consent must hit the card before execution.
+      expect(JSON.parse(reply.body)).toHaveProperty('result.isError', true);
+      if (explicit) expect(reply.body).toContain('PR revision or failure evidence changed');
+      expect(h.approvals, reply.body).toHaveLength(explicit ? 0 : 1);
+      if (!explicit)
+        expect(h.approvals[0]).toMatchObject({
+          toolName: 'verity_qa_analysis',
+          allowStandingGrant: false,
+        });
+      expect((await h.store.repairs.manualRepair(id))?.dispatch_id).toBeNull();
+    });
+  },
+);

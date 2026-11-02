@@ -137,8 +137,5 @@ export function createSerialUpdateChecker(
   };
 }
 
-// One process-wide checker is shared by foreground polling and the manual
-// Settings action. Expo update operations are global, so separate callers must
-// never fetch or reload concurrently.
-export const checkForAppUpdate = createSerialUpdateChecker();
+// Share one download checker between foreground events and update polling.
 export const downloadAppUpdate = createSerialUpdateChecker(Updates, false);

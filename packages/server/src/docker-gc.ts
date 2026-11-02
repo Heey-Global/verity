@@ -197,6 +197,9 @@ export interface DockerGcDeps {
   imageReferences?: DerivedImageReferences | undefined;
   /** Post-delete pass: leave containers, volumes and builder cache to scheduled GC. */
   imagesOnly?: boolean;
+  /** Called after a project image is removed, for the audit trail (ADR 0028).
+   *  Release images are housekeeping, not project history, and are not reported. */
+  onProjectImageRemoved?: (image: { ref: string; imageId: string }) => Promise<void>;
   log: DockerGcLogger;
   policy?: Partial<DockerGcPolicy>;
   /** Path whose filesystem free space drives disk-pressure escalation — the
@@ -210,10 +213,24 @@ export interface DockerGcDeps {
    *  lifecycle's own view. Omitting it falls back to the listing plus elapsed
    *  time, neither of which can see a provision whose sandbox does not exist yet;
    *  wire it wherever both the GC and the lifecycle are available. */
+  beforeSweep?: () => Promise<void>;
+  onReport?: (report: DockerGcReport) => void;
+  retireContainers?: () => Promise<{
+    removed: string[];
+    errors: string[];
+    retained?: Array<{ name: string; reason: string }>;
+  }>;
   heldRelays?: () => Iterable<{ projectId: string; containerGeneration: string }>;
 }
 
 export interface DockerGcReport {
+  observedAt: string;
+  nativeRequestedAt?: string | null;
+  containersRemoved: string[];
+  retainedContainers?: Array<{ name: string; reason: string }>;
+  stoppedContainerPins: { images: number; containers: number; estimatedBytes: number };
+  keptImageReasons: Array<{ imageId: string; containers: string[] }>;
+
   imagesRemoved: string[];
   /** Sum of the removed images' apparent sizes. An UPPER BOUND on space actually
    *  reclaimed: the Engine counts shared layers once per image, so two generations
@@ -519,6 +536,10 @@ export async function runDockerGc(deps: DockerGcDeps): Promise<DockerGcReport> {
   const volumeMinAgeMs = policy.volumeMinAgeMs;
 
   const report: DockerGcReport = {
+    observedAt: new Date(now()).toISOString(),
+    containersRemoved: [],
+    stoppedContainerPins: { images: 0, containers: 0, estimatedBytes: 0 },
+    keptImageReasons: [],
     imagesRemoved: [],
     estimatedImageBytes: 0,
     volumesRemoved: 0,
@@ -528,6 +549,26 @@ export async function runDockerGc(deps: DockerGcDeps): Promise<DockerGcReport> {
     lowDisk,
     errors,
   };
+
+  if (!deps.imagesOnly) {
+    try {
+      await deps.beforeSweep?.();
+    } catch (error) {
+      errors.push({ resource: 'worktrees', message: errorMessage(error) });
+    }
+    try {
+      const retired = await deps.retireContainers?.();
+      if (retired) {
+        report.containersRemoved = retired.removed;
+        if (retired.retained) report.retainedContainers = retired.retained;
+        errors.push(
+          ...retired.errors.map((message) => ({ resource: 'stopped container', message })),
+        );
+      }
+    } catch (error) {
+      errors.push({ resource: 'stopped containers', message: errorMessage(error) });
+    }
+  }
 
   // --- Devcontainer images -------------------------------------------------
   // Requires listContainers as well: without the in-use set this would happily
@@ -540,6 +581,31 @@ export async function runDockerGc(deps: DockerGcDeps): Promise<DockerGcReport> {
       const sweep = async (projectImages?: DerivedImageSnapshot): Promise<void> => {
         const [images, containers] = await Promise.all([listImages(), listContainers()]);
         const inUseImageIds = new Set(containers.map((container) => container.imageId));
+        const stopped = containers.filter((c) =>
+          ['exited', 'created', 'dead'].includes(c.state ?? ''),
+        );
+        const pinned = images.filter(
+          (i) =>
+            stopped.some((c) => c.imageId === i.id) &&
+            (i.labels['org.opencontainers.image.source'] === VERITY_IMAGE_SOURCE ||
+              [...i.repoTags, ...i.repoDigests].some(
+                (ref) =>
+                  ref.startsWith(DEVCONTAINER_IMAGE_PREFIX) ||
+                  VERITY_RELEASE_REPOSITORIES.has(repositoryOf(ref) ?? ''),
+              )),
+        );
+        report.stoppedContainerPins = {
+          images: pinned.length,
+          containers: stopped.filter((c) => pinned.some((i) => i.id === c.imageId)).length,
+          estimatedBytes: pinned.reduce((sum, image) => sum + image.size, 0),
+        };
+        report.keptImageReasons = pinned.slice(0, 100).map((image) => ({
+          imageId: image.id,
+          containers: stopped
+            .filter((c) => c.imageId === image.id)
+            .map((c) => c.names?.[0] ?? c.id)
+            .slice(0, 100),
+        }));
         const plan = planImageSweep({
           projectImages,
           images,
@@ -559,6 +625,14 @@ export async function runDockerGc(deps: DockerGcDeps): Promise<DockerGcReport> {
             await docker.removeImage(entry.ref);
             report.imagesRemoved.push(entry.ref);
             report.estimatedImageBytes += entry.size;
+            if (entry.ref.startsWith(DEVCONTAINER_IMAGE_PREFIX)) {
+              // The image is gone either way; a failed report is not a failed removal.
+              try {
+                await deps.onProjectImageRemoved?.({ ref: entry.ref, imageId: entry.imageId });
+              } catch {
+                // Reported or not, the removal itself succeeded.
+              }
+            }
           } catch (err) {
             // Most commonly a 409: a container grabbed the image between the
             // listing and the delete. Next pass re-evaluates.
@@ -575,6 +649,7 @@ export async function runDockerGc(deps: DockerGcDeps): Promise<DockerGcReport> {
 
   if (deps.imagesOnly) {
     for (const error of errors) log.warn(error, 'docker gc skipped a resource');
+    deps.onReport?.(report);
     return report;
   }
 
@@ -706,15 +781,24 @@ export async function runDockerGc(deps: DockerGcDeps): Promise<DockerGcReport> {
       builderVolumes: report.builderVolumesRemoved,
       relays: report.relaysRemoved.length,
       buildCacheBytes: report.buildCacheBytes,
+      containersRemoved: report.containersRemoved.length,
+      stoppedContainerPins: report.stoppedContainerPins,
       lowDisk,
       ...(freeBytes !== undefined ? { freeBytes } : {}),
       errors: errors.length,
     },
     'docker gc pass complete',
   );
+  if (lowDisk && report.imagesRemoved.length === 0 && report.stoppedContainerPins.images > 0) {
+    log.warn(
+      report.stoppedContainerPins,
+      'docker gc kept images pinned by stopped containers under disk pressure',
+    );
+  }
   for (const error of errors) {
     log.warn(error, 'docker gc skipped a resource');
   }
+  deps.onReport?.(report);
   return report;
 }
 
@@ -754,13 +838,24 @@ export function startDockerGcScheduler(deps: DockerGcDeps): DockerGcScheduler {
   let stopped = false;
   let running = false;
   let lastPassAt: number | undefined;
+  let flight: Promise<DockerGcReport> | undefined;
+  const collect = (): Promise<DockerGcReport> => {
+    if (flight) return flight;
+    running = true;
+    lastPassAt = now();
+    flight = runDockerGc(deps).finally(() => {
+      running = false;
+      flight = undefined;
+    });
+    return flight;
+  };
 
   const pass = async (): Promise<void> => {
     if (running || stopped) return;
     running = true;
     lastPassAt = now();
     try {
-      await runDockerGc(deps);
+      await collect();
     } catch (err) {
       deps.log.warn({ err }, 'docker gc pass failed');
     } finally {
@@ -813,6 +908,6 @@ export function startDockerGcScheduler(deps: DockerGcDeps): DockerGcScheduler {
       if (pressureTimer !== undefined) clearInterval(pressureTimer);
       pressureTimer = undefined;
     },
-    runOnce: () => runDockerGc(deps),
+    runOnce: collect,
   };
 }

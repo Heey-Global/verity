@@ -38,13 +38,28 @@ import { normalizeSecurityOptions } from './docker-security-options.js';
  * retry business.
  */
 import * as http from 'node:http';
-import type { Duplex } from 'node:stream';
+import { Readable, type Duplex } from 'node:stream';
 import type { HttpFetch, HttpResponse } from './github.js';
+import {
+  describePullProgress,
+  drainPullStreamLines,
+  parsePullStreamLine,
+  PullProgressTracker,
+  pullStreamEventError,
+  type PullStreamEvent,
+} from './docker-pull-progress.js';
 
 /** Additive companion configuration applied only to the replacement container. */
 export interface ContainerReplacementConfig {
   env: Record<string, string>;
   portBindings: Record<string, Array<{ HostIp: string; HostPort: string }>>;
+}
+
+/** Identity of a local image, for the durable audit trail. */
+interface DockerImageIdentity {
+  id: string;
+  sizeBytes: number | null;
+  repoDigests: string[];
 }
 
 /** The subset of the Docker Engine REST API Verity calls. §17 socket-proxy
@@ -69,6 +84,11 @@ export interface DockerClient {
    *  (`image_not_found` if the message indicates missing/denied, else `other`).
    *  A 2xx with no error line resolves.
    *
+   *  The stream is watched while it arrives: no forward progress for the idle
+   *  window rejects with `pull_stalled`, and a pull still running at the overall
+   *  ceiling rejects with `timeout` (see {@link DockerClientOptions}). Neither is
+   *  reported as `network`. Retrying is the caller's decision.
+   *
    *  Optional on the interface so test fakes and any transport that predates
    *  auto-pull stay valid; the real {@link createDockerClient} always provides
    *  it, and the provisioner falls back to surfacing `image_not_found` when it's
@@ -79,11 +99,21 @@ export interface DockerClient {
   /** Wait until a container exits and return its process exit code. */
   waitContainer?(id: string): Promise<number>;
   /** Read a bounded tail of stdout/stderr for diagnostics. */
-  containerLogs?(id: string, tail: number): Promise<string>;
+  containerLogs?(
+    id: string,
+    tail: number,
+    window?: { since: string; until: string },
+  ): Promise<string>;
   /** Stop a running container (Engine `/containers/{id}/stop`) — gracefully SIGTERM
    *  with the timeout from the daemon default (10s). 404 → `ContainerNotFound`
    *  so deprovision is best-effort idempotent. */
   stopContainer(id: string): Promise<void>;
+  /** Installer recovery retains stopped containers under archived names until acceptance. */
+  renameContainer?(id: string, name: string): Promise<void>;
+  setContainerRestartPolicy?(
+    id: string,
+    policy: { name: 'no' | 'always' | 'unless-stopped' | 'on-failure'; maximumRetryCount: number },
+  ): Promise<void>;
   /** Force-remove a container regardless of running state
    *  (Engine `/containers/{id}?force=true&v=true`). 404 → already gone.
    *
@@ -98,6 +128,8 @@ export interface DockerClient {
    *  named volumes are unaffected by `v` — so taking them down with the
    *  container is both safe and the only correct lifetime. */
   removeContainer(id: string): Promise<void>;
+  /** GC only: never stop a running container and never delete attached volumes. */
+  removeStoppedContainer?(id: string): Promise<void>;
   /** Replace one host-infrastructure container with the same Docker config and
    * mounts but a different immutable image. The real client rolls the original
    * config back if creation or startup of the successor fails. Optional config
@@ -133,11 +165,16 @@ export interface DockerClient {
    *  running container carries exactly the environment a spec asked for and
    *  nothing else. `undefined` when the daemon does not have the image. */
   inspectImageEnv?(ref: string): Promise<readonly string[] | undefined>;
+  /** Image ID, size and repository digests of a locally-present image (Engine
+   *  `GET /images/{ref}/json`), for the durable audit trail. `undefined` on 404. */
+  inspectImageIdentity?(ref: string): Promise<DockerImageIdentity | undefined>;
   /** Create a user-defined bridge network if absent (Engine `POST /networks/create`),
    *  idempotent — an existing network (409) is a no-op. Used for per-project sandbox
    *  network isolation (security review H2). Optional so pre-existing test fakes stay
    *  valid; the real {@link createDockerClient} always provides it. */
   ensureNetwork?(name: string, opts?: { labels?: Record<string, string> }): Promise<void>;
+  /** Create-only generation bridge. Conflicts must never adopt an existing network. */
+  createEgressNetwork?(name: string, bridge: string): Promise<{ id: string }>;
   /** Create a named local volume if absent (Engine `POST /volumes/create`) and
    *  resolve its daemon-side `Mountpoint`. Idempotent: the local driver answers a
    *  create for an existing name with that volume, labels untouched. Optional so
@@ -155,6 +192,8 @@ export interface DockerClient {
    *  Optional so pre-existing test fakes stay valid; the real
    *  {@link createDockerClient} always provides it. */
   hostCpuCount?(): Promise<number | undefined>;
+  /** Physical memory reported by the Docker daemon, not this process. */
+  hostMemoryBytes?(): Promise<number | undefined>;
   /** List images on the daemon (Engine `GET /images/json`). Read by the disk GC
    *  to find superseded devcontainer image generations. Optional so pre-existing
    *  test fakes stay valid; the real {@link createDockerClient} always provides it. */
@@ -209,6 +248,7 @@ export interface DockerContainerSummary {
   id: string;
   /** Resolved image content id (`sha256:…`), NOT the human-readable `repo:tag`. */
   imageId: string;
+  state?: string;
   /** Container names as the daemon reports them, WITHOUT the leading `/`. Only
    *  used for logging which container a sweep retired. Optional so pre-existing
    *  test fakes stay valid. */
@@ -302,6 +342,8 @@ export interface ContainerSpec {
   /** OCI runtime registered with the Docker daemon (`HostConfig.Runtime`). Secret jobs set this
    *  explicitly to `runsc`; omitting it preserves the daemon default for ordinary sandboxes. */
   runtime?: string;
+  /** Host PID visibility for the bounded host-systemd provisioning helper only. */
+  pidMode?: 'host';
   /** Mount the image root filesystem read-only (`HostConfig.ReadonlyRootfs`). */
   readOnlyRootfs?: boolean;
   /** Ephemeral in-memory mounts keyed by their absolute container path (`HostConfig.Tmpfs`). */
@@ -324,6 +366,10 @@ export interface ContainerSpec {
   pidsLimit?: number;
   /** Hard memory ceiling in bytes (`HostConfig.Memory`). Omit/0 → unlimited. */
   memoryBytes?: number;
+  /** Best-effort soft protection; not a guaranteed allocation. */
+  memoryReservationBytes?: number;
+  /** Host OOM preference (-1000..1000); positive favours eviction. */
+  oomScoreAdj?: number;
   /**
    * Combined memory+swap ceiling in bytes (`HostConfig.MemorySwap`). Setting it
    * equal to {@link memoryBytes} disables swap, which is what a Compose
@@ -401,6 +447,8 @@ export interface ContainerInspect {
   id: string;
   /** True while the container's state reports `Running: true`. */
   running: boolean;
+  finishedAt?: string;
+  exitCode?: number;
   /** Whether Docker keeps stdin open when no attach client is currently connected. */
   openStdin?: boolean;
   /** Container image reference recorded on the container config. */
@@ -432,12 +480,15 @@ export interface ContainerInspect {
   extraHosts?: string[] | undefined;
   sysctls?: Record<string, string> | undefined;
   networkMode?: string | undefined;
+  pidMode?: string | undefined;
   readOnlyRootfs?: boolean | undefined;
   tmpfs?: Record<string, string> | undefined;
   capDrop?: string[] | undefined;
   securityOpt?: string[] | undefined;
   pidsLimit?: number | undefined;
   memoryBytes?: number | undefined;
+  memoryReservationBytes?: number | undefined;
+  oomScoreAdj?: number | undefined;
   /** `HostConfig.MemorySwap`. Reported so a caller can tell a container Docker
    *  gave the default swap allowance (twice {@link memoryBytes}) from one whose
    *  combined ceiling matches its memory ceiling and therefore cannot swap. */
@@ -472,6 +523,7 @@ export interface ContainerInspect {
   capAdd?: string[] | undefined;
   deviceCount?: number | undefined;
   restartPolicy?: string | undefined;
+  restartMaximumRetryCount?: number | undefined;
   entrypoint?: string[] | undefined;
   command?: string[] | undefined;
   init?: boolean | undefined;
@@ -485,7 +537,14 @@ export type DockerClientError =
   | { kind: 'container_not_found'; id: string }
   | { kind: 'conflict'; message: string }
   | { kind: 'other'; status: number; message: string }
-  | { kind: 'network'; cause: unknown };
+  | { kind: 'network'; cause: unknown }
+  /** An image pull made no progress for its idle window (see
+   *  {@link DockerClientOptions.pullIdleTimeoutMs}). The connection was open
+   *  and nothing failed outright; the pull simply stopped moving. */
+  | { kind: 'pull_stalled'; image: string; idleMs: number; message: string }
+  /** An image pull was still moving when it reached its overall ceiling
+   *  ({@link DockerClientOptions.pullTimeoutMs}). */
+  | { kind: 'timeout'; image: string; timeoutMs: number; message: string };
 
 export class DockerError extends Error {
   /** Discriminant tag — `kind` from the {@link DockerClientError} union. */
@@ -505,7 +564,8 @@ export class DockerError extends Error {
     this.name = 'DockerError';
     this.kind = err.kind;
     this.payload = err;
-    if (err.kind === 'image_not_found') this.image = err.image;
+    if (err.kind === 'image_not_found' || err.kind === 'pull_stalled' || err.kind === 'timeout')
+      this.image = err.image;
     else if (err.kind === 'container_not_found') this.id = err.id;
     else if (err.kind === 'other') this.status = err.status;
     else if (err.kind === 'network') this.cause = err.cause;
@@ -524,10 +584,31 @@ export interface DockerClientOptions {
    *  (create/start/stop/remove/inspect). Image pulls use {@link pullTimeoutMs}
    *  instead — they stream for a long time. */
   timeoutMs?: number;
-  /** Timeout in ms for {@link DockerClient.pullImage} (default 300s). Pulls are
-   *  slow (image download + extract), so they get a separate, much longer budget
-   *  than the 30s request timeout above. */
+  /** Overall ceiling in ms for one {@link DockerClient.pullImage} call (default
+   *  {@link DEFAULT_PULL_TIMEOUT_MS}, 2 h). Reaching it rejects with
+   *  `kind: 'timeout'`.
+   *
+   *  This used to be the ONLY pull bound, at 300 s, and it measured the wrong
+   *  thing: a pull's duration is its size divided by the link speed, and both
+   *  belong to someone else. A 2.24 GB Server release over a 0.67 MB/s link
+   *  needs about 56 minutes of steady progress and could never finish inside
+   *  300 s, so it failed the same way on every attempt. Stalls are now caught by
+   *  {@link pullIdleTimeoutMs}; this ceiling only stops a pull that keeps
+   *  trickling forever, so it is set far above any download a host can
+   *  reasonably be expected to complete. */
   pullTimeoutMs?: number;
+  /** Abort a pull when the progress stream has not moved forward for this many
+   *  ms (default {@link DEFAULT_PULL_IDLE_TIMEOUT_MS}, 120 s); rejects with
+   *  `kind: 'pull_stalled'`. "Forward" means a layer reached a new state or a
+   *  byte counter rose — see {@link PullProgressTracker}. Suspended while every
+   *  known layer is already on the host, because extraction is local work the
+   *  containerd image store does without reporting progress. */
+  pullIdleTimeoutMs?: number;
+  /** Where pull progress lines go when the call passes no `log` of its own
+   *  ({@link PullImageOptions.log}). Default: no progress logging. */
+  pullLog?: (message: string) => void;
+  /** Minimum ms between two progress lines for one pull (default 30 s). */
+  pullLogIntervalMs?: number;
   /** Optional value for the `X-Registry-Auth` header on {@link
    *  DockerClient.pullImage} — a base64-encoded JSON `{username,password}` or an
    *  identity token, for private registries. Default unset: the product base
@@ -536,70 +617,108 @@ export interface DockerClientOptions {
   registryAuth?: string;
 }
 
-/** KNOWN GAP, recorded rather than quietly changed: `[truncated]` is added HERE, so it
- *  only ever reaches MULTIPLEXED output. Plain (unframed) logs leave through the early
- *  return below, before any marker — which means a read cut short by `containerLogs`'
- *  byte budget comes back indistinguishable from a complete one, at exactly the moment
- *  an operator is reading logs because something failed. The bound itself is right and
- *  should stay; what is missing is saying so. The likely fix is to append the sentinel
- *  where the budget is applied (`boundedResponseBytes`) rather than here, so it does not
- *  depend on which log format the Engine happened to serve. Both affected paths are
- *  pinned as they behave, under names carrying `unmarked`, in docker.test.ts — fixing
- *  this will fail those two tests, which is the point. */
-function decodeDockerLogFrames(bytes: Buffer): string {
-  const parts: Buffer[] = [];
-  let offset = 0;
-  while (offset + 8 <= bytes.length) {
-    const stream = bytes[offset];
-    if (
-      (stream !== 1 && stream !== 2) ||
-      bytes[offset + 1] !== 0 ||
-      bytes[offset + 2] !== 0 ||
-      bytes[offset + 3] !== 0
-    ) {
-      return bytes.toString('utf8');
-    }
-    const length = bytes.readUInt32BE(offset + 4);
-    if (offset + 8 + length > bytes.length) {
-      parts.push(bytes.subarray(offset + 8), Buffer.from('\n[truncated]\n'));
-      return Buffer.concat(parts).toString('utf8');
-    }
-    parts.push(bytes.subarray(offset + 8, offset + 8 + length));
-    offset += 8 + length;
-  }
-  if (offset < bytes.length && parts.length > 0) parts.push(Buffer.from('\n[truncated]\n'));
-  return parts.length === 0 ? bytes.toString('utf8') : Buffer.concat(parts).toString('utf8');
-}
-
-async function boundedResponseBytes(res: HttpResponse, limit: number): Promise<Buffer> {
-  if (res.body !== undefined && res.body !== null) {
-    const reader = res.body.getReader();
-    const chunks: Buffer[] = [];
-    let total = 0;
-    try {
-      while (total < limit) {
-        const next = await reader.read();
-        if (next.done) break;
-        const chunk = Buffer.from(next.value);
-        const remaining = limit - total;
-        chunks.push(chunk.subarray(0, remaining));
-        total += Math.min(chunk.length, remaining);
-        if (chunk.length > remaining) break;
+/** Decode frames incrementally and retain the latest output, on both transports.
+ * Frame headers must be removed before trimming: a byte tail can start inside a frame.
+ */
+async function dockerLogTail(res: HttpResponse, limit: number): Promise<string> {
+  let tail = Buffer.alloc(0);
+  let header = Buffer.alloc(0);
+  let mode: 'detect' | 'frames' | 'plain' = 'detect';
+  let remaining = 0;
+  let shortened = false;
+  const append = (bytes: Buffer) => {
+    if (!bytes.length) return;
+    shortened ||= tail.length + bytes.length > limit;
+    tail =
+      bytes.length >= limit
+        ? Buffer.from(bytes.subarray(-limit))
+        : Buffer.concat([tail.subarray(Math.max(0, tail.length + bytes.length - limit)), bytes]);
+  };
+  const consume = (input: Uint8Array) => {
+    let bytes = Buffer.from(input.buffer, input.byteOffset, input.byteLength);
+    while (bytes.length) {
+      if (mode === 'plain') {
+        append(bytes);
+        return;
       }
+      if (remaining > 0) {
+        const count = Math.min(bytes.length, remaining);
+        append(bytes.subarray(0, count));
+        remaining -= count;
+        bytes = bytes.subarray(count);
+        continue;
+      }
+      const count = Math.min(8 - header.length, bytes.length);
+      header = Buffer.concat([header, bytes.subarray(0, count)]);
+      bytes = bytes.subarray(count);
+      if (header.length < 8) continue;
+      if (
+        (header[0] !== 1 && header[0] !== 2) ||
+        header[1] !== 0 ||
+        header[2] !== 0 ||
+        header[3] !== 0
+      ) {
+        mode = 'plain';
+        append(header);
+        header = Buffer.alloc(0);
+        continue;
+      }
+      mode = 'frames';
+      remaining = header.readUInt32BE(4);
+      header = Buffer.alloc(0);
+    }
+  };
+  if (res.body) {
+    const reader = res.body.getReader();
+    try {
+      for (let next = await reader.read(); !next.done; next = await reader.read())
+        consume(next.value);
     } finally {
       await reader.cancel().catch(() => undefined);
     }
-    return Buffer.concat(chunks, total);
+  } else if (res.arrayBuffer) consume(new Uint8Array(await res.arrayBuffer()));
+  else consume(Buffer.from(res.text ? await res.text() : JSON.stringify(await res.json())));
+  if (mode === 'detect' || mode === 'plain') append(header);
+  else if (header.length || remaining) shortened = true;
+  // Omit a leading fragment after byte eviction, rather than displaying a broken
+  // credential-bearing JSON line. The latest complete lines remain intact.
+  if (shortened && tail.length >= limit) {
+    const newline = tail.indexOf(10);
+    tail = newline >= 0 ? tail.subarray(newline + 1) : Buffer.alloc(0);
+    while (tail.length && (tail[0]! & 0xc0) === 0x80) tail = tail.subarray(1);
   }
-  if (res.arrayBuffer !== undefined) return Buffer.from(await res.arrayBuffer()).subarray(0, limit);
-  const text = res.text === undefined ? JSON.stringify(await res.json()) : await res.text();
-  return Buffer.from(text, 'utf8').subarray(0, limit);
+  return tail.toString('utf8') + (shortened ? '\n[truncated]\n' : '');
 }
+
+/**
+ * Default no-progress window for an image pull.
+ *
+ * 120 s is long enough to ride out everything a healthy pull does between two
+ * advancing progress lines: a registry redirect and TLS setup for the next blob,
+ * the classic store's own per-layer retries (each a few seconds of countdown,
+ * which {@link PullProgressTracker} does not count as progress), a CDN edge
+ * hiccup, and byte counters on a link far slower than any host Verity supports —
+ * at 10 KB/s the Engine still reports movement several times a minute. It is
+ * short enough to notice a connection that died without a reset, which TCP
+ * alone may not report for many minutes, and to leave room for several retries
+ * inside the Updater's 30-minute stall rule.
+ */
+export const DEFAULT_PULL_IDLE_TIMEOUT_MS = 120_000;
+/** Default overall pull ceiling; see {@link DockerClientOptions.pullTimeoutMs}. */
+export const DEFAULT_PULL_TIMEOUT_MS = 2 * 60 * 60 * 1000;
+const DEFAULT_PULL_LOG_INTERVAL_MS = 30_000;
+/** `/containers/{id}/wait` used to borrow the 300 s pull budget. It keeps that
+ *  value on its own now that the pull bound means something else. */
+const CONTAINER_WAIT_TIMEOUT_MS = 300_000;
 
 /** Per-call options for {@link DockerClient.pullImage}. */
 interface PullImageOptions {
+  /** Abort a caller-owned disposable operation, including image download. */
+  signal?: AbortSignal;
   /** Override the client-level `registryAuth` for this single pull. */
   registryAuth?: string;
+  /** Rate-limited progress lines for this pull; overrides the client's `pullLog`. */
+  log?: (message: string) => void;
 }
 
 /** Init-shape narration of `fetch` so the docker client can construct
@@ -609,6 +728,74 @@ export interface HttpFetchInit {
   headers?: Record<string, string>;
   signal?: AbortSignal;
   body?: string;
+  /** Ask the transport to resolve once headers arrive and expose `body` as a
+   *  stream; see {@link HttpFetch}. */
+  stream?: boolean;
+}
+
+/** `120000` → `120s`. */
+function seconds(ms: number): string {
+  return `${String(Math.round(ms / 1000))}s`;
+}
+
+/**
+ * Settle with `promise`, or reject with the signal's reason once it aborts.
+ *
+ * The pull watchdog cannot rely on the transport to notice its abort: an
+ * injected fetch, or a body stream that is not wired to the request signal,
+ * would keep the read pending forever. Racing every await against the signal
+ * makes the bound hold whatever the transport does.
+ */
+function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  let onAbort = (): void => undefined;
+  const aborted = new Promise<never>((_resolve, reject) => {
+    onAbort = () => {
+      reject(signal.reason as Error);
+    };
+    if (signal.aborted) onAbort();
+    else signal.addEventListener('abort', onAbort, { once: true });
+  });
+  return Promise.race([promise, aborted]).finally(() => {
+    signal.removeEventListener('abort', onAbort);
+  });
+}
+
+/**
+ * Read an `/images/create` body to its end, handing every parsed line to
+ * `consume` as it arrives. A streaming body is read chunk by chunk under
+ * `signal`; a transport that only offers the buffered body (test fakes) is
+ * scanned once it resolves, which still finds an in-stream error but cannot
+ * show progress before then.
+ */
+async function readPullStream(
+  res: HttpResponse,
+  signal: AbortSignal,
+  consume: (events: readonly PullStreamEvent[]) => void,
+): Promise<void> {
+  if (res.body === undefined || res.body === null) {
+    const body = await abortable(
+      res.text !== undefined ? res.text() : res.json().then((json) => JSON.stringify(json)),
+      signal,
+    );
+    consume(drainPullStreamLines(`${body}\n`).events);
+    return;
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let pending = '';
+  try {
+    for (;;) {
+      const next = await abortable(reader.read(), signal);
+      if (next.done) break;
+      const drained = drainPullStreamLines(pending + decoder.decode(next.value, { stream: true }));
+      pending = drained.rest;
+      consume(drained.events);
+    }
+  } finally {
+    await reader.cancel().catch(() => undefined);
+  }
+  const last = parsePullStreamLine(pending + decoder.decode());
+  if (last !== undefined) consume([last]);
 }
 
 /** Translate a raw `fetch` failure into a typed {@link DockerClientError}. */
@@ -618,11 +805,13 @@ async function callDocker(
   method: string,
   timeoutMs: number,
   body?: unknown,
+  stream = false,
 ): Promise<HttpResponse> {
   const init: HttpFetchInit = {
     method,
     signal: AbortSignal.timeout(timeoutMs),
   };
+  if (stream) init.stream = true;
   if (body !== undefined) {
     init.headers = { 'content-type': 'application/json' };
     init.body = JSON.stringify(body);
@@ -763,24 +952,11 @@ export function parseImageRef(imageRef: string): { fromImage: string; tag?: stri
  *  failure appears as a `{"error":"..."}` line inside that 200 body. Returns the
  *  first error message found, or `undefined` when the pull succeeded. */
 export function findPullStreamError(body: string): string | undefined {
-  for (const rawLine of body.split('\n')) {
-    const line = rawLine.trim();
-    if (line === '') continue;
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(line);
-    } catch {
-      // Non-JSON line (shouldn't happen on this endpoint) — ignore, keep scanning.
-      continue;
-    }
-    if (typeof parsed === 'object' && parsed !== null && 'error' in parsed) {
-      const err = (parsed as { error?: unknown; errorDetail?: { message?: unknown } }).error;
-      if (typeof err === 'string' && err !== '') return err;
-      const detail = (parsed as { errorDetail?: { message?: unknown } }).errorDetail?.message;
-      if (typeof detail === 'string' && detail !== '') return detail;
-      // `error` present but not a usable string — still a failure signal.
-      return 'image pull failed';
-    }
+  for (const line of body.split('\n')) {
+    // Non-JSON lines (which this endpoint should never send) are skipped.
+    const event = parsePullStreamLine(line);
+    const error = event === undefined ? undefined : pullStreamEventError(event);
+    if (error !== undefined) return error;
   }
   return undefined;
 }
@@ -869,6 +1045,44 @@ export function createUnixSocketFetch(parsed: ParsedUnixBaseUrl): HttpFetch {
           headers: init?.headers,
         },
         (res) => {
+          const headers = {
+            get: (name: string) => {
+              const v = res.headers[name.toLowerCase()];
+              if (v === undefined) return null;
+              return Array.isArray(v) ? v.join(', ') : v;
+            },
+          };
+          if (init?.stream === true) {
+            // Streaming mode (image pulls): hand the body over as it arrives so
+            // the caller can watch progress. An abort destroys the request
+            // (below), which errors this stream for whoever is reading it.
+            const status = res.statusCode ?? 0;
+            const body = Readable.toWeb(res) as unknown as ReadableStream<Uint8Array>;
+            let collected: Promise<Buffer> | undefined;
+            const collect = (): Promise<Buffer> =>
+              (collected ??= (async () => {
+                const parts: Buffer[] = [];
+                const reader = body.getReader();
+                for (let next = await reader.read(); !next.done; next = await reader.read())
+                  parts.push(Buffer.from(next.value));
+                return Buffer.concat(parts);
+              })());
+            resolve({
+              ok: status >= 200 && status < 400,
+              status,
+              body,
+              text: async () => (await collect()).toString('utf8'),
+              json: async () => {
+                const raw = (await collect()).toString('utf8');
+                return raw === '' ? {} : (JSON.parse(raw) as unknown);
+              },
+              arrayBuffer: async () => {
+                return new Uint8Array(await collect()).buffer;
+              },
+              headers,
+            });
+            return;
+          }
           const chunks: Buffer[] = [];
           const responseLimit = requestPath.includes('/logs?')
             ? 64 * 1024
@@ -903,13 +1117,7 @@ export function createUnixSocketFetch(parsed: ParsedUnixBaseUrl): HttpFetch {
                     rawBuffer.byteOffset + rawBuffer.byteLength,
                   ),
                 ),
-              headers: {
-                get: (name: string) => {
-                  const v = res.headers[name.toLowerCase()];
-                  if (v === undefined) return null;
-                  return Array.isArray(v) ? v.join(', ') : v;
-                },
-              },
+              headers,
             });
           });
           res.on('error', reject);
@@ -1056,50 +1264,125 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
       : (url, init) => fetch(url, init));
   const base = opts.baseUrl.endsWith('/') ? opts.baseUrl.slice(0, -1) : opts.baseUrl;
   const timeoutMs = opts.timeoutMs ?? 30_000;
-  const pullTimeoutMs = opts.pullTimeoutMs ?? 300_000;
+  const pullTimeoutMs = opts.pullTimeoutMs ?? DEFAULT_PULL_TIMEOUT_MS;
+  const pullIdleTimeoutMs = opts.pullIdleTimeoutMs ?? DEFAULT_PULL_IDLE_TIMEOUT_MS;
+  const pullLogIntervalMs = opts.pullLogIntervalMs ?? DEFAULT_PULL_LOG_INTERVAL_MS;
   const defaultRegistryAuth = opts.registryAuth;
 
   /** POST /images/create?fromImage=…&tag=… — pull the pinned base image so a
    *  subsequent create finds it (ADR 0003 R6 / #299). See the interface doc for
-   *  the HTTP-200-with-in-stream-error gotcha this handles. */
+   *  the HTTP-200-with-in-stream-error gotcha this handles.
+   *
+   *  Two watchdogs bound the call, both plain timers so tests can drive them: an
+   *  idle window that restarts on every line that moves the pull forward
+   *  (`pull_stalled`), and an overall ceiling (`timeout`). A caller's own
+   *  `signal` still surfaces as `network`, as it always has. */
   const pullImage = async (imageRef: string, pullOpts?: PullImageOptions): Promise<void> => {
     const { fromImage, tag } = parseImageRef(imageRef);
     const query = new URLSearchParams({ fromImage });
     if (tag !== undefined) query.set('tag', tag);
     const url = `${base}/images/create?${query.toString()}`;
     const registryAuth = pullOpts?.registryAuth ?? defaultRegistryAuth;
-    const init: HttpFetchInit = {
-      method: 'POST',
-      signal: AbortSignal.timeout(pullTimeoutMs),
+    const log = pullOpts?.log ?? opts.pullLog;
+    const tracker = new PullProgressTracker();
+    const watchdog = new AbortController();
+    let verdict: DockerError | undefined;
+    const trip = (error: DockerError): void => {
+      verdict ??= error;
+      watchdog.abort(error);
     };
+    const startedAt = Date.now();
+    const ceiling = setTimeout(() => {
+      trip(
+        new DockerError({
+          kind: 'timeout',
+          image: imageRef,
+          timeoutMs: pullTimeoutMs,
+          message: `image pull of ${imageRef} did not finish within ${seconds(pullTimeoutMs)} (${describePullProgress(tracker.summary())})`,
+        }),
+      );
+    }, pullTimeoutMs);
+    let idle: ReturnType<typeof setTimeout> | undefined;
+    const armIdle = (): void => {
+      clearTimeout(idle);
+      idle = undefined;
+      // Local extraction reports nothing on the containerd store; only the
+      // ceiling bounds it (see PullProgressTracker.awaitingNetwork).
+      if (!tracker.awaitingNetwork) return;
+      idle = setTimeout(() => {
+        trip(
+          new DockerError({
+            kind: 'pull_stalled',
+            image: imageRef,
+            idleMs: pullIdleTimeoutMs,
+            message: `image pull of ${imageRef} stalled: no progress for ${seconds(pullIdleTimeoutMs)} (${describePullProgress(tracker.summary())})`,
+          }),
+        );
+      }, pullIdleTimeoutMs);
+    };
+    armIdle();
+    let loggedAt = startedAt;
+    const signal = pullOpts?.signal
+      ? AbortSignal.any([watchdog.signal, pullOpts.signal])
+      : watchdog.signal;
+    const init: HttpFetchInit = { method: 'POST', signal, stream: true };
     if (registryAuth !== undefined) {
       // Private-registry auth: base64 JSON {username,password} or identity token.
       init.headers = { 'X-Registry-Auth': registryAuth };
     }
+    let streamError: string | undefined;
+    const consume = (events: readonly PullStreamEvent[]): void => {
+      let advanced = false;
+      for (const event of events) {
+        streamError ??= pullStreamEventError(event);
+        if (tracker.observe(event)) advanced = true;
+      }
+      if (!advanced) return;
+      armIdle();
+      const now = Date.now();
+      if (log !== undefined && now - loggedAt >= pullLogIntervalMs) {
+        loggedAt = now;
+        log(`pulling ${imageRef}: ${describePullProgress(tracker.summary())}`);
+      }
+    };
     let res: HttpResponse;
     try {
-      res = await doFetch(url, init);
-    } catch (cause) {
-      throw new DockerError({ kind: 'network', cause });
-    }
-    if (!res.ok) {
-      // Rare: a non-2xx BEFORE the stream starts (e.g. proxy rejects the path).
-      const err = await toDockerError(res);
-      const payload = err.payload;
-      if (payload.kind === 'other' && payload.status === 404) {
-        throw new DockerError({
-          kind: 'image_not_found',
-          image: imageRef,
-          message: payload.message,
-        });
+      try {
+        res = await abortable(
+          Promise.resolve().then((): Promise<HttpResponse> => doFetch(url, init)),
+          watchdog.signal,
+        );
+      } catch (cause) {
+        throw verdict ?? new DockerError({ kind: 'network', cause });
       }
-      throw err;
+      if (!res.ok) {
+        // Rare: a non-2xx BEFORE the stream starts (e.g. proxy rejects the path).
+        const err = await toDockerError(res);
+        const payload = err.payload;
+        if (payload.kind === 'other' && payload.status === 404) {
+          throw new DockerError({
+            kind: 'image_not_found',
+            image: imageRef,
+            message: payload.message,
+          });
+        }
+        throw err;
+      }
+      // CRITICAL: /images/create streams NDJSON at HTTP 200; a pull failure is a
+      // `{"error":...}` line INSIDE that 200 body, not a status code. Read the
+      // whole stream, watching it for progress and scanning it for that line.
+      try {
+        await readPullStream(res, watchdog.signal, consume);
+      } catch (cause) {
+        throw (
+          verdict ??
+          (cause instanceof DockerError ? cause : new DockerError({ kind: 'network', cause }))
+        );
+      }
+    } finally {
+      clearTimeout(ceiling);
+      clearTimeout(idle);
     }
-    // CRITICAL: /images/create streams NDJSON at HTTP 200; a pull failure is a
-    // `{"error":...}` line INSIDE that 200 body, not a status code. Read the
-    // whole stream and scan it (see findPullStreamError).
-    const body = res.text !== undefined ? await res.text() : JSON.stringify(await res.json());
-    const streamError = findPullStreamError(body);
     if (streamError !== undefined) {
       if (pullErrorIsNotFound(streamError)) {
         throw new DockerError({ kind: 'image_not_found', image: imageRef, message: streamError });
@@ -1109,6 +1392,11 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
         status: res.status,
         message: `image pull failed: ${streamError}`,
       });
+    }
+    if (log !== undefined && Date.now() - startedAt >= pullLogIntervalMs) {
+      log(
+        `pulled ${imageRef} in ${seconds(Date.now() - startedAt)}: ${describePullProgress(tracker.summary())}`,
+      );
     }
   };
 
@@ -1186,6 +1474,7 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
           : {}),
         ...(spec.extraHosts?.length ? { ExtraHosts: spec.extraHosts } : {}),
         ...(spec.runtime !== undefined ? { Runtime: spec.runtime } : {}),
+        ...(spec.pidMode !== undefined ? { PidMode: spec.pidMode } : {}),
         ...(spec.groupAdd?.length ? { GroupAdd: spec.groupAdd } : {}),
         ...(spec.readOnlyRootfs !== undefined ? { ReadonlyRootfs: spec.readOnlyRootfs } : {}),
         ...(spec.tmpfs !== undefined ? { Tmpfs: spec.tmpfs } : {}),
@@ -1199,6 +1488,10 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
         ...(spec.memoryBytes !== undefined && spec.memoryBytes > 0
           ? { Memory: spec.memoryBytes }
           : {}),
+        ...(spec.memoryReservationBytes !== undefined
+          ? { MemoryReservation: spec.memoryReservationBytes }
+          : {}),
+        ...(spec.oomScoreAdj !== undefined ? { OomScoreAdj: spec.oomScoreAdj } : {}),
         // Only alongside `Memory`: a swap ceiling on its own is not a weaker limit, it
         // is a create the daemon refuses ("You should always set the Memory limit when
         // using Memoryswap limit"). Dropping it keeps a half-specified spec from
@@ -1436,6 +1729,28 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
   return {
     createContainer,
     pullImage,
+    renameContainer: async (id, name) => {
+      const query = new URLSearchParams({ name });
+      const res = await callDocker(
+        doFetch,
+        `${base}/containers/${encodeURIComponent(id)}/rename?${query.toString()}`,
+        'POST',
+        timeoutMs,
+      );
+      if (!res.ok) throw await toDockerError(res, id);
+    },
+    setContainerRestartPolicy: async (id, policy) => {
+      const res = await callDocker(
+        doFetch,
+        `${base}/containers/${encodeURIComponent(id)}/update`,
+        'POST',
+        timeoutMs,
+        {
+          RestartPolicy: { Name: policy.name, MaximumRetryCount: policy.maximumRetryCount },
+        },
+      );
+      if (!res.ok) throw await toDockerError(res, id);
+    },
     startContainer: async (id) => {
       const res = await callDocker(doFetch, `${base}/containers/${id}/start`, 'POST', timeoutMs);
       if (!res.ok) throw await toDockerError(res, id);
@@ -1445,7 +1760,7 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
         doFetch,
         `${base}/containers/${id}/wait?condition=not-running`,
         'POST',
-        pullTimeoutMs,
+        CONTAINER_WAIT_TIMEOUT_MS,
       );
       if (!res.ok) throw await toDockerError(res, id);
       const json = (await res.json()) as { StatusCode?: unknown; Error?: { Message?: unknown } };
@@ -1465,21 +1780,26 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
       }
       return json.StatusCode;
     },
-    containerLogs: async (id, tail) => {
+    containerLogs: async (id, tail, window) => {
       if (!Number.isSafeInteger(tail) || tail < 1 || tail > 1000) {
         throw new TypeError('container log tail must be between 1 and 1000');
       }
       const query = new URLSearchParams({ stdout: '1', stderr: '1', tail: String(tail) });
+      if (window !== undefined) {
+        query.set('since', window.since);
+        query.set('until', window.until);
+        query.set('timestamps', '1');
+      }
       const res = await callDocker(
         doFetch,
-        `${base}/containers/${id}/logs?${query.toString()}`,
+        `${base}/containers/${encodeURIComponent(id)}/logs?${query.toString()}`,
         'GET',
         timeoutMs,
+        undefined,
+        true,
       );
       if (!res.ok) throw await toDockerError(res, id);
-      // Reserve room for the decoder's explicit truncation marker.
-      const body = await boundedResponseBytes(res, 64 * 1024 - 32);
-      return decodeDockerLogFrames(body);
+      return dockerLogTail(res, 64 * 1024 - 32);
     },
     stopContainer: async (id) => {
       const res = await callDocker(doFetch, `${base}/containers/${id}/stop`, 'POST', timeoutMs);
@@ -1487,6 +1807,15 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
       // so the socket-proxy transport failed every stop of a stopped container,
       // including the rollback of a start that never got the container running.
       if (!res.ok && res.status !== 304) throw await toDockerError(res, id);
+    },
+    removeStoppedContainer: async (id) => {
+      const res = await callDocker(
+        doFetch,
+        `${base}/containers/${encodeURIComponent(id)}?force=false&v=false`,
+        'DELETE',
+        timeoutMs,
+      );
+      if (!res.ok && res.status !== 404) throw await toDockerError(res, id);
     },
     removeContainer: async (id) => {
       // `v=true` removes the anonymous volumes the daemon minted for this
@@ -1769,6 +2098,8 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
         Image?: unknown;
         RestartCount?: unknown;
         State?: {
+          FinishedAt?: string;
+          ExitCode?: number;
           Running?: unknown;
           Status?: unknown;
           Health?: { Status?: unknown };
@@ -1788,6 +2119,7 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
           PortBindings?: ContainerReplacementConfig['portBindings'];
           Runtime?: unknown;
           NetworkMode?: unknown;
+          PidMode?: unknown;
           ExtraHosts?: unknown;
           Sysctls?: unknown;
           ReadonlyRootfs?: unknown;
@@ -1797,6 +2129,8 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
           PidsLimit?: unknown;
           Memory?: unknown;
           MemorySwap?: unknown;
+          MemoryReservation?: unknown;
+          OomScoreAdj?: unknown;
           NanoCpus?: unknown;
           CpuShares?: unknown;
           Privileged?: unknown;
@@ -1804,7 +2138,7 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
           GroupAdd?: unknown;
           Devices?: unknown;
           DeviceRequests?: unknown;
-          RestartPolicy?: { Name?: unknown };
+          RestartPolicy?: { Name?: unknown; MaximumRetryCount?: unknown };
           Init?: unknown;
           Mounts?: unknown;
         };
@@ -1857,6 +2191,10 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
           : {}),
         id: json.Id,
         running: json.State?.Running === true,
+        ...(typeof json.State?.FinishedAt === 'string'
+          ? { finishedAt: json.State.FinishedAt }
+          : {}),
+        ...(typeof json.State?.ExitCode === 'number' ? { exitCode: json.State.ExitCode } : {}),
         ...(typeof json.Config?.Image === 'string' ? { image: json.Config.Image } : {}),
         ...(typeof json.Image === 'string' ? { imageId: json.Image } : {}),
         ...(labels !== undefined ? { labels } : {}),
@@ -1869,6 +2207,9 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
         ...(typeof json.RestartCount === 'number' ? { restartCount: json.RestartCount } : {}),
         ...(typeof json.State?.Health?.Status === 'string'
           ? { healthStatus: json.State.Health.Status }
+          : {}),
+        ...(typeof json.HostConfig?.PidMode === 'string'
+          ? { pidMode: json.HostConfig.PidMode }
           : {}),
         ...(typeof json.HostConfig?.NetworkMode === 'string'
           ? { networkMode: json.HostConfig.NetworkMode }
@@ -1895,6 +2236,12 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
           : {}),
         ...(typeof json.HostConfig?.MemorySwap === 'number'
           ? { memorySwapBytes: json.HostConfig.MemorySwap }
+          : {}),
+        ...(typeof json.HostConfig?.MemoryReservation === 'number'
+          ? { memoryReservationBytes: json.HostConfig.MemoryReservation }
+          : {}),
+        ...(typeof json.HostConfig?.OomScoreAdj === 'number'
+          ? { oomScoreAdj: json.HostConfig.OomScoreAdj }
           : {}),
         ...(typeof json.HostConfig?.NanoCpus === 'number'
           ? { nanoCpus: json.HostConfig.NanoCpus }
@@ -1952,6 +2299,9 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
         ...(typeof json.HostConfig?.RestartPolicy?.Name === 'string'
           ? { restartPolicy: json.HostConfig.RestartPolicy.Name }
           : {}),
+        ...(typeof json.HostConfig?.RestartPolicy?.MaximumRetryCount === 'number'
+          ? { restartMaximumRetryCount: json.HostConfig.RestartPolicy.MaximumRetryCount }
+          : {}),
         ...(isStringArray(json.Config?.Entrypoint) ? { entrypoint: json.Config.Entrypoint } : {}),
         ...(isStringArray(json.Config?.Cmd) ? { command: json.Config.Cmd } : {}),
         ...(typeof json.Config?.OpenStdin === 'boolean'
@@ -1976,6 +2326,16 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
         });
       }
       return { path: candidate.path, args: candidate.runtimeArgs };
+    },
+    hostMemoryBytes: async () => {
+      const res = await callDocker(doFetch, `${base}/info`, 'GET', timeoutMs);
+      if (!res.ok) throw await toDockerError(res);
+      const json = (await res.json()) as { MemTotal?: unknown };
+      return typeof json.MemTotal === 'number' &&
+        Number.isSafeInteger(json.MemTotal) &&
+        json.MemTotal > 0
+        ? json.MemTotal
+        : undefined;
     },
     hostCpuCount: async () => {
       const res = await callDocker(doFetch, `${base}/info`, 'GET', timeoutMs);
@@ -2024,6 +2384,23 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
       const json = (await res.json()) as { Config?: { Env?: unknown } };
       return isStringArray(json.Config?.Env) ? json.Config.Env : [];
     },
+    inspectImageIdentity: async (ref) => {
+      const res = await callDocker(
+        doFetch,
+        `${base}/images/${encodeURIComponent(ref)}/json`,
+        'GET',
+        timeoutMs,
+      );
+      if (res.status === 404) return undefined;
+      if (!res.ok) throw await toDockerError(res);
+      const json = (await res.json()) as { Id?: unknown; Size?: unknown; RepoDigests?: unknown };
+      if (typeof json.Id !== 'string') return undefined;
+      return {
+        id: json.Id,
+        sizeBytes: typeof json.Size === 'number' && Number.isFinite(json.Size) ? json.Size : null,
+        repoDigests: isStringArray(json.RepoDigests) ? json.RepoDigests : [],
+      };
+    },
     ensureNetwork: async (name, opts) => {
       // POST /networks/create. A user-defined bridge (egress stays open — H2 blocks
       // only lateral movement, not egress). Idempotent: a 409 means it already
@@ -2035,6 +2412,25 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
       });
       if (res.ok || res.status === 409) return;
       throw await toDockerError(res);
+    },
+    createEgressNetwork: async (name, bridge) => {
+      if (!/^verity-egress-[a-f0-9]{32}$/u.test(name) || !/^vep[a-f0-9]{12}$/u.test(bridge))
+        throw new Error('Invalid generation network');
+      const digest = name.slice('verity-egress-'.length);
+      const subnet = `fd${digest.slice(0, 2)}:${digest.slice(2, 6)}:${digest.slice(6, 10)}:${digest.slice(10, 14)}::/64`;
+      const res = await callDocker(doFetch, `${base}/networks/create`, 'POST', timeoutMs, {
+        Name: name,
+        Driver: 'bridge',
+        CheckDuplicate: true,
+        EnableIPv6: true,
+        IPAM: { Config: [{ Subnet: subnet }] },
+        Options: { 'com.docker.network.bridge.name': bridge },
+      });
+      if (!res.ok) throw await toDockerError(res);
+      const json = (await res.json()) as { Id?: unknown };
+      if (typeof json.Id !== 'string' || !/^[a-f0-9]{64}$/u.test(json.Id))
+        throw new Error('Invalid generation network identity');
+      return { id: json.Id };
     },
     ensureVolume: async (name, opts) => {
       const res = await callDocker(doFetch, `${base}/volumes/create`, 'POST', timeoutMs, {
@@ -2115,7 +2511,7 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
       return json.map((entry): DockerContainerSummary => {
         if (typeof entry !== 'object' || entry === null || Array.isArray(entry))
           throw invalidInventory();
-        const { Id, ImageID, Names, Labels, Created } = entry as Record<string, unknown>;
+        const { Id, ImageID, Names, Labels, Created, State } = entry as Record<string, unknown>;
         if (
           typeof Id !== 'string' ||
           Id.trim() === '' ||
@@ -2131,6 +2527,7 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
         return {
           id: Id,
           imageId: ImageID,
+          ...(typeof State === 'string' ? { state: State } : {}),
           names,
           labels: parseDockerLabels(Labels) ?? {},
           ...(typeof Created === 'number' ? { created: Created } : {}),

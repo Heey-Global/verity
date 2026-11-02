@@ -8,7 +8,7 @@
 import type { Conductor } from '@verity/session';
 import { InMemoryEventBus } from '@verity/session';
 import { EventStore, createSealableSecretCipher, type SealableSecretCipher } from '@verity/store';
-import { createTestDb, truncateAll, type TestDb } from '@verity/store/testing';
+import { createIsolatedTestDb, truncateAll, type TestDb } from '@verity/store/testing';
 import { generateKeyPairSync } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import type { FastifyInstance } from 'fastify';
@@ -95,6 +95,7 @@ describe('buildManifest', () => {
       // CI visibility plus run administration (`gh run view/watch/rerun/cancel`).
       checks: 'read',
       statuses: 'read',
+      deployments: 'read',
       actions: 'write',
       // Push .github/workflows/* files (GitHub blocks bot workflow-file pushes otherwise).
       workflows: 'write',
@@ -242,7 +243,10 @@ function restoreEnv(name: keyof typeof ORIGINAL_GITHUB_APP_ENV): void {
   else process.env[name] = value;
 }
 beforeAll(async () => {
-  ctx = await createTestDb();
+  // Full Server instances start background readers. A shared PostgreSQL pool
+  // lets TRUNCATE race those readers between cases and deadlock; these route
+  // tests need an isolated serialized database, not cross-connection behavior.
+  ctx = await createIsolatedTestDb();
 });
 afterAll(async () => {
   restoreEnv('VERITY_GH_APP_ID');
@@ -973,4 +977,15 @@ describe('POST /settings/github/disconnect', () => {
       await app.close();
     }
   });
+});
+
+it('keeps the shared PR token independent of optional legacy status access', () => {
+  const source = readFileSync(new URL('./embedded.ts', import.meta.url), 'utf8');
+  const mint = source.slice(
+    source.indexOf('const repositoryStatusTokenMint ='),
+    source.indexOf('const analysisChecksMint ='),
+  );
+  expect(mint).toContain("checks: 'read'");
+  expect(mint).toContain("actions: 'read'");
+  expect(mint).not.toMatch(/statuses:\s*'read'/);
 });

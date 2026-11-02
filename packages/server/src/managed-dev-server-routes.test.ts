@@ -302,3 +302,37 @@ it('passes the exact displayed secret mapping through Preview approval', async (
   expect(response.statusCode).toBe(200);
   expect(approve).toHaveBeenCalledWith('s1', 'srv', seen, { local: undefined });
 });
+
+it('forwards the displayed provider snapshot and reports stale approval conflicts', async () => {
+  const app = Fastify();
+  apps.push(app);
+  const approve = vi.fn(async () => {
+    throw new ManagedDevServerError(
+      'The secret provider changed. Refresh and review it again.',
+      409,
+    );
+  });
+  registerManagedDevServerRoutes(app, {
+    manager: { approve } as unknown as ManagedDevServerManager,
+  });
+  const seen = {
+    command: 'node server.mjs',
+    workdir: '.',
+    secretBindings: [{ secretAlias: 'ATTENDEE_API_KEY', env: 'API_KEY' }],
+    providerSnapshot: { provider: 'doppler', project: 'demo', config: 'staging' },
+  };
+  const response = await app.inject({
+    method: 'POST',
+    url: '/sessions/s1/managed-dev-servers/srv/approve',
+    payload: seen,
+  });
+  expect(response.statusCode).toBe(409);
+  expect(approve).toHaveBeenCalledWith('s1', 'srv', seen, { local: undefined });
+  const invalid = await app.inject({
+    method: 'POST',
+    url: '/sessions/s1/managed-dev-servers/srv/approve',
+    payload: { ...seen, providerSnapshot: { ...seen.providerSnapshot, provider: 'unknown' } },
+  });
+  expect(invalid.statusCode).toBe(400);
+  expect(approve).toHaveBeenCalledOnce();
+});

@@ -179,6 +179,30 @@ Disabled is always 40 % opacity; pressed is always a slight darkening.
 - States: default, pressed (slightly darker surface), disabled (40 %), selected (`action`
   border with glow).
 
+### 5.2a Log list
+
+For chronological records that are read as a stream (the Logs screen), not as
+settings. A grouped list would turn every record into a card row with a bold
+title; a log list keeps them dense and scannable.
+
+- **Surface:** no card. Rows sit directly on `background`, edge to edge within the
+  screen, separated by 1 px `border` dividers (also above the first row). No radius.
+- **Day groups:** `Label` section headers ("Today", "Yesterday", a date) above each run of
+  rows; records without a timestamp go into a final "Time not recorded" group.
+- **Row anatomy** (minimum height 52, padding 8 vertical, 16 leading, 12 trailing):
+  - **Meta line** in `Footnote`: time in the monospace font, then source, then the
+    severity word. Errors, failures and exit codes use `attention`; every other
+    severity stays `textMuted` (there is no amber). Severity is always a word, never color
+    alone. An optional neutral tag (`Label` on a 6 % tint, radius `tag`) marks extra
+    content such as captured build output.
+  - **Message** in `BodySmall`, `text`, wrapping freely — the message is the content.
+  - **Context (optional)** in `Subtitle`, e.g. the project.
+  - **Trailing:** the chevron `›` when tapping opens details; nothing else.
+- **States:** default, pressed (6 % neutral tint).
+- **Source problems** do not sit in the list: a `HintBox` above it names the
+  unavailable source with a "Details" action; with every source available there is
+  no status text, only a header icon button for source details.
+
 ### 5.3 Text field
 
 - Label above the field in `Subtitle` style (13, muted).
@@ -210,6 +234,7 @@ Disabled is always 40 % opacity; pressed is always a slight darkening.
   | `needsSetup` | attention tone                                           | attention dot        |
   | `optional`   | muted word; neutral tag only for `Soon` on feature cards | faint dot            |
   | `transient`  | spinner + muted word                                     | spinner + muted word |
+  | `unknown`    | neutral tag                                              | faint dot            |
 
 ### 5.5 Toggle
 
@@ -310,11 +335,11 @@ For diagnostics and overviews:
 
 ## 8. Status intents
 
-Every status shown anywhere in the app is one of **four intents**. The intent decides the
+Every status shown anywhere in the app is one of **five intents**. The intent decides the
 meaning and the words; [§ 5.4 Status](#54-status) decides how each intent is drawn (tag or
 dot and word) and in which color.
 
-### The four intents
+### The five intents
 
 | Intent       | Meaning                                 | Example labels                                                                      |
 | ------------ | --------------------------------------- | ----------------------------------------------------------------------------------- |
@@ -322,6 +347,7 @@ dot and word) and in which color.
 | `needsSetup` | Something required is missing or failed | Needs setup, Update available, Rejected, Error                                      |
 | `optional`   | Optional and empty — not a to-do        | Optional, Not configured, Off                                                       |
 | `transient`  | In motion                               | Saving…, Checking, Starting, Stopping, Bound, Reprovisioning X/N                    |
+| `unknown`    | Done, but its outcome was not seen      | Unknown                                                                             |
 
 ### Status rules
 
@@ -331,6 +357,9 @@ dot and word) and in which color.
   missing says **`Needs setup`** (`needsSetup`), never `Not configured`.
 - `transient` covers every in-flight state, including `Bound` (the in-progress Doppler
   step) and `Reprovisioning X/N`. It always shows a spinner next to its word.
+- `unknown` is for an action whose result was never recorded, for example a build
+  interrupted by a Server restart. It is neither a failure (`needsSetup`) nor an empty
+  option (`optional`), and it is never drawn in a problem color.
 - Meaning is never conveyed by color alone: every status renders its word.
 
 ### Status accessibility
@@ -550,3 +579,15 @@ can never drift because there is only one copy of it.
 The visual workbench used to reach these decisions is
 [`design-system/index.html`](./design-system/index.html). It shows every component and pattern
 rendered with the decided values.
+
+### Meeting result page
+
+The ended meeting uses shared Card, Text, Button, Row and SectionHeader components.
+An editable title and a single date/time/duration/people line replace metric tiles.
+Summary, decisions, proposed tasks, open questions and answers form the main column;
+notes, people, Transcript and Share form the side column at iPad widths (900 points and up).
+Phones stack both columns. Continue in chat appears once in the header.
+
+Working results show a progress indicator and “Verity is summarizing…”. Failed results
+offer Retry summary while notes and transcript stay available. Task suggestions use
+Add task and Not a task; added suggestions display their confirmation state.

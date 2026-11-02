@@ -17,7 +17,7 @@
     "start": "node dist/main.js"
   },
   "dependencies": {
-    "@fastify/compress": "9.2.2",
+    "@fastify/compress": "9.3.0",
     "@fastify/rate-limit": "11.2.1",
     "@fastify/websocket": "11.3.4",
     "@napi-rs/canvas": "1.0.13",
@@ -26,23 +26,27 @@
     "@verity/secret-contracts": "*",
     "@verity/session": "*",
     "@verity/store": "*",
+    "age-encryption": "0.3.1",
     "expo-server-sdk": "8.0.0",
     "fast-xml-parser": "5.11.2",
     "fastify": "5.12.7",
     "fflate": "0.8.3",
     "graphql": "17.0.2",
     "ipaddr.js": "2.5.0",
-    "minimatch": "10.2.6",
+    "minimatch": "11.0.3",
     "pdfjs-dist": "6.4.299",
+    "pg": "8.23.1",
+    "pg-copy-streams": "7.0.0",
     "qrcode": "1.5.4",
     "sanitize-html": "2.18.1",
     "sharp": "0.35.5",
     "sigstore": "5.0.0",
     "ws": "8.22.0",
-    "zod": "4.6.7",
-    "@verity/preview-tunnel": "*"
+    "zod": "4.6.7"
   },
   "devDependencies": {
+    "@types/pg": "8.23.1",
+    "@types/pg-copy-streams": "1.2.5",
     "@types/qrcode": "1.5.6",
     "@types/sanitize-html": "2.16.2",
     "@types/ws": "8.18.2"

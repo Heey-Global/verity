@@ -14,6 +14,66 @@ type PairedRoutePolicy =
  * including collections and cross-project actions. */
 const resourceRules: ReadonlyMap<string, ResourceRule> = new Map([
   [
+    routeScopeKey('GET', '/sessions/:id/mcp-apps/:appId'),
+    { kind: 'session', parameter: 'id', permission: 'read' },
+  ],
+  [
+    routeScopeKey('POST', '/sessions/:id/mcp-apps/:appId/call'),
+    { kind: 'session', parameter: 'id', permission: 'execute' },
+  ],
+  [
+    routeScopeKey('GET', '/projects/:id/assistant'),
+    { kind: 'project', parameter: 'id', permission: 'read' },
+  ],
+  [
+    routeScopeKey('PUT', '/projects/:id/assistant'),
+    { kind: 'project', parameter: 'id', permission: 'execute' },
+  ],
+  [
+    routeScopeKey('POST', '/projects/:id/repairs/approval'),
+    { kind: 'project', parameter: 'id', permission: 'execute' },
+  ],
+  [
+    routeScopeKey('GET', '/projects/:id/repairs'),
+    { kind: 'project', parameter: 'id', permission: 'read' },
+  ],
+  [
+    routeScopeKey('PUT', '/projects/:id/repairs'),
+    { kind: 'project', parameter: 'id', permission: 'execute' },
+  ],
+  [
+    routeScopeKey('POST', '/projects/:id/repairs/retry'),
+    { kind: 'project', parameter: 'id', permission: 'execute' },
+  ],
+  [
+    routeScopeKey('POST', '/projects/:id/egress/remove-request'),
+    { kind: 'project', parameter: 'id', permission: 'manage' },
+  ],
+  [
+    routeScopeKey('POST', '/projects/:id/egress/permanent'),
+    { kind: 'project', parameter: 'id', permission: 'manage' },
+  ],
+  [
+    routeScopeKey('GET', '/projects/:id/egress'),
+    { kind: 'project', parameter: 'id', permission: 'read' },
+  ],
+  [
+    routeScopeKey('POST', '/projects/:id/egress/requests'),
+    { kind: 'project', parameter: 'id', permission: 'execute' },
+  ],
+  [
+    routeScopeKey('POST', '/projects/:id/egress/decisions'),
+    { kind: 'project', parameter: 'id', permission: 'manage' },
+  ],
+  [
+    routeScopeKey('POST', '/projects/:id/egress/reopen'),
+    { kind: 'project', parameter: 'id', permission: 'manage' },
+  ],
+  [
+    routeScopeKey('POST', '/projects/:id/egress/revoke'),
+    { kind: 'project', parameter: 'id', permission: 'manage' },
+  ],
+  [
     routeScopeKey('GET', '/projects/:id/vulnerability-scan/ignores'),
     { kind: 'project', parameter: 'id', permission: 'read' },
   ],
@@ -60,6 +120,12 @@ const resourceRules: ReadonlyMap<string, ResourceRule> = new Map([
     { kind: 'session', parameter: 'id', permission: 'read' },
   ],
   [
+    // Execute, not read: the view carries the guest's link with its PIN, which can book.
+    routeScopeKey('GET', '/sessions/:id/scheduling-requests'),
+    { kind: 'session', parameter: 'id', permission: 'execute' },
+  ],
+
+  [
     routeScopeKey('PUT', '/sessions/:id/live-meetings/:meetingId'),
     { kind: 'session', parameter: 'id', permission: 'execute' },
   ],
@@ -99,6 +165,9 @@ const activeUserRoutes = new Set([
   routeScopeKey('POST', '/auth/logout'),
   // Tasks are owner-scoped inside the handler (docs/TASKS_AND_QUICK_CAPTURE_CONCEPT.md §7.2).
   routeScopeKey('GET', '/tasks'),
+  // Scheduling requests are filtered and checked per project inside the handler.
+  routeScopeKey('GET', '/scheduling-requests'),
+  routeScopeKey('POST', '/scheduling-requests/:requestId/revoke'),
   routeScopeKey('GET', '/tasks/:id/attachments/:hash'),
   routeScopeKey('PUT', '/tasks/:id'),
   routeScopeKey('PATCH', '/tasks/:id'),

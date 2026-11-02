@@ -1,6 +1,6 @@
 # One pinned amd64 compiler environment emits both static architectures, avoiding
 # emulation and preventing host/target toolchain drift.
-FROM node:26.12.1-bookworm-slim@sha256:28147155d47dc31abe0a46e0d12b59b2fb3d0a2dcc5dc65fce76a074180b16fe
+FROM node:26.13.0-bookworm-slim@sha256:bc0a2afd3b74ce12222fc8bab99271e66257f021078f5f4a5d687a77d280c1d9
 ARG ZIG_VERSION=0.13.0
 ARG ZIG_SHA256=d45312e61ebcc48032b77bc4cf7fd6915c11fa16e4aad116b66c9468211230ea
 ENV SOURCE_DATE_EPOCH=0

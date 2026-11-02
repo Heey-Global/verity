@@ -475,6 +475,26 @@ describe('browser file picker', () => {
     expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:document-picker/notes');
   });
 
+  it('reads the picker File directly even when blob URL fetch is blocked', async () => {
+    const file = new Blob(['hello']);
+    const fetch = jest.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('Load failed'));
+    mockGetDocumentAsync.mockResolvedValue({
+      canceled: false,
+      assets: [{ uri: 'blob:document-picker/direct', name: 'notes.txt', file }],
+    });
+    await expect(pickFiles(1)).resolves.toEqual([
+      {
+        kind: 'file',
+        fileName: 'notes.txt',
+        mediaType: 'application/octet-stream',
+        data: 'aGVsbG8=',
+      },
+    ]);
+    expect(readAsDataURL).toHaveBeenCalledWith(file);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:document-picker/direct');
+  });
+
   it('releases the browser object URL when reading fails', async () => {
     jest.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('read failed'));
     mockGetDocumentAsync.mockResolvedValue({

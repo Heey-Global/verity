@@ -16,6 +16,7 @@ it does not resolve itself, or when the host was set up by hand.
 
 - [Migrate to managed Server updates](#migrate-to-managed-server-updates)
 - [After an update: companion handoff](#after-an-update-companion-handoff)
+- [Automatic backup preparation](#automatic-backup-preparation)
 - [When an update fails](#when-an-update-fails)
 - [When the Updater is crash-looping](#when-the-updater-is-crash-looping)
 - [The control-plane generation](#the-control-plane-generation)
@@ -304,3 +305,58 @@ PostgreSQL connection rather than to a table row, so PostgreSQL releases it
 automatically if the Server is killed or disconnected. The replacement then
 forward-fences any stale active generation before it starts schedulers or opens
 listeners; no timeout or force switch is involved.
+
+
+## Automatic backup preparation
+
+Normal updates prepare backups for supported installer-managed systemd hosts,
+including Compose installations adopted by the managed update pipeline. The target
+release reuses installer provisioning for the configured destination (or
+`/var/lib/verity/backups`), read-only PostgreSQL role and encrypted identity helper.
+Existing installation IDs, CA keys, backup passwords and archives are preserved.
+The release-owned one-shot has no network, a read-only root filesystem and fixed
+host mounts. It shares the installer lock and refuses pending recovery or rotation.
+
+The current Updater prepares and verifies these resources after read-only preflight
+and before standby creation. Mount changes are checkpointed; a running old Server
+keeps serving until normal guarded cutover. A failed preparation leaves that Server
+active and the operation failed. Check update details, resolve the reported host
+problem and retry the update; no installer rerun is needed.
+
+For the first upgrade from an Updater predating this contract, the successor queues
+one additional guarded replacement of the same release after companion handoff.
+This gives the new Updater a preparation hook without letting the old release run
+unrecognized host commands. The repair uses the normal journal, monotone generation,
+standby checks and rollback. Completed repairs and terminal failures do not repeat
+on every restart. An interrupted operation resumes from its journal.
+
+Settings → Backup stays visible to devices authorized to read administrator backup
+status, including when preparation is unavailable. Save and confirm the recovery key
+there before captures begin. Host preparation never creates or confirms that key.
+Hand-assembled deployments without a sealed installer identity continue updating but
+cannot be provisioned automatically. Plain unmanaged Compose does not support app
+updates; adopt it through the existing managed migration first. Hosts without systemd
+need an explicit supported host migration rather than an automatic watcher setup.
+
+### Host runtime service renewal
+
+Updates can renew an older runtime service independently of devcontainer builder
+maintenance. The update panel reports host runtime renewal and runtime registration;
+the current Server keeps serving until normal activation. Renewal verifies the target
+release independently before granting its runtime-only installer bounded host writes.
+It reloads Docker to register runtimes and never automatically restarts the daemon or
+running projects.
+
+A failed renewal can report that the previous service was restored, in which case
+retrying is safe, or that restoration could not be verified. For the latter, inspect
+`journalctl -u verity-host-runtime` and the private host runtime transaction state;
+re-running the Verity installer is the fallback after resolving the reported cause.
+Do not delete transaction backups or old versioned gVisor directories as a workaround.
+A successfully renewed, backward-compatible runtime service can remain installed even
+if later update preparation or Server activation fails.
+
+Older installed Updaters do not gain this behavior simply by selecting a newer image:
+they perform runtime preparation before their own replacement. Delivery to such hosts
+requires a qualified signed compatibility release or a separately authorized recovery
+procedure. A schema bridge is not a runtime-service bootstrap. The runtime requirement
+must not be removed to force activation.

@@ -91,7 +91,17 @@ if (joined === 'api graphql --input -') {
 /** The GraphQL request a logged `gh api graphql --input -` call carried on stdin. */
 function graphqlBody(call: string[] | undefined) {
   expect(call?.slice(0, 4)).toEqual(['api', 'graphql', '--input', '-']);
-  return JSON.parse(call?.[4] ?? '{}') as { query: string; variables: Record<string, string> };
+  const body = JSON.parse(call?.[4] ?? '{}') as {
+    query: string;
+    variables: Record<string, string> & { additions?: { path: string; contents: string }[] };
+  };
+  // One generated file per commit.
+  expect(body.variables.additions).toHaveLength(1);
+  const [addition] = body.variables.additions ?? [];
+  return {
+    query: body.query,
+    variables: { ...body.variables, path: addition?.path, contents: addition?.contents },
+  };
 }
 
 describe('renovate notices regeneration', () => {
@@ -247,7 +257,8 @@ describe('renovate notices workflow', () => {
   });
 
   it('dispatches workflows that exist and accept a dispatch', () => {
-    const source = readFileSync('scripts/renovate-notices.mjs', 'utf8');
+    // The list lives in the commit helper every Renovate branch fix-up shares.
+    const source = readFileSync('scripts/renovate-branch.mjs', 'utf8');
     const dispatched = [...source.matchAll(/'([\w-]+\.yml)'/g)].map((match) => match[1]);
     expect(dispatched).toEqual(['ci.yml', 'gitleaks-dispatch.yml']);
     for (const file of dispatched) {

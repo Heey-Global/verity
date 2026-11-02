@@ -1,5 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
-import { googleCalendarRequestSchema, invokeGoogleCalendarApi } from './google-calendar.js';
+import {
+  deleteCalendarEvent,
+  googleCalendarRequestSchema,
+  insertCalendarEvent,
+  invokeGoogleCalendarApi,
+  listCalendarEventsInRange,
+  patchCalendarEvent,
+  readCalendarEvent,
+} from './google-calendar.js';
 
 describe('Google Calendar API', () => {
   it('bounds searches and encodes calendar identifiers', async () => {
@@ -192,4 +200,162 @@ it('requires an explicit Meet choice and returns the actual conference status an
       fetch,
     ),
   ).toMatchObject({ hangoutLink: 'https://meet.google.com/abc-defg-hij' });
+});
+
+describe('Google Calendar scheduling helpers', () => {
+  const response = (status: number, body: unknown = {}) => ({
+    ok: status >= 200 && status < 300,
+    status,
+    json: async () => body,
+    text: async () => JSON.stringify(body),
+    arrayBuffer: async () => new ArrayBuffer(0),
+  });
+
+  it('follows pagination and keeps the hold markers availability depends on', async () => {
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(
+        response(200, {
+          items: [
+            {
+              id: 'hold',
+              etag: '"1"',
+              start: { dateTime: '2026-11-03T14:00:00+01:00' },
+              end: { dateTime: '2026-11-03T16:00:00+01:00' },
+              extendedProperties: { private: { verityScheduling: 'r1', ignored: 3 } },
+              attendees: [{ email: 'me@example.test', self: true, responseStatus: 'accepted' }],
+              privateMetadata: 'dropped',
+            },
+          ],
+          nextPageToken: 'p2',
+        }),
+      )
+      .mockResolvedValueOnce(
+        response(200, {
+          items: [
+            {
+              id: 'all-day',
+              etag: '"2"',
+              start: { date: '2026-11-04' },
+              end: { date: '2026-11-05' },
+              transparency: 'transparent',
+            },
+          ],
+        }),
+      );
+    const events = await listCalendarEventsInRange(
+      'token',
+      { calendarId: 'primary', timeMin: '2026-11-03T00:00:00Z', timeMax: '2026-11-05T00:00:00Z' },
+      fetch,
+    );
+    expect(events).toEqual([
+      {
+        id: 'hold',
+        etag: '"1"',
+        status: 'confirmed',
+        start: { dateTime: '2026-11-03T14:00:00+01:00' },
+        end: { dateTime: '2026-11-03T16:00:00+01:00' },
+        attendees: [{ email: 'me@example.test', self: true, responseStatus: 'accepted' }],
+        extendedProperties: { private: { verityScheduling: 'r1' } },
+      },
+      {
+        id: 'all-day',
+        etag: '"2"',
+        status: 'confirmed',
+        start: { date: '2026-11-04' },
+        end: { date: '2026-11-05' },
+        transparency: 'transparent',
+      },
+    ]);
+    expect(new URL(fetch.mock.calls[1]![0] as string).searchParams.get('pageToken')).toBe('p2');
+  });
+
+  it('refuses to report availability from a truncated event list', async () => {
+    const fetch = vi.fn().mockResolvedValue(response(200, { items: [], nextPageToken: 'more' }));
+    await expect(
+      listCalendarEventsInRange(
+        'token',
+        { calendarId: 'primary', timeMin: '2026-11-03T00:00:00Z', timeMax: '2026-11-04T00:00:00Z' },
+        fetch,
+      ),
+    ).rejects.toThrow('too many events');
+  });
+
+  it('treats a vanished event as missing rather than as an error', async () => {
+    const fetch = vi.fn().mockResolvedValue(response(410));
+    expect(await readCalendarEvent('token', { calendarId: 'primary', eventId: 'e' }, fetch)).toBe(
+      undefined,
+    );
+    await expect(
+      deleteCalendarEvent(
+        'token',
+        { calendarId: 'primary', eventId: 'e', sendUpdates: 'all' },
+        fetch,
+      ),
+    ).resolves.toBeUndefined();
+  });
+
+  it('patches conditionally and adds Meet with a stable request id', async () => {
+    const fetch = vi.fn().mockResolvedValue(response(412));
+    expect(
+      await patchCalendarEvent(
+        'token',
+        {
+          calendarId: 'primary',
+          eventId: 'hold',
+          expectedEtag: '"1"',
+          event: { summary: 'Intro call' },
+          sendUpdates: 'all',
+          meetRequestId: 'booking-r1',
+        },
+        fetch,
+      ),
+    ).toEqual({ status: 'conflict' });
+    const [url, init] = fetch.mock.calls[0]! as [
+      string,
+      { headers: Record<string, string>; body: string },
+    ];
+    expect(new URL(url).searchParams.get('conferenceDataVersion')).toBe('1');
+    expect(new URL(url).searchParams.get('sendUpdates')).toBe('all');
+    expect(init.headers['If-Match']).toBe('"1"');
+    expect(JSON.parse(init.body)).toEqual({
+      summary: 'Intro call',
+      conferenceData: {
+        createRequest: { requestId: 'booking-r1', conferenceSolutionKey: { type: 'hangoutsMeet' } },
+      },
+    });
+  });
+
+  it('writes private markers when creating holds', async () => {
+    const fetch = vi.fn().mockResolvedValue(
+      response(200, {
+        id: 'hold',
+        etag: '"1"',
+        start: { dateTime: '2026-11-03T13:00:00Z' },
+        end: { dateTime: '2026-11-03T15:00:00Z' },
+        extendedProperties: { private: { verityScheduling: 'r1' } },
+      }),
+    );
+    const event = await insertCalendarEvent(
+      'token',
+      {
+        calendarId: 'primary',
+        event: {
+          summary: 'Hold',
+          start: { dateTime: '2026-11-03T13:00:00Z' },
+          end: { dateTime: '2026-11-03T15:00:00Z' },
+          extendedProperties: { private: { verityScheduling: 'r1' } },
+        },
+        sendUpdates: 'all',
+      },
+      fetch,
+    );
+    expect(event.extendedProperties).toEqual({ private: { verityScheduling: 'r1' } });
+    const [url, init] = fetch.mock.calls[0]! as [string, { method: string; body: string }];
+    expect(init.method).toBe('POST');
+    expect(new URL(url).searchParams.has('conferenceDataVersion')).toBe(false);
+    expect(JSON.parse(init.body).extendedProperties).toEqual({
+      private: { verityScheduling: 'r1' },
+    });
+  });
 });

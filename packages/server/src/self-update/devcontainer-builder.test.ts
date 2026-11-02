@@ -138,6 +138,33 @@ describe('reconcileDevcontainerBuilder', () => {
     });
   });
 
+  // The refusal an installed component with contract 1 gives, taken from its own die line.
+  const olderHostRefusal = () => {
+    const line = /die "(\$image does not declare \$CONTRACT_LABEL=\$CONTRACT;[^"]*)"/u.exec(
+      readFileSync('deploy/host/verity-host-builder', 'utf8'),
+    )?.[1];
+    expect(line).toBeDefined();
+    return (line ?? '')
+      .replace('$image', image)
+      .replace('$CONTRACT_LABEL', DEVCONTAINER_BUILDER_LABEL)
+      .replace('$CONTRACT', '1');
+  };
+  // A host component from an earlier installer refuses every image of a newer contract,
+  // in the words verity-host-builder uses; only the installer can replace it.
+  it('names the installer run when the host component refuses a newer contract', async () => {
+    const dir = await hostDir();
+    const outcome = await reconcileDevcontainerBuilder({
+      docker: labelled(),
+      image,
+      requestId: 'update-1',
+      requestDir: dir,
+      sleep: answer(dir, false, olderHostRefusal()),
+    });
+    expect(outcome).toMatchObject({ state: 'failed' });
+    expect(outcome.state === 'failed' && outcome.message).toContain('older builder contract');
+    expect(outcome.state === 'failed' && outcome.message).toContain('Re-run the Verity installer');
+  });
+
   it('gives up when nothing answers before the deadline', async () => {
     const dir = await hostDir();
     let clock = 0;

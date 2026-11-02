@@ -26,6 +26,12 @@
     },
     "expo-router": {
       "query-string": "$query-string"
+    },
+    "@bacons/xcode": {
+      "uuid": "14.0.3",
+      "@expo/plist": {
+        "@xmldom/xmldom": "0.8.15"
+      }
     }
   },
   "scripts": {
@@ -38,7 +44,7 @@
     "licenses:check": "node scripts/third-party-notices.ts --check",
     "licenses:write": "node scripts/third-party-notices.ts --write",
     "knip": "knip --exports",
-    "lint:changed": "eslint --no-warn-ignored --cache --cache-location .cache/eslint --",
+    "lint:changed": "node scripts/lint-runner.mjs --",
     "format": "prettier --check --cache --cache-strategy content --cache-location .cache/prettier .",
     "format:changed": "prettier --check --ignore-unknown --",
     "format:write": "prettier --write .",
@@ -49,19 +55,22 @@
     "render:app-screens": "node scripts/render-app-screens.mjs"
   },
   "devDependencies": {
-    "@agentclientprotocol/claude-agent-acp": "0.95.0",
-    "@agentclientprotocol/codex-acp": "2.2.2",
-    "@devcontainers/cli": "0.89.0",
+    "@agentclientprotocol/claude-agent-acp": "0.99.0",
+    "@agentclientprotocol/codex-acp": "2.3.0",
+    "@devcontainers/cli": "0.90.0",
     "@eslint/js": "10.0.1",
+    "@expo/plist": "0.10.1",
+    "@modelcontextprotocol/ext-apps": "2.0.4",
     "@modelcontextprotocol/sdk": "1.32.2",
-    "@openai/codex": "0.164.0",
-    "@types/node": "26.6.5",
+    "@openai/codex": "0.165.0",
+    "@types/node": "26.6.6",
+    "@types/react-dom": "19.3.0",
     "@types/semver": "7.8.0",
     "@vitest/coverage-v8": "5.0.5",
     "esbuild": "0.28.2",
     "eslint": "10.13.0",
     "ignore": "7.0.14",
-    "knip": "6.42.1",
+    "knip": "6.43.0",
     "metro": "0.84.5",
     "metro-config": "0.84.5",
     "metro-transform-worker": "0.84.5",
@@ -70,11 +79,13 @@
     "prettier": "3.9.10",
     "query-string": "file:vendor/expo-router-query-string",
     "react": "19.2.3",
+    "react-dom": "19.2.3",
     "react-native": "0.86.3",
+    "react-native-unistyles": "3.5.1",
     "release-please": "17.11.2",
     "semver": "7.8.5",
     "typescript": "6.0.3",
-    "typescript-eslint": "8.72.0",
+    "typescript-eslint": "8.72.1",
     "uuid": "14.0.3",
     "vitest": "5.0.5",
     "ws": "8.22.0",

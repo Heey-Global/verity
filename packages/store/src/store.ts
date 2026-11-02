@@ -1,3 +1,7 @@
+import { AssistantStore } from './assistant.js';
+import { SchedulingStore } from './scheduling.js';
+import { RepairSupervisionStore } from './repair-supervision.js';
+import { ProjectEgressStore } from './project-egress.js';
 import { VulnerabilityScanStore } from './vulnerability-scan.js';
 import { ForgeConnectionStore } from './forge-connections.js';
 import { GoogleAccountStore } from './google-accounts.js';
@@ -472,6 +476,7 @@ export interface HttpMcpConnectionRecord {
   authType?: 'none' | 'static' | 'oauth';
   oauthClientId?: string | null;
   oauthClientSecret?: string | null;
+  oauthTokenAuthMethod?: 'none' | 'client_secret_post' | 'client_secret_basic';
   oauthAuthorizationEndpoint?: string | null;
   oauthTokenEndpoint?: string | null;
   oauthScopes?: string | null;
@@ -1000,6 +1005,7 @@ export type QueuedTurnInput = Omit<QueuedTurnRecord, 'seq'>;
  * Written before a turn launches, cleared on its terminal event; a record still
  * present at startup means the turn was abandoned by a crash/restart. */
 export interface RunningTurnRecord {
+  markerId?: string | null;
   sessionId: string;
   /** Seq of the prompt event this turn is executing — recovery/reattach anchor. */
   promptSeq: number;
@@ -1229,6 +1235,23 @@ const ABANDONED_TURN_FENCE_INSTANCE = 'verity:abandoned-turn-fence';
  * hand out — an event that violates the schema.
  */
 export class EventStore implements EventSink {
+  private readonly backupRevocationListeners = new Set<() => Promise<void>>();
+
+  /** Wake destination synchronization after commit; the DB outbox remains the durable authority. */
+  subscribeBackupRevocations(listener: () => Promise<void>): () => void {
+    this.backupRevocationListeners.add(listener);
+    return () => {
+      this.backupRevocationListeners.delete(listener);
+    };
+  }
+
+  private async notifyBackupRevocations(): Promise<void> {
+    // A destination outage must not undo or misreport an already committed token deletion.
+    await Promise.allSettled(
+      [...this.backupRevocationListeners].map((listener) => Promise.resolve().then(listener)),
+    );
+  }
+
   /** PGlite does not enforce table-lock conflicts across its concurrent async
    * transactions, so serialize this rare dual-unique mutation in-process too.
    * The SQL table lock below remains the cross-process Postgres guard. */
@@ -1393,18 +1416,26 @@ export class EventStore implements EventSink {
     private readonly db: Kysely<Database>,
     private readonly cipher: SecretCipher = createPassthroughCipher(),
   ) {
+    this.projectEgress = new ProjectEgressStore(db);
     this.knowledge = new KnowledgeStore(db);
     this.integrations = new IntegrationStore(db, cipher);
-    this.liveMeetings = new LiveMeetingStore(db);
+    this.liveMeetings = new LiveMeetingStore(db, cipher);
     this.managedDevServers = new ManagedDevServerStore(db);
     this.vulnerabilityScans = new VulnerabilityScanStore(db);
     this.tasks = new TaskStore(db, cipher);
+    this.repairs = new RepairSupervisionStore(db);
+    this.assistant = new AssistantStore(db);
+    this.scheduling = new SchedulingStore(db, cipher);
   }
 
+  readonly projectEgress: ProjectEgressStore;
   readonly knowledge: KnowledgeStore;
   readonly integrations: IntegrationStore;
   readonly liveMeetings: LiveMeetingStore;
   readonly tasks: TaskStore;
+  readonly repairs: RepairSupervisionStore;
+  readonly assistant: AssistantStore;
+  readonly scheduling: SchedulingStore;
   readonly managedDevServers: ManagedDevServerStore;
   readonly vulnerabilityScans: VulnerabilityScanStore;
 
@@ -3750,6 +3781,86 @@ export class EventStore implements EventSink {
     });
   }
 
+  /** Accept a background dispatch, its prompt and recovery marker in one commit.
+   * Cancellation races on the same receipt row; only the winner can run the backend. */
+  async admitBackgroundDispatch(
+    id: string,
+    sessionId: string,
+    event: AgentEvent,
+  ): Promise<{ seq: number; ts: number; existing: boolean; markerId?: string } | undefined> {
+    const eventRow = await this.prepareEventRow(event);
+    const result = await this.db.transaction().execute(async (trx) => {
+      const receipt = await trx
+        .selectFrom('qa_dispatches')
+        .selectAll()
+        .where('id', '=', id)
+        .where('session_id', '=', sessionId)
+        .forUpdate()
+        .executeTakeFirst();
+      if (!receipt || receipt.state === 'cancelled' || receipt.state === 'legacy') return undefined;
+      if (receipt.state === 'admitted')
+        return {
+          seq: Number(receipt.prompt_seq),
+          ts: receipt.created_at.getTime(),
+          existing: true,
+        };
+      await sql`select pg_advisory_xact_lock(hashtext(${this.sessionEventAppendLockKey(sessionId)}))`.execute(
+        trx,
+      );
+      const predecessor = await trx
+        .selectFrom('running_turns')
+        .selectAll()
+        .where('session_id', '=', sessionId)
+        .forUpdate()
+        .executeTakeFirst();
+      if (predecessor) {
+        // Transcript terminal events may be late, unrelated or merely announce
+        // cancellation. Only a server-confirmed completion or the exact
+        // Runner's durable terminal/fence claim establishes relinquished ownership.
+        const runnerClosed =
+          predecessor.turn_id === null
+            ? undefined
+            : await trx
+                .selectFrom('runner_frames')
+                .select('turn_id')
+                .where('session_id', '=', sessionId)
+                .where('turn_id', '=', predecessor.turn_id)
+                .where('terminal', '=', true)
+                .executeTakeFirst();
+        if (!predecessor.settled && !runnerClosed) return undefined;
+        await trx
+          .deleteFrom('running_turns')
+          .where('session_id', '=', sessionId)
+          .where('prompt_seq', '=', predecessor.prompt_seq)
+          .execute();
+      }
+      const markerId = randomUUID();
+      const row = await trx
+        .insertInto('events')
+        .values({ session_id: sessionId, type: eventRow.type, payload: eventRow.payload })
+        .returning(['id', 'created_at'])
+        .executeTakeFirstOrThrow();
+      await trx
+        .insertInto('running_turns')
+        .values({ session_id: sessionId, prompt_seq: row.id, marker_id: markerId })
+        .execute();
+      await trx
+        .updateTable('qa_dispatches')
+        .set({ state: 'admitted', prompt_seq: row.id })
+        .where('id', '=', id)
+        .execute();
+      return { seq: Number(row.id), ts: row.created_at.getTime(), existing: false, markerId };
+    });
+    if (result && !result.existing)
+      this.enqueuePersistedMessageEvent(
+        sessionId,
+        result.seq,
+        new Date(result.ts),
+        JSON.parse(eventRow.payload) as AgentEvent,
+      );
+    return result;
+  }
+
   /**
    * Append one canonical event to the session's log. Validates against the
    * canonical schema first and refuses to persist anything invalid — the store
@@ -4450,6 +4561,26 @@ export class EventStore implements EventSink {
     return parsed.data;
   }
 
+  /** Fetch one app snapshot without hydrating the surrounding transcript. */
+  async getMcpAppEvent(
+    sessionId: string,
+    appId: string,
+  ): Promise<Extract<AgentEvent, { t: 'mcp_app' }> | undefined> {
+    const row = await this.db
+      .selectFrom('events')
+      .select('payload')
+      .where('session_id', '=', sessionId)
+      .where('type', '=', 'mcp_app')
+      .where(sql<string>`payload->>'appId'`, '=', appId)
+      .orderBy('id', 'desc')
+      .limit(1)
+      .executeTakeFirst();
+    if (row === undefined) return undefined;
+    const parsed = parseAgentEvent(row.payload);
+    if (!parsed.success || parsed.data.t !== 'mcp_app') throw new Error('Corrupt MCP app snapshot');
+    return parsed.data;
+  }
+
   /** Read a session's full event log in append order. Validates each payload. */
   async getEvents(sessionId: string): Promise<AgentEvent[]> {
     const sequenced = await this.getEventsAfter(sessionId, 0);
@@ -4462,11 +4593,12 @@ export class EventStore implements EventSink {
     sessionId: string,
     beforeSeq?: number,
     snapshotSeq?: number,
+    eventOffset?: number,
   ): Promise<BoundedHistoryResult> {
     // One query establishes the initial snapshot, including the empty-log case.
     const source = await this.getEventsBeforeSeq(
       sessionId,
-      HISTORY_MAX_EVENTS,
+      eventOffset === undefined ? HISTORY_MAX_EVENTS : 1,
       snapshotSeq === undefined ? beforeSeq : Math.min(beforeSeq ?? Infinity, snapshotSeq + 1),
     );
     const snapshot = snapshotSeq ?? source.events.at(-1)?.seq ?? 0;
@@ -4488,7 +4620,23 @@ export class EventStore implements EventSink {
       };
       const requiredBytes = Buffer.byteLength(JSON.stringify(candidate), 'utf8');
       if (requiredBytes > HISTORY_MAX_BYTES) {
-        if (page.events.length === 0)
+        if (page.events.length === 0) {
+          if (eventOffset !== undefined) {
+            const serialized = JSON.stringify(candidate);
+            // A JSON string needs at most six UTF-8 bytes per UTF-16 code unit.
+            // Leave room for the chunk envelope, including all numeric cursors.
+            const chunkChars = Math.floor((HISTORY_MAX_BYTES - 1024) / 6);
+            if (eventOffset >= serialized.length) throw new RangeError('invalid history offset');
+            return {
+              contract: 'bounded-history-v1',
+              kind: 'event-chunk',
+              seq: event.seq,
+              snapshotSeq: snapshot,
+              offset: eventOffset,
+              totalChars: serialized.length,
+              data: serialized.slice(eventOffset, eventOffset + chunkChars),
+            };
+          }
           return {
             contract: 'bounded-history-v1',
             kind: 'oversized-event',
@@ -4497,6 +4645,7 @@ export class EventStore implements EventSink {
             maxBytes: HISTORY_MAX_BYTES,
             snapshotSeq: snapshot,
           };
+        }
         return page;
       }
       Object.assign(page, candidate);
@@ -4537,6 +4686,21 @@ export class EventStore implements EventSink {
       return { seq: Number(row.id), ts: row.created_at.getTime(), event: parsed.data };
     });
     return { events, hasMore };
+  }
+
+  /** The user behind the session's most recent prompt that names one, or `undefined`
+   *  when no prompt in the session has an initiator. */
+  async latestPromptInitiator(sessionId: string): Promise<{ userId: string } | undefined> {
+    const row = await this.db
+      .selectFrom('events')
+      .select(sql<string>`payload->'initiatedBy'->>'userId'`.as('userId'))
+      .where('session_id', '=', sessionId)
+      .where(sql<boolean>`payload->>'t' = 'prompt'`)
+      .where(sql<boolean>`payload->'initiatedBy'->>'userId' is not null`)
+      .orderBy('id', 'desc')
+      .limit(1)
+      .executeTakeFirst();
+    return row?.userId ? { userId: row.userId } : undefined;
   }
 
   /**
@@ -5191,16 +5355,25 @@ export class EventStore implements EventSink {
   /** Mark a turn in flight for `sessionId` (upsert — only one turn runs at a time).
    * Recovery reads these at startup: a marker still present means the turn was
    * abandoned by a crash/restart and must be settled rather than re-inferred. */
-  async markTurnRunning(input: { sessionId: string; promptSeq: number }): Promise<void> {
+  async markTurnRunning(input: {
+    sessionId: string;
+    promptSeq: number;
+    markerId?: string;
+  }): Promise<void> {
+    const markerId = input.markerId ?? randomUUID();
     await this.db
       .insertInto('running_turns')
       .values({
         session_id: input.sessionId,
         prompt_seq: input.promptSeq,
+        marker_id: markerId,
+        settled: false,
       })
       .onConflict((oc) =>
         oc.column('session_id').doUpdateSet({
           prompt_seq: input.promptSeq,
+          marker_id: markerId,
+          settled: false,
           started_at: sql`now()`,
           // Re-anchoring the marker (a resume-retry starts a FRESH attempt) drops the
           // previous attempt's bound identity — the new attempt rebinds via
@@ -5210,6 +5383,26 @@ export class EventStore implements EventSink {
           start_command_id: null,
         }),
       )
+      .execute();
+  }
+
+  /** Record backend-confirmed completion, independently of best-effort cleanup.
+   * A unique marker identity prevents late completion from settling a resumed
+   * attempt even when that attempt reuses the same prompt sequence. The Runner identity must match too; alternatively admission can use
+   * its durable terminal/fence claim. */
+  async confirmTurnSettled(
+    sessionId: string,
+    promptSeq: number,
+    markerId: string,
+    turnId: string | null = null,
+  ): Promise<void> {
+    await this.db
+      .updateTable('running_turns')
+      .set({ settled: true })
+      .where('session_id', '=', sessionId)
+      .where('prompt_seq', '=', promptSeq)
+      .where('marker_id', '=', markerId)
+      .where('turn_id', turnId === null ? 'is' : '=', turnId)
       .execute();
   }
 
@@ -5224,7 +5417,7 @@ export class EventStore implements EventSink {
   ): Promise<void> {
     await this.db
       .updateTable('running_turns')
-      .set({ turn_id: identity.turnId, start_command_id: identity.startCommandId })
+      .set({ turn_id: identity.turnId, start_command_id: identity.startCommandId, settled: false })
       .where('session_id', '=', sessionId)
       .execute();
   }
@@ -5233,13 +5426,23 @@ export class EventStore implements EventSink {
    * event. Idempotent — a no-op if no marker is present. When `promptSeq` is given,
    * the delete is SCOPED to that anchor (`prompt_seq = ?`), so a settling turn's
    * late clear can only remove ITS OWN marker, never a newer turn's marker that
-   * already replaced the row (the settle-vs-next-turn race). Omit `promptSeq` to
-   * drop the marker unconditionally (recovery). */
-  async clearRunningTurn(sessionId: string, promptSeq?: number): Promise<void> {
+   * already replaced the row (the settle-vs-next-turn race). `markerId` additionally
+   * distinguishes attempts reusing a prompt anchor; snapshots of legacy markers
+   * pass null. Omitting both scopes is reserved for deliberate unconditional cleanup. */
+  async clearRunningTurn(
+    sessionId: string,
+    promptSeq?: number,
+    markerId?: string | null,
+  ): Promise<void> {
     let query = this.db.deleteFrom('running_turns').where('session_id', '=', sessionId);
     if (promptSeq !== undefined) {
       query = query.where('prompt_seq', '=', promptSeq);
     }
+    if (markerId !== undefined)
+      query =
+        markerId === null
+          ? query.where('marker_id', 'is', null)
+          : query.where('marker_id', '=', markerId);
     await query.execute();
   }
 
@@ -5248,7 +5451,14 @@ export class EventStore implements EventSink {
   async listRunningTurns(): Promise<RunningTurnRecord[]> {
     const rows = await this.db
       .selectFrom('running_turns')
-      .select(['session_id', 'prompt_seq', 'started_at', 'turn_id', 'start_command_id'])
+      .select([
+        'session_id',
+        'prompt_seq',
+        'started_at',
+        'turn_id',
+        'start_command_id',
+        'marker_id',
+      ])
       .execute();
     return rows.map((row) => ({
       sessionId: row.session_id,
@@ -5256,6 +5466,7 @@ export class EventStore implements EventSink {
       startedAt: new Date(row.started_at),
       turnId: row.turn_id,
       startCommandId: row.start_command_id,
+      markerId: row.marker_id,
     }));
   }
 
@@ -8180,14 +8391,120 @@ export class EventStore implements EventSink {
 
   /** Revoke a single device token by its public id. Returns true if a row went. */
   async deleteAuthToken(id: string): Promise<boolean> {
-    const res = await this.db.deleteFrom('auth_tokens').where('id', '=', id).executeTakeFirst();
-    return (res?.numDeletedRows ?? 0n) > 0n;
+    const deleted = await this.db.transaction().execute(async (trx) => {
+      const policy = await trx
+        .selectFrom('backup_policy')
+        .select('journal_enabled')
+        .where('id', '=', 1)
+        .forShare()
+        .executeTakeFirst();
+      await sql`lock table auth_tokens in row exclusive mode`.execute(trx);
+      const record = await trx
+        .selectFrom('auth_tokens')
+        .select('id')
+        .where('id', '=', id)
+        .forUpdate()
+        .executeTakeFirst();
+      if (!record) return false;
+      if (policy?.journal_enabled)
+        await trx
+          .insertInto('backup_revocation_outbox')
+          .values({ id: randomUUID(), device_id: id })
+          .execute();
+      const res = await trx.deleteFrom('auth_tokens').where('id', '=', id).executeTakeFirst();
+      return (res?.numDeletedRows ?? 0n) > 0n;
+    });
+    if (deleted) await this.notifyBackupRevocations();
+    return deleted;
   }
 
   /** Revoke every device token (e.g. on GitHub disconnect / master-password
    *  change) — forces all devices to re-authenticate. */
   async deleteAllAuthTokens(): Promise<void> {
-    await this.db.deleteFrom('auth_tokens').execute();
+    await this.db.transaction().execute(async (trx) => {
+      const policy = await trx
+        .selectFrom('backup_policy')
+        .select('journal_enabled')
+        .where('id', '=', 1)
+        .forShare()
+        .executeTakeFirst();
+      await sql`lock table auth_tokens in share row exclusive mode`.execute(trx);
+      if (policy?.journal_enabled) {
+        const devices = await trx.selectFrom('auth_tokens').select('id').forUpdate().execute();
+        for (const device of devices)
+          await trx
+            .insertInto('backup_revocation_outbox')
+            .values({ id: randomUUID(), device_id: device.id })
+            .execute();
+      }
+      await trx.deleteFrom('auth_tokens').execute();
+    });
+    await this.notifyBackupRevocations();
+  }
+
+  /** Runtime backup policy is disabled explicitly by restore before any token cleanup. */
+  async setBackupJournaling(enabled: boolean): Promise<void> {
+    await this.db
+      .updateTable('backup_policy')
+      .set({ journal_enabled: enabled })
+      .where('id', '=', 1)
+      .execute();
+  }
+
+  async listBackupRevocations(): Promise<{ id: string; deviceId: string; revokedAt: string }[]> {
+    const rows = await this.db
+      .selectFrom('backup_revocation_outbox')
+      .selectAll()
+      .orderBy('created_at')
+      .limit(1000)
+      .execute();
+    return rows.map((row) => ({
+      id: row.id,
+      deviceId: row.device_id,
+      revokedAt: row.created_at.toISOString(),
+    }));
+  }
+
+  async acknowledgeBackupRevocation(id: string): Promise<void> {
+    await this.db.deleteFrom('backup_revocation_outbox').where('id', '=', id).execute();
+  }
+
+  /** Stable server-owned bookkeeping; identities never come from sandbox-written markers. */
+  async backupGitRepositoryKey(projectId: string | null, path: string): Promise<string> {
+    if (
+      !path ||
+      path.startsWith('/') ||
+      path.includes('\\') ||
+      path.split('/').some((part) => !part || part === '.' || part === '..')
+    )
+      throw new Error('Invalid backup Git bookkeeping path');
+    const key = randomUUID();
+    if (projectId === null) {
+      await this.db
+        .insertInto('backup_unassigned_git_repositories')
+        .values({ path, repo_key: key })
+        .onConflict((conflict) => conflict.column('path').doNothing())
+        .execute();
+      return (
+        await this.db
+          .selectFrom('backup_unassigned_git_repositories')
+          .select('repo_key')
+          .where('path', '=', path)
+          .executeTakeFirstOrThrow()
+      ).repo_key;
+    }
+    await this.db
+      .insertInto('backup_git_repositories')
+      .values({ project_id: projectId, path, repo_key: key })
+      .onConflict((conflict) => conflict.columns(['project_id', 'path']).doNothing())
+      .execute();
+    const row = await this.db
+      .selectFrom('backup_git_repositories')
+      .select('repo_key')
+      .where('project_id', '=', projectId)
+      .where('path', '=', path)
+      .executeTakeFirstOrThrow();
+    return row.repo_key;
   }
 
   // ── Per-device Expo push tokens (ADR 0008, token registry) ────────────────
@@ -8383,6 +8700,7 @@ export class EventStore implements EventSink {
         authorization: this.encryptSecret(record.authorization),
         auth_type: record.authType ?? (record.authorization === null ? 'none' : 'static'),
         oauth_client_id: record.oauthClientId ?? null,
+        oauth_token_auth_method: record.oauthTokenAuthMethod ?? 'client_secret_post',
         oauth_client_secret: this.encryptSecret(record.oauthClientSecret ?? null),
         oauth_authorization_endpoint: record.oauthAuthorizationEndpoint ?? null,
         oauth_token_endpoint: record.oauthTokenEndpoint ?? null,
@@ -8399,6 +8717,7 @@ export class EventStore implements EventSink {
           authorization: this.encryptSecret(record.authorization),
           auth_type: record.authType ?? (record.authorization === null ? 'none' : 'static'),
           oauth_client_id: record.oauthClientId ?? null,
+          oauth_token_auth_method: record.oauthTokenAuthMethod ?? 'client_secret_post',
           oauth_client_secret: this.encryptSecret(record.oauthClientSecret ?? null),
           oauth_authorization_endpoint: record.oauthAuthorizationEndpoint ?? null,
           oauth_token_endpoint: record.oauthTokenEndpoint ?? null,
@@ -8428,6 +8747,9 @@ export class EventStore implements EventSink {
       authorization: this.decryptSecret(row.authorization),
       authType: row.auth_type as NonNullable<HttpMcpConnectionRecord['authType']>,
       oauthClientId: row.oauth_client_id,
+      oauthTokenAuthMethod: row.oauth_token_auth_method as NonNullable<
+        HttpMcpConnectionRecord['oauthTokenAuthMethod']
+      >,
       oauthClientSecret: this.decryptSecret(row.oauth_client_secret),
       oauthAuthorizationEndpoint: row.oauth_authorization_endpoint,
       oauthTokenEndpoint: row.oauth_token_endpoint,

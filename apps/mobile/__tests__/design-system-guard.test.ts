@@ -44,10 +44,9 @@ const EXEMPT: Partial<Record<string, Counts>> = {
   'components/ImageLightbox.tsx': { rawColor: 5 },
   // Not a colour: a doc comment shows an issue reference as `#123`.
   'components/SessionIssueRef.tsx': { rawColor: 1 },
-  // The meeting wave runs from signature to action through a fixed violet
-  // midpoint; a role in the middle would turn the gradient grey or pink. A
-  // participant avatar's initial scales with the avatar it sits in.
-  'components/meeting/MeetingUI.tsx': { rawColor: 1, fontSize: 1 },
+  // A participant avatar's initial scales with the avatar it sits in.
+  'components/meeting/MeetingUI.tsx': { fontSize: 1 },
+  // The meeting wave's fixed violet midpoint preserves its signature-to-action gradient.
   'components/meeting/MeetingWave.tsx': { rawColor: 1 },
   // A QR code needs a white quiet zone to stay scannable in either theme.
   'components/settings/settingsStyles.ts': { rawColor: 1 },

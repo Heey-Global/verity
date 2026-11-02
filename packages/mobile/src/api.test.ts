@@ -147,6 +147,38 @@ function jsonBody(call: Call | undefined): unknown {
 }
 
 describe('VerityClient live meetings', () => {
+  it('validates result reads and sends revision-scoped confirmation and retry requests', async () => {
+    const result = {
+      meetingId: 'm',
+      revision: 2,
+      status: 'ready',
+      title: 'Release',
+      summary: 'Ship.',
+      decisions: [],
+      tasks: [],
+      openQuestions: [],
+      model: null,
+      createdAt: 1,
+      updatedAt: 2,
+    };
+    const { fetch, calls } = fakeFetchSequence(
+      json({ result }),
+      json({ result }),
+      json({ accepted: true }),
+    );
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    expect(await client.getLiveMeetingResult('s', 'm')).toEqual(result);
+    await client.updateLiveMeetingResultTask('s', 'm', 'proposal', {
+      revision: 2,
+      state: 'added',
+      taskId: 'task',
+    });
+    expect(calls[1]?.url).toBe('http://host/sessions/s/live-meetings/m/result/tasks/proposal');
+    expect(jsonBody(calls[1])).toEqual({ revision: 2, state: 'added', taskId: 'task' });
+    await client.retryLiveMeetingResult('s', 'm');
+    expect(calls[2]?.init?.method).toBe('POST');
+  });
+
   it('loads server-generated insights for the selected meeting', async () => {
     const insight = {
       id: 'insight-1',
@@ -3926,6 +3958,7 @@ describe('managed dev server actions', () => {
     const seen = {
       command: 'npm run dev',
       workdir: 'web',
+      providerSnapshot: { provider: 'doppler' as const, project: 'demo', config: 'staging' },
       secretBindings: [{ secretAlias: 'ATTENDEE_API_KEY', env: 'API_KEY' }],
     };
     expect(await client.approveManagedDevServer('s/1', 'entry/1', seen)).toEqual([]);
@@ -4245,4 +4278,85 @@ it('preserves compact Google presentation in session detail while accepting olde
   expect(await client.getSessionGoogleStatus('s', controller.signal)).toEqual(googleStatus);
   expect(fetch.mock.calls.at(-1)?.[1]?.signal).toBe(controller.signal);
   expect(fetch.mock.calls.at(-1)?.[1]?.headers).toMatchObject({ authorization: 'Bearer paired' });
+});
+
+it('preserves the provider snapshot returned with managed server views', async () => {
+  const providerSnapshot = { provider: 'doppler', project: 'demo', config: 'staging' };
+  const server = {
+    id: 'srv',
+    name: 'API',
+    command: 'node server.mjs',
+    workdir: '.',
+    approved: false,
+    secretBindings: [{ secretAlias: 'ATTENDEE_API_KEY', env: 'API_KEY' }],
+    providerSnapshot,
+    instance: null,
+    elsewhere: [],
+  };
+  const { fetch } = fakeFetchSequence(json({ servers: [server] }));
+  const client = new VerityClient({ baseUrl: 'http://host', fetch });
+  expect((await client.listManagedDevServers('s'))?.[0]?.providerSnapshot).toEqual(
+    providerSnapshot,
+  );
+});
+
+it('loads MCP app documents and sends tool actions through authenticated session-scoped requests', async () => {
+  const fetcher = vi
+    .fn()
+    .mockResolvedValueOnce(new Response(JSON.stringify({ document: '<html>app</html>' })))
+    .mockResolvedValueOnce(
+      new Response(JSON.stringify({ content: [], structuredContent: { count: 2 } })),
+    );
+  const client = new VerityClient({
+    baseUrl: 'https://verity.example',
+    getToken: () => 'paired-device',
+    fetch: fetcher,
+  });
+  expect(await client.getMcpAppDocument('s', 'app')).toBe('<html>app</html>');
+  expect(await client.callMcpAppTool('s', 'app', { name: 'refresh', arguments: {} })).toMatchObject(
+    { structuredContent: { count: 2 } },
+  );
+  expect(fetcher.mock.calls[0]?.[0]).toBe('https://verity.example/sessions/s/mcp-apps/app');
+  expect(fetcher.mock.calls[1]?.[1]).toMatchObject({
+    method: 'POST',
+    body: JSON.stringify({ name: 'refresh', arguments: {} }),
+  });
+});
+
+it('uses server-bound MCP OAuth and sends only state and code on completion', async () => {
+  const discovery = {
+    authorizationEndpoint: 'https://identity.example/authorize',
+    tokenEndpoint: 'https://identity.example/token',
+    scopes: 'read',
+    registrationAvailable: true,
+  };
+  const flow = {
+    authorizationUrl: 'https://identity.example/authorize?state=state',
+    state: 'state',
+    redirectUri: 'https://host/app/mcp/oauth/callback',
+    expiresAt: 12345,
+  };
+  const { fetch, calls } = fakeFetchSequence(
+    json(discovery),
+    json(flow),
+    json({ connected: true }),
+    new Response(null, { status: 204 }),
+  );
+  const client = new VerityClient({ baseUrl: 'https://host', fetch });
+  expect(await client.discoverHttpMcpOAuth('https://tools.example/mcp')).toEqual(discovery);
+  expect(await client.startHttpMcpOAuth('tools/1', 'web')).toEqual(flow);
+  await client.completeHttpMcpOAuth('tools/1', {
+    code: 'code',
+    state: 'state',
+    kind: 'success',
+  } as { code: string; state: string });
+  await client.cancelHttpMcpOAuth('tools/1', 'state');
+  expect(calls.map((call) => call.url)).toEqual([
+    'https://host/mcp-connections/oauth/discover',
+    'https://host/mcp-connections/tools%2F1/oauth/start',
+    'https://host/mcp-connections/tools%2F1/oauth/complete',
+    'https://host/mcp-connections/tools%2F1/oauth/cancel',
+  ]);
+  expect(jsonBody(calls[2])).toEqual({ code: 'code', state: 'state' });
+  expect(jsonBody(calls[3])).toEqual({ state: 'state' });
 });

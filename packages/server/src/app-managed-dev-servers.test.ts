@@ -12,6 +12,7 @@ it('forwards the managed server manager to app and agent routes', async () => {
   const app = buildControlPlane({
     eventStore: {
       tasks: { expirePendingTitles: async () => [] },
+      liveMeetings: { unfinishedResults: async () => [] },
       getSession: async () => ({ projectId: 'p1' }),
       listMovePreviewRestarts: async () => [],
     } as unknown as ControlPlaneDeps['eventStore'],

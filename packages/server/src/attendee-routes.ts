@@ -1,9 +1,10 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import type { AttendeeMeetings } from './attendee-meetings.js';
+import { OnlineMeetingStartError, type AttendeeMeetings } from './attendee-meetings.js';
 
 const params = z.object({ id: z.string(), meetingId: z.string().uuid() });
 const edits = z.object({
+  title: z.string().max(200).nullable().optional(),
   speakerNames: z.record(z.string(), z.string().max(200)).optional(),
   speakerCorrections: z
     .array(
@@ -43,7 +44,7 @@ export function registerAttendeeRoutes(
     return service.configure(config);
   });
   app.post('/settings/attendee/test', () => service.test());
-  app.post('/sessions/:id/live-meetings/online', async (request) => {
+  app.post('/sessions/:id/live-meetings/online', async (request, reply) => {
     const { id } = z.object({ id: z.string() }).parse(request.params);
     const body = z
       .object({
@@ -63,7 +64,19 @@ export function registerAttendeeRoutes(
       )
     )
       throw new Error('Enter a Google Meet, Teams or Zoom HTTPS meeting link.');
-    return service.start(id, body.meetingUrl, body.listenForVerity, body.title);
+    try {
+      return await service.start(id, body.meetingUrl, body.listenForVerity, body.title, {
+        requestId: request.id,
+        emit: (entry) => {
+          if (entry.event === 'failed') request.log.warn(entry, 'Online meeting start failed');
+          else request.log.info(entry, 'Online meeting start progress');
+        },
+      });
+    } catch (error) {
+      if (error instanceof OnlineMeetingStartError)
+        return reply.code(503).send({ error: error.message });
+      throw error;
+    }
   });
   app.post('/sessions/:id/live-meetings/:meetingId/online/stop', async (request) => {
     const { id, meetingId } = params.parse(request.params);

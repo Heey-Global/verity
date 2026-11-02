@@ -64,6 +64,28 @@ export function agentEventDescriptor(event: AgentEvent): AgentEventDescriptor {
     case 'merged':
       return { kind: 'merged', label: `Merged PR #${String(event.number)}`, tone: 'neutral' };
     case 'error':
+      if (event.kind === 'memory_limit') {
+        return {
+          kind: 'memory-limit',
+          label: 'Memory limit reached',
+          detail: 'The memory guard stopped the agent. Retry with a smaller workload.',
+          tone: 'danger',
+          action: 'retry',
+        };
+      }
+      if (
+        PROCESS_FAILURE_KINDS.has(event.kind) &&
+        /(?:SIGKILL|exit(?:ed with code)? 137)/u.test(event.message)
+      ) {
+        return {
+          kind: 'agent-killed',
+          label: 'Agent was killed',
+          detail: 'Possible memory pressure. Retry with a smaller workload.',
+          tone: 'danger',
+          action: 'retry',
+          technical: technicalText(event.kind, event.message),
+        };
+      }
       if (event.kind === 'model_capacity_retry') {
         return { kind: 'model-capacity', label: event.message, tone: 'neutral' };
       }

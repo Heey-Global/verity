@@ -56,6 +56,25 @@ function fakeProcess(lines: string[]): SpawnedProcess {
 }
 
 describe('buildControlPlane', () => {
+  it('forwards backup runtime ownership and starts provisioned backups when ready', async () => {
+    const close = vi.fn(async () => undefined);
+    const start = vi.fn();
+    const setAlertNotifier = vi.fn();
+    const backup = { close, service: { start, setAlertNotifier } } as unknown as NonNullable<
+      ControlPlaneDeps['backup']
+    >;
+    const app = buildControlPlane({ eventStore: ctx.store, bus: new InMemoryEventBus(), backup });
+    try {
+      expect(setAlertNotifier).toHaveBeenCalledExactlyOnceWith(expect.any(Function));
+      expect(start).not.toHaveBeenCalled();
+      await app.ready();
+      expect(start).toHaveBeenCalledOnce();
+    } finally {
+      await app.close();
+    }
+    expect(close).toHaveBeenCalledOnce();
+  });
+
   it('composes local preview discovery and sharing without an Uplink manager', async () => {
     await ctx.store.createSession({
       sessionId: 'local-preview',

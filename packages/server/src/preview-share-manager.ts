@@ -54,6 +54,13 @@ const CONNECTOR_READY_MARKER = 'preview connector established';
 const removedUnreadyConnectorFailures = new WeakSet<object>();
 const PREVIEW_TTL_SECONDS = [60 * 60, 24 * 60 * 60, 7 * 24 * 60 * 60, 30 * 24 * 60 * 60];
 
+export interface PreviewCreateDiagnostic {
+  phase: 'ensure_sharing' | 'capability_check' | 'share_create' | 'share_ready';
+  code: string;
+  shareCreateSent: boolean;
+}
+export type PreviewCreateObserver = (diagnostic: PreviewCreateDiagnostic) => void;
+
 export interface PreviewEdgeCreate {
   webhook?: { path: string };
   pinHash: string;
@@ -79,7 +86,7 @@ export interface PreviewEdgeBinding {
  * something this interface can express today — see the contract gaps in
  * `docs/handoffs/PUBLIC_PREVIEW_UPLINK_HANDOFF.md`. */
 export interface PreviewEdgeControl {
-  create(input: PreviewEdgeCreate): Promise<PreviewEdgeBinding>;
+  create(input: PreviewEdgeCreate, observe?: PreviewCreateObserver): Promise<PreviewEdgeBinding>;
   remove(shareId: string): Promise<void>;
   isAvailable?(): boolean;
   canStartSharing?(): boolean;
@@ -797,6 +804,19 @@ export class PreviewShareManager {
         await this.stop(share.id);
       }
     }
+  }
+
+  /** Fence preview lifecycle changes while retaining every active share during GC. */
+  async withProjectStorageMutation<T>(projectId: string, mutation: () => Promise<T>): Promise<T> {
+    return this.withLifecycleLocks([`project:${projectId}`], async () => {
+      if (
+        (await this.options.store.listPublicPreviewShares(projectId)).some((share) =>
+          ACTIVE_STATES.includes(share.state),
+        )
+      )
+        throw new Error('Project has an active public preview');
+      return mutation();
+    });
   }
 
   async withProjectMutation<T>(projectId: string, mutation: () => Promise<T>): Promise<T> {

@@ -1,4 +1,4 @@
-import { meetingSavedCard } from './meetingSavedCard';
+import { meetingSavedCard, latestMeetingCards } from './meetingSavedCard';
 
 it('recognizes legacy notices without inventing metrics', () => {
   expect(
@@ -46,4 +46,28 @@ it('displays escaped title punctuation without changing the saved destination', 
     title: String.raw`Sync](https://example.com) [Q1] \ files`,
     link: '/knowledge/meeting.md',
   });
+});
+
+it('retains a derived summary in the saved meeting card', () => {
+  const text =
+    'Meeting saved to the knowledge base: [Release](/knowledge/meetings/release.md)\n<!-- verity-meeting: ' +
+    JSON.stringify({ sessionId: 's', meetingId: 'm', summary: 'The team agreed to ship.' }) +
+    ' -->';
+  expect(meetingSavedCard(text)?.summary).toBe('The team agreed to ship.');
+});
+
+it('keeps the newest version of a filed meeting card and preserves other rows', () => {
+  const notice = (summary: string) =>
+    'Meeting saved to the knowledge base: [Release](/knowledge/meetings/release.md)\n<!-- verity-meeting: ' +
+    JSON.stringify({ sessionId: 's', meetingId: 'm', summary }) +
+    ' -->';
+  const make = (id: string, text: string) =>
+    ({
+      kind: 'message',
+      message: { id, kind: 'agent-text', text },
+    }) as import('@verity/mobile').Row;
+  const newer = make('new', notice('Final summary'));
+  const answer = make('answer', 'A normal answer');
+  const older = make('old', notice(''));
+  expect(latestMeetingCards([newer, answer, older])).toEqual([newer, answer]);
 });

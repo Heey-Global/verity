@@ -138,6 +138,8 @@ describe('a managed deployment refuses project networks', () => {
       // request to resume that same journalled operation now. The resume runs
       // the steps the journal already names; it adds no Docker verb of its own.
       'GET /v1/update/attempt',
+      // Reads host preparation progress; it grants no network mutation authority.
+      'GET /v1/update/host-preparation',
       'POST /v1/update/retry',
       // Activation only records that Matrix credentials exist; the Updater still
       // owns the worker and this route never grants network attachment verbs.
@@ -172,13 +174,16 @@ describe('a managed deployment refuses project networks', () => {
       // throws keeps it that way.
       fetch: () => Promise.reject(new Error('this test never issues a Docker request')),
     });
-    // `ensureNetwork` is the Server-side creation D2 always left with the
-    // provisioner; it creates a network and puts nothing on one. Asserting it is
-    // the only network verb catches the additions worth catching — a
+    // Both creation verbs leave membership unchanged: ensureNetwork is the
+    // legacy path; createEgressNetwork creates a fresh deny-only generation bridge.
+    // Pinning the complete creation-only set catches additions such as a
     // `connectNetwork`, an `addContainerToNetwork` — where a list of forbidden
     // names would only catch the ones someone thought of. A membership call
     // named without `network` at all, or hidden inside an existing method, would
     // still get past this; the spec pin above is what stops it landing.
-    expect(Object.keys(client).filter((verb) => /network/i.test(verb))).toEqual(['ensureNetwork']);
+    expect(Object.keys(client).filter((verb) => /network/i.test(verb))).toEqual([
+      'ensureNetwork',
+      'createEgressNetwork',
+    ]);
   });
 });

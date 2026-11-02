@@ -442,6 +442,18 @@ export class LocalPreviewManager {
       this.blockedSessions.delete(sessionId);
     }
   }
+  /** Fence preview creation without interrupting an existing preview for GC. */
+  async withProjectStorageMutation<T>(projectId: string, mutation: () => Promise<T>): Promise<T> {
+    const release = await this.beginSessionMove(projectId);
+    try {
+      if (this.listProject(projectId).length > 0)
+        throw new PreviewShareConflictError('Project has an active preview');
+      return await mutation();
+    } finally {
+      release();
+    }
+  }
+
   async withProjectMutation<T>(projectId: string, mutation: () => Promise<T>): Promise<T> {
     const release = await this.beginSessionMove(projectId);
     try {

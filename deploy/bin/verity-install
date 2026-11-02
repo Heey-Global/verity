@@ -32,6 +32,7 @@ script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd -- "$script_dir/../.." && pwd)"
 source "$script_dir/verity-pairing-addresses"
 
+opt_backup_dir=''
 opt_image=''
 opt_deployment_id=''
 opt_tag='latest'
@@ -40,7 +41,19 @@ opt_check=0
 opt_advance_unpaired_from=''
 opt_update=0
 opt_reinstall=0
+opt_rotate_identity=0
+opt_restart_rotation=0
 opt_yes=0
+opt_restore=''
+opt_restore_action='trial'
+opt_restore_repository=''
+opt_restore_snapshot=''
+opt_restore_kind=''
+opt_restore_new_identity=0
+opt_restore_keep_none=0
+opt_restore_secrets_stdin=0
+opt_restore_keep_devices=()
+restore_activation=0
 bootstrap_recovery_only=${VERITY_BOOTSTRAP_RECOVERY_ONLY:-0}
 original_args=("$@")
 
@@ -98,6 +111,19 @@ Options:
                        first install; NEVER changes afterwards.
   --project NAME       Compose project name. Detected from an existing install,
                        then persisted; defaults to "verity" on a fresh host.
+  --backup-dir <path>  Set the dedicated local backup directory (default /var/lib/verity/backups).
+  --restore <path>     Recover from a copied local backup; defaults to a restricted trial.
+  --restore-repository ID  Select the exact repository (required for a new restore).
+  --restore-snapshot N Select the exact snapshot sequence (required for a new restore).
+  --restore-kind KIND  Select manual, scheduled or pre-update (required for a new restore).
+  --restart-rotation  Begin another rotation after a completed one; requires --rotate-identity.
+  --rotate-identity   Revoke all devices and replace CA, TLS and pairing identity; resume safely after interruption.
+  --new-identity      Generate new pairing identity and retain no previous devices.
+  --restore-action ACTION  trial, status, devices, review, accept or abort.
+  --keep-device ID    Explicitly retain a reviewed device; repeat for each device.
+  --keep-no-devices   Explicitly retain no devices during review.
+  --restore-secrets-stdin  Read recovery key then master password as two stdin lines.
+                       Otherwise credentials are read privately from the terminal.
   --check              Run the preflight and print what would be installed, then
                        stop without touching the deployment.
   --update             Update an existing, not-yet-paired installation to --image
@@ -123,6 +149,19 @@ while [ "$#" -gt 0 ]; do
     --deployment-id=*) opt_deployment_id="${1#--deployment-id=}"; shift ;;
     --project) [ "$#" -ge 2 ] || die 'option --project needs a value'; opt_project="$2"; shift 2 ;;
     --project=*) opt_project="${1#--project=}"; shift ;;
+    --backup-dir) [ "$#" -ge 2 ] || die 'option --backup-dir needs a value'; opt_backup_dir="$2"; shift 2 ;;
+    --backup-dir=*) opt_backup_dir="${1#--backup-dir=}"; shift ;;
+    --rotate-identity) opt_rotate_identity=1; shift ;;
+    --restart-rotation) opt_restart_rotation=1; shift ;;
+    --restore) [ "$#" -ge 2 ] || die 'option --restore needs a value'; opt_restore="$2"; shift 2 ;;
+    --restore-repository) [ "$#" -ge 2 ] || die 'option --restore-repository needs a value'; opt_restore_repository="$2"; shift 2 ;;
+    --restore-snapshot) [ "$#" -ge 2 ] || die 'option --restore-snapshot needs a value'; opt_restore_snapshot="$2"; shift 2 ;;
+    --restore-kind) [ "$#" -ge 2 ] || die 'option --restore-kind needs a value'; opt_restore_kind="$2"; shift 2 ;;
+    --restore-action) [ "$#" -ge 2 ] || die 'option --restore-action needs a value'; opt_restore_action="$2"; shift 2 ;;
+    --new-identity) opt_restore_new_identity=1; shift ;;
+    --keep-device) [ "$#" -ge 2 ] || die 'option --keep-device needs a value'; opt_restore_keep_devices+=("$2"); shift 2 ;;
+    --keep-no-devices) opt_restore_keep_none=1; shift ;;
+    --restore-secrets-stdin) opt_restore_secrets_stdin=1; shift ;;
     --check) opt_check=1; shift ;;
     --update) opt_update=1; shift ;;
     --reinstall) opt_reinstall=1; shift ;;
@@ -132,6 +171,23 @@ while [ "$#" -gt 0 ]; do
     *) usage >&2; die "unknown argument: $1" ;;
   esac
 done
+
+[ "$opt_restart_rotation" = 0 ] || [ "$opt_rotate_identity" = 1 ] \
+  || die '--restart-rotation requires --rotate-identity'
+if [ "$opt_rotate_identity" = 1 ]; then
+  [ "$opt_update$opt_reinstall$opt_check" = 000 ] && [ -z "$opt_restore$opt_deployment_id$opt_advance_unpaired_from$opt_backup_dir$opt_project" ] \
+    || die '--rotate-identity cannot be combined with install, update or restore options'
+fi
+
+if [ -n "$opt_restore" ]; then
+  [ "$opt_update$opt_reinstall$opt_check" = 000 ] || die '--restore cannot be combined with --update, --reinstall or --check'
+  [ -z "$opt_deployment_id$opt_advance_unpaired_from" ] || die '--restore chooses deployment identity from the authenticated snapshot'
+  case "$opt_restore_action" in trial|status|devices|review|accept|abort) ;; *) die 'invalid --restore-action' ;; esac
+else
+  [ "$opt_restore_new_identity$opt_restore_keep_none$opt_restore_secrets_stdin" = 000 ] && [ "${#opt_restore_keep_devices[@]}" = 0 ] \
+    && [ -z "$opt_restore_repository$opt_restore_snapshot$opt_restore_kind" ] && [ "$opt_restore_action" = trial ] \
+    || die 'restore options require --restore'
+fi
 
 [ "$opt_yes" = 0 ] || [ "$opt_reinstall" = 1 ] \
   || die '--yes is accepted only together with --reinstall'
@@ -225,7 +281,7 @@ select_pairing_host() {
 command -v docker >/dev/null || die 'docker is required'
 command -v flock >/dev/null || die 'the host flock utility is required'
 # The host runtime service registers the gVisor runtimes with these; refuse before any state changes.
-for tool in curl jq sha512sum; do
+for tool in curl jq sha512sum tar bzip2; do
   command -v "$tool" >/dev/null || die "the host $tool utility is required (the gVisor runtime registration uses it)"
 done
 
@@ -355,6 +411,32 @@ if [ "$opt_check" = 0 ]; then
   flock -n 8 || die 'another verity-install is already running on this host'
 fi
 
+if [ -z "$opt_restore" ] && [ -f "$STATE_DIR/restore/job" ]; then
+  recovery_phase=$(jq -er '.phase' "$STATE_DIR/restore/job") || die 'invalid recovery checkpoint; use --restore status'
+  recovery_id=$(jq -er '.id' "$STATE_DIR/restore/job") || die 'invalid recovery checkpoint'
+  case "$recovery_phase" in
+    aborted) ;;
+    accepted)
+      [[ -f $STATE_DIR/restore/activation-complete && ! -L $STATE_DIR/restore/activation-complete && $(cat "$STATE_DIR/restore/activation-complete") = "$recovery_id" ]] \
+        || die 'recovery activation is incomplete; resume --restore-action accept' ;;
+    *) die 'recovery is in progress; use --restore-action status, accept or abort' ;;
+  esac
+fi
+if [ "$opt_rotate_identity" = 1 ]; then
+  source "$script_dir/verity-rotate-identity"
+  verity_rotate_identity
+  exit 0
+fi
+if [ -e "$STATE_DIR/identity-rotation/checkpoint" ]; then
+  [ "$(jq -er '.phase' "$STATE_DIR/identity-rotation/checkpoint")" = complete ] \
+    || die 'identity rotation is incomplete; resume --rotate-identity before other operations'
+fi
+if [ -n "$opt_restore" ]; then
+  source "$script_dir/verity-restore-install"
+  verity_restore_install
+  [ "$restore_activation" = 1 ] || exit 0
+fi
+
 # ── managed Server already present? ────────────────────────────────────────
 # Managed mode gives the Server exactly two name shapes: the base name, and the
 # generation-qualified name a cutover creates (docker-update-preparation.ts:54,
@@ -481,6 +563,7 @@ sealed_volume="$(printf '%s' "$volumes_raw" | grep -Fx "$MANAGED_DEPLOYMENT_VOLU
 # --image the host has never had. The identity is still reused; only the mode differs.
 first_install=0
 if [ -z "$all_managed" ] && [ -z "$sealed_volume" ]; then first_install=1; fi
+if [ "$restore_activation" = 1 ] && [ -z "$all_managed" ]; then first_install=1; fi
 
 # The volume holds a sealed identity that bootstrap will check this run against, and
 # with no state file and no labelled container left there is nothing here that can
@@ -588,7 +671,7 @@ valid_project_name "$compose_project" \
 # mismatch several minutes later. Ask before pairing material is rotated or any
 # migration runs. Non-interactive invocations retain the safe repair behaviour;
 # automation must spell the destructive choice as --reinstall --yes.
-if [ "$first_install" = 0 ] && [ "$opt_check" = 0 ] && [ "$opt_update" = 0 ] && [ "$opt_reinstall" = 0 ]; then
+if [ "$first_install" = 0 ] && [ "$opt_check" = 0 ] && [ "$opt_update" = 0 ] && [ "$opt_reinstall" = 0 ] && [ "$restore_activation" = 0 ]; then
   if ( : </dev/tty && : >/dev/tty ) 2>/dev/null; then
     printf '\nAn existing Verity installation was found.\n' >/dev/tty
     printf '  1) Repair this installation (keep its version and all data)\n' >/dev/tty
@@ -894,17 +977,28 @@ printf '%s\n' "$deployment_id" | write_state "$ID_PATH" 0644
 printf '%s\n' "$compose_project" | write_state "$PROJECT_PATH" 0644
 printf '%s\n' "$postgres_password" | write_state "$POSTGRES_PASSWORD_PATH" 0600
 
+# Provision optional backup capability only through this privileged installer.
+source "$repo_root/deploy/host/verity-backup-prerequisites"
+backup_dir="${opt_backup_dir:-$(read_state "$STATE_DIR/backup-dir")}"
+backup_dir="${backup_dir:-${VERITY_BACKUP_DIR:-/var/lib/verity/backups}}"
+setup_backup_prerequisites "$backup_dir" "$server_image"
+
 # Stable server identity and TLS keys live beside the installer state. Each run
 # rotates only the short-lived, one-time pairing capability shown below.
 heading 'Device pairing'
 note 'Creating TLS identity and a pairing code valid for 15 minutes'
 pairing_host="$(select_pairing_host)"
+if [ "$restore_activation" = 1 ]; then
+  pairing_uri=''
+  note 'Keeping the reviewed recovery identity and TLS material'
+else
 pairing_uri="$(VERITY_STATE_DIR="$STATE_DIR" \
   VERITY_API_HOST_PORT="${VERITY_API_HOST_PORT:-8082}" \
   VERITY_PAIRING_HOST="$pairing_host" \
   VERITY_SERVER_UID="${VERITY_SERVER_UID:-1000}" \
   VERITY_SERVER_GID="${VERITY_SERVER_GID:-1000}" \
   "$repo_root/deploy/bin/verity-pairing-material")"
+fi
 
 # ── host runtime service (ADR 0008 Amendment 2) ────────────────────────────
 # Verity's releases run project Sandboxes and Secret jobs under two Docker runtime
@@ -923,8 +1017,6 @@ SYSTEMD_RUN_DIR="${VERITY_SYSTEMD_RUN_DIR:-/run/systemd/system}"
 heading 'Container runtimes'
 [ ! -L "$HOST_RUNTIME_DIR" ] || die "$HOST_RUNTIME_DIR must not be a symlink"
 install -d -m 0755 -o root -g root "$HOST_RUNTIME_LIBEXEC"
-install -m 0755 -o root -g root "$repo_root/deploy/host/verity-host-runtime" \
-  "$HOST_RUNTIME_LIBEXEC/verity-host-runtime"
 # Its sibling for the devcontainer builder: later updates install the builder their release
 # ships through it, after verifying that release's signature on the host.
 install -m 0755 -o root -g root "$repo_root/deploy/host/verity-host-builder" \
@@ -932,25 +1024,20 @@ install -m 0755 -o root -g root "$repo_root/deploy/host/verity-host-builder" \
 install -d -m 0700 -o root -g root "$HOST_RUNTIME_DIR"
 host_runtime_trigger=none
 if [ -d "$SYSTEMD_RUN_DIR" ] && command -v systemctl >/dev/null; then
-  for unit in verity-host-runtime.path verity-host-runtime.service \
-    verity-host-builder.path verity-host-builder.service; do
+  for unit in verity-host-builder.path verity-host-builder.service; do
     install -m 0644 -o root -g root "$repo_root/deploy/host/$unit" "$SYSTEMD_UNIT_DIR/$unit"
   done
   systemctl daemon-reload
-  systemctl enable --now verity-host-runtime.path >/dev/null 2>&1 \
-    || die 'could not enable verity-host-runtime.path — see `systemctl status verity-host-runtime.path`'
   systemctl enable --now verity-host-builder.path >/dev/null 2>&1 \
     || die 'could not enable verity-host-builder.path — see `systemctl status verity-host-builder.path`'
   host_runtime_trigger=systemd-path
 else
   note 'No systemd on this host: runtime migrations that a later release needs will ask you to re-run the Verity installer'
 fi
-agent_tmp="$(mktemp "$HOST_RUNTIME_DIR/.agent.json.XXXXXX")"
-# `builder` tells the Updater it may ask verity-host-builder; hosts installed before it
-# existed lack the key, and their Updater asks for this installer instead.
-printf '{"version":1,"trigger":"%s","builder":"%s"}\n' "$host_runtime_trigger" "$host_runtime_trigger" >"$agent_tmp"
-chmod 0644 "$agent_tmp"
-mv -f "$agent_tmp" "$HOST_RUNTIME_DIR/agent.json"
+VERITY_HOST_RUNTIME_DIR="$HOST_RUNTIME_DIR" VERITY_HOST_RUNTIME_LIBEXEC="$HOST_RUNTIME_LIBEXEC" \
+  VERITY_HOST_BUILDER_TRIGGER="$host_runtime_trigger" \
+  VERITY_SYSTEMD_UNIT_DIR="$SYSTEMD_UNIT_DIR" VERITY_SYSTEMD_RUN_DIR="$SYSTEMD_RUN_DIR" \
+  bash "$repo_root/deploy/host/install-runtime-service.sh" || die 'could not install the host runtime service'
 note 'Registering the gVisor runtimes runsc and runsc-project (running containers are not restarted)'
 VERITY_HOST_RUNTIME_DIR="$HOST_RUNTIME_DIR" \
   "$HOST_RUNTIME_LIBEXEC/verity-host-runtime" apply-pins "$repo_root/deploy/gvisor/versions.env" \
@@ -1057,6 +1144,8 @@ VERITY_HOST_ARCHITECTURE="$host_architecture" \
 VERITY_DEVCONTAINER_BUILDER_GID="$builder_gid" \
 VERITY_PAIRING_STATE_HOST_PATH="$STATE_DIR" \
 VERITY_POSTGRES_PASSWORD="$postgres_password" \
+VERITY_BACKUP_DIR="$VERITY_BACKUP_DIR" \
+VERITY_BACKUP_IDENTITY_DIR="$VERITY_BACKUP_IDENTITY_DIR" \
 VERITY_BOOTSTRAP_ADVANCE_IMAGE_FROM="$opt_advance_unpaired_from" \
 VERITY_GVISOR_SMOKE_IMAGE="$server_image" \
 COMPOSE_PROJECT_NAME="$compose_project" \
@@ -1085,6 +1174,13 @@ docker exec -e "PGPASSWORD=$postgres_password" "$postgres_container" \
   psql -v ON_ERROR_STOP=1 -h 127.0.0.1 -U verity -d verity -c 'SELECT 1' >/dev/null \
   || die 'PostgreSQL rejected the generated credential over TCP after the SCRAM migration; run this installer again after correcting PostgreSQL'
 
+configure_backup_database_role "$postgres_container" "$VERITY_BACKUP_POSTGRES_PASSWORD"
+unset VERITY_BACKUP_POSTGRES_PASSWORD
+
+if [ "$restore_activation" = 1 ]; then
+  heading 'Recovery accepted'
+  note 'Reconnect with a retained device. A new identity requires pairing through a later installer run.'
+else
 heading "$([ "$first_install" = 1 ] && printf 'Pair your device' || printf 'Optional: pair another device')"
 if [ "$first_install" = 1 ]; then
   printf '%s\n' '  1. Open the Verity app.'
@@ -1100,6 +1196,7 @@ printf '%s\n' "$pairing_uri" | docker run --rm -i --entrypoint node "$server_ima
 heading 'Cannot scan the QR code?'
 hint 'In the app, tap "Paste pairing code", then copy the entire line below.'
 printf '  %s\n\n' "$pairing_uri"
+fi
 heading 'Keep Verity off the public internet'
 printf '  Do not open or forward port %s or the preview ports %s\n' \
   "${VERITY_API_HOST_PORT:-8082}" "${VERITY_LOCAL_PREVIEW_PORT_RANGE:-8100-8119}"
@@ -1107,5 +1204,8 @@ printf '%s\n' '  to the internet on your router or cloud firewall.'
 hint 'Connect from your local network or through a VPN such as WireGuard or Tailscale.'
 hint 'Docker-published ports can bypass ufw; verify from a network that should be denied.'
 heading "$([ "$first_install" = 1 ] && printf '✓ Installation complete' || printf '✓ Update complete')"
+if [ "$restore_activation" = 1 ]; then
+  jq -er '.id' "$STATE_DIR/restore/job" | write_state "$STATE_DIR/restore/activation-complete" 0600
+fi
 printf '%s\n' '  Verity is ready.'
 hint 'Run this installer again only to repair this host or pair another device.'

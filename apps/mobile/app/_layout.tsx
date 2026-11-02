@@ -1,9 +1,11 @@
+import { completeMcpOAuthPopup } from '../lib/mcpOAuth';
 import { startRuntimeDiagnostics, setRuntimeDiagnosticsScreen } from '../lib/runtimeDiagnostics';
 // Root layout mounts the provider stack (gesture handler + safe area) and the themed router
 // Stack. The header colors come from the live theme via useUnistyles; the app is
 // locked to the dark theme (unistyles `initialTheme: 'dark'`, not OS-adaptive).
 // Component styles use StyleSheet.create.
 import { QuickCaptureBubble } from '../components/QuickCaptureBubble';
+import { BrowserAlertHost } from '../components/ui/BrowserAlertHost';
 import { installBrowserAlerts } from '../lib/browserAlerts';
 
 import { Link, Redirect, router, Stack, useGlobalSearchParams, usePathname } from 'expo-router';
@@ -65,6 +67,9 @@ import { NO_WINDOW_CONTROLS_INSET, type WindowControlsInset } from '../lib/windo
 if (Platform.OS !== 'web') Appearance.setColorScheme('dark');
 
 installBrowserAlerts();
+
+// Complete the popup before setup/auth redirects can discard the OAuth callback.
+completeMcpOAuthPopup();
 
 const FOREGROUND_UPDATE_POLL_MS = 30_000;
 
@@ -280,6 +285,10 @@ function HydratedRoot() {
               <Stack.Screen name="settings/forgejo/new" options={{ title: 'Connect Forgejo' }} />
               <Stack.Screen name="settings/forgejo/[id]" options={{ title: 'Forgejo' }} />
               <Stack.Screen name="settings/google" options={{ title: 'Google' }} />
+              <Stack.Screen
+                name="settings/scheduling-requests"
+                options={{ title: 'Scheduling requests' }}
+              />
               <Stack.Screen name="settings/premium" options={{ title: 'Verity Premium' }} />
               <Stack.Screen name="settings/diagnostics" options={{ title: 'Diagnostics' }} />
               <Stack.Screen name="settings/design-system" options={{ title: 'Design system' }} />
@@ -304,6 +313,13 @@ function HydratedRoot() {
               />
               <Stack.Screen name="settings/services/matrix/index" options={{ title: 'Matrix' }} />
               <Stack.Screen name="settings/server-update" options={{ title: 'Updates' }} />
+              <Stack.Screen name="settings/backup" options={{ title: 'Backup' }} />
+              <Stack.Screen name="settings/backup-test" options={{ title: 'Test restore' }} />
+              <Stack.Screen name="settings/backup-options" options={{ title: 'Options' }} />
+              <Stack.Screen
+                name="settings/backup-new-key"
+                options={{ title: 'New recovery key' }}
+              />
               <Stack.Screen
                 name="settings/server-update-channel"
                 options={{ title: 'Update channel' }}
@@ -329,6 +345,7 @@ function HydratedRoot() {
                 <QuickCaptureBubble />
               </>
             )}
+            <BrowserAlertHost />
           </KeyboardProvider>
         </SafeAreaProvider>
       </GestureHandlerRootView>

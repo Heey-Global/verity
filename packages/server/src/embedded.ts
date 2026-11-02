@@ -1,4 +1,27 @@
+import { createGitHubQAAnalysis } from './github-qa-analysis.js';
+import {
+  StorageReclamation,
+  requestNativeReclamation,
+  readNativeReclamation,
+} from './storage-reclamation.js';
+import { registerStorageReclamationRoutes } from './storage-reclamation-routes.js';
+import { startNativeRetirementEvidence } from './native-buildkit.js';
+import type { GitOutput } from './branches.js';
+import { SessionStorage } from './session-storage.js';
+import {
+  retireStoppedContainers,
+  retireCompletedUpdateContainers,
+} from './stopped-container-gc.js';
+import type { DockerGcReport } from './docker-gc.js';
+import { createServerLogSource } from './server-log-source.js';
+import {
+  selectBranchStatus,
+  createForgeStatusCache,
+  type ForgeStatusIdentity,
+} from './forge-status-cache.js';
+import { createBuildDiagnosticStore } from './build-diagnostics.js';
 import { brokeredDopplerBindingId } from './brokered-doppler-binding.js';
+import { BuildStorage } from './build-storage.js';
 import { createProjectImageReferences } from './derived-image-references.js';
 import { pinToolkitFeature } from './devcontainer-feature-pin.js';
 import { createGoogleAccountAccessToken } from './google-account-token.js';
@@ -68,7 +91,7 @@ import {
   type ProjectRecord,
 } from '@verity/store';
 import type { FastifyBaseLogger, FastifyInstance } from 'fastify';
-import type { Kysely } from 'kysely';
+import { sql, type Kysely } from 'kysely';
 
 import { existsSync, readFileSync, mkdirSync, readdirSync } from 'node:fs';
 import { chmod, chown, lstat, readFile, rename, rm, writeFile } from 'node:fs/promises';
@@ -149,6 +172,9 @@ import {
 } from './brokered-secret-job-executor.js';
 import { createSecretAuditRecorder } from './secret-audit-recorder.js';
 import { createPostgresSecretAuditLog } from './secret-audit-log.js';
+import { createPostgresAuditLog, type AuditServerIdentity } from './audit-log.js';
+import { createAuditRecorder } from './audit-recorder.js';
+import { runtimeServerVersion } from './runtime-version.js';
 import { createGatewayRequestMacKeyring, gatewayRequestMac } from './gateway-request-mac.js';
 import { createMcpGatewayTokens, type McpGatewayTokens } from './mcp-gateway-tokens.js';
 import type { McpGatewayDeps } from './mcp-gateway.js';
@@ -221,10 +247,10 @@ import { validateDopplerToken, listDopplerProjects, listDopplerConfigs } from '.
 import {
   ProvisionerImpl,
   DeprovisionerImpl,
-  AGENT_GATEWAY_PEER_FINGERPRINT_LABEL,
   projectClonePath,
   gitAuthHeader,
   defaultDevcontainerBuildSpawner,
+  devcontainerBuilderIdle,
   projectNetworkName,
   ensureOpenCodeSettingsMaterialized,
   materializeOpenCodeSettings,
@@ -242,6 +268,7 @@ import { containerNameFor } from './canonical.js';
 import { containerPathFor, DockerExecBackend, dockerHostFor } from './project-backend.js';
 import {
   createSleepingSessionGit,
+  sandboxIsRunning,
   createSandboxGit,
   withSleepingSessionGit,
 } from './sandbox-git.js';
@@ -263,7 +290,10 @@ import {
   type ClaudeEgressIdentityService,
 } from './claude-egress-identity.js';
 import type { ClaudeEgressMtlsMaterial, ClaudeEgressPeerBinding } from './claude-egress-mtls.js';
+import { projectedAgentGatewayFingerprint } from './agent-gateway-projection.js';
 import {
+  agentGatewayUnavailableMessage,
+  type AgentGatewayRepairFailure,
   claudeEgressAgentEnv,
   claudeEgressRelayHealthy,
   claudeEgressRouteEnabled,
@@ -275,6 +305,7 @@ import { ensureProjectSandboxReadyForTurn } from './project-auto-wake.js';
 import { projectRelayContainerName } from './project-relay-docker.js';
 import { createProjectRelayRuntime } from './project-relay-runtime.js';
 import type { ProjectRelayLifecycle } from './project-relay-lifecycle.js';
+import type { ProjectEgressLifecycle } from './project-egress-lifecycle.js';
 import {
   readCodexAccessToken,
   type AgentGatewayConfiguration,
@@ -623,6 +654,7 @@ import { createSandboxUpdateChecker, type SandboxVersionSource } from './sandbox
 import { adoptHandedOffSecretKey } from './self-update/secret-key-adopter.js';
 import { notifyManagedMatrixConfigured } from './self-update/server-update-controller.js';
 import { SERVER_COMPAT } from './self-update/compat.js';
+import { openBackupRuntime } from './backup/runtime.js';
 import type { ReleaseChannelResolver } from './self-update/release-channel.js';
 import type { VeritySettingsRecord } from '@verity/store';
 
@@ -722,6 +754,8 @@ export interface EmbeddedServerConfig {
    *  `POST /projects/:id/deprovision` become operational. Omit → those routes
    *  return 503 (multi-repo fleet registry not configured). */
   dockerBaseUrl?: string | undefined;
+  /** Experimental composition seam; production configuration never enables project egress. */
+  projectEgress?: ProjectEgressLifecycle | undefined;
   diagnosticServerContainerId?: string | undefined;
   hostDiagnosticSnapshotPath?: string | undefined;
   /** Enable fail-closed Docker/runsc readiness for the production Secret Job Executor path. */
@@ -852,6 +886,9 @@ export interface EmbeddedServerConfig {
    *  tune it. See main.ts for the `VERITY_SANDBOX_*` env mapping. */
   sandboxPidsLimit?: number | undefined;
   sandboxMemoryBytes?: number | undefined;
+  sandboxMemoryReservationBytes?: number | undefined;
+  sandboxHostReserveBytes?: number | undefined;
+  sandboxOomScoreAdj?: number | undefined;
   sandboxSwapBytes?: number | undefined;
   sandboxNanoCpus?: number | undefined;
   sandboxCpuShares?: number | undefined;
@@ -2024,6 +2061,8 @@ export async function buildEmbeddedServer(
             'verity_present_plan',
             'verity_end_planning',
             'verity_tasks',
+            'verity_repairs',
+            'verity_qa_analysis',
             'verity_app_help',
             'verity_vulnerabilities',
             'verity_google_slides',
@@ -2033,6 +2072,7 @@ export async function buildEmbeddedServer(
             'verity_gmail',
             'verity_matrix',
             'verity_google_calendar',
+            'verity_scheduling',
             'verity_google_contacts',
             'verity_google_drive',
           ]
@@ -2045,6 +2085,8 @@ export async function buildEmbeddedServer(
             'verity_present_plan',
             'verity_end_planning',
             'verity_tasks',
+            'verity_repairs',
+            'verity_qa_analysis',
             'verity_app_help',
             'verity_vulnerabilities',
             'verity_google_slides',
@@ -2054,6 +2096,7 @@ export async function buildEmbeddedServer(
             'verity_gmail',
             'verity_matrix',
             'verity_google_calendar',
+            'verity_scheduling',
             'verity_google_contacts',
             'verity_google_drive',
           ],
@@ -2067,6 +2110,8 @@ export async function buildEmbeddedServer(
             'verity_session_handoff',
             'verity_session_progress',
             'verity_recent_session_messages',
+            // Advertised to every Control session; only the assistant session may call it.
+            'verity_assistant',
           ]
         : [],
     authorizationSnapshot: async ({ projectId, toolName }) => {
@@ -2262,13 +2307,23 @@ export async function buildEmbeddedServer(
                       ? MANAGED_CONTROL_PLANE_RUNNER_NAME
                       : project.containerName;
                   const hostRoot = projectClonePath(config.hostCloneRoot!, project);
-                  if (!(await docker.inspectContainer(containerName)).running) {
+                  if (!(await sandboxIsRunning(() => docker.inspectContainer(containerName)))) {
                     if (config.dataVolume && !dataVolumeRoot)
                       throw new Error('Data volume root is unavailable');
                     return withSleepingSessionGit(
                       {
                         docker,
                         templateContainer: containerName,
+                        fallback: {
+                          imageId:
+                            typeof defaultProjectImage === 'function'
+                              ? await defaultProjectImage()
+                              : defaultProjectImage,
+                          runtime: PROJECT_RUNSC_RUNTIME,
+                          memoryBytes: 512 * 1024 ** 2,
+                          nanoCpus: 1_000_000_000,
+                          pidsLimit: 128,
+                        },
                         projectId: project.id,
                         hostRoot,
                         dockerBaseUrl: config.dockerBaseUrl,
@@ -2320,12 +2375,25 @@ export async function buildEmbeddedServer(
                       'show-ref',
                     ].includes(args[index + 2] ?? '') ||
                     (args[index + 2] === 'worktree' && args[index + 3] === 'list');
-                  if (readOnly && !(await projectDocker.inspectContainer(containerName)).running) {
+                  if (
+                    readOnly &&
+                    !(await sandboxIsRunning(() => projectDocker.inspectContainer(containerName)))
+                  ) {
                     if (config.dataVolume && !dataVolumeRoot)
                       throw new Error('Data volume root is unavailable');
                     return createSleepingSessionGit({
                       docker: projectDocker,
                       templateContainer: containerName,
+                      fallback: {
+                        imageId:
+                          typeof defaultProjectImage === 'function'
+                            ? await defaultProjectImage()
+                            : defaultProjectImage,
+                        runtime: PROJECT_RUNSC_RUNTIME,
+                        memoryBytes: 512 * 1024 ** 2,
+                        nanoCpus: 1_000_000_000,
+                        pidsLimit: 128,
+                      },
                       projectId: project.id,
                       hostRoot: projectClonePath(config.hostCloneRoot!, project),
                       ...(config.dataVolume
@@ -2387,6 +2455,85 @@ export async function buildEmbeddedServer(
       permissions: PROJECT_GITHUB_TOKEN_PERMISSIONS,
     });
 
+  const discoveryTokenMint = createCachedProjectTokenMint(
+    createGitHubAppProjectTokenMint({
+      ...baseMintOpts,
+      permissions: {
+        metadata: 'read',
+        actions: 'read',
+      },
+    }),
+    { authorityKey: githubAppAuthorityKey },
+  );
+  const discoveryPrTokenMint = createCachedProjectTokenMint(
+    createGitHubAppProjectTokenMint({
+      ...baseMintOpts,
+      permissions: { metadata: 'read', pull_requests: 'read' },
+    }),
+    { authorityKey: githubAppAuthorityKey },
+  );
+  const repositoryStatusTokenMint = createCachedProjectTokenMint(
+    createGitHubAppProjectTokenMint({
+      ...baseMintOpts,
+      // Optional legacy statuses must not prevent minting the shared PR reader.
+      // QA analysis uses a separate statuses token and reports missing access.
+      permissions: { metadata: 'read', pull_requests: 'read', checks: 'read', actions: 'read' },
+    }),
+    { authorityKey: githubAppAuthorityKey },
+  );
+  const analysisChecksMint = createCachedProjectTokenMint(
+    createGitHubAppProjectTokenMint({
+      ...baseMintOpts,
+      permissions: { metadata: 'read', checks: 'read' },
+    }),
+    { authorityKey: githubAppAuthorityKey },
+  );
+  const analysisStatusesMint = createCachedProjectTokenMint(
+    createGitHubAppProjectTokenMint({
+      ...baseMintOpts,
+      permissions: { metadata: 'read', statuses: 'read' },
+    }),
+    { authorityKey: githubAppAuthorityKey },
+  );
+  const analysisContentsMint = createCachedProjectTokenMint(
+    createGitHubAppProjectTokenMint({
+      ...baseMintOpts,
+      permissions: { metadata: 'read', contents: 'read', actions: 'read' },
+    }),
+    { authorityKey: githubAppAuthorityKey },
+  );
+  const analysisReleaseMint = createCachedProjectTokenMint(
+    createGitHubAppProjectTokenMint({
+      ...baseMintOpts,
+      permissions: { metadata: 'read', contents: 'read' },
+    }),
+    { authorityKey: githubAppAuthorityKey },
+  );
+  const analysisDeploymentMint = createCachedProjectTokenMint(
+    createGitHubAppProjectTokenMint({
+      ...baseMintOpts,
+      permissions: { metadata: 'read', deployments: 'read' },
+    }),
+    { authorityKey: githubAppAuthorityKey },
+  );
+  const githubQAAnalysis = createGitHubQAAnalysis((ref, action) => {
+    const mint =
+      config.githubProjectTokenMint ??
+      (action === 'checks'
+        ? analysisChecksMint
+        : action === 'statuses'
+          ? analysisStatusesMint
+          : action === 'pulls' || action === 'pull_status'
+            ? discoveryPrTokenMint
+            : action === 'releases'
+              ? analysisReleaseMint
+              : action === 'deployments' || action === 'deployment_statuses'
+                ? analysisDeploymentMint
+                : action === 'workflow'
+                  ? analysisContentsMint
+                  : discoveryTokenMint);
+    return mint(ref);
+  });
   const issuesTokenMint = createGitHubAppProjectTokenMint({
     ...baseMintOpts,
     permissions: { metadata: 'read', issues: 'read' },
@@ -2415,6 +2562,9 @@ export async function buildEmbeddedServer(
   // The latest-release lookup for the project overview is non-blocking: `GET
   // /projects` reads it synchronously and it refreshes in the background on a TTL.
   const githubForge = createGitHubForgeProvider({
+    discoveryTokenMint: config.githubProjectTokenMint ?? discoveryTokenMint,
+    discoveryPrTokenMint: config.githubProjectTokenMint ?? discoveryPrTokenMint,
+    repositoryStatusTokenMint: config.githubProjectTokenMint ?? repositoryStatusTokenMint,
     projectTokenMint: cachedProjectTokenMint,
     issuesTokenMint,
     installationToken: async () => {
@@ -2463,6 +2613,29 @@ export async function buildEmbeddedServer(
       }
     }
     return githubForge;
+  };
+  const sharedForgeStatus = createForgeStatusCache();
+  const statusScopes = new Map<string, ForgeStatusIdentity>();
+  const readProjectStatus = async (project: ProjectRecord, branch: string) => {
+    if (project.kind === 'local' || project.kind === 'control_plane') return null;
+    const provider = await projectForgeProvider(eventStore, githubForge, project);
+    if (!provider?.repositoryPrService) return null;
+    const token = await provider.mintProjectToken(project);
+    if (!token) throw new Error('Forge credentials unavailable');
+    const authority = `${project.forgeConnectionId ?? 'github'}:${createHash('sha256').update(token).digest('hex')}`;
+    const identity = { authority, owner: project.owner, repo: project.repo };
+    statusScopes.set(project.id, identity);
+    return sharedForgeStatus.read(identity, branch, () =>
+      provider.repositoryPrService!(project).prStatusForBranch(branch),
+    );
+  };
+  const readWorktreeStatus = async (branch: string, worktree: string) => {
+    const session = (await eventStore.listSessions()).find((row) => row.worktree === worktree);
+    const project = session?.projectId ? await eventStore.getProject(session.projectId) : undefined;
+    return project
+      ? readProjectStatus(project, branch)
+      : ((await forgeForWorktree(worktree))?.prServiceFor(worktree).prStatusForBranch(branch) ??
+          null);
   };
   const installationService: GitHubInstallationService = {
     listInstallationRepos: () => githubForge.listRepositories(),
@@ -2562,11 +2735,17 @@ export async function buildEmbeddedServer(
   // Docker client + ProvisionerImpl + DeprovisionerImpl — wired when a
   // dockerBaseUrl and hostCloneRoot are configured. Git auth comes exclusively from
   // the DB-backed GitHub App mint.
+  // Long image pulls (sandbox, toolkit, relay and preview images) report their
+  // progress here, rate-limited by the client.
+  const logDockerPull = (message: string): void => {
+    console.info(`verity: ${message}`);
+  };
   const projectDocker =
     config.dockerBaseUrl && config.hostCloneRoot
       ? createDockerClient({
           baseUrl: config.dockerBaseUrl,
           ...(config.registryAuth !== undefined ? { registryAuth: config.registryAuth } : {}),
+          pullLog: logDockerPull,
         })
       : undefined;
   if (projectDocker !== undefined) {
@@ -2587,6 +2766,7 @@ export async function buildEmbeddedServer(
       createDockerClient({
         baseUrl: config.dockerBaseUrl,
         ...(config.registryAuth !== undefined ? { registryAuth: config.registryAuth } : {}),
+        pullLog: logDockerPull,
       }))
     : undefined;
   const resolvePreviewUser = async (project: ProjectRecord): Promise<string | undefined> => {
@@ -2619,6 +2799,18 @@ export async function buildEmbeddedServer(
         : mutation();
     return localPreviewManager
       ? localPreviewManager.withProjectMutation(projectId, runPublic)
+      : runPublic();
+  };
+  const withStorageProjectMutation = async <T>(
+    projectId: string,
+    mutation: () => Promise<T>,
+  ): Promise<T> => {
+    const runPublic = () =>
+      previewShareManager
+        ? previewShareManager.withProjectStorageMutation(projectId, mutation)
+        : mutation();
+    return localPreviewManager
+      ? localPreviewManager.withProjectStorageMutation(projectId, runPublic)
       : runPublic();
   };
   // Every line the Uplink client writes is conditional on this option being
@@ -2855,6 +3047,8 @@ export async function buildEmbeddedServer(
   }
   let docker: DockerClient | undefined;
   let provisioner: ProvisionerImpl | undefined;
+  let stopNativeEvidence: (() => void) | undefined;
+  let buildStorage: BuildStorage | undefined;
   const projectSandboxLifecycleTelemetry = new ProjectSandboxLifecycleTelemetry();
   let deprovisioner: DeprovisionerImpl | undefined;
   // Claude-egress identity material is wired into the provisioner/deprovisioner
@@ -3043,7 +3237,9 @@ export async function buildEmbeddedServer(
     projectId: string,
     inspected: Awaited<ReturnType<DockerClient['inspectContainer']>>,
   ): boolean => {
-    const fingerprint = inspected.labels?.[AGENT_GATEWAY_PEER_FINGERPRINT_LABEL];
+    // A woken Sandbox holds a certificate re-issued after its creation-time label
+    // was written; the provisioner vouches for that one per container generation.
+    const fingerprint = projectedAgentGatewayFingerprint(secretRoot, projectId, inspected);
     return (
       fingerprint !== undefined &&
       agentGatewayBindings.some(
@@ -3069,16 +3265,17 @@ export async function buildEmbeddedServer(
    * the conductor's background backend resolutions must never trigger a rebuild.
    * The operator sees a transcript note and a `Waiting` badge for the duration, and
    * the turn resumes by itself — the alternative was a terminal error on a state
-   * that repairs itself in a minute. Failures are swallowed into `false` so the
-   * caller raises the one operator-facing message.
+   * that repairs itself in a minute. Failures are returned rather than thrown so
+   * the caller raises the one operator-facing message, naming the repair's own
+   * cause when there is one.
    */
   const repairSandboxForAgentTurn = async (
     project: ProjectRecord,
     preparation: TurnPreparationContext,
     queuedSessionIds: ReadonlySet<string>,
-  ): Promise<boolean> => {
-    if (!preparation.canWait || docker === undefined) return false;
-    if (provisioner?.repairSandboxForTurn === undefined) return false;
+  ): Promise<{ ready: true } | { ready: false; failure?: AgentGatewayRepairFailure }> => {
+    if (!preparation.canWait || docker === undefined) return { ready: false };
+    if (provisioner?.repairSandboxForTurn === undefined) return { ready: false };
     preparation.waitingOn(
       'The project Sandbox has to be rebuilt before this message can run. Keeping the turn queued while Verity attempts the rebuild; it continues automatically if the Sandbox becomes ready.',
     );
@@ -3091,10 +3288,10 @@ export async function buildEmbeddedServer(
           { requireFreshAgentGatewayIdentity: true },
         ))
       )
-        return false;
+        return { ready: false };
     } catch (error) {
       app.log.warn({ err: error, projectId: project.id }, 'turn-time sandbox repair failed');
-      return false;
+      return { ready: false, failure: { stage: 'rebuild', cause: error } };
     }
     // Trust the recreate only as far as the same check that rejected the Sandbox in
     // the first place: a repair that reports success but leaves the relay unhealthy
@@ -3102,13 +3299,15 @@ export async function buildEmbeddedServer(
     try {
       const inspected = await docker.inspectContainer(project.containerName);
       await synchronizeAgentGatewayForTurn();
-      return await agentGatewayReady(project.id, inspected);
+      return (await agentGatewayReady(project.id, inspected))
+        ? { ready: true }
+        : { ready: false, failure: { stage: 'still_unready' } };
     } catch (error) {
       app.log.warn(
         { err: error, projectId: project.id },
         'could not verify the Agent Gateway identity after a turn-time sandbox repair',
       );
-      return false;
+      return { ready: false, failure: { stage: 'verify', cause: error } };
     }
   };
 
@@ -3190,7 +3389,9 @@ export async function buildEmbeddedServer(
   let projectRelayLifecycle: ProjectRelayLifecycle | undefined;
   const projectRelayEnabled = (config.projectRelayImage ?? '').trim().length > 0;
   const forgeIdentity = projectRelayEnabled ? await loadForgeProxyIdentity(secretRoot) : undefined;
-  const forgeProxyEnabled = (): boolean => projectRelayEnabled;
+  // The protected relay profile has no Forge route; never add it implicitly.
+  const forgeProxyEnabled = (): boolean =>
+    projectRelayEnabled && config.projectEgress === undefined;
   const forgeCertificates = new Map<
     string,
     { expires: number; certificate: ReturnType<typeof issueGatewayServerCertificate> }
@@ -3433,6 +3634,40 @@ export async function buildEmbeddedServer(
       ? configuredDevcontainerFeatureRef.trim().length > 0
       : toolkitFeatureRefIsConfigured());
   const imageReferences = createProjectImageReferences(db);
+  // Durable audit trail for project image builds (ADR 0028). The Server generation is
+  // read from this container's own label once; outside a managed deployment it is null.
+  let auditServer: AuditServerIdentity | undefined;
+  const buildDiagnostics = createBuildDiagnosticStore(
+    join(
+      config.dataDir ?? config.dataVolumeRoot ?? config.workspacesDir ?? join(tmpdir(), 'verity'),
+      'build-diagnostics',
+    ),
+  );
+  const auditLog = createPostgresAuditLog(db);
+  const auditRecorder = createAuditRecorder(auditLog, {
+    server: async () => {
+      if (auditServer !== undefined) return auditServer;
+      let generation: number | null = null;
+      let settled = true;
+      try {
+        const label = (await projectDocker?.inspectContainer(hostname()))?.labels?.[
+          'verity.generation'
+        ];
+        const parsed = label === undefined ? Number.NaN : Number(label);
+        generation = Number.isInteger(parsed) && parsed >= 0 ? parsed : null;
+      } catch {
+        // Recorded as unknown this time, and asked again next time: a transient
+        // failure must neither block a build nor stick for the life of the process.
+        settled = false;
+      }
+      const identity = { release: runtimeServerVersion(), generation };
+      if (settled) auditServer = identity;
+      return identity;
+    },
+    onError: (error, kind) => {
+      console.warn(`verity: audit event ${kind} could not be recorded`, error);
+    },
+  });
   const selectedDevcontainerFeature: DevcontainerFeatureSource | undefined =
     typeof configuredDevcontainerFeatureRef === 'function'
       ? async () =>
@@ -3701,8 +3936,31 @@ export async function buildEmbeddedServer(
     if (config.controlPlaneRunner === true && refreshControlPlaneRunnerIdentity === undefined) {
       throw new Error('Claude control-plane Runner requires complete egress identity wiring.');
     }
+    buildStorage = new BuildStorage(
+      join(
+        config.dataVolumeRoot ?? config.dataDir ?? config.workspacesDir ?? join(tmpdir(), 'verity'),
+        'build-storage',
+      ),
+      undefined,
+      undefined,
+      undefined,
+      '/run/verity-buildkit',
+    );
+    const nativeEvidence = startNativeRetirementEvidence(
+      () => buildStorage?.retirementInventoryEmpty() === true,
+    );
+    // Registered after app construction below.
+    stopNativeEvidence = () => nativeEvidence.stop();
     provisioner = new ProvisionerImpl({
+      ...(config.projectEgress === undefined ? {} : { projectEgress: config.projectEgress }),
+      buildStorage,
+      buildFailureLogDirectory: join(
+        config.dataVolumeRoot ?? config.dataDir ?? config.workspacesDir ?? join(tmpdir(), 'verity'),
+        'build-failures',
+      ),
       imageReferences,
+      audit: auditRecorder,
+      buildDiagnostics,
       store: eventStore,
       db,
       docker,
@@ -3802,6 +4060,15 @@ export async function buildEmbeddedServer(
       ...(config.sandboxMemoryBytes !== undefined
         ? { sandboxMemoryBytes: config.sandboxMemoryBytes }
         : {}),
+      ...(config.sandboxMemoryReservationBytes !== undefined
+        ? { sandboxMemoryReservationBytes: config.sandboxMemoryReservationBytes }
+        : {}),
+      ...(config.sandboxHostReserveBytes !== undefined
+        ? { sandboxHostReserveBytes: config.sandboxHostReserveBytes }
+        : {}),
+      ...(config.sandboxOomScoreAdj !== undefined
+        ? { sandboxOomScoreAdj: config.sandboxOomScoreAdj }
+        : {}),
       ...(config.sandboxSwapBytes !== undefined
         ? { sandboxSwapBytes: config.sandboxSwapBytes }
         : {}),
@@ -3810,7 +4077,9 @@ export async function buildEmbeddedServer(
         ? { sandboxCpuShares: config.sandboxCpuShares }
         : {}),
       ...(config.sandboxCapAdd !== undefined ? { sandboxCapAdd: config.sandboxCapAdd } : {}),
-      ...(config.publicPreviews !== undefined || config.resolvePreviewConnectorImage !== undefined
+      ...(config.projectEgress !== undefined ||
+      config.publicPreviews !== undefined ||
+      config.resolvePreviewConnectorImage !== undefined
         ? (() => {
             const verifier = createDockerGvisorRuntimeVerifier({
               docker,
@@ -3957,6 +4226,12 @@ export async function buildEmbeddedServer(
     managedDevServerManager = new ManagedDevServerManager({
       store: eventStore,
       canSupervise: () => previewRecoveryReady && !secretCipher.isSealed(),
+      providerAuthority: async (projectId) => {
+        const binding = await getBrokeredProjectBinding(projectId);
+        return binding
+          ? JSON.stringify([binding.dopplerProject, binding.dopplerConfig])
+          : undefined;
+      },
       resolveSecrets: createManagedDevServerSecretResolver({
         getProjectBinding: getBrokeredProjectBinding,
         resolveSecret: resolveBrokerDopplerSecret,
@@ -4442,8 +4717,137 @@ export async function buildEmbeddedServer(
     matrixActivationDone = await notifyManagedMatrixConfigured();
   };
 
+  const backupArchitecture =
+    process.arch === 'x64' ? 'amd64' : process.arch === 'arm64' ? 'arm64' : undefined;
+  const backup =
+    config.databaseUrl && config.dataVolumeRoot && projectDocker && backupArchitecture
+      ? await openBackupRuntime({
+          probe: {
+            docker: projectDocker,
+            network: 'verity-net',
+            tufCachePath: join(config.dataVolumeRoot, 'backup-state', 'tuf-cache'),
+          },
+          root: config.dataVolumeRoot,
+          databaseUrl: config.databaseUrl,
+          currentImage: async () => (await projectDocker.inspectContainer(hostname())).image,
+          architecture: backupArchitecture,
+          release: SERVER_COMPAT.serverVersion,
+          schema: SERVER_COMPAT.schema.current,
+          store: eventStore,
+          onError: () => {
+            console.warn('verity: backup operation unavailable; queued revocations remain durable');
+          },
+        })
+      : undefined;
+  let lastDockerGcReport: DockerGcReport | undefined;
+  const sessionStorage =
+    config.hostCloneRoot && projectDocker && provisioner?.withProjectExclusiveMutation
+      ? new SessionStorage({
+          gitRoot: '/work',
+          listProjects: () => eventStore.listProjects(),
+          listSessions: () => eventStore.listSessions(),
+          activity: async (id) =>
+            (await eventStore.listSessionProjectionFacts([id], 0)).get(id)?.lastActivityAt ?? null,
+          root: (project) => projectClonePath(config.hostCloneRoot!, project),
+          mutate: (projectId, sessionId, operation, signal) =>
+            // Wait for the project owner before taking preview locks: that owner
+            // may itself need preview teardown in order to finish.
+            provisioner.withProjectExclusiveMutation(
+              projectId,
+              () =>
+                withStorageProjectMutation(projectId, async () => {
+                  if (managedDevServerManager?.hasRunningServers(projectId))
+                    throw new Error('Managed dev server is active');
+                  if (
+                    (localPreviewManager?.listProject(projectId).length ?? 0) > 0 ||
+                    (await eventStore.listPublicPreviewShares(projectId)).some((s) =>
+                      ['creating', 'active', 'revoking'].includes(s.state),
+                    )
+                  )
+                    throw new Error('Public preview is active');
+                  await operation();
+                }),
+              sessionId ? new Set([sessionId]) : undefined,
+              signal,
+            ),
+          withGit: async (project, operation) => {
+            if (config.dataVolume && !dataVolumeRoot)
+              throw new Error('Data volume root is unavailable');
+            const containerName = project.containerName;
+            const hostRoot = projectClonePath(config.hostCloneRoot!, project);
+            const inspect = await projectDocker
+              .inspectContainer(containerName)
+              .catch((error: unknown) => {
+                if (error instanceof DockerError && error.kind === 'container_not_found')
+                  return null;
+                throw error;
+              });
+            const authenticated = async (git: GitOutput) =>
+              operation(async (args) => {
+                if (!args.includes('fetch')) return git(args);
+                // Keep provider credentials out of persistent Git config and cleanup reports.
+                if (project.kind === 'forgejo')
+                  throw new Error('Forgejo retirement fetch is unavailable; worktree retained');
+                const token =
+                  project.kind === 'local' ? undefined : await cachedProjectTokenMint(project);
+                try {
+                  return await git([
+                    ...(token
+                      ? ['-c', `http.https://github.com/.extraHeader=${gitAuthHeader(token)}`]
+                      : []),
+                    ...args,
+                  ]);
+                } catch {
+                  throw new Error('Retirement remote verification failed; worktree retained');
+                }
+              });
+            if (!inspect?.running)
+              return withSleepingSessionGit(
+                {
+                  docker: projectDocker,
+                  templateContainer: containerName,
+                  projectId: project.id,
+                  hostRoot,
+                  dockerBaseUrl: config.dockerBaseUrl!,
+                  maintenance: {
+                    fallback: {
+                      imageId:
+                        typeof defaultProjectImage === 'function'
+                          ? await defaultProjectImage()
+                          : defaultProjectImage,
+                      runtime: PROJECT_RUNSC_RUNTIME,
+                      memoryBytes: 512 * 1024 ** 2,
+                      nanoCpus: 1_000_000_000,
+                      pidsLimit: 128,
+                    },
+                  },
+                  ...(config.dataVolume && dataVolumeRoot
+                    ? { dataVolume: { name: config.dataVolume, root: dataVolumeRoot } }
+                    : {}),
+                },
+                authenticated,
+              );
+            return authenticated(
+              createSandboxGit({
+                containerName,
+                hostRoot,
+                dockerBaseUrl: config.dockerBaseUrl!,
+                inspect: () => projectDocker.inspectContainer(containerName),
+                timeoutMs: 15_000,
+              }),
+            );
+          },
+          wake: async (project, sessionId) => {
+            if (project.state === 'sleeping')
+              await provisioner.ensureProjectSandboxAwake?.(project.id, new Set([sessionId]));
+          },
+          pr: (project, branch) => readProjectStatus(project, branch),
+        })
+      : undefined;
   const app = buildControlPlane({
+    ...(sessionStorage ? { sessionStorage } : {}),
     eventStore,
+    ...(backup ? { backup } : {}),
     ...(managedMatrixControl ? { onMatrixConfigured: activateMatrixIfConfigured } : {}),
     matrixConnectorToken: async () => {
       try {
@@ -4531,6 +4935,7 @@ export async function buildEmbeddedServer(
         }
       : {}),
     ...(uplinkControl ? { attendeeEdge: uplinkControl } : {}),
+    googleAccessToken,
     onOpenCodeSettingsChanged: async (settings) => {
       materializeOpenCodeSettings(settings, secretRoot, config.claudeConnectorPort);
       await refreshAgentGatewayCredential();
@@ -4557,6 +4962,20 @@ export async function buildEmbeddedServer(
     // gateway the probe stays inert and the meter keeps its per-session signal.
     ...(codexGatewayCredentialProvider === undefined ? {} : { codexGatewayCredentialProvider }),
     onSecretUnlocked: async () => {
+      // Restore process-local relay listeners before filtering persisted gateway
+      // certificates. A new Server owns none yet; treating that as identity drift
+      // would recreate a valid retained Sandbox while checking its unlock state.
+      for (const project of await eventStore.listProjects()) {
+        if (project.kind === 'control_plane' || project.state !== 'active') continue;
+        try {
+          await provisioner?.resumeProjectRelay?.(project.id);
+        } catch (error) {
+          app.log.warn(
+            { err: error, projectId: project.id },
+            'Retained relay resume deferred until project recovery',
+          );
+        }
+      }
       await projectAgentGatewayIdentity();
       let inspected = 0;
       let repaired = 0;
@@ -4620,8 +5039,64 @@ export async function buildEmbeddedServer(
     runtimeDiagnostics: createRuntimeDiagnostics({
       dockerBaseUrl: config.dockerBaseUrl,
       dataRoot: config.dataVolumeRoot,
-      serverContainerId: config.diagnosticServerContainerId,
+      serverContainerId: config.diagnosticServerContainerId?.trim() || hostname(),
       hostSnapshotPath: config.hostDiagnosticSnapshotPath,
+      builderMigrationPath: '/run/verity-buildkit/migration-status.json',
+      builderAdmissionDirectory: '/run/verity-buildkit',
+      buildStorageReportPath: '/run/verity-host-diagnostics/storage.json',
+      buildStorageReservations: () => buildStorage?.unresolvedAttempts() ?? [],
+      storageReclamation: async () => {
+        const report = sessionStorage?.lastReport;
+        let databaseBytes: number | null = null;
+        try {
+          const row = await sql<{
+            bytes: string;
+          }>`select pg_database_size(current_database())::text as bytes`.execute(db);
+          const value = Number(row.rows[0]?.bytes);
+          if (Number.isSafeInteger(value) && value >= 0) databaseBytes = value;
+        } catch {
+          /* Database usage is unknown, not zero. */
+        }
+        const nativeBuildkit = await readNativeReclamation();
+        return {
+          accounting:
+            'Image and dependency sizes are estimates with shared layers/reflinks; do not sum categories. Unknown measurements are null. No freed-byte claim is inferred from apparent sizes.',
+          lastGc: lastDockerGcReport
+            ? {
+                observedAt: lastDockerGcReport.observedAt,
+                containersRemoved: lastDockerGcReport.containersRemoved.slice(0, 100),
+                imagesRemoved: lastDockerGcReport.imagesRemoved.length,
+                lowDisk: lastDockerGcReport.lowDisk,
+                errors: lastDockerGcReport.errors.length,
+                stoppedContainerPins: lastDockerGcReport.stoppedContainerPins,
+                keptImageReasons: lastDockerGcReport.keptImageReasons,
+                retainedContainers: lastDockerGcReport.retainedContainers,
+              }
+            : null,
+          worktrees: report
+            ? {
+                observedAt: report.observedAt,
+                dependenciesRemoved: report.dependenciesRemoved.length,
+                worktreesRetired: report.worktreesRetired.length,
+                comparedDependencyBytes: report.comparedDependencyBytes,
+                worktreeSampledBytes: report.worktreeSampledBytes,
+                dependencySampledBytes: report.dependencySampledBytes,
+                usageComplete: report.usageComplete,
+                dryRun: report.dryRun,
+                blockers: report.blockers
+                  .slice(0, 100)
+                  .map((b) => ({ path: b.path, reason: b.reason.slice(0, 500) })),
+              }
+            : null,
+          databaseBytes,
+          nativeBuildkit,
+          activeBuildkitBytes:
+            typeof nativeBuildkit?.overlayAllocatedBytes === 'number'
+              ? nativeBuildkit.overlayAllocatedBytes
+              : null,
+        };
+      },
+      projectBuildFailure: (projectId) => provisioner?.lastBuildFailure(projectId),
     }),
     ...(secretJobRuntimeReadiness !== undefined ? { secretJobRuntimeReadiness } : {}),
     ...(config.pushEnabled === true
@@ -4662,10 +5137,113 @@ export async function buildEmbeddedServer(
     forgejoEnabled: projectRelayEnabled && provisioner !== undefined,
     branchPr: async (b: string, wt: string) =>
       (await forgeForWorktree(wt))?.prServiceFor(wt).prForBranch(b) ?? null,
-    branchPrStatus: async (b: string, wt: string) =>
-      (await forgeForWorktree(wt))?.prServiceFor(wt).prStatusForBranch(b) ?? null,
-    branchPrStatusForBranches: async (bs: readonly string[], wt: string) =>
-      (await forgeForWorktree(wt))?.prServiceFor(wt).prStatusForBranches(bs) ?? null,
+    branchPrStatus: readWorktreeStatus,
+    invalidateProjectPrStatus: (projectId) => {
+      const scope = statusScopes.get(projectId);
+      if (scope) sharedForgeStatus.invalidate(scope);
+    },
+    branchPrStatusForBranches: async (bs: readonly string[], wt: string) => {
+      const values = [];
+      for (const branch of bs) values.push(await readWorktreeStatus(branch, wt));
+      return selectBranchStatus(values, (await forgeForWorktree(wt))?.id ?? 'github');
+    },
+    repairPullRequest: async (project, number) => {
+      const provider = await projectForgeProvider(eventStore, githubForge, project);
+      return (await provider?.repositoryOperations(project).findPullRequest({ number })) ?? null;
+    },
+    qaAnalysisRead: async (project, request, authorize) => {
+      if (project.kind === 'forgejo') {
+        await authorize();
+        const provider = await projectForgeProvider(eventStore, githubForge, project);
+        if (request.action === 'pulls' && provider?.discover) {
+          const page = await provider.discover(project, request.page);
+          await authorize();
+          return {
+            data: page.pulls,
+            nextPage: page.nextPage,
+            checkedAt: new Date().toISOString(),
+            untrusted: true,
+          };
+        }
+        if (request.action === 'pull_status' && provider) {
+          const pull = await provider
+            .repositoryOperations(project)
+            .findPullRequest({ number: request.number });
+          await authorize();
+          const status = pull ? await readProjectStatus(project, pull.head) : null;
+          await authorize();
+          return {
+            data: status?.number === request.number ? status : null,
+            checkedAt: new Date().toISOString(),
+            untrusted: true,
+          };
+        }
+        return {
+          available: false,
+          reason:
+            'This Forgejo integration supports PR reads, not historical Actions/release analysis',
+        };
+      }
+      if (project.kind !== 'github')
+        return { available: false, reason: 'This project has no supported repository provider' };
+      return githubQAAnalysis(project, request, authorize);
+    },
+    repairDiscovery: async (project, pageNumber) => {
+      const provider = await projectForgeProvider(eventStore, githubForge, project);
+      if (!provider?.discover) throw new Error('Repository monitoring unsupported');
+      const firstPage = await provider.discover(project, 1);
+      const olderPage = pageNumber > 1 ? await provider.discover(project, pageNumber) : undefined;
+      const page = olderPage
+        ? {
+            ...olderPage,
+            pulls: [
+              ...new Map(
+                [...firstPage.pulls, ...olderPage.pulls].map((p) => [p.number, p]),
+              ).values(),
+            ],
+            runs: [
+              ...new Map([...firstPage.runs, ...olderPage.runs].map((r) => [r.id, r])).values(),
+            ],
+          }
+        : firstPage;
+      const statuses = [];
+      for (const pull of page.pulls) {
+        if (pull.fork) continue;
+        const status = await readProjectStatus(project, pull.branch);
+        if (status && status.number === pull.number && status.headSha === pull.sha)
+          statuses.push({ branch: pull.branch, status });
+        else await eventStore.repairs.invalidateObservation(project.id, `pr:${pull.number}`);
+      }
+      for (const incident of await eventStore.repairs.incidents(project.id)) {
+        if (
+          !incident.resource.startsWith('pr:') ||
+          ['resolved', 'superseded'].includes(incident.state)
+        )
+          continue;
+        const evidence = JSON.parse(incident.evidence) as { branch?: string };
+        if (
+          !evidence.branch ||
+          statuses.some((row) => `pr:${row.status.number}` === incident.resource)
+        )
+          continue;
+        const tracked = await provider.repositoryOperations(project).findPullRequest({
+          number: Number(incident.resource.slice(3)),
+        });
+        if (tracked && tracked.state !== 'open') {
+          await eventStore.repairs.retireResource(project.id, incident.resource);
+          continue;
+        }
+        const status = await readProjectStatus(project, evidence.branch);
+        const discovered = page.pulls.find((p) => `pr:${p.number}` === incident.resource);
+        if (
+          status &&
+          `pr:${status.number}` === incident.resource &&
+          (!discovered || (!discovered.fork && status.headSha === discovered.sha))
+        )
+          statuses.push({ branch: evidence.branch, status });
+      }
+      return { page, statuses };
+    },
     mergePr: async (n: number, wt: string, expectedHeadSha?: string) =>
       (await forgeForWorktree(wt))?.prServiceFor(wt).mergePr(n, expectedHeadSha) ?? false,
     repoIdentity: async (wt: string) => (await forgeForWorktree(wt))?.identityFor(wt)() ?? null,
@@ -4843,6 +5421,12 @@ export async function buildEmbeddedServer(
             : {}),
         }
       : {}),
+    audit: {
+      recorder: auditRecorder,
+      log: auditLog,
+      buildDiagnostics,
+      serverLogs: createServerLogSource(runtimeDocker, config.diagnosticServerContainerId),
+    },
     ...(projectDocker === undefined
       ? {}
       : {
@@ -4853,6 +5437,8 @@ export async function buildEmbeddedServer(
               imageReferences,
               ...(config.dockerGcPolicy !== undefined ? { policy: config.dockerGcPolicy } : {}),
               imagesOnly: true,
+              onProjectImageRemoved: (image) =>
+                auditRecorder.imageRemoved({ imageRef: image.ref, imageId: image.imageId }),
             });
           },
         }),
@@ -4862,6 +5448,7 @@ export async function buildEmbeddedServer(
     // are configured — same guard as `refreshProjectToken`).
     ...(projectWorktrees !== undefined ? { projectWorktrees } : {}),
     conductor: {
+      ensureWorkspace: (session) => sessionStorage?.ensureWorkspace(session) ?? Promise.resolve(),
       // Stable ACP v1 is the only Claude transport (ADR 0012); the native
       // stream-json backend it replaced has been removed, rollback included.
       backend: new AcpClaudeBackend(),
@@ -5168,6 +5755,7 @@ export async function buildEmbeddedServer(
                 throw new Error('Claude egress routing target cannot be verified');
               }
               let gatewayReady: boolean;
+              let repairFailure: AgentGatewayRepairFailure | undefined;
               try {
                 const inspected = await docker.inspectContainer(project.containerName);
                 gatewayReady = await agentGatewayReady(project.id, inspected);
@@ -5189,15 +5777,16 @@ export async function buildEmbeddedServer(
                 // busy. So rebuild now, tell the operator it is happening, and continue
                 // the turn on the fresh Sandbox once it is up. Background resolutions
                 // (auto-title, reattach) don't wait — they keep failing fast.
-                gatewayReady = await repairSandboxForAgentTurn(
+                const repair = await repairSandboxForAgentTurn(
                   project,
                   preparation,
                   queuedSessionIds,
                 );
+                gatewayReady = repair.ready;
+                repairFailure = repair.ready ? undefined : repair.failure;
               }
               if (!gatewayReady) {
-                const message =
-                  'Sandbox has no valid Agent Gateway identity and could not be repaired automatically — repair the project, then send the message again';
+                const message = agentGatewayUnavailableMessage(repairFailure);
                 // A background resolution never attempted the rebuild above, so its
                 // failure says nothing about whether the Sandbox is repairable — only
                 // that this resolution would not wait for one. Reporting it as the
@@ -5533,7 +6122,40 @@ export async function buildEmbeddedServer(
   }, 60_000);
   outputSweep.unref();
   app.addHook('onClose', () => clearInterval(outputSweep));
+  // An interrupted build must not hold build storage until someone reboots the host.
+  // Ask at start and every five minutes whether earlier attempts provably ended.
+  if (buildStorage !== undefined) {
+    const storage = buildStorage;
+    const buildDockerHost =
+      config.dockerBaseUrl === undefined ? undefined : dockerHostFor(config.dockerBaseUrl);
+    let reconciling = false;
+    const reconcileBuildStorage = async () => {
+      if (reconciling) return;
+      reconciling = true;
+      try {
+        const unresolved = await storage.reconcile(
+          buildDockerHost === undefined
+            ? {}
+            : { buildkitIdle: () => devcontainerBuilderIdle(buildDockerHost) },
+        );
+        if (unresolved.length > 0)
+          app.log.warn(
+            { attempts: unresolved },
+            'Build storage holds space for earlier build attempts whose end is not yet confirmed',
+          );
+      } catch (err) {
+        app.log.warn({ err }, 'Build storage reconciliation failed');
+      } finally {
+        reconciling = false;
+      }
+    };
+    void reconcileBuildStorage();
+    const buildStorageTimer = setInterval(() => void reconcileBuildStorage(), 5 * 60_000);
+    buildStorageTimer.unref();
+    app.addHook('onClose', () => clearInterval(buildStorageTimer));
+  }
   app.addHook('onClose', () => listenerDiscovery?.close());
+  app.addHook('onClose', () => config.projectEgress?.close());
   if (!localPreviewManager) previewRecoveryReady = true;
   managedDevServerLog.current = (message, detail) => app.log.info(detail ?? {}, message);
   app.addHook('onClose', () => managedDevServerManager?.close());
@@ -5544,7 +6166,10 @@ export async function buildEmbeddedServer(
   if (starterProvisioner !== undefined) {
     void ensureStarterProject({
       store: eventStore,
-      provision: (projectId) => starterProvisioner.provision(projectId),
+      provision: (projectId) =>
+        starterProvisioner.provision(projectId, {
+          initiator: { kind: 'system', trigger: 'welcome_project' },
+        }),
       log: app.log,
     });
   }
@@ -5606,6 +6231,10 @@ export async function buildEmbeddedServer(
     void sweep();
   }
 
+  app.addHook('onClose', () => stopNativeEvidence?.());
+
+  let storageReclamation: StorageReclamation | undefined;
+
   // Host-disk GC (docker-gc.ts). Wired off `projectDocker` because that is the
   // client that CREATES the resources it collects — the devcontainer image cache
   // in `resolveOrBuildImage` and the sandbox containers whose anonymous volumes
@@ -5613,6 +6242,7 @@ export async function buildEmbeddedServer(
   // the disk is full; `docker system prune` does not reach either (the image tags
   // are tagged, not dangling, and prune skips volumes entirely).
   if (projectDocker !== undefined && config.dockerGc !== false) {
+    let nativeMaintenanceRequested: string | null = null;
     const dockerGc = startDockerGcScheduler({
       docker: projectDocker,
       log: app.log,
@@ -5626,12 +6256,64 @@ export async function buildEmbeddedServer(
       // provision. This is what keeps the sweep off a relay whose sandbox has not
       // been created yet — neither the listing nor elapsed time can see that.
       heldRelays: () => projectRelayLifecycle?.heldRelays() ?? [],
+      beforeSweep: async () => {
+        nativeMaintenanceRequested = null;
+        await requestNativeReclamation()
+          .then((requestedAt) => {
+            nativeMaintenanceRequested = requestedAt;
+          })
+          .catch(() => undefined);
+        await sessionStorage?.runOnce();
+      },
+      onReport: (report) => {
+        report.nativeRequestedAt = nativeMaintenanceRequested;
+        lastDockerGcReport = report;
+      },
+      retireContainers: async () => {
+        const removed = await retireCompletedUpdateContainers(projectDocker);
+        if (!provisioner?.withProjectExclusiveMutation) return { removed, errors: [] };
+        const result = await retireStoppedContainers({
+          docker: projectDocker,
+          listProjects: () => eventStore.listProjects(),
+          withProjectMutation: (id, run) =>
+            withStorageProjectMutation(id, () =>
+              provisioner.withProjectExclusiveMutation(id, async () => {
+                if (managedDevServerManager?.hasRunningServers(id))
+                  throw new Error('Managed dev server is active');
+                if (
+                  (localPreviewManager?.listProject(id).length ?? 0) > 0 ||
+                  (await eventStore.listPublicPreviewShares(id)).some((s) =>
+                    ['creating', 'active', 'revoking'].includes(s.state),
+                  )
+                )
+                  throw new Error('Preview is active');
+                await run();
+              }),
+            ),
+        });
+        return {
+          removed: [...removed, ...result.removed],
+          errors: result.errors,
+          retained: result.retained,
+        };
+      },
       imageReferences,
+      onProjectImageRemoved: (image) =>
+        auditRecorder.imageRemoved({ imageRef: image.ref, imageId: image.imageId }),
+    });
+    storageReclamation = new StorageReclamation({
+      collect: () => dockerGc.runOnce(),
+      worktrees: () => sessionStorage?.lastReport,
+      dataRoot: config.dataVolumeRoot,
+    });
+    buildStorage?.setReclaimer(async () => {
+      await dockerGc.runOnce();
     });
     app.addHook('onClose', () => {
       dockerGc.stop();
     });
   }
+  registerStorageReclamationRoutes(app, eventStore, storageReclamation);
   if (codexModelCatalog !== undefined) {
     app.addHook('onClose', () => codexModelCatalog.close());
   }

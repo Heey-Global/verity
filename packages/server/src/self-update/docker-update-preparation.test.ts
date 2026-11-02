@@ -1,5 +1,6 @@
+import { DEVCONTAINER_BUILDER_CONTRACT } from './devcontainer-builder.js';
 import { readFileSync } from 'node:fs';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
@@ -17,7 +18,8 @@ import {
 import type { UpdatePreparationDeps } from './update-preparation.js';
 import { resumeUpdatePreparation } from './update-preparation.js';
 import type { UpdateJournal } from './update-journal.js';
-import { beginUpdate } from './update-journal.js';
+import { advanceUpdate, beginUpdate, readUpdateJournal } from './update-journal.js';
+import { UPDATE_PULL_RETRY_DELAYS_MS } from './pull-retry.js';
 
 /** The two candidate builders share every refusal below, so the cases that apply
  *  to both are written once and run against each. */
@@ -26,7 +28,7 @@ type PreparedActions = UpdatePreparationDeps;
 const oldImage = `ghcr.io/heey-global/verity/verity-server@sha256:${'a'.repeat(64)}`;
 const newImage = `ghcr.io/heey-global/verity/verity-server@sha256:${'b'.repeat(64)}`;
 
-async function setup(options: { serverVersionSource?: boolean } = {}) {
+async function setup(options: { serverVersionSource?: boolean; pairing?: boolean } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'docker-update-preparation-'));
   const spec: Omit<ServerDeploymentSpecBody, 'schemaVersion' | 'deploymentId'> = {
     image: oldImage,
@@ -43,6 +45,15 @@ async function setup(options: { serverVersionSource?: boolean } = {}) {
         : []),
     ],
     mounts: [
+      ...(options.pairing
+        ? [
+            {
+              source: { kind: 'bind' as const, path: '/etc/verity' },
+              target: '/run/verity-pairing',
+              readOnly: true,
+            },
+          ]
+        : []),
       { source: { kind: 'volume', name: 'verity-data' }, target: '/srv/verity', readOnly: false },
       {
         source: { kind: 'volume', name: 'verity-agent-gateway-control' },
@@ -137,11 +148,18 @@ function inspectFromSpec(spec: ContainerSpec, status: string): ContainerInspect 
     restartPolicy: spec.restartPolicy,
     securityOpt: spec.securityOpt,
     capAdd: spec.capAdd,
+    capDrop: spec.capDrop,
+    runtime: spec.runtime,
+    pidMode: spec.pidMode,
+    tmpfs: spec.tmpfs,
+    privileged: false,
+    deviceCount: 0,
     env: [...env].map(([name, value]) => `${name}=${value}`),
     entrypoint: spec.entrypoint,
     command: spec.command,
     ...(spec.memoryBytes === undefined ? {} : { memoryBytes: spec.memoryBytes }),
     ...(spec.memorySwapBytes === undefined ? {} : { memorySwapBytes: spec.memorySwapBytes }),
+    ...(spec.oomScoreAdj === undefined ? {} : { oomScoreAdj: spec.oomScoreAdj }),
     ...(spec.nanoCpus === undefined ? {} : { nanoCpus: spec.nanoCpus }),
     ...(spec.pidsLimit === undefined ? {} : { pidsLimit: spec.pidsLimit }),
     mounts: [
@@ -330,9 +348,7 @@ describe('Docker update preparation', () => {
       await actions.prepareStandby!(journal);
       await actions.ensureStandby(journal);
       const created = docker.createContainer.mock.calls.at(-1)?.[0] as ContainerSpec;
-      expect(created.binds?.includes('/run/verity-buildkit:/run/verity-buildkit:ro')).toBe(
-        expected,
-      );
+      expect(created.binds?.includes('/run/verity-buildkit:/run/verity-buildkit')).toBe(expected);
       expect(created.groupAdd?.includes('1102')).toBe(expected);
     } finally {
       await rm(hostRuntimeDir, { recursive: true, force: true });
@@ -353,7 +369,8 @@ describe('Docker update preparation', () => {
       phase: 'standby',
       candidate: { containerId: 'a'.repeat(64), containerName: 'verity-managed-server-g1' },
     });
-    expect(docker.pullImage).toHaveBeenCalledWith(newImage);
+    // The pull narrates its progress through the Updater's own log.
+    expect(docker.pullImage).toHaveBeenCalledWith(newImage, { log: expect.any(Function) });
     expect(verifyImage).toHaveBeenCalledOnce();
     expect(docker.createContainer).toHaveBeenCalledTimes(2);
     expect(docker.startContainer).toHaveBeenCalledTimes(2);
@@ -420,6 +437,77 @@ describe('Docker update preparation', () => {
     });
   });
 
+  // A host whose runtime service predates archive pins reaches an archive release through the
+  // builder: the target's bundle registers the runtimes, so no runtime request is needed.
+  it('installs an archive release through the builder on a host whose runtime service predates it', async () => {
+    const { root } = await setup();
+    const hostRuntimeDir = await mkdtemp(join(tmpdir(), 'verity-host-archive-'));
+    const release = 'release-20261026.0';
+    const args = {
+      runsc: ['--platform=systrap', '--network=none'],
+      'runsc-project': ['--platform=systrap', '--network=sandbox', '--host-uds=create'],
+    } as Record<string, string[]>;
+    const runtimes = new Map<string, { path: string; args: string[] }>();
+    const docker = {
+      ...fakeDocker(),
+      inspectRuntime: vi.fn(async (name: string) => runtimes.get(name)),
+    };
+    const builderRequests: string[] = [];
+    const host = setInterval(() => {
+      void readFile(join(hostRuntimeDir, 'builder-request.json'), 'utf8').then(
+        async (body) => {
+          const { id } = JSON.parse(body) as { id: string };
+          if (builderRequests.includes(id)) return;
+          builderRequests.push(id);
+          for (const name of Object.keys(args))
+            runtimes.set(name, { path: `/opt/verity/runsc/${release}/runsc`, args: args[name]! });
+          await writeFile(
+            join(hostRuntimeDir, 'builder-result.json'),
+            JSON.stringify({ version: 1, id, ok: true, message: 'builder updated' }),
+          );
+        },
+        () => undefined,
+      );
+    }, 5);
+    try {
+      await writeFile(
+        join(hostRuntimeDir, 'devcontainer-builder.json'),
+        '{"version":1,"gid":1102}',
+      );
+      await writeFile(
+        join(hostRuntimeDir, 'agent.json'),
+        JSON.stringify({ version: 1, trigger: 'systemd-path', builder: 'systemd-path' }),
+      );
+      docker.inspectImageLabels = vi.fn(async () => ({
+        'org.verity.devcontainer-builder': DEVCONTAINER_BUILDER_CONTRACT,
+        'org.verity.host-runtimes': JSON.stringify({
+          release,
+          sha512: { x86_64: 'a'.repeat(128), aarch64: 'b'.repeat(128) },
+          archiveSha512: { x86_64: 'c'.repeat(128), aarch64: 'd'.repeat(128) },
+          runtimes: args,
+        }),
+      }));
+      await expect(
+        resumeUpdatePreparation(
+          root,
+          await dockerUpdatePreparation({
+            managedRoot: root,
+            docker,
+            environment: { DATABASE_URL: 'postgres://db', DEPLOYMENT_ID: 'deployment-1' },
+            verifyImage: async () => undefined,
+            hostRuntimeDir,
+          }),
+        ),
+      ).resolves.toMatchObject({ phase: 'standby' });
+      // One builder installation, reused by the regular builder step after the runtimes.
+      expect(builderRequests).toHaveLength(1);
+      await expect(readFile(join(hostRuntimeDir, 'request.json'))).rejects.toThrow(/ENOENT/u);
+    } finally {
+      clearInterval(host);
+      await rm(hostRuntimeDir, { recursive: true, force: true });
+    }
+  });
+
   // Repository builds are not a reason to hold back a Server update: a builder the host cannot
   // update keeps the previous one, and the operator is told why instead of the update failing.
   it('prepares the standby when asking for the builder fails outright', async () => {
@@ -438,7 +526,9 @@ describe('Docker update preparation', () => {
       );
       // The request cannot be written at all: an error, not a host answer.
       await mkdir(join(hostRuntimeDir, 'builder-request.json'));
-      docker.inspectImageLabels = vi.fn(async () => ({ 'org.verity.devcontainer-builder': '1' }));
+      docker.inspectImageLabels = vi.fn(async () => ({
+        'org.verity.devcontainer-builder': DEVCONTAINER_BUILDER_CONTRACT,
+      }));
       await expect(
         resumeUpdatePreparation(
           root,
@@ -453,6 +543,57 @@ describe('Docker update preparation', () => {
         ),
       ).resolves.toMatchObject({ phase: 'standby' });
       expect(log).toHaveBeenCalledWith(expect.stringMatching(/Devcontainer builder not updated/u));
+    } finally {
+      await rm(hostRuntimeDir, { recursive: true, force: true });
+    }
+  });
+
+  it('logs a failed builder refresh separately from the archive runtime error', async () => {
+    const { root } = await setup();
+    const hostRuntimeDir = await mkdtemp(join(tmpdir(), 'verity-host-builder-'));
+    const docker = { ...fakeDocker(), inspectRuntime: vi.fn(async () => undefined) };
+    const log = vi.fn();
+    try {
+      await writeFile(
+        join(hostRuntimeDir, 'devcontainer-builder.json'),
+        '{"version":1,"gid":1102}',
+      );
+      await writeFile(
+        join(hostRuntimeDir, 'agent.json'),
+        JSON.stringify({ version: 1, trigger: 'systemd-path', builder: 'systemd-path' }),
+      );
+      // The request cannot be written at all: an error, not a host answer.
+      await mkdir(join(hostRuntimeDir, 'builder-request.json'));
+      docker.inspectImageLabels = vi.fn(async () => ({
+        'org.verity.devcontainer-builder': DEVCONTAINER_BUILDER_CONTRACT,
+        'org.verity.host-runtimes': JSON.stringify({
+          release: 'release-20261026.0',
+          sha512: { x86_64: 'a'.repeat(128), aarch64: 'b'.repeat(128) },
+          archiveSha512: { x86_64: 'c'.repeat(128), aarch64: 'd'.repeat(128) },
+          runtimes: {
+            runsc: ['--platform=systrap', '--network=none'],
+            'runsc-project': ['--platform=systrap', '--network=sandbox', '--host-uds=create'],
+          },
+        }),
+      }));
+      await expect(
+        resumeUpdatePreparation(
+          root,
+          await dockerUpdatePreparation({
+            managedRoot: root,
+            docker,
+            environment: { DATABASE_URL: 'postgres://db', DEPLOYMENT_ID: 'deployment-1' },
+            verifyImage: async () => undefined,
+            hostRuntimeDir,
+            log,
+          }),
+        ),
+      ).rejects.toThrow(/runtime service predates archives\. The current version keeps serving/u);
+      expect(log).toHaveBeenCalledWith(
+        expect.stringMatching(
+          /Host components not refreshed through the devcontainer builder\..+/u,
+        ),
+      );
     } finally {
       await rm(hostRuntimeDir, { recursive: true, force: true });
     }
@@ -473,7 +614,9 @@ describe('Docker update preparation', () => {
         join(hostRuntimeDir, 'agent.json'),
         JSON.stringify({ version: 1, trigger: 'systemd-path' }),
       );
-      docker.inspectImageLabels = vi.fn(async () => ({ 'org.verity.devcontainer-builder': '1' }));
+      docker.inspectImageLabels = vi.fn(async () => ({
+        'org.verity.devcontainer-builder': DEVCONTAINER_BUILDER_CONTRACT,
+      }));
       await expect(
         resumeUpdatePreparation(
           root,
@@ -563,6 +706,87 @@ describe('Docker update preparation', () => {
           }),
         ),
       ).rejects.toThrow('registry unreachable');
+    });
+  });
+
+  /**
+   * A failed preparation pull is terminal: the journal moves to `failed` and the
+   * device has to ask again. The incident this guards against was a pull that
+   * failed the same way on every attempt and needed a click each time; a stall
+   * or a dropped connection must instead be retried here, without anyone asking,
+   * and still stop after a bounded number of attempts.
+   */
+  describe('retrying the Server image pull', () => {
+    const stalled = () =>
+      new DockerError({
+        kind: 'pull_stalled',
+        image: newImage,
+        idleMs: 120_000,
+        message: `image pull of ${newImage} stalled`,
+      });
+    const prepare = async (docker: FakeDocker, sleep: (ms: number) => Promise<unknown>) => {
+      const { root } = await setup();
+      const log = vi.fn<(message: string) => void>();
+      const run = resumeUpdatePreparation(
+        root,
+        await dockerUpdatePreparation({
+          managedRoot: root,
+          docker,
+          environment: { DATABASE_URL: 'postgres://db', DEPLOYMENT_ID: 'deployment-1' },
+          verifyImage: async () => undefined,
+          pullRetrySleep: sleep,
+          log,
+        }),
+      );
+      return { root, run, log };
+    };
+
+    it('retries a stalled pull on its own and reaches standby', async () => {
+      const docker = fakeDocker();
+      docker.pullImage
+        .mockRejectedValueOnce(stalled())
+        .mockRejectedValueOnce(new DockerError({ kind: 'network', cause: new Error('reset') }))
+        .mockResolvedValueOnce(undefined);
+      const sleep = vi.fn<(ms: number) => Promise<unknown>>(async () => undefined);
+      const { run, log } = await prepare(docker, sleep);
+      await expect(run).resolves.toMatchObject({ phase: 'standby' });
+      expect(docker.pullImage.mock.calls.map(([ref]) => ref)).toEqual([
+        newImage,
+        newImage,
+        newImage,
+      ]);
+      expect(sleep.mock.calls.map(([ms]) => ms)).toEqual(UPDATE_PULL_RETRY_DELAYS_MS.slice(0, 2));
+      expect(log.mock.calls.some(([line]) => line.includes('retrying'))).toBe(true);
+    });
+
+    it('stops after its bound and fails the operation with the last stall', async () => {
+      const docker = fakeDocker();
+      docker.pullImage.mockImplementation(async () => {
+        throw stalled();
+      });
+      const sleep = vi.fn<(ms: number) => Promise<unknown>>(async () => undefined);
+      const { root, run } = await prepare(docker, sleep);
+      await expect(run).rejects.toMatchObject({ kind: 'pull_stalled' });
+      expect(docker.pullImage).toHaveBeenCalledTimes(UPDATE_PULL_RETRY_DELAYS_MS.length + 1);
+      expect(sleep).toHaveBeenCalledTimes(UPDATE_PULL_RETRY_DELAYS_MS.length);
+      await expect(readUpdateJournal(root)).resolves.toMatchObject({ phase: 'failed' });
+    });
+
+    it('does not spend the ceiling a second time', async () => {
+      const docker = fakeDocker();
+      docker.pullImage.mockRejectedValue(
+        new DockerError({
+          kind: 'timeout',
+          image: newImage,
+          timeoutMs: 7_200_000,
+          message: `image pull of ${newImage} did not finish`,
+        }),
+      );
+      const sleep = vi.fn<(ms: number) => Promise<unknown>>(async () => undefined);
+      const { run } = await prepare(docker, sleep);
+      await expect(run).rejects.toMatchObject({ kind: 'timeout' });
+      expect(docker.pullImage).toHaveBeenCalledOnce();
+      expect(sleep).not.toHaveBeenCalled();
     });
   });
 
@@ -1074,4 +1298,279 @@ describe('Docker update preparation', () => {
       /^managed Server authority unavailable: /,
     );
   });
+});
+
+describe('backup preparation before standby activation', () => {
+  it('requires corrected updater orchestration to resume the original pinned operation, even after a receipt exists', async () => {
+    const { root } = await setup({ pairing: true });
+    for (const [from, to] of [
+      ['requested', 'pulling'],
+      ['pulling', 'verifying-image'],
+      ['verifying-image', 'preflight'],
+      ['preflight', 'creating-standby'],
+    ] as const)
+      await advanceUpdate(root, from, to);
+    const journal = await readUpdateJournal(root);
+    if (!journal) throw new Error('missing recovery journal');
+    const docker = fakeDocker();
+    docker.inspectImageLabels.mockResolvedValue({ 'org.verity.backup-provisioning': '1' });
+    docker.listContainers.mockResolvedValue([
+      {
+        id: 'b'.repeat(64),
+        imageId: 'sha256:' + 'c'.repeat(64),
+        labels: { 'com.docker.compose.service': 'postgres' },
+      },
+    ]);
+    docker.inspectContainer.mockResolvedValue({
+      running: true,
+      networks: { 'verity-net': {} },
+    } as unknown as ContainerInspect);
+    let provisioned = false;
+    const lastJob = () => docker.createContainer.mock.calls.at(-1)?.[0];
+    docker.containerLogs.mockImplementation(async () =>
+      JSON.stringify({
+        version: 1,
+        statePath: '/etc/verity',
+        backupPath: '/srv/archives',
+        identityPath: '/var/lib/verity/backup-identity',
+        provisioned,
+      }),
+    );
+    docker.waitContainer.mockImplementation(async () => {
+      const job = lastJob();
+      if (job?.command?.[0] !== '/opt/verity-install/deploy/host/verity-backup-provision') return 0;
+      if (job.pidMode !== 'host' || !job.env?.includes('SYSTEMD_IGNORE_CHROOT=1')) return 1;
+      provisioned = true;
+      return 0;
+    });
+    // Model the old creator's omitted fields, using the actual preparation and
+    // provisioning implementations rather than mocking the host hook away.
+    const legacy = {
+      ...docker,
+      createContainer: async (spec: ContainerSpec) => {
+        const copy = {
+          ...spec,
+          env: (spec.env ?? []).filter((entry) => entry !== 'SYSTEMD_IGNORE_CHROOT=1'),
+        };
+        delete copy.pidMode;
+        return docker.createContainer(copy);
+      },
+    };
+    const actions = (client: UpdatePreparationDocker) =>
+      dockerUpdatePreparation({
+        managedRoot: root,
+        docker: client,
+        environment: { DATABASE_URL: 'postgres://db', DEPLOYMENT_ID: 'deployment-1' },
+        verifyImage: async () => undefined,
+      });
+    const oldUpdater = await actions(legacy);
+    await expect(oldUpdater.prepareStandby!(journal)).rejects.toThrow(
+      'previous Server remains active',
+    );
+    provisioned = true;
+    await expect(oldUpdater.prepareStandby!(journal)).rejects.toThrow(
+      'previous Server remains active',
+    );
+    const correctedUpdater = await actions(docker);
+    await correctedUpdater.prepareStandby!(journal);
+    await correctedUpdater.ensureStandby(journal);
+    expect(lastJob()).toMatchObject({
+      image: journal.targetDigest,
+      name: `verity-managed-server-g${String(journal.generation)}`,
+    });
+    expect(lastJob()?.binds).toContain('/srv/archives:/run/verity-backups');
+    expect(await readUpdateJournal(root)).toEqual(journal);
+    expect(docker.removeContainer.mock.calls.every(([id]) => id === 'a'.repeat(64))).toBe(true);
+  });
+
+  it.each([false, true])(
+    'seals backup mounts only after host verification (fail=%s)',
+    async (fail) => {
+      const { root, journal } = await setup({ pairing: true });
+      const docker = fakeDocker();
+      docker.inspectImageLabels.mockResolvedValue({ 'org.verity.backup-provisioning': '1' });
+      docker.listContainers.mockResolvedValue([
+        {
+          id: 'b'.repeat(64),
+          imageId: 'sha256:' + 'c'.repeat(64),
+          labels: { 'com.docker.compose.service': 'postgres' },
+        },
+      ]);
+      docker.inspectContainer.mockResolvedValue({
+        running: true,
+        networks: { 'verity-net': {} },
+      } as unknown as ContainerInspect);
+      const plan = {
+        version: 1,
+        statePath: '/etc/verity',
+        backupPath: '/srv/archives',
+        identityPath: '/var/lib/verity/backup-identity',
+        provisioned: false,
+      };
+      docker.containerLogs
+        .mockResolvedValueOnce(JSON.stringify(plan))
+        .mockResolvedValueOnce('')
+        .mockResolvedValueOnce('')
+        .mockResolvedValueOnce(JSON.stringify({ ...plan, provisioned: true }));
+      if (fail) docker.waitContainer.mockResolvedValueOnce(0).mockResolvedValueOnce(1);
+      const actions = await dockerUpdatePreparation({
+        managedRoot: root,
+        docker,
+        environment: { DATABASE_URL: 'postgres://db', DEPLOYMENT_ID: 'deployment-1' },
+        verifyImage: async () => undefined,
+      });
+      if (fail) {
+        await expect(actions.prepareStandby!(journal)).rejects.toThrow(
+          'previous Server remains active',
+        );
+        const state = await readManagedDeployment(root);
+        expect(
+          state.managed &&
+            state.spec.mounts.some((mount) => mount.target === '/run/verity-backups'),
+        ).toBe(false);
+        expect(
+          docker.createContainer.mock.calls.every(
+            ([request]) => request.labels?.['verity.managed-role'] === 'backup-provisioning',
+          ),
+        ).toBe(true);
+      } else {
+        await actions.prepareStandby!(journal);
+        await actions.ensureStandby(journal);
+        expect(docker.createContainer.mock.calls.at(-1)?.[0].binds).toContain(
+          '/srv/archives:/run/verity-backups',
+        );
+      }
+      // Host preparation never stops or removes the serving generation.
+      expect(docker.removeContainer.mock.calls.every(([id]) => id === 'a'.repeat(64))).toBe(true);
+    },
+  );
+});
+
+it('renews a legacy host service through a bounded helper before sending archive requirements', async () => {
+  const { root, journal } = await setup({ pairing: true });
+  const hostRuntimeDir = await mkdtemp(join(tmpdir(), 'runtime-renewal-integration-'));
+  const jobs = new Map<string, { spec: ContainerSpec; status: string }>();
+  const docker = fakeDocker();
+  const runtimes = new Map<string, { path: string; args: string[] }>();
+  const requirements = {
+    release: 'release-20261026.0',
+    sha512: { x86_64: 'a'.repeat(128), aarch64: 'b'.repeat(128) },
+    archiveSha512: { x86_64: 'c'.repeat(128), aarch64: 'd'.repeat(128) },
+    runtimes: {
+      runsc: ['--platform=systrap', '--network=none'],
+      'runsc-project': ['--platform=systrap', '--network=sandbox', '--host-uds=create'],
+    },
+  };
+  const service = { revision: 1, renewalProtocol: 1, features: ['binary', 'archive'] };
+  docker.inspectImageLabels.mockResolvedValue({
+    'org.verity.host-runtimes': JSON.stringify(requirements),
+    'org.verity.host-runtime-service': JSON.stringify(service),
+    'org.verity.devcontainer-builder': DEVCONTAINER_BUILDER_CONTRACT,
+  });
+  docker.listContainers.mockImplementation(async () => [
+    {
+      id: 'updater',
+      imageId: oldImage,
+      names: ['updater'],
+      labels: {
+        'verity.managed-deployment-id': journal.deploymentId,
+        'verity.managed-role': 'updater',
+      },
+    },
+    ...[...jobs].map(([id, job]) => ({
+      id,
+      imageId: job.spec.image,
+      names: [job.spec.name],
+      labels: job.spec.labels ?? {},
+    })),
+  ]);
+  docker.inspectContainer.mockImplementation(async (id) =>
+    id === 'updater'
+      ? {
+          id,
+          running: true,
+          image: oldImage,
+          mounts: [
+            {
+              type: 'bind',
+              source: '/var/lib/verity/host-runtime',
+              destination: '/run/verity-host-runtime',
+            },
+          ],
+        }
+      : { ...inspectFromSpec(jobs.get(id)!.spec, jobs.get(id)!.status), id },
+  );
+  docker.createContainer.mockImplementation(async (spec) => {
+    const id = String(jobs.size + 1).repeat(64);
+    jobs.set(id, { spec, status: 'created' });
+    return { id, warnings: [] };
+  });
+  docker.startContainer.mockImplementation(async (id) => {
+    jobs.get(id)!.status = 'running';
+  });
+  docker.waitContainer.mockImplementation(async (id) => {
+    const job = jobs.get(id)!;
+    job.status = 'exited';
+    if (job.spec.labels?.['verity.renewal-stage'] === 'install') {
+      await writeFile(
+        join(hostRuntimeDir, 'agent.json'),
+        JSON.stringify({
+          version: 1,
+          trigger: 'systemd-path',
+          builder: 'none',
+          runtimeArtifacts: ['binary', 'archive'],
+          runtimeService: {
+            ...service,
+            sha512: 'f'.repeat(128),
+            receipt: {
+              deploymentId: journal.deploymentId,
+              updateId: journal.updateId,
+              targetDigest: journal.targetDigest,
+            },
+          },
+        }),
+      );
+    }
+    return 0;
+  });
+  docker.removeContainer.mockImplementation(async (id) => {
+    jobs.delete(id);
+  });
+  const host = setInterval(() => {
+    void readFile(join(hostRuntimeDir, 'request.json'), 'utf8').then(
+      async (body) => {
+        const request = JSON.parse(body) as { id: string };
+        for (const [name, args] of Object.entries(requirements.runtimes))
+          runtimes.set(name, { path: `/opt/verity/runsc/${requirements.release}/runsc`, args });
+        await writeFile(
+          join(hostRuntimeDir, 'result.json'),
+          JSON.stringify({ version: 1, id: request.id, ok: true }),
+        );
+      },
+      () => undefined,
+    );
+  }, 5);
+  try {
+    await writeFile(
+      join(hostRuntimeDir, 'agent.json'),
+      JSON.stringify({ version: 1, trigger: 'systemd-path', builder: 'none' }),
+    );
+    const actions = await dockerUpdatePreparation({
+      managedRoot: root,
+      docker: { ...docker, inspectRuntime: async (name) => runtimes.get(name) },
+      environment: { DATABASE_URL: 'postgres://db', DEPLOYMENT_ID: 'deployment-1' },
+      verifyImage: async () => undefined,
+      hostRuntimeDir,
+    });
+    await actions.reconcileHostRuntimes!(journal);
+    expect(
+      docker.createContainer.mock.calls.map(([spec]) => spec.labels?.['verity.renewal-stage']),
+    ).toEqual(['verify', 'install']);
+    await expect(readFile(join(hostRuntimeDir, 'builder-request.json'))).rejects.toThrow(/ENOENT/u);
+    expect(runtimes.get('runsc')?.path).toContain(requirements.release);
+  } finally {
+    clearInterval(host);
+    await rm(hostRuntimeDir, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true });
+  }
 });

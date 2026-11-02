@@ -2,9 +2,15 @@
 // here rather than styling their own buttons, rows, fields, statuses or sheets.
 export { Button, IconButton } from './Button';
 export { Card, CardHead, Group, Row, ToggleRow } from './Card';
+export { FilterChips } from './FilterChips';
+export { SearchField } from './SearchField';
 export { SectionHeader } from './SectionHeader';
 export { ConfirmSheet, Sheet, useConfirm } from './Sheet';
 export { StatusDot, StatusTag } from './Status';
+export { StepIntro, SuccessHero } from './StepHero';
 export { Text } from './Text';
+export { LogList, LogRow } from './LogList';
 export { HintBox, TextField } from './TextField';
 export { Toggle } from './Toggle';
+
+export { useTextPrompt } from './TextPrompt';

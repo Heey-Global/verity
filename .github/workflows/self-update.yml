@@ -269,7 +269,28 @@ jobs:
       # renovate: datasource=github-actions depName=actions/setup-node
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '26.12.1'
+          node-version: '26.13.0'
+
+      # The harness needs nothing from the registry pull, the isolated daemon or the
+      # previous release, so it builds while those three run instead of after them.
+      # That takes it off the gate's critical path, and the gate is what every Server
+      # release waits on. It is joined again before the Server image build below:
+      # the two used to overlap on a shared host carrying the live deployment, and
+      # they still do not run side by side, so the image build keeps the whole VM
+      # and sees the same finished working tree it always did.
+      #
+      # `setsid` detaches the build from this step's shell, which ends long before
+      # the build does. The exit code is written by rename, so the join never
+      # reads a half-written status.
+      - name: Start the host-side harness build
+        run: |
+          set -euo pipefail
+          rm -f "$RUNNER_TEMP/verity-harness-build.status"
+          setsid bash -c '
+            npm ci --ignore-scripts && npm run build
+            echo $? >"$RUNNER_TEMP/verity-harness-build.status.tmp"
+            mv "$RUNNER_TEMP/verity-harness-build.status.tmp" "$RUNNER_TEMP/verity-harness-build.status"
+          ' >"$RUNNER_TEMP/verity-harness-build.log" 2>&1 </dev/null &
 
       - name: Fetch the previously released Server image
         shell: bash
@@ -592,7 +613,7 @@ jobs:
           # runs on. It is read from the staged WORKFLOW revision — this build is the
           # one host-daemon build in the job and its output runs `--privileged` there.
           # Its context is isolated from the CANDIDATE checkout as well: the candidate
-          # chooses the three pins below, but none of its text is executed by the
+          # chooses the pins below, but none of its text is executed by the
           # Dockerfile.
           #
           # Extracted, never sourced. `deploy/gvisor/versions.env` comes from the
@@ -605,16 +626,27 @@ jobs:
           runsc_release="$(sed -n 's/^RUNSC_RELEASE=//p' deploy/gvisor/versions.env | head -n 1)"
           runsc_sha512_x86_64="$(sed -n 's/^RUNSC_SHA512_X86_64=//p' deploy/gvisor/versions.env | head -n 1)"
           runsc_sha512_aarch64="$(sed -n 's/^RUNSC_SHA512_AARCH64=//p' deploy/gvisor/versions.env | head -n 1)"
+          # Present only for a release that ships as an archive; both or neither.
+          runsc_archive_x86_64="$(sed -n 's/^RUNSC_ARCHIVE_SHA512_X86_64=//p' deploy/gvisor/versions.env | head -n 1)"
+          runsc_archive_aarch64="$(sed -n 's/^RUNSC_ARCHIVE_SHA512_AARCH64=//p' deploy/gvisor/versions.env | head -n 1)"
           if [[ ! "$runsc_release" =~ ^[A-Za-z0-9._-]+$ ]] \
             || [[ ! "$runsc_sha512_x86_64" =~ ^[a-f0-9]{128}$ ]] \
-            || [[ ! "$runsc_sha512_aarch64" =~ ^[a-f0-9]{128}$ ]]; then
+            || [[ ! "$runsc_sha512_aarch64" =~ ^[a-f0-9]{128}$ ]] \
+            || { [[ -n "$runsc_archive_x86_64$runsc_archive_aarch64" ]] \
+              && { [[ ! "$runsc_archive_x86_64" =~ ^[a-f0-9]{128}$ ]] \
+                || [[ ! "$runsc_archive_aarch64" =~ ^[a-f0-9]{128}$ ]]; }; }; then
             echo "deploy/gvisor/versions.env contains an unusable runtime pin." >&2
             exit 1
           fi
           mkdir -p "$RUNNER_TEMP/verity-self-update-harness/gvisor-context/deploy/gvisor"
-          printf 'RUNSC_RELEASE=%s\nRUNSC_SHA512_X86_64=%s\nRUNSC_SHA512_AARCH64=%s\n' \
-            "$runsc_release" "$runsc_sha512_x86_64" "$runsc_sha512_aarch64" \
-            >"$RUNNER_TEMP/verity-self-update-harness/gvisor-context/deploy/gvisor/versions.env"
+          {
+            printf 'RUNSC_RELEASE=%s\nRUNSC_SHA512_X86_64=%s\nRUNSC_SHA512_AARCH64=%s\n' \
+              "$runsc_release" "$runsc_sha512_x86_64" "$runsc_sha512_aarch64"
+            if [[ -n "$runsc_archive_x86_64" ]]; then
+              printf 'RUNSC_ARCHIVE_SHA512_X86_64=%s\nRUNSC_ARCHIVE_SHA512_AARCH64=%s\n' \
+                "$runsc_archive_x86_64" "$runsc_archive_aarch64"
+            fi
+          } >"$RUNNER_TEMP/verity-self-update-harness/gvisor-context/deploy/gvisor/versions.env"
           docker build \
             --file "$RUNNER_TEMP/verity-self-update-harness/gvisor-context/Dockerfile" \
             --tag "$VERITY_SMOKE_DIND_IMAGE" \
@@ -754,25 +786,32 @@ jobs:
       # renovate: datasource=github-actions depName=crazy-max/ghaction-github-runtime
       - uses: crazy-max/ghaction-github-runtime@04d248b84655b509d8c44dc1d6f990c879747487 # v4.0.0
 
-      # The image build and the host harness have no dependency on one another and
-      # used to run concurrently, which was the right trade on a dedicated VM.
-      # It is not the right trade here. This host is 8 cores and 16 GB and it also
-      # carries the live Verity deployment; each runner lane is capped at 1.5 cores
-      # and 3 GiB, but the dind and its BuildKit are SIBLING containers started
-      # through the host socket and inherit no cap at all. Overlapping a full Server
-      # image build with `npm ci` plus `tsc -b` (measured at ~1.2 GB peak, and
-      # already SIGTERMed on these runners once) therefore does not overlap two
-      # capped workloads — it puts an uncapped one next to the cap the harness is
-      # trying to fit inside, on the box serving production.
-      #
-      # Serialising costs a few minutes of a 90-minute budget, on runner time that
-      # is now free. `--load` keeps the finished image in the isolated daemon where
-      # the smoke expects it; the cache makes the later release build incremental.
-      - name: Build the host-side harness
+      # The image build and the host harness have no dependency on one another, but
+      # they are kept apart: overlapping a full Server image build with `npm ci`
+      # plus `tsc -b` (measured at ~1.2 GB peak) once got the harness SIGTERMed.
+      # The harness started in the background above, alongside the pull, daemon
+      # start and load, and the image build waits for it here. `--load` keeps the
+      # finished image in the isolated daemon where the smoke expects it; the cache
+      # makes the later release build incremental.
+      - name: Join the host-side harness build
         run: |
           set -euo pipefail
-          npm ci --ignore-scripts
-          npm run build
+          status="$RUNNER_TEMP/verity-harness-build.status"
+          # Bounded well inside the job's 90 minutes; the build takes under two.
+          for _ in $(seq 1 1200); do
+            [[ -s "$status" ]] && break
+            sleep 0.5
+          done
+          cat "$RUNNER_TEMP/verity-harness-build.log"
+          if [[ ! -s "$status" ]]; then
+            echo '::error::The host-side harness build did not finish within 10 minutes.' >&2
+            exit 1
+          fi
+          code="$(cat "$status")"
+          if [[ "$code" != 0 ]]; then
+            echo "::error::The host-side harness build failed with exit code $code." >&2
+            exit 1
+          fi
 
       - name: Build the Server image into the isolated daemon
         run: |

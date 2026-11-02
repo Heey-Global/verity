@@ -1,3 +1,4 @@
+import { constants as osConstants } from 'node:os';
 import * as acp from '@agentclientprotocol/sdk/unstable';
 import { createHash } from 'node:crypto';
 import { lstat, mkdir, readFile, realpath, writeFile } from 'node:fs/promises';
@@ -139,6 +140,8 @@ export interface AcpBackendProfile {
   readonly adapter?: AcpEventAdapterOptions | undefined;
   /** The agent enforces {@link RunTurnOptions.toolless} through `sessionMeta`. */
   readonly enforcesToolless?: boolean | undefined;
+  /** The agent enforces {@link RunTurnOptions.gatewayToolsOnly} through `sessionMeta`. */
+  readonly enforcesGatewayToolsOnly?: boolean | undefined;
   /** An answered `session/load` error that, besides `resourceNotFound`, names a
    *  conversation the agent does not have — for an adapter that reports it some
    *  other way. Only for answers that are about the conversation itself. */
@@ -581,6 +584,9 @@ export async function runAcpTurn(
   if (opts.toolless === true && profile.enforcesToolless !== true) {
     throw new Error(`${profile.telemetryBackend} cannot run a turn without tools`);
   }
+  if (opts.gatewayToolsOnly === true && profile.enforcesGatewayToolsOnly !== true) {
+    throw new Error(`${profile.telemetryBackend} cannot run a turn limited to Verity tools`);
+  }
   const spawn = (): SpawnedProcess =>
     spawner(opts.command ?? profile.defaultCommand, args, {
       cwd: opts.cwd,
@@ -930,12 +936,15 @@ export async function runAcpTurn(
                           headers: [{ name: 'Authorization', value: `Bearer ${gateway.token}` }],
                         },
                       ]),
-                  ...(opts.mcpServers ?? []).map((server) => ({
-                    type: 'http' as const,
-                    name: server.name,
-                    url: server.url,
-                    headers: server.headers.map((header) => ({ ...header })),
-                  })),
+                  // Limited to Verity tools: the operator's own MCP connections stay out.
+                  ...(opts.gatewayToolsOnly === true ? [] : (opts.mcpServers ?? [])).map(
+                    (server) => ({
+                      type: 'http' as const,
+                      name: server.name,
+                      url: server.url,
+                      headers: server.headers.map((header) => ({ ...header })),
+                    }),
+                  ),
                 ]
               : [];
           // A bearer was minted but no server was offered, so tell the turn through the
@@ -1362,9 +1371,13 @@ export async function runAcpTurn(
     // EOF can precede the process close event; wait briefly for drained stderr and
     // exit metadata, without stalling a failure on a wedged remote channel.
     let exitTimer: ReturnType<typeof setTimeout> | undefined;
+    let processExitCode: number | undefined;
     await Promise.race([
       child.exited.then(
-        () => true,
+        (code) => {
+          processExitCode = code;
+          return true;
+        },
         () => false,
       ),
       new Promise<boolean>((resolve) => {
@@ -1373,7 +1386,17 @@ export async function runAcpTurn(
     ]);
     if (exitTimer !== undefined) clearTimeout(exitTimer);
     const exitDetails = child.exitDetails?.();
-    const stderr = `${child.stderr()}\n${message}`;
+    const actualExitCode = exitDetails?.signal
+      ? 128 + osConstants.signals[exitDetails.signal]
+      : (exitDetails?.code ?? processExitCode);
+    const memoryGuardKill =
+      actualExitCode === 137 && child.stderr().split(/\r?\n/u).includes('VERITY_MEMORY_GUARD_KILL');
+    const crashMessage = memoryGuardKill
+      ? 'Memory limit reached — the memory guard stopped the agent.'
+      : actualExitCode === 137
+        ? 'Agent was killed (SIGKILL, exit 137); possible memory pressure.'
+        : message;
+    const stderr = `${child.stderr()}\n${crashMessage}`;
     const processFailure =
       !aborted &&
       exitDetails !== undefined &&
@@ -1399,7 +1422,10 @@ export async function runAcpTurn(
     // rejected login prints the reason on stderr and leaves JSON-RPC with a
     // bare transport error, so the message alone would classify almost nothing.
     const failedBeforeExecution =
-      !aborted && boundSessionId === undefined && isExplicitPreExecutionRejection(stderr);
+      !aborted &&
+      actualExitCode !== 137 &&
+      boundSessionId === undefined &&
+      isExplicitPreExecutionRejection(stderr);
     // An operator cancel reaches this path whenever the adapter dies before
     // answering `session/prompt` after its process tree is killed. `aborted` is
     // set ONLY by the operator signal (the turn timeout stops via `stop(false)`). The
@@ -1417,9 +1443,13 @@ export async function runAcpTurn(
     // {@link SessionWriter.finish} — but the invariant is the point, and it
     // should not rest on where the writer happens to drop events today.
     if (sessionId !== undefined && !aborted && !failedBeforeExecution) {
-      const usageLimit = isUsageLimitError(message);
+      const usageLimit = actualExitCode !== 137 && isUsageLimitError(message);
       await writer
-        .write({ t: 'error', kind: usageLimit ? 'usage_limit' : 'acp', message })
+        .write({
+          t: 'error',
+          kind: memoryGuardKill ? 'memory_limit' : usageLimit ? 'usage_limit' : 'acp',
+          message: crashMessage,
+        })
         .catch(() => undefined);
       await writer
         .write({ t: 'status', state: usageLimit ? 'completed' : 'crashed' })
@@ -1455,7 +1485,11 @@ export async function runAcpTurn(
     await writer.finish().catch(() => undefined);
     return {
       sessionId: boundSessionId,
-      exitCode: aborted ? 143 : 1,
+      exitCode: aborted
+        ? 143
+        : actualExitCode !== undefined && actualExitCode !== 0
+          ? actualExitCode
+          : 1,
       stderr,
       aborted,
       ...(failedBeforeExecution ? { failedBeforeExecution: true as const } : {}),

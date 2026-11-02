@@ -80,7 +80,14 @@ async function fixture(handler: Handler, options: { branch?: string | null; url?
       child.stderr.on('data', (chunk: Buffer) => (stderr += chunk.toString()));
       child.on('error', reject);
       child.on('close', (code) => done({ code, stdout, stderr }));
-      child.stdin.end(stdin);
+      // Argument validation can exit before the fixture finishes writing its input.
+      child.stdin.on('error', (error: NodeJS.ErrnoException) => {
+        if (error.code !== 'EPIPE') reject(error);
+      });
+      // Rejected commands can exit before reading their body; do not write an
+      // empty payload into a pipe they may already have closed.
+      if (stdin) child.stdin.end(stdin);
+      else child.stdin.end();
     });
   return { calls, run };
 }
@@ -194,7 +201,9 @@ describe.each(ROOTS)('verity-repo (%s)', (binRoot) => {
 
   it('refuses incomplete commands before calling the server', async () => {
     const { calls, run } = await fixture(ok({}), { branch: null });
-    expect((await run(binRoot, ['pr', 'create'])).stderr).toContain('needs --title');
+    expect((await run(binRoot, ['pr', 'create'], 'unused input'.repeat(32_768))).stderr).toContain(
+      'needs --title',
+    );
     expect((await run(binRoot, ['pr', 'ready'])).stderr).toContain('not on a branch');
     expect((await run(binRoot, ['issue', 'view', 'seven'])).stderr).toContain('not a number');
     expect((await run(binRoot, ['issue', 'comment', '7'])).stderr).toContain('needs --body');

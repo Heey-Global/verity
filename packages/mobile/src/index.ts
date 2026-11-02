@@ -484,6 +484,7 @@ export {
   type ProjectSettingsDraft,
 } from './projectSettings.js';
 export { secretStatusSchema, type SecretStatus } from './api.js';
+export type { SchedulingRequestView } from './api.js';
 export { type IntegrationAccount, type IntegrationSource } from './api.js';
 export {
   type LiveMeeting,
@@ -501,6 +502,11 @@ export {
   type ConnectionRecordingExport,
   returnPathStatusSchema,
   type ReturnPathStatus,
+  backupStatusSchema,
+  backupProbeJobSchema,
+  type BackupStatus,
+  type BackupProbeJob,
+  type BackupKeyOffer,
   remoteControlDescriptorSchema,
   type RemoteControlDescriptor,
   uplinkDiagnosticsSchema,
@@ -603,6 +609,18 @@ export {
 } from './api.js';
 
 export { calendarChangeSummary, type CalendarChangeSummary } from './ui/calendarChangeSummary.js';
+export {
+  SCHEDULING_LANGUAGES,
+  schedulingApprovalSummary,
+  schedulingCardDecision,
+  schedulingCardEdit,
+  schedulingCardEmail,
+  schedulingWindowLabel,
+  type SchedulingApprovalSummary,
+  type SchedulingCardEdit,
+  type SchedulingEditable,
+  type SchedulingLanguage,
+} from './ui/schedulingSummary.js';
 
 export type { LocalPreviewShare, ManagedDevServer } from './api.js';
 
@@ -664,3 +682,15 @@ export {
   type VulnerabilityFinding,
   type VulnerabilitySettings,
 } from './vulnerability.js';
+
+export { liveMeetingResultSchema, type LiveMeetingResult } from './api.js';
+export type {
+  AuditEvent,
+  AuditDomain,
+  AuditHealth,
+  AuditInitiator,
+  AuditOperationDetail,
+  AuditOperationList,
+  AuditOperationQuery,
+  AuditOperationSummary,
+} from './audit.js';

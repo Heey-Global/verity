@@ -890,7 +890,13 @@ it('does not duplicate an already classified question lacking question punctuati
           question + ' We need these figures before approving the plan and making a decision.',
       },
     });
-    await vi.waitFor(() => expect(query).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() =>
+      expect(
+        query.mock.calls.filter(
+          ([, prompt]) => !(prompt as string).startsWith('Write a meeting result'),
+        ),
+      ).toHaveLength(1),
+    );
     await vi.waitFor(() => expect(onFinished).toHaveBeenCalledTimes(2));
     expect(
       (await ctx.store.liveMeetings.insights('session-1', 'meeting-1'))?.map(({ id }) => id),
@@ -964,7 +970,13 @@ it('reconciles a question published at a newer revision before batch insertion',
           question + ' We need these figures before approving the plan and making a decision.',
       },
     });
-    await vi.waitFor(() => expect(query).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() =>
+      expect(
+        query.mock.calls.filter(
+          ([, prompt]) => !(prompt as string).startsWith('Write a meeting result'),
+        ),
+      ).toHaveLength(2),
+    );
     await vi.waitFor(() => expect(onFinished).toHaveBeenCalledTimes(2));
     expect(insertion).toHaveBeenCalled();
     insertion.mockRestore();
@@ -1084,4 +1096,89 @@ it('reanalyzes a short transcript update while an earlier batch query is pending
   } finally {
     await checked.close();
   }
+});
+
+it('reads result state, rejects stale task changes and persists a confirmed task state', async () => {
+  await ctx.store.upsertProject({
+    id: 'p',
+    owner: 'heey-global',
+    repo: 'verity',
+    containerName: 'p',
+    state: 'active',
+  });
+  await ctx.db
+    .updateTable('sessions')
+    .set({ project_id: 'p' })
+    .where('session_id', '=', 'session-1')
+    .execute();
+  await app.inject({ method: 'PUT', url, payload: { ...meeting, state: 'ended' } });
+  const result = {
+    meetingId: 'meeting-1',
+    revision: 1,
+    status: 'ready' as const,
+    title: 'Result',
+    summary: 'Agreed.',
+    decisions: [],
+    openQuestions: [],
+    model: 'm',
+    createdAt: 1,
+    updatedAt: 1,
+    tasks: [
+      {
+        id: 'proposal',
+        text: 'Ship',
+        quote: 'Live words',
+        speaker: null,
+        atSeconds: null,
+        state: 'proposed' as const,
+        taskId: null,
+      },
+    ],
+  };
+  await ctx.store.liveMeetings.saveResult('session-1', result);
+  expect((await app.inject({ method: 'GET', url: url + '/result' })).json()).toEqual({ result });
+  expect(
+    (await app.inject({ method: 'GET', url: '/sessions/wrong/live-meetings/meeting-1/result' }))
+      .statusCode,
+  ).toBe(404);
+  expect(
+    (
+      await app.inject({
+        method: 'PATCH',
+        url: url + '/result/tasks/proposal',
+        payload: { revision: 2, state: 'dismissed' },
+      })
+    ).statusCode,
+  ).toBe(409);
+  expect(
+    (
+      await app.inject({
+        method: 'PATCH',
+        url: url + '/result/tasks/proposal',
+        payload: { revision: 2, state: 'added', taskId: 'stale-task' },
+      })
+    ).statusCode,
+  ).toBe(409);
+  expect(
+    await ctx.store.tasks.get('stale-task', '00000000-0000-4000-8000-000000000001'),
+  ).toBeUndefined();
+  const changed = await app.inject({
+    method: 'PATCH',
+    url: url + '/result/tasks/proposal',
+    payload: { revision: 1, state: 'added', taskId: 'created-task' },
+  });
+  expect(
+    await ctx.store.tasks.get('created-task', '00000000-0000-4000-8000-000000000001'),
+  ).toMatchObject({ title: 'Ship', projectId: 'p', detail: expect.stringContaining('Live words') });
+  expect(changed.statusCode).toBe(200);
+  expect(changed.json().result.tasks[0]).toMatchObject({ state: 'added', taskId: 'created-task' });
+  expect(
+    (
+      await app.inject({
+        method: 'PATCH',
+        url: url + '/result/tasks/proposal',
+        payload: { revision: 1, state: 'dismissed' },
+      })
+    ).statusCode,
+  ).toBe(409);
 });

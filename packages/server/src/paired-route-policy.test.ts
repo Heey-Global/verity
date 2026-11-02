@@ -100,3 +100,33 @@ it('allows live meeting viewing with read access and remote controls only with e
     ),
   ).toBe('forbidden');
 });
+
+it('requires session read access for app documents and execute access for app actions', async () => {
+  const store: PairedRoutePolicyStore = {
+    isActiveLocalUser: async () => true,
+    isActiveAdministrator: async () => false,
+    hasProjectPermission: async (userId, projectId, permission) =>
+      projectId === 'shared' && (permission === 'read' || userId === 'executor'),
+    getSession: async (id) => (id === 'session' ? { projectId: 'shared' } : undefined),
+  };
+  expect(
+    await authorizePairedRoute(store, 'viewer', 'GET', '/sessions/:id/mcp-apps/:appId', {
+      id: 'session',
+    }),
+  ).toBe('allow');
+  expect(
+    await authorizePairedRoute(store, 'viewer', 'POST', '/sessions/:id/mcp-apps/:appId/call', {
+      id: 'session',
+    }),
+  ).toBe('forbidden');
+  expect(
+    await authorizePairedRoute(store, 'executor', 'POST', '/sessions/:id/mcp-apps/:appId/call', {
+      id: 'session',
+    }),
+  ).toBe('allow');
+  expect(
+    await authorizePairedRoute(store, 'executor', 'POST', '/sessions/:id/mcp-apps/:appId/call', {
+      id: 'foreign',
+    }),
+  ).toBe('not_found');
+});

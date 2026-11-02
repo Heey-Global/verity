@@ -208,12 +208,21 @@ export function makeProject(
 }
 
 export type ClientOverrides = {
+  getStorageReclamation?: VerityClient['getStorageReclamation'];
+  reclaimStorage?: VerityClient['reclaimStorage'];
   validateGithubApp?: jest.Mock;
   getReturnPathStatus?: VerityClient['getReturnPathStatus'];
   startReturnPathDiagnostics?: VerityClient['startReturnPathDiagnostics'];
   stopReturnPathDiagnostics?: VerityClient['stopReturnPathDiagnostics'];
   settings?: VeritySettings;
   listPairedDevices?: jest.Mock;
+  auditHealth?: jest.Mock;
+  getBackupStatus?: jest.Mock;
+  auditEvents?: jest.Mock;
+  auditOperations?: jest.Mock;
+  auditOperation?: jest.Mock;
+  buildDiagnostic?: jest.Mock;
+  systemLogs?: jest.Mock;
   getUplinkDiagnostics?: jest.Mock;
   getVeritySettings?: jest.Mock;
   updateVeritySettings?: jest.Mock;
@@ -256,6 +265,9 @@ export function makeClient(status: SecretStatus, opts: ClientOverrides = {}): Ve
     validateGithubApp:
       opts.validateGithubApp ??
       jest.fn().mockResolvedValue({ ok: true, commitStatusPermission: { state: 'ready' } }),
+    getStorageReclamation:
+      opts.getStorageReclamation ?? jest.fn().mockRejectedValue(new Error('unavailable')),
+    reclaimStorage: opts.reclaimStorage ?? notImplemented('reclaimStorage'),
     getReturnPathStatus: opts.getReturnPathStatus ?? notImplemented('getReturnPathStatus'),
     startReturnPathDiagnostics:
       opts.startReturnPathDiagnostics ?? notImplemented('startReturnPathDiagnostics'),
@@ -303,6 +315,17 @@ export function makeClient(status: SecretStatus, opts: ClientOverrides = {}): Ve
       opts.listIntegrations ?? jest.fn().mockResolvedValue({ accounts: [], sources: [] }),
     listProviderLimits: opts.listProviderLimits ?? jest.fn().mockResolvedValue([]),
     listPairedDevices: opts.listPairedDevices ?? jest.fn().mockResolvedValue([]),
+    // Audit logs are administrator-only; by default this device is not one.
+    auditHealth: opts.auditHealth ?? jest.fn().mockResolvedValue(null),
+    // An administrator can discover Backup before host preparation is complete.
+    getBackupStatus:
+      opts.getBackupStatus ??
+      jest.fn().mockResolvedValue({ available: false, reason: 'installer-required' }),
+    auditEvents: opts.auditEvents ?? jest.fn().mockResolvedValue(null),
+    auditOperations: opts.auditOperations ?? jest.fn().mockResolvedValue(null),
+    auditOperation: opts.auditOperation ?? jest.fn(notImplemented('auditOperation')),
+    buildDiagnostic: opts.buildDiagnostic ?? jest.fn(notImplemented('buildDiagnostic')),
+    systemLogs: opts.systemLogs ?? jest.fn(notImplemented('systemLogs')),
     getUplinkDiagnostics:
       opts.getUplinkDiagnostics ??
       jest.fn().mockResolvedValue({

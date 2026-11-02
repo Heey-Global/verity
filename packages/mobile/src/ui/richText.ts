@@ -25,7 +25,10 @@ const FENCE = /^```([^`]*)$/;
  * emits an empty bubble. An unterminated opening fence renders its remainder as
  * code — the agent's stream may be mid-block when we render it live.
  */
-export function splitRichText(text: string): RichBlock[] {
+export function splitRichText(
+  text: string,
+  options: { hideQADecisions?: boolean } = {},
+): RichBlock[] {
   const lines = text.split('\n');
   const blocks: RichBlock[] = [];
   let mode: 'text' | 'code' = 'text';
@@ -40,7 +43,11 @@ export function splitRichText(text: string): RichBlock[] {
     buf = [];
   };
   const flushCode = (): void => {
-    blocks.push({ type: 'code', lang, content: buf.join('\n') });
+    // Filter before code cards are rendered, including incomplete streaming blocks.
+    // Keep the default lossless for file previews and exported documents.
+    if (!(options.hideQADecisions && lang === 'qa:decision')) {
+      blocks.push({ type: 'code', lang, content: buf.join('\n') });
+    }
     buf = [];
     lang = null;
   };
