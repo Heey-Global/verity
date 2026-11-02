@@ -44,12 +44,18 @@ export type QARepositoryRequest = Exclude<
   QAAnalysisRequest,
   {
     action:
+      | 'assignments'
       | 'projects'
       | 'save_report'
       | 'create_followup'
       | 'resolve_repair'
       | 'request_repair'
-      | 'repair_status';
+      | 'repair_status'
+      | 'propose_assignment'
+      | 'request_assignment'
+      | 'assignment_status'
+      | 'review_assignment'
+      | 'stop_assignment';
   }
 >;
 export function createGitHubQAAnalysis(
