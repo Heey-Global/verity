@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.83.3](https://github.com/Heey-Global/verity/compare/mobile-v1.83.2...mobile-v1.83.3) (2026-11-02)
+
+
+### Bug Fixes
+
+* **meetings:** show ongoing recordings on other devices ([#2185](https://github.com/Heey-Global/verity/issues/2185)) ([2b7eb75](https://github.com/Heey-Global/verity/commit/2b7eb754d031bc1f0bbe3b4ff50636a0c33e1dd1))
+
 ## [1.83.2](https://github.com/Heey-Global/verity/compare/mobile-v1.83.1...mobile-v1.83.2) (2026-11-02)
 
 
