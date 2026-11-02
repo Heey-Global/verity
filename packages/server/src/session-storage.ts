@@ -238,9 +238,28 @@ export class SessionStorage {
       throw new Error('Unsafe worktree retirement journal');
     return optionalFile(journal);
   }
-  async canRestore(session: SessionRecord): Promise<boolean> {
+  async canRestoreMany(sessions: readonly SessionRecord[]): Promise<Map<string, boolean>> {
+    if (sessions.length === 0) return new Map();
     try {
-      const project = (await this.deps.listProjects()).find((p) => p.id === session.projectId);
+      const projects = await this.deps.listProjects();
+      return new Map(
+        await Promise.all(
+          sessions.map(
+            async (session) =>
+              [session.sessionId, await this.canRestore(session, projects)] as const,
+          ),
+        ),
+      );
+    } catch {
+      return new Map(sessions.map((session) => [session.sessionId, false]));
+    }
+  }
+
+  async canRestore(session: SessionRecord, projects?: readonly ProjectRecord[]): Promise<boolean> {
+    try {
+      const project = (projects ?? (await this.deps.listProjects())).find(
+        (p) => p.id === session.projectId,
+      );
       if (!project || project.kind === 'control_plane') return false;
       const root = await this.safeRoot(project, session.worktree);
       const entry = JSON.parse(

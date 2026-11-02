@@ -38,11 +38,8 @@ export interface SessionNotification {
   alert?: LiveAlert | undefined;
 }
 
-/** `delivered`: a push was accepted or an alert shown. `suppressed`: the user
- * already sees it (viewing the session, or in the app for an informational
- * notification). `undelivered`: nothing reached anyone — no registered device,
- * or every ticket failed — so a caller that de-duplicates may try again later. */
-export type PushRouteOutcome = 'delivered' | 'suppressed' | 'undelivered';
+/** No-device and cooldown-only passes do not spend a producer's retry budget. */
+export type PushRouteOutcome = 'delivered' | 'suppressed' | 'undelivered' | 'failed' | 'deferred';
 
 export interface PushRouter {
   notify(input: SessionNotification): Promise<PushRouteOutcome>;
@@ -156,7 +153,9 @@ export function createPushRouter(options: PushRouterOptions): PushRouter {
       }
     }
     const result = await push(input.notification, [userId], delivery);
-    return result !== undefined && result.ticketsAccepted > 0 ? 'delivered' : 'undelivered';
+    if (result === undefined || result.targets === 0) return 'undelivered';
+    if (result.ticketsAccepted > 0) return 'delivered';
+    return result.ticketErrors > 0 || result.transportErrors > 0 ? 'failed' : 'deferred';
   };
 
   return {
@@ -176,7 +175,7 @@ export function createPushRouter(options: PushRouterOptions): PushRouter {
                 { component: 'push', kind: input.notification.data['kind'] },
                 'verity: push routing failed',
               );
-              return 'undelivered';
+              return 'failed';
             }),
           ),
         );
@@ -184,6 +183,8 @@ export function createPushRouter(options: PushRouterOptions): PushRouter {
         if (outcomes.length > 0 && outcomes.every((outcome) => outcome === 'suppressed')) {
           return 'suppressed';
         }
+        if (outcomes.includes('failed')) return 'failed';
+        if (outcomes.includes('deferred')) return 'deferred';
         return 'undelivered';
       } finally {
         release(input.key, delivery);

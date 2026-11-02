@@ -226,6 +226,11 @@ class DefaultPushSender implements PushSender {
       pruned: 0,
       transportErrors: 0,
     };
+    const ticketErrorCodes: Record<string, number> = {};
+    const countError = (code: unknown, count = 1) => {
+      const safe = safePushError(code);
+      ticketErrorCodes[safe] = (ticketErrorCodes[safe] ?? 0) + count;
+    };
     const messages: ExpoPushMessage[] = eligible.map((token) => ({
       to: token.expoToken,
       title: notification.title,
@@ -246,6 +251,7 @@ class DefaultPushSender implements PushSender {
         tickets = await this.options.transport.sendPushNotificationsAsync(chunk);
       } catch {
         result.transportErrors += chunk.length;
+        countError('TransportError', chunk.length);
         for (const message of chunk) {
           if (typeof message.to === 'string') this.defer(message.to, 'TransportError');
         }
@@ -262,11 +268,13 @@ class DefaultPushSender implements PushSender {
         const expoToken = typeof message?.to === 'string' ? message.to : undefined;
         if (ticket === undefined || expoToken === undefined) {
           result.ticketErrors += 1;
+          countError('MissingTicket');
           if (expoToken !== undefined) this.defer(expoToken, 'MissingTicket');
           continue;
         }
         if (ticket.status === 'error') {
           result.ticketErrors += 1;
+          countError(ticket.details?.error);
           this.defer(
             ticket.details?.error === 'MessageTooBig' ? payloadKey(expoToken) : expoToken,
             ticket.details?.error,
@@ -297,7 +305,12 @@ class DefaultPushSender implements PushSender {
     // frequently even though no Expo request was made.
     if (eligible.length > 0) {
       this.options.logger?.info(
-        { component: 'push', ...result, deferred: tokens.length - eligible.length },
+        {
+          component: 'push',
+          ...result,
+          ticketErrorCodes,
+          deferred: tokens.length - eligible.length,
+        },
         'verity: Expo push send completed',
       );
     }

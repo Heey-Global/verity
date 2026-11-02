@@ -115,3 +115,19 @@ has already ended. It is most useful during recurring waves. A profile without
 a CPU hotspot does not rule out host scheduling stalls or earlier blocking
 work. Pool-holder snapshots and CPU samples answer different questions and
 should be correlated by time, not treated as interchangeable evidence.
+
+
+## Session-list connection budget
+
+The session list batches projection facts, link state, automation state and
+restoration eligibility. Overlapping list requests share the base computation;
+a completed result is not cached. Envelope attention is collected separately,
+and every request still passes authentication.
+
+A truncated projection tail falls back through a single connection and keyset
+pages of 500 rows, with a separate event-sequence boundary for each session.
+Only one fallback history plus one page is hydrated at a time. Database work
+therefore scales with history pages and fixed query chunks, rather than one
+connection checkout per listed session. The PGlite driver regression counts
+actual connection acquisitions for both small and large lists, including
+missing worktrees and truncated tails.

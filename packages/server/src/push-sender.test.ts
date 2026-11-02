@@ -198,7 +198,13 @@ describe('PushSender', () => {
     now = 900_000;
     transport.tickets = [{ status: 'ok', id: 'fixed' }];
     await expect(sender.send(notification)).resolves.toMatchObject({ ticketsAccepted: 1 });
-    expect(JSON.stringify(logger.warn.mock.calls)).not.toMatch(/credential secret|ExpoPushToken/);
+    expect(logger.info).toHaveBeenCalledWith(
+      expect.objectContaining({ ticketErrorCodes: { InvalidCredentials: 1 } }),
+      'verity: Expo push send completed',
+    );
+    expect(JSON.stringify([...logger.warn.mock.calls, ...logger.info.mock.calls])).not.toMatch(
+      /credential secret|ExpoPushToken/,
+    );
   });
 
   it('contains transport and missing-ticket storms while allowing healthy targets', async () => {
