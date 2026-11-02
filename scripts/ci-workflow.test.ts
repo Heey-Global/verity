@@ -3489,7 +3489,17 @@ describe('CI runner footprint', () => {
     expect(source).toMatch(/^\s*node scripts\/lint-runner\.mjs\s/m);
     expect(source).toContain('git ls-files');
     const eslintStep = (ci.jobs.lint?.steps ?? []).find((step) => step.name === 'ESLint');
-    expect(eslintStep?.run).toBe('npm run lint');
+    expect(eslintStep?.run).toContain('npm run lint -- --no-cache');
+    expect(eslintStep?.run).toContain('set -euo pipefail');
+    expect(eslintStep?.run).toContain('/usr/bin/time --verbose');
+    expect(eslintStep?.run).toContain('resources.txt');
+    expect(eslintStep?.run).toContain('tee "$LINT_MEASUREMENT_DIR/lint.log"');
+    const measurement = ci.jobs.lint?.steps?.find(
+      (step) => step.name === 'Upload lint measurement',
+    );
+    expect(measurement?.if).toBe('always()');
+    expect(measurement?.uses).toContain('actions/upload-artifact@');
+    expect(measurement?.with?.path).toBe('${{ runner.temp }}/lint-measurement');
     // Inspect executable flags, without confusing git's --cached file listing
     // with ESLint's --cache flag.
     const flags = [scripts?.lint ?? '', eslintStep?.run ?? '', source]

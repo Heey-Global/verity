@@ -780,7 +780,31 @@ jobs:
       # --max-old-space-size cap was measured too and rejected: once batched it
       # bought ~5% more, and 768 MB turned the SIGTERM into a hard V8 OOM.
       - name: ESLint
-        run: npm run lint
+        shell: bash
+        env:
+          LINT_MEASUREMENT_DIR: ${{ runner.temp }}/lint-measurement
+        run: |
+          set -euo pipefail
+          mkdir -p "$LINT_MEASUREMENT_DIR"
+          {
+            git rev-parse HEAD
+            node --version
+            npm --version
+            uname -sm
+          } > "$LINT_MEASUREMENT_DIR/environment.txt"
+          # GNU time reports peak individual-process RSS in KiB, not aggregate
+          # container memory. Keep the normal worker heap and sequential policy.
+          /usr/bin/time --verbose --output="$LINT_MEASUREMENT_DIR/resources.txt" \
+            npm run lint -- --no-cache 2>&1 | tee "$LINT_MEASUREMENT_DIR/lint.log"
+      - name: Upload lint measurement
+        if: always()
+        # renovate: datasource=github-actions depName=actions/upload-artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: lint-measurement-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/lint-measurement
+          retention-days: 7
+          if-no-files-found: warn
       - run: npm run format
 
   knip:
