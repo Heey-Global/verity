@@ -307,7 +307,9 @@ Web search works without a card:
 
 Page fetches (Claude `WebFetch`, OpenCode `webfetch`) leave from the Sandbox to
 arbitrary destinations; they are ordinary direct targets and need a destination
-grant.
+grant. A Sandbox DNS lookup of an ungranted name that is on the host's
+`directHosts` inventory records one pending TCP 443 destination request,
+attributed to the project's configured sponsor, at most once a minute per name.
 
 Residual risk, accepted for now and to be tightened later:
 

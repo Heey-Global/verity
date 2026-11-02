@@ -212,7 +212,12 @@ function answerTcp(socket: Socket, answer: (query: Buffer) => Promise<Buffer | u
         }
         const frame = Buffer.alloc(2);
         frame.writeUInt16BE(reply.length, 0);
-        socket.write(Buffer.concat([frame, reply]));
+        // Backpressure: a client that never reads only fills the bounded input buffer.
+        if (socket.write(Buffer.concat([frame, reply]))) return;
+        return new Promise<void>((resolve) => {
+          socket.once('drain', resolve);
+          socket.once('close', resolve);
+        });
       })
       .catch(() => socket.destroy())
       .finally(() => {
