@@ -563,7 +563,11 @@ export class ProjectEgressFence {
       return undefined;
     const addresses = continuity.names.get(host);
     if (!addresses?.length) return undefined;
-    return { addresses, ttlSeconds: Math.max(1, Math.min(5, Math.floor(remaining / 1000))) };
+    // Several grants for one name may union beyond one DNS answer; any subset is admitted.
+    return {
+      addresses: addresses.slice(0, 32),
+      ttlSeconds: Math.max(1, Math.min(5, Math.floor(remaining / 1000))),
+    };
   }
   retire(binding: ProjectFenceBinding): Promise<void> {
     binding = { ...binding };

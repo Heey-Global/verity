@@ -44,8 +44,14 @@ it('answers only over the project-bound socket from the host-admitted family', a
     addresses: [],
     ttlSeconds: 1,
   });
+  for (const name of ['intranet', 'Downloads.example.com', 'host.1example'])
+    expect((await ask({ name, type: 'A' })).json()).toEqual({
+      granted: false,
+      addresses: [],
+      ttlSeconds: 1,
+    });
   for (const payload of [
-    { name: 'Downloads.example.com', type: 'A' },
+    { name: 'x'.repeat(254), type: 'A' },
     { name: 'downloads.example.com', type: 'TXT' },
     { name: 'downloads.example.com', type: 'A', projectId: 'p2' },
   ])

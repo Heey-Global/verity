@@ -6,13 +6,9 @@ import {
   type InternalConnectionIdentity,
 } from './internal-listener.js';
 
-const query = z.strictObject({
-  name: z
-    .string()
-    .max(253)
-    .regex(/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/u),
-  type: z.enum(['A', 'AAAA']),
-});
+const query = z.strictObject({ name: z.string().max(253), type: z.enum(['A', 'AAAA']) });
+/** Only canonical multi-label names can carry a direct grant. */
+const grantable = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/u;
 
 /**
  * The relay's controlled DNS answerer under the project fence. Identity comes only
@@ -37,6 +33,8 @@ export function registerProjectDnsRoute(
     if (!identity) return reply.code(401).send({ error: 'unauthorized' });
     const parsed = query.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: 'invalid name query' });
+    // Search-list expansions and other non-grantable names are refused, not failed.
+    if (!grantable.test(parsed.data.name)) return { granted: false, addresses: [], ttlSeconds: 1 };
     const family = parsed.data.type === 'A' ? 4 : 6;
     let answer: Awaited<ReturnType<typeof resolveDirect>>;
     try {

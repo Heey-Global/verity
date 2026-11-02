@@ -460,3 +460,22 @@ it('answers names only from the current admission of the exact generation', asyn
   await fence.revoke(binding);
   expect(fence.admitted(binding, 'downloads.example.com')).toBeUndefined();
 });
+
+it('caps a name answer at one DNS answer worth of admitted addresses', async () => {
+  const { deps, fence } = fixture();
+  await fence.prepare(binding);
+  let call = 0;
+  deps.resolve.mockImplementation(async () => {
+    call += 1;
+    return {
+      addresses: Array.from({ length: 20 }, (_, i) => `8.8.${call}.${i + 1}`),
+      expiresAt: 11000,
+    };
+  });
+  await fence.refresh({
+    binding,
+    revision: 1,
+    grants: [grant, { ...grant, id: 'alt', target: { ...grant.target, port: 8443 } }],
+  });
+  expect(fence.admitted(binding, 'downloads.example.com')?.addresses).toHaveLength(32);
+});

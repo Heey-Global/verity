@@ -142,6 +142,7 @@ export function brokerNameLookup(
             if (size > 8192) call.destroy(new Error('Oversized name answer'));
             else chunks.push(chunk);
           });
+          response.on('error', reject);
           response.on('end', () => {
             try {
               if (response.statusCode !== 200) throw new Error('Name authority refused');
