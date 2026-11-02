@@ -97,10 +97,23 @@ export function mandatoryEgressRoute(
 }
 
 export interface ProtectedAddressInventory {
-  /** Re-resolve every protected host; failure leaves the previous complete set. */
+  /** Re-resolve every protected host. Rejects if any built-in host stayed unresolved. */
   refresh(): Promise<void>;
-  /** False for protected addresses and whenever the inventory is absent or stale. */
+  /** False for protected addresses and whenever any built-in host's entry is stale. */
   allows(address: string): boolean;
+}
+
+/** The resolver established that a name has no public address (NXDOMAIN, empty,
+ * sinkholed or private answer). Timeouts and inventory failures stay transient.
+ */
+function definitelyNotPublic(error: unknown): boolean {
+  const { code, message } = error as NodeJS.ErrnoException;
+  return (
+    code === 'ENOTFOUND' ||
+    code === 'ENODATA' ||
+    message === 'Forbidden project DNS answer' ||
+    message === 'Invalid project DNS answer count'
+  );
 }
 
 /** Host-owned inventory. Unknown or stale state denies every direct address. */
@@ -115,25 +128,42 @@ export function createProtectedAddressInventory(options: {
   const hosts = [...(options.hosts ?? PROTECTED_ADDRESS_HOSTS)];
   const now = options.now ?? Date.now;
   const maxAgeMs = options.maxAgeMs ?? 10 * 60_000;
-  let addresses: ReadonlySet<string> | undefined;
-  let refreshedAt = -Infinity;
+  // Per built-in host: last confirmed public addresses and when they were confirmed.
+  const entries = new Map<string, { addresses: readonly string[]; at: number }>();
+  let configured: readonly string[] = [];
   let pending: Promise<void> | undefined;
   // IPv4-mapped IPv6 must compare equal to the IPv4 front end it names.
   const normalize = (address: string): string => ipaddr.process(address).toString();
   const refresh = async (): Promise<void> => {
     const startedAt = now();
-    // A partial answer would silently omit a protected front end.
-    const results = await Promise.all([
-      ...hosts.map((host) => options.resolve(host)),
-      // Configured suffixes and private services may have no public address;
-      // they must not invalidate the built-in inventory.
-      ...(options.configuredHosts ?? []).map((host) =>
-        options.resolve(host).catch(() => ({ addresses: [], expiresAt: 0 })),
-      ),
-    ]);
-    if (startedAt < refreshedAt) return;
-    addresses = new Set(results.flatMap((result) => result.addresses.map(normalize)));
-    refreshedAt = startedAt;
+    const failures: unknown[] = [];
+    await Promise.all(
+      hosts.map(async (host) => {
+        try {
+          const result = await options.resolve(host);
+          entries.set(host, { addresses: result.addresses.map(normalize), at: startedAt });
+        } catch (error) {
+          // A name without public addresses contributes none; a transient failure keeps
+          // the last confirmed addresses until they age out.
+          if (definitelyNotPublic(error)) entries.set(host, { addresses: [], at: startedAt });
+          else failures.push(error);
+        }
+      }),
+    );
+    // Configured suffixes and private services may have no public address;
+    // they must not invalidate the built-in inventory.
+    configured = (
+      await Promise.all(
+        (options.configuredHosts ?? []).map((host) =>
+          options.resolve(host).then(
+            (result) => result.addresses.map(normalize),
+            () => [],
+          ),
+        ),
+      )
+    ).flat();
+    if (failures.length)
+      throw new AggregateError(failures, 'Protected destination inventory incomplete');
   };
   return {
     refresh() {
@@ -144,8 +174,16 @@ export function createProtectedAddressInventory(options: {
       return pending;
     },
     allows(address) {
-      if (addresses === undefined || now() - refreshedAt > maxAgeMs) return false;
-      return !addresses.has(normalize(address));
+      const at = now();
+      for (const host of hosts) {
+        const entry = entries.get(host);
+        if (entry === undefined || at - entry.at > maxAgeMs) return false;
+      }
+      const candidate = normalize(address);
+      return (
+        !configured.includes(candidate) &&
+        hosts.every((host) => !entries.get(host)!.addresses.includes(candidate))
+      );
     },
   };
 }

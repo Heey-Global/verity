@@ -77,7 +77,8 @@ export function registerProjectEgressRoutes(app: FastifyInstance, store: Project
         // Requests stored before classification existed cannot be approved either.
         const policy = await store.read(params.parse(request.params).id, user(request));
         const pending = Object.values(policy.requests).find((r) => r.id === input.requestId);
-        if (pending) directEligible(pending.target);
+        if (!pending) throw new ProjectEgressError('missing');
+        directEligible(pending.target);
       }
       return {
         enforcement: 'unavailable',

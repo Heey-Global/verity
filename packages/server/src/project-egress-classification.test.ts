@@ -56,7 +56,7 @@ it('denies every address until a complete inventory exists and again once it is 
   expect(inventory.allows('198.51.100.7')).toBe(false);
 });
 
-it('keeps the previous complete inventory when a refresh is partial', async () => {
+it("keeps a host's last confirmed addresses through transient failures until they age out", async () => {
   let now = 0;
   let fail = false;
   const inventory = createProtectedAddressInventory({
@@ -74,7 +74,7 @@ it('keeps the previous complete inventory when a refresh is partial', async () =
   await inventory.refresh();
   fail = true;
   now = 50;
-  await expect(inventory.refresh()).rejects.toThrow('timeout');
+  await expect(inventory.refresh()).rejects.toThrow('inventory incomplete');
   expect(inventory.allows('151.101.0.223')).toBe(false);
   expect(inventory.allows('198.51.100.7')).toBe(true);
   // The failed refresh did not extend the old inventory's age.
@@ -122,4 +122,24 @@ it('lets configured hosts add public addresses without invalidating the inventor
   expect(inventory.allows('198.51.100.20')).toBe(false);
   expect(inventory.allows('140.82.112.6')).toBe(false);
   expect(inventory.allows('203.0.113.9')).toBe(true);
+});
+
+it('treats a definitive non-public answer as no addresses instead of an outage', async () => {
+  let now = 0;
+  const inventory = createProtectedAddressInventory({
+    hosts: ['api.github.com', 'claude.ai', 'retired.example.com'],
+    now: () => now,
+    maxAgeMs: 100,
+    resolve: async (host) => {
+      // A sinkholing resolver and a retired name both leave no public front end.
+      if (host === 'claude.ai') throw new Error('Forbidden project DNS answer');
+      if (host === 'retired.example.com')
+        throw Object.assign(new Error('queryA ENOTFOUND'), { code: 'ENOTFOUND' });
+      return { addresses: ['140.82.112.6'], expiresAt: 1e9 };
+    },
+  });
+  await inventory.refresh();
+  now = 50;
+  expect(inventory.allows('198.51.100.7')).toBe(true);
+  expect(inventory.allows('140.82.112.6')).toBe(false);
 });
