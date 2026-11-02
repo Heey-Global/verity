@@ -5,6 +5,11 @@ on:
     - cron: '17 2 * * *'
   workflow_dispatch:
     inputs:
+      lint-comparison-only:
+        description: Run the isolated lint comparison instead of the full check suite
+        required: false
+        type: boolean
+        default: false
       check-suite:
         description: Run all CI checks or only the canonical Server image smoke
         required: false
@@ -51,6 +56,10 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  lint-comparison:
+    if: github.event_name == 'workflow_dispatch' && inputs['lint-comparison-only']
+    uses: ./.github/workflows/lint-comparison.yml
+
   release-tag-barrier:
     # Require this check with strict up-to-date branches on main. A green check
     # against an older base cannot authorize a merge past a new release commit.
@@ -102,6 +111,7 @@ jobs:
           fi
 
   changes:
+    if: ${{ !inputs['lint-comparison-only'] }}
     runs-on: ubuntu-26.04
     # `actions: read` is for the base commit's own CI verdict, which the
     # release-please skip below refuses to take on faith. A job-level block
@@ -1925,7 +1935,7 @@ jobs:
     # A superseding run cancels this run's shards. Do not turn that intentional
     # cancellation into a stale red aggregate check; the newer run publishes the
     # required verdict for the same PR head.
-    if: ${{ always() && !cancelled() }}
+    if: ${{ always() && !cancelled() && !inputs['lint-comparison-only'] }}
     runs-on: ubuntu-26.04
     steps:
       - name: Verify all required jobs succeeded
