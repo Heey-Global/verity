@@ -1,7 +1,7 @@
 import { isIP } from 'node:net';
 import ipaddr from 'ipaddr.js';
 import { canonicalEgressTarget } from '@verity/store';
-import type { ProjectEgressResolution } from './project-egress-resolver.js';
+import { EGRESS_DNS_NOT_PUBLIC, type ProjectEgressResolution } from './project-egress-resolver.js';
 
 export type MandatoryEgressClass =
   'forge' | 'google' | 'model' | 'secrets' | 'search' | 'packages' | 'configured';
@@ -104,16 +104,12 @@ export interface ProtectedAddressInventory {
 }
 
 /** The resolver established that a name has no public address (NXDOMAIN, empty,
- * sinkholed or private answer). Timeouts and inventory failures stay transient.
+ * sinkholed or private answer). Timeouts, oversized answers and inventory failures
+ * stay transient.
  */
 function definitelyNotPublic(error: unknown): boolean {
-  const { code, message } = error as NodeJS.ErrnoException;
-  return (
-    code === 'ENOTFOUND' ||
-    code === 'ENODATA' ||
-    message === 'Forbidden project DNS answer' ||
-    message === 'Invalid project DNS answer count'
-  );
+  const { code } = error as NodeJS.ErrnoException;
+  return code === 'ENOTFOUND' || code === 'ENODATA' || code === EGRESS_DNS_NOT_PUBLIC;
 }
 
 /** Host-owned inventory. Unknown or stale state denies every direct address. */
@@ -130,7 +126,8 @@ export function createProtectedAddressInventory(options: {
   const maxAgeMs = options.maxAgeMs ?? 10 * 60_000;
   // Per built-in host: last confirmed public addresses and when they were confirmed.
   const entries = new Map<string, { addresses: readonly string[]; at: number }>();
-  let configured: readonly string[] = [];
+  // Per configured host: last public addresses; transient failures keep them.
+  const configured = new Map<string, readonly string[]>();
   let pending: Promise<void> | undefined;
   // IPv4-mapped IPv6 must compare equal to the IPv4 front end it names.
   const normalize = (address: string): string => ipaddr.process(address).toString();
@@ -150,18 +147,18 @@ export function createProtectedAddressInventory(options: {
         }
       }),
     );
-    // Configured suffixes and private services may have no public address;
-    // they must not invalidate the built-in inventory.
-    configured = (
-      await Promise.all(
-        (options.configuredHosts ?? []).map((host) =>
-          options.resolve(host).then(
-            (result) => result.addresses.map(normalize),
-            () => [],
-          ),
-        ),
-      )
-    ).flat();
+    // Configured suffixes and private services may have no public address; they
+    // never invalidate the built-in inventory, and a transient failure keeps the
+    // previously confirmed addresses (over-blocking is the safe direction).
+    await Promise.all(
+      (options.configuredHosts ?? []).map(async (host) => {
+        try {
+          configured.set(host, (await options.resolve(host)).addresses.map(normalize));
+        } catch (error) {
+          if (definitelyNotPublic(error)) configured.set(host, []);
+        }
+      }),
+    );
     if (failures.length)
       throw new AggregateError(failures, 'Protected destination inventory incomplete');
   };
@@ -181,7 +178,7 @@ export function createProtectedAddressInventory(options: {
       }
       const candidate = normalize(address);
       return (
-        !configured.includes(candidate) &&
+        [...configured.values()].every((addresses) => !addresses.includes(candidate)) &&
         hosts.every((host) => !entries.get(host)!.addresses.includes(candidate))
       );
     },

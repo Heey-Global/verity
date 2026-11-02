@@ -4,6 +4,7 @@ import {
   mandatoryEgressRoute,
   PROTECTED_ADDRESS_HOSTS,
 } from './project-egress-classification.js';
+import { EGRESS_DNS_NOT_PUBLIC } from './project-egress-resolver.js';
 
 it('classifies broker and system domains including subdomains, not lookalikes', () => {
   expect(mandatoryEgressRoute('github.com')).toBe('forge');
@@ -132,7 +133,10 @@ it('treats a definitive non-public answer as no addresses instead of an outage',
     maxAgeMs: 100,
     resolve: async (host) => {
       // A sinkholing resolver and a retired name both leave no public front end.
-      if (host === 'claude.ai') throw new Error('Forbidden project DNS answer');
+      if (host === 'claude.ai')
+        throw Object.assign(new Error('Forbidden project DNS answer'), {
+          code: EGRESS_DNS_NOT_PUBLIC,
+        });
       if (host === 'retired.example.com')
         throw Object.assign(new Error('queryA ENOTFOUND'), { code: 'ENOTFOUND' });
       return { addresses: ['140.82.112.6'], expiresAt: 1e9 };
@@ -142,4 +146,36 @@ it('treats a definitive non-public answer as no addresses instead of an outage',
   now = 50;
   expect(inventory.allows('198.51.100.7')).toBe(true);
   expect(inventory.allows('140.82.112.6')).toBe(false);
+});
+
+it('keeps configured broker addresses through transient failures and only an oversized answer stays transient', async () => {
+  let mode: 'ok' | 'timeout' | 'oversized' | 'gone' = 'ok';
+  const inventory = createProtectedAddressInventory({
+    hosts: ['api.github.com'],
+    configuredHosts: ['matrix.example.net'],
+    resolve: async (host) => {
+      if (host === 'matrix.example.net' && mode !== 'ok') {
+        if (mode === 'gone')
+          throw Object.assign(new Error('Invalid project DNS answer count'), {
+            code: EGRESS_DNS_NOT_PUBLIC,
+          });
+        throw new Error(
+          mode === 'timeout' ? 'Project DNS deadline exceeded' : 'Invalid project DNS answer count',
+        );
+      }
+      return {
+        addresses: [host === 'api.github.com' ? '140.82.112.6' : '198.51.100.20'],
+        expiresAt: 1e12,
+      };
+    },
+  });
+  await inventory.refresh();
+  for (const next of ['timeout', 'oversized'] as const) {
+    mode = next;
+    await inventory.refresh();
+    expect(inventory.allows('198.51.100.20')).toBe(false);
+  }
+  mode = 'gone';
+  await inventory.refresh();
+  expect(inventory.allows('198.51.100.20')).toBe(true);
 });

@@ -3,6 +3,11 @@ import { isIP } from 'node:net';
 import ipaddr from 'ipaddr.js';
 import { canonicalEgressTarget } from '@verity/store';
 
+/** A complete answer established that the name has no public unicast address. */
+export const EGRESS_DNS_NOT_PUBLIC = 'EGRESS_DNS_NOT_PUBLIC';
+const notPublic = (message: string): Error =>
+  Object.assign(new Error(message), { code: EGRESS_DNS_NOT_PUBLIC });
+
 export interface ProjectEgressResolution {
   addresses: readonly string[];
   expiresAt: number;
@@ -65,18 +70,22 @@ export function createProjectEgressResolver(options: {
         }),
       ]);
       const records = results.flat();
-      if (!records.length || records.length > 32)
-        throw new Error('Invalid project DNS answer count');
+      if (!records.length) throw notPublic('Invalid project DNS answer count');
+      if (records.length > 32) throw new Error('Invalid project DNS answer count');
       for (const [family, answers] of results.entries())
         for (const record of answers)
           if (
             isIP(record.address) !== (family === 0 ? 4 : 6) ||
-            ipaddr.parse(record.address).range() !== 'unicast' ||
             !Number.isSafeInteger(record.ttl) ||
-            record.ttl <= 0 ||
-            !(await options.destinationAllowed(record.address))
+            record.ttl <= 0
           )
             throw new Error('Forbidden project DNS answer');
+          // Sinkholed, private and host/project addresses are definitive, not outages.
+          else if (
+            ipaddr.parse(record.address).range() !== 'unicast' ||
+            !(await options.destinationAllowed(record.address))
+          )
+            throw notPublic('Forbidden project DNS answer');
       const expiresAt = startedAt + Math.min(...records.map((record) => record.ttl), 86400) * 1000;
       if (now() >= expiresAt) throw new Error('Project DNS answer expired');
       return {

@@ -1,7 +1,7 @@
 import { expect, it, vi } from 'vitest';
 import { Resolver } from 'node:dns/promises';
 import { createSocket } from 'node:dgram';
-import { createProjectEgressResolver } from './project-egress-resolver.js';
+import { createProjectEgressResolver, EGRESS_DNS_NOT_PUBLIC } from './project-egress-resolver.js';
 
 function fixture() {
   let now = 1000;
@@ -141,4 +141,34 @@ it('reads TTL and both families through the actual Node DNS resolver', async () 
   } finally {
     await new Promise<void>((resolve) => socket.close(resolve));
   }
+});
+
+it('marks only complete non-public answers as definitive for protected inventories', async () => {
+  const code = (pending: Promise<unknown>) =>
+    pending.then(
+      () => 'resolved',
+      (error: NodeJS.ErrnoException) => error.code,
+    );
+  const f = fixture();
+  f.resolver.resolve4.mockResolvedValue([{ address: '0.0.0.0', ttl: 30 }]);
+  expect(await code(f.resolve('downloads.example.com'))).toBe(EGRESS_DNS_NOT_PUBLIC);
+  f.resolver.resolve4.mockResolvedValue([{ address: '10.0.0.8', ttl: 30 }]);
+  expect(await code(f.resolve('downloads.example.com'))).toBe(EGRESS_DNS_NOT_PUBLIC);
+  f.resolver.resolve4.mockResolvedValue([{ address: '8.8.8.8', ttl: 30 }]);
+  f.destinationAllowed.mockResolvedValueOnce(false);
+  expect(await code(f.resolve('downloads.example.com'))).toBe(EGRESS_DNS_NOT_PUBLIC);
+  const empty = Object.assign(new Error(), { code: 'ENODATA' });
+  f.resolver.resolve4.mockRejectedValue(empty);
+  f.resolver.resolve6.mockRejectedValue(empty);
+  expect(await code(f.resolve('downloads.example.com'))).toBe(EGRESS_DNS_NOT_PUBLIC);
+  // Oversized, malformed and failed lookups stay transient.
+  f.resolver.resolve6.mockResolvedValue([]);
+  f.resolver.resolve4.mockResolvedValue(
+    Array.from({ length: 33 }, (_, i) => ({ address: `8.8.${i}.8`, ttl: 30 })),
+  );
+  expect(await code(f.resolve('downloads.example.com'))).toBeUndefined();
+  f.resolver.resolve4.mockResolvedValue([{ address: '8.8.8.8', ttl: 0 }]);
+  expect(await code(f.resolve('downloads.example.com'))).toBeUndefined();
+  f.resolver.resolve4.mockRejectedValue(Object.assign(new Error(), { code: 'ETIMEOUT' }));
+  expect(await code(f.resolve('downloads.example.com'))).toBe('ETIMEOUT');
 });
