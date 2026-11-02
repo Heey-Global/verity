@@ -86,6 +86,36 @@ export function relaySocketMounts(binding: ProjectEgressNetworkBinding, policy: 
   }));
 }
 
+/** The relay's optional Forge route only filters CONNECT targets it forwards to the
+ * Server's authenticated broker socket; the broker enforces capabilities and hosts.
+ */
+function forgeRelayEnvironment(entry: string): boolean {
+  if (entry === 'VERITY_FORGE_PROXY=github') return true;
+  const prefix = 'VERITY_FORGE_AUTHORITIES=';
+  if (!entry.startsWith(prefix)) return false;
+  let authorities: unknown;
+  try {
+    authorities = JSON.parse(entry.slice(prefix.length));
+  } catch {
+    return false;
+  }
+  // Matches the Server's emitter: lowercase URL hostnames with an explicit port, or
+  // an empty list for a Forgejo project without a connection (Forge route closed).
+  return (
+    Array.isArray(authorities) &&
+    authorities.length <= 16 &&
+    authorities.every((authority) => {
+      const match =
+        typeof authority === 'string'
+          ? /^((?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,62}):([1-9][0-9]{0,4})$/u.exec(
+              authority,
+            )
+          : null;
+      return match !== null && Number(match[2]) <= 65535;
+    })
+  );
+}
+
 /** No arbitrary host paths, implicit mounts, namespace sharing or command overrides. */
 export function verifyEgressRelay(
   binding: ProjectEgressNetworkBinding,
@@ -129,7 +159,10 @@ export function verifyEgressRelay(
     // answerer: a forwarding relay would give the Sandbox a recursive DNS channel out.
     !value.Config.Env.includes('VERITY_DNS_CONTROLLED=1') ||
     value.Config.Env.some(
-      (entry) => !environment.includes(entry) && entry !== 'VERITY_DNS_CONTROLLED=1',
+      (entry) =>
+        !environment.includes(entry) &&
+        entry !== 'VERITY_DNS_CONTROLLED=1' &&
+        !forgeRelayEnvironment(entry),
     ) ||
     new Set(value.Config.Env.map((entry) => entry.split('=')[0])).size !==
       value.Config.Env.length ||
