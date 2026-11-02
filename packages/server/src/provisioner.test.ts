@@ -784,6 +784,60 @@ describe('ProvisionerImpl (#174)', () => {
     }
   });
 
+  it('preserves an existing Sandbox when replacement protection infrastructure is missing', async () => {
+    const id = await seedProject('active');
+    const { client: docker, calls } = fakeDocker();
+    const provisioner = createProvisioner({
+      store: ctx.store,
+      db: ctx.db,
+      docker,
+      projectEgressEnabled: async () => true,
+      projectTokenMint: async () => undefined,
+      defaultImageRef: 'sandbox:test',
+      hostCloneRoot: '/work',
+    });
+    await expect(provisioner.recreateContainer(id, { confirmWarnings: true })).rejects.toThrow(
+      'no egress service',
+    );
+    expect(
+      calls.some(({ method }) => method === 'stopContainer' || method === 'removeContainer'),
+    ).toBe(false);
+    expect(await ctx.store.getProject(id)).toMatchObject({ state: 'active' });
+  });
+
+  it('defers network drift reconciliation when protection is off and the host is unreachable', async () => {
+    const id = await seedProject('active');
+    const { client: docker } = fakeDocker({
+      inspectContainer: async () => ({
+        id: 'retained',
+        running: true,
+        labels: { [PROJECT_ID_LABEL]: id, [CONTAINER_GENERATION_LABEL]: 'gen-1' },
+        networks: { 'protected-generation-network': {} },
+      }),
+    });
+    const egress = new ProjectEgressLifecycle(async () => {
+      throw new Error('host unavailable');
+    }, {});
+    const provisioner = createProvisioner({
+      store: ctx.store,
+      db: ctx.db,
+      docker,
+      projectEgress: egress,
+      sandboxRuntime: 'runsc-project',
+      projectEgressEnabled: async () => false,
+      projectTokenMint: async () => undefined,
+      defaultImageRef: 'sandbox:test',
+      hostCloneRoot: '/work',
+    });
+    provisioner.attachProjectBusyProbe(async () => false);
+    const recreate = vi.spyOn(provisioner, 'recreateContainer');
+    await expect(
+      provisioner.reconcileRelays([(await ctx.store.getProject(id))!], {}),
+    ).rejects.toMatchObject({ errors: [expect.objectContaining({ message: 'host unavailable' })] });
+    expect(recreate).not.toHaveBeenCalled();
+    expect(await ctx.store.getProject(id)).toMatchObject({ state: 'active' });
+  });
+
   it('fails a start closed when protection is on but the host has no egress service', async () => {
     const id = await seedProject();
     const root = mkdtempSync(join(tmpdir(), 'egress-switch-'));

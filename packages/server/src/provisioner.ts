@@ -4058,12 +4058,9 @@ export class ProvisionerImpl implements Provisioner {
   private async expectedProjectNetwork(projectId: string): Promise<string> {
     const egress = this.opts.projectEgress;
     if (egress === undefined) return projectNetworkName(projectId);
-    try {
-      return (await egress.current(projectId))?.networkName ?? projectNetworkName(projectId);
-    } catch (error) {
-      if (await this.projectEgressEnabled()) throw error;
-      return projectNetworkName(projectId);
-    }
+    // An unreachable host cannot establish network drift. Let reconciliation defer
+    // instead of replacing a running protected generation with an open one.
+    return (await egress.current(projectId))?.networkName ?? projectNetworkName(projectId);
   }
 
   private async retireEgressGeneration(projectId: string): Promise<void> {
@@ -4598,6 +4595,9 @@ export class ProvisionerImpl implements Provisioner {
     if (project.state === 'absent') {
       throw new ProvisioningError(`project ${projectId} is absent; provision it instead`);
     }
+
+    // Reject missing protection infrastructure before retiring a usable Sandbox.
+    await this.egressFor();
 
     const warning = await this.devcontainerWarningForProject(project);
     if (warning !== null && opts.confirmWarnings !== true) {
