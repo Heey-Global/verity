@@ -303,6 +303,7 @@ it('records one sponsor-attributed HTTPS request for an inventoried ungranted na
       store: { readForAdmission: f.readForAdmission },
       requests: { request },
       reportRequestFailure,
+      systemTargets: [{ host: 'mcp.exa.ai', protocol: 'tcp', port: 443 }],
       sponsor: () => 'sponsor',
       directAuthority: () => authority,
       inspect: f.inspect,

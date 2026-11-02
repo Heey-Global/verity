@@ -90,8 +90,6 @@ export const PROTECTED_ADDRESS_HOSTS: readonly string[] = [
 export const SYSTEM_DIRECT_TARGETS: readonly EgressTarget[] = [
   { host: 'mcp.exa.ai', protocol: 'tcp', port: 443 },
 ];
-export const systemDirectHost = (host: string): boolean =>
-  SYSTEM_DIRECT_TARGETS.some((target) => target.host === host);
 
 const covers = (domain: string, host: string): boolean =>
   host === domain || host.endsWith(`.${domain}`);
