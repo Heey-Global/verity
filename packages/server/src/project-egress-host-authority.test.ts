@@ -2,6 +2,7 @@ import { beforeEach, expect, it, vi } from 'vitest';
 import {
   egressHostAuthority,
   egressHostDestinationAllowed,
+  egressHostDirectChecks,
   readEgressHostConfiguration,
 } from './project-egress-host-authority.js';
 const fs = vi.hoisted(() => ({ open: vi.fn(), lstat: vi.fn(), realpath: vi.fn() }));
@@ -18,6 +19,20 @@ it('requires explicit DNS, canonical direct route inventory and a root-selected 
     projectSponsors: { project: 'sponsor' },
   };
   expect(egressHostAuthority.parse(config).directHosts).toEqual(['downloads.example.com']);
+  expect(egressHostAuthority.parse(config).mandatoryHosts).toEqual([]);
+  // Broker-only destinations are a configuration conflict, not a silently narrowed list.
+  for (const patch of [
+    { directHosts: ['api.github.com'] },
+    { directHosts: ['Uploads.GitHub.com'] },
+    { directHosts: ['matrix.example.org'], mandatoryHosts: ['example.org'] },
+  ])
+    expect(() => egressHostAuthority.parse({ ...config, ...patch })).toThrow(/broker or system/);
+  expect(() => egressHostAuthority.parse({ ...config, mandatoryHosts: ['198.51.100.20'] })).toThrow(
+    /names, not addresses/,
+  );
+  expect(
+    egressHostAuthority.parse({ ...config, mandatoryHosts: ['Matrix.Example.net'] }).mandatoryHosts,
+  ).toEqual(['matrix.example.net']);
   for (const patch of [
     { dnsServers: [] },
     { databaseUrl: 'file:///secret' },
@@ -88,4 +103,32 @@ it('excludes public host addresses and every public project subnet, refreshing i
     expect(await egressHostDestinationAllowed(address, io)).toBe(false);
   io.docker.mockResolvedValueOnce('');
   await expect(egressHostDestinationAllowed('1.1.1.1', io)).rejects.toThrow('inventory');
+});
+
+it('admits only inventoried non-broker hosts at unprotected, allowed addresses', async () => {
+  // Built directly: parsing rejects this conflict at startup; the runtime check still holds.
+  const authority = {
+    databaseUrl: 'postgres://fixture@localhost/verity',
+    dnsServers: ['1.1.1.1'],
+    directHosts: ['downloads.example.com', 'chat.example.net', 'api.github.com'],
+    mandatoryHosts: ['chat.example.net'],
+    projectSponsors: {},
+  };
+  const allowed = vi.fn(async (address: string) => address !== '10.0.0.1');
+  const checks = egressHostDirectChecks(
+    authority,
+    { allows: (address) => address !== '140.82.112.6' },
+    allowed,
+  );
+  expect(await checks.directTargetAllowed('downloads.example.com')).toBe(true);
+  expect(await checks.directTargetAllowed('chat.example.net')).toBe(false);
+  expect(await checks.directTargetAllowed('api.github.com')).toBe(false);
+  expect(await checks.directTargetAllowed('other.example.com')).toBe(false);
+  // Project grants never reach exa.ai; only the host-owned system grant does.
+  expect(await checks.directTargetAllowed('mcp.exa.ai')).toBe(false);
+  expect(await checks.destinationAllowed('198.51.100.7')).toBe(true);
+  expect(await checks.destinationAllowed('140.82.112.6')).toBe(false);
+  expect(await checks.destinationAllowed('10.0.0.1')).toBe(false);
+  const absent = egressHostDirectChecks(undefined, { allows: () => true }, allowed);
+  expect(await absent.directTargetAllowed('downloads.example.com')).toBe(false);
 });

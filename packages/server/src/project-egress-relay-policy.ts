@@ -86,6 +86,36 @@ export function relaySocketMounts(binding: ProjectEgressNetworkBinding, policy: 
   }));
 }
 
+/** The relay's optional Forge route only filters CONNECT targets it forwards to the
+ * Server's authenticated broker socket; the broker enforces capabilities and hosts.
+ */
+function forgeRelayEnvironment(entry: string): boolean {
+  if (entry === 'VERITY_FORGE_PROXY=github') return true;
+  const prefix = 'VERITY_FORGE_AUTHORITIES=';
+  if (!entry.startsWith(prefix)) return false;
+  let authorities: unknown;
+  try {
+    authorities = JSON.parse(entry.slice(prefix.length));
+  } catch {
+    return false;
+  }
+  // Matches the Server's emitter: lowercase URL hostnames with an explicit port, or
+  // an empty list for a Forgejo project without a connection (Forge route closed).
+  return (
+    Array.isArray(authorities) &&
+    authorities.length <= 16 &&
+    authorities.every((authority) => {
+      const match =
+        typeof authority === 'string'
+          ? /^((?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,62}):([1-9][0-9]{0,4})$/u.exec(
+              authority,
+            )
+          : null;
+      return match !== null && Number(match[2]) <= 65535;
+    })
+  );
+}
+
 /** No arbitrary host paths, implicit mounts, namespace sharing or command overrides. */
 export function verifyEgressRelay(
   binding: ProjectEgressNetworkBinding,
@@ -125,7 +155,15 @@ export function verifyEgressRelay(
     !['no-new-privileges', 'no-new-privileges=true'].includes(config.SecurityOpt[0]!) ||
     JSON.stringify(config.Sysctls) !==
       JSON.stringify({ 'net.ipv4.ip_unprivileged_port_start': '53' }) ||
-    value.Config.Env.some((entry) => !environment.includes(entry)) ||
+    // Port 53 reaches the relay under the fence, so its resolver must be the controlled
+    // answerer: a forwarding relay would give the Sandbox a recursive DNS channel out.
+    !value.Config.Env.includes('VERITY_DNS_CONTROLLED=1') ||
+    value.Config.Env.some(
+      (entry) =>
+        !environment.includes(entry) &&
+        entry !== 'VERITY_DNS_CONTROLLED=1' &&
+        !forgeRelayEnvironment(entry),
+    ) ||
     new Set(value.Config.Env.map((entry) => entry.split('=')[0])).size !==
       value.Config.Env.length ||
     volume.Name !== policy.dataVolume ||
@@ -181,9 +219,11 @@ export async function inspectEgressRelay(
     JSON.parse(await docker('image', 'inspect', policy.image)),
     JSON.parse(await docker('volume', 'inspect', policy.dataVolume)),
   );
+  // Shared ancestors belong to the same current inspection, not a later refresh.
+  const ancestors = new Set<string>();
   for (const { directory, socket } of paths) {
     // Every ancestor is checked: a safe leaf below a writable/symlinked root is not a binding.
-    for (let path = resolve(directory); ; path = dirname(path)) {
+    for (let path = resolve(directory); !ancestors.has(path); path = dirname(path)) {
       const stat = await lstat(path);
       if (
         !stat.isDirectory() ||
@@ -194,6 +234,7 @@ export async function inspectEgressRelay(
       ) {
         throw new Error('Untrusted relay socket ancestor');
       }
+      ancestors.add(path);
       if (path === '/') break;
     }
     const dir = await lstat(directory);

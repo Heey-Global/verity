@@ -1310,7 +1310,7 @@ describe('mobile OTA promotion', () => {
     };
     const stageCommands = stage.jobs.update.steps.map((step) => step.run ?? '').join('\n');
     const promoteCommands = promotion.jobs.promote.steps.map((step) => step.run ?? '').join('\n');
-    expect(stageCommands).toContain('scripts/mobile-ota-release.ts stage');
+    expect(stageCommands).toContain('node "$OTA_RELEASE_TOOLS/mobile-ota-release.ts" stage');
     expect(stageCommands).toContain('scripts/mobile-native-compatibility.mjs');
     expect(promoteCommands).toContain('scripts/mobile-ota-release.ts promote');
     expect(promotion.concurrency).toMatchObject({
@@ -2243,6 +2243,33 @@ describe('GitHub-hosted runner boundary', () => {
       expect(gate?.steps).toHaveLength(1);
       expect(gate?.steps?.[0]?.run).toContain('ARCHITECTURE_SMOKE_RESULT');
     }
+  });
+
+  it('prepares free disk before both boot VMs and rechecks after asset builds', () => {
+    const workflow = parse(readFileSync('.github/workflows/project-egress-boot.yml', 'utf8')) as {
+      jobs: Record<string, Job>;
+    };
+    for (const [name, minimum, marker] of [
+      ['boot-vm-preflight', 20, 'Prepare disposable KVM guest tooling'],
+      ['boot-retained-topology', 40, 'Prepare actual source and native guest assets'],
+    ] as const) {
+      const steps = workflow.jobs[name]!.steps!;
+      const prepare = steps.findIndex((step) => step.name === marker);
+      const reclaim = steps.findIndex(
+        (step) => step.uses === './.github/actions/reclaim-runner-disk',
+      );
+      expect(reclaim).toBeGreaterThan(
+        steps.findIndex((step) => step.uses?.startsWith('actions/checkout@')),
+      );
+      expect(reclaim).toBeLessThan(prepare);
+      expect(Number(steps[reclaim]?.with?.['minimum-free-gib'])).toBeGreaterThanOrEqual(minimum);
+    }
+    const steps = workflow.jobs['boot-retained-topology']!.steps!;
+    const run = steps.findIndex(
+      (step) => step.name === 'Retain actual topology across kernel, daemon and process events',
+    );
+    expect(steps[run - 1]?.uses).toBe('./.github/actions/reclaim-runner-disk');
+    expect(Number(steps[run - 1]?.with?.['minimum-free-gib'])).toBeGreaterThanOrEqual(36);
   });
 
   it('reclaims only known hosted-image SDKs before disk-heavy builds', () => {

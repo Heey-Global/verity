@@ -1,3 +1,8 @@
+import {
+  resolveSandboxMemory,
+  DEFAULT_SANDBOX_OOM_SCORE_ADJ,
+  FALLBACK_SANDBOX_MEMORY_BYTES,
+} from './sandbox-memory-policy.js';
 import { stripTrailingSlashes } from './path-text.js';
 import type { ProjectEgressLifecycle } from './project-egress-lifecycle.js';
 import { backupLifecycle } from './backup/lifecycle.js';
@@ -197,29 +202,12 @@ export interface ProjectRelayControl {
 
 const execFileAsync = promisify(execFile);
 
-// Default hard memory ceiling per project sandbox (HostConfig.Memory). Sandboxes
-// are UNTRUSTED and run arbitrary agent workloads (builds, tests, memory-leaky
-// tooling); without a cap a single runaway can exhaust host RAM and trigger a
-// GLOBAL OOM that thrashes the whole box unreachable (observed in prod: one
-// sandbox process ballooned and took the dev-server down). Capping each sandbox
-// keeps an OOM contained to that container's cgroup — the box stays healthy.
-//
-// Sized for gVisor, the default project runtime. Under runsc the whole guest is
-// one Sentry process whose memory is a host shmem file charged to this cgroup,
-// and there is no guest OOM killer: when the ceiling is hit the HOST kills the
-// Sentry, and every session of the project dies with it rather than one runaway
-// build. 4 GiB was hit that way four times in one evening (memcg 3.80 of 3.94 GB
-// shmem), and 6 GiB the same way on 2026-10-08, so the ceiling has to fit all of
-// a project's concurrent turns, not a single process. The toolkit's memory guard
-// (features/verity-sandbox-toolkit/bin/verity-memory-guard.mjs) stands in for
-// the missing guest OOM killer: it kills the largest agent-owned command a
-// reserve below this ceiling, so the common overrun costs one build rather than
-// the project. Override per-host with VERITY_SANDBOX_MEMORY (server-main.ts)
-// where the available RAM differs.
+// The hard limit is derived from Docker host capacity. The 6 GiB constant below
+// is only the fallback for daemons that cannot report capacity.
 // gVisor counts Sentry host threads as well as guest workload threads.
 export const DEFAULT_SANDBOX_PIDS_LIMIT = 4096;
 
-export const DEFAULT_SANDBOX_MEMORY_BYTES = 6 * 1024 * 1024 * 1024; // 6 GiB
+export const DEFAULT_SANDBOX_MEMORY_BYTES = FALLBACK_SANDBOX_MEMORY_BYTES;
 // Swap allowed per sandbox ON TOP of the memory ceiling (VERITY_SANDBOX_SWAP).
 // Off by default; see the `memorySwapBytes` comment at the container spec.
 export const DEFAULT_SANDBOX_SWAP_BYTES = 0;
@@ -926,8 +914,13 @@ export interface ProvisionerOptions {
    *  a project whose devcontainer legitimately needs more. */
   /** Max PIDs per sandbox (fork-bomb guard). Default 512. */
   sandboxPidsLimit?: number | undefined;
-  /** Hard memory ceiling per sandbox, in bytes. Default 6 GiB. */
+  /** Explicit hard ceiling; unset derives Docker host RAM minus the host reserve. */
   sandboxMemoryBytes?: number | undefined;
+  /** Soft protection, default 4 GiB clamped to the resolved hard ceiling. */
+  sandboxMemoryReservationBytes?: number | undefined;
+  /** Amount subtracted from Docker host capacity, default 4 GiB. */
+  sandboxHostReserveBytes?: number | undefined;
+  sandboxOomScoreAdj?: number | undefined;
   /** Swap a sandbox may use beyond {@link sandboxMemoryBytes}, in bytes. Default 0
    *  (swap disabled). Only takes effect on a host that has swap configured. */
   sandboxSwapBytes?: number | undefined;
@@ -2535,6 +2528,8 @@ export function sandboxSleepCompatibilityFingerprint(inspect: ContainerInspect):
     pidsLimit: inspect.pidsLimit ?? null,
     memoryBytes: inspect.memoryBytes ?? null,
     memorySwapBytes: inspect.memorySwapBytes ?? null,
+    memoryReservationBytes: inspect.memoryReservationBytes ?? null,
+    oomScoreAdj: inspect.oomScoreAdj ?? null,
     nanoCpus: inspect.nanoCpus ?? null,
     env: [...(inspect.env ?? [])].sort(),
     mounts: [...(inspect.mounts ?? [])].sort((a, b) =>
@@ -5680,7 +5675,18 @@ export class ProvisionerImpl implements Provisioner {
     // Bound once, then used for BOTH `Memory` and `MemorySwap` below, so the swap
     // allowance cannot drift away from the ceiling it is added to when someone
     // changes where the ceiling comes from.
-    const sandboxMemoryBytes = this.opts.sandboxMemoryBytes ?? DEFAULT_SANDBOX_MEMORY_BYTES;
+    let hostMemoryBytes: number | undefined;
+    try {
+      hostMemoryBytes = await this.opts.docker.hostMemoryBytes?.();
+    } catch {
+      // A transient daemon-info failure must not produce an unlimited sandbox.
+    }
+    const { memoryBytes: sandboxMemoryBytes, memoryReservationBytes } = resolveSandboxMemory({
+      hostMemoryBytes,
+      memoryBytes: this.opts.sandboxMemoryBytes,
+      reservationBytes: this.opts.sandboxMemoryReservationBytes,
+      hostReserveBytes: this.opts.sandboxHostReserveBytes,
+    });
     const hostCpus = await this.resolveHostCpuCount();
     // Dependencies get their own volume (see nodeModulesMountHint). Only on the
     // Runner runtime path, because its root stack start is what hands the fresh,
@@ -5864,6 +5870,8 @@ export class ProvisionerImpl implements Provisioner {
         this.opts.sandboxAllowPrivilegeEscalation === true ? [] : ['no-new-privileges=true'],
       pidsLimit: this.opts.sandboxPidsLimit ?? DEFAULT_SANDBOX_PIDS_LIMIT,
       memoryBytes: sandboxMemoryBytes,
+      memoryReservationBytes,
+      oomScoreAdj: this.opts.sandboxOomScoreAdj ?? DEFAULT_SANDBOX_OOM_SCORE_ADJ,
       // `MemorySwap` is the COMBINED memory+swap ceiling, so it is always derived
       // from the memory ceiling: equal to it means no swap. Leaving it out is not
       // neutral: Docker then grants twice the memory limit as the combined ceiling,

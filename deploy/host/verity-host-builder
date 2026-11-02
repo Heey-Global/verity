@@ -222,7 +222,10 @@ reconcile() {
     flock -w 60 6 || die 'snapshotter maintenance is still running; builder update deferred'
     exec 9<"$BUILDKIT_RUN_DIR/build-admission.lock"
     flock -w 30 9 || die 'builds are still running; builder update deferred without restarting it'
-    "$admission_helper" drained || die 'build termination or client compatibility is unknown; builder update deferred without restarting it'
+    local drain_reason
+    if ! drain_reason=$("$admission_helper" drained 2>&1); then
+      die "${drain_reason:-build termination or client compatibility is unknown}; builder update deferred without restarting it"
+    fi
     export VERITY_BUILDKIT_RELEASE_LOCK_HELD=1
   fi
 

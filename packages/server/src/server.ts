@@ -76,6 +76,13 @@ import { registerAttachmentRoute } from './attachment-route.js';
 import { AttendeeMeetings } from './attendee-meetings.js';
 import { attendeeResearchHints } from './attendee-research.js';
 import { registerAttendeeRoutes } from './attendee-routes.js';
+import { registerLiveMeetingIntakeRoutes } from './live-meeting-intake.js';
+import { registerCalendarWatchRoutes } from './calendar-watch-routes.js';
+import {
+  startCalendarMeetingWatcher,
+  type CalendarMeetingDeps,
+} from './calendar-meeting-watcher.js';
+import { registerCalendarMeetingRoutes } from './calendar-meeting-routes.js';
 import {
   attentionSignals,
   sessionAttentionSignals,
@@ -173,6 +180,7 @@ import { containerPathFor } from './project-backend.js';
 import { registerProjectCollectionRoutes } from './project-collection-routes.js';
 import { registerProjectDetailRoutes } from './project-detail-routes.js';
 import { registerProjectEgressRoutes } from './project-egress-routes.js';
+import { registerProjectDnsRoute } from './project-dns-route.js';
 import { registerProjectGitHubIssueRoutes } from './project-github-issues.js';
 import { registerProjectGitHubLinkRoute } from './project-github-link-route.js';
 import { registerProjectGoogleRoutes } from './project-google-routes.js';
@@ -1533,7 +1541,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           }) {
             return {
               method: request.method,
-              url: request.url,
+              url:
+                request.url.split('?', 1)[0] === '/app/mcp/oauth/callback'
+                  ? '/app/mcp/oauth/callback'
+                  : request.url,
               hostname: request.hostname ?? '',
               remoteAddress: request.ip ?? '',
               remotePort: request.socket?.remotePort ?? 0,
@@ -2484,23 +2495,56 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     return project?.kind === 'forgejo' ? 'Forgejo' : 'GitHub';
   };
   const scheduledPrRepairTurns = new Set<string>();
+  const preparingRepairDispatches = new Set<string>();
+  const repairTerminated = async (sessionId: string, dispatchId: string) => {
+    const receipt = await deps.eventStore.repairs.dispatchReceipt(dispatchId);
+    const boundary =
+      receipt?.prompt_seq == null
+        ? await deps.eventStore.repairs.attemptBoundary(dispatchId)
+        : Number(receipt.prompt_seq);
+    if (boundary === undefined || receipt?.state === 'reserved') return false;
+    const events = await deps.eventStore.listRecentSessionProjectionEvents(sessionId, 20);
+    return repairTurnTerminated(events.filter((row) => row.seq > boundary));
+  };
+  const reconcileSessionRepairs = async (projectId: string) => {
+    for (const incident of await deps.eventStore.repairs.incidents(projectId)) {
+      if (
+        !incident.dispatch_id ||
+        !incident.owner_session_id ||
+        conductor.isBusy(incident.owner_session_id)
+      )
+        continue;
+      if (preparingRepairDispatches.has(incident.dispatch_id)) continue;
+      const sessionMarker = await deps.eventStore.repairs.sessionAutomationMarker(
+        incident.dispatch_id,
+      );
+      // Recover pre-existing QA PR claims even with QA disabled. Workflow workers
+      // still need the supervisor's repair-PR / awaiting-merge handoff.
+      if (
+        !sessionMarker &&
+        !(incident.resource.startsWith('pr:') && incident.originating_session_id)
+      )
+        continue;
+      if (
+        sessionMarker &&
+        (await deps.eventStore.repairs.cancelReservedDispatch(incident.dispatch_id))
+      )
+        continue;
+      if (await repairTerminated(incident.owner_session_id, incident.dispatch_id))
+        await deps.eventStore.repairs.finishAttempt(
+          incident.id,
+          incident.dispatch_id,
+          'verifying',
+          incident.evidence,
+        );
+    }
+  };
   const maybeDispatchPrRepairTurn = async (
     session: SessionRecord,
     pr: PullRequestStatus,
     repair: PullRequestRepairKind,
   ): Promise<void> => {
     if (!repair.applies(pr)) return;
-    if (session.projectId !== null) {
-      const mandate = await deps.eventStore.repairs.mandate(session.projectId);
-      if (mandate) {
-        await deps.eventStore.repairs.associate(
-          session.projectId,
-          `pr:${pr.number}`,
-          session.sessionId,
-        );
-        return;
-      }
-    }
     const { sessionId } = session;
     const scheduledMarker = `${repair.id}:${repair.key(sessionId, pr)}`;
     if (scheduledPrRepairTurns.has(scheduledMarker)) return;
@@ -2519,6 +2563,9 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     await conductor
       .runWhenIdle(sessionId, async () => {
         let marker: string | undefined;
+        let dispatchId: string | undefined;
+        let dispatchAttempted = false;
+        let ownsMarker = false;
         try {
           // Re-checked HERE, not at the call site: `runWhenIdle` defers the
           // callback until the current turn settles, so the project delete can
@@ -2528,33 +2575,98 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           if (sessionsBeingReaped.has(sessionId)) return;
           const latest = await sessionPrStatus(session).catch(() => null);
           if (latest === null || !repair.applies(latest)) return;
+          const initiatedBy = await deps.eventStore.latestPromptInitiator(sessionId);
+          if (
+            session.planning === 'active' ||
+            (session.projectId !== null &&
+              !(await canExecuteAs(initiatedBy?.userId, session.projectId)))
+          )
+            return;
+          if (session.projectId !== null && latest.phase === 'open' && latest.headSha) {
+            const origin = await deps.eventStore.repairs.registerSessionOrigin(
+              session.projectId,
+              `pr:${latest.number}`,
+              sessionId,
+            );
+            if (origin !== sessionId) return;
+            await reconcileSessionRepairs(session.projectId);
+          }
           marker = `${repair.id}:${repair.key(sessionId, latest)}`;
-          const fresh = await deps.eventStore.markSessionAutomation(sessionId, marker);
+          const projectRepair = session.projectId !== null && latest.phase === 'open';
+          const fresh =
+            projectRepair || (await deps.eventStore.markSessionAutomation(sessionId, marker));
           if (!fresh) return;
+          ownsMarker = !projectRepair;
           // Nobody asked for this turn, so it runs for the session's most recent user;
           // their project rights are still checked on every gateway call it makes.
-          const initiatedBy = await deps.eventStore.latestPromptInitiator(sessionId);
+          if (session.projectId !== null && latest.phase === 'open') {
+            if (!latest.headSha) {
+              await deps.eventStore.deleteSessionAutomationMarker(sessionId, marker);
+              return;
+            }
+            const incident = await deps.eventStore.repairs.observe(
+              session.projectId,
+              `pr:${latest.number}`,
+              latest.headSha,
+              JSON.stringify({ observedAt: new Date().toISOString(), status: latest }),
+            );
+            const claim = await deps.eventStore.repairs.claimSessionRepair(
+              incident.id,
+              sessionId,
+              marker,
+            );
+            if (!claim?.dispatch_id) return;
+            dispatchId = claim.dispatch_id;
+            ownsMarker = true;
+            preparingRepairDispatches.add(dispatchId);
+          }
+          dispatchAttempted = true;
           const { accepted } = await conductor.dispatchTurnWhenIdle(
             sessionId,
             repair.prompt(latest, await codeHostName(session)),
             undefined,
             {
               displayPrompt: repair.displayPrompt(latest.number),
+              ...(dispatchId
+                ? {
+                    durableDispatchId: dispatchId,
+                    validateSession: async (current: SessionRecord) => {
+                      if (
+                        current.planning === 'active' ||
+                        current.projectId !== session.projectId ||
+                        !(await canExecuteAs(initiatedBy?.userId, current.projectId))
+                      )
+                        return false;
+                      const observed = await sessionPrStatus(current);
+                      return (
+                        observed !== null &&
+                        repair.applies(observed) &&
+                        repair.key(sessionId, observed) === repair.key(sessionId, latest)
+                      );
+                    },
+                  }
+                : {}),
               ...(initiatedBy ? { initiatedBy } : {}),
             },
           );
           if (!accepted) {
-            await deps.eventStore
-              .deleteSessionAutomationMarker(sessionId, marker)
-              .catch(() => undefined);
+            if (dispatchId) await deps.eventStore.repairs.cancelReservedDispatch(dispatchId);
+            else
+              await deps.eventStore
+                .deleteSessionAutomationMarker(sessionId, marker)
+                .catch(() => undefined);
           }
         } catch {
-          if (marker !== undefined) {
+          // Uncertain admission keeps its durable claim and marker until reconciled.
+          if (dispatchId && !dispatchAttempted)
+            await deps.eventStore.repairs.cancelReservedDispatch(dispatchId);
+          if (ownsMarker && marker !== undefined && (!dispatchId || !dispatchAttempted)) {
             await deps.eventStore
               .deleteSessionAutomationMarker(sessionId, marker)
               .catch(() => undefined);
           }
         } finally {
+          if (dispatchId) preparingRepairDispatches.delete(dispatchId);
           scheduledPrRepairTurns.delete(scheduledMarker);
         }
       })
@@ -2571,6 +2683,39 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     pr: PullRequestStatus | null | undefined,
   ): Promise<void> => {
     if (pr === null || pr === undefined) return;
+    if (session.projectId !== null) {
+      const resource = `pr:${pr.number}`;
+      if (pr.phase === 'open') {
+        await deps.eventStore.repairs.registerSessionOrigin(
+          session.projectId,
+          resource,
+          session.sessionId,
+        );
+        if (pr.headSha && pr.pipeline !== 'unknown')
+          await deps.eventStore.repairs.supersede(session.projectId, resource, pr.headSha);
+        if (
+          pr.headSha &&
+          pr.pipeline === 'success' &&
+          !MERGE_CONFLICT_REPAIR.applies(pr) &&
+          pr.checks.total > 0 &&
+          pr.checks.pending === 0 &&
+          pr.checks.failed === 0 &&
+          pr.checks.successful === pr.checks.total &&
+          (await deps.eventStore.repairs.incidents(session.projectId)).some(
+            (i) => i.resource === resource,
+          )
+        ) {
+          await reconcileSessionRepairs(session.projectId);
+          const incident = await deps.eventStore.repairs.observe(
+            session.projectId,
+            resource,
+            pr.headSha,
+            JSON.stringify({ observedAt: new Date().toISOString(), status: pr }),
+          );
+          await deps.eventStore.repairs.resolve(incident.id, pr.headSha);
+        }
+      } else await deps.eventStore.repairs.retireResource(session.projectId, resource);
+    }
     if (MERGE_CONFLICT_REPAIR.applies(pr)) {
       await maybeDispatchPrRepairTurn(session, pr, MERGE_CONFLICT_REPAIR);
       return;
@@ -3404,16 +3549,14 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     prRepairSweep = (async () => {
       if (deps.secretCipher?.isSealed() === true) return;
       const sessions = await deps.eventStore.listSessions();
-      const supervisedProjects = new Set(
-        (await deps.eventStore.repairs.mandates()).map((m) => m.project_id),
-      );
+      for (const projectId of new Set(sessions.flatMap((s) => (s.projectId ? [s.projectId] : []))))
+        await reconcileSessionRepairs(projectId);
       const live = new Set(sessions.map((session) => session.worktree));
       sessionPrCache.prune(live);
       prunePrSummaryCache(live);
       pruneBranchCache(live);
       for (const session of sessions) {
         if (prRepairStopped) break;
-        if (session.projectId && supervisedProjects.has(session.projectId)) continue;
         if (sessionsBeingReaped.has(session.sessionId) || !sessionPrCache.isDue(session, true))
           continue;
         try {
@@ -4275,6 +4418,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   });
 
   registerManagedDevServerRoutes(app, { manager: deps.managedDevServerManager });
+  registerProjectDnsRoute(app, { resolveDirect: deps.projectEgressResolve });
   registerManagedDevServerAgentRoute(app, {
     manager: deps.managedDevServerManager,
     capabilities: deps.ghTokenCapabilities,
@@ -4604,7 +4748,9 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       ? { extractImageText: (job: ImageTextJob) => void imageTextExtractor.enqueue(job) }
       : {}),
   });
-  registerHttpMcpConnectionRoutes(app, deps.eventStore);
+  registerHttpMcpConnectionRoutes(app, deps.eventStore, {
+    browserRequestOrigin: deps.browserRequestOrigin,
+  });
   registerProjectEgressRoutes(app, deps.eventStore.projectEgress);
   registerProjectDetailRoutes(app, {
     getDetail: async (id) => {
@@ -4692,6 +4838,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
 
   const veritySettingsBody = z.object({
     advancedModeEnabled: z.boolean().optional(),
+    unassignedMeetingRetentionDays: z.number().int().min(1).max(365).nullable().optional(),
     gitUserName: z.string().nullable().optional(),
     gitUserEmail: z.string().nullable().optional(),
     gitSshPrivateKeyPath: z.string().nullable().optional(),
@@ -5668,7 +5815,29 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     Boolean(deps.secretCipher && !deps.secretCipher.isSealed()),
   );
   app.addHook('onReady', () => attendeeMeetings.open());
-  app.addHook('onClose', () => attendeeMeetings.close());
+  const calendarMeetings: CalendarMeetingDeps = {
+    store: deps.eventStore,
+    meetings: attendeeMeetings,
+    sender: pushSender,
+    googleAccessToken: deps.googleAccessToken ?? (() => Promise.resolve(undefined)),
+    warn: (obj, msg) => app.log.warn(obj, msg),
+  };
+  registerCalendarMeetingRoutes(app, calendarMeetings);
+  let calendarMeetingWatcher: ReturnType<typeof startCalendarMeetingWatcher> | undefined;
+  app.addHook('onReady', async () => {
+    // Before the server takes requests: no join of this process is under way yet.
+    try {
+      await deps.eventStore.calendarWatch.releaseUnfinishedJoins();
+    } catch (err) {
+      app.log.warn({ err }, 'releasing unfinished calendar joins failed');
+    }
+    calendarMeetingWatcher = startCalendarMeetingWatcher(calendarMeetings);
+  });
+  app.addHook('onClose', async () => {
+    // Before the meetings close: a pass in flight may still be starting a bot.
+    await calendarMeetingWatcher?.stop();
+    await attendeeMeetings.close();
+  });
   meetingTranscripts.registerRoutes();
   registerServerSessionFiles(app, deps, conductor);
 
@@ -5990,6 +6159,22 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     publicProject: (project) => presentProject(project, null, UNKNOWN_SANDBOX_UPDATE, null),
     defaultModel: DEFAULT_MODEL,
   });
+  registerLiveMeetingIntakeRoutes(app, {
+    store: deps.eventStore,
+    meetings: attendeeMeetings,
+    spawn: sessionCreate.spawn,
+    canReadSession: async (userId, sessionId) =>
+      userId === undefined ||
+      (await authorizePairedRoute(deps.eventStore, userId, 'GET', '/sessions/:id', {
+        id: sessionId,
+      })) === 'allow',
+    log: app.log,
+  });
+  registerCalendarWatchRoutes(app, {
+    store: deps.eventStore,
+    googleAccessToken: deps.googleAccessToken ?? (() => Promise.resolve(undefined)),
+    log: app.log,
+  });
 
   registerRepairRoutes(app, deps.eventStore);
   registerQASettingsRoutes(app, deps.eventStore, (id) => conductor.cancelTurn(id));
@@ -6028,7 +6213,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         (await deps.eventStore.isActiveAdministrator(state.sponsor))
       );
     };
-    const preparingDispatches = new Set<string>();
+    const preparingDispatches = preparingRepairDispatches;
     const supervisor = createRepairSupervisor({
       preparingDispatches,
       enabled: qaEnabled,
@@ -6057,13 +6242,18 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         const session = await deps.eventStore.getSession(sessionId);
         return session ? sessionPrStatus(session) : null;
       },
-      target: async (projectId, branch) => {
+      target: async (projectId, branch, resource) => {
         let match: string | undefined;
         for (const session of await deps.eventStore.listSessions()) {
           if (session.projectId !== projectId || !(await worktreeExists(session.worktree)))
             continue;
           const branches = await branchesForSession(session);
           if (!branches || (await branches.current(session.worktree)) !== branch) continue;
+          await deps.eventStore.repairs.registerSessionOrigin(
+            projectId,
+            resource,
+            session.sessionId,
+          );
           if (
             match ||
             conductor.isBusy(session.sessionId) ||
@@ -6073,18 +6263,9 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             return { blocked: true };
           match = session.sessionId;
         }
-        return match ? { sessionId: match, blocked: false } : { blocked: false };
+        return match ? { blocked: true } : { blocked: false };
       },
-      terminated: async (id, dispatchId) => {
-        const receipt = await deps.eventStore.repairs.dispatchReceipt(dispatchId);
-        const boundary =
-          receipt?.prompt_seq == null
-            ? await deps.eventStore.repairs.attemptBoundary(dispatchId)
-            : Number(receipt.prompt_seq);
-        if (boundary === undefined) return false;
-        const events = await deps.eventStore.listRecentSessionProjectionEvents(id, 20);
-        return repairTurnTerminated(events.filter((row) => row.seq > boundary));
-      },
+      terminated: repairTerminated,
       spawn: async (projectId, sessionId) => {
         if (await deps.eventStore.getSession(sessionId)) return;
         const result = await sessionCreate.spawn(

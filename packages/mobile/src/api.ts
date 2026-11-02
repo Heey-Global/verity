@@ -903,10 +903,80 @@ export const veritySettingsSchema = z.object({
   googleDriveAccountEmail: z.string().nullable(),
   googleDriveConnected: z.boolean(),
   advancedModeEnabled: z.boolean().default(false),
+  unassignedMeetingRetentionDays: z.number().int().nullable().optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
 export type VeritySettings = z.infer<typeof veritySettingsSchema>;
+
+const activeLiveMeetingsSchema = z.object({
+  running: z.array(
+    z.object({
+      sessionId: z.string(),
+      id: z.string(),
+      title: z.string().nullable(),
+      engine: z.string(),
+      startedAt: z.number(),
+      state: z.enum(['active', 'interrupted']),
+      captureStatus: z.string(),
+      recorderLastSeenAt: z.number().nullable().optional(),
+      sessionName: z.string().nullable(),
+      projectId: z.string().nullable(),
+    }),
+  ),
+  unassigned: z.array(
+    z.object({
+      id: z.string(),
+      title: z.string().nullable(),
+      startedAt: z.number(),
+      endedAt: z.number().nullable(),
+      state: z.enum(['active', 'interrupted', 'ended']),
+      captureStatus: z.string(),
+      people: z.number(),
+    }),
+  ),
+  retentionDays: z.number(),
+});
+export type ActiveLiveMeetings = z.infer<typeof activeLiveMeetingsSchema>;
+
+const calendarWatchSchema = z.object({
+  accounts: z.array(
+    z.object({
+      id: z.string(),
+      email: z.string(),
+      displayName: z.string().nullable(),
+      // `.catch` keeps a newer server's additional state readable as "unavailable".
+      access: z.enum(['ok', 'missing_scope', 'unavailable']).catch('unavailable'),
+      calendars: z.array(
+        z.object({
+          id: z.string(),
+          summary: z.string(),
+          primary: z.boolean(),
+          watched: z.boolean(),
+          autoJoin: z.boolean(),
+        }),
+      ),
+    }),
+  ),
+  retentionDays: z.number(),
+});
+export type CalendarWatch = z.infer<typeof calendarWatchSchema>;
+
+const upcomingMeetingsSchema = z.object({
+  upcoming: z.array(
+    z.object({
+      eventKey: z.string(),
+      title: z.string().nullable(),
+      startsAt: z.number(),
+      endsAt: z.number(),
+      calendar: z.string(),
+      provider: z.enum(['meet', 'teams', 'zoom']).catch('meet'),
+      decision: z.enum(['joined', 'skipped', 'failed']).nullable().catch(null),
+      meetingId: z.string().nullable(),
+    }),
+  ),
+});
+export type UpcomingMeeting = z.infer<typeof upcomingMeetingsSchema>['upcoming'][number];
 
 const httpMcpConnectionSchema = z.object({
   id: z.string(),
@@ -983,7 +1053,13 @@ const serverUpdateAttemptSchema = z.object({
 });
 export type ServerUpdateAttempt = z.infer<typeof serverUpdateAttemptSchema>;
 
+const hostPreparationSchema = z.object({
+  updateId: z.string().min(1),
+  targetDigest: z.string().min(1),
+  stage: z.enum(['renewing', 'registering', 'ready', 'restored', 'recovery-required', 'unchanged']),
+});
 const serverUpdateRecoverySchema = z.object({
+  hostPreparation: hostPreparationSchema.optional().catch(undefined),
   installed: z
     .object({
       version: z.string().min(1),
@@ -1001,6 +1077,7 @@ export type ServerUpdateStatus = z.infer<typeof serverUpdateStatusSchema> & {
 } & Partial<{
     installed: { version: string; generation: number | null };
     attempt: ServerUpdateAttempt | null;
+    hostPreparation: z.infer<typeof hostPreparationSchema>;
     stalled: boolean;
     recovery: { retry: boolean; supersede: boolean };
   }>;
@@ -1114,6 +1191,7 @@ export type GoogleDriveImportResult = z.infer<typeof googleDriveImportResultSche
 
 type VeritySettingsKey =
   | 'advancedModeEnabled'
+  | 'unassignedMeetingRetentionDays'
   | 'gitUserName'
   | 'gitUserEmail'
   | 'gitSshPrivateKeyPath'
@@ -2534,6 +2612,73 @@ export class VerityClient {
       { method: 'POST' },
     );
   }
+  /** Running meetings of readable sessions and, for administrators, unassigned ones. */
+  async getActiveLiveMeetings(): Promise<ActiveLiveMeetings> {
+    return activeLiveMeetingsSchema.parse(
+      await (await this.request('/live-meetings/active', { method: 'GET' })).json(),
+    );
+  }
+  /** Meetings of the next hours from watched calendars. */
+  async getUpcomingMeetings(): Promise<UpcomingMeeting[]> {
+    return upcomingMeetingsSchema.parse(
+      await (await this.request('/live-meetings/upcoming', { method: 'GET' })).json(),
+    ).upcoming;
+  }
+  /** Joins a calendar meeting: into `sessionId` when given, otherwise unassigned. */
+  async joinCalendarMeeting(eventKey: string, sessionId?: string): Promise<{ meetingId: string }> {
+    return z.object({ meetingId: z.string() }).parse(
+      await (
+        await this.request(`/live-meetings/calendar/${encodeURIComponent(eventKey)}/join`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(sessionId ? { sessionId } : {}),
+        })
+      ).json(),
+    );
+  }
+  async skipCalendarMeeting(eventKey: string): Promise<void> {
+    await this.request(`/live-meetings/calendar/${encodeURIComponent(eventKey)}/skip`, {
+      method: 'POST',
+    });
+  }
+  /** The Google calendars Verity may watch for online meetings, with the current choices. */
+  async getCalendarWatch(): Promise<CalendarWatch> {
+    return calendarWatchSchema.parse(
+      await (await this.request('/settings/calendar-watch', { method: 'GET' })).json(),
+    );
+  }
+  async setCalendarWatch(choice: {
+    accountId: string;
+    calendarId: string;
+    watched: boolean;
+    autoJoin: boolean;
+  }): Promise<void> {
+    await this.request('/settings/calendar-watch', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(choice),
+    });
+  }
+  /** Assigns an unassigned meeting to a project (new session) or an existing session. */
+  async assignLiveMeeting(
+    meetingId: string,
+    target: { projectId: string } | { sessionId: string },
+  ): Promise<{ sessionId: string; meetingId: string }> {
+    return z.object({ sessionId: z.string(), meetingId: z.string() }).parse(
+      await (
+        await this.request(`/live-meetings/unassigned/${encodeURIComponent(meetingId)}/assign`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(target),
+        })
+      ).json(),
+    );
+  }
+  async discardLiveMeeting(meetingId: string): Promise<void> {
+    await this.request(`/live-meetings/unassigned/${encodeURIComponent(meetingId)}`, {
+      method: 'DELETE',
+    });
+  }
   async editOnlineMeetingSpeakers(
     sessionId: string,
     meetingId: string,
@@ -3454,6 +3599,9 @@ export class VerityClient {
     return {
       ...serverUpdateStatusSchema.parse(body),
       ...serverUpdateEnvelopeSchema.parse(body),
+      ...(recovery.hostPreparation === undefined
+        ? {}
+        : { hostPreparation: recovery.hostPreparation }),
       ...(recovery.installed === undefined ? {} : { installed: recovery.installed }),
       ...(recovery.attempt === undefined ? {} : { attempt: recovery.attempt }),
       ...(recovery.stalled === undefined ? {} : { stalled: recovery.stalled }),
@@ -4525,6 +4673,7 @@ export class VerityClient {
     authType?: 'none' | 'static' | 'oauth';
     oauthClientId?: string | null;
     oauthClientSecret?: string | null;
+    oauthTokenAuthMethod?: 'none' | 'client_secret_post' | 'client_secret_basic';
     oauthAuthorizationEndpoint?: string | null;
     oauthTokenEndpoint?: string | null;
     oauthScopes?: string | null;
@@ -4537,14 +4686,70 @@ export class VerityClient {
     return z.object({ connection: httpMcpConnectionSchema }).parse(await res.json()).connection;
   }
 
+  async discoverHttpMcpOAuth(url: string): Promise<{
+    authorizationEndpoint: string;
+    tokenEndpoint: string;
+    scopes: string;
+    registrationAvailable: boolean;
+  }> {
+    const res = await this.request('/mcp-connections/oauth/discover', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ url }),
+    });
+    return z
+      .object({
+        authorizationEndpoint: z.string(),
+        tokenEndpoint: z.string(),
+        scopes: z.string(),
+        registrationAvailable: z.boolean(),
+      })
+      .parse(await res.json());
+  }
+
+  async startHttpMcpOAuth(
+    connectionId: string,
+    platform: 'web' | 'native' | 'native-staging',
+  ): Promise<{
+    authorizationUrl: string;
+    state: string;
+    redirectUri: string;
+    expiresAt: number;
+  }> {
+    const res = await this.request(
+      `/mcp-connections/${encodeURIComponent(connectionId)}/oauth/start`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ platform }),
+      },
+    );
+    return z
+      .object({
+        authorizationUrl: z.string(),
+        state: z.string(),
+        redirectUri: z.string(),
+        expiresAt: z.number(),
+      })
+      .parse(await res.json());
+  }
+
+  async cancelHttpMcpOAuth(connectionId: string, state: string): Promise<void> {
+    await this.request(`/mcp-connections/${encodeURIComponent(connectionId)}/oauth/cancel`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ state }),
+    });
+  }
+
   async completeHttpMcpOAuth(
     connectionId: string,
-    input: { code: string; codeVerifier: string; redirectUri: string },
+    input: { code: string; state: string },
   ): Promise<void> {
     await this.request(`/mcp-connections/${encodeURIComponent(connectionId)}/oauth/complete`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(input),
+      body: JSON.stringify({ code: input.code, state: input.state }),
     });
   }
 
@@ -5965,6 +6170,7 @@ export class VerityClient {
               resource: z.string(),
               revision: z.string(),
               state: z.string(),
+              originating_session_id: z.string().nullable().optional(),
               owner_session_id: z.string().nullable(),
               last_session_id: z.string().nullable(),
               attempts: z.number(),

@@ -1,9 +1,11 @@
 import { AssistantStore } from './assistant.js';
 import { SchedulingStore } from './scheduling.js';
+import { QAAssignmentStore } from './qa-assignments.js';
 import { RepairSupervisionStore } from './repair-supervision.js';
 import { ProjectEgressStore } from './project-egress.js';
 import { VulnerabilityScanStore } from './vulnerability-scan.js';
 import { ForgeConnectionStore } from './forge-connections.js';
+import { CalendarWatchStore } from './calendar-watch.js';
 import { GoogleAccountStore } from './google-accounts.js';
 import {
   HISTORY_MAX_BYTES,
@@ -476,6 +478,7 @@ export interface HttpMcpConnectionRecord {
   authType?: 'none' | 'static' | 'oauth';
   oauthClientId?: string | null;
   oauthClientSecret?: string | null;
+  oauthTokenAuthMethod?: 'none' | 'client_secret_post' | 'client_secret_basic';
   oauthAuthorizationEndpoint?: string | null;
   oauthTokenEndpoint?: string | null;
   oauthScopes?: string | null;
@@ -748,12 +751,15 @@ export interface VeritySettingsRecord {
   premiumSharingEnabled?: boolean;
   premiumRemoteAccessEnabled?: boolean;
   advancedModeEnabled?: boolean;
+  /** Days an unassigned live meeting is kept after it ends; null means the default. */
+  unassignedMeetingRetentionDays?: number | null;
   createdAt: Date;
   updatedAt: Date;
 }
 
 type VeritySettingsKey =
   | 'advancedModeEnabled'
+  | 'unassignedMeetingRetentionDays'
   | 'gitUserName'
   | 'gitUserEmail'
   | 'gitSshPrivateKeyPath'
@@ -1423,6 +1429,7 @@ export class EventStore implements EventSink {
     this.vulnerabilityScans = new VulnerabilityScanStore(db);
     this.tasks = new TaskStore(db, cipher);
     this.repairs = new RepairSupervisionStore(db);
+    this.qaAssignments = new QAAssignmentStore(db);
     this.assistant = new AssistantStore(db);
     this.scheduling = new SchedulingStore(db, cipher);
   }
@@ -1433,6 +1440,7 @@ export class EventStore implements EventSink {
   readonly liveMeetings: LiveMeetingStore;
   readonly tasks: TaskStore;
   readonly repairs: RepairSupervisionStore;
+  readonly qaAssignments: QAAssignmentStore;
   readonly assistant: AssistantStore;
   readonly scheduling: SchedulingStore;
   readonly managedDevServers: ManagedDevServerStore;
@@ -2060,6 +2068,10 @@ export class EventStore implements EventSink {
 
   get googleAccounts(): GoogleAccountStore {
     return new GoogleAccountStore(this.db, this.cipher);
+  }
+
+  get calendarWatch(): CalendarWatchStore {
+    return new CalendarWatchStore(this.db, this.cipher);
   }
 
   async getGoogleServiceCredentials(sessionId: string, service: 'gmail' | 'calendar' | 'contacts') {
@@ -6993,6 +7005,7 @@ export class EventStore implements EventSink {
       premium_sharing_enabled: boolean;
       premium_remote_access_enabled: boolean;
       advanced_mode_enabled: boolean;
+      unassigned_meeting_retention_days: number | null;
       created_at: Date;
       updated_at: Date;
       // When false, secret columns are returned in their STORED (possibly
@@ -7003,6 +7016,7 @@ export class EventStore implements EventSink {
   ): VeritySettingsRecord {
     return {
       advancedModeEnabled: row.advanced_mode_enabled,
+      unassignedMeetingRetentionDays: row.unassigned_meeting_retention_days,
       gitUserName: row.git_user_name,
       gitUserEmail: row.git_user_email,
       gitSshPrivateKeyPath: row.git_ssh_private_key_path,
@@ -7098,6 +7112,7 @@ export class EventStore implements EventSink {
     'premium_sharing_enabled',
     'premium_remote_access_enabled',
     'advanced_mode_enabled',
+    'unassigned_meeting_retention_days',
     'created_at',
     'updated_at',
   ] as const;
@@ -7131,6 +7146,7 @@ export class EventStore implements EventSink {
     const values = {
       id: 'global',
       advanced_mode_enabled: patch.advancedModeEnabled ?? false,
+      unassigned_meeting_retention_days: patch.unassignedMeetingRetentionDays ?? null,
       git_user_name: normalizeSetting(patch.gitUserName),
       git_user_email: normalizeSetting(patch.gitUserEmail),
       git_ssh_private_key_path: normalizeSetting(patch.gitSshPrivateKeyPath),
@@ -7308,6 +7324,9 @@ export class EventStore implements EventSink {
             : {}),
           ...(patch.advancedModeEnabled !== undefined
             ? { advanced_mode_enabled: patch.advancedModeEnabled }
+            : {}),
+          ...(patch.unassignedMeetingRetentionDays !== undefined
+            ? { unassigned_meeting_retention_days: patch.unassignedMeetingRetentionDays }
             : {}),
           updated_at: sql`now()`,
         }),
@@ -8699,6 +8718,7 @@ export class EventStore implements EventSink {
         authorization: this.encryptSecret(record.authorization),
         auth_type: record.authType ?? (record.authorization === null ? 'none' : 'static'),
         oauth_client_id: record.oauthClientId ?? null,
+        oauth_token_auth_method: record.oauthTokenAuthMethod ?? 'client_secret_post',
         oauth_client_secret: this.encryptSecret(record.oauthClientSecret ?? null),
         oauth_authorization_endpoint: record.oauthAuthorizationEndpoint ?? null,
         oauth_token_endpoint: record.oauthTokenEndpoint ?? null,
@@ -8715,6 +8735,7 @@ export class EventStore implements EventSink {
           authorization: this.encryptSecret(record.authorization),
           auth_type: record.authType ?? (record.authorization === null ? 'none' : 'static'),
           oauth_client_id: record.oauthClientId ?? null,
+          oauth_token_auth_method: record.oauthTokenAuthMethod ?? 'client_secret_post',
           oauth_client_secret: this.encryptSecret(record.oauthClientSecret ?? null),
           oauth_authorization_endpoint: record.oauthAuthorizationEndpoint ?? null,
           oauth_token_endpoint: record.oauthTokenEndpoint ?? null,
@@ -8744,6 +8765,9 @@ export class EventStore implements EventSink {
       authorization: this.decryptSecret(row.authorization),
       authType: row.auth_type as NonNullable<HttpMcpConnectionRecord['authType']>,
       oauthClientId: row.oauth_client_id,
+      oauthTokenAuthMethod: row.oauth_token_auth_method as NonNullable<
+        HttpMcpConnectionRecord['oauthTokenAuthMethod']
+      >,
       oauthClientSecret: this.decryptSecret(row.oauth_client_secret),
       oauthAuthorizationEndpoint: row.oauth_authorization_endpoint,
       oauthTokenEndpoint: row.oauth_token_endpoint,

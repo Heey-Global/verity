@@ -1,4 +1,5 @@
 import { createGitHubQAAnalysis } from './github-qa-analysis.js';
+import { projectDecisionDirectory } from './knowledge-decisions.js';
 import {
   StorageReclamation,
   requestNativeReclamation,
@@ -886,6 +887,9 @@ export interface EmbeddedServerConfig {
    *  tune it. See main.ts for the `VERITY_SANDBOX_*` env mapping. */
   sandboxPidsLimit?: number | undefined;
   sandboxMemoryBytes?: number | undefined;
+  sandboxMemoryReservationBytes?: number | undefined;
+  sandboxHostReserveBytes?: number | undefined;
+  sandboxOomScoreAdj?: number | undefined;
   sandboxSwapBytes?: number | undefined;
   sandboxNanoCpus?: number | undefined;
   sandboxCpuShares?: number | undefined;
@@ -3386,9 +3390,9 @@ export async function buildEmbeddedServer(
   let projectRelayLifecycle: ProjectRelayLifecycle | undefined;
   const projectRelayEnabled = (config.projectRelayImage ?? '').trim().length > 0;
   const forgeIdentity = projectRelayEnabled ? await loadForgeProxyIdentity(secretRoot) : undefined;
-  // The protected relay profile has no Forge route; never add it implicitly.
-  const forgeProxyEnabled = (): boolean =>
-    projectRelayEnabled && config.projectEgress === undefined;
+  // Under the project fence, Git and gh reach forges only through this brokered route;
+  // direct grants for forge hosts are refused as broker-only destinations.
+  const forgeProxyEnabled = (): boolean => projectRelayEnabled;
   const forgeCertificates = new Map<
     string,
     { expires: number; certificate: ReturnType<typeof issueGatewayServerCertificate> }
@@ -4056,6 +4060,15 @@ export async function buildEmbeddedServer(
         : {}),
       ...(config.sandboxMemoryBytes !== undefined
         ? { sandboxMemoryBytes: config.sandboxMemoryBytes }
+        : {}),
+      ...(config.sandboxMemoryReservationBytes !== undefined
+        ? { sandboxMemoryReservationBytes: config.sandboxMemoryReservationBytes }
+        : {}),
+      ...(config.sandboxHostReserveBytes !== undefined
+        ? { sandboxHostReserveBytes: config.sandboxHostReserveBytes }
+        : {}),
+      ...(config.sandboxOomScoreAdj !== undefined
+        ? { sandboxOomScoreAdj: config.sandboxOomScoreAdj }
         : {}),
       ...(config.sandboxSwapBytes !== undefined
         ? { sandboxSwapBytes: config.sandboxSwapBytes }
@@ -4884,6 +4897,14 @@ export async function buildEmbeddedServer(
     ...(listenerDiscovery ? { listenerDiscovery } : {}),
     ...(localPreviewManager ? { localPreviewManager } : {}),
     ...(managedDevServerManager ? { managedDevServerManager } : {}),
+    ...(config.projectEgress
+      ? {
+          projectEgressResolve: (
+            identity: import('./internal-listener.js').InternalConnectionIdentity,
+            name: string,
+          ) => config.projectEgress!.resolveDirect(identity, name),
+        }
+      : {}),
     previewSharingCapability: async () => {
       const settings = await eventStore.getVeritySettings();
       return previewSharingCapability(
@@ -5454,6 +5475,8 @@ export async function buildEmbeddedServer(
                 return (await eventStore.getProjectSettingsRaw(projectId))?.memory ?? undefined;
               });
             },
+            projectDecisionDirectory: (projectId: string) =>
+              projectDecisionDirectory(config.dataVolumeRoot!, projectId),
           }
         : {}),
       // ADR 0011 D3: expose the project's secret alias names to every turn whose

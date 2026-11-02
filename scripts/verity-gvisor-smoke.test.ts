@@ -8,10 +8,12 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   PINNED_PROJECT_RUNSC_ARGS,
   PINNED_RUNSC_ARGS,
+  PINNED_RUNSC_RELEASE,
 } from '../packages/server/src/gvisor-runtime-config.js';
 
 const execFileAsync = promisify(execFile);
-const release = 'release-20260714.0';
+// The smoke reads the real pin file, so the fake daemon registers the pinned release.
+const release = PINNED_RUNSC_RELEASE;
 const digest = 'a'.repeat(64);
 const validInspect = {
   Config: {

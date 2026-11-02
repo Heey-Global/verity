@@ -2317,3 +2317,51 @@ it('edits the ended title and a personal note, then searches the transcript', as
   expect(screen.queryByText(/Release in Paris/)).toBeNull();
   prompt.mockRestore();
 });
+
+it('lets a second device save notes and ask research without starting its microphone', async () => {
+  const remote: MeetingRecord = {
+    id: 'collaborative-phone',
+    sessionId: 'session-1',
+    serverId: 'server-1',
+    engine: 'fluid-nemotron',
+    startedAt: Date.now() - 120000,
+    endedAt: null,
+    state: 'active',
+    captureStatus: 'listening',
+    transcript: 'Discuss the launch.',
+    error: null,
+  };
+  jest.mocked(getActiveMeetingServerId).mockReturnValue('server-1');
+  jest.mocked(listMeetings).mockResolvedValue([remote]);
+  const sendTurn = jest.fn().mockResolvedValue({ turnId: 'research-from-ipad' });
+  jest.mocked(createVerityClient).mockReturnValue({
+    sendTurn,
+    getLiveMeetingCommands: jest.fn().mockResolvedValue({ commands: [], recorderOnline: false }),
+  } as never);
+  render(<MeetingScreen />);
+  await screen.findByText(/Recording device unreachable.*transcript may be out of date/);
+  fireEvent.changeText(await noteInput(), 'Check launch date');
+  fireEvent.press(screen.getByLabelText('Add note'));
+  await waitFor(() =>
+    expect(finalizeNote).toHaveBeenCalledWith(expect.any(String), 'Check launch date'),
+  );
+  fireEvent.press(screen.getByLabelText('Switch to Ask Verity'));
+  fireEvent.changeText(
+    screen.getByLabelText('Ask Verity about this meeting'),
+    'Research the launch requirements',
+  );
+  fireEvent.press(screen.getByLabelText('Ask Verity in meeting'));
+  await waitFor(() =>
+    expect(sendTurn).toHaveBeenCalledWith(
+      'session-1',
+      expect.objectContaining({
+        prompt: expect.stringContaining(remote.id),
+      }),
+    ),
+  );
+  expect(saveNote).toHaveBeenCalledWith(
+    expect.objectContaining({ meetingId: remote.id, text: 'Check launch date' }),
+  );
+  expect(startMeeting).not.toHaveBeenCalled();
+  expect(endMeeting).not.toHaveBeenCalled();
+});

@@ -24882,6 +24882,24 @@ var import_zod7 = __toESM(require_zod(), 1);
 var sourcePath = import_zod7.z.string().trim().min(1).max(512).refine((path) => path.split("/").every((part) => part !== "" && part !== "." && part !== ".." && !part.startsWith(".") && !part.includes("\\") && !part.includes("\0")));
 var knowledgeToolRequestSchema = import_zod7.z.discriminatedUnion("operation", [
   import_zod7.z.object({
+    operation: import_zod7.z.literal("record_decision"),
+    requestId: import_zod7.z.string().regex(/^[A-Za-z0-9_-]{1,100}$/u),
+    title: import_zod7.z.string().trim().min(1).max(160),
+    decision: import_zod7.z.string().trim().min(1).max(8e3),
+    rationale: import_zod7.z.string().trim().max(4e3).optional(),
+    confirmationMessageSeq: import_zod7.z.number().int().positive().optional(),
+    predecessor: import_zod7.z.object({
+      id: import_zod7.z.string().regex(/^[a-f0-9]{32}$/u),
+      digest: import_zod7.z.string().regex(/^[a-f0-9]{64}$/u)
+    }).strict().optional()
+  }).strict(),
+  import_zod7.z.object({
+    operation: import_zod7.z.literal("lookup_decisions"),
+    id: import_zod7.z.string().regex(/^[a-f0-9]{32}$/u).optional(),
+    query: import_zod7.z.string().trim().max(300).optional(),
+    offset: import_zod7.z.number().int().min(0).max(500).optional()
+  }).strict(),
+  import_zod7.z.object({
     operation: import_zod7.z.literal("import_source"),
     sourcePath: import_zod7.z.string().trim().min(1).max(512),
     destination: import_zod7.z.enum(["meetings", "documents"]),
@@ -25331,6 +25349,38 @@ var window = {
 };
 var qaAnalysisRequestSchema = import_zod14.z.discriminatedUnion("action", [
   import_zod14.z.object({ action: import_zod14.z.literal("projects") }).strict(),
+  import_zod14.z.object({ action: import_zod14.z.literal("assignments"), projectId }).strict(),
+  import_zod14.z.object({
+    action: import_zod14.z.literal("propose_assignment"),
+    projectId,
+    title: import_zod14.z.string().min(1).max(100),
+    instruction: import_zod14.z.string().min(1).max(12e3),
+    criteria: import_zod14.z.string().min(1).max(4e3),
+    sessionId: projectId.optional()
+  }).strict(),
+  import_zod14.z.object({
+    action: import_zod14.z.literal("request_assignment"),
+    projectId,
+    assignmentId: import_zod14.z.string().regex(/^[a-f0-9]{64}$/)
+  }).strict(),
+  import_zod14.z.object({
+    action: import_zod14.z.literal("assignment_status"),
+    projectId,
+    assignmentId: import_zod14.z.string().regex(/^[a-f0-9]{64}$/)
+  }).strict(),
+  import_zod14.z.object({
+    action: import_zod14.z.literal("stop_assignment"),
+    projectId,
+    assignmentId: import_zod14.z.string().regex(/^[a-f0-9]{64}$/)
+  }).strict(),
+  import_zod14.z.object({
+    action: import_zod14.z.literal("review_assignment"),
+    projectId,
+    assignmentId: import_zod14.z.string().regex(/^[a-f0-9]{64}$/),
+    version: import_zod14.z.number().int().positive(),
+    outcome: import_zod14.z.enum(["completed", "retry", "blocked"]),
+    assessment: import_zod14.z.string().min(1).max(8e3)
+  }).strict(),
   import_zod14.z.object({
     action: import_zod14.z.literal("resolve_repair"),
     projectId,
@@ -25340,6 +25390,13 @@ var qaAnalysisRequestSchema = import_zod14.z.discriminatedUnion("action", [
   import_zod14.z.object({ action: import_zod14.z.literal("request_repair"), projectId, proposalId: import_zod14.z.string().uuid() }).strict(),
   import_zod14.z.object({ action: import_zod14.z.literal("repair_status"), projectId, proposalId: import_zod14.z.string().uuid() }).strict(),
   import_zod14.z.object({ action: import_zod14.z.literal("save_report"), projectId, reportId: import_zod14.z.string().uuid() }).strict(),
+  import_zod14.z.object({
+    action: import_zod14.z.literal("create_followup"),
+    projectId,
+    taskId: import_zod14.z.string().uuid(),
+    title: import_zod14.z.string().trim().min(1).max(200),
+    detail: import_zod14.z.string().trim().min(1).max(16e3)
+  }).strict(),
   import_zod14.z.object({ action: import_zod14.z.literal("pulls"), projectId, page }).strict(),
   import_zod14.z.object({ action: import_zod14.z.literal("pull_status"), projectId, number: id2 }).strict(),
   import_zod14.z.object({ action: import_zod14.z.literal("runs"), projectId, page, ...window }).strict(),
@@ -25352,6 +25409,7 @@ var qaAnalysisRequestSchema = import_zod14.z.discriminatedUnion("action", [
   import_zod14.z.object({ action: import_zod14.z.literal("deployment_statuses"), projectId, deploymentId: id2, page }).strict(),
   import_zod14.z.object({
     action: import_zod14.z.literal("statistics"),
+    comparePrevious: import_zod14.z.boolean().optional(),
     continuation: import_zod14.z.string().uuid().optional(),
     projectId,
     ...window,
@@ -25492,6 +25550,9 @@ function isRunnerSupervisorBackend(value) {
 import { constants as constants3 } from "node:fs";
 import { open as open2 } from "node:fs/promises";
 import { join as join2 } from "node:path";
+
+// packages/session/dist/acp-backend.js
+import { constants as osConstants } from "node:os";
 
 // node_modules/@agentclientprotocol/sdk/dist/v1/unstable/schema/index.js
 var AGENT_METHODS = {
@@ -31090,8 +31151,12 @@ async function runAcpTurn(opts, profile) {
       await writeAll(writer, topLevelText.flush()).catch(() => void 0);
     }
     let exitTimer;
+    let processExitCode;
     await Promise.race([
-      child.exited.then(() => true, () => false),
+      child.exited.then((code) => {
+        processExitCode = code;
+        return true;
+      }, () => false),
       new Promise((resolve4) => {
         exitTimer = setTimeout(() => resolve4(false), 250);
       })
@@ -31099,8 +31164,11 @@ async function runAcpTurn(opts, profile) {
     if (exitTimer !== void 0)
       clearTimeout(exitTimer);
     const exitDetails = child.exitDetails?.();
+    const actualExitCode = exitDetails?.signal ? 128 + osConstants.signals[exitDetails.signal] : exitDetails?.code ?? processExitCode;
+    const memoryGuardKill = actualExitCode === 137 && child.stderr().split(/\r?\n/u).includes("VERITY_MEMORY_GUARD_KILL");
+    const crashMessage = memoryGuardKill ? "Memory limit reached \u2014 the memory guard stopped the agent." : actualExitCode === 137 ? "Agent was killed (SIGKILL, exit 137); possible memory pressure." : message;
     const stderr = `${child.stderr()}
-${message}`;
+${crashMessage}`;
     const processFailure = !aborted && exitDetails !== void 0 && (exitDetails.code !== 0 || exitDetails.signal !== null || turnActive) ? {
       ...opts.model === void 0 ? {} : { model: opts.model.slice(0, 200) },
       exitCode: exitDetails.code,
@@ -31108,10 +31176,14 @@ ${message}`;
       turnActive,
       stderrTail: redactProcessStderr(child.stderr(), opts.env ?? process.env).slice(-65536)
     } : {};
-    const failedBeforeExecution = !aborted && boundSessionId === void 0 && isExplicitPreExecutionRejection(stderr);
+    const failedBeforeExecution = !aborted && actualExitCode !== 137 && boundSessionId === void 0 && isExplicitPreExecutionRejection(stderr);
     if (sessionId2 !== void 0 && !aborted && !failedBeforeExecution) {
-      const usageLimit = isUsageLimitError(message);
-      await writer.write({ t: "error", kind: usageLimit ? "usage_limit" : "acp", message }).catch(() => void 0);
+      const usageLimit = actualExitCode !== 137 && isUsageLimitError(message);
+      await writer.write({
+        t: "error",
+        kind: memoryGuardKill ? "memory_limit" : usageLimit ? "usage_limit" : "acp",
+        message: crashMessage
+      }).catch(() => void 0);
       await writer.write({ t: "status", state: usageLimit ? "completed" : "crashed" }).catch(() => void 0);
     }
     if (sessionId2 !== void 0 || opts.storeSessionId !== void 0) {
@@ -31142,7 +31214,7 @@ ${message}`;
     await writer.finish().catch(() => void 0);
     return {
       sessionId: boundSessionId,
-      exitCode: aborted ? 143 : 1,
+      exitCode: aborted ? 143 : actualExitCode !== void 0 && actualExitCode !== 0 ? actualExitCode : 1,
       stderr,
       aborted,
       ...failedBeforeExecution ? { failedBeforeExecution: true } : {},
@@ -31485,7 +31557,7 @@ var AcpOpenCodeBackend = class {
 
 // packages/session/dist/broker-spawner.js
 import { createConnection } from "node:net";
-import { constants as osConstants } from "node:os";
+import { constants as osConstants2 } from "node:os";
 import { StringDecoder } from "node:string_decoder";
 var PROTOCOL_VERSION2 = 1;
 var STDOUT_HIGH_WATER_BYTES = 1024 * 1024;
@@ -31714,7 +31786,7 @@ function createBrokerSpawner(socketPath, requireManagedConfiguration = false) {
             code: typeof frame.code === "number" ? frame.code : null,
             signal: typeof frame.signal === "string" ? frame.signal : null
           };
-          const signalNumber = typeof frame.signal === "string" ? osConstants.signals[frame.signal] : void 0;
+          const signalNumber = typeof frame.signal === "string" ? osConstants2.signals[frame.signal] : void 0;
           settle(typeof frame.code === "number" ? frame.code : 128 + (signalNumber ?? 0));
         }
       }

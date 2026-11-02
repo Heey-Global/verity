@@ -5056,3 +5056,119 @@ migrations['0179_qa_manual_repairs'] = {
     await sql`drop table qa_manual_repairs`.execute(db);
   },
 };
+
+// Existing manually configured clients retain their form-post authentication.
+migrations['0180_mcp_oauth_token_auth_method'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table http_mcp_connections add column oauth_token_auth_method text not null default 'client_secret_post' check (oauth_token_auth_method in ('none', 'client_secret_post', 'client_secret_basic'))`.execute(
+      db,
+    );
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table http_mcp_connections drop column oauth_token_auth_method`.execute(db);
+  },
+};
+
+migrations['0181_qa_assignments'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`create table qa_assignments (
+ id text primary key, project_id text not null references projects(id) on delete cascade,
+ source_session_id text not null, user_id text not null, target_session_id text,
+ state text not null, title text not null, instruction text not null, criteria text not null,
+ qa_revision integer not null, mandate_revision integer not null,
+ consent_key text unique, attempt integer not null default 0, dispatch_id text,
+ feedback text not null default '', evidence text not null default '', reason text,
+ version integer not null default 1, created_at timestamptz not null default now(),
+ expires_at timestamptz not null default now() + interval '1 hour'
+ )`.execute(db);
+    await sql`create unique index qa_assignment_project_owner on qa_assignments(project_id) where state in ('queued','running','waiting','verifying','stopping')`.execute(
+      db,
+    );
+    await sql`create table qa_assignment_notifications (
+ id text primary key, assignment_id text not null references qa_assignments(id) on delete cascade,
+ dispatch_id text not null unique, payload text not null,
+ attempt integer not null default 0, acknowledged boolean not null default false
+ )`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table qa_assignment_notifications`.execute(db);
+    await sql`drop table qa_assignments`.execute(db);
+  },
+};
+
+migrations['0182_session_pr_repair_origins'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table repair_attempts add column automation_marker text`.execute(db);
+    await sql`create table repair_session_origins (
+      project_id text not null references projects(id) on delete cascade,
+      resource text not null, session_id text not null references sessions(session_id) on delete cascade,
+      primary key (project_id, resource)
+    )`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table repair_session_origins`.execute(db);
+    await sql`alter table repair_attempts drop column automation_marker`.execute(db);
+  },
+};
+
+migrations['0183_unassigned_meeting_retention'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    // Null keeps the default in code, so changing the default needs no migration.
+    await sql`alter table verity_settings add column unassigned_meeting_retention_days integer
+      check (unassigned_meeting_retention_days between 1 and 365)`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table verity_settings drop column unassigned_meeting_retention_days`.execute(
+      db,
+    );
+  },
+};
+
+migrations['0184_calendar_watch_calendars'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    // Calendars Verity watches for online meetings. A calendar carries no project: meetings
+    // joined from it start unassigned. Disconnecting the account drops its choices.
+    await sql`create table calendar_watch_calendars (
+      account_id text not null references google_accounts(id) on delete cascade,
+      calendar_id text not null,
+      summary text not null,
+      auto_join boolean not null default false,
+      updated_at timestamptz not null default now(),
+      primary key (account_id, calendar_id)
+    )`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table calendar_watch_calendars`.execute(db);
+  },
+};
+
+migrations['0185_calendar_watch_events'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    // Joinable events of watched calendars and what Verity already did about them, so a
+    // restart neither repeats a notification nor joins a meeting twice. Title and link are
+    // encrypted: links often carry the meeting passcode.
+    await sql`create table calendar_watch_events (
+      event_key text primary key,
+      account_id text not null,
+      calendar_id text not null,
+      event_id text not null,
+      title text,
+      meeting_url text not null,
+      starts_at timestamptz not null,
+      ends_at timestamptz not null,
+      accepted boolean not null default true,
+      notified_at timestamptz,
+      decision text check (decision in ('joined', 'skipped', 'failed')),
+      meeting_id text,
+      started_notified_at timestamptz,
+      updated_at timestamptz not null default now(),
+      foreign key (account_id, calendar_id)
+        references calendar_watch_calendars(account_id, calendar_id) on delete cascade
+    )`.execute(db);
+    await sql`create index calendar_watch_events_calendar
+      on calendar_watch_events(account_id, calendar_id, starts_at)`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table calendar_watch_events`.execute(db);
+  },
+};

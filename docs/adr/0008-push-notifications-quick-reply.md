@@ -101,6 +101,22 @@ actions. Three actionable categories:
 - **`PULL_REQUEST_READY`** — **`Merge` / `Open`**. Merge requires Face ID/passcode and
   calls the existing authenticated merge endpoint; Open navigates without mutation.
 
+Two further categories belong to no session. They announce meetings from watched Google
+calendars (`docs/live-meeting-calendar.md`) and are recognized by their own parser
+(`packages/mobile/src/push/meeting.ts`), never through the session payload schema:
+
+- **`MEETING_UPCOMING`** — **`Join` / `Skip`**, five minutes before a meeting. Join requires
+  Face ID/passcode because it sends a bot that records the call; the meeting always starts
+  without a project and is assigned afterwards. A plain tap opens the app with Join / Skip.
+- **`MEETING_STARTED`** — **`Open` / `Discard`**, after Verity joined on its own. Open
+  brings the app to the foreground and offers the assign sheet; Discard requires
+  Face ID/passcode and deletes the transcript.
+
+Their `data` is `{ kind: 'meeting-upcoming', eventKey, startsAt }` or
+`{ kind: 'meeting-started', meetingId, eventKey }` plus `deviceId`. `eventKey` is an opaque
+server id; the meeting link stays on the server. Join, Skip and Discard go through the
+outbox; the server answers a repeated or late reply with 404/409, which drops it.
+
 **Payload & privacy.** The push `data` carries only routing metadata:
 `{ sessionId, kind, toolUseId?, pullRequestNumber?, deviceId }`. `deviceId` is added per
 recipient by the sender; the app rejects destructive actions unless it matches the active

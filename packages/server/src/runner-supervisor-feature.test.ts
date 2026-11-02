@@ -251,7 +251,11 @@ describe('verity-runner supervisor runtime', () => {
   });
 
   it('keeps the committed worker bundle reproducible', async () => {
-    await expect(execFileAsync('npm', ['run', 'check:runner-worker'])).resolves.toBeDefined();
+    // The bundler compiles its own graph; rebuilding every workspace here can
+    // exhaust the test deadline before the bundle comparison even starts.
+    await expect(
+      execFileAsync(process.execPath, ['scripts/build-runner-worker.mjs', '--check']),
+    ).resolves.toBeDefined();
   }, 60_000);
 
   it('opens the supervisor transport for every ACP adapter', async () => {

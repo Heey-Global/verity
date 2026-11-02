@@ -1,3 +1,4 @@
+import { McpOAuthAuthorizationRequired } from './http-mcp-oauth-errors.js';
 import { transformMcpResponse } from './mcp-apps-stream.js';
 import { lookup as dnsLookup } from 'node:dns';
 import { request as httpsRequest } from 'node:https';
@@ -336,18 +337,35 @@ export function registerHttpMcpProxyRoute(app: FastifyInstance, deps: HttpMcpPro
         if (authorizationPoll !== undefined) clearInterval(authorizationPoll);
       }
       return reply;
-    } catch {
+    } catch (error) {
       if (hijacked) {
         reply.raw.destroy();
         return reply;
       }
+      if (error instanceof McpOAuthAuthorizationRequired)
+        return reply
+          .code(401)
+          .send({ error: 'mcp_oauth_authorization_required', message: error.message });
       reply.code(502);
       return { error: 'MCP upstream unavailable' };
     }
   };
+  const guardedHandle: typeof handle = async (...args) => {
+    try {
+      return await handle(...args);
+    } catch (error) {
+      if (error instanceof McpOAuthAuthorizationRequired) {
+        return args[2]
+          .code(401)
+          .send({ error: 'mcp_oauth_authorization_required', message: error.message });
+      }
+      return args[2].code(502).send({ error: 'MCP connection could not be resolved' });
+    }
+  };
+
   app.post('/internal/mcp-proxy', { bodyLimit: MAX_BODY_BYTES }, (request, reply) =>
-    handle('POST', request, reply),
+    guardedHandle('POST', request, reply),
   );
-  app.get('/internal/mcp-proxy', (request, reply) => handle('GET', request, reply));
-  app.delete('/internal/mcp-proxy', (request, reply) => handle('DELETE', request, reply));
+  app.get('/internal/mcp-proxy', (request, reply) => guardedHandle('GET', request, reply));
+  app.delete('/internal/mcp-proxy', (request, reply) => guardedHandle('DELETE', request, reply));
 }

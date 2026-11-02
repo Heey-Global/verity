@@ -17,6 +17,11 @@ const networkBinding = z.strictObject({
   bridge: z.string().regex(/^vep[a-f0-9]{12}$/u),
 });
 const reference = { projectId: identity, generation: identity };
+/** A canonical DNS name as the relay's answerer sends it; never a URL or address. */
+const hostname = z
+  .string()
+  .max(253)
+  .regex(/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/u);
 export const projectEgressHostRequest = z.discriminatedUnion('operation', [
   z.strictObject({ operation: z.literal('current'), projectId: identity }),
   z.strictObject({ operation: z.literal('register'), binding: networkBinding }),
@@ -31,6 +36,7 @@ export const projectEgressHostRequest = z.discriminatedUnion('operation', [
     containerId: objectId,
   }),
   z.strictObject({ operation: z.literal('retire'), ...reference }),
+  z.strictObject({ operation: z.literal('resolve-direct'), ...reference, name: hostname }),
 ]);
 export const projectEgressHostResponse = z.discriminatedUnion('state', [
   z.strictObject({
@@ -43,6 +49,16 @@ export const projectEgressHostResponse = z.discriminatedUnion('state', [
     state: z.enum(['denied', 'started-denied', 'retired', 'direct-refreshed', 'direct-revoked']),
     generation: identity,
   }),
+  z.strictObject({
+    state: z.literal('resolved'),
+    generation: identity,
+    addresses: z
+      .array(z.union([z.ipv4(), z.ipv6()]))
+      .min(1)
+      .max(32),
+    ttlSeconds: z.number().int().min(1).max(5),
+  }),
+  z.strictObject({ state: z.literal('unresolved'), generation: identity }),
   z.strictObject({
     state: z.enum(['connected', 'started-connected']),
     generation: identity,
@@ -78,6 +94,14 @@ export interface ProjectEgressHostEnforcement {
   deny(binding: ProjectEgressNetworkBinding): Promise<void>;
   refresh(binding: ProjectEgressNetworkBinding): Promise<void>;
   revoke(binding: ProjectEgressNetworkBinding): Promise<void>;
+  /** Read-only: addresses admitted right now for a granted name of this generation. */
+  admitted(
+    binding: ProjectEgressNetworkBinding,
+    name: string,
+  ): { addresses: readonly string[]; ttlSeconds: number } | undefined;
+  /** A name the Sandbox asked for without a grant becomes a pending destination request.
+   * Never awaited: the DNS answer stays a refusal and does not wait on the policy store. */
+  requestDirect?(binding: ProjectEgressNetworkBinding, name: string): void;
 }
 interface Dependencies {
   bootId?: string;
@@ -94,6 +118,11 @@ interface Dependencies {
     role: 'sandbox' | 'relay',
     restoring?: boolean,
   ): Promise<void>;
+  /** A fresh, phase-local batch that performs all role, network and transport checks. */
+  inspectDirectTransport?(
+    binding: ProjectEgressNetworkBinding,
+    ids: { sandbox: string; relay: string },
+  ): Promise<EgressTransport | undefined>;
   inspectTransport?(
     binding: ProjectEgressNetworkBinding,
     ids: { sandbox: string; relay: string },
@@ -321,6 +350,25 @@ export class ProjectEgressHost {
   }
   execute(input: unknown): Promise<ProjectEgressHostResponse> {
     const request = projectEgressHostRequest.parse(input);
+    if (request.operation === 'resolve-direct') {
+      // DNS answers read the current admission only. They neither queue behind
+      // lifecycle work nor alter, renew or invalidate any authority.
+      const record = this.state.records.find(
+        (record) => !record.retired && key(record.binding) === key(request),
+      );
+      const answer = record && this.deps.enforcement?.admitted(record.binding, request.name);
+      if (record && !answer) this.deps.enforcement?.requestDirect?.(record.binding, request.name);
+      return Promise.resolve(
+        answer
+          ? {
+              state: 'resolved',
+              generation: request.generation,
+              addresses: [...answer.addresses],
+              ttlSeconds: answer.ttlSeconds,
+            }
+          : { state: 'unresolved', generation: request.generation },
+      );
+    }
     if (request.operation !== 'current' && request.operation !== 'refresh-direct')
       this.deps.enforcement?.invalidate(
         request.operation === 'register' ? request.binding : request,
@@ -402,13 +450,22 @@ export class ProjectEgressHost {
         if (!this.deps.enforcement || !this.transports.has(key(record.binding)))
           throw new Error('Direct enforcement is not ready');
         const verifyTransport = async () => {
-          for (const role of ['sandbox', 'relay'] as const)
-            await this.deps.inspectContainer(record.binding, record.containers[role]!, role);
-          await this.deps.inspectNetwork(record.binding, containerIds(record));
-          const transport = await this.deps.inspectTransport?.(record.binding, {
-            sandbox: record.containers.sandbox!,
-            relay: record.containers.relay!,
-          });
+          const ids = { sandbox: record.containers.sandbox!, relay: record.containers.relay! };
+          const transport = this.deps.inspectDirectTransport
+            ? await this.deps.inspectDirectTransport(record.binding, ids)
+            : await (async () => {
+                // Await every reader before admission or containment, including failures.
+                const checks = await Promise.allSettled([
+                  ...(['sandbox', 'relay'] as const).map((role) =>
+                    this.deps.inspectContainer(record.binding, record.containers[role]!, role),
+                  ),
+                  this.deps.inspectNetwork(record.binding, containerIds(record)),
+                  this.deps.inspectTransport?.(record.binding, ids),
+                ]);
+                for (const check of checks) if (check.status === 'rejected') throw check.reason;
+                const result = checks[3]!;
+                return result.status === 'fulfilled' ? result.value : undefined;
+              })();
           if (
             JSON.stringify(transport) !==
             JSON.stringify(this.transports.get(key(record.binding))!.transport)

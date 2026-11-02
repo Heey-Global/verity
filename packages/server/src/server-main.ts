@@ -1,3 +1,4 @@
+import { parseOomScoreAdj } from './sandbox-memory-policy.js';
 import {
   configureManagedUpdateChannel,
   MANAGED_DEPLOYMENT_ROOT,
@@ -943,6 +944,9 @@ async function main(): Promise<void> {
       // VERITY_SANDBOX_ALLOW_PRIVILEGE_ESCALATION=1 (or add caps via CAP_ADD).
       sandboxPidsLimit: parseNonNegativeInt(process.env.VERITY_SANDBOX_PIDS_LIMIT),
       sandboxMemoryBytes: parseByteSize(process.env.VERITY_SANDBOX_MEMORY),
+      sandboxMemoryReservationBytes: parseByteSize(process.env.VERITY_SANDBOX_MEMORY_RESERVATION),
+      sandboxHostReserveBytes: parseByteSize(process.env.VERITY_SANDBOX_HOST_RESERVE),
+      sandboxOomScoreAdj: parseOomScoreAdj(process.env.VERITY_SANDBOX_OOM_SCORE_ADJ),
       sandboxSwapBytes: parseSwapSize(process.env.VERITY_SANDBOX_SWAP),
       sandboxNanoCpus: parseCpuCores(process.env.VERITY_SANDBOX_CPUS),
       sandboxCpuShares: parseNonNegativeInt(process.env.VERITY_SANDBOX_CPU_SHARES),

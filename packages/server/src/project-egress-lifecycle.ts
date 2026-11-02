@@ -171,6 +171,23 @@ export class ProjectEgressLifecycle {
     if (reply.state !== 'direct-revoked' || reply.generation !== identity.containerGeneration)
       throw new Error('Direct revocation was not acknowledged');
   }
+  /** Addresses the host admitted for a granted name of exactly this generation. */
+  async resolveDirect(
+    identity: InternalConnectionIdentity,
+    name: string,
+  ): Promise<{ addresses: readonly string[]; ttlSeconds: number } | undefined> {
+    if (this.closed) return undefined;
+    const reply = await this.command({
+      operation: 'resolve-direct',
+      ...this.reference(identity),
+      name,
+    });
+    if (reply.state === 'unresolved' && reply.generation === identity.containerGeneration)
+      return undefined;
+    if (reply.state !== 'resolved' || reply.generation !== identity.containerGeneration)
+      throw new Error('Direct name answer was not acknowledged');
+    return { addresses: reply.addresses, ttlSeconds: reply.ttlSeconds };
+  }
   async retire(identity: InternalConnectionIdentity): Promise<void> {
     this.stopRenewal(identity);
     await this.acknowledge(

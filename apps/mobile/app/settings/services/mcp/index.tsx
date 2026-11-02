@@ -92,13 +92,17 @@ function McpConnectionsView({ client }: { client: VerityClient }) {
       mutationInFlight.current = true;
       setBusy(true);
       setError(undefined);
-      void runMcpOAuth(connection)
+      void runMcpOAuth(connection, client)
         .then(async (result) => {
           if (result.kind === 'cancelled') return;
           await client.completeHttpMcpOAuth(connection.id, result);
           await load();
         })
-        .catch(() => setError('Could not authorize the MCP connection.'))
+        .catch((caught: unknown) =>
+          setError(
+            caught instanceof Error ? caught.message : 'Could not authorize the MCP connection.',
+          ),
+        )
         .finally(() => {
           mutationInFlight.current = false;
           setBusy(false);

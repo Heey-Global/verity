@@ -1,4 +1,4 @@
-import type { ProjectEgressStore } from '@verity/store';
+import type { EgressGrant, EgressTarget, ProjectEgressStore } from '@verity/store';
 import {
   ProjectEgressFence,
   type ProjectFenceBinding,
@@ -14,6 +14,8 @@ export function createProjectEgressAdmission(options: {
   continuous?: boolean;
   sponsorUserId: string;
   store: Pick<ProjectEgressStore, 'readForAdmission'>;
+  /** Host-owned destinations admitted alongside the project's grants, never from a card. */
+  systemTargets?: readonly EgressTarget[];
   dependencies: Omit<ProjectFenceDependencies, 'policyCurrent'>;
 }): {
   invalidate(): void;
@@ -21,11 +23,25 @@ export function createProjectEgressAdmission(options: {
   refresh(): Promise<void>;
   revoke(): Promise<void>;
   retire(): Promise<void>;
+  admitted(name: string): { addresses: readonly string[]; ttlSeconds: number } | undefined;
 } {
   const binding = structuredClone(options.binding);
   const sponsorUserId = options.sponsorUserId;
   if (!sponsorUserId) throw new Error('An admission sponsor is required');
   const store = options.store;
+  const system: EgressGrant[] = (options.systemTargets ?? []).map((target) => ({
+    id: `system:${target.protocol}:${target.host}:${target.port}`,
+    target: { ...target },
+    approvedBy: 'system',
+    approvedAt: 0,
+    expiresAt: null,
+  }));
+  // Both admission reads append the same system grants, so currency still compares equal.
+  // A persisted grant can never claim a system id and its exemptions.
+  const withSystem = (grants: readonly EgressGrant[]) => [
+    ...grants.filter((grant) => !grant.id.startsWith('system:')),
+    ...system,
+  ];
   let lifecycle = Symbol();
   let refreshing: symbol | undefined;
   let queue: Promise<unknown> = Promise.resolve();
@@ -50,7 +66,7 @@ export function createProjectEgressAdmission(options: {
       // A revision identifies the complete persisted grant set, not caller authority.
       return (
         refreshing === lifecycle &&
-        JSON.stringify(policy.grants) === JSON.stringify(snapshot.grants)
+        JSON.stringify(withSystem(policy.grants)) === JSON.stringify(snapshot.grants)
       );
     },
   });
@@ -69,7 +85,13 @@ export function createProjectEgressAdmission(options: {
           if (!options.continuous) await fence.revoke(binding);
           const policy = await store.readForAdmission(binding.projectId, sponsorUserId);
           if (attempt !== lifecycle) throw new Error('Admission refresh superseded');
-          await fence.refresh({ binding, revision: policy.revision, grants: policy.grants });
+          await fence.refresh({
+            binding,
+            revision: policy.revision,
+            grants: withSystem(policy.grants),
+            // An unreachable system target excludes only itself, never the project's grants.
+            system: system.map((grant) => grant.id),
+          });
         } catch (error) {
           await fence.revoke(binding);
           throw error;
@@ -78,5 +100,6 @@ export function createProjectEgressAdmission(options: {
     },
     revoke: () => invalidate(() => fence.revoke(binding)),
     retire: () => invalidate(() => fence.retire(binding)),
+    admitted: (name) => fence.admitted(binding, name),
   };
 }

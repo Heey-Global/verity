@@ -154,6 +154,8 @@ export function createDockerProjectRelayStarter(
       // See RELAY_MEMORY_BYTES: the heap cap is only meaningful next to the ceiling.
       env: [
         `NODE_OPTIONS=--max-old-space-size=${String(RELAY_HEAP_LIMIT_MIB)}`,
+        // Under the project fence the relay answers names only from host-admitted grants.
+        ...(context.egress === undefined ? [] : ['VERITY_DNS_CONTROLLED=1']),
         ...(options.forgeProxyEnabled?.(context.identity.projectId) === true
           ? [
               'VERITY_FORGE_PROXY=github',

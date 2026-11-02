@@ -1,6 +1,8 @@
 # Ephemeral Docker daemon for the live Secret Job CI path. Keeping runsc inside this
 # privileged test container avoids mutating the shared self-hosted runner. A release pinned
-# as an archive brings the sidecars in gvisor-bin/ next to runsc, which it cannot run without.
+# as an archive brings the sidecars in gvisor-bin/ next to runsc, which it cannot run without,
+# and the two records deploy/host/verity-host-runtime writes beside them, so the managed
+# installer this image hosts in CI takes the directory as installed instead of fetching it again.
 # renovate: datasource=docker depName=docker
 FROM docker:29.9.2-dind@sha256:9e79b879b177fbd72c34376a3dd3d91747da5db49e1f560f76aea59561471977
 
@@ -28,6 +30,10 @@ RUN set -eu; \
       tar -xjf /tmp/gvisor.tar.bz2 -C "$(dirname "$install_path")" --no-same-owner runsc gvisor-bin; \
       rm -f /tmp/gvisor.tar.bz2; \
       test -f "$(dirname "$install_path")/gvisor-bin/gvisor_sentry"; \
+      (set -o pipefail; cd "$(dirname "$install_path")" && find runsc gvisor-bin -type f | LC_ALL=C sort | \
+        while IFS= read -r file; do sha512sum -- "$file"; done) >"$(dirname "$install_path")/.verity-files.sha512"; \
+      printf '%s\n' "$archive_checksum" >"$(dirname "$install_path")/.verity-archive-sha512"; \
+      chmod 0644 "$(dirname "$install_path")/.verity-files.sha512" "$(dirname "$install_path")/.verity-archive-sha512"; \
     fi; \
     printf '%s  %s\n' "$checksum" "$install_path" | sha512sum --check --status; \
     chmod 0755 "$install_path"; \

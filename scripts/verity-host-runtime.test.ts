@@ -84,7 +84,7 @@ function host(options: { daemon?: object; live?: object; reloadWorks?: boolean }
     `case "$1" in is-active) exit 0 ;; reload) ${
       options.reloadWorks === false
         ? 'exit 0'
-        : `jq -c '.runtimes // {}' '${daemonJson}' > '${live}.tmp' && mv '${live}.tmp' '${live}'`
+        : `if [[ -f '${daemonJson}' ]]; then jq -c '.runtimes // {}' '${daemonJson}'; else echo '{"runc":{"path":"runc"}}'; fi > '${live}.tmp' && mv '${live}.tmp' '${live}'`
     } ;; esac`,
   );
   const systemd = join(root, 'run-systemd');
@@ -624,5 +624,90 @@ describeHost('verity-host-runtime install-self', () => {
     expect(h.run().status).toBe(0);
     expect(readFileSync(h.target, 'utf8')).toBe(readFileSync(script, 'utf8'));
     expect(existsSync(h.agent)).toBe(false);
+  });
+});
+
+describeHost('durable Docker runtime configuration recovery', () => {
+  it.each([0, 1])(
+    'refuses an empty live snapshot with Docker exit %i before publication',
+    (status) => {
+      const h = host({ daemon: { 'log-level': 'debug' } });
+      const before = readFileSync(h.daemonJson, 'utf8');
+      writeFileSync(join(h.root, 'bin/docker'), `#!/bin/bash\nexit ${String(status)}\n`, {
+        mode: 0o755,
+      });
+      mkdirSync(h.state, { recursive: true });
+      writeFileSync(
+        join(h.state, 'request.json'),
+        JSON.stringify({
+          version: 1,
+          id: 'snapshot-failure',
+          requirements: {
+            release,
+            sha512: {
+              x86_64: createHash('sha512')
+                .update(readFileSync(join(h.root, 'runsc.download')))
+                .digest('hex'),
+              aarch64: 'b'.repeat(128),
+            },
+            runtimes: { runsc: runscArgs, 'runsc-project': projectArgs },
+          },
+        }),
+      );
+      const result = h.run('apply-request');
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('could not inspect current Docker runtime registrations');
+      expect(readFileSync(h.daemonJson, 'utf8')).toBe(before);
+      expect(existsSync(join(h.root, 'private/daemon-install/pending'))).toBe(false);
+      expect(h.callsOf('systemctl').some((call) => call.includes('reload'))).toBe(false);
+    },
+  );
+
+  it.each(['{}', ''])(
+    'retains recovery intent when Docker inspection fails (snapshot %j)',
+    (live) => {
+      const h = host();
+      const transaction = join(h.root, 'private/daemon-install');
+      mkdirSync(transaction, { recursive: true });
+      writeFileSync(join(transaction, 'pending'), '');
+      writeFileSync(join(transaction, 'absent'), '');
+      writeFileSync(join(transaction, 'live'), live);
+      writeFileSync(join(h.root, 'bin/docker'), '#!/bin/bash\nexit 1\n', { mode: 0o755 });
+      const result = h.run('apply-pins', h.pins);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('recovery-required');
+      expect(existsSync(join(transaction, 'pending'))).toBe(true);
+    },
+  );
+
+  it('recovers a killed configuration publication before reconciling forward', () => {
+    const h = host();
+    const systemctl = join(h.root, 'bin/systemctl');
+    const original = readFileSync(systemctl, 'utf8');
+    writeFileSync(
+      systemctl,
+      '#!/bin/bash\nif [[ $1 == reload ]]; then kill -KILL "$PPID"; exit 1; fi\nexit 0\n',
+      { mode: 0o755 },
+    );
+    expect(h.run('apply-pins', h.pins).signal).toBe('SIGKILL');
+    expect(existsSync(join(h.root, 'private/daemon-install/pending'))).toBe(true);
+    expect(existsSync(join(h.state, 'daemon-install.pending'))).toBe(true);
+    writeFileSync(systemctl, original, { mode: 0o755 });
+    const result = h.run('apply-pins', h.pins);
+    expect(result.status, result.stderr).toBe(0);
+    expect(existsSync(join(h.root, 'private/daemon-install'))).toBe(false);
+    expect(existsSync(join(h.state, 'daemon-install.pending'))).toBe(false);
+    expect(h.daemon()).toMatchObject({ runtimes: { runsc: { path: h.runtimePath } } });
+  });
+  it('keeps its checkpoint when restoration cannot be verified', () => {
+    const h = host();
+    writeFileSync(join(h.root, 'bin/systemctl'), '#!/bin/bash\n[[ $1 == is-active ]]\n', {
+      mode: 0o755,
+    });
+    const result = h.run('apply-pins', h.pins);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('recovery-required');
+    expect(result.stderr).not.toContain('was restored');
+    expect(existsSync(join(h.root, 'private/daemon-install/pending'))).toBe(true);
   });
 });

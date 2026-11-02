@@ -59,8 +59,10 @@ int same_bytes(const __u8 *a, const __u8 *b, int count)
 }
 
 /* Recognize only the existing IPv4 relay services and their exact ARP pair.
- * VLANs, IP options, fragments, IPv6, UDP and arbitrary service ports receive
- * no system exception. This classifier never grants an Internet destination.
+ * TCP reaches the relay services and its controlled DNS answerer; UDP reaches
+ * only that answerer on port 53. VLANs, IP options, fragments, IPv6 and other
+ * ports receive no system exception. This classifier never grants an Internet
+ * destination: the relay answers names only from the host's admitted grants.
  */
 static __inline __attribute__((always_inline))
 int relay_packet_matches(const __u8 *data, __u32 length,
@@ -78,15 +80,20 @@ int relay_packet_matches(const __u8 *data, __u32 length,
             data[20] != 0 || (data[21] != 1 && data[21] != 2))
             return 0;
     } else if (length < 54 || data[12] != 0x08 || data[13] != 0 ||
-               data[14] != 0x45 || data[23] != 6 ||
+               data[14] != 0x45 || (data[23] != 6 && data[23] != 17) ||
                (data[20] & 0xbf) != 0 || data[21] != 0 ||
-               ((__u32)data[16] * 256 + data[17]) < 40 || (data[46] >> 4) < 5) {
+               ((__u32)data[16] * 256 + data[17]) < (data[23] == 6 ? 40 : 28) ||
+               (data[23] == 6 && (data[46] >> 4) < 5)) {
         return 0;
     }
+    int udp = !arp && data[23] == 17;
     if (!arp) {
         __u32 ip_length = (__u32)data[16] * 256 + data[17];
-        __u32 tcp_length = (__u32)(data[46] >> 4) * 4;
-        if (ip_length > length - 14 || 20 + tcp_length > ip_length)
+        __u32 header_length = udp ? 8 : (__u32)(data[46] >> 4) * 4;
+        if (ip_length > length - 14 || 20 + header_length > ip_length)
+            return 0;
+        /* The UDP length must describe exactly the IP payload. */
+        if (udp && (__u32)data[38] * 256 + data[39] != ip_length - 20)
             return 0;
     }
     const __u8 *source_ip = data + (arp ? 28 : 26);
@@ -115,7 +122,9 @@ int relay_packet_matches(const __u8 *data, __u32 length,
         return 0;
     int offset = reverse ? 34 : 36;
     __u32 port = (__u32)data[offset] * 256 + data[offset + 1];
-    return port == 8080 || port == 8443 || (policy->codex == 1 && port == 8444);
+    if (udp)
+        return port == 53;
+    return port == 53 || port == 8080 || port == 8443 || (policy->codex == 1 && port == 8444);
 }
 #ifndef VERITY_RELAY_PACKET_TEST
 struct {

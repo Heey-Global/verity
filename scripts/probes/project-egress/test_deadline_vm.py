@@ -30,7 +30,7 @@ def evidence():
     mutations = {'wall': {'protected_before': 0, 'protected_after': 2,
                          'before': {'accepted': 1}, 'after': {'accepted': 3, 'last_accepted_boot_ns': 5,
                          'clocks': {'real_ns': 10}}, 'real_deadline_ns': 9, 'lease': {'deadline_ns': 6}},
-                 'guard': {'map': {'deadline_ns': 0}, 'removed': {'qdiscs': [{'kind': 'noqueue'}]},
+                 'guard': {'map': {'deadline_ns': 0}, 'removed': {'qdiscs': [{'kind': 'noqueue'}], 'stats': {'accepted': 3, 'denied': 2}},
                            'before': {'accepted': 3, 'denied': 2}, 'after': {'accepted': 3, 'denied': 2}}}
     return {'complete': True, 'cases': cases, 'zero': zero, 'mutations': mutations,
             'started_mono_ns': 1, 'finished_mono_ns': 2}
@@ -128,6 +128,12 @@ class DeadlineVerifierTests(unittest.TestCase):
 
     def test_rejects_zero_deadline_permission(self):
         self.proof['zero']['after']['accepted'] += 1
+        with self.assertRaises(AssertionError): self.verify()
+
+    def test_removal_baseline_excludes_packets_denied_before_detachment(self):
+        self.proof['mutations']['guard']['before']['denied'] = 1
+        self.verify()
+        self.proof['mutations']['guard']['after']['denied'] += 1
         with self.assertRaises(AssertionError): self.verify()
 
     def test_rejects_unremoved_kernel_guard_as_mutation(self):

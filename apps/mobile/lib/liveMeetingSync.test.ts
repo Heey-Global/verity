@@ -186,3 +186,29 @@ it('does not upload or apply recorder commands after switching servers', async (
     subscription.mockRestore();
   }
 });
+
+it('uploads a viewing device note without a local recording or a new transcript event', async () => {
+  Object.defineProperty(AppState, 'currentState', { configurable: true, value: 'active' });
+  const subscription = jest
+    .spyOn(AppState, 'addEventListener')
+    .mockReturnValue({ remove: jest.fn() });
+  jest.mocked(currentMeeting).mockReturnValue(null);
+  jest.mocked(getActiveMeetingServerId).mockReturnValue('web:https://browser.test');
+  jest.mocked(pendingMeetings).mockResolvedValue([]);
+  jest.mocked(pendingNotes).mockResolvedValue([{ sessionId: 'session-1', note }]);
+  const stop = startLiveMeetingSync();
+  try {
+    await waitFor(() => expect(client.putLiveMeetingNote).toHaveBeenCalledWith('session-1', note));
+    expect(acknowledgeNote).toHaveBeenCalledWith(
+      'web:https://browser.test',
+      note.id,
+      note.revision,
+    );
+    expect(client.putLiveMeeting).not.toHaveBeenCalled();
+    expect(client.getLiveMeetingCommands).not.toHaveBeenCalled();
+    expect(endMeeting).not.toHaveBeenCalled();
+  } finally {
+    stop();
+    subscription.mockRestore();
+  }
+});

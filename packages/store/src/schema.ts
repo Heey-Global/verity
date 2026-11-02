@@ -124,6 +124,33 @@ export interface GoogleAccountsTable {
   created_at: ColumnType<Date, string | undefined, never>;
 }
 
+/** A watched calendar; a row exists only while watching is on. */
+export interface CalendarWatchCalendarsTable {
+  account_id: string;
+  calendar_id: string;
+  summary: string;
+  auto_join: ColumnType<boolean, boolean | undefined, boolean>;
+  updated_at: ColumnType<Date, string | undefined, string>;
+}
+
+/** A joinable event of a watched calendar; `title` and `meeting_url` are encrypted. */
+export interface CalendarWatchEventsTable {
+  event_key: string;
+  account_id: string;
+  calendar_id: string;
+  event_id: string;
+  title: string | null;
+  meeting_url: string;
+  starts_at: ColumnType<Date, string, string>;
+  ends_at: ColumnType<Date, string, string>;
+  accepted: ColumnType<boolean, boolean | undefined, boolean>;
+  notified_at: ColumnType<Date | null, string | null | undefined, string | null>;
+  decision: 'joined' | 'skipped' | 'failed' | null;
+  meeting_id: string | null;
+  started_notified_at: ColumnType<Date | null, string | null | undefined, string | null>;
+  updated_at: ColumnType<Date, string | undefined, string>;
+}
+
 export interface GoogleServiceOverridesTable {
   mode: 'inherit' | 'disabled' | 'account';
   revision: string;
@@ -219,6 +246,7 @@ export interface HttpMcpConnectionsTable {
   authorization: string | null;
   auth_type: ColumnType<string, string | undefined, string>;
   oauth_client_id: string | null;
+  oauth_token_auth_method: ColumnType<string, string | undefined, string>;
   oauth_client_secret: string | null;
   oauth_authorization_endpoint: string | null;
   oauth_token_endpoint: string | null;
@@ -530,6 +558,12 @@ export interface VeritySettingsTable {
   id: string;
   /** Shows internal Verity Control project/workspace surfaces when enabled. */
   advanced_mode_enabled: ColumnType<boolean, boolean | undefined, boolean>;
+  /** Days an unassigned live meeting is kept after it ends; null means the default. */
+  unassigned_meeting_retention_days: ColumnType<
+    number | null,
+    number | null | undefined,
+    number | null
+  >;
   git_user_name: ColumnType<string | null, string | null | undefined, string | null>;
   git_user_email: ColumnType<string | null, string | null | undefined, string | null>;
   git_ssh_private_key_path: ColumnType<string | null, string | null | undefined, string | null>;
@@ -1596,12 +1630,15 @@ export interface VulnDigestsTable {
 export interface Database {
   qa_dispatches: QADispatchesTable;
   qa_manual_repairs: QAManualRepairsTable;
+  qa_assignments: QAAssignmentsTable;
+  qa_assignment_notifications: QAAssignmentNotificationsTable;
   repair_resource_budgets: RepairResourceBudgetsTable;
   repair_mandates: RepairMandatesTable;
   repair_incidents: RepairIncidentsTable;
   repair_workflow_heads: RepairWorkflowHeadsTable;
   repair_attempts: RepairAttemptsTable;
   repair_session_history: RepairSessionHistoryTable;
+  repair_session_origins: RepairSessionOriginsTable;
   qa_coordinator: QACoordinatorTable;
   qa_inbox: QAInboxTable;
   qa_proposals: QAProposalsTable;
@@ -1648,6 +1685,8 @@ export interface Database {
   session_slide_decks: SessionSlideDecksTable;
   google_workspace_recents: GoogleWorkspaceRecentsTable;
   google_accounts: GoogleAccountsTable;
+  calendar_watch_calendars: CalendarWatchCalendarsTable;
+  calendar_watch_events: CalendarWatchEventsTable;
   google_service_overrides: GoogleServiceOverridesTable;
   project_google_drive_folders: ProjectGoogleDriveFoldersTable;
   project_google_connections: ProjectGoogleConnectionsTable;
@@ -1829,6 +1868,7 @@ interface RepairWorkflowHeadsTable {
   run_id: ColumnType<string, string | number, string | number>;
 }
 interface RepairAttemptsTable {
+  automation_marker: string | null;
   dispatch_id: string;
   incident_id: string;
   session_id: string;
@@ -1836,6 +1876,11 @@ interface RepairAttemptsTable {
   ended_at: Date | null;
   outcome: string | null;
   start_seq: ColumnType<string | null, string | number | null, string | number | null>;
+}
+interface RepairSessionOriginsTable {
+  project_id: string;
+  resource: string;
+  session_id: string;
 }
 interface RepairSessionHistoryTable {
   project_id: string;
@@ -1979,4 +2024,35 @@ interface RepairResourceBudgetsTable {
   resource: string;
   used: Generated<number>;
   cycle: Generated<number>;
+}
+
+interface QAAssignmentsTable {
+  id: string;
+  project_id: string;
+  source_session_id: string;
+  user_id: string;
+  target_session_id: string | null;
+  state: string;
+  title: string;
+  instruction: string;
+  criteria: string;
+  qa_revision: number;
+  mandate_revision: number;
+  consent_key: string | null;
+  attempt: Generated<number>;
+  dispatch_id: string | null;
+  feedback: Generated<string>;
+  evidence: Generated<string>;
+  reason: string | null;
+  version: Generated<number>;
+  created_at: Generated<Date>;
+  expires_at: Generated<Date>;
+}
+interface QAAssignmentNotificationsTable {
+  attempt: Generated<number>;
+  acknowledged: Generated<boolean>;
+  id: string;
+  assignment_id: string;
+  dispatch_id: string;
+  payload: string;
 }

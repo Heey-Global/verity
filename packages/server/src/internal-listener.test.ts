@@ -13,6 +13,7 @@ import {
   markInternalConnections,
   internalConnectionIdentity,
   PROJECT_UDS_ROUTES,
+  RELAY_ANSWERER_ROUTES,
   requestArrivedInternally,
   startInternalListener,
   startProjectInternalUnixListener,
@@ -333,6 +334,9 @@ describe('project relay route drift', () => {
       [...entries.matchAll(/'([^']+)'/gu)].map((match) => match[1] as string),
     );
     expect(relayRoutes.size).toBeGreaterThan(0);
-    expect([...PROJECT_UDS_ROUTES].sort()).toEqual([...relayRoutes].sort());
+    const forwarded = [...PROJECT_UDS_ROUTES].filter((route) => !RELAY_ANSWERER_ROUTES.has(route));
+    expect(forwarded.sort()).toEqual([...relayRoutes].sort());
+    // The relay's own answerer route is never forwarded for the Sandbox.
+    for (const route of RELAY_ANSWERER_ROUTES) expect(relayRoutes.has(route)).toBe(false);
   });
 });

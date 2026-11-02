@@ -10,6 +10,7 @@ import { createConnection, createServer as createNetServer, type Server, Socket 
 import type { Duplex } from 'node:stream';
 
 import { DOCKER_EMBEDDED_DNS, DNS_PORT, startDnsForwarder, type DnsForwarder } from './dns.js';
+import { answerDnsQuery, brokerNameLookup } from './dns-answer.js';
 
 export const BROKER_SOCKET_PATH = '/run/verity-relay/broker/broker.sock';
 export const CLAUDE_SOCKET_PATH = '/run/verity-relay/claude/claude.sock';
@@ -326,6 +327,8 @@ export async function startRelay(
     codexSocketPath?: string;
     dnsPort?: number;
     dnsUpstream?: { host: string; port: number };
+    /** Under the project fence: answer names only from host-admitted direct grants. */
+    controlledDns?: boolean;
   } = {},
 ): Promise<StartedRelay> {
   const host = options.host ?? '0.0.0.0';
@@ -347,10 +350,15 @@ export async function startRelay(
     await listen(codex, options.codexPort ?? CODEX_PORT, host);
     // The gVisor Sandbox's only resolver (see dns.ts). The capability-less relay binds port 53
     // under the `net.ipv4.ip_unprivileged_port_start` sysctl its container is created with.
+    const lookup =
+      (options.controlledDns ?? process.env.VERITY_DNS_CONTROLLED === '1')
+        ? brokerNameLookup(options.brokerSocketPath ?? BROKER_SOCKET_PATH)
+        : undefined;
     dns = await startDnsForwarder({
       host,
       port: options.dnsPort ?? DNS_PORT,
       upstream: options.dnsUpstream ?? DOCKER_EMBEDDED_DNS,
+      ...(lookup ? { answer: (query: Buffer) => answerDnsQuery(query, lookup) } : {}),
     });
   } catch (error) {
     await Promise.allSettled([closeServer(broker), closeServer(claude), closeServer(codex)]);

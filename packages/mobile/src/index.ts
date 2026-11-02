@@ -484,7 +484,12 @@ export {
   type ProjectSettingsDraft,
 } from './projectSettings.js';
 export { secretStatusSchema, type SecretStatus } from './api.js';
-export type { SchedulingRequestView } from './api.js';
+export type {
+  ActiveLiveMeetings,
+  CalendarWatch,
+  SchedulingRequestView,
+  UpcomingMeeting,
+} from './api.js';
 export { type IntegrationAccount, type IntegrationSource } from './api.js';
 export {
   type LiveMeeting,
@@ -598,6 +603,12 @@ export {
   type PushOutboxOptions,
   type PushOutboxStorage,
 } from './push/outbox.js';
+export {
+  parseMeetingPush,
+  resolveMeetingPushResponse,
+  type MeetingPush,
+  type MeetingPushIntent,
+} from './push/meeting.js';
 
 export {
   type KnowledgeSource,
@@ -694,3 +705,5 @@ export type {
   AuditOperationQuery,
   AuditOperationSummary,
 } from './audit.js';
+
+export { qaAssignmentView } from './ui/qaAssignment.js';

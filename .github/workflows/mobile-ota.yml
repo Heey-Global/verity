@@ -94,7 +94,13 @@ jobs:
 
       - name: Check out the immutable merged release source
         if: steps.intent.outputs.mode == 'stage'
-        run: git checkout --detach '${{ steps.intent.outputs.commit }}'
+        run: |
+          # Keep recovery tooling from reconciled main while bundling the exact
+          # approved app source, which may predate a release-script repair.
+          tooling="$(mktemp -d "$RUNNER_TEMP/verity-ota-tools.XXXXXX")"
+          cp -R scripts/. "$tooling/"
+          echo "OTA_RELEASE_TOOLS=$tooling" >> "$GITHUB_ENV"
+          git checkout --detach '${{ steps.intent.outputs.commit }}'
 
       - name: Require Expo release configuration
         if: steps.intent.outputs.mode == 'stage'
@@ -191,7 +197,7 @@ jobs:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
           STAGING_GOOGLE_AUTH_ID: ${{ secrets.STAGING_GOOGLE_AUTH_ID }}
           GOOGLE_AUTH_ID: ${{ vars.GOOGLE_AUTH_ID || '340053543157-ohufghcdnc5do2lkjg7cgnkk67oac0e7.apps.googleusercontent.com' }}
-        run: node scripts/mobile-ota-release.ts stage-map "${{ steps.version.outputs.runtime }}" "${{ steps.intent.outputs.version }}"
+        run: node "$OTA_RELEASE_TOOLS/mobile-ota-release.ts" stage-map "${{ steps.version.outputs.runtime }}" "${{ steps.intent.outputs.version }}"
 
       - name: Retain exact staging OTA CPU map
         if: always() && steps.intent.outputs.mode == 'stage' && steps.version.outputs.blocked != 'true'
@@ -213,7 +219,7 @@ jobs:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
           STAGING_GOOGLE_AUTH_ID: ${{ secrets.STAGING_GOOGLE_AUTH_ID }}
           GOOGLE_AUTH_ID: ${{ vars.GOOGLE_AUTH_ID || '340053543157-ohufghcdnc5do2lkjg7cgnkk67oac0e7.apps.googleusercontent.com' }}
-        run: node scripts/mobile-ota-release.ts stage "${{ steps.version.outputs.runtime }}" "${{ steps.intent.outputs.version }}"
+        run: node "$OTA_RELEASE_TOOLS/mobile-ota-release.ts" stage "${{ steps.version.outputs.runtime }}" "${{ steps.intent.outputs.version }}"
 
       - name: Record the delivered Staging release
         if: steps.intent.outputs.mode == 'stage' && steps.version.outputs.blocked != 'true'

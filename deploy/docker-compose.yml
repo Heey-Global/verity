@@ -21,6 +21,7 @@ services:
     # container itself; sandbox limits below only apply to spawned project
     # containers. Keep defaults conservative for a 16 GiB single-host install and
     # override in .env on larger machines.
+    oom_score_adj: ${VERITY_SERVER_OOM_SCORE_ADJ:--250}
     mem_limit: ${VERITY_SERVER_MEMORY:-4g}
     memswap_limit: ${VERITY_SERVER_MEMORY_SWAP:-4g}
     cpus: ${VERITY_SERVER_CPUS:-4}
@@ -120,7 +121,12 @@ services:
       # there. It prefers cgroup v2 with the sandbox's own cgroup visible and
       # falls back to asking Node what libuv found, which is expected to cover a
       # v1 host as well — untested, and the prompt is written not to depend on it.
-      VERITY_SANDBOX_MEMORY: ${VERITY_SANDBOX_MEMORY:-6g}
+      VERITY_SANDBOX_MEMORY: ${VERITY_SANDBOX_MEMORY:-}
+      VERITY_SANDBOX_MEMORY_RESERVATION: ${VERITY_SANDBOX_MEMORY_RESERVATION:-}
+      VERITY_SANDBOX_HOST_RESERVE: ${VERITY_SANDBOX_HOST_RESERVE:-4g}
+      VERITY_SANDBOX_OOM_SCORE_ADJ: ${VERITY_SANDBOX_OOM_SCORE_ADJ:-500}
+      VERITY_SERVER_OOM_SCORE_ADJ: ${VERITY_SERVER_OOM_SCORE_ADJ:--250}
+      VERITY_CONTROL_PLANE_RUNNER_OOM_SCORE_ADJ: ${VERITY_CONTROL_PLANE_RUNNER_OOM_SCORE_ADJ:--250}
       # Swap a sandbox may use on top of VERITY_SANDBOX_MEMORY. 0 disables swap.
       # Only useful if the HOST has swap, and that swap is shared by every
       # container on it. See "Resource guardrails" in deploy/README.md.
@@ -400,6 +406,7 @@ services:
     # already provisions; it goes to the Server alone, never into this environment.
     image: ${VERITY_SERVER_IMAGE:?set the digest-pinned server image containing the agent gateway}
     restart: unless-stopped
+    oom_score_adj: ${VERITY_AGENT_GATEWAY_OOM_SCORE_ADJ:--250}
     mem_limit: ${VERITY_AGENT_GATEWAY_MEMORY:-512m}
     memswap_limit: ${VERITY_AGENT_GATEWAY_MEMORY_SWAP:-512m}
     cpus: ${VERITY_AGENT_GATEWAY_CPUS:-1}
@@ -492,6 +499,7 @@ services:
     # renovate: datasource=docker depName=postgres
     image: postgres:18-alpine@sha256:10a5c69a83035ab5239f5620d708520e8b28f5aa1f2b20143e6024532edadfb5
     restart: unless-stopped
+    oom_score_adj: ${VERITY_POSTGRES_OOM_SCORE_ADJ:--250}
     mem_limit: ${VERITY_POSTGRES_MEMORY:-1g}
     memswap_limit: ${VERITY_POSTGRES_MEMORY_SWAP:-1g}
     cpus: ${VERITY_POSTGRES_CPUS:-1}
@@ -573,6 +581,7 @@ services:
   # services profiled means the legacy one-file deployment remains unchanged.
   verity-managed-gateway:
     profiles: [managed]
+    oom_score_adj: ${VERITY_MANAGED_GATEWAY_OOM_SCORE_ADJ:--250}
     image: ${VERITY_SERVER_IMAGE:?set the digest-pinned official server image}
     command: [managed-gateway]
     restart: unless-stopped
@@ -603,6 +612,7 @@ services:
 
   verity-updater:
     profiles: [managed]
+    oom_score_adj: ${VERITY_UPDATER_OOM_SCORE_ADJ:--250}
     image: ${VERITY_SERVER_IMAGE:?set the digest-pinned official server image}
     command: [managed-updater]
     restart: unless-stopped

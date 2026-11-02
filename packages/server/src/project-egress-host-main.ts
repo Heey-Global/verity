@@ -1,15 +1,21 @@
 import { z } from 'zod';
+import { inspectEgressHostDirectTransport } from './project-egress-host-inspection.js';
 import { createPostgresDb, ProjectEgressStore } from '@verity/store';
 import {
   readEgressHostConfiguration,
   egressHostAuthority,
   egressHostDestinationAllowed,
+  egressHostDirectChecks,
   unavailableEgressAuthority,
 } from './project-egress-host-authority.js';
 import { createProjectEgressHostEnforcement } from './project-egress-host-enforcement.js';
 import { hostProjectDeadlineEnforcer } from './project-egress-deadline.js';
 import { inspectProjectFenceAttachment } from './project-egress-attachment.js';
 import { createProjectEgressResolver } from './project-egress-resolver.js';
+import {
+  createProtectedAddressInventory,
+  SYSTEM_DIRECT_TARGETS,
+} from './project-egress-classification.js';
 import { inspectEgressTransport } from './project-egress-transport.js';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -53,8 +59,8 @@ const authority = rawAuthority === undefined ? undefined : egressHostAuthority.p
 if (authority !== undefined && relayPolicy?.packetEnforcement !== true)
   throw new Error('Direct authority requires host packet enforcement');
 const database = authority === undefined ? undefined : createPostgresDb(authority.databaseUrl);
-const policyStore =
-  database === undefined ? unavailableEgressAuthority : new ProjectEgressStore(database);
+const projectPolicy = database === undefined ? undefined : new ProjectEgressStore(database);
+const policyStore = projectPolicy ?? unavailableEgressAuthority;
 const resolve =
   authority === undefined
     ? () => Promise.reject(new Error('Host DNS authority is not configured'))
@@ -62,17 +68,30 @@ const resolve =
         servers: authority.dnsServers,
         destinationAllowed: egressHostDestinationAllowed,
       });
+// Addresses of broker/system destinations are never direct, whatever name points at them.
+const protectedAddresses = createProtectedAddressInventory({
+  resolve,
+  configuredHosts: authority?.mandatoryHosts ?? [],
+  reportConfiguredFailure: (host, error) => {
+    console.error(`Configured broker host ${host} could not be resolved`, error);
+  },
+});
+const deadline = hostProjectDeadlineEnforcer();
 const enforcement = createProjectEgressHostEnforcement({
-  deadline: hostProjectDeadlineEnforcer(),
+  deadline,
   store: policyStore,
+  systemTargets: SYSTEM_DIRECT_TARGETS,
+  ...(projectPolicy ? { requests: projectPolicy } : {}),
+  reportRequestFailure: (error) => console.error('Destination request was not recorded', error),
   directAuthority: (binding) => authority?.projectSponsors[binding.projectId] !== undefined,
   sponsor: (binding) => authority?.projectSponsors[binding.projectId] ?? '__unconfigured__',
   inspect: inspectEgressHostDirect,
   dependencies: {
     inspect: inspectProjectFenceAttachment,
     apply: applyProjectFenceRules,
-    directTargetAllowed: (host) => Promise.resolve(authority?.directHosts.includes(host) === true),
-    destinationAllowed: egressHostDestinationAllowed,
+    ...egressHostDirectChecks(authority, protectedAddresses),
+    reportSystemFailure: (target, error) =>
+      console.error(`System destination ${target.host} was not admitted`, error),
     resolve,
     existing: async (binding) => {
       const tables = z
@@ -106,6 +125,10 @@ const controller = new ProjectEgressHost(await store.load(), {
   inspectNetwork: inspectEgressHostNetwork,
   inspectContainer: (binding, id, role, restoring) =>
     inspectEgressHostContainer(binding, id, role, relayPolicy, restoring),
+  inspectDirectTransport: (binding, ids) => {
+    if (!relayPolicy) throw new Error('Relay host policy is not configured');
+    return inspectEgressHostDirectTransport(binding, ids, relayPolicy);
+  },
   inspectTransport: (binding, ids) => {
     if (!relayPolicy) throw new Error('Relay host policy is not configured');
     return inspectEgressTransport(binding, ids, relayPolicy.codexSubpath !== undefined);
@@ -119,8 +142,18 @@ const controller = new ProjectEgressHost(await store.load(), {
 });
 if (mode === 'restore') {
   await controller.restore(relayPolicy?.packetEnforcement === true);
+  deadline.close();
   await database?.destroy();
 } else {
+  const refreshProtected = () =>
+    protectedAddresses.refresh().catch((error: unknown) => {
+      // The previous complete inventory ages out; direct admission then fails closed.
+      console.error('Protected destination inventory refresh failed', error);
+    });
+  if (authority !== undefined) await refreshProtected();
+  const inventoryTimer =
+    authority === undefined ? undefined : setInterval(() => void refreshProtected(), 60_000);
+  inventoryTimer?.unref();
   const service = await serveProjectEgressHost({
     restore: () => controller.restore(),
     deny: () => controller.shutdown(),
@@ -144,12 +177,17 @@ if (mode === 'restore') {
     },
   });
   const stop = () => {
+    clearInterval(inventoryTimer);
     void service.stop().then(
       async () => {
+        deadline.close();
         await database?.destroy();
         process.exit(0);
       },
-      () => process.exit(1),
+      () => {
+        deadline.close();
+        process.exit(1);
+      },
     );
   };
   process.once('SIGTERM', stop);

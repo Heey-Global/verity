@@ -229,6 +229,7 @@ export * from './knowledge-sources.js';
 export { redactSecrets, redactProcessStderr } from './redact.js';
 
 export * from './google-accounts.js';
+export * from './calendar-watch.js';
 
 export * from './vulnerability-scan.js';
 
@@ -266,3 +267,5 @@ export {
   type RepairIncident,
   type RepairMode,
 } from './repair-supervision.js';
+
+export { QAAssignmentStore, type QAAssignment, type QAAssignmentState } from './qa-assignments.js';

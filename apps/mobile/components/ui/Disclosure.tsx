@@ -9,13 +9,23 @@ export function Disclosure({
   title,
   subtitle,
   children,
+  expanded: controlled,
+  onExpandedChange,
 }: {
   title: string;
   subtitle?: string;
   children: ReactNode;
+  /** Set to control it from outside, e.g. to open it when it is the only way forward. */
+  expanded?: boolean;
+  onExpandedChange?: (expanded: boolean) => void;
 }) {
   const { theme } = useUnistyles();
-  const [expanded, setExpanded] = useState(false);
+  const [own, setOwn] = useState(false);
+  const expanded = controlled ?? own;
+  const setExpanded = (next: boolean) => {
+    if (controlled === undefined) setOwn(next);
+    onExpandedChange?.(next);
+  };
   return (
     <View>
       <Row
