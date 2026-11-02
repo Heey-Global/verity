@@ -3390,9 +3390,9 @@ export async function buildEmbeddedServer(
   let projectRelayLifecycle: ProjectRelayLifecycle | undefined;
   const projectRelayEnabled = (config.projectRelayImage ?? '').trim().length > 0;
   const forgeIdentity = projectRelayEnabled ? await loadForgeProxyIdentity(secretRoot) : undefined;
-  // The protected relay profile has no Forge route; never add it implicitly.
-  const forgeProxyEnabled = (): boolean =>
-    projectRelayEnabled && config.projectEgress === undefined;
+  // Under the project fence, Git and gh reach forges only through this brokered route;
+  // direct grants for forge hosts are refused as broker-only destinations.
+  const forgeProxyEnabled = (): boolean => projectRelayEnabled;
   const forgeCertificates = new Map<
     string,
     { expires: number; certificate: ReturnType<typeof issueGatewayServerCertificate> }

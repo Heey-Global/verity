@@ -86,6 +86,31 @@ export function relaySocketMounts(binding: ProjectEgressNetworkBinding, policy: 
   }));
 }
 
+/** The relay's optional Forge route only filters CONNECT targets it forwards to the
+ * Server's authenticated broker socket; the broker enforces capabilities and hosts.
+ */
+function forgeRelayEnvironment(entry: string): boolean {
+  if (entry === 'VERITY_FORGE_PROXY=github') return true;
+  const prefix = 'VERITY_FORGE_AUTHORITIES=';
+  if (!entry.startsWith(prefix)) return false;
+  let authorities: unknown;
+  try {
+    authorities = JSON.parse(entry.slice(prefix.length));
+  } catch {
+    return false;
+  }
+  return (
+    Array.isArray(authorities) &&
+    authorities.length > 0 &&
+    authorities.length <= 16 &&
+    authorities.every(
+      (authority) =>
+        typeof authority === 'string' &&
+        /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,62}:443$/u.test(authority),
+    )
+  );
+}
+
 /** No arbitrary host paths, implicit mounts, namespace sharing or command overrides. */
 export function verifyEgressRelay(
   binding: ProjectEgressNetworkBinding,
@@ -125,7 +150,9 @@ export function verifyEgressRelay(
     !['no-new-privileges', 'no-new-privileges=true'].includes(config.SecurityOpt[0]!) ||
     JSON.stringify(config.Sysctls) !==
       JSON.stringify({ 'net.ipv4.ip_unprivileged_port_start': '53' }) ||
-    value.Config.Env.some((entry) => !environment.includes(entry)) ||
+    value.Config.Env.some(
+      (entry) => !environment.includes(entry) && !forgeRelayEnvironment(entry),
+    ) ||
     new Set(value.Config.Env.map((entry) => entry.split('=')[0])).size !==
       value.Config.Env.length ||
     volume.Name !== policy.dataVolume ||

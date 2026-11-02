@@ -304,3 +304,31 @@ it('accepts absent listeners only for deny-only restoration of a stopped relay',
   await chmod(dir, 0o777);
   await expect(inspectEgressRelay(binding, f.reply[0]!.Id, policy, docker, true)).rejects.toThrow();
 });
+
+it('accepts only the brokered Forge route settings in the relay environment', () => {
+  const check = (env: string[]) => {
+    const f = fixture();
+    f.reply[0]!.Config.Env = ['PATH=/usr/bin', 'NODE_OPTIONS=--max-old-space-size=96', ...env];
+    return () => verifyEgressRelay(binding, policy, f.reply, image, f.volume);
+  };
+  expect(check(['VERITY_FORGE_PROXY=github'])()).toHaveLength(3);
+  expect(
+    check([
+      'VERITY_FORGE_PROXY=github',
+      'VERITY_FORGE_AUTHORITIES=["github.com:443","api.github.com:443","forge.example.org:443"]',
+    ])(),
+  ).toHaveLength(3);
+  for (const env of [
+    ['VERITY_FORGE_PROXY=anything'],
+    ['VERITY_FORGE_AUTHORITIES=["github.com:22"]'],
+    ['VERITY_FORGE_AUTHORITIES=["10.0.0.1:443"]'],
+    ['VERITY_FORGE_AUTHORITIES=[]'],
+    ['VERITY_FORGE_AUTHORITIES=not-json'],
+    [
+      'VERITY_FORGE_AUTHORITIES=["evil.example.org:443"]',
+      'VERITY_FORGE_AUTHORITIES=["x.example:443"]',
+    ],
+    ['VERITY_DNS_UPSTREAM=203.0.113.1'],
+  ])
+    expect(check(env), env.join(' ')).toThrow('Untrusted relay');
+});
