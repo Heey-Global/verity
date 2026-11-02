@@ -329,7 +329,7 @@ export class RepairSupervisionStore {
       await sql<{
         id: string;
         session_id: string;
-      }>`select id,session_id from qa_dispatches d where state='reserved' and not exists(select 1 from qa_manual_repairs m where m.dispatch_id=d.id)`.execute(
+      }>`select id,session_id from qa_dispatches d where state='reserved' and d.id not like 'qa-assignment:%' and not exists(select 1 from qa_manual_repairs m where m.dispatch_id=d.id)`.execute(
         this.db,
       )
     ).rows;
@@ -429,7 +429,7 @@ export class RepairSupervisionStore {
         if (
           consentKey &&
           (
-            await sql`select id from qa_manual_repairs where consent_key=${consentKey} and id<>${manual.id}`.execute(
+            await sql`select id from qa_manual_repairs where consent_key=${consentKey} and id<>${manual.id} union all select id from qa_assignments where consent_key=${consentKey}`.execute(
               trx,
             )
           ).rows.length
@@ -447,7 +447,7 @@ export class RepairSupervisionStore {
           return undefined;
       }
       const result =
-        await sql<RepairIncident>`update repair_incidents i set state = 'working', owner_session_id = ${sessionId}, last_session_id = ${sessionId}, attempts = attempts + 1, dispatch_id = ${randomUUID()}, updated_at = now() where i.id = ${id} and (${qaRevision === undefined} or exists (select 1 from qa_coordinator c where c.id = 1 and c.enabled = true and c.revision = ${qaRevision ?? -1})) and (i.state = 'open' or (${manual !== undefined} and i.state = 'verifying' and i.owner_session_id is null)) and coalesce((select used from repair_resource_budgets b where b.project_id=i.project_id and b.resource=i.resource),0) < 2 and exists (select 1 from repair_mandates m where m.project_id = i.project_id and (m.mode = 'automatic' or (${manual !== undefined} and m.mode = 'monitor')) and m.revision = ${mandateRevision}) and not exists (select 1 from repair_incidents other where other.project_id = i.project_id and other.owner_session_id is not null) and (select count(*) from repair_incidents where owner_session_id is not null) < 2 returning i.*`.execute(
+        await sql<RepairIncident>`update repair_incidents i set state = 'working', owner_session_id = ${sessionId}, last_session_id = ${sessionId}, attempts = attempts + 1, dispatch_id = ${randomUUID()}, updated_at = now() where i.id = ${id} and (${qaRevision === undefined} or exists (select 1 from qa_coordinator c where c.id = 1 and c.enabled = true and c.revision = ${qaRevision ?? -1})) and (i.state = 'open' or (${manual !== undefined} and i.state = 'verifying' and i.owner_session_id is null)) and coalesce((select used from repair_resource_budgets b where b.project_id=i.project_id and b.resource=i.resource),0) < 2 and exists (select 1 from repair_mandates m where m.project_id = i.project_id and (m.mode = 'automatic' or (${manual !== undefined} and m.mode = 'monitor')) and m.revision = ${mandateRevision}) and not exists (select 1 from repair_incidents other where other.project_id = i.project_id and other.owner_session_id is not null) and not exists(select 1 from qa_assignments a where a.project_id=i.project_id and a.state in ('queued','running','waiting','verifying','stopping')) and ((select count(*) from repair_incidents where owner_session_id is not null) + (select count(*) from qa_assignments where state in ('queued','running','waiting','verifying','stopping'))) < 2 returning i.*`.execute(
           trx,
         );
       const claim = result.rows[0];
