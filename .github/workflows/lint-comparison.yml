@@ -1,0 +1,68 @@
+name: Lint comparison
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: '26.13.0'
+      - run: npm ci --workspace packages --include-workspace-root --ignore-scripts --omit=optional
+      - name: Measure both lint implementations
+        shell: bash
+        env:
+          MEASUREMENT_DIR: ${{ runner.temp }}/lint-comparison
+          BASELINE_SHA: df75b9aa2a18bc118c5d2429183618db3cbd2a99
+        run: |
+          set -euo pipefail
+          mkdir -p "$MEASUREMENT_DIR"
+          {
+            git rev-parse HEAD
+            echo "baseline-launcher=$BASELINE_SHA"
+            node --version
+            npm --version
+            uname -sm
+            lscpu
+            free -k
+          } > "$MEASUREMENT_DIR/environment.txt"
+          git show "$BASELINE_SHA:scripts/lint.sh" > "$MEASUREMENT_DIR/baseline.sh"
+          # Both launchers read the same tracked sources, config and dependencies.
+          # The historical launcher has no result cache. Current caches are bypassed.
+          # Run sequentially on one runner; order and OS-cache warming remain a limitation.
+          failed=0
+          for variant in baseline current; do
+            if [[ "$variant" == baseline ]]; then
+              command=(bash "$MEASUREMENT_DIR/baseline.sh")
+            else
+              command=(npm run lint -- --no-cache)
+            fi
+            set +e
+            /usr/bin/time --verbose --output="$MEASUREMENT_DIR/$variant-resources.txt" \
+              timeout --signal=TERM --kill-after=30s 45m "${command[@]}" \
+              2>&1 | tee "$MEASUREMENT_DIR/$variant.log"
+            status=${PIPESTATUS[0]}
+            set -e
+            echo "$status" > "$MEASUREMENT_DIR/$variant-exit.txt"
+            if [[ "$status" != 0 ]]; then failed=1; fi
+          done
+          # RSS is the maximum individual-process RSS, not aggregate runner memory.
+          # Failed/timed-out baselines cannot establish a speedup ratio.
+          exit "$failed"
+      - name: Upload comparison evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: lint-comparison-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/lint-comparison
+          retention-days: 7
+          if-no-files-found: warn
