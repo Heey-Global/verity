@@ -24882,6 +24882,24 @@ var import_zod7 = __toESM(require_zod(), 1);
 var sourcePath = import_zod7.z.string().trim().min(1).max(512).refine((path) => path.split("/").every((part) => part !== "" && part !== "." && part !== ".." && !part.startsWith(".") && !part.includes("\\") && !part.includes("\0")));
 var knowledgeToolRequestSchema = import_zod7.z.discriminatedUnion("operation", [
   import_zod7.z.object({
+    operation: import_zod7.z.literal("record_decision"),
+    requestId: import_zod7.z.string().regex(/^[A-Za-z0-9_-]{1,100}$/u),
+    title: import_zod7.z.string().trim().min(1).max(160),
+    decision: import_zod7.z.string().trim().min(1).max(8e3),
+    rationale: import_zod7.z.string().trim().max(4e3).optional(),
+    confirmationMessageSeq: import_zod7.z.number().int().positive().optional(),
+    predecessor: import_zod7.z.object({
+      id: import_zod7.z.string().regex(/^[a-f0-9]{32}$/u),
+      digest: import_zod7.z.string().regex(/^[a-f0-9]{64}$/u)
+    }).strict().optional()
+  }).strict(),
+  import_zod7.z.object({
+    operation: import_zod7.z.literal("lookup_decisions"),
+    id: import_zod7.z.string().regex(/^[a-f0-9]{32}$/u).optional(),
+    query: import_zod7.z.string().trim().max(300).optional(),
+    offset: import_zod7.z.number().int().min(0).max(500).optional()
+  }).strict(),
+  import_zod7.z.object({
     operation: import_zod7.z.literal("import_source"),
     sourcePath: import_zod7.z.string().trim().min(1).max(512),
     destination: import_zod7.z.enum(["meetings", "documents"]),
@@ -25372,6 +25390,13 @@ var qaAnalysisRequestSchema = import_zod14.z.discriminatedUnion("action", [
   import_zod14.z.object({ action: import_zod14.z.literal("request_repair"), projectId, proposalId: import_zod14.z.string().uuid() }).strict(),
   import_zod14.z.object({ action: import_zod14.z.literal("repair_status"), projectId, proposalId: import_zod14.z.string().uuid() }).strict(),
   import_zod14.z.object({ action: import_zod14.z.literal("save_report"), projectId, reportId: import_zod14.z.string().uuid() }).strict(),
+  import_zod14.z.object({
+    action: import_zod14.z.literal("create_followup"),
+    projectId,
+    taskId: import_zod14.z.string().uuid(),
+    title: import_zod14.z.string().trim().min(1).max(200),
+    detail: import_zod14.z.string().trim().min(1).max(16e3)
+  }).strict(),
   import_zod14.z.object({ action: import_zod14.z.literal("pulls"), projectId, page }).strict(),
   import_zod14.z.object({ action: import_zod14.z.literal("pull_status"), projectId, number: id2 }).strict(),
   import_zod14.z.object({ action: import_zod14.z.literal("runs"), projectId, page, ...window }).strict(),
@@ -25384,6 +25409,7 @@ var qaAnalysisRequestSchema = import_zod14.z.discriminatedUnion("action", [
   import_zod14.z.object({ action: import_zod14.z.literal("deployment_statuses"), projectId, deploymentId: id2, page }).strict(),
   import_zod14.z.object({
     action: import_zod14.z.literal("statistics"),
+    comparePrevious: import_zod14.z.boolean().optional(),
     continuation: import_zod14.z.string().uuid().optional(),
     projectId,
     ...window,

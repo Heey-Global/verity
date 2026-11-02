@@ -398,3 +398,63 @@ it('requires fixed bounds on subsequent run pages before contacting GitHub', asy
   );
   expect(fetcher).toHaveBeenCalledOnce();
 });
+
+it('compares equal adjacent periods without counting the boundary in both', async () => {
+  const makeRun = (id: number, created_at: string, conclusion: string) => ({
+    id,
+    created_at,
+    conclusion,
+    run_attempt: 1,
+    workflow_id: 10,
+    event: 'pull_request',
+    head_branch: 'fix/' + id,
+    head_sha: 'sha' + id,
+    status: 'completed',
+    run_started_at: created_at,
+    updated_at: created_at,
+    html_url: 'https://github.com/team/app/actions/runs/' + id,
+    name: 'CI',
+    pull_requests: [{ number: id }],
+  });
+  const runs = [
+    makeRun(1, '2026-10-01T00:00:00Z', 'failure'),
+    makeRun(2, '2026-10-02T00:00:00Z', 'success'),
+  ];
+  const fetched: string[] = [];
+  const reader = createGitHubQAAnalysis(
+    async () => 'test-token',
+    async (input) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+      fetched.push(url);
+      if (url.endsWith('/app/')) return Response.json({ default_branch: 'main' });
+      if (url.includes('/jobs?')) return Response.json({ total_count: 0, jobs: [] });
+      return Response.json({ total_count: runs.length, workflow_runs: runs });
+    },
+  );
+  const result = await reader(
+    ref,
+    {
+      action: 'statistics',
+      projectId: 'p',
+      releaseWorkflowIds: [],
+      since: '2026-10-02T00:00:00Z',
+      until: '2026-10-03T00:00:00Z',
+      comparePrevious: true,
+    },
+    async () => {},
+  );
+  expect(result).toMatchObject({
+    complete: true,
+    since: '2026-10-02T00:00:00Z',
+    groups: [{ runs: 1, firstAttempt: { successRate: 1 } }],
+    comparison: {
+      since: '2026-10-01T00:00:00.000Z',
+      untilExclusive: '2026-10-02T00:00:00Z',
+      groups: [{ runs: 1, firstAttempt: { successRate: 0 } }],
+      firstAttemptSuccessRateChanges: [{ percentagePoints: 100 }],
+    },
+  });
+  expect(fetched.some((url) => decodeURIComponent(url).includes('2026-10-01T00:00:00.000Z'))).toBe(
+    true,
+  );
+});

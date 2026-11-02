@@ -5096,7 +5096,22 @@ migrations['0181_qa_assignments'] = {
   },
 };
 
-migrations['0182_unassigned_meeting_retention'] = {
+migrations['0182_session_pr_repair_origins'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table repair_attempts add column automation_marker text`.execute(db);
+    await sql`create table repair_session_origins (
+      project_id text not null references projects(id) on delete cascade,
+      resource text not null, session_id text not null references sessions(session_id) on delete cascade,
+      primary key (project_id, resource)
+    )`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table repair_session_origins`.execute(db);
+    await sql`alter table repair_attempts drop column automation_marker`.execute(db);
+  },
+};
+
+migrations['0183_unassigned_meeting_retention'] = {
   async up(db: Kysely<unknown>): Promise<void> {
     // Null keeps the default in code, so changing the default needs no migration.
     await sql`alter table verity_settings add column unassigned_meeting_retention_days integer
@@ -5109,7 +5124,7 @@ migrations['0182_unassigned_meeting_retention'] = {
   },
 };
 
-migrations['0183_calendar_watch_calendars'] = {
+migrations['0184_calendar_watch_calendars'] = {
   async up(db: Kysely<unknown>): Promise<void> {
     // Calendars Verity watches for online meetings. A calendar carries no project: meetings
     // joined from it start unassigned. Disconnecting the account drops its choices.
@@ -5127,7 +5142,7 @@ migrations['0183_calendar_watch_calendars'] = {
   },
 };
 
-migrations['0184_calendar_watch_events'] = {
+migrations['0185_calendar_watch_events'] = {
   async up(db: Kysely<unknown>): Promise<void> {
     // Joinable events of watched calendars and what Verity already did about them, so a
     // restart neither repeats a notification nor joins a meeting twice. Title and link are

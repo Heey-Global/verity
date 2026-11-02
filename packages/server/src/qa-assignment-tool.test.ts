@@ -116,6 +116,10 @@ it('fences competing assignments, background repairs and reused consent', async 
   const incident = await ctx.store.repairs.observe('p', 'pr:1', 'sha', '{}');
   await ctx.store.repairs.configure('p', 'user', 'automatic');
   expect(await ctx.store.repairs.claim(incident.id, 'other', 2)).toBeUndefined();
+  await ctx.store.repairs.registerSessionOrigin('p', 'pr:1', 'target');
+  expect(
+    await ctx.store.repairs.claimSessionRepair(incident.id, 'target', 'ci:sha'),
+  ).toBeUndefined();
 });
 it('requires present execution rights and cancels reserved work after revocation', async () => {
   const { service, propose, deps } = setup();

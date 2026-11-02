@@ -135,11 +135,37 @@ clients_compatible() {
         fi
     done
 }
+drain_blocked() {
+    printf '%s\n' "$1" >&2
+    return 1
+}
 drained() {
-    [[ ! -e $run_dir/migration-pending && ! -e $journal ]] || return 1
-    clients_compatible || return 1
-    [[ -z $(find "$run_dir/leases" -mindepth 1 -maxdepth 1 -print -quit) ]] || return 1
-    ctl du --format '{{json .}}' | jq -se 'length == 1 and (.[0] | if . == null then true else type == "array" and all(.[]; .inUse == false) end)' >/dev/null
+    [[ ! -e $run_dir/migration-pending ]] || {
+        drain_blocked 'Builder migration pending'; return 1;
+    }
+    [[ ! -e $journal ]] || {
+        drain_blocked 'Builder migration recovery journal remains'; return 1;
+    }
+    clients_compatible || {
+        drain_blocked 'An incompatible or unverifiable builder client remains'; return 1;
+    }
+    local leases usage
+    leases=$(find "$run_dir/leases" -mindepth 1 -maxdepth 1 -printf '%f\n') || {
+        drain_blocked 'Builder admission leases could not be inspected'; return 1;
+    }
+    if [[ -n $leases ]]; then
+        local -a names
+        mapfile -t names <<< "$leases"
+        drain_blocked "${#names[@]} admission leases remain ($(IFS=,; echo "${names[*]}"))"
+        return 1
+    fi
+    usage=$(ctl du --format '{{json .}}') &&
+      jq -se 'length == 1 and (.[0] | if . == null then true else type == "array" and all(.[]; .inUse | type == "boolean") end)' <<< "$usage" >/dev/null || {
+        drain_blocked 'BuildKit cache activity could not be verified'; return 1;
+    }
+    jq -se '.[0] == null or all(.[0][]; .inUse == false)' <<< "$usage" >/dev/null || {
+        drain_blocked 'BuildKit cache is in use'; return 1;
+    }
 }
 probe() {
     # A local rootfs from the pinned BuildKit image avoids any network pull in the solve.

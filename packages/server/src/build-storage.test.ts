@@ -3,6 +3,8 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
+  utimesSync,
   readlinkSync,
   rmSync,
   writeFileSync,
@@ -595,6 +597,144 @@ describe('host maintenance admission', () => {
     const manager = new BuildStorage(f.root, f.report, f.policy, () => f.local, gate);
     return { ...f, gate, manager };
   }
+  function orphan(f: ReturnType<typeof admission>, name = 'attempt-orphan', overrides = {}) {
+    const marker = join(f.gate, 'leases', name);
+    mkdirSync(marker);
+    writeFileSync(
+      join(marker, 'owner.json'),
+      JSON.stringify({
+        version: 1,
+        pid: 2147483647,
+        start: 'gone',
+        namespace: readlinkSync('/proc/self/ns/pid'),
+        hostBootId: readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim(),
+        ...overrides,
+      }),
+    );
+    return marker;
+  }
+  it('reclaims a dead owner marker even when its artifact root is gone', async () => {
+    const f = admission();
+    const marker = orphan(f);
+    await f.manager.reconcile();
+    expect(existsSync(marker)).toBe(false);
+  });
+  it('sweeps during admission and keeps the current live owner', () => {
+    const f = admission();
+    const dead = orphan(f);
+    const first = f.manager.acquire();
+    expect(existsSync(dead)).toBe(false);
+    const markers = readdirSync(join(f.gate, 'leases'));
+    const marker = join(f.gate, 'leases', markers[0]!);
+    const owner = JSON.parse(readFileSync(join(marker, 'owner.json'), 'utf8')) as { pid: number };
+    expect(owner.pid).toBe(process.pid);
+    // An independent manager's recovery must preserve another instance's live lease.
+    const other = new BuildStorage(
+      join(f.directory, 'other'),
+      f.report,
+      f.policy,
+      () => f.local,
+      f.gate,
+    );
+    expect(() => other.acquire().dispose()).not.toThrow();
+    expect(existsSync(marker)).toBe(true);
+    first.dispose();
+  });
+  it('reclaims a reused pid but preserves a surviving child and unknown remote work', async () => {
+    const f = admission();
+    const reused = orphan(f, 'attempt-reused', { pid: process.pid, start: 'different-start' });
+    const child = orphan(f, 'attempt-child');
+    writeFileSync(join(child, 'child-0'), String(process.pid));
+    const remote = orphan(f, 'attempt-remote');
+    writeFileSync(join(remote, 'remote-operation.json'), '{}');
+    await f.manager.reconcile({ buildkitIdle: async () => true });
+    expect(existsSync(reused)).toBe(false);
+    expect(existsSync(child)).toBe(true);
+    expect(existsSync(remote)).toBe(true);
+  });
+  it('preserves foreign namespace owners until a changed boot proves termination', async () => {
+    const f = admission();
+    const foreign = orphan(f, 'attempt-foreign', { namespace: 'pid:[other]' });
+    const rebooted = orphan(f, 'attempt-rebooted', {
+      namespace: 'pid:[other]',
+      hostBootId: '22222222-2222-4222-8222-222222222222',
+    });
+    await f.manager.reconcile();
+    expect(existsSync(foreign)).toBe(true);
+    expect(existsSync(rebooted)).toBe(false);
+  });
+  it('only reclaims unreferenced legacy markers that predate this boot', async () => {
+    const f = admission();
+    const fresh = join(f.gate, 'leases', 'attempt-fresh');
+    const old = join(f.gate, 'leases', 'attempt-old');
+    mkdirSync(fresh);
+    mkdirSync(old);
+    utimesSync(old, new Date(0), new Date(0));
+    await f.manager.reconcile();
+    expect(existsSync(fresh)).toBe(true);
+    expect(existsSync(old)).toBe(false);
+  });
+  it('keeps remote evidence when the artifact directory disappears', async () => {
+    const f = admission();
+    const lease = f.manager.acquire();
+    await expect(
+      lease.run('false', [], { ...commandOptions, remoteOperation: 'build-export' }),
+    ).rejects.toThrow();
+    lease.dispose();
+    const marker = join(f.gate, 'leases', readdirSync(join(f.gate, 'leases'))[0]!);
+    expect(existsSync(join(marker, 'remote-operation.json'))).toBe(true);
+    rmSync(lease.directory, { recursive: true });
+    // Simulate a dead owner while preserving the actual operation evidence.
+    const owner = JSON.parse(readFileSync(join(marker, 'owner.json'), 'utf8')) as object;
+    writeFileSync(join(marker, 'owner.json'), JSON.stringify({ ...owner, pid: 2147483647 }));
+    await f.manager.reconcile({ buildkitIdle: async () => false });
+    expect(existsSync(marker)).toBe(true);
+    await f.manager.reconcile({ buildkitIdle: async () => true });
+    expect(existsSync(marker)).toBe(false);
+  });
+  it('uses marker evidence even when an attempt owner becomes unreadable', async () => {
+    const f = admission();
+    const marker = orphan(f);
+    mkdirSync(join(f.root, 'attempt-unreadable'), { recursive: true });
+    writeFileSync(join(f.root, 'attempt-unreadable', 'owner.json'), 'broken');
+    await f.manager.reconcile();
+    expect(existsSync(marker)).toBe(false);
+    expect(existsSync(join(f.root, 'attempt-unreadable'))).toBe(true);
+  });
+  it('retains ambiguous remote admission even without host identity evidence', async () => {
+    const f = admission();
+    const lease = f.manager.acquire();
+    rmSync(f.report);
+    await expect(
+      lease.run('false', [], { ...commandOptions, remoteOperation: 'build-export' }),
+    ).rejects.toThrow();
+    expect(lease.retainArtifacts).toBe(true);
+    lease.dispose();
+    const marker = join(f.gate, 'leases', readdirSync(join(f.gate, 'leases'))[0]!);
+    await f.manager.reconcile({ buildkitIdle: async () => true });
+    expect(existsSync(marker)).toBe(true);
+    expect(existsSync(lease.directory)).toBe(true);
+  });
+  it('keeps an unmanaged transition marker after ambiguous remote failure', async () => {
+    const f = fixture();
+    const gate = join(f.directory, 'gate');
+    mkdirSync(gate);
+    const manager = new BuildStorage(f.root, f.report, f.policy, () => f.local, gate);
+    const lease = manager.admit();
+    mkdirSync(join(gate, 'leases'));
+    writeFileSync(join(gate, 'build-admission.lock'), '');
+    await expect(
+      lease.run('false', [], { ...commandOptions, remoteOperation: 'build-export' }),
+    ).rejects.toThrow();
+    expect(lease.retainArtifacts).toBe(true);
+    lease.dispose();
+    expect(lease.retainArtifacts).toBe(true);
+    const marker = join(gate, 'leases', readdirSync(join(gate, 'leases'))[0]!);
+    expect(JSON.parse(readFileSync(join(marker, 'owner.json'), 'utf8'))).toMatchObject({
+      pid: process.pid,
+    });
+    expect(existsSync(join(marker, 'remote-operation.json'))).toBe(true);
+  });
   it('holds a shared host lock until disposal and removes only its own marker', async () => {
     const { spawnSync } = await import('node:child_process');
     const { readdirSync } = await import('node:fs');
@@ -681,6 +821,7 @@ describe('host maintenance admission', () => {
     await lease.run('true', [], { ...commandOptions, remoteOperation: 'build-export' });
     expect(spawnSync('flock', ['-xn', lock, 'true']).status).toBe(1);
     expect(readdirSync(join(gate, 'leases'))).toHaveLength(1);
+    expect(lease.retainArtifacts).toBe(false);
     lease.dispose();
     expect(spawnSync('flock', ['-xn', lock, 'true']).status).toBe(0);
     expect(readdirSync(join(gate, 'leases'))).toHaveLength(0);
