@@ -42,7 +42,9 @@ const MANDATORY_DOMAINS: readonly (readonly [string, MandatoryEgressClass])[] = 
 /**
  * Representative hostnames whose current addresses must not be reachable through
  * a direct grant. Shared front ends serve protected and public names on the same
- * addresses; an IP-level rule cannot separate them.
+ * addresses; an IP-level rule cannot separate them. This is best effort for
+ * anycast CDNs, which may answer a protected name on addresses these lookups did
+ * not return; hostname classification remains the primary boundary.
  */
 export const PROTECTED_ADDRESS_HOSTS: readonly string[] = [
   'github.com',
@@ -105,6 +107,8 @@ export interface ProtectedAddressInventory {
 export function createProtectedAddressInventory(options: {
   resolve(host: string): Promise<ProjectEgressResolution>;
   hosts?: readonly string[];
+  /** Deployment-configured names: a failed, empty or private answer adds nothing. */
+  configuredHosts?: readonly string[];
   now?: () => number;
   maxAgeMs?: number;
 }): ProtectedAddressInventory {
@@ -119,7 +123,14 @@ export function createProtectedAddressInventory(options: {
   const refresh = async (): Promise<void> => {
     const startedAt = now();
     // A partial answer would silently omit a protected front end.
-    const results = await Promise.all(hosts.map((host) => options.resolve(host)));
+    const results = await Promise.all([
+      ...hosts.map((host) => options.resolve(host)),
+      // Configured suffixes and private services may have no public address;
+      // they must not invalidate the built-in inventory.
+      ...(options.configuredHosts ?? []).map((host) =>
+        options.resolve(host).catch(() => ({ addresses: [], expiresAt: 0 })),
+      ),
+    ]);
     if (startedAt < refreshedAt) return;
     addresses = new Set(results.flatMap((result) => result.addresses.map(normalize)));
     refreshedAt = startedAt;

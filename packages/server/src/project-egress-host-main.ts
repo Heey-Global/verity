@@ -12,10 +12,7 @@ import { createProjectEgressHostEnforcement } from './project-egress-host-enforc
 import { hostProjectDeadlineEnforcer } from './project-egress-deadline.js';
 import { inspectProjectFenceAttachment } from './project-egress-attachment.js';
 import { createProjectEgressResolver } from './project-egress-resolver.js';
-import {
-  createProtectedAddressInventory,
-  PROTECTED_ADDRESS_HOSTS,
-} from './project-egress-classification.js';
+import { createProtectedAddressInventory } from './project-egress-classification.js';
 import { inspectEgressTransport } from './project-egress-transport.js';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -71,7 +68,7 @@ const resolve =
 // Addresses of broker/system destinations are never direct, whatever name points at them.
 const protectedAddresses = createProtectedAddressInventory({
   resolve,
-  hosts: [...PROTECTED_ADDRESS_HOSTS, ...(authority?.mandatoryHosts ?? [])],
+  configuredHosts: authority?.mandatoryHosts ?? [],
 });
 const deadline = hostProjectDeadlineEnforcer();
 const enforcement = createProjectEgressHostEnforcement({

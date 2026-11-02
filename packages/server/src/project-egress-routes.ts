@@ -24,9 +24,9 @@ const revoke = z
   .object({ grantId: z.string().uuid(), revision: z.number().int().nonnegative() })
   .strict();
 
-/** Broker/system destinations never become direct rules, so they never produce a card.
- * IP literals and deployment-specific broker hosts are enforced by the host, which
- * owns the current protected address inventory and its mandatoryHosts configuration.
+/** Built-in broker/system hostnames never become direct rules or cards. IP literals
+ * and deployment-specific mandatoryHosts are only known to the host, which refuses
+ * them at admission; such requests can still be recorded here but never take effect.
  */
 class BrokerRequiredError extends Error {
   constructor(readonly route: string) {

@@ -105,3 +105,21 @@ it('joins concurrent refreshes instead of overlapping them', async () => {
   await first;
   expect(inventory.allows('140.82.112.6')).toBe(false);
 });
+
+it('lets configured hosts add public addresses without invalidating the inventory', async () => {
+  const inventory = createProtectedAddressInventory({
+    hosts: ['api.github.com'],
+    configuredHosts: ['matrix.example.net', 'internal.example.org'],
+    resolve: async (host) => {
+      if (host === 'internal.example.org') throw new Error('Forbidden project DNS answer');
+      return {
+        addresses: [host === 'matrix.example.net' ? '198.51.100.20' : '140.82.112.6'],
+        expiresAt: 1e12,
+      };
+    },
+  });
+  await inventory.refresh();
+  expect(inventory.allows('198.51.100.20')).toBe(false);
+  expect(inventory.allows('140.82.112.6')).toBe(false);
+  expect(inventory.allows('203.0.113.9')).toBe(true);
+});
