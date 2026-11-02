@@ -309,7 +309,8 @@ it('records one sponsor-attributed HTTPS request for an inventoried ungranted na
       dependencies: {
         inspect: async (b) => ({ ...b }),
         apply: f.apply,
-        directTargetAllowed: async (host) => ['api.example.com', 'down.example.com'].includes(host),
+        directTargetAllowed: async (host) =>
+          ['api.example.com', 'down.example.com', 'mcp.exa.ai'].includes(host),
         destinationAllowed: async () => true,
         resolve: async () => {
           throw new Error('Unexpected DNS');
@@ -321,6 +322,7 @@ it('records one sponsor-attributed HTTPS request for an inventoried ungranted na
     enforcement.requestDirect!(network, 'api.example.com');
     // Names outside the host inventory never become cards that could not take effect.
     enforcement.requestDirect!(network, 'random.example.com');
+    enforcement.requestDirect!(network, 'mcp.exa.ai');
     await settle();
     expect(request).toHaveBeenCalledTimes(1);
     expect(request).toHaveBeenCalledWith('a', 'sponsor', {

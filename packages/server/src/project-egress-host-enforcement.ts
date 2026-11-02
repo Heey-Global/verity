@@ -1,5 +1,6 @@
 import type { EgressTarget, ProjectEgressStore } from '@verity/store';
 import { createProjectEgressAdmission } from './project-egress-admission.js';
+import { systemDirectHost } from './project-egress-classification.js';
 import type { ProjectDeadlineRelayEnforcer } from './project-egress-deadline.js';
 import type {
   ProjectFenceBinding,
@@ -156,7 +157,8 @@ export function createProjectEgressHostEnforcement(options: {
     },
     requestDirect(binding, name) {
       const requests = options.requests;
-      if (!requests || !options.directAuthority(binding)) return;
+      // System targets are admitted by the host itself; they never become cards.
+      if (!requests || !options.directAuthority(binding) || systemDirectHost(name)) return;
       void options.dependencies
         .directTargetAllowed(name)
         .then((allowed) => {
