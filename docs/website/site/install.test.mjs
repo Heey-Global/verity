@@ -81,6 +81,53 @@ test('preflight reports every detected problem before exiting', () => {
   assert.match(result.stderr, /--install-missing/);
 });
 
+test('preflight names the missing tools and the exact command that installs them', () => {
+  const bin = host();
+  rmSync(join(bin, 'bzip2'));
+
+  const result = run(bin, '--preflight');
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /bzip2 is required/);
+  assert.match(result.stderr, /re-run with --install-missing to install bzip2 automatically/);
+  assert.match(
+    result.stderr,
+    /curl -fsSL https:\/\/verity\.build\/install\.sh \| bash -s -- --preflight --install-missing/,
+  );
+});
+
+test('a full run that fails preflight is offered a full run with --install-missing', () => {
+  const bin = host();
+  rmSync(join(bin, 'bzip2'));
+
+  const result = run(bin);
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /\| bash -s -- --install-missing$/m);
+});
+
+test('preflight leaves out the curl command when curl itself is missing', () => {
+  const bin = host();
+  rmSync(join(bin, 'curl'));
+
+  const result = run(bin, '--preflight');
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /re-run with --install-missing to install curl automatically/);
+  assert.doesNotMatch(result.stderr, /curl -fsSL/);
+});
+
+test('preflight leaves out the curl command when it would drop passthrough options', () => {
+  const bin = host();
+  rmSync(join(bin, 'bzip2'));
+
+  const result = run(bin, '--preflight', '--update');
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /re-run with --install-missing to install bzip2 automatically\./);
+  assert.doesNotMatch(result.stderr, /curl -fsSL/);
+});
+
 test('successful preflight exits before pulling an image', () => {
   const result = run(host(), '--preflight');
 
