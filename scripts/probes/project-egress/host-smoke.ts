@@ -765,7 +765,18 @@ try {
     'foreign registered generation is unreachable despite a successful receiver control',
   );
 
-  for (const port of [53])
+  // Port 53 is the relay's controlled DNS answerer and is admitted; a port outside the bound
+  // transport set stays closed.
+  await docker(
+    'exec',
+    '--user',
+    '1000:1000',
+    containerId,
+    'python3',
+    '-c',
+    `import socket; socket.create_connection(('${relayAddress}',53),timeout=2).close()`,
+  );
+  for (const port of [5353])
     assert.ok((await client('negative', relayAddress, port)).includes('transport-denied'));
   await docker(
     'exec',
