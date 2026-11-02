@@ -249,6 +249,10 @@ it('stops answering a controlled TCP client that never reads its replies', async
     socket.destroy();
   });
   socket.on('error', () => undefined);
+  let closed = false;
+  socket.once('close', () => {
+    closed = true;
+  });
   await new Promise<void>((resolve) => socket.once('connect', resolve));
   // Never read: replies can only accumulate in the relay's own write buffer.
   socket.pause();
@@ -261,12 +265,15 @@ it('stops answering a controlled TCP client that never reads its replies', async
   for (let round = 0; round < 1_000 && !stalled; round++) {
     const target = lookups + 64;
     socket.write(batch);
-    const deadline = Date.now() + 300;
+    const deadline = Date.now() + 1_000;
     while (lookups < target && Date.now() < deadline)
       await new Promise((resolve) => setTimeout(resolve, 2));
     stalled = lookups < target;
   }
   expect(stalled).toBe(true);
+  // Stalled while still connected: held by backpressure, not by a dropped connection.
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  expect(closed).toBe(false);
   // Many replies flowed first: the stall is the full write buffer, not a slow runner.
   expect(lookups).toBeGreaterThan(1_000);
   expect(lookups).toBeLessThan(64_000);
