@@ -472,7 +472,7 @@ try {
     codexSubpath: 'codex',
   };
   let brokerRequests = 0;
-  const dnsLookups: string[] = [];
+  const dnsLookups = new Set<string>();
   const receipts: Record<string, number[]> = {
     'broker.sock': [],
     'claude.sock': [],
@@ -498,7 +498,7 @@ try {
                   name: string;
                   type: 'A' | 'AAAA';
                 };
-                dnsLookups.push(query.name);
+                dnsLookups.add(query.name);
                 lifecycle.resolveDirect(identity, query.name).then(
                   (answer) =>
                     response.end(
@@ -1185,7 +1185,7 @@ try {
   await directProbe('direct-revoked', false);
   assert.ok((await dns(dnsName, [])).includes('dns-refused'));
   // Every answer came from the host through the broker socket, for both names.
-  assert.ok(dnsLookups.includes(dnsName) && dnsLookups.includes('ungranted.example.com'));
+  assert.ok(dnsLookups.has(dnsName) && dnsLookups.has('ungranted.example.com'));
   results.push(
     'relay DNS answers a granted name over UDP/TCP with exactly the host-admitted addresses and refuses ungranted or revoked names',
   );
