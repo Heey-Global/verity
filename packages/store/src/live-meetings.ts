@@ -690,6 +690,46 @@ export class LiveMeetingStore {
     });
   }
 
+  /** Meetings that are running now: online meetings until the server ends them (including
+   * interrupted ones it is still recovering), device recordings while their recorder still
+   * reports in. A device recording whose app died stays `active` in the table, so the
+   * heartbeat decides rather than the state. */
+  async running(recorderWindowMs = 60_000): Promise<
+    Array<{
+      sessionId: string;
+      id: string;
+      title: string | null;
+      engine: string;
+      startedAt: number;
+      state: 'active' | 'interrupted';
+      captureStatus: string;
+    }>
+  > {
+    const rows = await this.db
+      .selectFrom('live_meetings')
+      .select(['session_id', 'id', 'title', 'engine', 'started_at', 'state', 'capture_status'])
+      .where((eb) =>
+        eb.or([
+          eb.and([eb('engine', '=', 'attendee'), eb('state', '<>', 'ended')]),
+          eb.and([
+            eb('state', '=', 'active'),
+            eb('recorder_last_seen_at', '>', Date.now() - recorderWindowMs),
+          ]),
+        ]),
+      )
+      .orderBy('started_at', 'desc')
+      .execute();
+    return rows.map((row) => ({
+      sessionId: row.session_id,
+      id: row.id,
+      title: row.title,
+      engine: row.engine,
+      startedAt: Number(row.started_at),
+      state: row.state === 'interrupted' ? 'interrupted' : 'active',
+      captureStatus: row.capture_status,
+    }));
+  }
+
   async recorderOnline(sessionId: string, meetingId: string): Promise<boolean> {
     const row = await this.db
       .selectFrom('live_meetings')

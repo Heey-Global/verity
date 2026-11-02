@@ -124,6 +124,33 @@ export interface GoogleAccountsTable {
   created_at: ColumnType<Date, string | undefined, never>;
 }
 
+/** A watched calendar; a row exists only while watching is on. */
+export interface CalendarWatchCalendarsTable {
+  account_id: string;
+  calendar_id: string;
+  summary: string;
+  auto_join: ColumnType<boolean, boolean | undefined, boolean>;
+  updated_at: ColumnType<Date, string | undefined, string>;
+}
+
+/** A joinable event of a watched calendar; `title` and `meeting_url` are encrypted. */
+export interface CalendarWatchEventsTable {
+  event_key: string;
+  account_id: string;
+  calendar_id: string;
+  event_id: string;
+  title: string | null;
+  meeting_url: string;
+  starts_at: ColumnType<Date, string, string>;
+  ends_at: ColumnType<Date, string, string>;
+  accepted: ColumnType<boolean, boolean | undefined, boolean>;
+  notified_at: ColumnType<Date | null, string | null | undefined, string | null>;
+  decision: 'joined' | 'skipped' | 'failed' | null;
+  meeting_id: string | null;
+  started_notified_at: ColumnType<Date | null, string | null | undefined, string | null>;
+  updated_at: ColumnType<Date, string | undefined, string>;
+}
+
 export interface GoogleServiceOverridesTable {
   mode: 'inherit' | 'disabled' | 'account';
   revision: string;
@@ -531,6 +558,12 @@ export interface VeritySettingsTable {
   id: string;
   /** Shows internal Verity Control project/workspace surfaces when enabled. */
   advanced_mode_enabled: ColumnType<boolean, boolean | undefined, boolean>;
+  /** Days an unassigned live meeting is kept after it ends; null means the default. */
+  unassigned_meeting_retention_days: ColumnType<
+    number | null,
+    number | null | undefined,
+    number | null
+  >;
   git_user_name: ColumnType<string | null, string | null | undefined, string | null>;
   git_user_email: ColumnType<string | null, string | null | undefined, string | null>;
   git_ssh_private_key_path: ColumnType<string | null, string | null | undefined, string | null>;
@@ -1652,6 +1685,8 @@ export interface Database {
   session_slide_decks: SessionSlideDecksTable;
   google_workspace_recents: GoogleWorkspaceRecentsTable;
   google_accounts: GoogleAccountsTable;
+  calendar_watch_calendars: CalendarWatchCalendarsTable;
+  calendar_watch_events: CalendarWatchEventsTable;
   google_service_overrides: GoogleServiceOverridesTable;
   project_google_drive_folders: ProjectGoogleDriveFoldersTable;
   project_google_connections: ProjectGoogleConnectionsTable;

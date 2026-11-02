@@ -5110,3 +5110,65 @@ migrations['0182_session_pr_repair_origins'] = {
     await sql`alter table repair_attempts drop column automation_marker`.execute(db);
   },
 };
+
+migrations['0183_unassigned_meeting_retention'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    // Null keeps the default in code, so changing the default needs no migration.
+    await sql`alter table verity_settings add column unassigned_meeting_retention_days integer
+      check (unassigned_meeting_retention_days between 1 and 365)`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table verity_settings drop column unassigned_meeting_retention_days`.execute(
+      db,
+    );
+  },
+};
+
+migrations['0184_calendar_watch_calendars'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    // Calendars Verity watches for online meetings. A calendar carries no project: meetings
+    // joined from it start unassigned. Disconnecting the account drops its choices.
+    await sql`create table calendar_watch_calendars (
+      account_id text not null references google_accounts(id) on delete cascade,
+      calendar_id text not null,
+      summary text not null,
+      auto_join boolean not null default false,
+      updated_at timestamptz not null default now(),
+      primary key (account_id, calendar_id)
+    )`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table calendar_watch_calendars`.execute(db);
+  },
+};
+
+migrations['0185_calendar_watch_events'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    // Joinable events of watched calendars and what Verity already did about them, so a
+    // restart neither repeats a notification nor joins a meeting twice. Title and link are
+    // encrypted: links often carry the meeting passcode.
+    await sql`create table calendar_watch_events (
+      event_key text primary key,
+      account_id text not null,
+      calendar_id text not null,
+      event_id text not null,
+      title text,
+      meeting_url text not null,
+      starts_at timestamptz not null,
+      ends_at timestamptz not null,
+      accepted boolean not null default true,
+      notified_at timestamptz,
+      decision text check (decision in ('joined', 'skipped', 'failed')),
+      meeting_id text,
+      started_notified_at timestamptz,
+      updated_at timestamptz not null default now(),
+      foreign key (account_id, calendar_id)
+        references calendar_watch_calendars(account_id, calendar_id) on delete cascade
+    )`.execute(db);
+    await sql`create index calendar_watch_events_calendar
+      on calendar_watch_events(account_id, calendar_id, starts_at)`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table calendar_watch_events`.execute(db);
+  },
+};

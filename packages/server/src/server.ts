@@ -76,6 +76,13 @@ import { registerAttachmentRoute } from './attachment-route.js';
 import { AttendeeMeetings } from './attendee-meetings.js';
 import { attendeeResearchHints } from './attendee-research.js';
 import { registerAttendeeRoutes } from './attendee-routes.js';
+import { registerLiveMeetingIntakeRoutes } from './live-meeting-intake.js';
+import { registerCalendarWatchRoutes } from './calendar-watch-routes.js';
+import {
+  startCalendarMeetingWatcher,
+  type CalendarMeetingDeps,
+} from './calendar-meeting-watcher.js';
+import { registerCalendarMeetingRoutes } from './calendar-meeting-routes.js';
 import {
   attentionSignals,
   sessionAttentionSignals,
@@ -4829,6 +4836,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
 
   const veritySettingsBody = z.object({
     advancedModeEnabled: z.boolean().optional(),
+    unassignedMeetingRetentionDays: z.number().int().min(1).max(365).nullable().optional(),
     gitUserName: z.string().nullable().optional(),
     gitUserEmail: z.string().nullable().optional(),
     gitSshPrivateKeyPath: z.string().nullable().optional(),
@@ -5805,7 +5813,29 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     Boolean(deps.secretCipher && !deps.secretCipher.isSealed()),
   );
   app.addHook('onReady', () => attendeeMeetings.open());
-  app.addHook('onClose', () => attendeeMeetings.close());
+  const calendarMeetings: CalendarMeetingDeps = {
+    store: deps.eventStore,
+    meetings: attendeeMeetings,
+    sender: pushSender,
+    googleAccessToken: deps.googleAccessToken ?? (() => Promise.resolve(undefined)),
+    warn: (obj, msg) => app.log.warn(obj, msg),
+  };
+  registerCalendarMeetingRoutes(app, calendarMeetings);
+  let calendarMeetingWatcher: ReturnType<typeof startCalendarMeetingWatcher> | undefined;
+  app.addHook('onReady', async () => {
+    // Before the server takes requests: no join of this process is under way yet.
+    try {
+      await deps.eventStore.calendarWatch.releaseUnfinishedJoins();
+    } catch (err) {
+      app.log.warn({ err }, 'releasing unfinished calendar joins failed');
+    }
+    calendarMeetingWatcher = startCalendarMeetingWatcher(calendarMeetings);
+  });
+  app.addHook('onClose', async () => {
+    // Before the meetings close: a pass in flight may still be starting a bot.
+    await calendarMeetingWatcher?.stop();
+    await attendeeMeetings.close();
+  });
   meetingTranscripts.registerRoutes();
   registerServerSessionFiles(app, deps, conductor);
 
@@ -6126,6 +6156,22 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     isSleepLifecycleState,
     publicProject: (project) => presentProject(project, null, UNKNOWN_SANDBOX_UPDATE, null),
     defaultModel: DEFAULT_MODEL,
+  });
+  registerLiveMeetingIntakeRoutes(app, {
+    store: deps.eventStore,
+    meetings: attendeeMeetings,
+    spawn: sessionCreate.spawn,
+    canReadSession: async (userId, sessionId) =>
+      userId === undefined ||
+      (await authorizePairedRoute(deps.eventStore, userId, 'GET', '/sessions/:id', {
+        id: sessionId,
+      })) === 'allow',
+    log: app.log,
+  });
+  registerCalendarWatchRoutes(app, {
+    store: deps.eventStore,
+    googleAccessToken: deps.googleAccessToken ?? (() => Promise.resolve(undefined)),
+    log: app.log,
   });
 
   registerRepairRoutes(app, deps.eventStore);

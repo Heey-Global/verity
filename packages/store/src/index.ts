@@ -229,6 +229,7 @@ export * from './knowledge-sources.js';
 export { redactSecrets, redactProcessStderr } from './redact.js';
 
 export * from './google-accounts.js';
+export * from './calendar-watch.js';
 
 export * from './vulnerability-scan.js';
 

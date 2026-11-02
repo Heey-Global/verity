@@ -5,6 +5,7 @@ import { RepairSupervisionStore } from './repair-supervision.js';
 import { ProjectEgressStore } from './project-egress.js';
 import { VulnerabilityScanStore } from './vulnerability-scan.js';
 import { ForgeConnectionStore } from './forge-connections.js';
+import { CalendarWatchStore } from './calendar-watch.js';
 import { GoogleAccountStore } from './google-accounts.js';
 import {
   HISTORY_MAX_BYTES,
@@ -750,12 +751,15 @@ export interface VeritySettingsRecord {
   premiumSharingEnabled?: boolean;
   premiumRemoteAccessEnabled?: boolean;
   advancedModeEnabled?: boolean;
+  /** Days an unassigned live meeting is kept after it ends; null means the default. */
+  unassignedMeetingRetentionDays?: number | null;
   createdAt: Date;
   updatedAt: Date;
 }
 
 type VeritySettingsKey =
   | 'advancedModeEnabled'
+  | 'unassignedMeetingRetentionDays'
   | 'gitUserName'
   | 'gitUserEmail'
   | 'gitSshPrivateKeyPath'
@@ -2064,6 +2068,10 @@ export class EventStore implements EventSink {
 
   get googleAccounts(): GoogleAccountStore {
     return new GoogleAccountStore(this.db, this.cipher);
+  }
+
+  get calendarWatch(): CalendarWatchStore {
+    return new CalendarWatchStore(this.db, this.cipher);
   }
 
   async getGoogleServiceCredentials(sessionId: string, service: 'gmail' | 'calendar' | 'contacts') {
@@ -6997,6 +7005,7 @@ export class EventStore implements EventSink {
       premium_sharing_enabled: boolean;
       premium_remote_access_enabled: boolean;
       advanced_mode_enabled: boolean;
+      unassigned_meeting_retention_days: number | null;
       created_at: Date;
       updated_at: Date;
       // When false, secret columns are returned in their STORED (possibly
@@ -7007,6 +7016,7 @@ export class EventStore implements EventSink {
   ): VeritySettingsRecord {
     return {
       advancedModeEnabled: row.advanced_mode_enabled,
+      unassignedMeetingRetentionDays: row.unassigned_meeting_retention_days,
       gitUserName: row.git_user_name,
       gitUserEmail: row.git_user_email,
       gitSshPrivateKeyPath: row.git_ssh_private_key_path,
@@ -7102,6 +7112,7 @@ export class EventStore implements EventSink {
     'premium_sharing_enabled',
     'premium_remote_access_enabled',
     'advanced_mode_enabled',
+    'unassigned_meeting_retention_days',
     'created_at',
     'updated_at',
   ] as const;
@@ -7135,6 +7146,7 @@ export class EventStore implements EventSink {
     const values = {
       id: 'global',
       advanced_mode_enabled: patch.advancedModeEnabled ?? false,
+      unassigned_meeting_retention_days: patch.unassignedMeetingRetentionDays ?? null,
       git_user_name: normalizeSetting(patch.gitUserName),
       git_user_email: normalizeSetting(patch.gitUserEmail),
       git_ssh_private_key_path: normalizeSetting(patch.gitSshPrivateKeyPath),
@@ -7312,6 +7324,9 @@ export class EventStore implements EventSink {
             : {}),
           ...(patch.advancedModeEnabled !== undefined
             ? { advanced_mode_enabled: patch.advancedModeEnabled }
+            : {}),
+          ...(patch.unassignedMeetingRetentionDays !== undefined
+            ? { unassigned_meeting_retention_days: patch.unassignedMeetingRetentionDays }
             : {}),
           updated_at: sql`now()`,
         }),

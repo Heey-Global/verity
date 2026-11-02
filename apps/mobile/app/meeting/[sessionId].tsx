@@ -99,7 +99,15 @@ import {
   Text as UiText,
   TextField,
   Toggle,
+  useConfirm,
 } from '../../components/ui';
+import {
+  CalendarMeetingPicker,
+  UnassignedMeetingCard,
+  useCalendarMeetingChoice,
+  useUnassignedMeetings,
+  useUpcomingMeetings,
+} from '../../components/meeting/OnlineMeetingStart';
 import { tint } from '../../components/ui/tint';
 
 type TranscriptRow = SpeakerLine | { text: string; pending?: boolean };
@@ -158,6 +166,14 @@ export default function MeetingScreen() {
   const [engines, setEngines] = useState<STTEngine[]>([]);
   const [meetingSource, setMeetingSource] = useState<'presence' | 'online'>('presence');
   const [meetingUrl, setMeetingUrl] = useState('');
+  const [now, setNow] = useState(Date.now());
+  // A meeting from a watched calendar replaces typing its link; the field stays as a fallback.
+  const upcoming = useUpcomingMeetings(meetingSource === 'online');
+  const { selectedEventKey, setSelectedEventKey, manualLink, setManualLink, selectedEvent } =
+    useCalendarMeetingChoice(upcoming, now);
+  const [unassignedMeetings, reloadUnassigned] = useUnassignedMeetings();
+  const [continuing, setContinuing] = useState<string | null>(null);
+  const [confirm, confirmSheet] = useConfirm();
   const [meetingTitle, setMeetingTitle] = useState('');
   const [attendeeConfigured, setAttendeeConfigured] = useState(false);
   useEffect(() => {
@@ -181,7 +197,6 @@ export default function MeetingScreen() {
   const [selectedEngine, setSelectedEngine] = useState<STTEngineId>('fluid-nemotron');
   const [expectedParticipants, setExpectedParticipants] = useState<number | null>(null);
   const [showNewMeeting, setShowNewMeeting] = useState(false);
-  const [now, setNow] = useState(Date.now());
   const [syncError, setSyncError] = useState(false);
   // Every save is briefly pending; only a backlog that lasts is worth showing.
   const [syncPendingSince, setSyncPendingSince] = useState<number | null>(null);
@@ -843,12 +858,16 @@ export default function MeetingScreen() {
       if (meetingSource === 'online') {
         const client = createVerityClient();
         if (!client) throw new Error('Connect to the server.');
-        const result = await client.startOnlineMeeting(
-          sessionId,
-          meetingUrl.trim(),
-          true,
-          meetingTitle.trim() || undefined,
-        );
+        // A link typed earlier stays behind a collapsed field; never start from what is not shown.
+        if (!selectedEvent && !manualLink) throw new Error('Pick a meeting or enter its link.');
+        const result = selectedEvent
+          ? await client.joinCalendarMeeting(selectedEvent.eventKey, sessionId)
+          : await client.startOnlineMeeting(
+              sessionId,
+              meetingUrl.trim(),
+              true,
+              meetingTitle.trim() || undefined,
+            );
         await syncMeetingSession(sessionId);
         const synced = (await listMeetings(sessionId)).find((item) => item.id === result.meetingId);
         if (synced) setMeeting(synced);
@@ -870,6 +889,46 @@ export default function MeetingScreen() {
       setBusy(false);
     }
   };
+
+  // Moves a meeting Verity joined without a project into this session, with everything said
+  // so far, and opens it.
+  const continueHere = async (meetingId: string) => {
+    if (!sessionId || continuing) return;
+    setContinuing(meetingId);
+    setError(null);
+    try {
+      const client = createVerityClient();
+      if (!client) throw new Error('Connect to the server.');
+      await client.assignLiveMeeting(meetingId, { sessionId });
+      await syncMeetingSession(sessionId);
+      const synced = (await listMeetings(sessionId)).find((item) => item.id === meetingId);
+      if (synced) setMeeting(synced);
+      setShowNewMeeting(false);
+      await refresh();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+      await reloadUnassigned();
+    } finally {
+      setContinuing(null);
+    }
+  };
+  const discardUnassigned = (meetingId: string) =>
+    confirm({
+      title: 'Discard this meeting?',
+      message: 'Verity leaves the call and deletes everything it transcribed.',
+      confirmLabel: 'Discard',
+      destructive: true,
+      onConfirm: async () => {
+        try {
+          const client = createVerityClient();
+          if (!client) throw new Error('Connect to the server to discard this meeting.');
+          await client.discardLiveMeeting(meetingId);
+        } catch (reason) {
+          setError(reason instanceof Error ? reason.message : String(reason));
+        }
+        await reloadUnassigned();
+      },
+    });
 
   const end = async () => {
     if (busy) return;
@@ -1687,14 +1746,27 @@ export default function MeetingScreen() {
               </View>
             </Card>
           ) : null}
-          <TextField
-            label="Title"
-            accessibilityLabel="Meeting title"
-            value={meetingTitle}
-            onChangeText={setMeetingTitle}
-            maxLength={200}
-            placeholder="Optional"
-          />
+          {unassignedMeetings.map((item) => (
+            <UnassignedMeetingCard
+              key={item.id}
+              meeting={item}
+              now={now}
+              busy={continuing === item.id}
+              onContinue={() => void continueHere(item.id)}
+              onDiscard={() => discardUnassigned(item.id)}
+            />
+          ))}
+          {/* A calendar meeting brings its own title. */}
+          {meetingSource === 'online' && selectedEvent ? null : (
+            <TextField
+              label="Title"
+              accessibilityLabel="Meeting title"
+              value={meetingTitle}
+              onChangeText={setMeetingTitle}
+              maxLength={200}
+              placeholder="Optional"
+            />
+          )}
           <View style={styles.setupSection}>
             <SectionHeader title="Meeting source" />
             <Group>
@@ -1716,13 +1788,15 @@ export default function MeetingScreen() {
           </View>
           {meetingSource === 'online' ? (
             <View style={styles.setupSection}>
-              <TextField
-                label="Meeting link"
-                accessibilityLabel="Online meeting link"
-                value={meetingUrl}
-                onChangeText={setMeetingUrl}
-                placeholder="https://"
-                keyboardType="url"
+              <CalendarMeetingPicker
+                upcoming={upcoming}
+                selectedKey={selectedEventKey}
+                onSelect={setSelectedEventKey}
+                manual={manualLink}
+                onManualChange={setManualLink}
+                meetingUrl={meetingUrl}
+                onMeetingUrlChange={setMeetingUrl}
+                now={now}
               />
               <UiText variant="footnote">
                 {attendeeConfigured
@@ -1803,17 +1877,23 @@ export default function MeetingScreen() {
               returning
                 ? 'Return to live meeting'
                 : meetingSource === 'online'
-                  ? 'Start online meeting'
+                  ? selectedEvent
+                    ? `Join ${selectedEvent.title || 'meeting'}`
+                    : 'Start online meeting'
                   : 'Start recording'
             }
             accessibilityLabel="Start meeting"
             icon={returning ? 'arrow-right' : meetingSource === 'online' ? 'video' : 'mic'}
             loading={busy}
-            disabled={meetingSource === 'online' && (!attendeeConfigured || !meetingUrl.trim())}
+            disabled={
+              meetingSource === 'online' &&
+              (!attendeeConfigured || (!selectedEvent && !(manualLink && meetingUrl.trim())))
+            }
             onPress={start}
             fullWidth
           />
         </ScrollView>
+        {confirmSheet}
       </View>
     );
   }
