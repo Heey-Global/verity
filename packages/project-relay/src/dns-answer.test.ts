@@ -230,3 +230,51 @@ it('asks the broker socket and rejects malformed or out-of-family answers', asyn
   status = 401;
   await expect(lookup('downloads.example.com', 'A')).rejects.toThrow();
 });
+
+it('stops answering a controlled TCP client that never reads its replies', async () => {
+  let lookups = 0;
+  const addresses = Array.from({ length: 28 }, (_, i) => `8.8.4.${i + 1}`);
+  const lookup = async (): Promise<DirectNameAnswer> => {
+    lookups += 1;
+    return { granted: true, addresses, ttlSeconds: 2 };
+  };
+  const forwarder = await startDnsForwarder({
+    host: '127.0.0.1',
+    port: 0,
+    answer: (message) => answerDnsQuery(message, lookup),
+  });
+  cleanups.push(() => forwarder.close());
+  const socket = createConnection(forwarder.tcpPort, '127.0.0.1');
+  cleanups.push(async () => {
+    socket.destroy();
+  });
+  socket.on('error', () => undefined);
+  let closed = false;
+  socket.once('close', () => {
+    closed = true;
+  });
+  await new Promise<void>((resolve) => socket.once('connect', resolve));
+  // Never read: replies can only accumulate in the relay's own write buffer.
+  socket.pause();
+  const message = query('downloads.example.com', 1, 9);
+  const frame = Buffer.alloc(2);
+  frame.writeUInt16BE(message.length);
+  // Batches stay below the bounded input buffer; a stall means backpressure held.
+  const batch = Buffer.concat(Array.from({ length: 64 }, () => Buffer.concat([frame, message])));
+  let stalled = false;
+  for (let round = 0; round < 1_000 && !stalled; round++) {
+    const target = lookups + 64;
+    socket.write(batch);
+    const deadline = Date.now() + 1_000;
+    while (lookups < target && Date.now() < deadline)
+      await new Promise((resolve) => setTimeout(resolve, 2));
+    stalled = lookups < target;
+  }
+  expect(stalled).toBe(true);
+  // Stalled while still connected: held by backpressure, not by a dropped connection.
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  expect(closed).toBe(false);
+  // Many replies flowed first: the stall is the full write buffer, not a slow runner.
+  expect(lookups).toBeGreaterThan(1_000);
+  expect(lookups).toBeLessThan(64_000);
+}, 60_000);

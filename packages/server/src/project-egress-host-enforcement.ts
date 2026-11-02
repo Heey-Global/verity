@@ -1,4 +1,4 @@
-import type { ProjectEgressStore } from '@verity/store';
+import type { EgressTarget, ProjectEgressStore } from '@verity/store';
 import { createProjectEgressAdmission } from './project-egress-admission.js';
 import type { ProjectDeadlineRelayEnforcer } from './project-egress-deadline.js';
 import type {
@@ -31,6 +31,7 @@ interface Generation {
 export function createProjectEgressHostEnforcement(options: {
   deadline: ProjectDeadlineRelayEnforcer;
   store: Pick<ProjectEgressStore, 'readForAdmission'>;
+  systemTargets?: readonly EgressTarget[];
   /** Records destination requests for ungranted names; absent, none are recorded. */
   requests?: Pick<ProjectEgressStore, 'request'>;
   reportRequestFailure?(error: unknown): void;
@@ -86,6 +87,7 @@ export function createProjectEgressHostEnforcement(options: {
           binding: b,
           sponsorUserId: options.sponsor(binding),
           store: options.store,
+          ...(options.systemTargets ? { systemTargets: options.systemTargets } : {}),
           dependencies: {
             ...options.dependencies,
             deadline: options.deadline,
@@ -154,7 +156,13 @@ export function createProjectEgressHostEnforcement(options: {
     },
     requestDirect(binding, name) {
       const requests = options.requests;
-      if (!requests || !options.directAuthority(binding)) return;
+      // System targets are admitted by the host itself; they never become cards.
+      if (
+        !requests ||
+        !options.directAuthority(binding) ||
+        options.systemTargets?.some((target) => target.host === name)
+      )
+        return;
       void options.dependencies
         .directTargetAllowed(name)
         .then((allowed) => {

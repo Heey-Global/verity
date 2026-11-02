@@ -124,6 +124,8 @@ it('admits only inventoried non-broker hosts at unprotected, allowed addresses',
   expect(await checks.directTargetAllowed('chat.example.net')).toBe(false);
   expect(await checks.directTargetAllowed('api.github.com')).toBe(false);
   expect(await checks.directTargetAllowed('other.example.com')).toBe(false);
+  // Project grants never reach exa.ai; only the host-owned system grant does.
+  expect(await checks.directTargetAllowed('mcp.exa.ai')).toBe(false);
   expect(await checks.destinationAllowed('198.51.100.7')).toBe(true);
   expect(await checks.destinationAllowed('140.82.112.6')).toBe(false);
   expect(await checks.destinationAllowed('10.0.0.1')).toBe(false);

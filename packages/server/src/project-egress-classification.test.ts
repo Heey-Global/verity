@@ -3,6 +3,7 @@ import {
   createProtectedAddressInventory,
   mandatoryEgressRoute,
   PROTECTED_ADDRESS_HOSTS,
+  SYSTEM_DIRECT_TARGETS,
 } from './project-egress-classification.js';
 import { EGRESS_DNS_MIXED, EGRESS_DNS_NOT_PUBLIC } from './project-egress-resolver.js';
 
@@ -198,4 +199,10 @@ it('keeps the public front ends of a mixed protected answer and reports configur
   expect(inventory.allows('104.16.0.34')).toBe(false);
   expect(inventory.allows('198.51.100.7')).toBe(true);
   expect(reported).toEqual(['matrix.example.net']);
+});
+
+it('keeps exa.ai broker-only for project grants while its search endpoint is a system target', () => {
+  expect(mandatoryEgressRoute('mcp.exa.ai')).toBe('search');
+  expect(SYSTEM_DIRECT_TARGETS).toEqual([{ host: 'mcp.exa.ai', protocol: 'tcp', port: 443 }]);
+  expect(PROTECTED_ADDRESS_HOSTS).not.toContain('mcp.exa.ai');
 });

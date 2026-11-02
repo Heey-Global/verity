@@ -12,7 +12,10 @@ import { createProjectEgressHostEnforcement } from './project-egress-host-enforc
 import { hostProjectDeadlineEnforcer } from './project-egress-deadline.js';
 import { inspectProjectFenceAttachment } from './project-egress-attachment.js';
 import { createProjectEgressResolver } from './project-egress-resolver.js';
-import { createProtectedAddressInventory } from './project-egress-classification.js';
+import {
+  createProtectedAddressInventory,
+  SYSTEM_DIRECT_TARGETS,
+} from './project-egress-classification.js';
 import { inspectEgressTransport } from './project-egress-transport.js';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -77,6 +80,7 @@ const deadline = hostProjectDeadlineEnforcer();
 const enforcement = createProjectEgressHostEnforcement({
   deadline,
   store: policyStore,
+  systemTargets: SYSTEM_DIRECT_TARGETS,
   ...(projectPolicy ? { requests: projectPolicy } : {}),
   reportRequestFailure: (error) => console.error('Destination request was not recorded', error),
   directAuthority: (binding) => authority?.projectSponsors[binding.projectId] !== undefined,
@@ -86,6 +90,8 @@ const enforcement = createProjectEgressHostEnforcement({
     inspect: inspectProjectFenceAttachment,
     apply: applyProjectFenceRules,
     ...egressHostDirectChecks(authority, protectedAddresses),
+    reportSystemFailure: (target, error) =>
+      console.error(`System destination ${target.host} was not admitted`, error),
     resolve,
     existing: async (binding) => {
       const tables = z
