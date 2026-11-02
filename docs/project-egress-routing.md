@@ -294,8 +294,10 @@ rules. Offline approvers, timeouts and broker failure leave access blocked.
 
 ## System-wide network protection switch
 
-Network protection is one administrator setting, `projectEgressEnabled`
-(Settings → App & Server → Network protection), default off. The Server reaches
+Network protection is one administrator setting, `projectEgressEnabled`, default
+off, exposed through `GET /settings` and administrator-only `PATCH /settings`.
+The planned app control is Settings → App & Server → Network protection; it is
+not included in this increment. The Server reaches
 the host egress service only when `VERITY_PROJECT_EGRESS_SOCKET` and
 `VERITY_PROJECT_EGRESS_KEY_PATH` are set (`deploy/docker-compose.egress.yml`);
 otherwise the setting reports unavailable and refuses to be enabled (409).
@@ -306,7 +308,8 @@ otherwise the setting reports unavailable and refuses to be enabled (409).
   retired best-effort, and an unreachable host never blocks the open start.
 - An existing generation keeps the mode it started with until it is replaced.
   Cold wake replaces a generation whose mode differs from the switch.
-- Destination approvals stay per project (Project → Settings → Sandbox).
+- Destination approvals stay per project through the project egress API. The
+  planned app interface is Project → Settings → Sandbox.
 
 ## Web search under the fence
 
