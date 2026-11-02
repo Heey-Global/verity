@@ -1603,6 +1603,7 @@ export interface Database {
   repair_workflow_heads: RepairWorkflowHeadsTable;
   repair_attempts: RepairAttemptsTable;
   repair_session_history: RepairSessionHistoryTable;
+  repair_session_origins: RepairSessionOriginsTable;
   qa_coordinator: QACoordinatorTable;
   qa_inbox: QAInboxTable;
   qa_proposals: QAProposalsTable;
@@ -1830,6 +1831,7 @@ interface RepairWorkflowHeadsTable {
   run_id: ColumnType<string, string | number, string | number>;
 }
 interface RepairAttemptsTable {
+  automation_marker: string | null;
   dispatch_id: string;
   incident_id: string;
   session_id: string;
@@ -1837,6 +1839,11 @@ interface RepairAttemptsTable {
   ended_at: Date | null;
   outcome: string | null;
   start_seq: ColumnType<string | null, string | number | null, string | number | null>;
+}
+interface RepairSessionOriginsTable {
+  project_id: string;
+  resource: string;
+  session_id: string;
 }
 interface RepairSessionHistoryTable {
   project_id: string;
