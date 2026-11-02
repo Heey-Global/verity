@@ -4,7 +4,7 @@ import { spawn } from 'node:child_process';
 import { isIP } from 'node:net';
 import ipaddr from 'ipaddr.js';
 import type { ProjectEgressResolution } from './project-egress-resolver.js';
-import { canonicalEgressTarget, type EgressGrant } from '@verity/store';
+import { canonicalEgressTarget, type EgressGrant, type EgressTarget } from '@verity/store';
 import {
   projectDeadlineLease,
   type ProjectDeadlineEnforcer,
@@ -46,6 +46,8 @@ export interface ProjectFenceDependencies {
   directTargetAllowed(host: string): Promise<boolean>;
   /** Host-owned resolver called only for a valid, explicitly granted target. */
   resolve(host: string): Promise<ProjectEgressResolution>;
+  /** Told when a host-owned system target was excluded from a refresh. */
+  reportSystemFailure?(target: EgressTarget, error: unknown): void;
   /** Excludes host addresses and every project network, including public ranges. */
   destinationAllowed(address: string): Promise<boolean>;
   /** Recheck durable revision, current generation and sponsor authority at admission. */
@@ -478,7 +480,10 @@ export class ProjectEgressFence {
           if (!isIP(target.host)) named.push(target.host, ...addresses);
         } catch (error) {
           // A host-owned system target never takes the project's own grants down.
-          if (system.has(grant.id)) continue;
+          if (system.has(grant.id)) {
+            this.deps.reportSystemFailure?.(grant.target, error);
+            continue;
+          }
           throw error;
         }
         leases.push(...admitted);

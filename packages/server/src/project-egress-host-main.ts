@@ -90,6 +90,8 @@ const enforcement = createProjectEgressHostEnforcement({
     inspect: inspectProjectFenceAttachment,
     apply: applyProjectFenceRules,
     ...egressHostDirectChecks(authority, protectedAddresses),
+    reportSystemFailure: (target, error) =>
+      console.error(`System destination ${target.host} was not admitted`, error),
     resolve,
     existing: async (binding) => {
       const tables = z
