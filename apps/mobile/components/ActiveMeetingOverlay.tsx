@@ -2,7 +2,14 @@ import { subscribeLiveRefresh } from '../lib/liveConnection';
 import { router, usePathname } from 'expo-router';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Animated, PanResponder, Pressable, useWindowDimensions, View } from 'react-native';
+import {
+  Animated,
+  AppState,
+  PanResponder,
+  Pressable,
+  useWindowDimensions,
+  View,
+} from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -14,9 +21,14 @@ import {
   subscribeVoiceMeetingRequest,
 } from '../lib/liveMeetingSession';
 import { listMeetings, type MeetingRecord } from '../lib/liveMeetingStore';
-import { createVerityClient, getActiveMeetingServerId } from '../lib/client';
+import {
+  createVerityClient,
+  getActiveMeetingServerId,
+  subscribeVerityBaseUrl,
+} from '../lib/client';
 import {
   clearFollowedRemoteMeeting,
+  followRemoteMeeting,
   subscribeFollowedRemoteMeeting,
   syncMeetingSession,
 } from '../lib/liveMeetingSync';
@@ -93,12 +105,68 @@ export function ActiveMeetingOverlay() {
     [localMeeting?.id],
   );
   useEffect(() => subscribeFollowedRemoteMeeting(setFollowed), []);
+  useEffect(() => {
+    let dispose = () => {};
+    const bind = () => {
+      dispose();
+      setRemoteMeeting(null);
+      clearFollowedRemoteMeeting();
+      const serverId = getActiveMeetingServerId();
+      const client = createVerityClient();
+      if (!serverId || !client) return;
+      let mounted = true;
+      let loading = false;
+      const discover = async () => {
+        if (!mounted || loading || AppState.currentState !== 'active') return;
+        loading = true;
+        try {
+          const active = await client.getActiveLiveMeetings();
+          if (!mounted || getActiveMeetingServerId() !== serverId) return;
+          const candidate = active[0];
+          if (candidate) followRemoteMeeting(candidate.sessionId, candidate.id);
+          else {
+            clearFollowedRemoteMeeting();
+            setRemoteMeeting(null);
+          }
+        } catch {
+          // Older or unreachable servers must not interrupt a local recording.
+        } finally {
+          loading = false;
+        }
+      };
+      void discover();
+      const timer = setInterval(() => void discover(), 5000);
+      const foreground = AppState.addEventListener('change', (state) => {
+        if (state === 'active') void discover();
+      });
+      dispose = () => {
+        mounted = false;
+        clearInterval(timer);
+        foreground.remove();
+      };
+    };
+    bind();
+    const unsubscribe = subscribeVerityBaseUrl(bind);
+    return () => {
+      unsubscribe();
+      dispose();
+    };
+  }, []);
+  useEffect(() => {
+    setPendingCommand(null);
+    setError(null);
+    remoteStopRequested.current = false;
+  }, [followed?.serverId, followed?.meetingId]);
   const meeting = localMeeting?.state === 'active' ? localMeeting : remoteMeeting;
   const remote =
     meeting !== null && meeting.id === remoteMeeting?.id && localMeeting?.id !== meeting.id;
   const activePendingCommand = remote ? pendingCommand : null;
   useEffect(() => {
-    if (!followed || pathname.startsWith('/meeting/')) return;
+    if (!followed) {
+      setRemoteMeeting(null);
+      return;
+    }
+    if (pathname.startsWith('/meeting/')) return;
     let mounted = true;
     let polling = false;
     const client = createVerityClient();
@@ -116,7 +184,7 @@ export function ActiveMeetingOverlay() {
         const saved =
           (await listMeetings(followed.sessionId)).find((item) => item.id === followed.meetingId) ??
           null;
-        if (!mounted) return;
+        if (!mounted || getActiveMeetingServerId() !== followed.serverId) return;
         setRemoteMeeting(saved);
         if (saved?.state !== 'active') {
           clearFollowedRemoteMeeting();
@@ -130,6 +198,7 @@ export function ActiveMeetingOverlay() {
           }
           return;
         }
+        if (saved.engine === 'attendee') return;
         const control = await client?.getLiveMeetingCommands(
           followed.sessionId,
           followed.meetingId,
@@ -214,6 +283,13 @@ export function ActiveMeetingOverlay() {
           throw new Error('This meeting belongs to another server.');
         const client = createVerityClient();
         if (!client) throw new Error('Connect to the server to stop this recording.');
+        if (meeting.engine === 'attendee') {
+          await client.stopOnlineMeeting(meeting.sessionId, meeting.id);
+          setRemoteMeeting(null);
+          clearFollowedRemoteMeeting();
+          openMeeting();
+          return;
+        }
         await client.requestLiveMeetingCommand(meeting.sessionId, meeting.id, 'stop');
         remoteStopRequested.current = true;
         setPendingCommand('stop');
@@ -278,6 +354,7 @@ export function ActiveMeetingOverlay() {
               size="compact"
               disabled={
                 busy ||
+                meeting.engine === 'attendee' ||
                 !!activePendingCommand ||
                 (meeting.captureStatus !== 'listening' && meeting.captureStatus !== 'paused')
               }

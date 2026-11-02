@@ -2516,6 +2516,13 @@ export class VerityClient {
       .insights;
   }
 
+  async getActiveLiveMeetings(): Promise<Array<{ id: string; sessionId: string }>> {
+    const res = await this.request('/live-meetings/active', { method: 'GET' });
+    return z
+      .object({ meetings: z.array(z.object({ id: z.string(), sessionId: z.string() })) })
+      .parse(await res.json()).meetings;
+  }
+
   async getLiveMeetingChanges(sessionId: string, after: number) {
     const res = await this.request(
       `/sessions/${encodeURIComponent(sessionId)}/live-meetings?after=${after}`,

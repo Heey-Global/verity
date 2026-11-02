@@ -4299,3 +4299,11 @@ it('preserves the provider snapshot returned with managed server views', async (
     providerSnapshot,
   );
 });
+
+it('discovers active meetings using the cross-session metadata endpoint', async () => {
+  const meetings = [{ id: 'm', sessionId: 's' }];
+  const { fetch, calls } = fakeFetch(json({ meetings }));
+  const client = new VerityClient({ baseUrl: 'http://host', fetch });
+  expect(await client.getActiveLiveMeetings()).toEqual(meetings);
+  expect(calls[0]?.url).toBe('http://host/live-meetings/active');
+});

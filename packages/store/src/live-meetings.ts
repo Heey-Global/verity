@@ -801,6 +801,17 @@ export class LiveMeetingStore {
     });
   }
 
+  async activeMeetings(): Promise<Array<{ id: string; sessionId: string }>> {
+    const rows = await this.db
+      .selectFrom('live_meetings')
+      .select(['id', 'session_id'])
+      .where('state', '=', 'active')
+      .orderBy('started_at', 'desc')
+      .orderBy('id')
+      .execute();
+    return rows.map((row) => ({ id: row.id, sessionId: row.session_id }));
+  }
+
   async changes(
     sessionId: string,
     after: number,
