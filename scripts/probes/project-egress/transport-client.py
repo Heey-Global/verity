@@ -47,6 +47,49 @@ elif mode == 'external':
                 if positive:
                     raise
     print('external-probed', flush=True)
+elif mode == 'dns':
+    # Real queries to the relay's controlled answerer: UDP and TCP, both families.
+    name, expected = sys.argv[3], sys.argv[4:]
+
+    def ask(qtype, transport):
+        query = (bytes.fromhex('5ee501000001000000000000')
+                 + b''.join(bytes([len(label)]) + label.encode() for label in name.split('.'))
+                 + b'\0' + qtype.to_bytes(2, 'big') + b'\0\1')
+        if transport == 'udp':
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as channel:
+                channel.settimeout(3)
+                channel.sendto(query, (address, 53))
+                reply = channel.recv(4096)
+        else:
+            with socket.create_connection((address, 53), timeout=3) as channel:
+                channel.sendall(len(query).to_bytes(2, 'big') + query)
+                reply = b''
+                while len(reply) < 2 or len(reply) < 2 + int.from_bytes(reply[:2], 'big'):
+                    part = channel.recv(4096)
+                    if not part:
+                        raise RuntimeError(('dns tcp closed', reply))
+                    reply += part
+                reply = reply[2:]
+        if reply[:2] != query[:2] or not reply[2] & 0x80:
+            raise RuntimeError(('dns reply mismatch', reply))
+        rcode, count, offset, found = reply[3] & 0x0f, int.from_bytes(reply[6:8], 'big'), len(query), []
+        for _ in range(count):
+            rtype, length = int.from_bytes(reply[offset + 2:offset + 4], 'big'), int.from_bytes(reply[offset + 10:offset + 12], 'big')
+            data = reply[offset + 12:offset + 12 + length]
+            found.append(socket.inet_ntop(socket.AF_INET if rtype == 1 else socket.AF_INET6, data))
+            offset += 12 + length
+        return rcode, found
+
+    for transport in ('udp', 'tcp'):
+        for qtype, family in ((1, socket.AF_INET), (28, socket.AF_INET6)):
+            rcode, found = ask(qtype, transport)
+            if expected:
+                wanted = [a for a in expected if (':' in a) == (family == socket.AF_INET6)]
+                if rcode != 0 or found != wanted:
+                    raise RuntimeError(('dns granted mismatch', transport, qtype, rcode, found))
+            elif rcode != 5 or found:
+                raise RuntimeError(('dns refusal mismatch', transport, qtype, rcode, found))
+    print('dns-granted' if expected else 'dns-refused', flush=True)
 elif mode == 'stream':
     channels = []
     for port in ports:

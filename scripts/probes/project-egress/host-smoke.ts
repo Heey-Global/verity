@@ -32,6 +32,7 @@ import {
 import {
   createServer as createNetServer,
   createConnection,
+  isIP,
   type Server as NetServer,
 } from 'node:net';
 import { randomBytes } from 'node:crypto';
@@ -79,6 +80,8 @@ const store = await openProjectEgressHostStore(directory);
 let relayPolicy: EgressRelayPolicy | undefined;
 const starts: string[] = [];
 const composedTargets = ['11.77.106.2', '2001:4860:feed:106::2'];
+// A granted hostname: the relay's controlled DNS answers it with exactly these admitted addresses.
+const dnsName = 'dns-fixture.example.com';
 let directEnabled = true;
 let deadlineHelper: ReturnType<typeof hostProjectDeadlineEnforcer>;
 function createEnforcement() {
@@ -97,7 +100,7 @@ function createEnforcement() {
           revision: 1,
           requests: {},
           grants: directEnabled
-            ? composedTargets.flatMap((host) =>
+            ? [...composedTargets, dnsName].flatMap((host) =>
                 [
                   { host, protocol: 'tcp' as const, port: 443 },
                   { host, protocol: 'udp' as const, port: 8080 },
@@ -122,9 +125,13 @@ function createEnforcement() {
         ),
       inspect: inspectProjectFenceAttachment,
       apply: applyProjectFenceRules,
-      directTargetAllowed: (host) => Promise.resolve(composedTargets.includes(host)),
+      directTargetAllowed: (host) =>
+        Promise.resolve(composedTargets.includes(host) || host === dnsName),
       destinationAllowed: (address) => Promise.resolve(composedTargets.includes(address)),
-      resolve: () => Promise.reject(new Error('Exact address fixture')),
+      resolve: (host) =>
+        host === dnsName
+          ? Promise.resolve({ addresses: composedTargets, expiresAt: Date.now() + 3_600_000 })
+          : Promise.reject(new Error('Exact address fixture')),
       existing: async (binding) => {
         const rules = await exec('/usr/sbin/nft', ['-j', 'list', 'tables']);
         return (
@@ -465,6 +472,7 @@ try {
     codexSubpath: 'codex',
   };
   let brokerRequests = 0;
+  const dnsLookups = new Set<string>();
   const receipts: Record<string, number[]> = {
     'broker.sock': [],
     'claude.sock': [],
@@ -480,7 +488,32 @@ try {
       item.socket === 'broker.sock'
         ? createServer((request, response) => {
             brokerRequests++;
-            if (request.url === '/internal/mcp-proxy') {
+            if (request.url === '/internal/dns') {
+              // The Server's DNS route, reduced to its host call: the answer is what the
+              // host admitted for this generation, never a resolver lookup.
+              const chunks: Buffer[] = [];
+              request.on('data', (chunk: Buffer) => chunks.push(chunk));
+              request.on('end', () => {
+                const query = JSON.parse(Buffer.concat(chunks).toString('utf8')) as {
+                  name: string;
+                  type: 'A' | 'AAAA';
+                };
+                dnsLookups.add(query.name);
+                lifecycle.resolveDirect(identity, query.name).then(
+                  (answer) =>
+                    response.end(
+                      JSON.stringify({
+                        granted: answer !== undefined,
+                        addresses: (answer?.addresses ?? []).filter(
+                          (address) => isIP(address) === (query.type === 'A' ? 4 : 6),
+                        ),
+                        ttlSeconds: answer?.ttlSeconds ?? 1,
+                      }),
+                    ),
+                  () => response.writeHead(503).end(),
+                );
+              });
+            } else if (request.url === '/internal/mcp-proxy') {
               response.writeHead(200, { 'content-type': 'text/event-stream' });
               const timer = setInterval(() => response.write('transport-stream-marker\n'), 50);
               response.once('close', () => clearInterval(timer));
@@ -765,7 +798,18 @@ try {
     'foreign registered generation is unreachable despite a successful receiver control',
   );
 
-  for (const port of [53])
+  // Port 53 is the relay's controlled DNS answerer and is admitted; a port outside the bound
+  // transport set stays closed.
+  await docker(
+    'exec',
+    '--user',
+    '1000:1000',
+    containerId,
+    'python3',
+    '-c',
+    `import socket; socket.create_connection(('${relayAddress}',53),timeout=2).close()`,
+  );
+  for (const port of [5353])
     assert.ok((await client('negative', relayAddress, port)).includes('transport-denied'));
   await docker(
     'exec',
@@ -1117,8 +1161,34 @@ try {
   assert.ok(heartbeat.attempts > 10 && heartbeat.attempts > beforeHeartbeat.attempts);
   assert.ok(BigInt(heartbeat.boot_ns) > BigInt(beforeHeartbeat.boot_ns));
   await directProbe('fresh-after-expiry', true);
+  const dns = async (name: string, expected: readonly string[]) =>
+    docker(
+      'exec',
+      '--user',
+      '1000:1000',
+      containerId,
+      'python3',
+      '/probe/transport-client.py',
+      relayAddress,
+      'dns',
+      name,
+      ...expected,
+    );
+  const stopDnsRenewal = await beginRenewal();
+  try {
+    assert.ok((await dns(dnsName, composedTargets)).includes('dns-granted'));
+    assert.ok((await dns('ungranted.example.com', [])).includes('dns-refused'));
+  } finally {
+    await stopDnsRenewal();
+  }
   await lifecycle.revokeDirect(identity);
   await directProbe('direct-revoked', false);
+  assert.ok((await dns(dnsName, [])).includes('dns-refused'));
+  // Every answer came from the host through the broker socket, for both names.
+  assert.ok(dnsLookups.has(dnsName) && dnsLookups.has('ungranted.example.com'));
+  results.push(
+    'relay DNS answers a granted name over UDP/TCP with exactly the host-admitted addresses and refuses ungranted or revoked names',
+  );
   assert.ok((await client('positive', relayAddress)).includes('transport-positive'));
   directEnabled = false;
   await lifecycle.refreshDirect(identity);

@@ -120,7 +120,7 @@ it('requires TC and direct denial before enabling the exact relay pair, without 
     codex: false,
   });
   const rules = f.apply.mock.calls.at(-1)![0];
-  expect(rules).toContain('tcp dport { 8080, 8443 }');
+  expect(rules).toContain('tcp dport { 53, 8080, 8443 }');
   expect(rules).not.toContain('elements =');
   await f.enforcement.refresh(network);
   expect(f.readForAdmission).toHaveBeenCalledWith('a', 'sponsor', 1);
@@ -132,10 +132,10 @@ it('direct revocation retains the relay but complete denial clears both paths', 
   await f.enforcement.refresh(network);
   await f.enforcement.revoke(network);
   expect(f.deadline.clearRelay).not.toHaveBeenCalled();
-  expect(f.apply.mock.calls.at(-1)![0]).toContain('tcp dport { 8080, 8443 }');
+  expect(f.apply.mock.calls.at(-1)![0]).toContain('tcp dport { 53, 8080, 8443 }');
   await f.enforcement.deny(network);
   expect(f.deadline.clearRelay).toHaveBeenCalledWith(corridor.binding);
-  expect(f.apply.mock.calls.at(-1)![0]).not.toContain('tcp dport { 8080, 8443 }');
+  expect(f.apply.mock.calls.at(-1)![0]).not.toContain('tcp dport { 53, 8080, 8443 }');
   await expect(f.enforcement.refresh(network)).rejects.toThrow('not ready');
 });
 it('clears kernel exceptions and refuses readiness after a post-install endpoint change', async () => {
@@ -147,7 +147,7 @@ it('clears kernel exceptions and refuses readiness after a post-install endpoint
   });
   await expect(f.enforcement.connect(network, ids, relay)).rejects.toThrow('admission failed');
   expect(f.deadline.clearRelay).toHaveBeenCalledOnce();
-  expect(f.apply.mock.calls.at(-1)![0]).not.toContain('tcp dport { 8080, 8443 }');
+  expect(f.apply.mock.calls.at(-1)![0]).not.toContain('tcp dport { 53, 8080, 8443 }');
   await expect(f.enforcement.refresh(network)).rejects.toThrow('not ready');
 });
 it('invalidates pending authority reads immediately when a lifecycle operation arrives', async () => {
@@ -180,7 +180,7 @@ it('routes only bound routed addresses through the later direct fence and preser
     expect(rules).toContain('counter drop');
     expect(rules).not.toContain('ct state established accept');
   }
-  expect(fence).toContain('tcp dport { 8080, 8443 }');
+  expect(fence).toContain('tcp dport { 53, 8080, 8443 }');
   expect(fence).toContain(`meta ibrname "${network.bridge}" counter drop`);
   expect(fence).not.toContain('elements =');
   expect(() =>
@@ -279,7 +279,7 @@ it.each([false, true])(
       host.execute({ operation: 'refresh-direct', projectId: 'a', generation: 'g1' }),
     ).rejects.toThrow('database unavailable');
     expect(f.deadline.clearRelay).not.toHaveBeenCalled();
-    expect(f.apply.mock.calls.at(-1)![0]).toContain('tcp dport { 8080, 8443 }');
+    expect(f.apply.mock.calls.at(-1)![0]).toContain('tcp dport { 53, 8080, 8443 }');
     await expect(
       host.execute({ operation: 'refresh-direct', projectId: 'a', generation: 'g1' }),
     ).resolves.toMatchObject({ state: 'direct-refreshed' });
@@ -290,3 +290,59 @@ it.each([false, true])(
     expect(f.deadline.clearRelay).toHaveBeenCalled();
   },
 );
+
+it('records one sponsor-attributed HTTPS request for an inventoried ungranted name', async () => {
+  vi.useFakeTimers({ now: 1_000_000 });
+  try {
+    const f = fixture();
+    const request = vi.fn(async () => ({ covered: true as const }));
+    const reportRequestFailure = vi.fn();
+    let authority = true;
+    const enforcement = createProjectEgressHostEnforcement({
+      deadline: f.deadline,
+      store: { readForAdmission: f.readForAdmission },
+      requests: { request },
+      reportRequestFailure,
+      sponsor: () => 'sponsor',
+      directAuthority: () => authority,
+      inspect: f.inspect,
+      dependencies: {
+        inspect: async (b) => ({ ...b }),
+        apply: f.apply,
+        directTargetAllowed: async (host) => ['api.example.com', 'down.example.com'].includes(host),
+        destinationAllowed: async () => true,
+        resolve: async () => {
+          throw new Error('Unexpected DNS');
+        },
+      },
+    });
+    const settle = () => vi.advanceTimersByTimeAsync(0);
+    enforcement.requestDirect!(network, 'api.example.com');
+    enforcement.requestDirect!(network, 'api.example.com');
+    // Names outside the host inventory never become cards that could not take effect.
+    enforcement.requestDirect!(network, 'random.example.com');
+    await settle();
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(request).toHaveBeenCalledWith('a', 'sponsor', {
+      host: 'api.example.com',
+      protocol: 'tcp',
+      port: 443,
+    });
+    await vi.advanceTimersByTimeAsync(60_001);
+    enforcement.requestDirect!(network, 'api.example.com');
+    await settle();
+    expect(request).toHaveBeenCalledTimes(2);
+    // Without configured direct authority there is no sponsor to attribute a request to.
+    authority = false;
+    enforcement.requestDirect!(network, 'down.example.com');
+    await settle();
+    expect(request).toHaveBeenCalledTimes(2);
+    authority = true;
+    request.mockRejectedValueOnce(new Error('store down'));
+    enforcement.requestDirect!(network, 'down.example.com');
+    await settle();
+    expect(reportRequestFailure).toHaveBeenCalledWith(new Error('store down'));
+  } finally {
+    vi.useRealTimers();
+  }
+});

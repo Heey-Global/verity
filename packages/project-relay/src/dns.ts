@@ -49,6 +49,8 @@ interface DnsForwarderOptions {
   port?: number;
   upstream?: { host: string; port: number };
   limits?: Partial<DnsForwarderLimits>;
+  /** Controlled mode: answer every query locally and never contact an upstream. */
+  answer?: (query: Buffer) => Promise<Buffer | undefined>;
 }
 
 export async function startDnsForwarder(options: DnsForwarderOptions = {}): Promise<DnsForwarder> {
@@ -76,8 +78,23 @@ async function startDnsForwarderAttempt(options: DnsForwarderOptions): Promise<D
 
   const udp = createSocket('udp4');
   const pending = new Set<UdpSocket>();
+  const answer = options.answer;
+  let answering = 0;
   udp.on('message', (query: Buffer, client: RemoteInfo) => {
     if (query.length < MIN_MESSAGE_BYTES || query.length > MAX_UDP_MESSAGE_BYTES) return;
+    if (answer) {
+      if (answering >= limits.maxInFlightUdp) return;
+      answering += 1;
+      void answer(query)
+        .then((reply) => {
+          if (reply) udp.send(reply, client.port, client.address);
+        })
+        .catch(() => undefined)
+        .finally(() => {
+          answering -= 1;
+        });
+      return;
+    }
     // Dropped, not refused: the client's resolver retries, as it would for a lost packet.
     if (pending.size >= limits.maxInFlightUdp) return;
     const exchange = createSocket('udp4');
@@ -101,6 +118,14 @@ async function startDnsForwarderAttempt(options: DnsForwarderOptions): Promise<D
 
   const connections = new Set<Socket>();
   const tcp: Server = createServer((downstream) => {
+    if (answer) {
+      connections.add(downstream);
+      downstream.setTimeout(limits.timeoutMs, () => downstream.destroy());
+      downstream.once('close', () => connections.delete(downstream));
+      downstream.once('error', () => downstream.destroy());
+      answerTcp(downstream, answer);
+      return;
+    }
     const upstreamSocket = createConnection(upstream);
     for (const socket of [downstream, upstreamSocket]) {
       connections.add(socket);
@@ -162,4 +187,45 @@ async function startDnsForwarderAttempt(options: DnsForwarderOptions): Promise<D
       ]);
     },
   };
+}
+
+/** Length-prefixed DNS over TCP, one query at a time, answered in controlled mode. */
+function answerTcp(socket: Socket, answer: (query: Buffer) => Promise<Buffer | undefined>): void {
+  let buffered = Buffer.alloc(0);
+  let busy = false;
+  const next = (): void => {
+    if (busy || socket.destroyed || buffered.length < 2) return;
+    const length = buffered.readUInt16BE(0);
+    if (length < MIN_MESSAGE_BYTES || length > MAX_UDP_MESSAGE_BYTES) {
+      socket.destroy();
+      return;
+    }
+    if (buffered.length < 2 + length) return;
+    const query = buffered.subarray(2, 2 + length);
+    buffered = buffered.subarray(2 + length);
+    busy = true;
+    void answer(Buffer.from(query))
+      .then((reply) => {
+        if (!reply) {
+          socket.destroy();
+          return;
+        }
+        const frame = Buffer.alloc(2);
+        frame.writeUInt16BE(reply.length, 0);
+        socket.write(Buffer.concat([frame, reply]));
+      })
+      .catch(() => socket.destroy())
+      .finally(() => {
+        busy = false;
+        next();
+      });
+  };
+  socket.on('data', (chunk: Buffer) => {
+    buffered = Buffer.concat([buffered, chunk]);
+    if (buffered.length > 2 + MAX_UDP_MESSAGE_BYTES) {
+      socket.destroy();
+      return;
+    }
+    next();
+  });
 }

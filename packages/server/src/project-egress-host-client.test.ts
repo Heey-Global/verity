@@ -124,3 +124,24 @@ it('does not confuse explicit connect readiness with start or denial acknowledge
     ).rejects.toThrow();
   }
 });
+it('accepts only generation-matched name answers for resolve-direct', async () => {
+  const request = {
+    operation: 'resolve-direct' as const,
+    projectId: 'p1',
+    generation: 'g1',
+    name: 'downloads.example.com',
+  };
+  for (const [reply, accepted] of [
+    [{ state: 'resolved', generation: 'g1', addresses: ['8.8.8.8'], ttlSeconds: 3 }, true],
+    [{ state: 'unresolved', generation: 'g1' }, true],
+    [{ state: 'unresolved', generation: 'g2' }, false],
+    [{ state: 'denied', generation: 'g1' }, false],
+  ] as const) {
+    const command = await fixture((req, res) => {
+      req.resume();
+      res.end(JSON.stringify(reply));
+    });
+    if (accepted) await expect(command(request)).resolves.toEqual(reply);
+    else await expect(command(request)).rejects.toThrow('outcome may be unknown');
+  }
+});

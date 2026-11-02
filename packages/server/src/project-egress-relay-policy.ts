@@ -155,8 +155,14 @@ export function verifyEgressRelay(
     !['no-new-privileges', 'no-new-privileges=true'].includes(config.SecurityOpt[0]!) ||
     JSON.stringify(config.Sysctls) !==
       JSON.stringify({ 'net.ipv4.ip_unprivileged_port_start': '53' }) ||
+    // Port 53 reaches the relay under the fence, so its resolver must be the controlled
+    // answerer: a forwarding relay would give the Sandbox a recursive DNS channel out.
+    !value.Config.Env.includes('VERITY_DNS_CONTROLLED=1') ||
     value.Config.Env.some(
-      (entry) => !environment.includes(entry) && !forgeRelayEnvironment(entry),
+      (entry) =>
+        !environment.includes(entry) &&
+        entry !== 'VERITY_DNS_CONTROLLED=1' &&
+        !forgeRelayEnvironment(entry),
     ) ||
     new Set(value.Config.Env.map((entry) => entry.split('=')[0])).size !==
       value.Config.Env.length ||

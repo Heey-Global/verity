@@ -21,6 +21,7 @@ export function createProjectEgressAdmission(options: {
   refresh(): Promise<void>;
   revoke(): Promise<void>;
   retire(): Promise<void>;
+  admitted(name: string): { addresses: readonly string[]; ttlSeconds: number } | undefined;
 } {
   const binding = structuredClone(options.binding);
   const sponsorUserId = options.sponsorUserId;
@@ -78,5 +79,6 @@ export function createProjectEgressAdmission(options: {
     },
     revoke: () => invalidate(() => fence.revoke(binding)),
     retire: () => invalidate(() => fence.retire(binding)),
+    admitted: (name) => fence.admitted(binding, name),
   };
 }
