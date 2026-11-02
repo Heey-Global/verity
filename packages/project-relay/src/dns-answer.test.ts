@@ -267,5 +267,7 @@ it('stops answering a controlled TCP client that never reads its replies', async
     stalled = lookups < target;
   }
   expect(stalled).toBe(true);
+  // Many replies flowed first: the stall is the full write buffer, not a slow runner.
+  expect(lookups).toBeGreaterThan(1_000);
   expect(lookups).toBeLessThan(64_000);
 }, 60_000);
