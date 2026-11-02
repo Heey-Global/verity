@@ -28,11 +28,10 @@ function fixture() {
   };
   const events: string[] = [];
   const store = {
-    readForAdmission: vi.fn(async (projectId: string, sponsor: string, revision?: number) => {
+    readForAdmission: vi.fn(async (projectId: string, revision?: number) => {
       events.push('read');
       if (
         projectId !== binding.projectId ||
-        sponsor !== 'sponsor' ||
         (revision !== undefined && revision !== policy.revision)
       )
         throw new Error('stale authority');
@@ -69,7 +68,6 @@ function fixture() {
     events,
     admission: createProjectEgressAdmission({
       binding,
-      sponsorUserId: 'sponsor',
       store,
       dependencies,
     }),
@@ -79,24 +77,24 @@ function fixture() {
   };
 }
 
-it('loads durable policy after denial and rechecks sponsor and revision before admission', async () => {
+it('loads durable policy after denial and rechecks the revision before admission', async () => {
   const f = fixture();
   await f.admission.prepare();
   f.events.length = 0;
   await f.admission.refresh();
   expect(f.events.slice(0, 3)).toEqual(['revoke', 'deny', 'read']);
   expect(f.store.readForAdmission.mock.calls).toEqual([
-    ['project', 'sponsor'],
-    ['project', 'sponsor', 1],
-    ['project', 'sponsor', 1],
-    ['project', 'sponsor', 1],
-    ['project', 'sponsor', 1],
+    ['project'],
+    ['project', 1],
+    ['project', 1],
+    ['project', 1],
+    ['project', 1],
   ]);
   expect(f.events).toContain('allow');
   expect(f.dependencies.deadline.arm).toHaveBeenCalledOnce();
 });
 
-it('closes existing access before a sponsor loses authority or the store fails', async () => {
+it('closes existing access when the store fails', async () => {
   const f = fixture();
   await f.admission.prepare();
   await f.admission.refresh();
@@ -120,7 +118,7 @@ it.each([1, 2, 3, 4, 5])(
   async (pauseAt) => {
     const f = fixture();
     await f.admission.prepare();
-    const policy = await f.store.readForAdmission('project', 'sponsor');
+    const policy = await f.store.readForAdmission('project');
     let release!: () => void;
     const paused = new Promise<void>((resolve) => {
       release = resolve;
@@ -233,7 +231,6 @@ it('admits host-owned system targets beside project grants without breaking curr
   const f = fixture();
   const admission = createProjectEgressAdmission({
     binding: f.binding,
-    sponsorUserId: 'sponsor',
     store: f.store,
     systemTargets: [{ host: 'mcp.exa.ai', protocol: 'tcp', port: 443 }],
     dependencies: f.dependencies,
@@ -276,7 +273,6 @@ it('drops only an unreachable system target, never the project grants', async ()
   const reportSystemFailure = vi.fn();
   const admission = createProjectEgressAdmission({
     binding: f.binding,
-    sponsorUserId: 'sponsor',
     store: f.store,
     systemTargets: [{ host: 'mcp.exa.ai', protocol: 'tcp', port: 443 }],
     dependencies: { ...f.dependencies, reportSystemFailure },

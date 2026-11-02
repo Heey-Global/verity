@@ -5172,3 +5172,16 @@ migrations['0185_calendar_watch_events'] = {
     await sql`drop table calendar_watch_events`.execute(db);
   },
 };
+
+migrations['0186_project_egress_switch'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    // Default off: network protection only applies once an administrator enables it.
+    await db.schema
+      .alterTable('verity_settings')
+      .addColumn('project_egress_enabled', 'boolean', (c) => c.notNull().defaultTo(false))
+      .execute();
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await db.schema.alterTable('verity_settings').dropColumn('project_egress_enabled').execute();
+  },
+};

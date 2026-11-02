@@ -83,8 +83,7 @@ const enforcement = createProjectEgressHostEnforcement({
   systemTargets: SYSTEM_DIRECT_TARGETS,
   ...(projectPolicy ? { requests: projectPolicy } : {}),
   reportRequestFailure: (error) => console.error('Destination request was not recorded', error),
-  directAuthority: (binding) => authority?.projectSponsors[binding.projectId] !== undefined,
-  sponsor: (binding) => authority?.projectSponsors[binding.projectId] ?? '__unconfigured__',
+  directAuthority: () => authority !== undefined,
   inspect: inspectEgressHostDirect,
   dependencies: {
     inspect: inspectProjectFenceAttachment,

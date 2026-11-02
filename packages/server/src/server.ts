@@ -666,6 +666,7 @@ function publicVeritySettings(
     uplinkSubscriptionKeyConfigured: configured(uplinkSubscriptionKey),
     premiumSharingEnabled: settings.premiumSharingEnabled !== false,
     premiumRemoteAccessEnabled: settings.premiumRemoteAccessEnabled !== false,
+    projectEgressEnabled: settings.projectEgressEnabled === true,
     // The app reads this to build the OAuth request. Prefer the env-baked client
     // id (ADR 0009) so it is present even before the first connect; fall back to
     // whatever the connection persisted.
@@ -4166,6 +4167,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     store: () => veritySettingsStore(deps.eventStore),
     agentLogin,
     parseSettingsPatch: (body) => veritySettingsBody.parse(body),
+    projectEgressAvailable: deps.projectEgressAvailable,
     storeAgentCredentials,
     publicSettings: async (settings, request) => ({
       ...publicVeritySettings(
@@ -4174,6 +4176,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           (request.headers['x-verity-app-variant'] === undefined ? undefined : null),
       ),
       ...(await googleAccountSettingsStatus(deps.eventStore)),
+      projectEgressAvailable: (await deps.projectEgressAvailable?.()) === true,
       claudeCredentialStatus: (
         deps.claudeOAuthTokenProvider ?? dbClaudeOAuthTokenProvider
       ).statusForCredentials?.(settings.claudeCodeOauthCredentialsJson) ?? {
@@ -4883,6 +4886,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     uplinkSubscriptionKey: z.string().trim().min(1).max(4096).nullable().optional(),
     premiumSharingEnabled: z.boolean().optional(),
     premiumRemoteAccessEnabled: z.boolean().optional(),
+    projectEgressEnabled: z.boolean().optional(),
   });
 
   async function runProjectDelete(

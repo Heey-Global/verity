@@ -107,6 +107,8 @@ export interface ControlPlaneDeps {
   listenerDiscovery?: ServerDeps['listenerDiscovery'];
   localPreviewManager?: ServerDeps['localPreviewManager'];
   managedDevServerManager?: ServerDeps['managedDevServerManager'];
+  projectEgressResolve?: ServerDeps['projectEgressResolve'];
+  projectEgressAvailable?: ServerDeps['projectEgressAvailable'];
   previewSharingCapability?: ServerDeps['previewSharingCapability'];
   returnPathActivation?: ServerDeps['returnPathActivation'];
   coordinatedRecording?: ServerDeps['coordinatedRecording'];
@@ -395,6 +397,12 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
     ...(deps.pushEnabled !== undefined ? { pushEnabled: deps.pushEnabled } : {}),
     ...(deps.managedDevServerManager !== undefined
       ? { managedDevServerManager: deps.managedDevServerManager }
+      : {}),
+    ...(deps.projectEgressResolve !== undefined
+      ? { projectEgressResolve: deps.projectEgressResolve }
+      : {}),
+    ...(deps.projectEgressAvailable !== undefined
+      ? { projectEgressAvailable: deps.projectEgressAvailable }
       : {}),
     ...(deps.listenerDiscovery !== undefined ? { listenerDiscovery: deps.listenerDiscovery } : {}),
     ...(deps.localPreviewManager !== undefined

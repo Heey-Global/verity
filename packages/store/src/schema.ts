@@ -631,6 +631,8 @@ export interface VeritySettingsTable {
   /** Operator switches for the paid Uplink features (see VeritySettingsRecord). */
   premium_sharing_enabled: ColumnType<boolean, boolean | undefined, boolean>;
   premium_remote_access_enabled: ColumnType<boolean, boolean | undefined, boolean>;
+  /** System-wide network protection: fence every project container (see VeritySettingsRecord). */
+  project_egress_enabled: ColumnType<boolean, boolean | undefined, boolean>;
   /** VESTIGIAL — no longer read or written. These were the nightly sandbox
    *  auto-update policy, removed once the relay reconciler started rebuilding
    *  every sandbox onto the current image after each Server restart: on a released

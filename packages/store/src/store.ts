@@ -750,6 +750,9 @@ export interface VeritySettingsRecord {
    * the switch decides whether this server uses it. Both default to on. */
   premiumSharingEnabled?: boolean;
   premiumRemoteAccessEnabled?: boolean;
+  /** System-wide network protection. When on, every project container starts behind
+   * the host egress fence from its next start. Defaults to off. */
+  projectEgressEnabled?: boolean;
   advancedModeEnabled?: boolean;
   /** Days an unassigned live meeting is kept after it ends; null means the default. */
   unassignedMeetingRetentionDays?: number | null;
@@ -794,7 +797,8 @@ type VeritySettingsKey =
   | 'uplinkSubscriptionKey'
   | 'uplinkInstallationId'
   | 'premiumSharingEnabled'
-  | 'premiumRemoteAccessEnabled';
+  | 'premiumRemoteAccessEnabled'
+  | 'projectEgressEnabled';
 
 export type VeritySettingsPatch = {
   [K in VeritySettingsKey]?: VeritySettingsRecord[K] | undefined;
@@ -7004,6 +7008,7 @@ export class EventStore implements EventSink {
       uplink_installation_id: string | null;
       premium_sharing_enabled: boolean;
       premium_remote_access_enabled: boolean;
+      project_egress_enabled: boolean;
       advanced_mode_enabled: boolean;
       unassigned_meeting_retention_days: number | null;
       created_at: Date;
@@ -7069,6 +7074,7 @@ export class EventStore implements EventSink {
       uplinkInstallationId: row.uplink_installation_id,
       premiumSharingEnabled: row.premium_sharing_enabled,
       premiumRemoteAccessEnabled: row.premium_remote_access_enabled,
+      projectEgressEnabled: row.project_egress_enabled,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     };
@@ -7111,6 +7117,7 @@ export class EventStore implements EventSink {
     'uplink_installation_id',
     'premium_sharing_enabled',
     'premium_remote_access_enabled',
+    'project_egress_enabled',
     'advanced_mode_enabled',
     'unassigned_meeting_retention_days',
     'created_at',
@@ -7186,6 +7193,7 @@ export class EventStore implements EventSink {
       uplink_installation_id: normalizeSetting(patch.uplinkInstallationId),
       premium_sharing_enabled: patch.premiumSharingEnabled ?? true,
       premium_remote_access_enabled: patch.premiumRemoteAccessEnabled ?? true,
+      project_egress_enabled: patch.projectEgressEnabled ?? false,
     };
     const row = await this.db
       .insertInto('verity_settings')
@@ -7321,6 +7329,9 @@ export class EventStore implements EventSink {
             : {}),
           ...(patch.premiumRemoteAccessEnabled !== undefined
             ? { premium_remote_access_enabled: patch.premiumRemoteAccessEnabled }
+            : {}),
+          ...(patch.projectEgressEnabled !== undefined
+            ? { project_egress_enabled: patch.projectEgressEnabled }
             : {}),
           ...(patch.advancedModeEnabled !== undefined
             ? { advanced_mode_enabled: patch.advancedModeEnabled }

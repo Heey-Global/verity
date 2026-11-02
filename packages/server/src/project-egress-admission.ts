@@ -5,14 +5,14 @@ import {
   type ProjectFenceDependencies,
 } from './project-egress-fence.js';
 
-/** Experimental host composition. Identity and sponsor must come from the trusted
- * registrar, never a sandbox header or request. No caller-supplied grant list is
+/** Host composition. Identity must come from the trusted registrar, never a sandbox
+ * header or request. Grants are project settings, applied without borrowing a user's
+ * authority; rights are checked when a grant is decided. No caller-supplied grant list is
  * accepted. Production does not construct this adapter.
  */
 export function createProjectEgressAdmission(options: {
   binding: ProjectFenceBinding;
   continuous?: boolean;
-  sponsorUserId: string;
   store: Pick<ProjectEgressStore, 'readForAdmission'>;
   /** Host-owned destinations admitted alongside the project's grants, never from a card. */
   systemTargets?: readonly EgressTarget[];
@@ -26,8 +26,6 @@ export function createProjectEgressAdmission(options: {
   admitted(name: string): { addresses: readonly string[]; ttlSeconds: number } | undefined;
 } {
   const binding = structuredClone(options.binding);
-  const sponsorUserId = options.sponsorUserId;
-  if (!sponsorUserId) throw new Error('An admission sponsor is required');
   const store = options.store;
   const system: EgressGrant[] = (options.systemTargets ?? []).map((target) => ({
     id: `system:${target.protocol}:${target.host}:${target.port}`,
@@ -58,11 +56,7 @@ export function createProjectEgressAdmission(options: {
     ...options.dependencies,
     policyCurrent: async (snapshot) => {
       if (refreshing !== lifecycle) return false;
-      const policy = await store.readForAdmission(
-        binding.projectId,
-        sponsorUserId,
-        snapshot.revision,
-      );
+      const policy = await store.readForAdmission(binding.projectId, snapshot.revision);
       // A revision identifies the complete persisted grant set, not caller authority.
       return (
         refreshing === lifecycle &&
@@ -83,7 +77,7 @@ export function createProjectEgressAdmission(options: {
         // Permission revocation or a failed database read cannot retain old access.
         try {
           if (!options.continuous) await fence.revoke(binding);
-          const policy = await store.readForAdmission(binding.projectId, sponsorUserId);
+          const policy = await store.readForAdmission(binding.projectId);
           if (attempt !== lifecycle) throw new Error('Admission refresh superseded');
           await fence.refresh({
             binding,

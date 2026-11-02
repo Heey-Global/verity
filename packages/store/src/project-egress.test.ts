@@ -28,6 +28,13 @@ beforeAll(async () => {
 afterAll(async () => {
   await ctx.close();
 });
+it('defaults network protection off and persists the global switch', async () => {
+  expect((await ctx.store.getVeritySettingsRaw())?.projectEgressEnabled).toBe(false);
+  await ctx.store.updateVeritySettings({ projectEgressEnabled: true });
+  expect((await ctx.store.getVeritySettingsRaw())?.projectEgressEnabled).toBe(true);
+  await ctx.store.updateVeritySettings({ projectEgressEnabled: false });
+  expect((await ctx.store.getVeritySettingsRaw())?.projectEgressEnabled).toBe(false);
+});
 it('canonicalizes exact targets and rejects URL or ambiguous syntax', () => {
   expect(canonicalEgressTarget(target).host).toBe('downloads.example.com');
   expect(canonicalEgressTarget({ ...target, host: '2001:4860:4860:0:0:0:0:8888' }).host).toBe(
@@ -48,32 +55,17 @@ it('canonicalizes exact targets and rejects URL or ambiguous syntax', () => {
   ])
     expect(() => canonicalEgressTarget({ ...target, host })).toThrow();
 });
-it('requires current execution authority and the exact revision for admission', async () => {
-  const policy = await store.readForAdmission('a', 'member');
-  expect(await store.readForAdmission('a', 'member', policy.revision)).toEqual(policy);
-  await expect(store.readForAdmission('a', 'member', policy.revision + 1)).rejects.toMatchObject({
+it('reads the project grants for the host without borrowing any user authority', async () => {
+  const policy = await store.readForAdmission('a');
+  expect(await store.readForAdmission('a', policy.revision)).toEqual(policy);
+  await expect(store.readForAdmission('a', policy.revision + 1)).rejects.toMatchObject({
     code: 'stale',
   });
-  expect(() => store.readForAdmission('a', 'member', -1)).toThrow('invalid');
-  await expect(store.readForAdmission('b', 'member')).rejects.toMatchObject({ code: 'forbidden' });
-  await sql`update project_memberships set can_execute = false where project_id = 'a' and user_id = 'member'`.execute(
-    ctx.db,
-  );
-  try {
-    expect(await store.read('a', 'member')).toEqual(policy);
-    await expect(store.readForAdmission('a', 'member', policy.revision)).rejects.toMatchObject({
-      code: 'forbidden',
-    });
-  } finally {
-    await sql`update project_memberships set can_execute = true where project_id = 'a' and user_id = 'member'`.execute(
-      ctx.db,
-    );
-  }
+  expect(() => store.readForAdmission('a', -1)).toThrow('invalid');
+  // Grants are project settings: a member losing rights does not change what the host applies.
   await sql`update users set status = 'disabled' where id = 'member'`.execute(ctx.db);
   try {
-    await expect(store.readForAdmission('a', 'member', policy.revision)).rejects.toMatchObject({
-      code: 'forbidden',
-    });
+    expect(await store.readForAdmission('a', policy.revision)).toEqual(policy);
   } finally {
     await sql`update users set status = 'active' where id = 'member'`.execute(ctx.db);
   }
@@ -189,4 +181,17 @@ it('lets managers recover request capacity without deleting denials', async () =
   await store.removeRequest('b', admin, '1', 0);
   expect(await store.request('b', admin, target)).toMatchObject({ status: 'pending' });
   expect((await store.read('b', admin)).requests['0']?.status).toBe('denied');
+});
+it('records a Sandbox request once per target, attributed to the Sandbox', async () => {
+  const asked = { host: 'sandbox.example.com', protocol: 'tcp' as const, port: 443 };
+  const first = (await store.requestFromSandbox('a', asked)) as EgressRequest;
+  const again = (await store.requestFromSandbox('a', asked)) as EgressRequest;
+  expect(again.id).toBe(first.id);
+  expect(first.requestedBy).toEqual(['sandbox']);
+  expect(first.status).toBe('pending');
+  // Only a project manager decides it; the Sandbox path grants nothing itself.
+  await expect(store.decide('a', 'member', first.id, first.revision, true)).rejects.toMatchObject({
+    code: 'forbidden',
+  });
+  expect((await store.read('a', admin)).grants).toHaveLength(0);
 });

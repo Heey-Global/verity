@@ -53,6 +53,16 @@ export class ProjectEgressLifecycle {
     };
     await tick();
   }
+  /** Whether the host egress service answers with packet enforcement. A read-only probe:
+   * `current` for a reserved project id alters no rules and renews nothing. */
+  async available(): Promise<boolean> {
+    if (this.closed) return false;
+    try {
+      return await this.requiresFreshWakeGeneration('verity-availability-probe');
+    } catch {
+      return false;
+    }
+  }
   async requiresFreshWakeGeneration(projectId: string): Promise<boolean> {
     const reply = await this.command({ operation: 'current', projectId });
     if (
