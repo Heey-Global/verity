@@ -740,11 +740,12 @@ describe('ProvisionerImpl (#174)', () => {
   it('starts open while the protection switch is off, even with an unreachable host service', async () => {
     const id = await seedProject();
     const root = mkdtempSync(join(tmpdir(), 'egress-switch-'));
+    const hostCreate = vi.fn();
     const egress = {
       current: vi.fn(async () => {
         throw new Error('host egress service unavailable');
       }),
-      create: vi.fn(),
+      create: hostCreate,
     } as unknown as ProjectEgressLifecycle;
     const { client: docker, calls } = fakeDocker({
       inspectContainer: async (name) => ({
@@ -770,7 +771,7 @@ describe('ProvisionerImpl (#174)', () => {
     });
     try {
       await provisioner.provision(id);
-      expect(egress.create).not.toHaveBeenCalled();
+      expect(hostCreate).not.toHaveBeenCalled();
       const spec = calls.filter((call) => call.method === 'createContainer').at(-1)!
         .payload as ContainerSpec;
       expect(spec).toMatchObject({
@@ -1112,7 +1113,7 @@ describe('ProvisionerImpl (#174)', () => {
     );
   });
 
-  it.each([false, true, 'packet', 'switched-off'] as const)(
+  it.each([false, true, 'packet', 'switched-off', 'host-down', 'missing-host'] as const)(
     'wakes with the host-required generation and fresh relay capabilities (host: %s)',
     async (protectedStart) => {
       const id = await seedProject('active');
@@ -1121,7 +1122,7 @@ describe('ProvisionerImpl (#174)', () => {
         running: false,
         image: 'verity-devc-test:latest',
         extraHosts: ['relay:172.20.0.2'],
-        networks: { 'project-network': {} },
+        networks: { [protectedStart ? 'project-network' : projectNetworkName(id)]: {} },
         labels: { [PROJECT_ID_LABEL]: id, [CONTAINER_GENERATION_LABEL]: 'generation-1' },
         mounts: [
           { source: '/opt/agent-seed', destination: '/opt/agent-seed', readWrite: false },
@@ -1135,7 +1136,11 @@ describe('ProvisionerImpl (#174)', () => {
         sleepCompatibilityFingerprint: sandboxSleepCompatibilityFingerprint({
           ...retained,
           running: true,
-          networks: { 'project-network': { ipAddress: '172.20.0.2' } },
+          networks: {
+            [protectedStart ? 'project-network' : projectNetworkName(id)]: {
+              ipAddress: '172.20.0.2',
+            },
+          },
         }),
         sleepingSince: new Date(),
         wakeStartedAt: null,
@@ -1164,13 +1169,14 @@ describe('ProvisionerImpl (#174)', () => {
         protectedStart === 'packet',
       );
       // The retained Sandbox started protected, so the host still holds its generation.
-      vi.spyOn(egress, 'current').mockResolvedValue({
+      const current = vi.spyOn(egress, 'current').mockResolvedValue({
         projectId: id,
         generation: 'generation-1',
         networkId: 'a'.repeat(64),
         networkName: 'project-network',
         bridge: 'vep0123456789ab',
       });
+      if (protectedStart === 'host-down') current.mockRejectedValue(new Error('host unavailable'));
       const hostStart = vi.spyOn(egress, 'start').mockResolvedValue(undefined);
       vi.spyOn(egress, 'connect').mockResolvedValue('172.20.0.2');
       const provisioner = createProvisioner({
@@ -1183,8 +1189,9 @@ describe('ProvisionerImpl (#174)', () => {
         projectRelay: relay,
         ...(protectedStart
           ? {
-              projectEgress: egress,
-              projectEgressEnabled: async () => protectedStart !== 'switched-off',
+              ...(protectedStart === 'missing-host' ? {} : { projectEgress: egress }),
+              projectEgressEnabled: async () =>
+                protectedStart !== 'switched-off' && protectedStart !== 'host-down',
               sandboxRuntime: 'runsc-project' as const,
             }
           : {}),
@@ -1197,9 +1204,23 @@ describe('ProvisionerImpl (#174)', () => {
       );
       provisioner.attachProjectBusyProbe(busyProbe);
 
+      if (protectedStart === 'missing-host') {
+        await expect(
+          provisioner.ensureProjectSandboxAwake(id, requestingSessionIds),
+        ).rejects.toThrow('no egress service');
+        expect(await ctx.store.getProject(id)).toMatchObject({
+          state: 'sleeping',
+          wakeStartedAt: null,
+        });
+        return;
+      }
       // A packet-enforcing host, or protection switched off since the Sandbox started
       // protected, both replace the retained generation instead of waking it.
-      if (protectedStart === 'packet' || protectedStart === 'switched-off') {
+      if (
+        protectedStart === 'packet' ||
+        protectedStart === 'switched-off' ||
+        protectedStart === 'host-down'
+      ) {
         const replace = vi.spyOn(provisioner, 'recreateContainer').mockImplementation(async () => {
           await ctx.store.updateProjectState(id, 'active');
           return (await ctx.store.getProject(id))!;

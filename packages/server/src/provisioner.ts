@@ -3547,6 +3547,13 @@ export class ProvisionerImpl implements Provisioner {
                         project.sleepCompatibilityFingerprint
                       ? 'contract_mismatch'
                       : undefined;
+          const egress = await this.egressFor();
+          const retainedEgress =
+            generation === undefined
+              ? undefined
+              : await this.generationEgress(project.id, generation);
+          const needsFreshGeneration =
+            egress !== undefined && (await egress.requiresFreshWakeGeneration(project.id));
           await this.opts.store.updateProjectSleepState(project.id, 'waking', {
             sleepCompatibilityFingerprint: project.sleepCompatibilityFingerprint,
             sleepingSince: project.sleepingSince ?? null,
@@ -3588,14 +3595,12 @@ export class ProvisionerImpl implements Provisioner {
               throw cause;
             }
           };
-          const egress = await this.egressFor();
-          const retainedEgress =
-            generation === undefined
-              ? undefined
-              : await this.generationEgress(project.id, generation);
           if (
             egress !== retainedEgress ||
-            (egress !== undefined && (await egress.requiresFreshWakeGeneration(project.id)))
+            needsFreshGeneration ||
+            (egress === undefined &&
+              inspect !== null &&
+              !Object.hasOwn(inspect.networks ?? {}, projectNetworkName(project.id)))
           ) {
             // The protection switch changed since this Sandbox started, or Docker
             // allocates new veth attachments after a stopped protected Sandbox while

@@ -324,11 +324,20 @@ function containerRuntime(
     async close(): Promise<void> {
       // A replacement may already have retired this generation before removing
       // its Sandbox. Do not re-stop disappeared objects or revoke the new one.
-      if (
-        egress !== undefined &&
-        (await egress.current(identity.projectId))?.generation === identity.containerGeneration
-      )
-        await egress.retire(identity);
+      try {
+        if (
+          egress !== undefined &&
+          (await egress.current(identity.projectId))?.generation === identity.containerGeneration
+        )
+          await egress.retire(identity);
+      } catch (error) {
+        // Removing the exact relay closes its transport even when the host cannot
+        // retire the registration. An unavailable host must not prevent cleanup.
+        options.log?.warn(
+          { projectId: identity.projectId, relay: id, err: error },
+          'host egress retirement failed; removing the relay through Docker',
+        );
+      }
       const failures = await removeRelayContainer(docker, id);
       if (failures.length > 0) {
         throw new AggregateError(failures, `project relay teardown failed: ${id}`);
