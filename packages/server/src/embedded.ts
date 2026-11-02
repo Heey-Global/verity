@@ -4897,6 +4897,14 @@ export async function buildEmbeddedServer(
     ...(listenerDiscovery ? { listenerDiscovery } : {}),
     ...(localPreviewManager ? { localPreviewManager } : {}),
     ...(managedDevServerManager ? { managedDevServerManager } : {}),
+    ...(config.projectEgress
+      ? {
+          projectEgressResolve: (
+            identity: import('./internal-listener.js').InternalConnectionIdentity,
+            name: string,
+          ) => config.projectEgress!.resolveDirect(identity, name),
+        }
+      : {}),
     previewSharingCapability: async () => {
       const settings = await eventStore.getVeritySettings();
       return previewSharingCapability(

@@ -138,6 +138,10 @@ export function createProjectEgressHostEnforcement(options: {
     async refresh(binding) {
       return current(binding).admission.refresh();
     },
+    admitted(binding, name) {
+      const state = generations.get(key(binding));
+      return state?.ready ? state.admission.admitted(name) : undefined;
+    },
     async revoke(binding) {
       return current(binding).admission.revoke();
     },

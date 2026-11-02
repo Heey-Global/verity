@@ -125,7 +125,10 @@ export function verifyEgressRelay(
     !['no-new-privileges', 'no-new-privileges=true'].includes(config.SecurityOpt[0]!) ||
     JSON.stringify(config.Sysctls) !==
       JSON.stringify({ 'net.ipv4.ip_unprivileged_port_start': '53' }) ||
-    value.Config.Env.some((entry) => !environment.includes(entry)) ||
+    // Controlled DNS only narrows the relay's resolver to host-admitted direct names.
+    value.Config.Env.some(
+      (entry) => !environment.includes(entry) && entry !== 'VERITY_DNS_CONTROLLED=1',
+    ) ||
     new Set(value.Config.Env.map((entry) => entry.split('=')[0])).size !==
       value.Config.Env.length ||
     volume.Name !== policy.dataVolume ||

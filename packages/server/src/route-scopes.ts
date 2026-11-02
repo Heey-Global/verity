@@ -222,6 +222,12 @@ export const NON_OPERATOR_ROUTES: ReadonlyMap<string, RouteScopeDeclaration> = n
   ),
   declare(
     'POST',
+    '/internal/dns',
+    'container-capability',
+    'project-bound broker socket identity; answers only host-admitted direct names',
+  ),
+  declare(
+    'POST',
     '/internal/package-install',
     'container-capability',
     'per-container capability, presented by the sandbox package-manager shims',

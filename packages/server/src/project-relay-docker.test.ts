@@ -510,6 +510,8 @@ it('routes new, running and stopped experimental relays through host acknowledge
     nanoCpus: 250_000_000,
     restartPolicy: 'no',
   });
+  // Under the fence the relay answers names only from host-admitted direct grants.
+  expect(h.createContainer.mock.calls[0]?.[0].env).toContain('VERITY_DNS_CONTROLLED=1');
   expect(start).toHaveBeenCalledWith(identity, 'relay', 'relay-cid');
   expect(h.startContainer).not.toHaveBeenCalled();
   for (const running of [true, false]) {

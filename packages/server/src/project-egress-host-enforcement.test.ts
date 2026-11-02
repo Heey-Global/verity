@@ -120,7 +120,7 @@ it('requires TC and direct denial before enabling the exact relay pair, without 
     codex: false,
   });
   const rules = f.apply.mock.calls.at(-1)![0];
-  expect(rules).toContain('tcp dport { 8080, 8443 }');
+  expect(rules).toContain('tcp dport { 53, 8080, 8443 }');
   expect(rules).not.toContain('elements =');
   await f.enforcement.refresh(network);
   expect(f.readForAdmission).toHaveBeenCalledWith('a', 'sponsor', 1);
@@ -132,10 +132,10 @@ it('direct revocation retains the relay but complete denial clears both paths', 
   await f.enforcement.refresh(network);
   await f.enforcement.revoke(network);
   expect(f.deadline.clearRelay).not.toHaveBeenCalled();
-  expect(f.apply.mock.calls.at(-1)![0]).toContain('tcp dport { 8080, 8443 }');
+  expect(f.apply.mock.calls.at(-1)![0]).toContain('tcp dport { 53, 8080, 8443 }');
   await f.enforcement.deny(network);
   expect(f.deadline.clearRelay).toHaveBeenCalledWith(corridor.binding);
-  expect(f.apply.mock.calls.at(-1)![0]).not.toContain('tcp dport { 8080, 8443 }');
+  expect(f.apply.mock.calls.at(-1)![0]).not.toContain('tcp dport { 53, 8080, 8443 }');
   await expect(f.enforcement.refresh(network)).rejects.toThrow('not ready');
 });
 it('clears kernel exceptions and refuses readiness after a post-install endpoint change', async () => {
@@ -147,7 +147,7 @@ it('clears kernel exceptions and refuses readiness after a post-install endpoint
   });
   await expect(f.enforcement.connect(network, ids, relay)).rejects.toThrow('admission failed');
   expect(f.deadline.clearRelay).toHaveBeenCalledOnce();
-  expect(f.apply.mock.calls.at(-1)![0]).not.toContain('tcp dport { 8080, 8443 }');
+  expect(f.apply.mock.calls.at(-1)![0]).not.toContain('tcp dport { 53, 8080, 8443 }');
   await expect(f.enforcement.refresh(network)).rejects.toThrow('not ready');
 });
 it('invalidates pending authority reads immediately when a lifecycle operation arrives', async () => {
@@ -180,7 +180,7 @@ it('routes only bound routed addresses through the later direct fence and preser
     expect(rules).toContain('counter drop');
     expect(rules).not.toContain('ct state established accept');
   }
-  expect(fence).toContain('tcp dport { 8080, 8443 }');
+  expect(fence).toContain('tcp dport { 53, 8080, 8443 }');
   expect(fence).toContain(`meta ibrname "${network.bridge}" counter drop`);
   expect(fence).not.toContain('elements =');
   expect(() =>
@@ -279,7 +279,7 @@ it.each([false, true])(
       host.execute({ operation: 'refresh-direct', projectId: 'a', generation: 'g1' }),
     ).rejects.toThrow('database unavailable');
     expect(f.deadline.clearRelay).not.toHaveBeenCalled();
-    expect(f.apply.mock.calls.at(-1)![0]).toContain('tcp dport { 8080, 8443 }');
+    expect(f.apply.mock.calls.at(-1)![0]).toContain('tcp dport { 53, 8080, 8443 }');
     await expect(
       host.execute({ operation: 'refresh-direct', projectId: 'a', generation: 'g1' }),
     ).resolves.toMatchObject({ state: 'direct-refreshed' });

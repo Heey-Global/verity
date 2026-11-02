@@ -154,6 +154,9 @@ export const PROJECT_UDS_ROUTES: ReadonlySet<string> = new Set([
   'POST /internal/mcp-proxy',
   'GET /internal/mcp-proxy',
   'DELETE /internal/mcp-proxy',
+  // The relay's controlled DNS answerer under the project fence: socket identity only,
+  // answering just the addresses the host admitted for this generation.
+  'POST /internal/dns',
 ]);
 
 /**

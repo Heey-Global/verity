@@ -283,6 +283,8 @@ export class ProjectEgressFence {
         grants: string;
         validUntil: number;
         targets: string;
+        /** Granted hostnames and exactly the addresses admitted for them. */
+        names: ReadonlyMap<string, readonly string[]>;
       };
     }
   >();
@@ -431,6 +433,7 @@ export class ProjectEgressFence {
         throw new Error('Project fence authority changed');
       observe('initial-inspection-policy');
       const leases: Lease[] = [];
+      const names = new Map<string, string[]>();
       // Never reconsider excluded grants after an asynchronous wall-clock rollback.
       for (const grant of authority) {
         if (
@@ -465,6 +468,8 @@ export class ProjectEgressFence {
         );
         for (const address of addresses)
           leases.push({ address, protocol: target.protocol, port: target.port, expiresAt });
+        if (!isIP(target.host))
+          names.set(target.host, [...new Set([...(names.get(target.host) ?? []), ...addresses])]);
       }
       const targets = JSON.stringify(
         leases.map((lease) => [lease.address, lease.protocol, lease.port]).sort(),
@@ -528,6 +533,7 @@ export class ProjectEgressFence {
             grants: JSON.stringify(snapshot.grants),
             validUntil: Math.min(...leases.map((lease) => lease.expiresAt)),
             targets,
+            names,
           };
         }
       } catch (error) {
@@ -535,6 +541,29 @@ export class ProjectEgressFence {
         throw error;
       }
     });
+  }
+  /** Addresses currently admitted for a granted hostname of this exact generation.
+   * Read-only: it never renews, resolves or extends authority. A short TTL keeps a
+   * sandbox from caching an answer beyond the admission it describes.
+   */
+  admitted(
+    binding: ProjectFenceBinding,
+    host: string,
+  ): { addresses: readonly string[]; ttlSeconds: number } | undefined {
+    const current = this.active.get(binding.projectId);
+    const continuity = current?.continuity;
+    const remaining = (continuity?.validUntil ?? 0) - this.now();
+    if (
+      !current ||
+      !continuity ||
+      bindingKey(current.binding) !== bindingKey(binding) ||
+      this.retired.has(generationKey(binding)) ||
+      remaining <= 0
+    )
+      return undefined;
+    const addresses = continuity.names.get(host);
+    if (!addresses?.length) return undefined;
+    return { addresses, ttlSeconds: Math.max(1, Math.min(5, Math.floor(remaining / 1000))) };
   }
   retire(binding: ProjectFenceBinding): Promise<void> {
     binding = { ...binding };

@@ -180,6 +180,7 @@ import { containerPathFor } from './project-backend.js';
 import { registerProjectCollectionRoutes } from './project-collection-routes.js';
 import { registerProjectDetailRoutes } from './project-detail-routes.js';
 import { registerProjectEgressRoutes } from './project-egress-routes.js';
+import { registerProjectDnsRoute } from './project-dns-route.js';
 import { registerProjectGitHubIssueRoutes } from './project-github-issues.js';
 import { registerProjectGitHubLinkRoute } from './project-github-link-route.js';
 import { registerProjectGoogleRoutes } from './project-google-routes.js';
@@ -4417,6 +4418,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   });
 
   registerManagedDevServerRoutes(app, { manager: deps.managedDevServerManager });
+  registerProjectDnsRoute(app, { resolveDirect: deps.projectEgressResolve });
   registerManagedDevServerAgentRoute(app, {
     manager: deps.managedDevServerManager,
     capabilities: deps.ghTokenCapabilities,

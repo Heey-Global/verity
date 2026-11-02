@@ -304,3 +304,18 @@ it('accepts absent listeners only for deny-only restoration of a stopped relay',
   await chmod(dir, 0o777);
   await expect(inspectEgressRelay(binding, f.reply[0]!.Id, policy, docker, true)).rejects.toThrow();
 });
+
+it('accepts only the controlled DNS setting beyond the image environment', () => {
+  const check = (env: string[]) => {
+    const f = fixture();
+    f.reply[0]!.Config.Env = ['PATH=/usr/bin', 'NODE_OPTIONS=--max-old-space-size=96', ...env];
+    return () => verifyEgressRelay(binding, policy, f.reply, image, f.volume);
+  };
+  expect(check(['VERITY_DNS_CONTROLLED=1'])()).toHaveLength(3);
+  for (const env of [
+    ['VERITY_DNS_CONTROLLED=0'],
+    ['VERITY_DNS_CONTROLLED=1', 'VERITY_DNS_CONTROLLED=1'],
+    ['VERITY_DNS_UPSTREAM=203.0.113.1'],
+  ])
+    expect(check(env), env.join(' ')).toThrow('Untrusted relay');
+});

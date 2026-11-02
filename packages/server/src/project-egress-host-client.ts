@@ -95,7 +95,9 @@ export function createProjectEgressHostClient(options: {
                           ? ['direct-revoked']
                           : command.operation === 'retire'
                             ? ['retired']
-                            : ['denied'];
+                            : command.operation === 'resolve-direct'
+                              ? ['resolved', 'unresolved']
+                              : ['denied'];
                 if (
                   !expectedStates.includes(result.state) ||
                   result.state === 'current' ||

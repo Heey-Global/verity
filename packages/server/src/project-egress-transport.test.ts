@@ -91,8 +91,17 @@ it('binds daemon-assigned IPs to kernel-proven peers even after runsc removes NI
   });
   const rules = transportRules(binding, t!, 'bridge', 'a'.repeat(32));
   expect(rules).toContain('meta iif 10 meta oif 11');
-  expect(rules).toContain('tcp dport { 8080, 8443 }');
+  expect(rules).toContain('tcp dport { 53, 8080, 8443 }');
   expect(rules).not.toContain('8444');
+  // UDP reaches only the relay's DNS answerer, and only for the exact pair.
+  const udp = rules.split('\n').filter((rule) => rule.includes('udp'));
+  expect(udp).toHaveLength(3);
+  for (const rule of udp) {
+    expect(rule).toMatch(/udp [ds]port 53 /u);
+    expect(rule).toContain('meta iif');
+  }
+  expect(udp[0]).toContain('ip saddr 172.20.0.2');
+  expect(udp[2]).toContain('ct state established');
 });
 it.each([
   'foreign-network',
@@ -137,7 +146,7 @@ it('refuses injected rule syntax and permits Codex only when host policy selects
   const f = fixture();
   const t = (await inspectEgressTransport(binding, ids, true, f.io))!;
   expect(transportRules(binding, t, 'bridge', 'a'.repeat(32))).toContain(
-    'tcp dport { 8080, 8443, 8444 }',
+    'tcp dport { 53, 8080, 8443, 8444 }',
   );
   expect(() =>
     transportRules(
