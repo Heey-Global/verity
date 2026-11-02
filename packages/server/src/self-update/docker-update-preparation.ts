@@ -4,6 +4,7 @@ import {
   HOST_RUNTIME_SERVICE_LABEL,
   parseRuntimeServiceRequirements,
   renewHostRuntimeService,
+  runtimeRenewalMayHaveStarted,
 } from './host-runtime-renewal.js';
 import { writeHostPreparation } from './host-preparation.js';
 import { backupProvisionPlan, provisionBackupHost } from './backup-provisioning.js';
@@ -418,45 +419,53 @@ export async function dockerUpdatePreparation(
             : {
                 serviceRequirements,
                 renewHostRuntimeService: async () => {
-                  if (state.spec.image !== journal.previousDigest)
-                    throw new Error('Runtime renewal previous image differs from sealed authority');
-                  const updaters = (await docker.listContainers!()).filter(
-                    (item) =>
-                      item.labels?.[MANAGED_DEPLOYMENT_LABEL] === journal.deploymentId &&
-                      item.labels?.[MANAGED_ROLE_LABEL] === 'updater',
-                  );
-                  // Compose installations retain their service label and deployment identity in env.
-                  const candidates =
-                    updaters.length > 0
-                      ? updaters
-                      : (await docker.listContainers!()).filter(
-                          (item) =>
-                            item.labels?.['com.docker.compose.service'] === 'verity-updater',
-                        );
-                  const owned = [];
-                  for (const item of candidates) {
-                    const inspect = await docker.inspectContainer(item.id);
-                    if (
-                      item.labels?.[MANAGED_DEPLOYMENT_LABEL] === journal.deploymentId ||
-                      inspect.env?.includes(`VERITY_MANAGED_DEPLOYMENT_ID=${journal.deploymentId}`)
-                    )
-                      owned.push(inspect);
-                  }
-                  if (owned.length !== 1 || owned[0]?.image !== journal.previousDigest)
-                    throw new Error('Runtime renewal requires one trusted installed updater');
-                  const runtimeMount = owned[0].mounts?.find(
-                    (mount) =>
-                      mount.type === 'bind' && mount.destination === '/run/verity-host-runtime',
-                  );
-                  const installerMount = state.spec.mounts.find(
-                    (mount) =>
-                      mount.target === '/run/verity-pairing' && mount.source.kind === 'bind',
-                  );
-                  if (!runtimeMount?.source || installerMount?.source.kind !== 'bind')
-                    throw new Error(
-                      'Runtime renewal requires the installed host runtime and installer state mounts',
-                    );
+                  let fallbackRecovery: 'unchanged' | 'recovery-required' = 'recovery-required';
                   try {
+                    fallbackRecovery = (await runtimeRenewalMayHaveStarted(docker, journal))
+                      ? 'recovery-required'
+                      : 'unchanged';
+                    if (state.spec.image !== journal.previousDigest)
+                      throw new Error(
+                        'Runtime renewal previous image differs from sealed authority',
+                      );
+                    const updaters = (await docker.listContainers!()).filter(
+                      (item) =>
+                        item.labels?.[MANAGED_DEPLOYMENT_LABEL] === journal.deploymentId &&
+                        item.labels?.[MANAGED_ROLE_LABEL] === 'updater',
+                    );
+                    // Compose installations retain their service label and deployment identity in env.
+                    const candidates =
+                      updaters.length > 0
+                        ? updaters
+                        : (await docker.listContainers!()).filter(
+                            (item) =>
+                              item.labels?.['com.docker.compose.service'] === 'verity-updater',
+                          );
+                    const owned = [];
+                    for (const item of candidates) {
+                      const inspect = await docker.inspectContainer(item.id);
+                      if (
+                        item.labels?.[MANAGED_DEPLOYMENT_LABEL] === journal.deploymentId ||
+                        inspect.env?.includes(
+                          `VERITY_MANAGED_DEPLOYMENT_ID=${journal.deploymentId}`,
+                        )
+                      )
+                        owned.push(inspect);
+                    }
+                    if (owned.length !== 1 || owned[0]?.image !== journal.previousDigest)
+                      throw new Error('Runtime renewal requires one trusted installed updater');
+                    const runtimeMount = owned[0].mounts?.find(
+                      (mount) =>
+                        mount.type === 'bind' && mount.destination === '/run/verity-host-runtime',
+                    );
+                    const installerMount = state.spec.mounts.find(
+                      (mount) =>
+                        mount.target === '/run/verity-pairing' && mount.source.kind === 'bind',
+                    );
+                    if (!runtimeMount?.source || installerMount?.source.kind !== 'bind')
+                      throw new Error(
+                        'Runtime renewal requires the installed host runtime and installer state mounts',
+                      );
                     await renewHostRuntimeService({
                       docker,
                       journal,
@@ -494,9 +503,7 @@ export async function dockerUpdatePreparation(
                     await writeHostPreparation(
                       options.managedRoot,
                       journal,
-                      error instanceof HostRuntimeRenewalError
-                        ? error.recovery
-                        : 'recovery-required',
+                      error instanceof HostRuntimeRenewalError ? error.recovery : fallbackRecovery,
                     );
                     throw error;
                   }

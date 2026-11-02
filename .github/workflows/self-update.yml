@@ -46,7 +46,7 @@ on:
   # longer serializes every backend publication. Running it from the default
   # branch also keeps the workflow-owned harness current.
   schedule:
-    - cron: '17 3 * * 1'
+    - cron: '17 3 * * *'
 
 permissions:
   contents: read

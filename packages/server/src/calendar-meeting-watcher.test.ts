@@ -156,6 +156,24 @@ it('retries a notification the push service did not take', async () => {
   expect(send).toHaveBeenCalledTimes(2);
 });
 
+it('retries a notification deferred by another delivery failure', async () => {
+  const { state, send, run } = await fixture();
+  send.mockResolvedValueOnce({
+    targets: 1,
+    deferred: 1,
+    ticketsAccepted: 0,
+    ticketErrors: 0,
+    receiptsQueued: 0,
+    pruned: 0,
+    transportErrors: 0,
+  });
+  state.now = START - 4 * MIN;
+  await run();
+  await run();
+  await run();
+  expect(send).toHaveBeenCalledTimes(2);
+});
+
 it.each([
   [
     'declined',
