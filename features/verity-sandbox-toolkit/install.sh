@@ -50,7 +50,7 @@ OSV_SCANNER_VERSION="${OSVSCANNERVERSION:-2.6.0}"
 # renovate: datasource=npm depName=@openai/codex
 CODEX_VERSION="${CODEXVERSION:-0.166.0}"
 # renovate: datasource=npm depName=@agentclientprotocol/codex-acp
-CODEX_ACP_VERSION="${CODEXACPVERSION:-2.5.0}"
+CODEX_ACP_VERSION="${CODEXACPVERSION:-2.3.0}"
 # renovate: datasource=npm depName=@opencode/cli
 OPENCODE_VERSION="${OPENCODEVERSION:-2.2.2}"
 RUNNER_UID="${RUNNERUID:-1101}"
