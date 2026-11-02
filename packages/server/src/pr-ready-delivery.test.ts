@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, expect, it, vi } from 'vitest';
-import { createTestDb, type TestDb } from '@verity/store/testing';
+import { createIsolatedTestDb, type TestDb } from '@verity/store/testing';
 import { startPullRequestReadyMonitor } from './pr-ready-push.js';
 import type { PullRequestStatus } from './forge-provider.js';
 import { createPushRouter, type PushRouteOutcome, type PushRouter } from './push-router.js';
@@ -7,7 +7,7 @@ import { createPushSender, type ExpoPushTransport } from './push-sender.js';
 
 let ctx: TestDb;
 beforeAll(async () => {
-  ctx = await createTestDb();
+  ctx = await createIsolatedTestDb();
 });
 afterAll(async () => {
   await ctx.close();
