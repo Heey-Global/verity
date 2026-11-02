@@ -24,7 +24,10 @@ const revoke = z
   .object({ grantId: z.string().uuid(), revision: z.number().int().nonnegative() })
   .strict();
 
-/** Broker/system destinations never become direct rules, so they never produce a card. */
+/** Broker/system destinations never become direct rules, so they never produce a card.
+ * IP literals and deployment-specific broker hosts are enforced by the host, which
+ * owns the current protected address inventory and its mandatoryHosts configuration.
+ */
 class BrokerRequiredError extends Error {
   constructor(readonly route: string) {
     super('broker required');
@@ -70,6 +73,12 @@ export function registerProjectEgressRoutes(app: FastifyInstance, store: Project
     });
     app.post('/projects/:id/egress/decisions', async (request) => {
       const input = decision.parse(request.body);
+      if (input.allow) {
+        // Requests stored before classification existed cannot be approved either.
+        const policy = await store.read(params.parse(request.params).id, user(request));
+        const pending = Object.values(policy.requests).find((r) => r.id === input.requestId);
+        if (pending) directEligible(pending.target);
+      }
       return {
         enforcement: 'unavailable',
         request: await store.decide(

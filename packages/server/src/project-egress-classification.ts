@@ -113,21 +113,28 @@ export function createProtectedAddressInventory(options: {
   const maxAgeMs = options.maxAgeMs ?? 10 * 60_000;
   let addresses: ReadonlySet<string> | undefined;
   let refreshedAt = -Infinity;
+  let pending: Promise<void> | undefined;
+  // IPv4-mapped IPv6 must compare equal to the IPv4 front end it names.
+  const normalize = (address: string): string => ipaddr.process(address).toString();
+  const refresh = async (): Promise<void> => {
+    const startedAt = now();
+    // A partial answer would silently omit a protected front end.
+    const results = await Promise.all(hosts.map((host) => options.resolve(host)));
+    if (startedAt < refreshedAt) return;
+    addresses = new Set(results.flatMap((result) => result.addresses.map(normalize)));
+    refreshedAt = startedAt;
+  };
   return {
-    async refresh() {
-      const startedAt = now();
-      // A partial answer would silently omit a protected front end.
-      const results = await Promise.all(hosts.map((host) => options.resolve(host)));
-      addresses = new Set(
-        results.flatMap((result) =>
-          result.addresses.map((address) => ipaddr.parse(address).toString()),
-        ),
-      );
-      refreshedAt = startedAt;
+    refresh() {
+      // Serialized: a slow refresh is joined rather than overtaken by a later tick.
+      pending ??= refresh().finally(() => {
+        pending = undefined;
+      });
+      return pending;
     },
     allows(address) {
       if (addresses === undefined || now() - refreshedAt > maxAgeMs) return false;
-      return !addresses.has(ipaddr.parse(address).toString());
+      return !addresses.has(normalize(address));
     },
   };
 }

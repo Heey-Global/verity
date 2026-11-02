@@ -45,7 +45,12 @@ it('denies every address until a complete inventory exists and again once it is 
   expect(inventory.allows('198.51.100.7')).toBe(false);
   await inventory.refresh();
   expect(inventory.allows('198.51.100.7')).toBe(true);
-  for (const address of ['140.82.112.6', '104.16.0.34', '2606:4700:0:0:0:0:6810:22'])
+  for (const address of [
+    '140.82.112.6',
+    '::ffff:140.82.112.6',
+    '104.16.0.34',
+    '2606:4700:0:0:0:0:6810:22',
+  ])
     expect(inventory.allows(address)).toBe(false);
   now += 101;
   expect(inventory.allows('198.51.100.7')).toBe(false);
@@ -75,4 +80,28 @@ it('keeps the previous complete inventory when a refresh is partial', async () =
   // The failed refresh did not extend the old inventory's age.
   now = 101;
   expect(inventory.allows('198.51.100.7')).toBe(false);
+});
+
+it('joins concurrent refreshes instead of overlapping them', async () => {
+  const now = 0;
+  const releases: (() => void)[] = [];
+  let calls = 0;
+  const inventory = createProtectedAddressInventory({
+    hosts: ['api.github.com'],
+    now: () => now,
+    maxAgeMs: 1_000,
+    resolve: () => {
+      calls += 1;
+      return new Promise((resolve) =>
+        releases.push(() => resolve({ addresses: ['140.82.112.6'], expiresAt: 1e9 })),
+      );
+    },
+  });
+  const first = inventory.refresh();
+  const second = inventory.refresh();
+  expect(second).toBe(first);
+  expect(calls).toBe(1);
+  releases[0]!();
+  await first;
+  expect(inventory.allows('140.82.112.6')).toBe(false);
 });
