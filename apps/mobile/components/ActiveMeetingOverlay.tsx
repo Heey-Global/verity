@@ -163,6 +163,13 @@ export function ActiveMeetingOverlay() {
   useEffect(
     () =>
       subscribeVerityBaseUrl(() => {
+        clearFollowedRemoteMeeting();
+        setFollowed(null);
+        setRemoteMeeting(null);
+        setPendingCommand(null);
+        setError(null);
+        remoteStopRequested.current = false;
+        settled.current.clear();
         setDiscovered(null);
         setAssigning(null);
         setUpcomingKey(null);
@@ -173,11 +180,12 @@ export function ActiveMeetingOverlay() {
   useEffect(() => {
     const client = createVerityClient();
     if (!client) return;
+    const serverId = getActiveMeetingServerId();
     let mounted = true;
     const discover = async () => {
       try {
         const active = await client.getActiveLiveMeetings();
-        if (mounted) setDiscovered(active);
+        if (mounted && getActiveMeetingServerId() === serverId) setDiscovered(active);
       } catch {
         /* Offline or an older server: keep what the device already knows. */
       }
@@ -211,6 +219,13 @@ export function ActiveMeetingOverlay() {
   const remote =
     meeting !== null && meeting.id === remoteMeeting?.id && localMeeting?.id !== meeting.id;
   const activePendingCommand = remote ? pendingCommand : null;
+  const recorderLastSeenAt = discovered?.running.find(
+    (item) => item.id === meeting?.id,
+  )?.recorderLastSeenAt;
+  const recorderUnreachable =
+    remote &&
+    !online &&
+    (!recorderOnline || (recorderLastSeenAt != null && now - recorderLastSeenAt >= 60_000));
   useEffect(() => {
     if (!followed || pathname.startsWith('/meeting/')) return;
     let mounted = true;
@@ -230,7 +245,7 @@ export function ActiveMeetingOverlay() {
         const saved =
           (await listMeetings(followed.sessionId)).find((item) => item.id === followed.meetingId) ??
           null;
-        if (!mounted) return;
+        if (!mounted || getActiveMeetingServerId() !== followed.serverId) return;
         setRemoteMeeting(saved);
         if (!saved) {
           // Not synced to this device yet (or offline): while the server still lists it as
@@ -262,7 +277,7 @@ export function ActiveMeetingOverlay() {
           followed.sessionId,
           followed.meetingId,
         );
-        if (!mounted || !control) return;
+        if (!mounted || !control || getActiveMeetingServerId() !== followed.serverId) return;
         setRecorderOnline(control.recorderOnline);
         const latest = control.commands[0];
         setPendingCommand(latest?.state === 'pending' ? latest.action : null);
@@ -422,7 +437,10 @@ export function ActiveMeetingOverlay() {
   }
 
   const openMeeting = () =>
-    router.push({ pathname: '/meeting/[sessionId]', params: { sessionId: meeting.sessionId } });
+    router.push({
+      pathname: '/meeting/[sessionId]',
+      params: { sessionId: meeting.sessionId, meetingId: meeting.id },
+    });
   const togglePause = async () => {
     if (
       busy ||
@@ -494,13 +512,27 @@ export function ActiveMeetingOverlay() {
             {/* Recording is shown in the problem colour, as on the meeting screen. */}
             <Dot intent={meeting.captureStatus === 'paused' ? 'optional' : 'needsSetup'} />
             <Text variant="row" style={styles.title}>
-              {meeting.captureStatus === 'paused' ? 'Paused' : online ? 'Online' : 'Live meeting'} ·{' '}
-              {Math.floor((now - meeting.startedAt) / 60000)} min
+              {recorderUnreachable
+                ? 'Meeting'
+                : meeting.captureStatus === 'paused'
+                  ? 'Paused'
+                  : online
+                    ? 'Online'
+                    : 'Live meeting'}{' '}
+              · {Math.floor((now - meeting.startedAt) / 60000)} min
             </Text>
           </View>
           {meeting.title ? (
             <Text variant="row" numberOfLines={1}>
               {meeting.title}
+            </Text>
+          ) : null}
+          {recorderUnreachable ? (
+            <Text variant="footnote" tone="attention">
+              Recording device unreachable · transcript may be out of date
+              {recorderLastSeenAt != null
+                ? ` · Last contact ${Math.max(0, Math.floor((now - recorderLastSeenAt) / 60000))} min ago`
+                : ''}
             </Text>
           ) : null}
           <Text variant="footnote">

@@ -154,7 +154,7 @@ export default function RootLayout() {
 }
 
 function HydratedRoot() {
-  useEffect(() => (isDemoMode() || Platform.OS === 'web' ? undefined : startLiveMeetingSync()), []);
+  useEffect(() => (isDemoMode() ? undefined : startLiveMeetingSync()), []);
   const { theme } = useUnistyles();
   const gate = useOnboardingGate();
   const pathname = usePathname();

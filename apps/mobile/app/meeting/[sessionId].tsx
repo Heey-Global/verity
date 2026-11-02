@@ -1093,6 +1093,9 @@ export default function MeetingScreen() {
         ? `Waiting for recording device to ${pendingCommand}…`
         : 'Recording device unreachable. Open Verity there.'
       : null) ??
+    (live && !active && meeting?.engine !== 'attendee' && !recorderOnline
+      ? 'Recording device unreachable · transcript may be out of date. Notes and research remain available.'
+      : null) ??
     (syncDelayed && meeting?.serverId !== null
       ? 'Server sync delayed · saved on this device'
       : null);
@@ -2084,7 +2087,13 @@ export default function MeetingScreen() {
       </Text>
       <View
         style={[styles.pill, voiceSending && { borderColor: colors.signature }]}
-        accessibilityLabel={paused ? 'Paused' : `Recording ${elapsed(meeting.startedAt, now)}`}
+        accessibilityLabel={
+          paused
+            ? 'Paused'
+            : !active && !recorderOnline && meeting.engine !== 'attendee'
+              ? `Meeting duration ${elapsed(meeting.startedAt, now)}`
+              : `Recording ${elapsed(meeting.startedAt, now)}`
+        }
       >
         {voiceSending ? (
           <Text style={[styles.pillText, { color: colors.signature }]}>✦ Sending request…</Text>

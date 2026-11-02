@@ -919,6 +919,7 @@ const activeLiveMeetingsSchema = z.object({
       startedAt: z.number(),
       state: z.enum(['active', 'interrupted']),
       captureStatus: z.string(),
+      recorderLastSeenAt: z.number().nullable().optional(),
       sessionName: z.string().nullable(),
       projectId: z.string().nullable(),
     }),
