@@ -147,6 +147,28 @@ describe('locked CLI installation', () => {
     expect(calls).not.toContain('"install"');
     const repeat = item.run();
     expect(repeat.status, repeat.stderr).toBe(0);
+    expect(repeat.stdout).toContain('Reusing verified CLI');
+    expect(
+      readFileSync(path.join(item.prefix, 'calls'), 'utf8')
+        .split('\n')
+        .filter((line) => line.includes('"ci"')),
+    ).toHaveLength(1);
+  });
+
+  it('reinstalls when installed bytes or executable links no longer match the verified tree', () => {
+    const item = fixture();
+    expect(item.run().status).toBe(0);
+    const command = path.join(item.prefix, 'bin/verity-test-cli');
+    writeFileSync(realpathSync(command), '#!/usr/bin/env node\nconsole.log("modified");\n');
+    const repaired = item.run();
+    expect(repaired.status, repaired.stderr).toBe(0);
+    expect(repaired.stdout).not.toContain('Reusing verified CLI');
+    expect(spawnSync(command, [], { encoding: 'utf8' }).stdout.trim()).toBe('1.0.0');
+    rmSync(command);
+    const relinked = item.run();
+    expect(relinked.status, relinked.stderr).toBe(0);
+    expect(existsSync(command)).toBe(true);
+    expect(relinked.stdout).not.toContain('Reusing verified CLI');
   });
 
   it('removes the V1 global package when replacing OpenCode with the V2 package', () => {

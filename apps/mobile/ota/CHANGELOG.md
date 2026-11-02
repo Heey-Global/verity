@@ -1,5 +1,113 @@
 # Changelog
 
+## [1.83.1](https://github.com/Heey-Global/verity/compare/mobile-v1.83.0...mobile-v1.83.1) (2026-11-01)
+
+
+### Features
+
+* **sandbox:** add elastic memory limits and resilient OOM handling ([#2142](https://github.com/Heey-Global/verity/issues/2142)) ([923158f](https://github.com/Heey-Global/verity/commit/923158f56f4481aef0055a5a7fe506cd4adee739))
+
+
+### Bug Fixes
+
+* **diagnostics:** preserve safe stop and export failure reasons ([#2147](https://github.com/Heey-Global/verity/issues/2147)) ([daa9c27](https://github.com/Heey-Global/verity/commit/daa9c27788d24312dd07541056874ec4624d741b))
+
+## [1.82.1](https://github.com/Heey-Global/verity/compare/mobile-v1.82.0...mobile-v1.82.1) (2026-10-31)
+
+
+### Features
+
+* **assistant:** show open scheduling requests of granted projects ([#2112](https://github.com/Heey-Global/verity/issues/2112)) ([32f0f90](https://github.com/Heey-Global/verity/commit/32f0f9035e756ee072ee71d4121aed050597533f))
+* **qa:** add bounded CI and release analysis ([#2111](https://github.com/Heey-Global/verity/issues/2111)) ([702760b](https://github.com/Heey-Global/verity/commit/702760bba7c640d680422c37d60753eb6bbd837e))
+
+
+### Bug Fixes
+
+* **deps:** update agent clis ([#2101](https://github.com/Heey-Global/verity/issues/2101)) ([3bf7784](https://github.com/Heey-Global/verity/commit/3bf77841d552c8d2d49125206776594e744c047e))
+
+## [1.81.1](https://github.com/Heey-Global/verity/compare/mobile-v1.81.0...mobile-v1.81.1) (2026-10-30)
+
+
+### Features
+
+* **scheduling:** offer meeting times through booking links ([#2080](https://github.com/Heey-Global/verity/issues/2080)) ([b06f9e9](https://github.com/Heey-Global/verity/commit/b06f9e91b7b46c7e107b33ce1f2a33a095d07957))
+
+
+### Bug Fixes
+
+* **lint:** bound memory and reuse dependency-aware results ([#2084](https://github.com/Heey-Global/verity/issues/2084)) ([293839c](https://github.com/Heey-Global/verity/commit/293839c5f6c73fda508e8207c45aa132eb9bf748))
+* **mobile:** clear keyboard gap after interrupted opening ([#2086](https://github.com/Heey-Global/verity/issues/2086)) ([9dc532d](https://github.com/Heey-Global/verity/commit/9dc532d78b3d26d94f47cef4713a6a8f67c65120))
+* **mobile:** keep iPhone sessions single-pane across rotation ([#2087](https://github.com/Heey-Global/verity/issues/2087)) ([40ab27f](https://github.com/Heey-Global/verity/commit/40ab27f074f073dcf351a7bcc4480bc9c60a0c82))
+
+## [1.80.5](https://github.com/Heey-Global/verity/compare/mobile-v1.80.4...mobile-v1.80.5) (2026-10-29)
+
+
+### Features
+
+* **backup:** add mobile setup and enable provisioned backups ([#2053](https://github.com/Heey-Global/verity/issues/2053)) ([df75b9a](https://github.com/Heey-Global/verity/commit/df75b9aa2a18bc118c5d2429183618db3cbd2a99))
+
+
+### Bug Fixes
+
+* **sessions:** serialize consecutive deletions and bound lint memory ([#2056](https://github.com/Heey-Global/verity/issues/2056)) ([0add0d1](https://github.com/Heey-Global/verity/commit/0add0d19e627d79b9eb2f91ebba0a13990b724aa))
+
+## [1.80.4](https://github.com/Heey-Global/verity/compare/mobile-v1.80.3...mobile-v1.80.4) (2026-10-29)
+
+
+### Features
+
+* **assistant:** add the Verity assistant as a Verity Control function ([#2048](https://github.com/Heey-Global/verity/issues/2048)) ([2a1fd31](https://github.com/Heey-Global/verity/commit/2a1fd319d3e0bd3db35a8ac4eb1a93708d878a7b))
+* **logs:** list individual audit and system events ([#2052](https://github.com/Heey-Global/verity/issues/2052)) ([be666a4](https://github.com/Heey-Global/verity/commit/be666a482aaf6420c1dc9e57a82d30a0217af25e))
+* **qa:** add opt-in CI supervision and repair coordination ([#2040](https://github.com/Heey-Global/verity/issues/2040)) ([0ccdfbf](https://github.com/Heey-Global/verity/commit/0ccdfbf17a7723aef3936fc4c0ee4d1fd6859447))
+
+
+### Bug Fixes
+
+* **mobile:** distinguish missing sessions in history errors ([#2050](https://github.com/Heey-Global/verity/issues/2050)) ([828d19c](https://github.com/Heey-Global/verity/commit/828d19c2463bb9079e287714481ca4a6a18b3602))
+* **mobile:** improve task microphone gestures and docking ([#2034](https://github.com/Heey-Global/verity/issues/2034)) ([b2afa35](https://github.com/Heey-Global/verity/commit/b2afa35b2df8a738cd3e208b78693f1c09a00bcc))
+* **mobile:** preserve selection evidence in diagnostic exports ([#2051](https://github.com/Heey-Global/verity/issues/2051)) ([60b8fb9](https://github.com/Heey-Global/verity/commit/60b8fb940a35b703085cb469f2f147a84aa82495))
+
+## [1.80.3](https://github.com/Heey-Global/verity/compare/mobile-v1.80.2...mobile-v1.80.3) (2026-10-29)
+
+
+### Features
+
+* **logs:** link build diagnostics with audit and system logs ([#2031](https://github.com/Heey-Global/verity/issues/2031)) ([8f3a05e](https://github.com/Heey-Global/verity/commit/8f3a05ea6a93ed4036ce20eae7a34f7156d7a5be))
+* **mobile:** add selection scheduling diagnostics ([#2023](https://github.com/Heey-Global/verity/issues/2023)) ([86c07c2](https://github.com/Heey-Global/verity/commit/86c07c25975201ecb8ad7aea006240639a337f3b))
+
+
+### Bug Fixes
+
+* **settings:** refine feature order and simplify footer ([#2021](https://github.com/Heey-Global/verity/issues/2021)) ([8fe5dc8](https://github.com/Heey-Global/verity/commit/8fe5dc8e8a9bb5a8f62259ad59550ab2a788dfb3))
+
+## [1.80.2](https://github.com/Heey-Global/verity/compare/mobile-v1.80.1...mobile-v1.80.2) (2026-10-28)
+
+
+### Features
+
+* **backup:** add encrypted local backups and installer recovery ([#1975](https://github.com/Heey-Global/verity/issues/1975)) ([6d5bc40](https://github.com/Heey-Global/verity/commit/6d5bc40184649e6eeb47f0d519a4ef1e36558379))
+
+
+### Bug Fixes
+
+* **history:** recover oversized events in bounded chunks ([#2007](https://github.com/Heey-Global/verity/issues/2007)) ([91411a7](https://github.com/Heey-Global/verity/commit/91411a70ccf61236f8171e092f29393717c2fa3b))
+* **settings:** group features and app administration settings ([#2005](https://github.com/Heey-Global/verity/issues/2005)) ([82332ff](https://github.com/Heey-Global/verity/commit/82332ffe4eccf6517fc3777c789e070eba41dcb0))
+
+## [1.80.1](https://github.com/Heey-Global/verity/compare/mobile-v1.80.0...mobile-v1.80.1) (2026-10-27)
+
+
+### Features
+
+* **audit:** add administrator logs for project image operations ([#1977](https://github.com/Heey-Global/verity/issues/1977)) ([3ef0ba7](https://github.com/Heey-Global/verity/commit/3ef0ba792b9ca14728e8df2effac2362c12d9a2a))
+* **server:** derive a meeting result after a live meeting ends ([#1978](https://github.com/Heey-Global/verity/issues/1978)) ([06aa780](https://github.com/Heey-Global/verity/commit/06aa780a57f9b478f70143b1319b7a3d9b667759))
+
+
+### Bug Fixes
+
+* **mobile:** steady the iPad meeting column before and during the transcript ([#1972](https://github.com/Heey-Global/verity/issues/1972)) ([b665b63](https://github.com/Heey-Global/verity/commit/b665b636e5a19440ca61e4284582c115c53c8bdf))
+* **server:** revalidate execution and provider authority ([#1971](https://github.com/Heey-Global/verity/issues/1971)) ([ceb7048](https://github.com/Heey-Global/verity/commit/ceb7048d36f2d5bb0ee542e45e4d5ceca04ac4dd))
+* **web:** render inline images and readable code blocks ([#1973](https://github.com/Heey-Global/verity/issues/1973)) ([53e9e16](https://github.com/Heey-Global/verity/commit/53e9e165b648dba575b2a3f6ed8d9e54a3b460f2))
+
 ## [1.79.3](https://github.com/Heey-Global/verity/compare/mobile-v1.79.2...mobile-v1.79.3) (2026-10-26)
 
 

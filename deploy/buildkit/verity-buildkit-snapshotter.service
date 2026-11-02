@@ -1,0 +1,14 @@
+[Unit]
+Description=Converge Verity BuildKit snapshotter to release policy
+After=docker.service verity-buildkit.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/libexec/verity-buildkit/snapshotter-migrate.sh reconcile
+TimeoutStartSec=8min
+TimeoutStopSec=30s
+KillMode=mixed
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes

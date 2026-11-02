@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
+  boundedHistoryPageSchema,
   aggregateUsage,
   extractToolResultImages,
   sessionProjectionEvents,
@@ -1518,6 +1519,54 @@ describe('EventStore — append-only event log', () => {
     expect(
       await ctx.store.getBoundedHistory('s1', page.beforeSeq!, page.snapshotSeq),
     ).toMatchObject({ kind: 'oversized-event', seq: huge.seq });
+  });
+
+  it('recovers an oversized event in bounded chunks and continues without loss', async () => {
+    const older = await ctx.store.appendEvent('s1', { t: 'text', delta: 'older' });
+    const huge = await ctx.store.appendEvent('s1', {
+      t: 'raw',
+      backend: 'claude-code',
+      payload: { value: '\u0001🌍界"\\'.repeat(50_000) },
+    });
+    const tail = await ctx.store.appendEvent('s1', { t: 'text', delta: 'tail' });
+    const initial = await ctx.store.getBoundedHistory('s1');
+    if (initial.kind !== 'page') throw new Error('expected page');
+    const boundary = await ctx.store.getBoundedHistory(
+      's1',
+      initial.beforeSeq!,
+      initial.snapshotSeq,
+    );
+    if (boundary.kind !== 'oversized-event') throw new Error('expected oversized event');
+    await ctx.store.appendEvent('s1', { t: 'text', delta: 'concurrent arrival' });
+    let offset = 0;
+    const chunks: string[] = [];
+    for (;;) {
+      const chunk = await ctx.store.getBoundedHistory(
+        's1',
+        huge.seq + 1,
+        initial.snapshotSeq,
+        offset,
+      );
+      expect(Buffer.byteLength(JSON.stringify(chunk))).toBeLessThanOrEqual(256 * 1024);
+      if (chunk.kind !== 'event-chunk') throw new Error('expected chunk');
+      expect(chunk).toMatchObject({ seq: huge.seq, snapshotSeq: tail.seq, offset });
+      chunks.push(chunk.data);
+      offset += chunk.data.length;
+      if (offset === chunk.totalChars) break;
+    }
+    const serialized = chunks.join('');
+    expect(Buffer.byteLength(serialized)).toBe(boundary.requiredBytes);
+    const recovered = boundedHistoryPageSchema.parse(JSON.parse(serialized));
+    expect(recovered).toMatchObject({ kind: 'page', beforeSeq: huge.seq, hasMore: true });
+    const stored = await ctx.store.getEventsBeforeSeq('s1', 1, huge.seq + 1);
+    expect(recovered.events).toEqual(stored.events);
+    expect(recovered.events[0]?.seq).toBe(huge.seq);
+    const last = await ctx.store.getBoundedHistory('s1', recovered.beforeSeq!, initial.snapshotSeq);
+    expect(last).toMatchObject({
+      kind: 'page',
+      events: [expect.objectContaining(older)],
+      hasMore: false,
+    });
   });
 
   it('caps event count and preserves the snapshot across concurrent arrivals', async () => {

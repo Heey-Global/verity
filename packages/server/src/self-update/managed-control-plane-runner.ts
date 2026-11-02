@@ -1,3 +1,4 @@
+import { parseOomScoreAdj } from '../sandbox-memory-policy.js';
 import { stat } from 'node:fs/promises';
 import { CONTROL_PLANE_PROJECT_ID } from '../control-plane-project.js';
 import { STANDARD_MOUNTS, standardDataMountPaths } from '../sandbox-standard-mounts.js';
@@ -384,6 +385,7 @@ export function desiredSpec(
   architecture: 'amd64' | 'arm64',
   runtimeGid: string,
   dockerSocket?: { readonly hostPath: string; readonly gid: string },
+  oomScoreAdj = -250,
 ): ContainerSpec {
   return {
     image,
@@ -469,6 +471,7 @@ export function desiredSpec(
     capAdd: ['CHOWN', 'SETUID', 'SETGID', 'KILL', 'SETPCAP'],
     securityOpt: ['no-new-privileges=true'],
     pidsLimit: 512,
+    oomScoreAdj,
     memoryBytes: 4 * 1024 * 1024 * 1024,
     // Match the ceiling, which disables swap — the Compose service this replaces
     // set `memswap_limit` equal to its `mem_limit` for exactly that reason.
@@ -497,6 +500,8 @@ export async function reconcileManagedControlPlaneRunner(
     throw new Error(`managed Server authority unavailable: ${deployment.reason}`);
   const environment = options.environment ?? process.env;
   if (!enabled(deployment.spec.mounts, environment)) return;
+  const oomScoreAdj =
+    parseOomScoreAdj(environment.VERITY_CONTROL_PLANE_RUNNER_OOM_SCORE_ADJ) ?? -250;
   const runtimeGid = environment.VERITY_RUNNER_RUNTIME_GID?.trim() || '1101';
   if (!/^[1-9][0-9]{0,9}$/.test(runtimeGid))
     throw new Error('VERITY_RUNNER_RUNTIME_GID must be a positive group ID');
@@ -589,6 +594,7 @@ export async function reconcileManagedControlPlaneRunner(
     if (
       current.image === deployment.spec.image &&
       current.running &&
+      (current.oomScoreAdj ?? 0) === oomScoreAdj &&
       socketMatches(current) &&
       knowledgeMatches(current)
     ) {
@@ -613,6 +619,7 @@ export async function reconcileManagedControlPlaneRunner(
     deployment.spec.platform.architecture,
     runtimeGid,
     dockerSocket,
+    oomScoreAdj,
   );
   const createdId = await create(options, desired);
 

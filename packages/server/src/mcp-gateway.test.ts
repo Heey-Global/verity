@@ -638,6 +638,64 @@ describe('MCP gateway — refusals (ADR 0014 D2)', () => {
     expect(records.at(-1)).toMatchObject({ rejection: 'denied' });
   });
 
+  it('passes card edits a tool accepts beside the request it recorded, never in place of it', async () => {
+    const edits = { title: 'Changed on the card' };
+    const approvedEdits = vi.fn(() => edits);
+    const { gateway, invokeTool } = harness({
+      approvedEdits,
+      requestApproval: vi.fn(async () => ({
+        decision: { behavior: 'allow' as const, updatedInput: edits },
+        decidedBy: 'card' as const,
+      })),
+    });
+    await gateway.handle({ projectId: 'p1', token: 'session-token', body: call() });
+    expect(approvedEdits).toHaveBeenCalledWith(
+      expect.objectContaining({ toolName: 'verity_http_request', updatedInput: edits }),
+    );
+    expect(invokeTool).toHaveBeenCalledWith(
+      expect.objectContaining({ request: HTTP_ARGUMENTS, approvedEdits: edits }),
+    );
+  });
+
+  it('refuses edits that did not come from the operator’s card', async () => {
+    const approvedEdits = vi.fn(() => ({ title: 'x' }));
+    const { gateway, invokeTool } = harness({
+      approvedEdits,
+      requestApproval: vi.fn(async () => ({
+        decision: { behavior: 'allow' as const, updatedInput: { title: 'x' } },
+        decidedBy: 'grant' as const,
+      })),
+    });
+    const response = await gateway.handle({
+      projectId: 'p1',
+      token: 'session-token',
+      body: call(),
+    });
+    expect(resultOf(response.body).content[0]?.text).toContain('edits are not supported');
+    expect(approvedEdits).not.toHaveBeenCalled();
+    expect(invokeTool).not.toHaveBeenCalled();
+  });
+
+  it('refuses edits the tool does not accept', async () => {
+    const { gateway, invokeTool, records } = harness({
+      approvedEdits: () => {
+        throw new Error('not editable');
+      },
+      requestApproval: vi.fn(async () => ({
+        decision: { behavior: 'allow' as const, updatedInput: { title: 'x' } },
+        decidedBy: 'card' as const,
+      })),
+    });
+    const response = await gateway.handle({
+      projectId: 'p1',
+      token: 'session-token',
+      body: call(),
+    });
+    expect(resultOf(response.body).content[0]?.text).toContain('edits are not supported');
+    expect(invokeTool).not.toHaveBeenCalled();
+    expect(records.at(-1)).toMatchObject({ rejection: 'denied' });
+  });
+
   it('refuses a call whose bearer was retired while its card was parked', async () => {
     // A card can sit open for minutes. If the caller's turn settles in the meantime the
     // bearer that admitted the call is retired, and serving the approval afterwards would

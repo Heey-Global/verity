@@ -79,6 +79,7 @@ const PRIMARY_FIELD: Record<string, string> = {
   TaskUpdate: 'subject',
   // A skill/slash-command invocation — headline reads "Skill code-review".
   Skill: 'skill',
+  verity_repairs: 'action',
   verity_tasks: 'action',
   verity_vulnerabilities: 'action',
   // Without this the fallback picks whichever string field comes first in the object, which
@@ -129,6 +130,7 @@ const VERITY_TOOL_LABELS: Record<string, string> = {
   verity_gmail: 'Gmail',
   verity_matrix: 'Matrix',
   verity_google_calendar: 'Google Calendar',
+  verity_scheduling: 'Scheduling',
   verity_google_contacts: 'Google Contacts',
   verity_google_docs: 'Google Docs',
   verity_google_drive: 'Google Drive',
@@ -149,6 +151,7 @@ const VERITY_TOOL_LABELS: Record<string, string> = {
   verity_start_planning: 'Verity Planning Mode',
   verity_present_plan: 'Verity Plan',
   verity_end_planning: 'Verity Implement Plan',
+  verity_repairs: 'QA · CI supervision',
   verity_tasks: 'Verity Tasks',
   verity_app_help: 'Verity Help',
   verity_vulnerabilities: 'Verity Vulnerability Scan',

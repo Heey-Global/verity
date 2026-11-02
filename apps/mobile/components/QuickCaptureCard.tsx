@@ -18,11 +18,13 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import { randomUUID } from 'expo-crypto';
 import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { Icon } from './Icon';
 import { KeyCommands } from './KeyCommands';
 import { useVoiceInput } from '../hooks/useVoiceInput';
+import { createVerityClient } from '../lib/client';
 import { pickFiles, pickImagesFromLibrary } from '../lib/attachments';
 import {
   enableTaskScreenshotSuggestions,
@@ -44,7 +46,8 @@ export function QuickCaptureCard({
   context: TaskContext;
   projects: ProjectRecord[];
   onClose(): void;
-  onSaved(id: string, label: string): void;
+  /** `kind` 'assistant': `id` is the assistant session the note was sent to. */
+  onSaved(id: string, label: string, kind?: 'task' | 'assistant'): void;
 }) {
   const { theme } = useUnistyles();
   const [text, setText] = useState('');
@@ -82,6 +85,23 @@ export function QuickCaptureCard({
         : null),
   );
   const projectExplicitlySelected = useRef(false);
+  /** The Verity assistant session, when it is on and this user may read it. */
+  const [assistantSessionId, setAssistantSessionId] = useState<string | null>(null);
+  const [toAssistant, setToAssistant] = useState(false);
+  useEffect(() => {
+    let active = true;
+    // Only administrators can read the assistant settings; for everyone else the
+    // target simply stays hidden and capture works as before.
+    void createVerityClient()
+      ?.assistantSettings()
+      .then((settings) => {
+        if (active && settings.enabled) setAssistantSessionId(settings.sessionId);
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, []);
   const [other, setOther] = useState(false);
   const [saving, setSaving] = useState(false);
   const dictated = useRef(false);
@@ -92,28 +112,34 @@ export function QuickCaptureCard({
   const voice = useVoiceInput(text, onDictation);
   const started = useRef(false);
   const savingRef = useRef(false);
-  const pendingSave = useRef<{ target: string | null; recording: boolean } | null>(null);
+  const pendingSave = useRef<{
+    target: string | null;
+    recording: boolean;
+    assistant: boolean;
+  } | null>(null);
   useEffect(() => {
     if (!started.current) {
       started.current = true;
       voice.toggle();
     }
   }, [voice]);
-  const save = async (target = projectId) => {
-    if (!text.trim() || savingRef.current || target === null) return;
+  const save = async () => {
+    const target = projectId;
+    const assistant = toAssistant && assistantSessionId !== null;
+    if (!text.trim() || savingRef.current || (target === null && !assistant)) return;
     if (uploads.reduce((total, upload) => total + upload.data.length, 0) > 45_000_000) {
       Alert.alert('Attachments too large', 'Keep the total attachment size below 33 MB.');
       return;
     }
     savingRef.current = true;
     setSaving(true);
-    pendingSave.current = { target, recording: voice.state === 'recording' };
+    pendingSave.current = { target, recording: voice.state === 'recording', assistant };
     if (voice.state === 'recording') voice.toggle();
     else voice.abort();
   };
   useEffect(() => {
     if (voice.state !== 'idle' || !pendingSave.current) return;
-    const { target, recording: wasRecording } = pendingSave.current;
+    const { target, recording: wasRecording, assistant } = pendingSave.current;
     pendingSave.current = null;
     if ((wasRecording && voice.error) || !text.trim()) {
       savingRef.current = false;
@@ -123,6 +149,20 @@ export function QuickCaptureCard({
     // Wait for native end so the final transcript is included in the saved task.
     void (async () => {
       try {
+        if (assistant && assistantSessionId !== null) {
+          // A voice note to Verity is a message in its session, not a task: the
+          // assistant decides which project it belongs to.
+          await createVerityClient()!.sendTurn(assistantSessionId, {
+            prompt: text.trim(),
+            ...(uploads.length ? { attachments: uploads } : {}),
+            clientReplyId: randomUUID(),
+            queueBehindActiveTurn: true,
+          });
+          onSaved(assistantSessionId, 'Verity', 'assistant');
+          onClose();
+          return;
+        }
+        if (target === null) return;
         const task = await captureTask({
           title: dictated.current ? provisionalTaskTitle(text) : text.trim(),
           ...(dictated.current ? { detail: text.trim(), generateTitle: true } : {}),
@@ -154,6 +194,7 @@ export function QuickCaptureCard({
     projects,
     onSaved,
     onClose,
+    assistantSessionId,
   ]);
   const dismiss = () => {
     if (!savingRef.current) {
@@ -214,13 +255,14 @@ export function QuickCaptureCard({
         );
   const selectProject = (id: string) => {
     projectExplicitlySelected.current = true;
+    setToAssistant(false);
     setProjectId(id);
     void saveTaskPreferences({ projectId: id }).catch(() =>
       Alert.alert('Could not remember project', 'Try again'),
     );
   };
   const chip = (id: string) => {
-    const selected = projectId === id;
+    const selected = !toAssistant && projectId === id;
     return (
       <Pressable
         key={id}
@@ -418,7 +460,7 @@ export function QuickCaptureCard({
             {/* One layout throughout: the project is picked here while or after
               speaking, and only the footer's main button changes. Nothing is
               saved until the operator taps Save. */}
-            {projectId === null ? (
+            {projectId === null && !toAssistant ? (
               <Text style={styles.hint}>
                 {projects.length === 0
                   ? 'Create a project to save this task.'
@@ -426,6 +468,24 @@ export function QuickCaptureCard({
               </Text>
             ) : null}
             <View style={styles.chips}>
+              {assistantSessionId !== null ? (
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: toAssistant }}
+                  accessibilityHint="Sends the note to the Verity assistant, which files it"
+                  onPress={() => setToAssistant(true)}
+                  style={({ pressed }) => [
+                    styles.chip,
+                    toAssistant ? styles.chipSelected : null,
+                    pressed ? styles.pressed : null,
+                  ]}
+                >
+                  {toAssistant ? <View style={styles.chipDot} /> : null}
+                  <Text style={[styles.chipLabel, toAssistant ? styles.chipLabelSelected : null]}>
+                    Verity
+                  </Text>
+                </Pressable>
+              ) : null}
               {chips.map(chip)}
               <Pressable
                 accessibilityRole="button"
@@ -458,7 +518,7 @@ export function QuickCaptureCard({
               </Text>
               <Pressable
                 accessibilityRole="button"
-                disabled={!text.trim() || saving || projectId === null}
+                disabled={!text.trim() || saving || (projectId === null && !toAssistant)}
                 onPress={() => void save()}
                 style={({ pressed }) => [
                   styles.save,
@@ -469,7 +529,7 @@ export function QuickCaptureCard({
                 {saving ? (
                   <ActivityIndicator color={theme.colors.onAction} />
                 ) : (
-                  <Text style={styles.saveLabel}>Save</Text>
+                  <Text style={styles.saveLabel}>{toAssistant ? 'Send' : 'Save'}</Text>
                 )}
               </Pressable>
             </View>

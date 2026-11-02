@@ -12,9 +12,12 @@ import {
   enableTaskScreenshotSuggestions,
 } from '../lib/taskScreenshot';
 import { useVoiceInput } from '../hooks/useVoiceInput';
+import { createVerityClient } from '../lib/client';
 
 jest.mock('../hooks/useVoiceInput', () => ({ useVoiceInput: jest.fn() }));
 jest.mock('../lib/tasksStore', () => ({ captureTask: jest.fn() }));
+// No server by default: the assistant target stays hidden, as for a member without access.
+jest.mock('../lib/client', () => ({ createVerityClient: jest.fn(() => null) }));
 jest.mock('../lib/attachments', () => ({ pickFiles: jest.fn(), pickImagesFromLibrary: jest.fn() }));
 jest.mock('../lib/taskScreenshot', () => ({
   recentTaskScreenshot: jest.fn(async () => null),
@@ -322,3 +325,35 @@ it.each([
     );
   },
 );
+
+it('sends the note to the Verity assistant instead of saving a task', async () => {
+  const sendTurn = jest.fn(async () => ({}));
+  jest.mocked(createVerityClient).mockReturnValue({
+    assistantSettings: jest.fn(async () => ({ enabled: true, sessionId: 'assistant', grants: [] })),
+    sendTurn,
+  } as unknown as ReturnType<typeof createVerityClient>);
+  const ui = render(<QuickCaptureCard {...props} />);
+  await act(async () => {});
+  fireEvent.changeText(ui.getByLabelText('Task text'), 'Did Jonas send the offer?');
+  fireEvent.press(ui.getByText('Verity'));
+  jest
+    .mocked(useVoiceInput)
+    .mockReturnValue({ ...voice, state: 'idle' } as unknown as ReturnType<typeof useVoiceInput>);
+  ui.rerender(<QuickCaptureCard {...props} />);
+  await act(async () => fireEvent.press(ui.getByText('Send')));
+  expect(sendTurn).toHaveBeenCalledWith(
+    'assistant',
+    expect.objectContaining({ prompt: 'Did Jonas send the offer?', queueBehindActiveTurn: true }),
+  );
+  expect(captureTask).not.toHaveBeenCalled();
+  expect(props.onSaved).toHaveBeenCalledWith('assistant', 'Verity', 'assistant');
+});
+
+it('hides the assistant target while it is off', async () => {
+  jest.mocked(createVerityClient).mockReturnValue({
+    assistantSettings: jest.fn(async () => ({ enabled: false, sessionId: null, grants: [] })),
+  } as unknown as ReturnType<typeof createVerityClient>);
+  const ui = render(<QuickCaptureCard {...props} />);
+  await act(async () => {});
+  expect(ui.queryByText('Verity')).toBeNull();
+});

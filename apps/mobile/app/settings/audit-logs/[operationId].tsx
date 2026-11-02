@@ -14,6 +14,7 @@ import {
   SettingsMessage,
   SettingsScaffold,
 } from '../../../components/settings/SettingsChrome';
+import { BuildOutput } from '../../../components/logs/LogEntries';
 import { Row, StatusTag, Text } from '../../../components/ui';
 import type { StatusIntent } from '../../../components/ui/Status';
 import {
@@ -25,6 +26,15 @@ import {
   shortDigest,
 } from '../../../lib/auditLabels';
 import { createVerityClient } from '../../../lib/client';
+
+const EVENT_LABELS: Record<string, string> = {
+  'build.requested': 'Build requested',
+  'build.succeeded': 'Build succeeded',
+  'build.failed': 'Build failed',
+  'image.removed': 'Image removed',
+  'project.deleted': 'Project deleted',
+  'audit.write_gap': 'Missing records detected',
+};
 
 const OUTCOME: Record<AuditOperationDetail['status'], { intent: StatusIntent; label: string }> = {
   succeeded: { intent: 'ready', label: 'Succeeded' },
@@ -177,6 +187,36 @@ export function AuditOperationView({
         </SettingsGroup>
       ) : null}
 
+      {build !== null ? (
+        <SettingsGroup title="Build execution">
+          <SettingsListPanel>
+            <Row
+              title="Duration"
+              subtitle={
+                build.durationMs === null
+                  ? 'Not recorded'
+                  : `${(build.durationMs / 1000).toFixed(1)} seconds`
+              }
+            />
+            <BuildOutput
+              client={client}
+              operationId={operation.operationId}
+              status={operation.status}
+            />
+          </SettingsListPanel>
+        </SettingsGroup>
+      ) : null}
+      <SettingsGroup title="Timeline">
+        <SettingsListPanel>
+          {operation.events.map((event, index) => (
+            <Row
+              key={index}
+              title={EVENT_LABELS[event.kind] ?? 'Event recorded'}
+              subtitle={auditTime(event.recordedAt)}
+            />
+          ))}
+        </SettingsListPanel>
+      </SettingsGroup>
       <SettingsGroup title="Server">
         <SettingsListPanel>
           <Row
@@ -206,5 +246,5 @@ export function AuditOperationView({
 }
 
 const styles = StyleSheet.create((theme) => ({
-  head: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.md },
+  head: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: theme.spacing.md },
 }));

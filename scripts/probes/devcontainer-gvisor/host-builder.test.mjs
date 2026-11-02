@@ -113,6 +113,8 @@ test('resource limits scale with the host within their bounds', () => {
 
 test('service waits for BuildKit readiness and keeps its trace socket in a writable runtime directory', () => {
   const unit = source('verity-buildkit.service');
+  assert.match(unit, /^ExecStartPre=\+.*snapshotter-migrate.sh recover$/m);
+  assert.match(unit, /^ExecStartPost=\+.*snapshotter-migrate.sh recover-verify$/m);
   assert.match(unit, /^Type=notify$/m);
   assert.match(unit, /^NotifyAccess=main$/m);
   assert.match(unit, /^TimeoutStartSec=60$/m);

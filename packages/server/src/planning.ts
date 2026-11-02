@@ -109,11 +109,14 @@ export interface SessionPlanningActions {
   /** Enter planning mode. Answers whether the session exists. */
   start(sessionId: string): Promise<boolean>;
   /** Leave planning mode and start the implementation as a turn of its own.
-   *  Answers false when the session was not planning (already decided). */
+   *  Answers false when the session was not planning (already decided).
+   *  `initiatedBy` is the user who approved the plan; the implementation turn runs
+   *  for them, and an authenticated server refuses tool calls in a turn without one. */
   implement(
     sessionId: string,
     planningRevision: number,
     consent?: PlanningConsent,
+    initiatedBy?: { userId: string },
   ): Promise<boolean>;
   present(sessionId: string, plan: string): Promise<number | undefined>;
   /** Leave planning mode without implementing. False when it was not planning. */
@@ -130,7 +133,7 @@ export function createSessionPlanning(deps: PlanningDeps): SessionPlanningAction
     async present(sessionId, plan) {
       return store.presentSessionPlan(sessionId, plan);
     },
-    async implement(sessionId, planningRevision, consent) {
+    async implement(sessionId, planningRevision, consent, initiatedBy) {
       const session = await store.getSession(sessionId);
       if (session?.planningRevision !== planningRevision || session.planningPlan == null)
         return false;
@@ -145,6 +148,7 @@ export function createSessionPlanning(deps: PlanningDeps): SessionPlanningAction
           queueBehindActiveTurn: true,
           planningRevision,
           ...(consent !== undefined ? { planningConsent: consent } : {}),
+          ...(initiatedBy !== undefined ? { initiatedBy } : {}),
         },
       );
       if (result.accepted === false) return false;
@@ -183,7 +187,12 @@ export function registerPlanningRoutes(
     }
     const ended =
       body.action === 'implement'
-        ? await deps.planning.implement(id, body.planningRevision)
+        ? await deps.planning.implement(
+            id,
+            body.planningRevision,
+            undefined,
+            request.localUserId ? { userId: request.localUserId } : undefined,
+          )
         : await deps.planning.discard(id, body.planningRevision);
     if (!ended) {
       reply.code(409);

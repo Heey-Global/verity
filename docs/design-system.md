@@ -179,6 +179,30 @@ Disabled is always 40 % opacity; pressed is always a slight darkening.
 - States: default, pressed (slightly darker surface), disabled (40 %), selected (`action`
   border with glow).
 
+### 5.2a Log list
+
+For chronological records that are read as a stream (the Logs screen), not as
+settings. A grouped list would turn every record into a card row with a bold
+title; a log list keeps them dense and scannable.
+
+- **Surface:** no card. Rows sit directly on `background`, edge to edge within the
+  screen, separated by 1 px `border` dividers (also above the first row). No radius.
+- **Day groups:** `Label` section headers ("Today", "Yesterday", a date) above each run of
+  rows; records without a timestamp go into a final "Time not recorded" group.
+- **Row anatomy** (minimum height 52, padding 8 vertical, 16 leading, 12 trailing):
+  - **Meta line** in `Footnote`: time in the monospace font, then source, then the
+    severity word. Errors, failures and exit codes use `attention`; every other
+    severity stays `textMuted` (there is no amber). Severity is always a word, never color
+    alone. An optional neutral tag (`Label` on a 6 % tint, radius `tag`) marks extra
+    content such as captured build output.
+  - **Message** in `BodySmall`, `text`, wrapping freely — the message is the content.
+  - **Context (optional)** in `Subtitle`, e.g. the project.
+  - **Trailing:** the chevron `›` when tapping opens details; nothing else.
+- **States:** default, pressed (6 % neutral tint).
+- **Source problems** do not sit in the list: a `HintBox` above it names the
+  unavailable source with a "Details" action; with every source available there is
+  no status text, only a header icon button for source details.
+
 ### 5.3 Text field
 
 - Label above the field in `Subtitle` style (13, muted).

@@ -43,6 +43,7 @@ describe('EventStore — HTTP MCP connections', () => {
         authType: 'none',
         oauthClientId: null,
         oauthClientSecret: null,
+        oauthTokenAuthMethod: 'client_secret_post',
         oauthAuthorizationEndpoint: null,
         oauthTokenEndpoint: null,
         oauthScopes: null,
@@ -170,5 +171,32 @@ describe('EventStore — HTTP MCP connections', () => {
       else
         await expect(ctx.store.upsertProjectMcpBinding(binding)).rejects.toThrow(/limit exceeded/u);
     }
+  });
+});
+
+it('persists dynamically registered client authentication across updates without losing its secret', async () => {
+  const connection = {
+    id: 'registered',
+    name: 'registered',
+    url: 'https://tools.example/mcp',
+    authorization: null,
+    enabled: true,
+    authType: 'oauth' as const,
+    oauthClientId: 'client',
+    oauthClientSecret: 'secret',
+    oauthTokenAuthMethod: 'client_secret_basic' as const,
+  };
+  await ctx.store.upsertHttpMcpConnection(connection);
+  const first = (await ctx.store.listHttpMcpConnections()).find(
+    (item) => item.id === connection.id,
+  )!;
+  expect(first).toMatchObject(connection);
+  await ctx.store.upsertHttpMcpConnection({ ...first, enabled: false });
+  expect(
+    (await ctx.store.listHttpMcpConnections()).find((item) => item.id === connection.id),
+  ).toMatchObject({
+    oauthTokenAuthMethod: 'client_secret_basic',
+    oauthClientSecret: 'secret',
+    enabled: false,
   });
 });

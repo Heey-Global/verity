@@ -130,8 +130,30 @@ function messages(error: unknown): string {
 export function classifyUpdateError(error: unknown): UpdateAttemptCause {
   const text = messages(error);
   for (const [pattern, cause] of PATTERNS) if (pattern.test(text)) return cause;
-  if (error instanceof DockerError) return error.kind === 'network' ? 'network' : 'docker';
+  if (error instanceof DockerError) return dockerErrorCause(error.kind);
   return 'unknown';
+}
+
+/**
+ * A pull that stalled or ran out its ceiling is reported as `network-timeout`
+ * rather than a cause of its own: the cause set is closed and parsed strictly on
+ * both sides of a cutover (see {@link parseUpdateAttempt}), so a new value would
+ * make an older Server read the whole record as "nothing recorded". Both are,
+ * from the device's point of view, a download that did not complete in time.
+ */
+function dockerErrorCause(kind: DockerError['kind']): UpdateAttemptCause {
+  switch (kind) {
+    case 'network':
+      return 'network';
+    case 'pull_stalled':
+    case 'timeout':
+      return 'network-timeout';
+    case 'image_not_found':
+    case 'container_not_found':
+    case 'conflict':
+    case 'other':
+      return 'docker';
+  }
 }
 
 const PHASES: readonly UpdatePhase[] = [

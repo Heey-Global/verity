@@ -9,6 +9,7 @@ import {
   initializeManagedDeployment,
   migrateManagedDevcontainerBuilder,
   migrateManagedHostDiagnostics,
+  migrateManagedBackupMounts,
   readManagedDeployment,
 } from './managed-deployment.js';
 import {
@@ -42,6 +43,8 @@ export interface ManagedBootstrapEnvironment {
   readonly VERITY_HOST_ARCHITECTURE?: string;
   readonly VERITY_PAIRING_STATE_HOST_PATH?: string;
   readonly VERITY_HOST_DIAGNOSTIC_DIR?: string;
+  readonly VERITY_BACKUP_DIR?: string;
+  readonly VERITY_BACKUP_IDENTITY_DIR?: string;
   readonly DEVCONTAINER_BUILDER_GID?: string;
   readonly VERITY_BOOTSTRAP_ADVANCE_IMAGE_FROM?: string;
 }
@@ -96,9 +99,16 @@ export async function runManagedBootstrap(
   const architecture = hostArchitecture === 'x64' ? 'amd64' : hostArchitecture;
   if (architecture !== 'amd64' && architecture !== 'arm64')
     throw new Error(`unsupported host architecture: ${hostArchitecture}`);
-  const currentUser = userInfo();
-  const uid = uint('VERITY_SERVER_UID', env.VERITY_SERVER_UID, currentUser.uid);
-  const gid = uint('VERITY_SERVER_GID', env.VERITY_SERVER_GID, currentUser.gid);
+  const uid = uint(
+    'VERITY_SERVER_UID',
+    env.VERITY_SERVER_UID,
+    process.getuid?.() ?? userInfo().uid,
+  );
+  const gid = uint(
+    'VERITY_SERVER_GID',
+    env.VERITY_SERVER_GID,
+    process.getgid?.() ?? userInfo().gid,
+  );
   const dockerGid = uint('VERITY_DOCKER_SOCKET_GID', env.VERITY_DOCKER_SOCKET_GID, 999);
   const relayGid = uint('VERITY_PROJECT_RELAY_GID', env.VERITY_PROJECT_RELAY_GID, 65532);
   const runnerGid = uint('VERITY_RUNNER_RUNTIME_GID', env.VERITY_RUNNER_RUNTIME_GID, 1101);
@@ -144,6 +154,22 @@ export async function runManagedBootstrap(
     hostDiagnosticPath.includes(':')
   )
     throw new Error('VERITY_HOST_DIAGNOSTIC_DIR must be a normalized absolute directory');
+  const backupPath = env.VERITY_BACKUP_DIR || undefined;
+  const backupIdentityPath = env.VERITY_BACKUP_IDENTITY_DIR || undefined;
+  const backupPaths = [backupPath, backupIdentityPath];
+  if (
+    backupPaths.some((path) => path !== undefined) &&
+    backupPaths.some(
+      (path) =>
+        path === undefined ||
+        !isAbsolute(path) ||
+        normalize(path) !== path ||
+        path === '/' ||
+        /[:,\r\n]/.test(path),
+    )
+  ) {
+    throw new Error('Backup mounts require two normalized absolute host directories');
+  }
   const forwardedEnvironment = Object.keys(env)
     .filter(
       (name) =>
@@ -181,6 +207,8 @@ export async function runManagedBootstrap(
             'VERITY_HOST_ARCHITECTURE',
             'VERITY_PAIRING_STATE_HOST_PATH',
             'VERITY_HOST_DIAGNOSTIC_DIR',
+            'VERITY_BACKUP_DIR',
+            'VERITY_BACKUP_IDENTITY_DIR',
             'VERITY_BOOTSTRAP_ADVANCE_IMAGE_FROM',
           ].includes(name)),
     )
@@ -224,6 +252,20 @@ export async function runManagedBootstrap(
         target: '/run/verity-host-diagnostics',
         readOnly: true,
       },
+      ...(backupPath !== undefined && backupIdentityPath !== undefined
+        ? [
+            {
+              source: { kind: 'bind' as const, path: backupPath },
+              target: '/run/verity-backups',
+              readOnly: false,
+            },
+            {
+              source: { kind: 'bind' as const, path: backupIdentityPath },
+              target: '/run/verity-backup-identity',
+              readOnly: false,
+            },
+          ]
+        : []),
       ...(env.VERITY_RUNNER_SUPERVISOR === '1'
         ? [
             {
@@ -298,6 +340,15 @@ export async function runManagedBootstrap(
     image,
     hostPath: hostDiagnosticPath,
   });
+  if (backupPath !== undefined && backupIdentityPath !== undefined) {
+    await migrateManagedBackupMounts({
+      root,
+      deploymentId: state.spec.deploymentId,
+      image,
+      backupPath: backupPath,
+      identityPath: backupIdentityPath,
+    });
+  }
   // The installer repair path for deployments sealed before the builder existed.
   // Absent the verified input, an old spec is left exactly as it is.
   if (builderGid !== undefined)

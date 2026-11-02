@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+# Root-only CA backup helper. Request data never selects a source path or container image.
+set -euo pipefail
+umask 077
+state_dir="${VERITY_STATE_DIR:-/etc/verity}"
+request_dir="${VERITY_BACKUP_IDENTITY_DIR:-/var/lib/verity/backup-identity}"
+die() { printf 'verity-backup-identity: %s\n' "$*" >&2; exit 1; }
+[[ $(id -u) = 0 ]] || die 'must run as root'
+for tool in docker jq flock readlink stat; do command -v "$tool" >/dev/null || die "missing $tool"; done
+# Pin trusted host configuration independently of the Server-writable request directory.
+[[ $(readlink -f -- "$state_dir") = "$state_dir" && ! -L $state_dir ]] || die 'unsafe installer state path'
+[[ $(stat -c %u "$state_dir") = 0 ]] || die 'installer state must be root-owned'
+for file in backup-dir backup-server-image installation-id tls-ca-key.pem tls-ca-cert.pem; do
+  [[ -f $state_dir/$file && ! -L $state_dir/$file && $(stat -c %u "$state_dir/$file") = 0 ]] || die "unsafe $file"
+done
+backup_dir=$(head -n1 "$state_dir/backup-dir")
+image=$(head -n1 "$state_dir/backup-server-image")
+installation_id=$(head -n1 "$state_dir/installation-id")
+[[ $image =~ ^ghcr\.io/heey-global/verity/verity-server(:[a-zA-Z0-9._-]+)?@sha256:[a-f0-9]{64}$ ]] || die 'image must be digest-pinned'
+[[ $installation_id =~ ^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$ ]] || die 'invalid installation id'
+[[ $backup_dir = /* && $backup_dir != / && $(readlink -f -- "$backup_dir") = "$backup_dir" ]] || die 'unsafe backup directory'
+[[ -d $request_dir && ! -L $request_dir && $(readlink -f -- "$request_dir") = "$request_dir" ]] || die 'unsafe request directory'
+[[ $(stat -c %u "$request_dir") = 0 ]] || die 'request directory must be root-owned'
+exec {helper_lock}>"$state_dir/.backup-identity.lock"
+flock --exclusive "$helper_lock"
+if [[ -e $state_dir/identity-rotation/checkpoint || -L $state_dir/identity-rotation/checkpoint ]]; then
+  [[ -f $state_dir/identity-rotation/checkpoint && ! -L $state_dir/identity-rotation/checkpoint ]] || die 'unsafe rotation checkpoint'
+  jq -e '.phase == "complete"' "$state_dir/identity-rotation/checkpoint" >/dev/null || die 'identity rotation is pending'
+fi
+request="$request_dir/recipient.json"
+[[ -f $request && ! -L $request && $(stat -c %s "$request") -le 1024 ]] || die 'no bounded regular recipient request'
+# Read once: subsequent pathname replacement cannot change validated data.
+request_data=$(head -c 1025 -- "$request")
+jq -e 'type == "object" and ((keys == ["keyGeneration", "recipient"]) or (keys == ["keyGeneration", "recipient", "retireGeneration"])) and (if has("retireGeneration") then (.retireGeneration | type == "number" and . >= 1 and . <= 999999999 and floor == .) and .retireGeneration < .keyGeneration else true end) and (.keyGeneration | type == "number" and . >= 1 and . <= 999999999 and floor == .) and (.recipient | type == "string" and test("^age1[023456789acdefghjklmnpqrstuvwxyz]{58}$"))' <<<"$request_data" >/dev/null || die 'invalid recipient request'
+recipient=$(jq -r '.recipient' <<<"$request_data")
+generation=$(jq -r '.keyGeneration' <<<"$request_data")
+identity_dir="$backup_dir/identity"
+if [[ ! -e $identity_dir && ! -L $identity_dir ]]; then mkdir -m 0755 -- "$identity_dir"; fi
+[[ -d $identity_dir && ! -L $identity_dir && $(stat -c %u "$identity_dir") = 0 ]] || die 'unsafe identity directory'
+# Hold the verified directory inode while writing; the writable destination parent may be renamed.
+exec {identity_fd}<"$identity_dir"
+[[ $(readlink -f "/proc/self/fd/$identity_fd") = "$identity_dir" ]] || die 'identity directory changed'
+[[ $(stat -Lc %u "/proc/self/fd/$identity_fd") = 0 ]] || die 'identity directory owner changed'
+identity_mode=$(stat -Lc %a "/proc/self/fd/$identity_fd")
+[[ $((8#$identity_mode & 0022)) = 0 ]] || die 'identity directory is writable by another user'
+pinned="/proc/self/fd/$identity_fd"
+retired_dir="$state_dir/backup-retired-generations"
+if [[ ! -e $retired_dir && ! -L $retired_dir ]]; then mkdir -m 0700 -- "$retired_dir"; fi
+[[ -d $retired_dir && ! -L $retired_dir && $(stat -c %u "$retired_dir") = 0 ]] || die 'unsafe retirement directory'
+if jq -e 'has("retireGeneration")' <<<"$request_data" >/dev/null; then
+  retired=$(jq -r '.retireGeneration' <<<"$request_data")
+  tombstone="$retired_dir/$installation_id-k$retired"
+  if [[ ! -e $tombstone && ! -L $tombstone ]]; then
+    printf '%s:%s\n' "$installation_id" "$retired" > "$tombstone"
+    sync -f "$tombstone"
+    sync -f "$retired_dir"
+  fi
+  [[ -f $tombstone && ! -L $tombstone ]] || die 'unsafe retirement tombstone'
+fi
+# Finish every durable deletion before considering a recipient. A crash between tombstone and
+# unlink cannot re-enable the exposed generation, even if an old request is replayed.
+for tombstone in "$retired_dir/$installation_id"-k*; do
+  [[ -e $tombstone || -L $tombstone ]] || continue
+  retired=${tombstone##*-k}
+  [[ $retired =~ ^[1-9][0-9]{0,8}$ && -f $tombstone && ! -L $tombstone && $(stat -c %u "$tombstone") = 0 ]] || die 'invalid retirement tombstone'
+  old="$pinned/$installation_id-ca-key-k$retired"
+  [[ ! -e $old && ! -L $old || -f $old && ! -L $old ]] || die 'unsafe retired identity'
+  rm -f -- "$old"
+  sync -f "$pinned"
+  marker="$pinned/$installation_id-ca-retired-k$retired"
+  [[ ! -L $marker ]] || die 'unsafe retirement marker'
+  printf '%s:%s\n' "$installation_id" "$retired" > "$marker"
+  chmod 0644 "$marker"
+  sync -f "$marker"
+  sync -f "$pinned"
+done
+[[ ! -e $retired_dir/$installation_id-k$generation ]] || die 'recipient generation is permanently retired'
+temporary=$(mktemp "$pinned/.ca-backup.XXXXXXXX")
+trap 'rm -f -- "$temporary"' EXIT
+# A CA-signed receipt binds ciphertext to this installation, generation and certificate.
+# Recipient is confidential host state and is passed through stdin only.
+jq -cn --arg recipient "$recipient" --arg installationId "$installation_id" --argjson keyGeneration "$generation" '{recipient:$recipient,installationId:$installationId,keyGeneration:$keyGeneration}' | docker run --rm --interactive --network=none --read-only --user 0 \
+  --cap-drop=ALL --security-opt=no-new-privileges \
+  --mount "type=bind,src=$state_dir/tls-ca-key.pem,dst=/run/verity-backup-ca.pem,readonly" \
+  --mount "type=bind,src=$state_dir/tls-ca-cert.pem,dst=/run/verity-backup-ca-cert.pem,readonly" \
+  --entrypoint node "$image" /app/packages/server/dist/backup/identity-helper-cli.js >"$temporary"
+[[ -s $temporary ]] || die 'CA encryption produced no ciphertext'
+chmod 0644 "$temporary"
+sync -f "$temporary"
+mv -f -- "$temporary" "$pinned/$installation_id-ca-key-k$generation"
+sync -f "$pinned"

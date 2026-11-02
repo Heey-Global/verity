@@ -79,24 +79,27 @@ describe('EAS archive preparation', () => {
     });
   });
 
-  it('excludes development pods only from the isolated TestFlight manifest', () => {
-    const f = fixture();
-    const path = join(f.root, 'apps/mobile/package.json');
-    const app = JSON.parse(readFileSync(path, 'utf8'));
-    app.expo = { autolinking: { ios: { exclude: ['existing-module'] } } };
-    writeFileSync(path, JSON.stringify(app));
-    expect(f.run('true', false, 'testflight').status).toBe(0);
-    const prepared = JSON.parse(readFileSync(path, 'utf8'));
-    expect(prepared.expo.autolinking.ios.exclude).toEqual([
-      'existing-module',
-      'expo-dev-client',
-      'expo-dev-menu',
-      'expo-dev-launcher',
-    ]);
-    expect(prepared.dependencies).toEqual(app.dependencies);
-    expect(f.run('true', false, 'testflight').status).toBe(0);
-    expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual(prepared);
-  });
+  it.each(['testflight', 'staging', 'profiling'])(
+    'excludes development pods from the isolated %s manifest',
+    (profile) => {
+      const f = fixture();
+      const path = join(f.root, 'apps/mobile/package.json');
+      const app = JSON.parse(readFileSync(path, 'utf8'));
+      app.expo = { autolinking: { ios: { exclude: ['existing-module'] } } };
+      writeFileSync(path, JSON.stringify(app));
+      expect(f.run('true', false, profile).status).toBe(0);
+      const prepared = JSON.parse(readFileSync(path, 'utf8'));
+      expect(prepared.expo.autolinking.ios.exclude).toEqual([
+        'existing-module',
+        'expo-dev-client',
+        'expo-dev-menu',
+        'expo-dev-launcher',
+      ]);
+      expect(prepared.dependencies).toEqual(app.dependencies);
+      expect(f.run('true', false, profile).status).toBe(0);
+      expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual(prepared);
+    },
+  );
 
   it.each(['development', 'preview', 'simulator'])(
     'preserves the manifest for the %s profile',

@@ -2961,3 +2961,15 @@ describe('managed public links', () => {
     expect(f.share().state).toBe('revoked');
   });
 });
+
+it('storage maintenance skips active public previews without replacing connectors', async () => {
+  const f = fixture();
+  retainShare(f);
+  const mutation = vi.fn(async () => {});
+  await expect(f.manager.withProjectStorageMutation('p1', mutation)).rejects.toThrow(
+    'active public preview',
+  );
+  expect(mutation).not.toHaveBeenCalled();
+  expect(f.docker.removeContainer).not.toHaveBeenCalled();
+  expect(f.docker.createContainer).not.toHaveBeenCalled();
+});

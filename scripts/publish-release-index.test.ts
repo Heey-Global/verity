@@ -159,6 +159,17 @@ describe('staged release index publication', () => {
     expect(fake.tags['v1.2.3']).toBeUndefined();
   });
 
+  it('preserves a legacy version-only candidate while staging a source-specific replacement', () => {
+    const fake = registry({ 'candidate-v1.2.3': digest });
+    const stageTag = `candidate-v${input.version}-${input.sourceSha}`;
+    const result = publishReleaseIndex({ ...input, stageTag }, fake.docker);
+    expect(result.reused).toBe(false);
+    expect(fake.tags['candidate-v1.2.3']).toBe(digest);
+    expect(fake.tags[stageTag]).toBe(result.digest);
+    expect(fake.writes).toHaveLength(1);
+    expect(fake.tags['v1.2.3']).toBeUndefined();
+  });
+
   it('bundles an already released index instead of staging a twin', () => {
     const fake = registry({ 'v1.2.3': digest });
     expect(publishReleaseIndex(staged, fake.docker)).toEqual({ digest, reused: true });

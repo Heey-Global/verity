@@ -51,6 +51,18 @@ describe('Claude smoke fixture control handshake', () => {
       });
       try {
         expect((await next()).type).toBe('system');
+        send({
+          type: 'control_request',
+          request_id: 'settings',
+          request: { subtype: 'get_settings' },
+        });
+        expect(await next()).toMatchObject({
+          type: 'control_response',
+          response: {
+            request_id: 'settings',
+            response: { applied: { ultracodeAvailable: false, ultracodeRequested: false } },
+          },
+        });
         const user = {
           type: 'user',
           message: { role: 'user', content: 'seed before sandbox recreate' },

@@ -77,6 +77,7 @@ export function registerSessionMergeRoutes(
     id: string,
     setStatus: (status: number) => void,
     approvedTip?: string,
+    initiatedBy?: { userId: string },
   ) => Promise<{ merged: true; base: string; branch: string } | { error: string }>;
 } {
   const {
@@ -193,6 +194,8 @@ export function registerSessionMergeRoutes(
           await conductor
             .dispatchTurn(id, buildPullRequestMergeRejectedPrompt(number), undefined, {
               displayPrompt: buildPullRequestMergeRejectedDisplayPrompt(number),
+              // Without the caller as initiator, the repair turn could not use gateway tools.
+              ...(request.localUserId ? { initiatedBy: { userId: request.localUserId } } : {}),
             })
             .catch(() => undefined);
         }
@@ -275,6 +278,8 @@ export function registerSessionMergeRoutes(
     id: string,
     setStatus: (status: number) => void,
     approvedTip?: string,
+    // The user who asked for the merge; the follow-up turn runs for them.
+    initiatedBy?: { userId: string },
   ): Promise<{ merged: true; base: string; branch: string } | { error: string }> => {
     const session = await deps.eventStore.getSession(id);
     if (!session) {
@@ -421,6 +426,7 @@ export function registerSessionMergeRoutes(
         await conductor
           .dispatchTurn(id, buildLocalMergedPrompt(branch, base, note), undefined, {
             displayPrompt: buildLocalMergeDisplayPrompt(),
+            ...(initiatedBy ? { initiatedBy } : {}),
           })
           .catch(() => undefined);
       })
@@ -430,9 +436,14 @@ export function registerSessionMergeRoutes(
 
   app.post('/sessions/:id/merge', async (request, reply) => {
     const { id } = sessionParams.parse(request.params);
-    return mergeLocalSession(id, (status) => {
-      reply.code(status);
-    });
+    return mergeLocalSession(
+      id,
+      (status) => {
+        reply.code(status);
+      },
+      undefined,
+      request.localUserId ? { userId: request.localUserId } : undefined,
+    );
   });
 
   return { mergeLocalSession };

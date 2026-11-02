@@ -16,7 +16,7 @@
     "build": "tsc -b"
   },
   "dependencies": {
-    "@agentclientprotocol/sdk": "2.0.2",
+    "@agentclientprotocol/sdk": "2.1.0",
     "@verity/adapter-claude": "*",
     "@verity/events": "*",
     "@verity/secret-contracts": "*",

@@ -46,6 +46,13 @@ export type HttpFetch = (
     headers?: Record<string, string>;
     signal?: AbortSignal;
     body?: string;
+    /** Transport hint for long streaming responses (the Docker image-pull
+     *  progress stream): resolve as soon as the headers arrive and expose the
+     *  body incrementally as {@link HttpResponse.body}. The global `fetch`
+     *  always behaves this way and ignores the flag; the Docker unix-socket
+     *  transport otherwise buffers the whole body before resolving. A caller
+     *  that sets it must read the body to its end or cancel it. */
+    stream?: boolean;
   },
 ) => Promise<HttpResponse>;
 
@@ -57,6 +64,7 @@ export type HttpFetch = (
 type GitHubTokenSource = string | (() => string | undefined);
 
 export interface GitHubPrServiceOptions {
+  identity?: () => Promise<{ owner: string; repo: string } | null>;
   /** The repo whose `origin` remote identifies the GitHub owner/name (e.g. /work). */
   repoDir: string;
   /** GitHub token or token provider — see {@link GitHubTokenSource}. */
@@ -251,7 +259,7 @@ export function createGitHubPrService(opts: GitHubPrServiceOptions): GitHubPrSer
   // Resolve the token freshly each time (a provider may rotate it, #131).
   const resolveToken = makeTokenResolver(opts.token);
   // Resolve the repo identity once and memoize it (the origin remote is stable).
-  const identity = makeIdentityResolver(git, opts.repoDir);
+  const identity = opts.identity ?? makeIdentityResolver(git, opts.repoDir);
 
   const cache = new Map<string, { status: PullRequestStatus | null; at: number }>();
   const lastCacheByBranch = new Map<string, { status: PullRequestStatus | null; at: number }>();

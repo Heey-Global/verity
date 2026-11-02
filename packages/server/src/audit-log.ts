@@ -155,6 +155,8 @@ export function auditEventHash(event: Omit<AuditEvent, 'eventHash'>): string {
 }
 
 interface AuditOperationQuery {
+  since?: string | undefined;
+  until?: string | undefined;
   domain?: AuditDomain | undefined;
   /** Operation ID, image ID/digest fragment or project label fragment. */
   search?: string | undefined;
@@ -167,6 +169,9 @@ export interface AuditLog {
   /** Append one event. With `txn` it co-commits with the caller's transaction and a
    *  failure propagates; without, it runs in its own transaction. */
   append(input: AuditEventInput, txn?: Transaction<Database>): Promise<AuditEvent>;
+  listEvents(
+    query: AuditOperationQuery,
+  ): Promise<{ events: AuditEvent[]; nextBefore: string | null }>;
   /** Events grouped by operation, newest operation first. */
   listOperations(query: AuditOperationQuery): Promise<{
     operations: AuditEvent[][];
@@ -327,6 +332,46 @@ export function createPostgresAuditLog(db: Kysely<Database>): AuditLog {
       return db.transaction().execute((trx) => appendWithin(trx, input));
     },
 
+    async listEvents(query) {
+      const limit = Math.min(Math.max(query.limit ?? DEFAULT_LIMIT, 1), MAX_LIMIT);
+      let selection = db
+        .selectFrom('audit_events')
+        .select(['event_json', 'event_id', sql<string>`recorded_at::text`.as('at')]);
+      if (query.domain) selection = selection.where('domain', '=', query.domain);
+      if (query.since)
+        selection = selection.where(sql<boolean>`recorded_at >= ${query.since}::timestamptz`);
+      if (query.until)
+        selection = selection.where(sql<boolean>`recorded_at <= ${query.until}::timestamptz`);
+      const search = query.search?.trim();
+      if (search) {
+        const fragment = `%${search.replace(/[\\%_]/g, '\\$&')}%`;
+        selection = selection.where((eb) =>
+          eb.or([
+            eb('operation_id', 'ilike', fragment),
+            eb('image_id', 'ilike', fragment),
+            eb('project_label', 'ilike', fragment),
+            eb('kind', 'ilike', fragment),
+          ]),
+        );
+      }
+      const cursor = decodeAuditCursor(query.before);
+      if (cursor)
+        selection = selection.where(
+          sql<boolean>`(recorded_at, event_id) < (${cursor.at}::timestamptz, ${cursor.operationId})`,
+        );
+      const rows = await selection
+        .orderBy('recorded_at', 'desc')
+        .orderBy('event_id', 'desc')
+        .limit(limit + 1)
+        .execute();
+      const page = rows.slice(0, limit),
+        last = page.at(-1);
+      return {
+        events: page.map(parseRow),
+        nextBefore: rows.length > limit && last ? encodeCursor(last.at, last.event_id) : null,
+      };
+    },
+
     async listOperations(query) {
       const limit = Math.min(Math.max(query.limit ?? DEFAULT_LIMIT, 1), MAX_LIMIT);
       // Filters select operations; the start time is still taken over ALL their events,
@@ -358,6 +403,10 @@ export function createPostgresAuditLog(db: Kysely<Database>): AuditLog {
         ])
         .groupBy('operation_id');
       if (filtered) starts = starts.where('operation_id', 'in', matching);
+      if (query.since)
+        starts = starts.having(sql<boolean>`min(recorded_at) >= ${query.since}::timestamptz`);
+      if (query.until)
+        starts = starts.having(sql<boolean>`min(recorded_at) <= ${query.until}::timestamptz`);
       const cursor = decodeAuditCursor(query.before);
       if (cursor !== undefined) {
         // Compound cursor: operations that started at the same instant are neither

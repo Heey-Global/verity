@@ -1182,36 +1182,3 @@ it('reads result state, rejects stale task changes and persists a confirmed task
     ).statusCode,
   ).toBe(409);
 });
-
-it('discovers device and online meetings across sessions without transcripts or credentials', async () => {
-  await ctx.store.createSession({ sessionId: 'session-2', worktree: '/two', model: 'm' });
-  await app.inject({ method: 'PUT', url, payload: meeting });
-  await ctx.store.liveMeetings.putMeeting({
-    id: 'online',
-    sessionId: 'session-2',
-    engine: 'attendee',
-    startedAt: 200,
-    endedAt: null,
-    state: 'active',
-    transcript: 'Private transcript',
-    captureStatus: 'listening',
-    ownerTokenHash: 'secret',
-    revision: 1,
-  });
-  const response = await app.inject({ method: 'GET', url: '/live-meetings/active' });
-  expect(response.statusCode).toBe(200);
-  expect(response.json()).toEqual({
-    meetings: [
-      { id: 'online', sessionId: 'session-2' },
-      { id: 'meeting-1', sessionId: 'session-1' },
-    ],
-  });
-  await app.inject({
-    method: 'PUT',
-    url,
-    payload: { ...meeting, state: 'ended', endedAt: 300, revision: 2 },
-  });
-  expect((await app.inject({ method: 'GET', url: '/live-meetings/active' })).json()).toEqual({
-    meetings: [{ id: 'online', sessionId: 'session-2' }],
-  });
-});

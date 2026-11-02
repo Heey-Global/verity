@@ -27,7 +27,7 @@ export async function googleApprovalAccount(
   const service =
     input.toolName === 'verity_gmail'
       ? 'gmail'
-      : input.toolName === 'verity_google_calendar'
+      : input.toolName === 'verity_google_calendar' || input.toolName === 'verity_scheduling'
         ? 'calendar'
         : input.toolName === 'verity_google_contacts'
           ? 'contacts'

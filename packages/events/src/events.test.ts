@@ -9,6 +9,19 @@ import {
 
 /** One valid example per canonical variant — kept exhaustive on purpose. */
 const validEvents: Record<AgentEvent['t'], AgentEvent> = {
+  mcp_app: {
+    t: 'mcp_app',
+    appId: '00000000-0000-4000-8000-000000000001',
+    projectId: 'p1',
+    sessionId: 's1',
+    turnId: 'turn1',
+    connectionId: 'c1',
+    connectionFingerprint: 'fingerprint',
+    toolName: 'dashboard',
+    resourceUri: 'ui://dashboard',
+    input: {},
+    result: { content: [] },
+  },
   session: { t: 'session', id: 's1', model: 'claude-sonnet-4-6', worktree: '/w/agent-s1' },
   status: { t: 'status', state: 'running' },
   text: { t: 'text', delta: 'hello' },

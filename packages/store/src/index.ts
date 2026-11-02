@@ -1,4 +1,15 @@
 export {
+  ProjectEgressStore,
+  ProjectEgressError,
+  canonicalEgressTarget,
+  egressTargetKey,
+  egressGrantCovers,
+  type EgressTarget,
+  type EgressPolicy,
+  type EgressRequest,
+  type EgressGrant,
+} from './project-egress.js';
+export {
   ForgeConnectionStore,
   type ForgeConnection,
   type ForgeConnectionProvider,
@@ -218,6 +229,7 @@ export * from './knowledge-sources.js';
 export { redactSecrets, redactProcessStderr } from './redact.js';
 
 export * from './google-accounts.js';
+export * from './calendar-watch.js';
 
 export * from './vulnerability-scan.js';
 
@@ -226,3 +238,34 @@ export type {
   LiveMeetingResultItem,
   LiveMeetingResultTask,
 } from './live-meetings.js';
+
+export {
+  AssistantStore,
+  type AssistantGrant,
+  type AssistantMode,
+  type AssistantSettings,
+} from './assistant.js';
+
+export {
+  CLOSED_SCHEDULING_STATES,
+  SchedulingStore,
+  type CreateSchedulingDraft,
+  type SchedulingColleague,
+  type SchedulingHold,
+  type SchedulingHoldState,
+  type SchedulingRequest,
+  type SchedulingDraftContent,
+  type SchedulingRequestPatch,
+  type SchedulingRequestState,
+  type SchedulingShareBinding,
+} from './scheduling.js';
+
+export {
+  RepairSupervisionStore,
+  type RepairMandate,
+  type ManualRepairProposal,
+  type RepairIncident,
+  type RepairMode,
+} from './repair-supervision.js';
+
+export { QAAssignmentStore, type QAAssignment, type QAAssignmentState } from './qa-assignments.js';

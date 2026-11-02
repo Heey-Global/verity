@@ -3549,3 +3549,54 @@ describe('coordinated Uplink recordings', () => {
     await client.stop();
   });
 });
+
+it.each([false, true])(
+  'reports webhook negotiation versus share rejection without secrets (negotiated=%s)',
+  async (negotiated) => {
+    const fixture = setup();
+    const entries: unknown[] = [];
+    fixture.client.start();
+    await flush();
+    fixture.socket.open();
+    fixture.socket.message({
+      type: 'welcome',
+      installationId: 'installation-1',
+      features: ['sharing'],
+      leaseUntil: new Date(Date.now() + 60000).toISOString(),
+      capabilities: negotiated ? ['webhook-v1'] : [],
+    });
+    await flush();
+    try {
+      const pending = fixture.client.create(
+        {
+          durationSeconds: 2592000,
+          pinHash: 'secret-pin-hash',
+          webhook: { path: '/webhooks/attendee' },
+        },
+        (entry) => entries.push(entry),
+      );
+      const failure = expect(pending).rejects.toThrow();
+      await flush();
+      const create = fixture.socket.sent
+        .map((raw) => JSON.parse(raw) as { type: string; requestId: string })
+        .find((frame) => frame.type === 'share.create');
+      if (negotiated) {
+        expect(create).toBeDefined();
+        fixture.socket.message({
+          type: 'share.error',
+          requestId: create!.requestId,
+          code: 'secret-provider-token',
+        });
+      } else expect(create).toBeUndefined();
+      await failure;
+      expect(entries.at(-1)).toEqual({
+        phase: negotiated ? 'share_create' : 'capability_check',
+        code: negotiated ? 'share_rejected' : 'webhook_not_negotiated',
+        shareCreateSent: negotiated,
+      });
+      expect(JSON.stringify(entries)).not.toContain('secret-');
+    } finally {
+      await fixture.client.stop();
+    }
+  },
+);

@@ -2,7 +2,17 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+
+vi.mock('node:fs', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('node:fs')>()),
+  readFileSync: vi.fn((...args: Parameters<typeof readFileSync>) => {
+    if (String(args[0]).endsWith('/.release-source-recoveries.json'))
+      return JSON.stringify({ 'v3.0.0': { original: release, source: head } });
+    throw new Error('Unexpected recovery file read');
+  }),
+}));
 import { registerReleaseTags } from './release-tag-registration.mjs';
 
 const head = 'a'.repeat(40);
@@ -97,6 +107,38 @@ describe('release tag registration', () => {
     f.tags.set('v3.0.0', wrong);
     expect(() => invoke(f)).toThrow('differs');
     expect(f.writes).toHaveLength(0);
+  });
+  it.each(['check', 'register'] as const)(
+    'accepts an explicitly recorded recovery source in %s mode',
+    (mode) => {
+      const f = fixture();
+      f.tags.set('v3.0.0', head);
+      expect(invoke(f, mode)[0]).toEqual({ tag: 'v3.0.0', sha: head });
+      expect(f.writes).toHaveLength(0);
+    },
+  );
+  it('requires the recorded original source to match the trusted release merge', () => {
+    const f = fixture();
+    f.tags.set('v3.0.0', head);
+    vi.mocked(readFileSync).mockReturnValueOnce(
+      JSON.stringify({ 'v3.0.0': { original: wrong, source: head } }),
+    );
+    expect(() => invoke(f, 'check')).toThrow('differs');
+  });
+  it('rejects a recorded recovery outside the original release ancestry', () => {
+    const f = fixture();
+    f.tags.set('v3.0.0', head);
+    let lookups = 0;
+    expect(() =>
+      registerReleaseTags('check', head, {
+        repository: 'example/repo',
+        run: (command, args) => {
+          if (args[0] === 'merge-base' && args[2] === release && args[3] === head && ++lookups > 1)
+            throw Object.assign(new Error('Not ancestor'), { status: 1 });
+          return f.run(command, args);
+        },
+      }),
+    ).toThrow('differs');
   });
   it('accepts only an identical tag when another registrar wins the race', () => {
     const f = fixture();

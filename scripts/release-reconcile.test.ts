@@ -61,6 +61,8 @@ type Fixture = {
     mainMoved?: boolean;
     oldHead?: boolean;
     recent?: boolean;
+    /** Commit the change this long ago instead of at the fixed fixture time. */
+    ageMs?: number;
     rename?: boolean;
   };
 };
@@ -160,12 +162,15 @@ function sweep(fixture: Fixture) {
     if (fixture.native.rename) git('mv', 'apps/mobile/plugins/capture.js', nativePath);
     else writeFileSync(join(cwd, nativePath), 'native change');
     git('add', '.');
-    const date = fixture.native.recent ? new Date().toISOString() : approvedAt;
+    const fresh = fixture.native.recent === true || fixture.native.ageMs !== undefined;
+    const date = fresh
+      ? new Date(Date.now() - (fixture.native.ageMs ?? 0)).toISOString()
+      : approvedAt;
     execFileSync('git', ['commit', '-qm', fixture.message ?? 'feat(tasks): capture tasks'], {
       cwd,
       env: { ...process.env, GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date },
     });
-    if (!fixture.native.recent) {
+    if (!fresh) {
       writeFileSync(join(cwd, 'server-version'), 'server release');
       git('add', '.');
       execFileSync('git', ['commit', '-qm', 'chore(release): staging server 4.21.0'], {
@@ -427,6 +432,19 @@ describe('release reconciliation sweep', () => {
       pending: { server: [875] },
       releases: delivered,
       mergedAt: new Date(Date.now() - 60 * 1000).toISOString(),
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.dispatches).toEqual([]);
+    expect(result.stdout).toContain('younger than the push run lag');
+  });
+
+  // A duplicate publication run is refused at the immutable version tag and turns red, so
+  // publication keeps the full lag that planning no longer needs.
+  it('keeps waiting on a three-minute-old release merge', () => {
+    const result = sweep({
+      pending: { server: [875] },
+      releases: delivered,
+      mergedAt: new Date(Date.now() - 3 * 60 * 1000).toISOString(),
     });
     expect(result.status, result.stderr).toBe(0);
     expect(result.dispatches).toEqual([]);
@@ -712,6 +730,45 @@ describe('missing Server Staging planning', () => {
     });
     expect(result.status).toBe(1);
     expect(result.dispatches).toEqual([]);
+  });
+});
+
+// A lost push used to leave the release PR missing for ten minutes or more. Planning is safe
+// to repeat, so the sweep only waits out the ordinary push run lag before recovering it.
+describe('planning grace', () => {
+  const minutes = (count: number) => count * 60 * 1000;
+  const server = { backend: true, ota: false, releases: [{ tag_name: 'v1.2.3' }] };
+  const path = 'packages/server/src/example.ts';
+  it.each([
+    {
+      name: 'missing Server plan',
+      fixture: { ...server, native: { path, ageMs: minutes(3) } },
+      dispatch: 'workflow run release-dispatch.yml --ref main -f backend-replan=true',
+    },
+    {
+      name: 'stale Server release PR',
+      fixture: { ...server, native: { path, open: true, stale: true, ageMs: minutes(3) } },
+      dispatch: 'workflow run release-dispatch.yml --ref main -f backend-replan=true',
+    },
+    {
+      name: 'missing native plan',
+      fixture: {
+        ota: false,
+        releases: [{ tag_name: 'mobile-v1.33.0' }],
+        native: { ageMs: minutes(3) },
+      },
+      dispatch: 'workflow run release-dispatch.yml --ref main -f mobile-replan=true',
+    },
+  ])('recovers a $name three minutes after the merge', ({ fixture, dispatch }) => {
+    const result = sweep(fixture);
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.dispatches).toEqual([dispatch]);
+  });
+  it('still leaves a one-minute-old merge to its own push run', () => {
+    const result = sweep({ ...server, native: { path, ageMs: minutes(1) } });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.dispatches).toEqual([]);
+    expect(result.stdout).toContain('younger than the push run lag');
   });
 });
 

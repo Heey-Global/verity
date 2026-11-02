@@ -38,6 +38,7 @@ import {
   isBiometricUnlockEnabled,
   refreshBiometricUnlockSecret,
   setAuthToken,
+  unlockAuthTokenWithBiometrics,
 } from '../../lib/authToken';
 import { createVerityClient, getVerityBaseUrl } from '../../lib/client';
 import { KEYBOARD_BOTTOM_OFFSET } from '../../lib/keyboardOffsets';
@@ -59,9 +60,12 @@ export default function OnboardingMasterPassword() {
 export function MasterPasswordRoute({
   returnTo,
   restartExplanation,
+  onBiometricUnlock,
 }: {
   returnTo: Href | null;
   restartExplanation?: string | undefined;
+  /** Offered on the unlock form when this device's bearer sits behind Face ID. */
+  onBiometricUnlock?: (() => void) | undefined;
 }) {
   const next = returnTo ? ({ href: returnTo, label: 'Continue' } as const) : NEXT;
   const back = returnTo ?? BACK;
@@ -87,6 +91,7 @@ export function MasterPasswordRoute({
       next={next}
       returnTo={returnTo}
       restartExplanation={restartExplanation}
+      onBiometricUnlock={onBiometricUnlock}
     />
   );
 }
@@ -97,12 +102,14 @@ function MasterPasswordStep({
   next,
   returnTo,
   restartExplanation,
+  onBiometricUnlock,
 }: {
   client: VerityClient;
   back: Href;
   next: { href: Href; label?: string };
   returnTo: Href | null;
   restartExplanation?: string | undefined;
+  onBiometricUnlock?: (() => void) | undefined;
 }) {
   const { theme } = useUnistyles();
   const [status, setStatus] = useState<SecretStatus | undefined>(undefined);
@@ -129,6 +136,9 @@ function MasterPasswordStep({
   }, [client]);
 
   useEffect(() => refreshStatus(), [refreshStatus]);
+
+  const needsDeviceAuthorization =
+    returnTo !== null && status === 'unlocked' && getAuthToken(getVerityBaseUrl()) === null;
 
   const reset = () => {
     setPassword('');
@@ -214,6 +224,16 @@ function MasterPasswordStep({
       .finally(() => setBusy(false));
   };
 
+  // With Face ID enabled the device bearer is stored only behind Face ID, and
+  // /secret/unlock refuses a request without it before comparing the password.
+  // Load it first so a correct password is never rejected as an unpaired device.
+  const loadProtectedBearer = async (pairingBootstrap: string | undefined): Promise<boolean> => {
+    const baseUrl = getVerityBaseUrl();
+    if (pairingBootstrap !== undefined || getAuthToken(baseUrl) !== null) return false;
+    if (!(await isBiometricUnlockEnabled(baseUrl))) return false;
+    return unlockAuthTokenWithBiometrics(baseUrl);
+  };
+
   const submitUnlock = () => {
     if (busy) return;
     setFieldError(undefined);
@@ -222,9 +242,20 @@ function MasterPasswordStep({
     const pairingBootstrap = profile
       ? (getPairingBootstrap(profile.serverId) ?? undefined)
       : undefined;
-    void client
-      .unlockSecret(password, deviceLabel(), pairingBootstrap)
+    const deviceOnly = needsDeviceAuthorization;
+    void loadProtectedBearer(pairingBootstrap)
+      .catch(() => false)
+      .then(async (loaded) => {
+        // An open store needed only this device's bearer; the password has
+        // nothing left to unlock, and an older Core would enroll a new device for it.
+        if (loaded && deviceOnly) return 'authorized' as const;
+        return client.unlockSecret(password, deviceLabel(), pairingBootstrap);
+      })
       .then((res) => {
+        if (res === 'authorized') {
+          onUnlocked();
+          return;
+        }
         if (profile && pairingBootstrap) clearPairingBootstrap(profile.serverId, pairingBootstrap);
         if (res?.token) void setAuthToken(getVerityBaseUrl(), res.token, res.tokenId);
         maybeAskBiometrics(res?.token, password);
@@ -293,9 +324,6 @@ function MasterPasswordStep({
     );
   }
 
-  const baseUrl = getVerityBaseUrl();
-  const needsDeviceAuthorization =
-    returnTo !== null && status === 'unlocked' && getAuthToken(baseUrl) === null;
   const mode = needsDeviceAuthorization ? 'unlock' : secretUiMode(status);
 
   if (showBiometricConsent) {
@@ -410,6 +438,16 @@ function MasterPasswordStep({
         onPress={submitAction}
         fullWidth
       />
+
+      {mode === 'unlock' && onBiometricUnlock ? (
+        <Button
+          label="Unlock with Face ID"
+          variant="secondary"
+          disabled={busy}
+          onPress={onBiometricUnlock}
+          fullWidth
+        />
+      ) : null}
     </View>
   );
 

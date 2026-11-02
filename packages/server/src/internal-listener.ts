@@ -1,4 +1,5 @@
-import { createHash } from 'node:crypto';
+import { projectSocketBindingName } from './project-relay-identity.js';
+export { projectSocketBindingName } from './project-relay-identity.js';
 import {
   chmodSync,
   chownSync,
@@ -130,14 +131,6 @@ export function unlinkOwnedUnixSocket(
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
   }
-}
-
-export function projectSocketBindingName(identity: InternalConnectionIdentity): string {
-  const bindingHash = createHash('sha256')
-    .update(`${identity.projectId}\0${identity.containerGeneration}`)
-    .digest('hex')
-    .slice(0, 32);
-  return `project-${bindingHash}`;
 }
 
 /** Exported so the relay-drift test can hold the sidecar's forwarding allowlist to

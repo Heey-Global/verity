@@ -129,7 +129,24 @@ export interface ForgeRepositoryOperations {
   commentOnIssue: (number: number, body: string) => Promise<{ url: string }>;
 }
 
+export interface ForgeDiscoveryPage {
+  errors?: { category: string; step: string; checkedAt: string; retryAt?: string | undefined }[];
+  pulls: { number: number; branch: string; sha: string; fork: boolean }[];
+  runs: {
+    id: string;
+    workflow: string;
+    sha: string;
+    branch: string;
+    conclusion: string | null;
+    url: string;
+  }[];
+  nextPage: number | null;
+  workflowsSupported: boolean;
+}
+
 export interface ForgeProvider {
+  discover?(ref: ForgeRepoRef, page: number): Promise<ForgeDiscoveryPage>;
+  repositoryPrService?(ref: ForgeRepoRef): ForgePrService;
   readonly id: ForgeProviderId;
   readonly capabilities: ForgeCapabilities;
   /** The repository a git remote URL points at on this forge, or null for any other host. */

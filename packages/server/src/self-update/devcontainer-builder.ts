@@ -53,7 +53,7 @@ export async function readDevcontainerBuilderCapability(
  * Older releases do not, and are never asked for it.
  */
 export const DEVCONTAINER_BUILDER_LABEL = 'org.verity.devcontainer-builder';
-export const DEVCONTAINER_BUILDER_CONTRACT = '1';
+export const DEVCONTAINER_BUILDER_CONTRACT = '2';
 
 const INSTALLER_ONCE =
   'Re-run the Verity installer once on the host; later updates then install the builder ' +
@@ -137,10 +137,19 @@ export async function reconcileDevcontainerBuilder(
       message:
         'The host builder service did not answer; check `journalctl -u verity-host-builder` on the host.',
     };
-  return result.ok
-    ? { state: 'reconciled', message: result.message }
-    : {
-        state: 'failed',
-        message: `The host could not update the devcontainer builder: ${result.message}`,
-      };
+  if (result.ok) return { state: 'reconciled', message: result.message };
+  // An installed host component accepts exactly one contract and names it when it
+  // refuses. It cannot replace itself, so only the installer moves it forward;
+  // until then every later release is refused the same way.
+  if (result.message.includes(`does not declare ${DEVCONTAINER_BUILDER_LABEL}=`))
+    return {
+      state: 'failed',
+      message:
+        `This host's builder component accepts an older builder contract than this release ` +
+        `(${DEVCONTAINER_BUILDER_CONTRACT}). ${INSTALLER_ONCE}`,
+    };
+  return {
+    state: 'failed',
+    message: `The host could not update the devcontainer builder: ${result.message}`,
+  };
 }

@@ -12,17 +12,34 @@ cleanup() {
     set +e
     sudo journalctl -u verity-buildkit --no-pager > "$PROBE_EVIDENCE/service.log"
     sudo cp -R /var/lib/verity-buildkit/evidence/. "$PROBE_EVIDENCE/runtime/"
+    sudo systemctl disable --now verity-buildkit-snapshotter.timer
+    sudo systemctl stop verity-buildkit-snapshotter.service
     sudo systemctl disable --now verity-buildkit
+    sudo systemctl disable --now verity-build-storage.timer
+    sudo systemctl stop verity-build-storage.service
     docker rm -fv "$name-marker"
     docker image rm "$name:positive" "$name:network" "$name:network2" "$name:missing" "$name:stopped"
     if docker image inspect "$name:positive" > /dev/null 2>&1; then status=1; fi
     if sudo systemctl is-active --quiet verity-buildkit; then status=1; fi
+    if sudo systemctl is-active --quiet verity-build-storage.timer; then status=1; fi
     sudo chown -R "$(id -u):$(id -g)" "$PROBE_EVIDENCE"
     printf '%s\n' "$status" > "$PROBE_EVIDENCE/exit-code.txt"
     exit "$status"
 }
 trap cleanup EXIT
 sudo bash deploy/buildkit/install.sh
+# Exercise the production migration on this disposable host, before any client builds.
+sudo systemctl stop verity-buildkit-snapshotter.timer
+sudo sed -i 's/snapshotter = "auto"/snapshotter = "native"/' /etc/verity-buildkit/buildkitd.toml
+sudo systemctl restart verity-buildkit
+printf 'native rollback data\n' | sudo tee /var/lib/verity-buildkit/runc-native/verity-migration-retention-probe > /dev/null
+sudo /usr/local/libexec/verity-buildkit/snapshotter-migrate.sh reconcile
+sudo cat /run/verity-buildkit/migration-status.json > "$PROBE_EVIDENCE/snapshotter-migration.json"
+jq -e '.state == "converged"' "$PROBE_EVIDENCE/snapshotter-migration.json"
+# A repeated run must not restart the worker or perform another migration.
+before_pid=$(sudo systemctl show verity-buildkit -p MainPID --value)
+sudo /usr/local/libexec/verity-buildkit/snapshotter-migrate.sh reconcile
+[[ $(sudo systemctl show verity-buildkit -p MainPID --value) == "$before_pid" ]]
 sudo /usr/local/libexec/verity-buildkit/runsc-real --version > "$PROBE_EVIDENCE/runsc-version.txt"
 # Instrument the host-side call, then delegate to the unmodified production adapter.
 sudo mkdir -p /var/lib/verity-buildkit/evidence/{bundles,runsc}
@@ -58,6 +75,13 @@ sudo nsenter --target "$main_pid" --mount --root --wdns=/ -- "$(command -v node)
     /run/docker.sock /var/run/docker.sock /run/containerd/containerd.sock \
     < scripts/probes/devcontainer-gvisor/verify-worker-sockets.mjs
 cp -R scripts/probes/devcontainer-gvisor/.devcontainer "$work/"
+# Establish the disposable runner's actual runtime root before enabling admission.
+# A missing containerd configuration is a test failure, never substituted capacity.
+containerd_root=$(sudo containerd config dump | python3 -c 'import sys,tomllib; print(tomllib.loads(sys.stdin.read())["root"])')
+[[ $containerd_root == /* ]]
+sudo test -d "$containerd_root"
+printf 'version=1\ncontainerdRoot=%s\nexportRoot=%s\nprojectRoot=%s\n' "$containerd_root" "$work" "$work" \
+    | sudo tee /etc/verity-buildkit/storage-roots.conf > /dev/null
 PROBE_CONFIG="$work/.devcontainer/devcontainer.json" node --input-type=module - <<'NODE'
 import { readFileSync, writeFileSync } from 'node:fs';
 const base = /^FROM (node:[^\s]+@sha256:[a-f0-9]{64})/m.exec(readFileSync('deploy/preview-edge.Dockerfile', 'utf8'))?.[1];
@@ -69,20 +93,32 @@ NODE
 # Enter through root, then drop to the runner with the dedicated socket group.
 # Explicit sudo run-as groups are not covered by every runner sudoers policy.
 # Supplementary groups retain Docker access for image loading; the Server is non-root.
-spawn_build() {
+run_probe() {
+    sudo systemctl restart verity-build-storage.service
     sudo --preserve-env=PATH setpriv --reuid "$(id -u)" \
         --regid "$(getent group verity-buildkit | cut -d: -f3)" --init-groups \
-        env PATH="$PWD/node_modules/.bin:$PATH" VERITY_DEVCONTAINER_BUILDKIT_ENDPOINT=unix:///run/verity-buildkit/buildkitd.sock \
-        node scripts/probes/devcontainer-gvisor/server-spawner.mjs "${2:-$work}" "$1"
+        env PATH="$PWD/node_modules/.bin:$PATH" GITHUB_ACTIONS="$GITHUB_ACTIONS" \
+        VERITY_DEVCONTAINER_BUILDKIT_ENDPOINT=unix:///run/verity-buildkit/buildkitd.sock \
+        PROBE_STORAGE_ROOT="${PROBE_STORAGE_ROOT_OVERRIDE:-$work/build-storage}" PROBE_STORAGE_REPORT=/var/lib/verity/host-diagnostics/storage.json \
+        PROBE_EVIDENCE="$PROBE_EVIDENCE" PROBE_WARM="${PROBE_WARM:-0}" \
+        node "$@"
+}
+spawn_build() {
+    run_probe scripts/probes/devcontainer-gvisor/server-spawner.mjs "${2:-$work}" "$1"
 }
 spawn_build "$name:positive" > "$PROBE_EVIDENCE/positive.log" 2>&1
-# The runner's ext4 supports overlayfs, so "auto" must not have fallen back to
-# the native snapshotter, whose full copy per step is what this setting avoids.
+PROBE_WARM=1 spawn_build "$name:positive" > "$PROBE_EVIDENCE/warm.log" 2>&1
+PROBE_WARM=1 spawn_build "$name:positive" > "$PROBE_EVIDENCE/repeated.log" 2>&1
+# Verify the active worker, not historical log lines or retained worker directories.
 sudo test -d /var/lib/verity-buildkit/runc-overlayfs
-# install.sh removes native snapshots only on this report, so it must match.
+sudo /usr/local/libexec/verity-buildkit/buildctl --addr unix:///run/verity-buildkit/buildkitd.sock \
+    debug workers --format '{{json .}}' > "$PROBE_EVIDENCE/active-workers.json"
+jq -e 'length == 1 and .[0].labels["org.mobyproject.buildkit.worker.snapshotter"] == "overlayfs"' \
+    "$PROBE_EVIDENCE/active-workers.json"
 sudo journalctl -q -o cat -u verity-buildkit > "$PROBE_EVIDENCE/worker-start.log"
 grep -F 'found worker' "$PROBE_EVIDENCE/worker-start.log" | grep -F 'worker.snapshotter:overlayfs' > /dev/null
-sudo test ! -e /var/lib/verity-buildkit/runc-native
+sudo test -d /var/lib/verity-buildkit/runc-native
+[[ $(sudo cat /var/lib/verity-buildkit/runc-native/verity-migration-retention-probe) == 'native rollback data' ]]
 docker create --name "$name-marker" "$name:positive" > /dev/null
 docker cp "$name-marker:/verity-dockerfile-probe" "$PROBE_EVIDENCE/dockerfile-marker.txt"
 docker cp "$name-marker:/verity-feature-probe" "$PROBE_EVIDENCE/feature-marker.txt"
@@ -142,6 +178,14 @@ if ! spawn_build "$name:network2" "$network_work" > "$PROBE_EVIDENCE/network-egr
     false
 fi
 rules_after_second=$(count_subnet_rules)
+run_probe scripts/probes/devcontainer-gvisor/storage-lifecycle.mjs "$work" "$name:positive" \
+    > "$PROBE_EVIDENCE/storage-lifecycle.log" 2>&1
+PROBE_STORAGE_ROOT_OVERRIDE="$work/import-cancel-build-storage" run_probe scripts/probes/devcontainer-gvisor/storage-import-cancel.mjs "$work" "$name:positive" \
+    > "$PROBE_EVIDENCE/import-cancellation.log" 2>&1
+comparison_work=$(mktemp -d "$RUNNER_TEMP/verity-storage-comparison.XXXXXX")
+sudo env GITHUB_ACTIONS="$GITHUB_ACTIONS" RUNNER_TEMP="$RUNNER_TEMP" PROBE_EVIDENCE="$PROBE_EVIDENCE" \
+    "$(command -v node)" scripts/probes/devcontainer-gvisor/storage-comparison.mjs "$comparison_work" \
+    > "$PROBE_EVIDENCE/storage-comparison.log" 2>&1
 sudo bash deploy/buildkit/install.sh > "$PROBE_EVIDENCE/reinstall.log" 2>&1
 [[ $(sed -n 's/^SUBNET=//p' /etc/verity-buildkit/network.env) == "$subnet" ]]
 rules_after_reinstall=$(count_subnet_rules)
@@ -165,5 +209,7 @@ expect_rejection "$name:missing" "$PROBE_EVIDENCE/missing-runtime.log"
 grep -F runsc-real "$PROBE_EVIDENCE/missing-runtime.log" > /dev/null
 sudo mv /usr/local/libexec/verity-buildkit/runsc-disabled /usr/local/libexec/verity-buildkit/runsc-real
 sudo systemctl stop verity-buildkit
-expect_rejection "$name:stopped" "$PROBE_EVIDENCE/stopped-builder.log"
+# Independent disposable admission root: the previous negative build intentionally
+# retains its uncertain reservation. Never release it merely to run another probe.
+PROBE_STORAGE_ROOT_OVERRIDE="$work/stopped-build-storage" expect_rejection "$name:stopped" "$PROBE_EVIDENCE/stopped-builder.log"
 printf 'Real Server spawner: host service built with gVisor, loaded image, and rejected both worker failures.\n' > "$PROBE_EVIDENCE/result.txt"

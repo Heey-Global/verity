@@ -1,3 +1,4 @@
+import { SchedulingDiagnostics } from '../components/SchedulingDiagnostics';
 import { sessionLayout } from '../lib/sessionLayout';
 import { useSessionLayoutNavigation } from '../hooks/useSessionLayoutNavigation';
 import { DeferredSessionPane } from '../components/DeferredSessionPane';
@@ -122,7 +123,11 @@ import { createSessionConfirmingWarnings } from '../lib/startSession';
 import { repairProject } from '../lib/projectRepair';
 import { sessionLoadError } from '../lib/sessionLoadError';
 import type { ProjectOverviewStatus } from '../lib/projectSetup';
-import { projectGroups, type SessionProjectGroup } from '../lib/projectGroups';
+import {
+  projectGroups,
+  projectGroupSessionId,
+  type SessionProjectGroup,
+} from '../lib/projectGroups';
 import { formatResetDisplay } from '../lib/time';
 import { SessionChat } from './session/[id]';
 import { toneColor } from '../theme/tokens';
@@ -698,8 +703,8 @@ function SessionList({ client }: { client: VerityClient }) {
           unread={unread}
           previewUrls={previewUrls}
           publicPreviews={publicPreviews}
-          selectedId={wide ? selectedId : null}
-          renamingId={renaming?.sessionId ?? null}
+          selectedId={wide ? projectGroupSessionId(item, selectedId) : null}
+          renamingId={projectGroupSessionId(item, renaming?.sessionId)}
           updatingProjectIds={updatingProjectIds}
           repairingProjectIds={repairingProjectIds}
         />
@@ -962,11 +967,13 @@ function SessionList({ client }: { client: VerityClient }) {
   );
 
   finishHomeWork();
-  if (!wide) return master;
+  if (!wide) return <SchedulingDiagnostics stage="sidebar">{master}</SchedulingDiagnostics>;
 
   return (
     <View style={styles.splitRow}>
-      <View style={[styles.leftPane, { width: sidebarWidth }]}>{master}</View>
+      <View style={[styles.leftPane, { width: sidebarWidth }]}>
+        <SchedulingDiagnostics stage="sidebar">{master}</SchedulingDiagnostics>
+      </View>
       <View style={styles.rightPane}>
         {selectedId && baseUrl ? (
           <DeferredSessionPane

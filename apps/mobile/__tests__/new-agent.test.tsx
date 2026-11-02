@@ -1,5 +1,6 @@
 import { type VerityClient, type ProjectRecord } from '@verity/mobile';
 import { render, waitFor } from '@testing-library/react-native';
+import { Platform } from 'react-native';
 
 const mockCreateVerityClient = jest.fn<VerityClient | null, []>();
 const mockReplace = jest.fn();
@@ -90,6 +91,10 @@ function launchedSessionId(): string {
 }
 
 beforeEach(() => {
+  // Wide-window cases represent an iPad; width alone no longer identifies a tablet.
+  jest
+    .spyOn(Platform as typeof Platform & { isPad: boolean }, 'isPad', 'get')
+    .mockReturnValue(true);
   mockCreateVerityClient.mockReset();
   mockReplace.mockReset();
   mockSetParams.mockReset();
@@ -100,7 +105,39 @@ beforeEach(() => {
   mockParams = {};
 });
 
+afterEach(() => {
+  jest.restoreAllMocks();
+});
+
 describe('NewAgentScreen', () => {
+  it.each([undefined, 's/restored-iphone'])(
+    'keeps the same iPhone launch mounted across rotation (restored sid: %s)',
+    async (sid) => {
+      jest
+        .spyOn(Platform as typeof Platform & { isPad: boolean }, 'isPad', 'get')
+        .mockReturnValue(false);
+      mockWidth = 393;
+      mockParams = { sid };
+      const createSession = jest.fn(() => new Promise<never>(() => undefined));
+      mockCreateVerityClient.mockReturnValue(makeClient({ createSession }));
+      const view = render(<NewAgentScreen />);
+      const id = launchedSessionId();
+      await waitFor(() => expect(createSession).toHaveBeenCalledTimes(1));
+      const gate = pendingSession(id);
+
+      for (const width of [852, 393, 852, 393]) {
+        mockWidth = width;
+        view.rerender(<NewAgentScreen />);
+        expect(mockSessionChat).toHaveBeenLastCalledWith(
+          expect.objectContaining({ sessionId: id }),
+        );
+        expect(mockReplace).not.toHaveBeenCalled();
+        expect(pendingSession(id)).toBe(gate);
+      }
+      expect(createSession).toHaveBeenCalledTimes(1);
+    },
+  );
+
   it.each([767, 768])(
     'uses the shared split boundary for a new session at %i points',
     async (width) => {

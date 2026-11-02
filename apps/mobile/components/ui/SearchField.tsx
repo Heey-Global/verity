@@ -71,6 +71,7 @@ const styles = StyleSheet.create((theme) => ({
   focused: { borderColor: theme.colors.action },
   input: {
     flex: 1,
+    minWidth: 0,
     ...theme.typography.bodySmall,
     color: theme.colors.text,
     paddingVertical: theme.spacing.sm,

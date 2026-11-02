@@ -1,7 +1,7 @@
 import { CoordinatedRecordingManager } from './coordinated-recording.js';
 import { ReturnPathActivation } from './remote-return-path-activation.js';
 import type { Conductor } from '@verity/session';
-import { generateKeyPairSync } from 'node:crypto';
+import { generateKeyPairSync, randomUUID } from 'node:crypto';
 import { sql } from 'kysely';
 import { InMemoryEventBus } from '@verity/session';
 import { EventStore, createSealableSecretCipher } from '@verity/store';
@@ -101,6 +101,66 @@ describe('paired device management', () => {
   });
   afterAll(async () => ctx.close());
   beforeEach(async () => truncateAll(ctx.db));
+
+  it('keeps backup setup behind paired-device administrator authority and installer resources', async () => {
+    const store = new EventStore(ctx.db);
+    const registry = await createAuthTokenRegistry(store, { enabled: true });
+    const device = await registry.mint('backup administrator');
+    const app = buildServer({
+      eventStore: store,
+      bus: new InMemoryEventBus(),
+      conductor,
+      authRegistry: registry,
+    });
+    const headers = { authorization: `Bearer ${device.token}` };
+    try {
+      expect(
+        (
+          await app.inject({
+            method: 'GET',
+            url: '/api/backups/status',
+            headers: { 'x-user': 'admin' },
+          })
+        ).statusCode,
+      ).toBe(401);
+      expect(
+        (await app.inject({ method: 'GET', url: '/api/backups/status', headers })).json(),
+      ).toEqual({ available: false, reason: 'installer-required' });
+      expect(
+        (await app.inject({ method: 'POST', url: '/api/backups/setup', headers })).statusCode,
+      ).toBe(503);
+      const probeRoutes = [
+        { method: 'POST' as const, url: '/api/backups/probes' },
+        { method: 'GET' as const, url: `/api/backups/probes/${randomUUID()}` },
+        { method: 'POST' as const, url: `/api/backups/probes/${randomUUID()}/cancel` },
+      ];
+      for (const route of probeRoutes) {
+        expect((await app.inject(route)).statusCode).toBe(401);
+        expect((await app.inject({ ...route, headers })).statusCode).toBe(503);
+      }
+      const admin = vi.spyOn(store, 'isActiveAdministrator').mockResolvedValue(false);
+      try {
+        expect(
+          (await app.inject({ method: 'GET', url: '/api/backups/status', headers })).statusCode,
+        ).toBe(403);
+        expect(
+          (await app.inject({ method: 'POST', url: '/api/backups/setup', headers })).statusCode,
+        ).toBe(403);
+        for (const route of probeRoutes)
+          expect((await app.inject({ ...route, headers })).statusCode).toBe(403);
+      } finally {
+        admin.mockRestore();
+      }
+      for (const route of probeRoutes)
+        expect((await app.inject({ ...route, headers })).statusCode).toBe(503);
+      await registry.revoke(device.id);
+      expect(
+        (await app.inject({ method: 'GET', url: '/api/backups/status', headers })).statusCode,
+      ).toBe(401);
+    } finally {
+      await app.close();
+    }
+  });
 
   it('serves the remote descriptor only to a paired device', async () => {
     const store = new EventStore(ctx.db);
@@ -266,6 +326,17 @@ describe('paired device management', () => {
       admin.mockRestore();
       expect((await app.inject({ ...operations[2], headers })).json().phase).toBe('stopped');
       expect((await app.inject({ ...operations[3], headers })).json().status.runId).toBe(runId);
+      expect((await app.inject({ ...operations[3], headers })).json()).not.toHaveProperty(
+        'failures',
+      );
+      expect(
+        (
+          await app.inject({
+            ...operations[3],
+            headers: { ...headers, 'x-verity-recording-failure-details': '1' },
+          })
+        ).json().failures,
+      ).toEqual({ stop: null, export: null });
       const v2Id = '11234567-0123-4123-8123-0123456789ab';
       expect(
         (
@@ -1232,6 +1303,49 @@ describe('global auth gate (onRequest)', () => {
       });
       expect(locked.statusCode).toBe(429);
       expect(locked.headers['retry-after']).toBeDefined();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('keeps the existing device entry when a paired device unlocks with its bearer', async () => {
+    const cipher = createSealableSecretCipher();
+    const store = new EventStore(ctx.db, cipher);
+    const registry = await createAuthTokenRegistry(store, { enabled: true });
+    const pairing = {
+      consumeBootstrap: (token: string) => token === 'initialization-bootstrap',
+    } as unknown as DevicePairingManager;
+    const app = buildServer({
+      eventStore: store,
+      bus: new InMemoryEventBus(),
+      conductor,
+      secretCipher: cipher,
+      devicePairing: pairing,
+      authRegistry: registry,
+    });
+    try {
+      const init = await app.inject({
+        method: 'POST',
+        url: '/secret/init',
+        headers: { 'x-verity-pairing': 'initialization-bootstrap' },
+        payload: { password: PASSWORD, deviceLabel: 'iPhone' },
+      });
+      expect(init.statusCode).toBe(200);
+      const device = init.json<{ token: string; tokenId: string }>();
+      cipher.seal();
+
+      const unlock = await app.inject({
+        method: 'POST',
+        url: '/secret/unlock',
+        headers: { authorization: `Bearer ${device.token}` },
+        payload: { password: PASSWORD, deviceLabel: 'iPhone' },
+      });
+
+      // A fresh token here adds the same phone to the device list on every
+      // manual unlock, and the replaced entry lingers as an inactive duplicate.
+      expect(unlock.statusCode).toBe(200);
+      expect(unlock.json()).toMatchObject({ token: device.token, tokenId: device.tokenId });
+      expect((await registry.list()).map(({ id }) => id)).toEqual([device.tokenId]);
     } finally {
       await app.close();
     }

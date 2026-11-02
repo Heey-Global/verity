@@ -35,7 +35,7 @@ const FAILURE_DETAIL: Record<string, string> = {
   'verifying-image-failed': 'The new version failed signature verification.',
   'preflight-failed': 'The new version failed its readiness check.',
   'host-runtime-failed':
-    'The new version needs a Docker runtime this host does not have yet. Re-run the Verity installer on the host, then retry the update.',
+    'Host runtime preparation did not complete. Your current version keeps serving. Retry the update; if it still fails, inspect the host runtime service journal or re-run the Verity installer.',
   'creating-standby-failed': 'The new version could not be prepared.',
 };
 
@@ -56,7 +56,7 @@ const OPERATION_DETAIL: Record<ServerUpdateOperation['state'], string> = {
   completed: 'Verity is running the new version.',
   'rolling-back': 'Something went wrong during activation. Restoring the previous version.',
   'rolled-back': 'The previous version is running again. Nothing was lost.',
-  failed: 'The update was stopped before anything changed.',
+  failed: 'The new version was not activated. Your current version keeps serving.',
 };
 
 const BUSY_STATES: readonly ServerUpdateOperation['state'][] = [
@@ -124,7 +124,23 @@ function describeOperation(operation: ServerUpdateOperation): ServerUpdateView {
 export function describeServerUpdate(status: ServerUpdateStatus): ServerUpdateView {
   const operation = status.operation;
   if (operation !== null && isBusy(operation.state)) {
-    const outcome = describeOperation(operation);
+    let outcome = describeOperation(operation);
+    const host = status.hostPreparation;
+    if (
+      operation.phase === 'preflight' &&
+      host?.updateId === operation.updateId &&
+      host.targetDigest === operation.targetDigest &&
+      (host.stage === 'renewing' || host.stage === 'registering')
+    ) {
+      outcome = {
+        ...outcome,
+        title:
+          host.stage === 'renewing'
+            ? 'Updating host runtime support'
+            : 'Registering required runtimes',
+        detail: 'Your current version remains available.',
+      };
+    }
     // The one exception to "in flight wins": the server reports the operation
     // stuck after commit and has said it will let a newer release replace it.
     if (status.recovery?.supersede !== true || status.state !== 'available') return outcome;
@@ -137,7 +153,32 @@ export function describeServerUpdate(status: ServerUpdateStatus): ServerUpdateVi
     };
   }
   if (operation !== null && isFailure(operation.state)) {
-    const outcome = describeOperation(operation);
+    let outcome = describeOperation(operation);
+    const host = status.hostPreparation;
+    if (
+      operation.failureCode === 'host-runtime-failed' &&
+      host?.updateId === operation.updateId &&
+      host.targetDigest === operation.targetDigest
+    ) {
+      if (host.stage === 'restored')
+        outcome = {
+          ...outcome,
+          detail:
+            'Host runtime renewal failed. The previous service was restored and your current version keeps serving.',
+        };
+      if (host.stage === 'unchanged')
+        outcome = {
+          ...outcome,
+          detail:
+            'Host runtime release verification failed. No host changes were made and your current version keeps serving.',
+        };
+      if (host.stage === 'recovery-required')
+        return {
+          ...outcome,
+          detail:
+            'Host runtime recovery needs attention. Restoration could not be verified. Inspect the host service journal or re-run the Verity installer; your current version keeps serving.',
+        };
+    }
     if (status.state !== 'available') return outcome;
     const digest = status.release.serverImage;
     return {
@@ -161,7 +202,8 @@ export function describeServerUpdate(status: ServerUpdateStatus): ServerUpdateVi
       return {
         ...idle,
         title: `Version ${status.release.version} available`,
-        detail: 'Verity can install this update itself and roll back if it does not come up.',
+        detail:
+          'Verity can install this update and required host runtime support. It rolls back the Server if activation fails.',
         action: `Install ${status.release.version}`,
         targetDigest: status.release.serverImage,
         idempotencyKey: attemptKey(status.release.serverImage, operation),
@@ -338,7 +380,7 @@ const CAUSE_LABEL: Record<string, string> = {
   'disk-full': 'the disk is full',
   unhealthy: 'a service did not start',
   docker: 'Docker reported an error',
-  unknown: 'unknown error',
+  unknown: 'the updater did not provide a specific cause',
 };
 
 /** Phases after which the stuck operation's target is already serving. */

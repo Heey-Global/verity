@@ -4692,6 +4692,43 @@ migrations['0169_live_meeting_results'] = {
   },
 };
 
+migrations['0170_backup_foundation'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`create table backup_policy (id integer primary key check (id = 1), journal_enabled boolean not null default false)`.execute(
+      db,
+    );
+    await sql`insert into backup_policy(id) values (1)`.execute(db);
+    await sql`create table backup_revocation_outbox (
+      id text primary key, device_id text not null, created_at timestamptz not null default now()
+    )`.execute(db);
+    await sql`create table backup_git_repositories (
+      project_id text not null references projects(id) on delete cascade,
+      path text not null, repo_key text not null unique, primary key (project_id, path)
+    )`.execute(db);
+    await sql`create table backup_unassigned_git_repositories (
+      path text primary key, repo_key text not null unique
+    )`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table backup_unassigned_git_repositories`.execute(db);
+    await sql`drop table backup_git_repositories`.execute(db);
+    await sql`drop table backup_revocation_outbox`.execute(db);
+    await sql`drop table backup_policy`.execute(db);
+  },
+};
+
+migrations['0171_project_egress_policy'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`create table project_egress_policy (
+      project_id text primary key references projects(id) on delete cascade,
+      state jsonb not null
+    )`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table project_egress_policy`.execute(db);
+  },
+};
+
 export const migrationProvider: MigrationProvider = {
   getMigrations(): Promise<Record<string, Migration>> {
     return Promise.resolve(migrations);
@@ -4801,3 +4838,337 @@ export async function executedSchemaGeneration(db: Kysely<Database>): Promise<st
   const executed = await getExecutedMigrations(db);
   return executed.sort().at(-1) ?? null;
 }
+
+migrations['0172_repair_supervision'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`create table repair_mandates (
+      project_id text primary key references projects(id) on delete cascade,
+      sponsor_user_id text not null,
+      mode text not null check (mode in ('off', 'monitor', 'automatic')),
+      revision integer not null default 1,
+      cursor text, health text not null default 'pending', checked_at timestamptz
+    )`.execute(db);
+    await sql`create table repair_incidents (
+      id text primary key, project_id text not null references projects(id) on delete cascade,
+      resource text not null, revision text not null, evidence text not null,
+      state text not null default 'open' check (state in ('open', 'working', 'verifying', 'awaiting_merge', 'resolved', 'superseded', 'blocked')),
+      owner_session_id text, last_session_id text, attempts integer not null default 0,
+      dispatch_id text, updated_at timestamptz not null default now(),
+      unique (project_id, resource, revision)
+    )`.execute(db);
+    await sql`create table repair_workflow_heads (
+      project_id text not null references projects(id) on delete cascade,
+      workflow text not null, run_id bigint not null, primary key (project_id, workflow)
+    )`.execute(db);
+    await sql`create table repair_attempts (
+      dispatch_id text primary key, incident_id text not null references repair_incidents(id) on delete cascade,
+      session_id text not null, started_at timestamptz not null default now(),
+      ended_at timestamptz, outcome text, start_seq bigint
+    )`.execute(db);
+    await sql`create unique index repair_project_owner on repair_incidents(project_id) where owner_session_id is not null`.execute(
+      db,
+    );
+    await sql`create table repair_session_history (
+      project_id text not null references projects(id) on delete cascade,
+      resource text not null, session_id text not null,
+      created_at timestamptz not null default now(),
+      primary key (project_id, resource, session_id)
+    )`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table repair_session_history`.execute(db);
+    await sql`drop table repair_workflow_heads`.execute(db);
+    await sql`drop table repair_attempts`.execute(db);
+    await sql`drop table repair_incidents`.execute(db);
+    await sql`drop table repair_mandates`.execute(db);
+  },
+};
+
+migrations['0173_qa_coordinator'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`create table qa_coordinator (
+      id integer primary key check (id = 1), enabled boolean not null default false,
+      revision integer not null default 0, sponsor text, session_id text,
+      health text not null default 'disabled', active_dispatch text,
+      active_seq bigint, active_revision integer, active_snapshot text,
+      wake_day text, wakes integer not null default 0
+    )`.execute(db);
+    await sql`insert into qa_coordinator(id) values (1)`.execute(db);
+    await sql`create table qa_inbox (
+      project_id text primary key references projects(id) on delete cascade,
+      fingerprint text not null, acknowledged text,
+      updated_at timestamptz not null default now()
+    )`.execute(db);
+    await sql`create table qa_proposals (
+      id text primary key, project_id text not null references projects(id) on delete cascade,
+      incident_id text not null references repair_incidents(id) on delete cascade,
+      mandate_revision integer not null, qa_revision integer not null,
+      state text not null default 'pending', decided_by text, created_at timestamptz not null default now(),
+      unique(project_id, mandate_revision, qa_revision)
+    )`.execute(db);
+    await sql`create table qa_decisions (
+      dispatch_id text primary key, session_id text not null,
+      snapshot text not null, outcome text, created_at timestamptz not null default now()
+    )`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table qa_proposals`.execute(db);
+    await sql`drop table qa_decisions`.execute(db);
+    await sql`drop table qa_inbox`.execute(db);
+    await sql`drop table qa_coordinator`.execute(db);
+  },
+};
+
+migrations['0174_qa_recovery'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`create table qa_dispatches (
+      id text primary key, session_id text not null,
+      state text not null check(state in ('reserved','admitted','cancelled','legacy')),
+      prompt_seq bigint, created_at timestamptz not null default now()
+    )`.execute(db);
+    // Existing in-flight work has no atomic receipt; never infer that it did not run.
+    await sql`insert into qa_dispatches(id,session_id,state) select dispatch_id,owner_session_id,'legacy' from repair_incidents where dispatch_id is not null and owner_session_id is not null on conflict do nothing`.execute(
+      db,
+    );
+    await sql`insert into qa_dispatches(id,session_id,state) select active_dispatch,session_id,'legacy' from qa_coordinator where active_dispatch is not null and session_id is not null on conflict do nothing`.execute(
+      db,
+    );
+    await sql`create table repair_resource_budgets (
+      project_id text not null references projects(id) on delete cascade, resource text not null,
+      used integer not null default 0, cycle integer not null default 0,
+      primary key(project_id,resource)
+    )`.execute(db);
+    await sql`insert into repair_resource_budgets(project_id,resource,used) select project_id,resource,least(2,sum(attempts)) from repair_incidents where state <> 'resolved' group by project_id,resource`.execute(
+      db,
+    );
+    await sql`alter table repair_incidents add column repair_pr integer, add column verified_success boolean not null default false`.execute(
+      db,
+    );
+    await sql`update repair_incidents set verified_success=true where state='resolved'`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table repair_incidents drop column repair_pr, drop column verified_success`.execute(
+      db,
+    );
+    await sql`drop table repair_resource_budgets`.execute(db);
+    await sql`drop table qa_dispatches`.execute(db);
+  },
+};
+
+migrations['0175_running_turn_settlement'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table running_turns add column marker_id text, add column settled boolean not null default false`.execute(
+      db,
+    );
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table running_turns drop column marker_id, drop column settled`.execute(db);
+  },
+};
+
+migrations['0176_assistant'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`create table assistant_settings (
+      id integer primary key check (id = 1), enabled boolean not null default false,
+      revision integer not null default 0, sponsor_user_id text, session_id text,
+      updated_at timestamptz not null default now()
+    )`.execute(db);
+    await sql`create table assistant_project_grants (
+      project_id text primary key references projects(id) on delete cascade,
+      mode text not null check (mode in ('off', 'tasks', 'delegate')),
+      sponsor_user_id text not null, revision integer not null default 1,
+      updated_at timestamptz not null default now()
+    )`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table assistant_project_grants`.execute(db);
+    await sql`drop table assistant_settings`.execute(db);
+  },
+};
+
+migrations['0177_scheduling_requests'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`create table scheduling_requests (
+      id text primary key, session_id text not null, project_id text,
+      google_account_id text, calendar_id text not null, time_zone text not null,
+      language text not null check (language in ('en', 'de')),
+      title text not null, duration_minutes integer not null check (duration_minutes between 5 and 480),
+      add_meet boolean not null, organizer_name text not null, organizer_email text not null,
+      guest_email text not null, guest_name text, colleagues jsonb not null default '[]',
+      email_subject text not null, email_body text not null,
+      state text not null check (state in ('draft', 'provisioning', 'open', 'booked', 'expired', 'revoked', 'failed')),
+      failure text, closes_at timestamptz not null, link_expires_at timestamptz,
+      approved_at timestamptz, approval_digest text, sender_account_id text,
+      share_secret text, share_revoked_at timestamptz, email_sent_at timestamptz,
+      booked_event_id text, booked_start timestamptz, booked_end timestamptz, guest_note text,
+      notified_no_slots_at timestamptz,
+      attempts integer not null default 0, next_attempt_at timestamptz,
+      lease_owner text, lease_until timestamptz,
+      revision integer not null default 1,
+      created_at timestamptz not null default now(), updated_at timestamptz not null default now()
+    )`.execute(db);
+    await sql`create index scheduling_requests_session on scheduling_requests(session_id, created_at desc)`.execute(
+      db,
+    );
+    await sql`create index scheduling_requests_active on scheduling_requests(state) where state in ('provisioning', 'open') or (share_secret is not null and share_revoked_at is null)`.execute(
+      db,
+    );
+    await sql`create table scheduling_holds (
+      request_id text not null references scheduling_requests(id) on delete cascade,
+      position integer not null, window_start timestamptz not null, window_end timestamptz not null,
+      event_id text not null,
+      state text not null check (state in ('pending', 'active', 'converted', 'cancel_pending', 'cancelled')),
+      attempts integer not null default 0, next_attempt_at timestamptz, last_error text,
+      updated_at timestamptz not null default now(),
+      primary key (request_id, position), check (window_end > window_start)
+    )`.execute(db);
+    await sql`create index scheduling_holds_cleanup on scheduling_holds(next_attempt_at) where state = 'cancel_pending'`.execute(
+      db,
+    );
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table scheduling_holds`.execute(db);
+    await sql`drop table scheduling_requests`.execute(db);
+  },
+};
+
+migrations['0178_qa_observation_diagnostics'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table repair_mandates add column observation_error text`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table repair_mandates drop column observation_error`.execute(db);
+  },
+};
+
+migrations['0179_qa_manual_repairs'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`create table qa_manual_repairs (
+      id text primary key, project_id text not null references projects(id) on delete cascade,
+      source_session_id text not null, user_id text not null, target_session_id text not null,
+      number integer not null, branch text not null, revision text not null, requires_card boolean not null default false,
+      qa_revision integer not null, mandate_revision integer not null,
+      expires_at timestamptz not null default now() + interval '1 hour',
+      dispatch_id text unique, consent_key text unique, reason text
+    )`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table qa_manual_repairs`.execute(db);
+  },
+};
+
+// Existing manually configured clients retain their form-post authentication.
+migrations['0180_mcp_oauth_token_auth_method'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table http_mcp_connections add column oauth_token_auth_method text not null default 'client_secret_post' check (oauth_token_auth_method in ('none', 'client_secret_post', 'client_secret_basic'))`.execute(
+      db,
+    );
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table http_mcp_connections drop column oauth_token_auth_method`.execute(db);
+  },
+};
+
+migrations['0181_qa_assignments'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`create table qa_assignments (
+ id text primary key, project_id text not null references projects(id) on delete cascade,
+ source_session_id text not null, user_id text not null, target_session_id text,
+ state text not null, title text not null, instruction text not null, criteria text not null,
+ qa_revision integer not null, mandate_revision integer not null,
+ consent_key text unique, attempt integer not null default 0, dispatch_id text,
+ feedback text not null default '', evidence text not null default '', reason text,
+ version integer not null default 1, created_at timestamptz not null default now(),
+ expires_at timestamptz not null default now() + interval '1 hour'
+ )`.execute(db);
+    await sql`create unique index qa_assignment_project_owner on qa_assignments(project_id) where state in ('queued','running','waiting','verifying','stopping')`.execute(
+      db,
+    );
+    await sql`create table qa_assignment_notifications (
+ id text primary key, assignment_id text not null references qa_assignments(id) on delete cascade,
+ dispatch_id text not null unique, payload text not null,
+ attempt integer not null default 0, acknowledged boolean not null default false
+ )`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table qa_assignment_notifications`.execute(db);
+    await sql`drop table qa_assignments`.execute(db);
+  },
+};
+
+migrations['0182_session_pr_repair_origins'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table repair_attempts add column automation_marker text`.execute(db);
+    await sql`create table repair_session_origins (
+      project_id text not null references projects(id) on delete cascade,
+      resource text not null, session_id text not null references sessions(session_id) on delete cascade,
+      primary key (project_id, resource)
+    )`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table repair_session_origins`.execute(db);
+    await sql`alter table repair_attempts drop column automation_marker`.execute(db);
+  },
+};
+
+migrations['0183_unassigned_meeting_retention'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    // Null keeps the default in code, so changing the default needs no migration.
+    await sql`alter table verity_settings add column unassigned_meeting_retention_days integer
+      check (unassigned_meeting_retention_days between 1 and 365)`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table verity_settings drop column unassigned_meeting_retention_days`.execute(
+      db,
+    );
+  },
+};
+
+migrations['0184_calendar_watch_calendars'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    // Calendars Verity watches for online meetings. A calendar carries no project: meetings
+    // joined from it start unassigned. Disconnecting the account drops its choices.
+    await sql`create table calendar_watch_calendars (
+      account_id text not null references google_accounts(id) on delete cascade,
+      calendar_id text not null,
+      summary text not null,
+      auto_join boolean not null default false,
+      updated_at timestamptz not null default now(),
+      primary key (account_id, calendar_id)
+    )`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table calendar_watch_calendars`.execute(db);
+  },
+};
+
+migrations['0185_calendar_watch_events'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    // Joinable events of watched calendars and what Verity already did about them, so a
+    // restart neither repeats a notification nor joins a meeting twice. Title and link are
+    // encrypted: links often carry the meeting passcode.
+    await sql`create table calendar_watch_events (
+      event_key text primary key,
+      account_id text not null,
+      calendar_id text not null,
+      event_id text not null,
+      title text,
+      meeting_url text not null,
+      starts_at timestamptz not null,
+      ends_at timestamptz not null,
+      accepted boolean not null default true,
+      notified_at timestamptz,
+      decision text check (decision in ('joined', 'skipped', 'failed')),
+      meeting_id text,
+      started_notified_at timestamptz,
+      updated_at timestamptz not null default now(),
+      foreign key (account_id, calendar_id)
+        references calendar_watch_calendars(account_id, calendar_id) on delete cascade
+    )`.execute(db);
+    await sql`create index calendar_watch_events_calendar
+      on calendar_watch_events(account_id, calendar_id, starts_at)`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table calendar_watch_events`.execute(db);
+  },
+};

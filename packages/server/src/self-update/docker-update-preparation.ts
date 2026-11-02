@@ -1,4 +1,12 @@
 import { readFile } from 'node:fs/promises';
+import {
+  HostRuntimeRenewalError,
+  HOST_RUNTIME_SERVICE_LABEL,
+  parseRuntimeServiceRequirements,
+  renewHostRuntimeService,
+} from './host-runtime-renewal.js';
+import { writeHostPreparation } from './host-preparation.js';
+import { backupProvisionPlan, provisionBackupHost } from './backup-provisioning.js';
 import type { ContainerInspect, DockerClient } from '../docker.js';
 import { DEVCONTAINER_BUILDER_SOCKET_DIRECTORY } from './deployment-spec.js';
 import {
@@ -9,6 +17,7 @@ import {
   migrateManagedControlPlaneRunner,
   migrateManagedDevcontainerBuilder,
   migrateManagedHostDiagnostics,
+  migrateManagedBackupMounts,
   readManagedDeployment,
 } from './managed-deployment.js';
 import { readHostDiagnosticsCapability } from './host-diagnostics.js';
@@ -21,6 +30,7 @@ import {
 } from './managed-server-owner.js';
 import { reconcileHostRuntimes, readTargetHostRuntimes } from './host-runtimes.js';
 import { readBundledPostgresImage } from './postgres-image.js';
+import { pullWithRetry } from './pull-retry.js';
 import type { StandbyCandidate, UpdatePreparationDeps } from './update-preparation.js';
 import type { UpdateJournal } from './update-journal.js';
 
@@ -67,6 +77,10 @@ export interface DockerUpdatePreparationOptions {
   /** The host runtime request directory as the Updater sees it; tests only. */
   readonly hostRuntimeDir?: string;
   readonly log?: (message: string) => void;
+  /** Waits between attempts of the target-image pull; tests only. */
+  readonly pullRetryDelaysMs?: readonly number[];
+  /** Sleep used for those waits; tests only. */
+  readonly pullRetrySleep?: (ms: number) => Promise<unknown>;
 }
 
 function candidateName(journal: UpdateJournal, role: string): string {
@@ -169,6 +183,10 @@ export async function dockerUpdatePreparation(
     options.environment ?? process.env,
     options.readFile ?? ((path) => readFile(path, 'utf8')),
   );
+
+  // Pull progress goes where the rest of the Updater's narration goes.
+  const progressLog = options.log ?? console.info;
+  const pullOptions = { log: progressLog };
 
   // Every candidate runs the target digest, and preparation pulls it before any
   // container is compared, so the image is on the daemon by the time this runs.
@@ -316,12 +334,49 @@ export async function dockerUpdatePreparation(
      * is not a reason to fail a Server update with nothing else wrong with it;
      * the reconciler checks the image is present and simply declines the swap
      * when it is not, leaving the database where it was until the next update.
+     * For the same reason it gets a single attempt: retrying a pull whose
+     * failure is swallowed anyway would only delay the update.
+     *
+     * The Server pull itself is retried ({@link pullWithRetry}) on a stall or a
+     * transient network failure, because a failure here is terminal for the
+     * operation and the slow, flaky links that cause it are exactly the ones
+     * where a second attempt tends to get through.
+     *
+     * What a retry costs depends on the daemon's image store, and only part of
+     * it is established:
+     *
+     * - Layers a failed attempt finished are kept by both stores and reported
+     *   as "Already exists" next time; a retry never fetches those again.
+     * - Classic graphdriver store: a partially downloaded layer is NOT carried
+     *   across pulls. The daemon resumes it with an HTTP Range request only
+     *   within its own per-layer retries inside one pull; the temporary file
+     *   belongs to that pull and is removed when it ends (moby
+     *   `distribution/pull_v2.go`, `v2LayerDescriptor.Download`/`Close`). A
+     *   retry after a stall restarts each unfinished layer from zero.
+     * - containerd image store (`io.containerd.snapshotter.v1`): containerd
+     *   keeps an unfinished blob as an ingest under a ref derived from its
+     *   digest, closes rather than aborts the writer when a fetch fails, and
+     *   on the next fetch of the same blob seeks the registry stream to the
+     *   ingest's offset (containerd `remotes/handlers.go` `Fetch`,
+     *   `content/helpers.go` `Copy`/`seekReader`). So resumption is designed
+     *   in. NOT verified: whether moby's pull lease or containerd's garbage
+     *   collection removes that ingest between our attempts, and how long an
+     *   ingest survives, were not established from code or documentation.
+     *   Treat resumption there as likely but unconfirmed.
+     *
+     * With the idle window in place a steadily progressing pull no longer
+     * needs a retry to finish, so none of this decides whether an update
+     * completes; it decides how much a stall costs.
      */
     pullImage: async (digest) => {
-      await docker.pullImage!(digest);
+      await pullWithRetry(digest, () => docker.pullImage!(digest, pullOptions), {
+        ...(options.pullRetryDelaysMs === undefined ? {} : { delaysMs: options.pullRetryDelaysMs }),
+        ...(options.pullRetrySleep === undefined ? {} : { sleep: options.pullRetrySleep }),
+        log: progressLog,
+      });
       const bundled = await readBundledPostgresImage(docker, digest);
       if (bundled.kind !== 'image') return;
-      await docker.pullImage!(bundled.image).catch(() => undefined);
+      await docker.pullImage!(bundled.image, pullOptions).catch(() => undefined);
     },
     verifyImage: async (journal) => {
       if (journal.deploymentId !== state.spec.deploymentId)
@@ -330,26 +385,147 @@ export async function dockerUpdatePreparation(
     },
     runPreflight,
     reconcileHostRuntimes: async (journal) => {
+      // One request id for both calls below: a builder answer already on file for this update
+      // is reused rather than installed twice.
+      const reconcileBuilder = () =>
+        reconcileDevcontainerBuilder({
+          docker,
+          image: journal.targetDigest,
+          requestId: journal.updateId,
+          ...(options.hostRuntimeDir === undefined ? {} : { requestDir: options.hostRuntimeDir }),
+        }).catch((error: unknown) => ({
+          state: 'failed' as const,
+          message: error instanceof Error ? error.message : String(error),
+        }));
       const requirements = await readTargetHostRuntimes(docker, journal.targetDigest);
       if (requirements !== undefined) {
+        const rawService = (await docker.inspectImageLabels?.(journal.targetDigest))?.[
+          HOST_RUNTIME_SERVICE_LABEL
+        ];
+        let serviceRequirements;
+        if (rawService !== undefined) {
+          try {
+            serviceRequirements = parseRuntimeServiceRequirements(JSON.parse(rawService));
+          } catch {
+            serviceRequirements = null;
+          }
+          if (serviceRequirements === null)
+            throw new Error('Malformed target host runtime service requirements');
+        }
         await reconcileHostRuntimes({
+          ...(serviceRequirements === undefined
+            ? {}
+            : {
+                serviceRequirements,
+                renewHostRuntimeService: async () => {
+                  if (state.spec.image !== journal.previousDigest)
+                    throw new Error('Runtime renewal previous image differs from sealed authority');
+                  const updaters = (await docker.listContainers!()).filter(
+                    (item) =>
+                      item.labels?.[MANAGED_DEPLOYMENT_LABEL] === journal.deploymentId &&
+                      item.labels?.[MANAGED_ROLE_LABEL] === 'updater',
+                  );
+                  // Compose installations retain their service label and deployment identity in env.
+                  const candidates =
+                    updaters.length > 0
+                      ? updaters
+                      : (await docker.listContainers!()).filter(
+                          (item) =>
+                            item.labels?.['com.docker.compose.service'] === 'verity-updater',
+                        );
+                  const owned = [];
+                  for (const item of candidates) {
+                    const inspect = await docker.inspectContainer(item.id);
+                    if (
+                      item.labels?.[MANAGED_DEPLOYMENT_LABEL] === journal.deploymentId ||
+                      inspect.env?.includes(`VERITY_MANAGED_DEPLOYMENT_ID=${journal.deploymentId}`)
+                    )
+                      owned.push(inspect);
+                  }
+                  if (owned.length !== 1 || owned[0]?.image !== journal.previousDigest)
+                    throw new Error('Runtime renewal requires one trusted installed updater');
+                  const runtimeMount = owned[0].mounts?.find(
+                    (mount) =>
+                      mount.type === 'bind' && mount.destination === '/run/verity-host-runtime',
+                  );
+                  const installerMount = state.spec.mounts.find(
+                    (mount) =>
+                      mount.target === '/run/verity-pairing' && mount.source.kind === 'bind',
+                  );
+                  if (!runtimeMount?.source || installerMount?.source.kind !== 'bind')
+                    throw new Error(
+                      'Runtime renewal requires the installed host runtime and installer state mounts',
+                    );
+                  try {
+                    await renewHostRuntimeService({
+                      docker,
+                      journal,
+                      runtimeHostPath: runtimeMount.source,
+                      installerStatePath: installerMount.source.path,
+                      verifyInstalled: async () => {
+                        const agent = JSON.parse(
+                          await readFile(
+                            `${options.hostRuntimeDir ?? '/run/verity-host-runtime'}/agent.json`,
+                            'utf8',
+                          ),
+                        ) as {
+                          runtimeService?: {
+                            sha512?: string;
+                            receipt?: {
+                              deploymentId?: string;
+                              updateId?: string;
+                              targetDigest?: string;
+                            };
+                          };
+                        };
+                        const receipt = agent.runtimeService?.receipt;
+                        if (
+                          receipt?.deploymentId !== journal.deploymentId ||
+                          receipt.updateId !== journal.updateId ||
+                          receipt.targetDigest !== journal.targetDigest ||
+                          !/^[a-f0-9]{128}$/u.test(agent.runtimeService?.sha512 ?? '')
+                        )
+                          throw new Error(
+                            'Installed host runtime service has no matching renewal receipt',
+                          );
+                      },
+                    });
+                  } catch (error) {
+                    await writeHostPreparation(
+                      options.managedRoot,
+                      journal,
+                      error instanceof HostRuntimeRenewalError
+                        ? error.recovery
+                        : 'recovery-required',
+                    );
+                    throw error;
+                  }
+                },
+              }),
+          onProgress: async (stage) => {
+            await writeHostPreparation(options.managedRoot, journal, stage);
+          },
           docker,
           requirements,
           requestId: journal.updateId,
           ...(options.hostRuntimeDir === undefined ? {} : { requestDir: options.hostRuntimeDir }),
+          // A host whose runtime service predates archive pins gets the target's through the
+          // builder first: its bundle registers the runtimes and replaces that service.
+          refreshHostComponents: async () => {
+            const refreshed = await reconcileBuilder();
+            if (refreshed.state === 'reconciled') return undefined;
+            const detail = refreshed.state === 'skipped' ? refreshed.reason : refreshed.message;
+            (options.log ?? console.warn)(
+              `Host components not refreshed through the devcontainer builder. ${detail}`,
+            );
+            return detail;
+          },
         });
       }
+      await writeHostPreparation(options.managedRoot, journal, 'ready');
       // After the runtimes: the builder runs its steps on the runsc they register.
       // Nothing about the builder may fail the update, an unexpected error included.
-      const builder = await reconcileDevcontainerBuilder({
-        docker,
-        image: journal.targetDigest,
-        requestId: journal.updateId,
-        ...(options.hostRuntimeDir === undefined ? {} : { requestDir: options.hostRuntimeDir }),
-      }).catch((error: unknown) => ({
-        state: 'failed' as const,
-        message: error instanceof Error ? error.message : String(error),
-      }));
+      const builder = await reconcileBuilder();
       if (builder.state === 'failed')
         (options.log ?? console.warn)(
           `Devcontainer builder not updated; the previous builder keeps running. ${builder.message}`,
@@ -367,6 +543,24 @@ export async function dockerUpdatePreparation(
       );
       if (!migrated.managed)
         throw new Error(`managed Server authority unavailable: ${migrated.reason}`);
+      const backup = await backupProvisionPlan(docker, migrated.spec, journal.targetDigest);
+      if (backup) {
+        await provisionBackupHost(docker, migrated.spec, journal.targetDigest, backup);
+        const standby = await findNamed(docker, candidateName(journal, STANDBY_ROLE));
+        const hasMounts = ['/run/verity-backups', '/run/verity-backup-identity'].every(
+          (target) =>
+            migrated.managed && migrated.spec.mounts.some((mount) => mount.target === target),
+        );
+        if (standby && !hasMounts) throw new Error('Existing standby predates backup mounts');
+        migrated = await migrateManagedBackupMounts({
+          root: options.managedRoot,
+          deploymentId: migrated.spec.deploymentId,
+          image: migrated.spec.image,
+          backupPath: backup.backupPath,
+          identityPath: backup.identityPath,
+        });
+        if (!migrated.managed) throw new Error(migrated.reason);
+      }
       const diagnostics = await readHostDiagnosticsCapability(options.hostRuntimeDir);
       if (diagnostics.state === 'available') {
         const sealedDiagnosticMount = migrated.spec.mounts.find(
@@ -413,7 +607,7 @@ export async function dockerUpdatePreparation(
       if (
         builder.state === 'available' &&
         !migrated.spec.mounts.some(
-          (mount) => mount.target === DEVCONTAINER_BUILDER_SOCKET_DIRECTORY,
+          (mount) => mount.target === DEVCONTAINER_BUILDER_SOCKET_DIRECTORY && !mount.readOnly,
         )
       ) {
         if ((await findNamed(docker, candidateName(journal, STANDBY_ROLE))) === null) {

@@ -49,6 +49,13 @@ const reconcileRunTitle = 'Reconcile unpublished releases';
  * dispatching against it would only race that run for the train lock.
  */
 const graceMs = 10 * 60 * 1000;
+/**
+ * Planning a Staging release PR is safe to repeat: a late push run that plans
+ * after this sweep's dispatch refreshes the same PR with the same content. Only
+ * publication races a late push run into a red, refused tag, so planning waits
+ * just long enough for an ordinary push run to appear.
+ */
+const planningGraceMs = 2 * 60 * 1000;
 const now = Date.now();
 
 /** @param {string[]} args */
@@ -309,7 +316,8 @@ function refreshOpenReleasePr(number, backend, ota = false, website = false) {
   if (currentMain() !== head) return;
   const time = Date.parse(git('log', '-1', '--format=%cI'));
   if (!Number.isFinite(time)) throw new Error('Invalid Main commit time');
-  if (time > now - graceMs) return;
+  // The OTA workflow publishes as well as plans, so it keeps the full lag.
+  if (time > now - (ota ? graceMs : planningGraceMs)) return;
   const rawComparison = /** @type {unknown} */ (
     JSON.parse(gh('api', `repos/${repository}/compare/${original.head.sha}...${head}`))
   );
@@ -379,7 +387,7 @@ function reconcileNativePlanning() {
   }
   const headTime = Date.parse(git('log', '-1', '--format=%cI'));
   if (!Number.isFinite(headTime)) throw new Error('Invalid Main commit time');
-  if (headTime > now - graceMs) {
+  if (headTime > now - planningGraceMs) {
     notes.push('Mobile planning: Main is younger than the push run lag.');
     return;
   }
@@ -471,7 +479,7 @@ function reconcilePlanning(train) {
   }
   const headTime = Date.parse(git('log', '-1', '--format=%cI'));
   if (!Number.isFinite(headTime)) throw new Error('Invalid Main commit time');
-  if (headTime > now - graceMs) {
+  if (headTime > now - planningGraceMs) {
     notes.push(`${label} planning: Main is younger than the push run lag.`);
     return;
   }

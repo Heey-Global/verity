@@ -24,6 +24,15 @@ export const boundedHistoryResultSchema = z.discriminatedUnion('kind', [
   boundedHistoryPageSchema,
   z.object({
     contract: z.literal('bounded-history-v1'),
+    kind: z.literal('event-chunk'),
+    seq: z.number().int().positive(),
+    snapshotSeq: z.number().int().nonnegative(),
+    offset: z.number().int().nonnegative(),
+    totalChars: z.number().int().positive(),
+    data: z.string().min(1),
+  }),
+  z.object({
+    contract: z.literal('bounded-history-v1'),
     kind: z.literal('oversized-event'),
     seq: z.number().int().positive(),
     requiredBytes: z.number().int().positive(),

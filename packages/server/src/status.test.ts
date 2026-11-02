@@ -251,6 +251,19 @@ describe('projectionTailIsSelfContained', () => {
  */
 const SAMPLES: Record<AgentEventType, AgentEvent> = {
   dev_servers_changed: { t: 'dev_servers_changed', devServers: [] },
+  mcp_app: {
+    t: 'mcp_app',
+    appId: '00000000-0000-4000-8000-000000000001',
+    projectId: 'p1',
+    sessionId: 's1',
+    turnId: 'turn1',
+    connectionId: 'c1',
+    connectionFingerprint: 'fingerprint',
+    toolName: 'dashboard',
+    resourceUri: 'ui://dashboard',
+    input: {},
+    result: { content: [] },
+  },
   session: { t: 'session', id: 's1', model: 'claude-opus-5', worktree: '/wt/s1' },
   status: running,
   text,

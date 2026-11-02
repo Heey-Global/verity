@@ -72,74 +72,70 @@ describe('audit labels', () => {
 });
 
 describe('audit logs screen', () => {
-  it('lists operations and opens one', async () => {
-    const auditOperations = jest.fn().mockResolvedValue({
-      operations: [
-        op(),
-        op({
-          operationId: 'op-2',
-          status: 'failed',
-          initiator: { kind: 'system', trigger: 'sandbox_wake' },
-        }),
-      ],
+  const event = (kind: string, eventId: string, minutes: number) => ({
+    eventId,
+    operationId: 'op-1',
+    kind,
+    domain: 'builds',
+    recordedAt: new Date(Date.now() - minutes * 60000).toISOString(),
+    project: { id: 'p1', label: 'org/repo' },
+    imageId: null,
+    payload: {},
+  });
+  it('shows each event of one build and opens details without collapsing rows', async () => {
+    const auditEvents = jest.fn().mockResolvedValue({
+      events: [event('build.failed', 'end', 1), event('build.requested', 'start', 5)],
       nextBefore: null,
-      oldestRecordedAt: '2026-04-30T00:00:00.000Z',
+      oldestRecordedAt: null,
     });
-    mockCreateVerityClient.mockReturnValue(makeClient('unlocked', { auditOperations }));
+    mockCreateVerityClient.mockReturnValue(makeClient('unlocked', { auditEvents }));
     render(<AuditLogsScreen />);
-    expect(await screen.findByText('Project image built')).toBeOnTheScreen();
-    expect(screen.getByText(/org\/repo · Session “Fix login”/)).toBeOnTheScreen();
-    expect(screen.getByText(/Sandbox wake/)).toBeOnTheScreen();
+    expect(await screen.findByText('Image build failed')).toBeOnTheScreen();
+    expect(screen.getByText('Image build requested')).toBeOnTheScreen();
     expect(screen.getByText('Failed')).toBeOnTheScreen();
-    expect(screen.getByText(/^Entries since/)).toBeOnTheScreen();
-    fireEvent.press(screen.getByText('Project image built'));
+    expect(screen.getAllByText('Output')).toHaveLength(1);
+    fireEvent.press(screen.getByText('Image build failed'));
+    expect(await screen.findByText(/"eventId": "end"/)).toBeOnTheScreen();
+    fireEvent.press(screen.getByText('Open operation and build output'));
     expect(mockPush).toHaveBeenCalledWith('/settings/audit-logs/op-1');
   });
-
-  // Returning from an older entry must preserve the pages already loaded.
-  it('keeps older pages when returning from an entry', async () => {
-    const auditOperations = jest
+  it('preserves earlier event pages on return and filters the event query', async () => {
+    const auditEvents = jest
       .fn()
-      .mockResolvedValueOnce({ operations: [op()], nextBefore: 'cursor', oldestRecordedAt: null })
       .mockResolvedValueOnce({
-        operations: [op({ operationId: 'older', status: 'failed' })],
+        events: [event('build.failed', 'end', 1)],
+        nextBefore: 'cursor',
+        oldestRecordedAt: null,
+      })
+      .mockResolvedValue({
+        events: [event('build.requested', 'start', 5)],
         nextBefore: null,
         oldestRecordedAt: null,
       });
-    mockCreateVerityClient.mockReturnValue(makeClient('unlocked', { auditOperations }));
+    mockCreateVerityClient.mockReturnValue(makeClient('unlocked', { auditEvents }));
     render(<AuditLogsScreen />);
-    fireEvent.press(await screen.findByText('Show older entries'));
-    expect(await screen.findByText('Failed')).toBeOnTheScreen();
-    await act(async () => refocus());
-    expect(auditOperations).toHaveBeenCalledTimes(2);
-    expect(screen.getByText('Failed')).toBeOnTheScreen();
-  });
-
-  it('filters by area and searches', async () => {
-    const auditOperations = jest
-      .fn()
-      .mockResolvedValue({ operations: [], nextBefore: null, oldestRecordedAt: null });
-    mockCreateVerityClient.mockReturnValue(makeClient('unlocked', { auditOperations }));
-    render(<AuditLogsScreen />);
-    expect(await screen.findByText('No entries yet.')).toBeOnTheScreen();
-    fireEvent.press(screen.getByText('Builds'));
-    await waitFor(() => expect(auditOperations).toHaveBeenLastCalledWith({ domain: 'builds' }));
-    jest.useFakeTimers();
-    fireEvent.changeText(screen.getByLabelText('Search image, project or ID'), '3f9a');
-    await act(async () => {
-      jest.advanceTimersByTime(400);
+    const older = await screen.findByText('Show older entries');
+    act(() => {
+      fireEvent.press(older);
+      fireEvent.press(older);
     });
-    jest.useRealTimers();
+    expect(await screen.findByText('Image build requested')).toBeOnTheScreen();
+    await act(async () => refocus());
+    expect(auditEvents).toHaveBeenCalledTimes(2);
+    expect(auditEvents).toHaveBeenLastCalledWith(expect.objectContaining({ before: 'cursor' }));
+    fireEvent.press(screen.getByText('Builds'));
     await waitFor(() =>
-      expect(auditOperations).toHaveBeenLastCalledWith({ domain: 'builds', search: '3f9a' }),
+      expect(auditEvents).toHaveBeenLastCalledWith(expect.objectContaining({ domain: 'builds' })),
     );
-    expect(await screen.findByText('No matching entries.')).toBeOnTheScreen();
+    fireEvent.changeText(screen.getByLabelText('Search logs'), 'org/repo');
+    await waitFor(() =>
+      expect(auditEvents).toHaveBeenLastCalledWith(expect.objectContaining({ search: 'org/repo' })),
+    );
   });
-
-  it('explains when this device may not read audit logs', async () => {
+  it('explains administrator-only availability', async () => {
     mockCreateVerityClient.mockReturnValue(makeClient('unlocked'));
     render(<AuditLogsScreen />);
-    expect(await screen.findByText('Audit logs unavailable')).toBeOnTheScreen();
+    expect(await screen.findByText(/Audit logs unavailable/)).toBeOnTheScreen();
   });
 });
 

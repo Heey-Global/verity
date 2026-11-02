@@ -40,6 +40,19 @@ const RESULT: RunResult = { sessionId: 'sess-1', exitCode: 0, stderr: '', aborte
 const RESULT_FRAME = frame({ kind: 'result', result: RESULT }, 5);
 
 const eventExamples: Record<AgentEvent['t'], AgentEvent> = {
+  mcp_app: {
+    t: 'mcp_app',
+    appId: '00000000-0000-4000-8000-000000000001',
+    projectId: 'p1',
+    sessionId: 's1',
+    turnId: 'turn1',
+    connectionId: 'c1',
+    connectionFingerprint: 'fingerprint',
+    toolName: 'dashboard',
+    resourceUri: 'ui://dashboard',
+    input: {},
+    result: { content: [] },
+  },
   session: { t: 'session', id: 's', model: 'model', worktree: '/work' },
   dev_servers_changed: {
     t: 'dev_servers_changed',

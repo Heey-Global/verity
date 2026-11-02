@@ -476,12 +476,6 @@ export function registerLiveMeetingRoutes(
     queued.clear();
     for (const controller of inFlight.values()) controller.abort();
   });
-  // Cross-session discovery has the same administrator boundary as GET /sessions.
-  // Keep transcripts and recorder credentials out of the discovery response.
-  app.get('/live-meetings/active', async () => ({
-    meetings: await store.liveMeetings.activeMeetings(),
-  }));
-
   app.get('/sessions/:id/live-meetings', async (request, reply) => {
     const { id: sessionId } = sessionParams.parse(request.params);
     if (!(await store.getSession(sessionId))) {

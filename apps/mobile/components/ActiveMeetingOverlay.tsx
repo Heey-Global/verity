@@ -2,6 +2,7 @@ import { subscribeLiveRefresh } from '../lib/liveConnection';
 import { router, usePathname } from 'expo-router';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { useEffect, useMemo, useRef, useState } from 'react';
+import type { ActiveLiveMeetings } from '@verity/mobile';
 import {
   Animated,
   AppState,
@@ -32,10 +33,18 @@ import {
   subscribeFollowedRemoteMeeting,
   syncMeetingSession,
 } from '../lib/liveMeetingSync';
-import { Button, Text } from './ui';
+import { subscribeMeetingPrompt } from '../lib/meetingPrompts';
+import { AssignMeetingSheet, type AssignableMeeting } from './meeting/AssignMeetingSheet';
+import { CalendarMeetingPrompt } from './meeting/CalendarMeetingPrompt';
+import { Button, Text, useConfirm } from './ui';
 import { Dot } from './ui/Status';
 
 const WIDTH = 200;
+
+/** Online meetings stay alive while interrupted: Core is still recovering them. */
+const alive = (meeting: Pick<MeetingRecord, 'state' | 'engine'> | null | undefined) =>
+  meeting?.state === 'active' ||
+  (meeting?.engine === 'attendee' && meeting.state === 'interrupted');
 
 export function ActiveMeetingOverlay() {
   const [localMeeting, setLocalMeeting] = useState<MeetingRecord | null>(null);
@@ -54,6 +63,19 @@ export function ActiveMeetingOverlay() {
   const [voiceRequestSent, setVoiceRequestSent] = useState(false);
   const [now, setNow] = useState(Date.now());
   const [overlayHeight, setOverlayHeight] = useState(105);
+  // What the server reports as running, so a meeting started elsewhere (another device,
+  // or Verity joining on its own) appears without first opening its session.
+  const [discovered, setDiscovered] = useState<ActiveLiveMeetings | null>(null);
+  const discoveredRef = useRef(discovered);
+  discoveredRef.current = discovered;
+  const [assigning, setAssigning] = useState<AssignableMeeting | null>(null);
+  // A calendar meeting whose notification was tapped: asks Join / Skip.
+  const [upcomingKey, setUpcomingKey] = useState<string | null>(null);
+  const [confirm, confirmSheet] = useConfirm();
+  // Meetings seen ending: the server list may still name one until it refreshes, and
+  // following it again would bounce between follow and clear.
+  const settled = useRef(new Set<string>());
+  const discoverRef = useRef<() => Promise<void>>(async () => undefined);
   const pathname = usePathname();
   const insets = useSafeAreaInsets();
   const { width, height } = useWindowDimensions();
@@ -105,68 +127,100 @@ export function ActiveMeetingOverlay() {
     [localMeeting?.id],
   );
   useEffect(() => subscribeFollowedRemoteMeeting(setFollowed), []);
-  useEffect(() => {
-    let dispose = () => {};
-    const bind = () => {
-      dispose();
-      setRemoteMeeting(null);
-      clearFollowedRemoteMeeting();
-      const serverId = getActiveMeetingServerId();
-      const client = createVerityClient();
-      if (!serverId || !client) return;
-      let mounted = true;
-      let loading = false;
-      const discover = async () => {
-        if (!mounted || loading || AppState.currentState !== 'active') return;
-        loading = true;
-        try {
-          const active = await client.getActiveLiveMeetings();
-          if (!mounted || getActiveMeetingServerId() !== serverId) return;
-          const candidate = active[0];
-          if (candidate) followRemoteMeeting(candidate.sessionId, candidate.id);
-          else {
-            clearFollowedRemoteMeeting();
-            setRemoteMeeting(null);
-          }
-        } catch {
-          // Older or unreachable servers must not interrupt a local recording.
-        } finally {
-          loading = false;
+  useEffect(
+    () =>
+      subscribeMeetingPrompt((prompt) => {
+        if (prompt.kind === 'upcoming') {
+          setUpcomingKey(prompt.eventKey);
+          return;
         }
-      };
-      void discover();
-      const timer = setInterval(() => void discover(), 5000);
-      const foreground = AppState.addEventListener('change', (state) => {
-        if (state === 'active') void discover();
-      });
-      dispose = () => {
-        mounted = false;
-        clearInterval(timer);
-        foreground.remove();
-      };
-    };
-    bind();
-    const unsubscribe = subscribeVerityBaseUrl(bind);
-    return () => {
-      unsubscribe();
-      dispose();
-    };
-  }, []);
+        // "Verity joined …": open the meeting where it runs, or assign it first.
+        void (async () => {
+          try {
+            const client = createVerityClient();
+            if (!client) throw new Error('Connect to the server to open this meeting.');
+            const active = await client.getActiveLiveMeetings();
+            setDiscovered(active);
+            const running = active.running.find((item) => item.id === prompt.meetingId);
+            const unassigned = active.unassigned.find((item) => item.id === prompt.meetingId);
+            if (running)
+              router.push({
+                pathname: '/meeting/[sessionId]',
+                params: { sessionId: running.sessionId },
+              });
+            else if (unassigned) setAssigning(unassigned);
+            else setError('This meeting has ended or was discarded.');
+          } catch (reason) {
+            setError(reason instanceof Error ? reason.message : String(reason));
+          }
+        })();
+      }),
+    [],
+  );
+  // A pairing made after launch or a switch to another server starts discovery over, so the
+  // card never shows, assigns or discards meetings of the previous server.
+  const [serverEpoch, setServerEpoch] = useState(0);
+  useEffect(
+    () =>
+      subscribeVerityBaseUrl(() => {
+        clearFollowedRemoteMeeting();
+        setFollowed(null);
+        setRemoteMeeting(null);
+        setPendingCommand(null);
+        setError(null);
+        remoteStopRequested.current = false;
+        settled.current.clear();
+        setDiscovered(null);
+        setAssigning(null);
+        setUpcomingKey(null);
+        setServerEpoch((value) => value + 1);
+      }),
+    [],
+  );
   useEffect(() => {
-    setPendingCommand(null);
-    setError(null);
-    remoteStopRequested.current = false;
-  }, [followed?.serverId, followed?.meetingId]);
+    const client = createVerityClient();
+    if (!client) return;
+    const serverId = getActiveMeetingServerId();
+    let mounted = true;
+    const discover = async () => {
+      try {
+        const active = await client.getActiveLiveMeetings();
+        if (mounted && getActiveMeetingServerId() === serverId) setDiscovered(active);
+      } catch {
+        /* Offline or an older server: keep what the device already knows. */
+      }
+    };
+    discoverRef.current = discover;
+    const detach = subscribeLiveRefresh(
+      client,
+      discover,
+      (path) => path === '/live-meetings/active',
+      [{ path: '/live-meetings/active' }],
+      { initial: true },
+    );
+    const foreground = AppState.addEventListener('change', (state) => {
+      if (state === 'active') void discover();
+    });
+    return () => {
+      mounted = false;
+      detach();
+      foreground.remove();
+    };
+  }, [serverEpoch]);
+  useEffect(() => {
+    if (!discovered || followed || alive(localMeeting)) return;
+    const next = discovered.running.find(
+      (item) => item.id !== localMeeting?.id && !settled.current.has(item.id),
+    );
+    if (next) followRemoteMeeting(next.sessionId, next.id);
+  }, [discovered, followed, localMeeting]);
   const meeting = localMeeting?.state === 'active' ? localMeeting : remoteMeeting;
+  const online = meeting?.engine === 'attendee';
   const remote =
     meeting !== null && meeting.id === remoteMeeting?.id && localMeeting?.id !== meeting.id;
   const activePendingCommand = remote ? pendingCommand : null;
   useEffect(() => {
-    if (!followed) {
-      setRemoteMeeting(null);
-      return;
-    }
-    if (pathname.startsWith('/meeting/')) return;
+    if (!followed || pathname.startsWith('/meeting/')) return;
     let mounted = true;
     let polling = false;
     const client = createVerityClient();
@@ -186,7 +240,19 @@ export function ActiveMeetingOverlay() {
           null;
         if (!mounted || getActiveMeetingServerId() !== followed.serverId) return;
         setRemoteMeeting(saved);
-        if (saved?.state !== 'active') {
+        if (!saved) {
+          // Not synced to this device yet (or offline): while the server still lists it as
+          // running, keep following and look again on the next refresh. Clearing at once
+          // would let discovery follow it again, in a loop; once it is gone, let it go.
+          if (discoveredRef.current?.running.some((item) => item.id === followed.meetingId)) return;
+          // Before discovery has answered (a cold start) the server may still run it; let
+          // discovery follow it again then, rather than settling it for good.
+          if (discoveredRef.current) settled.current.add(followed.meetingId);
+          clearFollowedRemoteMeeting();
+          return;
+        }
+        if (!alive(saved)) settled.current.add(saved.id);
+        if (!alive(saved)) {
           clearFollowedRemoteMeeting();
           setPendingCommand(null);
           if (remoteStopRequested.current) {
@@ -198,12 +264,13 @@ export function ActiveMeetingOverlay() {
           }
           return;
         }
-        if (saved.engine === 'attendee') return;
+        // Online meetings run on the server; there is no recorder to command.
+        if (saved?.engine === 'attendee') return;
         const control = await client?.getLiveMeetingCommands(
           followed.sessionId,
           followed.meetingId,
         );
-        if (!mounted || !control) return;
+        if (!mounted || !control || getActiveMeetingServerId() !== followed.serverId) return;
         setRecorderOnline(control.recorderOnline);
         const latest = control.commands[0];
         setPendingCommand(latest?.state === 'pending' ? latest.action : null);
@@ -231,11 +298,18 @@ export function ActiveMeetingOverlay() {
       detach();
     };
   }, [followed?.serverId, followed?.sessionId, followed?.meetingId, pathname, pendingCommand]);
+  // An ended one stays offered too: a meeting joined automatically can end before anyone opens
+  // the app, and it is deleted after the retention period unless assigned or discarded.
+  const unassigned =
+    discovered?.unassigned.find((item) => item.state !== 'ended') ??
+    discovered?.unassigned[0] ??
+    null;
+  const showMeeting = alive(meeting);
   useEffect(() => {
-    if (meeting?.state !== 'active') return;
+    if (!showMeeting && !unassigned) return;
     const timer = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(timer);
-  }, [meeting?.state]);
+  }, [showMeeting, unassigned]);
   useEffect(() => {
     if (meeting?.state !== 'active') return;
     void activateKeepAwakeAsync('verity-live-meeting').catch(() => undefined);
@@ -244,7 +318,116 @@ export function ActiveMeetingOverlay() {
     };
   }, [meeting?.state]);
 
-  if (meeting?.state !== 'active' || pathname.startsWith('/meeting/')) return null;
+  const sheets = (
+    <>
+      <AssignMeetingSheet
+        meeting={assigning}
+        onClose={() => setAssigning(null)}
+        onAssigned={(sessionId) => {
+          setAssigning(null);
+          void discoverRef.current();
+          router.push({ pathname: '/meeting/[sessionId]', params: { sessionId } });
+        }}
+        onDiscard={() => {
+          const target = assigning;
+          setAssigning(null);
+          if (target) discardUnassigned(target.id);
+        }}
+      />
+      <CalendarMeetingPrompt
+        eventKey={upcomingKey}
+        onClose={() => setUpcomingKey(null)}
+        onJoined={() => {
+          setUpcomingKey(null);
+          void discoverRef.current();
+        }}
+      />
+      {confirmSheet}
+    </>
+  );
+  const discardUnassigned = (meetingId: string) =>
+    confirm({
+      title: 'Discard this meeting?',
+      message: 'Verity leaves the call and deletes everything it transcribed.',
+      confirmLabel: 'Discard',
+      destructive: true,
+      onConfirm: async () => {
+        try {
+          const client = createVerityClient();
+          if (!client) throw new Error('Connect to the server to discard this meeting.');
+          await client.discardLiveMeeting(meetingId);
+          setError(null);
+        } catch (reason) {
+          setError(reason instanceof Error ? reason.message : String(reason));
+        }
+        await discoverRef.current();
+      },
+    });
+
+  if (pathname.startsWith('/meeting/')) return sheets;
+  if (!showMeeting || !meeting) {
+    if (!unassigned) return sheets;
+    return (
+      <View
+        pointerEvents="box-none"
+        style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}
+      >
+        <Animated.View
+          {...pan.panHandlers}
+          onLayout={(event) => setOverlayHeight(event.nativeEvent.layout.height)}
+          style={[styles.card, { top, width: WIDTH, transform: position.getTranslateTransform() }]}
+        >
+          <View style={styles.titleRow}>
+            <Dot
+              intent={
+                unassigned.state === 'ended'
+                  ? 'optional'
+                  : unassigned.state === 'interrupted'
+                    ? 'optional'
+                    : 'needsSetup'
+              }
+            />
+            <Text variant="row" style={styles.title}>
+              {unassigned.state === 'ended' ? 'Ended' : 'Online'} ·{' '}
+              {Math.max(
+                0,
+                Math.floor(((unassigned.endedAt ?? now) - unassigned.startedAt) / 60000),
+              )}{' '}
+              min
+            </Text>
+          </View>
+          <Text variant="row" numberOfLines={1}>
+            {unassigned.title || 'Online meeting'}
+          </Text>
+          <Text variant="footnote">Not in a project yet</Text>
+          {error ? (
+            <Text variant="footnote" tone="attention">
+              {error}
+            </Text>
+          ) : null}
+          <View style={styles.actions}>
+            <View style={styles.grow}>
+              <Button
+                label="Assign"
+                accessibilityLabel="Assign meeting to a project"
+                size="compact"
+                onPress={() => setAssigning(unassigned)}
+                fullWidth
+              />
+            </View>
+            <Button
+              label="Discard"
+              accessibilityLabel="Discard meeting"
+              variant="secondary"
+              size="compact"
+              onPress={() => discardUnassigned(unassigned.id)}
+            />
+          </View>
+        </Animated.View>
+        {sheets}
+      </View>
+    );
+  }
 
   const openMeeting = () =>
     router.push({ pathname: '/meeting/[sessionId]', params: { sessionId: meeting.sessionId } });
@@ -278,18 +461,16 @@ export function ActiveMeetingOverlay() {
     if (busy || activePendingCommand === 'stop') return;
     setBusy(true);
     try {
-      if (remote) {
-        if (!meeting.serverId || meeting.serverId !== getActiveMeetingServerId())
-          throw new Error('This meeting belongs to another server.');
+      if (remote && (!meeting.serverId || meeting.serverId !== getActiveMeetingServerId()))
+        throw new Error('This meeting belongs to another server.');
+      if (remote && online) {
+        const client = createVerityClient();
+        if (!client) throw new Error('Connect to the server to stop this meeting.');
+        await client.stopOnlineMeeting(meeting.sessionId, meeting.id);
+        void discoverRef.current();
+      } else if (remote) {
         const client = createVerityClient();
         if (!client) throw new Error('Connect to the server to stop this recording.');
-        if (meeting.engine === 'attendee') {
-          await client.stopOnlineMeeting(meeting.sessionId, meeting.id);
-          setRemoteMeeting(null);
-          clearFollowedRemoteMeeting();
-          openMeeting();
-          return;
-        }
         await client.requestLiveMeetingCommand(meeting.sessionId, meeting.id, 'stop');
         remoteStopRequested.current = true;
         setPendingCommand('stop');
@@ -321,10 +502,15 @@ export function ActiveMeetingOverlay() {
             {/* Recording is shown in the problem colour, as on the meeting screen. */}
             <Dot intent={meeting.captureStatus === 'paused' ? 'optional' : 'needsSetup'} />
             <Text variant="row" style={styles.title}>
-              {meeting.captureStatus === 'paused' ? 'Paused' : 'Live meeting'} ·{' '}
+              {meeting.captureStatus === 'paused' ? 'Paused' : online ? 'Online' : 'Live meeting'} ·{' '}
               {Math.floor((now - meeting.startedAt) / 60000)} min
             </Text>
           </View>
+          {meeting.title ? (
+            <Text variant="row" numberOfLines={1}>
+              {meeting.title}
+            </Text>
+          ) : null}
           <Text variant="footnote">
             {activePendingCommand
               ? recorderOnline
@@ -344,23 +530,32 @@ export function ActiveMeetingOverlay() {
         ) : null}
         <View style={styles.actions}>
           <View style={styles.grow}>
-            <Button
-              label={meeting.captureStatus === 'paused' ? 'Resume' : 'Pause'}
-              accessibilityLabel={
-                meeting.captureStatus === 'paused' ? 'Resume meeting' : 'Pause meeting'
-              }
-              icon={meeting.captureStatus === 'paused' ? 'play' : 'pause'}
-              variant="secondary"
-              size="compact"
-              disabled={
-                busy ||
-                meeting.engine === 'attendee' ||
-                !!activePendingCommand ||
-                (meeting.captureStatus !== 'listening' && meeting.captureStatus !== 'paused')
-              }
-              onPress={togglePause}
-              fullWidth
-            />
+            {online ? (
+              <Button
+                label="Open"
+                accessibilityLabel="Open live meeting"
+                size="compact"
+                onPress={openMeeting}
+                fullWidth
+              />
+            ) : (
+              <Button
+                label={meeting.captureStatus === 'paused' ? 'Resume' : 'Pause'}
+                accessibilityLabel={
+                  meeting.captureStatus === 'paused' ? 'Resume meeting' : 'Pause meeting'
+                }
+                icon={meeting.captureStatus === 'paused' ? 'play' : 'pause'}
+                variant="secondary"
+                size="compact"
+                disabled={
+                  busy ||
+                  !!activePendingCommand ||
+                  (meeting.captureStatus !== 'listening' && meeting.captureStatus !== 'paused')
+                }
+                onPress={togglePause}
+                fullWidth
+              />
+            )}
           </View>
           <Button
             label="Stop"
@@ -373,6 +568,7 @@ export function ActiveMeetingOverlay() {
           />
         </View>
       </Animated.View>
+      {sheets}
     </View>
   );
 }

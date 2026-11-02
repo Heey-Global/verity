@@ -1,3 +1,4 @@
+import { parseOomScoreAdj } from './sandbox-memory-policy.js';
 import {
   configureManagedUpdateChannel,
   MANAGED_DEPLOYMENT_ROOT,
@@ -867,8 +868,7 @@ async function main(): Promise<void> {
       // (optionally `…:/v1.41`). A `unix://` value selects the mounted-socket
       // transport in createDockerClient (ADR 0003 R2). Passed through unchanged.
       dockerBaseUrl: process.env.VERITY_DOCKER_BASE_URL,
-      diagnosticServerContainerId:
-        process.env.VERITY_DIAGNOSTIC_SERVER_CONTAINER_ID ?? process.env.HOSTNAME,
+      diagnosticServerContainerId: process.env.VERITY_DIAGNOSTIC_SERVER_CONTAINER_ID,
       hostDiagnosticSnapshotPath:
         process.env.VERITY_HOST_DIAGNOSTIC_SNAPSHOT ?? '/run/verity-host-diagnostics/snapshot.json',
       resolvePreviewConnectorImage: () =>
@@ -944,6 +944,9 @@ async function main(): Promise<void> {
       // VERITY_SANDBOX_ALLOW_PRIVILEGE_ESCALATION=1 (or add caps via CAP_ADD).
       sandboxPidsLimit: parseNonNegativeInt(process.env.VERITY_SANDBOX_PIDS_LIMIT),
       sandboxMemoryBytes: parseByteSize(process.env.VERITY_SANDBOX_MEMORY),
+      sandboxMemoryReservationBytes: parseByteSize(process.env.VERITY_SANDBOX_MEMORY_RESERVATION),
+      sandboxHostReserveBytes: parseByteSize(process.env.VERITY_SANDBOX_HOST_RESERVE),
+      sandboxOomScoreAdj: parseOomScoreAdj(process.env.VERITY_SANDBOX_OOM_SCORE_ADJ),
       sandboxSwapBytes: parseSwapSize(process.env.VERITY_SANDBOX_SWAP),
       sandboxNanoCpus: parseCpuCores(process.env.VERITY_SANDBOX_CPUS),
       sandboxCpuShares: parseNonNegativeInt(process.env.VERITY_SANDBOX_CPU_SHARES),

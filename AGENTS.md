@@ -45,8 +45,19 @@ For localized changes, pass explicit file paths to
 Include all relevant branch changes, not just the most recent commit. Use the
 full format or lint check when shared configuration changes affect the tree.
 When types or shared APIs change, also lint affected unchanged consumers with
-`npx eslint --no-warn-ignored --no-cache -- <files>`: ESLint's file cache does not
-invalidate unchanged files when an imported type changes.
+`npm run lint:changed -- <files>`. The lint runner roots type analysis at the
+requested files and their imports, retains ambient declarations, and resolves
+project references to current sources. Local runs reuse clean file-group results only while
+recorded source/type dependencies, configuration, ambient declarations and module
+resolution inputs remain unchanged. CI executes every lint group without reusing clean
+results. Both CI and local runs may reuse ambient classifications validated against
+current file content and the TypeScript/classifier version; this metadata is bounded
+to 4 MiB under `.cache/lint-ambient` and never stores ASTs or type programs. Use
+`npm run lint -- --no-cache` or `npm run lint:changed -- --no-cache <files>` to
+bypass both caches and force a fresh check. Workers run sequentially under a conservative heap
+budget, limit both file count and source bytes per group, and retry smaller groups
+after memory exhaustion; the heap budget never grows automatically. Full local lint
+includes new unignored files and skips files deleted from the working tree.
 
 For TypeScript changes, build the affected projects and consumers, for example
 `npx tsc -b packages/server`. Build mode includes referenced dependencies, but
@@ -90,10 +101,11 @@ gitleaks scan, the repository's lint and format scripts, then a code review
 whose receipt is `.agents/.last-code-review-sha` — a per-checkout marker, never
 committed. Run `verity-code-review run` and `verity-code-review mark`; the
 sandbox git wrapper refuses `git push --no-verify`. When the dependencies are
-not installed, the hook stops and asks: the operator chooses between installing
-them (`npm ci --ignore-scripts`) and skipping lint and format for the session
-(`verity-local-checks skip`, remembered per checkout until `package.json` or
-the lockfile changes). The scan is the last point at which a leaked credential
+not installed, the hook automatically prepares compatible dependencies with
+`verity-dependencies install` (falling back to npm with lifecycle scripts disabled)
+and runs the checks. A requested push authorizes this preparation without another
+confirmation. Installation failures stop the push. An explicit
+`verity-local-checks skip` remains valid until dependency inputs change. The scan is the last point at which a leaked credential
 is still local; once pushed it is burned and has to be rotated, whoever
 force-updates the branch afterwards. Do not commit credentials, private
 deployment data, generated local state, or `.env` files in the first place.

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-import { appendFileSync } from 'node:fs';
+import { appendFileSync, readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
-import { pathToFileURL } from 'node:url';
+import { pathToFileURL, URL } from 'node:url';
 import { isReleaseBotLogin } from './release-bot-logins.mjs';
 
 const trains = [
@@ -175,8 +175,28 @@ export function registerReleaseTags(mode, head, options = {}) {
       target = remoteTarget();
     }
     if (!target || !shaPattern.test(target)) throw new Error(`Invalid remote release tag ${tag}`);
-    if (matches[0] && target !== matches[0])
-      throw new Error(`${tag} differs from its merged release commit`);
+    if (matches[0] && target !== matches[0]) {
+      // Recovery bindings are reviewed repository data, never inferred from a
+      // mutable draft. Keep the binding after publication so later CI continues
+      // to verify the corrected immutable identity.
+      /** @type {unknown} */
+      const rawRecoveries = JSON.parse(
+        readFileSync(new URL('../.release-source-recoveries.json', import.meta.url), 'utf8'),
+      );
+      if (!rawRecoveries || typeof rawRecoveries !== 'object' || Array.isArray(rawRecoveries))
+        throw new Error('Invalid release source recoveries');
+      const recoveries =
+        /** @type {Record<string, {original?: unknown, source?: unknown} | undefined>} */ (
+          rawRecoveries
+        );
+      const recovery = recoveries[tag];
+      if (
+        recovery?.original !== matches[0] ||
+        recovery?.source !== target ||
+        !ancestor(matches[0], target)
+      )
+        throw new Error(`${tag} differs from its merged release commit`);
+    }
     git(['merge-base', '--is-ancestor', target, head]);
     if (versionAt(target, spec) !== version)
       throw new Error(`${tag} declares a different release version`);

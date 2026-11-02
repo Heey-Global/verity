@@ -2,13 +2,12 @@ import { refreshTaskContext, startTaskContext, useTaskContext } from '../lib/sha
 import { Icon } from './Icon';
 import { bubbleRestingPlace, projectsByRecentCapture, taskContext } from '@verity/mobile';
 import * as Haptics from 'expo-haptics';
-import { useGlobalSearchParams, usePathname } from 'expo-router';
+import { router, useGlobalSearchParams, usePathname } from 'expo-router';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   Animated,
   AppState,
-  Easing,
   Keyboard,
   PanResponder,
   Platform,
@@ -39,11 +38,13 @@ import { QuickCaptureIntro } from './QuickCaptureIntro';
 import { startWatchInbox, syncWatchProjects } from '../lib/watchCapture';
 import { TasksPanel } from './TasksPanel';
 import { tint } from './ui/tint';
+import { useTaskCaptureGesture } from '../hooks/useTaskCaptureGesture';
+import { taskCaptureGlyphOffset } from '../lib/taskCaptureMotion';
 
 /** Bubble diameter; half of it sits outside the screen edge. */
-const BUBBLE = 50;
-/** Extra touch area on the visible side, so the target is a full 44pt. */
-const EXTEND = 19;
+const BUBBLE = 60;
+/** Extra touch area on the visible side, so the target is a full 52pt. */
+const EXTEND = 22;
 
 export function QuickCaptureBubble() {
   useEffect(
@@ -66,23 +67,19 @@ export function QuickCaptureBubble() {
   const [meeting, setMeeting] = useState(false);
   const [remoteMeeting, setRemoteMeeting] = useState(false);
   const [dragging, setDragging] = useState(false);
-  /** From grab until the release spring lands: the whole bubble is on screen. */
-  /** 0 = glyph centred (in the hand), 1 = glyph on the visible half (docked).
-   *  Animated so the glyph glides instead of jumping when the bubble lands. */
-  const glyph = useRef(new Animated.Value(1)).current;
-  const setLoose = (value: boolean) =>
-    Animated.timing(glyph, {
-      toValue: value ? 0 : 1,
-      duration: value ? 120 : 220,
-      easing: Easing.out(Easing.cubic),
-      useNativeDriver: false,
-    }).start();
   const [capture, setCapture] = useState(false);
   const [intro, setIntro] = useState(false);
   const [panel, setPanel] = useState(false);
-  const [saved, setSaved] = useState<{ id: string; label: string } | null>(null);
+  const gesture = useTaskCaptureGesture(
+    () => (preferences.introSeen || !preferences.loaded ? setCapture(true) : setIntro(true)),
+    () => setPanel(true),
+  );
+  const [saved, setSaved] = useState<{
+    id: string;
+    label: string;
+    kind: 'task' | 'assistant';
+  } | null>(null);
   const position = useRef(new Animated.ValueXY()).current;
-  const squash = useRef(new Animated.Value(1)).current;
   const origin = useRef({ x: 0, y: 0 });
   const context = taskContext(pathname, params, sessions);
   const recentProjects = projectsByRecentCapture(projects, tasks);
@@ -114,15 +111,13 @@ export function QuickCaptureBubble() {
   const pan = useMemo(
     () =>
       PanResponder.create({
-        onMoveShouldSetPanResponder: (_, g) => Math.abs(g.dx) > 6 || Math.abs(g.dy) > 6,
+        onMoveShouldSetPanResponderCapture: (_, g) => gesture.claimDrag(g.dx, g.dy),
         onPanResponderGrant: () => {
           // Grabbing a bubble mid-flight: freeze it where it is and drag from there.
           position.stopAnimation((value) => {
             origin.current = value;
           });
-          squash.stopAnimation(() => squash.setValue(1));
           setDragging(true);
-          setLoose(true);
         },
         onPanResponderMove: (_, g) =>
           position.setValue({
@@ -131,9 +126,8 @@ export function QuickCaptureBubble() {
           }),
         onPanResponderRelease: (_, g) => {
           setDragging(false);
-          // A throw keeps its momentum: the spring starts at the finger's
-          // velocity, so a hard fling overshoots the edge and bounces back,
-          // while a gentle release just glides home.
+          // Keep the release velocity while bringing the circle and glyph
+          // to their resting position together.
           const rest = bubbleRestingPlace({
             x: origin.current.x + g.dx + BUBBLE / 2,
             y: origin.current.y + g.dy,
@@ -151,23 +145,12 @@ export function QuickCaptureBubble() {
           Animated.spring(position, {
             toValue: origin.current,
             velocity: { x: g.vx * 1000, y: g.vy * 1000 },
-            // Soft and slightly underdamped: a gentle release glides home, a
-            // hard throw overshoots once and settles instead of snapping.
+            // Stop at the edge without overshoot or a second landing animation.
             tension: 38,
-            friction: Math.max(5.5, 8.5 - Math.abs(g.vx) * 2),
+            friction: 12,
+            overshootClamping: true,
             useNativeDriver: false,
-          }).start(({ finished }) => {
-            if (!finished) return;
-            setLoose(false);
-            // Arrival: a short squash against the edge, like a ball landing.
-            squash.setValue(Math.max(0.88, 1 - Math.abs(g.vx) * 0.08));
-            Animated.spring(squash, {
-              toValue: 1,
-              tension: 120,
-              friction: 6,
-              useNativeDriver: false,
-            }).start();
-          });
+          }).start();
           void saveTaskPreferences({ side: rest.side, fraction: rest.y / height });
           void Haptics.impactAsync(
             Math.abs(g.vx) > 0.6
@@ -183,12 +166,25 @@ export function QuickCaptureBubble() {
             x: preferences.side === 'left' ? -BUBBLE / 2 : width - BUBBLE / 2,
             y: Math.max(top, Math.min(bottom, height * preferences.fraction)),
           };
-          Animated.spring(position, { toValue: origin.current, useNativeDriver: false }).start(() =>
-            setLoose(false),
-          );
+          Animated.spring(position, {
+            toValue: origin.current,
+            tension: 38,
+            friction: 12,
+            overshootClamping: true,
+            useNativeDriver: false,
+          }).start();
         },
       }),
-    [position, squash, width, height, top, bottom, preferences.side, preferences.fraction],
+    [
+      position,
+      width,
+      height,
+      top,
+      bottom,
+      preferences.side,
+      preferences.fraction,
+      gesture.claimDrag,
+    ],
   );
   useEffect(() => startTasksStore(), []);
   // Apple Watch captures land in the same queue once the store is running.
@@ -289,7 +285,7 @@ export function QuickCaptureBubble() {
         <Animated.View
           {...pan.panHandlers}
           // The wrapper extends 22pt onto the screen past the bubble so the
-          // touch target is 44pt wide where it can be hit; children outside
+          // touch target is 52pt wide where it can be hit; children outside
           // a parent's bounds get no touches on Android, so slop would not do.
           style={{
             position: 'absolute',
@@ -303,8 +299,6 @@ export function QuickCaptureBubble() {
                 ),
               },
               { translateY: position.y },
-              { scaleX: squash },
-              { scaleY: Animated.divide(1, squash) },
             ],
           }}
         >
@@ -312,18 +306,20 @@ export function QuickCaptureBubble() {
               rather than a button; it only comes forward while being dragged. */}
           <Pressable
             accessibilityRole="button"
-            accessibilityLabel="Capture task"
+            accessibilityLabel={
+              count > 0 ? `Capture task, ${String(count)} open tasks` : 'Capture task'
+            }
             accessibilityHint={
               preferences.introSeen
                 ? 'Double tap to record a task; long press to open the task list'
                 : 'Double tap to learn how task capture works; long press to open the task list'
             }
-            onPress={() =>
-              preferences.introSeen || !preferences.loaded ? setCapture(true) : setIntro(true)
-            }
-            onLongPress={() => setPanel(true)}
+            onPressIn={gesture.onPressIn}
+            onPress={gesture.onPress}
+            onLongPress={gesture.onLongPress}
+            delayLongPress={600}
             // The pressable spans the bubble plus the extension on the visible
-            // side, so the whole 44pt the finger can reach records on tap.
+            // side, so the whole 52pt the finger can reach records on tap.
             style={{
               paddingLeft: preferences.side === 'right' ? EXTEND : 0,
               paddingRight: preferences.side === 'left' ? EXTEND : 0,
@@ -347,51 +343,45 @@ export function QuickCaptureBubble() {
                 style={{
                   transform: [
                     {
-                      translateX: glyph.interpolate({
-                        inputRange: [0, 1],
-                        outputRange: [
-                          0,
-                          (preferences.side === 'right' ? -1 : 1) * (BUBBLE / 4 - 2),
-                        ],
-                      }),
+                      // Center within the visible portion as the circle crosses
+                      // an edge; no preference change or delayed animation moves it.
+                      translateX: taskCaptureGlyphOffset(position.x, width, BUBBLE),
                     },
                   ],
                 }}
               >
-                <Icon name="mic" size={20} color={theme.colors.action} />
+                <Icon name="mic" size={24} color={theme.colors.action} />
               </Animated.View>
             </View>
-          </Pressable>
-          {count > 0 ? (
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={`Open Tasks, ${String(count)} open`}
-              hitSlop={6}
-              onPress={() => setPanel(true)}
-              style={{
-                position: 'absolute',
-                top: -6,
-                [preferences.side === 'right' ? 'left' : 'right']: EXTEND - 4,
-                minWidth: 18,
-                height: 18,
-                paddingHorizontal: 5,
-                borderRadius: 9,
-                backgroundColor: theme.colors.action,
-                justifyContent: 'center',
-              }}
-            >
-              <Text
+            {count > 0 ? (
+              <View
+                pointerEvents="none"
+                accessible={false}
                 style={{
-                  color: theme.colors.onAction,
-                  textAlign: 'center',
-                  fontSize: theme.typography.caption.fontSize,
-                  fontFamily: theme.fonts.bold,
+                  position: 'absolute',
+                  top: 0,
+                  [preferences.side === 'right' ? 'left' : 'right']: EXTEND - 4,
+                  minWidth: 18,
+                  height: 18,
+                  paddingHorizontal: 5,
+                  borderRadius: 9,
+                  backgroundColor: theme.colors.action,
+                  justifyContent: 'center',
                 }}
               >
-                {count}
-              </Text>
-            </Pressable>
-          ) : null}
+                <Text
+                  style={{
+                    color: theme.colors.onAction,
+                    textAlign: 'center',
+                    fontSize: theme.typography.caption.fontSize,
+                    fontFamily: theme.fonts.bold,
+                  }}
+                >
+                  {count}
+                </Text>
+              </View>
+            ) : null}
+          </Pressable>
         </Animated.View>
       ) : null}
       {intro ? (
@@ -412,7 +402,7 @@ export function QuickCaptureBubble() {
           context={context}
           projects={recentProjects}
           onClose={() => setCapture(false)}
-          onSaved={(id, label) => setSaved({ id, label })}
+          onSaved={(id, label, kind = 'task') => setSaved({ id, label, kind })}
         />
       ) : null}
       {panel ? (
@@ -442,9 +432,17 @@ export function QuickCaptureBubble() {
             backgroundColor: theme.colors.surface,
           }}
         >
-          <Text style={{ color: theme.colors.text }}>Saved · {saved.label}</Text>
+          <Text style={{ color: theme.colors.text }}>
+            {saved.kind === 'assistant' ? 'Sent' : 'Saved'} · {saved.label}
+          </Text>
           <Pressable
             onPress={() => {
+              // A message cannot be unsent; offer the conversation instead.
+              if (saved.kind === 'assistant') {
+                setSaved(null);
+                router.push(`/session/${saved.id}`);
+                return;
+              }
               void removeTask(saved.id)
                 .then(() => setSaved(null))
                 .catch((error) =>
@@ -455,7 +453,9 @@ export function QuickCaptureBubble() {
                 );
             }}
           >
-            <Text style={{ color: theme.colors.action }}>Undo</Text>
+            <Text style={{ color: theme.colors.action }}>
+              {saved.kind === 'assistant' ? 'Open' : 'Undo'}
+            </Text>
           </Pressable>
         </View>
       ) : null}

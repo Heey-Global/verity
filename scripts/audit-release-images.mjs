@@ -404,7 +404,9 @@ export async function fetchTagCatalogue({
     `${registry}/token?service=ghcr.io&scope=repository:${repository}:pull`,
     { headers: { authorization: `Basic ${auth}` }, fetchImpl },
   );
-  const issued = /** @type {{ token?: unknown }} */ (await tokenResponse.json());
+  /** @type {unknown} */
+  const tokenJson = await tokenResponse.json();
+  const issued = /** @type {{ token?: unknown }} */ (tokenJson);
   const pullToken = issued.token;
   if (typeof pullToken !== 'string' || pullToken === '') {
     throw new Error(`ghcr.io issued no usable pull token for ${repository}`);
@@ -427,7 +429,9 @@ export async function fetchTagCatalogue({
       headers: { authorization: `Bearer ${pullToken}` },
       fetchImpl,
     });
-    const body = /** @type {{ tags?: unknown }} */ (await response.json());
+    /** @type {unknown} */
+    const catalogueJson = await response.json();
+    const body = /** @type {{ tags?: unknown }} */ (catalogueJson);
     // The OCI spec allows a null `tags` for a repository that has none.
     const listed = body.tags;
     if (listed !== null && listed !== undefined && !Array.isArray(listed)) {
@@ -484,7 +488,9 @@ export async function fetchReleases({
     },
     fetchImpl,
   });
-  const body = /** @type {Release[]} */ (/** @type {unknown} */ (await response.json()));
+  /** @type {unknown} */
+  const releaseJson = await response.json();
+  const body = /** @type {Release[]} */ (releaseJson);
   if (!Array.isArray(body)) throw new Error(`${repository} returned no release list`);
   return body;
 }

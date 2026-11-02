@@ -1,3 +1,4 @@
+import { SchedulingDiagnostics } from './SchedulingDiagnostics';
 import { markSessionSwitch, sessionSwitchTiming, type SwitchTiming } from '@verity/mobile';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 
@@ -40,5 +41,7 @@ export function DeferredSessionPane({
   useEffect(() => {
     if (ready && sessionId) markSessionSwitch(mountedTrace.current, 'deferred-pane-ready-commit');
   }, [ready, sessionId]);
-  return ready ? children : fallback;
+  return (
+    <SchedulingDiagnostics stage="session">{ready ? children : fallback}</SchedulingDiagnostics>
+  );
 }

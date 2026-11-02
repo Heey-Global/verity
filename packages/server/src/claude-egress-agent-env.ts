@@ -84,6 +84,47 @@ export function claudeProjectEgressRefusal(options: {
   return 'Claude turns require the agent gateway egress. Configure the Claude egress identity and connector port before sending another message.';
 }
 
+/** Why a turn-time repair of a Sandbox without a valid Agent Gateway identity
+ *  did not make it ready. `undefined` means no repair was attempted or the repair
+ *  declined without an error to report. */
+export type AgentGatewayRepairFailure =
+  | { stage: 'rebuild'; cause: unknown }
+  | { stage: 'verify'; cause: unknown }
+  | { stage: 'still_unready' };
+
+const REPAIR_REASON_MAX_CHARS = 300;
+
+function repairReason(cause: unknown): string {
+  const raw = cause instanceof Error ? cause.message : String(cause);
+  const firstLine = raw.split('\n', 1)[0]?.trim() ?? '';
+  const reason = firstLine === '' ? 'unknown error' : firstLine;
+  return reason.length > REPAIR_REASON_MAX_CHARS
+    ? `${reason.slice(0, REPAIR_REASON_MAX_CHARS)}…`
+    : reason;
+}
+
+/**
+ * The operator-facing message for a Claude/Codex/OpenCode turn refused because its
+ * Sandbox has no valid Agent Gateway identity.
+ *
+ * When the automatic repair failed for a reason of its own — build storage
+ * unavailable, an image that would not build — that reason is what the operator
+ * has to act on, so it is named rather than hidden behind the identity symptom.
+ */
+export function agentGatewayUnavailableMessage(failure?: AgentGatewayRepairFailure): string {
+  const prefix = 'Sandbox has no valid Agent Gateway identity';
+  switch (failure?.stage) {
+    case 'rebuild':
+      return `${prefix}, and the automatic Sandbox rebuild failed: ${repairReason(failure.cause)} — resolve that, then send the message again`;
+    case 'verify':
+      return `${prefix}, and the rebuilt Sandbox could not be verified: ${repairReason(failure.cause)} — repair the project, then send the message again`;
+    case 'still_unready':
+      return `${prefix}, and it was still missing after the automatic Sandbox rebuild — repair the project, then send the message again`;
+    case undefined:
+      return `${prefix} and could not be repaired automatically — repair the project, then send the message again`;
+  }
+}
+
 /**
  * Decide the Claude-related environment a PROJECT agent process receives.
  *

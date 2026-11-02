@@ -1333,30 +1333,54 @@ describe('managed companion reconciliation', () => {
     expect(await readlink(join(target, '.current'))).toBe(`.versions/${'b'.repeat(64)}`);
   });
 
-  it('migrates the first managed update from a complete legacy flat seed', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'verity-agent-seed-legacy-'));
+  it.each([false, true])(
+    'migrates a legacy flat seed when the dependency helper is absent: %s',
+    async (missingHelper) => {
+      const root = await mkdtemp(join(tmpdir(), 'verity-agent-seed-legacy-'));
+      const source = await seedSource(root);
+      const target = join(root, 'seed');
+      await cp(source, target, { recursive: true });
+      if (missingHelper) await rm(join(target, 'bin/verity-dependencies'));
+      await writeFile(
+        join(target, '.verity-agent-seed'),
+        `schema=1\nimage=${oldImage}\nversion=13.1.4\npublished=2026-08-01T00:00:00Z\n`,
+      );
+
+      await publishAgentSeedAtomically(
+        source,
+        target,
+        targetImage,
+        '13.1.5',
+        undefined,
+        undefined,
+        true,
+      );
+      expect(await readlink(join(target, '.current'))).toBe(`.versions/${'b'.repeat(64)}`);
+      // Existing legacy sandboxes still bind the root and keep its complete flat
+      // files; only newly created sandboxes resolve `.current`.
+      expect(await readFile(join(target, '.verity-agent-seed'), 'utf8')).toContain(
+        `image=${oldImage}`,
+      );
+    },
+  );
+});
+
+it('requires the dependency helper in the newly published target even for legacy migration', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'verity-seed-target-helper-'));
+  try {
     const source = await seedSource(root);
     const target = join(root, 'seed');
     await cp(source, target, { recursive: true });
     await writeFile(
       join(target, '.verity-agent-seed'),
-      `schema=1\nimage=${oldImage}\nversion=13.1.4\npublished=2026-08-01T00:00:00Z\n`,
+      `schema=1\nimage=${oldImage}\nversion=4.64.0\npublished=2026-08-01T00:00:00Z\n`,
     );
-
-    await publishAgentSeedAtomically(
-      source,
-      target,
-      targetImage,
-      '13.1.5',
-      undefined,
-      undefined,
-      true,
-    );
-    expect(await readlink(join(target, '.current'))).toBe(`.versions/${'b'.repeat(64)}`);
-    // Existing legacy sandboxes still bind the root and keep its complete flat
-    // files; only newly created sandboxes resolve `.current`.
-    expect(await readFile(join(target, '.verity-agent-seed'), 'utf8')).toContain(
-      `image=${oldImage}`,
-    );
-  });
+    await rm(join(source, 'bin/verity-dependencies'));
+    await expect(
+      publishAgentSeedAtomically(source, target, targetImage, '4.68.0', undefined, undefined, true),
+    ).rejects.toThrow('required file is missing: bin/verity-dependencies');
+    await expect(readlink(join(target, '.current'))).rejects.toThrow();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });

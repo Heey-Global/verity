@@ -81,3 +81,8 @@ coverage
 /core.[0-9]*
 /core.*.[0-9]*
 /connectors/matrix/target/
+
+# Exact-bundle CPU profiling maps and private device captures.
+/apps/mobile/profiling-artifacts/
+
+/apps/mobile/dist-cpu-profile/

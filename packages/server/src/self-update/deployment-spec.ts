@@ -301,6 +301,11 @@ export function parseServerDeploymentSpec(value: unknown): ServerDeploymentSpec 
         mount.target === '/var/run/docker.sock' &&
         !mount.readOnly) ||
         (mount.target === '/run/verity-pairing' && mount.readOnly) ||
+        ((mount.target === '/run/verity-backups' ||
+          mount.target === '/run/verity-backup-identity') &&
+          source.path !== '/' &&
+          !source.path.includes(':') &&
+          !mount.readOnly) ||
         (mount.target === '/run/verity-host-diagnostics' &&
           source.path !== '/' &&
           !source.path.includes(':') &&
@@ -308,8 +313,7 @@ export function parseServerDeploymentSpec(value: unknown): ServerDeploymentSpec 
         // OPTIONAL, like the diagnostic bind: specs sealed before the builder
         // existed stay parseable, and only a verified installation adds it.
         (source.path === DEVCONTAINER_BUILDER_SOCKET_DIRECTORY &&
-          mount.target === DEVCONTAINER_BUILDER_SOCKET_DIRECTORY &&
-          mount.readOnly))
+          mount.target === DEVCONTAINER_BUILDER_SOCKET_DIRECTORY))
     ) {
       mounts.push({
         source: { kind: 'bind', path: source.path },
@@ -339,8 +343,12 @@ export function parseServerDeploymentSpec(value: unknown): ServerDeploymentSpec 
   // builds its update controller only when the socket is actually there.
   if (
     mounts.length < 3 ||
-    mounts.length > 9 ||
-    mounts.some((mount) => mount.readOnly !== READ_ONLY_TARGETS.includes(mount.target)) ||
+    mounts.length > 11 ||
+    mounts.some(
+      (mount) =>
+        mount.target !== DEVCONTAINER_BUILDER_SOCKET_DIRECTORY &&
+        mount.readOnly !== READ_ONLY_TARGETS.includes(mount.target),
+    ) ||
     new Set(mountKeys).size !== mountKeys.length ||
     // Distinct targets, not just distinct keys: two binds from different host
     // paths onto /var/run/docker.sock produce different keys, and with a fourth
@@ -348,6 +356,8 @@ export function parseServerDeploymentSpec(value: unknown): ServerDeploymentSpec 
     // vetted.
     new Set(mounts.map((mount) => mount.target)).size !== mounts.length ||
     !requiredVolumeKeys.every((key) => mountKeys.includes(key)) ||
+    mounts.some((mount) => mount.target === '/run/verity-backups') !==
+      mounts.some((mount) => mount.target === '/run/verity-backup-identity') ||
     // The two control-plane volumes form one boundary: the Server must rotate the
     // identity generation it asks the Runner to acknowledge over the matching
     // runtime socket. Accept old specs with neither, but never a half-upgraded pair.

@@ -1030,25 +1030,19 @@ ${smoke.slice(start, end)}`,
   });
 
   /**
-   * This assertion is the inverse of the one it replaces, and the inversion is the
-   * point rather than a relaxation.
+   * The image build and the harness build have no dependency on one another, but they
+   * must not run side by side: overlapping a full Server image build with `npm ci` plus
+   * `tsc -b` (measured at ~1.2 GB peak) once got the harness SIGTERMed.
    *
-   * The image build and the harness build have no dependency on one another, so
-   * running them concurrently was free wall-clock on a VM that had the machine to
-   * itself. It is not free here. The runner lane is capped at 1.5 cores and 3 GiB,
-   * but the isolated daemon and its BuildKit are SIBLING containers started through
-   * the host socket and inherit no cap at all — so overlapping them does not overlap
-   * two bounded workloads. It puts an uncapped image build next to the ceiling
-   * `npm ci` plus `tsc -b` is trying to fit inside (measured at ~1.2 GB peak, and
-   * already SIGTERMed on these runners once), on the box serving production.
-   *
-   * Serialising spends a few minutes of a 90-minute budget, on runner time that no
-   * longer costs anything. What must NOT be lost with the concurrency is the cache
-   * warming: this build is what makes the gated release publisher's build
-   * incremental, and it needs the Actions runtime token a shell-invoked Buildx does
+   * The harness may overlap everything BEFORE the image build — the registry pull, the
+   * isolated daemon's start and the predecessor load — and does, because this job gates
+   * every Server release and the harness was otherwise on its critical path. What this
+   * guards is that it is always joined before the image build starts. What must also not
+   * be lost is the cache warming: this build is what makes the gated release publisher's
+   * build incremental, and it needs the Actions runtime token a shell-invoked Buildx does
    * not otherwise get.
    */
-  it('builds the image and harness one after the other, still warming the release cache', async () => {
+  it('joins the harness before the image build, still warming the release cache', async () => {
     const workflow = await readFile(resolve(root, '.github/workflows/self-update.yml'), 'utf8');
 
     expect(workflow).toContain('docker buildx build');
@@ -1059,19 +1053,21 @@ ${smoke.slice(start, end)}`,
     expect(workflow).toContain('failed to fetch oauth token: unexpected status from');
     expect(workflow).toContain('deterministic Dockerfile/build failures still fail immediately');
 
-    // Two steps, not one step with two background jobs — and the harness first, so a
-    // compile error fails before the expensive build rather than beside it.
-    // Anchored on the end of the line, because a bare `indexOf` of the name is a
-    // prefix match: it is equally satisfied by a step called
-    // "Build the host-side harness LATER", which is exactly what a reordering edit
-    // that renames as it goes would leave behind.
-    const harness = workflow.indexOf('- name: Build the host-side harness\n');
+    // Anchored on the end of the line, because a bare `indexOf` of the name is a prefix
+    // match: it is equally satisfied by a step called "Join the host-side harness build
+    // LATER", which is exactly what a reordering edit that renames as it goes would leave
+    // behind.
+    const start = workflow.indexOf('- name: Start the host-side harness build\n');
+    const fetch = workflow.indexOf('- name: Fetch the previously released Server image\n');
+    const join = workflow.indexOf('- name: Join the host-side harness build\n');
     const image = workflow.indexOf('- name: Build the Server image into the isolated daemon\n');
-    expect(harness).toBeGreaterThan(-1);
-    expect(image).toBeGreaterThan(harness);
+    expect(start).toBeGreaterThan(-1);
+    expect(fetch).toBeGreaterThan(start);
+    expect(join).toBeGreaterThan(fetch);
+    expect(image).toBeGreaterThan(join);
 
-    // The concurrency this replaced, in the spelling it had. Backgrounding the build
-    // again is a one-line change that looks like a pure speed win from the diff.
+    // The concurrency with the image build, in the spelling it once had. Backgrounding
+    // that build again is a one-line change that looks like a pure speed win from the diff.
     expect(workflow).not.toContain('image_pid');
     expect(workflow).not.toContain('harness_pid');
   });

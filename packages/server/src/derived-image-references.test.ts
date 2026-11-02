@@ -175,3 +175,31 @@ it.each(['sha256:test', 'private.example/probe@sha256:pinned'])(
     ).toEqual([]);
   },
 );
+
+it('does not pin a sleeping default selection after container retirement, but keeps overrides', async () => {
+  const ctx = await createTestDb();
+  try {
+    await ctx.store.upsertProject({
+      id: 'sleeping',
+      owner: 'org',
+      repo: 'sleeping',
+      containerName: 'verity-sleeping',
+      state: 'absent',
+    });
+    await ctx.db
+      .updateTable('projects')
+      .set({
+        state: 'sleeping',
+        image_ref: ref,
+        image_override_ref: 'private.example/pinned:chosen',
+      })
+      .where('id', '=', 'sleeping')
+      .execute();
+    await createProjectImageReferences(ctx.db).withSnapshot(async (held) => {
+      expect(held.refs.has(ref)).toBe(false);
+      expect(held.refs.has('private.example/pinned:chosen')).toBe(true);
+    });
+  } finally {
+    await ctx.close();
+  }
+});

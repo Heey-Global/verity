@@ -85,6 +85,7 @@ function harness(
     readRecentMessages?: ControlPlaneSessionToolDeps['readRecentMessages'];
     authorizeKnowledgeCaller?: ControlPlaneSessionToolDeps['authorizeKnowledgeCaller'];
     canAccessKnowledgeTarget?: ControlPlaneSessionToolDeps['canAccessKnowledgeTarget'];
+    authorizeHandoffTarget?: ControlPlaneSessionToolDeps['authorizeHandoffTarget'];
   } = {},
 ) {
   const dispatchTurn = vi.fn(overrides.dispatchTurn ?? (async () => ({ queued: false })));
@@ -102,6 +103,7 @@ function harness(
     allowKnowledgeControlOperations: overrides.allowKnowledgeControlOperations,
     authorizeKnowledgeCaller: overrides.authorizeKnowledgeCaller,
     canAccessKnowledgeTarget: overrides.canAccessKnowledgeTarget,
+    authorizeHandoffTarget: overrides.authorizeHandoffTarget,
     getSession: async (sessionId) => {
       if (sessionId === 'control-session') return { projectId: CONTROL_PROJECT_ID };
       // A Control session from before sessions carried a project id.
@@ -771,4 +773,50 @@ it('keeps protected target transcripts blocked for a knowledge-free Control call
     h.tools.recentMessages(h.call({ sessionId: 'sess-web', purpose: 'Check result' })),
   ).rejects.toThrow('target is unavailable');
   expect(readRecentMessages).not.toHaveBeenCalled();
+});
+
+describe('control-plane session tools — handoff target authorization', () => {
+  // The assistant's project grants hang on this hook. If a target shape skipped it, the
+  // assistant could brief a project nobody granted it while every grant test stayed green.
+  it('asks before every target shape and delivers nothing when refused', async () => {
+    const authorizeHandoffTarget = vi.fn(async (input: { projectId: string }) => {
+      if (input.projectId === 'website') throw new ControlPlaneSessionAuthorityError('no grant');
+    });
+    const createSession = vi.fn(async () => ({ sessionId: 'sess-new' }));
+    const { tools, call, dispatchTurn } = harness({ authorizeHandoffTarget, createSession });
+    for (const target of [
+      { sessionId: 'sess-web' },
+      { project: 'website' },
+      { newSession: { project: 'website' } },
+    ]) {
+      await expect(
+        tools.handoff(call({ target, title: 'Fix', briefing: 'Please fix it' })),
+      ).rejects.toThrow('no grant');
+    }
+    expect(createSession).not.toHaveBeenCalled();
+    expect(dispatchTurn).not.toHaveBeenCalled();
+    await tools.handoff(call({ target: { sessionId: 'sess-k8s' }, title: 'Fix', briefing: 'Go' }));
+    expect(authorizeHandoffTarget).toHaveBeenLastCalledWith({
+      sessionId: 'control-session',
+      turnId: 'turn-1',
+      projectId: 'k8s',
+    });
+    expect(dispatchTurn).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses before revealing why an ungranted target is blocked', async () => {
+    const authorizeHandoffTarget = vi.fn(async () => {
+      throw new ControlPlaneSessionAuthorityError('no grant');
+    });
+    const { tools, call } = harness({ authorizeHandoffTarget });
+    for (const target of [
+      { sessionId: 'sess-stopped' },
+      { project: 'stopped' },
+      { newSession: { project: 'stopped' } },
+    ]) {
+      await expect(tools.handoff(call({ target, title: 'Fix', briefing: 'Go' }))).rejects.toThrow(
+        'no grant',
+      );
+    }
+  });
 });

@@ -1,0 +1,10 @@
+[Unit]
+Description=Refresh Verity build storage filesystem evidence
+
+[Timer]
+OnBootSec=15s
+OnUnitInactiveSec=15s
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target

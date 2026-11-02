@@ -593,7 +593,7 @@ describe('managed devcontainer builder migration', () => {
   const migrate = (directory: string, image: string, gid = 1102) =>
     migrateManagedDevcontainerBuilder({ root: directory, deploymentId: 'managed-1', image, gid });
 
-  it('adds only the read-only socket bind and its group, keeping the old authority', async () => {
+  it('adds only the socket and admission bind and its group, keeping the old authority', async () => {
     const { directory, initial } = await adopt({ ...adoptionSpec(), resources: LIMITS });
     const migrated = await migrate(directory, initial.spec.image);
     if (!migrated.managed) throw new Error(migrated.reason);
@@ -607,7 +607,7 @@ describe('managed devcontainer builder migration', () => {
         {
           source: { kind: 'bind', path: '/run/verity-buildkit' },
           target: '/run/verity-buildkit',
-          readOnly: true,
+          readOnly: false,
         },
       ],
       user: { ...before.user, supplementaryGids: [1101, 1102] },
@@ -620,6 +620,33 @@ describe('managed devcontainer builder migration', () => {
 
   // Rollback depends on the FIRST pre-migration authority. A repeated repair must
   // neither rewrite the backup with the migrated spec nor change the sealed one.
+  it('upgrades a legacy read-only socket bind and keeps a separate permission backup', async () => {
+    const spec = adoptionSpec();
+    const { directory, initial } = await adopt({
+      ...spec,
+      mounts: [
+        ...spec.mounts,
+        {
+          source: { kind: 'bind', path: '/run/verity-buildkit' },
+          target: '/run/verity-buildkit',
+          readOnly: true,
+        },
+      ],
+      user: { ...spec.user, supplementaryGids: [...spec.user.supplementaryGids, 1102] },
+    });
+    const migrated = await migrate(directory, initial.spec.image);
+    if (!migrated.managed) throw new Error(migrated.reason);
+    expect(
+      migrated.spec.mounts.find((mount) => mount.target === '/run/verity-buildkit')?.readOnly,
+    ).toBe(false);
+    expect(
+      JSON.parse(
+        await readFile(join(directory, 'server-deployment.before-builder-admission.json'), 'utf8'),
+      ),
+    ).toEqual(initial.spec);
+    expect(await migrate(directory, initial.spec.image)).toEqual(migrated);
+  });
+
   it('is idempotent and never replaces its backup', async () => {
     const { directory, initial } = await adopt();
     const first = await migrate(directory, initial.spec.image);

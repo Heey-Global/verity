@@ -1,3 +1,4 @@
+import { StorageReclamation } from '../../components/settings/StorageReclamation';
 import { type IntegrationSource, type VerityClient } from '@verity/mobile';
 import * as Application from 'expo-application';
 import { router, useFocusEffect } from 'expo-router';
@@ -5,6 +6,7 @@ import { useCallback, useMemo, useState } from 'react';
 import { Alert, View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 import { CardRow, Eyebrow, RowCard, Tag } from '../../components/premium/PremiumChrome';
+import { CPUProfiling } from '../../components/settings/CPUProfiling';
 import { MatrixImportErrors } from '../../components/settings/MatrixImportErrors';
 import { PublicPreviewDiagnostics } from '../../components/settings/PublicPreviewDiagnostics';
 import { ReturnPathDiagnostics } from '../../components/settings/ReturnPathDiagnostics';
@@ -98,6 +100,7 @@ export function DiagnosticsSettings({ client }: { client: VerityClient }) {
   const errorCount = sources?.reduce((total, source) => total + source.importDiagnostics.length, 0);
   return (
     <SettingsScaffold title="Diagnostics" detail>
+      <StorageReclamation client={client} />
       <PublicPreviewDiagnostics
         client={client}
         keyConfigured={settings?.uplinkSubscriptionKeyConfigured}
@@ -142,6 +145,7 @@ export function DiagnosticsSettings({ client }: { client: VerityClient }) {
               switchValue={recordingGestures}
               onPress={() => setGestureDiagnosticsEnabled(!recordingGestures)}
             />
+            <CPUProfiling />
             <CardRow
               title="Export app update logs"
               subtitle={

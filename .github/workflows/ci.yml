@@ -68,7 +68,7 @@ jobs:
       # renovate: datasource=github-actions depName=actions/setup-node
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '26.12.1'
+          node-version: '26.13.0'
       # Merged release PRs are authored by the release app, whose `<slug>[bot]`
       # login the barrier must trust next to github-actions[bot]. The slug is an
       # output of minting a token, so mint one that can only read metadata.
@@ -520,23 +520,8 @@ jobs:
                   typecheck=true
                   mobile_app=true
                   ;;
-                # `test` because the suite reads these as data, not only as build
-                # inputs: gvisor-runtime-config.test.ts reads `.dockerignore`,
-                # renovate-config.test.ts and claude-egress-deployment.test.ts read
-                # `deploy/Dockerfile`, ci-workflow.test.ts parses
-                # release workflows, and runner-supervisor-feature.test.ts and
-                # runner-boundary-attestation.test.ts read the toolkit's install
-                # script and published hashes. Naming a path without running the
-                # job that reads it is the same green-on-nothing as not naming it
-                # at all — scripts/ci-workflow.test.ts holds this arm to that.
-                #
-                # `verity-control-plane-runner-start` belongs here for the image
-                # half of the same rule: it is COPYed into the server image and is
-                # the sole entrypoint of the control-plane Runner, so it is only
-                # ever exercised by the deployment smoke that runs against a built
-                # image. Reaching the catch-all instead left the launcher's
-                # environment — which is what tells the spawn broker which worktree
-                # roots the container has — provable by nothing at all.
+                # Tests read these build inputs directly; runtime entrypoints also
+                # require the built-image smoke. Keep this before the catch-all.
                 .dockerignore|deploy/Dockerfile|deploy/bin/verity-transcribe-meeting|deploy/bin/verity-agent-gateway-deployment-smoke|deploy/bin/verity-control-plane-runner-deployment-smoke|deploy/bin/verity-control-plane-runner-start|features/verity-sandbox-toolkit/*)
                   lint=true
                   test=true
@@ -546,7 +531,7 @@ jobs:
                   lint=true
                   test=true
                   ;;
-                deploy/bin/verity-install|deploy/bin/verity-install.test.mjs|deploy/bin/verity-compose|deploy/bin/verity-pairing-material|deploy/bin/verity-pairing-material.test.mjs)
+                deploy/host/verity-backup-provision|deploy/bin/verity-backup-provision.test.mjs|deploy/host/verity-backup-prerequisites|deploy/host/verity-backup-identity|deploy/installer-ci.Dockerfile|deploy/bin/verity-install|deploy/bin/verity-install.test.mjs|deploy/bin/verity-compose|deploy/bin/verity-pairing-material|deploy/bin/verity-pairing-material.test.mjs|deploy/bin/verity-restore-install|deploy/bin/verity-restore-install.test.mjs|deploy/bin/verity-rotate-identity|deploy/bin/verity-rotate-identity.test.mjs|scripts/backup-restore-content.mjs|.github/scripts/backup-restore-device-trust.mjs|deploy/bin/verity-backup-restore-smoke|.github/scripts/backup-restore-docker.mjs|.github/scripts/backup-restore-diagnostics.mjs)
                   lint=true
                   test=true
                   installer=true
@@ -654,7 +639,7 @@ jobs:
       # renovate: datasource=github-actions depName=actions/setup-node
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '26.12.1'
+          node-version: '26.13.0'
           # DELIBERATELY no `cache: npm` — see the note on the `typecheck` job.
       - name: Install pinned Gitleaks
         shell: bash
@@ -693,7 +678,7 @@ jobs:
       # renovate: datasource=github-actions depName=actions/setup-node
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '26.12.1'
+          node-version: '26.13.0'
           # DELIBERATELY no `cache: npm` — see the note on the `typecheck` job.
       # ESLint covers every Node package but deliberately ignores the Expo app
       # (see eslint.config.js). Install that exact workspace set plus the root
@@ -808,7 +793,7 @@ jobs:
       # renovate: datasource=github-actions depName=actions/setup-node
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '26.12.1'
+          node-version: '26.13.0'
           # DELIBERATELY no `cache: npm` — see the note on the `typecheck` job.
       # Knip analyzes the whole monorepo, so install every workspace. Its parser
       # has a platform-specific optional binding, which rules out the lint lane's
@@ -827,7 +812,7 @@ jobs:
       # renovate: datasource=github-actions depName=actions/setup-node
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '26.12.1'
+          node-version: '26.13.0'
           # Deliberately no `cache: npm`: the archive is roughly 2 GB and duplicates
           # the lockfile-derived install across parallel jobs. Keep the repository's
           # limited Actions cache available for the smaller targeted tool caches and
@@ -877,7 +862,7 @@ jobs:
       # renovate: datasource=github-actions depName=actions/setup-node
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '26.12.1'
+          node-version: '26.13.0'
           # DELIBERATELY no `cache: npm` — see the note on the `typecheck` job.
       # Root Vitest explicitly excludes packages/mobile and the Expo app. Install
       # only the Server dependency closure plus root test tooling; the Expo graph
@@ -965,8 +950,9 @@ jobs:
       # renovate: datasource=github-actions depName=actions/setup-node
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '26.12.1'
-      - run: npm ci --workspace @verity/server --include-workspace-root --ignore-scripts
+          node-version: '26.13.0'
+      # The DOM host contract imports the web app and its Expo/Apps SDK dependencies.
+      - run: npm ci --workspace @verity/server --workspace @verity/mobile-app --include-workspace-root --ignore-scripts
       - name: Run repository contract suites
         run: |
           npx vitest run scripts --maxWorkers=1
@@ -988,11 +974,10 @@ jobs:
   # fork of the default profile with two syscall rules changed, which is a file
   # nobody would keep in step with Docker's.
   #
-  # `kernel.apparmor_restrict_unprivileged_userns` is already 0 on this host, so the
-  # other axis Ubuntu 24.04 can close is open; the preflight below proves both at
-  # once rather than asserting either. The suite imports nothing beyond node:
-  # builtins, so the container image supplies node and the job needs no `npm ci`, no
-  # `setup-node` and no node_modules — it finishes in well under a minute.
+  # Backup provisioning additionally needs bind mounts. Its separate root fixture
+  # gets SYS_ADMIN only inside a disposable container with no writable host mount,
+  # network or Docker socket. It creates a mount namespace without uid remapping;
+  # the ordinary installer suite stays non-root and capability-less.
   installer:
     needs: changes
     if: needs.changes.outputs.installer == 'true'
@@ -1000,8 +985,10 @@ jobs:
     timeout-minutes: 10
     env:
       # Same pin the Dockerfiles carry, so Renovate moves one version for all of them.
-      VERITY_INSTALLER_IMAGE: node:26.12.1-bookworm-slim@sha256:28147155d47dc31abe0a46e0d12b59b2fb3d0a2dcc5dc65fce76a074180b16fe
+      VERITY_INSTALLER_IMAGE: node:26.13.0-bookworm-slim@sha256:bc0a2afd3b74ce12222fc8bab99271e66257f021078f5f4a5d687a77d280c1d9
       VERITY_INSTALLER_SANDBOX: --rm --cap-drop ALL --network none --security-opt seccomp=unconfined
+      # Mount-only root fixture: no user namespace/uid_map, host mounts or Docker socket.
+      VERITY_BACKUP_TEST_SANDBOX: --rm --cap-drop ALL --cap-add SYS_ADMIN --network none --security-opt seccomp=unconfined --security-opt apparmor=unconfined
     steps:
       # A prior job on this lane can leave root-owned files in the shared workspace,
       # and actions/checkout's clean then fails with EACCES for the non-root runner.
@@ -1033,6 +1020,13 @@ jobs:
       # installer refuses a non-root caller (`must run as root`) by invoking it
       # outside `unshare -r`. As root in the container that case would pass the check
       # it exists to fail, and the assertion would silently invert.
+      - name: Build installer test tools
+        run: |
+          set -euo pipefail
+          fixture="verity-installer-ci:${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          docker build --file deploy/installer-ci.Dockerfile \
+            --build-arg "VERITY_INSTALLER_BASE_IMAGE=$VERITY_INSTALLER_IMAGE" --tag "$fixture" .
+          echo "VERITY_INSTALLER_IMAGE=$fixture" >> "$GITHUB_ENV"
       - name: Ensure unprivileged user namespaces are available in the test container
         run: |
           set -euo pipefail
@@ -1053,7 +1047,22 @@ jobs:
             --volume "$GITHUB_WORKSPACE:/workspace:ro" \
             --workdir /workspace \
             "$VERITY_INSTALLER_IMAGE" \
-            node --test deploy/bin/verity-install.test.mjs docs/website/site/install.test.mjs
+            node --test deploy/bin/verity-install.test.mjs deploy/bin/verity-restore-install.test.mjs deploy/bin/verity-rotate-identity.test.mjs docs/website/site/install.test.mjs
+
+      - name: Run backup provisioning in an isolated mount fixture
+        run: |
+          set -euo pipefail
+          docker run $VERITY_BACKUP_TEST_SANDBOX \
+            --user 0:0 \
+            --env CI=true \
+            --volume "$GITHUB_WORKSPACE:/workspace:ro" \
+            --workdir /workspace \
+            "$VERITY_INSTALLER_IMAGE" \
+            sh -c 'unshare -m sh -c "mount --bind /tmp /tmp" && exec node --test deploy/bin/verity-backup-provision.test.mjs'
+
+      - name: Clean installer test tools
+        if: always()
+        run: docker image rm "verity-installer-ci:${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >/dev/null 2>&1 || true
 
   runner-postgres-race:
     needs: changes
@@ -1067,7 +1076,7 @@ jobs:
       # renovate: datasource=github-actions depName=actions/setup-node
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '26.12.1'
+          node-version: '26.13.0'
           # DELIBERATELY no `cache: npm` — see the note on the `typecheck` job.
       - run: npm ci --workspace @verity/server --include-workspace-root
       # Only the PostgreSQL-gated suites run here, and the sole reason they need
@@ -1129,7 +1138,7 @@ jobs:
       # renovate: datasource=github-actions depName=actions/setup-node
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '26.12.1'
+          node-version: '26.13.0'
           # DELIBERATELY no `cache: npm` — see the note on the `typecheck` job.
       # Coverage exercises the same root Vitest package set as the sharded test
       # jobs, so it needs the Server closure and root tooling, not Mobile/Expo.
@@ -1192,7 +1201,7 @@ jobs:
       # renovate: datasource=github-actions depName=actions/setup-node
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '26.12.1'
+          node-version: '26.13.0'
       # The full mobile dependency closure grows the shared npm cache to roughly
       # 1.8 GB. Restoring and extracting it immediately before the full `npm ci`
       # has repeatedly pushed the GitHub-hosted runner into an external SIGTERM.
@@ -1233,7 +1242,7 @@ jobs:
       # renovate: datasource=github-actions depName=actions/setup-node
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '26.12.1'
+          node-version: '26.13.0'
           # DELIBERATELY no `cache: npm` — see the note on the `typecheck` job.
       - run: npm ci
       # renovate: datasource=github-actions depName=actions/cache
@@ -1399,6 +1408,18 @@ jobs:
             memory-swap=6g
             cpu-period=100000
             cpu-quota=300000
+      - name: Resolve the bundled PostgreSQL pin
+        id: postgres
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t pins < <(sed -nE 's/^[[:space:]]*image:[[:space:]]*(postgres:[^[:space:]]+@sha256:[0-9a-f]{64})[[:space:]]*$/\1/p' deploy/docker-compose.yml)
+          if [[ ${#pins[@]} -ne 1 ]]; then
+            echo "expected exactly one digest-pinned postgres image in deploy/docker-compose.yml, found ${#pins[@]}" >&2
+            exit 1
+          fi
+          echo "image=${pins[0]}" >> "$GITHUB_OUTPUT"
+
       - name: Build Verity server image
         # renovate: datasource=github-actions depName=docker/build-push-action
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
@@ -1420,6 +1441,7 @@ jobs:
           tags: ${{ env.VERITY_CI_IMAGE }}
           build-args: |
             VERITY_SERVER_VERSION=99.0.0
+            VERITY_BUNDLED_POSTGRES_IMAGE=${{ steps.postgres.outputs.image }}
             VERITY_BUNDLED_PROJECT_RELAY_IMAGE=${{ env.VERITY_CI_RELAY_IMAGE }}
           # THE canonical note for every `type=gha` cache in this repo; the other
           # eight build steps point back here. All three attributes exist because
@@ -1530,6 +1552,17 @@ jobs:
       - name: Load Verity server image into the runner's Docker
         if: matrix.installer == 'compose'
         run: docker load --input "$RUNNER_TEMP/$VERITY_CI_IMAGE_ARCHIVE"
+      - name: Verify backup Docker capacity and cleanup
+        if: matrix.installer == 'compose'
+        shell: bash
+        run: |
+          set -euo pipefail
+          postgres_image="$(sed -n 's/^    image: \(postgres:[^ ]*\)$/\1/p' deploy/docker-compose.yml)"
+          docker run --rm --user 0 --entrypoint node \
+            --volume /var/run/docker.sock:/var/run/docker.sock \
+            --volume "$PWD/.github/scripts/backup-docker-smoke.mjs:/tmp/backup-docker-smoke.mjs:ro" \
+            --env "VERITY_CI_BACKUP_POSTGRES=$postgres_image" \
+            "$VERITY_CI_IMAGE" /tmp/backup-docker-smoke.mjs
       - name: Verify the bundled installer payload
         if: matrix.installer == 'compose'
         run: |
@@ -1693,10 +1726,16 @@ jobs:
           done
 
           if [[ ! -x "$host_runsc" ]]; then
+            # The whole release directory: an archive release keeps the sidecars runsc needs
+            # in gvisor-bin/ next to it. Its contents, so a leftover partial directory is
+            # filled in rather than gaining a nested copy.
             runsc_copy="$RUNNER_TEMP/verity-clean-install-runsc"
-            docker cp "$VERITY_CI_CLEAN_DIND:$host_runsc" "$runsc_copy"
-            sudo install -D -o root -g root -m 0755 "$runsc_copy" "$host_runsc"
-            rm -f "$runsc_copy"
+            rm -rf "$runsc_copy"
+            docker cp "$VERITY_CI_CLEAN_DIND:$(dirname "$host_runsc")" "$runsc_copy"
+            sudo install -d -o root -g root -m 0755 "$(dirname "$host_runsc")"
+            sudo cp -R --no-preserve=ownership "$runsc_copy/." "$(dirname "$host_runsc")"
+            sudo chown -R root:root "$(dirname "$host_runsc")"
+            rm -rf "$runsc_copy"
             installed_host_runsc=1
           fi
 
@@ -1754,6 +1793,10 @@ jobs:
           isolated_id="$(docker --host "$isolated" info --format '{{.ID}}')"
           VERITY_MANAGED_INSTALL_DAEMON_ID="$isolated_id" DOCKER_HOST="$isolated" \
             deploy/bin/verity-managed-install-smoke "$VERITY_CI_IMAGE" "$VERITY_CI_MANAGED_DIND"
+
+          # Keep the memory-heavy daemon fixtures serial. Recovery must never see the source host or its index.
+          docker stop "$VERITY_CI_MANAGED_DIND" >/dev/null
+          deploy/bin/verity-backup-restore-smoke "$VERITY_CI_IMAGE" "$managed_dind_image" "$RUNNER_TEMP/$VERITY_CI_IMAGE_ARCHIVE"
 
       - name: Clean Docker smoke artifacts
         if: always()

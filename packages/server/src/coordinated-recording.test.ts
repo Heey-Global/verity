@@ -34,7 +34,7 @@ function fixture() {
       state: 'recording',
     })),
     stop: vi.fn<RecordingUplinkAdapter['stop']>(async () => {}),
-    export: vi.fn(async () => ({ records: [] })),
+    export: vi.fn<RecordingUplinkAdapter['export']>(async () => ({ records: [] })),
   };
   const manager = new CoordinatedRecordingManager(
     activation,
@@ -320,5 +320,64 @@ it('propagates preparation timeout and missing-pair termination as terminal evid
     phase: 'expired',
     core: { state: 'stopped' },
     evidence: { stopReason: 'preparation_timeout', readiness: { ready: false } },
+  });
+});
+
+it.each([
+  [new Error('Uplink offline'), 'control_offline'],
+  [new Error('Uplink diagnostics.stop timed out'), 'control_timeout'],
+  [new Error('Uplink diagnostics.export timed out'), 'control_timeout'],
+  [new Error('Uplink closed the control connection (1001 private-peer)'), 'control_closed'],
+  [Object.assign(new Error('private socket'), { code: 'EPIPE' }), 'control_send_failed'],
+  [new Error('diagnostics_not_entitled'), 'diagnostics_not_entitled'],
+  [new Error('invalid_diagnostics_response'), 'invalid_diagnostics_response'],
+  [new Error('invalid_diagnostics_hash'), 'invalid_diagnostics_hash'],
+  [new Error('invalid_diagnostics_cursor'), 'invalid_diagnostics_cursor'],
+  [new Error('private-token'), 'unknown'],
+  ['private-token', 'unknown'],
+])('exports only a fixed classification for %s', async (error, reason) => {
+  const { manager, uplink } = fixture();
+  await manager.start(id, 120000);
+  uplink.stop.mockRejectedValueOnce(error);
+  await manager.stop(id);
+  uplink.export.mockRejectedValueOnce(error);
+  const report = await manager.export(id, true);
+  expect(report).toMatchObject({
+    status: { phase: 'stopped', error: 'uplink_stop_failed' },
+    failures: { stop: reason, export: reason },
+    uplink: { available: false, data: null, error: 'uplink_export_failed' },
+  });
+  expect(JSON.stringify(report)).not.toContain('private');
+  expect(await manager.export(id)).not.toHaveProperty('failures');
+});
+
+it('keeps independent failure reasons and clears them after successful retries', async () => {
+  const { manager, uplink } = fixture();
+  await manager.start(id, 120000);
+  uplink.stop.mockRejectedValueOnce(new Error('diagnostics_conflict'));
+  await manager.stop(id);
+  uplink.export.mockRejectedValueOnce(new Error('diagnostics_not_found'));
+  expect(await manager.export(id, true)).toMatchObject({
+    failures: { stop: 'diagnostics_conflict', export: 'diagnostics_not_found' },
+  });
+  expect(await manager.export(id, true)).toMatchObject({
+    failures: { stop: 'diagnostics_conflict', export: null },
+  });
+  await manager.stop(id);
+  expect(await manager.export(id, true)).toMatchObject({
+    failures: { stop: null, export: null },
+  });
+});
+
+it('preserves the original start error and classifies oversized exports', async () => {
+  const { manager, uplink } = fixture();
+  uplink.start.mockRejectedValueOnce(new Error('private start'));
+  uplink.stop.mockRejectedValueOnce(new Error('diagnostics_not_found'));
+  await manager.start(id, 120000);
+  uplink.export.mockResolvedValueOnce({ records: ['x'.repeat(1024 * 1024)] });
+  expect(await manager.export(id, true)).toMatchObject({
+    status: { error: 'uplink_start_failed' },
+    failures: { stop: 'diagnostics_not_found', export: 'export_too_large' },
+    uplink: { available: false, data: null },
   });
 });

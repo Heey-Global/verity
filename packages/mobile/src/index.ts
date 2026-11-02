@@ -484,6 +484,12 @@ export {
   type ProjectSettingsDraft,
 } from './projectSettings.js';
 export { secretStatusSchema, type SecretStatus } from './api.js';
+export type {
+  ActiveLiveMeetings,
+  CalendarWatch,
+  SchedulingRequestView,
+  UpcomingMeeting,
+} from './api.js';
 export { type IntegrationAccount, type IntegrationSource } from './api.js';
 export {
   type LiveMeeting,
@@ -501,6 +507,11 @@ export {
   type ConnectionRecordingExport,
   returnPathStatusSchema,
   type ReturnPathStatus,
+  backupStatusSchema,
+  backupProbeJobSchema,
+  type BackupStatus,
+  type BackupProbeJob,
+  type BackupKeyOffer,
   remoteControlDescriptorSchema,
   type RemoteControlDescriptor,
   uplinkDiagnosticsSchema,
@@ -592,6 +603,12 @@ export {
   type PushOutboxOptions,
   type PushOutboxStorage,
 } from './push/outbox.js';
+export {
+  parseMeetingPush,
+  resolveMeetingPushResponse,
+  type MeetingPush,
+  type MeetingPushIntent,
+} from './push/meeting.js';
 
 export {
   type KnowledgeSource,
@@ -603,6 +620,18 @@ export {
 } from './api.js';
 
 export { calendarChangeSummary, type CalendarChangeSummary } from './ui/calendarChangeSummary.js';
+export {
+  SCHEDULING_LANGUAGES,
+  schedulingApprovalSummary,
+  schedulingCardDecision,
+  schedulingCardEdit,
+  schedulingCardEmail,
+  schedulingWindowLabel,
+  type SchedulingApprovalSummary,
+  type SchedulingCardEdit,
+  type SchedulingEditable,
+  type SchedulingLanguage,
+} from './ui/schedulingSummary.js';
 
 export type { LocalPreviewShare, ManagedDevServer } from './api.js';
 
@@ -667,6 +696,7 @@ export {
 
 export { liveMeetingResultSchema, type LiveMeetingResult } from './api.js';
 export type {
+  AuditEvent,
   AuditDomain,
   AuditHealth,
   AuditInitiator,
@@ -675,3 +705,5 @@ export type {
   AuditOperationQuery,
   AuditOperationSummary,
 } from './audit.js';
+
+export { qaAssignmentView } from './ui/qaAssignment.js';

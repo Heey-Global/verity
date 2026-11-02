@@ -304,13 +304,20 @@ describe('truncateAll', () => {
 
       // Give anything still queued the turns it would need to reach the driver.
       await new Promise((resolve) => setTimeout(resolve, 50));
-      // truncateAll's own seed restore follows the truncate, once; nothing else may.
+      // Only truncateAll's own seed rows may follow the truncate; no projection work may.
       const afterTruncate = statements.slice(truncatedAt + 1);
       expect(
         afterTruncate.filter((statement) => statement.startsWith('insert into users')),
       ).toHaveLength(1);
       expect(
-        afterTruncate.filter((statement) => !statement.startsWith('insert into users')),
+        afterTruncate.filter((statement) => statement.startsWith('insert into backup_policy')),
+      ).toEqual(['insert into backup_policy(id, journal_enabled) values (1, false)']);
+      expect(
+        afterTruncate.filter(
+          (statement) =>
+            !statement.startsWith('insert into users') &&
+            !statement.startsWith('insert into backup_policy'),
+        ),
       ).toEqual([]);
     } finally {
       await close();

@@ -1,3 +1,4 @@
+import type { ProjectEgressLifecycle } from './project-egress-lifecycle.js';
 import type { GhTokenCapabilityRegistry } from './github-token-broker.js';
 import type {
   InternalConnectionIdentity,
@@ -7,6 +8,7 @@ import type { ProjectClaudeUnixListener } from './project-claude-unix-listener.j
 import type { SigningCapabilityRegistry } from './signing-capability.js';
 
 export interface ProjectRelayBinding {
+  egress?: ProjectEgressLifecycle;
   projectId: string;
   forgeConnectionId?: string | null;
   owner: string;
@@ -45,6 +47,7 @@ export class ProjectRelayStartError extends Error {
 }
 
 export interface ProjectRelayStartContext {
+  egress?: ProjectEgressLifecycle;
   identity: InternalConnectionIdentity;
   brokerSocketPath: string;
   claudeSocketPath: string;
@@ -75,6 +78,7 @@ export interface ProjectRelayLifecycleOptions {
 }
 
 interface ActiveRelay {
+  egress?: ProjectEgressLifecycle;
   containerGeneration: string;
   brokerListener?: ProjectInternalUnixListener;
   claudeListener?: ProjectClaudeUnixListener;
@@ -271,6 +275,8 @@ export class ProjectRelayLifecycle {
       // and classified the sandbox orphaned until the recreate interrupted its turn.
       // A different generation is not ours to restart: it belongs to a start or
       // stop that is converging on its own.
+      if (active.egress !== binding.egress)
+        throw new Error('Project relay enforcement authority changed');
       if (active.containerGeneration === binding.containerGeneration) {
         await active.runtime?.ensureRunning?.();
       }
@@ -312,6 +318,7 @@ export class ProjectRelayLifecycle {
       projectId: binding.projectId,
       containerGeneration: binding.containerGeneration,
     } satisfies InternalConnectionIdentity;
+    await binding.egress?.prepare(identity);
     const brokerListener = await this.options.startBrokerListener(identity);
     let claudeListener: ProjectClaudeUnixListener | undefined;
     let codexListener: ProjectClaudeUnixListener | undefined;
@@ -335,6 +342,7 @@ export class ProjectRelayLifecycle {
         : undefined;
       runtime = await this.options.startRelay({
         identity,
+        ...(binding.egress === undefined ? {} : { egress: binding.egress }),
         brokerSocketPath: brokerListener.socketPath,
         claudeSocketPath: claudeListener.socketPath,
         ...(codexListener === undefined ? {} : { codexSocketPath: codexListener.socketPath }),
@@ -342,6 +350,7 @@ export class ProjectRelayLifecycle {
       });
       this.active.set(binding.projectId, {
         containerGeneration: binding.containerGeneration,
+        ...(binding.egress === undefined ? {} : { egress: binding.egress }),
         brokerListener,
         claudeListener,
         ...(codexListener === undefined ? {} : { codexListener }),
@@ -353,6 +362,7 @@ export class ProjectRelayLifecycle {
       if (error instanceof ProjectRelayStartError) runtime = error.runtime;
       this.active.set(binding.projectId, {
         containerGeneration: binding.containerGeneration,
+        ...(binding.egress === undefined ? {} : { egress: binding.egress }),
         brokerListener,
         ...(claudeListener === undefined ? {} : { claudeListener }),
         ...(codexListener === undefined ? {} : { codexListener }),

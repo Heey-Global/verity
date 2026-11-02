@@ -65,16 +65,6 @@ not transfer that ownership. Allow one active meeting on the device initially; c
 Live Meeting again opens the existing meeting. Coordinate microphone ownership with normal
 dictation rather than allowing two capture sessions to compete.
 
-The global meeting overlay automatically discovers active device and online meetings on the
-connected server, including when their session has never been opened on this device. It is
-shared by iPhone, iPad and web. Discovery runs on app foreground and every five seconds while
-active; the selected meeting then uses the existing meeting synchronization. A local recording
-has display priority, otherwise the newest active meeting is shown. Ended meetings disappear,
-and switching servers clears the remote overlay. Discovery requires the same administrator
-access as the cross-session session list and returns only meeting and session IDs. Opening or
-viewing a remote meeting never takes over its microphone. Online meetings use the server's
-online-stop action and do not offer device pause/resume.
-
 ## 3. Visual direction and interaction
 
 The approved direction uses a quiet dark interface with subtle violet accents. The latest
