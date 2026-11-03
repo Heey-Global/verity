@@ -906,7 +906,9 @@ describe('CI aggregate cancellation', () => {
     const workflow = parse(readFileSync('.github/workflows/ci.yml', 'utf8')) as {
       jobs: { 'ci-checks': { if?: string } };
     };
-    expect(workflow.jobs['ci-checks'].if).toBe('${{ always() && !cancelled() }}');
+    expect(workflow.jobs['ci-checks'].if).toBe(
+      "${{ always() && !cancelled() && !inputs['lint-comparison-only'] }}",
+    );
   });
 });
 

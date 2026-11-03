@@ -36,7 +36,7 @@ class ComposedProof(unittest.TestCase):
                  'heartbeat': {'attempts': 30, 'boot_ns': '200'}, 'heartbeatBefore': {'attempts': 29, 'boot_ns': '100'},
                  'heartbeatWindowStart': {'clocks': {'bootBeforeNs': '4000000001'}},
                  'heartbeatWindowEnd': {'clocks': {'bootBeforeNs': '4300000001'}}}
-        helper = {'afterKillState': 'gone', 'signal': 'SIGKILL', 'helper': {'pid': 123, 'command': '/usr/bin/python3\0/opt/verity-egress/project-egress-deadline.py\0--worker'},
+        helper = {'afterKillState': 'gone', 'signal': 'SIGKILL', 'helper': {'pid': 123, 'command': '/usr/bin/python3\0/opt/verity-egress/project-egress-deadline.py\0--serve'},
                   'beforeKill': {'clocks': {'bootBeforeNs': '1300000000'}},
                   'live': {'state': proof['live']['state'], 'deadline_ns': '2500000000', 'accepted': 10, 'clocks': {'bootBeforeNs': '1400000000'}},
                   'expired': proof['expired'], 'attempted': proof['attempted']}
