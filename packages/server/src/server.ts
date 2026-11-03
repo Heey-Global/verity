@@ -1426,6 +1426,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
    * runs FIRST because it needs `session_backend_state` to know which files are the
    * session's, and the cascade is about to delete exactly that.
    *
+   * Managed runners persist cleanup ownership through `queueSessionArtifacts` before
+   * the cascade, then wake a background worker after deletion. That durable write must
+   * succeed; supervisor calls and filesystem purges never run in the request.
+   *
    * A purge failure never blocks the delete: leaving the row behind because a file
    * could not be unlinked would strand the session in the UI, which is strictly
    * worse than the leak it is trying to prevent. A purge that neither succeeds nor
@@ -1453,6 +1457,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         app.log.warn({ err: error, sessionId }, 'verity: could not stop managed dev servers');
       }
       await deps.localPreviewManager?.stopSession(sessionId);
+      await deps.queueSessionArtifacts?.(sessionId);
       // `.catch()` alone would only cover a REJECTED promise; an implementation that
       // throws before returning one would escape and fail the delete — the outcome the
       // paragraph above says must never happen. try/catch covers both.
@@ -1475,7 +1480,9 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       } catch {
         // Logged by the implementation; never fatal here.
       }
-      return await deps.eventStore.deleteSession(sessionId);
+      const deleted = await deps.eventStore.deleteSession(sessionId);
+      if (deleted) deps.scheduleSessionCleanup?.();
+      return deleted;
     } finally {
       release?.();
     }

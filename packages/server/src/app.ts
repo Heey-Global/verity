@@ -64,6 +64,9 @@ export interface ControlPlaneDeps {
   unlockClientIdentity?: ServerDeps['unlockClientIdentity'];
   /** Installer-issued authority that gates first initialization. */
   devicePairing?: ServerDeps['devicePairing'];
+  /** Persist cleanup ownership before session deletion, then wake the retry worker. */
+  queueSessionArtifacts?: ServerDeps['queueSessionArtifacts'];
+  scheduleSessionCleanup?: ServerDeps['scheduleSessionCleanup'];
   /** Remove a session's backend transcript files from the runner runtime as part of
    *  deleting it. Forwarded verbatim to {@link buildServer}; see the same field on
    *  `ServerDeps`. Omit on deployments without the runner supervisor. */
@@ -361,6 +364,12 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
       : {}),
     ...(deps.devicePairing !== undefined ? { devicePairing: deps.devicePairing } : {}),
     bus: deps.bus,
+    ...(deps.queueSessionArtifacts !== undefined
+      ? { queueSessionArtifacts: deps.queueSessionArtifacts }
+      : {}),
+    ...(deps.scheduleSessionCleanup !== undefined
+      ? { scheduleSessionCleanup: deps.scheduleSessionCleanup }
+      : {}),
     ...(deps.purgeSessionArtifacts !== undefined
       ? { purgeSessionArtifacts: deps.purgeSessionArtifacts }
       : {}),
