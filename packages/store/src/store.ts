@@ -1,3 +1,4 @@
+import { UserContextStore } from './user-context.js';
 import { AssistantStore } from './assistant.js';
 import { SchedulingStore } from './scheduling.js';
 import { QAAssignmentStore } from './qa-assignments.js';
@@ -365,6 +366,7 @@ export interface ProjectUpsertInput {
 }
 
 export interface SessionBackendStateRecord {
+  contextFingerprint?: string;
   sessionId: string;
   backend: string;
   backendSessionId: string;
@@ -1425,6 +1427,7 @@ export class EventStore implements EventSink {
     private readonly db: Kysely<Database>,
     private readonly cipher: SecretCipher = createPassthroughCipher(),
   ) {
+    this.userContext = new UserContextStore(db);
     this.projectEgress = new ProjectEgressStore(db);
     this.knowledge = new KnowledgeStore(db);
     this.integrations = new IntegrationStore(db, cipher);
@@ -1438,6 +1441,7 @@ export class EventStore implements EventSink {
     this.scheduling = new SchedulingStore(db, cipher);
   }
 
+  readonly userContext: UserContextStore;
   readonly projectEgress: ProjectEgressStore;
   readonly knowledge: KnowledgeStore;
   readonly integrations: IntegrationStore;
@@ -3195,7 +3199,14 @@ export class EventStore implements EventSink {
   ): Promise<SessionBackendStateRecord | undefined> {
     const row = await this.db
       .selectFrom('session_backend_state')
-      .select(['session_id', 'backend', 'backend_session_id', 'context_seq', 'updated_at'])
+      .select([
+        'session_id',
+        'backend',
+        'backend_session_id',
+        'context_seq',
+        'updated_at',
+        'context_fingerprint',
+      ])
       .where('session_id', '=', sessionId)
       .where('backend', '=', backend)
       .executeTakeFirst();
@@ -3205,6 +3216,7 @@ export class EventStore implements EventSink {
       backend: row.backend,
       backendSessionId: row.backend_session_id,
       contextSeq: Number(row.context_seq),
+      ...(row.context_fingerprint ? { contextFingerprint: row.context_fingerprint } : {}),
       updatedAt: row.updated_at,
     };
   }
@@ -3225,6 +3237,7 @@ export class EventStore implements EventSink {
     backend: string;
     backendSessionId: string;
     contextSeq: number;
+    contextFingerprint?: string;
   }): Promise<SessionBackendStateRecord[]> {
     return await this.db.transaction().execute(async (tx) => {
       // Read before delete rather than `DELETE … RETURNING`: this runs on every bind,
@@ -3232,7 +3245,14 @@ export class EventStore implements EventSink {
       // the transaction is cheaper than a dialect-specific surprise here.
       const displaced = await tx
         .selectFrom('session_backend_state')
-        .select(['session_id', 'backend', 'backend_session_id', 'context_seq', 'updated_at'])
+        .select([
+          'session_id',
+          'backend',
+          'backend_session_id',
+          'context_seq',
+          'updated_at',
+          'context_fingerprint',
+        ])
         .where('session_id', '=', input.sessionId)
         .where('backend', '!=', input.backend)
         .execute();
@@ -3248,11 +3268,13 @@ export class EventStore implements EventSink {
           backend: input.backend,
           backend_session_id: input.backendSessionId,
           context_seq: input.contextSeq,
+          context_fingerprint: input.contextFingerprint ?? null,
         })
         .onConflict((oc) =>
           oc.columns(['session_id', 'backend']).doUpdateSet({
             backend_session_id: input.backendSessionId,
             context_seq: input.contextSeq,
+            context_fingerprint: input.contextFingerprint ?? null,
             updated_at: sql`now()`,
           }),
         )
@@ -3262,6 +3284,7 @@ export class EventStore implements EventSink {
         backend: row.backend,
         backendSessionId: row.backend_session_id,
         contextSeq: Number(row.context_seq),
+        ...(row.context_fingerprint ? { contextFingerprint: row.context_fingerprint } : {}),
         updatedAt: row.updated_at,
       }));
     });
@@ -3279,7 +3302,14 @@ export class EventStore implements EventSink {
   async getSessionBackendStates(sessionId: string): Promise<SessionBackendStateRecord[]> {
     const rows = await this.db
       .selectFrom('session_backend_state')
-      .select(['session_id', 'backend', 'backend_session_id', 'context_seq', 'updated_at'])
+      .select([
+        'session_id',
+        'backend',
+        'backend_session_id',
+        'context_seq',
+        'updated_at',
+        'context_fingerprint',
+      ])
       .where('session_id', '=', sessionId)
       .execute();
     return rows.map((row) => ({
@@ -3287,6 +3317,7 @@ export class EventStore implements EventSink {
       backend: row.backend,
       backendSessionId: row.backend_session_id,
       contextSeq: Number(row.context_seq),
+      ...(row.context_fingerprint ? { contextFingerprint: row.context_fingerprint } : {}),
       updatedAt: row.updated_at,
     }));
   }

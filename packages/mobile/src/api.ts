@@ -4657,6 +4657,54 @@ export class VerityClient {
     return signingKeySchema.parse(await res.json());
   }
 
+  async getUserContext(): Promise<{ instructions: string; memory: string; revision: number }> {
+    const res = await this.request('/me/context', { method: 'GET' });
+    return z
+      .object({ instructions: z.string(), memory: z.string(), revision: z.number().int() })
+      .parse(await res.json());
+  }
+
+  async replaceUserContext(input: { instructions: string; memory: string; revision: number }) {
+    const res = await this.request('/me/context', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+    return z
+      .object({ instructions: z.string(), memory: z.string(), revision: z.number().int() })
+      .parse(await res.json());
+  }
+
+  async getProjectMemory(id: string) {
+    const res = await this.request(`/projects/${encodeURIComponent(id)}/memory`, { method: 'GET' });
+    return z.object({ memory: z.string(), revision: z.string() }).parse(await res.json());
+  }
+
+  async replaceProjectMemory(id: string, input: { memory: string; revision: string }) {
+    const res = await this.request(`/projects/${encodeURIComponent(id)}/memory`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+    return z.object({ memory: z.string(), revision: z.string() }).parse(await res.json());
+  }
+
+  async getProjectInstructions(id: string) {
+    const res = await this.request(`/projects/${encodeURIComponent(id)}/instructions`, {
+      method: 'GET',
+    });
+    return z.object({ instructions: z.string(), revision: z.string() }).parse(await res.json());
+  }
+
+  async replaceProjectInstructions(id: string, input: { instructions: string; revision: string }) {
+    const res = await this.request(`/projects/${encodeURIComponent(id)}/instructions`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+    return z.object({ instructions: z.string(), revision: z.string() }).parse(await res.json());
+  }
+
   async getProject(id: string): Promise<ProjectDetail> {
     const res = await this.request(`/projects/${encodeURIComponent(id)}`, { method: 'GET' });
     return projectDetailSchema.parse(await res.json());
@@ -5810,6 +5858,44 @@ export class VerityClient {
       ...(signal ? { signal } : {}),
     });
     return branchListSchema.parse(await res.json());
+  }
+
+  async listSharedKnowledgeFiles(path = ''): Promise<SessionDirectory> {
+    const res = await this.request(`/knowledge/shared/files?path=${encodeURIComponent(path)}`, {
+      method: 'GET',
+    });
+    const directory = sessionDirectorySchema.parse(await res.json());
+    if (directory.root !== 'shared')
+      throw new Error('Update the Verity server to browse Shared knowledge');
+    return directory;
+  }
+
+  async getSharedKnowledgeFile(path: string): Promise<SessionFileContent> {
+    const res = await this.request(
+      `/knowledge/shared/files/content?path=${encodeURIComponent(path)}`,
+      { method: 'GET' },
+    );
+    return sessionFileContentSchema.parse(await res.json());
+  }
+
+  async downloadSharedKnowledgeFile(path: string): Promise<Blob> {
+    const res = await this.request(
+      `/knowledge/shared/files/download?path=${encodeURIComponent(path)}`,
+      { method: 'GET' },
+    );
+    return res.blob();
+  }
+
+  async writeSharedKnowledgeFile(
+    path: string,
+    content: string,
+    expectedVersion: string,
+  ): Promise<SessionFileContent> {
+    const res = await this.request('/knowledge/shared/files/content', {
+      method: 'PUT',
+      body: JSON.stringify({ root: 'shared', path, content, expectedVersion }),
+    });
+    return sessionFileContentSchema.parse(await res.json());
   }
 
   /** Browse a session's local worktree. Includes uncommitted and generated files,

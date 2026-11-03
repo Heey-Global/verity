@@ -23622,6 +23622,8 @@ var agentEventSchema = import_zod.z.discriminatedUnion("t", [
   }),
   import_zod.z.object({
     t: import_zod.z.literal("mcp_app"),
+    title: import_zod.z.string().max(200).optional(),
+    source: import_zod.z.string().max(200).optional(),
     appId: import_zod.z.string().uuid(),
     projectId: import_zod.z.string().min(1),
     sessionId: import_zod.z.string().min(1),
@@ -23635,12 +23637,16 @@ var agentEventSchema = import_zod.z.discriminatedUnion("t", [
   }),
   import_zod.z.object({
     t: import_zod.z.literal("tool_call_start"),
+    title: import_zod.z.string().max(200).optional(),
+    source: import_zod.z.string().max(200).optional(),
     id: import_zod.z.string().min(1),
     name: import_zod.z.string().min(1),
     parentToolId
   }),
   import_zod.z.object({
     t: import_zod.z.literal("tool_call"),
+    title: import_zod.z.string().max(200).optional(),
+    source: import_zod.z.string().max(200).optional(),
     id: import_zod.z.string().min(1),
     name: import_zod.z.string().min(1),
     input: import_zod.z.unknown(),
@@ -24683,6 +24689,15 @@ var PLANNING_TOOLS = [
   END_PLANNING_TOOL
 ];
 function planningToolName(name2) {
+  const canonical = name2.replace(/^mcp__verity__/u, "").replace(/^verity_verity_/u, "verity_");
+  const aliases = {
+    verity_planning_start: START_PLANNING_TOOL,
+    verity_planning_present: PRESENT_PLAN_TOOL,
+    verity_planning_implement: END_PLANNING_TOOL,
+    verity_planning_discard: END_PLANNING_TOOL
+  };
+  if (Object.hasOwn(aliases, canonical))
+    return aliases[canonical];
   return PLANNING_TOOLS.find((tool) => name2 === tool || name2 === `mcp__verity__${tool}` || name2 === `verity_${tool}`);
 }
 var PLANNING_SYSTEM_PROMPT = `# Planning mode (Verity)
@@ -25448,6 +25463,49 @@ var recordingFailureReasonSchema = import_zod15.z.enum([
   "invalid_diagnostics_cursor",
   "export_too_large"
 ]);
+
+// node_modules/@verity/events/dist/action-title.js
+function actionTitle(name2, title3, source) {
+  const clean = (value) => value.replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/gu, "").replace(/\s+/gu, " ").trim().slice(0, 200);
+  const words = (value) => value.split(/[_\s-]+/u).filter(Boolean).map((word) => {
+    const acronyms = {
+      api: "API",
+      cli: "CLI",
+      http: "HTTP",
+      qa: "QA",
+      github: "GitHub",
+      mcp: "MCP"
+    };
+    return Object.hasOwn(acronyms, word.toLowerCase()) ? acronyms[word.toLowerCase()] : word.charAt(0).toUpperCase() + word.slice(1);
+  }).join(" ");
+  const provided = title3 ? clean(title3) : "";
+  const readable = provided.includes("_") ? words(provided) : provided;
+  if (readable)
+    return readable;
+  const qualified = /^mcp__([^_]+)__(.+)$/u.exec(name2);
+  let normalized = clean(qualified?.[2] ?? name2).replace(/^verity_verity_/u, "verity_");
+  const aliases = {
+    verity_start_planning: "verity_planning_start",
+    verity_present_plan: "verity_planning_present",
+    verity_end_planning: "verity_planning_implement",
+    verity_list_sessions: "verity_session_list",
+    verity_send_session_message: "verity_session_send_message",
+    verity_list_linked_sessions: "verity_session_list_links",
+    verity_recent_session_messages: "verity_session_read_recent_messages",
+    verity_publish_session_progress: "verity_session_publish_progress"
+  };
+  if ((!qualified || qualified[1] === "verity") && Object.hasOwn(aliases, normalized))
+    normalized = aliases[normalized];
+  source ??= qualified?.[1];
+  if (source && source.toLowerCase() !== "verity")
+    return `${words(clean(source))} \xB7 ${words(normalized)}`;
+  const parts = normalized.split("_");
+  if (parts[0] === "verity" && parts.length === 2)
+    return `Verity \xB7 ${words(parts[1])}`;
+  if (parts[0] === "verity" && parts.length > 2)
+    return `Verity \xB7 ${words(parts[1])} \xB7 ${words(parts.slice(2).join("_"))}`;
+  return [source ? clean(source) : void 0, words(normalized)].filter(Boolean).join(" \xB7 ");
+}
 
 // packages/session/dist/image-references.js
 import { createHash } from "node:crypto";
@@ -29424,6 +29482,12 @@ var StructuredLifecycleMapper = class {
 };
 
 // packages/session/dist/acp-adapter.js
+function toolDisplayMetadata(name2) {
+  const qualified = /^mcp__([^_]+)__/.exec(name2);
+  if (!qualified && !name2.startsWith("verity_"))
+    return {};
+  return { title: actionTitle(name2), source: (qualified?.[1] ?? "verity").slice(0, 200) };
+}
 var CLAUDE_ACP_META = "claudeCode";
 var CLAUDE_WEEKLY_RATE_LIMIT_TYPES = /* @__PURE__ */ new Set([
   // `weekly` was emitted by the native Claude stream before the ACP migration.
@@ -29650,11 +29714,24 @@ var AcpEventAdapter = class {
     const events = [];
     if (!seen.has("start")) {
       seen.add("start");
-      events.push({ t: "tool_call_start", id: id3, name: name2, parentToolId: parent });
+      events.push({
+        t: "tool_call_start",
+        id: id3,
+        name: name2,
+        ...toolDisplayMetadata(name2),
+        parentToolId: parent
+      });
     }
     if (!seen.has("call") && snapshot2.rawInput !== void 0) {
       seen.add("call");
-      events.push({ t: "tool_call", id: id3, name: name2, input: snapshot2.rawInput, parentToolId: parent });
+      events.push({
+        t: "tool_call",
+        id: id3,
+        name: name2,
+        ...toolDisplayMetadata(name2),
+        input: snapshot2.rawInput,
+        parentToolId: parent
+      });
     }
     if (snapshot2.status === "completed" || snapshot2.status === "failed") {
       this.pendingTerminal.add(id3);
@@ -29689,7 +29766,14 @@ var AcpEventAdapter = class {
     const events = [];
     if (!seen.has("call")) {
       seen.add("call");
-      events.push({ t: "tool_call", id: id3, name: name2, input: tool.rawInput ?? {}, parentToolId: parent });
+      events.push({
+        t: "tool_call",
+        id: id3,
+        name: name2,
+        ...toolDisplayMetadata(name2),
+        input: tool.rawInput ?? {},
+        parentToolId: parent
+      });
     }
     seen.add("result");
     this.pendingTerminal.delete(id3);

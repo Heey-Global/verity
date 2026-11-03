@@ -133,7 +133,7 @@ function McpConnectionsView({ client }: { client: VerityClient }) {
   return (
     <SettingsScaffold title="MCP connections" detail onRetry={() => void load()}>
       <SettingsGroup
-        title="Connections"
+        title="Connectors"
         description="Configure remote HTTP MCP servers once, then enable them explicitly per project. Credentials stay on the Verity server."
       >
         {connections === undefined ? (

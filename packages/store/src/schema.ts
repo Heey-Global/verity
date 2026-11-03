@@ -870,6 +870,11 @@ interface RunningTurnsTable {
 }
 
 export interface SessionBackendStateTable {
+  context_fingerprint: ColumnType<
+    string | null,
+    string | null | undefined,
+    string | null | undefined
+  >;
   session_id: string;
   backend: string;
   backend_session_id: string;
@@ -1640,7 +1645,15 @@ export interface VulnDigestsTable {
   user_id: string;
   day: string;
 }
+export interface UserContextTable {
+  user_id: string;
+  instructions: string;
+  memory: string;
+  revision: number;
+}
+
 export interface Database {
+  user_context: UserContextTable;
   qa_dispatches: QADispatchesTable;
   qa_manual_repairs: QAManualRepairsTable;
   qa_assignments: QAAssignmentsTable;

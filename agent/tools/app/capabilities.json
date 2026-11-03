@@ -1,0 +1,13 @@
+[
+  {
+    "name": "verity_app_help_lookup",
+    "title": "Verity · App · Help Lookup",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": null,
+    "skill": "app-help",
+    "compatibility": {
+      "name": "verity_app_help"
+    }
+  }
+]

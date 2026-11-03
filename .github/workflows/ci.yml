@@ -571,7 +571,7 @@ jobs:
                 # Same reason for `test`: verity-git-guard.test.ts executes
                 # `agent-seed/bin/git`, and the drift job compares the two copies
                 # rather than reading either one's behaviour.
-                agent-seed/*|features/verity-sandbox-toolkit/agent-seed/*)
+                agent/*|agent-seed/*|features/verity-sandbox-toolkit/agent-seed/*)
                   lint=true
                   test=true
                   agent_seed_drift=true

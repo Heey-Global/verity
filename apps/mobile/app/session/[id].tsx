@@ -2421,6 +2421,10 @@ export const SessionChat = memo(function SessionChat({
   const [filesInitialPath, setFilesInitialPath] = useState<string | null>(null);
   const [filesInitialRoot, setFilesInitialRoot] = useState<SessionFileRoot>('worktree');
   const openSessionFile = useCallback((path: string, root: SessionFileRoot = 'worktree') => {
+    if (root === 'shared') {
+      router.push({ pathname: '/settings/shared-knowledge', params: { path } });
+      return;
+    }
     setFilesInitialPath(path);
     setFilesInitialRoot(root);
     setFilesOpen(true);
@@ -6162,9 +6166,8 @@ function SessionFilesSheet({
             {(
               [
                 ['worktree', documentSession ? 'My edits' : 'Code'],
-                ['sources', 'Sources'],
-                ['documents', 'Documents'],
-                ['shared', 'Global'],
+                ['sources', 'Raw Sources'],
+                ['documents', 'Wiki'],
               ] as const
             )
               .filter(
@@ -6278,9 +6281,9 @@ function SessionFilesSheet({
                   ? 'My edits'
                   : 'Code'
                 : root === 'sources'
-                  ? 'Sources'
+                  ? 'Raw Sources'
                   : root === 'documents'
-                    ? 'Documents'
+                    ? 'Wiki'
                     : root === 'drafts'
                       ? 'Session edits'
                       : root === 'knowledge'
@@ -6302,7 +6305,7 @@ function SessionFilesSheet({
           <HeaderTextButton
             label={
               root === 'worktree'
-                ? 'Back to Documents'
+                ? 'Back to Wiki'
                 : documentStatus?.running
                   ? 'My working copy (session running)'
                   : documentStatus?.pending
@@ -6316,9 +6319,7 @@ function SessionFilesSheet({
         {!driveActive && (root === 'documents' || root === 'drafts') ? (
           <HeaderTextButton
             label={
-              root === 'drafts'
-                ? 'Back to Documents'
-                : 'Session edits (including retained sessions)'
+              root === 'drafts' ? 'Back to Wiki' : 'Session edits (including retained sessions)'
             }
             disabled={mutating}
             onPress={() => navigateRoot(root === 'drafts' ? 'documents' : 'drafts')}

@@ -108,6 +108,8 @@ export function registerServerSessionFiles(
   ];
 
   registerSessionFileRoutes(app, {
+    resolveSharedRoot: async () =>
+      deps.dataRoot ? ensureSharedKnowledge(deps.dataRoot) : undefined,
     documentStatus: async (id) => {
       const session = await deps.eventStore.getSession(id);
       if (!session?.projectId || !deps.dataRoot) return undefined;

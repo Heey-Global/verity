@@ -176,3 +176,12 @@ repaired; no valid decision is silently selected from partial evidence. Deleting
 an entire decision removes it from discovery; deleting an ancestor leaves its
 successor unresolved. The directory is derived from the Markdown files, not a
 second database. Structured writes do not migrate existing free-form documents.
+
+
+## Shared knowledge in the app
+
+Settings > Shared knowledge is the central browser for cross-project reference material. Personal Instructions and Memory remain separate under Settings > Personal context; project Instructions and Memory remain in project settings. Project and session file browsers show project files only. Existing Shared file links open the central Settings view.
+
+Active users can browse and download Shared files without selecting a project or session. Administrators can edit supported text files under Shared Wiki (`insights/`); writes require the version last read so concurrent changes cannot silently overwrite one another. Original sources and derived files remain protected in this editor. Publishing from a project continues to use the existing explicit publication approval.
+
+This navigation change does not move existing files, convert shared material into private context, or remove agent read access to `/knowledge/shared`.

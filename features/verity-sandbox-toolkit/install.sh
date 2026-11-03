@@ -651,6 +651,11 @@ install -m 0755 "$FEATURE_DIR/lifecycle/post-start.sh" \
 # on and sets core.hooksPath to — so an operator-overridden HOOKSPATH can never
 # decouple the install target from the guard (which would silently skip the gate).
 install -d "$HOOKS_PATH" /opt/agent-seed/bin
+install -m 0755 "$FEATURE_DIR/agent-seed/bin/verity" /opt/agent-seed/bin/verity
+ln -sf /opt/agent-seed/bin/verity /usr/local/bin/verity
+cp -R "$FEATURE_DIR/agent-seed/skills" /opt/agent-seed/
+install -m 0644 "$FEATURE_DIR/agent-seed/skills-manifest.json" /opt/agent-seed/skills-manifest.json
+chmod -R a+rX,go-w /opt/agent-seed/skills
 install -m 0755 "$FEATURE_DIR/agent-seed/hooks/pre-push" "$HOOKS_PATH/pre-push"
 # Secret gate: pre-commit scans the staged diff, pre-push re-scans the branch
 # range. Both delegate to verity-secret-scan (gitleaks wrapper, installed below),
@@ -678,6 +683,7 @@ install -m 0755 "$FEATURE_DIR/agent-seed/bin/verity-code-review" /opt/agent-seed
 # for the pre-push hook; the hook resolves it as a sibling, the symlink below
 # lets the agent run the command the hook prints.
 install -m 0755 "$FEATURE_DIR/agent-seed/bin/verity-local-checks" /opt/agent-seed/bin/verity-local-checks
+install -m 0755 "$FEATURE_DIR/agent-seed/bin/verity-dependencies" /opt/agent-seed/bin/verity-dependencies
 install -m 0644 "$FEATURE_DIR/agent-seed/bin/verity-review-base.sh" /opt/agent-seed/bin/verity-review-base.sh
 install -m 0755 "$FEATURE_DIR/agent-seed/bin/verity-secret-scan" /opt/agent-seed/bin/verity-secret-scan
 # Commit-signing broker wrapper (audit H1). git is pointed at it via GIT_CONFIG_*
@@ -701,6 +707,7 @@ ln -sf /opt/agent-seed/bin/verity-dev-server /usr/local/bin/verity-dev-server
 ln -sf /opt/agent-seed/bin/verity-repo /usr/local/bin/verity-repo
 ln -sf /opt/agent-seed/bin/verity-code-review /usr/local/bin/verity-code-review
 ln -sf /opt/agent-seed/bin/verity-local-checks /usr/local/bin/verity-local-checks
+ln -sf /opt/agent-seed/bin/verity-dependencies /usr/local/bin/verity-dependencies
 # Same for the secret scanner, so it can be run by hand ("is this branch clean?")
 # and so the hooks resolve it through PATH even under a custom hooks path.
 ln -sf /opt/agent-seed/bin/verity-secret-scan /usr/local/bin/verity-secret-scan

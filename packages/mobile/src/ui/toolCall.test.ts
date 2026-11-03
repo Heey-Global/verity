@@ -90,7 +90,7 @@ describe('toolCallView', () => {
       }),
     );
     expect(untitled.subtitle).toBeNull();
-    expect(untitled.headline).toBe('Verity Handoff');
+    expect(untitled.headline).toBe('Verity · Session · Handoff');
   });
 
   it('labels Verity tools the same under every backend qualification', () => {
@@ -98,8 +98,8 @@ describe('toolCallView', () => {
     // the bare name would show the doubled raw identifier for the very same call.
     for (const name of ['verity_gmail', 'mcp__verity__verity_gmail', 'verity_verity_gmail']) {
       const view = toolCallView(tool({ name, state: 'running', input: { action: 'search' } }));
-      expect(view.title).toBe('Gmail');
-      expect(view.headline).toBe('Gmail search');
+      expect(view.title).toBe('Verity · Gmail');
+      expect(view.headline).toBe('Verity · Gmail search');
     }
     const handoff = toolCallView(
       tool({
@@ -108,7 +108,7 @@ describe('toolCallView', () => {
         input: { briefing: 'x'.repeat(200) },
       }),
     );
-    expect(handoff.headline).toBe('Verity Handoff');
+    expect(handoff.headline).toBe('Verity · Session · Handoff');
     expect(handoff.subtitle).toBeNull();
   });
 
@@ -125,17 +125,17 @@ describe('toolCallView', () => {
           input: { server: 'verity', action: 'read', scope: 'project' },
         }),
       );
-      expect(view.title).toBe('Verity Vulnerability Scan');
-      expect(view.headline).toBe('Verity Vulnerability Scan read');
+      expect(view.title).toBe('Verity · Vulnerabilities');
+      expect(view.headline).toBe('Verity · Vulnerabilities read');
       expect(view.subtitle).toBe('read');
     }
   });
 
   it('uses readable planning labels under every backend qualification', () => {
     for (const [toolName, label] of [
-      ['verity_start_planning', 'Verity Planning Mode'],
-      ['verity_present_plan', 'Verity Plan'],
-      ['verity_end_planning', 'Verity Implement Plan'],
+      ['verity_start_planning', 'Verity · Planning · Start'],
+      ['verity_present_plan', 'Verity · Planning · Present'],
+      ['verity_end_planning', 'Verity · Planning · Implement'],
     ]) {
       for (const name of [toolName!, `mcp__verity__${toolName}`, `verity_${toolName}`]) {
         const view = toolCallView(tool({ name, state: 'running', input: {} }));
@@ -187,13 +187,30 @@ describe('toolCallView', () => {
     }
   });
 
+  it('keeps prototype property names readable in collapsed headlines', () => {
+    const view = toolCallView(tool({ name: 'constructor', state: 'running', input: {} }));
+    expect(view.title).toBe('Constructor');
+    expect(view.headline).toBe('Constructor');
+  });
+
+  it.each([
+    ['verity repo pr create --title Example', 'Verity · Repository · PR Create'],
+    ['verity repo issue list --json', 'Verity · Repository · Issue List'],
+    ['verity skill read planning', 'Verity · Skills · Read'],
+    ['verity dev-server status Web', 'Verity · Dev Server · Status'],
+  ])('labels canonical CLI command %s', (command, headline) => {
+    expect(
+      toolCallView(tool({ name: 'Bash', state: 'running', input: { command } })).headline,
+    ).toBe(headline);
+  });
+
   it('labels platform tasks without using the project identifier as the action', () => {
     for (const name of ['verity_tasks', 'mcp__verity__verity_tasks', 'verity_verity_tasks']) {
       const view = toolCallView(
         tool({ name, state: 'running', input: { project: 'verity', action: 'list' } }),
       );
-      expect(view.title).toBe('Verity Tasks');
-      expect(view.headline).toBe('Verity Tasks list');
+      expect(view.title).toBe('Verity · Tasks');
+      expect(view.headline).toBe('Verity · Tasks list');
     }
   });
 
@@ -204,17 +221,17 @@ describe('toolCallView', () => {
       'verity_verity_new_feature',
     ]) {
       const view = toolCallView(tool({ name, state: 'running', input: {} }));
-      expect(view.title).toBe('Verity New Feature');
-      expect(view.headline).toBe('Verity New Feature');
+      expect(view.title).toBe('Verity · New · Feature');
+      expect(view.headline).toBe('Verity · New · Feature');
     }
   });
 
-  it('leaves unrelated tool names untouched', () => {
+  it('derives readable third-party titles without treating them as first-party tools', () => {
     expect(
       toolCallView(tool({ name: 'mcp__other__verity_gmail', state: 'running', input: {} })).title,
-    ).toBe('mcp__other__verity_gmail');
+    ).toBe('Other · Verity Gmail');
     expect(toolCallView(tool({ name: 'constructor', state: 'running', input: {} })).title).toBe(
-      'constructor',
+      'Constructor',
     );
   });
 

@@ -196,7 +196,33 @@ function ProjectSettingsIndexView({
         setConnectionRefresh((value) => value + 1);
       }}
     >
-      <SettingsGroup title="Connections">
+      <SettingsGroup title="Context">
+        <SettingsListPanel>
+          <SettingsNavRow
+            icon="file-text"
+            title="Instructions"
+            subtitle="Project rules outside the code repository"
+            onPress={() =>
+              router.push({
+                pathname: '/project/[id]/settings/context',
+                params: { id: projectId, kind: 'instructions' },
+              })
+            }
+          />
+          <SettingsNavRow
+            icon="book-open"
+            title="Memory"
+            subtitle="Review and edit project facts"
+            onPress={() =>
+              router.push({
+                pathname: '/project/[id]/settings/context',
+                params: { id: projectId, kind: 'memory' },
+              })
+            }
+          />
+        </SettingsListPanel>
+      </SettingsGroup>
+      <SettingsGroup title="Connectors">
         <SettingsListPanel>
           {project.kind === 'local' && (available.github || available.forgejo) ? (
             <SettingsNavRow
@@ -302,7 +328,7 @@ function ProjectSettingsIndexView({
           <SettingsNavRow
             icon="plus"
             title="Add connection"
-            subtitle="Discover services in Connections"
+            subtitle="Discover services in Connectors"
             onPress={() => router.push('/settings/services')}
           />
         </SettingsListPanel>

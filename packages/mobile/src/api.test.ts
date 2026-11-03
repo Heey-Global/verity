@@ -20,6 +20,50 @@ const ZERO_USAGE = {
   turns: 0,
 };
 
+it('round-trips revisioned personal and project context through their scoped endpoints', async () => {
+  const personal = { instructions: 'Rules', memory: 'Fact', revision: 3 };
+  const memory = { memory: 'Project fact', revision: 'memory-revision' };
+  const instructions = { instructions: 'Project rules', revision: 'rules-revision' };
+  const { fetch, calls } = fakeFetchSequence(
+    json(personal),
+    json(personal),
+    json(memory),
+    json(memory),
+    json(instructions),
+    json(instructions),
+  );
+  const client = new VerityClient({ baseUrl: 'http://host', fetch });
+  expect(await client.getUserContext()).toEqual(personal);
+  expect(await client.replaceUserContext(personal)).toEqual(personal);
+  expect(await client.getProjectMemory('project/id')).toEqual(memory);
+  expect(await client.replaceProjectMemory('project/id', memory)).toEqual(memory);
+  expect(await client.getProjectInstructions('project/id')).toEqual(instructions);
+  expect(await client.replaceProjectInstructions('project/id', instructions)).toEqual(instructions);
+  expect(calls.map(({ url, init }) => [url, init?.method])).toEqual([
+    ['http://host/me/context', 'GET'],
+    ['http://host/me/context', 'PUT'],
+    ['http://host/projects/project%2Fid/memory', 'GET'],
+    ['http://host/projects/project%2Fid/memory', 'PUT'],
+    ['http://host/projects/project%2Fid/instructions', 'GET'],
+    ['http://host/projects/project%2Fid/instructions', 'PUT'],
+  ]);
+  expect(calls.filter(({ init }) => init?.method === 'PUT').map(({ init }) => init?.body)).toEqual(
+    [personal, memory, instructions].map((snapshot) => JSON.stringify(snapshot)),
+  );
+});
+
+it('rejects context responses whose revisions cannot support conflict checks', async () => {
+  const { fetch } = fakeFetchSequence(
+    json({ instructions: '', memory: '', revision: 'wrong' }),
+    json({ memory: '', revision: 1 }),
+    json({ instructions: '', revision: null }),
+  );
+  const client = new VerityClient({ baseUrl: 'http://host', fetch });
+  await expect(client.getUserContext()).rejects.toThrow();
+  await expect(client.getProjectMemory('p')).rejects.toThrow();
+  await expect(client.getProjectInstructions('p')).rejects.toThrow();
+});
+
 // An absent codeHost means GitHub, so an unknown one must not keep owner/repo:
 // the chips would otherwise open an unrelated github.com repository.
 it('drops the repository identity for a code host this client does not know', () => {
@@ -4526,4 +4570,46 @@ describe('VerityClient calendar meetings', () => {
     registered('GET', '/settings/calendar-watch');
     registered('PUT', '/settings/calendar-watch');
   });
+});
+
+it('downloads Shared originals through the authenticated client transport', async () => {
+  const { fetch, calls } = fakeFetch(new Response('original bytes'));
+  const client = new VerityClient({ baseUrl: 'http://host', fetch });
+  expect(await (await client.downloadSharedKnowledgeFile('sources/a b.pdf')).text()).toBe(
+    'original bytes',
+  );
+  expect(calls[0]?.url).toBe(
+    'http://host/knowledge/shared/files/download?path=sources%2Fa%20b.pdf',
+  );
+});
+
+it('browses Shared without a session and sends the revision for edits', async () => {
+  const directory = { root: 'shared', path: 'insights', entries: [], truncated: false };
+  const file = {
+    path: 'insights/a b.md',
+    content: 'Before',
+    version: 'a'.repeat(64),
+    size: 6,
+    editable: true,
+  };
+  const { fetch, calls } = fakeFetchSequence(
+    json(directory),
+    json(file),
+    json({ ...file, content: 'After' }),
+    json({ ...directory, root: 'worktree' }),
+  );
+  const client = new VerityClient({ baseUrl: 'http://host', fetch });
+  expect(await client.listSharedKnowledgeFiles('insights')).toEqual(directory);
+  expect(await client.getSharedKnowledgeFile(file.path)).toEqual(file);
+  expect((await client.writeSharedKnowledgeFile(file.path, 'After', file.version)).content).toBe(
+    'After',
+  );
+  expect(calls[1]?.url).toBe('http://host/knowledge/shared/files/content?path=insights%2Fa%20b.md');
+  expect(jsonBody(calls[2])).toEqual({
+    root: 'shared',
+    path: file.path,
+    content: 'After',
+    expectedVersion: file.version,
+  });
+  await expect(client.listSharedKnowledgeFiles()).rejects.toThrow('Update the Verity server');
 });

@@ -152,3 +152,26 @@ it('requires project management permission to disconnect GitHub', async () => {
     }),
   ).toBe('allow');
 });
+
+it('allows active users to read Shared centrally but reserves changes for administrators', async () => {
+  const store: PairedRoutePolicyStore = {
+    isActiveLocalUser: async (id) => id !== 'disabled',
+    isActiveAdministrator: async (id) => id === 'admin',
+    hasProjectPermission: async () => false,
+    getSession: async () => undefined,
+  };
+  for (const route of [
+    '/knowledge/shared/files',
+    '/knowledge/shared/files/content',
+    '/knowledge/shared/files/download',
+  ]) {
+    expect(await authorizePairedRoute(store, 'member', 'GET', route, {})).toBe('allow');
+    expect(await authorizePairedRoute(store, 'disabled', 'GET', route, {})).toBe('forbidden');
+  }
+  expect(
+    await authorizePairedRoute(store, 'member', 'PUT', '/knowledge/shared/files/content', {}),
+  ).toBe('forbidden');
+  expect(
+    await authorizePairedRoute(store, 'admin', 'PUT', '/knowledge/shared/files/content', {}),
+  ).toBe('allow');
+});

@@ -364,7 +364,16 @@ export class SessionReducer {
       case 'tool_call':
         // An approved tool now runs: clear the matching permission prompt (#149).
         this.clearPermissionFor(event.id);
-        this.openTool(seq, ts, event.id, event.name, event.input, event.parentToolId);
+        this.openTool(
+          seq,
+          ts,
+          event.id,
+          event.name,
+          event.input,
+          event.parentToolId,
+          event.title,
+          event.source,
+        );
         break;
       case 'tool_result':
         if (this._pendingSkillToolId !== null && event.id !== this._pendingSkillToolId) {
@@ -636,6 +645,8 @@ export class SessionReducer {
     name: string,
     input: unknown,
     parentToolId?: string,
+    title?: string,
+    source?: string,
   ): void {
     this.active = null; // a tool boundary closes any open text/thinking block
     // Track a `Skill` call so the injected body that follows (a `skill` event) can
@@ -648,6 +659,8 @@ export class SessionReducer {
       createdAt: ts,
       tool: {
         name,
+        ...(title ? { title } : {}),
+        ...(source ? { source } : {}),
         state: 'running',
         input,
         createdAt: ts,

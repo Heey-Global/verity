@@ -1,3 +1,5 @@
+import { AGENT_SKILL_MANIFEST_HASH } from '@verity/events';
+import { resolveAgentContext } from './agent-context.js';
 import { createGitHubQAAnalysis } from './github-qa-analysis.js';
 import { projectDecisionDirectory } from './knowledge-decisions.js';
 import {
@@ -2075,6 +2077,7 @@ export async function buildEmbeddedServer(
             'verity_google_slides',
             'verity_google_docs',
             'verity_knowledge',
+            'verity_memory_append',
             'verity_google_sheets',
             'verity_gmail',
             'verity_matrix',
@@ -2099,6 +2102,7 @@ export async function buildEmbeddedServer(
             'verity_google_slides',
             'verity_google_docs',
             'verity_knowledge',
+            'verity_memory_append',
             'verity_google_sheets',
             'verity_gmail',
             'verity_matrix',
@@ -5528,6 +5532,32 @@ export async function buildEmbeddedServer(
       transcript: transcriptStore,
       ...(config.dataVolumeRoot !== undefined
         ? {
+            agentContext: async (session, initiatedBy) => {
+              const status =
+                session.projectId && config.runnerSupervisor === true
+                  ? await requestRunnerSupervisor(
+                      join(config.dataVolumeRoot!, 'runners', session.projectId, 'supervisor.sock'),
+                      { kind: 'status' },
+                    ).catch(() => undefined)
+                  : undefined;
+              return resolveAgentContext(
+                eventStore,
+                config.dataVolumeRoot!,
+                session,
+                (projectId) =>
+                  readOrMigrateProjectOverview(config.dataVolumeRoot!, projectId, async () => {
+                    const approved = await eventStore.knowledge.getProjectOverview(projectId);
+                    return (
+                      approved?.bodyMarkdown ??
+                      (await eventStore.getProjectSettingsRaw(projectId))?.memory ??
+                      undefined
+                    );
+                  }),
+                status?.['builtInSkillsVersion'] === 1 &&
+                  status['builtInSkillsManifestHash'] === AGENT_SKILL_MANIFEST_HASH,
+                initiatedBy,
+              );
+            },
             projectOverview: async (projectId: string) => {
               return readOrMigrateProjectOverview(config.dataVolumeRoot!, projectId, async () => {
                 const approved = await eventStore.knowledge.getProjectOverview(projectId);

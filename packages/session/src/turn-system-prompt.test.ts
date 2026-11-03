@@ -85,9 +85,29 @@ describe('pull request instructions per code host', () => {
   });
 });
 
+describe('trusted Skills core', () => {
+  it('requires loading situational procedures and preserves the legacy fallback', () => {
+    const core = turnSystemPrompt('local', true);
+    expect(core).toContain('verity skill read <name>');
+    expect(core).toContain('dev-server');
+    expect(core).toContain('No remote publishing is configured');
+    expect(core).not.toContain('verity-dev-server add');
+    expect(core).not.toContain(' (Verity)');
+    expect(Buffer.byteLength(core)).toBeLessThan(9500);
+    expect(turnSystemPrompt('local')).toContain('verity-dev-server');
+  });
+});
+
 it('keeps special Documents sessions separate from local Code projects', () => {
   const prompt = turnSystemPrompt('documents');
   expect(prompt).toContain(DOCUMENT_PROJECT_SYSTEM_PROMPT);
   expect(prompt).not.toContain(LOCAL_PROJECT_SYSTEM_PROMPT);
   expect(prompt).not.toContain(PULL_REQUEST_SYSTEM_PROMPT);
+});
+
+it('keeps compact Documents contexts out of the remote branch workflow', () => {
+  const prompt = turnSystemPrompt('documents', true);
+  expect(prompt).toContain('Documents working copy publishes automatically');
+  expect(prompt).toContain('Use the code working directory');
+  expect(prompt).not.toContain('Use this session branch for remote work');
 });

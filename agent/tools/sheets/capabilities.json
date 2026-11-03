@@ -1,0 +1,62 @@
+[
+  {
+    "name": "verity_sheets_inspect_spreadsheet",
+    "title": "Verity · Sheets · Inspect Spreadsheet",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": "sheets",
+    "skill": null,
+    "compatibility": {
+      "name": "verity_google_sheets",
+      "action": "inspect_spreadsheet"
+    }
+  },
+  {
+    "name": "verity_sheets_read_range",
+    "title": "Verity · Sheets · Read Range",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": "sheets",
+    "skill": null,
+    "compatibility": {
+      "name": "verity_google_sheets",
+      "action": "read_range"
+    }
+  },
+  {
+    "name": "verity_sheets_write_range",
+    "title": "Verity · Sheets · Write Range",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": "sheets",
+    "skill": null,
+    "compatibility": {
+      "name": "verity_google_sheets",
+      "action": "write_range"
+    }
+  },
+  {
+    "name": "verity_sheets_clear_range",
+    "title": "Verity · Sheets · Clear Range",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": "sheets",
+    "skill": null,
+    "compatibility": {
+      "name": "verity_google_sheets",
+      "action": "clear_range"
+    }
+  },
+  {
+    "name": "verity_sheets_structural_edit",
+    "title": "Verity · Sheets · Structural Edit",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": "sheets",
+    "skill": null,
+    "compatibility": {
+      "name": "verity_google_sheets",
+      "action": "structural_edit"
+    }
+  }
+]

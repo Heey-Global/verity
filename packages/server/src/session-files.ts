@@ -64,7 +64,7 @@ export function isManagedKnowledgePath(root: SessionFileRootName, rel: string): 
   if (rel === '' || rel.split('/').includes(FILE_HISTORY_DIR)) return true;
   const first = rel.split('/')[0];
   if (first === EXTRACTED_TEXT_DIR) return true;
-  return root === 'knowledge' && first === SHARED_KNOWLEDGE_DIR;
+  return root === 'knowledge' && (first === SHARED_KNOWLEDGE_DIR || first === 'AGENTS.md');
 }
 
 export interface SessionFileEntry {
