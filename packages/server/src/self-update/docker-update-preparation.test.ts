@@ -1751,7 +1751,7 @@ it('prepares host runtimes using the installed live-smoke service instead of inv
     expect(docker.inspectRuntime).toHaveBeenCalledWith('runsc');
     expect(docker.inspectRuntime).toHaveBeenCalledWith('runsc-project');
     expect(docker.createContainer).not.toHaveBeenCalled();
-// Include the read-only inventory of any previously started host writer.
+    // Include the read-only inventory of any previously started host writer.
     expect(docker.listContainers).toHaveBeenCalledTimes(3);
     // A receipt cannot conceal a wrong runtime registration on the daemon.
     docker.inspectRuntime.mockResolvedValue(undefined);
