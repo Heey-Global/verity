@@ -4,15 +4,15 @@ import { Button, TextField } from '../ui';
 import { SettingsGroup, SettingsMessage, SettingsPanel, SettingsScaffold } from './SettingsChrome';
 
 type Snapshot = { instructions: string; memory: string; revision: number | string };
+type ContextSettingsProps = { projectId?: string; kind: 'instructions' | 'memory' };
+
+export function ContextSettings(props: ContextSettingsProps) {
+  // Each scope owns its draft and requests. Navigation must never reuse either.
+  return <ContextSettingsEditor key={JSON.stringify([props.projectId, props.kind])} {...props} />;
+}
 
 /** Saving one field preserves the other from the same revision; conflicts keep the draft. */
-export function ContextSettings({
-  projectId,
-  kind,
-}: {
-  projectId?: string;
-  kind: 'instructions' | 'memory';
-}) {
+function ContextSettingsEditor({ projectId, kind }: ContextSettingsProps) {
   const client = useMemo(() => createVerityClient(), []);
   const [snapshot, setSnapshot] = useState<Snapshot>();
   const [draft, setDraft] = useState('');

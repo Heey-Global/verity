@@ -1,11 +1,58 @@
 import type { VerityClient } from '@verity/mobile';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react-native';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
 
 jest.mock('expo-router', () => require('./support/settingsHarness').expoRouterMock());
 
 const mockClient = jest.fn<VerityClient | null, []>();
 jest.mock('../lib/client', () => ({ createVerityClient: () => mockClient() }));
 import { ContextSettings } from '../components/settings/ContextSettings';
+
+it('isolates drafts and pending responses when navigating to another context scope', async () => {
+  let finishOldLoad!: (value: { memory: string; revision: string }) => void;
+  const oldLoad = new Promise<{ memory: string; revision: string }>((resolve) => {
+    finishOldLoad = resolve;
+  });
+  let finishNewLoad!: (value: { memory: string; revision: string }) => void;
+  const newLoad = new Promise<{ memory: string; revision: string }>((resolve) => {
+    finishNewLoad = resolve;
+  });
+  const read = jest
+    .fn()
+    .mockResolvedValueOnce({ memory: 'Project A fact', revision: 'same' })
+    .mockImplementationOnce(() => oldLoad)
+    .mockImplementationOnce(() => newLoad);
+  const replace = jest.fn().mockRejectedValue(new Error('Reload required'));
+  mockClient.mockReturnValue({
+    getProjectMemory: read,
+    replaceProjectMemory: replace,
+  } as unknown as VerityClient);
+  const view = render(<ContextSettings kind="memory" projectId="a" />);
+  fireEvent.changeText(await screen.findByDisplayValue('Project A fact'), 'Unsaved A fact');
+  fireEvent.press(screen.getByText('Save'));
+  await screen.findByText('Reload required');
+  fireEvent.press(screen.getByText('Retry'));
+  await waitFor(() => expect(read).toHaveBeenCalledTimes(2));
+  view.rerender(<ContextSettings kind="memory" projectId="b" />);
+  expect(screen.queryByDisplayValue('Unsaved A fact')).toBeNull();
+  await act(async () => {
+    finishNewLoad({ memory: 'Project B fact', revision: 'b-revision' });
+  });
+  await screen.findByDisplayValue('Project B fact');
+  await act(async () => {
+    finishOldLoad({ memory: 'Late A response', revision: 'a-late' });
+  });
+  await waitFor(() => expect(screen.queryByDisplayValue('Late A response')).toBeNull());
+  expect(screen.queryByDisplayValue('Unsaved A fact')).toBeNull();
+  expect(screen.getByDisplayValue('Project B fact')).toBeTruthy();
+  fireEvent.changeText(screen.getByDisplayValue('Project B fact'), 'Updated B fact');
+  fireEvent.press(screen.getByText('Save'));
+  await waitFor(() =>
+    expect(replace).toHaveBeenLastCalledWith('b', {
+      memory: 'Updated B fact',
+      revision: 'b-revision',
+    }),
+  );
+});
 
 it('preserves the other personal field and retains the draft after a revision conflict', async () => {
   const replace = jest
