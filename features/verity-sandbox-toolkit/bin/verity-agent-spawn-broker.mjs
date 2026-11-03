@@ -14,6 +14,7 @@ import {
   mkdir,
   mkdtemp,
   open,
+  opendir,
   readdir,
   rename,
   readFile,
@@ -986,7 +987,7 @@ async function managedDirectory(path, owner, group) {
   await chmod(path, 0o755);
 }
 
-async function lockSessionHome(home, options) {
+async function lockSessionHome(home, options, nonblocking = false) {
   await managedDirectory(
     join(options.runtimeDir, 'session-homes'),
     process.getuid(),
@@ -999,9 +1000,13 @@ async function lockSessionHome(home, options) {
   );
   try {
     await new Promise((resolveLock, rejectLock) => {
-      const child = spawn('/usr/bin/flock', ['--wait', String(SESSION_HOME_WAIT_MS / 1000), '3'], {
-        stdio: ['ignore', 'ignore', 'ignore', handle.fd],
-      });
+      const child = spawn(
+        '/usr/bin/flock',
+        [...(nonblocking ? ['--nonblock'] : ['--wait', String(SESSION_HOME_WAIT_MS / 1000)]), '3'],
+        {
+          stdio: ['ignore', 'ignore', 'ignore', handle.fd],
+        },
+      );
       child.once('error', rejectLock);
       child.once('exit', (code) =>
         code === 0 ? resolveLock() : rejectLock(new Error(SESSION_HOME_BUSY)),
@@ -1012,6 +1017,232 @@ async function lockSessionHome(home, options) {
     await handle.close();
     throw error;
   }
+}
+
+/** A project-wide content cache; credentials and npm logs remain in the private home. */
+function npmCachePath(options) {
+  return join(options.runtimeDir ?? DEFAULT_RUNTIME_DIR, 'package-cache', 'npm');
+}
+
+async function packageCacheDirectory(options) {
+  const { uid, gid } = validateIdentity(options);
+  const root = join(options.runtimeDir ?? DEFAULT_RUNTIME_DIR, 'package-cache');
+  try {
+    await mkdir(root, { mode: 0o755 });
+  } catch (error) {
+    if (error.code !== 'EEXIST') throw error;
+  }
+  const rootMetadata = await lstat(root);
+  if (
+    !rootMetadata.isDirectory() ||
+    rootMetadata.isSymbolicLink() ||
+    rootMetadata.uid !== process.getuid() ||
+    (rootMetadata.mode & 0o022) !== 0 ||
+    (await realpath(root)) !== root
+  )
+    throw new Error('invalid package cache root');
+  const cache = npmCachePath(options);
+  try {
+    await mkdir(cache, { mode: 0o700 });
+  } catch (error) {
+    if (error.code !== 'EEXIST') throw error;
+  }
+  const metadata = await lstat(cache);
+  if (
+    !metadata.isDirectory() ||
+    metadata.isSymbolicLink() ||
+    (metadata.uid !== uid && metadata.uid !== process.getuid())
+  )
+    throw new Error('invalid package cache');
+  await chown(cache, uid, gid);
+  await chmod(cache, 0o700);
+  return cache;
+}
+
+/** flock's open-file-description lease survives broker death in the spawned child. */
+export async function acquirePackageCacheLease(options, exclusive = false) {
+  await packageCacheDirectory(options);
+  const handle = await open(
+    join(options.runtimeDir ?? DEFAULT_RUNTIME_DIR, 'package-cache', 'npm.lock'),
+    constants.O_CREAT | constants.O_RDWR | constants.O_NOFOLLOW,
+    0o600,
+  );
+  try {
+    const metadata = await handle.stat();
+    if (!metadata.isFile() || metadata.uid !== process.getuid() || metadata.nlink !== 1)
+      throw new Error('invalid package cache lease');
+    await new Promise((resolveLock, rejectLock) => {
+      const child = spawn(
+        '/usr/bin/flock',
+        [...(exclusive ? ['--exclusive', '--nonblock'] : ['--shared', '--wait', '30']), '3'],
+        { stdio: ['ignore', 'ignore', 'ignore', handle.fd] },
+      );
+      child.once('error', rejectLock);
+      child.once('exit', (code) =>
+        code === 0 ? resolveLock() : rejectLock(new Error('package cache is in use')),
+      );
+    });
+    return handle;
+  } catch (error) {
+    await handle.close();
+    throw error;
+  }
+}
+
+async function cacheTreeBytes(path, budget, owner) {
+  if (++budget.entries > 100_000 || Date.now() > budget.deadline)
+    throw new Error('package cache inventory limit');
+  const metadata = await lstat(path);
+  if (
+    metadata.isSymbolicLink() ||
+    (!metadata.isDirectory() && !metadata.isFile()) ||
+    metadata.uid !== owner ||
+    (metadata.isFile() && metadata.nlink !== 1)
+  )
+    throw new Error('unsafe package cache entry');
+  let bytes = metadata.blocks * 512;
+  if (metadata.isDirectory()) {
+    const directory = await opendir(path);
+    for await (const entry of directory)
+      bytes += await cacheTreeBytes(join(path, entry.name), budget, owner);
+  }
+  return bytes;
+}
+
+async function validatedCacache(parent, options, budget) {
+  const { uid } = validateIdentity(options);
+  // No ancestor of the removable leaf may redirect outside its owned home.
+  const parentMetadata = await lstat(parent).catch((error) => {
+    if (error.code === 'ENOENT') return undefined;
+    throw error;
+  });
+  if (!parentMetadata) return { path: join(parent, '_cacache'), bytes: 0 };
+  if (
+    !parentMetadata.isDirectory() ||
+    parentMetadata.isSymbolicLink() ||
+    parentMetadata.uid !== uid ||
+    (await realpath(parent)) !== parent
+  )
+    throw new Error('unsafe package cache root');
+  const path = join(parent, '_cacache');
+  const metadata = await lstat(path).catch((error) => {
+    if (error.code === 'ENOENT') return undefined;
+    throw error;
+  });
+  if (!metadata) return { path, bytes: 0 };
+  if (!metadata.isDirectory() || metadata.isSymbolicLink())
+    throw new Error('unsafe package cache root');
+  return { path, bytes: await cacheTreeBytes(path, budget, uid) };
+}
+
+/** Only the broker can exclude actual child starts; a server activity snapshot cannot. */
+export async function reclaimPackageCaches(request, options) {
+  if (
+    !Array.isArray(request.sessionIds) ||
+    request.sessionIds.length > 1000 ||
+    new Set(request.sessionIds).size !== request.sessionIds.length ||
+    !Number.isSafeInteger(request.maxBytes) ||
+    request.maxBytes <= 0
+  )
+    throw new Error('invalid package cache reclamation request');
+  const homes = request.sessionIds.map((id) =>
+    sessionHomePath(options.runtimeDir ?? DEFAULT_RUNTIME_DIR, id),
+  );
+  const report = {
+    observedAt: new Date().toISOString(),
+    sharedBytes: null,
+    legacyBytes: 0,
+    removedBytes: 0,
+    legacyCachesRemoved: 0,
+    sharedCachePruned: false,
+    usageComplete: true,
+    blockers: [],
+  };
+  const block = (reason) => {
+    report.usageComplete = false;
+    if (report.blockers.length < 100) report.blockers.push(String(reason).slice(0, 500));
+  };
+  const budget = { entries: 0, deadline: Date.now() + 15_000 };
+  let safeHomes = true;
+  try {
+    const directory = join(options.runtimeDir ?? DEFAULT_RUNTIME_DIR, 'session-homes');
+    const metadata = await lstat(directory).catch((error) => {
+      if (error.code === 'ENOENT') return undefined;
+      throw error;
+    });
+    if (metadata) {
+      if (
+        !metadata.isDirectory() ||
+        metadata.isSymbolicLink() ||
+        metadata.uid !== process.getuid() ||
+        (metadata.mode & 0o022) !== 0 ||
+        (await realpath(directory)) !== directory
+      )
+        throw new Error('unsafe session homes root');
+      const owned = new Set(homes);
+      const entries = await opendir(directory);
+      for await (const entry of entries) {
+        if (++budget.entries > 100_000 || Date.now() > budget.deadline)
+          throw new Error('package cache inventory limit');
+        if (/^[a-f0-9]{64}$/u.test(entry.name) && !owned.has(join(directory, entry.name))) {
+          report.legacyBytes = null;
+          block('session home ownership is unknown');
+        }
+      }
+    }
+  } catch (error) {
+    safeHomes = false;
+    report.legacyBytes = null;
+    block(error.message);
+  }
+  for (const home of safeHomes ? homes : []) {
+    let lease;
+    try {
+      if (Date.now() > budget.deadline) throw new Error('package cache inventory limit');
+      if (activeSessionHomes.has(home)) throw new Error('session home is in use');
+      const metadata = await lstat(home).catch((error) => {
+        if (error.code === 'ENOENT') return undefined;
+        throw error;
+      });
+      if (!metadata) continue;
+      if (
+        !metadata.isDirectory() ||
+        metadata.isSymbolicLink() ||
+        metadata.uid !== process.getuid() ||
+        (await realpath(home)) !== home
+      )
+        throw new Error('unsafe session home');
+      lease = await lockSessionHome(home, options, true);
+      if (activeSessionHomes.has(home)) throw new Error('session home is in use');
+      const cache = await validatedCacache(join(home, 'cache'), options, budget);
+      if (cache.bytes > 0) {
+        await rm(cache.path, { recursive: true });
+        report.removedBytes += cache.bytes;
+        report.legacyCachesRemoved++;
+      }
+    } catch (error) {
+      report.legacyBytes = null;
+      block(error.message);
+    } finally {
+      await lease?.close();
+    }
+  }
+  let lease;
+  try {
+    lease = await acquirePackageCacheLease(options, true);
+    const cache = await validatedCacache(npmCachePath(options), options, budget);
+    if (cache.bytes > request.maxBytes) {
+      await rm(cache.path, { recursive: true });
+      report.removedBytes += cache.bytes;
+      report.sharedCachePruned = true;
+      report.sharedBytes = 0;
+    } else report.sharedBytes = cache.bytes;
+  } catch (error) {
+    block(error.message);
+  } finally {
+    await lease?.close();
+  }
+  return report;
 }
 
 async function claimSessionHome(request, options) {
@@ -1706,6 +1937,8 @@ export function agentLaunchSpec(request, options) {
             normalConfinement ? request.managedHome : request.knowledgeHome,
             request.planning ? '--read-only-root' : '--write-isolated',
             ...(request.command === 'opencode-acp' ? ['--self-proc-maps'] : []),
+            request.planning ? '--runtime-root' : '--write-root',
+            npmCachePath(options),
             ...planningRuntimeRoots(request, options).flatMap((path) => ['--runtime-root', path]),
             ...(normalConfinement ? normalSessionRoots(options, agentPath) : []),
             '--',
@@ -1772,7 +2005,7 @@ export function agentLaunchSpec(request, options) {
               XDG_DATA_HOME: join(request.managedHome, 'data'),
               XDG_STATE_HOME: join(request.managedHome, 'state'),
               XDG_CACHE_HOME: join(request.managedHome, 'cache'),
-              npm_config_cache: join(request.managedHome, 'cache'),
+              npm_config_logs_dir: join(request.managedHome, 'cache', '_logs'),
               TMPDIR: join(request.managedHome, 'tmp'),
             }
           : {}),
@@ -1798,16 +2031,18 @@ export function agentLaunchSpec(request, options) {
                     XDG_STATE_HOME: join(request.knowledgeHome, 'state'),
                     XDG_CACHE_HOME: join(request.knowledgeHome, 'cache'),
                   }),
-              npm_config_cache: join(request.knowledgeHome, 'cache'),
+              npm_config_logs_dir: join(request.knowledgeHome, 'cache', '_logs'),
               TMPDIR: join(request.knowledgeHome, 'tmp'),
             }
           : {}),
+        npm_config_cache: npmCachePath(options),
       },
       stdio: [
         'pipe',
         'pipe',
         'pipe',
         ...(request.sessionLockFd === undefined ? [] : [request.sessionLockFd]),
+        ...(request.packageCacheLockFd === undefined ? [] : [request.packageCacheLockFd]),
       ],
       // Give every agent invocation its own process group. Codex can leave tool
       // and sub-agent descendants running after its direct process receives a
@@ -3245,6 +3480,15 @@ export async function runAgentSpawnBroker(options = {}) {
         if (
           isObject(raw) &&
           raw.protocolVersion === AGENT_SPAWN_PROTOCOL_VERSION &&
+          raw.kind === 'reclaim-package-caches'
+        ) {
+          send(socket, { ok: true, report: await reclaimPackageCaches(raw, options) });
+          socket.end();
+          return;
+        }
+        if (
+          isObject(raw) &&
+          raw.protocolVersion === AGENT_SPAWN_PROTOCOL_VERSION &&
           ['prepare-session-home', 'delete-session-home'].includes(raw.kind)
         ) {
           const home = sessionHomePath(options.runtimeDir, raw.sessionId);
@@ -3400,6 +3644,18 @@ export async function runAgentSpawnBroker(options = {}) {
             };
           }
           if (request.kind === 'trusted-cli') trustedCliFailurePhase = 'launch-spec';
+          if (request.kind === 'agent') {
+            const lease = await acquirePackageCacheLease(options);
+            request.packageCacheLockFd = lease.fd;
+            const cleanup = materialized.cleanup;
+            materialized.cleanup = async () => {
+              try {
+                return await cleanup();
+              } finally {
+                await lease.close();
+              }
+            };
+          }
           if (request.kind === 'agent' && request.command === 'codex-acp') {
             releaseCodexStartup = await acquireCodexStartup();
           }
