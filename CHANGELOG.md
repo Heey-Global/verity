@@ -6,6 +6,27 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.77.0](https://github.com/Heey-Global/verity/compare/v4.76.0...v4.77.0) (2026-11-03)
+
+
+### Features
+
+* **agent:** add scoped context and trusted capabilities ([#2212](https://github.com/Heey-Global/verity/issues/2212)) ([5f5ada5](https://github.com/Heey-Global/verity/commit/5f5ada50b097ab2b3d73413a1d70b54377c62dab))
+* **knowledge:** add direct project browsing and protect Wiki writes ([#2215](https://github.com/Heey-Global/verity/issues/2215)) ([b9c6a74](https://github.com/Heey-Global/verity/commit/b9c6a74e540b4e94a06b34b6115507eaa56acf5b))
+
+
+### Bug Fixes
+
+* **meetings:** restore calendar selection and reliable web startup ([#2205](https://github.com/Heey-Global/verity/issues/2205)) ([4dac91e](https://github.com/Heey-Global/verity/commit/4dac91e1bf9cd97d8114938add501b7b1e6fb61d))
+* **mobile:** expose native pre-data read transitions ([#2206](https://github.com/Heey-Global/verity/issues/2206)) ([1a5b444](https://github.com/Heey-Global/verity/commit/1a5b44470ed0e49dec08f69a7b1bbc1586aa52f8))
+* **projects:** restore local code workspaces and GitHub disconnect ([#2211](https://github.com/Heey-Global/verity/issues/2211)) ([9acc428](https://github.com/Heey-Global/verity/commit/9acc42872d8f1097cd83a9ecffdeee944e1a3867))
+* **session:** decouple deletion from runner cleanup ([#2207](https://github.com/Heey-Global/verity/issues/2207)) ([19f281e](https://github.com/Heey-Global/verity/commit/19f281e3b51bbd3642c7d26bc8897b57a72dfacd))
+
+
+### Performance Improvements
+
+* **server:** reduce polling-driven Docker execs ([#2208](https://github.com/Heey-Global/verity/issues/2208)) ([7e200b1](https://github.com/Heey-Global/verity/commit/7e200b12402c1f4c065e8334c45091607bf4b186))
+
 ## [4.76.0](https://github.com/Heey-Global/verity/compare/v4.75.0...v4.76.0) (2026-11-03)
 
 
