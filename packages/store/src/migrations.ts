@@ -5203,3 +5203,22 @@ migrations['0187_project_egress_switch'] = {
     await db.schema.alterTable('verity_settings').dropColumn('project_egress_enabled').execute();
   },
 };
+
+migrations['0188_user_context'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await db.schema
+      .alterTable('session_backend_state')
+      .addColumn('context_fingerprint', 'text')
+      .execute();
+    await sql`create table user_context (
+      user_id text primary key references users(id) on delete cascade,
+      instructions text not null default '' check (char_length(instructions) <= 12000),
+      memory text not null default '' check (char_length(memory) <= 8000),
+      revision integer not null default 1 check (revision > 0)
+    )`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table user_context`.execute(db);
+    await db.schema.alterTable('session_backend_state').dropColumn('context_fingerprint').execute();
+  },
+};

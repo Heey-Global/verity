@@ -21,6 +21,45 @@ import { fileURLToPath, URL } from 'node:url';
 import { TextDecoder } from 'node:util';
 import { setImmediate } from 'node:timers';
 
+/** Partial or stale toolkit installations must retain the legacy runtime prompt. */
+export async function installedSkillsManifestHash(seedRoot = '/opt/agent-seed') {
+  try {
+    if (!(await lstat(join(seedRoot, 'bin/verity'))).isFile()) return undefined;
+    const bytes = await readFile(join(seedRoot, 'skills-manifest.json'));
+    const manifest = JSON.parse(bytes.toString('utf8'));
+    if (
+      createHash('sha256')
+        .update(await readFile(join(seedRoot, 'bin/verity')))
+        .digest('hex') !== manifest.dispatcher
+    )
+      return undefined;
+    if (manifest.version !== 1 || !manifest.files || typeof manifest.files !== 'object')
+      return undefined;
+    const files = Object.entries(manifest.files);
+    if (!files.length) return undefined;
+    for (const [path, digest] of files) {
+      if (!/^[a-z]+(?:-[a-z]+)*\/SKILL\.md$/.test(path) || typeof digest !== 'string')
+        return undefined;
+      const target = join(seedRoot, 'skills', path);
+      if (!(await lstat(dirname(target))).isDirectory() || !(await lstat(target)).isFile())
+        return undefined;
+      if (
+        createHash('sha256')
+          .update(await readFile(target))
+          .digest('hex') !== digest
+      )
+        return undefined;
+    }
+    return createHash('sha256').update(bytes).digest('hex');
+  } catch {
+    return undefined;
+  }
+}
+
+export async function installedSkillsVersion(seedRoot = '/opt/agent-seed') {
+  return (await installedSkillsManifestHash(seedRoot)) ? 1 : 0;
+}
+
 export const SUPERVISOR_PROTOCOL_VERSION = 1;
 /**
  * The oldest Server dialect this supervisor still answers — ADR 0006 D9.
@@ -2622,6 +2661,8 @@ export async function handleSupervisorRequest(
   if (!isObject(request) || !supportedRequestVersion(request.protocolVersion)) {
     throw new Error('unsupported supervisor protocol');
   }
+  const skillsManifestHash =
+    request.kind === 'status' ? await installedSkillsManifestHash() : undefined;
   switch (request.kind) {
     case 'status':
       return {
@@ -2631,6 +2672,8 @@ export async function handleSupervisorRequest(
         // Both ride on the same helper. The Server reads `scriptIsolation` before it
         // raises an approval card for an entry script this Sandbox could not confine.
         managedAgentConfig: true,
+        builtInSkillsVersion: skillsManifestHash ? 1 : 0,
+        ...(skillsManifestHash ? { builtInSkillsManifestHash: skillsManifestHash } : {}),
         persistentSessionHomes: true,
         planningIsolation: capabilities.scriptIsolation,
         knowledgeIsolation: capabilities.scriptIsolation,

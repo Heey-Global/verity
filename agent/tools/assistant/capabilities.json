@@ -1,0 +1,38 @@
+[
+  {
+    "name": "verity_assistant_projects",
+    "title": "Verity · Assistant · Projects",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": null,
+    "skill": null,
+    "compatibility": {
+      "name": "verity_assistant",
+      "action": "projects"
+    }
+  },
+  {
+    "name": "verity_assistant_scheduling",
+    "title": "Verity · Assistant · Scheduling",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": null,
+    "skill": null,
+    "compatibility": {
+      "name": "verity_assistant",
+      "action": "scheduling"
+    }
+  },
+  {
+    "name": "verity_assistant_add_task",
+    "title": "Verity · Assistant · Add Task",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": null,
+    "skill": null,
+    "compatibility": {
+      "name": "verity_assistant",
+      "action": "add_task"
+    }
+  }
+]

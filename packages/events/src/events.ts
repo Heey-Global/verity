@@ -425,6 +425,8 @@ export const agentEventSchema = z.discriminatedUnion('t', [
   }),
   z.object({
     t: z.literal('mcp_app'),
+    title: z.string().max(200).optional(),
+    source: z.string().max(200).optional(),
     appId: z.string().uuid(),
     projectId: z.string().min(1),
     sessionId: z.string().min(1),
@@ -438,12 +440,16 @@ export const agentEventSchema = z.discriminatedUnion('t', [
   }),
   z.object({
     t: z.literal('tool_call_start'),
+    title: z.string().max(200).optional(),
+    source: z.string().max(200).optional(),
     id: z.string().min(1),
     name: z.string().min(1),
     parentToolId,
   }),
   z.object({
     t: z.literal('tool_call'),
+    title: z.string().max(200).optional(),
+    source: z.string().max(200).optional(),
     id: z.string().min(1),
     name: z.string().min(1),
     input: z.unknown(),

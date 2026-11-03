@@ -254,11 +254,11 @@ function LinkRepositorySection({
     return (
       <SettingsGroup
         title="Code host"
-        description="This project lives only on this Verity server. Connect GitHub or Forgejo in Connections to link it to a repository there."
+        description="This project lives only on this Verity server. Connect GitHub or Forgejo in Connectors to link it to a repository there."
       >
         <View style={styles.selfStart}>
           <Button
-            label="Open Connections"
+            label="Open Connectors"
             variant="secondary"
             size="compact"
             onPress={() => router.push('/settings/services')}

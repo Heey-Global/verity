@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "dispatcher": "2f23c161a8a7784b7b4d61c32a29bbab6aae6748fee21aad188fb214f1c140c0",
+  "files": {
+    "app-help/SKILL.md": "fe026a0ac765c46210be57f1b3cdcfbb3fe99af0ad20660b91e620d460c4f3db",
+    "automation/SKILL.md": "9a5e8dd61bdff3a29bca81f8baacdc638b6f51a87ac644abc298c4468318da92",
+    "delegation/SKILL.md": "fdb54c4670ab5b96b66292a4edf00e0ab81578405ec071d2ba6a5098f7ba4cc0",
+    "dependencies/SKILL.md": "9615a54907ba7b6dade796b08b4bfa74846047c6c642be860e83a47fe371e78c",
+    "dev-server/SKILL.md": "525035548031223a60e3f490e36f89db59d7ca442cdbc7518cb9f8d27774d8b7",
+    "knowledge-ingest/SKILL.md": "f7a8303328abdd18188a38c839cc1a5a0ee3fd82d8c784ca979a81491eb1aa22",
+    "knowledge-lint/SKILL.md": "14b0ccf18bb67a7cf48cc3bf65a201e5b8a98830e36e89916852f4e3d38d7ead",
+    "knowledge-query/SKILL.md": "79fe2195be4b7db7c1d4f63fae8f17152fcb1b4af2baa5efc6462af1eb1ca520",
+    "media-output/SKILL.md": "4fd54648398432e91de86582f1042bac22b2fe36cdd12657f9ca13a1089094a3",
+    "memory-curate/SKILL.md": "287ba6572721f549854e7434788b330972fe824f28dedddc2ab81f09c4306301",
+    "planning/SKILL.md": "2ee4e67ee6113e676402a1459bd2556a195421c54278d81dae6439098c246b22",
+    "pull-request/SKILL.md": "229a4d419a14c4225c5564fc1c11b3428284239a6fa76aec9bca5c005be6e95a",
+    "push-review/SKILL.md": "7cfdc24e0f8f4423b55cd35f180f4330222b5c6c9b300d269d015104c4896188",
+    "sandbox-resources/SKILL.md": "dbf2b652d27aa19967d65b7da04e6572a7ae51616747d2e95b0a4eb1346480ea",
+    "tasks/SKILL.md": "f6e70a7a2082ed3788aef135d35c2c5fc4f2159a129de43a1b4d88a1d25ad2d8"
+  }
+}

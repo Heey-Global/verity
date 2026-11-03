@@ -4649,6 +4649,54 @@ export class VerityClient {
     return signingKeySchema.parse(await res.json());
   }
 
+  async getUserContext(): Promise<{ instructions: string; memory: string; revision: number }> {
+    const res = await this.request('/me/context', { method: 'GET' });
+    return z
+      .object({ instructions: z.string(), memory: z.string(), revision: z.number().int() })
+      .parse(await res.json());
+  }
+
+  async replaceUserContext(input: { instructions: string; memory: string; revision: number }) {
+    const res = await this.request('/me/context', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+    return z
+      .object({ instructions: z.string(), memory: z.string(), revision: z.number().int() })
+      .parse(await res.json());
+  }
+
+  async getProjectMemory(id: string) {
+    const res = await this.request(`/projects/${encodeURIComponent(id)}/memory`, { method: 'GET' });
+    return z.object({ memory: z.string(), revision: z.string() }).parse(await res.json());
+  }
+
+  async replaceProjectMemory(id: string, input: { memory: string; revision: string }) {
+    const res = await this.request(`/projects/${encodeURIComponent(id)}/memory`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+    return z.object({ memory: z.string(), revision: z.string() }).parse(await res.json());
+  }
+
+  async getProjectInstructions(id: string) {
+    const res = await this.request(`/projects/${encodeURIComponent(id)}/instructions`, {
+      method: 'GET',
+    });
+    return z.object({ instructions: z.string(), revision: z.string() }).parse(await res.json());
+  }
+
+  async replaceProjectInstructions(id: string, input: { instructions: string; revision: string }) {
+    const res = await this.request(`/projects/${encodeURIComponent(id)}/instructions`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+    return z.object({ instructions: z.string(), revision: z.string() }).parse(await res.json());
+  }
+
   async getProject(id: string): Promise<ProjectDetail> {
     const res = await this.request(`/projects/${encodeURIComponent(id)}`, { method: 'GET' });
     return projectDetailSchema.parse(await res.json());

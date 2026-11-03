@@ -83,3 +83,16 @@ describe('pull request instructions per code host', () => {
     expect(prompt).not.toContain('verity-repo pr create');
   });
 });
+
+describe('trusted Skills core', () => {
+  it('requires loading situational procedures and preserves the legacy fallback', () => {
+    const core = turnSystemPrompt('local', true);
+    expect(core).toContain('verity skill read <name>');
+    expect(core).toContain('dev-server');
+    expect(core).toContain('No remote publishing is configured');
+    expect(core).not.toContain('verity-dev-server add');
+    expect(core).not.toContain(' (Verity)');
+    expect(Buffer.byteLength(core)).toBeLessThan(9500);
+    expect(turnSystemPrompt('local')).toContain('verity-dev-server');
+  });
+});

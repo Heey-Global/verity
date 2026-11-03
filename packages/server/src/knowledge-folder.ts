@@ -61,18 +61,21 @@ export const SHARED_KNOWLEDGE_DIR = 'shared';
  */
 export const EXTRACTED_TEXT_DIR = '.text';
 
-const KNOWLEDGE_SOURCES_DIR = 'sources';
+export const KNOWLEDGE_RAW_SOURCES_DIR = 'sources';
 const SHARED_LAYOUT_MARKER = '.sources-layout-v1';
-export const KNOWLEDGE_DOCUMENTS_DIR = `${KNOWLEDGE_SOURCES_DIR}/documents`;
-export const KNOWLEDGE_MATRIX_DIR = `${KNOWLEDGE_SOURCES_DIR}/matrix`;
+export const KNOWLEDGE_DOCUMENTS_DIR = `${KNOWLEDGE_RAW_SOURCES_DIR}/documents`;
+export const KNOWLEDGE_MATRIX_DIR = `${KNOWLEDGE_RAW_SOURCES_DIR}/matrix`;
 const LEGACY_MATRIX_DIR = `${KNOWLEDGE_DOCUMENTS_DIR}/matrix`;
 export function currentMatrixBody(body: string): string {
   return body.startsWith(`Attachment: ${LEGACY_MATRIX_DIR}/`)
     ? body.replace(`Attachment: ${LEGACY_MATRIX_DIR}/`, `Attachment: ${KNOWLEDGE_MATRIX_DIR}/`)
     : body;
 }
-export const KNOWLEDGE_MEETINGS_DIR = `${KNOWLEDGE_SOURCES_DIR}/meetings`;
-export const KNOWLEDGE_INSIGHTS_DIR = 'insights';
+export const KNOWLEDGE_MEETINGS_DIR = `${KNOWLEDGE_RAW_SOURCES_DIR}/meetings`;
+/** Canonical terminology; physical names remain stable compatibility contracts. */
+export const KNOWLEDGE_WIKI_DIR = 'insights';
+/** @deprecated Use KNOWLEDGE_WIKI_DIR in new code. */
+export const KNOWLEDGE_INSIGHTS_DIR = KNOWLEDGE_WIKI_DIR;
 
 /**
  * The subfolders an entry point writes into (D3). The operator never chooses
@@ -83,11 +86,11 @@ export const PROJECT_KNOWLEDGE_SUBDIRS = [
   KNOWLEDGE_DOCUMENTS_DIR,
   KNOWLEDGE_MEETINGS_DIR,
   KNOWLEDGE_MATRIX_DIR,
-  KNOWLEDGE_INSIGHTS_DIR,
+  KNOWLEDGE_WIKI_DIR,
 ] as const;
 export const PROJECT_KNOWLEDGE_TOP_LEVEL_DIRS = [
-  KNOWLEDGE_SOURCES_DIR,
-  KNOWLEDGE_INSIGHTS_DIR,
+  KNOWLEDGE_RAW_SOURCES_DIR,
+  KNOWLEDGE_WIKI_DIR,
 ] as const;
 
 /** The project's short memory, injected into every session (D5). */
@@ -343,7 +346,7 @@ async function availableLegacyPath(path: string): Promise<string> {
 }
 
 async function migrateLegacySharedEntries(root: string): Promise<void> {
-  const reserved = new Set([KNOWLEDGE_SOURCES_DIR, KNOWLEDGE_INSIGHTS_DIR, EXTRACTED_TEXT_DIR]);
+  const reserved = new Set([KNOWLEDGE_RAW_SOURCES_DIR, KNOWLEDGE_WIKI_DIR, EXTRACTED_TEXT_DIR]);
   const destination = join(root, KNOWLEDGE_DOCUMENTS_DIR);
   for (const entry of await readdir(root, { withFileTypes: true })) {
     if (reserved.has(entry.name)) continue;
@@ -355,7 +358,7 @@ async function migrateLegacySharedEntries(root: string): Promise<void> {
   const extractedDestination = join(extractedRoot, KNOWLEDGE_DOCUMENTS_DIR);
   await mkdir(extractedDestination, { recursive: true, mode: 0o755 });
   for (const entry of await readdir(extractedRoot, { withFileTypes: true })) {
-    if (entry.name === KNOWLEDGE_SOURCES_DIR || entry.name === KNOWLEDGE_INSIGHTS_DIR) continue;
+    if (entry.name === KNOWLEDGE_RAW_SOURCES_DIR || entry.name === KNOWLEDGE_WIKI_DIR) continue;
     const target = join(extractedDestination, entry.name);
     if (await stat(target).catch(() => undefined)) continue;
     await renameAfterConcurrentCheck(join(extractedRoot, entry.name), target);

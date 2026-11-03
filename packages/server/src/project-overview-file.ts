@@ -1,8 +1,13 @@
+import { createHash } from 'node:crypto';
 import { constants as fsConstants } from 'node:fs';
 import { open, readFile, rename, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
-import { PROJECT_MEMORY_MAX_CHARS, ProjectMemoryTooLargeError } from '@verity/store';
+import {
+  ContextConflictError,
+  PROJECT_MEMORY_MAX_CHARS,
+  ProjectMemoryTooLargeError,
+} from '@verity/store';
 
 import {
   ensureProjectKnowledge,
@@ -132,4 +137,50 @@ async function migrateProjectOverview(
   }
   await markProjectOverviewAuthoritative(dir);
   return value && value.length <= PROJECT_MEMORY_MAX_CHARS ? value : undefined;
+}
+
+export function projectMemoryRevision(memory: string): string {
+  return createHash('sha256').update(memory).digest('hex');
+}
+
+/** Replacements share the append queue so an agent append cannot be silently lost. */
+export async function replaceProjectOverview(
+  dataRoot: string,
+  projectId: string,
+  revision: string,
+  memory: string,
+) {
+  if (memory.length > PROJECT_MEMORY_MAX_CHARS)
+    throw new ProjectMemoryTooLargeError(memory.length, PROJECT_MEMORY_MAX_CHARS);
+  const previous = appendQueues.get(projectId) ?? Promise.resolve();
+  const pending = previous
+    .catch(() => undefined)
+    .then(async () => {
+      const dir = await ensureProjectKnowledge(dataRoot, projectId);
+      const current = (await readProjectOverview(dataRoot, projectId)) ?? '';
+      if (projectMemoryRevision(current) !== revision)
+        throw new ContextConflictError('Project Memory changed; reload before saving');
+      const value = memory.trim();
+      const path = join(dir, OVERVIEW_FILE_NAME);
+      const temporary = `${path}.${process.pid}-${Date.now()}.tmp`;
+      const handle = await open(
+        temporary,
+        fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW,
+        0o644,
+      );
+      try {
+        await handle.writeFile(value ? `${value}\n` : '', 'utf8');
+      } finally {
+        await handle.close();
+      }
+      await rename(temporary, path);
+      await markProjectOverviewAuthoritative(dir);
+      return { memory: value, revision: projectMemoryRevision(value) };
+    });
+  appendQueues.set(projectId, pending);
+  try {
+    return await pending;
+  } finally {
+    if (appendQueues.get(projectId) === pending) appendQueues.delete(projectId);
+  }
 }

@@ -1,0 +1,38 @@
+[
+  {
+    "name": "verity_docs_inspect_document",
+    "title": "Verity · Docs · Inspect Document",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": "docs",
+    "skill": null,
+    "compatibility": {
+      "name": "verity_google_docs",
+      "action": "inspect_document"
+    }
+  },
+  {
+    "name": "verity_docs_read_document",
+    "title": "Verity · Docs · Read Document",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": "docs",
+    "skill": null,
+    "compatibility": {
+      "name": "verity_google_docs",
+      "action": "read_document"
+    }
+  },
+  {
+    "name": "verity_docs_edit",
+    "title": "Verity · Docs · Edit",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": "docs",
+    "skill": null,
+    "compatibility": {
+      "name": "verity_google_docs",
+      "action": "edit"
+    }
+  }
+]

@@ -1,3 +1,4 @@
+import { actionTitle } from '@verity/events';
 import { appFallback, type McpAppCardEvent } from './McpAppCard.shared';
 import { Card } from './ui/Card';
 import { Text } from './ui/Text';
@@ -6,7 +7,7 @@ import { Text } from './ui/Text';
 export function McpAppCard({ event }: { event: McpAppCardEvent }) {
   return (
     <Card stacked>
-      <Text>{event.toolName}</Text>
+      <Text>{actionTitle(event.toolName, event.title, event.source)}</Text>
       <Text>{appFallback(event) || 'Interactive app available in Verity web.'}</Text>
     </Card>
   );

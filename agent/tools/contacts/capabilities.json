@@ -1,0 +1,14 @@
+[
+  {
+    "name": "verity_contacts_search_contacts",
+    "title": "Verity · Contacts · Search Contacts",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": "contacts",
+    "skill": null,
+    "compatibility": {
+      "name": "verity_google_contacts",
+      "action": "search_contacts"
+    }
+  }
+]

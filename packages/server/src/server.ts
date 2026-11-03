@@ -1,3 +1,5 @@
+import { registerProjectContextRoutes } from './project-context-routes.js';
+import { registerUserContextRoutes } from './user-context-routes.js';
 import { PreviewConnector } from '@verity/preview-tunnel';
 import { SchedulingPageListeners } from './scheduling-page.js';
 import { registerSchedulingRoutes } from './scheduling-routes.js';
@@ -4397,6 +4399,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       repositoryFor: deps.projectRepository,
     });
   }
+  registerUserContextRoutes(app, deps.eventStore.userContext);
+  if (deps.dataRoot) registerProjectContextRoutes(app, deps.eventStore, deps.dataRoot);
   registerProjectMemoryRoute(app, {
     ...(deps.mcpGateway === undefined
       ? {}

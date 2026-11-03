@@ -6,7 +6,12 @@ import { sessionParams } from './session-route-schemas.js';
 
 /** Which of the explorer's roots a request addresses. Omitted → the worktree, so
  *  every pre-knowledge client keeps browsing exactly what it browsed before. */
-const sessionFileRoot = z.enum(SESSION_FILE_ROOTS).default('worktree');
+const sessionFileRoot = z
+  .enum([...SESSION_FILE_ROOTS, 'wiki', 'raw-sources'])
+  .default('worktree')
+  .transform((root): SessionFileRootName =>
+    root === 'wiki' ? 'documents' : root === 'raw-sources' ? 'sources' : root,
+  );
 
 const sessionFileQuery = z.object({
   root: sessionFileRoot,

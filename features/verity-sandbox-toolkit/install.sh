@@ -651,6 +651,11 @@ install -m 0755 "$FEATURE_DIR/lifecycle/post-start.sh" \
 # on and sets core.hooksPath to — so an operator-overridden HOOKSPATH can never
 # decouple the install target from the guard (which would silently skip the gate).
 install -d "$HOOKS_PATH" /opt/agent-seed/bin
+install -m 0755 "$FEATURE_DIR/agent-seed/bin/verity" /opt/agent-seed/bin/verity
+ln -sf /opt/agent-seed/bin/verity /usr/local/bin/verity
+cp -R "$FEATURE_DIR/agent-seed/skills" /opt/agent-seed/
+install -m 0644 "$FEATURE_DIR/agent-seed/skills-manifest.json" /opt/agent-seed/skills-manifest.json
+chmod -R a+rX,go-w /opt/agent-seed/skills
 install -m 0755 "$FEATURE_DIR/agent-seed/hooks/pre-push" "$HOOKS_PATH/pre-push"
 # Secret gate: pre-commit scans the staged diff, pre-push re-scans the branch
 # range. Both delegate to verity-secret-scan (gitleaks wrapper, installed below),

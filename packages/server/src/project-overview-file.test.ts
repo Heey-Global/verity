@@ -8,6 +8,8 @@ import { PROJECT_MEMORY_MAX_CHARS } from '@verity/store';
 import { OVERVIEW_FILE_NAME, projectKnowledgeDir } from './knowledge-folder.js';
 import {
   appendProjectOverview,
+  projectMemoryRevision,
+  replaceProjectOverview,
   readOrMigrateProjectOverview,
   readProjectOverview,
 } from './project-overview-file.js';
@@ -21,6 +23,26 @@ describe('project overview file', () => {
 
   afterEach(() => {
     rmSync(dataRoot, { recursive: true, force: true });
+  });
+
+  it('edits authoritative Memory with revision checks and keeps clearing authoritative', async () => {
+    await readOrMigrateProjectOverview(dataRoot, 'project', async () => 'Legacy fact');
+    const saved = await replaceProjectOverview(
+      dataRoot,
+      'project',
+      projectMemoryRevision('Legacy fact'),
+      'Edited fact',
+    );
+    expect(await readProjectOverview(dataRoot, 'project')).toBe('Edited fact');
+    await appendProjectOverview(dataRoot, 'project', 'Concurrent fact');
+    await expect(
+      replaceProjectOverview(dataRoot, 'project', saved.revision, 'Stale overwrite'),
+    ).rejects.toThrow(/changed/);
+    const current = (await readProjectOverview(dataRoot, 'project'))!;
+    await replaceProjectOverview(dataRoot, 'project', projectMemoryRevision(current), '');
+    expect(
+      await readOrMigrateProjectOverview(dataRoot, 'project', async () => 'Legacy fact'),
+    ).toBeUndefined();
   });
 
   it('serializes simultaneous appends without losing either fact', async () => {

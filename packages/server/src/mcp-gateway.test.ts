@@ -1253,3 +1253,62 @@ it('checks execution authority after approval and fails closed on lookup errors'
   expect(authorizeExecution).toHaveBeenCalledOnce();
   expect(invokeTool).not.toHaveBeenCalled();
 });
+
+it('advertises focused canonical schemas and dispatches through the existing validator', async () => {
+  const { gateway, invokeTool } = harness({ capabilityVersion: 2, servedTools: ['verity_tasks'] });
+  const listed = await gateway.handle({
+    projectId: 'p1',
+    token: 'session-token',
+    body: { jsonrpc: '2.0', id: 1, method: 'tools/list' },
+  });
+  const tools = (listed.body as { result: { tools: { name: string; title: string }[] } }).result
+    .tools;
+  expect(
+    tools.some(
+      (tool) => tool.name === 'verity_tasks_complete' && tool.title === 'Verity · Tasks · Complete',
+    ),
+  ).toBe(true);
+  expect(tools.some((tool) => tool.name === 'verity_tasks')).toBe(false);
+  await gateway.handle({
+    projectId: 'p1',
+    token: 'session-token',
+    body: {
+      jsonrpc: '2.0',
+      id: 2,
+      method: 'tools/call',
+      params: { name: 'verity_tasks_list', arguments: {} },
+    },
+  });
+  expect(invokeTool).toHaveBeenCalledWith(
+    expect.objectContaining({ toolName: 'verity_tasks', request: { action: 'list' } }),
+  );
+});
+
+it('uses availability for listing, calls and revocation during approval', async () => {
+  let available = true;
+  const { gateway, invokeTool, requestApproval } = harness({
+    servedTools: ['verity_http_request'],
+    toolAvailable: async () => available,
+  });
+  requestApproval.mockImplementation(async () => {
+    available = false;
+    return ALLOW;
+  });
+  await gateway.handle({
+    projectId: 'p1',
+    token: 'session-token',
+    body: {
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'tools/call',
+      params: { name: 'verity_http_request', arguments: HTTP_ARGUMENTS },
+    },
+  });
+  expect(invokeTool).not.toHaveBeenCalled();
+  const listed = await gateway.handle({
+    projectId: 'p1',
+    token: 'session-token',
+    body: { jsonrpc: '2.0', id: 2, method: 'tools/list' },
+  });
+  expect((listed.body as { result: { tools: unknown[] } }).result.tools).toEqual([]);
+});

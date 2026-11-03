@@ -268,7 +268,7 @@ function HydratedRoot() {
               />
               <Stack.Screen
                 name="project/[id]/settings/services"
-                options={{ title: 'Connections' }}
+                options={{ title: 'Connectors' }}
               />
               <Stack.Screen name="project/[id]/settings/sandbox" options={{ title: 'Sandbox' }} />
               <Stack.Screen
@@ -306,7 +306,7 @@ function HydratedRoot() {
               <Stack.Screen name="settings/services/claude" options={{ title: 'Claude' }} />
               <Stack.Screen name="settings/services/codex" options={{ title: 'Codex' }} />
               <Stack.Screen name="settings/services/doppler" options={{ title: 'Doppler' }} />
-              <Stack.Screen name="settings/services/index" options={{ title: 'Connections' }} />
+              <Stack.Screen name="settings/services/index" options={{ title: 'Connectors' }} />
               <Stack.Screen
                 name="settings/services/mcp/index"
                 options={{ title: 'MCP connections' }}

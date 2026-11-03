@@ -176,6 +176,26 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
         </View>
       ) : null}
 
+      <SettingsGroup title="Personal">
+        <SettingsListPanel>
+          <SettingsNavRow
+            icon="file-text"
+            title="Instructions"
+            subtitle="Your rules across projects"
+            onPress={() =>
+              router.push({ pathname: '/settings/context', params: { kind: 'instructions' } })
+            }
+          />
+          <SettingsNavRow
+            icon="book-open"
+            title="Memory"
+            subtitle="Review and edit learned facts"
+            onPress={() =>
+              router.push({ pathname: '/settings/context', params: { kind: 'memory' } })
+            }
+          />
+        </SettingsListPanel>
+      </SettingsGroup>
       <SettingsGroup title="Features">
         <SettingsListPanel>
           <SettingsNavRow
@@ -192,7 +212,7 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
           />
           <SettingsNavRow
             icon="link"
-            title="Connections"
+            title="Connectors"
             subtitle="AI, code, documents and other services"
             status={
               githubActionPending ? { intent: 'needsSetup', label: 'Action needed' } : undefined

@@ -6132,8 +6132,8 @@ function SessionFilesSheet({
             {(
               [
                 ['worktree', documentSession ? 'My edits' : 'Code'],
-                ['sources', 'Sources'],
-                ['documents', 'Documents'],
+                ['sources', 'Raw Sources'],
+                ['documents', 'Wiki'],
                 ['shared', 'Global'],
               ] as const
             )
@@ -6246,9 +6246,9 @@ function SessionFilesSheet({
                   ? 'My edits'
                   : 'Code'
                 : root === 'sources'
-                  ? 'Sources'
+                  ? 'Raw Sources'
                   : root === 'documents'
-                    ? 'Documents'
+                    ? 'Wiki'
                     : root === 'drafts'
                       ? 'Session edits'
                       : root === 'knowledge'
@@ -6267,7 +6267,7 @@ function SessionFilesSheet({
           <HeaderTextButton
             label={
               root === 'worktree'
-                ? 'Back to Documents'
+                ? 'Back to Wiki'
                 : documentStatus?.running
                   ? 'My working copy (session running)'
                   : documentStatus?.pending
@@ -6281,9 +6281,7 @@ function SessionFilesSheet({
         {!driveActive && (root === 'documents' || root === 'drafts') ? (
           <HeaderTextButton
             label={
-              root === 'drafts'
-                ? 'Back to Documents'
-                : 'Session edits (including retained sessions)'
+              root === 'drafts' ? 'Back to Wiki' : 'Session edits (including retained sessions)'
             }
             disabled={mutating}
             onPress={() => navigateRoot(root === 'drafts' ? 'documents' : 'drafts')}

@@ -1,3 +1,4 @@
+import { actionTitle } from '@verity/events';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useUnistyles } from 'react-native-unistyles';
 import {
@@ -39,7 +40,7 @@ export function McpAppCard({ event }: { event: McpAppCardEvent }) {
   }, [client, event.sessionId, event.appId, failed]);
   return (
     <Card stacked>
-      <Text variant="row">{event.toolName}</Text>
+      <Text variant="row">{actionTitle(event.toolName, event.title, event.source)}</Text>
       {!document && !error ? <Text tone="muted">Loading interactive app…</Text> : null}
       {document && client && !error ? (
         <McpAppFrame document={document} event={event} client={client} failed={failed} />
@@ -186,7 +187,7 @@ function McpAppFrame({
   return (
     <iframe
       ref={frame}
-      title={event.toolName}
+      title={actionTitle(event.toolName, event.title, event.source)}
       sandbox="allow-scripts"
       allow=""
       referrerPolicy="no-referrer"

@@ -1,0 +1,14 @@
+[
+  {
+    "name": "verity_repairs_status",
+    "title": "Verity · Repairs · Status",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": null,
+    "skill": null,
+    "compatibility": {
+      "name": "verity_repairs",
+      "action": "status"
+    }
+  }
+]

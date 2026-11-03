@@ -247,3 +247,11 @@ export {
 } from './qa-analysis.js';
 
 export { recordingFailureReasonSchema, type RecordingFailureReason } from './recording-failure.js';
+
+export { actionTitle } from './action-title.js';
+
+export {
+  AGENT_CORE_PROMPT,
+  AGENT_SKILL_CATALOG,
+  AGENT_SKILL_MANIFEST_HASH,
+} from './agent-assets.generated.js';

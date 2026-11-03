@@ -1084,13 +1084,13 @@ describe('project settings — repository', () => {
       }),
     );
     render(<ProjectRepositoryScreen />);
-    fireEvent.press(await screen.findByText('Open Connections'));
+    fireEvent.press(await screen.findByText('Open Connectors'));
     connections.mockResolvedValue(forgejoConnections());
     act(() => refocus());
     expect(await screen.findByLabelText(/^Forgejo, git\.example\.org/)).toBeOnTheScreen();
   });
 
-  it('sends a local project without any code host to Connections', async () => {
+  it('sends a local project without any code host to Connectors', async () => {
     mockCreateVerityClient.mockReturnValue(
       makeClient({
         detail: makeDetail({ kind: 'local' }),
@@ -1100,7 +1100,7 @@ describe('project settings — repository', () => {
     );
     render(<ProjectRepositoryScreen />);
 
-    fireEvent.press(await screen.findByText('Open Connections'));
+    fireEvent.press(await screen.findByText('Open Connectors'));
     expect(mockPush).toHaveBeenCalledWith('/settings/services');
   });
 

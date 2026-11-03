@@ -1,4 +1,5 @@
-import { qaAnalysisRequestSchema, QA_ANALYSIS_DESCRIPTION } from '@verity/events';
+import { capabilityVariants, capabilityArguments } from './agent-capabilities.js';
+import { actionTitle, qaAnalysisRequestSchema, QA_ANALYSIS_DESCRIPTION } from '@verity/events';
 import {
   vulnerabilityRequestSchema,
   VULNERABILITY_TOOL_DESCRIPTION,
@@ -290,6 +291,16 @@ export interface McpGatewayDeps {
    * model to retry a call that cannot ever succeed.
    */
   servedTools?: readonly GatewayToolName[];
+  /** Version 2 exposes focused names; omitted keeps old backend contexts compatible. */
+  capabilityVersion?: 1 | 2;
+  capabilityVersionForCaller?: (caller: McpGatewayCaller) => Promise<1 | 2>;
+  toolAvailable?: (input: {
+    projectId: string;
+    sessionId: string;
+    turnId: string;
+    toolName: GatewayToolName;
+  }) => Promise<boolean>;
+
   /** Additional tools exposed only for the already authenticated project identity. */
   extraToolsForProject?: ((projectId: string) => readonly GatewayToolName[]) | undefined;
   /** Overridable for tests; defaults to {@link MCP_GATEWAY_APPROVAL_TIMEOUT_MS}. */
@@ -310,6 +321,9 @@ const gmailAttachmentPaths = z
   .optional();
 
 const TOOL_SCHEMAS = {
+  verity_memory_append: z
+    .object({ scope: z.enum(['user', 'project']), text: z.string().trim().min(1).max(8_000) })
+    .strict(),
   verity_knowledge: knowledgeToolRequestSchema,
   verity_http_request: brokeredHttpRequestSchema,
   verity_secret_run: trustedCliRequestSchema,
@@ -471,6 +485,8 @@ const TOOL_SCHEMAS = {
 } as const satisfies Record<GatewayToolName, z.ZodType>;
 
 const TOOL_DESCRIPTIONS: Record<GatewayToolName, string> = {
+  verity_memory_append:
+    'Append a supported nonsensitive fact to the directing user’s private Memory or this project’s Memory. Choose scope explicitly. Never store secrets, transient progress or unsupported interpretations. Sensitive personal facts and disputed interpretations require explicit confirmation. This cannot change Instructions.',
   verity_knowledge: KNOWLEDGE_TOOL_DESCRIPTION,
   verity_http_request: BROKERED_HTTP_TOOL_DESCRIPTION,
   verity_secret_run: TRUSTED_CLI_TOOL_DESCRIPTION,
@@ -597,8 +613,19 @@ const ADVERTISED_INPUT_SCHEMAS = Object.fromEntries(
   ]),
 ) as Record<GatewayToolName, JsonSchemaObject>;
 
+export const AGENT_CAPABILITIES = gatewayToolNameSchema.options.flatMap((name) =>
+  capabilityVariants(
+    name,
+    z.toJSONSchema(TOOL_SCHEMAS[name], { target: 'draft-7' }) as JsonSchemaObject,
+  ),
+);
+const CAPABILITIES_BY_NAME = new Map(AGENT_CAPABILITIES.map((entry) => [entry.name, entry]));
+if (CAPABILITIES_BY_NAME.size !== AGENT_CAPABILITIES.length)
+  throw new Error('Duplicate canonical tool name');
+
 function toolDeclarations(served: ReadonlySet<GatewayToolName>): readonly {
   name: string;
+  title: string;
   description: string;
   inputSchema: unknown;
 }[] {
@@ -606,6 +633,7 @@ function toolDeclarations(served: ReadonlySet<GatewayToolName>): readonly {
     .filter((name) => served.has(name))
     .map((name) => ({
       name,
+      title: actionTitle(name),
       description: TOOL_DESCRIPTIONS[name],
       inputSchema: ADVERTISED_INPUT_SCHEMAS[name],
     }));
@@ -737,7 +765,19 @@ export function createMcpGateway(deps: McpGatewayDeps): McpGateway {
       );
     }
     const requested = parsedParams.data.name;
-    const rawArguments = parsedParams.data.arguments ?? {};
+    let rawArguments = parsedParams.data.arguments ?? {};
+    const version =
+      caller && deps.capabilityVersionForCaller
+        ? await deps.capabilityVersionForCaller(caller)
+        : deps.capabilityVersion;
+    const capability = version === 2 ? CAPABILITIES_BY_NAME.get(requested) : undefined;
+    if (capability) {
+      try {
+        rawArguments = capabilityArguments(capability, rawArguments);
+      } catch {
+        return jsonRpcError(id, INVALID_PARAMS, 'Unexpected operation discriminator');
+      }
+    }
     // Keyed over the call as it arrived, because at this point that is the only form of it
     // that exists: the checks that follow decide whether it is ever validated. Once it is,
     // the record keys the validated request instead, which is what actually ran.
@@ -749,7 +789,7 @@ export function createMcpGateway(deps: McpGatewayDeps): McpGateway {
     // which tool the attempt was for and only an authenticated caller would ever get that far
     // otherwise. The answer still does not: an unauthenticated caller is turned away with the
     // same 401 whichever name it used, so the served set stays unlearnable from outside.
-    const parsedName = gatewayToolNameSchema.safeParse(requested);
+    const parsedName = gatewayToolNameSchema.safeParse(capability?.legacyName ?? requested);
     const toolName =
       parsedName.success && toolsForProject(projectId).has(parsedName.data)
         ? parsedName.data
@@ -771,6 +811,16 @@ export function createMcpGateway(deps: McpGatewayDeps): McpGateway {
     }
     if (caller === undefined) {
       return reject(projectId, callId, 'unauthenticated', rawKeyed, toolName, unauthorized);
+    }
+    if (deps.toolAvailable && !(await deps.toolAvailable({ projectId, ...caller, toolName }))) {
+      return reject(
+        projectId,
+        callId,
+        'unknown_tool',
+        rawKeyed,
+        toolName,
+        jsonRpcError(id, METHOD_NOT_FOUND, 'Tool unavailable for this session'),
+      );
     }
     const request = TOOL_SCHEMAS[toolName].safeParse(rawArguments);
     if (!request.success) {
@@ -1005,6 +1055,11 @@ export function createMcpGateway(deps: McpGatewayDeps): McpGateway {
         return reject(projectId, callId, 'unauthenticated', keyed, toolName, unauthorized);
       }
 
+      if (
+        deps.toolAvailable &&
+        !(await deps.toolAvailable({ projectId, sessionId, turnId, toolName }))
+      )
+        throw new ControlPlaneSessionAuthorityError('Tool access was revoked while waiting.');
       result = await deps.invokeTool({
         projectId,
         sessionId,
@@ -1130,8 +1185,33 @@ export function createMcpGateway(deps: McpGatewayDeps): McpGateway {
         }
         case 'ping':
           return jsonRpcResult(id, {});
-        case 'tools/list':
-          return jsonRpcResult(id, { tools: toolDeclarations(toolsForProject(projectId)) });
+        case 'tools/list': {
+          const available = new Set<GatewayToolName>();
+          for (const toolName of toolsForProject(projectId)) {
+            if (
+              !deps.toolAvailable ||
+              (caller && (await deps.toolAvailable({ projectId, ...caller, toolName })))
+            )
+              available.add(toolName);
+          }
+          const version =
+            caller && deps.capabilityVersionForCaller
+              ? await deps.capabilityVersionForCaller(caller)
+              : deps.capabilityVersion;
+          return jsonRpcResult(id, {
+            tools:
+              version === 2
+                ? AGENT_CAPABILITIES.filter((entry) => available.has(entry.legacyName)).map(
+                    (entry) => ({
+                      name: entry.name,
+                      title: entry.title,
+                      inputSchema: entry.inputSchema,
+                      description: TOOL_DESCRIPTIONS[entry.legacyName],
+                    }),
+                  )
+                : toolDeclarations(available),
+          });
+        }
         case 'tools/call':
           return callTool(projectId, id, params, token, caller);
         default:
