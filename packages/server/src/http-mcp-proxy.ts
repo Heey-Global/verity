@@ -16,6 +16,11 @@ import {
   internalConnectionGenerationSignal,
 } from './internal-listener.js';
 import type { McpGatewayCaller } from './mcp-gateway-tokens.js';
+import {
+  assertProjectTransportAuthority,
+  projectTransportSignal,
+  withProjectTransportAuthority,
+} from './project-transport-authority.js';
 
 const MAX_BODY_BYTES = 1024 * 1024;
 const MAX_STREAM_BYTES = 16 * 1024 * 1024;
@@ -112,6 +117,9 @@ export async function forwardHttpMcp(
   body: IncomingMessage;
   eventStream: boolean;
 }> {
+  await assertProjectTransportAuthority();
+  signal = projectTransportSignal(signal ?? new AbortController().signal);
+  signal.throwIfAborted();
   const url = parseHttpMcpUpstream(connection.url);
   return new Promise((resolve, reject) => {
     let connected = false;
@@ -214,7 +222,8 @@ export function registerHttpMcpProxyRoute(app: FastifyInstance, deps: HttpMcpPro
     const token = bearerToken(request.headers.authorization);
     const connectionId = request.headers[BINDING_HEADER];
     if (
-      generationSignal?.aborted === true ||
+      generationSignal === undefined ||
+      generationSignal.aborted ||
       identity === undefined ||
       token === undefined ||
       typeof connectionId !== 'string' ||
@@ -254,18 +263,42 @@ export function registerHttpMcpProxyRoute(app: FastifyInstance, deps: HttpMcpPro
     try {
       interception =
         method !== 'DELETE' && deps.intercept !== undefined
-          ? await deps.intercept({
-              projectId: identity.projectId,
-              caller,
-              connection,
-              body: request.body,
-              ...(typeof request.headers['mcp-session-id'] === 'string'
-                ? { protocolSessionId: request.headers['mcp-session-id'] }
-                : {}),
-              ...(typeof request.headers['mcp-protocol-version'] === 'string'
-                ? { protocolVersion: request.headers['mcp-protocol-version'] }
-                : {}),
-            })
+          ? await withProjectTransportAuthority(
+              {
+                ...identity,
+                signal: generationSignal,
+                authorize: async () => {
+                  const activeCaller = await deps.resolveCaller({
+                    projectId: identity.projectId,
+                    token,
+                  });
+                  const activeConnection = await deps.resolveConnection({
+                    projectId: identity.projectId,
+                    connectionId,
+                  });
+                  if (
+                    activeCaller?.sessionId !== caller.sessionId ||
+                    activeCaller.turnId !== caller.turnId ||
+                    activeConnection?.url !== connection.url ||
+                    activeConnection.authorization !== connection.authorization
+                  )
+                    throw new Error('MCP access changed');
+                },
+              },
+              () =>
+                deps.intercept!({
+                  projectId: identity.projectId,
+                  caller,
+                  connection,
+                  body: request.body,
+                  ...(typeof request.headers['mcp-session-id'] === 'string'
+                    ? { protocolSessionId: request.headers['mcp-session-id'] }
+                    : {}),
+                  ...(typeof request.headers['mcp-protocol-version'] === 'string'
+                    ? { protocolVersion: request.headers['mcp-protocol-version'] }
+                    : {}),
+                }),
+            )
           : undefined;
     } catch {
       request.log.warn(
