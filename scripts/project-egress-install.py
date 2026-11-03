@@ -10,9 +10,11 @@ import os
 from pathlib import Path
 import platform
 import re
+import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 
 ASSETS = (
     'project-egress-host-main.mjs', 'project-egress-deadline.py',
@@ -197,16 +199,8 @@ def stop_controller(run):
         raise ValueError('Cannot establish controller service state')
 
 
-def install(source, root=Path('/'), run=command, check=preflight):
-    files = release_files(source)
-    check(root, run)
-    current = root / 'opt/verity-egress'
-    for path in (current, root / 'opt/verity-egress-releases/entry',
-                 root / 'var/lib/verity-egress/install.lock',
-                 *(root / relative for relative in UNITS.values())):
-        trusted_parent(path, root)
-    identity = digest(b''.join(name.encode() + files[name] for name in ASSETS))
-    release = root / 'opt/verity-egress-releases' / identity
+def prepare_release(release, files):
+    """Publish complete immutable assets atomically while install.lock is held."""
     if release.exists() or release.is_symlink():
         info = release.lstat()
         if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o222:
@@ -220,17 +214,38 @@ def install(source, root=Path('/'), run=command, check=preflight):
                     or info.st_mode & 0o222 or path.read_bytes() != data):
                 raise ValueError('Installed release does not match trusted read-only staged content')
     else:
-        durable_mkdir(release)
-        for name, data in files.items():
-            atomic_file(release / name, data, mode=0o444)
-        release.chmod(0o555)
-        sync_directory(release)
+        durable_mkdir(release.parent)
+        temporary = Path(tempfile.mkdtemp(prefix='.prepare-', dir=release.parent))
+        try:
+            for name, data in files.items():
+                atomic_file(temporary / name, data, mode=0o444)
+            temporary.chmod(0o555)
+            sync_directory(temporary)
+            os.rename(temporary, release)
+            sync_directory(release.parent)
+        finally:
+            if temporary.exists():
+                temporary.chmod(0o700)
+                shutil.rmtree(temporary)
+
+
+def install(source, root=Path('/'), run=command, check=preflight):
+    files = release_files(source)
+    check(root, run)
+    current = root / 'opt/verity-egress'
+    for path in (current, root / 'opt/verity-egress-releases/entry',
+                 root / 'var/lib/verity-egress/install.lock',
+                 *(root / relative for relative in UNITS.values())):
+        trusted_parent(path, root)
+    identity = digest(b''.join(name.encode() + files[name] for name in ASSETS))
+    release = root / 'opt/verity-egress-releases' / identity
     state = root / 'var/lib/verity-egress'
     durable_mkdir(state, mode=0o700)
     with os.fdopen(os.open(state / 'install.lock', os.O_CREAT | os.O_WRONLY | os.O_NOFOLLOW, 0o600), 'a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         if current.exists() and not current.is_symlink():
             raise ValueError('Existing unmanaged /opt/verity-egress requires separate migration')
+        prepare_release(release, files)
         old_target = os.readlink(current) if current.is_symlink() else None
         if old_target is not None:
             previous = Path(old_target)

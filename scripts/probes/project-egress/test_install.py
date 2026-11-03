@@ -201,6 +201,39 @@ class InstallTests(unittest.TestCase):
                         installer.preflight(self.root, self.execute)
         self.assertEqual(self.calls, [])
 
+    def test_interrupted_release_preparation_can_retry_without_partial_final_release(self):
+        original = installer.atomic_file
+        writes = 0
+        def interrupt(*args, **kwargs):
+            nonlocal writes
+            writes += 1
+            if writes == 2:
+                raise OSError('interrupted staging')
+            return original(*args, **kwargs)
+        with patch.object(installer, 'atomic_file', side_effect=interrupt):
+            with self.assertRaisesRegex(OSError, 'interrupted staging'):
+                self.apply()
+        releases = self.root / 'opt/verity-egress-releases'
+        self.assertEqual(list(releases.iterdir()), [])
+        self.assertEqual(self.calls, [])
+        # An orphaned unpublished directory from a killed process also cannot
+        # poison the final content address or prevent a subsequent installation.
+        (releases / '.prepare-orphaned').mkdir()
+        (releases / '.prepare-orphaned' / 'partial').write_text('interrupted')
+        identity = self.apply()
+        self.assertEqual((self.root / 'opt/verity-egress').resolve(), releases / identity)
+
+    def test_install_lock_is_held_before_release_preparation(self):
+        state = self.root / 'var/lib/verity-egress'
+        state.mkdir(parents=True)
+        with (state / 'install.lock').open('w') as lock:
+            installer.fcntl.flock(lock, installer.fcntl.LOCK_EX | installer.fcntl.LOCK_NB)
+            with patch.object(installer, 'prepare_release') as prepare:
+                with self.assertRaises(BlockingIOError):
+                    self.apply()
+                prepare.assert_not_called()
+        self.assertEqual(self.calls, [])
+
 
 if __name__ == '__main__':
     unittest.main()
