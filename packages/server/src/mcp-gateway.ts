@@ -812,16 +812,6 @@ export function createMcpGateway(deps: McpGatewayDeps): McpGateway {
     if (caller === undefined) {
       return reject(projectId, callId, 'unauthenticated', rawKeyed, toolName, unauthorized);
     }
-    if (deps.toolAvailable && !(await deps.toolAvailable({ projectId, ...caller, toolName }))) {
-      return reject(
-        projectId,
-        callId,
-        'unknown_tool',
-        rawKeyed,
-        toolName,
-        jsonRpcError(id, METHOD_NOT_FOUND, 'Tool unavailable for this session'),
-      );
-    }
     const request = TOOL_SCHEMAS[toolName].safeParse(rawArguments);
     if (!request.success) {
       return reject(
@@ -902,6 +892,16 @@ export function createMcpGateway(deps: McpGatewayDeps): McpGateway {
       }
     }
 
+    if (deps.toolAvailable && !(await deps.toolAvailable({ projectId, ...caller, toolName }))) {
+      return reject(
+        projectId,
+        callId,
+        'unknown_tool',
+        keyed,
+        toolName,
+        jsonRpcError(id, METHOD_NOT_FOUND, 'Tool unavailable for this session'),
+      );
+    }
     let authorizationSnapshot: string | undefined;
     try {
       authorizationSnapshot = await deps.authorizationSnapshot?.({

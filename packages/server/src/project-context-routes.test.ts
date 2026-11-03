@@ -1,4 +1,5 @@
 import Fastify from 'fastify';
+import rateLimit from '@fastify/rate-limit';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -10,6 +11,7 @@ import { authorizePairedRoute } from './paired-route-policy.js';
 it('requires project manage access and revision checks for both project context editors', async () => {
   const root = await mkdtemp(join(tmpdir(), 'verity-project-context-'));
   const app = Fastify();
+  await app.register(rateLimit, { max: 100, timeWindow: 60_000 });
   app.decorateRequest('localUserId', null);
   app.addHook('onRequest', async (request) => {
     const user = request.headers['x-test-user'];

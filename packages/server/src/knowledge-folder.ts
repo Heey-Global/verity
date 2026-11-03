@@ -61,7 +61,7 @@ export const SHARED_KNOWLEDGE_DIR = 'shared';
  */
 export const EXTRACTED_TEXT_DIR = '.text';
 
-export const KNOWLEDGE_RAW_SOURCES_DIR = 'sources';
+const KNOWLEDGE_RAW_SOURCES_DIR = 'sources';
 const SHARED_LAYOUT_MARKER = '.sources-layout-v1';
 export const KNOWLEDGE_DOCUMENTS_DIR = `${KNOWLEDGE_RAW_SOURCES_DIR}/documents`;
 export const KNOWLEDGE_MATRIX_DIR = `${KNOWLEDGE_RAW_SOURCES_DIR}/matrix`;
@@ -73,8 +73,8 @@ export function currentMatrixBody(body: string): string {
 }
 export const KNOWLEDGE_MEETINGS_DIR = `${KNOWLEDGE_RAW_SOURCES_DIR}/meetings`;
 /** Canonical terminology; physical names remain stable compatibility contracts. */
-export const KNOWLEDGE_WIKI_DIR = 'insights';
-/** @deprecated Use KNOWLEDGE_WIKI_DIR in new code. */
+const KNOWLEDGE_WIKI_DIR = 'insights';
+/** Public compatibility name for the Wiki storage directory; the physical path is stable. */
 export const KNOWLEDGE_INSIGHTS_DIR = KNOWLEDGE_WIKI_DIR;
 
 /**

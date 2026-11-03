@@ -1,4 +1,5 @@
 import Fastify from 'fastify';
+import rateLimit from '@fastify/rate-limit';
 import { describe, expect, it, vi } from 'vitest';
 import { ContextConflictError, type UserContextStore } from '@verity/store';
 import { registerUserContextRoutes } from './user-context-routes.js';
@@ -7,6 +8,7 @@ import { authorizePairedRoute } from './paired-route-policy.js';
 describe('personal context routes', () => {
   it('takes identity only from authentication and preserves conflicting drafts', async () => {
     const app = Fastify();
+    await app.register(rateLimit, { max: 100, timeWindow: 60_000 });
     app.decorateRequest('localUserId', null);
     app.addHook('onRequest', async (request) => {
       if (request.headers.authorization === 'Bearer paired') request.localUserId = 'u1';

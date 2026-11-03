@@ -2359,7 +2359,9 @@ describe('POST /internal/control-plane/mcp (control-plane gateway)', () => {
         method: 'tools/list',
       });
       expect(res.status).toBe(200);
-      expect(JSON.parse(res.body).result.tools).toHaveLength(1);
+      // The request reaches MCP despite device auth. No directing user is bound
+      // to this fixture's turn, so discovery must still expose no executable tools.
+      expect(JSON.parse(res.body).result.tools).toEqual([]);
     });
   });
 

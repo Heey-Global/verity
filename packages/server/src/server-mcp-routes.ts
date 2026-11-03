@@ -1051,6 +1051,11 @@ export function registerServerMcpRoutes({
         );
         if (assistantRefusal !== undefined)
           throw new ControlPlaneSessionAuthorityError(assistantRefusal);
+        const principal = await runningTurnInitiator(sessionId, input.turnId);
+        if (!(await canExecuteAs(principal?.userId, projectId)))
+          throw new ControlPlaneSessionAuthorityError(
+            'The calling user no longer has project execution permission.',
+          );
         if (toolName === 'verity_vulnerabilities') {
           await vulnerabilityTool.authorize(input);
           return;
