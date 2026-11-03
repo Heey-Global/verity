@@ -1,3 +1,12 @@
+import {
+  PreviewShareConflictError,
+  PreviewNetworkProtectionError,
+  assertPreviewNetworkSupported,
+} from './preview-network-policy.js';
+export {
+  PreviewShareConflictError,
+  PreviewNetworkProtectionError,
+} from './preview-network-policy.js';
 import { hasNoNewPrivileges } from './docker-security-options.js';
 import {
   STANDARD_MOUNTS,
@@ -1175,7 +1184,11 @@ export class PreviewShareManager {
           }
         }
       }
-    } catch {
+    } catch (error) {
+      if (error instanceof PreviewNetworkProtectionError) {
+        await this.stop(share.id);
+        return;
+      }
       // Missing storage or runtime during an update preserves the link offline.
       offline = true;
       staticMount = undefined;
@@ -1231,14 +1244,20 @@ export class PreviewShareManager {
       await this.stop(share.id);
       return;
     }
+    const sandbox =
+      project.state === 'active'
+        ? await this.options.docker.inspectContainer(project.containerName)
+        : undefined;
+    try {
+      if (sandbox) assertPreviewNetworkSupported(sandbox);
+    } catch (error) {
+      if (!(error instanceof PreviewNetworkProtectionError)) throw error;
+      await this.stop(share.id);
+      return;
+    }
     let offline = true;
     let generation = share.containerGeneration;
-    if (
-      project.state === 'active' &&
-      instance.state === 'running' &&
-      instance.desired === 'running'
-    ) {
-      const sandbox = await this.options.docker.inspectContainer(project.containerName);
+    if (sandbox !== undefined && instance.state === 'running' && instance.desired === 'running') {
       const currentGeneration = containerGenerationOf(sandbox);
       const listeners = (await this.options.listListeningProcesses?.(project)) ?? [];
       offline =
@@ -1587,7 +1606,6 @@ export async function sweepOrphanedPreviewShares(options: {
 
 export class PreviewShareInputError extends Error {}
 export class PreviewShareNotFoundError extends Error {}
-export class PreviewShareConflictError extends Error {}
 export class PreviewShareUpstreamError extends Error {}
 /** Revocation is durable locally, but Uplink has not acknowledged it yet. */
 export class PreviewShareRemovalQueuedError extends Error {}
@@ -1662,6 +1680,7 @@ async function assertEligibleSandbox(
   >,
   staticFolder = false,
 ): Promise<void> {
+  assertPreviewNetworkSupported(sandbox);
   const networks = Object.keys(sandbox.networks ?? {});
   if (networks.length !== 1 || networks[0] !== expectedNetwork) {
     throw new PreviewShareConflictError('sandbox is attached to unexpected networks');
