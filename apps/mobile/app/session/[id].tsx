@@ -2421,6 +2421,10 @@ export const SessionChat = memo(function SessionChat({
   const [filesInitialPath, setFilesInitialPath] = useState<string | null>(null);
   const [filesInitialRoot, setFilesInitialRoot] = useState<SessionFileRoot>('worktree');
   const openSessionFile = useCallback((path: string, root: SessionFileRoot = 'worktree') => {
+    if (root === 'shared') {
+      router.push({ pathname: '/settings/shared-knowledge', params: { path } });
+      return;
+    }
     setFilesInitialPath(path);
     setFilesInitialRoot(root);
     setFilesOpen(true);
@@ -6164,7 +6168,6 @@ function SessionFilesSheet({
                 ['worktree', documentSession ? 'My edits' : 'Code'],
                 ['sources', 'Raw Sources'],
                 ['documents', 'Wiki'],
-                ['shared', 'Global'],
               ] as const
             )
               .filter(

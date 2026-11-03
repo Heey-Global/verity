@@ -187,6 +187,46 @@ describe('session explorer knowledge roots', () => {
     ]);
   });
 
+  it('browses Shared without a session and preserves revision and path protections', async () => {
+    await ctx.store.deleteSession('s-knowledge');
+    await ctx.store.deleteSession('s-loose');
+    const listing = await app.inject('/knowledge/shared/files');
+    expect(listing.statusCode).toBe(200);
+    expect(listing.json()).toMatchObject({ root: 'shared' });
+    const file = join(sharedKnowledgeDir(dataRoot), 'insights/reference.md');
+    writeFileSync(file, 'Original reference');
+    const response = await app.inject('/knowledge/shared/files/content?path=insights/reference.md');
+    expect(response.statusCode).toBe(200);
+    const snapshot = response.json<{ version: string; content: string }>();
+    expect(snapshot.content).toBe('Original reference');
+    const original = join(sharedKnowledgeDir(dataRoot), 'sources/documents/original.txt');
+    writeFileSync(original, 'Immutable source');
+    const source = await app.inject(
+      '/knowledge/shared/files/content?path=sources/documents/original.txt',
+    );
+    expect(source.json()).toMatchObject({ editable: false, content: 'Immutable source' });
+    const download = await app.inject(
+      '/knowledge/shared/files/download?path=sources/documents/original.txt',
+    );
+    expect(download.statusCode).toBe(200);
+    expect(download.body).toBe('Immutable source');
+
+    const save = (expectedVersion: string, path = 'insights/reference.md') =>
+      app.inject({
+        method: 'PUT',
+        url: '/knowledge/shared/files/content',
+        payload: { root: 'shared', path, content: 'Updated reference', expectedVersion },
+      });
+    expect((await save(snapshot.version)).statusCode).toBe(200);
+    expect((await save(snapshot.version)).statusCode).toBe(409);
+    expect(readFileSync(file, 'utf8')).toBe('Updated reference');
+    expect((await save(snapshot.version, 'sources/original.md')).statusCode).toBe(403);
+    expect((await save(snapshot.version, 'insights/../sources/original.md')).statusCode).toBe(403);
+    expect(
+      (await app.inject('/knowledge/shared/files/content?path=../outside.md')).statusCode,
+    ).toBe(400);
+  });
+
   it('keeps the worktree root exactly what it was', async () => {
     // The default when no root is named, so every client built before the
     // knowledge roots existed keeps browsing the worktree.

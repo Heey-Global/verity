@@ -21,6 +21,7 @@ export const APP_LINK_SCHEME = 'verity://';
  * it is a diagnostics surface, not something to point a user at. */
 export const APP_LINK_SETTINGS_ROUTES = [
   '/settings',
+  '/settings/shared-knowledge',
   '/settings/github',
   '/settings/forgejo/new',
   '/settings/google',

@@ -1,0 +1,191 @@
+import { Platform } from 'react-native';
+import { Directory, File, Paths } from 'expo-file-system';
+import { loadSharingModule } from '../../lib/sessionFileUi';
+import { fileNameFromPath } from '../../lib/fileSelection';
+import { useEffect, useMemo, useState } from 'react';
+import type { SessionDirectory, SessionFileContent } from '@verity/mobile';
+import { createVerityClient } from '../../lib/client';
+import { Button, TextField } from '../ui';
+import {
+  SettingsGroup,
+  SettingsListPanel,
+  SettingsMessage,
+  SettingsNavRow,
+  SettingsPanel,
+  SettingsScaffold,
+} from './SettingsChrome';
+
+export function SharedKnowledgeSettings({ initialPath }: { initialPath?: string }) {
+  const client = useMemo(() => createVerityClient(), []);
+  const [path, setPath] = useState('');
+  const [filePath, setFilePath] = useState<string | undefined>(initialPath);
+  const [directory, setDirectory] = useState<SessionDirectory>();
+  const [file, setFile] = useState<SessionFileContent>();
+  const [draft, setDraft] = useState('');
+  const [error, setError] = useState<string>();
+  const [saving, setSaving] = useState(false);
+  const [reload, setReload] = useState(0);
+  useEffect(() => {
+    if (!client) return;
+    let active = true;
+    setFile(undefined);
+    setDirectory(undefined);
+    setError(undefined);
+    const load = async () => {
+      try {
+        if (filePath !== undefined) {
+          const next = await client.getSharedKnowledgeFile(filePath);
+          if (active) {
+            setFile(next);
+            setDraft(next.content);
+          }
+        } else {
+          const next = await client.listSharedKnowledgeFiles(path);
+          if (active) setDirectory(next);
+        }
+      } catch (failure) {
+        if (active)
+          setError(failure instanceof Error ? failure.message : 'Could not load Shared knowledge');
+      }
+    };
+    void load();
+    return () => {
+      active = false;
+    };
+  }, [client, path, filePath, reload]);
+  if (!client)
+    return (
+      <SettingsMessage
+        screenTitle="Shared knowledge"
+        title="Server unavailable"
+        subtitle="Connect to your Verity server to browse Shared knowledge."
+      />
+    );
+  const back = () => {
+    if (filePath !== undefined) {
+      setPath(filePath.split('/').slice(0, -1).join('/'));
+      setFilePath(undefined);
+    } else setPath(path.split('/').slice(0, -1).join('/'));
+  };
+  const save = async () => {
+    if (!file || !file.version || filePath === undefined || saving) return;
+    setSaving(true);
+    try {
+      const next = await client.writeSharedKnowledgeFile(filePath, draft, file.version);
+      setFile(next);
+      setDraft(next.content);
+      setError(undefined);
+    } catch (failure) {
+      setError(failure instanceof Error ? failure.message : 'Could not save Shared knowledge');
+    } finally {
+      setSaving(false);
+    }
+  };
+  const download = async () => {
+    if (filePath === undefined || saving) return;
+    setSaving(true);
+    try {
+      const blob = await client.downloadSharedKnowledgeFile(filePath);
+      const name = fileNameFromPath(filePath);
+      if (Platform.OS === 'web') {
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement('a');
+        anchor.href = url;
+        anchor.download = name;
+        anchor.click();
+        setTimeout(() => URL.revokeObjectURL(url), 60_000);
+      } else {
+        const directory = new Directory(Paths.cache, 'shared-knowledge');
+        directory.create({ intermediates: true, idempotent: true });
+        const target = new File(directory, name);
+        target.write(new Uint8Array(await blob.arrayBuffer()));
+        const sharing = await loadSharingModule();
+        if (!sharing || !(await sharing.isAvailableAsync()))
+          throw new Error('No app is available to open this file');
+        await sharing.shareAsync(target.uri);
+      }
+    } catch (failure) {
+      setError(failure instanceof Error ? failure.message : 'Could not download file');
+    } finally {
+      setSaving(false);
+    }
+  };
+  return (
+    <SettingsScaffold
+      title="Shared knowledge"
+      detail
+      state={{ error, saving }}
+      onRetry={() => setReload((value) => value + 1)}
+    >
+      <SettingsGroup
+        title={filePath ?? (path || 'Shared library')}
+        description="Reference material shared across projects. Agents can read it from every project. Administrators can edit supported text files; original sources remain protected."
+      >
+        {path || filePath !== undefined ? (
+          <Button label="Back to folder" variant="secondary" disabled={saving} onPress={back} />
+        ) : null}
+        {directory ? (
+          <SettingsListPanel>
+            {directory.entries.map((entry) => (
+              <SettingsNavRow
+                key={entry.path}
+                icon={entry.kind === 'directory' ? 'folder' : 'file-text'}
+                title={entry.name}
+                onPress={() => {
+                  if (entry.kind === 'directory') setPath(entry.path);
+                  else setFilePath(entry.path);
+                }}
+              />
+            ))}
+          </SettingsListPanel>
+        ) : null}
+        {directory?.entries.length === 0 ? (
+          <SettingsPanel>
+            <TextField
+              label="Library"
+              value="No shared documents yet"
+              disabled
+              onChangeText={() => undefined}
+            />
+          </SettingsPanel>
+        ) : null}
+        {directory?.truncated ? (
+          <SettingsPanel>
+            <TextField
+              label="Listing limit"
+              value="This folder has more files than can be shown. Organize it into smaller folders."
+              disabled
+              onChangeText={() => undefined}
+            />
+          </SettingsPanel>
+        ) : null}
+        {filePath !== undefined ? (
+          <Button
+            label="Download original"
+            variant="secondary"
+            disabled={saving}
+            onPress={() => void download()}
+          />
+        ) : null}
+        {file ? (
+          <SettingsPanel>
+            <TextField
+              label="Content"
+              value={draft}
+              onChangeText={setDraft}
+              multiline
+              disabled={file.editable !== true || saving}
+            />
+            {file.editable && file.version ? (
+              <Button
+                label="Save"
+                disabled={saving || draft === file.content}
+                onPress={() => void save()}
+              />
+            ) : null}
+          </SettingsPanel>
+        ) : null}
+      </SettingsGroup>
+    </SettingsScaffold>
+  );
+}

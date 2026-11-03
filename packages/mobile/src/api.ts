@@ -5860,6 +5860,44 @@ export class VerityClient {
     return branchListSchema.parse(await res.json());
   }
 
+  async listSharedKnowledgeFiles(path = ''): Promise<SessionDirectory> {
+    const res = await this.request(`/knowledge/shared/files?path=${encodeURIComponent(path)}`, {
+      method: 'GET',
+    });
+    const directory = sessionDirectorySchema.parse(await res.json());
+    if (directory.root !== 'shared')
+      throw new Error('Update the Verity server to browse Shared knowledge');
+    return directory;
+  }
+
+  async getSharedKnowledgeFile(path: string): Promise<SessionFileContent> {
+    const res = await this.request(
+      `/knowledge/shared/files/content?path=${encodeURIComponent(path)}`,
+      { method: 'GET' },
+    );
+    return sessionFileContentSchema.parse(await res.json());
+  }
+
+  async downloadSharedKnowledgeFile(path: string): Promise<Blob> {
+    const res = await this.request(
+      `/knowledge/shared/files/download?path=${encodeURIComponent(path)}`,
+      { method: 'GET' },
+    );
+    return res.blob();
+  }
+
+  async writeSharedKnowledgeFile(
+    path: string,
+    content: string,
+    expectedVersion: string,
+  ): Promise<SessionFileContent> {
+    const res = await this.request('/knowledge/shared/files/content', {
+      method: 'PUT',
+      body: JSON.stringify({ root: 'shared', path, content, expectedVersion }),
+    });
+    return sessionFileContentSchema.parse(await res.json());
+  }
+
   /** Browse a session's local worktree. Includes uncommitted and generated files,
    * but the server blocks path escapes and `.git` internals. */
   async listSessionFiles(
