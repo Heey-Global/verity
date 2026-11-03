@@ -12,6 +12,8 @@ Deploy the Server and rebuilt toolkit/runner artifacts together, then recreate p
 
 Existing backend contexts without a current scoped fingerprint are rebuilt on their next turn. Authorized conversation history provides the handoff. Edits or clearing of Instructions/Memory, a different directing user, or a changed connector catalog also rebuild the backend context. Historical conversations remain stored; clearing factual context does not delete historical messages.
 
+Memory changes do not interrupt the active turn. Multiple changes made before the next turn are incorporated together when that turn resolves its context. A rebuild starts a new backend context and hands off the authorized conversation history, which can increase input-token usage and response latency and reduce reuse of the previous context cache; the actual cost depends on the provider and history size. Keep Memory focused on durable facts rather than progress logs. Retain this rebuild behavior for now and revisit optimization if observed usage or measured costs warrant it.
+
 Project Memory remains authoritative in `overview.md`. The revisioned settings editor reads and writes that file, and its migration marker prevents cleared legacy content from returning. Project Instructions use a separate managed knowledge-root `AGENTS.md`; repository `AGENTS.md` remains code guidance. User context is keyed by the authenticated identity, never a deployment-wide singleton.
 
 Wiki and Raw Sources keep their existing physical mount paths, working-copy publication behavior and immutable identifiers. Existing Documents/Sources route values remain accepted; canonical Wiki/Raw Sources route values normalize through the compatibility parser. No Global knowledge relocation is included.

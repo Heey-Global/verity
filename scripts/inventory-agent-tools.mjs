@@ -1,5 +1,11 @@
-import { AGENT_CAPABILITIES } from '../packages/server/dist/mcp-gateway.js';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+// Runtime inventory uses the built gateway; lint also runs before build artifacts exist.
+const gatewayModulePath = '../packages/server/dist/mcp-gateway.js';
+const gatewayModule = /** @type {unknown} */ (await import(gatewayModulePath));
+const { AGENT_CAPABILITIES } =
+  /** @type {{ AGENT_CAPABILITIES: readonly import('../packages/server/src/agent-capabilities.js').AgentCapability[] }} */ (
+    gatewayModule
+  );
 const check = process.argv.includes('--check');
 /** @type {Map<string, unknown[]>} */
 const domains = new Map();
