@@ -1,6 +1,7 @@
 import importlib.util
 from pathlib import Path
 import json
+import tempfile
 import unittest
 import unittest.mock
 
@@ -10,6 +11,16 @@ spec.loader.exec_module(boot_vm)
 
 
 class BootEvidenceTests(unittest.TestCase):
+    def test_vm_disk_uses_the_runner_reclaimed_filesystem(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with unittest.mock.patch.dict(boot_vm.os.environ, {'RUNNER_TEMP': directory}):
+                vm = boot_vm.BootVM('base.qcow2', 'evidence')
+            try:
+                self.assertEqual(vm.work.parent, Path(directory))
+                self.assertEqual(vm.disk_gib, 12)
+            finally:
+                vm.close()
+
     def test_process_restart_is_not_a_guest_reboot(self):
         before = {'boot_id': '11111111-1111-1111-1111-111111111111', 'init': 'systemd', 'systemd': 249}
         with self.assertRaisesRegex(ValueError, 'did not reboot'):
