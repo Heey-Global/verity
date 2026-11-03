@@ -9,6 +9,7 @@ on:
       - 'deploy/gvisor/versions.env'
       - 'deploy/egress/**'
       - 'scripts/build-project-egress-host.mjs'
+      - 'scripts/project-egress-install.py'
       - 'features/verity-sandbox-toolkit/**'
       - 'deploy/verity-sandbox.Dockerfile'
       - 'deploy/project-relay.Dockerfile'
