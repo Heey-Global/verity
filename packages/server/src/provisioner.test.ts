@@ -1943,43 +1943,48 @@ describe('ProvisionerImpl (#174)', () => {
   });
 
   it('initializes an internal Git workspace for a local project', async () => {
-    const id = randomUUID();
-    await ctx.store.upsertProject({
-      id,
-      ...baseInput,
-      owner: 'local',
-      repo: 'my-project',
-      containerName: 'verity-local--my-project',
-      kind: 'local',
-      cloneDir: 'local-my-project',
-    });
-    const { runner: git, calls: gitCalls } = fakeGit([
-      { match: /^init -b main / },
-      { match: /commit --allow-empty -m chore: initialize project$/ },
-    ]);
-    const { client: docker, calls: dockerCalls } = fakeDocker({ createdContainerId: 'cid-local' });
-    const provisioner = createProvisioner({
-      store: ctx.store,
-      db: ctx.db,
-      docker,
-      projectTokenMint: async () => undefined,
-      defaultImageRef: 'ghcr.io/heey-global/dev-base:default',
-      hostCloneRoot: '/var/lib/verity-dev',
-      git,
-      isDirectory: () => false,
-      prepareLocalWorkspace: undefined,
-    });
+    const root = mkdtempSync(join(tmpdir(), 'local-git-workspace-'));
+    try {
+      const id = randomUUID();
+      await ctx.store.upsertProject({
+        id,
+        ...baseInput,
+        owner: 'local',
+        repo: 'my-project',
+        containerName: 'verity-local--my-project',
+        kind: 'local',
+        cloneDir: 'local-my-project',
+      });
+      const { runner: git, calls: gitCalls } = fakeGit([
+        { match: /^init -b main / },
+        { match: /commit --allow-empty -m chore: initialize project$/ },
+      ]);
+      const { client: docker, calls: dockerCalls } = fakeDocker({
+        createdContainerId: 'cid-local',
+      });
+      const provisioner = createProvisioner({
+        store: ctx.store,
+        db: ctx.db,
+        docker,
+        projectTokenMint: async () => undefined,
+        defaultImageRef: 'ghcr.io/heey-global/dev-base:default',
+        hostCloneRoot: root,
+        git,
+        isDirectory: () => false,
+        prepareLocalWorkspace: undefined,
+      });
 
-    const result = await provisioner.provision(id);
+      const result = await provisioner.provision(id);
 
-    expect(result.state).toBe('active');
-    expect(gitCalls.some((call) => call.args.includes('clone'))).toBe(false);
-    expect(gitCalls.some((call) => call.args[0] === 'init')).toBe(true);
-    expect(gitCalls.some((call) => call.args.includes('--allow-empty'))).toBe(true);
-    const created = dockerCalls.find((call) => call.method === 'createContainer');
-    expect((created?.payload as ContainerSpec).binds).toContain(
-      '/var/lib/verity-dev/local-my-project:/work',
-    );
+      expect(result.state).toBe('active');
+      expect(gitCalls.some((call) => call.args.includes('clone'))).toBe(false);
+      expect(gitCalls.some((call) => call.args[0] === 'init')).toBe(true);
+      expect(gitCalls.some((call) => call.args.includes('--allow-empty'))).toBe(true);
+      const created = dockerCalls.find((call) => call.method === 'createContainer');
+      expect((created?.payload as ContainerSpec).binds).toContain(`${root}/local-my-project:/work`);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   /** What `git init` leaves in a fresh `.git/config`, written `key=value`. A key with no
