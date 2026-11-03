@@ -1,3 +1,4 @@
+import { join } from 'node:path';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 
@@ -117,6 +118,25 @@ export interface SessionFileRouteDeps {
 /** Registers file browsing, upload, preview, download, delete, and move routes
  *  over the session's worktree and the project's knowledge folders. */
 export function registerSessionFileRoutes(app: FastifyInstance, deps: SessionFileRouteDeps): void {
+  // Resolve writes relative to Wiki itself so intermediate symlinks cannot reach Sources.
+  const writeWiki = async (
+    reply: FastifyReply,
+    target: SessionFileTarget,
+    body: SessionFileWriteBody,
+  ) => {
+    const result = await deps.write(
+      reply,
+      { root: 'documents', dir: join(target.dir, 'insights') },
+      {
+        ...body,
+        root: 'documents',
+        path: body.path.slice('insights/'.length),
+      },
+    );
+    return result && typeof result === 'object' && 'path' in result
+      ? { ...result, path: body.path }
+      : result;
+  };
   const resolveProjectRoot = deps.resolveProjectRoot;
   if (resolveProjectRoot) {
     const projectTarget = async (request: FastifyRequest, reply: FastifyReply) => {
@@ -157,7 +177,7 @@ export function registerSessionFileRoutes(app: FastifyInstance, deps: SessionFil
         if (!wikiPath(body.path))
           return reply.code(403).send({ error: 'Only Wiki files can be edited here.' });
         const target = await projectTarget(request, reply);
-        return target ? deps.write(reply, target, { ...body, root: 'knowledge' }) : reply;
+        return target ? writeWiki(reply, target, body) : reply;
       },
     );
   }
@@ -197,7 +217,7 @@ export function registerSessionFileRoutes(app: FastifyInstance, deps: SessionFil
       if (!isSharedWikiPath(body.path))
         return reply.code(403).send({ error: 'Only Shared Wiki files can be edited here.' });
       const value = await sharedTarget(reply);
-      return value ? deps.write(reply, value, { ...body, root: 'shared' }) : reply;
+      return value ? writeWiki(reply, value, body) : reply;
     });
   }
 

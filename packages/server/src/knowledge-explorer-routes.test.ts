@@ -4,6 +4,7 @@ import {
   mkdtempSync,
   readFileSync,
   statSync,
+  symlinkSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
@@ -220,6 +221,16 @@ describe('session explorer knowledge roots', () => {
     expect((await save(snapshot.version)).statusCode).toBe(200);
     expect((await save(snapshot.version)).statusCode).toBe(409);
     expect(readFileSync(file, 'utf8')).toBe('Updated reference');
+    symlinkSync('../sources', join(sharedKnowledgeDir(dataRoot), 'insights/alias'));
+    expect(
+      (
+        await save(
+          fileVersion(Buffer.from('Immutable source')),
+          'insights/alias/documents/original.txt',
+        )
+      ).statusCode,
+    ).toBe(400);
+    expect(readFileSync(original, 'utf8')).toBe('Immutable source');
     expect((await save(snapshot.version, 'sources/original.md')).statusCode).toBe(403);
     expect((await save(snapshot.version, 'insights/../sources/original.md')).statusCode).toBe(403);
     expect(
@@ -255,6 +266,18 @@ describe('session explorer knowledge roots', () => {
     expect((await save('insights/note.md')).statusCode).toBe(200);
     expect((await save('insights/note.md')).statusCode).toBe(409);
     expect(readFileSync(join(dir, 'insights/note.md'), 'utf8')).toBe('Revised');
+    symlinkSync('../sources', join(dir, 'insights/alias'));
+    const escaped = await app.inject({
+      method: 'PUT',
+      url: `${base}/content`,
+      payload: {
+        path: 'insights/alias/documents/original.txt',
+        content: 'Overwritten',
+        expectedVersion: fileVersion(Buffer.from('Source')),
+      },
+    });
+    expect(escaped.statusCode).toBe(400);
+    expect(readFileSync(join(dir, 'sources/documents/original.txt'), 'utf8')).toBe('Source');
     expect((await save('sources/documents/original.txt')).statusCode).toBe(403);
     expect((await save('insights/../sources/documents/original.txt')).statusCode).toBe(403);
     expect(
