@@ -2794,6 +2794,13 @@ export async function buildEmbeddedServer(
   };
   // Filled once the managed dev server manager exists, further down.
   const managedLinkEnded: { current?: (instanceId: string, shareId: string) => void } = {};
+  const listenerRuntime = new DockerProjectRuntime({
+    resolveUser: resolvePreviewUser,
+    dockerBaseUrl: config.dockerBaseUrl,
+  });
+  const listListeningProcesses = (project: ProjectRecord, options?: { fresh?: boolean }) =>
+    listenerDiscovery?.listListeningProcesses(project, options) ??
+    listenerRuntime.listListeningProcesses(project);
   let previewShareManager: PreviewShareManager | undefined;
   const withPreviewProjectMutation = async <T>(
     projectId: string,
@@ -2939,14 +2946,11 @@ export async function buildEmbeddedServer(
         new DockerProjectRuntime({
           resolveUser: resolvePreviewUser,
           dockerBaseUrl: config.dockerBaseUrl,
+          listListeningProcesses,
         }).ensurePreviewTarget(project, port),
       listSessionServers: (sessionId) =>
         listenerDiscovery?.listSessionDevServers(sessionId) ?? Promise.resolve([]),
-      listListeningProcesses: async (project) =>
-        await new DockerProjectRuntime({
-          resolveUser: resolvePreviewUser,
-          dockerBaseUrl: config.dockerBaseUrl,
-        }).listListeningProcesses(project),
+      listListeningProcesses,
       edge: uplinkControl,
       // The same deferred logger as the client's: this manager is built just as
       // far ahead of `app`, and its timing lines belong next to the Uplink's.
@@ -4056,7 +4060,8 @@ export async function buildEmbeddedServer(
           }
         : {}),
       recreateEnvDriftedSandboxes: config.recreateEnvDriftedSandboxes ?? true,
-      onContainerStarted: async () => {
+      onContainerStarted: async (project) => {
+        listenerDiscovery?.invalidateProject(project.id);
         await projectAgentGatewayIdentity(true);
       },
       onSandboxLifecycle: (event) => projectSandboxLifecycleTelemetry.record(event),
@@ -4192,11 +4197,7 @@ export async function buildEmbeddedServer(
           onScan: (project, processes) => {
             void managedDevServerManager?.sweepOrphans(project, processes);
           },
-          scan: (project) =>
-            new DockerProjectRuntime({
-              resolveUser: resolvePreviewUser,
-              dockerBaseUrl: config.dockerBaseUrl,
-            }).listListeningProcesses(project),
+          scan: (project) => listenerRuntime.listListeningProcesses(project),
         })
       : undefined;
 
@@ -4217,17 +4218,14 @@ export async function buildEmbeddedServer(
           ...(config.dataVolumeRoot ? { dataVolumeRoot: config.dataVolumeRoot } : {}),
           ...(config.agentSeedHostPath ? { agentSeedHostPath: config.agentSeedHostPath } : {}),
           isDevServerRunning: () => Promise.resolve(false),
-          listListeningProcesses: (project) =>
-            new DockerProjectRuntime({
-              resolveUser: resolvePreviewUser,
-              dockerBaseUrl: config.dockerBaseUrl,
-            }).listListeningProcesses(project),
+          listListeningProcesses,
           listSessionServers: (sessionId) =>
             listenerDiscovery?.listSessionDevServers(sessionId) ?? Promise.resolve([]),
           prepareTargetPort: (project, port) =>
             new DockerProjectRuntime({
               resolveUser: resolvePreviewUser,
               dockerBaseUrl: config.dockerBaseUrl,
+              listListeningProcesses,
             }).ensurePreviewTarget(project, port),
           publicHost: process.env.VERITY_LOCAL_PREVIEW_HOST ?? 'localhost',
           connectorHost: hostname(),
@@ -4264,6 +4262,7 @@ export async function buildEmbeddedServer(
         resolveSecret: resolveBrokerDopplerSecret,
       }),
       runtime: new DockerProjectRuntime({
+        listListeningProcesses,
         isSecretManagedServer: async (id) =>
           ((await eventStore.managedDevServers.getInstance(id))?.lastRunSecretBindings.length ??
             0) > 0,
@@ -4725,12 +4724,6 @@ export async function buildEmbeddedServer(
                   )
                 : projects;
             const result = await reconciled;
-            // Nudge Runner-supervisor reconciliation OFF the hot path: reconcile
-            // fans out a `docker exec` into every active sandbox, so awaiting it
-            // here would add per-container Docker latency to project listing. The
-            // periodic reconciler (below) is the primary driver and surfaces its
-            // own failures; this list-triggered call is best-effort.
-            void provisioner?.reconcileRunnerSupervisors(result).catch(() => undefined);
             return result;
           },
           { ttlMs: 3_000 },

@@ -2954,6 +2954,56 @@ describe('ProvisionerImpl (#174)', () => {
     );
   });
 
+  it('backs off failed runner starts to one minute and clears backoff for a replacement', async () => {
+    const id = await seedProject();
+    const project = { ...(await ctx.store.getProject(id))!, state: 'active' as const };
+    const { runner: git } = fakeGit([]);
+    const { client: docker } = fakeDocker();
+    const containerCommand = vi
+      .fn<ContainerCommandRunner>()
+      .mockRejectedValue(new Error('unavailable'));
+    const provisioner = createProvisioner({
+      store: ctx.store,
+      db: ctx.db,
+      docker,
+      git,
+      projectTokenMint: async () => 'tok',
+      defaultImageRef: 'ghcr.io/example/dev-base:default',
+      hostCloneRoot: '/srv/workspaces',
+      dataVolumeRoot: '/srv',
+      runnerSupervisor: true,
+      dockerHostForBuild: 'unix:///var/run/docker.sock',
+      containerCommand,
+      isDirectory: () => true,
+    });
+    let now = 0;
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    const fail = () =>
+      expect(provisioner.reconcileRunnerSupervisors([project])).rejects.toThrow(
+        /reconciliation failed/,
+      );
+    try {
+      let attempts = 0;
+      for (const delay of [5_000, 10_000, 20_000, 40_000, 60_000, 60_000]) {
+        await fail();
+        expect(containerCommand).toHaveBeenCalledTimes(++attempts);
+        const calls = containerCommand.mock.calls.length;
+        now += delay - 1;
+        await fail();
+        expect(containerCommand).toHaveBeenCalledTimes(calls);
+        now++;
+      }
+      const calls = containerCommand.mock.calls.length;
+      containerCommand.mockResolvedValue({ stdout: '', stderr: '' });
+      await provisioner.reconcileRunnerSupervisors([{ ...project, containerName: 'replacement' }]);
+      expect(containerCommand).toHaveBeenCalledTimes(calls + 1);
+      await provisioner.reconcileRunnerSupervisors([{ ...project, containerName: 'replacement' }]);
+      expect(containerCommand).toHaveBeenCalledTimes(calls + 2);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
   it('shares overlapping supervisor reads without skipping newly active projects and retries failures', async () => {
     const id = await seedProject();
     const project = { ...(await ctx.store.getProject(id))!, state: 'active' as const };
@@ -3008,7 +3058,16 @@ describe('ProvisionerImpl (#174)', () => {
     reject(new Error('exec failed'));
     expect((await failed).map((result) => result.status)).toEqual(['rejected', 'rejected']);
     containerCommand.mockResolvedValueOnce({ stdout: '', stderr: '' });
-    await provisioner.reconcileRunnerSupervisors([project]);
+    await expect(provisioner.reconcileRunnerSupervisors([project])).rejects.toThrow(
+      /reconciliation failed/,
+    );
+    expect(containerCommand).toHaveBeenCalledTimes(3);
+    const retryClock = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 5_001);
+    try {
+      await provisioner.reconcileRunnerSupervisors([project]);
+    } finally {
+      retryClock.mockRestore();
+    }
     expect(containerCommand).toHaveBeenCalledTimes(4);
     const releases = new Map<string, (value: { stdout: string; stderr: string }) => void>();
     containerCommand.mockImplementation(
