@@ -28,7 +28,7 @@ import {
 } from '../lib/liveMeetingStore';
 
 jest.mock('expo-router', () => ({
-  router: { back: jest.fn(), push: jest.fn() },
+  router: { back: jest.fn(), push: jest.fn(), replace: jest.fn(), canGoBack: jest.fn(() => true) },
   Stack: { Screen: () => null },
   useLocalSearchParams: jest.fn(() => ({ sessionId: 'session-1' })),
 }));
@@ -2364,4 +2364,41 @@ it('lets a second device save notes and ask research without starting its microp
   );
   expect(startMeeting).not.toHaveBeenCalled();
   expect(endMeeting).not.toHaveBeenCalled();
+});
+
+it('leaves a directly opened meeting screen when Cancel has no history', async () => {
+  jest.mocked(router.canGoBack).mockReturnValueOnce(false);
+  render(<MeetingScreen />);
+  fireEvent.press(await screen.findByText('Cancel'));
+  expect(router.replace).toHaveBeenCalledWith({
+    pathname: '/session/[id]',
+    params: { id: 'session-1' },
+  });
+});
+
+it('shows calendar entries for in-person meetings and uses the selected title', async () => {
+  jest.mocked(createVerityClient).mockReturnValue({
+    getUpcomingMeetings: jest.fn().mockResolvedValue([
+      {
+        eventKey: 'office',
+        title: 'Office review',
+        startsAt: Date.now(),
+        endsAt: Date.now() + 3600000,
+        calendar: 'Work',
+        provider: null,
+        decision: null,
+        meetingId: null,
+      },
+    ]),
+  } as never);
+  render(<MeetingScreen />);
+  await screen.findByText('Office review');
+  await waitFor(() =>
+    expect(screen.getByLabelText('Meeting title').props.value).toBe('Office review'),
+  );
+  fireEvent.press(await screen.findByRole('radio', { name: /^Up to 4 people/ }));
+  fireEvent.press(screen.getByLabelText('Start meeting'));
+  await waitFor(() =>
+    expect(startMeeting).toHaveBeenCalledWith('session-1', 'fluid-nemotron', 4, 'Office review'),
+  );
 });

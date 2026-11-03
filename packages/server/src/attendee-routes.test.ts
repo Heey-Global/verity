@@ -51,3 +51,32 @@ it('exposes only explicitly safe startup errors', async () => {
     await app.close();
   }
 });
+
+it.each(['meet.google.com/abc-defg-hij', 'https://meet.google.com/abc-defg-hij'])(
+  'accepts a pasted meeting link: %s',
+  async (meetingUrl) => {
+    const service = new AttendeeMeetings({ store: {} as EventStore, ingest: vi.fn() });
+    const start = vi
+      .spyOn(service, 'start')
+      .mockRejectedValue(new OnlineMeetingStartError('ready for startup'));
+    const app = Fastify();
+    registerAttendeeRoutes(app, service, () => true);
+    try {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/sessions/session/live-meetings/online',
+        payload: { meetingUrl },
+      });
+      expect(response.statusCode).toBe(503);
+      expect(start).toHaveBeenCalledWith(
+        'session',
+        'https://meet.google.com/abc-defg-hij',
+        false,
+        undefined,
+        expect.any(Object),
+      );
+    } finally {
+      await app.close();
+    }
+  },
+);
