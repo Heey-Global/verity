@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { runInNewContext } from 'node:vm';
 import ts from 'typescript';
 import { expect, it } from 'vitest';
 import { ACTIVATION_GATE_DIRECTORY } from './activation-gate.js';
@@ -28,9 +29,7 @@ function fixtureFunction(name: string, dependencies: Record<string, unknown> = {
   const { outputText } = ts.transpileModule(declaration.getText(source), {
     compilerOptions: { target: ts.ScriptTarget.ES2024, module: ts.ModuleKind.None },
   });
-  return new Function(...Object.keys(dependencies), `${outputText}\nreturn ${name};`)(
-    ...Object.values(dependencies),
-  ) as unknown;
+  return runInNewContext(`${outputText}\n${name};`, dependencies) as unknown;
 }
 function fixtureConstant(name: string): string {
   for (const statement of source.statements) {
@@ -64,7 +63,11 @@ it('keeps the live-smoke deployment seal unchanged when re-adopting the selected
   const root = join(parent, 'managed-deployment');
   const image = `ghcr.io/heey-global/verity/verity-server@sha256:${'a'.repeat(64)}`;
   try {
-    const before = await initializeManagedDeployment({ root, spec: deploymentSpec(image) });
+    // Cross the VM boundary as JSON, just as the sealed deployment does on disk.
+    const spec = JSON.parse(JSON.stringify(deploymentSpec(image))) as ReturnType<
+      typeof deploymentSpec
+    >;
+    const before = await initializeManagedDeployment({ root, spec });
     if (!before.managed) throw new Error(before.reason);
     await runManagedBootstrap(
       {
