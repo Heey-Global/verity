@@ -76,6 +76,12 @@ export function HomeInbox({
   const perform = useMemo(() => createPushReplyPerformer(client), [client]);
   const [settled, setSettled] = useState<ReadonlySet<string>>(() => new Set());
   const [pending, setPending] = useState<string | null>(null);
+  // One reply id per item until it is delivered: a second tap after a `retry`
+  // (whose first request may have landed) reuses it, so the server's idempotency
+  // key turns it into the same reply instead of a second prompt.
+  const replyIds = useRef(new Map<string, string>());
+  // State re-renders too late to stop a fast double tap; the ref does not.
+  const running = useRef(false);
 
   const all = useMemo(
     () => inboxItems({ sessions, projects, meetings, now }),
@@ -104,16 +110,23 @@ export function HomeInbox({
       if (action.kind === 'repair_project') return onRepairProject(action.projectId);
       const reply = replyFor(action);
       if (reply === null) return;
+      if (running.current) return;
+      running.current = true;
       setPending(item.key);
+      const replyKey = `${item.key}:${action.kind}:${action.label}`;
+      const replyId = replyIds.current.get(replyKey) ?? randomUUID();
+      replyIds.current.set(replyKey, replyId);
       try {
-        const outcome = await perform(reply, randomUUID());
+        const outcome = await perform(reply, replyId);
         if (outcome === 'retry') {
           Alert.alert('Not sent', 'Verity could not reach the server. Try again in a moment.');
           return;
         }
         // `stale` means someone answered first; either way the item is done.
+        replyIds.current.delete(replyKey);
         setSettled((current) => new Set(current).add(item.key));
       } finally {
+        running.current = false;
         setPending(null);
       }
     },
@@ -235,7 +248,7 @@ export function InboxCard({
         <View style={styles.actions}>
           {item.actions.map((action, index) => (
             <Button
-              key={`${action.kind}:${action.label}`}
+              key={`${String(index)}:${action.kind}:${action.label}`}
               label={action.label}
               size="compact"
               variant={index === 0 ? 'primary' : 'secondary'}

@@ -139,6 +139,16 @@ it('keeps an item when the answer could not be delivered', async () => {
     fireEvent.press(screen.getByRole('button', { name: 'Valibot' }));
   });
   expect(screen.getByText('Which validation library?')).toBeTruthy();
+  // The first request may have landed: the retry must carry the same idempotency
+  // key, or the agent receives the answer twice.
+  await act(async () => {
+    fireEvent.press(screen.getByRole('button', { name: 'Valibot' }));
+  });
+  const ids = client.sendTurn.mock.calls.map(
+    (call) => (call as unknown as [string, { clientReplyId: string }])[1].clientReplyId,
+  );
+  expect(ids).toHaveLength(2);
+  expect(ids[1]).toBe(ids[0]);
 });
 
 it('decides a described permission without opening the session', async () => {
