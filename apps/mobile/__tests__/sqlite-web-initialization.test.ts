@@ -1,14 +1,13 @@
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { runInNewContext } from 'node:vm';
-import { expect, it } from 'vitest';
 import ts from 'typescript';
 
-const require = createRequire(import.meta.url);
-const { serializeSqliteInitialization } = require('../apps/mobile/sqlite-web-transformer.cjs') as {
+const mobileRequire = createRequire(__filename);
+const { serializeSqliteInitialization } = mobileRequire('../sqlite-web-transformer.cjs') as {
   serializeSqliteInitialization: (src: string, filename: string) => string;
 };
-const filename = require
+const filename = mobileRequire
   .resolve('expo-sqlite/package.json')
   .replace('package.json', 'web/worker.ts');
 const original = readFileSync(filename, 'utf8');
