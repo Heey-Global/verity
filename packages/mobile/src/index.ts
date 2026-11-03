@@ -707,3 +707,5 @@ export type {
 } from './audit.js';
 
 export { qaAssignmentView } from './ui/qaAssignment.js';
+
+export { projectEgressPolicySchema, type ProjectEgressPolicy } from './projectEgress.js';
