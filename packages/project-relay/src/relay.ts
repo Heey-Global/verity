@@ -31,6 +31,9 @@ export const BROKER_RELAY_ROUTES: ReadonlySet<string> = new Set([
   'POST /internal/project/memory',
   'POST /internal/project/repo',
   'POST /internal/package-install',
+  'GET /internal/package-artifacts/*',
+  'HEAD /internal/package-artifacts/*',
+  'POST /internal/package-artifacts/npm/-/npm/v1/security/advisories/bulk',
   'POST /internal/dev-servers',
   // The loopback MCP gateway (ADR 0014 D1) — an ACP agent's only path to the brokered
   // secret tools, authenticated with the per-turn bearer in `authorization`.
@@ -63,6 +66,19 @@ export const BROKER_RELAY_ROUTES: ReadonlySet<string> = new Set([
 export const BROKER_DECISION_ROUTES: ReadonlySet<string> = new Set([
   'POST /internal/mcp',
   'POST /internal/package-install',
+]);
+// Native package-client telemetry is tolerated only in the registry adapter and
+// dropped before dispatch. It supplies no destination or authorization context.
+const PACKAGE_CLIENT_HEADERS = new Set([
+  'npm-command',
+  'npm-in-ci',
+  'npm-scope',
+  'npm-session',
+  'pacote-version',
+  'pacote-req-type',
+  'pacote-pkg-id',
+  'cache-control',
+  'pragma',
 ]);
 const HOP_BY_HOP_HEADERS = new Set([
   'connection',
@@ -393,12 +409,16 @@ async function relayBrokerRequest(
     if (
       !path.startsWith('/') ||
       path.includes('?') ||
-      !BROKER_RELAY_ROUTES.has(`${method} ${path}`)
+      (!BROKER_RELAY_ROUTES.has(`${method} ${path}`) &&
+        !(
+          (method === 'GET' || method === 'HEAD') &&
+          /^\/internal\/package-artifacts\/(?:npm|pypi\/simple|file)\/[^?#]+$/u.test(path)
+        ))
     ) {
       drainAndReject(request, response, 404, 'not found');
       return;
     }
-    if (hasUnsafeHeaders(request)) {
+    if (hasUnsafeHeaders(request, path.startsWith('/internal/package-artifacts/'))) {
       drainAndReject(request, response, 400, 'invalid headers');
       return;
     }
@@ -426,7 +446,11 @@ async function relayBrokerRequest(
       path,
       request.headers,
       body,
-      mcpProxy ? { ...limits, maxResponseBytes: MCP_PROXY_MAX_RESPONSE_BYTES } : limits,
+      mcpProxy
+        ? { ...limits, maxResponseBytes: MCP_PROXY_MAX_RESPONSE_BYTES }
+        : path.startsWith('/internal/package-artifacts/')
+          ? { ...limits, maxResponseBytes: 32 * 1024 * 1024 }
+          : limits,
       parked ? limits.decisionTimeoutMs : mcpProxy ? MCP_PROXY_TIMEOUT_MS : limits.requestTimeoutMs,
       mcpProxy,
     );
@@ -550,6 +574,7 @@ function forwardedRequestHeaders(
       value === undefined ||
       HOP_BY_HOP_HEADERS.has(name) ||
       CLIENT_ONLY_REQUEST_HEADERS.has(name) ||
+      PACKAGE_CLIENT_HEADERS.has(name) ||
       name === 'host' ||
       name === 'content-length'
     )
@@ -567,10 +592,14 @@ function responseHeaders(headers: IncomingHttpHeaders): IncomingHttpHeaders {
   return forwarded;
 }
 
-function hasUnsafeHeaders(request: IncomingMessage): boolean {
+function hasUnsafeHeaders(request: IncomingMessage, packageRequest = false): boolean {
   if (request.headers.upgrade !== undefined || request.headers.expect !== undefined) return true;
   for (const [name, values] of Object.entries(request.headersDistinct)) {
-    if (!ACCEPTED_REQUEST_HEADERS.has(name)) return true;
+    if (
+      !ACCEPTED_REQUEST_HEADERS.has(name) &&
+      !(packageRequest && (PACKAGE_CLIENT_HEADERS.has(name) || name === 'content-encoding'))
+    )
+      return true;
     if (values !== undefined && values.length !== 1) return true;
     if (
       name === 'connection' &&
