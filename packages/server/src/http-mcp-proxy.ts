@@ -102,6 +102,7 @@ export async function forwardHttpMcp(
     sessionId?: string;
     lastEventId?: string;
   },
+  onTransport?: (stage: 'socket' | 'connected' | 'request-written') => void,
 ): Promise<{
   status: number;
   headers: Record<string, string>;
@@ -175,9 +176,13 @@ export async function forwardHttpMcp(
         });
       },
     );
+    // finish confirms the local write, not receipt by the upstream application.
+    request.once('finish', () => onTransport?.('request-written'));
     request.on('socket', (socket) => {
+      onTransport?.('socket');
       socket.once('secureConnect', () => {
         connected = true;
+        onTransport?.('connected');
       });
     });
     request.setTimeout(MCP_TIMEOUT_MS, () =>
@@ -285,6 +290,33 @@ export function registerHttpMcpProxyRoute(app: FastifyInstance, deps: HttpMcpPro
       method === 'POST'
         ? Buffer.from(JSON.stringify(interception?.body ?? request.body))
         : undefined;
+    const accept = request.headers.accept ?? 'application/json, text/event-stream';
+    const requestContentType = request.headers['content-type']
+      ?.split(';', 1)[0]
+      ?.trim()
+      .toLowerCase();
+    const protocolVersion = request.headers['mcp-protocol-version'];
+    const requestMetadata = {
+      bodyBytes: body?.byteLength ?? 0,
+      requestContentType: requestContentType === 'application/json' ? requestContentType : 'other',
+      acceptsJson: accept
+        .split(',')
+        .some((part) => part.split(';', 1)[0]?.trim() === 'application/json'),
+      acceptsEventStream: accept
+        .split(',')
+        .some((part) => part.split(';', 1)[0]?.trim() === 'text/event-stream'),
+      protocolVersion:
+        protocolVersion === undefined
+          ? 'absent'
+          : typeof protocolVersion === 'string' &&
+              ['2024-11-05', '2025-03-26', '2025-06-18', '2025-11-25'].includes(protocolVersion)
+            ? protocolVersion
+            : 'other',
+      hasProtocolSession: typeof request.headers['mcp-session-id'] === 'string',
+    };
+    let transportStage: 'socket' | 'connected' | 'request-written' | undefined;
+    let connectedMs: number | undefined;
+    let requestWrittenMs: number | undefined;
     let hijacked = false;
     let upstreamStatus: number | undefined;
     let contentType: string | undefined;
@@ -295,6 +327,10 @@ export function registerHttpMcpProxyRoute(app: FastifyInstance, deps: HttpMcpPro
     const upstreamStarted = performance.now();
     const diagnostics = () => ({
       ...context,
+      ...requestMetadata,
+      transportStage,
+      connectedMs,
+      requestWrittenMs,
       upstreamStatus,
       contentType,
       headersMs,
@@ -303,23 +339,34 @@ export function registerHttpMcpProxyRoute(app: FastifyInstance, deps: HttpMcpPro
       bytes: streamed,
       elapsedMs: performance.now() - upstreamStarted,
     });
-    request.log.info({ ...context, stage: 'forward' }, 'MCP proxy forwarding started');
+    request.log.info({ ...diagnostics(), stage: 'forward' }, 'MCP proxy forwarding started');
     try {
-      const response = await forwardHttpMcp(connection, method, body, {
-        ...(typeof request.headers.accept === 'string' ? { accept: request.headers.accept } : {}),
-        ...(typeof request.headers['content-type'] === 'string'
-          ? { contentType: request.headers['content-type'] }
-          : {}),
-        ...(typeof request.headers['mcp-protocol-version'] === 'string'
-          ? { protocolVersion: request.headers['mcp-protocol-version'] }
-          : {}),
-        ...(typeof request.headers['mcp-session-id'] === 'string'
-          ? { sessionId: request.headers['mcp-session-id'] }
-          : {}),
-        ...(typeof request.headers['last-event-id'] === 'string'
-          ? { lastEventId: request.headers['last-event-id'] }
-          : {}),
-      });
+      const response = await forwardHttpMcp(
+        connection,
+        method,
+        body,
+        {
+          ...(typeof request.headers.accept === 'string' ? { accept: request.headers.accept } : {}),
+          ...(typeof request.headers['content-type'] === 'string'
+            ? { contentType: request.headers['content-type'] }
+            : {}),
+          ...(typeof request.headers['mcp-protocol-version'] === 'string'
+            ? { protocolVersion: request.headers['mcp-protocol-version'] }
+            : {}),
+          ...(typeof request.headers['mcp-session-id'] === 'string'
+            ? { sessionId: request.headers['mcp-session-id'] }
+            : {}),
+          ...(typeof request.headers['last-event-id'] === 'string'
+            ? { lastEventId: request.headers['last-event-id'] }
+            : {}),
+        },
+        (stage) => {
+          transportStage = stage;
+          if (stage === 'connected') connectedMs = performance.now() - upstreamStarted;
+          if (stage === 'request-written') requestWrittenMs = performance.now() - upstreamStarted;
+          request.log.info({ ...diagnostics(), stage }, 'MCP proxy upstream transport progress');
+        },
+      );
       upstreamStatus = response.status;
       // Log only recognized media types, never arbitrary upstream header values.
       const mediaType = response.headers['content-type']?.split(';', 1)[0]?.trim().toLowerCase();
