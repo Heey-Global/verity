@@ -208,7 +208,6 @@ const openChoicesSchema = z.object({
     .min(1),
   multiSelect: z.boolean().optional(),
 });
-export type OpenChoices = z.infer<typeof openChoicesSchema>;
 
 /** One parked permission prompt with what it asks. `input` is absent when the
  * server judged it too large to carry; the app then opens the session instead. */
@@ -218,7 +217,6 @@ const pendingPermissionRequestSchema = z.object({
   riskClass: z.string().min(1),
   input: z.unknown().optional(),
 });
-export type PendingPermissionRequest = z.infer<typeof pendingPermissionRequestSchema>;
 
 export const sessionSummarySchema = z
   .object({
