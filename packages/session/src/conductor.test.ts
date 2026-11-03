@@ -5118,6 +5118,7 @@ describe('Conductor.startSession', () => {
   async function freshTurnSystemPrompt(
     sessionId: string,
     kind: 'github' | 'forgejo' | 'local',
+    worktree?: string,
   ): Promise<string> {
     if (kind === 'forgejo')
       await ctx.store.forgeConnections.upsert({
@@ -5141,7 +5142,7 @@ describe('Conductor.startSession', () => {
     });
     await ctx.store.createSession({
       sessionId,
-      worktree: `/wt/${sessionId}`,
+      worktree: worktree ?? `/wt/${sessionId}`,
       model: 'm',
       projectId: `project-${sessionId}`,
     });
@@ -5162,6 +5163,28 @@ describe('Conductor.startSession', () => {
     return captured?.appendSystemPrompt ?? '';
   }
 
+  it('directs local code and package installs outside Documents for new and retained sessions', async () => {
+    const code = await freshTurnSystemPrompt(
+      's-code-path',
+      'local',
+      '/work/.verity-sessions/current',
+    );
+    expect(code).toContain('Your current working directory is the code workspace');
+    expect(code).toContain(
+      'durable Documents working copy is ../../.verity-document-sessions/code-s-code-path',
+    );
+    const retained = await freshTurnSystemPrompt(
+      's-doc-path',
+      'local',
+      '/work/.verity-document-sessions/existing',
+    );
+    expect(retained).toContain(
+      'Your code working directory is ../../.verity-sessions/code-s-doc-path',
+    );
+    expect(retained).toContain('Never put package installs, builds or code projects in Documents');
+    expect(retained).not.toContain('This project has no Code repository');
+  });
+
   it('drops the pull-request directive for a project with no GitHub repository', async () => {
     const appended = await freshTurnSystemPrompt('s-local-project', 'local');
 
@@ -5181,8 +5204,8 @@ describe('Conductor.startSession', () => {
     // `toContain` alone would pass on a template that interpolated it twice.
     expect(appended).toContain(SANDBOX_RESOURCES_SYSTEM_PROMPT);
     expect(appended.split(SANDBOX_RESOURCES_SYSTEM_PROMPT)).toHaveLength(2);
-    // Document sessions do not create branches, commits or code-review receipts.
-    expect(appended).not.toContain(REPO_CONVENTIONS_SYSTEM_PROMPT);
+    // Local Code uses repository conventions while remote review receipts remain inapplicable.
+    expect(appended).toContain(REPO_CONVENTIONS_SYSTEM_PROMPT);
     expect(appended).not.toContain(CODE_REVIEW_SYSTEM_PROMPT);
   });
 
@@ -5258,7 +5281,7 @@ describe('Conductor.startSession', () => {
       expect(run.appendSystemPrompt).not.toContain(PULL_REQUEST_SYSTEM_PROMPT);
     }
     expect(LOCAL_PROJECT_SYSTEM_PROMPT).toContain(
-      'Existing document sessions remain document workspaces',
+      'Existing document sessions retain their Documents working copies',
     );
     // A fresh context in the same session now classifies as GitHub-backed.
     const relinked = await ctx.store.getProject('project-linked');
@@ -5527,7 +5550,7 @@ describe('Conductor.startSession', () => {
     // The retry (store healthy again) must not report the worktree as busy.
     const { sessionId } = await conductor.startSession(start);
     await waitFor(() => !conductor.isBusy(sessionId));
-    expect(getProject).toHaveBeenCalledTimes(2);
+    expect(getProject.mock.calls.length).toBeGreaterThanOrEqual(2);
     getProject.mockRestore();
   });
 

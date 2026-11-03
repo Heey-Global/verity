@@ -1537,3 +1537,56 @@ describe('EventStore — projects', () => {
     });
   });
 });
+
+describe('disconnectProjectFromGitHub', () => {
+  it('preserves the clone, session and history binding and allows retry', async () => {
+    const id = randomUUID();
+    await ctx.store.upsertProject({
+      id,
+      owner: 'acme',
+      repo: 'code',
+      kind: 'github',
+      containerName: 'test-disconnect',
+      state: 'active',
+    });
+    const sessionId = randomUUID();
+    await ctx.store.createSession({
+      sessionId,
+      projectId: id,
+      worktree: '/data/acme-code/.verity-sessions/test',
+      model: 'test',
+      name: 'Existing',
+    });
+    await ctx.store.updateProjectSettings(id, { defaultBranch: 'main' });
+    const local = await ctx.store.disconnectProjectFromGitHub(id);
+    expect(local).toMatchObject({
+      id,
+      kind: 'local',
+      owner: '__local__',
+      repo: 'code',
+      cloneDir: 'acme-code',
+      containerName: 'test-disconnect',
+      forgeConnectionId: null,
+    });
+    expect(await ctx.store.getSession(sessionId)).toMatchObject({
+      projectId: id,
+      worktree: '/data/acme-code/.verity-sessions/test',
+    });
+    expect(await ctx.store.getProjectSettingsRaw(id)).toMatchObject({ defaultBranch: 'main' });
+    expect(await ctx.store.disconnectProjectFromGitHub(id)).toMatchObject({ id, kind: 'local' });
+    expect(await ctx.store.getProjectByOwnerRepo('acme', 'code')).toBeUndefined();
+  });
+  it('refuses other project kinds and missing projects', async () => {
+    const id = randomUUID();
+    await ctx.store.upsertProject({
+      id,
+      owner: 'acme',
+      repo: 'code',
+      kind: 'control_plane',
+      containerName: 'control-test',
+      state: 'absent',
+    });
+    expect(await ctx.store.disconnectProjectFromGitHub(id)).toBeUndefined();
+    expect(await ctx.store.disconnectProjectFromGitHub(randomUUID())).toBeUndefined();
+  });
+});

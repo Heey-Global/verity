@@ -5825,10 +5825,17 @@ export class Conductor {
       : codeIndex >= 0
         ? `${'../'.repeat(parts.length - codeIndex)}.verity-document-sessions/code-${session.sessionId}`
         : undefined;
+    const project = await this.deps.store.getProject(session.projectId);
+    const codeGuidance =
+      project?.kind !== 'control_plane' && documentPath === '.'
+        ? `\n\nYour code working directory is ../../.verity-sessions/code-${session.sessionId}, relative to your current Documents directory. Run code tools and package installs there. Keep this Documents working copy for texts and assets.`
+        : project?.kind !== 'control_plane'
+          ? '\n\nYour current working directory is the code workspace. Put code, mockups, websites, builds and package installs here.'
+          : '';
     const documents =
       documentPath === undefined
         ? ''
-        : `\n\nYour durable Documents working copy is ${documentPath}, relative to your working directory. Write project documents there. /knowledge/insights is the read-only canonical Documents collection. Changes from your working copy are published automatically after the turn, with concurrent changes preserved as conflicts. Sources and Global remain read-only. These working-copy instructions replace direct-write guidance for /knowledge/insights above.`;
+        : `\n\nYour durable Documents working copy is ${documentPath}, relative to your working directory. These workspace instructions replace earlier guidance that local projects have no Code workspace. Use Documents only for text documents and assets. Code, mockups, websites, builds and package installs belong in the code working directory, never in Documents. /knowledge/insights is the read-only canonical Documents collection. Changes from your working copy are published automatically after the turn, with concurrent changes preserved as conflicts. Sources and Global remain read-only. These working-copy instructions replace direct-write guidance for /knowledge/insights above.`;
     let decisions = '';
     if (this.deps.projectDecisionDirectory) {
       try {
@@ -5838,7 +5845,7 @@ export class Conductor {
           '\n\nProject decision directory unavailable. Do not assume there are no decisions; report the unavailable knowledge and retry lookup_decisions.';
       }
     }
-    return `\n\n## Project knowledge\n${KNOWLEDGE_CONTEXT_INSTRUCTIONS}${documents}${decisions}`;
+    return `\n\n## Project knowledge\n${KNOWLEDGE_CONTEXT_INSTRUCTIONS}${documents}${codeGuidance}${decisions}`;
   }
 
   /** Whether this session's project was created without a GitHub repository, so
@@ -5853,10 +5860,10 @@ export class Conductor {
    *  the adjacent {@link projectMemoryPrompt} read already does on the same
    *  fresh-context path, so a down store fails it either way. */
   private async codeHostForSession(session: SessionRecord): Promise<TurnCodeHost> {
-    if (session.worktree.split('/').includes('.verity-document-sessions')) return 'local';
     if (session.projectId === null) return 'github';
     const project = await this.deps.store.getProject(session.projectId);
     if (project === undefined) return 'github';
+    if (project.kind === 'control_plane') return 'documents';
     if (isLocalProject(project)) return 'local';
     return project.kind === 'forgejo' ? 'forgejo' : 'github';
   }

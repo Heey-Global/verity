@@ -5130,7 +5130,12 @@ function SessionFilesSheet({
   const { theme } = useUnistyles();
   const sheet = useResizableSheet();
   const [documentSession, setDocumentSession] = useState(false);
-  const [documentStatus, setDocumentStatus] = useState<{ pending: boolean; running: boolean }>();
+  const [codeAvailable, setCodeAvailable] = useState(true);
+  const [documentStatus, setDocumentStatus] = useState<{
+    pending: boolean;
+    running: boolean;
+    warning?: string;
+  }>();
   const workspaceClassified = useRef(false);
   const [path, setPath] = useState(initialFilePath ? parentPath(initialFilePath) : '');
   const [root, setRoot] = useState<SessionFileRoot>(initialRoot);
@@ -5192,6 +5197,26 @@ function SessionFilesSheet({
   const openWithRef = useRef<((filePath: string) => void) | null>(null);
 
   useEffect(() => {
+    if (codeAvailable || driveActive) return;
+    let active = true;
+    const timer = setInterval(() => {
+      void client
+        .listSessionFiles(sessionId, '', 'worktree')
+        .then((dir) => {
+          if (active && dir.codeAvailable) {
+            setCodeAvailable(true);
+            if (dir.workspaceKind) setDocumentSession(dir.workspaceKind === 'documents');
+          }
+        })
+        .catch(() => undefined);
+    }, 5000);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
+  }, [client, sessionId, codeAvailable, documentSession, driveActive]);
+
+  useEffect(() => {
     if (!initialFilePath) return;
     // Shares openFile's request token so a tap during this initial fetch wins even
     // if the deep-linked file resolves afterwards.
@@ -5233,6 +5258,11 @@ function SessionFilesSheet({
       .then((dir) => {
         if (!active) return;
         setDocumentStatus(dir.documentStatus);
+        setCodeAvailable(dir.codeAvailable ?? true);
+        if (dir.codeAvailable === false && root === 'worktree' && !initialFilePath) {
+          setRoot('documents');
+          setPath('');
+        }
         if (dir.workspaceKind) {
           setDocumentSession(dir.workspaceKind === 'documents');
           if (
@@ -6137,7 +6167,9 @@ function SessionFilesSheet({
                 ['shared', 'Global'],
               ] as const
             )
-              .filter(([candidate]) => !(documentSession && candidate === 'worktree'))
+              .filter(
+                ([candidate]) => !((documentSession || !codeAvailable) && candidate === 'worktree'),
+              )
               .map(([candidate, label]) => (
                 <Pressable
                   key={candidate}
@@ -6262,6 +6294,9 @@ function SessionFilesSheet({
             disabled={mutating || selecting}
             onNavigate={(index) => setPath(index < 0 ? '' : breadcrumbSegments(path)[index]!.path)}
           />
+        ) : null}
+        {!driveActive && documentStatus?.warning ? (
+          <Text style={styles.sheetError}>{documentStatus.warning}</Text>
         ) : null}
         {!driveActive && documentSession && (root === 'documents' || root === 'worktree') ? (
           <HeaderTextButton

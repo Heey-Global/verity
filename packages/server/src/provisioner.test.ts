@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { verifyEgressHostContainer } from './project-egress-host-runtime.js';
 import { ProjectEgressLifecycle } from './project-egress-lifecycle.js';
 import { ProjectEgressHost } from './project-egress-host.js';
@@ -1941,7 +1942,7 @@ describe('ProvisionerImpl (#174)', () => {
     expect(spec.ulimits).toEqual([{ name: 'core', soft: 0, hard: 0 }]);
   });
 
-  it('allocates a local document workspace without initializing Git', async () => {
+  it('initializes an internal Git workspace for a local project', async () => {
     const id = randomUUID();
     await ctx.store.upsertProject({
       id,
@@ -1966,13 +1967,15 @@ describe('ProvisionerImpl (#174)', () => {
       hostCloneRoot: '/var/lib/verity-dev',
       git,
       isDirectory: () => false,
+      prepareLocalWorkspace: undefined,
     });
 
     const result = await provisioner.provision(id);
 
     expect(result.state).toBe('active');
     expect(gitCalls.some((call) => call.args.includes('clone'))).toBe(false);
-    expect(gitCalls).toEqual([]);
+    expect(gitCalls.some((call) => call.args[0] === 'init')).toBe(true);
+    expect(gitCalls.some((call) => call.args.includes('--allow-empty'))).toBe(true);
     const created = dockerCalls.find((call) => call.method === 'createContainer');
     expect((created?.payload as ContainerSpec).binds).toContain(
       '/var/lib/verity-dev/local-my-project:/work',
@@ -2405,19 +2408,39 @@ describe('ProvisionerImpl (#174)', () => {
     },
   );
 
-  it('resumes an incomplete migration without Git and skips completed migrations', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'document-migration-resume-'));
+  it('retains existing local history and legacy Documents while allocating code worktrees', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'local-code-resume-'));
     const id = randomUUID();
-    const project = await ctx.store.upsertProject({
+    await ctx.store.upsertProject({
       id,
       ...baseInput,
       kind: 'local',
       owner: '__local__',
-      repo: 'documents',
-      cloneDir: 'documents',
+      repo: 'code',
+      cloneDir: 'code',
     });
-    const state = join(root, 'document-migrations', id);
-    mkdirSync(state, { recursive: true });
+    const clone = join(root, 'code');
+    execFileSync('git', ['init', '-q', '-b', 'main', clone]);
+    execFileSync('git', [
+      '-C',
+      clone,
+      '-c',
+      'user.name=Test',
+      '-c',
+      'user.email=test@example.com',
+      '-c',
+      'commit.gpgsign=false',
+      'commit',
+      '--allow-empty',
+      '-qm',
+      'initial',
+    ]);
+    const head = execFileSync('git', ['-C', clone, 'rev-parse', 'HEAD'], { encoding: 'utf8' });
+    const sessionId = randomUUID();
+    const view = join(clone, '.verity-document-sessions', 'existing');
+    mkdirSync(view, { recursive: true });
+    writeFileSync(join(view, 'note.md'), 'keep');
+    await ctx.store.createSession({ sessionId, projectId: id, worktree: view, model: 'test' });
     const provisioner = createProvisioner({
       store: ctx.store,
       db: ctx.db,
@@ -2425,44 +2448,20 @@ describe('ProvisionerImpl (#174)', () => {
       projectTokenMint: async () => undefined,
       defaultImageRef: 'image:test',
       hostCloneRoot: root,
-      dataVolumeRoot: root,
+      prepareLocalWorkspace: undefined,
     });
-    const recreate = vi.spyOn(provisioner, 'recreateContainer').mockResolvedValue(project);
     try {
-      writeFileSync(join(state, 'manifest.json'), JSON.stringify({ stage: 'archived' }));
       await provisioner.prepareLocalDocuments(id);
-      expect(recreate).toHaveBeenCalledOnce();
-      writeFileSync(join(state, 'manifest.json'), JSON.stringify({ stage: 'complete' }));
       await provisioner.prepareLocalDocuments(id);
-      expect(recreate).toHaveBeenCalledOnce();
+      expect(execFileSync('git', ['-C', clone, 'rev-parse', 'HEAD'], { encoding: 'utf8' })).toBe(
+        head,
+      );
+      expect(readFileSync(join(view, 'note.md'), 'utf8')).toBe('keep');
+      expect(existsSync(join(clone, '.verity-sessions', `code-${sessionId}`, '.git'))).toBe(true);
+      expect((await ctx.store.getSession(sessionId))?.worktree).toBe(view);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
-  });
-
-  it('refuses Code connection without document storage instead of publishing local history', async () => {
-    const project = await ctx.store.upsertProject({
-      id: randomUUID(),
-      ...baseInput,
-      kind: 'local',
-      owner: '__local__',
-      repo: 'local-project',
-      cloneDir: 'local-project',
-    });
-    const { runner: git, calls } = fakeGit([]);
-    const provisioner = createProvisioner({
-      store: ctx.store,
-      db: ctx.db,
-      docker: fakeDocker().client,
-      projectTokenMint: async () => undefined,
-      defaultImageRef: 'image:test',
-      hostCloneRoot: '/var/lib/verity-dev',
-      git,
-    });
-    await expect(
-      provisioner.linkCloneToGitHub(project, { owner: 'acme', repo: 'code' }, undefined),
-    ).rejects.toThrow('requires configured document storage');
-    expect(calls).toEqual([]);
   });
 
   it.each(['provision', 'recreateContainer'] as const)(
@@ -11840,4 +11839,162 @@ describe('devcontainerBuilderIdle', () => {
       }) as never),
     ).toBeUndefined();
   });
+});
+
+describe('disconnectGitHub', () => {
+  it('disconnects a deleted remote offline and retains commits, Documents and session paths', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'disconnect-code-'));
+    const id = randomUUID();
+    const project = await ctx.store.upsertProject({
+      id,
+      containerName: `test-disconnect-${randomUUID()}`,
+      owner: 'deleted',
+      repo: 'repository',
+      kind: 'github',
+      cloneDir: 'retained',
+      state: 'active',
+    });
+    const clone = join(root, 'retained');
+    execFileSync('git', ['init', '-q', '-b', 'main', clone]);
+    execFileSync('git', [
+      '-C',
+      clone,
+      '-c',
+      'user.name=Test',
+      '-c',
+      'user.email=test@example.com',
+      '-c',
+      'commit.gpgsign=false',
+      'commit',
+      '--allow-empty',
+      '-qm',
+      'initial',
+    ]);
+    execFileSync('git', [
+      '-C',
+      clone,
+      'remote',
+      'add',
+      'origin',
+      'https://github.com/deleted/nonexistent',
+    ]);
+    const head = execFileSync('git', ['-C', clone, 'rev-parse', 'HEAD'], { encoding: 'utf8' });
+    const documents = join(root, 'knowledge', id, 'insights');
+    mkdirSync(documents, { recursive: true });
+    writeFileSync(join(documents, 'note.md'), 'keep');
+    const sessionId = randomUUID();
+    await ctx.store.createSession({
+      sessionId,
+      projectId: id,
+      worktree: join(clone, '.verity-sessions', 'existing'),
+      model: 'test',
+    });
+    const relay = defaultProjectRelay();
+    const stop = vi.spyOn(relay, 'stop');
+    const { client: docker } = fakeDocker();
+    const provisioner = createProvisioner({
+      store: ctx.store,
+      db: ctx.db,
+      docker,
+      projectRelay: relay,
+      projectTokenMint: async () => {
+        throw new Error('Must not contact GitHub');
+      },
+      defaultImageRef: 'image:test',
+      hostCloneRoot: root,
+    });
+    const recreate = vi
+      .spyOn(provisioner, 'recreateContainer')
+      .mockImplementation(async () => (await ctx.store.getProject(id))!);
+    try {
+      const local = await provisioner.withProjectExclusiveMutation(id, () =>
+        provisioner.disconnectGitHub(project),
+      );
+      expect(local).toMatchObject({ id, kind: 'local', cloneDir: 'retained' });
+      expect(stop).toHaveBeenCalledWith(id);
+      expect(recreate).toHaveBeenCalledOnce();
+      expect(execFileSync('git', ['-C', clone, 'remote'], { encoding: 'utf8' }).trim()).toBe('');
+      expect(execFileSync('git', ['-C', clone, 'rev-parse', 'HEAD'], { encoding: 'utf8' })).toBe(
+        head,
+      );
+      expect(readFileSync(join(documents, 'note.md'), 'utf8')).toBe('keep');
+      expect((await ctx.store.getSession(sessionId))?.worktree).toBe(
+        join(clone, '.verity-sessions', 'existing'),
+      );
+      await provisioner.withProjectExclusiveMutation(id, () => provisioner.disconnectGitHub(local));
+      expect((await ctx.store.getProject(id))?.kind).toBe('local');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+it('retains local history and reports a redacted signature-policy rejection during linking', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'link-signature-'));
+  const project = await ctx.store.upsertProject({
+    id: randomUUID(),
+    containerName: `test-disconnect-${randomUUID()}`,
+    owner: '__local__',
+    repo: 'code',
+    kind: 'local',
+    cloneDir: 'code',
+    state: 'absent',
+  });
+  const clone = join(root, 'code');
+  execFileSync('git', ['init', '-q', '-b', 'main', clone]);
+  execFileSync('git', [
+    '-C',
+    clone,
+    '-c',
+    'user.name=Test',
+    '-c',
+    'user.email=test@example.com',
+    '-c',
+    'commit.gpgsign=false',
+    'commit',
+    '--allow-empty',
+    '-qm',
+    'initial',
+  ]);
+  const head = execFileSync('git', ['-C', clone, 'rev-parse', 'HEAD'], { encoding: 'utf8' });
+  const token = 'test-link-token';
+  const git: GitRunner = async (args) => {
+    if (args.includes('ls-remote')) return { stdout: '', stderr: '' };
+    if (args.includes('push'))
+      throw Object.assign(new Error('push failed'), {
+        stderr: `GH013: Commits must have verified signatures. ${gitAuthHeader(token)} ${token}`,
+      });
+    return {
+      stdout: execFileSync('git', [...args], {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+      }),
+      stderr: '',
+    };
+  };
+  const provisioner = createProvisioner({
+    store: ctx.store,
+    db: ctx.db,
+    docker: fakeDocker().client,
+    projectTokenMint: async () => token,
+    defaultImageRef: 'image:test',
+    hostCloneRoot: root,
+    prepareLocalWorkspace: undefined,
+    git,
+  });
+  try {
+    const error = await provisioner
+      .linkCloneToGitHub(project, { owner: 'acme', repo: 'code' }, token)
+      .catch((cause: unknown) => cause);
+    expect(error).toBeInstanceOf(ProvisioningError);
+    const detail = (error as Error).cause as Error;
+    expect(detail.message).toContain('Commits must have verified signatures');
+    expect(detail.message).not.toContain(token);
+    expect(detail.message).not.toContain(gitAuthHeader(token));
+    expect(execFileSync('git', ['-C', clone, 'rev-parse', 'HEAD'], { encoding: 'utf8' })).toBe(
+      head,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

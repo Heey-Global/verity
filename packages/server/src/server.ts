@@ -5485,7 +5485,12 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
               'verity: linking a project to GitHub failed',
             );
             reply.code(409);
-            return { error: error.message };
+            return {
+              error:
+                error.cause instanceof Error
+                  ? `${error.message}: ${error.cause.message}${/signature|GH013|verified/i.test(error.cause.message) ? '. Configure a Git signing key and verified Git email; existing history is retained. If existing commits are unsigned, choose a target that accepts them or resolve the repository policy before retrying.' : ''}`
+                  : error.message,
+            };
           }
           throw error;
         }
@@ -5575,6 +5580,32 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         }
       }
     },
+  });
+
+  app.post('/projects/:id/disconnect-github', async (request, reply) => {
+    const { id } = z.object({ id: z.string().min(1) }).parse(request.params);
+    const project = await deps.eventStore.getProject(id);
+    if (!project || project.hiddenAt !== null)
+      return reply.code(404).send({ error: 'Project not found' });
+    if (!['github', 'local'].includes(project.kind ?? 'github'))
+      return reply.code(409).send({ error: 'Only GitHub projects can be disconnected.' });
+    const provisioner = deps.provisioner;
+    if (!provisioner?.disconnectGitHub || !provisioner.withProjectExclusiveMutation)
+      return reply.code(503).send({ error: 'GitHub disconnection is unavailable.' });
+    try {
+      const local = await provisioner.withProjectExclusiveMutation(id, () =>
+        provisioner.disconnectGitHub!(project),
+      );
+      await afterProjectProvision(local.id);
+      return { project: local };
+    } catch (error) {
+      if (error instanceof ProvisioningError) return reply.code(409).send({ error: error.message });
+      request.log.warn({ err: error, projectId: id }, 'GitHub disconnection failed');
+      return reply.code(409).send({
+        error:
+          'Could not disconnect GitHub. Local files and history were retained; retry or repair the Sandbox.',
+      });
+    }
   });
 
   registerVerityControlSessionRoute(app, {

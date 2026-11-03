@@ -9,6 +9,7 @@ import {
   createDocumentWorkspaceProvisioner,
   DOCUMENT_SESSION_DIRECTORY,
   documentWorkspace,
+  documentViewForSession,
   isDocumentWorkspace,
 } from './document-workspace.js';
 import './fastify-augmentation.js';
@@ -167,11 +168,6 @@ export function registerServerSessionMove({
       const projectIds = [source.id, target.id].sort();
       if (projectIds.some((projectId) => projectsBeingDeleted.has(projectId)))
         throw new SessionMoveError('busy', 'A project is being deleted.');
-      if (deps.dataRoot && !isDocumentWorkspace(session.worktree))
-        throw new SessionMoveError(
-          'unsupported_session',
-          'Migrate this legacy repository session to Documents before moving it to a document project.',
-        );
       await deps.provisioner?.prepareLocalDocuments?.(target.id);
       const releases = projectIds.map(beginProjectSpawn);
       try {
@@ -249,7 +245,7 @@ export function registerServerSessionMove({
                     retainedBranch: null,
                     skipped: [],
                   };
-                  const notice = `This session moved to project ${target.id}, a Documents workspace without Git. Published source documents remain in the source project. Outstanding edits were copied under Transferred edits/${body.operationId}. Historical paths refer to the previous project. Use the target project's instructions and permissions.`;
+                  const notice = `This session moved to project ${target.id}, a Documents workspace without Git. Published source documents and any adjacent Code worktree remain in the source project. Outstanding edits were copied under Transferred edits/${body.operationId}. Historical paths refer to the previous project. Use the target project's instructions and permissions.`;
                   await deps.eventStore.commitSessionMove(
                     id,
                     body.operationId,
@@ -366,6 +362,25 @@ export function registerServerSessionMove({
                   const created = await provisioner.add(branch);
                   if (created !== targetWorktree) throw new Error('Unexpected move worktree path');
                   const transferred = await transferMoveSnapshot(snapshot, created);
+                  const sourceDocuments = documentViewForSession(session);
+                  const targetDocuments = documentViewForSession({
+                    sessionId: id,
+                    worktree: created,
+                  });
+                  if (deps.dataRoot && sourceDocuments && targetDocuments) {
+                    const destination = documentWorkspace(
+                      deps.dataRoot,
+                      target.id,
+                      targetDocuments,
+                    );
+                    await destination.prepare();
+                    await documentWorkspace(
+                      deps.dataRoot,
+                      source.id,
+                      sourceDocuments,
+                    ).transferPending(destination, `Transferred edits/${body.operationId}`);
+                    await destination.publish();
+                  }
                   if (
                     (await captureMoveSnapshot(session.worktree)).fingerprint !==
                     snapshot.fingerprint
@@ -391,7 +406,7 @@ export function registerServerSessionMove({
                     `This session moved to project ${target.id}, workspace ${containerPathFor(created, targetClone)}, branch ${branch}. ` +
                     `Historical paths refer to the previous project. Uncommitted work was copied. ` +
                     `The old workspace ${session.worktree} and branch ${snapshot.branch} are retained. ` +
-                    `Commits were not transferred. ${snapshot.skipped.length} skipped entries remain in the source workspace. Use the target project's instructions and permissions.`;
+                    `Commits were not transferred. Pending document edits were copied under Transferred edits/${body.operationId}; published documents stay in the source project. ${snapshot.skipped.length} skipped entries remain in the source workspace. Use the target project's instructions and permissions.`;
                   await deps.previewShareManager?.revokeSessionShares(source.id, id);
                   // The instances belong to the source project; forget them so their
                   // network ports do not stay reserved for a session that left.

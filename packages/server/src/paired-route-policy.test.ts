@@ -130,3 +130,25 @@ it('requires session read access for app documents and execute access for app ac
     }),
   ).toBe('not_found');
 });
+
+it('requires project management permission to disconnect GitHub', async () => {
+  const store: PairedRoutePolicyStore = {
+    isActiveLocalUser: async () => true,
+    isActiveAdministrator: async () => false,
+    hasProjectPermission: async (user, project, permission) =>
+      user === 'manager' && project === 'project' && permission === 'manage',
+    getSession: async () => undefined,
+  };
+  for (const user of ['reader', 'executor']) {
+    expect(
+      await authorizePairedRoute(store, user, 'POST', '/projects/:id/disconnect-github', {
+        id: 'project',
+      }),
+    ).toBe('forbidden');
+  }
+  expect(
+    await authorizePairedRoute(store, 'manager', 'POST', '/projects/:id/disconnect-github', {
+      id: 'project',
+    }),
+  ).toBe('allow');
+});

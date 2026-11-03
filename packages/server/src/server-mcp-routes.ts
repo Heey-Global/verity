@@ -48,10 +48,7 @@ import {
   parseBrokeredDopplerBinding,
 } from './brokered-doppler-binding.js';
 import { createControlDiagnosticsTool } from './control-diagnostics-tool.js';
-import {
-  createDocumentWorkspaceProvisioner,
-  documentViewForSession,
-} from './document-workspace.js';
+import { documentViewForSession } from './document-workspace.js';
 import './fastify-augmentation.js';
 import { gmailHasStandingAuthorization } from './gmail-tool.js';
 import { assertSafeGmailSendSnapshot, type GmailDraftSendSnapshot } from './gmail.js';
@@ -246,14 +243,12 @@ export function registerServerMcpRoutes({
           ...(settings?.defaultBranch == null ? {} : { baseBranch: settings.defaultBranch }),
         };
         const provisioner =
-          isLocalProject(project) && deps.dataRoot
-            ? createDocumentWorkspaceProvisioner(deps.dataRoot, project.id, projectClone)
-            : (deps.projectWorktrees?.(project, projectClone, worktreeOpts) ??
-              createGitWorktreeProvisioner({
-                repoDir: projectClone,
-                worktreeRoot: join(projectClone, '.verity-sessions'),
-                ...worktreeOpts,
-              }));
+          deps.projectWorktrees?.(project, projectClone, worktreeOpts) ??
+          createGitWorktreeProvisioner({
+            repoDir: projectClone,
+            worktreeRoot: join(projectClone, '.verity-sessions'),
+            ...worktreeOpts,
+          });
         await deps.refreshProjectToken?.(project);
         const worktree = await provisioner.add(makeBranch(name));
         try {
