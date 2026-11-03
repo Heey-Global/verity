@@ -4,7 +4,7 @@ import { spawn } from 'node:child_process';
 import { isIP } from 'node:net';
 import ipaddr from 'ipaddr.js';
 import type { ProjectEgressResolution } from './project-egress-resolver.js';
-import { canonicalEgressTarget, type EgressGrant } from '@verity/store';
+import { canonicalEgressTarget, type EgressGrant, type EgressTarget } from '@verity/store';
 import {
   projectDeadlineLease,
   type ProjectDeadlineEnforcer,
@@ -25,6 +25,9 @@ export interface ProjectFenceSnapshot {
   binding: ProjectFenceBinding;
   revision: number;
   grants: readonly EgressGrant[];
+  /** Host-owned system grant ids: exempt from the project target inventory, and a
+   * failed check excludes that grant alone instead of failing the refresh. */
+  system?: readonly string[];
 }
 export interface ProjectFenceRelay {
   transport: EgressTransport;
@@ -43,6 +46,8 @@ export interface ProjectFenceDependencies {
   directTargetAllowed(host: string): Promise<boolean>;
   /** Host-owned resolver called only for a valid, explicitly granted target. */
   resolve(host: string): Promise<ProjectEgressResolution>;
+  /** Told when a host-owned system target was excluded from a refresh. */
+  reportSystemFailure?(target: EgressTarget, error: unknown): void;
   /** Excludes host addresses and every project network, including public ranges. */
   destinationAllowed(address: string): Promise<boolean>;
   /** Recheck durable revision, current generation and sponsor authority at admission. */
@@ -283,6 +288,8 @@ export class ProjectEgressFence {
         grants: string;
         validUntil: number;
         targets: string;
+        /** Granted hostnames and exactly the addresses admitted for them. */
+        names: ReadonlyMap<string, readonly string[]>;
       };
     }
   >();
@@ -431,40 +438,57 @@ export class ProjectEgressFence {
         throw new Error('Project fence authority changed');
       observe('initial-inspection-policy');
       const leases: Lease[] = [];
+      const names = new Map<string, string[]>();
+      const system = new Set(snapshot.system ?? []);
       // Never reconsider excluded grants after an asynchronous wall-clock rollback.
       for (const grant of authority) {
-        if (
-          grant.revokedAt !== undefined ||
-          (grant.expiresAt !== null && grant.expiresAt <= this.now())
-        )
-          continue;
-        if (grant.expiresAt !== null && !Number.isFinite(grant.expiresAt))
-          throw new Error('Invalid grant expiry');
-        const target = canonicalEgressTarget(grant.target);
-        if (!(await this.deps.directTargetAllowed(target.host)))
-          throw new Error('Destination requires a broker or system route');
-        const resolution = isIP(target.host)
-          ? { addresses: [target.host], expiresAt: Infinity }
-          : await this.deps.resolve(target.host);
-        const { addresses } = resolution;
-        if (
-          !addresses.length ||
-          addresses.length > 32 ||
-          addresses.some((address) => !publicAddress(address)) ||
-          (!isIP(target.host) &&
-            (!Number.isSafeInteger(resolution.expiresAt) || resolution.expiresAt <= this.now()))
-        )
-          throw new Error('Nonpublic project fence resolution');
-        for (const address of addresses)
-          if (!(await this.deps.destinationAllowed(address)))
-            throw new Error('Protected project or host destination');
-        const expiresAt = Math.min(
-          (grant.expiresAt ?? Infinity) - APPLY_BUDGET_MS,
-          resolution.expiresAt - APPLY_BUDGET_MS,
-          this.now() + LEASE_MS,
-        );
-        for (const address of addresses)
-          leases.push({ address, protocol: target.protocol, port: target.port, expiresAt });
+        const admitted: Lease[] = [];
+        const named: string[] = [];
+        try {
+          if (
+            grant.revokedAt !== undefined ||
+            (grant.expiresAt !== null && grant.expiresAt <= this.now())
+          )
+            continue;
+          if (grant.expiresAt !== null && !Number.isFinite(grant.expiresAt))
+            throw new Error('Invalid grant expiry');
+          const target = canonicalEgressTarget(grant.target);
+          if (!system.has(grant.id) && !(await this.deps.directTargetAllowed(target.host)))
+            throw new Error('Destination requires a broker or system route');
+          const resolution = isIP(target.host)
+            ? { addresses: [target.host], expiresAt: Infinity }
+            : await this.deps.resolve(target.host);
+          const { addresses } = resolution;
+          if (
+            !addresses.length ||
+            addresses.length > 32 ||
+            addresses.some((address) => !publicAddress(address)) ||
+            (!isIP(target.host) &&
+              (!Number.isSafeInteger(resolution.expiresAt) || resolution.expiresAt <= this.now()))
+          )
+            throw new Error('Nonpublic project fence resolution');
+          for (const address of addresses)
+            if (!(await this.deps.destinationAllowed(address)))
+              throw new Error('Protected project or host destination');
+          const expiresAt = Math.min(
+            (grant.expiresAt ?? Infinity) - APPLY_BUDGET_MS,
+            resolution.expiresAt - APPLY_BUDGET_MS,
+            this.now() + LEASE_MS,
+          );
+          for (const address of addresses)
+            admitted.push({ address, protocol: target.protocol, port: target.port, expiresAt });
+          if (!isIP(target.host)) named.push(target.host, ...addresses);
+        } catch (error) {
+          // A host-owned system target never takes the project's own grants down.
+          if (system.has(grant.id)) {
+            this.deps.reportSystemFailure?.(grant.target, error);
+            continue;
+          }
+          throw error;
+        }
+        leases.push(...admitted);
+        const [host, ...addresses] = named;
+        if (host) names.set(host, [...new Set([...(names.get(host) ?? []), ...addresses])]);
       }
       const targets = JSON.stringify(
         leases.map((lease) => [lease.address, lease.protocol, lease.port]).sort(),
@@ -528,6 +552,7 @@ export class ProjectEgressFence {
             grants: JSON.stringify(snapshot.grants),
             validUntil: Math.min(...leases.map((lease) => lease.expiresAt)),
             targets,
+            names,
           };
         }
       } catch (error) {
@@ -535,6 +560,36 @@ export class ProjectEgressFence {
         throw error;
       }
     });
+  }
+  /** Addresses currently admitted for a granted hostname of this exact generation.
+   * Read-only: it never renews, resolves or extends authority. A short TTL keeps a
+   * sandbox from caching an answer beyond the admission it describes.
+   */
+  admitted(
+    binding: ProjectFenceBinding,
+    host: string,
+  ): { addresses: readonly string[]; ttlSeconds: number } | undefined {
+    const current = this.active.get(binding.projectId);
+    const continuity = current?.continuity;
+    const remaining = (continuity?.validUntil ?? 0) - this.now();
+    if (
+      !current ||
+      !continuity ||
+      bindingKey(current.binding) !== bindingKey(binding) ||
+      this.retired.has(generationKey(binding)) ||
+      remaining <= 0
+    )
+      return undefined;
+    const addresses = continuity.names.get(host);
+    if (!addresses?.length) return undefined;
+    // Several grants for one name may union beyond one DNS answer; any subset is
+    // admitted, so keep up to 16 of each family rather than starving one of them.
+    return {
+      addresses: [4, 6].flatMap((family) =>
+        addresses.filter((address) => isIP(address) === family).slice(0, 16),
+      ),
+      ttlSeconds: Math.max(1, Math.min(5, Math.floor(remaining / 1000))),
+    };
   }
   retire(binding: ProjectFenceBinding): Promise<void> {
     binding = { ...binding };

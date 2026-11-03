@@ -125,15 +125,16 @@ const verifiedNodeVersion = readFileSync(
 /** The start failure runsc reports for a filestore left by an unclean teardown,
  *  as worded in runsc/container/container.go (createGoferFilestoreInSelf) of the
  *  release pinned in deploy/gvisor/versions.env, wrapped the way dockerd relays it. */
-function staleFilestoreError(containerId: string): DockerError {
+function staleFilestoreError(containerId: string, docker29 = false): DockerError {
   const filestore = `/proc/4242/root/var/lib/docker/overlay2/layer/merged/.gvisor.filestore.${containerId}`;
   return new DockerError({
     kind: 'other',
     status: 500,
-    message:
-      `failed to create task for container: OCI runtime create failed: runsc-project: ` +
-      `"/var/lib/docker/overlay2/layer/merged" mount source already has a filestore file at ` +
-      `"${filestore}"; repeated submounts are not supported with overlay optimizations`,
+    message: docker29
+      ? `OCI runtime create failed: creating container: cannot create gofer process: creating gofer filestore files: "/var/lib/docker/rootfs/overlayfs/layer" mount source already has a filestore file ".gvisor.filestore.${containerId}"; repeated submounts are not supported with overlay optimizations`
+      : `failed to create task for container: OCI runtime create failed: runsc-project: ` +
+        `"/var/lib/docker/overlay2/layer/merged" mount source already has a filestore file at ` +
+        `"${filestore}"; repeated submounts are not supported with overlay optimizations`,
   });
 }
 
@@ -737,6 +738,131 @@ describe('ProvisionerImpl (#174)', () => {
     },
   );
 
+  it('starts open while the protection switch is off, even with an unreachable host service', async () => {
+    const id = await seedProject();
+    const root = mkdtempSync(join(tmpdir(), 'egress-switch-'));
+    const hostCreate = vi.fn();
+    const egress = {
+      current: vi.fn(async () => {
+        throw new Error('host egress service unavailable');
+      }),
+      create: hostCreate,
+    } as unknown as ProjectEgressLifecycle;
+    const { client: docker, calls } = fakeDocker({
+      inspectContainer: async (name) => ({
+        id: name,
+        running: true,
+        networks: { [projectNetworkName(id)]: { ipAddress: '172.30.0.2' } },
+      }),
+    });
+    const { runner: git } = fakeGit([{ match: /\bclone\b/ }, { match: /remote set-url/ }]);
+    const provisioner = createProvisioner({
+      store: ctx.store,
+      db: ctx.db,
+      docker,
+      git,
+      projectEgress: egress,
+      projectEgressEnabled: async () => false,
+      sandboxRuntime: 'runsc-project',
+      verifySandboxRuntime: async () => {},
+      projectTokenMint: async () => 'tok',
+      defaultImageRef: 'image:test',
+      hostCloneRoot: root,
+      gitSecretRoot: join(root, 'secrets'),
+    });
+    try {
+      await provisioner.provision(id);
+      expect(hostCreate).not.toHaveBeenCalled();
+      const spec = calls.filter((call) => call.method === 'createContainer').at(-1)!
+        .payload as ContainerSpec;
+      expect(spec).toMatchObject({
+        network: projectNetworkName(id),
+        restartPolicy: 'unless-stopped',
+      });
+      expect(calls.some((call) => call.method === 'startContainer')).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves an existing Sandbox when replacement protection infrastructure is missing', async () => {
+    const id = await seedProject('active');
+    const { client: docker, calls } = fakeDocker();
+    const provisioner = createProvisioner({
+      store: ctx.store,
+      db: ctx.db,
+      docker,
+      projectEgressEnabled: async () => true,
+      projectTokenMint: async () => undefined,
+      defaultImageRef: 'sandbox:test',
+      hostCloneRoot: '/work',
+    });
+    await expect(provisioner.recreateContainer(id, { confirmWarnings: true })).rejects.toThrow(
+      'no egress service',
+    );
+    expect(
+      calls.some(({ method }) => method === 'stopContainer' || method === 'removeContainer'),
+    ).toBe(false);
+    expect(await ctx.store.getProject(id)).toMatchObject({ state: 'active' });
+  });
+
+  it('defers network drift reconciliation when protection is off and the host is unreachable', async () => {
+    const id = await seedProject('active');
+    const { client: docker } = fakeDocker({
+      inspectContainer: async () => ({
+        id: 'retained',
+        running: true,
+        labels: { [PROJECT_ID_LABEL]: id, [CONTAINER_GENERATION_LABEL]: 'gen-1' },
+        networks: { 'protected-generation-network': {} },
+      }),
+    });
+    const egress = new ProjectEgressLifecycle(async () => {
+      throw new Error('host unavailable');
+    }, {});
+    const provisioner = createProvisioner({
+      store: ctx.store,
+      db: ctx.db,
+      docker,
+      projectEgress: egress,
+      sandboxRuntime: 'runsc-project',
+      projectEgressEnabled: async () => false,
+      projectTokenMint: async () => undefined,
+      defaultImageRef: 'sandbox:test',
+      hostCloneRoot: '/work',
+    });
+    provisioner.attachProjectBusyProbe(async () => false);
+    const recreate = vi.spyOn(provisioner, 'recreateContainer');
+    await expect(
+      provisioner.reconcileRelays([(await ctx.store.getProject(id))!], {}),
+    ).rejects.toMatchObject({ errors: [expect.objectContaining({ message: 'host unavailable' })] });
+    expect(recreate).not.toHaveBeenCalled();
+    expect(await ctx.store.getProject(id)).toMatchObject({ state: 'active' });
+  });
+
+  it('fails a start closed when protection is on but the host has no egress service', async () => {
+    const id = await seedProject();
+    const root = mkdtempSync(join(tmpdir(), 'egress-switch-'));
+    const { client: docker, calls } = fakeDocker();
+    const { runner: git } = fakeGit([{ match: /\bclone\b/ }, { match: /remote set-url/ }]);
+    const provisioner = createProvisioner({
+      store: ctx.store,
+      db: ctx.db,
+      docker,
+      git,
+      projectEgressEnabled: async () => true,
+      projectTokenMint: async () => 'tok',
+      defaultImageRef: 'image:test',
+      hostCloneRoot: root,
+      gitSecretRoot: join(root, 'secrets'),
+    });
+    try {
+      await expect(provisioner.provision(id)).rejects.toThrow(/Network protection is on/);
+      expect(calls.some((call) => call.method === 'startContainer')).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it.each([false, true])(
     'sleeps an owned active Sandbox after revocation (scan restoration=%s)',
     async (scanRestore) => {
@@ -1042,7 +1168,7 @@ describe('ProvisionerImpl (#174)', () => {
     );
   });
 
-  it.each([false, true, 'packet'] as const)(
+  it.each([false, true, 'packet', 'switched-off', 'host-down', 'missing-host'] as const)(
     'wakes with the host-required generation and fresh relay capabilities (host: %s)',
     async (protectedStart) => {
       const id = await seedProject('active');
@@ -1051,7 +1177,7 @@ describe('ProvisionerImpl (#174)', () => {
         running: false,
         image: 'verity-devc-test:latest',
         extraHosts: ['relay:172.20.0.2'],
-        networks: { 'project-network': {} },
+        networks: { [protectedStart ? 'project-network' : projectNetworkName(id)]: {} },
         labels: { [PROJECT_ID_LABEL]: id, [CONTAINER_GENERATION_LABEL]: 'generation-1' },
         mounts: [
           { source: '/opt/agent-seed', destination: '/opt/agent-seed', readWrite: false },
@@ -1065,7 +1191,11 @@ describe('ProvisionerImpl (#174)', () => {
         sleepCompatibilityFingerprint: sandboxSleepCompatibilityFingerprint({
           ...retained,
           running: true,
-          networks: { 'project-network': { ipAddress: '172.20.0.2' } },
+          networks: {
+            [protectedStart ? 'project-network' : projectNetworkName(id)]: {
+              ipAddress: '172.20.0.2',
+            },
+          },
         }),
         sleepingSince: new Date(),
         wakeStartedAt: null,
@@ -1093,6 +1223,15 @@ describe('ProvisionerImpl (#174)', () => {
       vi.spyOn(egress, 'requiresFreshWakeGeneration').mockResolvedValue(
         protectedStart === 'packet',
       );
+      // The retained Sandbox started protected, so the host still holds its generation.
+      const current = vi.spyOn(egress, 'current').mockResolvedValue({
+        projectId: id,
+        generation: 'generation-1',
+        networkId: 'a'.repeat(64),
+        networkName: 'project-network',
+        bridge: 'vep0123456789ab',
+      });
+      if (protectedStart === 'host-down') current.mockRejectedValue(new Error('host unavailable'));
       const hostStart = vi.spyOn(egress, 'start').mockResolvedValue(undefined);
       vi.spyOn(egress, 'connect').mockResolvedValue('172.20.0.2');
       const provisioner = createProvisioner({
@@ -1104,7 +1243,12 @@ describe('ProvisionerImpl (#174)', () => {
         hostCloneRoot: '/work',
         projectRelay: relay,
         ...(protectedStart
-          ? { projectEgress: egress, sandboxRuntime: 'runsc-project' as const }
+          ? {
+              ...(protectedStart === 'missing-host' ? {} : { projectEgress: egress }),
+              projectEgressEnabled: async () =>
+                protectedStart !== 'switched-off' && protectedStart !== 'host-down',
+              sandboxRuntime: 'runsc-project' as const,
+            }
           : {}),
         onSandboxLifecycle: lifecycle,
       });
@@ -1115,7 +1259,23 @@ describe('ProvisionerImpl (#174)', () => {
       );
       provisioner.attachProjectBusyProbe(busyProbe);
 
-      if (protectedStart === 'packet') {
+      if (protectedStart === 'missing-host') {
+        await expect(
+          provisioner.ensureProjectSandboxAwake(id, requestingSessionIds),
+        ).rejects.toThrow('no egress service');
+        expect(await ctx.store.getProject(id)).toMatchObject({
+          state: 'sleeping',
+          wakeStartedAt: null,
+        });
+        return;
+      }
+      // A packet-enforcing host, or protection switched off since the Sandbox started
+      // protected, both replace the retained generation instead of waking it.
+      if (
+        protectedStart === 'packet' ||
+        protectedStart === 'switched-off' ||
+        protectedStart === 'host-down'
+      ) {
         const replace = vi.spyOn(provisioner, 'recreateContainer').mockImplementation(async () => {
           await ctx.store.updateProjectState(id, 'active');
           return (await ctx.store.getProject(id))!;
@@ -1181,6 +1341,7 @@ describe('ProvisionerImpl (#174)', () => {
       writeFileSync(join(keyDir, `egress_ca.${id}.crt`), 'OLD-CA');
       writeFileSync(join(keyDir, `egress_client.${id}.crt`), 'OLD-CERT');
       const retained = {
+        networks: { [projectNetworkName(id)]: {} },
         id: 'container-1',
         running: false,
         image: 'sandbox:test',
@@ -1259,6 +1420,7 @@ describe('ProvisionerImpl (#174)', () => {
       writeFileSync(certPath, created.clientCertPem);
       writeFileSync(keyPath, created.clientKeyPem, { mode: 0o600 });
       const running = {
+        networks: { [projectNetworkName(id)]: {} },
         id: 'container-1',
         running: true,
         image: 'sandbox:test',
@@ -1378,52 +1540,56 @@ describe('ProvisionerImpl (#174)', () => {
     expect(fallback).not.toHaveBeenCalled();
   });
 
-  it('replaces a retained sleeping Sandbox whose stale gVisor filestore blocks its start', async () => {
-    // Returning it to sleep would fail every later wake the same way.
-    const id = await seedProject('active');
-    const retained = {
-      id: 'container-1',
-      running: false,
-      image: 'sandbox:test',
-      labels: { [PROJECT_ID_LABEL]: id, [CONTAINER_GENERATION_LABEL]: 'generation-1' },
-    };
-    await ctx.store.updateProjectSleepState(id, 'sleeping', {
-      sleepCompatibilityFingerprint: sandboxSleepCompatibilityFingerprint(retained),
-      sleepingSince: new Date(),
-      wakeStartedAt: null,
-    });
-    const { client: docker, calls } = fakeDocker({
-      createdContainerId: 'container-2',
-      inspectContainer: vi
-        .fn()
-        .mockResolvedValueOnce(retained)
-        .mockResolvedValue({ ...retained, id: 'container-2', running: true }),
-      startContainer: vi.fn(async (containerId: string) => {
-        if (containerId === 'container-1') throw staleFilestoreError('container-1');
-      }),
-    });
-    const relay = defaultProjectRelay();
-    relay.reactivate = vi.fn(async () => ({
-      identity: { projectId: id, containerGeneration: 'generation-1' },
-      signingCapability: 'fresh-signing',
-      githubCapability: 'fresh-github',
-    }));
-    const fallback = vi.fn();
-    const provisioner = createProvisioner({
-      store: ctx.store,
-      db: ctx.db,
-      docker,
-      projectTokenMint: async () => undefined,
-      defaultImageRef: 'sandbox:test',
-      hostCloneRoot: '/work',
-      projectRelay: relay,
-      onSandboxWakeFallback: fallback,
-    });
+  it.each([false, true])(
+    'replaces a retained sleeping Sandbox with a stale filestore (Docker 29=%s)',
+    async (docker29) => {
+      // Returning it to sleep would fail every later wake the same way.
+      const id = await seedProject('active');
+      const retained = {
+        networks: { [projectNetworkName(id)]: {} },
+        id: 'container-1',
+        running: false,
+        image: 'sandbox:test',
+        labels: { [PROJECT_ID_LABEL]: id, [CONTAINER_GENERATION_LABEL]: 'generation-1' },
+      };
+      await ctx.store.updateProjectSleepState(id, 'sleeping', {
+        sleepCompatibilityFingerprint: sandboxSleepCompatibilityFingerprint(retained),
+        sleepingSince: new Date(),
+        wakeStartedAt: null,
+      });
+      const { client: docker, calls } = fakeDocker({
+        createdContainerId: 'container-2',
+        inspectContainer: vi
+          .fn()
+          .mockResolvedValueOnce(retained)
+          .mockResolvedValue({ ...retained, id: 'container-2', running: true }),
+        startContainer: vi.fn(async (containerId: string) => {
+          if (containerId === 'container-1') throw staleFilestoreError('container-1', docker29);
+        }),
+      });
+      const relay = defaultProjectRelay();
+      relay.reactivate = vi.fn(async () => ({
+        identity: { projectId: id, containerGeneration: 'generation-1' },
+        signingCapability: 'fresh-signing',
+        githubCapability: 'fresh-github',
+      }));
+      const fallback = vi.fn();
+      const provisioner = createProvisioner({
+        store: ctx.store,
+        db: ctx.db,
+        docker,
+        projectTokenMint: async () => undefined,
+        defaultImageRef: 'sandbox:test',
+        hostCloneRoot: '/work',
+        projectRelay: relay,
+        onSandboxWakeFallback: fallback,
+      });
 
-    expect((await provisioner.ensureProjectSandboxAwake(id)).state).toBe('active');
-    expect(fallback).toHaveBeenCalledWith({ projectId: id, reason: 'stale_runtime_state' });
-    expect(calls.some((call) => call.method === 'createContainer')).toBe(true);
-  });
+      expect((await provisioner.ensureProjectSandboxAwake(id)).state).toBe('active');
+      expect(fallback).toHaveBeenCalledWith({ projectId: id, reason: 'stale_runtime_state' });
+      expect(calls.some((call) => call.method === 'createContainer')).toBe(true);
+    },
+  );
 
   it('marks no activity after a scan wake but on every joining wake', async () => {
     const id = await seedProject('active');
@@ -1498,6 +1664,7 @@ describe('ProvisionerImpl (#174)', () => {
     const id = await seedProject('active');
     const retained = {
       id: 'container-1',
+      networks: { [projectNetworkName(id)]: {} },
       running: false,
       image: 'sandbox:test',
       labels: { [PROJECT_ID_LABEL]: id, [CONTAINER_GENERATION_LABEL]: 'generation-1' },
@@ -1640,6 +1807,7 @@ describe('ProvisionerImpl (#174)', () => {
     const id = await seedProject('active');
     const retained = {
       id: 'container-1',
+      networks: { [projectNetworkName(id)]: {} },
       running: false,
       image: 'sandbox:test',
       labels: { [PROJECT_ID_LABEL]: id, [CONTAINER_GENERATION_LABEL]: 'generation-1' },

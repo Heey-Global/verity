@@ -430,3 +430,69 @@ it('closes direct authority when the kernel rejects a delayed continuity handoff
   expect(deps.apply.mock.calls.at(-1)![0]).not.toContain('elements =');
   expect(deps.deadline.revoke).toHaveBeenCalled();
 });
+it('answers names only from the current admission of the exact generation', async () => {
+  const { deps, fence, setNow } = fixture();
+  await fence.prepare(binding);
+  expect(fence.admitted(binding, 'downloads.example.com')).toBeUndefined();
+  deps.resolve.mockResolvedValue({
+    addresses: ['8.8.8.8', '2001:4860:4860::8888'],
+    expiresAt: 11000,
+  });
+  await fence.refresh({
+    binding,
+    revision: 1,
+    grants: [
+      grant,
+      { ...grant, id: 'raw', target: { host: '9.9.9.9', protocol: 'tcp', port: 443 } },
+    ],
+  });
+  const answer = fence.admitted(binding, 'downloads.example.com');
+  expect(answer?.addresses).toEqual(['8.8.8.8', '2001:4860:4860::8888']);
+  expect(answer?.ttlSeconds).toBeGreaterThanOrEqual(1);
+  expect(answer?.ttlSeconds).toBeLessThanOrEqual(5);
+  // Ungranted names, IP-literal grants, other generations and expired admissions get nothing.
+  expect(fence.admitted(binding, 'other.example.com')).toBeUndefined();
+  expect(fence.admitted(binding, '9.9.9.9')).toBeUndefined();
+  expect(fence.admitted({ ...binding, generation: 'g2' }, 'downloads.example.com')).toBeUndefined();
+  setNow(1_000_000);
+  expect(fence.admitted(binding, 'downloads.example.com')).toBeUndefined();
+  setNow(1000);
+  await fence.revoke(binding);
+  expect(fence.admitted(binding, 'downloads.example.com')).toBeUndefined();
+});
+
+it('caps a name answer at one DNS answer worth of admitted addresses', async () => {
+  const { deps, fence } = fixture();
+  await fence.prepare(binding);
+  let call = 0;
+  deps.resolve.mockImplementation(async () => {
+    call += 1;
+    return {
+      addresses: Array.from({ length: 20 }, (_, i) => `8.8.${call}.${i + 1}`),
+      expiresAt: 11000,
+    };
+  });
+  await fence.refresh({
+    binding,
+    revision: 1,
+    grants: [grant, { ...grant, id: 'alt', target: { ...grant.target, port: 8443 } }],
+  });
+  const answer = fence.admitted(binding, 'downloads.example.com')!.addresses;
+  expect(answer).toHaveLength(16);
+  for (const address of answer) expect(address).toMatch(/^8\.8\.[12]\.\d+$/u);
+});
+it('keeps both address families when one name admits many addresses', async () => {
+  const { deps, fence } = fixture();
+  await fence.prepare(binding);
+  deps.resolve.mockResolvedValue({
+    addresses: [
+      ...Array.from({ length: 20 }, (_, i) => `8.8.4.${i + 1}`),
+      ...Array.from({ length: 12 }, (_, i) => `2001:4860:4860::${i + 1}`),
+    ],
+    expiresAt: 11000,
+  });
+  await fence.refresh({ binding, revision: 1, grants: [grant] });
+  const answer = fence.admitted(binding, 'downloads.example.com')!.addresses;
+  expect(answer.filter((address) => address.includes(':'))).toHaveLength(12);
+  expect(answer.filter((address) => !address.includes(':'))).toHaveLength(16);
+});

@@ -108,6 +108,15 @@ export interface ServerDeps {
   localPreviewManager?: LocalPreviewManager | undefined;
   /** Dev servers the agent sets up and Verity runs (concept 2.6). */
   managedDevServerManager?: ManagedDevServerManager | undefined;
+  /** Host-admitted names for the relay's DNS answerer under the project fence. */
+  projectEgressResolve?:
+    | ((
+        identity: import('./internal-listener.js').InternalConnectionIdentity,
+        name: string,
+      ) => Promise<{ addresses: readonly string[]; ttlSeconds: number } | undefined>)
+    | undefined;
+  /** Whether the host egress service answers; network protection can only be enabled then. */
+  projectEgressAvailable?: (() => Promise<boolean>) | undefined;
   previewSharingCapability?:
     (() => Promise<PreviewSharingCapability> | PreviewSharingCapability) | undefined;
   previewShareManager?: PreviewShareManager | undefined;

@@ -857,6 +857,9 @@ export const veritySettingsSchema = z.object({
   uplinkSubscriptionKeyConfigured: z.boolean(),
   premiumSharingEnabled: z.boolean().optional(),
   premiumRemoteAccessEnabled: z.boolean().optional(),
+  /** System-wide network protection, and whether this host's egress service answers. */
+  projectEgressEnabled: z.boolean().optional(),
+  projectEgressAvailable: z.boolean().optional(),
   uplinkInstallationId: z.string().nullable(),
   transcribeBaseUrl: z.string().nullable(),
   transcribeModel: z.string().nullable(),
@@ -903,10 +906,80 @@ export const veritySettingsSchema = z.object({
   googleDriveAccountEmail: z.string().nullable(),
   googleDriveConnected: z.boolean(),
   advancedModeEnabled: z.boolean().default(false),
+  unassignedMeetingRetentionDays: z.number().int().nullable().optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
 export type VeritySettings = z.infer<typeof veritySettingsSchema>;
+
+const activeLiveMeetingsSchema = z.object({
+  running: z.array(
+    z.object({
+      sessionId: z.string(),
+      id: z.string(),
+      title: z.string().nullable(),
+      engine: z.string(),
+      startedAt: z.number(),
+      state: z.enum(['active', 'interrupted']),
+      captureStatus: z.string(),
+      recorderLastSeenAt: z.number().nullable().optional(),
+      sessionName: z.string().nullable(),
+      projectId: z.string().nullable(),
+    }),
+  ),
+  unassigned: z.array(
+    z.object({
+      id: z.string(),
+      title: z.string().nullable(),
+      startedAt: z.number(),
+      endedAt: z.number().nullable(),
+      state: z.enum(['active', 'interrupted', 'ended']),
+      captureStatus: z.string(),
+      people: z.number(),
+    }),
+  ),
+  retentionDays: z.number(),
+});
+export type ActiveLiveMeetings = z.infer<typeof activeLiveMeetingsSchema>;
+
+const calendarWatchSchema = z.object({
+  accounts: z.array(
+    z.object({
+      id: z.string(),
+      email: z.string(),
+      displayName: z.string().nullable(),
+      // `.catch` keeps a newer server's additional state readable as "unavailable".
+      access: z.enum(['ok', 'missing_scope', 'unavailable']).catch('unavailable'),
+      calendars: z.array(
+        z.object({
+          id: z.string(),
+          summary: z.string(),
+          primary: z.boolean(),
+          watched: z.boolean(),
+          autoJoin: z.boolean(),
+        }),
+      ),
+    }),
+  ),
+  retentionDays: z.number(),
+});
+export type CalendarWatch = z.infer<typeof calendarWatchSchema>;
+
+const upcomingMeetingsSchema = z.object({
+  upcoming: z.array(
+    z.object({
+      eventKey: z.string(),
+      title: z.string().nullable(),
+      startsAt: z.number(),
+      endsAt: z.number(),
+      calendar: z.string(),
+      provider: z.enum(['meet', 'teams', 'zoom']).catch('meet'),
+      decision: z.enum(['joined', 'skipped', 'failed']).nullable().catch(null),
+      meetingId: z.string().nullable(),
+    }),
+  ),
+});
+export type UpcomingMeeting = z.infer<typeof upcomingMeetingsSchema>['upcoming'][number];
 
 const httpMcpConnectionSchema = z.object({
   id: z.string(),
@@ -1121,6 +1194,7 @@ export type GoogleDriveImportResult = z.infer<typeof googleDriveImportResultSche
 
 type VeritySettingsKey =
   | 'advancedModeEnabled'
+  | 'unassignedMeetingRetentionDays'
   | 'gitUserName'
   | 'gitUserEmail'
   | 'gitSshPrivateKeyPath'
@@ -1145,6 +1219,7 @@ export type VeritySettingsPatch = {
   uplinkSubscriptionKey?: string | null | undefined;
   premiumSharingEnabled?: boolean | undefined;
   premiumRemoteAccessEnabled?: boolean | undefined;
+  projectEgressEnabled?: boolean | undefined;
   transcribeApiKey?: string | null | undefined;
   codexAuthJson?: string | null | undefined;
   opencodeBaseUrl?: string | null | undefined;
@@ -2540,6 +2615,73 @@ export class VerityClient {
       `/sessions/${encodeURIComponent(sessionId)}/live-meetings/${encodeURIComponent(meetingId)}/online/stop`,
       { method: 'POST' },
     );
+  }
+  /** Running meetings of readable sessions and, for administrators, unassigned ones. */
+  async getActiveLiveMeetings(): Promise<ActiveLiveMeetings> {
+    return activeLiveMeetingsSchema.parse(
+      await (await this.request('/live-meetings/active', { method: 'GET' })).json(),
+    );
+  }
+  /** Meetings of the next hours from watched calendars. */
+  async getUpcomingMeetings(): Promise<UpcomingMeeting[]> {
+    return upcomingMeetingsSchema.parse(
+      await (await this.request('/live-meetings/upcoming', { method: 'GET' })).json(),
+    ).upcoming;
+  }
+  /** Joins a calendar meeting: into `sessionId` when given, otherwise unassigned. */
+  async joinCalendarMeeting(eventKey: string, sessionId?: string): Promise<{ meetingId: string }> {
+    return z.object({ meetingId: z.string() }).parse(
+      await (
+        await this.request(`/live-meetings/calendar/${encodeURIComponent(eventKey)}/join`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(sessionId ? { sessionId } : {}),
+        })
+      ).json(),
+    );
+  }
+  async skipCalendarMeeting(eventKey: string): Promise<void> {
+    await this.request(`/live-meetings/calendar/${encodeURIComponent(eventKey)}/skip`, {
+      method: 'POST',
+    });
+  }
+  /** The Google calendars Verity may watch for online meetings, with the current choices. */
+  async getCalendarWatch(): Promise<CalendarWatch> {
+    return calendarWatchSchema.parse(
+      await (await this.request('/settings/calendar-watch', { method: 'GET' })).json(),
+    );
+  }
+  async setCalendarWatch(choice: {
+    accountId: string;
+    calendarId: string;
+    watched: boolean;
+    autoJoin: boolean;
+  }): Promise<void> {
+    await this.request('/settings/calendar-watch', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(choice),
+    });
+  }
+  /** Assigns an unassigned meeting to a project (new session) or an existing session. */
+  async assignLiveMeeting(
+    meetingId: string,
+    target: { projectId: string } | { sessionId: string },
+  ): Promise<{ sessionId: string; meetingId: string }> {
+    return z.object({ sessionId: z.string(), meetingId: z.string() }).parse(
+      await (
+        await this.request(`/live-meetings/unassigned/${encodeURIComponent(meetingId)}/assign`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(target),
+        })
+      ).json(),
+    );
+  }
+  async discardLiveMeeting(meetingId: string): Promise<void> {
+    await this.request(`/live-meetings/unassigned/${encodeURIComponent(meetingId)}`, {
+      method: 'DELETE',
+    });
   }
   async editOnlineMeetingSpeakers(
     sessionId: string,
@@ -6032,6 +6174,7 @@ export class VerityClient {
               resource: z.string(),
               revision: z.string(),
               state: z.string(),
+              originating_session_id: z.string().nullable().optional(),
               owner_session_id: z.string().nullable(),
               last_session_id: z.string().nullable(),
               attempts: z.number(),

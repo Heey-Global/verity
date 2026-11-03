@@ -95,9 +95,11 @@ export function getSavedVerityBaseUrl(): string | null {
   return currentBaseUrl;
 }
 
-/** A verified installation identity shared by its direct and Uplink endpoints. */
+/** Native pairing identity, or the cookie-authenticated origin for browser-local meeting sync. */
 export function getActiveMeetingServerId(): string | null {
   if (isDemoMode()) return null;
+  // Browser storage and cookies belong to this origin; no native pairing profile exists.
+  if (Platform.OS === 'web') return currentBaseUrl ? `web:${currentBaseUrl}` : null;
   const profile = getServerProfile();
   return profile?.activeUrl === currentBaseUrl ? profile.serverId : null;
 }

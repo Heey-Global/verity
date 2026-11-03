@@ -1707,3 +1707,20 @@ describe('recorded backup mount migration', () => {
     expect(client.removeContainer).not.toHaveBeenCalled();
   });
 });
+
+it('refuses bootstrap reconciliation beside a generation', async () => {
+  const client = docker();
+  vi.mocked(client.listContainers!).mockResolvedValue([
+    {
+      id: 'generation',
+      imageId: body().image,
+      names: ['verity-managed-server-g190'],
+      labels: { [MANAGED_DEPLOYMENT_LABEL]: 'deployment-1', [MANAGED_ROLE_LABEL]: 'server' },
+    },
+  ]);
+  await expect(reconcileManagedServer(runtimeOptions(await authority(), client))).rejects.toThrow(
+    'restore the Gateway selection',
+  );
+  expect(client.createContainer).not.toHaveBeenCalled();
+  expect(client.startContainer).not.toHaveBeenCalled();
+});

@@ -1,4 +1,5 @@
 import { createGitHubQAAnalysis } from './github-qa-analysis.js';
+import { projectDecisionDirectory } from './knowledge-decisions.js';
 import {
   StorageReclamation,
   requestNativeReclamation,
@@ -305,7 +306,8 @@ import { ensureProjectSandboxReadyForTurn } from './project-auto-wake.js';
 import { projectRelayContainerName } from './project-relay-docker.js';
 import { createProjectRelayRuntime } from './project-relay-runtime.js';
 import type { ProjectRelayLifecycle } from './project-relay-lifecycle.js';
-import type { ProjectEgressLifecycle } from './project-egress-lifecycle.js';
+import { ProjectEgressLifecycle } from './project-egress-lifecycle.js';
+import { createProjectEgressHostClient } from './project-egress-host-client.js';
 import {
   readCodexAccessToken,
   type AgentGatewayConfiguration,
@@ -754,8 +756,12 @@ export interface EmbeddedServerConfig {
    *  `POST /projects/:id/deprovision` become operational. Omit → those routes
    *  return 503 (multi-repo fleet registry not configured). */
   dockerBaseUrl?: string | undefined;
-  /** Experimental composition seam; production configuration never enables project egress. */
+  /** Injected host egress lifecycle (tests and probes); otherwise built from the socket and key. */
   projectEgress?: ProjectEgressLifecycle | undefined;
+  /** Host egress service control socket and key file. Both present → network protection
+   *  becomes available; whether it applies is the system-wide `projectEgressEnabled` setting. */
+  projectEgressSocketPath?: string | undefined;
+  projectEgressKeyPath?: string | undefined;
   diagnosticServerContainerId?: string | undefined;
   hostDiagnosticSnapshotPath?: string | undefined;
   /** Enable fail-closed Docker/runsc readiness for the production Secret Job Executor path. */
@@ -3046,6 +3052,7 @@ export async function buildEmbeddedServer(
     };
   }
   let docker: DockerClient | undefined;
+  let projectEgress: ProjectEgressLifecycle | undefined = config.projectEgress;
   let provisioner: ProvisionerImpl | undefined;
   let stopNativeEvidence: (() => void) | undefined;
   let buildStorage: BuildStorage | undefined;
@@ -3389,9 +3396,9 @@ export async function buildEmbeddedServer(
   let projectRelayLifecycle: ProjectRelayLifecycle | undefined;
   const projectRelayEnabled = (config.projectRelayImage ?? '').trim().length > 0;
   const forgeIdentity = projectRelayEnabled ? await loadForgeProxyIdentity(secretRoot) : undefined;
-  // The protected relay profile has no Forge route; never add it implicitly.
-  const forgeProxyEnabled = (): boolean =>
-    projectRelayEnabled && config.projectEgress === undefined;
+  // Under the project fence, Git and gh reach forges only through this brokered route;
+  // direct grants for forge hosts are refused as broker-only destinations.
+  const forgeProxyEnabled = (): boolean => projectRelayEnabled;
   const forgeCertificates = new Map<
     string,
     { expires: number; certificate: ReturnType<typeof issueGatewayServerCertificate> }
@@ -3696,6 +3703,24 @@ export async function buildEmbeddedServer(
     }
     const dockerBaseUrl = config.dockerBaseUrl;
     docker = projectDocker;
+    if (
+      projectEgress === undefined &&
+      config.projectEgressSocketPath !== undefined &&
+      config.projectEgressKeyPath !== undefined
+    ) {
+      try {
+        projectEgress = new ProjectEgressLifecycle(
+          createProjectEgressHostClient({
+            socketPath: config.projectEgressSocketPath,
+            token: readFileSync(config.projectEgressKeyPath, 'utf8').trim(),
+          }),
+          projectDocker,
+        );
+      } catch (error) {
+        // Unavailable protection is reported, never a reason to refuse the Server start.
+        console.warn('verity: host egress service is configured but unusable', error);
+      }
+    }
     // Turn preparation calls this before every message. Reuse the same ~50-minute
     // token as the sandbox broker so a chat does not mint once per turn; authority
     // changes still invalidate the cache immediately.
@@ -3952,7 +3977,9 @@ export async function buildEmbeddedServer(
     // Registered after app construction below.
     stopNativeEvidence = () => nativeEvidence.stop();
     provisioner = new ProvisionerImpl({
-      ...(config.projectEgress === undefined ? {} : { projectEgress: config.projectEgress }),
+      ...(projectEgress === undefined ? {} : { projectEgress }),
+      projectEgressEnabled: async () =>
+        (await eventStore.getVeritySettingsRaw())?.projectEgressEnabled === true,
       buildStorage,
       buildFailureLogDirectory: join(
         config.dataVolumeRoot ?? config.dataDir ?? config.workspacesDir ?? join(tmpdir(), 'verity'),
@@ -4077,7 +4104,7 @@ export async function buildEmbeddedServer(
         ? { sandboxCpuShares: config.sandboxCpuShares }
         : {}),
       ...(config.sandboxCapAdd !== undefined ? { sandboxCapAdd: config.sandboxCapAdd } : {}),
-      ...(config.projectEgress !== undefined ||
+      ...(projectEgress !== undefined ||
       config.publicPreviews !== undefined ||
       config.resolvePreviewConnectorImage !== undefined
         ? (() => {
@@ -4896,6 +4923,15 @@ export async function buildEmbeddedServer(
     ...(listenerDiscovery ? { listenerDiscovery } : {}),
     ...(localPreviewManager ? { localPreviewManager } : {}),
     ...(managedDevServerManager ? { managedDevServerManager } : {}),
+    ...(projectEgress
+      ? {
+          projectEgressResolve: (
+            identity: import('./internal-listener.js').InternalConnectionIdentity,
+            name: string,
+          ) => projectEgress.resolveDirect(identity, name),
+        }
+      : {}),
+    projectEgressAvailable: projectEgressAvailability(() => projectEgress),
     previewSharingCapability: async () => {
       const settings = await eventStore.getVeritySettings();
       return previewSharingCapability(
@@ -5466,6 +5502,8 @@ export async function buildEmbeddedServer(
                 return (await eventStore.getProjectSettingsRaw(projectId))?.memory ?? undefined;
               });
             },
+            projectDecisionDirectory: (projectId: string) =>
+              projectDecisionDirectory(config.dataVolumeRoot!, projectId),
           }
         : {}),
       // ADR 0011 D3: expose the project's secret alias names to every turn whose
@@ -6155,7 +6193,7 @@ export async function buildEmbeddedServer(
     app.addHook('onClose', () => clearInterval(buildStorageTimer));
   }
   app.addHook('onClose', () => listenerDiscovery?.close());
-  app.addHook('onClose', () => config.projectEgress?.close());
+  app.addHook('onClose', () => projectEgress?.close());
   if (!localPreviewManager) previewRecoveryReady = true;
   managedDevServerLog.current = (message, detail) => app.log.info(detail ?? {}, message);
   app.addHook('onClose', () => managedDevServerManager?.close());
@@ -6679,4 +6717,18 @@ export function createProjectWorktreeFactory(
         return token ? gitAuthHeader(token) : undefined;
       },
     });
+}
+
+/** Host egress availability for Settings, cached for ten seconds so a hung host service
+ * cannot stall every settings read. Enabling re-checks within that window at most. */
+function projectEgressAvailability(
+  lifecycle: () => ProjectEgressLifecycle | undefined,
+): () => Promise<boolean> {
+  let cached: { value: boolean; at: number } | undefined;
+  return async () => {
+    if (cached && Date.now() - cached.at < 10_000) return cached.value;
+    const value = (await lifecycle()?.available()) === true;
+    cached = { value, at: Date.now() };
+    return value;
+  };
 }

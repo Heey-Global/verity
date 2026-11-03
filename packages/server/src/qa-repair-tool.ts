@@ -79,6 +79,10 @@ export function createQARepairTool(deps: QARepairDeps) {
       throw new ControlPlaneSessionToolError(
         'Repair approval expired or QA settings changed; resolve the PR again.',
       );
+    if (await store.sessionOrigin(p.project_id, `pr:${p.number}`))
+      throw new ControlPlaneSessionToolError(
+        'This PR is managed by its originating session; QA cannot start a competing repair.',
+      );
     const observed = await deps.inspect(p.project_id, p.number);
     if (
       !observed ||
@@ -190,6 +194,16 @@ export function createQARepairTool(deps: QARepairDeps) {
         return {
           status: 'blocked',
           reason: 'No current failed open PR in this repository, or fork/coverage is unsupported.',
+        };
+      const origin = await store.sessionOrigin(projectId, `pr:${number}`);
+      if (origin)
+        return {
+          status: 'session-managed',
+          sessionId: origin,
+          projectId,
+          number,
+          reason:
+            'The originating session handles this PR automatically, including while waiting for idle or attention. QA may analyze recurring causes but cannot start a competing repair.',
         };
       const candidates = [];
       for (const s of await deps.store.listSessions()) {

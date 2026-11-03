@@ -406,3 +406,108 @@ describe('foregroundPushBehavior', () => {
     expect(surfaced({ sessionId: 's1', kind: 'permission' })).toBe(false);
   });
 });
+
+describe('calendar meeting pushes', () => {
+  const outbox = () =>
+    ({
+      queue: jest.fn().mockResolvedValue(undefined),
+      enqueue: jest.fn().mockResolvedValue(undefined),
+      flush: jest.fn().mockResolvedValue(undefined),
+      pending: jest.fn().mockResolvedValue([]),
+    }) as unknown as PushOutbox & { enqueue: jest.Mock };
+  const respond = (actionIdentifier: string, data: unknown) =>
+    ({
+      actionIdentifier,
+      notification: { request: { content: { data } } },
+    }) as unknown as import('expo-notifications').NotificationResponse;
+  const upcoming = { kind: 'meeting-upcoming', eventKey: 'k1', deviceId: 'current' };
+  const started = { kind: 'meeting-started', meetingId: 'm1', deviceId: 'current' };
+  const handle = async (actionIdentifier: string, data: unknown) => {
+    const box = outbox();
+    const prompt = jest.fn();
+    const session = jest.fn();
+    await handlePushResponse(
+      respond(actionIdentifier, data),
+      box,
+      session,
+      'current',
+      undefined,
+      undefined,
+      prompt,
+    );
+    return { box, prompt, session };
+  };
+
+  it('queues Join, Skip and Discard as outbox replies', async () => {
+    expect((await handle('VERITY_MEETING_JOIN', upcoming)).box.enqueue).toHaveBeenCalledWith({
+      type: 'join-calendar-meeting',
+      eventKey: 'k1',
+    });
+    expect((await handle('VERITY_MEETING_SKIP', upcoming)).box.enqueue).toHaveBeenCalledWith({
+      type: 'skip-calendar-meeting',
+      eventKey: 'k1',
+    });
+    expect((await handle('VERITY_MEETING_DISCARD', started)).box.enqueue).toHaveBeenCalledWith({
+      type: 'discard-live-meeting',
+      meetingId: 'm1',
+    });
+  });
+
+  it('hands a tap to the meeting card instead of opening a session', async () => {
+    const tapUpcoming = await handle('expo.modules.notifications.actions.DEFAULT', upcoming);
+    expect(tapUpcoming.prompt).toHaveBeenCalledWith({ kind: 'upcoming', eventKey: 'k1' });
+    const openStarted = await handle('VERITY_MEETING_OPEN', started);
+    expect(openStarted.prompt).toHaveBeenCalledWith({ kind: 'started', meetingId: 'm1' });
+    expect(openStarted.session).not.toHaveBeenCalled();
+    expect(openStarted.box.enqueue).not.toHaveBeenCalled();
+  });
+
+  // A Join left in the tray by a former server must not send a bot through the current one.
+  it('ignores meeting pushes from another pairing', async () => {
+    const { box } = await handle('VERITY_MEETING_JOIN', { ...upcoming, deviceId: 'old' });
+    expect(box.enqueue).not.toHaveBeenCalled();
+  });
+
+  it('ignores a meeting push when the pairing cannot be checked', async () => {
+    const box = outbox();
+    const { deviceId: _omitted, ...unstamped } = upcoming;
+    await handlePushResponse(respond('VERITY_MEETING_JOIN', unstamped), box, jest.fn(), undefined);
+    expect(box.enqueue).not.toHaveBeenCalled();
+  });
+
+  // Join from a killed app is the main path; the device id may not be loaded yet.
+  it('asks in the sheet when Join arrives before the device id is known', async () => {
+    const box = outbox();
+    const prompt = jest.fn();
+    await handlePushResponse(
+      respond('VERITY_MEETING_JOIN', upcoming),
+      box,
+      jest.fn(),
+      undefined,
+      undefined,
+      undefined,
+      prompt,
+    );
+    expect(box.enqueue).not.toHaveBeenCalled();
+    expect(prompt).toHaveBeenCalledWith({ kind: 'upcoming', eventKey: upcoming.eventKey });
+  });
+
+  // On a cold start the device id may not be loaded yet; a tap must still lead somewhere.
+  it('opens the sheet for a plain tap before the pairing is known', async () => {
+    const prompt = jest.fn();
+    await handlePushResponse(
+      respond('expo.modules.notifications.actions.DEFAULT', upcoming),
+      outbox(),
+      jest.fn(),
+      undefined,
+      undefined,
+      undefined,
+      prompt,
+    );
+    expect(prompt).toHaveBeenCalledWith({ kind: 'upcoming', eventKey: upcoming.eventKey });
+  });
+
+  it('shows a meeting about to start while the app is open', () => {
+    expect(foregroundPushBehavior(upcoming).shouldShowBanner).toBe(true);
+  });
+});

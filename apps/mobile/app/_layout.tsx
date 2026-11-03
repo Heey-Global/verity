@@ -154,7 +154,7 @@ export default function RootLayout() {
 }
 
 function HydratedRoot() {
-  useEffect(() => (isDemoMode() || Platform.OS === 'web' ? undefined : startLiveMeetingSync()), []);
+  useEffect(() => (isDemoMode() ? undefined : startLiveMeetingSync()), []);
   const { theme } = useUnistyles();
   const gate = useOnboardingGate();
   const pathname = usePathname();
@@ -288,6 +288,10 @@ function HydratedRoot() {
               <Stack.Screen
                 name="settings/scheduling-requests"
                 options={{ title: 'Scheduling requests' }}
+              />
+              <Stack.Screen
+                name="settings/meeting-calendars"
+                options={{ title: 'Meeting calendars' }}
               />
               <Stack.Screen name="settings/premium" options={{ title: 'Verity Premium' }} />
               <Stack.Screen name="settings/diagnostics" options={{ title: 'Diagnostics' }} />

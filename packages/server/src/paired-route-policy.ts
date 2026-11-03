@@ -168,6 +168,9 @@ const activeUserRoutes = new Set([
   // Scheduling requests are filtered and checked per project inside the handler.
   routeScopeKey('GET', '/scheduling-requests'),
   routeScopeKey('POST', '/scheduling-requests/:requestId/revoke'),
+  // Running meetings are filtered per session inside the handler; unassigned ones are
+  // listed for administrators only. Assigning and discarding stay administrator routes.
+  routeScopeKey('GET', '/live-meetings/active'),
   routeScopeKey('GET', '/tasks/:id/attachments/:hash'),
   routeScopeKey('PUT', '/tasks/:id'),
   routeScopeKey('PATCH', '/tasks/:id'),

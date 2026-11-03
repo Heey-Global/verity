@@ -1,12 +1,17 @@
 import { constants } from 'node:fs';
 import { open, lstat, realpath } from 'node:fs/promises';
 import { dirname } from 'node:path';
+import { isIP } from 'node:net';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import ipaddr from 'ipaddr.js';
 import { z } from 'zod';
 import { canonicalEgressTarget, type ProjectEgressStore } from '@verity/store';
 import { projectEgressHostDocker } from './project-egress-host-runtime.js';
+import {
+  mandatoryEgressRoute,
+  type ProtectedAddressInventory,
+} from './project-egress-classification.js';
 
 /** Fixed installation files only. No path comes from the control protocol. */
 export async function readEgressHostConfiguration(path: string): Promise<unknown> {
@@ -43,7 +48,13 @@ export async function readEgressHostConfiguration(path: string): Promise<unknown
     await file.close();
   }
 }
-const name = z.string().min(1).max(128);
+const canonicalHosts = (limit: number) =>
+  z
+    .array(z.string())
+    .max(limit)
+    .transform((hosts) =>
+      hosts.map((host) => canonicalEgressTarget({ host, protocol: 'tcp', port: 443 }).host),
+    );
 export const egressHostAuthority = z.strictObject({
   databaseUrl: z
     .string()
@@ -53,14 +64,12 @@ export const egressHostAuthority = z.strictObject({
     .array(z.union([z.ipv4(), z.ipv6()]))
     .min(1)
     .max(3),
-  /** An explicit host-reviewed route inventory; unclassified hosts stay unavailable. */
-  directHosts: z
-    .array(z.string())
-    .max(1000)
-    .transform((hosts) =>
-      hosts.map((host) => canonicalEgressTarget({ host, protocol: 'tcp', port: 443 }).host),
-    ),
-  projectSponsors: z.record(name, name),
+  /** Deployment-specific broker/system host names (Matrix, OpenCode, private MCP). */
+  mandatoryHosts: canonicalHosts(100)
+    .refine((hosts) => hosts.every((host) => isIP(host) === 0), {
+      message: 'Broker and system hosts must be names, not addresses',
+    })
+    .default([]),
 });
 
 /** Re-read all host addresses and every Docker subnet on each admission check.
@@ -123,3 +132,26 @@ export async function egressHostDestinationAllowed(
 export const unavailableEgressAuthority: Pick<ProjectEgressStore, 'readForAdmission'> = {
   readForAdmission: () => Promise.reject(new Error('Host admission authority is not configured')),
 };
+
+/** Direct admission checks: any public name that is not broker-only, at an address
+ * that is neither a host/project destination nor a protected front end. Which names a
+ * project reaches is its own grants; there is no host-side inventory.
+ */
+export function egressHostDirectChecks(
+  authority: z.infer<typeof egressHostAuthority> | undefined,
+  protectedAddresses: Pick<ProtectedAddressInventory, 'allows'>,
+  destinationAllowed: (address: string) => Promise<boolean> = egressHostDestinationAllowed,
+): {
+  directTargetAllowed(host: string): Promise<boolean>;
+  destinationAllowed(address: string): Promise<boolean>;
+} {
+  return {
+    directTargetAllowed: (host) =>
+      Promise.resolve(
+        authority !== undefined &&
+          mandatoryEgressRoute(host, authority.mandatoryHosts) === undefined,
+      ),
+    destinationAllowed: async (address) =>
+      protectedAddresses.allows(address) && (await destinationAllowed(address)),
+  };
+}

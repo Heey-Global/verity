@@ -54,7 +54,11 @@ function routerFor(sender: Pick<PushSender, 'send'>): Pick<PushRouter, 'notify'>
   return {
     notify: vi.fn<PushRouter['notify']>(async (input) => {
       const result = await sender.send(input.notification);
-      return result.ticketsAccepted > 0 ? 'delivered' : 'undelivered';
+      return result.ticketsAccepted > 0
+        ? 'delivered'
+        : result.targets === 0
+          ? 'undelivered'
+          : 'failed';
     }),
   };
 }
@@ -83,6 +87,8 @@ describe('pull request ready push', () => {
     const sender = fakeSender();
     const markers = new Set<string>();
     const monitor = startPullRequestReadyMonitor({
+      claimAttempt: async () => 'claim',
+      finishAttempt: async () => undefined,
       router: routerFor(sender),
       listSessions: async () => [SESSION],
       statusFor: async () => READY,
@@ -105,6 +111,8 @@ describe('pull request ready push', () => {
     const markers = new Set<string>();
     const router = { notify: vi.fn<PushRouter['notify']>().mockResolvedValue('suppressed') };
     const monitor = startPullRequestReadyMonitor({
+      claimAttempt: async () => 'claim',
+      finishAttempt: async () => undefined,
       router,
       initiatorOf: async () => 'user-a',
       listSessions: async () => [SESSION],
@@ -135,6 +143,8 @@ describe('pull request ready push', () => {
       READY,
     ];
     const monitor = startPullRequestReadyMonitor({
+      claimAttempt: async () => 'claim',
+      finishAttempt: async () => undefined,
       router: routerFor(sender),
       listSessions: async () => [SESSION],
       statusFor: async () => statuses.shift() ?? READY,
@@ -163,6 +173,8 @@ describe('pull request ready push', () => {
     });
     let marked = false;
     const monitor = startPullRequestReadyMonitor({
+      claimAttempt: async () => 'claim',
+      finishAttempt: async () => undefined,
       router: routerFor(sender),
       listSessions: async () => [SESSION],
       statusFor: async () => READY,
@@ -201,6 +213,8 @@ describe('pull request ready push', () => {
       });
     let marked = false;
     const monitor = startPullRequestReadyMonitor({
+      claimAttempt: async () => 'claim',
+      finishAttempt: async () => undefined,
       router: routerFor(sender),
       listSessions: async () => [SESSION],
       statusFor: async () => READY,
@@ -229,6 +243,8 @@ describe('pull request ready push', () => {
     const sender = fakeSender();
     const warn = vi.fn();
     const monitor = startPullRequestReadyMonitor({
+      claimAttempt: async () => 'claim',
+      finishAttempt: async () => undefined,
       router: routerFor(sender),
       listSessions: async () => {
         throw new Error('getaddrinfo ENOTFOUND verity-postgres');

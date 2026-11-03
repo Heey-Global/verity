@@ -780,6 +780,56 @@ printf '%s\\n' '2: docker0 inet 172.17.0.1/16 scope global docker0' '3: br-abcde
     assert.equal(stateFile(host, 'updater-token'), 'f'.repeat(64));
   });
 
+  test('repair accepts a server GID without a named host group', () => {
+    const host = makeHost({
+      docker: runningServer('verity-managed-server-g4', 'host-abc', '["CHOWN"]', DIGEST_B),
+      state: { 'deployment-id': 'host-abc\n', 'compose-project': 'deploy\n' },
+    });
+    const realInstall = spawnSync('bash', ['-c', 'command -v install'], {
+      encoding: 'utf8',
+    }).stdout.trim();
+    const realChown = spawnSync('bash', ['-c', 'command -v chown'], {
+      encoding: 'utf8',
+    }).stdout.trim();
+    const ownershipLog = join(host.root, 'ownership.log');
+    writeFileSync(
+      join(host.stubDir, 'install'),
+      `#!/bin/bash
+args=("$@")
+while (( $# )); do
+  if [[ $1 = -g && \${2-} = 1000 ]]; then
+    echo "install: invalid group: '1000'" >&2
+    exit 1
+  fi
+  shift
+done
+exec ${shellQuote(realInstall)} "\${args[@]}"
+`,
+      { mode: 0o755 },
+    );
+    // Only root is mapped in this namespace. Record the requested ownership,
+    // then map the unnamed server group to root for the real filesystem call.
+    writeFileSync(
+      join(host.stubDir, 'chown'),
+      `#!/bin/bash
+printf '%s\\n' "$*" >>${shellQuote(ownershipLog)}
+owner=$1
+shift
+if [[ $owner = *:1000 ]]; then owner="\${owner%:1000}:0"; fi
+exec ${shellQuote(realChown)} "$owner" "$@"
+`,
+      { mode: 0o755 },
+    );
+    const result = run(host, [], { VERITY_SERVER_GID: '1000' });
+    assert.equal(result.status, 0, result.output);
+    assert.match(result.output, /Mode +host-side repair/);
+    const requestDir = host.hostRuntime.VERITY_BACKUP_IDENTITY_DIR;
+    assert.ok(readFileSync(ownershipLog, 'utf8').includes(`root:1000 ${requestDir}\n`));
+    assert.equal(statSync(requestDir).uid, statSync(host.stateDir).uid);
+    assert.equal(statSync(requestDir).mode & 0o777, 0o770);
+    assert.equal(handoverEnv(host).VERITY_SERVER_IMAGE, DIGEST_B);
+  });
+
   test('a recovery-pinned rerun cannot reinterpret replace as the latest release', () => {
     const host = makeHost({
       docker: runningServer('verity-managed-server-g4', 'host-abc', '["CHOWN"]', DIGEST_B),

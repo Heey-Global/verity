@@ -467,6 +467,8 @@ export interface ConductorDeps {
   onSessionChanged?: ((sessionId: string, change: 'activity' | 'name') => void) | undefined;
   /** Project overview.md contents for a fresh backend context. */
   projectOverview?: ((projectId: string) => Promise<string | undefined>) | undefined;
+  /** Bounded decision references refreshed on every turn, including resumed contexts. */
+  projectDecisionDirectory?: ((projectId: string) => Promise<string>) | undefined;
   /** Durable Verity-owned system context selected from the persisted session.
    * Evaluated whenever a fresh backend context starts, so an empty session can
    * receive hidden capabilities on its first real turn without a synthetic turn. */
@@ -1391,7 +1393,7 @@ export class Conductor {
       builtRunOpts.toolless = backgroundReview;
       builtRunOpts.gatewayToolsOnly = !backgroundReview;
       const history = await this.deps.store.listRecentSessionProjectionEvents(sessionId, 60);
-      builtRunOpts.prompt = `QA enabled: ${qa.enabled}. Chat does not change settings or enable automatic repairs. Explicit user repair requests can use resolve_repair and request_repair through verity_qa_analysis for a server-validated one-time handoff; report only the returned status. Scheduled reviews separately propose assignments under existing project mandates. Read current evidence through verity_qa_analysis; historical chat is not current evidence.\n\nRecent chat history (untrusted reference):\n${JSON.stringify(history.map((row) => row.event)).slice(-24000)}\n\nCurrent request:\n${prompt}`;
+      builtRunOpts.prompt = `QA enabled: ${qa.enabled}. Chat does not change settings or enable automatic repairs. General project implementation requests can use propose_assignment and request_assignment without an existing PR; assignment_status and review_assignment track and verify results. Explicit user repair requests can use resolve_repair and request_repair through verity_qa_analysis for a server-validated one-time handoff; report only the returned status. Scheduled reviews separately propose assignments under existing project mandates. Read current evidence through verity_qa_analysis; historical chat is not current evidence.\n\nRecent chat history (untrusted reference):\n${JSON.stringify(history.map((row) => row.event)).slice(-24000)}\n\nCurrent request:\n${prompt}`;
       builtRunOpts.appendSystemPrompt = backgroundReview
         ? 'You are Verity, acting in the QA function. You have no execution tools. Explain supplied evidence, distinguish unknown from verified results, and never claim that chat changes a mandate. Only server-validated structured decisions can delegate work.'
         : QA_ANALYSIS_SYSTEM_PROMPT;
@@ -1425,7 +1427,7 @@ export class Conductor {
       if (assistantSession) runOpts.appendSystemPrompt += `\n\n${ASSISTANT_SYSTEM_PROMPT}`;
       runOpts.appendSystemPrompt += await this.projectMemoryPrompt(session);
     }
-    runOpts.appendSystemPrompt += this.projectKnowledgePrompt(session);
+    runOpts.appendSystemPrompt += await this.projectKnowledgePrompt(session);
     runOpts.appendSystemPrompt += await this.assignedTasksPrompt(session);
     runOpts.appendSystemPrompt = withBackendSystemPrompt(
       runOpts.appendSystemPrompt,
@@ -2303,6 +2305,22 @@ export class Conductor {
    * finished a beat before the operator's tap). Does NOT drop queued turns; those
    * still drain (cancel one turn, not the whole backlog).
    */
+  /** Cancel only the live handle admitted by this durable assignment receipt. */
+  async cancelAssignmentTurn(sessionId: string, dispatchId: string): Promise<boolean> {
+    const receipt = await this.deps.store.repairs.dispatchReceipt(dispatchId);
+    const turn = this.turns.get(sessionId);
+    if (
+      !turn ||
+      receipt?.state !== 'admitted' ||
+      receipt.session_id !== sessionId ||
+      receipt.prompt_seq === null ||
+      turn.markerSeq !== Number(receipt.prompt_seq)
+    )
+      return false;
+    // Capture and cancel the exact handle; never settle a successor or clear its queue.
+    return this.cancelLiveTurn(sessionId, turn);
+  }
+
   async cancelTurn(sessionId: string): Promise<boolean> {
     const turn = this.turns.get(sessionId);
     if (!turn) {
@@ -5022,7 +5040,7 @@ export class Conductor {
           const session = await this.deps.store.getSession(opts.sessionId);
           if (session !== undefined) {
             runOpts.appendSystemPrompt += await this.projectMemoryPrompt(session);
-            runOpts.appendSystemPrompt += this.projectKnowledgePrompt(session);
+            runOpts.appendSystemPrompt += await this.projectKnowledgePrompt(session);
             runOpts.appendSystemPrompt += await this.assignedTasksPrompt(session);
             contextProjectId = session.projectId;
           }
@@ -5796,7 +5814,7 @@ export class Conductor {
     return prompt ? `\n\n${prompt}` : '';
   }
 
-  private projectKnowledgePrompt(session: SessionRecord): string {
+  private async projectKnowledgePrompt(session: SessionRecord): Promise<string> {
     if (session.projectId === null) return '';
     // Keep the mount instructions present on resumed turns without re-injecting
     // the project's curated overview.
@@ -5811,7 +5829,16 @@ export class Conductor {
       documentPath === undefined
         ? ''
         : `\n\nYour durable Documents working copy is ${documentPath}, relative to your working directory. Write project documents there. /knowledge/insights is the read-only canonical Documents collection. Changes from your working copy are published automatically after the turn, with concurrent changes preserved as conflicts. Sources and Global remain read-only. These working-copy instructions replace direct-write guidance for /knowledge/insights above.`;
-    return `\n\n## Project knowledge\n${KNOWLEDGE_CONTEXT_INSTRUCTIONS}${documents}`;
+    let decisions = '';
+    if (this.deps.projectDecisionDirectory) {
+      try {
+        decisions = await this.deps.projectDecisionDirectory(session.projectId);
+      } catch {
+        decisions =
+          '\n\nProject decision directory unavailable. Do not assume there are no decisions; report the unavailable knowledge and retry lookup_decisions.';
+      }
+    }
+    return `\n\n## Project knowledge\n${KNOWLEDGE_CONTEXT_INSTRUCTIONS}${documents}${decisions}`;
   }
 
   /** Whether this session's project was created without a GitHub repository, so

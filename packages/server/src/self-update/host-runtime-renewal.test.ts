@@ -33,7 +33,13 @@ function fixture() {
           capAdd: spec.capAdd,
           capDrop: spec.capDrop,
           groupAdd: [],
-          securityOpt: spec.securityOpt,
+          // Docker 29 appends label=disable for host-PID jobs, including old specs.
+          securityOpt: [
+            ...new Set([
+              ...(spec.securityOpt ?? []),
+              ...(spec.pidMode === 'host' ? ['label=disable'] : []),
+            ]),
+          ],
           labels: spec.labels,
           entrypoint: spec.entrypoint,
           command: spec.command,
@@ -118,6 +124,7 @@ describe('authenticated runtime service renewal', () => {
       runtime: 'runc',
       network: 'none',
       pidMode: 'host',
+      securityOpt: ['no-new-privileges=true', 'label=disable'],
       capAdd: ['CHOWN', 'FOWNER', 'DAC_OVERRIDE'],
       capDrop: ['ALL'],
       restartPolicy: 'no',
@@ -138,7 +145,7 @@ describe('authenticated runtime service renewal', () => {
   it('never starts the host writer after a signature verification failure', async () => {
     const h = fixture();
     h.docker.waitContainer.mockResolvedValueOnce(1);
-    await expect(h.run()).rejects.toThrow(/signature verification failed/u);
+    await expect(h.run()).rejects.toThrow(/no host changes were made/u);
     expect(h.docker.createContainer).toHaveBeenCalledOnce();
     expect(h.verifyInstalled).not.toHaveBeenCalled();
   });
@@ -180,6 +187,7 @@ describe('authenticated runtime service renewal', () => {
       .mockRejectedValueOnce(new Error('disconnected'));
     await expect(h.run()).rejects.toThrow('disconnected');
     const install = [...h.jobs.values()].find((job) => job.spec.network === 'none')!;
+    install.inspect.status = 'running';
     const replacement: unknown = {
       image: image('c'),
       labels: {},
@@ -248,6 +256,72 @@ describe('authenticated runtime service renewal', () => {
     await h.run();
     expect(h.docker.createContainer).toHaveBeenCalledTimes(2);
     expect(h.jobs.size).toBe(0);
+  });
+  it.each(['create', 'inspect', 'verify-wait'] as const)(
+    'classifies %s failures before host writes as unchanged',
+    async (stage) => {
+      const h = fixture();
+      if (stage === 'create')
+        h.docker.createContainer.mockRejectedValueOnce(new Error('create failed'));
+      if (stage === 'inspect')
+        h.docker.inspectContainer.mockRejectedValueOnce(new Error('inspect failed'));
+      if (stage === 'verify-wait')
+        h.docker.waitContainer.mockRejectedValueOnce(new Error('wait failed'));
+      await expect(h.run()).rejects.toMatchObject({ recovery: 'unchanged' });
+      expect(h.verifyInstalled).not.toHaveBeenCalled();
+    },
+  );
+  it('retains an install job after an ambiguous start failure', async () => {
+    const h = fixture();
+    h.docker.startContainer
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error('start disconnected'));
+    await expect(h.run()).rejects.toMatchObject({ recovery: 'recovery-required' });
+    expect(h.docker.removeContainer).not.toHaveBeenCalled();
+  });
+  it('replaces only an owned Created job and never accepts extra security options', async () => {
+    const h = fixture();
+    h.docker.startContainer
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error('disconnected'));
+    await expect(h.run()).rejects.toThrow('disconnected');
+    const install = [...h.jobs.values()].find((job) => job.spec.pidMode === 'host')!;
+    install.inspect.securityOpt = ['no-new-privileges=true', 'label=disable', 'seccomp=unconfined'];
+    const old = install.inspect.id;
+    await h.run();
+    expect(h.docker.removeContainer).toHaveBeenCalledWith(old);
+    expect(h.docker.createContainer).toHaveBeenCalledTimes(3);
+  });
+  it('never removes a foreign Created job', async () => {
+    const h = fixture();
+    h.docker.startContainer
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error('disconnected'));
+    await expect(h.run()).rejects.toThrow('disconnected');
+    const install = [...h.jobs.values()].find((job) => job.spec.pidMode === 'host')!;
+    install.inspect.labels = { ...install.inspect.labels, 'verity.update-id': 'foreign' };
+    await expect(h.run()).rejects.toMatchObject({ recovery: 'unchanged' });
+    expect(h.docker.removeContainer).not.toHaveBeenCalled();
+  });
+  it('does not report unchanged when re-verification fails after an earlier install started', async () => {
+    const h = fixture();
+    h.docker.waitContainer
+      .mockResolvedValueOnce(0)
+      .mockRejectedValueOnce(new Error('disconnected'));
+    await expect(h.run()).rejects.toMatchObject({ recovery: 'recovery-required' });
+    h.docker.waitContainer.mockRejectedValueOnce(new Error('verification disconnected'));
+    await expect(h.run()).rejects.toMatchObject({ recovery: 'recovery-required' });
+    expect(h.docker.removeContainer).not.toHaveBeenCalled();
+  });
+  it('retains recovery-required if inventory fails after an ambiguous install start', async () => {
+    const h = fixture();
+    h.docker.startContainer
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error('start disconnected'));
+    await expect(h.run()).rejects.toMatchObject({ recovery: 'recovery-required' });
+    h.docker.listContainers.mockRejectedValueOnce(new Error('inventory unavailable'));
+    await expect(h.run()).rejects.toMatchObject({ recovery: 'recovery-required' });
+    expect(h.docker.removeContainer).not.toHaveBeenCalled();
   });
   it('rejects malformed service capability declarations', () => {
     expect(

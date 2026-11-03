@@ -171,18 +171,28 @@ esac`,
 }
 
 describeHost('deploy/host/verity-host-builder', () => {
-  it('defers a changed bundle before touching files when build termination is unknown', async () => {
-    const h = await host();
-    writeFileSync(join(h.libexec, 'snapshotter-migrate.sh'), '#!/bin/sh\nexit 1\n', {
-      mode: 0o755,
-    });
-    writeFileSync(join(h.runDir, 'build-admission.lock'), '');
-    h.request('busy-1');
-    expect(h.run('apply-request').status).not.toBe(0);
-    expect(h.result().message).toContain('deferred without restarting');
-    expect(h.callsOf('systemctl').some((call) => call.includes('restart'))).toBe(false);
-    expect(readFileSync(join(h.config, 'buildkitd.toml'), 'utf8')).toBe('previous\n');
-  });
+  it.each(['', '2 admission leases remain (attempt-one, attempt-two)'])(
+    'preserves drain diagnostics before touching files: %s',
+    async (diagnostic) => {
+      const h = await host();
+      writeFileSync(
+        join(h.libexec, 'snapshotter-migrate.sh'),
+        `#!/bin/sh\necho '${diagnostic}' >&2\nexit 1\n`,
+        {
+          mode: 0o755,
+        },
+      );
+      writeFileSync(join(h.runDir, 'build-admission.lock'), '');
+      h.request('busy-1');
+      expect(h.run('apply-request').status).not.toBe(0);
+      expect(h.result().message).toContain('deferred without restarting');
+      expect(h.result().message).toContain(
+        diagnostic || 'build termination or client compatibility is unknown',
+      );
+      expect(h.callsOf('systemctl').some((call) => call.includes('restart'))).toBe(false);
+      expect(readFileSync(join(h.config, 'buildkitd.toml'), 'utf8')).toBe('previous\n');
+    },
+  );
 
   it('installs the bundle of a verified release image with the installer-recorded group', async () => {
     const h = await host();

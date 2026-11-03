@@ -13,6 +13,7 @@ import {
 } from '../gvisor-runtime-config.js';
 import {
   HOST_RUNTIMES_LABEL,
+  hostRuntimePreparationReady,
   HostRuntimeError,
   parseHostRuntimeRequirements,
   readTargetHostRuntimes,
@@ -584,5 +585,45 @@ describe('runtime service renewal independent of the builder', () => {
     ).rejects.toThrow(/does not advertise.*keeps serving/u);
     expect(renewHostRuntimeService).toHaveBeenCalledOnce();
     await expect(readFile(join(dir, 'request.json'))).rejects.toThrow(/ENOENT/u);
+  });
+});
+
+describe('runtime readiness after external Repair', () => {
+  const service = { revision: 1, renewalProtocol: 1, features: ['binary', 'archive'] };
+  const target = `ghcr.io/heey-global/verity/verity-server@sha256:${'b'.repeat(64)}`;
+  const readyAgent = {
+    version: 1,
+    trigger: 'systemd-path',
+    runtimeArtifacts: ['binary', 'archive'],
+    runtimeService: service,
+  };
+  const client = () => ({
+    ...daemon(both).docker,
+    inspectImageLabels: vi.fn(async () => ({
+      [HOST_RUNTIMES_LABEL]: JSON.stringify(declared),
+      'org.verity.host-runtime-service': JSON.stringify(service),
+    })),
+  });
+  it('reads fresh capabilities and exact registrations after Repair', async () => {
+    const dir = await requestDir({ ...readyAgent, runtimeService: undefined });
+    const docker = client();
+    expect(await hostRuntimePreparationReady(docker, target, dir)).toBe(false);
+    await writeFile(join(dir, 'agent.json'), JSON.stringify(readyAgent));
+    expect(await hostRuntimePreparationReady(docker, target, dir)).toBe(true);
+    expect(docker.inspectImageLabels).toHaveBeenCalledWith(target);
+  });
+  it.each(['service-install.pending', 'daemon-install.pending'])(
+    'refuses readiness while %s exists',
+    async (marker) => {
+      const dir = await requestDir(readyAgent);
+      await writeFile(join(dir, marker), '');
+      expect(await hostRuntimePreparationReady(client(), target, dir)).toBe(false);
+    },
+  );
+  it('refuses capabilities without the target runtime registration', async () => {
+    const docker = { ...client(), ...daemon(secretOnly).docker };
+    expect(await hostRuntimePreparationReady(docker, target, await requestDir(readyAgent))).toBe(
+      false,
+    );
   });
 });

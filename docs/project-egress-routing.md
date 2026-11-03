@@ -82,11 +82,11 @@ DNS, or activate production enforcement.
 
 ### Experimental policy admission composition
 
-`createProjectEgressAdmission` binds one trusted registrar identity and execution
-sponsor to a fence. Refresh accepts no caller-supplied grants: it first revokes
-the current fence, then reads the durable policy through `readForAdmission`.
-That store operation requires current project execution rights, an active sponsor
-and, for revalidation, the exact policy revision. The complete grant set is
+`createProjectEgressAdmission` binds one trusted registrar identity to a fence.
+Refresh accepts no caller-supplied grants: it first revokes the current fence,
+then reads the project's stored grants through `readForAdmission`, which checks
+the exact policy revision on revalidation. Grants are project settings whose
+rights were checked when a project manager decided them. The complete grant set is
 compared again before admission, including after asynchronous DNS work. Failed
 reads and changed authority leave the fence denied; reading never renews a grant.
 Lifecycle operations serialize across policy reads and kernel work. A revoke,
@@ -291,6 +291,55 @@ An approved target enables a fresh connection attempt, not automatic replay of
 an application mutation. Do not buffer or forward unapproved request payloads.
 For uncertain external outcomes, preserve the adapter's idempotency and recovery
 rules. Offline approvers, timeouts and broker failure leave access blocked.
+
+## System-wide network protection switch
+
+Network protection is one administrator setting, `projectEgressEnabled`, default
+off, exposed through `GET /settings` and administrator-only `PATCH /settings`.
+The app control is Settings → App & Server → Network protection. It saves the
+confirmed setting without requesting container recreation; an unavailable host
+blocks enabling, while disabling remains available. Older servers show an update
+requirement. The Server reaches
+the host egress service only when `VERITY_PROJECT_EGRESS_SOCKET` and
+`VERITY_PROJECT_EGRESS_KEY_PATH` are set (`deploy/docker-compose.egress.yml`);
+otherwise the setting reports unavailable and refuses to be enabled (409).
+
+- Each new container generation reads the switch. On: the generation is fenced
+  through the host; a missing or unreachable host service fails the start closed.
+  Off: the generation starts on the open project network; a fenced predecessor is
+  retired best-effort, and an unreachable host never blocks the open start.
+- An existing generation keeps the mode it started with until it is replaced.
+  Cold wake replaces a generation whose mode differs from the switch.
+- Destination approvals stay per project through the project egress API. The
+  planned app interface is Project → Settings → Sandbox.
+
+## Web search under the fence
+
+Web search works without a card:
+
+- Claude and Codex search is provider-hosted. It travels inside the model request
+  through the model gateway (`/v1/messages`, `/codex/responses`,
+  `/codex/alpha/search`), which passes tool definitions unchanged.
+- OpenCode's built-in Exa search calls the fixed endpoint `https://mcp.exa.ai/mcp`
+  from the Sandbox. Interim decision: the host admits `mcp.exa.ai` TCP 443 as a
+  system target (`SYSTEM_DIRECT_TARGETS`) for every fenced project with direct
+  authority, beside its grants, and controlled DNS answers it. Projects still
+  cannot grant `exa.ai` names; its addresses are no longer address-protected.
+
+Page fetches (Claude `WebFetch`, OpenCode `webfetch`) leave from the Sandbox to
+arbitrary destinations; they are ordinary direct targets and need a destination
+grant. A Sandbox DNS lookup of an ungranted, non-broker name records one pending
+TCP 443 destination request of the project, attributed to the Sandbox: at most
+once a minute per name and 20 new requests per project and minute.
+
+Residual risk, accepted for now and to be tightened later:
+
+- Provider-hosted search and fetches leave from Anthropic/OpenAI infrastructure;
+  the fence neither sees nor bounds them, and query text can carry data.
+- Admission is by address. Names sharing `mcp.exa.ai`'s front-end addresses are
+  reachable too, and the Exa MCP endpoint offers more than search, including
+  page retrieval, to any process in the Sandbox. A server-side Verity search tool
+  over the MCP gateway would remove the direct path.
 
 ## Bounded implementation sequence and gates
 

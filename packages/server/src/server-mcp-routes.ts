@@ -1,4 +1,10 @@
 import {
+  createQAAssignmentTool,
+  trustedQAAssignmentConsent,
+  matchesQAAssignmentContinuation,
+} from './qa-assignment-tool.js';
+import { qaAnalysisRequestSchema } from '@verity/events';
+import {
   createQARepairTool,
   trustedQARepairInstruction,
   trustedQARepairConsent,
@@ -70,6 +76,7 @@ import {
 } from './knowledge-import.js';
 import { publishSharedInsight } from './knowledge-publish.js';
 import { knowledgeToolRequestSchema } from './knowledge-tool.js';
+import { lookupProjectDecisions, recordProjectDecision } from './knowledge-decisions.js';
 import { readMatrixDiagnosticSnapshot } from './matrix-diagnostic-snapshot.js';
 import { createMatrixTool, matrixRequestSchema } from './matrix-tool.js';
 import { registerMcpAppsRoutes } from './mcp-apps-routes.js';
@@ -177,6 +184,102 @@ export function registerServerMcpRoutes({
   // turn-bound prompt (D2). The `acp` channel is stated by the caller rather than read off a
   // live turn, because a gateway call routinely arrives with none (ADR 0014 D3).
   const controlHandoffSessionCreates = new Map<string, Promise<{ sessionId: string }>>();
+  const createHandoffSession = async ({
+    projectId,
+    name,
+    idempotencyKey,
+  }: {
+    projectId: string;
+    name: string;
+    idempotencyKey: string;
+  }) => {
+    const existing = controlHandoffSessionCreates.get(idempotencyKey);
+    if (existing !== undefined) return existing;
+    const creating = (async (): Promise<{ sessionId: string }> => {
+      const digest = createHash('sha256').update(idempotencyKey).digest();
+      digest[6] = (digest[6]! & 0x0f) | 0x40;
+      digest[8] = (digest[8]! & 0x3f) | 0x80;
+      const hex = digest.subarray(0, 16).toString('hex');
+      const sessionId = `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+      const prior = await deps.eventStore.getSession(sessionId);
+      if (prior !== undefined) {
+        if (prior.projectId !== projectId) {
+          throw new ControlPlaneSessionToolError('new-session handoff key collision');
+        }
+        return { sessionId };
+      }
+      const project = await deps.eventStore.getProject(projectId);
+      if (
+        project === undefined ||
+        project.hiddenAt !== null ||
+        project.state !== 'active' ||
+        isControlPlaneProject(project)
+      ) {
+        throw new ControlPlaneSessionToolError('new-session handoff target is unavailable');
+      }
+      if (deps.projectCloneRoot === undefined || deps.projectBackend === undefined) {
+        throw new ControlPlaneSessionToolError('new-session handoff is not configured');
+      }
+      if (projectsBeingDeleted.has(project.id)) {
+        throw new ControlPlaneSessionToolError('new-session handoff target is unavailable');
+      }
+      if (isLocalProject(project) && !deps.dataRoot)
+        throw new ControlPlaneSessionToolError(
+          'Local projects require configured document storage.',
+        );
+      await deps.provisioner?.prepareLocalDocuments?.(project.id);
+      const releaseSpawn = beginProjectSpawn(project.id);
+      try {
+        const settings = await projectSettingsStore(deps.eventStore).getProjectSettings(project.id);
+        const model = resolveProjectDefaultModel(
+          await availableModels({ allowLegacyCodexFallback: true }),
+          settings,
+          isProjectSessionModel,
+        );
+        if (model === undefined || !(await isConfiguredProjectSessionModel(model))) {
+          throw new ControlPlaneSessionToolError('project has no eligible default model');
+        }
+        const selectedModel = model;
+        const projectClone = projectClonePath(deps.projectCloneRoot, project);
+        const worktreeOpts = {
+          refreshBase: true,
+          ...(settings?.defaultBranch == null ? {} : { baseBranch: settings.defaultBranch }),
+        };
+        const provisioner =
+          isLocalProject(project) && deps.dataRoot
+            ? createDocumentWorkspaceProvisioner(deps.dataRoot, project.id, projectClone)
+            : (deps.projectWorktrees?.(project, projectClone, worktreeOpts) ??
+              createGitWorktreeProvisioner({
+                repoDir: projectClone,
+                worktreeRoot: join(projectClone, '.verity-sessions'),
+                ...worktreeOpts,
+              }));
+        await deps.refreshProjectToken?.(project);
+        const worktree = await provisioner.add(makeBranch(name));
+        try {
+          await deps.eventStore.createSession({
+            sessionId,
+            projectId: project.id,
+            worktree,
+            model: selectedModel,
+            name,
+          });
+        } catch (error) {
+          await provisioner.remove(worktree).catch(() => undefined);
+          throw error;
+        }
+        return { sessionId };
+      } finally {
+        releaseSpawn();
+      }
+    })();
+    controlHandoffSessionCreates.set(idempotencyKey, creating);
+    try {
+      return await creating;
+    } finally {
+      controlHandoffSessionCreates.delete(idempotencyKey);
+    }
+  };
   const qaRepair = createQARepairTool({
     store: deps.eventStore,
     permitted: canExecuteAs,
@@ -230,12 +333,120 @@ export function registerServerMcpRoutes({
       return result.accepted;
     },
   });
+  const qaAssignments = createQAAssignmentTool({
+    store: deps.eventStore,
+    permitted: canExecuteAs,
+    busy: (id) => conductor.isBusy(id),
+    pendingPermissions: (id) => conductor.pendingPermissions(id),
+    create: createHandoffSession,
+    target: async (session, assignment) => {
+      if (!(await sessionResumable(session)) || session.planning === 'active') return false;
+      const branches = await branchesForSession(session);
+      if (!branches) return false;
+      if (assignment && assignment.attempt > 0) {
+        const latest = await deps.eventStore.getEventsBeforeSeq(session.sessionId, 2000);
+        const lastPromptSeq = latest.events.findLast((row) => row.event.t === 'prompt')?.seq;
+        return matchesQAAssignmentContinuation(
+          assignment.evidence,
+          await branches.worktreeFingerprint?.(session.worktree),
+          lastPromptSeq,
+        );
+      }
+      return (
+        !!(await branches.headRevision?.(session.worktree)) &&
+        !(await branches.isDirty(session.worktree))
+      );
+    },
+    dispatch: async (sessionId, prompt, dispatchId, userId, validate) =>
+      (
+        await conductor.dispatchTurnWhenIdle(
+          sessionId,
+          prompt,
+          {},
+          {
+            durableDispatchId: dispatchId,
+            initiatedBy: { userId },
+            displayPrompt: dispatchId.includes(':notification:')
+              ? 'QA assignment status update'
+              : prompt,
+            validateSession: validate,
+          },
+        )
+      ).accepted,
+    cancel: (sessionId, dispatchId) => conductor.cancelAssignmentTurn(sessionId, dispatchId),
+    inspect: async (a) => {
+      const session = a.target_session_id
+        ? await deps.eventStore.getSession(a.target_session_id)
+        : undefined;
+      if (!session || session.projectId !== a.project_id)
+        return { verified: false, reason: 'Target unavailable' };
+      const branches = await branchesForSession(session);
+      const revision = await branches?.headRevision?.(session.worktree);
+      const branch = await branches?.current(session.worktree);
+      const dirty = await branches?.isDirty(session.worktree);
+      const worktreeFingerprint = await branches?.worktreeFingerprint?.(session.worktree);
+      const recent = await deps.eventStore.getEventsBeforeSeq(session.sessionId, 2000);
+      const lastPromptSeq = recent.events.findLast((row) => row.event.t === 'prompt')?.seq;
+      const receipt = a.dispatch_id
+        ? await deps.eventStore.repairs.dispatchReceipt(a.dispatch_id)
+        : undefined;
+      if (receipt?.prompt_seq == null || lastPromptSeq !== Number(receipt.prompt_seq))
+        return {
+          verified: false,
+          reason: 'The session received a different prompt; new approval is required.',
+        };
+      const project = await deps.eventStore.getProject(a.project_id);
+      if (!project || !deps.repairDiscovery || !revision || !branch)
+        return { verified: false, revision, branch, dirty, worktreeFingerprint, lastPromptSeq };
+      deps.invalidateProjectPrStatus?.(a.project_id);
+      let pageNumber: number | undefined = 1;
+      for (let pages = 0; pageNumber !== undefined && pages < 10; pages++) {
+        const { page, statuses } = await deps.repairDiscovery(project, pageNumber);
+        const pr = statuses.find((p) => p.branch === branch && p.status.headSha === revision);
+        const pull = page.pulls.find((p) => p.branch === branch && p.sha === revision && !p.fork);
+        if (pr && pull)
+          return {
+            verified:
+              dirty === false && pr.status.pipeline === 'success' && pr.status.checks.total > 0,
+            revision,
+            branch,
+            dirty,
+            worktreeFingerprint,
+            lastPromptSeq,
+            pull: pr.status,
+          };
+        pageNumber = page.nextPage ?? undefined;
+      }
+      return {
+        verified: false,
+        revision,
+        branch,
+        dirty,
+        worktreeFingerprint,
+        lastPromptSeq,
+        reason: 'No matching current PR evidence',
+      };
+    },
+  });
   let repairTimer: ReturnType<typeof setInterval> | undefined;
   let repairSweep: Promise<void> | undefined;
+  const wakeAssignments = () => {
+    repairSweep ??= qaAssignments
+      .sweep()
+      .catch((error) => app.log.warn({ error }, 'QA assignment reconciliation failed'))
+      .finally(() => {
+        repairSweep = undefined;
+      });
+  };
+  const unsubscribeAssignments = deps.bus.subscribeAll((_id, { event }) => {
+    if (['session_progress', 'permission', 'result', 'interrupted', 'status'].includes(event.t))
+      wakeAssignments();
+  });
   app.addHook('onReady', () => {
     repairTimer = setInterval(() => {
       repairSweep ??= qaRepair
         .sweep()
+        .then(() => qaAssignments.sweep())
         .catch((error) => app.log.warn({ error }, 'manual QA repair reconciliation failed'))
         .finally(() => {
           repairSweep = undefined;
@@ -244,6 +455,7 @@ export function registerServerMcpRoutes({
     repairTimer.unref();
   });
   app.addHook('onClose', async () => {
+    unsubscribeAssignments();
     if (repairTimer) clearInterval(repairTimer);
     await repairSweep;
   });
@@ -593,96 +805,7 @@ export function registerServerMcpRoutes({
           },
         );
       },
-      createSession: async ({ projectId, name, idempotencyKey }) => {
-        const existing = controlHandoffSessionCreates.get(idempotencyKey);
-        if (existing !== undefined) return existing;
-        const creating = (async (): Promise<{ sessionId: string }> => {
-          const digest = createHash('sha256').update(idempotencyKey).digest();
-          digest[6] = (digest[6]! & 0x0f) | 0x40;
-          digest[8] = (digest[8]! & 0x3f) | 0x80;
-          const hex = digest.subarray(0, 16).toString('hex');
-          const sessionId = `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
-          const prior = await deps.eventStore.getSession(sessionId);
-          if (prior !== undefined) {
-            if (prior.projectId !== projectId) {
-              throw new ControlPlaneSessionToolError('new-session handoff key collision');
-            }
-            return { sessionId };
-          }
-          const project = await deps.eventStore.getProject(projectId);
-          if (
-            project === undefined ||
-            project.hiddenAt !== null ||
-            project.state !== 'active' ||
-            isControlPlaneProject(project)
-          ) {
-            throw new ControlPlaneSessionToolError('new-session handoff target is unavailable');
-          }
-          if (deps.projectCloneRoot === undefined || deps.projectBackend === undefined) {
-            throw new ControlPlaneSessionToolError('new-session handoff is not configured');
-          }
-          if (projectsBeingDeleted.has(project.id)) {
-            throw new ControlPlaneSessionToolError('new-session handoff target is unavailable');
-          }
-          if (isLocalProject(project) && !deps.dataRoot)
-            throw new ControlPlaneSessionToolError(
-              'Local projects require configured document storage.',
-            );
-          await deps.provisioner?.prepareLocalDocuments?.(project.id);
-          const releaseSpawn = beginProjectSpawn(project.id);
-          try {
-            const settings = await projectSettingsStore(deps.eventStore).getProjectSettings(
-              project.id,
-            );
-            const model = resolveProjectDefaultModel(
-              await availableModels({ allowLegacyCodexFallback: true }),
-              settings,
-              isProjectSessionModel,
-            );
-            if (model === undefined || !(await isConfiguredProjectSessionModel(model))) {
-              throw new ControlPlaneSessionToolError('project has no eligible default model');
-            }
-            const selectedModel = model;
-            const projectClone = projectClonePath(deps.projectCloneRoot, project);
-            const worktreeOpts = {
-              refreshBase: true,
-              ...(settings?.defaultBranch == null ? {} : { baseBranch: settings.defaultBranch }),
-            };
-            const provisioner =
-              isLocalProject(project) && deps.dataRoot
-                ? createDocumentWorkspaceProvisioner(deps.dataRoot, project.id, projectClone)
-                : (deps.projectWorktrees?.(project, projectClone, worktreeOpts) ??
-                  createGitWorktreeProvisioner({
-                    repoDir: projectClone,
-                    worktreeRoot: join(projectClone, '.verity-sessions'),
-                    ...worktreeOpts,
-                  }));
-            await deps.refreshProjectToken?.(project);
-            const worktree = await provisioner.add(makeBranch(name));
-            try {
-              await deps.eventStore.createSession({
-                sessionId,
-                projectId: project.id,
-                worktree,
-                model: selectedModel,
-                name,
-              });
-            } catch (error) {
-              await provisioner.remove(worktree).catch(() => undefined);
-              throw error;
-            }
-            return { sessionId };
-          } finally {
-            releaseSpawn();
-          }
-        })();
-        controlHandoffSessionCreates.set(idempotencyKey, creating);
-        try {
-          return await creating;
-        } finally {
-          controlHandoffSessionCreates.delete(idempotencyKey);
-        }
-      },
+      createSession: createHandoffSession,
       readProgress: async (sessionId) => {
         const session = await deps.eventStore.getSession(sessionId);
         if (session === undefined)
@@ -1111,6 +1234,20 @@ export function registerServerMcpRoutes({
       authorizationSnapshot: async ({ sessionId, turnId, projectId, toolName, request }) => {
         if (
           toolName === 'verity_qa_analysis' &&
+          (request as { action: string }).action === 'request_assignment'
+        ) {
+          const r = request as { projectId: string; assignmentId: string };
+          return JSON.stringify(
+            await qaAssignments.owned(
+              await repairCaller(sessionId, turnId),
+              r.projectId,
+              r.assignmentId,
+            ),
+          );
+        }
+
+        if (
+          toolName === 'verity_qa_analysis' &&
           (request as { action: string }).action === 'request_repair'
         ) {
           const r = request as { projectId: string; proposalId: string };
@@ -1200,6 +1337,18 @@ export function registerServerMcpRoutes({
             (request as { proposalId: string }).proposalId,
           );
         }
+        if (
+          toolName === 'verity_qa_analysis' &&
+          (request as { action: string }).action === 'request_assignment'
+        )
+          return (
+            (await trustedQAAssignmentConsent(
+              deps.eventStore,
+              sessionId,
+              turnId,
+              (request as { assignmentId: string }).assignmentId,
+            )) !== undefined
+          );
         if (toolName === 'verity_vulnerabilities') {
           await vulnerabilityTool.authorize({ projectId, sessionId, turnId, request });
           return true;
@@ -1229,7 +1378,7 @@ export function registerServerMcpRoutes({
         // reads a static catalog and touches no data at all.
         if (
           toolName === 'verity_qa_analysis' &&
-          (request as { action?: string }).action === 'save_report'
+          ['save_report', 'create_followup'].includes((request as { action?: string }).action ?? '')
         )
           return false;
         if (
@@ -1497,6 +1646,64 @@ export function registerServerMcpRoutes({
               return importProjectSource(deps.dataRoot, input.projectId, session.worktree, request);
             if (request.operation === 'create_source_folder')
               return createProjectSourceFolder(deps.dataRoot, input.projectId, request);
+            if (request.operation === 'lookup_decisions')
+              return lookupProjectDecisions(deps.dataRoot, input.projectId, request);
+            if (request.operation === 'record_decision') {
+              const running = (await deps.eventStore.listRunningTurns()).find(
+                (turn) => turn.sessionId === input.sessionId,
+              );
+              if (!running) throw new Error('A decision requires an active confirmation prompt');
+              let seq = request.confirmationMessageSeq;
+              if (seq === undefined) {
+                let before: number | undefined;
+                // Steering does not advance the turn's starting promptSeq. Resolve
+                // the latest delivered user prompt rather than misattributing a save.
+                for (let page = 0; page < 10 && seq === undefined; page++) {
+                  const recent = await deps.eventStore.getEventsBeforeSeq(
+                    input.sessionId,
+                    200,
+                    before,
+                  );
+                  const delivered = [...recent.events]
+                    .reverse()
+                    .find(
+                      ({ seq: eventSeq, event }) =>
+                        event.t === 'prompt' &&
+                        (eventSeq === running.promptSeq ||
+                          (eventSeq > running.promptSeq && event.steered === true)),
+                    );
+                  seq = delivered?.seq;
+                  before = recent.events[0]?.seq;
+                  if (!recent.hasMore || before === undefined || before <= running.promptSeq) break;
+                }
+                if (seq === undefined)
+                  throw new Error(
+                    'No delivered user confirmation found; supply its confirmationMessageSeq.',
+                  );
+              }
+              const events = await deps.eventStore.getEventsAfter(input.sessionId, seq - 1, 1);
+              const confirmation = events[0];
+              if (
+                confirmation?.seq !== seq ||
+                confirmation.event.t !== 'prompt' ||
+                confirmation.event.peer !== undefined ||
+                (deps.authRegistry?.isEnabled() === true &&
+                  confirmation.event.initiatedBy === undefined) ||
+                (seq > running.promptSeq && confirmation.event.steered !== true)
+              )
+                throw new Error(
+                  'Decision confirmation must reference a user prompt in the calling session',
+                );
+              return recordProjectDecision(
+                deps.dataRoot,
+                input.projectId,
+                {
+                  sessionId: input.sessionId,
+                  confirmationMessageSeq: seq,
+                },
+                request,
+              );
+            }
             return moveProjectSource(deps.dataRoot, input.projectId, request);
           }
           const session = await deps.eventStore.getSession(input.sessionId);
@@ -1510,6 +1717,61 @@ export function registerServerMcpRoutes({
             request,
             documentViewForSession(session),
           );
+        }
+        if (input.toolName === 'verity_qa_analysis') {
+          const request = qaAnalysisRequestSchema.parse(input.request);
+          if (request.action === 'assignments')
+            return qaAssignments.list(
+              await repairCaller(input.sessionId, input.turnId),
+              request.projectId,
+            );
+          if (request.action === 'propose_assignment')
+            return qaAssignments.propose(
+              await repairCaller(input.sessionId, input.turnId),
+              request,
+              input.invocationId,
+            );
+          if (request.action === 'assignment_status')
+            return qaAssignments.status(
+              await repairCaller(input.sessionId, input.turnId),
+              request.projectId,
+              request.assignmentId,
+            );
+          if (request.action === 'stop_assignment')
+            return qaAssignments.stop(
+              await repairCaller(input.sessionId, input.turnId),
+              request.projectId,
+              request.assignmentId,
+            );
+          if (request.action === 'review_assignment')
+            return qaAssignments.review(
+              await repairCaller(input.sessionId, input.turnId),
+              request.projectId,
+              request.assignmentId,
+              request.version,
+              request.outcome,
+              request.assessment,
+            );
+          if (request.action === 'request_assignment') {
+            const consent = input.approvedByCard
+              ? `card:${request.assignmentId}`
+              : await trustedQAAssignmentConsent(
+                  deps.eventStore,
+                  input.sessionId,
+                  input.turnId,
+                  request.assignmentId,
+                );
+            if (!consent)
+              throw new ControlPlaneSessionAuthorityError(
+                'An explicit assignment approval is required.',
+              );
+            return qaAssignments.request(
+              await repairCaller(input.sessionId, input.turnId),
+              request.projectId,
+              request.assignmentId,
+              consent,
+            );
+          }
         }
         if (input.toolName === 'verity_qa_analysis') {
           const r = input.request as {
@@ -1552,6 +1814,7 @@ export function registerServerMcpRoutes({
           return executeQAAnalysis(
             {
               ...assistantToolDeps,
+              publishSessionEvent,
               saveReport: (projectId, id, report, authorize) => {
                 if (!deps.dataRoot) throw new Error('Document storage unavailable');
                 return saveQAReport(deps.dataRoot, projectId, id, report, authorize);
@@ -1649,6 +1912,15 @@ export function registerServerMcpRoutes({
               ...input,
               ...(googleAccount ? { googleAccount } : {}),
               ...scheduling,
+              ...(toolName === 'verity_qa_analysis' &&
+              (input as { action?: string }).action === 'request_assignment' &&
+              authorizationSnapshot
+                ? {
+                    assignment: JSON.parse(authorizationSnapshot) as Record<string, unknown>,
+                    scope:
+                      'One project assignment, one executing session, at most two follow-ups within the same goal. No merge, deployment, additional access, or future automatic work.',
+                  }
+                : {}),
               ...(toolName === 'verity_qa_analysis' &&
               (input as { action?: string }).action === 'request_repair' &&
               authorizationSnapshot

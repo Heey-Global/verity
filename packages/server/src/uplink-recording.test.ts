@@ -112,3 +112,52 @@ it('preserves strict v2 pages and rejects wrong negotiated versions', () => {
     parseRecordingResponse({ ...page, secret: 'private' }, fixture.document.runId, 2),
   ).toThrow();
 });
+
+it.each([
+  [{ ...response, secret: 'private', records: [], padding: 'x'.repeat(32768) }, runId, 1, 'size'],
+  [{ ...response, version: 99 }, runId, 1, 'version'],
+  [{ ...response, version: 99 }, runId, 3, 'version'],
+  [{ ...response, state: 'private' }, runId, 1, 'schema'],
+  [response, '22222222-2222-4222-8222-222222222222', 1, 'run_id'],
+] as const)(
+  'classifies invalid replies without exposing peer content',
+  (value, expectedRun, version, reason) => {
+    expect(() => parseRecordingResponse(value, expectedRun, version)).toThrow(
+      new Error(`invalid_diagnostics_response_${reason}`),
+    );
+  },
+);
+
+it('classifies inconsistent finalized lifecycle metadata', () => {
+  const fixture = JSON.parse(
+    readFileSync(
+      new URL('../../events/src/fixtures/socket-evidence-v2.json', import.meta.url),
+      'utf8',
+    ),
+  ) as { document: Record<string, unknown> & { runId: string } };
+  expect(() =>
+    parseRecordingResponse(
+      {
+        ...Object.fromEntries(
+          Object.entries(fixture.document).filter(([key]) => key !== 'records'),
+        ),
+        type: 'diagnostics.stopped',
+        requestId: runId,
+        exportHash: null,
+      },
+      fixture.document.runId,
+      2,
+    ),
+  ).toThrow(new Error('invalid_diagnostics_response_lifecycle'));
+});
+
+it('preserves unversioned protocol errors for newer negotiated versions', () => {
+  for (const version of [2, 3] as const)
+    expect(() =>
+      parseRecordingResponse(
+        { type: 'diagnostics.error', requestId: runId, runId, code: 'not_found' },
+        runId,
+        version,
+      ),
+    ).toThrow(new Error('diagnostics_not_found'));
+});

@@ -124,6 +124,40 @@ esac\n`,
     expect(f.invoke().status).toBe(0);
     expect(f.status().state).toBe('deferred');
   });
+  it.each([
+    { path: 'migration-pending', message: 'migration pending' },
+    { path: '../state/pending.json', message: 'migration recovery journal' },
+  ])('explains the recovery fence: $message', ({ path, message }) => {
+    const f = fixture();
+    expect(f.invoke('init').status).toBe(0);
+    writeFileSync(join(f.run, path), '{}');
+    const result = f.invoke('drained');
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain(message);
+  });
+  it.each([
+    { options: { legacy: true }, message: 'incompatible or unverifiable builder client' },
+    { options: { busy: true }, message: 'BuildKit cache is in use' },
+    { options: { failUsage: true }, message: 'BuildKit cache activity could not be verified' },
+    { options: { usage: '[{}]' }, message: 'BuildKit cache activity could not be verified' },
+  ])('explains the drain blocker: $message', ({ options, message }) => {
+    const f = fixture(options);
+    expect(f.invoke('init').status).toBe(0);
+    const result = f.invoke('drained');
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain(message);
+  });
+  it('reports lease count and names without releasing them', () => {
+    const f = fixture();
+    expect(f.invoke('init').status).toBe(0);
+    for (const name of ['attempt-one', 'attempt-two']) mkdirSync(join(f.run, 'leases', name));
+    const result = f.invoke('drained');
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('2 admission leases remain');
+    expect(result.stderr).toContain('attempt-one');
+    expect(result.stderr).toContain('attempt-two');
+    expect(existsSync(join(f.run, 'leases', 'attempt-one'))).toBe(true);
+  });
   it('rolls back configuration when the gVisor build fails', () => {
     const f = fixture({ failProbe: true });
     expect(f.invoke().status).not.toBe(0);

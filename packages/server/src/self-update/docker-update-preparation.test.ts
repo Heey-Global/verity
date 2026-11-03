@@ -423,6 +423,98 @@ describe('Docker update preparation', () => {
       }
     };
 
+    it('reports unchanged when renewal cannot identify a trusted installed updater', async () => {
+      const { root, journal } = await setup();
+      const hostRuntimeDir = await mkdtemp(join(tmpdir(), 'verity-host-renewal-'));
+      try {
+        const docker = { ...fakeDocker(), inspectRuntime: registered(['runsc', 'runsc-project']) };
+        docker.inspectImageLabels.mockResolvedValue({
+          [label[1]!]: label[2]!.replaceAll('\\"', '"'),
+          'org.verity.host-runtime-service': JSON.stringify({
+            revision: 1,
+            renewalProtocol: 1,
+            features: ['binary', 'archive'],
+          }),
+        });
+        await expect(
+          resumeUpdatePreparation(
+            root,
+            await dockerUpdatePreparation({
+              managedRoot: root,
+              docker,
+              environment: { DATABASE_URL: 'postgres://db', DEPLOYMENT_ID: 'deployment-1' },
+              verifyImage: async () => undefined,
+              hostRuntimeDir,
+            }),
+          ),
+        ).rejects.toThrow('one trusted installed updater');
+        expect(JSON.parse(await readFile(join(root, 'host-preparation.json'), 'utf8'))).toEqual({
+          updateId: journal.updateId,
+          targetDigest: journal.targetDigest,
+          stage: 'unchanged',
+        });
+      } finally {
+        await rm(hostRuntimeDir, { recursive: true, force: true });
+      }
+    });
+
+    it('does not overwrite recovery-required when updater inventory fails after an earlier install started', async () => {
+      const { root, journal } = await setup();
+      const hostRuntimeDir = await mkdtemp(join(tmpdir(), 'verity-host-renewal-'));
+      try {
+        const docker = { ...fakeDocker(), inspectRuntime: registered(['runsc', 'runsc-project']) };
+        docker.inspectImageLabels.mockResolvedValue({
+          [label[1]!]: label[2]!.replaceAll('\\"', '"'),
+          'org.verity.host-runtime-service': JSON.stringify({
+            revision: 1,
+            renewalProtocol: 1,
+            features: ['binary', 'archive'],
+          }),
+        });
+        let installInspected = false;
+        docker.listContainers.mockImplementation(async () => {
+          if (installInspected) throw new Error('updater inventory unavailable');
+          return [
+            {
+              id: 'retained-install',
+              imageId: newImage,
+              names: ['verity-runtime-install-retained'],
+              labels: {
+                'verity.managed-role': 'runtime-renewal',
+                'verity.managed-deployment-id': journal.deploymentId,
+                'verity.update-id': journal.updateId,
+                'verity.target-digest': journal.targetDigest,
+                'verity.renewal-stage': 'install',
+              },
+            },
+          ];
+        });
+        docker.inspectContainer.mockImplementation(async (id) => {
+          expect(id).toBe('retained-install');
+          installInspected = true;
+          return { id, status: 'running', running: true };
+        });
+        await expect(
+          resumeUpdatePreparation(
+            root,
+            await dockerUpdatePreparation({
+              managedRoot: root,
+              docker,
+              environment: { DATABASE_URL: 'postgres://db', DEPLOYMENT_ID: 'deployment-1' },
+              verifyImage: async () => undefined,
+              hostRuntimeDir,
+            }),
+          ),
+        ).rejects.toThrow('updater inventory unavailable');
+        expect(docker.inspectContainer).toHaveBeenCalledWith('retained-install');
+        expect(JSON.parse(await readFile(join(root, 'host-preparation.json'), 'utf8')).stage).toBe(
+          'recovery-required',
+        );
+      } finally {
+        await rm(hostRuntimeDir, { recursive: true, force: true });
+      }
+    });
+
     it('creates no standby on a host that lacks one of them', async () => {
       const docker = { ...fakeDocker(), inspectRuntime: registered(['runsc']) };
       await expect(prepare(docker)).rejects.toThrow(/runsc-project.*the Verity installer/su);
@@ -1659,7 +1751,8 @@ it('prepares host runtimes using the installed live-smoke service instead of inv
     expect(docker.inspectRuntime).toHaveBeenCalledWith('runsc');
     expect(docker.inspectRuntime).toHaveBeenCalledWith('runsc-project');
     expect(docker.createContainer).not.toHaveBeenCalled();
-    expect(docker.listContainers).toHaveBeenCalledTimes(2);
+// Include the read-only inventory of any previously started host writer.
+    expect(docker.listContainers).toHaveBeenCalledTimes(3);
     // A receipt cannot conceal a wrong runtime registration on the daemon.
     docker.inspectRuntime.mockResolvedValue(undefined);
     await expect(actions.reconcileHostRuntimes!(journal)).rejects.toThrow();

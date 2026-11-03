@@ -133,6 +133,11 @@ export function unlinkOwnedUnixSocket(
   }
 }
 
+/** Called by the relay itself, never forwarded for the Sandbox: the controlled DNS
+ *  answerer's lookup under the project fence (socket identity only), which keeps
+ *  Sandbox name lookups behind the answerer's own bounds. */
+export const RELAY_ANSWERER_ROUTES: ReadonlySet<string> = new Set(['POST /internal/dns']);
+
 /** Exported so the relay-drift test can hold the sidecar's forwarding allowlist to
  *  it: the relay is the only hop a Sandbox has to this socket. */
 export const PROJECT_UDS_ROUTES: ReadonlySet<string> = new Set([
@@ -154,6 +159,7 @@ export const PROJECT_UDS_ROUTES: ReadonlySet<string> = new Set([
   'POST /internal/mcp-proxy',
   'GET /internal/mcp-proxy',
   'DELETE /internal/mcp-proxy',
+  ...RELAY_ANSWERER_ROUTES,
 ]);
 
 /**

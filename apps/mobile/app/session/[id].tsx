@@ -1,3 +1,6 @@
+import { qaAssignmentView } from '@verity/mobile';
+import { Card, CardHead } from '../../components/ui/Card';
+import { StatusTag } from '../../components/ui/Status';
 import { McpAppCard } from '../../components/McpAppCard';
 import { QAApprovalCard } from '../../components/QAApprovalCard';
 import { SchedulingApprovalEditor } from '../../components/SchedulingApprovalEditor';
@@ -7730,6 +7733,37 @@ function ToolCard({ message }: { message: ToolCallMessage }) {
   const skillBody = message.tool.skillBody;
   const running = message.tool.name === 'Skill' && message.tool.state === 'running';
   const expandable = Boolean(view.subtitle) || Boolean(view.preview) || Boolean(skillBody);
+  const assignment = qaAssignmentView(message.tool);
+  if (assignment)
+    return (
+      <Card stacked attention={assignment.status === 'blocked' || assignment.status === 'waiting'}>
+        <CardHead
+          title={assignment.title}
+          subtitle={assignment.reason}
+          trailing={
+            <StatusTag
+              intent={
+                assignment.status === 'completed'
+                  ? 'ready'
+                  : assignment.status === 'blocked' || assignment.status === 'waiting'
+                    ? 'needsSetup'
+                    : 'unknown'
+              }
+              label={assignment.label}
+            />
+          }
+        />
+        {assignment.sessionId ? (
+          <Button
+            label="Open project session"
+            onPress={() =>
+              router.push({ pathname: '/session/[id]', params: { id: assignment.sessionId! } })
+            }
+          />
+        ) : null}
+      </Card>
+    );
+
   if (
     planningToolName(message.tool.name) === START_PLANNING_TOOL &&
     message.tool.state === 'completed'

@@ -102,6 +102,7 @@ function build(
     planningOnApproval?: boolean;
     revisePlanOnApproval?: boolean;
     planningTurn?: boolean;
+    onApprovalInput?: (input: unknown) => void;
   } = {},
 ): Harness {
   const cipher = createSealableSecretCipher();
@@ -198,6 +199,7 @@ function build(
       allowStandingGrant?: boolean;
       signal?: AbortSignal;
     }) => {
+      options.onApprovalInput?.(input);
       approvals.push({
         sessionId: input.sessionId,
         callId: input.toolUseId,
@@ -2572,6 +2574,7 @@ it('rejects forged project/generation headers at the real relay before broker ex
 it('lets QA read authorized CI evidence through the gateway but refuses all other tools', async () => {
   const h = build({
     planningTools: true,
+    unlocked: true,
     allow: true,
     qaAnalysisRead: async (_project, _request, authorize) => {
       await authorize();
@@ -2596,6 +2599,19 @@ it('lets QA read authorized CI evidence through the gateway but refuses all othe
   await h.store.repairs.configureQA(true, 'admin');
   await h.store.repairs.qaSession('qa');
   await h.store.repairs.configure('p1', 'admin', 'monitor');
+  await sql`insert into users (id, role, status) values ('qa-reader', 'member', 'active')`.execute(
+    ctx.db,
+  );
+  await sql`insert into project_memberships(project_id,user_id,can_read,can_execute,can_manage) values ('p1','qa-reader',true,true,false)`.execute(
+    ctx.db,
+  );
+  const prompt = await h.store.appendEvent('qa', {
+    t: 'prompt',
+    text: 'Save the agreed prevention task',
+    initiatedBy: { userId: 'qa-reader' },
+  });
+  await h.store.markTurnRunning({ sessionId: 'qa', promptSeq: prompt.seq });
+  await h.store.bindTurnIdentity('qa', { turnId: 't1', startCommandId: 'qa-start' });
   const token = h.tokens.issue({ projectId: 'p1', sessionId: 'qa', turnId: 't1' });
   await withListener(h, async (socketPath) => {
     let id = 0;
@@ -2618,7 +2634,20 @@ it('lets QA read authorized CI evidence through the gateway but refuses all othe
     const reportId = (JSON.parse(baseline.result.content[0]!.text) as { reportId: string })
       .reportId;
     await call('verity_qa_analysis', { action: 'save_report', projectId: 'p1', reportId });
+    const followup = await call('verity_qa_analysis', {
+      action: 'create_followup',
+      projectId: 'p1',
+      taskId: '10000000-0000-4000-8000-000000000042',
+      title: 'Prevent recurring typecheck failures',
+      detail:
+        'Inspect the failing jobs and move a matching scoped check before push; measure first-attempt success.',
+    });
+    expect(followup.result.isError, JSON.stringify(followup)).toBeUndefined();
+    expect(
+      (await h.store.tasks.get('10000000-0000-4000-8000-000000000042', 'qa-reader'))?.sessionId,
+    ).toBeNull();
     expect(h.approvals).toEqual([
+      expect.objectContaining({ toolName: 'verity_qa_analysis', allowStandingGrant: false }),
       expect.objectContaining({ toolName: 'verity_qa_analysis', allowStandingGrant: false }),
     ]);
 
@@ -2725,3 +2754,71 @@ it.each([false, true])(
     });
   },
 );
+
+it('shows the stored general QA assignment on a one-time approval card', async () => {
+  let approvalInput: unknown;
+  const h = build({
+    planningTools: true,
+    allow: false,
+    onApprovalInput: (input) => {
+      approvalInput = input;
+    },
+  });
+  await h.store.createProject({
+    id: 'p1',
+    kind: 'github',
+    owner: 'team',
+    repo: 'app',
+    cloneDir: 'app',
+    containerName: 'app',
+    state: 'active',
+  });
+  await h.store.createSession({
+    sessionId: 'qa',
+    projectId: 'p1',
+    worktree: '/tmp/qa',
+    model: 'claude',
+  });
+  await h.store.repairs.configureQA(true, '00000000-0000-4000-8000-000000000001');
+  await h.store.repairs.qaSession('qa');
+  await h.store.repairs.configure('p1', '00000000-0000-4000-8000-000000000001', 'monitor');
+  const id = 'a'.repeat(64);
+  await h.store.qaAssignments.propose({
+    id,
+    project_id: 'p1',
+    source_session_id: 'qa',
+    user_id: '00000000-0000-4000-8000-000000000001',
+    target_session_id: null,
+    title: 'Optimize CI',
+    instruction: 'Optimize CI in team/app',
+    criteria: 'Preserve tests',
+    qa_revision: 1,
+    mandate_revision: 1,
+  });
+  const row = await h.store.appendEvent('qa', {
+    t: 'prompt',
+    text: 'What is slow?',
+    initiatedBy: { userId: '00000000-0000-4000-8000-000000000001' },
+  });
+  await h.store.markTurnRunning({ sessionId: 'qa', promptSeq: row.seq });
+  await h.store.bindTurnIdentity('qa', { turnId: 't1', startCommandId: 'start' });
+  const token = h.tokens.issue({ projectId: 'p1', sessionId: 'qa', turnId: 't1' });
+  await withListener(h, async (socketPath) => {
+    await postUnix(socketPath, `Bearer ${token}`, {
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'tools/call',
+      params: {
+        name: 'verity_qa_analysis',
+        arguments: { action: 'request_assignment', projectId: 'p1', assignmentId: id },
+      },
+    });
+    expect(h.approvals).toHaveLength(1);
+    expect(approvalInput).toMatchObject({
+      toolName: 'verity_qa_analysis',
+      allowStandingGrant: false,
+      input: { assignment: { instruction: 'Optimize CI in team/app', criteria: 'Preserve tests' } },
+    });
+    expect((await h.store.qaAssignments.get(id))?.state).toBe('proposed');
+  });
+});
