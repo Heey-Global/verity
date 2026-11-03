@@ -71,3 +71,51 @@ export async function pendingSessionCleanups(root: string): Promise<PendingSessi
   }
   return records;
 }
+
+/** One serial worker: retries survive failed requests and do not overlap slow supervisor calls. */
+export function createSessionCleanupWorker(
+  scan: () => Promise<void>,
+  onError: (error: unknown) => void,
+  intervalMs = 30_000,
+): {
+  start: () => void;
+  run: () => void;
+  stop: () => void;
+  settled: () => Promise<void> | undefined;
+} {
+  let timer: ReturnType<typeof setInterval> | undefined;
+  let active: Promise<void> | undefined;
+  let requested = false;
+  let stopped = false;
+  const run = (): void => {
+    if (stopped) return;
+    requested = true;
+    if (active) return;
+    active = (async () => {
+      while (requested && !stopped) {
+        requested = false;
+        try {
+          await scan();
+        } catch (error) {
+          onError(error);
+        }
+      }
+    })().finally(() => {
+      active = undefined;
+    });
+  };
+  return {
+    run,
+    start: () => {
+      if (timer || stopped) return;
+      timer = setInterval(run, intervalMs);
+      timer.unref();
+      run();
+    },
+    stop: () => {
+      stopped = true;
+      clearInterval(timer);
+    },
+    settled: () => active,
+  };
+}
