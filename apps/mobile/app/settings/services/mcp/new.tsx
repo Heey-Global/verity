@@ -3,7 +3,8 @@ import { type VerityClient } from '@verity/mobile';
 import * as Clipboard from 'expo-clipboard';
 import { router } from 'expo-router';
 import { useMemo, useRef, useState } from 'react';
-import { Platform } from 'react-native';
+import { Platform, View } from 'react-native';
+import { StyleSheet } from 'react-native-unistyles';
 import {
   SettingsChoiceRow,
   SettingsGroup,
@@ -151,14 +152,19 @@ function NewMcpConnectionView({ client }: { client: VerityClient }) {
       title="Add MCP connection"
       detail
       footer={
-        <Button
-          label="Add connection"
-          accessibilityLabel="Add MCP connection"
-          loading={busy}
-          disabled={incomplete || discovering}
-          onPress={add}
-          fullWidth
-        />
+        // The error sits beside the pinned action, not at the end of a long
+        // form, so a failed submit is seen without scrolling.
+        <View style={styles.footerStack}>
+          {error !== undefined ? <HintBox title={error.title} message={error.message} /> : null}
+          <Button
+            label="Add connection"
+            accessibilityLabel="Add MCP connection"
+            loading={busy}
+            disabled={incomplete || discovering}
+            onPress={add}
+            fullWidth
+          />
+        </View>
       }
     >
       <SettingsGroup title="Server">
@@ -342,7 +348,10 @@ function NewMcpConnectionView({ client }: { client: VerityClient }) {
           ) : null}
         </SettingsGroup>
       ) : null}
-      {error !== undefined ? <HintBox title={error.title} message={error.message} /> : null}
     </SettingsScaffold>
   );
 }
+
+const styles = StyleSheet.create((theme) => ({
+  footerStack: { gap: theme.spacing.sm },
+}));
