@@ -5233,6 +5233,39 @@ export class ProvisionerImpl implements Provisioner {
         );
       }
       try {
+        // Merge strategies may overwrite ignored files even with the porcelain
+        // flag. Protect untracked files (including ignored dependencies/assets)
+        // before either merging or recreating the linked checkout.
+        const localOnly = (
+          await git(['-C', clonePath, 'ls-files', '--others', '--directory', '-z'])
+        ).stdout
+          .split('\0')
+          .filter(Boolean)
+          .map((path) => path.replace(/\/$/u, ''));
+        const incoming = (
+          await git([
+            '-C',
+            clonePath,
+            'ls-tree',
+            '-r',
+            '--name-only',
+            '-z',
+            `refs/remotes/origin/${remoteBranch}`,
+          ])
+        ).stdout
+          .split('\0')
+          .filter(Boolean);
+        const hasAncestor = (paths: Set<string>, path: string) =>
+          path.split('/').some((_, index, parts) => paths.has(parts.slice(0, index + 1).join('/')));
+        const localPaths = new Set(localOnly);
+        const incomingPaths = new Set(incoming);
+        if (
+          incoming.some((path) => hasAncestor(localPaths, path)) ||
+          localOnly.some((path) => hasAncestor(incomingPaths, path))
+        )
+          throw new ProvisioningError(
+            'The destination contains files that would replace local untracked or ignored files. Move those files out of the code workspace before linking.',
+          );
         // Identity and signing are pinned per-invocation exactly as `initLocalRepo`
         // and the session merge in branches.ts pin them: the server container carries
         // no `user.email`, and an unset one aborts this merge commit outright, while
@@ -5251,6 +5284,7 @@ export class ProvisionerImpl implements Provisioner {
           'core.hooksPath=/dev/null',
           'merge',
           '--allow-unrelated-histories',
+          '--no-overwrite-ignore',
           '--no-edit',
           '-X',
           'ours',
@@ -5350,25 +5384,10 @@ export class ProvisionerImpl implements Provisioner {
         pushTarget,
       ]);
     } catch (cause) {
-      // The push result is ambiguous: GitHub may have accepted it before the
-      // connection failed. Restore the local branch while preserving dirty
-      // working-tree changes, but retain origin + the identity reservation so
-      // a retry can fetch an accepted merge or recreate a rejected one.
-      let rollbackCause: unknown;
-      if (mergedExistingHistory) {
-        try {
-          await git(['-C', clonePath, 'reset', '--merge', localHead]);
-        } catch (error) {
-          rollbackCause = error;
-        }
-      }
-      // Keep a matching origin even when this command reports failure. The
-      // server cannot know whether GitHub accepted the update before the network
-      // broke; the next attempt uses origin + exact remote HEAD to recover.
-      const failure =
-        rollbackCause === undefined
-          ? commandFailureMessage(cause)
-          : `${commandFailureMessage(cause)}; restoring the local branch also failed: ${commandFailureMessage(rollbackCause)}`;
+      // GitHub may already have accepted this exact merge. Keep it and origin
+      // so a retry reuses its hash/import branch rather than generating a new
+      // timestamped merge and publishing a duplicate suffixed branch.
+      const failure = commandFailureMessage(cause);
       const safeCause = new Error(redactSensitive(failure, [token, authHeader]));
       throw new AmbiguousGitPushError(
         `pushing ${importBranch ?? branch} to ${target.owner}/${target.repo} failed; retry to recover`,

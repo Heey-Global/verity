@@ -11999,14 +11999,19 @@ it('retains local history and reports a redacted signature-policy rejection duri
   }
 });
 
-it.each(['dirty-empty', 'different-default'] as const)(
+it.each(['dirty-empty', 'different-default', 'ignored-collision', 'ambiguous-retry'] as const)(
   'preserves local edits and the destination branch when linking: %s',
   async (scenario) => {
     const root = mkdtempSync(join(tmpdir(), 'link-preservation-'));
     const clone = join(root, 'code');
     const remote = join(root, 'remote');
+    let mergeNumber = 0;
     const run = (...args: string[]) =>
-      execFileSync('git', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+      execFileSync('git', args, {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: { ...process.env, GIT_COMMITTER_DATE: `@${1700000000 + mergeNumber} +0000` },
+      });
     const commit = (repo: string) =>
       run(
         '-C',
@@ -12025,16 +12030,36 @@ it.each(['dirty-empty', 'different-default'] as const)(
     run('init', '-q', '-b', 'main', clone);
     writeFileSync(join(clone, 'file.txt'), 'original');
     run('-C', clone, 'add', 'file.txt');
+    if (scenario === 'ignored-collision') {
+      writeFileSync(join(clone, '.gitignore'), 'asset.txt\n');
+      run('-C', clone, 'add', '.gitignore');
+    }
     commit(clone);
     run('init', '-q', '-b', 'master', remote);
-    if (scenario === 'different-default') {
+    if (scenario !== 'dirty-empty') {
+      if (scenario === 'ignored-collision') {
+        writeFileSync(join(remote, 'asset.txt'), 'remote asset');
+        run('-C', remote, 'add', 'asset.txt');
+        writeFileSync(join(clone, 'asset.txt'), 'local asset');
+      }
       commit(remote);
-      run('-C', remote, 'config', 'receive.denyCurrentBranch', 'ignore');
     } else writeFileSync(join(clone, 'file.txt'), 'uncommitted');
     const calls: string[][] = [];
     const git: GitRunner = async (args) => {
       calls.push([...args]);
-      if (args.includes('push')) return { stdout: '', stderr: '' };
+      if (args.includes('merge') && args.includes('--allow-unrelated-histories')) mergeNumber++;
+      if (args.includes('push')) {
+        if (
+          scenario === 'ambiguous-retry' &&
+          calls.filter((call) => call.includes('push')).length === 1
+        ) {
+          // Simulate acceptance followed by transport failure, without a network push.
+          run('-C', remote, 'fetch', clone, 'HEAD');
+          run('-C', remote, 'update-ref', args.at(-1)!.split(':')[1]!, 'FETCH_HEAD');
+          throw new Error('connection lost after remote accepted import');
+        }
+        return { stdout: '', stderr: '' };
+      }
       const localArgs = args.map((arg) => (arg === 'https://github.com/acme/code' ? remote : arg));
       return { stdout: run(...localArgs), stderr: '' };
     };
@@ -12063,14 +12088,34 @@ it.each(['dirty-empty', 'different-default'] as const)(
         ).rejects.toThrow('uncommitted changes');
         expect(calls.some((args) => args.includes('push'))).toBe(false);
         expect(readFileSync(join(clone, 'file.txt'), 'utf8')).toBe('uncommitted');
+      } else if (scenario === 'ignored-collision') {
+        await expect(
+          provisioner.linkCloneToGitHub(project, { owner: 'acme', repo: 'code' }, undefined),
+        ).rejects.toThrow('merging the existing GitHub repository');
+        expect(readFileSync(join(clone, 'asset.txt'), 'utf8')).toBe('local asset');
+        expect(calls.some((args) => args.includes('push'))).toBe(false);
       } else {
+        let acceptedHead: string | undefined;
+        if (scenario === 'ambiguous-retry') {
+          await expect(
+            provisioner.linkCloneToGitHub(project, { owner: 'acme', repo: 'code' }, undefined),
+          ).rejects.toThrow('retry to recover');
+          acceptedHead = run('-C', remote, 'rev-parse', 'verity/import-main').trim();
+        }
         const result = await provisioner.linkCloneToGitHub(
           project,
           { owner: 'acme', repo: 'code' },
           undefined,
         );
         expect(result.defaultBranch).toBe('master');
-        expect(result.importBranch).toBeDefined();
+        expect(result.importBranch).toBe('verity/import-main');
+        if (acceptedHead) {
+          expect(run('-C', clone, 'rev-parse', 'HEAD').trim()).toBe(acceptedHead);
+          expect(calls.filter((args) => args.includes('push')).map((args) => args.at(-1))).toEqual([
+            'HEAD:refs/heads/verity/import-main',
+            'HEAD:refs/heads/verity/import-main',
+          ]);
+        }
         expect(run('-C', remote, 'rev-list', '--count', 'master').trim()).toBe('1');
       }
     } finally {
