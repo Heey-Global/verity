@@ -5,9 +5,10 @@ import type { AgentEvent } from './events.js';
  *
  * The overview needs five things from a session's log — its status badge, its
  * cumulative token usage, its latest per-window rate-limit states, how many
- * events it has, and the question it is waiting on. The first three are decided ENTIRELY by the discriminants below;
- * every other kind of event (`text`, `thinking`, `tool_call`, `tool_result`,
- * `raw`, …) is skipped by all three projections. Those skipped kinds are also the
+ * events it has, and the question it is waiting on. All but the count are decided
+ * ENTIRELY by the discriminants below; every other kind of event (`text`,
+ * `thinking`, `tool_call`, `tool_result`, `raw`, …) is skipped by every one of
+ * them. Those skipped kinds are also the
  * bulk of a real log, and the only ones carrying large payloads.
  *
  * So this set is what lets `GET /sessions` answer from a narrow slice instead of

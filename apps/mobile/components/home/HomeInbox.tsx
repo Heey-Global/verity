@@ -20,6 +20,8 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { Icon } from '../Icon';
 import { Button, Card, CardHead, StatusTag, Text } from '../ui';
 import { tint } from '../ui/tint';
+import { useTaskPreferences } from '../../lib/taskPreferences';
+import { taskAccountScope } from '../../lib/tasksStore';
 import { dispatchTaskVoiceShortcut } from '../../lib/voiceShortcut';
 
 const MARK = require('../../assets/brand/verity-v-mark.png') as number;
@@ -137,7 +139,9 @@ export function HomeInbox({
           selected={item.sessionId !== undefined && item.sessionId === selectedSessionId}
           pending={pending === item.key}
           disabled={pending !== null}
-          onAction={(action) => void run(item, action)}
+          onAction={(action) => {
+            run(item, action).catch(() => setPending(null));
+          }}
         />
       ))}
     </ScrollView>
@@ -147,6 +151,9 @@ export function HomeInbox({
 /** Verity's identity and capture on Home; exported for the design-system catalog. */
 export function VerityHeader({ summary }: { summary: string }) {
   const { theme } = useUnistyles();
+  // The field opens quick capture, which only listens while task capture is on
+  // and an account is known; without them it would be a button that does nothing.
+  const capture = useTaskPreferences().enabled && taskAccountScope() !== null;
   return (
     <View style={styles.header}>
       <View style={styles.identity}>
@@ -166,20 +173,22 @@ export function VerityHeader({ summary }: { summary: string }) {
           </Text>
         </View>
       </View>
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel="Tell Verity"
-        accessibilityHint="Records a note for Verity: an idea, a mail or an appointment"
-        onPress={() => dispatchTaskVoiceShortcut({ target: 'assistant' })}
-        style={({ pressed }) => [styles.capture, pressed ? styles.capturePressed : null]}
-      >
-        <Text variant="body" tone="faint" style={styles.flex}>
-          Tell Verity… an idea, a mail, an appointment
-        </Text>
-        <View style={styles.mic}>
-          <Icon name="mic" size={20} color={theme.colors.action} />
-        </View>
-      </Pressable>
+      {capture ? (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Tell Verity"
+          accessibilityHint="Records a note for Verity: an idea, a mail or an appointment"
+          onPress={() => dispatchTaskVoiceShortcut({ target: 'assistant' })}
+          style={({ pressed }) => [styles.capture, pressed ? styles.capturePressed : null]}
+        >
+          <Text variant="body" tone="faint" style={styles.flex}>
+            Tell Verity… an idea, a mail, an appointment
+          </Text>
+          <View style={styles.mic}>
+            <Icon name="mic" size={20} color={theme.colors.action} />
+          </View>
+        </Pressable>
+      ) : null}
     </View>
   );
 }
@@ -207,7 +216,13 @@ export function InboxCard({
           trailing={<StatusTag intent={TAG_INTENT[item.tone]} label={item.tag} />}
         />
         {item.message ? (
-          <Text variant="bodySmall" tone="muted" numberOfLines={3}>
+          // A permission is decided from what it asks, so its input is never cut
+          // short; everything else is context and stays brief.
+          <Text
+            variant="bodySmall"
+            tone="muted"
+            {...(item.kind === 'permission' ? {} : { numberOfLines: 3 })}
+          >
             {item.message}
           </Text>
         ) : null}

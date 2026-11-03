@@ -11,6 +11,11 @@ jest.mock('expo-crypto', () => {
   return { randomUUID: () => `reply-${String((n += 1))}` };
 });
 jest.mock('../../lib/voiceShortcut', () => ({ dispatchTaskVoiceShortcut: jest.fn() }));
+const mockCapture = { enabled: true, scope: 'account' as string | null };
+jest.mock('../../lib/taskPreferences', () => ({
+  useTaskPreferences: () => ({ enabled: mockCapture.enabled }),
+}));
+jest.mock('../../lib/tasksStore', () => ({ taskAccountScope: () => mockCapture.scope }));
 
 import type { ProjectRecord, SessionSummary, UpcomingMeeting, VerityClient } from '@verity/mobile';
 import { act, fireEvent, render, screen } from '@testing-library/react-native';
@@ -99,7 +104,11 @@ const question = session('form', {
   },
 });
 
-beforeEach(() => jest.clearAllMocks());
+beforeEach(() => {
+  jest.clearAllMocks();
+  mockCapture.enabled = true;
+  mockCapture.scope = 'account';
+});
 
 it('says so when nothing needs the operator', async () => {
   const { onCountChange } = await renderInbox([session('quiet')]);
@@ -230,4 +239,27 @@ it('maps every network answer to the push-reply route it reuses', () => {
     eventKey: 'e',
   });
   expect(replyFor({ kind: 'open_session', label: 'Open', sessionId: 's' })).toBeNull();
+});
+
+it('hides "Tell Verity" while quick capture cannot open', async () => {
+  mockCapture.enabled = false;
+  await renderInbox([]);
+  expect(screen.queryByRole('button', { name: 'Tell Verity' })).toBeNull();
+});
+
+it('shows a permission’s whole input instead of a clipped preview', async () => {
+  const command = Array.from({ length: 8 }, (_, i) => `step ${String(i)}`).join(' && ');
+  await renderInbox([
+    session('shell', {
+      status: 'awaiting_input',
+      permissionAwaitingInput: true,
+      pendingPermissions: ['t1'],
+      pendingPermissionRequests: [
+        { toolUseId: 't1', tool: 'Bash', riskClass: 'ask', input: { command } },
+      ],
+    }),
+  ]);
+  const message = await screen.findByText(new RegExp('step 7'));
+  // Allow must never stand next to text the operator cannot read in full.
+  expect(message.props.numberOfLines).toBeUndefined();
 });

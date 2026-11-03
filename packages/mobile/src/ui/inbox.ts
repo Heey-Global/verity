@@ -212,7 +212,7 @@ function sessionItems(
   if (choices !== undefined) {
     items.push({
       ...base,
-      key: `question:${session.sessionId}:${at}`,
+      key: `question:${session.sessionId}`,
       kind: 'question',
       tag: 'Question',
       tone: 'attention',
@@ -234,7 +234,7 @@ function sessionItems(
   } else if (flags.includes('question') && session.permissionAwaitingInput !== true) {
     items.push({
       ...base,
-      key: `question:${session.sessionId}:${at}`,
+      key: `question:${session.sessionId}`,
       kind: 'question',
       tag: 'Question',
       tone: 'attention',
@@ -247,7 +247,7 @@ function sessionItems(
   if (flags.includes('crashed')) {
     items.push({
       ...base,
-      key: `crashed:${session.sessionId}:${at}`,
+      key: `crashed:${session.sessionId}`,
       kind: 'crashed',
       tag: 'Crashed',
       tone: 'attention',
@@ -273,7 +273,10 @@ function sessionItems(
       tone: 'success',
       title: pr.title,
       context: `${project ? projectDisplayName(project) : label} · PR #${pr.number}`,
-      message: 'Checks passed, no conflicts.',
+      message:
+        button.kind === 'merge'
+          ? 'Checks passed, no conflicts.'
+          : 'Ready, but you cannot merge it here.',
       actions:
         button.kind === 'merge'
           ? [

@@ -620,6 +620,8 @@ function SessionList({ client }: { client: VerityClient }) {
   const openSessionFromHome = useCallback(
     (sessionId: string) => {
       const session = sessions.find((candidate) => candidate.sessionId === sessionId);
+      // `onOpenSession` only prefetches and marks the session seen; the rows
+      // navigate through their own Link, so Home navigates here, once.
       if (session) onOpenSession(session);
       if (wide) setSelectedId(sessionId);
       else router.push({ pathname: '/session/[id]', params: { id: sessionId } });
