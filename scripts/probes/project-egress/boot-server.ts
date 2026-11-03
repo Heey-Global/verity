@@ -1,7 +1,9 @@
 /** Disposable boot fixture: the real EmbeddedServer with persistent test PostgreSQL. */
 import assert from 'node:assert/strict';
-import { EventStore, migrateToLatest, migrationProvider } from '@verity/store';
-import { createEmbeddedDb } from '@verity/store/testing';
+import { EventStore } from '../../../packages/store/src/store.js';
+import { migrateToLatest } from '../../../packages/store/src/db.js';
+import { migrationProvider } from '../../../packages/store/src/migrations.js';
+import { createEmbeddedDb } from '../../../packages/store/src/pglite.js';
 import { readFile, appendFile } from 'node:fs/promises';
 import { buildTestEmbeddedServer } from '../../../packages/server/src/testing.js';
 import { createDockerClient } from '../../../packages/server/src/docker.js';
