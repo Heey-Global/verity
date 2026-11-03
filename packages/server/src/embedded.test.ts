@@ -2467,17 +2467,18 @@ describe('buildEmbeddedServer', () => {
     }
   }, 60_000); // A full embedded DB migration can exceed the shared CI timeout.
 
-  it.each(['project', 'control-missing', 'control-unreachable'])(
+  it.each(['project', 'control-missing', 'control-unreachable', 'timeout'])(
     'deletes backend transcripts with runner layout: %s',
     async (layout) => {
-      const controlPlaneRunner = layout !== 'project';
-      // The glue between the DELETE route and `purgeSessionArtifacts`: which runner runtime
+      const controlPlaneRunner = layout.startsWith('control-');
+      // The glue between the DELETE route and durable cleanup: which runner runtime
       // to look in (the session's project), and which sandbox path claude encoded into its
       // directory name (the worktree, mapped through `hostCloneRoot`). Both are derived in
       // `embedded.ts` from the session row, so neither the route tests nor the resolver
       // tests can catch a wrong derivation — only a delete against a real layout can.
       const root = mkdtempSync(join(tmpdir(), 'verity-purge-wiring-'));
       let supervisor: Server | undefined;
+      let fixtureDb: ReturnType<typeof createEmbeddedDb> | undefined;
       const deletionRequests: unknown[] = [];
       try {
         const dataDir = join(root, 'db');
@@ -2486,7 +2487,7 @@ describe('buildEmbeddedServer', () => {
         const worktree = join(hostCloneRoot, 'heey-global-verity', '.verity-sessions', 'agent-p1');
         mkdirSync(worktree, { recursive: true });
 
-        const db = createEmbeddedDb(dataDir);
+        const db = (fixtureDb = createEmbeddedDb());
         await migrateToLatest(db);
         const store = new EventStore(db);
         await store.upsertProject({
@@ -2509,7 +2510,6 @@ describe('buildEmbeddedServer', () => {
           backendSessionId: 'thread-purge',
           contextSeq: 0,
         });
-        await db.destroy();
 
         const runtime = join(
           dataVolumeRoot,
@@ -2539,6 +2539,7 @@ describe('buildEmbeddedServer', () => {
         supervisor = createServer((peer) => {
           peer.once('data', (data) => {
             deletionRequests.push(JSON.parse(data.toString('utf8').trim()));
+            if (layout === 'timeout' && deletionRequests.length === 1) return;
             peer.end(`${JSON.stringify({ ok: true })}\n`);
           });
         });
@@ -2546,14 +2547,38 @@ describe('buildEmbeddedServer', () => {
           supervisor!.listen(join(runtime, 'supervisor.sock'), resolve),
         );
         server = await buildTestEmbeddedServer({
+          openDatabase: () => db,
           dataDir,
           dataVolumeRoot,
           hostCloneRoot,
           controlPlaneRunner,
         });
+        const deleteStarted = Date.now();
         const res = await server.app.inject({ method: 'DELETE', url: '/sessions/s-purge' });
         expect(res.statusCode).toBe(200);
 
+        expect(
+          (await server.app.inject({ method: 'GET', url: '/sessions/s-purge' })).statusCode,
+        ).toBe(404);
+        if (layout === 'timeout') {
+          expect(Date.now() - deleteStarted).toBeLessThan(5_000);
+          // The request must finish while the supervisor is still withholding its reply.
+          expect(existsSync(rollout)).toBe(true);
+        }
+        await vi.waitFor(
+          () => {
+            expect(existsSync(rollout)).toBe(false);
+            expect(existsSync(transcript)).toBe(false);
+            expect(existsSync(subagent)).toBe(false);
+          },
+          { timeout: layout === 'timeout' ? 45_000 : 5_000 },
+        );
+        if (layout === 'timeout') {
+          expect(deletionRequests.length).toBeGreaterThanOrEqual(2);
+          expect(
+            (await server.app.inject({ method: 'GET', url: '/sessions/s-purge' })).statusCode,
+          ).toBe(404);
+        }
         expect(deletionRequests).toContainEqual(
           expect.objectContaining({ kind: 'delete-session-home', sessionId: 's-purge' }),
         );
@@ -2567,6 +2592,7 @@ describe('buildEmbeddedServer', () => {
         expect(existsSync(strangerRollout)).toBe(true);
       } finally {
         await server?.close();
+        if (!server) await fixtureDb?.destroy();
         server = undefined;
         if (supervisor)
           await new Promise<void>((resolve, reject) =>
