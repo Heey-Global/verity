@@ -35,7 +35,9 @@ do not depend on a particular generation's container name or a process-local
 ticket. Authorization is independently checked again for the current connection.
 
 Metadata is limited to 2 MiB, artifacts to 32 MiB and simultaneous broker
-operations to two. Oversized packages and npm releases with only SHA1 integrity
+responses to two, including buffered downloads until the client finishes. A third
+request receives HTTP 429. Revocation aborts slow client transfers; loopback TCP
+fixtures cover backpressure and cancellation, not protected-runtime isolation. Oversized packages and npm releases with only SHA1 integrity
 are unavailable. Redirects stay within the selected fixed provider/path class;
 private DNS answers, caller credentials, arbitrary methods, range requests and
 arbitrary URL forwarding are rejected. npm audit retains its fixed read operation

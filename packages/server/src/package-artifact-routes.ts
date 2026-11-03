@@ -1,4 +1,5 @@
 import { Readable } from 'node:stream';
+import { finished } from 'node:stream/promises';
 import { gunzipSync } from 'node:zlib';
 import type { FastifyInstance, RouteHandlerMethod } from 'fastify';
 import { bearerToken } from './auth.js';
@@ -34,89 +35,111 @@ export function registerPackageArtifactRoutes(
   },
 ): void {
   const broker = createPackageArtifactBroker(options);
+  let activeTransfers = 0;
   const handler: RouteHandlerMethod = async (request, reply) => {
-    const identity = internalConnectionIdentity(request);
-    const generation = internalConnectionGenerationSignal(request);
-    const token = capability(request.headers.authorization);
-    const authorized = async (): Promise<boolean> => {
-      if (!identity || !generation || generation.aborted || !token) return false;
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      const binding = await Promise.race([
-        options.capabilities.resolve(token).catch(() => undefined),
-        new Promise<undefined>((resolve) => {
-          timer = setTimeout(() => resolve(undefined), 1000);
-          timer.unref();
-        }),
-      ]).finally(() => {
-        if (timer) clearTimeout(timer);
-      });
-      return (
-        !generation.aborted &&
-        binding?.projectId === identity.projectId &&
-        binding.containerGeneration === identity.containerGeneration
-      );
-    };
-    if (!(await authorized()) || !identity) {
-      reply.header('www-authenticate', 'Basic realm="Verity package artifacts"');
-      return reply.code(401).send({ error: 'unauthorized' });
-    }
-    // Registry paths only: no query, caller headers, upstream cookies or raw URLs.
-    if (
-      request.url.includes('?') ||
-      request.headers.range ||
-      (request.method !== 'POST' &&
-        ((request.headers['content-length'] && request.headers['content-length'] !== '0') ||
-          request.headers['transfer-encoding']))
-    )
-      return reply.code(400).send({ error: 'invalid package artifact request' });
-    const controller = new AbortController();
-    const abort = () => controller.abort();
-    const closed = () => {
-      if (!reply.raw.writableFinished) abort();
-    };
-    generation?.addEventListener('abort', abort, { once: true });
-    request.raw.once('aborted', abort);
-    reply.raw.once('close', closed);
-    if (generation?.aborted) abort();
-    const timeout = setTimeout(abort, 30_000);
-    timeout.unref();
-    let polling = false;
-    const poll = setInterval(() => {
-      if (polling || controller.signal.aborted) return;
-      polling = true;
-      void authorized()
-        .then((valid) => {
-          if (!valid) abort();
-        }, abort)
-        .finally(() => {
-          polling = false;
-        });
-    }, 200);
-    poll.unref();
+    if (activeTransfers >= 2)
+      return reply.code(429).send({ error: 'package artifact capacity reached' });
+    activeTransfers++;
     try {
-      const path = (request.params as { '*': string })['*'];
-      const base = options.artifactBaseUrl?.(identity) ?? PACKAGE_ARTIFACT_BASE_URL;
-      const response =
-        request.method === 'POST'
-          ? await broker.advisories(request.body, controller.signal, authorized)
-          : await broker.serve(path, controller.signal, authorized, base);
-      if (controller.signal.aborted || !(await authorized()))
+      const identity = internalConnectionIdentity(request);
+      const generation = internalConnectionGenerationSignal(request);
+      const token = capability(request.headers.authorization);
+      const authorized = async (): Promise<boolean> => {
+        if (!identity || !generation || generation.aborted || !token) return false;
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const binding = await Promise.race([
+          options.capabilities.resolve(token).catch(() => undefined),
+          new Promise<undefined>((resolve) => {
+            timer = setTimeout(() => resolve(undefined), 1000);
+            timer.unref();
+          }),
+        ]).finally(() => {
+          if (timer) clearTimeout(timer);
+        });
+        return (
+          !generation.aborted &&
+          binding?.projectId === identity.projectId &&
+          binding.containerGeneration === identity.containerGeneration
+        );
+      };
+      if (!(await authorized()) || !identity) {
+        reply.header('www-authenticate', 'Basic realm="Verity package artifacts"');
         return reply.code(401).send({ error: 'unauthorized' });
-      reply.header('cache-control', 'no-store');
-      return reply.type(response.contentType).send(response.body);
-    } catch (error) {
-      const status = controller.signal.aborted
-        ? 401
-        : error instanceof PackageArtifactError
-          ? error.status
-          : 502;
-      return reply.code(status).send({ error: 'package artifact request rejected' });
+      }
+      // Registry paths only: no query, caller headers, upstream cookies or raw URLs.
+      if (
+        request.url.includes('?') ||
+        request.headers.range ||
+        (request.method !== 'POST' &&
+          ((request.headers['content-length'] && request.headers['content-length'] !== '0') ||
+            request.headers['transfer-encoding']))
+      )
+        return reply.code(400).send({ error: 'invalid package artifact request' });
+      const controller = new AbortController();
+      let sending = false;
+      const abort = () => {
+        controller.abort();
+        if (sending && !reply.raw.writableFinished) reply.raw.destroy();
+      };
+      const closed = () => {
+        if (!reply.raw.writableFinished) abort();
+      };
+      generation?.addEventListener('abort', abort, { once: true });
+      request.raw.once('aborted', abort);
+      reply.raw.once('close', closed);
+      if (generation?.aborted) abort();
+      const timeout = setTimeout(abort, 30_000);
+      timeout.unref();
+      let polling = false;
+      const poll = setInterval(() => {
+        if (polling || controller.signal.aborted) return;
+        polling = true;
+        void authorized()
+          .then((valid) => {
+            if (!valid) abort();
+          }, abort)
+          .finally(() => {
+            polling = false;
+          });
+      }, 200);
+      poll.unref();
+      try {
+        const path = (request.params as { '*': string })['*'];
+        const base = options.artifactBaseUrl?.(identity) ?? PACKAGE_ARTIFACT_BASE_URL;
+        const response =
+          request.method === 'POST'
+            ? await broker.advisories(request.body, controller.signal, authorized)
+            : await broker.serve(path, controller.signal, authorized, base);
+        if (controller.signal.aborted || !(await authorized()))
+          return reply.code(401).send({ error: 'unauthorized' });
+        reply.header('cache-control', 'no-store');
+        sending = true;
+        // Keep revocation checks alive until the client-side transfer completes,
+        // rather than dropping them as soon as the broker buffers the artifact.
+        const transfer = finished(reply.raw, { readable: false, cleanup: true });
+        // Fastify's Reply thenable can settle after end() while socket writes are
+        // still buffered. Observe the actual writable completion instead.
+        void transfer.catch(() => {});
+        reply.type(response.contentType).send(response.body);
+        await transfer;
+        return reply;
+      } catch (error) {
+        if (reply.raw.destroyed) return;
+        const status = controller.signal.aborted
+          ? 401
+          : error instanceof PackageArtifactError
+            ? error.status
+            : 502;
+        return reply.code(status).send({ error: 'package artifact request rejected' });
+      } finally {
+        clearTimeout(timeout);
+        clearInterval(poll);
+        generation?.removeEventListener('abort', abort);
+        request.raw.removeListener('aborted', abort);
+        reply.raw.removeListener('close', closed);
+      }
     } finally {
-      clearTimeout(timeout);
-      clearInterval(poll);
-      generation?.removeEventListener('abort', abort);
-      request.raw.removeListener('aborted', abort);
-      reply.raw.removeListener('close', closed);
+      activeTransfers--;
     }
   };
   app.get('/internal/package-artifacts/*', handler);
