@@ -2668,6 +2668,24 @@ async function updaterRestarts(managedRoot: string): Promise<void> {
     `the committed generation runs ${String(before.image)}, not the digest the last cutover selected`,
   );
 
+  // Inspect the startup verdict while the generation is still serving, so a
+  // drift failure reports names and migration flags without exposing values.
+  const startup = await recoverManagedUpdater({
+    managedRoot,
+    docker: client,
+    environment: {
+      ...serverEnvironment(required('VERITY_SMOKE_DATABASE_URL'), authority.spec.deploymentId),
+      VERITY_SERVER_IMAGE: composeDigest,
+    },
+    readFile: readSecret,
+    cutover: { activate: publishActivationGate, gateway: gatewayController(managedRoot) },
+    reconcileCompanions: () => Promise.resolve(),
+  });
+  expect(
+    startup.reconcile.status === 'ok',
+    `the serving generation drifted before restart: ${JSON.stringify(startup.reconcile)}`,
+  );
+
   // An explicit stop, not a kill: `unless-stopped` is exactly the policy that
   // makes the daemon leave it down until someone asks for it, which is the state
   // a restarted Updater has to resolve.
