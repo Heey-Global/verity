@@ -15,6 +15,7 @@ vi.mock('node:https', async (original) => ({
   request: transport.request,
 }));
 vi.mock('./internal-listener.js', () => ({
+  internalConnectionGenerationSignal: () => undefined,
   internalConnectionIdentity: () => ({ projectId: 'project', containerGeneration: 'generation' }),
 }));
 

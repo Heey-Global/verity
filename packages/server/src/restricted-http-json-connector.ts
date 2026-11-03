@@ -1,3 +1,7 @@
+import {
+  assertProjectTransportAuthority,
+  projectTransportSignal,
+} from './project-transport-authority.js';
 import { createHash } from 'node:crypto';
 import { lookup as dnsLookup } from 'node:dns/promises';
 import { request as httpsRequest } from 'node:https';
@@ -262,7 +266,7 @@ export function createNodeRestrictedHttpJsonTransport(options?: {
           path: request.path,
           headers: request.headers,
           servername: request.hostname,
-          signal: AbortSignal.timeout(request.timeoutMs),
+          signal: projectTransportSignal(AbortSignal.timeout(request.timeoutMs)),
           // A reused keep-alive socket would skip lookup and therefore the at-most-once approval
           // fence inside it. A fresh connection binds every approved call to one guarded lookup.
           agent: false,
@@ -277,6 +281,7 @@ export function createNodeRestrictedHttpJsonTransport(options?: {
                   throw rejected();
                 }
                 await request.authorizeRequest();
+                await assertProjectTransportAuthority();
                 const selected = addresses[0]!;
                 if (lookupOptions.all === true) {
                   callback(null, addresses);

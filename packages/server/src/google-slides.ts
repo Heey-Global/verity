@@ -1,3 +1,4 @@
+import { projectTransportFetch } from './project-transport-authority.js';
 import type { GoogleFetch, GoogleTransportOptions } from './google-drive.js';
 
 const GOOGLE_SLIDES_API = 'https://slides.googleapis.com/v1';
@@ -34,7 +35,7 @@ async function slidesRequest(
   const doFetch: GoogleFetch = opts.fetch ?? fetch;
   let response;
   try {
-    response = await doFetch(`${GOOGLE_SLIDES_API}${path}`, {
+    response = await projectTransportFetch(doFetch, `${GOOGLE_SLIDES_API}${path}`, {
       method: init.method ?? 'GET',
       headers: {
         Authorization: `Bearer ${accessToken}`,

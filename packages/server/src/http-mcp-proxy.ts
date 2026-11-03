@@ -11,7 +11,10 @@ import ipaddr from 'ipaddr.js';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 
 import { bearerToken } from './auth.js';
-import { internalConnectionIdentity } from './internal-listener.js';
+import {
+  internalConnectionIdentity,
+  internalConnectionGenerationSignal,
+} from './internal-listener.js';
 import type { McpGatewayCaller } from './mcp-gateway-tokens.js';
 
 const MAX_BODY_BYTES = 1024 * 1024;
@@ -102,6 +105,7 @@ export async function forwardHttpMcp(
     sessionId?: string;
     lastEventId?: string;
   },
+  signal?: AbortSignal,
 ): Promise<{
   status: number;
   headers: Record<string, string>;
@@ -120,6 +124,7 @@ export async function forwardHttpMcp(
         path: `${url.pathname}${url.search}`,
         servername: url.hostname,
         agent: false,
+        ...(signal === undefined ? {} : { signal }),
         headers: {
           accept: headers.accept ?? 'application/json, text/event-stream',
           ...(body === undefined
@@ -158,6 +163,10 @@ export async function forwardHttpMcp(
       },
       (response) => {
         request.setTimeout(0);
+        const abortResponse = () => response.destroy(new Error('Project generation retired'));
+        signal?.addEventListener('abort', abortResponse, { once: true });
+        response.once('close', () => signal?.removeEventListener('abort', abortResponse));
+        if (signal?.aborted) abortResponse();
         const safeHeaders: Record<string, string> = {};
         for (const name of RESPONSE_HEADERS) {
           const value = response.headers[name];
@@ -201,9 +210,11 @@ export function registerHttpMcpProxyRoute(app: FastifyInstance, deps: HttpMcpPro
     reply: FastifyReply,
   ): Promise<unknown> => {
     const identity = internalConnectionIdentity(request);
+    const generationSignal = internalConnectionGenerationSignal(request);
     const token = bearerToken(request.headers.authorization);
     const connectionId = request.headers[BINDING_HEADER];
     if (
+      generationSignal?.aborted === true ||
       identity === undefined ||
       token === undefined ||
       typeof connectionId !== 'string' ||
@@ -214,10 +225,10 @@ export function registerHttpMcpProxyRoute(app: FastifyInstance, deps: HttpMcpPro
     }
     const caller = await deps.resolveCaller({ projectId: identity.projectId, token });
     const connection =
-      caller === undefined
+      generationSignal?.aborted || caller === undefined
         ? undefined
         : await deps.resolveConnection({ projectId: identity.projectId, connectionId });
-    if (caller === undefined || connection === undefined) {
+    if (generationSignal?.aborted || caller === undefined || connection === undefined) {
       reply.code(401);
       return { error: 'unauthorized' };
     }
@@ -267,13 +278,16 @@ export function registerHttpMcpProxyRoute(app: FastifyInstance, deps: HttpMcpPro
       { ...context, stage: 'intercept', elapsedMs: performance.now() - requestStarted },
       'MCP proxy interception completed',
     );
-    if (interception !== undefined) {
+    {
+      // Every asynchronous credential/interception lookup can outlive retirement.
       const activeCaller = await deps.resolveCaller({ projectId: identity.projectId, token });
+      if (generationSignal?.aborted) return reply.code(401).send({ error: 'MCP access changed' });
       const activeConnection = await deps.resolveConnection({
         projectId: identity.projectId,
         connectionId,
       });
       if (
+        generationSignal?.aborted ||
         activeCaller?.sessionId !== caller.sessionId ||
         activeCaller.turnId !== caller.turnId ||
         activeConnection?.url !== connection.url ||
@@ -305,21 +319,27 @@ export function registerHttpMcpProxyRoute(app: FastifyInstance, deps: HttpMcpPro
     });
     request.log.info({ ...context, stage: 'forward' }, 'MCP proxy forwarding started');
     try {
-      const response = await forwardHttpMcp(connection, method, body, {
-        ...(typeof request.headers.accept === 'string' ? { accept: request.headers.accept } : {}),
-        ...(typeof request.headers['content-type'] === 'string'
-          ? { contentType: request.headers['content-type'] }
-          : {}),
-        ...(typeof request.headers['mcp-protocol-version'] === 'string'
-          ? { protocolVersion: request.headers['mcp-protocol-version'] }
-          : {}),
-        ...(typeof request.headers['mcp-session-id'] === 'string'
-          ? { sessionId: request.headers['mcp-session-id'] }
-          : {}),
-        ...(typeof request.headers['last-event-id'] === 'string'
-          ? { lastEventId: request.headers['last-event-id'] }
-          : {}),
-      });
+      const response = await forwardHttpMcp(
+        connection,
+        method,
+        body,
+        {
+          ...(typeof request.headers.accept === 'string' ? { accept: request.headers.accept } : {}),
+          ...(typeof request.headers['content-type'] === 'string'
+            ? { contentType: request.headers['content-type'] }
+            : {}),
+          ...(typeof request.headers['mcp-protocol-version'] === 'string'
+            ? { protocolVersion: request.headers['mcp-protocol-version'] }
+            : {}),
+          ...(typeof request.headers['mcp-session-id'] === 'string'
+            ? { sessionId: request.headers['mcp-session-id'] }
+            : {}),
+          ...(typeof request.headers['last-event-id'] === 'string'
+            ? { lastEventId: request.headers['last-event-id'] }
+            : {}),
+        },
+        generationSignal,
+      );
       upstreamStatus = response.status;
       // Log only recognized media types, never arbitrary upstream header values.
       const mediaType = response.headers['content-type']?.split(';', 1)[0]?.trim().toLowerCase();
@@ -373,6 +393,7 @@ export function registerHttpMcpProxyRoute(app: FastifyInstance, deps: HttpMcpPro
         : undefined;
       lifetime?.unref();
       let checkingAuthorization = false;
+      let authorizationDeadline: ReturnType<typeof setTimeout> | undefined;
       const authorizationPoll = response.eventStream
         ? setInterval(() => {
             // A live turn does not keep a removed project binding or a replaced
@@ -380,6 +401,10 @@ export function registerHttpMcpProxyRoute(app: FastifyInstance, deps: HttpMcpPro
             // cannot accumulate concurrent credential resolutions.
             if (checkingAuthorization || response.body.destroyed) return;
             checkingAuthorization = true;
+            authorizationDeadline = setTimeout(() => {
+              response.body.destroy(new Error('HTTP MCP authority check deadline exceeded'));
+            }, 1000);
+            authorizationDeadline.unref();
             void (async () => {
               try {
                 const activeCaller = await deps.resolveCaller({
@@ -409,10 +434,11 @@ export function registerHttpMcpProxyRoute(app: FastifyInstance, deps: HttpMcpPro
               } catch {
                 response.body.destroy(new Error('HTTP MCP proxy authorization unavailable'));
               } finally {
+                if (authorizationDeadline !== undefined) clearTimeout(authorizationDeadline);
                 checkingAuthorization = false;
               }
             })();
-          }, 1_000)
+          }, 500)
         : undefined;
       authorizationPoll?.unref();
       try {
@@ -442,6 +468,7 @@ export function registerHttpMcpProxyRoute(app: FastifyInstance, deps: HttpMcpPro
       } finally {
         if (lifetime !== undefined) clearTimeout(lifetime);
         if (authorizationPoll !== undefined) clearInterval(authorizationPoll);
+        if (authorizationDeadline !== undefined) clearTimeout(authorizationDeadline);
       }
       request.log.info({ ...diagnostics(), stage: 'complete' }, 'MCP proxy response completed');
       return reply;

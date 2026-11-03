@@ -1,3 +1,5 @@
+import { withProjectTransportAuthority } from './project-transport-authority.js';
+import type { InternalConnectionIdentity } from './internal-listener.js';
 import { capabilityVariants, capabilityArguments } from './agent-capabilities.js';
 import { actionTitle, qaAnalysisRequestSchema, QA_ANALYSIS_DESCRIPTION } from '@verity/events';
 import {
@@ -687,6 +689,7 @@ export interface McpGateway {
     projectId: string;
     token: string | undefined;
     body: unknown;
+    transport?: { identity: InternalConnectionIdentity; signal: AbortSignal };
   }): Promise<McpGatewayResponse>;
 }
 
@@ -748,6 +751,7 @@ export function createMcpGateway(deps: McpGatewayDeps): McpGateway {
     params: Record<string, unknown> | undefined,
     token: string | undefined,
     caller: McpGatewayCaller | undefined,
+    transport?: { identity: InternalConnectionIdentity; signal: AbortSignal },
   ): Promise<McpGatewayResponse> => {
     // Minted before anything is examined, so every record this call produces — including the
     // ones for a body that never named a tool — can be paired with the others.
@@ -1060,18 +1064,40 @@ export function createMcpGateway(deps: McpGatewayDeps): McpGateway {
         !(await deps.toolAvailable({ projectId, sessionId, turnId, toolName }))
       )
         throw new ControlPlaneSessionAuthorityError('Tool access was revoked while waiting.');
-      result = await deps.invokeTool({
-        projectId,
-        sessionId,
-        turnId,
-        callId,
-        invocationId,
-        approvedByCard: !standingAuthorization,
-        ...(approvedEdits === undefined ? {} : { approvedEdits }),
-        ...(authorizationSnapshot === undefined ? {} : { authorizationSnapshot }),
-        toolName: toolName,
-        request: request.data,
-      });
+      const execute = () =>
+        deps.invokeTool({
+          projectId,
+          sessionId,
+          turnId,
+          callId,
+          invocationId,
+          approvedByCard: !standingAuthorization,
+          ...(approvedEdits === undefined ? {} : { approvedEdits }),
+          ...(authorizationSnapshot === undefined ? {} : { authorizationSnapshot }),
+          toolName: toolName,
+          request: request.data,
+        });
+      result =
+        transport === undefined
+          ? await execute()
+          : await withProjectTransportAuthority(
+              {
+                ...transport.identity,
+                signal: transport.signal,
+                authorize: async () => {
+                  if (transport.identity.projectId !== projectId)
+                    throw new Error('Project transport mismatch');
+                  await deps.authorizeExecution?.({ projectId, sessionId, turnId });
+                  const active =
+                    token === undefined
+                      ? undefined
+                      : await deps.resolveCaller({ projectId, token });
+                  if (active?.sessionId !== sessionId || active.turnId !== turnId)
+                    throw new Error('Project transport authority retired');
+                },
+              },
+              execute,
+            );
     } catch (error) {
       if (error instanceof DopplerSecretResolutionError) {
         const message = dopplerResolutionMessage(error);
@@ -1135,7 +1161,7 @@ export function createMcpGateway(deps: McpGatewayDeps): McpGateway {
   };
 
   return {
-    async handle({ projectId, token, body }): Promise<McpGatewayResponse> {
+    async handle({ projectId, token, body, transport }): Promise<McpGatewayResponse> {
       const envelope = jsonRpcRequestSchema.safeParse(body);
       if (!envelope.success) {
         // Not addressed to any tool, so it is not a gateway call and gets no record.
@@ -1213,7 +1239,7 @@ export function createMcpGateway(deps: McpGatewayDeps): McpGateway {
           });
         }
         case 'tools/call':
-          return callTool(projectId, id, params, token, caller);
+          return callTool(projectId, id, params, token, caller, transport);
         default:
           return jsonRpcError(id, METHOD_NOT_FOUND, `unsupported method ${method}`);
       }

@@ -1,3 +1,4 @@
+import { projectTransportFetch } from './project-transport-authority.js';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 
@@ -186,7 +187,8 @@ export async function invokeGoogleCalendarApi(
       }
     }
   }
-  const response = await doFetch(
+  const response = await projectTransportFetch(
+    doFetch,
     `https://www.googleapis.com/calendar/v3${path}${params.size ? `?${params.toString()}` : ''}`,
     {
       method,
@@ -362,7 +364,7 @@ async function calendarFetch(
   url: string,
   init: { method?: string; headers?: Record<string, string>; body?: string } = {},
 ): Promise<GoogleHttpResponse> {
-  return doFetch(url, {
+  return projectTransportFetch(doFetch, url, {
     ...init,
     headers: { Authorization: `Bearer ${token}`, ...init.headers },
     signal: AbortSignal.timeout(20_000),
