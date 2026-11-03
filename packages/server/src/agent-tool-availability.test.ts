@@ -3,6 +3,19 @@ import type { EventStore } from '@verity/store';
 import { connectorToolAvailable } from './agent-tool-availability.js';
 
 describe('connector discovery', () => {
+  it('keeps account-only Drive document reads available without project folder links', async () => {
+    let scopes = ['https://www.googleapis.com/auth/drive'];
+    const store = {
+      googleAccounts: {
+        list: async () => [{ id: 'a', scopes }],
+        folders: async () => [],
+      },
+    } as unknown as EventStore;
+    const input = { projectId: 'p', sessionId: 's', toolName: 'verity_google_drive' as const };
+    expect(await connectorToolAvailable(store, input)).toBe(true);
+    scopes = [];
+    expect(await connectorToolAvailable(store, input)).toBe(false);
+  });
   it('uses session-bound access and current scopes without loading credentials', async () => {
     const scopes = ['gmail.readonly', 'gmail.compose', 'gmail.settings.basic'].map(
       (scope) => `https://www.googleapis.com/auth/${scope}`,

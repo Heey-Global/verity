@@ -33,6 +33,10 @@ export async function connectorToolAvailable(
     );
   }
   if (input.toolName === 'verity_google_drive') {
+    // URL reads can use an authorized account without a project folder. Folder
+    // operations still validate their binding in resolveGoogleDriveAuthority.
+    if ((await store.googleAccounts.list()).some((account) => hasGoogleDriveScopes(account.scopes)))
+      return true;
     const folders = await store.googleAccounts.folders(input.projectId);
     for (const folder of folders)
       if (hasGoogleDriveScopes((await store.googleAccounts.get(folder.accountId))?.scopes))

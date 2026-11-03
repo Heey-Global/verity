@@ -1,4 +1,6 @@
 import { matrixRequestSchema } from './matrix-tool.js';
+import type { EventStore } from '@verity/store';
+import { connectorToolAvailable } from './agent-tool-availability.js';
 import { gatewayToolNameSchema, secretAuditEventInputSchema } from '@verity/secret-contracts';
 import { TrustedCliDispatchError, type ExternalPermissionAnswer } from '@verity/session';
 import { describe, expect, it, vi } from 'vitest';
@@ -1311,4 +1313,45 @@ it('uses availability for listing, calls and revocation during approval', async 
     body: { jsonrpc: '2.0', id: 2, method: 'tools/list' },
   });
   expect((listed.body as { result: { tools: unknown[] } }).result.tools).toEqual([]);
+});
+
+it('advertises and approves account-only Drive URL reads without linked folders', async () => {
+  const store = {
+    googleAccounts: {
+      list: async () => [{ id: 'a', scopes: ['https://www.googleapis.com/auth/drive'] }],
+      folders: async () => [],
+    },
+  } as unknown as EventStore;
+  const { gateway, invokeTool, requestApproval } = harness({
+    servedTools: ['verity_google_drive'],
+    toolAvailable: (input) => connectorToolAvailable(store, input),
+  });
+  const listed = await gateway.handle({
+    projectId: 'p1',
+    token: 'session-token',
+    body: { jsonrpc: '2.0', id: 1, method: 'tools/list' },
+  });
+  expect((listed.body as { result: { tools: { name: string }[] } }).result.tools).toEqual(
+    expect.arrayContaining([expect.objectContaining({ name: 'verity_google_drive' })]),
+  );
+  const response = await gateway.handle({
+    projectId: 'p1',
+    token: 'session-token',
+    body: call(
+      {
+        action: 'read_document_url',
+        accountId: 'a',
+        url: 'https://docs.google.com/document/d/shared/edit',
+      },
+      'verity_google_drive',
+    ),
+  });
+  expect(resultOf(response.body).isError).not.toBe(true);
+  expect(requestApproval).toHaveBeenCalledOnce();
+  expect(invokeTool).toHaveBeenCalledWith(
+    expect.objectContaining({
+      toolName: 'verity_google_drive',
+      request: expect.objectContaining({ action: 'read_document_url' }),
+    }),
+  );
 });
