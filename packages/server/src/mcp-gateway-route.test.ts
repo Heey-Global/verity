@@ -15,7 +15,6 @@ import { join } from 'node:path';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import { VERITY_CONTROL_PROJECT_ID, buildServer } from './server.js';
-import { isDocumentWorkspace } from './document-workspace.js';
 import { createRuntimeDiagnostics } from './runtime-diagnostics.js';
 import {
   markInternalConnections,
@@ -1645,7 +1644,7 @@ describe('POST /internal/control-plane/mcp (control-plane gateway)', () => {
       const result = JSON.parse(body.result.content[0]!.text) as { sessionId: string };
       const session = await harness.store.getSession(result.sessionId);
       expect(session?.model).toBe('codex/default');
-      expect(isDocumentWorkspace(session!.worktree)).toBe(true);
+      expect(session!.worktree).toMatch(/^\/wt\/new-handoff-/);
       expect(harness.dispatches).toHaveLength(1);
       await harness.store.updateProjectSettings('website', {
         allowedAgents: ['opencode'],
