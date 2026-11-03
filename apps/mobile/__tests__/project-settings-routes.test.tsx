@@ -69,6 +69,7 @@ describe('project settings index — destinations', () => {
   // Each row opens its project-specific destination directly.
   it.each([
     ['Vulnerability scan', '/project/[id]/vulnerability-scan'],
+    ['Project knowledge', '/project/[id]/knowledge'],
     ['Sandbox', '/project/[id]/settings/sandbox'],
     ['Agents', '/project/[id]/settings/model'],
   ])('routes %s to %s', async (label, pathname) => {

@@ -14,6 +14,22 @@ type PairedRoutePolicy =
  * including collections and cross-project actions. */
 const resourceRules: ReadonlyMap<string, ResourceRule> = new Map([
   [
+    routeScopeKey('GET', '/projects/:id/knowledge/files'),
+    { kind: 'project', parameter: 'id', permission: 'read' },
+  ],
+  [
+    routeScopeKey('GET', '/projects/:id/knowledge/files/content'),
+    { kind: 'project', parameter: 'id', permission: 'read' },
+  ],
+  [
+    routeScopeKey('GET', '/projects/:id/knowledge/files/download'),
+    { kind: 'project', parameter: 'id', permission: 'read' },
+  ],
+  [
+    routeScopeKey('PUT', '/projects/:id/knowledge/files/content'),
+    { kind: 'project', parameter: 'id', permission: 'manage' },
+  ],
+  [
     routeScopeKey('GET', '/projects/:id/instructions'),
     { kind: 'project', parameter: 'id', permission: 'read' },
   ],

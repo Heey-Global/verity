@@ -175,3 +175,33 @@ it('allows active users to read Shared centrally but reserves changes for admini
     await authorizePairedRoute(store, 'admin', 'PUT', '/knowledge/shared/files/content', {}),
   ).toBe('allow');
 });
+
+it('scopes direct project knowledge reads and edits to project permissions', async () => {
+  const store: PairedRoutePolicyStore = {
+    isActiveLocalUser: async () => true,
+    isActiveAdministrator: async () => false,
+    hasProjectPermission: async (user, project, permission) =>
+      project === 'p' && (permission === 'read' || user === 'manager'),
+    getSession: async () => undefined,
+  };
+  for (const route of [
+    '/projects/:id/knowledge/files',
+    '/projects/:id/knowledge/files/content',
+    '/projects/:id/knowledge/files/download',
+  ]) {
+    expect(await authorizePairedRoute(store, 'reader', 'GET', route, { id: 'p' })).toBe('allow');
+    expect(await authorizePairedRoute(store, 'reader', 'GET', route, { id: 'other' })).toBe(
+      'forbidden',
+    );
+  }
+  expect(
+    await authorizePairedRoute(store, 'reader', 'PUT', '/projects/:id/knowledge/files/content', {
+      id: 'p',
+    }),
+  ).toBe('forbidden');
+  expect(
+    await authorizePairedRoute(store, 'manager', 'PUT', '/projects/:id/knowledge/files/content', {
+      id: 'p',
+    }),
+  ).toBe('allow');
+});

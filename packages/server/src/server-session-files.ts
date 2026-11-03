@@ -108,6 +108,10 @@ export function registerServerSessionFiles(
   ];
 
   registerSessionFileRoutes(app, {
+    resolveProjectRoot: async (id) => {
+      if (!deps.dataRoot || !(await deps.eventStore.getProject(id))) return undefined;
+      return ensureProjectKnowledge(deps.dataRoot, id);
+    },
     resolveSharedRoot: async () =>
       deps.dataRoot ? ensureSharedKnowledge(deps.dataRoot) : undefined,
     documentStatus: async (id) => {
@@ -227,6 +231,13 @@ export function registerServerSessionFiles(
         );
       } catch (error) {
         await directoryHandle?.close().catch(() => undefined);
+        // A project with no recorded decisions still has a usable Decisions view.
+        if (
+          root.root === 'knowledge' &&
+          target.rel === 'insights/decisions' &&
+          (error as NodeJS.ErrnoException).code === 'ENOENT'
+        )
+          return { root: root.root, path: target.rel, entries: [], truncated: false };
         if (error instanceof Error && error.message === 'invalid path') {
           reply.code(400);
           return { error: 'invalid path' };

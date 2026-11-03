@@ -15,9 +15,16 @@ import {
   SettingsScaffold,
 } from './SettingsChrome';
 
-export function SharedKnowledgeSettings({ initialPath }: { initialPath?: string }) {
+export function SharedKnowledgeSettings({
+  initialPath,
+  projectId,
+}: {
+  initialPath?: string;
+  projectId?: string;
+}) {
   const client = useMemo(() => createVerityClient(), []);
   const [path, setPath] = useState('');
+  const title = projectId ? 'Project knowledge' : 'Shared knowledge';
   const [filePath, setFilePath] = useState<string | undefined>(initialPath);
   const [directory, setDirectory] = useState<SessionDirectory>();
   const [file, setFile] = useState<SessionFileContent>();
@@ -37,7 +44,9 @@ export function SharedKnowledgeSettings({ initialPath }: { initialPath?: string 
     const load = async () => {
       try {
         if (filePath !== undefined) {
-          const next = await client.getSharedKnowledgeFile(filePath);
+          const next = await (projectId
+            ? client.getProjectKnowledgeFile(projectId, filePath)
+            : client.getSharedKnowledgeFile(filePath));
           if (active) {
             setFile(next);
             setDraft(
@@ -46,12 +55,14 @@ export function SharedKnowledgeSettings({ initialPath }: { initialPath?: string 
             retryDraft.current = undefined;
           }
         } else {
-          const next = await client.listSharedKnowledgeFiles(path);
+          const next = await (projectId
+            ? client.listProjectKnowledgeFiles(projectId, path)
+            : client.listSharedKnowledgeFiles(path));
           if (active) setDirectory(next);
         }
       } catch (failure) {
         if (active)
-          setError(failure instanceof Error ? failure.message : 'Could not load Shared knowledge');
+          setError(failure instanceof Error ? failure.message : `Could not load ${title}`);
       } finally {
         if (active) setLoading(false);
       }
@@ -60,13 +71,13 @@ export function SharedKnowledgeSettings({ initialPath }: { initialPath?: string 
     return () => {
       active = false;
     };
-  }, [client, path, filePath, reload]);
+  }, [client, path, filePath, reload, projectId, title]);
   if (!client)
     return (
       <SettingsMessage
-        screenTitle="Shared knowledge"
+        screenTitle={title}
         title="Server unavailable"
-        subtitle="Connect to your Verity server to browse Shared knowledge."
+        subtitle={`Connect to your Verity server to browse ${title}.`}
       />
     );
   const back = () => {
@@ -79,12 +90,14 @@ export function SharedKnowledgeSettings({ initialPath }: { initialPath?: string 
     if (!file || !file.version || filePath === undefined || saving || loading) return;
     setSaving(true);
     try {
-      const next = await client.writeSharedKnowledgeFile(filePath, draft, file.version);
+      const next = await (projectId
+        ? client.writeProjectKnowledgeFile(projectId, filePath, draft, file.version)
+        : client.writeSharedKnowledgeFile(filePath, draft, file.version));
       setFile(next);
       setDraft(next.content);
       setError(undefined);
     } catch (failure) {
-      setError(failure instanceof Error ? failure.message : 'Could not save Shared knowledge');
+      setError(failure instanceof Error ? failure.message : `Could not save ${title}`);
     } finally {
       setSaving(false);
     }
@@ -93,7 +106,9 @@ export function SharedKnowledgeSettings({ initialPath }: { initialPath?: string 
     if (filePath === undefined || saving) return;
     setSaving(true);
     try {
-      const blob = await client.downloadSharedKnowledgeFile(filePath);
+      const blob = await (projectId
+        ? client.downloadProjectKnowledgeFile(projectId, filePath)
+        : client.downloadSharedKnowledgeFile(filePath));
       const name = fileNameFromPath(filePath);
       if (Platform.OS === 'web') {
         const url = URL.createObjectURL(blob);
@@ -120,7 +135,7 @@ export function SharedKnowledgeSettings({ initialPath }: { initialPath?: string 
   };
   return (
     <SettingsScaffold
-      title="Shared knowledge"
+      title={title}
       detail
       state={{ error, saving }}
       onRetry={() => {
@@ -130,13 +145,35 @@ export function SharedKnowledgeSettings({ initialPath }: { initialPath?: string 
       }}
     >
       <SettingsGroup
-        title={filePath ?? (path || 'Shared library')}
-        description="Reference material shared across projects. Agents can read it from every project. Administrators can edit supported text files; original sources remain protected."
+        title={filePath ?? (path || (projectId ? 'Project library' : 'Shared library'))}
+        description={
+          projectId
+            ? 'Decisions, Wiki and original sources for this project. Wiki edits require project management access.'
+            : 'Reference material shared across projects. Agents can read it from every project. Administrators can edit supported text files; original sources remain protected.'
+        }
       >
         {path || filePath !== undefined ? (
           <Button label="Back to folder" variant="secondary" disabled={saving} onPress={back} />
         ) : null}
-        {directory ? (
+        {projectId && filePath === undefined ? (
+          <SettingsListPanel>
+            {(
+              [
+                ['Decisions', 'insights/decisions'],
+                ['Wiki', 'insights'],
+                ['Raw Sources', 'sources'],
+              ] as const
+            ).map(([label, folder]) => (
+              <SettingsNavRow
+                key={folder}
+                icon="folder"
+                title={label}
+                onPress={() => setPath(folder)}
+              />
+            ))}
+          </SettingsListPanel>
+        ) : null}
+        {directory && (!projectId || path) ? (
           <SettingsListPanel>
             {directory.entries.map((entry) => (
               <SettingsNavRow
@@ -151,11 +188,11 @@ export function SharedKnowledgeSettings({ initialPath }: { initialPath?: string 
             ))}
           </SettingsListPanel>
         ) : null}
-        {directory?.entries.length === 0 ? (
+        {directory?.entries.length === 0 && (!projectId || path) ? (
           <SettingsPanel>
             <TextField
               label="Library"
-              value="No shared documents yet"
+              value="No documents in this folder"
               disabled
               onChangeText={() => undefined}
             />

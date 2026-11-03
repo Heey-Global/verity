@@ -4583,6 +4583,39 @@ it('downloads Shared originals through the authenticated client transport', asyn
   );
 });
 
+it('browses project knowledge without a session and sends the revision for edits', async () => {
+  const directory = { root: 'knowledge', path: 'insights', entries: [], truncated: false };
+  const file = {
+    path: 'insights/a b.md',
+    content: 'Before',
+    version: 'a'.repeat(64),
+    size: 6,
+    editable: true,
+  };
+  const { fetch, calls } = fakeFetchSequence(
+    json(directory),
+    json(file),
+    json({ ...file, content: 'After' }),
+    json({ ...directory, root: 'worktree' }),
+  );
+  const client = new VerityClient({ baseUrl: 'http://host', fetch });
+  expect(await client.listProjectKnowledgeFiles('p/1', 'insights')).toEqual(directory);
+  expect(await client.getProjectKnowledgeFile('p/1', file.path)).toEqual(file);
+  expect(
+    (await client.writeProjectKnowledgeFile('p/1', file.path, 'After', file.version)).content,
+  ).toBe('After');
+  expect(calls[1]?.url).toBe(
+    'http://host/projects/p%2F1/knowledge/files/content?path=insights%2Fa%20b.md',
+  );
+  expect(jsonBody(calls[2])).toEqual({
+    root: 'knowledge',
+    path: file.path,
+    content: 'After',
+    expectedVersion: file.version,
+  });
+  await expect(client.listProjectKnowledgeFiles('p/1')).rejects.toThrow('Update the Verity server');
+});
+
 it('browses Shared without a session and sends the revision for edits', async () => {
   const directory = { root: 'shared', path: 'insights', entries: [], truncated: false };
   const file = {
