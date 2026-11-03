@@ -176,7 +176,7 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
         </View>
       ) : null}
 
-      <SettingsGroup title="Personal">
+      <SettingsGroup title="Personal context">
         <SettingsListPanel>
           <SettingsNavRow
             icon="file-text"
@@ -193,6 +193,16 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
             onPress={() =>
               router.push({ pathname: '/settings/context', params: { kind: 'memory' } })
             }
+          />
+        </SettingsListPanel>
+      </SettingsGroup>
+      <SettingsGroup title="Knowledge">
+        <SettingsListPanel>
+          <SettingsNavRow
+            icon="book-open"
+            title="Shared knowledge"
+            subtitle="Reference material available to agents across projects"
+            onPress={() => router.push('/settings/shared-knowledge')}
           />
         </SettingsListPanel>
       </SettingsGroup>

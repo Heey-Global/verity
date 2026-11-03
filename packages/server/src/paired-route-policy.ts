@@ -176,6 +176,9 @@ const resourceRules: ReadonlyMap<string, ResourceRule> = new Map([
 ]);
 
 const activeUserRoutes = new Set([
+  routeScopeKey('GET', '/knowledge/shared/files'),
+  routeScopeKey('GET', '/knowledge/shared/files/content'),
+  routeScopeKey('GET', '/knowledge/shared/files/download'),
   // Personal context is bound to the authenticated identity inside the handlers.
   routeScopeKey('GET', '/me/context'),
   routeScopeKey('PUT', '/me/context'),

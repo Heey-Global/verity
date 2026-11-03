@@ -4571,3 +4571,45 @@ describe('VerityClient calendar meetings', () => {
     registered('PUT', '/settings/calendar-watch');
   });
 });
+
+it('downloads Shared originals through the authenticated client transport', async () => {
+  const { fetch, calls } = fakeFetch(new Response('original bytes'));
+  const client = new VerityClient({ baseUrl: 'http://host', fetch });
+  expect(await (await client.downloadSharedKnowledgeFile('sources/a b.pdf')).text()).toBe(
+    'original bytes',
+  );
+  expect(calls[0]?.url).toBe(
+    'http://host/knowledge/shared/files/download?path=sources%2Fa%20b.pdf',
+  );
+});
+
+it('browses Shared without a session and sends the revision for edits', async () => {
+  const directory = { root: 'shared', path: 'insights', entries: [], truncated: false };
+  const file = {
+    path: 'insights/a b.md',
+    content: 'Before',
+    version: 'a'.repeat(64),
+    size: 6,
+    editable: true,
+  };
+  const { fetch, calls } = fakeFetchSequence(
+    json(directory),
+    json(file),
+    json({ ...file, content: 'After' }),
+    json({ ...directory, root: 'worktree' }),
+  );
+  const client = new VerityClient({ baseUrl: 'http://host', fetch });
+  expect(await client.listSharedKnowledgeFiles('insights')).toEqual(directory);
+  expect(await client.getSharedKnowledgeFile(file.path)).toEqual(file);
+  expect((await client.writeSharedKnowledgeFile(file.path, 'After', file.version)).content).toBe(
+    'After',
+  );
+  expect(calls[1]?.url).toBe('http://host/knowledge/shared/files/content?path=insights%2Fa%20b.md');
+  expect(jsonBody(calls[2])).toEqual({
+    root: 'shared',
+    path: file.path,
+    content: 'After',
+    expectedVersion: file.version,
+  });
+  await expect(client.listSharedKnowledgeFiles()).rejects.toThrow('Update the Verity server');
+});

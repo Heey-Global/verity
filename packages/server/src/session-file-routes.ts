@@ -72,6 +72,7 @@ interface SessionFileTarget {
 }
 
 export interface SessionFileRouteDeps {
+  resolveSharedRoot?: () => Promise<string | undefined>;
   documentStatus?:
     | ((
         sessionId: string,
@@ -115,6 +116,46 @@ export interface SessionFileRouteDeps {
 /** Registers file browsing, upload, preview, download, delete, and move routes
  *  over the session's worktree and the project's knowledge folders. */
 export function registerSessionFileRoutes(app: FastifyInstance, deps: SessionFileRouteDeps): void {
+  const resolveSharedRoot = deps.resolveSharedRoot;
+  if (resolveSharedRoot) {
+    const isSharedWikiPath = (path: string) =>
+      path.startsWith('insights/') && !path.replaceAll('\\', '/').split('/').includes('..');
+    const sharedTarget = async (reply: FastifyReply) => {
+      const dir = await resolveSharedRoot();
+      if (!dir) {
+        reply.code(404).send({ error: 'Shared knowledge is not configured' });
+        return undefined;
+      }
+      return { root: 'shared' as const, dir };
+    };
+    app.get('/knowledge/shared/files', async (request, reply) => {
+      const { path } = sessionFileQuery.parse(request.query);
+      const value = await sharedTarget(reply);
+      return value ? deps.list(reply, value, path) : reply;
+    });
+    app.get('/knowledge/shared/files/content', async (request, reply) => {
+      const { path } = sessionFileQuery.parse(request.query);
+      const value = await sharedTarget(reply);
+      if (!value) return reply;
+      const content = await deps.content(reply, value, path);
+      return content && typeof content === 'object' && 'editable' in content
+        ? { ...content, editable: isSharedWikiPath(path) && content.editable }
+        : content;
+    });
+    app.get('/knowledge/shared/files/download', async (request, reply) => {
+      const { path } = sessionFileQuery.parse(request.query);
+      const value = await sharedTarget(reply);
+      return value ? deps.download(reply, value, path) : reply;
+    });
+    app.put('/knowledge/shared/files/content', { bodyLimit: 6_100_000 }, async (request, reply) => {
+      const body = sessionFileWriteBody.parse(request.body);
+      if (!isSharedWikiPath(body.path))
+        return reply.code(403).send({ error: 'Only Shared Wiki files can be edited here.' });
+      const value = await sharedTarget(reply);
+      return value ? deps.write(reply, value, { ...body, root: 'shared' }) : reply;
+    });
+  }
+
   const target = async (
     id: string,
     root: SessionFileRootName,
