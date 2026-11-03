@@ -997,6 +997,21 @@ describe('project settings — repository', () => {
     expect(screen.queryByLabelText(/^Connect project to GitHub(,|$)/)).toBeNull();
   });
 
+  it('disconnects GitHub only after confirming that local data is retained', async () => {
+    const disconnectProjectFromGitHub = jest
+      .fn()
+      .mockResolvedValue({ project: { ...makeDetail().project, kind: 'local' } });
+    mockCreateVerityClient.mockReturnValue(makeClient({ disconnectProjectFromGitHub }));
+    render(<ProjectRepositoryScreen />);
+    fireEvent.press(await screen.findByRole('button', { name: 'Disconnect GitHub' }));
+    expect(disconnectProjectFromGitHub).not.toHaveBeenCalled();
+    expect(screen.getByText(/Documents, code, commits and session history stay/)).toBeOnTheScreen();
+    fireEvent.press(screen.getByRole('button', { name: 'Disconnect' }));
+    await waitFor(() =>
+      expect(disconnectProjectFromGitHub).toHaveBeenCalledWith(makeDetail().project.id),
+    );
+  });
+
   it('connects a local project to a repository the installation can see', async () => {
     const linkProjectToGitHub = jest
       .fn()

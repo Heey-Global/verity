@@ -27,7 +27,7 @@ export function Disclosure({
     onExpandedChange?.(next);
   };
   return (
-    <View>
+    <View style={styles.root}>
       <Row
         title={title}
         subtitle={subtitle}
@@ -47,6 +47,8 @@ export function Disclosure({
   );
 }
 const styles = StyleSheet.create((theme) => ({
+  // A flush Card is a horizontal container; claim its width before the Row lays out text.
+  root: { width: '100%', minWidth: 0 },
   content: {
     paddingHorizontal: theme.spacing.md,
     paddingBottom: theme.spacing.md,

@@ -12,6 +12,7 @@ import {
   DELEGATION_SYSTEM_PROMPT,
   LANGUAGE_SYSTEM_PROMPT,
   LOCAL_PROJECT_SYSTEM_PROMPT,
+  DOCUMENT_PROJECT_SYSTEM_PROMPT,
   MEMORY_SYSTEM_PROMPT,
   PLANNING_SYSTEM_PROMPT,
   TASKS_RESUME_SYSTEM_PROMPT,
@@ -52,17 +53,18 @@ import type { Backend } from './backend.js';
  * agent offer push/PR chips, and those labels are rendered verbatim, so a tap
  * dispatches a turn that cannot succeed against a clone with no `origin`.
  *
- * Document sessions also omit repository conventions and code-review receipts:
- * their durable working copies publish automatically without Git. Connecting Code
- * creates Code sessions; existing document sessions keep their original role.
+ * Special Documents sessions omit repository conventions and code-review receipts.
+ * Ordinary local projects keep repository conventions for their internal Code
+ * worktrees, while their Documents still publish independently of Git.
  */
 /** Where a session's project lives, as far as the turn prompt cares. */
-export type TurnCodeHost = 'github' | 'forgejo' | 'local';
+export type TurnCodeHost = 'github' | 'forgejo' | 'local' | 'documents';
 
 /** GitHub keeps its proven `gh` workflow; every other code host goes through
  *  `verity-repo`, whose instructions only differ in the host's name. */
 function pullRequestPrompt(codeHost: TurnCodeHost): string {
   if (codeHost === 'local') return LOCAL_PROJECT_SYSTEM_PROMPT;
+  if (codeHost === 'documents') return DOCUMENT_PROJECT_SYSTEM_PROMPT;
   if (codeHost === 'forgejo') return repoToolPullRequestSystemPrompt('Forgejo');
   return PULL_REQUEST_SYSTEM_PROMPT;
 }
@@ -88,9 +90,9 @@ ${VISIBLE_MEDIA_SYSTEM_PROMPT}
 
 ${pullRequestPrompt(codeHost)}
 
-${codeHost === 'local' ? '' : REPO_CONVENTIONS_SYSTEM_PROMPT}
+${codeHost === 'documents' ? '' : REPO_CONVENTIONS_SYSTEM_PROMPT}
 
-${codeHost === 'local' ? '' : CODE_REVIEW_SYSTEM_PROMPT}
+${codeHost === 'local' || codeHost === 'documents' ? '' : CODE_REVIEW_SYSTEM_PROMPT}
 
 ${LANGUAGE_SYSTEM_PROMPT}
 
@@ -109,6 +111,7 @@ const TURN_SYSTEM_PROMPTS: Readonly<Record<TurnCodeHost, string>> = {
   github: assembleTurnSystemPrompt('github'),
   forgejo: assembleTurnSystemPrompt('forgejo'),
   local: assembleTurnSystemPrompt('local'),
+  documents: assembleTurnSystemPrompt('documents'),
 };
 
 /**
@@ -152,7 +155,7 @@ export const COMPACT_RESUME_SYSTEM_PROMPT =
 
 export function turnSystemPrompt(codeHost: TurnCodeHost = 'github', compact = false): string {
   if (compact)
-    return `${AGENT_CORE_PROMPT}\n\n# Built-in Skills\n${AGENT_SKILL_CATALOG}\n\nCode host: ${codeHost}. ${codeHost === 'local' ? 'No remote publishing is configured; do not offer push/PR actions.' : 'Use this session branch for remote work.'}`;
+    return `${AGENT_CORE_PROMPT}\n\n# Built-in Skills\n${AGENT_SKILL_CATALOG}\n\nCode host: ${codeHost}. ${codeHost === 'documents' ? 'This Documents working copy publishes automatically; do not offer Git, push or PR actions. Use the code working directory for code and package installs.' : codeHost === 'local' ? 'No remote publishing is configured; do not offer push/PR actions.' : 'Use this session branch for remote work.'}`;
   return TURN_SYSTEM_PROMPTS[codeHost];
 }
 

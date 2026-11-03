@@ -50,7 +50,17 @@ export function registerAttendeeRoutes(
     const body = z
       .object({
         title: z.string().max(200).optional(),
-        meetingUrl: z.url().max(2048),
+        meetingUrl: z
+          .string()
+          .trim()
+          .transform((value) =>
+            /^(?:meet\.google\.com|teams\.microsoft\.com|teams\.live\.com|(?:[a-z0-9-]+\.)?zoom\.us)\//i.test(
+              value,
+            )
+              ? `https://${value}`
+              : value,
+          )
+          .pipe(z.url().max(2048)),
         listenForVerity: z.boolean().default(false),
       })
       .parse(request.body);

@@ -103,6 +103,7 @@ import {
 } from '../../components/ui';
 import {
   CalendarMeetingPicker,
+  canJoinCalendarMeeting,
   UnassignedMeetingCard,
   useCalendarMeetingChoice,
   useUnassignedMeetings,
@@ -167,14 +168,32 @@ export default function MeetingScreen() {
   const [meetingSource, setMeetingSource] = useState<'presence' | 'online'>('presence');
   const [meetingUrl, setMeetingUrl] = useState('');
   const [now, setNow] = useState(Date.now());
-  // A meeting from a watched calendar replaces typing its link; the field stays as a fallback.
-  const upcoming = useUpcomingMeetings(meetingSource === 'online');
-  const { selectedEventKey, setSelectedEventKey, manualLink, setManualLink, selectedEvent } =
-    useCalendarMeetingChoice(upcoming, now);
+  // Both sources can take a calendar title; online calls can also use its join link.
+  const { upcoming, loadFailed: calendarLoadFailed } = useUpcomingMeetings(true);
+  const {
+    selectedEventKey,
+    setSelectedEventKey,
+    manualLink,
+    setManualLink,
+    selectedEvent: selectedCalendarEvent,
+  } = useCalendarMeetingChoice(upcoming, now, meetingSource === 'presence');
+  const selectedEvent =
+    selectedCalendarEvent?.provider && canJoinCalendarMeeting(selectedCalendarEvent, now)
+      ? selectedCalendarEvent
+      : null;
   const [unassignedMeetings, reloadUnassigned] = useUnassignedMeetings();
   const [continuing, setContinuing] = useState<string | null>(null);
   const [confirm, confirmSheet] = useConfirm();
   const [meetingTitle, setMeetingTitle] = useState('');
+  const titledEvent = useRef<string | null>(null);
+  const titleEdited = useRef(false);
+  useEffect(() => {
+    const chosen = upcoming?.find((event) => event.eventKey === selectedEventKey);
+    if (chosen && titledEvent.current !== chosen.eventKey) {
+      titledEvent.current = chosen.eventKey;
+      if (!titleEdited.current) setMeetingTitle(chosen.title ?? '');
+    }
+  }, [selectedEventKey, upcoming]);
   const [attendeeConfigured, setAttendeeConfigured] = useState(false);
   useEffect(() => {
     let current = true;
@@ -1717,7 +1736,11 @@ export default function MeetingScreen() {
             <Button
               label="Cancel"
               variant="text"
-              onPress={() => (meeting ? setShowNewMeeting(false) : router.back())}
+              onPress={() => {
+                if (meeting) setShowNewMeeting(false);
+                else if (router.canGoBack()) router.back();
+                else router.replace({ pathname: '/session/[id]', params: { id: sessionId } });
+              }}
             />
           </View>
           {error ? <HintBox title="Could not start the meeting" message={error} /> : null}
@@ -1765,7 +1788,10 @@ export default function MeetingScreen() {
               label="Title"
               accessibilityLabel="Meeting title"
               value={meetingTitle}
-              onChangeText={setMeetingTitle}
+              onChangeText={(value) => {
+                titleEdited.current = true;
+                setMeetingTitle(value);
+              }}
               maxLength={200}
               placeholder="Optional"
             />
@@ -1789,18 +1815,29 @@ export default function MeetingScreen() {
               />
             </Group>
           </View>
+          <CalendarMeetingPicker
+            upcoming={upcoming}
+            loadFailed={calendarLoadFailed}
+            inPerson={meetingSource === 'presence'}
+            onChooseCalendars={() => router.push('/settings/meeting-calendars')}
+            selectedKey={meetingSource === 'presence' || selectedEvent ? selectedEventKey : null}
+            onSelect={(eventKey) => {
+              titleEdited.current = false;
+              setSelectedEventKey(eventKey);
+              const chosen = upcoming?.find((event) => event.eventKey === eventKey);
+              if (chosen) {
+                titledEvent.current = eventKey;
+                setMeetingTitle(chosen.title ?? '');
+              }
+            }}
+            manual={manualLink}
+            onManualChange={setManualLink}
+            meetingUrl={meetingUrl}
+            onMeetingUrlChange={setMeetingUrl}
+            now={now}
+          />
           {meetingSource === 'online' ? (
             <View style={styles.setupSection}>
-              <CalendarMeetingPicker
-                upcoming={upcoming}
-                selectedKey={selectedEventKey}
-                onSelect={setSelectedEventKey}
-                manual={manualLink}
-                onManualChange={setManualLink}
-                meetingUrl={meetingUrl}
-                onMeetingUrlChange={setMeetingUrl}
-                now={now}
-              />
               <UiText variant="footnote">
                 {attendeeConfigured
                   ? 'Transcription continues while the app is closed. Requires Verity Premium Online sharing.'

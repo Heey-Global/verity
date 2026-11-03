@@ -13,29 +13,36 @@ const REFRESH_MS = 30_000;
 /** Matches the server's limit on joining early (`calendar-meeting-routes.ts`). */
 const JOIN_EARLY_MS = 15 * 60_000;
 
-const canJoinNow = (meeting: UpcomingMeeting, now: number) =>
-  meeting.startsAt - now <= JOIN_EARLY_MS;
+export const canJoinCalendarMeeting = (meeting: UpcomingMeeting, now: number) =>
+  meeting.startsAt - now <= JOIN_EARLY_MS && meeting.endsAt > now;
 
 const clock = (ms: number) =>
   new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
-/** The calendar meetings that can still be joined; empty for a server or user without them. */
-export function useUpcomingMeetings(enabled: boolean): UpcomingMeeting[] | null {
+/** Upcoming entries from the selected calendars, including in-person meetings. */
+export function useUpcomingMeetings(enabled: boolean) {
   const [upcoming, setUpcoming] = useState<UpcomingMeeting[] | null>(null);
+  const [loadFailed, setLoadFailed] = useState(false);
   useEffect(() => {
     if (!enabled) return;
     let current = true;
     const load = () => {
       const client = createVerityClient();
       if (!client) return;
-      // Older servers and users other than administrators have no calendar list.
-      void client
-        .getUpcomingMeetings()
+      // Permission or connection failures must not look like an empty calendar.
+      void Promise.resolve()
+        .then(() => client.getUpcomingMeetings(true))
         .then((list) => {
-          if (current) setUpcoming(list.filter((item) => item.decision !== 'joined'));
+          if (current) {
+            setLoadFailed(false);
+            setUpcoming(list.filter((item) => item.decision !== 'joined'));
+          }
         })
         .catch(() => {
-          if (current) setUpcoming([]);
+          if (current) {
+            setLoadFailed(true);
+            setUpcoming([]);
+          }
         });
     };
     load();
@@ -45,31 +52,44 @@ export function useUpcomingMeetings(enabled: boolean): UpcomingMeeting[] | null 
       clearInterval(timer);
     };
   }, [enabled]);
-  return upcoming;
+  return { upcoming, loadFailed };
 }
 
 /**
  * Which calendar meeting the start button joins. The first one is picked by default; with
  * none to pick, the link field opens, since typing the link is then the only way forward.
  */
-export function useCalendarMeetingChoice(upcoming: UpcomingMeeting[] | null, now: number) {
+export function useCalendarMeetingChoice(
+  upcoming: UpcomingMeeting[] | null,
+  now: number,
+  inPerson = false,
+) {
   const [selectedEventKey, setSelectedEventKey] = useState<string | null>(null);
   const [manualLink, setManualLink] = useState(false);
   const preselected = useRef(false);
+  const previousSource = useRef(inPerson);
   useEffect(() => {
     if (upcoming === null) return;
     if (upcoming.length === 0) setManualLink(true);
-    // Picked once, and only a meeting that is on now: a refresh must never swap in another
-    // meeting behind the operator's back, and one hours ahead cannot be joined yet.
-    if (!preselected.current) {
+    // A refresh preserves the choice; changing sources selects a compatible current event.
+    const sourceChanged = previousSource.current !== inPerson;
+    previousSource.current = inPerson;
+    if (!preselected.current || sourceChanged) {
       preselected.current = true;
-      const soon = upcoming.find((item) => canJoinNow(item, now));
-      if (soon) setSelectedEventKey(soon.eventKey);
+      const eligible = (item: UpcomingMeeting) =>
+        canJoinCalendarMeeting(item, now) && (inPerson || item.provider !== null);
+      const current = upcoming.find((item) => item.eventKey === selectedEventKey);
+      const soon =
+        sourceChanged && current && eligible(current) ? current : upcoming.find(eligible);
+      if (soon) {
+        setSelectedEventKey(soon.eventKey);
+        if (sourceChanged) setManualLink(false);
+      } else if (sourceChanged) setSelectedEventKey(null);
       return;
     }
     if (selectedEventKey && !upcoming.some((item) => item.eventKey === selectedEventKey))
       setSelectedEventKey(null);
-  }, [upcoming, selectedEventKey, now]);
+  }, [upcoming, selectedEventKey, now, inPerson]);
   const selectedEvent = manualLink
     ? null
     : (upcoming?.find((item) => item.eventKey === selectedEventKey) ?? null);
@@ -106,6 +126,9 @@ export function useUnassignedMeetings(): [ActiveLiveMeetings['unassigned'], () =
  */
 export function CalendarMeetingPicker({
   upcoming,
+  loadFailed = false,
+  inPerson = false,
+  onChooseCalendars,
   selectedKey,
   onSelect,
   manual,
@@ -115,6 +138,9 @@ export function CalendarMeetingPicker({
   now,
 }: {
   upcoming: UpcomingMeeting[] | null;
+  loadFailed?: boolean;
+  inPerson?: boolean;
+  onChooseCalendars?: () => void;
   selectedKey: string | null;
   onSelect: (eventKey: string) => void;
   manual: boolean;
@@ -139,9 +165,9 @@ export function CalendarMeetingPicker({
             <Row
               key={meeting.eventKey}
               title={meeting.title || 'Online meeting'}
-              subtitle={`${when(meeting)} · ${PROVIDER[meeting.provider]}`}
+              subtitle={`${when(meeting)} · ${meeting.provider ? PROVIDER[meeting.provider] : 'In person'}`}
               selected={!manual && selectedKey === meeting.eventKey}
-              disabled={!canJoinNow(meeting, now)}
+              disabled={!inPerson && (!meeting.provider || !canJoinCalendarMeeting(meeting, now))}
               onPress={() => {
                 onSelect(meeting.eventKey);
                 onManualChange(false);
@@ -152,25 +178,46 @@ export function CalendarMeetingPicker({
       ) : (
         <Card flush>
           <Row
-            title={upcoming === null ? 'Loading meetings…' : 'No meetings with a link'}
-            subtitle={upcoming === null ? undefined : 'From watched calendars in the next hours'}
+            title={
+              loadFailed
+                ? 'Could not load calendar meetings'
+                : upcoming === null
+                  ? 'Loading meetings…'
+                  : 'No calendar meetings'
+            }
+            subtitle={
+              loadFailed
+                ? 'Check your server connection and calendar access. Retrying automatically.'
+                : upcoming === null
+                  ? undefined
+                  : 'From watched calendars in the next hours. Choose calendars in Settings → Google → Meeting calendars.'
+            }
             leading={{ icon: 'calendar' }}
           />
         </Card>
       )}
-      <Card flush>
-        <Disclosure title="Enter link manually" expanded={manual} onExpandedChange={onManualChange}>
-          <TextField
-            label="Meeting link"
-            accessibilityLabel="Online meeting link"
-            value={meetingUrl}
-            onChangeText={onMeetingUrlChange}
-            placeholder="https://"
-            keyboardType="url"
-          />
-          <Text variant="footnote">Google Meet, Microsoft Teams or Zoom.</Text>
-        </Disclosure>
-      </Card>
+      {onChooseCalendars && (!upcoming || upcoming.length === 0 || loadFailed) ? (
+        <Button label="Choose meeting calendars" variant="text" onPress={onChooseCalendars} />
+      ) : null}
+      {!inPerson ? (
+        <Card flush>
+          <Disclosure
+            title="Enter link manually"
+            expanded={manual}
+            onExpandedChange={onManualChange}
+          >
+            <TextField
+              label="Meeting link"
+              accessibilityLabel="Online meeting link"
+              value={meetingUrl}
+              onChangeText={onMeetingUrlChange}
+              placeholder="https://"
+              keyboardType="url"
+            />
+            <Text variant="footnote">Google Meet, Microsoft Teams or Zoom.</Text>
+          </Disclosure>
+        </Card>
+      ) : null}
     </View>
   );
 }

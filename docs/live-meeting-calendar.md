@@ -113,3 +113,19 @@ it has a session.
 - Calendar meetings are one source of unassigned meetings. Other sources, such
   as phone calls, are not available yet; they would enter through the same
   unassigned state.
+
+### Calendar selection for in-person meetings
+
+The new-meeting screen offers calendar selection for both sources. Selecting an
+entry fills the title; in-person meetings still use the device microphone.
+Timed events without an online link are available for in-person recording.
+Online entry points require a supported meeting link and remain subject to the
+join window. Entries come from the watched calendars selected under Settings ›
+Google › Meeting calendars. An empty selection offers a shortcut to that page;
+failed calendar reads are shown as errors rather than as an empty calendar.
+
+The app requests `GET /live-meetings/upcoming?includeInPerson=true` for this
+combined list. The server refreshes the watched calendars and their join cache
+without starting a bot. Requests without that flag retain the cached online-only
+response used by meeting notifications. Calendar events without timed start/end
+values, cancelled events, and declined invitations are excluded.

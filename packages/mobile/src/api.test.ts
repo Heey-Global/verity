@@ -1311,6 +1311,17 @@ describe('VerityClient.listProjects (#174)', () => {
     );
   });
 
+  it('disconnects GitHub using the stable project ID and parses the local result', async () => {
+    const local = { ...project, kind: 'local', owner: '__local__' };
+    const { fetch, calls } = fakeFetch(json({ project: local }));
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    expect(await client.disconnectProjectFromGitHub('p/1')).toMatchObject({
+      project: { id: project.id, kind: 'local' },
+    });
+    expect(calls[0]?.url).toBe('http://host/projects/p%2F1/disconnect-github');
+    expect(calls[0]?.init?.method).toBe('POST');
+  });
+
   it('creates a project', async () => {
     const { fetch, calls } = fakeFetch(json({ project }));
     const client = new VerityClient({ baseUrl: 'http://host', fetch });
@@ -4478,14 +4489,20 @@ describe('VerityClient calendar meetings', () => {
       decision: null,
       meetingId: null,
     };
-    const { fetch, calls } = fakeFetchSequence(json(active), json({ upcoming: [upcoming] }));
+    const { fetch, calls } = fakeFetchSequence(
+      json(active),
+      json({ upcoming: [upcoming] }),
+      json({ upcoming: [{ ...upcoming, provider: null }] }),
+    );
     const client = new VerityClient({ baseUrl: 'http://host', fetch });
     expect(await client.getActiveLiveMeetings()).toEqual(active);
     // An unknown provider from a newer server still lists the meeting.
     expect(await client.getUpcomingMeetings()).toEqual([{ ...upcoming, provider: 'meet' }]);
+    expect(await client.getUpcomingMeetings(true)).toEqual([{ ...upcoming, provider: null }]);
     expect(calls.map((call) => call.url)).toEqual([
       'http://host/live-meetings/active',
       'http://host/live-meetings/upcoming',
+      'http://host/live-meetings/upcoming?includeInPerson=true',
     ]);
     registered('GET', '/live-meetings/active');
     registered('GET', '/live-meetings/upcoming');

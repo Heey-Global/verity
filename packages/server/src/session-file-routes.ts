@@ -73,11 +73,14 @@ interface SessionFileTarget {
 
 export interface SessionFileRouteDeps {
   documentStatus?:
-    | ((sessionId: string) => Promise<{ pending: boolean; running: boolean } | undefined>)
+    | ((
+        sessionId: string,
+      ) => Promise<{ pending: boolean; running: boolean; warning?: string } | undefined>)
     | undefined;
   /** The directory backing `root` for this session, or `undefined` when the
    *  session does not exist — or, for a knowledge root, when the session has no
    *  project or the deployment has no knowledge folder configured. */
+  codeAvailable?: ((sessionId: string) => Promise<boolean>) | undefined;
   workspaceKind?: ((sessionId: string) => Promise<'documents' | 'code'>) | undefined;
   resolveRoot: (sessionId: string, root: SessionFileRootName) => Promise<string | undefined>;
   list: (reply: FastifyReply, target: SessionFileTarget, path: string) => Promise<unknown>;
@@ -155,6 +158,7 @@ export function registerSessionFileRoutes(app: FastifyInstance, deps: SessionFil
       ? {
           ...listed,
           workspaceKind: await deps.workspaceKind(id),
+          codeAvailable: await deps.codeAvailable?.(id),
           documentStatus: await deps.documentStatus?.(id),
         }
       : listed;

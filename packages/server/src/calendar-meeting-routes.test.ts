@@ -62,7 +62,10 @@ function event(eventId: string, startsAt: number, meetingUrl: string) {
 }
 const key = (eventId: string) => calendarEventKey(accountId, 'primary', eventId);
 
-function serve(start = vi.fn(async () => ({ meetingId: 'meeting-1' }))) {
+function serve(
+  start = vi.fn(async () => ({ meetingId: 'meeting-1' })),
+  calendarEntries?: unknown[],
+) {
   const send = vi.fn(async () => ({
     targets: 0,
     ticketsAccepted: 0,
@@ -83,7 +86,11 @@ function serve(start = vi.fn(async () => ({ meetingId: 'meeting-1' }))) {
     },
     meetings: { start, runningFor } as unknown as CalendarMeetingDeps['meetings'],
     sender: { send },
-    googleAccessToken: async () => undefined,
+    googleAccessToken: async () => (calendarEntries ? 'fixture-token' : undefined),
+    fetch: vi.fn(async () => ({
+      status: 200,
+      json: async () => ({ items: calendarEntries ?? [] }),
+    })) as never,
     warn: vi.fn(),
     now: () => NOW,
   });
@@ -204,4 +211,76 @@ it('answers 503 when the bot cannot start, and the meeting can be joined again',
   const url = `/live-meetings/calendar/${key('soon')}/join`;
   expect((await app.inject({ method: 'POST', url })).statusCode).toBe(503);
   expect((await app.inject({ method: 'POST', url })).json()).toEqual({ meetingId: 'meeting-2' });
+});
+
+it('includes timed in-person calendar events without exposing links or joining bots', async () => {
+  const { app, start } = serve(undefined, [
+    {
+      id: 'office',
+      etag: 'v1',
+      summary: 'Office review',
+      status: 'confirmed',
+      start: { dateTime: new Date(NOW + MIN).toISOString() },
+      end: { dateTime: new Date(NOW + 31 * MIN).toISOString() },
+    },
+    {
+      id: 'remote',
+      etag: 'v1',
+      summary: 'Remote review',
+      status: 'confirmed',
+      hangoutLink: 'https://meet.google.com/aaa-bbbb-ccc',
+      start: { dateTime: new Date(NOW + MIN).toISOString() },
+      end: { dateTime: new Date(NOW + 31 * MIN).toISOString() },
+    },
+    {
+      id: 'cancelled',
+      etag: 'v1',
+      summary: 'Cancelled',
+      status: 'cancelled',
+      start: { dateTime: new Date(NOW + MIN).toISOString() },
+      end: { dateTime: new Date(NOW + 31 * MIN).toISOString() },
+    },
+    {
+      id: 'all-day',
+      etag: 'v1',
+      summary: 'Holiday',
+      start: { date: '2026-11-02' },
+      end: { date: '2026-11-03' },
+    },
+  ]);
+  const response = await app.inject({
+    method: 'GET',
+    url: '/live-meetings/upcoming?includeInPerson=true',
+  });
+  expect(response.statusCode).toBe(200);
+  const entries = response.json<{
+    upcoming: { eventKey: string; title: string; provider: string | null }[];
+  }>().upcoming;
+  expect(entries).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ eventKey: key('office'), title: 'Office review', provider: null }),
+    ]),
+  );
+  expect(entries.map((item: { title: string }) => item.title)).not.toContain('Cancelled');
+  expect(entries.map((item: { title: string }) => item.title)).not.toContain('Holiday');
+  expect(entries).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ eventKey: key('remote'), provider: 'meet' }),
+    ]),
+  );
+  expect(await ctx.store.calendarWatch.getEvent(key('remote'))).toBeDefined();
+  expect(start).not.toHaveBeenCalled();
+  expect(response.body).not.toContain('fixture-token');
+});
+
+it('reports unavailable calendar access instead of claiming the calendar is empty', async () => {
+  const { app } = serve();
+  const response = await app.inject({
+    method: 'GET',
+    url: '/live-meetings/upcoming?includeInPerson=true',
+  });
+  expect(response.statusCode).toBe(503);
+  expect(response.json()).toEqual({
+    error: expect.stringContaining('Calendar access is unavailable'),
+  });
 });

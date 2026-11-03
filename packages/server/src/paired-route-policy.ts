@@ -30,6 +30,10 @@ const resourceRules: ReadonlyMap<string, ResourceRule> = new Map([
     { kind: 'project', parameter: 'id', permission: 'manage' },
   ],
   [
+    routeScopeKey('POST', '/projects/:id/disconnect-github'),
+    { kind: 'project', parameter: 'id', permission: 'manage' },
+  ],
+  [
     routeScopeKey('GET', '/sessions/:id/mcp-apps/:appId'),
     { kind: 'session', parameter: 'id', permission: 'read' },
   ],

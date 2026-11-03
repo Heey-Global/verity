@@ -973,7 +973,7 @@ const upcomingMeetingsSchema = z.object({
       startsAt: z.number(),
       endsAt: z.number(),
       calendar: z.string(),
-      provider: z.enum(['meet', 'teams', 'zoom']).catch('meet'),
+      provider: z.enum(['meet', 'teams', 'zoom']).nullable().catch('meet'),
       decision: z.enum(['joined', 'skipped', 'failed']).nullable().catch(null),
       meetingId: z.string().nullable(),
     }),
@@ -1937,7 +1937,10 @@ export type SessionFileRoot =
   'worktree' | 'knowledge' | 'shared' | 'sources' | 'documents' | 'drafts';
 
 export const sessionDirectorySchema = z.object({
-  documentStatus: z.object({ pending: z.boolean(), running: z.boolean() }).optional(),
+  documentStatus: z
+    .object({ pending: z.boolean(), running: z.boolean(), warning: z.string().optional() })
+    .optional(),
+  codeAvailable: z.boolean().optional(),
   workspaceKind: z.enum(['documents', 'code']).optional(),
   root: z.enum(['worktree', 'knowledge', 'shared', 'sources', 'documents', 'drafts']).optional(),
   path: z.string(),
@@ -2623,9 +2626,14 @@ export class VerityClient {
     );
   }
   /** Meetings of the next hours from watched calendars. */
-  async getUpcomingMeetings(): Promise<UpcomingMeeting[]> {
+  async getUpcomingMeetings(includeInPerson = false): Promise<UpcomingMeeting[]> {
     return upcomingMeetingsSchema.parse(
-      await (await this.request('/live-meetings/upcoming', { method: 'GET' })).json(),
+      await (
+        await this.request(
+          `/live-meetings/upcoming${includeInPerson ? '?includeInPerson=true' : ''}`,
+          { method: 'GET' },
+        )
+      ).json(),
     ).upcoming;
   }
   /** Joins a calendar meeting: into `sessionId` when given, otherwise unassigned. */
@@ -4850,6 +4858,13 @@ export class VerityClient {
    * branch plus a pull request the operator still has to merge — so callers must
    * surface {@link LinkedProject.pullRequest}. The sandbox is recreated as part of
    * this, so callers should warn that running sessions restart. */
+  async disconnectProjectFromGitHub(id: string): Promise<LinkedProject> {
+    const res = await this.request(`/projects/${encodeURIComponent(id)}/disconnect-github`, {
+      method: 'POST',
+    });
+    return linkedProjectSchema.parse(await res.json());
+  }
+
   async linkProjectToGitHub(id: string, repo: string): Promise<LinkedProject> {
     const res = await this.request(`/projects/${encodeURIComponent(id)}/link-github`, {
       method: 'POST',

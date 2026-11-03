@@ -1,4 +1,33 @@
-# Local projects without Git
+# Local project files
+
+## Current implementation direction
+
+Ordinary local projects retain an internal Git repository and isolated Code worktrees.
+The Code area is hidden while it contains no user files and appears when code is added;
+Git metadata, Verity scaffolding and generated dependencies do not count as content.
+A GitHub connection is optional. Disconnecting GitHub preserves the project ID,
+Documents, code files, commits and session history without deleting the remote repository.
+
+Agents put code, mockups, websites, builds and package installs in their Code working
+directory. Documents working copies hold text documents and assets and continue to
+publish automatically. Dependency/build directories and unsupported entries such as
+symlinks are skipped with recovery guidance; skipping never proposes deletion of
+previously published documents. Symlink targets are never followed.
+
+Existing local Git repositories and session paths remain in place. Existing Documents
+sessions retain their working copies and receive an adjacent Code worktree on demand.
+Projects already migrated to Documents get a new internal Git repository; earlier
+archives remain intact. No automatic file moves, history rewrites or knowledge-model
+restructuring are part of this change. New bootstrap commits use the configured server
+signer when available. Existing unsigned commits stay unchanged and may still be
+rejected by a repository requiring verified signatures; link errors explain that policy.
+
+## Historical proposal
+
+The proposal below records the earlier repository-free approach. Its repository and
+working-directory restrictions are superseded by the direction above. Its broader
+knowledge-model proposals are not implemented by this change.
+
 
 **Status:** Implemented in this change; rollout requires legacy migration.
 **Scope:** Verity server, provisioner, store, agent runtime, mobile explorer, documentation
