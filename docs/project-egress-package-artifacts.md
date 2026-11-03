@@ -37,7 +37,12 @@ ticket. Authorization is independently checked again for the current connection.
 Metadata is limited to 2 MiB, artifacts to 32 MiB and simultaneous broker
 responses to two, including buffered downloads until the client finishes. A third
 request receives HTTP 429. Revocation aborts slow client transfers; loopback TCP
-fixtures cover backpressure and cancellation, not protected-runtime isolation. Oversized packages and npm releases with only SHA1 integrity
+fixtures cover backpressure and cancellation through the Unix broker and TCP relay,
+not protected-runtime isolation. The relay streams with bounded backpressure, limits
+active responses independently and checks authority on a separate HEAD request every
+200 ms with a one-second deadline until its client finishes. This control request
+cannot fetch metadata or artifacts and uses the same project capability and listener
+generation as the data request. Oversized packages and npm releases with only SHA1 integrity
 are unavailable. Redirects stay within the selected fixed provider/path class;
 private DNS answers, caller credentials, arbitrary methods, range requests and
 arbitrary URL forwarding are rejected. npm audit retains its fixed read operation

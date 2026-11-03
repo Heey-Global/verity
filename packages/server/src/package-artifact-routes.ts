@@ -37,9 +37,11 @@ export function registerPackageArtifactRoutes(
   const broker = createPackageArtifactBroker(options);
   let activeTransfers = 0;
   const handler: RouteHandlerMethod = async (request, reply) => {
-    if (activeTransfers >= 2)
+    const authorityProbe =
+      request.method === 'HEAD' && request.url === '/internal/package-artifacts/authority';
+    if (!authorityProbe && activeTransfers >= 2)
       return reply.code(429).send({ error: 'package artifact capacity reached' });
-    activeTransfers++;
+    if (!authorityProbe) activeTransfers++;
     try {
       const identity = internalConnectionIdentity(request);
       const generation = internalConnectionGenerationSignal(request);
@@ -75,6 +77,7 @@ export function registerPackageArtifactRoutes(
             request.headers['transfer-encoding']))
       )
         return reply.code(400).send({ error: 'invalid package artifact request' });
+      if (authorityProbe) return reply.code(204).send();
       const controller = new AbortController();
       let sending = false;
       const abort = () => {
@@ -139,7 +142,7 @@ export function registerPackageArtifactRoutes(
         reply.raw.removeListener('close', closed);
       }
     } finally {
-      activeTransfers--;
+      if (!authorityProbe) activeTransfers--;
     }
   };
   app.get('/internal/package-artifacts/*', handler);

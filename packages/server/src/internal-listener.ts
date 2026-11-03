@@ -160,6 +160,7 @@ export const PROJECT_UDS_ROUTES: ReadonlySet<string> = new Set([
   'POST /internal/package-install',
   'GET /internal/package-artifacts/*',
   'HEAD /internal/package-artifacts/*',
+  'HEAD /internal/package-artifacts/authority',
   'POST /internal/package-artifacts/npm/-/npm/v1/security/advisories/bulk',
   // `verity-dev-server`: managed dev servers (concept 2.6), same capability as memory.
   'POST /internal/dev-servers',

@@ -1,3 +1,7 @@
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createBrokerRelayServer } from '@verity/project-relay/dist/relay.js';
 import { EventEmitter } from 'node:events';
 import { createHash } from 'node:crypto';
 import { Readable } from 'node:stream';
@@ -172,75 +176,122 @@ it('aborts an active upstream request when capability revalidation stops answeri
   expect((await f.get()).statusCode).toBe(401);
 });
 
-it('revokes a buffered artifact while a slow client is still receiving it', async () => {
-  const f = fixture();
-  const archive = Buffer.alloc(8 * 1024 * 1024, 97);
-  const integrity = `sha512-${createHash('sha512').update(archive).digest('base64')}`;
-  f.transport.mockImplementation(
-    async ({ path }) =>
-      Object.assign(
-        Readable.from([
-          path.endsWith('.tgz')
-            ? archive
-            : Buffer.from(
-                JSON.stringify({
-                  name: 'example',
-                  versions: {
-                    '1.0.0': {
-                      name: 'example',
-                      version: '1.0.0',
-                      dist: {
-                        tarball: 'https://registry.npmjs.org/example/-/example-1.0.0.tgz',
-                        integrity,
+it.each([
+  { throughRelay: false, cancellation: 'revoke' },
+  { throughRelay: true, cancellation: 'revoke' },
+  { throughRelay: true, cancellation: 'stall' },
+  { throughRelay: true, cancellation: 'generation' },
+])(
+  'revokes a buffered artifact with a slow client ($throughRelay, $cancellation)',
+  async ({ throughRelay, cancellation }) => {
+    const f = fixture();
+    const archive = Buffer.alloc(8 * 1024 * 1024, 97);
+    const integrity = `sha512-${createHash('sha512').update(archive).digest('base64')}`;
+    f.transport.mockImplementation(
+      async ({ path }) =>
+        Object.assign(
+          Readable.from([
+            path.endsWith('.tgz')
+              ? archive
+              : Buffer.from(
+                  JSON.stringify({
+                    name: 'example',
+                    versions: {
+                      '1.0.0': {
+                        name: 'example',
+                        version: '1.0.0',
+                        dist: {
+                          tarball: 'https://registry.npmjs.org/example/-/example-1.0.0.tgz',
+                          integrity,
+                        },
                       },
                     },
-                  },
-                  'dist-tags': { latest: '1.0.0' },
-                }),
-              ),
-        ]),
-        { statusCode: 200, headers: {} },
-      ) as IncomingMessage,
-  );
-  const sockets: Socket[] = [];
-  f.app.server.on('connection', (connected: Socket) => {
-    sockets.push(connected);
-  });
-  const origin = await f.app.listen({ host: '127.0.0.1', port: 0 });
-  const clients: IncomingMessage[] = [];
-  try {
-    for (let index = 0; index < 2; index++) {
-      clients.push(
-        await new Promise<IncomingMessage>((resolve, reject) => {
-          const outgoing = request(
-            new URL('/internal/package-artifacts/npm/example/-/example-1.0.0.tgz', origin),
-            {
-              headers: { authorization: 'Bearer good' },
-            },
-            (response) => {
-              response.on('error', () => {});
-              response.once('data', () => {
-                response.pause();
-                resolve(response);
-              });
-            },
-          );
-          outgoing.on('error', reject);
-          outgoing.end();
-        }),
-      );
-    }
-    expect(clients.map((client) => client.statusCode)).toEqual([200, 200]);
-    // Real backpressure keeps the valid response pending beyond broker buffering.
-    expect(sockets.every((socket) => socket.writableLength > 0)).toBe(true);
-    expect((await f.get()).statusCode).toBe(429);
-    f.resolve.mockResolvedValue(undefined);
-    await vi.waitFor(() => expect(sockets.every((socket) => socket.destroyed)).toBe(true), {
-      timeout: 1800,
+                    'dist-tags': { latest: '1.0.0' },
+                  }),
+                ),
+          ]),
+          { statusCode: 200, headers: {} },
+        ) as IncomingMessage,
+    );
+    const sockets: Socket[] = [];
+    f.app.server.on('connection', (connected: Socket) => {
+      sockets.push(connected);
     });
-  } finally {
-    for (const client of clients) client.destroy();
-    for (const socket of sockets) socket.destroy();
-    await f.app.close();
-  }
-});
+    const directory = await mkdtemp(join(tmpdir(), 'artifact-relay-'));
+    let relay: Server | undefined;
+    const relaySockets: Socket[] = [];
+    let origin: string;
+    if (throughRelay) {
+      const socketPath = join(directory, 'broker.sock');
+      await f.app.listen({ path: socketPath });
+      relay = createBrokerRelayServer({ socketPath });
+      relay.on('connection', (socket) => relaySockets.push(socket));
+      await new Promise<void>((resolve) => relay!.listen(0, '127.0.0.1', resolve));
+      const address = relay.address();
+      if (!address || typeof address === 'string') throw new Error('Missing relay TCP address');
+      origin = `http://127.0.0.1:${address.port}`;
+    } else {
+      origin = await f.app.listen({ host: '127.0.0.1', port: 0 });
+    }
+    const clients: IncomingMessage[] = [];
+    try {
+      for (let index = 0; index < 2; index++) {
+        clients.push(
+          await new Promise<IncomingMessage>((resolve, reject) => {
+            const outgoing = request(
+              new URL('/internal/package-artifacts/npm/example/-/example-1.0.0.tgz', origin),
+              {
+                headers: { authorization: 'Bearer good' },
+              },
+              (response) => {
+                response.on('error', () => {});
+                response.once('data', () => {
+                  response.pause();
+                  resolve(response);
+                });
+              },
+            );
+            outgoing.on('error', reject);
+            outgoing.end();
+          }),
+        );
+      }
+      expect(clients.map((client) => client.statusCode)).toEqual([200, 200]);
+      // Real backpressure keeps the valid response pending beyond broker buffering.
+      expect(sockets.every((socket) => socket.writableLength > 0)).toBe(true);
+      const activeSockets = [...sockets, ...relaySockets];
+      const capacity = await new Promise<number | undefined>((resolve, reject) => {
+        const outgoing = request(
+          new URL('/internal/package-artifacts/npm/example', origin),
+          {
+            headers: { authorization: 'Bearer good' },
+          },
+          (response) => {
+            response.resume();
+            resolve(response.statusCode);
+          },
+        );
+        outgoing.on('error', reject);
+        outgoing.end();
+      });
+      expect(capacity).toBe(429);
+      if (cancellation === 'generation') f.generation.abort();
+      else if (cancellation === 'stall') f.resolve.mockImplementation(() => new Promise(() => {}));
+      else f.resolve.mockResolvedValue(undefined);
+      await vi.waitFor(() => expect(activeSockets.every((socket) => socket.destroyed)).toBe(true), {
+        timeout: 1800,
+      });
+    } finally {
+      for (const client of clients) client.destroy();
+      for (const socket of sockets) socket.destroy();
+      if (relay) {
+        relay.closeAllConnections();
+        await new Promise<void>((resolve, reject) =>
+          relay.close((error) => (error ? reject(error) : resolve())),
+        );
+      }
+      await f.app.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  },
+);
