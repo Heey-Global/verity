@@ -6,6 +6,24 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.76.0](https://github.com/Heey-Global/verity/compare/v4.75.0...v4.76.0) (2026-11-03)
+
+
+### Features
+
+* **egress:** wire global network protection into server starts ([#2192](https://github.com/Heey-Global/verity/issues/2192)) ([6e7c5e2](https://github.com/Heey-Global/verity/commit/6e7c5e222dcb9d12774fd8375cf33977c2510cd9))
+
+
+### Bug Fixes
+
+* **deps:** update Claude Code and OpenCode ([#2199](https://github.com/Heey-Global/verity/issues/2199)) ([17c7d11](https://github.com/Heey-Global/verity/commit/17c7d114fd64416874e411f64ad2d5795fea8c27))
+* **deps:** update dependency @agentclientprotocol/sdk to v2.2.0 ([#2200](https://github.com/Heey-Global/verity/issues/2200)) ([2747c6e](https://github.com/Heey-Global/verity/commit/2747c6eddd3c984a235159c9059474a73cc3db42))
+* **deps:** update dependency @napi-rs/canvas to v1.1.0 ([#2201](https://github.com/Heey-Global/verity/issues/2201)) ([c057d29](https://github.com/Heey-Global/verity/commit/c057d29216aaf3a3de0600630d0df15780a204f1))
+* **diagnostics:** classify invalid recording responses safely ([#2194](https://github.com/Heey-Global/verity/issues/2194)) ([988286e](https://github.com/Heey-Global/verity/commit/988286ed0080ae91fbd5a05137eb848e66b1de2e))
+* **push:** contain repeated failed Expo deliveries ([#2191](https://github.com/Heey-Global/verity/issues/2191)) ([e9c1e63](https://github.com/Heey-Global/verity/commit/e9c1e63c14e40c32d850ad36e5bd477c03b56e9f))
+* **self-update:** preserve runtime renewal and reboot recovery ([#2195](https://github.com/Heey-Global/verity/issues/2195)) ([73f240c](https://github.com/Heey-Global/verity/commit/73f240c2969fb13866d0beed81a9677ce76a0c8e))
+* **server:** bound push retries, protect Repair and batch session reads ([#2196](https://github.com/Heey-Global/verity/issues/2196)) ([94f3ae1](https://github.com/Heey-Global/verity/commit/94f3ae145ab96fd1bd35f2d4d9e6522df233bdc2))
+
 ## [4.75.0](https://github.com/Heey-Global/verity/compare/v4.74.0...v4.75.0) (2026-11-02)
 
 
