@@ -5496,6 +5496,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         }
         let linked: ProjectRecord | undefined;
         try {
+          if (published.defaultBranch)
+            await deps.eventStore.updateProjectSettings(project.id, {
+              defaultBranch: published.defaultBranch,
+            });
           linked = await deps.eventStore.linkProjectToGitHub(project.id, target);
         } catch (error) {
           // Publication is already externally visible. Retain the durable claim

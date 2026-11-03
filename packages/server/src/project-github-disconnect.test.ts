@@ -135,3 +135,45 @@ it('surfaces the actionable GitHub ruleset rejection from a linking failure', as
     await app.close();
   }
 });
+
+it('persists the published default branch before recreating a linked Sandbox', async () => {
+  await ctx.store.upsertProject({
+    id: 'link-master',
+    owner: '__local__',
+    repo: 'code',
+    kind: 'local',
+    containerName: 'link-master',
+    state: 'active',
+  });
+  const recreateContainer = vi.fn(async () => {
+    expect((await ctx.store.getProjectSettingsRaw('link-master'))?.defaultBranch).toBe('master');
+    return (await ctx.store.getProject('link-master'))!;
+  });
+  const app = buildServer({
+    eventStore: ctx.store,
+    bus,
+    conductor,
+    ghTokenMint: async () => 'token',
+    provisioner: {
+      provision: vi.fn(),
+      linkCloneToGitHub: async () => ({
+        defaultBranch: 'master',
+        importBranch: 'verity/import-main',
+      }),
+      recreateContainer,
+      withProjectExclusiveMutation: async (_id, mutate) => mutate(),
+    },
+  });
+  try {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/projects/link-master/link-github',
+      payload: { repo: 'acme/code' },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(recreateContainer).toHaveBeenCalledOnce();
+    expect((await ctx.store.getProjectSettingsRaw('link-master'))?.defaultBranch).toBe('master');
+  } finally {
+    await app.close();
+  }
+});

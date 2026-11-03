@@ -11998,3 +11998,83 @@ it('retains local history and reports a redacted signature-policy rejection duri
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+it.each(['dirty-empty', 'different-default'] as const)(
+  'preserves local edits and the destination branch when linking: %s',
+  async (scenario) => {
+    const root = mkdtempSync(join(tmpdir(), 'link-preservation-'));
+    const clone = join(root, 'code');
+    const remote = join(root, 'remote');
+    const run = (...args: string[]) =>
+      execFileSync('git', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    const commit = (repo: string) =>
+      run(
+        '-C',
+        repo,
+        '-c',
+        'user.name=Test',
+        '-c',
+        'user.email=test@example.com',
+        '-c',
+        'commit.gpgsign=false',
+        'commit',
+        '--allow-empty',
+        '-qm',
+        'initial',
+      );
+    run('init', '-q', '-b', 'main', clone);
+    writeFileSync(join(clone, 'file.txt'), 'original');
+    run('-C', clone, 'add', 'file.txt');
+    commit(clone);
+    run('init', '-q', '-b', 'master', remote);
+    if (scenario === 'different-default') {
+      commit(remote);
+      run('-C', remote, 'config', 'receive.denyCurrentBranch', 'ignore');
+    } else writeFileSync(join(clone, 'file.txt'), 'uncommitted');
+    const calls: string[][] = [];
+    const git: GitRunner = async (args) => {
+      calls.push([...args]);
+      if (args.includes('push')) return { stdout: '', stderr: '' };
+      const localArgs = args.map((arg) => (arg === 'https://github.com/acme/code' ? remote : arg));
+      return { stdout: run(...localArgs), stderr: '' };
+    };
+    const project = await ctx.store.upsertProject({
+      id: randomUUID(),
+      containerName: `link-${randomUUID()}`,
+      owner: '__local__',
+      repo: 'code',
+      cloneDir: 'code',
+      kind: 'local',
+      state: 'absent',
+    });
+    const provisioner = createProvisioner({
+      store: ctx.store,
+      db: ctx.db,
+      docker: fakeDocker().client,
+      defaultImageRef: 'image:test',
+      hostCloneRoot: root,
+      prepareLocalWorkspace: undefined,
+      git,
+    });
+    try {
+      if (scenario === 'dirty-empty') {
+        await expect(
+          provisioner.linkCloneToGitHub(project, { owner: 'acme', repo: 'code' }, undefined),
+        ).rejects.toThrow('uncommitted changes');
+        expect(calls.some((args) => args.includes('push'))).toBe(false);
+        expect(readFileSync(join(clone, 'file.txt'), 'utf8')).toBe('uncommitted');
+      } else {
+        const result = await provisioner.linkCloneToGitHub(
+          project,
+          { owner: 'acme', repo: 'code' },
+          undefined,
+        );
+        expect(result.defaultBranch).toBe('master');
+        expect(result.importBranch).toBeDefined();
+        expect(run('-C', remote, 'rev-list', '--count', 'master').trim()).toBe('1');
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);

@@ -742,10 +742,11 @@ export type DevcontainerFeatureSource =
   | { ref: string; version: string; identity: string }
   | (() => Promise<{ ref: string; version: string; identity: string } | undefined>);
 
-/** Outcome of linking a local project to a GitHub repository. Empty when the history
- *  went straight onto the (empty) repository's default branch; otherwise it names the
- *  import branch the history was published on and the pull request carrying it in. */
+/** Outcome of publishing local history, including the destination default branch
+ *  and, for a nonempty target, the import branch and its pull request. */
 export interface LinkCloneToGitHubResult {
+  /** Persist before recreating the linked Sandbox. */
+  defaultBranch?: string | undefined;
   importBranch?: string | undefined;
   pullRequest?: { number: number; url: string } | undefined;
   /** Set when the branch is published but its pull request could not be opened. */
@@ -5103,14 +5104,30 @@ export class ProvisionerImpl implements Provisioner {
     const git = this.forgeGitRunner(access, target.forgeConnectionId ?? project.id);
     const branch = (await git(['-C', clonePath, 'symbolic-ref', '--short', 'HEAD'])).stdout.trim();
     const localHead = (await git(['-C', clonePath, 'rev-parse', '--verify', 'HEAD'])).stdout.trim();
-    let originMatchesTarget = false;
+    // Recreation resets the base checkout even for an empty target. Refuse dirty
+    // tracked files before publication so that transition cannot discard edits.
+    let localStatus: string;
+    try {
+      localStatus = (
+        await git(['-C', clonePath, 'status', '--porcelain', '--untracked-files=no'])
+      ).stdout.trim();
+    } catch (cause) {
+      throw new ProvisioningError(
+        'checking the local project status failed',
+        new Error(redactSensitive(commandFailureMessage(cause), [token, authHeader])),
+      );
+    }
+    if (localStatus !== '')
+      throw new ProvisioningError(
+        'the local project has uncommitted changes; commit, stash, or discard them before linking GitHub',
+      );
     let originExists = false;
     try {
       const existingOrigin = (
         await git(['-C', clonePath, 'remote', 'get-url', 'origin'])
       ).stdout.trim();
       originExists = true;
-      originMatchesTarget = existingOrigin === url || existingOrigin === `${url}.git`;
+      const originMatchesTarget = existingOrigin === url || existingOrigin === `${url}.git`;
       if (!originMatchesTarget) {
         throw new ProvisioningError(
           'origin already points to another repository; remove or rename it before linking',
@@ -5149,41 +5166,13 @@ export class ProvisionerImpl implements Provisioner {
       // sanitizer removes remotes between turns, so compare the exact target
       // history rather than requiring a retained origin entry.
       if (extra === undefined && sha === localHead && ref === `refs/heads/${branch}`) {
-        return {};
+        return { defaultBranch: branch };
       }
     }
     if (!originExists) {
       await git(['-C', clonePath, 'remote', 'add', 'origin', url]);
     }
     if (remoteHeads.length > 0) {
-      let localStatus: string;
-      try {
-        // Tracked changes only, mirroring `hasTrackedChanges` in branches.ts: the
-        // project clone permanently carries the untracked `.verity-sessions/`
-        // directory its session worktrees live in, so counting untracked files
-        // would block every project that has ever run a session. They are also the
-        // ones not at risk below — `git merge` refuses on its own rather than
-        // clobbering an untracked file, and the `reset --merge` rollback ignores them.
-        localStatus = (
-          await git(['-C', clonePath, 'status', '--porcelain', '--untracked-files=no'])
-        ).stdout.trim();
-      } catch (cause) {
-        if (!originExists) {
-          await git(['-C', clonePath, 'remote', 'remove', 'origin']);
-        }
-        const safeCause = new Error(
-          redactSensitive(commandFailureMessage(cause), [token, authHeader]),
-        );
-        throw new ProvisioningError('checking the local project status failed', safeCause);
-      }
-      if (localStatus !== '') {
-        if (!originExists) {
-          await git(['-C', clonePath, 'remote', 'remove', 'origin']);
-        }
-        throw new ProvisioningError(
-          'the local project has uncommitted changes; commit, stash, or discard them before linking GitHub',
-        );
-      }
       let remoteBranch: string | undefined;
       try {
         const remoteHead = await git([
@@ -5386,13 +5375,17 @@ export class ProvisionerImpl implements Provisioner {
         safeCause,
       );
     }
-    if (importBranch === undefined) return {};
+    if (importBranch === undefined) return { defaultBranch: destinationBranch };
     // The branch is published. A pull request that cannot be opened is REPORTED,
     // never rolled back: the operator can open it by hand from a branch that is
     // already on GitHub, whereas failing the link here would strand that branch
     // behind a project that still believes it is local.
     if (this.opts.openPullRequest === undefined || token === undefined) {
-      return { importBranch, pullRequestError: 'opening pull requests is not configured' };
+      return {
+        defaultBranch: destinationBranch,
+        importBranch,
+        pullRequestError: 'opening pull requests is not configured',
+      };
     }
     try {
       const pullRequest = await this.opts.openPullRequest(target, token, {
@@ -5405,9 +5398,10 @@ export class ProvisionerImpl implements Provisioner {
           `\`${destinationBranch}\` (unrelated histories; the project's own files win any ` +
           `conflict). Merging this pull request publishes it.`,
       });
-      return { importBranch, pullRequest };
+      return { defaultBranch: destinationBranch, importBranch, pullRequest };
     } catch (cause) {
       return {
+        defaultBranch: destinationBranch,
         importBranch,
         pullRequestError: redactSensitive(
           cause instanceof Error ? cause.message : 'opening the pull request failed',
