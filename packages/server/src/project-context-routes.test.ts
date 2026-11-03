@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { expect, it } from 'vitest';
 import type { EventStore } from '@verity/store';
 import { registerProjectContextRoutes } from './project-context-routes.js';
+import { authorizePairedRoute } from './paired-route-policy.js';
 
 it('requires project manage access and revision checks for both project context editors', async () => {
   const root = await mkdtemp(join(tmpdir(), 'verity-project-context-'));
@@ -15,6 +16,7 @@ it('requires project manage access and revision checks for both project context 
     if (typeof user === 'string') request.localUserId = user;
   });
   const store = {
+    isActiveLocalUser: async () => true,
     isActiveAdministrator: async () => false,
     hasProjectPermission: async (user: string, id: string, permission: string) =>
       id === 'p' && (user === 'manager' || (user === 'reader' && permission === 'read')),
@@ -22,6 +24,17 @@ it('requires project manage access and revision checks for both project context 
     getProjectSettingsRaw: async () => ({ memory: 'Legacy project fact' }),
     knowledge: { getProjectOverview: async () => null },
   } as unknown as EventStore;
+  app.addHook('preHandler', async (request, reply) => {
+    if (!request.localUserId) return reply.code(403).send();
+    const outcome = await authorizePairedRoute(
+      store,
+      request.localUserId,
+      request.method,
+      request.routeOptions.url!,
+      request.params as Record<string, unknown>,
+    );
+    if (outcome !== 'allow') return reply.code(403).send();
+  });
   registerProjectContextRoutes(app, store, root);
   try {
     for (const kind of ['instructions', 'memory']) {

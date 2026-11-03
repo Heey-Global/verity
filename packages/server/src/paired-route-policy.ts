@@ -14,6 +14,22 @@ type PairedRoutePolicy =
  * including collections and cross-project actions. */
 const resourceRules: ReadonlyMap<string, ResourceRule> = new Map([
   [
+    routeScopeKey('GET', '/projects/:id/instructions'),
+    { kind: 'project', parameter: 'id', permission: 'read' },
+  ],
+  [
+    routeScopeKey('PUT', '/projects/:id/instructions'),
+    { kind: 'project', parameter: 'id', permission: 'manage' },
+  ],
+  [
+    routeScopeKey('GET', '/projects/:id/memory'),
+    { kind: 'project', parameter: 'id', permission: 'read' },
+  ],
+  [
+    routeScopeKey('PUT', '/projects/:id/memory'),
+    { kind: 'project', parameter: 'id', permission: 'manage' },
+  ],
+  [
     routeScopeKey('GET', '/sessions/:id/mcp-apps/:appId'),
     { kind: 'session', parameter: 'id', permission: 'read' },
   ],
@@ -156,6 +172,9 @@ const resourceRules: ReadonlyMap<string, ResourceRule> = new Map([
 ]);
 
 const activeUserRoutes = new Set([
+  // Personal context is bound to the authenticated identity inside the handlers.
+  routeScopeKey('GET', '/me/context'),
+  routeScopeKey('PUT', '/me/context'),
   // Any active user may open the live connection; every session it subscribes
   // to is authorized individually, like `GET /sessions/:id`. The WebSocket
   // handshake consumes the ticket, not a paired-device bearer.
