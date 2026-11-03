@@ -335,8 +335,14 @@ A failed startup restores the previous bundle link and unit bytes only after
 stopping the new controller and restoring denial. It leaves Docker and the controller
 stopped and never restores unrestricted traffic. If containment itself fails,
 the command stops without claiming rollback safety. Investigate the failure on
-the host; after approval, reapply a previously verified staged release through
-the same command. Retained release files do not authorize garbage collection,
+the host. **Recovery from a stopped Docker daemon remains unavailable in this
+prototype:** `apply` runs the read-only preflight first, and its `docker info`
+requirement rejects a stopped daemon. Reapplying a staged release is therefore
+not a recovery command. A separately implemented and natively verified recovery
+path must establish denial before starting Docker and then revalidate the daemon;
+do not start Docker merely to make preflight pass. The empty kernel allowlist
+keeps installation unavailable until the remaining lifecycle gates are met.
+Retained release files do not authorize garbage collection,
 removal of fence rules, or deletion of registry/BPF state. Uninstalling protection
 requires a separate container migration and deactivation procedure; removing
 units alone is not a safe uninstall.
