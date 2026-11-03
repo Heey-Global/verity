@@ -244,3 +244,32 @@ it('revalidates stored recordings and excludes previous capture generations from
   ).toBeNull();
   expect(validateStoredRemoteRecording('{bad')).toBeNull();
 });
+
+it.each([
+  'stream_opened',
+  'stream_local_read_started',
+  'stream_local_read_completed',
+  'stream_send_requested',
+  'stream_send_completed',
+])('retains native transition %s only with bounded stream attribution', async (event) => {
+  const data = snapshot();
+  const entry = {
+    sequence: 3,
+    utc: '2026-10-08T15:23:11.216Z',
+    elapsedMs: 116,
+    event,
+    streamId: 'A'.repeat(32),
+  };
+  const value = { ...data, events: [...data.events, entry] };
+  expect(JSON.parse((await acceptedDataDiagnostics(JSON.stringify(value)))!)).toEqual([value]);
+  expect(
+    await acceptedDataDiagnostics(
+      JSON.stringify({ ...value, events: [{ ...entry, streamId: undefined }] }),
+    ),
+  ).toBeNull();
+  expect(
+    await acceptedDataDiagnostics(
+      JSON.stringify({ ...value, events: [{ ...entry, payload: 'private' }] }),
+    ),
+  ).toBeNull();
+});

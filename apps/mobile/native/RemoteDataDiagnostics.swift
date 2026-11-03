@@ -40,6 +40,8 @@ final class RemoteDataDiagnostics: @unchecked Sendable {
     case networkPath = "network_path", counters
     case streamOpenRequested = "stream_open_requested", streamOpened = "stream_opened"
     case streamSendRequested = "stream_send_requested", streamSendCompleted = "stream_send_completed"
+    case streamLocalReadStarted = "stream_local_read_started"
+    case streamLocalReadCompleted = "stream_local_read_completed"
     case streamStalled = "stream_stalled"
   }
   enum Cause: String, Codable {

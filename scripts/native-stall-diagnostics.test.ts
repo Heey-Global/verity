@@ -51,3 +51,38 @@ it('observes each warmup request and emits its snapshot before legacy cleanup ou
   expect(observer.indexOf('task.delegate = self')).toBeGreaterThan(-1);
   expect(observer.indexOf('task.delegate = self')).toBeLessThan(observer.indexOf('task.resume()'));
 });
+
+it('records the pre-DATA wait boundaries around the real awaited operations', () => {
+  const source = read('apps/mobile/native/RemoteAppTunnel.swift');
+  const accept = source.slice(
+    source.indexOf('private func accept('),
+    source.indexOf('private func readConnectHead('),
+  );
+  expect(accept.indexOf('try await writer.send(')).toBeLessThan(
+    accept.indexOf('logStream(id, stream, event: "opened")'),
+  );
+  expect(accept.indexOf('logStream(id, stream, event: "opened")')).toBeLessThan(
+    accept.indexOf('self.pumpLocal('),
+  );
+  const pump = source.slice(
+    source.indexOf('private func pumpLocal('),
+    source.indexOf('private func read('),
+  );
+  const ordered = [
+    '.streamLocalReadStarted',
+    'try await receive(',
+    '.streamLocalReadCompleted',
+    'if bytes.isEmpty',
+    '.streamSendRequested',
+    'try await writer.send(["type": "stream.data"',
+    'stream.sentBytes += bytes.count',
+  ];
+  let previous = -1;
+  for (const boundary of ordered) {
+    const index = pump.indexOf(boundary);
+    expect(index).toBeGreaterThan(previous);
+    previous = index;
+  }
+  expect(pump).toContain('var firstRead = true');
+  expect(pump).toContain('firstRead = false');
+});
