@@ -3447,7 +3447,7 @@ describe('CI runner footprint', () => {
     expect(cached).toBe(true);
   });
 
-  it('keeps CI lint uncached and never enables ESLint single-file result caching', () => {
+  it('allows CI metadata reuse while disabling lint result caching', () => {
     // Prettier's cache above is safe; ESLint's is not, and the difference is not
     // visible from the shape of the two steps — which is why this is asserted and
     // not left to the comment in ci.yml. An ESLint cache entry is invalidated by
@@ -3489,7 +3489,9 @@ describe('CI runner footprint', () => {
     expect(source).toMatch(/^\s*node scripts\/lint-runner\.mjs\s/m);
     expect(source).toContain('git ls-files');
     const eslintStep = (ci.jobs.lint?.steps ?? []).find((step) => step.name === 'ESLint');
-    expect(eslintStep?.run).toContain('npm run lint -- --no-cache');
+    expect(eslintStep?.run).toContain('npm run lint 2>&1');
+    expect(eslintStep?.run).not.toContain('--no-cache');
+    expect(eslintStep?.env?.CI).toBe('true');
     expect(eslintStep?.run).toContain('set -euo pipefail');
     expect(eslintStep?.run).toContain('/usr/bin/time --verbose');
     expect(eslintStep?.run).toContain('resources.txt');
