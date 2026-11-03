@@ -5160,6 +5160,9 @@ export class ProvisionerImpl implements Provisioner {
     const remoteHeads = refs.filter((line) => /\srefs\/heads\//.test(line));
     let destinationBranch = branch;
     let mergedExistingHistory = false;
+    if (!originExists) {
+      await git(['-C', clonePath, 'remote', 'add', 'origin', url]);
+    }
     if (remoteHeads.length > 0) {
       const [sha, ref, extra] = refs.length === 1 ? refs[0]!.split(/\s+/) : [];
       // A prior attempt may have pushed before finalization. The local config
@@ -5168,9 +5171,6 @@ export class ProvisionerImpl implements Provisioner {
       if (extra === undefined && sha === localHead && ref === `refs/heads/${branch}`) {
         return { defaultBranch: branch };
       }
-    }
-    if (!originExists) {
-      await git(['-C', clonePath, 'remote', 'add', 'origin', url]);
     }
     if (remoteHeads.length > 0) {
       let remoteBranch: string | undefined;

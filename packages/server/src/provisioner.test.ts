@@ -11999,7 +11999,13 @@ it('retains local history and reports a redacted signature-policy rejection duri
   }
 });
 
-it.each(['dirty-empty', 'different-default', 'ignored-collision', 'ambiguous-retry'] as const)(
+it.each([
+  'dirty-empty',
+  'different-default',
+  'ignored-collision',
+  'ambiguous-retry',
+  'published-retry',
+] as const)(
   'preserves local edits and the destination branch when linking: %s',
   async (scenario) => {
     const root = mkdtempSync(join(tmpdir(), 'link-preservation-'));
@@ -12036,19 +12042,25 @@ it.each(['dirty-empty', 'different-default', 'ignored-collision', 'ambiguous-ret
     }
     commit(clone);
     run('init', '-q', '-b', 'master', remote);
-    if (scenario !== 'dirty-empty') {
+    if (scenario !== 'dirty-empty' && scenario !== 'published-retry') {
       if (scenario === 'ignored-collision') {
         writeFileSync(join(remote, 'asset.txt'), 'remote asset');
         run('-C', remote, 'add', 'asset.txt');
         writeFileSync(join(clone, 'asset.txt'), 'local asset');
       }
       commit(remote);
-    } else writeFileSync(join(clone, 'file.txt'), 'uncommitted');
+    } else if (scenario === 'dirty-empty') writeFileSync(join(clone, 'file.txt'), 'uncommitted');
     const calls: string[][] = [];
     const git: GitRunner = async (args) => {
       calls.push([...args]);
       if (args.includes('merge') && args.includes('--allow-unrelated-histories')) mergeNumber++;
       if (args.includes('push')) {
+        if (scenario === 'published-retry') {
+          run('-C', remote, 'fetch', clone, 'HEAD');
+          run('-C', remote, 'update-ref', 'refs/heads/main', 'FETCH_HEAD');
+          run('-C', remote, 'symbolic-ref', 'HEAD', 'refs/heads/main');
+        }
+
         if (
           scenario === 'ambiguous-retry' &&
           calls.filter((call) => call.includes('push')).length === 1
@@ -12088,6 +12100,16 @@ it.each(['dirty-empty', 'different-default', 'ignored-collision', 'ambiguous-ret
         ).rejects.toThrow('uncommitted changes');
         expect(calls.some((args) => args.includes('push'))).toBe(false);
         expect(readFileSync(join(clone, 'file.txt'), 'utf8')).toBe('uncommitted');
+      } else if (scenario === 'published-retry') {
+        await provisioner.linkCloneToGitHub(project, { owner: 'acme', repo: 'code' }, undefined);
+        const retry = await provisioner.linkCloneToGitHub(
+          project,
+          { owner: 'acme', repo: 'code' },
+          undefined,
+        );
+        expect(retry.defaultBranch).toBe('main');
+        expect(run('-C', clone, 'remote', 'get-url', 'origin').trim()).toBe(remote);
+        expect(calls.filter((args) => args.includes('push'))).toHaveLength(1);
       } else if (scenario === 'ignored-collision') {
         await expect(
           provisioner.linkCloneToGitHub(project, { owner: 'acme', repo: 'code' }, undefined),

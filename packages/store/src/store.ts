@@ -6210,6 +6210,8 @@ export class EventStore implements EventSink {
   /** Disconnect by stable ID; pin the existing clone and preserve all dependent records. */
   async disconnectProjectFromGitHub(id: string): Promise<ProjectRecord | undefined> {
     const row = await this.db.transaction().execute(async (tx) => {
+      // Match project creation and lifecycle lock order before allocating a local identity.
+      await sql`select pg_advisory_xact_lock(1447383636, 18)`.execute(tx);
       const existing = await tx
         .selectFrom('projects')
         .select(this.projectColumns)
@@ -6219,13 +6221,23 @@ export class EventStore implements EventSink {
       if (!existing || existing.hidden_at !== null || !['github', 'local'].includes(existing.kind))
         return undefined;
       if (existing.kind === 'local') return existing;
-      const collision = await tx
-        .selectFrom('projects')
-        .select('id')
-        .where('owner', '=', LOCAL_PROJECT_OWNER)
-        .where('repo', '=', existing.repo)
-        .executeTakeFirst();
-      const localRepo = collision ? `${existing.repo}-${id}` : existing.repo;
+      let localRepo = existing.repo;
+      for (let attempt = 1; ; attempt++) {
+        const collision = await tx
+          .selectFrom('projects')
+          .select('id')
+          .where('owner', '=', LOCAL_PROJECT_OWNER)
+          .where('repo', '=', localRepo)
+          .executeTakeFirst();
+        const claim = await tx
+          .selectFrom('project_identity_claims')
+          .select('project_id')
+          .where('owner', '=', LOCAL_PROJECT_OWNER)
+          .where('repo', '=', localRepo)
+          .executeTakeFirst();
+        if (!collision && (!claim || claim.project_id === id)) break;
+        localRepo = `${existing.repo}-${id}${attempt === 1 ? '' : `-${attempt}`}`;
+      }
       const updated = await tx
         .updateTable('projects')
         .set({
