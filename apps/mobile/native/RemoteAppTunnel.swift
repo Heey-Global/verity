@@ -1051,8 +1051,17 @@ final class RemoteAppTunnel: @unchecked Sendable {
   }
 
   private func pumpLocal(_ stream: Stream, id: String) async throws {
+    var firstRead = true
     while !Task.isCancelled {
+      if firstRead {
+        lock.withLock { dataDiagnostics.record(.streamLocalReadStarted, streamId: id) }
+      }
       let bytes = try await receive(stream.connection, maximum: 16 * 1024)
+      if firstRead {
+        // Completion includes EOF; stream_send_requested distinguishes actual bytes.
+        lock.withLock { dataDiagnostics.record(.streamLocalReadCompleted, streamId: id) }
+        firstRead = false
+      }
       if bytes.isEmpty {
         lock.withLock {
           stream.outgoingEnded = true
