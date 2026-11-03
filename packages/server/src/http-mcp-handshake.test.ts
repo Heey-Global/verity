@@ -352,3 +352,67 @@ it('retires the interceptor tools/list stream before the main tool request can b
     await app.close();
   }
 });
+
+it.each(['headers', 'json'] as const)(
+  'revokes main MCP requests while waiting for %s',
+  async (phase) => {
+    const app = Fastify();
+    let allowed = true;
+    let started = false;
+    let providerSignal: AbortSignal | undefined;
+    let source: PassThrough | undefined;
+    transport.request.mockClear();
+    transport.request.mockImplementation(
+      (options: RequestOptions, callback: (response: IncomingMessage) => void) => {
+        providerSignal = options.signal;
+        const outgoing = Object.assign(new EventEmitter(), {
+          setTimeout: vi.fn(),
+          end: () => {
+            started = true;
+            if (phase === 'json') {
+              source = Object.assign(new PassThrough(), {
+                statusCode: 200,
+                headers: { 'content-type': 'application/json' },
+                setTimeout: vi.fn(),
+              });
+              callback(source as unknown as IncomingMessage);
+            }
+          },
+        });
+        options.signal?.addEventListener(
+          'abort',
+          () => outgoing.emit('error', new Error('revoked')),
+          { once: true },
+        );
+        return outgoing;
+      },
+    );
+    registerHttpMcpProxyRoute(app, {
+      resolveCaller: async () => (allowed ? { sessionId: 'session', turnId: 'turn' } : undefined),
+      resolveConnection: async () => ({ id: 'tools', url: 'https://mcp.example.test/rpc' }),
+    });
+    try {
+      const pending = app
+        .inject({
+          method: 'POST',
+          url: '/internal/mcp-proxy',
+          payload: { jsonrpc: '2.0', id: 1, method: 'ping' },
+          headers: { authorization: 'Bearer turn', 'x-verity-mcp-binding': 'tools' },
+        })
+        .then(
+          (response) => response,
+          () => undefined,
+        );
+      await vi.waitFor(() => expect(started).toBe(true));
+      allowed = false;
+      await vi.waitFor(() => expect(providerSignal?.aborted).toBe(true));
+      if (phase === 'json') expect(source?.destroyed).toBe(true);
+      await pending;
+      expect(transport.request).toHaveBeenCalledOnce();
+    } finally {
+      source?.destroy();
+      transport.generation.abort();
+      await app.close();
+    }
+  },
+);
