@@ -683,6 +683,7 @@ install -m 0755 "$FEATURE_DIR/agent-seed/bin/verity-code-review" /opt/agent-seed
 # for the pre-push hook; the hook resolves it as a sibling, the symlink below
 # lets the agent run the command the hook prints.
 install -m 0755 "$FEATURE_DIR/agent-seed/bin/verity-local-checks" /opt/agent-seed/bin/verity-local-checks
+install -m 0755 "$FEATURE_DIR/agent-seed/bin/verity-dependencies" /opt/agent-seed/bin/verity-dependencies
 install -m 0644 "$FEATURE_DIR/agent-seed/bin/verity-review-base.sh" /opt/agent-seed/bin/verity-review-base.sh
 install -m 0755 "$FEATURE_DIR/agent-seed/bin/verity-secret-scan" /opt/agent-seed/bin/verity-secret-scan
 # Commit-signing broker wrapper (audit H1). git is pointed at it via GIT_CONFIG_*
@@ -706,6 +707,7 @@ ln -sf /opt/agent-seed/bin/verity-dev-server /usr/local/bin/verity-dev-server
 ln -sf /opt/agent-seed/bin/verity-repo /usr/local/bin/verity-repo
 ln -sf /opt/agent-seed/bin/verity-code-review /usr/local/bin/verity-code-review
 ln -sf /opt/agent-seed/bin/verity-local-checks /usr/local/bin/verity-local-checks
+ln -sf /opt/agent-seed/bin/verity-dependencies /usr/local/bin/verity-dependencies
 # Same for the secret scanner, so it can be run by hand ("is this branch clean?")
 # and so the hooks resolve it through PATH even under a custom hooks path.
 ln -sf /opt/agent-seed/bin/verity-secret-scan /usr/local/bin/verity-secret-scan

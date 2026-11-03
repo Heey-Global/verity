@@ -14,6 +14,21 @@ import { describe, expect, it } from 'vitest';
 import { AGENT_SKILL_MANIFEST_HASH } from '../packages/events/src/agent-assets.generated.js';
 
 describe('built-in agent assets', () => {
+  it('installs every helper dispatched by the canonical CLI', () => {
+    const cli = readFileSync('agent/cli/verity', 'utf8');
+    const installer = readFileSync('features/verity-sandbox-toolkit/install.sh', 'utf8');
+    const commands = cli.slice(cli.indexOf('const commands ='), cli.indexOf('const [domain'));
+    const helpers = [...commands.matchAll(/: '(verity-[a-z-]+)'/g)].map((match) => match[1]!);
+    expect(helpers.length).toBeGreaterThan(0);
+    for (const helper of helpers) {
+      expect(installer).toContain(
+        `install -m 0755 "$FEATURE_DIR/agent-seed/bin/${helper}" /opt/agent-seed/bin/${helper}`,
+      );
+      expect(
+        readFileSync(`features/verity-sandbox-toolkit/agent-seed/bin/${helper}`).length,
+      ).toBeGreaterThan(0);
+    }
+  });
   it('keeps generated prompts, CLI and distribution copies synchronized', () => {
     expect(() =>
       execFileSync(process.execPath, ['scripts/sync-agent-assets.mjs', '--check']),
