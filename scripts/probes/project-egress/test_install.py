@@ -234,6 +234,42 @@ class InstallTests(unittest.TestCase):
                 prepare.assert_not_called()
         self.assertEqual(self.calls, [])
 
+    def test_failed_unit_sync_restores_all_units_and_release_then_allows_retry(self):
+        previous = self.apply()
+        snapshots = {name: (self.root / relative).read_bytes() for name, relative in installer.UNITS.items()}
+        manifest = json.loads((self.release / 'manifest.json').read_text())
+        changed = b'new controller'
+        (self.release / installer.ASSETS[0]).write_bytes(changed)
+        manifest[installer.ASSETS[0]] = installer.digest(changed)
+        (self.release / 'manifest.json').write_text(json.dumps(manifest))
+        fsync = installer.os.fsync
+        failed = False
+        def fail_unit(descriptor):
+            nonlocal failed
+            path = installer.os.readlink('/proc/self/fd/' + str(descriptor))
+            if not failed and str(self.root / 'etc') in path and '.verity-' in path:
+                failed = True
+                raise OSError('unit sync failed')
+            return fsync(descriptor)
+        with patch.object(installer.os, 'fsync', side_effect=fail_unit):
+            with self.assertRaisesRegex(OSError, 'unit sync failed'):
+                self.apply()
+        self.assertTrue(failed)
+        self.assertEqual((self.root / 'opt/verity-egress').resolve().name, previous)
+        for name, relative in installer.UNITS.items():
+            self.assertEqual((self.root / relative).read_bytes(), snapshots[name])
+        self.assertFalse(list(self.root.rglob('*.verity-*')))
+        self.assertNotEqual(self.apply(), previous)
+
+    def test_failed_symlink_replace_does_not_poison_a_later_switch(self):
+        link = self.root / 'current'
+        with patch.object(installer.os, 'replace', side_effect=OSError('replace failed')):
+            with self.assertRaisesRegex(OSError, 'replace failed'):
+                installer.switch_link(link, 'old')
+        self.assertEqual(list(self.root.iterdir()), [])
+        installer.switch_link(link, 'new')
+        self.assertEqual(installer.os.readlink(link), 'new')
+
 
 if __name__ == '__main__':
     unittest.main()

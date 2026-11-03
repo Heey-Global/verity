@@ -15,6 +15,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import uuid
 
 ASSETS = (
     'project-egress-host-main.mjs', 'project-egress-deadline.py',
@@ -153,21 +154,28 @@ def durable_mkdir(path, mode=0o755):
 
 def atomic_file(path, data, mode=0o644):
     durable_mkdir(path.parent)
-    temporary = path.with_name(path.name + '.verity-new')
-    with temporary.open('xb') as output:
-        output.write(data)
-        output.flush()
-        os.fchmod(output.fileno(), mode)
-        os.fsync(output.fileno())
-    os.replace(temporary, path)
-    sync_directory(path.parent)
+    descriptor, name = tempfile.mkstemp(prefix=path.name + '.verity-', dir=path.parent)
+    temporary = Path(name)
+    try:
+        with os.fdopen(descriptor, 'wb') as output:
+            output.write(data)
+            output.flush()
+            os.fchmod(output.fileno(), mode)
+            os.fsync(output.fileno())
+        os.replace(temporary, path)
+        sync_directory(path.parent)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def switch_link(path, target):
-    temporary = path.with_name(path.name + '.verity-new')
-    temporary.symlink_to(target)
-    os.replace(temporary, path)
-    sync_directory(path.parent)
+    temporary = path.with_name(path.name + '.verity-' + uuid.uuid4().hex)
+    try:
+        temporary.symlink_to(target)
+        os.replace(temporary, path)
+        sync_directory(path.parent)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def trusted_parent(path, root):
