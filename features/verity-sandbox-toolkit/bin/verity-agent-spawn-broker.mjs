@@ -26,7 +26,7 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { constants, lstatSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath, URL } from 'node:url';
 
 export const AGENT_SPAWN_PROTOCOL_VERSION = 1;
@@ -1051,11 +1051,14 @@ async function packageCacheDirectory(options) {
   if (
     !metadata.isDirectory() ||
     metadata.isSymbolicLink() ||
-    (metadata.uid !== uid && metadata.uid !== process.getuid())
+    (metadata.uid !== uid && metadata.uid !== process.getuid()) ||
+    (metadata.mode & 0o777) !== 0o700
   )
     throw new Error('invalid package cache');
-  await chown(cache, uid, gid);
-  await chmod(cache, 0o700);
+  // mkdir establishes the private mode before ownership is handed to the agent.
+  // The production broker has CAP_CHOWN but no CAP_FOWNER: chmod after that
+  // handoff fails, including on subsequent or concurrent cache acquisitions.
+  if (metadata.uid !== uid || metadata.gid !== gid) await chown(cache, uid, gid);
   return cache;
 }
 
@@ -1135,6 +1138,129 @@ async function validatedCacache(parent, options, budget) {
   return { path, bytes: await cacheTreeBytes(path, budget, uid) };
 }
 
+/** Run data operations as the owner: the broker intentionally lacks DAC_OVERRIDE. */
+async function maintainPackageCache(parent, options, budget, maxBytes, shared = false) {
+  const { uid, gid } = validateIdentity(options);
+  if (uid === process.getuid() && gid === process.getgid())
+    return await collectPackageCacheLeaf(parent, options, budget, maxBytes, shared);
+  const result = await new Promise((resolveResult, rejectResult) => {
+    const child = spawn(
+      options.setprivPath ?? '/usr/bin/setpriv',
+      [
+        `--reuid=${uid}`,
+        `--regid=${gid}`,
+        '--clear-groups',
+        process.execPath,
+        fileURLToPath(import.meta.url),
+        '--package-cache-leaf',
+      ],
+      { stdio: ['pipe', 'pipe', 'ignore'], env: { PATH: '/usr/local/bin:/usr/bin:/bin' } },
+    );
+    let output = '';
+    const timer = setTimeout(
+      () => child.kill('SIGKILL'),
+      Math.max(1, budget.deadline - Date.now()),
+    );
+    child.stdout.on('data', (chunk) => {
+      output += chunk.toString();
+      if (output.length > 4096) child.kill('SIGKILL');
+    });
+    child.once('error', (error) => {
+      clearTimeout(timer);
+      rejectResult(error);
+    });
+    child.once('close', (code) => {
+      clearTimeout(timer);
+      if (code !== 0 || output.length > 4096)
+        return rejectResult(new Error('package cache owner operation could not be verified'));
+      try {
+        resolveResult(JSON.parse(output));
+      } catch {
+        rejectResult(new Error('invalid package cache owner result'));
+      }
+    });
+    child.stdin.on('error', () => {});
+    child.stdin.end(
+      JSON.stringify({
+        parent,
+        maxBytes,
+        shared,
+        remainingEntries: 100_000 - budget.entries,
+        durationMs: Math.max(1, budget.deadline - Date.now()),
+      }),
+    );
+  });
+  if (
+    !result ||
+    !Number.isSafeInteger(result.entries) ||
+    result.entries < 0 ||
+    !Number.isSafeInteger(result.removedBytes) ||
+    result.removedBytes < 0 ||
+    !Number.isSafeInteger(result.remainingBytes) ||
+    result.remainingBytes < 0 ||
+    typeof result.pruned !== 'boolean' ||
+    typeof result.otherEntries !== 'boolean'
+  )
+    throw new Error('invalid package cache owner result');
+  budget.entries += result.entries;
+  return result;
+}
+
+async function collectPackageCacheLeaf(parent, options, budget, maxBytes, shared) {
+  const before = budget.entries;
+  const cache = await validatedCacache(parent, options, budget);
+  const pruned = cache.bytes > maxBytes;
+  let otherEntries = false;
+  if (shared) {
+    const directory = await opendir(parent);
+    for await (const entry of directory) {
+      if (++budget.entries > 100_000 || Date.now() > budget.deadline)
+        throw new Error('package cache inventory limit');
+      if (entry.name !== '_cacache') otherEntries = true;
+    }
+  }
+  if (pruned) await rm(cache.path, { recursive: true });
+  return {
+    remainingBytes: pruned ? 0 : cache.bytes,
+    removedBytes: pruned ? cache.bytes : 0,
+    pruned,
+    otherEntries,
+    entries: budget.entries - before,
+  };
+}
+
+async function packageCacheLeafMain() {
+  let input = '';
+  for await (const chunk of process.stdin) {
+    input += chunk.toString();
+    if (input.length > 4096) throw new Error('invalid package cache owner request');
+  }
+  const value = JSON.parse(input);
+  if (
+    typeof value.parent !== 'string' ||
+    !isAbsolute(value.parent) ||
+    !Number.isSafeInteger(value.maxBytes) ||
+    value.maxBytes < 0 ||
+    typeof value.shared !== 'boolean' ||
+    !Number.isSafeInteger(value.remainingEntries) ||
+    value.remainingEntries < 0 ||
+    value.remainingEntries > 100_000 ||
+    !Number.isSafeInteger(value.durationMs) ||
+    value.durationMs < 1 ||
+    value.durationMs > 15_000
+  )
+    throw new Error('invalid package cache owner request');
+  const result = await collectPackageCacheLeaf(
+    value.parent,
+    { enforceRoot: false, agentUid: process.getuid(), agentGid: process.getgid() },
+    { entries: 100_000 - value.remainingEntries, deadline: Date.now() + value.durationMs },
+    value.maxBytes,
+    value.shared,
+  );
+  process.stdout.write(JSON.stringify(result));
+  return true;
+}
+
 /** Only the broker can exclude actual child starts; a server activity snapshot cannot. */
 export async function reclaimPackageCaches(request, options) {
   if (
@@ -1208,18 +1334,15 @@ export async function reclaimPackageCaches(request, options) {
       if (
         !metadata.isDirectory() ||
         metadata.isSymbolicLink() ||
-        metadata.uid !== process.getuid() ||
+        (metadata.uid !== process.getuid() && metadata.uid !== validateIdentity(options).uid) ||
         (await realpath(home)) !== home
       )
         throw new Error('unsafe session home');
       lease = await lockSessionHome(home, options, true);
       if (activeSessionHomes.has(home)) throw new Error('session home is in use');
-      const cache = await validatedCacache(join(home, 'cache'), options, budget);
-      if (cache.bytes > 0) {
-        await rm(cache.path, { recursive: true });
-        report.removedBytes += cache.bytes;
-        report.legacyCachesRemoved++;
-      }
+      const cache = await maintainPackageCache(join(home, 'cache'), options, budget, 0);
+      report.removedBytes += cache.removedBytes;
+      if (cache.pruned) report.legacyCachesRemoved++;
     } catch (error) {
       report.legacyBytes = null;
       block(error.message);
@@ -1230,22 +1353,20 @@ export async function reclaimPackageCaches(request, options) {
   let lease;
   try {
     lease = await acquirePackageCacheLease(options, true);
-    let retainedEntries = false;
-    const entries = await opendir(npmCachePath(options));
-    for await (const entry of entries) {
-      if (++budget.entries > 100_000 || Date.now() > budget.deadline)
-        throw new Error('package cache inventory limit');
-      if (entry.name !== '_cacache') retainedEntries = true;
+    const cache = await maintainPackageCache(
+      npmCachePath(options),
+      options,
+      budget,
+      request.maxBytes,
+      true,
+    );
+    report.removedBytes += cache.removedBytes;
+    report.sharedCachePruned = cache.pruned;
+    report.sharedBytes = cache.remainingBytes;
+    if (cache.otherEntries) {
+      report.sharedBytes = null;
+      block('Retained non-cacache npm cache entries have unknown allocation');
     }
-    if (retainedEntries) block('Retained non-cacache npm cache entries have unknown allocation');
-    const cache = await validatedCacache(npmCachePath(options), options, budget);
-    if (cache.bytes > request.maxBytes) {
-      await rm(cache.path, { recursive: true });
-      report.removedBytes += cache.bytes;
-      report.sharedCachePruned = true;
-      report.sharedBytes = 0;
-    } else report.sharedBytes = cache.bytes;
-    if (retainedEntries) report.sharedBytes = null;
   } catch (error) {
     block(error.message);
   } finally {
@@ -3924,35 +4045,37 @@ if (invokedPath === fileURLToPath(import.meta.url)) {
       ? SHARED_SESSION_ROOT
       : undefined;
   const launch =
-    process.argv[2] === '--probe'
-      ? probeAgentSpawnBroker(controlDir)
-      : runAgentSpawnBroker({
-          runtimeDir,
-          controlDir,
-          ...(sharedSessionRoot === undefined ? {} : { sharedSessionRoot }),
-          agentUid: Number(process.env.VERITY_AGENT_UID ?? 1000),
-          agentGid: Number(process.env.VERITY_AGENT_GID ?? 1000),
-          runnerUid: Number(process.env.VERITY_RUNNER_RUNTIME_UID ?? 1101),
-          runnerGid: Number(process.env.VERITY_RUNNER_RUNTIME_GID ?? 1101),
-          // ADR 0006 Amendment 1. Set by `verity-control-plane-runner-start` and
-          // by nothing else — but a project image CAN declare the same name, so
-          // the value is re-checked against the mounted inode here rather than
-          // trusted. See {@link resolveDockerGid}: no socket owned by the claimed
-          // group, no grant, which is every project Sandbox.
-          ...(() => {
-            const dockerGid = resolveDockerGid(process.env, (path) => statSync(path).gid);
-            return dockerGid === undefined ? {} : { dockerGid };
-          })(),
-          // Thread the broker's own (container-provided) environment into the
-          // Claude child through the `childEnvironment` allowlist. The container
-          // sets CLAUDE_CONFIG_DIR=/run/verity-runner/claude on the
-          // runner-supervisor path; without this the allowlisted copy() has no
-          // source and Claude never sees the config dir, so its transcript would
-          // land off the shared mount. The allowlist bounds exposure to the
-          // vetted keys only — inherited OAuth/API/egress secrets never cross
-          // (see the "passes only the local Claude connector coordinates" test).
-          env: process.env,
-        });
+    process.argv[2] === '--package-cache-leaf'
+      ? packageCacheLeafMain()
+      : process.argv[2] === '--probe'
+        ? probeAgentSpawnBroker(controlDir)
+        : runAgentSpawnBroker({
+            runtimeDir,
+            controlDir,
+            ...(sharedSessionRoot === undefined ? {} : { sharedSessionRoot }),
+            agentUid: Number(process.env.VERITY_AGENT_UID ?? 1000),
+            agentGid: Number(process.env.VERITY_AGENT_GID ?? 1000),
+            runnerUid: Number(process.env.VERITY_RUNNER_RUNTIME_UID ?? 1101),
+            runnerGid: Number(process.env.VERITY_RUNNER_RUNTIME_GID ?? 1101),
+            // ADR 0006 Amendment 1. Set by `verity-control-plane-runner-start` and
+            // by nothing else — but a project image CAN declare the same name, so
+            // the value is re-checked against the mounted inode here rather than
+            // trusted. See {@link resolveDockerGid}: no socket owned by the claimed
+            // group, no grant, which is every project Sandbox.
+            ...(() => {
+              const dockerGid = resolveDockerGid(process.env, (path) => statSync(path).gid);
+              return dockerGid === undefined ? {} : { dockerGid };
+            })(),
+            // Thread the broker's own (container-provided) environment into the
+            // Claude child through the `childEnvironment` allowlist. The container
+            // sets CLAUDE_CONFIG_DIR=/run/verity-runner/claude on the
+            // runner-supervisor path; without this the allowlisted copy() has no
+            // source and Claude never sees the config dir, so its transcript would
+            // land off the shared mount. The allowlist bounds exposure to the
+            // vetted keys only — inherited OAuth/API/egress secrets never cross
+            // (see the "passes only the local Claude connector coordinates" test).
+            env: process.env,
+          });
   launch
     .then((broker) => {
       if (typeof broker === 'boolean') {
