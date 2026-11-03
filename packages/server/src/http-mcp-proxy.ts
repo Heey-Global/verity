@@ -23,6 +23,15 @@ const MCP_TIMEOUT_MS = 60_000;
 const BINDING_HEADER = 'x-verity-mcp-binding';
 const RESPONSE_HEADERS = ['content-type', 'mcp-session-id'] as const;
 
+class McpUpstreamFailure extends Error {
+  constructor(
+    readonly stage: 'connect' | 'headers' | 'response',
+    readonly reason: 'timeout' | 'transport' | 'protocol',
+  ) {
+    super('MCP upstream request failed');
+  }
+}
+
 export interface HttpMcpProxyConnection {
   id: string;
   url: string;
@@ -101,6 +110,7 @@ export async function forwardHttpMcp(
 }> {
   const url = parseHttpMcpUpstream(connection.url);
   return new Promise((resolve, reject) => {
+    let connected = false;
     const request = httpsRequest(
       {
         protocol: 'https:',
@@ -155,7 +165,7 @@ export async function forwardHttpMcp(
         }
         const eventStream = isHttpMcpEventStream(response.headers['content-type']);
         response.setTimeout(eventStream ? EVENT_STREAM_IDLE_TIMEOUT_MS : MCP_TIMEOUT_MS, () =>
-          response.destroy(new Error('HTTP MCP upstream stream stalled')),
+          response.destroy(new McpUpstreamFailure('response', 'timeout')),
         );
         resolve({
           status: response.statusCode ?? 502,
@@ -165,10 +175,21 @@ export async function forwardHttpMcp(
         });
       },
     );
+    request.on('socket', (socket) => {
+      socket.once('secureConnect', () => {
+        connected = true;
+      });
+    });
     request.setTimeout(MCP_TIMEOUT_MS, () =>
-      request.destroy(new Error('HTTP MCP upstream timeout')),
+      request.destroy(new McpUpstreamFailure(connected ? 'headers' : 'connect', 'timeout')),
     );
-    request.on('error', reject);
+    request.on('error', (error: Error) =>
+      reject(
+        error instanceof McpUpstreamFailure
+          ? error
+          : new McpUpstreamFailure(connected ? 'headers' : 'connect', 'transport'),
+      ),
+    );
     request.end(body);
   });
 }
@@ -218,6 +239,7 @@ export function registerHttpMcpProxyRoute(app: FastifyInstance, deps: HttpMcpPro
             })
           : undefined;
     } catch {
+      request.log.warn({ stage: 'intercept', connectionId }, 'MCP proxy request failed');
       return reply.code(502).send({ error: 'MCP request could not be authorized' });
     }
     if (interception !== undefined) {
@@ -239,6 +261,7 @@ export function registerHttpMcpProxyRoute(app: FastifyInstance, deps: HttpMcpPro
         ? Buffer.from(JSON.stringify(interception?.body ?? request.body))
         : undefined;
     let hijacked = false;
+    let upstreamStatus: number | undefined;
     try {
       const response = await forwardHttpMcp(connection, method, body, {
         ...(typeof request.headers.accept === 'string' ? { accept: request.headers.accept } : {}),
@@ -255,6 +278,18 @@ export function registerHttpMcpProxyRoute(app: FastifyInstance, deps: HttpMcpPro
           ? { lastEventId: request.headers['last-event-id'] }
           : {}),
       });
+      upstreamStatus = response.status;
+      if (response.status >= 400) {
+        request.log.warn(
+          {
+            stage: 'headers',
+            upstreamStatus,
+            connectionId,
+            reason: response.status === 401 || response.status === 403 ? 'authorization' : 'http',
+          },
+          'MCP upstream rejected request',
+        );
+      }
       reply.hijack();
       hijacked = true;
       reply.raw.writeHead(response.status, response.headers);
@@ -327,7 +362,18 @@ export function registerHttpMcpProxyRoute(app: FastifyInstance, deps: HttpMcpPro
             response.body,
             limiter,
             async function* (source) {
-              yield* transformMcpResponse(source, response.eventStream, interception.transform);
+              try {
+                yield* transformMcpResponse(source, response.eventStream, interception.transform);
+              } catch (error) {
+                // pipeline destroys the HTTP response with this error before the
+                // outer catch runs. Keep Fastify's own error log credential-free too.
+                throw error instanceof McpUpstreamFailure
+                  ? error
+                  : new McpUpstreamFailure(
+                      'response',
+                      error instanceof SyntaxError ? 'protocol' : 'transport',
+                    );
+              }
             },
             reply.raw,
           );
@@ -338,6 +384,22 @@ export function registerHttpMcpProxyRoute(app: FastifyInstance, deps: HttpMcpPro
       }
       return reply;
     } catch (error) {
+      // Error messages and URLs can contain connector credentials or query PINs.
+      request.log.warn(
+        {
+          stage:
+            error instanceof McpUpstreamFailure ? error.stage : hijacked ? 'response' : 'connect',
+          reason:
+            error instanceof McpUpstreamFailure
+              ? error.reason
+              : error instanceof SyntaxError
+                ? 'protocol'
+                : 'transport',
+          connectionId,
+          upstreamStatus,
+        },
+        'MCP proxy request failed',
+      );
       if (hijacked) {
         reply.raw.destroy();
         return reply;
@@ -346,8 +408,10 @@ export function registerHttpMcpProxyRoute(app: FastifyInstance, deps: HttpMcpPro
         return reply
           .code(401)
           .send({ error: 'mcp_oauth_authorization_required', message: error.message });
+      if (error instanceof McpUpstreamFailure && error.reason === 'timeout')
+        return reply.code(504).send({ error: `MCP upstream timed out during ${error.stage}` });
       reply.code(502);
-      return { error: 'MCP upstream unavailable' };
+      return { error: 'MCP upstream connection failed' };
     }
   };
   const guardedHandle: typeof handle = async (...args) => {
@@ -359,6 +423,7 @@ export function registerHttpMcpProxyRoute(app: FastifyInstance, deps: HttpMcpPro
           .code(401)
           .send({ error: 'mcp_oauth_authorization_required', message: error.message });
       }
+      args[1].log.warn({ stage: 'resolve' }, 'MCP proxy connection resolution failed');
       return args[2].code(502).send({ error: 'MCP connection could not be resolved' });
     }
   };
