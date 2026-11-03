@@ -86,3 +86,17 @@ it('records the pre-DATA wait boundaries around the real awaited operations', ()
   expect(pump).toContain('var firstRead = true');
   expect(pump).toContain('firstRead = false');
 });
+
+it('requires teardown receipts unless the bounded native recorder reports overflow', () => {
+  const source = read('scripts/remote-control-tunnel/Smoke.swift');
+  expect(source).toContain('precondition(cancelRequests <= 1 && socketCancels <= 1)');
+  expect(source).toMatch(
+    /if dropped == 0 \{\s*precondition\(cancelRequests == 1 && socketCancels == 1\)/u,
+  );
+  expect(source).toContain('precondition(events.count == RemoteDataDiagnostics.capacity)');
+  expect(source).toContain('production-diagnostics-gap dropped=');
+  const recorder = read('apps/mobile/native/RemoteDataDiagnostics.swift');
+  expect(recorder).toContain(
+    'if entries.count < Self.capacity { entries.append(entry) } else { dropped += 1 }',
+  );
+});
