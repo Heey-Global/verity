@@ -362,6 +362,7 @@ export function registerServerSessionMove({
                   const created = await provisioner.add(branch);
                   if (created !== targetWorktree) throw new Error('Unexpected move worktree path');
                   const transferred = await transferMoveSnapshot(snapshot, created);
+                  let destinationDocuments: ReturnType<typeof documentWorkspace> | undefined;
                   const sourceDocuments = documentViewForSession(session);
                   const targetDocuments = documentViewForSession({
                     sessionId: id,
@@ -379,7 +380,7 @@ export function registerServerSessionMove({
                       source.id,
                       sourceDocuments,
                     ).transferPending(destination, `Transferred edits/${body.operationId}`);
-                    await destination.publish();
+                    destinationDocuments = destination;
                   }
                   if (
                     (await captureMoveSnapshot(session.worktree)).fingerprint !==
@@ -425,6 +426,24 @@ export function registerServerSessionMove({
                     notice,
                     JSON.stringify(result),
                   );
+                  // A failed move must never publish into the target. Staged edits
+                  // survive a crash here and can publish on the moved session's next turn.
+                  if (destinationDocuments) {
+                    try {
+                      await destinationDocuments.publish();
+                    } catch (error) {
+                      app.log.warn(
+                        { err: error, sessionId: id },
+                        'Moved Documents remain pending publication',
+                      );
+                      await deps.eventStore
+                        .appendPendingNote(
+                          id,
+                          'The session moved successfully. Transferred Documents remain in its working copy; retry publication on the next turn. Original files were retained.',
+                        )
+                        .catch(() => undefined);
+                    }
+                  }
                   await liveHub.recheckSession(id);
                   invalidateBranchCache(session.worktree);
                   return result;

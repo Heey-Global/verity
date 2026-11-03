@@ -331,83 +331,121 @@ it('moves pending Documents without Git and retains the source working copy on r
   }
 });
 
-it('moves a local Code session and transfers pending Documents while retaining the originals', async () => {
-  const source = await ctx.store.upsertProject({
-    id: 'unmigrated-source',
-    owner: '__local__',
-    repo: 'legacy',
-    kind: 'local',
-    state: 'active',
-    containerName: 'unmigrated-source',
-  });
-  const target = await ctx.store.upsertProject({
-    id: 'plain-target',
-    owner: '__local__',
-    repo: 'documents',
-    kind: 'local',
-    state: 'active',
-    containerName: 'plain-target',
-  });
-  const worktree = join(projectClonePath(root, source), '.verity-sessions', 'legacy');
-  for (const project of [source, target]) {
-    const clone = projectClonePath(root, project);
-    await mkdir(clone, { recursive: true });
-    await moveGit(clone, 'init', '-b', 'main');
-    await moveGit(clone, 'config', 'user.name', 'Test');
-    await moveGit(clone, 'config', 'user.email', 'test@example.test');
-    await moveGit(clone, '-c', 'commit.gpgsign=false', 'commit', '--allow-empty', '-m', 'initial');
-  }
-  await moveGit(projectClonePath(root, source), 'worktree', 'add', '-b', 'legacy', worktree);
-  await writeFile(join(worktree, 'code.ts'), 'retained code');
-  await ctx.store.createSession({
-    sessionId: 'unmigrated',
-    projectId: source.id,
-    worktree,
-    model: 'm',
-  });
-  const dataRoot = join(root, 'document-data');
-  const { documentWorkspace, documentViewForSession } = await import('./document-workspace.js');
-  const view = documentViewForSession({ sessionId: 'unmigrated', worktree })!;
-  await documentWorkspace(dataRoot, source.id, view).prepare();
-  await writeFile(join(view, 'draft.md'), 'pending document');
-  const operationId = randomUUID();
-  const app = buildServer({
-    eventStore: ctx.store,
-    conductor: new Conductor({ store: ctx.store }),
-    bus: new InMemoryEventBus(),
-    dataRoot,
-    projectCloneRoot: root,
-    provisioner: {
-      withProjectExclusiveMutation: async <T>(_id: string, fn: () => Promise<T>) => fn(),
-    } as unknown as Provisioner,
-  });
-  try {
-    const response = await app.inject({
-      method: 'POST',
-      url: '/sessions/unmigrated/project',
-      payload: { project: target.id, operationId, onCommits: 'leave' },
+it.each([false, true])(
+  'moves a local Code session without publishing Documents from a failed move: commitFailure=%s',
+  async (commitFailure) => {
+    const suffix = commitFailure ? 'failed' : 'moved';
+    const sessionId = `unmigrated-${suffix}`;
+    const source = await ctx.store.upsertProject({
+      id: `unmigrated-source-${suffix}`,
+      owner: '__local__',
+      repo: `legacy-${suffix}`,
+      kind: 'local',
+      state: 'active',
+      containerName: `unmigrated-source-${suffix}`,
     });
-    expect(response.statusCode).toBe(200);
-    const moved = (await ctx.store.getSession('unmigrated'))!;
-    expect(moved.projectId).toBe(target.id);
-    expect(await readFile(join(moved.worktree, 'code.ts'), 'utf8')).toBe('retained code');
-    expect(
-      await readFile(
-        join(
-          dataRoot,
-          'knowledge',
-          target.id,
-          'insights',
-          'Transferred edits',
-          operationId,
-          'draft.md',
+    const target = await ctx.store.upsertProject({
+      id: `plain-target-${suffix}`,
+      owner: '__local__',
+      repo: `documents-${suffix}`,
+      kind: 'local',
+      state: 'active',
+      containerName: `plain-target-${suffix}`,
+    });
+    const worktree = join(projectClonePath(root, source), '.verity-sessions', 'legacy');
+    for (const project of [source, target]) {
+      const clone = projectClonePath(root, project);
+      await mkdir(clone, { recursive: true });
+      await moveGit(clone, 'init', '-b', 'main');
+      await moveGit(clone, 'config', 'user.name', 'Test');
+      await moveGit(clone, 'config', 'user.email', 'test@example.test');
+      await moveGit(
+        clone,
+        '-c',
+        'commit.gpgsign=false',
+        'commit',
+        '--allow-empty',
+        '-m',
+        'initial',
+      );
+    }
+    await moveGit(projectClonePath(root, source), 'worktree', 'add', '-b', 'legacy', worktree);
+    await writeFile(join(worktree, 'code.ts'), 'retained code');
+    await ctx.store.createSession({
+      sessionId,
+      projectId: source.id,
+      worktree,
+      model: 'm',
+    });
+    const dataRoot = join(root, 'document-data');
+    const { documentWorkspace, documentViewForSession } = await import('./document-workspace.js');
+    const view = documentViewForSession({ sessionId, worktree })!;
+    await documentWorkspace(dataRoot, source.id, view).prepare();
+    await writeFile(join(view, 'draft.md'), 'pending document');
+    const operationId = randomUUID();
+    const app = buildServer({
+      eventStore: ctx.store,
+      conductor: new Conductor({ store: ctx.store }),
+      bus: new InMemoryEventBus(),
+      dataRoot,
+      projectCloneRoot: root,
+      provisioner: {
+        withProjectExclusiveMutation: async <T>(_id: string, fn: () => Promise<T>) => fn(),
+      } as unknown as Provisioner,
+    });
+    const commit = commitFailure
+      ? vi
+          .spyOn(ctx.store, 'commitSessionMove')
+          .mockRejectedValueOnce(new Error('forced move persistence failure'))
+      : undefined;
+    try {
+      const response = await app.inject({
+        method: 'POST',
+        url: `/sessions/${sessionId}/project`,
+        payload: { project: target.id, operationId, onCommits: 'leave' },
+      });
+      if (commitFailure) {
+        expect(response.statusCode).toBe(500);
+        expect((await ctx.store.getSession(sessionId))?.projectId).toBe(source.id);
+        await expect(
+          readFile(
+            join(
+              dataRoot,
+              'knowledge',
+              target.id,
+              'insights',
+              'Transferred edits',
+              operationId,
+              'draft.md',
+            ),
+          ),
+        ).rejects.toMatchObject({ code: 'ENOENT' });
+        expect(await readFile(join(view, 'draft.md'), 'utf8')).toBe('pending document');
+        return;
+      }
+      expect(response.statusCode).toBe(200);
+      const moved = (await ctx.store.getSession(sessionId))!;
+      expect(moved.projectId).toBe(target.id);
+      expect(await readFile(join(moved.worktree, 'code.ts'), 'utf8')).toBe('retained code');
+      expect(
+        await readFile(
+          join(
+            dataRoot,
+            'knowledge',
+            target.id,
+            'insights',
+            'Transferred edits',
+            operationId,
+            'draft.md',
+          ),
+          'utf8',
         ),
-        'utf8',
-      ),
-    ).toBe('pending document');
-    expect(await readFile(join(view, 'draft.md'), 'utf8')).toBe('pending document');
-    expect(await readFile(join(worktree, 'code.ts'), 'utf8')).toBe('retained code');
-  } finally {
-    await app.close();
-  }
-});
+      ).toBe('pending document');
+      expect(await readFile(join(view, 'draft.md'), 'utf8')).toBe('pending document');
+      expect(await readFile(join(worktree, 'code.ts'), 'utf8')).toBe('retained code');
+    } finally {
+      commit?.mockRestore();
+      await app.close();
+    }
+  },
+);
