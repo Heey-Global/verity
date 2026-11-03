@@ -9,7 +9,8 @@ import { backupLifecycle } from './backup/lifecycle.js';
 import type { BuildStorage, BuildStorageLease } from './build-storage.js';
 import type { BuildDiagnosticStore } from './build-diagnostics.js';
 import type { DerivedImageReferences } from './derived-image-references.js';
-import { createSignedEmptyCommit } from './signed-bootstrap.js';
+import { createSignedEmptyCommit, createSignedMergeCommit } from './signed-bootstrap.js';
+import type { HistorySigningIdentity } from './sign-history.js';
 import { createGitWorktreeProvisioner } from './worktree.js';
 import { mkdir as mkdirDocumentRoot } from 'node:fs/promises';
 import { FORGE_PROXY_CA_FILE } from './brokered-forge-proxy.js';
@@ -4908,27 +4909,30 @@ export class ProvisionerImpl implements Provisioner {
     }
   }
 
-  /** Finish an empty GitHub clone so worktrees and pull requests have a real base. */
-  private async signedBootstrap(clonePath: string, git: GitRunner = this.git): Promise<boolean> {
+  /** Use the configured identity for new server-signed commits. */
+  private async signingIdentity(): Promise<HistorySigningIdentity | undefined> {
     const settings = await this.opts.veritySettings?.();
     const privateKey = resolveSigningPrivateKey(settings);
-    if (!privateKey) return false;
+    if (!privateKey) return undefined;
     const name = settings?.gitUserName?.trim();
     const email = settings?.gitUserEmail?.trim();
     if (!name || !email)
       throw new ProvisioningError(
         'Configure the Git commit name and verified email before initializing a signed repository.',
       );
+    return { privateKey, committerName: name, committerEmail: email };
+  }
+
+  /** Finish an empty clone without rewriting existing history. */
+  private async signedBootstrap(clonePath: string, git: GitRunner = this.git): Promise<boolean> {
+    const identity = await this.signingIdentity();
+    if (!identity) return false;
     try {
-      await createSignedEmptyCommit(git, clonePath, {
-        privateKey,
-        committerName: name,
-        committerEmail: email,
-      });
+      await createSignedEmptyCommit(git, clonePath, identity);
     } catch (cause) {
       throw new ProvisioningError(
         'Creating the signed initial commit failed. Check the Git signing key and verified Git email.',
-        new Error(redactSensitive(commandFailureMessage(cause), [privateKey])),
+        new Error(redactSensitive(commandFailureMessage(cause), [identity.privateKey])),
       );
     }
     return true;
@@ -5232,6 +5236,7 @@ export class ProvisionerImpl implements Provisioner {
           safeCause,
         );
       }
+      const signingIdentity = await this.signingIdentity();
       try {
         // Merge strategies may overwrite ignored files even with the porcelain
         // flag. Protect untracked files (including ignored dependencies/assets)
@@ -5266,11 +5271,8 @@ export class ProvisionerImpl implements Provisioner {
           throw new ProvisioningError(
             'The destination contains files that would replace local untracked or ignored files. Move those files out of the code workspace before linking.',
           );
-        // Identity and signing are pinned per-invocation exactly as `initLocalRepo`
-        // and the session merge in branches.ts pin them: the server container carries
-        // no `user.email`, and an unset one aborts this merge commit outright, while
-        // an inherited `commit.gpgsign=true` would route Verity's own merge through a
-        // signing path that holds no key for it.
+        // Leave the merge pending for the server signer when configured. Git's
+        // automatic signer cannot access the broker's private key on this path.
         await git([
           '-C',
           clonePath,
@@ -5285,11 +5287,35 @@ export class ProvisionerImpl implements Provisioner {
           'merge',
           '--allow-unrelated-histories',
           '--no-overwrite-ignore',
+          ...(signingIdentity ? ['--no-commit', '--no-ff'] : []),
           '--no-edit',
           '-X',
           'ours',
           `refs/remotes/origin/${remoteBranch}`,
         ]);
+        if (signingIdentity) {
+          const pending = await git([
+            '-C',
+            clonePath,
+            'rev-parse',
+            '--verify',
+            '--quiet',
+            'MERGE_HEAD',
+          ]).then(
+            () => true,
+            () => false,
+          );
+          if (pending) {
+            try {
+              await createSignedMergeCommit(git, clonePath, signingIdentity);
+            } catch (cause) {
+              // eslint-disable-next-line preserve-caught-error -- signer errors may contain private key material.
+              throw new Error(
+                redactSensitive(commandFailureMessage(cause), [signingIdentity.privateKey]),
+              );
+            }
+          }
+        }
         mergedExistingHistory = true;
       } catch (cause) {
         // A merge that never started leaves no MERGE_HEAD, and `git merge --abort`
@@ -5458,6 +5484,7 @@ export class ProvisionerImpl implements Provisioner {
     const local = await this.opts.store.disconnectProjectFromGitHub(project.id);
     if (!local) throw new ProvisioningError('Project changed while disconnecting; retry.');
     if (branch) await this.opts.store.updateProjectSettings(local.id, { defaultBranch: branch });
+    if (local.state === 'absent') return local;
     try {
       return await this.recreateContainer(local.id, {
         confirmWarnings: true,

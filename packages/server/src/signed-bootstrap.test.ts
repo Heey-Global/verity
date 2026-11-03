@@ -67,3 +67,52 @@ it('refuses identity header injection before running Git or signing', async () =
     }),
   ).rejects.toThrow('Invalid Git signing identity');
 });
+
+it('never runs reference hooks when installing a signed bootstrap or merge commit', async () => {
+  const { createSignedMergeCommit } = await import('./signed-bootstrap.js');
+  const root = mkdtempSync(join(tmpdir(), 'signed-hooks-'));
+  roots.push(root);
+  const run = (...args: string[]) =>
+    execFileSync(
+      'git',
+      ['-C', root, '-c', 'user.name=Test', '-c', 'user.email=test@example.com', ...args],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
+    ).trim();
+  execFileSync('git', ['init', '-q', '-b', 'main', root]);
+  run('config', 'core.hooksPath', join(root, '.git', 'hooks'));
+  const hook = join(root, '.git', 'hooks', 'reference-transaction');
+  writeFileSync(hook, '#!/bin/sh\nprintf executed > "$0.ran"\n', { mode: 0o755 });
+  const git: GitRunner = async (args) => ({
+    stdout: execFileSync('git', [...args], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }),
+    stderr: '',
+  });
+  const spawn = async ({ payloadPath }: { payloadPath: string }) => {
+    writeFileSync(
+      `${payloadPath}.sig`,
+      '-----BEGIN SSH SIGNATURE-----\nfixture\n-----END SSH SIGNATURE-----\n',
+    );
+  };
+  const identity = {
+    privateKey: 'fixture',
+    committerName: 'Signer',
+    committerEmail: 'signer@example.com',
+  };
+  await createSignedEmptyCommit(git, root, identity, spawn);
+  expect(() => readFileSync(`${hook}.ran`)).toThrow();
+  const first = run('rev-parse', 'HEAD');
+  run('-c', 'core.hooksPath=/dev/null', 'checkout', '-qb', 'other');
+  writeFileSync(join(root, 'file.txt'), 'incoming');
+  run('add', 'file.txt');
+  run('-c', 'core.hooksPath=/dev/null', '-c', 'commit.gpgsign=false', 'commit', '-qm', 'incoming');
+  const other = run('rev-parse', 'HEAD');
+  run('-c', 'core.hooksPath=/dev/null', 'checkout', '-q', 'main');
+  run('-c', 'core.hooksPath=/dev/null', 'merge', '--no-ff', '--no-commit', 'other');
+  await createSignedMergeCommit(git, root, identity, spawn);
+  expect(() => readFileSync(`${hook}.ran`)).toThrow();
+  expect(run('show', '-s', '--format=%P', 'HEAD')).toBe(`${first} ${other}`);
+  expect(run('cat-file', '-p', 'HEAD')).toContain('gpgsig -----BEGIN SSH SIGNATURE-----');
+  expect(() => run('rev-parse', '--verify', 'MERGE_HEAD')).toThrow();
+});
