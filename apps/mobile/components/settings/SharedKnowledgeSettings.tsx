@@ -62,7 +62,7 @@ export function SharedKnowledgeSettings({
         }
       } catch (failure) {
         if (active)
-          setError(failure instanceof Error ? failure.message : 'Could not load Shared knowledge');
+          setError(failure instanceof Error ? failure.message : `Could not load ${title}`);
       } finally {
         if (active) setLoading(false);
       }
@@ -71,13 +71,13 @@ export function SharedKnowledgeSettings({
     return () => {
       active = false;
     };
-  }, [client, path, filePath, reload, projectId]);
+  }, [client, path, filePath, reload, projectId, title]);
   if (!client)
     return (
       <SettingsMessage
         screenTitle={title}
         title="Server unavailable"
-        subtitle="Connect to your Verity server to browse Shared knowledge."
+        subtitle={`Connect to your Verity server to browse ${title}.`}
       />
     );
   const back = () => {
@@ -97,7 +97,7 @@ export function SharedKnowledgeSettings({
       setDraft(next.content);
       setError(undefined);
     } catch (failure) {
-      setError(failure instanceof Error ? failure.message : 'Could not save Shared knowledge');
+      setError(failure instanceof Error ? failure.message : `Could not save ${title}`);
     } finally {
       setSaving(false);
     }
