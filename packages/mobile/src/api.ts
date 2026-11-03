@@ -5860,6 +5860,51 @@ export class VerityClient {
     return branchListSchema.parse(await res.json());
   }
 
+  async listProjectKnowledgeFiles(projectId: string, path = ''): Promise<SessionDirectory> {
+    const res = await this.request(
+      `/projects/${encodeURIComponent(projectId)}/knowledge/files?path=${encodeURIComponent(path)}`,
+      {
+        method: 'GET',
+      },
+    );
+    const directory = sessionDirectorySchema.parse(await res.json());
+    if (directory.root !== 'knowledge')
+      throw new Error('Update the Verity server to browse project knowledge');
+    return directory;
+  }
+
+  async getProjectKnowledgeFile(projectId: string, path: string): Promise<SessionFileContent> {
+    const res = await this.request(
+      `/projects/${encodeURIComponent(projectId)}/knowledge/files/content?path=${encodeURIComponent(path)}`,
+      { method: 'GET' },
+    );
+    return sessionFileContentSchema.parse(await res.json());
+  }
+
+  async downloadProjectKnowledgeFile(projectId: string, path: string): Promise<Blob> {
+    const res = await this.request(
+      `/projects/${encodeURIComponent(projectId)}/knowledge/files/download?path=${encodeURIComponent(path)}`,
+      { method: 'GET' },
+    );
+    return res.blob();
+  }
+
+  async writeProjectKnowledgeFile(
+    projectId: string,
+    path: string,
+    content: string,
+    expectedVersion: string,
+  ): Promise<SessionFileContent> {
+    const res = await this.request(
+      `/projects/${encodeURIComponent(projectId)}/knowledge/files/content`,
+      {
+        method: 'PUT',
+        body: JSON.stringify({ root: 'knowledge', path, content, expectedVersion }),
+      },
+    );
+    return sessionFileContentSchema.parse(await res.json());
+  }
+
   async listSharedKnowledgeFiles(path = ''): Promise<SessionDirectory> {
     const res = await this.request(`/knowledge/shared/files?path=${encodeURIComponent(path)}`, {
       method: 'GET',

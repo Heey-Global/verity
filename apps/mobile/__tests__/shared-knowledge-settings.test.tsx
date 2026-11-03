@@ -66,3 +66,32 @@ it('keeps Shared out of the session root tabs and links Settings to the central 
   const settings = readFileSync(join(__dirname, '../app/settings/index.tsx'), 'utf8');
   expect(settings).toContain("router.push('/settings/shared-knowledge')");
 });
+
+it('opens project Decisions, Wiki and Sources without exposing the Shared browser', async () => {
+  const list = jest
+    .fn()
+    .mockResolvedValue({
+      root: 'knowledge',
+      path: '',
+      entries: [{ name: 'overview.md', path: 'overview.md', kind: 'file' }],
+      truncated: false,
+    });
+  const shared = jest.fn();
+  mockClient.mockReturnValue({
+    listProjectKnowledgeFiles: list,
+    listSharedKnowledgeFiles: shared,
+  } as unknown as VerityClient);
+  render(<SharedKnowledgeSettings projectId="p" />);
+  await waitFor(() => expect(list).toHaveBeenCalledWith('p', ''));
+  expect(screen.queryByText('overview.md')).toBeNull();
+  for (const [label, folder] of [
+    ['Decisions', 'insights/decisions'],
+    ['Wiki', 'insights'],
+    ['Raw Sources', 'sources'],
+  ]) {
+    fireEvent.press(screen.getByText(label));
+    await waitFor(() => expect(list).toHaveBeenLastCalledWith('p', folder));
+  }
+  expect(shared).not.toHaveBeenCalled();
+  expect(screen.queryByText('Shared library')).toBeNull();
+});

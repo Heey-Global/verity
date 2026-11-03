@@ -196,6 +196,18 @@ function ProjectSettingsIndexView({
         setConnectionRefresh((value) => value + 1);
       }}
     >
+      <SettingsGroup title="Knowledge">
+        <SettingsListPanel>
+          <SettingsNavRow
+            icon="book-open"
+            title="Project knowledge"
+            subtitle="Decisions, Wiki and Raw Sources"
+            onPress={() =>
+              router.push({ pathname: '/project/[id]/knowledge', params: { id: projectId } })
+            }
+          />
+        </SettingsListPanel>
+      </SettingsGroup>
       <SettingsGroup title="Context">
         <SettingsListPanel>
           <SettingsNavRow

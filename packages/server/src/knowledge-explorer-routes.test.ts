@@ -227,6 +227,49 @@ describe('session explorer knowledge roots', () => {
     ).toBe(400);
   });
 
+  it('browses project knowledge without sessions and confines edits to its Wiki', async () => {
+    await ctx.store.deleteSession('s-knowledge');
+    const base = '/projects/p-1/knowledge/files';
+    const listing = await app.inject(base);
+    expect(listing.statusCode).toBe(200);
+    expect(listing.json()).toMatchObject({ root: 'knowledge' });
+    expect((await app.inject(`${base}?path=insights/decisions`)).json()).toMatchObject({
+      entries: [],
+    });
+    const dir = projectKnowledgeDir(dataRoot, 'p-1');
+    writeFileSync(join(dir, 'insights/note.md'), 'Project note');
+    writeFileSync(join(dir, 'sources/documents/original.txt'), 'Source');
+    const snapshot = (await app.inject(`${base}/content?path=insights/note.md`)).json();
+    expect(snapshot).toMatchObject({ content: 'Project note', editable: true });
+    const save = (path: string) =>
+      app.inject({
+        method: 'PUT',
+        url: `${base}/content`,
+        payload: {
+          root: 'shared',
+          path,
+          content: 'Revised',
+          expectedVersion: snapshot.version,
+        },
+      });
+    expect((await save('insights/note.md')).statusCode).toBe(200);
+    expect((await save('insights/note.md')).statusCode).toBe(409);
+    expect(readFileSync(join(dir, 'insights/note.md'), 'utf8')).toBe('Revised');
+    expect((await save('sources/documents/original.txt')).statusCode).toBe(403);
+    expect((await save('insights/../sources/documents/original.txt')).statusCode).toBe(403);
+    expect(
+      (await app.inject(`${base}/content?path=sources/documents/original.txt`)).json(),
+    ).toMatchObject({ editable: false });
+    expect((await app.inject(`${base}/download?path=sources/documents/original.txt`)).body).toBe(
+      'Source',
+    );
+    expect((await app.inject(`${base}/content?path=../other/file.md`)).statusCode).toBe(400);
+    expect((await app.inject('/projects/missing/knowledge/files')).statusCode).toBe(404);
+    expect(
+      listing.json<{ entries: { name: string }[] }>().entries.map((entry) => entry.name),
+    ).not.toContain('shared');
+  });
+
   it('keeps the worktree root exactly what it was', async () => {
     // The default when no root is named, so every client built before the
     // knowledge roots existed keeps browsing the worktree.
