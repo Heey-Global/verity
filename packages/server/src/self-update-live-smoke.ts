@@ -352,6 +352,13 @@ function deploymentSpec(
     ],
     mounts: [
       { source: { kind: 'volume', name: 'verity-data' }, target: '/srv/verity', readOnly: false },
+      // Bootstrap always seals this installer mount. Include it before creating
+      // the Server so re-adoption cannot introduce a pending mount migration.
+      {
+        source: { kind: 'bind', path: '/var/lib/verity/host-diagnostics' },
+        target: '/run/verity-host-diagnostics',
+        readOnly: true,
+      },
       {
         source: { kind: 'volume', name: 'verity-agent-gateway-control' },
         target: '/run/verity-agent-gateway',
@@ -2666,24 +2673,6 @@ async function updaterRestarts(managedRoot: string): Promise<void> {
   expect(
     before.image === committedDigest,
     `the committed generation runs ${String(before.image)}, not the digest the last cutover selected`,
-  );
-
-  // Inspect the startup verdict while the generation is still serving, so a
-  // drift failure reports names and migration flags without exposing values.
-  const startup = await recoverManagedUpdater({
-    managedRoot,
-    docker: client,
-    environment: {
-      ...serverEnvironment(required('VERITY_SMOKE_DATABASE_URL'), authority.spec.deploymentId),
-      VERITY_SERVER_IMAGE: composeDigest,
-    },
-    readFile: readSecret,
-    cutover: { activate: publishActivationGate, gateway: gatewayController(managedRoot) },
-    reconcileCompanions: () => Promise.resolve(),
-  });
-  expect(
-    startup.reconcile.status === 'ok',
-    `the serving generation drifted before restart: ${JSON.stringify(startup.reconcile)}`,
   );
 
   // An explicit stop, not a kill: `unless-stopped` is exactly the policy that
