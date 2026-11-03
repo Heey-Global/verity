@@ -1,23 +1,16 @@
 {
   "schema": 1,
-  "version": "1.83.3",
+  "version": "1.83.4",
   "runtime": "1.83.0",
   "channel": "production",
-  "commit": "12c1cc5022ca154e1ac3be74fd90738c7db37d1b",
-  "tag": "mobile-v1.83.3",
-  "branch": "staging-mobile-v1.83.3-12c1cc5022ca154e1ac3be74fd90738c7db37d1b",
-  "baseline": "mobile-v1.83.0",
-  "group": "f9496f48-e225-438d-a665-5f967ffd45ee",
+  "commit": "0fb8c6343dc74e191726ebc520444f61407b954b",
+  "tag": "mobile-v1.83.4",
+  "branch": "staging-mobile-v1.83.4-0fb8c6343dc74e191726ebc520444f61407b954b",
+  "baseline": "mobile-v1.83.3",
+  "group": "935b38d4-b8b9-433b-a2de-674fb43e7b4f",
   "notes": [
-    "show ongoing recordings on other devices (#2185)",
-    "join online meetings from watched Google calendars (#2167)",
-    "remember confirmed project decisions across chats (#2165)",
-    "restore session repairs and analyze recurring failures (#2168)",
-    "delegate and supervise project assignments (#2171)",
-    "isolate project group selection updates (#2169)",
-    "discover OAuth and complete native/web sign-ins (#2160)",
-    "renew host runtime services independently of builder admission (#2159)",
-    "preserve safe stop and export failure reasons (#2147)",
-    "add elastic memory limits and resilient OOM handling (#2142)"
+    "wire global network protection into server starts (#2192)",
+    "preserve runtime renewal and reboot recovery (#2195)",
+    "classify invalid recording responses safely (#2194)"
   ]
 }
