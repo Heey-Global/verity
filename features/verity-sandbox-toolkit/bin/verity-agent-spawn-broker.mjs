@@ -1041,6 +1041,9 @@ async function packageCacheDirectory(options) {
     (await realpath(root)) !== root
   )
     throw new Error('invalid package cache root');
+  // The broker may inherit umask 077. The agent must traverse this broker-owned
+  // parent, while npm contents and the broker lease remain private.
+  await chmod(root, 0o755);
   const cache = npmCachePath(options);
   try {
     await mkdir(cache, { mode: 0o700 });

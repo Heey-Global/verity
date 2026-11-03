@@ -38,7 +38,9 @@ async function fixture(): Promise<AgentSpawnBrokerOptions> {
 }
 it('creates and reuses the private cache without chmod on the agent-owned path', async () => {
   const options = await fixture();
+  await mkdir(join(options.runtimeDir!, 'package-cache'), { mode: 0o700 });
   const first = await acquirePackageCacheLease(options);
+  expect((await stat(join(options.runtimeDir!, 'package-cache'))).mode & 0o777).toBe(0o755);
   await first.close();
   const concurrent = await Promise.all([
     acquirePackageCacheLease(options),
