@@ -66,6 +66,18 @@ describe('useCalendarMeetingChoice', () => {
     expect(fresh.result.current.selectedEvent).toBeNull();
   });
 
+  it('selects an eligible call when switching from a mixed in-person list to online', () => {
+    const upcoming = [meeting('office', NOW, { provider: null }), meeting('call', NOW)];
+    const { result, rerender } = renderHook(
+      ({ inPerson }: { inPerson: boolean }) => useCalendarMeetingChoice(upcoming, NOW, inPerson),
+      { initialProps: { inPerson: true } },
+    );
+    expect(result.current.selectedEvent?.eventKey).toBe('office');
+    rerender({ inPerson: false });
+    expect(result.current.selectedEvent?.eventKey).toBe('call');
+    expect(result.current.manualLink).toBe(false);
+  });
+
   it('opens the link field when the calendar has nothing to pick', () => {
     const { result, rerender } = renderHook(
       ({ upcoming }: { upcoming: UpcomingMeeting[] | null }) =>
@@ -79,20 +91,22 @@ describe('useCalendarMeetingChoice', () => {
 
 describe('useUpcomingMeetings', () => {
   // A meeting already joined belongs to the floating card, not to the start list.
-  it('leaves out joined meetings and reads an unavailable list as empty', async () => {
+  it('leaves out joined meetings and exposes calendar loading failures', async () => {
     jest.mocked(createVerityClient).mockReturnValue({
       getUpcomingMeetings: jest
         .fn()
         .mockResolvedValue([meeting('a', NOW), meeting('b', NOW, { decision: 'joined' })]),
     } as never);
     const listed = renderHook(() => useUpcomingMeetings(true));
-    await waitFor(() => expect(listed.result.current?.map((item) => item.eventKey)).toEqual(['a']));
+    await waitFor(() =>
+      expect(listed.result.current.upcoming?.map((item) => item.eventKey)).toEqual(['a']),
+    );
     listed.unmount();
     jest.mocked(createVerityClient).mockReturnValue({
       getUpcomingMeetings: jest.fn().mockRejectedValue(new Error('403')),
     } as never);
     const refused = renderHook(() => useUpcomingMeetings(true));
-    await waitFor(() => expect(refused.result.current).toEqual([]));
+    await waitFor(() => expect(refused.result.current).toEqual({ upcoming: [], loadFailed: true }));
     refused.unmount();
   });
 });
@@ -129,9 +143,29 @@ describe('CalendarMeetingPicker', () => {
     expect(props.onManualChange).toHaveBeenCalledWith(true);
   });
 
+  it('offers in-person events without a call link and keeps link entry hidden', () => {
+    render(
+      <CalendarMeetingPicker
+        {...props}
+        upcoming={[meeting('office', NOW, { provider: null })]}
+        inPerson
+        manual={false}
+      />,
+    );
+    fireEvent.press(screen.getByText('Meeting office'));
+    expect(props.onSelect).toHaveBeenCalledWith('office');
+    expect(screen.queryByText('Enter link manually')).toBeNull();
+  });
+
+  it('shows calendar request failures distinctly from empty calendars', () => {
+    render(<CalendarMeetingPicker {...props} upcoming={[]} loadFailed manual />);
+    expect(screen.getByText('Could not load calendar meetings')).toBeOnTheScreen();
+    expect(screen.queryByText('No calendar meetings')).toBeNull();
+  });
+
   it('shows the link field when nothing can be picked', () => {
     render(<CalendarMeetingPicker {...props} upcoming={[]} manual />);
-    expect(screen.getByText('No meetings with a link')).toBeOnTheScreen();
+    expect(screen.getByText('No calendar meetings')).toBeOnTheScreen();
     expect(screen.getByLabelText('Online meeting link')).toBeOnTheScreen();
   });
 });

@@ -973,7 +973,7 @@ const upcomingMeetingsSchema = z.object({
       startsAt: z.number(),
       endsAt: z.number(),
       calendar: z.string(),
-      provider: z.enum(['meet', 'teams', 'zoom']).catch('meet'),
+      provider: z.enum(['meet', 'teams', 'zoom']).nullable().catch('meet'),
       decision: z.enum(['joined', 'skipped', 'failed']).nullable().catch(null),
       meetingId: z.string().nullable(),
     }),
@@ -2623,9 +2623,14 @@ export class VerityClient {
     );
   }
   /** Meetings of the next hours from watched calendars. */
-  async getUpcomingMeetings(): Promise<UpcomingMeeting[]> {
+  async getUpcomingMeetings(includeInPerson = false): Promise<UpcomingMeeting[]> {
     return upcomingMeetingsSchema.parse(
-      await (await this.request('/live-meetings/upcoming', { method: 'GET' })).json(),
+      await (
+        await this.request(
+          `/live-meetings/upcoming${includeInPerson ? '?includeInPerson=true' : ''}`,
+          { method: 'GET' },
+        )
+      ).json(),
     ).upcoming;
   }
   /** Joins a calendar meeting: into `sessionId` when given, otherwise unassigned. */

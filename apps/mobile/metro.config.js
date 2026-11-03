@@ -11,6 +11,7 @@ const workspaceRoot = path.resolve(projectRoot, '../..');
 const config = getDefaultConfig(projectRoot);
 // Expo SQLite's browser worker loads its database engine as a WebAssembly asset.
 config.resolver.assetExts.push('wasm');
+config.transformer.babelTransformerPath = require.resolve('./sqlite-web-transformer.cjs');
 config.watchFolders = [workspaceRoot];
 config.resolver.nodeModulesPaths = [
   path.resolve(projectRoot, 'node_modules'),
