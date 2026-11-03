@@ -101,7 +101,10 @@ export function QuickCaptureCard({
       .then((settings) => {
         if (active && settings.enabled) {
           setAssistantSessionId(settings.sessionId);
-          if (preferAssistant === true) setToAssistant(true);
+          // A project the operator picked while the settings loaded wins.
+          if (preferAssistant === true && !projectExplicitlySelected.current) {
+            setToAssistant(true);
+          }
         }
       })
       .catch(() => undefined);

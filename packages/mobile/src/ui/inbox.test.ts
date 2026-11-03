@@ -140,6 +140,9 @@ describe('inboxItems', () => {
     const permissions = items.filter((item) => item.kind === 'permission');
     expect(permissions.map(labels)).toEqual([['Allow', 'Deny', 'Open'], ['Review'], ['Review']]);
     expect(permissions[0]?.actions[0]).toMatchObject({ kind: 'allow', toolUseId: 't1' });
+    // Allow travels with the complete input, never with only the tool's summary.
+    expect(permissions[0]?.request).toBe(JSON.stringify({ url: 'https://api.exa.ai' }, null, 2));
+    expect(permissions.slice(1).map((item) => item.request)).toEqual([undefined, undefined]);
     // An awaiting session whose question IS the permission is not also a question.
     expect(kinds(items)).not.toContain('question');
   });

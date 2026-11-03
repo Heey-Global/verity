@@ -247,7 +247,7 @@ it('hides "Tell Verity" while quick capture cannot open', async () => {
   expect(screen.queryByRole('button', { name: 'Tell Verity' })).toBeNull();
 });
 
-it('shows a permission’s whole input instead of a clipped preview', async () => {
+it('shows a permission’s whole input next to Allow, not just its summary', async () => {
   const command = Array.from({ length: 8 }, (_, i) => `step ${String(i)}`).join(' && ');
   await renderInbox([
     session('shell', {
@@ -255,11 +255,20 @@ it('shows a permission’s whole input instead of a clipped preview', async () =
       permissionAwaitingInput: true,
       pendingPermissions: ['t1'],
       pendingPermissionRequests: [
-        { toolUseId: 't1', tool: 'Bash', riskClass: 'ask', input: { command } },
+        {
+          toolUseId: 't1',
+          tool: 'Bash',
+          riskClass: 'ask',
+          // A field no tool summary shows: approving must not hide it.
+          input: { command, description: 'hidden-detail' },
+        },
       ],
     }),
   ]);
-  const message = await screen.findByText(new RegExp('step 7'));
+  await screen.findByRole('button', { name: 'Allow' });
+  const request = screen.getByTestId('inbox-request');
   // Allow must never stand next to text the operator cannot read in full.
-  expect(message.props.numberOfLines).toBeUndefined();
+  expect(request.props.numberOfLines).toBeUndefined();
+  expect(request.props.children).toContain('step 7');
+  expect(request.props.children).toContain('hidden-detail');
 });

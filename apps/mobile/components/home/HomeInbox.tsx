@@ -140,7 +140,12 @@ export function HomeInbox({
           pending={pending === item.key}
           disabled={pending !== null}
           onAction={(action) => {
-            run(item, action).catch(() => setPending(null));
+            // `perform` reports failures as outcomes; anything it throws is
+            // unexpected, but the operator still has to learn the answer was not sent.
+            run(item, action).catch(() => {
+              setPending(null);
+              Alert.alert('Not sent', 'Something went wrong. Open the session and try again.');
+            });
           }}
         />
       ))}
@@ -216,14 +221,15 @@ export function InboxCard({
           trailing={<StatusTag intent={TAG_INTENT[item.tone]} label={item.tag} />}
         />
         {item.message ? (
-          // A permission is decided from what it asks, so its input is never cut
-          // short; everything else is context and stays brief.
-          <Text
-            variant="bodySmall"
-            tone="muted"
-            {...(item.kind === 'permission' ? {} : { numberOfLines: 3 })}
-          >
+          <Text variant="bodySmall" tone="muted" numberOfLines={3}>
             {item.message}
+          </Text>
+        ) : null}
+        {item.request !== undefined ? (
+          // Allow is decided from exactly what the tool receives, so the input is
+          // shown whole; a clipped summary could hide the part that matters.
+          <Text variant="code" testID="inbox-request" selectable>
+            {item.request}
           </Text>
         ) : null}
         <View style={styles.actions}>

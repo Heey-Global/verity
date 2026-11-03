@@ -48,6 +48,10 @@ export interface InboxItem {
   /** Where it comes from: project, session, time. */
   context: string;
   message?: string;
+  /** A permission's complete input, formatted. Allow is only offered together
+   *  with it, so the operator approves what the tool will receive rather than a
+   *  summary of it. */
+  request?: string;
   sessionId?: string;
   projectId?: string;
   /** Answers in display order; the first is the primary one. */
@@ -163,6 +167,7 @@ function sessionItems(
       title: view.headline,
       context: where,
       ...(view.subtitle ? { message: view.subtitle } : {}),
+      ...(decidable ? { request: JSON.stringify(request.input, null, 2) } : {}),
       actions: decidable
         ? [
             {
