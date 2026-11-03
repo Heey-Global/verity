@@ -1,6 +1,7 @@
 import { networkProtectionStatus } from '../../lib/networkProtection';
 import { resetFeatureHints } from '../../lib/featureHints';
 import { useTaskPreferences } from '../../lib/taskPreferences';
+import { setHomeInboxEnabled, useHomePreferences } from '../../lib/homePreferences';
 // Settings, top level: what is left to set up, where everything lives, and the
 // two app-wide switches. Everything with a form of its own is one tap deeper.
 //
@@ -69,6 +70,7 @@ export default function SettingsIndexScreen() {
 
 function SettingsIndexView({ client }: { client: VerityClient }) {
   const taskPreferences = useTaskPreferences();
+  const homePreferences = useHomePreferences();
   const reload = useLoadVeritySettings(client);
   const { settings, secretStatus, loading, failed } = useVeritySettings();
   const githubConnected = githubRepositoryAccessReady(settings);
@@ -355,6 +357,12 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
 
       <SettingsGroup title="This app">
         <SettingsListPanel>
+          <SettingsToggleRow
+            label="New Home (preview)"
+            subtitle="Everything that needs you across projects, beside the project list"
+            value={homePreferences.inbox}
+            onValueChange={setHomeInboxEnabled}
+          />
           {!isDemoMode() ? (
             <SettingsNavRow
               icon="help-circle"

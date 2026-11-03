@@ -152,6 +152,15 @@ export {
   type AttentionNotice,
 } from './ui/attentionNotice.js';
 export { sessionLabel } from './ui/sessionLabel.js';
+export {
+  inboxItems,
+  inboxSummary,
+  MEETING_LEAD_MS,
+  type InboxAction,
+  type InboxInput,
+  type InboxItem,
+  type InboxItemKind,
+} from './ui/inbox.js';
 export { parseBranchIssue, forgeRefUrl, type RefHost, type RepoIdentity } from './ui/branchRef.js';
 export {
   LEGACY_GITHUB_CONNECTION_ID,

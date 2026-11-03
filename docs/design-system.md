@@ -122,7 +122,7 @@ keys use the platform monospace font. All sizes scale with the in-app font-zoom 
 | -------- | ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Flat     | 1 px `border`, no shadow                                | Cards and lists — the default                                                                                                                                                                                                                                      |
 | Floating | Soft dark shadow downward (`0 18px 50px` black at 60 %) | Sheets, menus, dialogs                                                                                                                                                                                                                                             |
-| Glow     | Colored halo                                            | Four uses only: brand moments in `signature` (success check), Verity's presence in a live meeting in `signature` (§ 5.8), the selected card in `action`, and success and attention status dots in their tone. Buttons never glow. Dark theme only — in light, the selected card keeps its plain border and dots have no halo. |
+| Glow     | Colored halo                                            | Four uses only: brand moments in `signature` (success check), Verity's presence in a live meeting or on Home in `signature` (§ 5.8), the selected card in `action`, and success and attention status dots in their tone. Buttons never glow. Dark theme only — in light, the selected card keeps its plain border and dots have no halo. |
 
 **Website.** `docs/website/site/index.html` uses the same roles, Inter, the
 `control` radius for buttons and the tonal primary button. It has two brand moments
@@ -271,9 +271,12 @@ Confirmations use a compact Verity sheet instead of the platform alert:
 
 ### 5.8 Verity presence
 
-The live meeting gives Verity its own place, so what it contributes reads as a participant
-speaking up rather than as another list. It appears in the wide (iPad) meeting layout only
-and nowhere else in the app.
+Verity has its own visual presence in the wide (iPad) meeting layout and on Home.
+It identifies Verity as the source of a contribution or briefing, rather than styling
+every item in a list as an assistant message. Home reuses the visual vocabulary of
+Meeting and Premium; it does not introduce a separate palette or set of effects.
+
+#### Meeting pane
 
 - **Pane:** a `surface` panel with a 2 px edge running from `signature` to `action` and a
   `signature` glow. It is the one surface on the screen with a gradient; everything around
@@ -288,6 +291,26 @@ and nowhere else in the app.
 - **Ask field:** a text field with the V mark, the model meeting answers use as a muted
   chip, and a tonal send button. The model picked here applies to that meeting only.
 - People and notes beside the pane use no `signature`, so pink stays Verity's.
+
+#### Home presence
+
+- **Identity:** reuse the Verity V mark and `signature` treatment from Meeting, with
+  the Display headline and restrained content-screen eyebrows used by Premium.
+  A compact header is sufficient; a halo is optional, dark-theme only.
+- **Briefing pane:** when a briefing needs its own panel, reuse the meeting pane's
+  `surface`, 2 px `signature`-to-`action` edge and `signature` glow. At most one such
+  surface appears on Home. A compact header does not require a surrounding pane.
+  In light theme use a plain border and no glow or gradient.
+- **Capture:** reuse the shared text-field and tonal action treatments. Signature
+  identifies Verity; typing, microphone and send controls use `action`. The meeting's
+  model selector is not part of this Home pattern.
+- **Attribution:** a small V mark may identify Verity's recommendation inside an inbox
+  item. Keep the originating project and role visible. Meeting-specific newest-answer
+  borders do not automatically apply to inbox cards.
+- **Restraint:** surrounding inbox items stay flat. Reuse these elements where they
+  communicate identity, hierarchy or interaction, not as a checklist of effects.
+  Premium branding does not imply that the Home assistant is a paid feature.
+  Buttons never glow; existing typography, motion and accessibility rules still apply.
 
 ## 6. Patterns
 

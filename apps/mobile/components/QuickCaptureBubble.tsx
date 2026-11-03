@@ -68,6 +68,7 @@ export function QuickCaptureBubble() {
   const [remoteMeeting, setRemoteMeeting] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [capture, setCapture] = useState(false);
+  const [captureToAssistant, setCaptureToAssistant] = useState(false);
   const [intro, setIntro] = useState(false);
   const [panel, setPanel] = useState(false);
   const gesture = useTaskCaptureGesture(
@@ -251,7 +252,7 @@ export function QuickCaptureBubble() {
   }, [saved]);
   useEffect(
     () =>
-      subscribeTaskVoiceShortcut(() => {
+      subscribeTaskVoiceShortcut((request) => {
         if (
           capture ||
           taskAccountScope() === null ||
@@ -263,6 +264,7 @@ export function QuickCaptureBubble() {
           return;
         setPanel(false);
         setIntro(false);
+        setCaptureToAssistant(request.target === 'assistant');
         setCapture(true);
       }),
     [capture, meeting, remoteMeeting, pathname],
@@ -401,7 +403,11 @@ export function QuickCaptureBubble() {
         <QuickCaptureCard
           context={context}
           projects={recentProjects}
-          onClose={() => setCapture(false)}
+          preferAssistant={captureToAssistant}
+          onClose={() => {
+            setCapture(false);
+            setCaptureToAssistant(false);
+          }}
           onSaved={(id, label, kind = 'task') => setSaved({ id, label, kind })}
         />
       ) : null}
