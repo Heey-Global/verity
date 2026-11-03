@@ -357,3 +357,36 @@ it('hides the assistant target while it is off', async () => {
   await act(async () => {});
   expect(ui.queryByText('Verity')).toBeNull();
 });
+
+it('preselects the assistant when Home asks for it, and only when it is available', async () => {
+  const sendTurn = jest.fn(async () => ({}));
+  jest.mocked(createVerityClient).mockReturnValue({
+    assistantSettings: jest.fn(async () => ({ enabled: true, sessionId: 'assistant', grants: [] })),
+    sendTurn,
+  } as unknown as ReturnType<typeof createVerityClient>);
+  const ui = render(<QuickCaptureCard {...props} preferAssistant />);
+  await act(async () => {});
+  // No chip tap: "Tell Verity" on Home already chose the target.
+  expect(ui.getByText('Send')).toBeTruthy();
+  fireEvent.changeText(ui.getByLabelText('Task text'), 'Book the venue for March');
+  jest
+    .mocked(useVoiceInput)
+    .mockReturnValue({ ...voice, state: 'idle' } as unknown as ReturnType<typeof useVoiceInput>);
+  ui.rerender(<QuickCaptureCard {...props} preferAssistant />);
+  await act(async () => fireEvent.press(ui.getByText('Send')));
+  expect(sendTurn).toHaveBeenCalledWith(
+    'assistant',
+    expect.objectContaining({ prompt: 'Book the venue for March' }),
+  );
+  expect(captureTask).not.toHaveBeenCalled();
+});
+
+it('falls back to the usual project choice when the assistant is off', async () => {
+  jest.mocked(createVerityClient).mockReturnValue({
+    assistantSettings: jest.fn(async () => ({ enabled: false, sessionId: null, grants: [] })),
+  } as unknown as ReturnType<typeof createVerityClient>);
+  const ui = render(<QuickCaptureCard {...props} preferAssistant />);
+  await act(async () => {});
+  expect(ui.queryByText('Verity')).toBeNull();
+  expect(ui.getByText('Save')).toBeTruthy();
+});

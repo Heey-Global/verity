@@ -42,12 +42,16 @@ export function QuickCaptureCard({
   projects,
   onClose,
   onSaved,
+  preferAssistant,
 }: {
   context: TaskContext;
   projects: ProjectRecord[];
   onClose(): void;
   /** `kind` 'assistant': `id` is the assistant session the note was sent to. */
   onSaved(id: string, label: string, kind?: 'task' | 'assistant'): void;
+  /** Select the assistant as the target once it is known to be available, as
+   * Home's "Tell Verity" does. Without an assistant the usual choice applies. */
+  preferAssistant?: boolean;
 }) {
   const { theme } = useUnistyles();
   const [text, setText] = useState('');
@@ -95,7 +99,10 @@ export function QuickCaptureCard({
     void createVerityClient()
       ?.assistantSettings()
       .then((settings) => {
-        if (active && settings.enabled) setAssistantSessionId(settings.sessionId);
+        if (active && settings.enabled) {
+          setAssistantSessionId(settings.sessionId);
+          if (preferAssistant === true) setToAssistant(true);
+        }
       })
       .catch(() => undefined);
     return () => {
