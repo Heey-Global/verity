@@ -1,9 +1,10 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-// Runtime inventory uses the built gateway; lint also runs before build artifacts exist.
+// Runtime inventory uses the built gateway. Keep its inventory projection independent
+// of workspace declarations: CI lints before referenced packages are built.
 const gatewayModulePath = '../packages/server/dist/mcp-gateway.js';
 const gatewayModule = /** @type {unknown} */ (await import(gatewayModulePath));
 const { AGENT_CAPABILITIES } =
-  /** @type {{ AGENT_CAPABILITIES: readonly import('../packages/server/src/agent-capabilities.js').AgentCapability[] }} */ (
+  /** @type {{ AGENT_CAPABILITIES: readonly { name: string; title: string; legacyName: string; discriminator?: 'action' | 'operation'; value?: string }[] }} */ (
     gatewayModule
   );
 const check = process.argv.includes('--check');
