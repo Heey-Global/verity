@@ -221,6 +221,24 @@ export function registerHttpMcpProxyRoute(app: FastifyInstance, deps: HttpMcpPro
       reply.code(401);
       return { error: 'unauthorized' };
     }
+    const requestStarted = performance.now();
+    const rpcMethod =
+      typeof request.body === 'object' &&
+      request.body !== null &&
+      'method' in request.body &&
+      typeof request.body.method === 'string' &&
+      [
+        'initialize',
+        'notifications/initialized',
+        'tools/list',
+        'tools/call',
+        'resources/read',
+        'ping',
+      ].includes(request.body.method)
+        ? request.body.method
+        : 'other';
+    const context = { connectionId, rpcMethod };
+    request.log.info({ ...context, stage: 'intercept' }, 'MCP proxy interception started');
     let interception;
     try {
       interception =
@@ -239,9 +257,16 @@ export function registerHttpMcpProxyRoute(app: FastifyInstance, deps: HttpMcpPro
             })
           : undefined;
     } catch {
-      request.log.warn({ stage: 'intercept', connectionId }, 'MCP proxy request failed');
+      request.log.warn(
+        { ...context, stage: 'intercept', elapsedMs: performance.now() - requestStarted },
+        'MCP proxy request failed',
+      );
       return reply.code(502).send({ error: 'MCP request could not be authorized' });
     }
+    request.log.info(
+      { ...context, stage: 'intercept', elapsedMs: performance.now() - requestStarted },
+      'MCP proxy interception completed',
+    );
     if (interception !== undefined) {
       const activeCaller = await deps.resolveCaller({ projectId: identity.projectId, token });
       const activeConnection = await deps.resolveConnection({
@@ -262,6 +287,23 @@ export function registerHttpMcpProxyRoute(app: FastifyInstance, deps: HttpMcpPro
         : undefined;
     let hijacked = false;
     let upstreamStatus: number | undefined;
+    let contentType: string | undefined;
+    let headersMs: number | undefined;
+    let firstByteMs: number | undefined;
+    let upstreamEndMs: number | undefined;
+    let streamed = 0;
+    const upstreamStarted = performance.now();
+    const diagnostics = () => ({
+      ...context,
+      upstreamStatus,
+      contentType,
+      headersMs,
+      firstByteMs,
+      upstreamEndMs,
+      bytes: streamed,
+      elapsedMs: performance.now() - upstreamStarted,
+    });
+    request.log.info({ ...context, stage: 'forward' }, 'MCP proxy forwarding started');
     try {
       const response = await forwardHttpMcp(connection, method, body, {
         ...(typeof request.headers.accept === 'string' ? { accept: request.headers.accept } : {}),
@@ -279,12 +321,24 @@ export function registerHttpMcpProxyRoute(app: FastifyInstance, deps: HttpMcpPro
           : {}),
       });
       upstreamStatus = response.status;
+      // Log only recognized media types, never arbitrary upstream header values.
+      const mediaType = response.headers['content-type']?.split(';', 1)[0]?.trim().toLowerCase();
+      contentType =
+        mediaType === 'application/json' || mediaType === 'text/event-stream' ? mediaType : 'other';
+      headersMs = performance.now() - upstreamStarted;
+      request.log.info(
+        { ...diagnostics(), stage: 'headers' },
+        'MCP proxy upstream headers received',
+      );
+      response.body.once('end', () => {
+        upstreamEndMs = performance.now() - upstreamStarted;
+        request.log.info({ ...diagnostics(), stage: 'end' }, 'MCP proxy upstream body ended');
+      });
       if (response.status >= 400) {
         request.log.warn(
           {
             stage: 'headers',
-            upstreamStatus,
-            connectionId,
+            ...diagnostics(),
             reason: response.status === 401 || response.status === 403 ? 'authorization' : 'http',
           },
           'MCP upstream rejected request',
@@ -294,9 +348,16 @@ export function registerHttpMcpProxyRoute(app: FastifyInstance, deps: HttpMcpPro
       hijacked = true;
       reply.raw.writeHead(response.status, response.headers);
       const maxBytes = response.eventStream ? MAX_EVENT_STREAM_BYTES : MAX_STREAM_BYTES;
-      let streamed = 0;
+
       const limiter = new Transform({
         transform(chunk: Buffer, _encoding, callback) {
+          if (firstByteMs === undefined && chunk.byteLength > 0) {
+            firstByteMs = performance.now() - upstreamStarted;
+            request.log.info(
+              { ...diagnostics(), stage: 'first-byte' },
+              'MCP proxy upstream first body byte received',
+            );
+          }
           streamed += chunk.byteLength;
           callback(
             streamed > maxBytes ? new Error('HTTP MCP upstream response too large') : null,
@@ -382,6 +443,7 @@ export function registerHttpMcpProxyRoute(app: FastifyInstance, deps: HttpMcpPro
         if (lifetime !== undefined) clearTimeout(lifetime);
         if (authorizationPoll !== undefined) clearInterval(authorizationPoll);
       }
+      request.log.info({ ...diagnostics(), stage: 'complete' }, 'MCP proxy response completed');
       return reply;
     } catch (error) {
       // Error messages and URLs can contain connector credentials or query PINs.
@@ -395,8 +457,7 @@ export function registerHttpMcpProxyRoute(app: FastifyInstance, deps: HttpMcpPro
               : error instanceof SyntaxError
                 ? 'protocol'
                 : 'transport',
-          connectionId,
-          upstreamStatus,
+          ...diagnostics(),
         },
         'MCP proxy request failed',
       );

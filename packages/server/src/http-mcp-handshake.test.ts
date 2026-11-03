@@ -83,7 +83,16 @@ it.each([false, true])(
           callback,
         ),
     );
-    const app = Fastify();
+    const logs: string[] = [];
+    const app = Fastify({
+      logger: {
+        stream: {
+          write: (line: string) => {
+            logs.push(line);
+          },
+        },
+      },
+    });
     registerHttpMcpProxyRoute(app, {
       resolveCaller: async () => ({ sessionId: 'session', turnId: 'turn' }),
       resolveConnection: async () => ({
@@ -112,6 +121,40 @@ it.each([false, true])(
         'tools/call',
       ]);
       expect(clientTransport.sessionId).toBe(sse ? 'test-session' : undefined);
+      await vi.waitFor(() => {
+        const entries = logs
+          .map((line) => JSON.parse(line) as Record<string, unknown>)
+          .filter((entry) => entry.rpcMethod === 'tools/call');
+        const headers = entries.find((entry) => entry.stage === 'headers');
+        const firstByte = entries.find((entry) => entry.stage === 'first-byte');
+        expect(headers).toMatchObject({
+          upstreamStatus: 200,
+          contentType: sse ? 'text/event-stream' : 'application/json',
+          headersMs: expect.any(Number),
+          reqId: expect.any(String),
+        });
+        expect(firstByte).toMatchObject({
+          upstreamStatus: 200,
+          firstByteMs: expect.any(Number),
+          reqId: headers?.reqId,
+        });
+        expect(Number(firstByte?.firstByteMs)).toBeGreaterThanOrEqual(Number(headers?.headersMs));
+        if (!sse) {
+          const ended = entries.find((entry) => entry.stage === 'end');
+          expect(ended).toMatchObject({
+            upstreamEndMs: expect.any(Number),
+            bytes: expect.any(Number),
+            reqId: headers?.reqId,
+          });
+          expect(Number(ended?.upstreamEndMs)).toBeGreaterThanOrEqual(
+            Number(firstByte?.firstByteMs),
+          );
+          expect(entries).toContainEqual(
+            expect.objectContaining({ stage: 'complete', reqId: headers?.reqId }),
+          );
+        }
+      });
+      expect(logs.join('')).not.toMatch(/pin=|private/u);
     } finally {
       await client.close();
       upstream.closeAllConnections();
@@ -210,7 +253,7 @@ it.each(['authorization', 'protocol', 'timeout'] as const)(
           end: () => {
             const response = Object.assign(new PassThrough(), {
               statusCode: failure === 'authorization' ? 403 : 200,
-              headers: { 'content-type': 'application/json' },
+              headers: { 'content-type': 'application/json; token=secret' },
               setTimeout: (_delay: number, onTimeout: () => void) => {
                 if (failure === 'timeout') setImmediate(onTimeout);
               },
@@ -245,6 +288,9 @@ it.each(['authorization', 'protocol', 'timeout'] as const)(
             stage: failure === 'authorization' ? 'headers' : 'response',
             reason: failure,
             upstreamStatus: failure === 'authorization' ? 403 : 200,
+            contentType: 'application/json',
+            headersMs: expect.any(Number),
+            elapsedMs: expect.any(Number),
           }),
         ),
       );
