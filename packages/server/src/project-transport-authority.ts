@@ -19,7 +19,12 @@ export async function assertProjectTransportAuthority(): Promise<void> {
     await Promise.race([
       Promise.resolve().then(() => authority.authorize()),
       new Promise<never>((_resolve, reject) => {
-        abort = () => reject(authority.signal.reason ?? new Error('Project authority retired'));
+        abort = () =>
+          reject(
+            authority.signal.reason instanceof Error
+              ? authority.signal.reason
+              : new Error('Project authority retired'),
+          );
         authority.signal.addEventListener('abort', abort, { once: true });
         if (authority.signal.aborted) abort();
         timer = setTimeout(() => reject(new Error('Project authority check timed out')), 1000);
