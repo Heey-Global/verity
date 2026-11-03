@@ -278,6 +278,10 @@ import {
   sessionHasOpenTasks,
   type SessionStatus,
 } from './status.js';
+import {
+  openChoicesFromProjection,
+  pendingPermissionRequestsFromProjection,
+} from './session-inbox-facts.js';
 import { taskTitleModel } from './task-titles.js';
 import { registerTasksRoutes } from './tasks-routes.js';
 import { isDriftReportable, toolkitDriftEntryOf } from './toolkit-drift.js';
@@ -4059,9 +4063,12 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     // `SessionProjectionFacts.rateLimitEvents`.
     const rateLimits = latestRateLimitsFromSequenced(facts.rateLimitEvents);
     const rateLimit = rateLimits[0];
-    const pendingPermissions = [
-      ...new Set([...conductor.pendingPermissions(session.sessionId), ...pendingLinks]),
-    ];
+    const conductorPermissions = conductor.pendingPermissions(session.sessionId);
+    const pendingPermissions = [...new Set([...conductorPermissions, ...pendingLinks])];
+    const pendingPermissionRequests = pendingPermissionRequestsFromProjection(
+      events,
+      conductorPermissions,
+    );
     // Unread counts include only agent text; the seq still identifies a nonempty log.
     const projectedStatus = liveStatusFromProjection(
       session.sessionId,
@@ -4082,11 +4089,13 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             ? 'running'
             : 'completed'
           : projectedStatus;
+    const busy = conductor.isBusy(session.sessionId);
     const branch = listBranchFor(
       session,
       resumable,
-      conductor.isBusy(session.sessionId) || status === 'running' || sessionHasOpenTasks(events),
+      busy || status === 'running' || sessionHasOpenTasks(events),
     );
+    const openChoices = openChoicesFromProjection(events, status, busy);
     // A `Set` the relay reconciler already maintains; this adds one `Set.has` per
     // session and no I/O, so it is safe on a route polled every 2 s per device.
     const attention = sessionAttentionSignals({
@@ -4103,6 +4112,9 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       ...(status === 'awaiting_input' && pendingPermissions.length > 0
         ? { permissionAwaitingInput: true as const }
         : {}),
+      // Both absent in the common case, so a quiet session's summary is unchanged.
+      ...(pendingPermissionRequests.length > 0 ? { pendingPermissionRequests } : {}),
+      ...(openChoices !== undefined ? { openChoices } : {}),
       // Summed in SQL over the whole log rather than folded out of `events`: the
       // slice is on its way to being a bounded tail, and a total taken from a
       // tail would quietly shrink as a session got longer.
