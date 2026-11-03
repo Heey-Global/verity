@@ -82,6 +82,9 @@ export function egressGrantCovers(
 const emptyPolicy = (): EgressPolicy => ({ revision: 0, requests: {}, grants: [] });
 
 /** Draft policy only: persistence does not enable network enforcement. */
+/** `requestedBy` entry for a request the host recorded from a Sandbox DNS lookup. */
+const SANDBOX_REQUESTER = 'sandbox';
+
 export class ProjectEgressStore {
   constructor(
     private readonly db: Kysely<Database>,
@@ -121,16 +124,18 @@ export class ProjectEgressStore {
       throw new ProjectEgressError('forbidden');
   }
 
+  /** `userId` undefined is the trusted host service: grants are project settings whose
+   * rights were checked when they were decided, so the host borrows no user's authority. */
   private async access<T>(
     projectId: string,
-    userId: string,
+    userId: string | undefined,
     permission: 'read' | 'execute' | 'manage',
     operation: (state: EgressPolicy, now: number) => T,
     write = true,
   ): Promise<T> {
     return this.db.transaction().execute(async (tx) => {
       // Membership/user/project locks also serialize permission revocation with decisions.
-      await this.authorized(tx, projectId, userId, permission);
+      if (userId !== undefined) await this.authorized(tx, projectId, userId, permission);
       await sql`insert into project_egress_policy(project_id, state) values (${projectId}, ${JSON.stringify(emptyPolicy())}::jsonb) on conflict do nothing`.execute(
         tx,
       );
@@ -158,14 +163,10 @@ export class ProjectEgressStore {
   read(projectId: string, userId: string): Promise<EgressPolicy> {
     return this.access(projectId, userId, 'read', (state) => state, false);
   }
-  /** Trusted admission path: viewing a policy is not permission to run a workload.
-   * Call again immediately before admission; this read never renews grants.
+  /** Trusted host admission path; never exposed to a user route. Call again
+   * immediately before admission; this read never renews grants.
    */
-  readForAdmission(
-    projectId: string,
-    sponsorUserId: string,
-    expectedRevision?: number,
-  ): Promise<EgressPolicy> {
+  readForAdmission(projectId: string, expectedRevision?: number): Promise<EgressPolicy> {
     if (
       expectedRevision !== undefined &&
       (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0)
@@ -173,7 +174,7 @@ export class ProjectEgressStore {
       throw new ProjectEgressError('invalid');
     return this.access(
       projectId,
-      sponsorUserId,
+      undefined,
       'execute',
       (state) => {
         if (expectedRevision !== undefined && state.revision !== expectedRevision)
@@ -188,6 +189,22 @@ export class ProjectEgressStore {
     userId: string,
     input: EgressTarget,
   ): Promise<EgressRequest | { covered: true }> {
+    return this.fileRequest(projectId, userId, userId, input);
+  }
+  /** Trusted host path: a Sandbox asked for an ungranted name. Recorded as one pending
+   * request of the project, attributed to the Sandbox rather than to any user. */
+  requestFromSandbox(
+    projectId: string,
+    input: EgressTarget,
+  ): Promise<EgressRequest | { covered: true }> {
+    return this.fileRequest(projectId, undefined, SANDBOX_REQUESTER, input);
+  }
+  private fileRequest(
+    projectId: string,
+    userId: string | undefined,
+    requester: string,
+    input: EgressTarget,
+  ): Promise<EgressRequest | { covered: true }> {
     const target = canonicalEgressTarget(input),
       key = egressTargetKey(target);
     return this.access(projectId, userId, 'execute', (state, now) => {
@@ -195,8 +212,8 @@ export class ProjectEgressStore {
       const old = state.requests[key];
       // A denied/expired request never turns into another automatic card.
       if (old) {
-        if (!old.requestedBy.includes(userId) && old.requestedBy.length < 100)
-          old.requestedBy.push(userId);
+        if (!old.requestedBy.includes(requester) && old.requestedBy.length < 100)
+          old.requestedBy.push(requester);
         return old;
       }
       if (Object.keys(state.requests).length >= 1000) throw new ProjectEgressError('capacity');
@@ -204,7 +221,7 @@ export class ProjectEgressStore {
         id: randomUUID(),
         target,
         revision: state.revision,
-        requestedBy: [userId],
+        requestedBy: [requester],
         createdAt: now,
         expiresAt: now + 300_000,
         status: 'pending',

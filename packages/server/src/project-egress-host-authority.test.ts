@@ -11,22 +11,12 @@ vi.mock('node:fs/promises', async (importOriginal) => ({
   ...fs,
 }));
 beforeEach(() => vi.resetAllMocks());
-it('requires explicit DNS, canonical direct route inventory and a root-selected sponsor mapping', () => {
+it('requires explicit DNS and a database, with no host inventory or sponsor list', () => {
   const config = {
     databaseUrl: 'postgres://fixture@localhost/verity',
     dnsServers: ['1.1.1.1'],
-    directHosts: ['Downloads.Example.com'],
-    projectSponsors: { project: 'sponsor' },
   };
-  expect(egressHostAuthority.parse(config).directHosts).toEqual(['downloads.example.com']);
   expect(egressHostAuthority.parse(config).mandatoryHosts).toEqual([]);
-  // Broker-only destinations are a configuration conflict, not a silently narrowed list.
-  for (const patch of [
-    { directHosts: ['api.github.com'] },
-    { directHosts: ['Uploads.GitHub.com'] },
-    { directHosts: ['matrix.example.org'], mandatoryHosts: ['example.org'] },
-  ])
-    expect(() => egressHostAuthority.parse({ ...config, ...patch })).toThrow(/broker or system/);
   expect(() => egressHostAuthority.parse({ ...config, mandatoryHosts: ['198.51.100.20'] })).toThrow(
     /names, not addresses/,
   );
@@ -36,7 +26,8 @@ it('requires explicit DNS, canonical direct route inventory and a root-selected 
   for (const patch of [
     { dnsServers: [] },
     { databaseUrl: 'file:///secret' },
-    { directHosts: ['https://example.com/path'] },
+    { directHosts: ['downloads.example.com'] },
+    { projectSponsors: { project: 'sponsor' } },
     { unexpected: true },
   ])
     expect(() => egressHostAuthority.parse({ ...config, ...patch })).toThrow();
@@ -105,14 +96,11 @@ it('excludes public host addresses and every public project subnet, refreshing i
   await expect(egressHostDestinationAllowed('1.1.1.1', io)).rejects.toThrow('inventory');
 });
 
-it('admits only inventoried non-broker hosts at unprotected, allowed addresses', async () => {
-  // Built directly: parsing rejects this conflict at startup; the runtime check still holds.
+it('admits any non-broker host at unprotected, allowed addresses', async () => {
   const authority = {
     databaseUrl: 'postgres://fixture@localhost/verity',
     dnsServers: ['1.1.1.1'],
-    directHosts: ['downloads.example.com', 'chat.example.net', 'api.github.com'],
     mandatoryHosts: ['chat.example.net'],
-    projectSponsors: {},
   };
   const allowed = vi.fn(async (address: string) => address !== '10.0.0.1');
   const checks = egressHostDirectChecks(
@@ -123,7 +111,7 @@ it('admits only inventoried non-broker hosts at unprotected, allowed addresses',
   expect(await checks.directTargetAllowed('downloads.example.com')).toBe(true);
   expect(await checks.directTargetAllowed('chat.example.net')).toBe(false);
   expect(await checks.directTargetAllowed('api.github.com')).toBe(false);
-  expect(await checks.directTargetAllowed('other.example.com')).toBe(false);
+  expect(await checks.directTargetAllowed('other.example.com')).toBe(true);
   // Project grants never reach exa.ai; only the host-owned system grant does.
   expect(await checks.directTargetAllowed('mcp.exa.ai')).toBe(false);
   expect(await checks.destinationAllowed('198.51.100.7')).toBe(true);

@@ -75,9 +75,8 @@ function fixture() {
       events.push('relay-clear');
     }),
   };
-  const readForAdmission = vi.fn(async (_project: string, _sponsor: string, _revision?: number) => {
+  const readForAdmission = vi.fn(async (_project: string, _revision?: number) => {
     void _project;
-    void _sponsor;
     void _revision;
     return { revision: 1, grants: [grant], requests: {} };
   });
@@ -92,7 +91,6 @@ function fixture() {
   const enforcement = createProjectEgressHostEnforcement({
     deadline,
     store: { readForAdmission },
-    sponsor: () => 'sponsor',
     directAuthority: () => true,
     inspect,
     dependencies: {
@@ -123,7 +121,7 @@ it('requires TC and direct denial before enabling the exact relay pair, without 
   expect(rules).toContain('tcp dport { 53, 8080, 8443 }');
   expect(rules).not.toContain('elements =');
   await f.enforcement.refresh(network);
-  expect(f.readForAdmission).toHaveBeenCalledWith('a', 'sponsor', 1);
+  expect(f.readForAdmission).toHaveBeenCalledWith('a', 1);
   expect(f.deadline.arm).toHaveBeenCalledOnce();
 });
 it('direct revocation retains the relay but complete denial clears both paths', async () => {
@@ -291,7 +289,7 @@ it.each([false, true])(
   },
 );
 
-it('records one sponsor-attributed HTTPS request for an inventoried ungranted name', async () => {
+it('records one Sandbox HTTPS request per ungranted name and caps a project', async () => {
   vi.useFakeTimers({ now: 1_000_000 });
   try {
     const f = fixture();
@@ -301,17 +299,16 @@ it('records one sponsor-attributed HTTPS request for an inventoried ungranted na
     const enforcement = createProjectEgressHostEnforcement({
       deadline: f.deadline,
       store: { readForAdmission: f.readForAdmission },
-      requests: { request },
+      requests: { requestFromSandbox: request },
       reportRequestFailure,
       systemTargets: [{ host: 'mcp.exa.ai', protocol: 'tcp', port: 443 }],
-      sponsor: () => 'sponsor',
       directAuthority: () => authority,
       inspect: f.inspect,
       dependencies: {
         inspect: async (b) => ({ ...b }),
         apply: f.apply,
-        directTargetAllowed: async (host) =>
-          ['api.example.com', 'down.example.com', 'mcp.exa.ai'].includes(host),
+        // `random.example.com` stands in for a broker-only name.
+        directTargetAllowed: async (host) => host !== 'random.example.com',
         destinationAllowed: async () => true,
         resolve: async () => {
           throw new Error('Unexpected DNS');
@@ -321,12 +318,12 @@ it('records one sponsor-attributed HTTPS request for an inventoried ungranted na
     const settle = () => vi.advanceTimersByTimeAsync(0);
     enforcement.requestDirect!(network, 'api.example.com');
     enforcement.requestDirect!(network, 'api.example.com');
-    // Names outside the host inventory never become cards that could not take effect.
+    // Broker names never become cards that could not take effect.
     enforcement.requestDirect!(network, 'random.example.com');
     enforcement.requestDirect!(network, 'mcp.exa.ai');
     await settle();
     expect(request).toHaveBeenCalledTimes(1);
-    expect(request).toHaveBeenCalledWith('a', 'sponsor', {
+    expect(request).toHaveBeenCalledWith('a', {
       host: 'api.example.com',
       protocol: 'tcp',
       port: 443,
@@ -335,7 +332,7 @@ it('records one sponsor-attributed HTTPS request for an inventoried ungranted na
     enforcement.requestDirect!(network, 'api.example.com');
     await settle();
     expect(request).toHaveBeenCalledTimes(2);
-    // Without configured direct authority there is no sponsor to attribute a request to.
+    // Without configured direct authority no grant could take effect, so nothing is asked.
     authority = false;
     enforcement.requestDirect!(network, 'down.example.com');
     await settle();
@@ -345,6 +342,13 @@ it('records one sponsor-attributed HTTPS request for an inventoried ungranted na
     enforcement.requestDirect!(network, 'down.example.com');
     await settle();
     expect(reportRequestFailure).toHaveBeenCalledWith(new Error('store down'));
+    // A Sandbox resolving many names files at most 20 new requests per project and minute.
+    await vi.advanceTimersByTimeAsync(60_001);
+    request.mockClear();
+    for (let i = 0; i < 30; i++) enforcement.requestDirect!(network, `api.example.com`);
+    for (let i = 0; i < 30; i++) enforcement.requestDirect!(network, `n${String(i)}.example.com`);
+    await settle();
+    expect(request).toHaveBeenCalledTimes(20);
   } finally {
     vi.useRealTimers();
   }

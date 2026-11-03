@@ -631,6 +631,8 @@ export interface VeritySettingsTable {
   /** Operator switches for the paid Uplink features (see VeritySettingsRecord). */
   premium_sharing_enabled: ColumnType<boolean, boolean | undefined, boolean>;
   premium_remote_access_enabled: ColumnType<boolean, boolean | undefined, boolean>;
+  /** System-wide network protection: fence every project container (see VeritySettingsRecord). */
+  project_egress_enabled: ColumnType<boolean, boolean | undefined, boolean>;
   /** VESTIGIAL — no longer read or written. These were the nightly sandbox
    *  auto-update policy, removed once the relay reconciler started rebuilding
    *  every sandbox onto the current image after each Server restart: on a released
@@ -948,6 +950,17 @@ interface SessionAutomationMarkerTable {
   session_id: string;
   marker: string;
   created_at: ColumnType<Date, string | undefined, never>;
+}
+
+/** Durable attempt budget and fenced transport claims for PR-ready notifications. */
+interface PrReadyDeliveryTable {
+  session_id: string;
+  marker: string;
+  attempts: number;
+  next_attempt_at: ColumnType<string, number, number>;
+  claim_id: string | null;
+  lease_until: ColumnType<string, number, number>;
+  completed: boolean;
 }
 
 /** GitHub-token-broker capabilities (security review #662). One row per project:
@@ -1723,6 +1736,7 @@ export interface Database {
   session_backend_state: SessionBackendStateTable;
   session_pending_note: SessionPendingNoteTable;
   session_automation_marker: SessionAutomationMarkerTable;
+  pr_ready_delivery: PrReadyDeliveryTable;
   forge_connections: ForgeConnectionsTable;
   gh_token_capabilities: GhTokenCapabilitiesTable;
   signing_capabilities: SigningCapabilitiesTable;

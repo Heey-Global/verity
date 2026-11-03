@@ -90,12 +90,10 @@ function createEnforcement() {
   });
   return createProjectEgressHostEnforcement({
     deadline: deadlineHelper,
-    sponsor: () => 'fixture-sponsor',
     directAuthority: () => true,
     store: {
-      readForAdmission: (projectId, sponsor) => {
+      readForAdmission: (projectId) => {
         assert.equal(projectId, 'host-smoke');
-        assert.equal(sponsor, 'fixture-sponsor');
         return Promise.resolve({
           revision: 1,
           requests: {},

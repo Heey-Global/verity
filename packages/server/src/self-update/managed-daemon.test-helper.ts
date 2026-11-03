@@ -129,6 +129,7 @@ function fakeDaemon() {
           id,
           imageId: `sha256:${container.spec.image.slice(-64)}`,
           names: [container.spec.name],
+          labels: container.spec.labels ?? {},
         })),
       ),
     ),

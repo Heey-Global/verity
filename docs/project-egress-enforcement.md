@@ -34,8 +34,8 @@ it does not certify arbitrary host stalls or clock changes.
 The dependency callbacks are enforcement prerequisites, not optional defaults:
 `directTargetAllowed` must reject mandatory-broker/system overlap;
 `destinationAllowed` must reject host and all project networks even if public
-ranges were configured; `policyCurrent` must recheck the durable revision,
-generation and sponsor authority; the resolver belongs to the trusted host.
+ranges were configured; `policyCurrent` must recheck the durable revision and
+generation; the resolver belongs to the trusted host.
 No production provider for these dependencies is enabled by this increment.
 
 Forwarded IP traffic has source guards and exact destination/protocol/port

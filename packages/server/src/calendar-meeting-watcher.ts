@@ -50,7 +50,7 @@ export interface CalendarMeetingDeps {
 }
 
 /** Sends to every active administrator's devices. True when the notification is settled:
- * delivered, or nobody could receive it. A transport failure leaves it for the next pass. */
+ * delivered, or nobody could receive it. A transport failure or cooldown leaves it for the next pass. */
 async function notifyAdministrators(
   deps: CalendarMeetingDeps,
   notification: PushNotification,
@@ -61,7 +61,9 @@ async function notifyAdministrators(
   );
   if (targets.length === 0) return true;
   const result = await deps.sender.send(notification, targets);
-  return result.ticketsAccepted > 0 || result.transportErrors === 0;
+  return (
+    result.ticketsAccepted > 0 || (result.transportErrors === 0 && (result.deferred ?? 0) === 0)
+  );
 }
 
 const titleOf = (event: Pick<CalendarWatchEvent, 'title'>) => event.title?.trim() || 'Meeting';

@@ -81,7 +81,14 @@ describe('settings index — destinations', () => {
         'Verity Premium',
         'Verity Control',
       ],
-      ['Updates', 'Backup', 'Server address', 'Devices & Web Browsers', 'Logs'],
+      [
+        'Updates',
+        'Network protection',
+        'Backup',
+        'Server address',
+        'Devices & Web Browsers',
+        'Logs',
+      ],
       ['Show welcome tour again', 'Diagnostics', 'Try demo'],
     ];
     groups.forEach((group, index) => {
@@ -152,6 +159,7 @@ describe('settings index — destinations', () => {
     ['Meeting transcription', '/settings/transcription'],
     ['Connections', '/settings/services'],
     ['Updates', '/settings/server-update'],
+    ['Network protection', '/settings/network-protection'],
     ['Change server address', '/onboarding/server-url?reconfigure=1'],
     ['Manage devices and web browsers', '/devices'],
   ])('routes %s to %s', async (label, href) => {

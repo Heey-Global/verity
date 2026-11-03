@@ -666,6 +666,7 @@ function publicVeritySettings(
     uplinkSubscriptionKeyConfigured: configured(uplinkSubscriptionKey),
     premiumSharingEnabled: settings.premiumSharingEnabled !== false,
     premiumRemoteAccessEnabled: settings.premiumRemoteAccessEnabled !== false,
+    projectEgressEnabled: settings.projectEgressEnabled === true,
     // The app reads this to build the OAuth request. Prefer the env-baked client
     // id (ADR 0009) so it is present even before the first connect; fall back to
     // whatever the connection persisted.
@@ -3626,6 +3627,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           wasSent: (sessionId, marker) =>
             deps.eventStore.hasSessionAutomationMarker(sessionId, marker),
           markSent: (sessionId, marker) => deps.eventStore.markSessionAutomation(sessionId, marker),
+          claimAttempt: (sessionId, marker, now) =>
+            deps.eventStore.claimPrReadyDelivery(sessionId, marker, now),
+          finishAttempt: (sessionId, marker, claim, outcome, now) =>
+            deps.eventStore.finishPrReadyDelivery(sessionId, marker, claim, outcome, now),
           describeSession: describePushSession,
           logger: app.log,
           ...(deps.pullRequestPushPollMs === undefined
@@ -3826,14 +3831,59 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         deps.eventStore.listSessionAutomationStatuses(ids),
       ),
     ]);
+    const missing: SessionRecord[] = [];
+    const resumable = new Map<string, boolean>();
+    for (const session of sessions) {
+      const exists = await worktreeExists(session.worktree);
+      resumable.set(session.sessionId, exists);
+      if (!exists) missing.push(session);
+    }
+    const restorable = await deps.sessionStorage?.canRestoreMany(missing);
+    for (const [id, value] of restorable ?? []) resumable.set(id, value);
+    const fallbackIds = ids.filter((id) => {
+      const entry = facts.get(id);
+      return (
+        entry?.eventsTruncated &&
+        !projectionTailIsSelfContained(entry.events.map(({ event }) => event))
+      );
+    });
+    const boundaries = new Map(fallbackIds.map((id) => [id, facts.get(id)!.lastEventSeq]));
+    const byId = new Map(sessions.map((session) => [session.sessionId, session]));
+    const prepared = new Map<string, SessionSummary>();
+    const prepare = (session: SessionRecord, events: AgentEvent[]) =>
+      summarizeSessionWithFacts(
+        session,
+        facts.get(session.sessionId) ?? emptyProjectionFacts(),
+        pendingLinks.get(session.sessionId) ?? [],
+        automations.get(session.sessionId),
+        events,
+        resumable.get(session.sessionId) ?? false,
+      );
+    const fallbackRead = fullProjectionReadTail.then(async () => {
+      await yieldToEventLoop();
+      await deps.eventStore.visitSessionProjectionEvents(boundaries, async (id, events) => {
+        prepared.set(
+          id,
+          await prepare(
+            byId.get(id)!,
+            events.map(({ event }) => event),
+          ),
+        );
+      });
+    });
+    fullProjectionReadTail = fallbackRead.then(
+      () => undefined,
+      () => undefined,
+    );
+    await fallbackRead;
     return Promise.all(
-      sessions.map((session) =>
-        summarizeSessionWithFacts(
-          session,
-          facts.get(session.sessionId) ?? emptyProjectionFacts(),
-          pendingLinks.get(session.sessionId) ?? [],
-          automations.get(session.sessionId),
-        ),
+      sessions.map(
+        async (session) =>
+          prepared.get(session.sessionId) ??
+          (await prepare(
+            session,
+            facts.get(session.sessionId)?.events.map(({ event }) => event) ?? [],
+          )),
       ),
     );
   };
@@ -3966,11 +4016,13 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     facts: SessionProjectionFacts,
     pendingLinks: readonly string[] = [],
     automationStatus?: SessionAutomationStatus,
+    preparedEvents?: AgentEvent[],
+    preparedResumable?: boolean,
   ): Promise<SessionSummary> => {
-    const events = await projectionEventsFor(session.sessionId, facts);
+    const events = preparedEvents ?? (await projectionEventsFor(session.sessionId, facts));
     const pr = prSummaryFor(session);
     const pullRequest = pr === undefined ? undefined : sessionPrCache.peek(session.worktree);
-    const resumable = await sessionResumable(session);
+    const resumable = preparedResumable ?? (await sessionResumable(session));
     const branch = listBranchFor(session, resumable);
     // Not from `events`: the quota state in force can be older than any tail, so
     // the store reads the newest one per window separately. See
@@ -4166,6 +4218,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     store: () => veritySettingsStore(deps.eventStore),
     agentLogin,
     parseSettingsPatch: (body) => veritySettingsBody.parse(body),
+    projectEgressAvailable: deps.projectEgressAvailable,
     storeAgentCredentials,
     publicSettings: async (settings, request) => ({
       ...publicVeritySettings(
@@ -4174,6 +4227,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           (request.headers['x-verity-app-variant'] === undefined ? undefined : null),
       ),
       ...(await googleAccountSettingsStatus(deps.eventStore)),
+      projectEgressAvailable: (await deps.projectEgressAvailable?.()) === true,
       claudeCredentialStatus: (
         deps.claudeOAuthTokenProvider ?? dbClaudeOAuthTokenProvider
       ).statusForCredentials?.(settings.claudeCodeOauthCredentialsJson) ?? {
@@ -4883,6 +4937,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     uplinkSubscriptionKey: z.string().trim().min(1).max(4096).nullable().optional(),
     premiumSharingEnabled: z.boolean().optional(),
     premiumRemoteAccessEnabled: z.boolean().optional(),
+    projectEgressEnabled: z.boolean().optional(),
   });
 
   async function runProjectDelete(

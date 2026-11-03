@@ -97,6 +97,7 @@ async function fixture(
     onMatrixConfigured?: () => Promise<void>;
     onRetryRequested?: ((journal: UpdateJournal) => boolean) | null;
     now?: () => number;
+    hostRuntimeReady?: (targetDigest: string) => Promise<boolean>;
   } = {},
 ) {
   const root = await mkdtemp(join(tmpdir(), 'verity-updater-status-'));
@@ -137,6 +138,9 @@ async function fixture(
             }),
         }),
     ...(options.now === undefined ? {} : { now: options.now }),
+    ...(options.hostRuntimeReady === undefined
+      ? {}
+      : { hostRuntimeReady: options.hostRuntimeReady }),
   });
   servers.push(server);
   return { socketPath, token, managedRoot, accepted, retried, server };
@@ -1832,3 +1836,34 @@ describe('optional host preparation status', () => {
     expect(await readUpdaterOperation({ socketPath, token })).toMatchObject({ phase: 'preflight' });
   });
 });
+
+it.each([true, false, 'unavailable'] as const)(
+  'revalidates failed host preparation after external Repair (%s)',
+  async (ready) => {
+    const checked: string[] = [];
+    const { socketPath, token, managedRoot } = await fixture({
+      managed: true,
+      hostRuntimeReady: async (target) => {
+        checked.push(target);
+        if (ready === 'unavailable') throw new Error('host unavailable');
+        return ready;
+      },
+    });
+    await requestUpdaterOperation({
+      socketPath,
+      token,
+      idempotencyKey: 'repaired-runtime',
+      targetDigest: image('b'),
+    });
+    await advanceUpdate(managedRoot, 'requested', 'pulling');
+    await advanceUpdate(managedRoot, 'pulling', 'verifying-image');
+    const journal = await advanceUpdate(managedRoot, 'verifying-image', 'preflight');
+    await failUpdate(managedRoot, 'preflight', 'host-runtime-failed');
+    await writeHostPreparation(managedRoot, journal, 'recovery-required');
+    expect(await readUpdaterHostPreparation({ socketPath, token })).toMatchObject({
+      stage: ready === true ? 'ready' : 'recovery-required',
+      targetDigest: image('b'),
+    });
+    expect(checked).toEqual([image('b')]);
+  },
+);

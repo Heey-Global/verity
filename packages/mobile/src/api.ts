@@ -857,6 +857,9 @@ export const veritySettingsSchema = z.object({
   uplinkSubscriptionKeyConfigured: z.boolean(),
   premiumSharingEnabled: z.boolean().optional(),
   premiumRemoteAccessEnabled: z.boolean().optional(),
+  /** System-wide network protection, and whether this host's egress service answers. */
+  projectEgressEnabled: z.boolean().optional(),
+  projectEgressAvailable: z.boolean().optional(),
   uplinkInstallationId: z.string().nullable(),
   transcribeBaseUrl: z.string().nullable(),
   transcribeModel: z.string().nullable(),
@@ -1216,6 +1219,7 @@ export type VeritySettingsPatch = {
   uplinkSubscriptionKey?: string | null | undefined;
   premiumSharingEnabled?: boolean | undefined;
   premiumRemoteAccessEnabled?: boolean | undefined;
+  projectEgressEnabled?: boolean | undefined;
   transcribeApiKey?: string | null | undefined;
   codexAuthJson?: string | null | undefined;
   opencodeBaseUrl?: string | null | undefined;

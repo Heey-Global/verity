@@ -12,8 +12,10 @@ import type {
 } from './project-egress-host.js';
 import type { EgressDirectCorridor } from './project-egress-transport.js';
 
-/** Repeated lookups of one name record at most one request per interval. */
+/** Repeated lookups of one name record at most one request per interval, and a project
+ * records at most this many new requests per interval. */
 const REQUEST_INTERVAL_MS = 60_000;
+const REQUESTS_PER_INTERVAL = 20;
 const key = (b: { projectId: string; generation: string }) => `${b.projectId}:${b.generation}`;
 type Admission = ReturnType<typeof createProjectEgressAdmission>;
 interface Generation {
@@ -25,7 +27,7 @@ interface Generation {
 }
 
 /** Owned by the serialized host controller, outside every project namespace.
- * Policy and sponsorship are loaded by trusted host configuration, not commands.
+ * Policy is loaded from the project's stored grants, never from commands.
  * No renewal timer runs here: a lost Server cannot keep direct authority alive.
  */
 export function createProjectEgressHostEnforcement(options: {
@@ -33,9 +35,8 @@ export function createProjectEgressHostEnforcement(options: {
   store: Pick<ProjectEgressStore, 'readForAdmission'>;
   systemTargets?: readonly EgressTarget[];
   /** Records destination requests for ungranted names; absent, none are recorded. */
-  requests?: Pick<ProjectEgressStore, 'request'>;
+  requests?: Pick<ProjectEgressStore, 'requestFromSandbox'>;
   reportRequestFailure?(error: unknown): void;
-  sponsor(binding: ProjectEgressNetworkBinding): string;
   directAuthority(binding: ProjectEgressNetworkBinding): boolean;
   inspect(
     binding: ProjectEgressNetworkBinding,
@@ -47,8 +48,10 @@ export function createProjectEgressHostEnforcement(options: {
   dependencies: Omit<ProjectFenceDependencies, 'deadline' | 'policyCurrent' | 'relay'>;
 }): ProjectEgressHostEnforcement {
   const generations = new Map<string, Generation>();
-  // Bounded by projects × inventoried direct hosts: only those names are ever recorded.
+  // Last request per project and name, and recent request times per project. Any public
+  // name can become a card, so both are bounded: a Sandbox cannot flood the project.
   const requested = new Map<string, number>();
+  const recent = new Map<string, number[]>();
   const current = (binding: ProjectEgressNetworkBinding) => {
     const state = generations.get(key(binding));
     if (!state?.ready) throw new Error('Host packet enforcement is not ready');
@@ -85,7 +88,6 @@ export function createProjectEgressHostEnforcement(options: {
         generation.admission = createProjectEgressAdmission({
           continuous: true,
           binding: b,
-          sponsorUserId: options.sponsor(binding),
           store: options.store,
           ...(options.systemTargets ? { systemTargets: options.systemTargets } : {}),
           dependencies: {
@@ -168,11 +170,18 @@ export function createProjectEgressHostEnforcement(options: {
         .then((allowed) => {
           const id = `${binding.projectId}|${name}`;
           const now = Date.now();
-          // Only inventoried, non-broker names: any other card could never take effect.
+          // Broker and system names never become cards that could not take effect.
           if (!allowed || (requested.get(id) ?? -Infinity) > now - REQUEST_INTERVAL_MS) return;
+          const times = (recent.get(binding.projectId) ?? []).filter(
+            (at) => at > now - REQUEST_INTERVAL_MS,
+          );
+          if (times.length >= REQUESTS_PER_INTERVAL) return;
+          recent.set(binding.projectId, [...times, now]);
+          for (const [entry, at] of requested)
+            if (at <= now - REQUEST_INTERVAL_MS) requested.delete(entry);
           requested.set(id, now);
           // A DNS query names no port; the card asks for HTTPS, the common provider case.
-          return requests.request(binding.projectId, options.sponsor(binding), {
+          return requests.requestFromSandbox(binding.projectId, {
             host: name,
             protocol: 'tcp',
             port: 443,
