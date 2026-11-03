@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { verifyEgressHostContainer } from './project-egress-host-runtime.js';
 import { ProjectEgressLifecycle } from './project-egress-lifecycle.js';
 import { ProjectEgressHost } from './project-egress-host.js';
@@ -1941,42 +1942,49 @@ describe('ProvisionerImpl (#174)', () => {
     expect(spec.ulimits).toEqual([{ name: 'core', soft: 0, hard: 0 }]);
   });
 
-  it('allocates a local document workspace without initializing Git', async () => {
-    const id = randomUUID();
-    await ctx.store.upsertProject({
-      id,
-      ...baseInput,
-      owner: 'local',
-      repo: 'my-project',
-      containerName: 'verity-local--my-project',
-      kind: 'local',
-      cloneDir: 'local-my-project',
-    });
-    const { runner: git, calls: gitCalls } = fakeGit([
-      { match: /^init -b main / },
-      { match: /commit --allow-empty -m chore: initialize project$/ },
-    ]);
-    const { client: docker, calls: dockerCalls } = fakeDocker({ createdContainerId: 'cid-local' });
-    const provisioner = createProvisioner({
-      store: ctx.store,
-      db: ctx.db,
-      docker,
-      projectTokenMint: async () => undefined,
-      defaultImageRef: 'ghcr.io/heey-global/dev-base:default',
-      hostCloneRoot: '/var/lib/verity-dev',
-      git,
-      isDirectory: () => false,
-    });
+  it('initializes an internal Git workspace for a local project', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'local-git-workspace-'));
+    try {
+      const id = randomUUID();
+      await ctx.store.upsertProject({
+        id,
+        ...baseInput,
+        owner: 'local',
+        repo: 'my-project',
+        containerName: 'verity-local--my-project',
+        kind: 'local',
+        cloneDir: 'local-my-project',
+      });
+      const { runner: git, calls: gitCalls } = fakeGit([
+        { match: /^init -b main / },
+        { match: /commit --allow-empty -m chore: initialize project$/ },
+      ]);
+      const { client: docker, calls: dockerCalls } = fakeDocker({
+        createdContainerId: 'cid-local',
+      });
+      const provisioner = createProvisioner({
+        store: ctx.store,
+        db: ctx.db,
+        docker,
+        projectTokenMint: async () => undefined,
+        defaultImageRef: 'ghcr.io/heey-global/dev-base:default',
+        hostCloneRoot: root,
+        git,
+        isDirectory: () => false,
+        prepareLocalWorkspace: undefined,
+      });
 
-    const result = await provisioner.provision(id);
+      const result = await provisioner.provision(id);
 
-    expect(result.state).toBe('active');
-    expect(gitCalls.some((call) => call.args.includes('clone'))).toBe(false);
-    expect(gitCalls).toEqual([]);
-    const created = dockerCalls.find((call) => call.method === 'createContainer');
-    expect((created?.payload as ContainerSpec).binds).toContain(
-      '/var/lib/verity-dev/local-my-project:/work',
-    );
+      expect(result.state).toBe('active');
+      expect(gitCalls.some((call) => call.args.includes('clone'))).toBe(false);
+      expect(gitCalls.some((call) => call.args[0] === 'init')).toBe(true);
+      expect(gitCalls.some((call) => call.args.includes('--allow-empty'))).toBe(true);
+      const created = dockerCalls.find((call) => call.method === 'createContainer');
+      expect((created?.payload as ContainerSpec).binds).toContain(`${root}/local-my-project:/work`);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   /** What `git init` leaves in a fresh `.git/config`, written `key=value`. A key with no
@@ -2405,19 +2413,39 @@ describe('ProvisionerImpl (#174)', () => {
     },
   );
 
-  it('resumes an incomplete migration without Git and skips completed migrations', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'document-migration-resume-'));
+  it('retains existing local history and legacy Documents while allocating code worktrees', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'local-code-resume-'));
     const id = randomUUID();
-    const project = await ctx.store.upsertProject({
+    await ctx.store.upsertProject({
       id,
       ...baseInput,
       kind: 'local',
       owner: '__local__',
-      repo: 'documents',
-      cloneDir: 'documents',
+      repo: 'code',
+      cloneDir: 'code',
     });
-    const state = join(root, 'document-migrations', id);
-    mkdirSync(state, { recursive: true });
+    const clone = join(root, 'code');
+    execFileSync('git', ['init', '-q', '-b', 'main', clone]);
+    execFileSync('git', [
+      '-C',
+      clone,
+      '-c',
+      'user.name=Test',
+      '-c',
+      'user.email=test@example.com',
+      '-c',
+      'commit.gpgsign=false',
+      'commit',
+      '--allow-empty',
+      '-qm',
+      'initial',
+    ]);
+    const head = execFileSync('git', ['-C', clone, 'rev-parse', 'HEAD'], { encoding: 'utf8' });
+    const sessionId = randomUUID();
+    const view = join(clone, '.verity-document-sessions', 'existing');
+    mkdirSync(view, { recursive: true });
+    writeFileSync(join(view, 'note.md'), 'keep');
+    await ctx.store.createSession({ sessionId, projectId: id, worktree: view, model: 'test' });
     const provisioner = createProvisioner({
       store: ctx.store,
       db: ctx.db,
@@ -2425,44 +2453,20 @@ describe('ProvisionerImpl (#174)', () => {
       projectTokenMint: async () => undefined,
       defaultImageRef: 'image:test',
       hostCloneRoot: root,
-      dataVolumeRoot: root,
+      prepareLocalWorkspace: undefined,
     });
-    const recreate = vi.spyOn(provisioner, 'recreateContainer').mockResolvedValue(project);
     try {
-      writeFileSync(join(state, 'manifest.json'), JSON.stringify({ stage: 'archived' }));
       await provisioner.prepareLocalDocuments(id);
-      expect(recreate).toHaveBeenCalledOnce();
-      writeFileSync(join(state, 'manifest.json'), JSON.stringify({ stage: 'complete' }));
       await provisioner.prepareLocalDocuments(id);
-      expect(recreate).toHaveBeenCalledOnce();
+      expect(execFileSync('git', ['-C', clone, 'rev-parse', 'HEAD'], { encoding: 'utf8' })).toBe(
+        head,
+      );
+      expect(readFileSync(join(view, 'note.md'), 'utf8')).toBe('keep');
+      expect(existsSync(join(clone, '.verity-sessions', `code-${sessionId}`, '.git'))).toBe(true);
+      expect((await ctx.store.getSession(sessionId))?.worktree).toBe(view);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
-  });
-
-  it('refuses Code connection without document storage instead of publishing local history', async () => {
-    const project = await ctx.store.upsertProject({
-      id: randomUUID(),
-      ...baseInput,
-      kind: 'local',
-      owner: '__local__',
-      repo: 'local-project',
-      cloneDir: 'local-project',
-    });
-    const { runner: git, calls } = fakeGit([]);
-    const provisioner = createProvisioner({
-      store: ctx.store,
-      db: ctx.db,
-      docker: fakeDocker().client,
-      projectTokenMint: async () => undefined,
-      defaultImageRef: 'image:test',
-      hostCloneRoot: '/var/lib/verity-dev',
-      git,
-    });
-    await expect(
-      provisioner.linkCloneToGitHub(project, { owner: 'acme', repo: 'code' }, undefined),
-    ).rejects.toThrow('requires configured document storage');
-    expect(calls).toEqual([]);
   });
 
   it.each(['provision', 'recreateContainer'] as const)(
@@ -11900,3 +11904,351 @@ describe('devcontainerBuilderIdle', () => {
     ).toBeUndefined();
   });
 });
+
+describe('disconnectGitHub', () => {
+  it.each(['active', 'absent'] as const)(
+    'disconnects a deleted remote offline and retains commits, Documents and session paths: %s',
+    async (state) => {
+      const root = mkdtempSync(join(tmpdir(), 'disconnect-code-'));
+      const id = randomUUID();
+      const project = await ctx.store.upsertProject({
+        id,
+        containerName: `test-disconnect-${randomUUID()}`,
+        owner: 'deleted',
+        repo: 'repository',
+        kind: 'github',
+        cloneDir: 'retained',
+        state,
+      });
+      const clone = join(root, 'retained');
+      execFileSync('git', ['init', '-q', '-b', 'main', clone]);
+      execFileSync('git', [
+        '-C',
+        clone,
+        '-c',
+        'user.name=Test',
+        '-c',
+        'user.email=test@example.com',
+        '-c',
+        'commit.gpgsign=false',
+        'commit',
+        '--allow-empty',
+        '-qm',
+        'initial',
+      ]);
+      execFileSync('git', [
+        '-C',
+        clone,
+        'remote',
+        'add',
+        'origin',
+        'https://github.com/deleted/nonexistent',
+      ]);
+      const head = execFileSync('git', ['-C', clone, 'rev-parse', 'HEAD'], { encoding: 'utf8' });
+      const documents = join(root, 'knowledge', id, 'insights');
+      mkdirSync(documents, { recursive: true });
+      writeFileSync(join(documents, 'note.md'), 'keep');
+      const sessionId = randomUUID();
+      await ctx.store.createSession({
+        sessionId,
+        projectId: id,
+        worktree: join(clone, '.verity-sessions', 'existing'),
+        model: 'test',
+      });
+      const relay = defaultProjectRelay();
+      const stop = vi.spyOn(relay, 'stop');
+      const { client: docker } = fakeDocker();
+      const provisioner = createProvisioner({
+        store: ctx.store,
+        db: ctx.db,
+        docker,
+        projectRelay: relay,
+        projectTokenMint: async () => {
+          throw new Error('Must not contact GitHub');
+        },
+        defaultImageRef: 'image:test',
+        hostCloneRoot: root,
+      });
+      const recreate = vi
+        .spyOn(provisioner, 'recreateContainer')
+        .mockImplementation(async () => (await ctx.store.getProject(id))!);
+      try {
+        const local = await provisioner.withProjectExclusiveMutation(id, () =>
+          provisioner.disconnectGitHub(project),
+        );
+        expect(local).toMatchObject({ id, kind: 'local', cloneDir: 'retained' });
+        expect(stop).toHaveBeenCalledWith(id);
+        expect(recreate).toHaveBeenCalledTimes(state === 'absent' ? 0 : 1);
+        expect(local.state).toBe(state);
+        expect(execFileSync('git', ['-C', clone, 'remote'], { encoding: 'utf8' }).trim()).toBe('');
+        expect(execFileSync('git', ['-C', clone, 'rev-parse', 'HEAD'], { encoding: 'utf8' })).toBe(
+          head,
+        );
+        expect(readFileSync(join(documents, 'note.md'), 'utf8')).toBe('keep');
+        expect((await ctx.store.getSession(sessionId))?.worktree).toBe(
+          join(clone, '.verity-sessions', 'existing'),
+        );
+        await provisioner.withProjectExclusiveMutation(id, () =>
+          provisioner.disconnectGitHub(local),
+        );
+        expect((await ctx.store.getProject(id))?.kind).toBe('local');
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+});
+
+it('retains local history and reports a redacted signature-policy rejection during linking', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'link-signature-'));
+  const project = await ctx.store.upsertProject({
+    id: randomUUID(),
+    containerName: `test-disconnect-${randomUUID()}`,
+    owner: '__local__',
+    repo: 'code',
+    kind: 'local',
+    cloneDir: 'code',
+    state: 'absent',
+  });
+  const clone = join(root, 'code');
+  execFileSync('git', ['init', '-q', '-b', 'main', clone]);
+  execFileSync('git', [
+    '-C',
+    clone,
+    '-c',
+    'user.name=Test',
+    '-c',
+    'user.email=test@example.com',
+    '-c',
+    'commit.gpgsign=false',
+    'commit',
+    '--allow-empty',
+    '-qm',
+    'initial',
+  ]);
+  const head = execFileSync('git', ['-C', clone, 'rev-parse', 'HEAD'], { encoding: 'utf8' });
+  const token = 'test-link-token';
+  const git: GitRunner = async (args) => {
+    if (args.includes('ls-remote')) return { stdout: '', stderr: '' };
+    if (args.includes('push'))
+      throw Object.assign(new Error('push failed'), {
+        stderr: `GH013: Commits must have verified signatures. ${gitAuthHeader(token)} ${token}`,
+      });
+    return {
+      stdout: execFileSync('git', [...args], {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+      }),
+      stderr: '',
+    };
+  };
+  const provisioner = createProvisioner({
+    store: ctx.store,
+    db: ctx.db,
+    docker: fakeDocker().client,
+    projectTokenMint: async () => token,
+    defaultImageRef: 'image:test',
+    hostCloneRoot: root,
+    prepareLocalWorkspace: undefined,
+    git,
+  });
+  try {
+    const error = await provisioner
+      .linkCloneToGitHub(project, { owner: 'acme', repo: 'code' }, token)
+      .catch((cause: unknown) => cause);
+    expect(error).toBeInstanceOf(ProvisioningError);
+    const detail = (error as Error).cause as Error;
+    expect(detail.message).toContain('Commits must have verified signatures');
+    expect(detail.message).not.toContain(token);
+    expect(detail.message).not.toContain(gitAuthHeader(token));
+    expect(execFileSync('git', ['-C', clone, 'rev-parse', 'HEAD'], { encoding: 'utf8' })).toBe(
+      head,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+it.each([
+  'dirty-empty',
+  'different-default',
+  'ignored-collision',
+  'ambiguous-retry',
+  'published-retry',
+  'signed-merge',
+] as const)(
+  'preserves local edits and the destination branch when linking: %s',
+  async (scenario) => {
+    const root = mkdtempSync(join(tmpdir(), 'link-preservation-'));
+    const clone = join(root, 'code');
+    const remote = join(root, 'remote');
+    let mergeNumber = 0;
+    const run = (...args: string[]) =>
+      execFileSync('git', args, {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: { ...process.env, GIT_COMMITTER_DATE: `@${1700000000 + mergeNumber} +0000` },
+      });
+    const commit = (repo: string) =>
+      run(
+        '-C',
+        repo,
+        '-c',
+        'user.name=Test',
+        '-c',
+        'user.email=test@example.com',
+        '-c',
+        'commit.gpgsign=false',
+        'commit',
+        '--allow-empty',
+        '-qm',
+        'initial',
+      );
+    run('init', '-q', '-b', 'main', clone);
+    writeFileSync(join(clone, 'file.txt'), 'original');
+    run('-C', clone, 'add', 'file.txt');
+    if (scenario === 'ignored-collision') {
+      writeFileSync(join(clone, '.gitignore'), 'asset.txt\n');
+      run('-C', clone, 'add', '.gitignore');
+    }
+    commit(clone);
+    run('init', '-q', '-b', 'master', remote);
+    if (scenario !== 'dirty-empty' && scenario !== 'published-retry') {
+      if (scenario === 'ignored-collision') {
+        writeFileSync(join(remote, 'asset.txt'), 'remote asset');
+        run('-C', remote, 'add', 'asset.txt');
+        writeFileSync(join(clone, 'asset.txt'), 'local asset');
+      }
+      commit(remote);
+    } else if (scenario === 'dirty-empty') writeFileSync(join(clone, 'file.txt'), 'uncommitted');
+    const calls: string[][] = [];
+    const git: GitRunner = async (args) => {
+      calls.push([...args]);
+      if (args.includes('merge') && args.includes('--allow-unrelated-histories')) mergeNumber++;
+      if (args.includes('push')) {
+        if (scenario === 'published-retry') {
+          run('-C', remote, 'fetch', clone, 'HEAD');
+          run('-C', remote, 'update-ref', 'refs/heads/main', 'FETCH_HEAD');
+          run('-C', remote, 'symbolic-ref', 'HEAD', 'refs/heads/main');
+        }
+
+        if (
+          scenario === 'ambiguous-retry' &&
+          calls.filter((call) => call.includes('push')).length === 1
+        ) {
+          // Simulate acceptance followed by transport failure, without a network push.
+          run('-C', remote, 'fetch', clone, 'HEAD');
+          run('-C', remote, 'update-ref', args.at(-1)!.split(':')[1]!, 'FETCH_HEAD');
+          throw new Error('connection lost after remote accepted import');
+        }
+        return { stdout: '', stderr: '' };
+      }
+      const localArgs = args.map((arg) => (arg === 'https://github.com/acme/code' ? remote : arg));
+      return { stdout: run(...localArgs), stderr: '' };
+    };
+    const project = await ctx.store.upsertProject({
+      id: randomUUID(),
+      containerName: `link-${randomUUID()}`,
+      owner: '__local__',
+      repo: 'code',
+      cloneDir: 'code',
+      kind: 'local',
+      state: 'absent',
+    });
+    const signing = await import('./signed-bootstrap.js');
+    const originalSignMerge = signing.createSignedMergeCommit;
+    const signedMerge =
+      scenario === 'signed-merge'
+        ? vi
+            .spyOn(signing, 'createSignedMergeCommit')
+            .mockImplementation((runner, repo, identity) =>
+              originalSignMerge(runner, repo, identity, async ({ payloadPath }) => {
+                writeFileSync(
+                  `${payloadPath}.sig`,
+                  '-----BEGIN SSH SIGNATURE-----\nfixture\n-----END SSH SIGNATURE-----\n',
+                );
+              }),
+            )
+        : undefined;
+    const provisioner = createProvisioner({
+      store: ctx.store,
+      db: ctx.db,
+      docker: fakeDocker().client,
+      defaultImageRef: 'image:test',
+      hostCloneRoot: root,
+      prepareLocalWorkspace: undefined,
+      veritySettings:
+        scenario === 'signed-merge'
+          ? async () => ({
+              ...(await ctx.store.updateVeritySettings({
+                gitUserName: 'Signer',
+                gitUserEmail: 'signer@example.com',
+              })),
+              gitSshPrivateKey: 'fixture',
+            })
+          : undefined,
+
+      git,
+    });
+    try {
+      if (scenario === 'dirty-empty') {
+        await expect(
+          provisioner.linkCloneToGitHub(project, { owner: 'acme', repo: 'code' }, undefined),
+        ).rejects.toThrow('uncommitted changes');
+        expect(calls.some((args) => args.includes('push'))).toBe(false);
+        expect(readFileSync(join(clone, 'file.txt'), 'utf8')).toBe('uncommitted');
+      } else if (scenario === 'published-retry') {
+        await provisioner.linkCloneToGitHub(project, { owner: 'acme', repo: 'code' }, undefined);
+        const retry = await provisioner.linkCloneToGitHub(
+          project,
+          { owner: 'acme', repo: 'code' },
+          undefined,
+        );
+        expect(retry.defaultBranch).toBe('main');
+        expect(run('-C', clone, 'remote', 'get-url', 'origin').trim()).toBe(remote);
+        expect(calls.filter((args) => args.includes('push'))).toHaveLength(1);
+      } else if (scenario === 'ignored-collision') {
+        await expect(
+          provisioner.linkCloneToGitHub(project, { owner: 'acme', repo: 'code' }, undefined),
+        ).rejects.toThrow('merging the existing GitHub repository');
+        expect(readFileSync(join(clone, 'asset.txt'), 'utf8')).toBe('local asset');
+        expect(calls.some((args) => args.includes('push'))).toBe(false);
+      } else {
+        let acceptedHead: string | undefined;
+        if (scenario === 'ambiguous-retry') {
+          await expect(
+            provisioner.linkCloneToGitHub(project, { owner: 'acme', repo: 'code' }, undefined),
+          ).rejects.toThrow('retry to recover');
+          acceptedHead = run('-C', remote, 'rev-parse', 'verity/import-main').trim();
+        }
+        const result = await provisioner.linkCloneToGitHub(
+          project,
+          { owner: 'acme', repo: 'code' },
+          undefined,
+        );
+        if (scenario === 'signed-merge') {
+          expect(signedMerge).toHaveBeenCalledOnce();
+          expect(run('-C', clone, 'cat-file', '-p', 'HEAD')).toContain(
+            'gpgsig -----BEGIN SSH SIGNATURE-----',
+          );
+          expect(run('-C', clone, 'show', '-s', '--format=%ce', 'HEAD').trim()).toBe(
+            'signer@example.com',
+          );
+        }
+        expect(result.defaultBranch).toBe('master');
+        expect(result.importBranch).toBe('verity/import-main');
+        if (acceptedHead) {
+          expect(run('-C', clone, 'rev-parse', 'HEAD').trim()).toBe(acceptedHead);
+          expect(calls.filter((args) => args.includes('push')).map((args) => args.at(-1))).toEqual([
+            'HEAD:refs/heads/verity/import-main',
+            'HEAD:refs/heads/verity/import-main',
+          ]);
+        }
+        expect(run('-C', remote, 'rev-list', '--count', 'master').trim()).toBe('1');
+      }
+    } finally {
+      signedMerge?.mockRestore();
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);

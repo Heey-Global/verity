@@ -568,17 +568,20 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
         prepareWorkspace: async (session) => {
           await deps.conductor?.prepareWorkspace?.(session);
           const view = documentViewForSession(session);
-          if (deps.dataRoot && session.projectId && view)
-            await documentWorkspace(deps.dataRoot, session.projectId, view).prepare();
+          if (deps.dataRoot && session.projectId && view) {
+            const workspace = documentWorkspace(deps.dataRoot, session.projectId, view);
+            await workspace.prepare();
+            if (workspace.warning)
+              await deps.eventStore.appendPendingNote(session.sessionId, workspace.warning);
+          }
         },
         settleWorkspace: async (session) => {
           const view = documentViewForSession(session);
           if (deps.dataRoot && session.projectId && view) {
-            const result = await documentWorkspace(
-              deps.dataRoot,
-              session.projectId,
-              view,
-            ).publish();
+            const workspace = documentWorkspace(deps.dataRoot, session.projectId, view);
+            const result = await workspace.publish();
+            if (workspace.warning)
+              await deps.eventStore.appendPendingNote(session.sessionId, workspace.warning);
             if (result.conflicts.length)
               await deps.eventStore.appendPendingNote(
                 session.sessionId,

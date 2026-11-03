@@ -14,6 +14,10 @@ type PairedRoutePolicy =
  * including collections and cross-project actions. */
 const resourceRules: ReadonlyMap<string, ResourceRule> = new Map([
   [
+    routeScopeKey('POST', '/projects/:id/disconnect-github'),
+    { kind: 'project', parameter: 'id', permission: 'manage' },
+  ],
+  [
     routeScopeKey('GET', '/sessions/:id/mcp-apps/:appId'),
     { kind: 'session', parameter: 'id', permission: 'read' },
   ],
