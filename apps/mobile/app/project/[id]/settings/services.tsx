@@ -23,16 +23,14 @@ import {
   SettingsListPanel,
   SettingsMessage,
   SettingsNavRow,
-  SettingsPanel,
   SettingsScaffold,
-  SettingsToggleRow,
 } from '../../../../components/settings/SettingsChrome';
 import { settingsStyles as styles } from '../../../../components/settings/settingsStyles';
 import { ProjectGoogleServices } from '../../../../components/settings/ProjectGoogleServices';
 import { ProjectMatrixRooms } from '../../../../components/settings/ProjectMatrixRooms';
 import { createVerityClient } from '../../../../lib/client';
 import { projectIdParam, useProjectDetail } from '../../../../lib/useProjectDetail';
-import { Button } from '../../../../components/ui';
+import { Button, Group, HintBox, Text as UiText, ToggleRow } from '../../../../components/ui';
 
 export default function ProjectServicesScreen() {
   const { id, section } = useLocalSearchParams<{
@@ -393,7 +391,7 @@ function ProjectMcpBindingsSection({
   const [connections, setConnections] = useState<HttpMcpConnection[]>([]);
   const [bindings, setBindings] = useState<ProjectMcpBinding[]>([]);
   const [pendingConnectionId, setPendingConnectionId] = useState<string | undefined>();
-  const [error, setError] = useState<string | undefined>();
+  const [error, setError] = useState<{ title: string; message: string } | undefined>();
   const mutationInFlight = useRef(false);
   const loadGeneration = useRef(0);
   const load = useCallback(async (): Promise<void> => {
@@ -412,7 +410,11 @@ function ProjectMcpBindingsSection({
         setBindings(nextBindings);
       })
       .catch(() => {
-        if (loadGeneration.current === generation) setError('Could not load MCP connections.');
+        if (loadGeneration.current === generation)
+          setError({
+            title: 'Connections unavailable',
+            message: 'Could not load MCP connections.',
+          });
       });
   }, [client, projectId]);
   // Reload on focus so globally configured connections appear here when this
@@ -435,7 +437,9 @@ function ProjectMcpBindingsSection({
       void client
         .setProjectMcpBinding(projectId, connectionId, !enabled(connectionId))
         .then(load)
-        .catch(() => setError('Could not update the MCP connection.'))
+        .catch(() =>
+          setError({ title: 'Not updated', message: 'Could not update the MCP connection.' }),
+        )
         .finally(() => {
           mutationInFlight.current = false;
           setPendingConnectionId(undefined);
@@ -446,26 +450,26 @@ function ProjectMcpBindingsSection({
   return (
     <>
       {connections.length === 0 ? (
-        <SettingsPanel>
-          <Text style={styles.reproSubtitle}>
-            No MCP connections available. Add and authorize MCP servers in Verity settings; then
-            return here to enable them for this project.
-          </Text>
-        </SettingsPanel>
+        <UiText variant="subtitle">
+          No MCP connections available. Add and authorize MCP servers in Verity settings; then
+          return here to enable them for this project.
+        </UiText>
       ) : (
-        <SettingsPanel>
+        <Group>
           {connections.map((connection) => (
-            <SettingsToggleRow
+            <ToggleRow
               key={connection.id}
-              label={connection.name}
+              title={connection.name}
+              subtitle={connection.url}
               value={enabled(connection.id)}
               disabled={pendingConnectionId !== undefined}
+              switching={pendingConnectionId === connection.id}
               onValueChange={() => toggle(connection.id)}
             />
           ))}
-        </SettingsPanel>
+        </Group>
       )}
-      {error ? <Text style={styles.fieldError}>{error}</Text> : null}
+      {error ? <HintBox title={error.title} message={error.message} /> : null}
     </>
   );
 }

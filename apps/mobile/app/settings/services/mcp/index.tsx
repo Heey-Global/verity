@@ -4,22 +4,28 @@
 import { type HttpMcpConnection, type VerityClient } from '@verity/mobile';
 import { router, useFocusEffect } from 'expo-router';
 import { useCallback, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Text, View } from 'react-native';
-import { useUnistyles } from 'react-native-unistyles';
+import { View } from 'react-native';
 
 import {
   SettingsGroup,
   SettingsListPanel,
   SettingsMessage,
   SettingsNavRow,
-  SettingsPanel,
   SettingsScaffold,
 } from '../../../../components/settings/SettingsChrome';
 import { settingsStyles as styles } from '../../../../components/settings/settingsStyles';
-import { StatusPill } from '../../../../components/StatusPill';
 import { createVerityClient } from '../../../../lib/client';
 import { runMcpOAuth } from '../../../../lib/mcpOAuth';
-import { Button, ConfirmSheet } from '../../../../components/ui';
+import {
+  Button,
+  Card,
+  CardHead,
+  ConfirmSheet,
+  HintBox,
+  StatusDot,
+  StatusTag,
+  Text,
+} from '../../../../components/ui';
 
 export default function McpConnectionsScreen() {
   const client = useMemo(() => createVerityClient(), []);
@@ -36,10 +42,9 @@ export default function McpConnectionsScreen() {
 }
 
 function McpConnectionsView({ client }: { client: VerityClient }) {
-  const { theme } = useUnistyles();
   const [connections, setConnections] = useState<HttpMcpConnection[] | undefined>(undefined);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | undefined>(undefined);
+  const [error, setError] = useState<{ title: string; message: string } | undefined>(undefined);
   const [removing, setRemoving] = useState<HttpMcpConnection | null>(null);
   // The sheet fades out after it closes; its wording stays until it is gone.
   const [asked, setAsked] = useState<HttpMcpConnection | null>(null);
@@ -72,7 +77,10 @@ function McpConnectionsView({ client }: { client: VerityClient }) {
       .catch(() => {
         if (revision.current === generation) {
           setConnections((current) => current ?? []);
-          setError('Could not load MCP connections.');
+          setError({
+            title: 'Connections unavailable',
+            message: 'Could not load MCP connections.',
+          });
         }
         return false;
       });
@@ -99,9 +107,11 @@ function McpConnectionsView({ client }: { client: VerityClient }) {
           await load();
         })
         .catch((caught: unknown) =>
-          setError(
-            caught instanceof Error ? caught.message : 'Could not authorize the MCP connection.',
-          ),
+          setError({
+            title: 'Authorization failed',
+            message:
+              caught instanceof Error ? caught.message : 'Could not authorize the MCP connection.',
+          }),
         )
         .finally(() => {
           mutationInFlight.current = false;
@@ -121,7 +131,9 @@ function McpConnectionsView({ client }: { client: VerityClient }) {
       await client
         .deleteHttpMcpConnection(connection.id)
         .then(() => load())
-        .catch(() => setError('Could not remove the MCP connection.'))
+        .catch(() =>
+          setError({ title: 'Not removed', message: 'Could not remove the MCP connection.' }),
+        )
         .finally(() => {
           mutationInFlight.current = false;
           setBusy(false);
@@ -137,50 +149,48 @@ function McpConnectionsView({ client }: { client: VerityClient }) {
         description="Configure remote HTTP MCP servers once, then enable them explicitly per project. Credentials stay on the Verity server."
       >
         {connections === undefined ? (
-          <View style={styles.signingKeyLoadingRow}>
-            <ActivityIndicator size="small" color={theme.colors.text} />
-            <Text style={styles.disclosureSummary}>Loading connections…</Text>
-          </View>
+          <StatusDot intent="transient" label="Loading connections" />
         ) : null}
-        {connections?.length === 0 ? (
-          <Text style={styles.reproSubtitle}>No MCP connections yet.</Text>
-        ) : null}
+        {connections?.length === 0 ? <Text variant="subtitle">No MCP connections yet.</Text> : null}
         {connections?.map((connection) => (
-          <SettingsPanel key={connection.id}>
-            <View style={styles.sectionHeaderRow}>
-              <Text style={styles.disclosureTitle}>{connection.name}</Text>
+          <Card key={connection.id} stacked>
+            <CardHead
+              title={connection.name}
+              subtitle={connection.url}
+              {...(connection.authType === 'oauth'
+                ? {
+                    trailing: (
+                      <StatusTag
+                        intent={connection.oauthConnected ? 'ready' : 'needsSetup'}
+                        label={connection.oauthConnected ? 'Authorized' : 'Not authorized'}
+                      />
+                    ),
+                  }
+                : {})}
+            />
+            <View style={styles.updateLinks}>
               {connection.authType === 'oauth' ? (
-                <StatusPill
-                  quiet
-                  intent={connection.oauthConnected ? 'ready' : 'needsSetup'}
-                  label={connection.oauthConnected ? 'Authorized' : 'Not authorized'}
+                <Button
+                  label={connection.oauthConnected ? 'Reconnect OAuth' : 'Connect OAuth'}
+                  accessibilityLabel={`${connection.oauthConnected ? 'Reconnect' : 'Connect'} OAuth for ${connection.name}`}
+                  variant="secondary"
+                  size="compact"
+                  disabled={busy}
+                  onPress={() => connectOAuth(connection)}
                 />
               ) : null}
-            </View>
-            <Text style={styles.identityEmail} numberOfLines={1}>
-              {connection.url}
-            </Text>
-            {connection.authType === 'oauth' ? (
               <Button
-                label={connection.oauthConnected ? 'Reconnect OAuth' : 'Connect OAuth'}
-                accessibilityLabel={`${connection.oauthConnected ? 'Reconnect' : 'Connect'} OAuth for ${connection.name}`}
-                variant="secondary"
+                label="Remove"
+                accessibilityLabel={`Remove ${connection.name} MCP connection`}
+                variant="destructive"
                 size="compact"
                 disabled={busy}
-                onPress={() => connectOAuth(connection)}
+                onPress={() => ask(connection)}
               />
-            ) : null}
-            <Button
-              label="Remove"
-              accessibilityLabel={`Remove ${connection.name} MCP connection`}
-              variant="text"
-              size="compact"
-              disabled={busy}
-              onPress={() => ask(connection)}
-            />
-          </SettingsPanel>
+            </View>
+          </Card>
         ))}
-        {error !== undefined ? <Text style={styles.fieldError}>{error}</Text> : null}
+        {error !== undefined ? <HintBox title={error.title} message={error.message} /> : null}
         {supported ? (
           <SettingsListPanel>
             <SettingsNavRow
