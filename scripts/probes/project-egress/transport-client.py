@@ -1,4 +1,5 @@
 """Real project-UID client; no host sockets or credentials are mounted here."""
+import os
 import select
 import socket
 import sys
@@ -98,18 +99,26 @@ elif mode == 'stream':
             channel.sendall(b'GET /internal/mcp-proxy HTTP/1.1\r\nHost: relay\r\nContent-Length: 0\r\n\r\n')
         channels.append(channel)
     for _ in range(1200):
-        if select.select([channels[0]], [], [], 0)[0]:
-            data = channels[0].recv(8192)
-            if b'transport-stream-marker' in data:
-                with open('/work/broker-receipts', 'a') as evidence:
-                    evidence.write(str(time.time() * 1000) + '\n')
+        # Revocation may reset the broker socket. Keep witnessing the original
+        # sockets after closure; reconnecting would invalidate the no-revival proof.
+        try:
+            if select.select([channels[0]], [], [], 0)[0]:
+                data = channels[0].recv(8192)
+                if b'transport-stream-marker' in data:
+                    with open('/work/broker-receipts', 'a') as evidence:
+                        evidence.write(str(time.time() * 1000) + '\n')
+        except OSError:
+            pass
         for channel in channels[1:]:
             try:
                 channel.sendall(b'transport-stream-marker\n')
             except OSError:
                 pass
-        with open('/work/stream-alive-' + sys.argv[3], 'w') as heartbeat:
+        # Readers must never see the empty file between truncation and write.
+        heartbeat_path = '/work/stream-alive-' + sys.argv[3]
+        with open(heartbeat_path + '.tmp', 'w') as heartbeat:
             heartbeat.write(str(time.time() * 1000))
+        os.replace(heartbeat_path + '.tmp', heartbeat_path)
         time.sleep(0.05)
 else:
     raise ValueError(mode)
