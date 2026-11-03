@@ -217,7 +217,12 @@ function sessionItems(
   if (choices !== undefined) {
     items.push({
       ...base,
-      key: `question:${session.sessionId}`,
+      // Keyed by what is asked: later activity leaves an answered question hidden,
+      // while a new question in a quick next turn gets a key of its own.
+      key: `question:${session.sessionId}:${fingerprint([
+        choices.question ?? '',
+        ...choices.options.map((option) => option.label),
+      ])}`,
       kind: 'question',
       tag: 'Question',
       tone: 'attention',
@@ -252,7 +257,9 @@ function sessionItems(
   if (flags.includes('crashed')) {
     items.push({
       ...base,
-      key: `crashed:${session.sessionId}`,
+      // A crash after a resumed turn has grown the log, so it is not taken for
+      // the one already answered with Resume.
+      key: `crashed:${session.sessionId}:${String(session.eventCount ?? 0)}`,
       kind: 'crashed',
       tag: 'Crashed',
       tone: 'attention',
@@ -378,4 +385,13 @@ function projectHealthItem(project: ProjectRecord): InboxItem | undefined {
 function clockTime(epochMs: number): string {
   const date = new Date(epochMs);
   return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+}
+
+/** A short, stable digest of a question's text and options (djb2). */
+function fingerprint(parts: readonly string[]): string {
+  let hash = 5381;
+  for (const char of parts.join('\u0000')) {
+    hash = ((hash << 5) + hash + (char.codePointAt(0) ?? 0)) | 0;
+  }
+  return (hash >>> 0).toString(36);
 }

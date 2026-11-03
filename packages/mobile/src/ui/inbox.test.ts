@@ -115,6 +115,30 @@ describe('inboxItems', () => {
     expect(labels(item)).toEqual(['Answer']);
   });
 
+  it('keys a question by what it asks and a crash by the turn it ended', () => {
+    const keyOf = (over: Parameters<typeof session>[1]) =>
+      inboxItems({ sessions: [session('s', over)], projects: [project()], now: NOW })[0]?.key;
+    const asked = {
+      status: 'completed' as const,
+      openChoices: {
+        question: 'Which library?',
+        options: [{ label: 'Zod' }, { label: 'Valibot' }],
+      },
+    };
+    // Unrelated activity must not bring an answered question back…
+    expect(keyOf({ ...asked, eventCount: 10, lastActivityAt: 1 })).toBe(
+      keyOf({ ...asked, eventCount: 11, lastActivityAt: 2 }),
+    );
+    // …and a new question in a quick next turn must not inherit the answered one.
+    expect(keyOf(asked)).not.toBe(
+      keyOf({ ...asked, openChoices: { question: 'Which port?', options: [{ label: '3000' }] } }),
+    );
+    // A crash after Resume is a new item, not the one already resumed.
+    expect(keyOf({ status: 'crashed', eventCount: 10 })).not.toBe(
+      keyOf({ status: 'crashed', eventCount: 14 }),
+    );
+  });
+
   it('decides described permissions in place and opens the rest', () => {
     const items = inboxItems({
       sessions: [
