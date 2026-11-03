@@ -270,6 +270,22 @@ class InstallTests(unittest.TestCase):
         installer.switch_link(link, 'new')
         self.assertEqual(installer.os.readlink(link), 'new')
 
+    def test_first_install_unit_failure_restores_absent_link_without_missing_directory_sync(self):
+        original = installer.atomic_file
+        target = self.root / installer.UNITS['verity-egress-host.service']
+        def fail_unit(path, *args, **kwargs):
+            if path == target:
+                raise OSError('initial unit write failed')
+            return original(path, *args, **kwargs)
+        with patch.object(installer, 'atomic_file', side_effect=fail_unit):
+            with self.assertRaisesRegex(OSError, 'initial unit write failed'):
+                self.apply()
+        current = self.root / 'opt/verity-egress'
+        self.assertFalse(current.exists() or current.is_symlink())
+        self.assertFalse(any((self.root / relative).exists() for relative in installer.UNITS.values()))
+        self.assertEqual(self.calls[-1][1:], ('daemon-reload',))
+        self.assertFalse(any('start' in args for args in self.calls))
+
 
 if __name__ == '__main__':
     unittest.main()

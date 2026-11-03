@@ -312,7 +312,8 @@ def install(source, root=Path('/'), run=command, check=preflight):
                 path = root / relative
                 if data is None:
                     path.unlink(missing_ok=True)
-                    sync_directory(path.parent)
+                    if path.parent.is_dir():
+                        sync_directory(path.parent)
                 else:
                     atomic_file(path, data)
             if old_target is None:
