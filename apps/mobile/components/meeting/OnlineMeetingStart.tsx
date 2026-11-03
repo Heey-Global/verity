@@ -59,24 +59,37 @@ export function useUpcomingMeetings(enabled: boolean) {
  * Which calendar meeting the start button joins. The first one is picked by default; with
  * none to pick, the link field opens, since typing the link is then the only way forward.
  */
-export function useCalendarMeetingChoice(upcoming: UpcomingMeeting[] | null, now: number) {
+export function useCalendarMeetingChoice(
+  upcoming: UpcomingMeeting[] | null,
+  now: number,
+  inPerson = false,
+) {
   const [selectedEventKey, setSelectedEventKey] = useState<string | null>(null);
   const [manualLink, setManualLink] = useState(false);
   const preselected = useRef(false);
+  const previousSource = useRef(inPerson);
   useEffect(() => {
     if (upcoming === null) return;
     if (upcoming.length === 0) setManualLink(true);
-    // Picked once, and only a meeting that is on now: a refresh must never swap in another
-    // meeting behind the operator's back, and one hours ahead cannot be joined yet.
-    if (!preselected.current) {
+    // A refresh preserves the choice; changing sources selects a compatible current event.
+    const sourceChanged = previousSource.current !== inPerson;
+    previousSource.current = inPerson;
+    if (!preselected.current || sourceChanged) {
       preselected.current = true;
-      const soon = upcoming.find((item) => canJoinCalendarMeeting(item, now));
-      if (soon) setSelectedEventKey(soon.eventKey);
+      const eligible = (item: UpcomingMeeting) =>
+        canJoinCalendarMeeting(item, now) && (inPerson || item.provider !== null);
+      const current = upcoming.find((item) => item.eventKey === selectedEventKey);
+      const soon =
+        sourceChanged && current && eligible(current) ? current : upcoming.find(eligible);
+      if (soon) {
+        setSelectedEventKey(soon.eventKey);
+        if (sourceChanged) setManualLink(false);
+      } else if (sourceChanged) setSelectedEventKey(null);
       return;
     }
     if (selectedEventKey && !upcoming.some((item) => item.eventKey === selectedEventKey))
       setSelectedEventKey(null);
-  }, [upcoming, selectedEventKey, now]);
+  }, [upcoming, selectedEventKey, now, inPerson]);
   const selectedEvent = manualLink
     ? null
     : (upcoming?.find((item) => item.eventKey === selectedEventKey) ?? null);

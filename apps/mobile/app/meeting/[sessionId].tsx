@@ -176,7 +176,7 @@ export default function MeetingScreen() {
     manualLink,
     setManualLink,
     selectedEvent: selectedCalendarEvent,
-  } = useCalendarMeetingChoice(upcoming, now);
+  } = useCalendarMeetingChoice(upcoming, now, meetingSource === 'presence');
   const selectedEvent =
     selectedCalendarEvent?.provider && canJoinCalendarMeeting(selectedCalendarEvent, now)
       ? selectedCalendarEvent

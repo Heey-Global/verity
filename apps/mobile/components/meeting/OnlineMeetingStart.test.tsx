@@ -66,6 +66,18 @@ describe('useCalendarMeetingChoice', () => {
     expect(fresh.result.current.selectedEvent).toBeNull();
   });
 
+  it('selects an eligible call when switching from a mixed in-person list to online', () => {
+    const upcoming = [meeting('office', NOW, { provider: null }), meeting('call', NOW)];
+    const { result, rerender } = renderHook(
+      ({ inPerson }: { inPerson: boolean }) => useCalendarMeetingChoice(upcoming, NOW, inPerson),
+      { initialProps: { inPerson: true } },
+    );
+    expect(result.current.selectedEvent?.eventKey).toBe('office');
+    rerender({ inPerson: false });
+    expect(result.current.selectedEvent?.eventKey).toBe('call');
+    expect(result.current.manualLink).toBe(false);
+  });
+
   it('opens the link field when the calendar has nothing to pick', () => {
     const { result, rerender } = renderHook(
       ({ upcoming }: { upcoming: UpcomingMeeting[] | null }) =>
