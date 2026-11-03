@@ -56,16 +56,19 @@ function fakeProcess(lines: string[]): SpawnedProcess {
 }
 
 describe('buildControlPlane', () => {
-  it('forwards backup runtime ownership without activating the closed acceptance gate', async () => {
+  it('forwards backup runtime ownership and starts provisioned backups when ready', async () => {
     const close = vi.fn(async () => undefined);
     const start = vi.fn();
-    const backup = { close, service: { start } } as unknown as NonNullable<
+    const setAlertNotifier = vi.fn();
+    const backup = { close, service: { start, setAlertNotifier } } as unknown as NonNullable<
       ControlPlaneDeps['backup']
     >;
     const app = buildControlPlane({ eventStore: ctx.store, bus: new InMemoryEventBus(), backup });
     try {
-      await app.ready();
+      expect(setAlertNotifier).toHaveBeenCalledExactlyOnceWith(expect.any(Function));
       expect(start).not.toHaveBeenCalled();
+      await app.ready();
+      expect(start).toHaveBeenCalledOnce();
     } finally {
       await app.close();
     }

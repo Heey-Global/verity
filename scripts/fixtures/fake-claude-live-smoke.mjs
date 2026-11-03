@@ -37,7 +37,14 @@ await appendFile(
   })}\n`,
 );
 
-if (process.argv.slice(2, 5).join(' ') === 'auth status --json') {
+if (
+  process.argv.some(
+    (argument, index) =>
+      argument === 'auth' &&
+      process.argv[index + 1] === 'status' &&
+      process.argv[index + 2] === '--json',
+  )
+) {
   process.stdout.write(`${JSON.stringify({ loggedIn: false })}\n`);
   process.exit(0);
 }
@@ -197,6 +204,20 @@ if (process.argv.includes('--input-format') && process.argv.includes('stream-jso
             },
             pending_permission_requests: [],
             pending_user_dialog_requests: [],
+          },
+        });
+      } else if (
+        frame.type === 'control_request' &&
+        typeof frame.request_id === 'string' &&
+        isRecord(request) &&
+        request.subtype === 'get_settings'
+      ) {
+        emit({
+          type: 'control_response',
+          response: {
+            subtype: 'success',
+            request_id: frame.request_id,
+            response: { applied: { ultracodeAvailable: false, ultracodeRequested: false } },
           },
         });
       } else if (

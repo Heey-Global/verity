@@ -550,6 +550,27 @@ expect_client_done() {
 
 export VERITY_SMOKE_DOCKER_SOCKET="$socket"
 export VERITY_SMOKE_MANAGED_ROOT="$managed_root"
+# BEGIN installed runtime fixture
+# This host-side harness has no systemd service or real installed Updater.
+# Exercise the already-installed-service path with the shipped installer, while
+# Docker runtime registration remains subject to the production checks.
+# Renewal of an old service is covered separately on disposable systemd hosts.
+runtime_fixture="$managed_root/runtime-service-fixture"
+install -d -m 0700 "$runtime_fixture"
+# Historical targets without the runtime-service protocol have no installer.
+# Leave their fixture empty; preparation still rejects any target that declares
+# required capabilities without supplying the matching installer.
+if [[ -f "$repo_root/deploy/host/install-runtime-service.sh" ]]; then
+  VERITY_HOST_RUNTIME_TEST=1 \
+  VERITY_HOST_RUNTIME_DIR="$runtime_fixture/state" \
+  VERITY_HOST_RUNTIME_PRIVATE_DIR="$runtime_fixture/private" \
+  VERITY_HOST_RUNTIME_LIBEXEC="$runtime_fixture/libexec" \
+  VERITY_SYSTEMD_UNIT_DIR="$runtime_fixture/units" \
+  VERITY_SYSTEMD_RUN_DIR="$runtime_fixture/no-systemd" \
+  bash "$repo_root/deploy/host/install-runtime-service.sh"
+fi
+export VERITY_SMOKE_HOST_RUNTIME_DIR="$runtime_fixture/state"
+# END installed runtime fixture
 export VERITY_SMOKE_PREVIOUS_DIGEST="$previous_digest"
 export VERITY_SMOKE_TARGET_DIGEST="$target_digest"
 export VERITY_SMOKE_DAEMON_CPUS="$(docker info --format '{{.NCPU}}')"
@@ -1084,6 +1105,41 @@ upgrade_data_probe seed
 echo '--- stage: prepare a candidate through pull, verify, preflight and standby'
 node packages/server/dist/self-update-live-smoke.js prepare
 
+# This complements process-restart recovery with a real restart of the isolated
+# daemon. The host identity comparison is repeated immediately before mutation.
+restart_isolated_daemon() {
+  local dind="${VERITY_SMOKE_DIND:?the isolated daemon container must be named}" isolated_id nested_id name
+  [[ "$dind" =~ ^verity-self-update-dind-[0-9]+-[0-9]+$ ]] || return 1
+  isolated_id="$(docker info --format '{{.ID}}')"
+  nested_id="$(docker --host unix:///var/run/docker.sock exec "$dind" docker info --format '{{.ID}}')"
+  [[ -n "$isolated_id" && "$isolated_id" == "$nested_id" ]] || return 1
+  # The Server's policy is the sealed production policy, not a fixture override.
+  [[ "$(docker inspect --format '{{.HostConfig.RestartPolicy.Name}}' "$server")" == unless-stopped ]] || return 1
+  # Long-lived fixture companions are initially created with restart=no so fault
+  # injection can stop them. Give only those running companions the boot policy.
+  while IFS= read -r name; do
+    [[ "$name" == "$server" ]] || docker update --restart unless-stopped "$name" >/dev/null
+  done < <(docker ps --format '{{.Names}}')
+  docker --host unix:///var/run/docker.sock restart "$dind" >/dev/null
+  for attempt in $(seq 1 120); do
+    if docker --host unix:///var/run/docker.sock exec "$dind" docker info >/dev/null 2>&1; then
+      docker --host unix:///var/run/docker.sock exec "$dind" chmod 0666 /run/verity-dind/docker.sock
+      break
+    fi
+    [[ "$attempt" != 120 ]] || return 1
+    sleep 1
+  done
+  wait_for_healthy "$server" 'the selected Server did not recover after the Docker daemon restart'
+  expect_gateway_serving 'the Gateway did not restore its selection after the Docker daemon restart'
+  [[ "$(docker ps -aq --filter label=verity.managed-role=server | wc -l)" -eq 1 ]] || {
+    echo 'Docker restart left more than one managed Server' >&2
+    return 1
+  }
+  # Startup reconciliation must keep the restored generation, not recreate the base name.
+  node packages/server/dist/self-update-live-smoke.js updater-restarts
+  [[ "$(docker ps -aq --filter label=verity.managed-role=server | wc -l)" -eq 1 ]]
+}
+
 if [[ "$smoke_profile" == 'release' || "${VERITY_SMOKE_ALLOW_NO_ROLLBACK:-false}" == 'true' ]]; then
   if [[ "${VERITY_SMOKE_ALLOW_NO_ROLLBACK:-false}" == 'true' ]]; then
     echo '--- irreversible-schema override: exercising the complete forward update path'
@@ -1125,6 +1181,8 @@ if [[ "$smoke_profile" == 'release' || "${VERITY_SMOKE_ALLOW_NO_ROLLBACK:-false}
   node packages/server/dist/self-update-live-smoke.js updater-restarts
   wait_for_healthy "$server" 'the forward-only restart did not restore a healthy Server'
   expect_gateway_serving 'the Gateway did not keep serving after the forward-only restart'
+  upgrade_data_probe verify
+  restart_isolated_daemon
   upgrade_data_probe verify
   echo 'forward update, handoff, routing, companion reconciliation and restart passed'
   exit 0
@@ -1746,6 +1804,7 @@ node packages/server/dist/self-update-live-smoke.js updater-restarts
 echo '--- waiting for the rebuilt twelfth generation to serve /healthz'
 wait_for_healthy "$server" 'the generation rebuilt by the restart never became healthy'
 expect_gateway_serving 'the Gateway never reached the Server the restart rebuilt'
+restart_isolated_daemon
 
 echo '--- the rebuilt generation must come back sealed'
 expect_secret_status "$server" sealed

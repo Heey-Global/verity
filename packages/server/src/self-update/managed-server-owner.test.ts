@@ -15,6 +15,7 @@ import {
 import {
   initializeManagedDeployment,
   migrateManagedDevcontainerBuilder,
+  migrateManagedBackupMounts,
   migrateManagedHostDiagnostics,
 } from './managed-deployment.js';
 import {
@@ -283,6 +284,7 @@ describe('managed Server host limits', () => {
     // container is still built with what Compose gave the `verity` service.
     expect(Object.hasOwn(spec, 'resources')).toBe(false);
     expect(await containerSpec(spec)).toMatchObject({
+      oomScoreAdj: -250,
       memoryBytes: 4 * 1024 ** 3,
       memorySwapBytes: 4 * 1024 ** 3,
       nanoCpus: 4_000_000_000,
@@ -309,6 +311,7 @@ describe('managed Server host limits', () => {
    *  ceilings a daemon would report for one created from it. */
   const limited = (overrides: Partial<ContainerInspect> = {}): ContainerInspect => ({
     ...owned(true),
+    oomScoreAdj: -250,
     memoryBytes: 4 * 1024 ** 3,
     memorySwapBytes: 4 * 1024 ** 3,
     nanoCpus: 4_000_000_000,
@@ -316,10 +319,45 @@ describe('managed Server host limits', () => {
     ...overrides,
   });
 
+  it('resolves an explicit OOM priority from sealed environment sources', async () => {
+    const spec = sealed(undefined, [
+      {
+        name: 'VERITY_SERVER_OOM_SCORE_ADJ',
+        source: { kind: 'env', name: 'VERITY_SERVER_OOM_SCORE_ADJ' },
+      },
+    ]);
+    expect(
+      await managedServerContainerSpec(
+        spec,
+        { ...runtimeOptions('', docker()).environment, VERITY_SERVER_OOM_SCORE_ADJ: '-100' },
+        async () => 'secret',
+      ),
+    ).toMatchObject({ oomScoreAdj: -100 });
+  });
+
   it('accepts a candidate whose ceilings are the sealed ones', async () => {
     const desired = await containerSpec(sealed());
     expect(managedContainerMatchesSpec(limited(), desired, IMAGE_ENV, false, 'exact')).toBe(true);
   });
+
+  it.each([0, undefined])(
+    'accepts the pre-priority Server default %s with sealed ceilings',
+    async (oomScoreAdj) => {
+      const desired = await containerSpec(sealed());
+      expect(
+        managedContainerMatchesSpec(limited({ oomScoreAdj }), desired, IMAGE_ENV, false, 'exact'),
+      ).toBe(true);
+      expect(
+        managedContainerMatchesSpec(
+          limited({ oomScoreAdj }),
+          { ...desired, oomScoreAdj: -100 },
+          IMAGE_ENV,
+          false,
+          'exact',
+        ),
+      ).toBe(false);
+    },
+  );
 
   it.each([
     // The whole point of the guardrail: a candidate created before the ceilings
@@ -333,6 +371,7 @@ describe('managed Server host limits', () => {
     ['unlimited swap', { memorySwapBytes: -1 }],
     ['more CPU', { nanoCpus: 8_000_000_000 }],
     ['no fork-bomb guard', { pidsLimit: -1 }],
+    ['a different protected OOM preference', { oomScoreAdj: -100 }],
   ])('refuses a candidate with %s', async (_label, drift) => {
     const legacy = sealed();
     const desired = await containerSpec(legacy);
@@ -1624,4 +1663,64 @@ describe('recorded devcontainer builder migration', () => {
     const client = docker({ ...owned(true), groupAdd: ['999', '1101', '4242'] });
     await expect(reconcileManagedServer(runtimeOptions(root, client))).rejects.toThrow('conflicts');
   });
+});
+
+describe('recorded backup mount migration', () => {
+  const migrate = async (root: string) =>
+    migrateManagedBackupMounts({
+      root,
+      deploymentId: 'deployment-1',
+      image: body().image,
+      backupPath: '/var/lib/verity/backups',
+      identityPath: '/var/lib/verity/backup-identity',
+    });
+  it('preserves the running generation until guarded cutover and survives retry', async () => {
+    const root = await authority();
+    await migrate(root);
+    await migrate(root);
+    const client = docker(owned(true));
+    await expect(reconcileManagedServer(runtimeOptions(root, client))).resolves.toEqual({
+      containerId: 'existing',
+      action: 'unchanged',
+      backupMountPending: true,
+    });
+    expect(client.removeContainer).not.toHaveBeenCalled();
+    expect(client.createContainer).not.toHaveBeenCalled();
+  });
+  it('recreates a stopped old generation with both sealed binds', async () => {
+    const root = await authority();
+    await migrate(root);
+    const client = docker(owned(false));
+    await reconcileManagedServer(runtimeOptions(root, client));
+    expect(client.createContainer.mock.calls[0]?.[0].binds).toEqual(
+      expect.arrayContaining([
+        '/var/lib/verity/backups:/run/verity-backups',
+        '/var/lib/verity/backup-identity:/run/verity-backup-identity',
+      ]),
+    );
+  });
+  it('does not excuse unrelated drift with a backup checkpoint', async () => {
+    const root = await authority();
+    await migrate(root);
+    const client = docker({ ...owned(true), readOnlyRootfs: true });
+    await expect(reconcileManagedServer(runtimeOptions(root, client))).rejects.toThrow('conflicts');
+    expect(client.removeContainer).not.toHaveBeenCalled();
+  });
+});
+
+it('refuses bootstrap reconciliation beside a generation', async () => {
+  const client = docker();
+  vi.mocked(client.listContainers!).mockResolvedValue([
+    {
+      id: 'generation',
+      imageId: body().image,
+      names: ['verity-managed-server-g190'],
+      labels: { [MANAGED_DEPLOYMENT_LABEL]: 'deployment-1', [MANAGED_ROLE_LABEL]: 'server' },
+    },
+  ]);
+  await expect(reconcileManagedServer(runtimeOptions(await authority(), client))).rejects.toThrow(
+    'restore the Gateway selection',
+  );
+  expect(client.createContainer).not.toHaveBeenCalled();
+  expect(client.startContainer).not.toHaveBeenCalled();
 });

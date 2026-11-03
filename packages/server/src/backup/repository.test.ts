@@ -38,6 +38,37 @@ async function* files(data: Buffer): AsyncGenerator<CaptureFile> {
 const info = { release: 'v1.0.0', schema: 1, capturedAt: '2026-10-25T01:00:00Z' };
 
 describe('backup repository', () => {
+  it('resumes only the exact path-specific ciphertext of a confirmed replacement', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'verity-replacement-artifacts-'));
+    roots.push(root);
+    const keys = await generateBackupKeys();
+    const name = `${randomUUID()}-r2`;
+    const repository = new BackupRepository(
+      join(root, 'backup'),
+      join(root, 'host'),
+      name,
+      keys.host,
+    );
+    await repository.initialize(true);
+    const header = await readFile(join(repository.root, 'header'));
+    const bundle = await readFile(join(repository.root, 'keys'));
+    await repository.initialize(true);
+    await writeFile(join(repository.root, 'header'), bundle);
+    await writeFile(join(repository.root, 'keys'), header);
+    await expect(repository.initialize(true)).rejects.toThrow(
+      'Replacement repository is not empty',
+    );
+    await writeFile(join(repository.root, 'header'), header);
+    await writeFile(join(repository.root, 'keys'), bundle);
+    await repository.initialize(true);
+    expect(
+      await recoverHostKeys(keys.recoveryKey, await readFile(join(repository.root, 'keys'))),
+    ).toEqual(keys.host);
+    await repository.capture(files(Buffer.from('replacement')), info);
+    const snapshot = await readSnapshot(join(root, 'backup'), name, 1, keys.recoveryKey);
+    expect(snapshot.files[0]!.path).toBe('workspace/file');
+  });
+
   it('restores a complete snapshot with only destination and recovery key, and reuses ciphertext', async () => {
     const f = await fixture();
     const data = randomBytes(512 * 1024);

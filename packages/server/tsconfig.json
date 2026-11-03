@@ -20,6 +20,9 @@
     },
     {
       "path": "../preview-tunnel"
+    },
+    {
+      "path": "../project-relay"
     }
   ],
   "include": ["src/**/*.ts"]

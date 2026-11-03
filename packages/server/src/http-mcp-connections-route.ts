@@ -1,11 +1,12 @@
 import { randomUUID } from 'node:crypto';
 
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { EventStore } from '@verity/store';
 import { z } from 'zod';
 
 import { parseHttpMcpUpstream } from './http-mcp-proxy.js';
-import { completeHttpMcpOAuth } from './http-mcp-oauth.js';
+import { discoverMcpOAuth, registerMcpOAuthClient } from './http-mcp-oauth-discovery.js';
+import { McpOAuthFlows, NATIVE_MCP_CALLBACK, mcpWebCallback } from './http-mcp-oauth-flows.js';
 
 const connectionParams = z.object({ connectionId: z.string().min(1).max(128) });
 const projectConnectionParams = z.object({
@@ -25,10 +26,11 @@ const connectionBody = z
     authorization: z.string().min(1).max(8192).nullable().optional(),
     authType: z.enum(['none', 'static', 'oauth']).optional(),
     oauthClientId: z.string().trim().min(1).max(512).nullable().optional(),
+    oauthTokenAuthMethod: z.enum(['none', 'client_secret_post', 'client_secret_basic']).optional(),
     oauthClientSecret: z.string().trim().min(1).max(4096).nullable().optional(),
     oauthAuthorizationEndpoint: z.string().max(2048).nullable().optional(),
     oauthTokenEndpoint: z.string().max(2048).nullable().optional(),
-    oauthScopes: z.string().trim().min(1).max(4096).nullable().optional(),
+    oauthScopes: z.string().trim().max(4096).nullable().optional(),
     enabled: z.boolean().optional(),
   })
   .strict()
@@ -36,6 +38,7 @@ const connectionBody = z
     const oauthValues = [
       body.oauthClientId,
       body.oauthClientSecret,
+      body.oauthTokenAuthMethod,
       body.oauthAuthorizationEndpoint,
       body.oauthTokenEndpoint,
       body.oauthScopes,
@@ -78,7 +81,29 @@ function isUniqueViolation(error: unknown): boolean {
 }
 
 /** User-owned server definitions with explicit per-project activation. No credential value is public. */
-export function registerHttpMcpConnectionRoutes(app: FastifyInstance, store: EventStore): void {
+export function registerHttpMcpConnectionRoutes(
+  app: FastifyInstance,
+  store: EventStore,
+  options: {
+    browserRequestOrigin?: ((request: FastifyRequest) => string | undefined) | undefined;
+  } = {},
+): void {
+  const flows = new McpOAuthFlows(store);
+  const trustedOrigin = (request: FastifyRequest) =>
+    options.browserRequestOrigin?.(request) ?? `${request.protocol}://${request.headers.host}`;
+  app.post('/mcp-connections/oauth/discover', async (request, reply) => {
+    const body = z
+      .object({ url: z.string().max(2048) })
+      .strict()
+      .parse(request.body);
+    try {
+      return (await discoverMcpOAuth(body.url)).discovery;
+    } catch {
+      return reply.code(400).send({
+        error: 'OAuth discovery failed. Check the server URL or configure OAuth manually.',
+      });
+    }
+  });
   app.get('/mcp-connections', async (request) => ({
     connections: (await store.listHttpMcpConnections(connectionOwnerId(request))).map(
       (connection) => ({
@@ -104,19 +129,50 @@ export function registerHttpMcpConnectionRoutes(app: FastifyInstance, store: Eve
       url = parseHttpMcpUpstream(body.url).toString();
       if (body.authType === 'oauth') {
         if (
-          body.oauthClientId == null ||
           body.oauthAuthorizationEndpoint == null ||
           body.oauthTokenEndpoint == null ||
-          body.oauthScopes == null
+          body.oauthClientId == null
         ) {
-          throw new Error('incomplete OAuth configuration');
+          const { authority, discovery } = await discoverMcpOAuth(url);
+          // Do not send registration credentials to endpoints supplied by the form.
+          if (
+            (body.oauthAuthorizationEndpoint != null &&
+              body.oauthAuthorizationEndpoint !== discovery.authorizationEndpoint) ||
+            (body.oauthTokenEndpoint != null && body.oauthTokenEndpoint !== discovery.tokenEndpoint)
+          )
+            throw new Error('OAuth endpoints do not match discovery');
+          body.oauthAuthorizationEndpoint = discovery.authorizationEndpoint;
+          body.oauthTokenEndpoint = discovery.tokenEndpoint;
+          body.oauthScopes ??= discovery.scopes;
+          if (body.oauthClientId == null) {
+            if (body.oauthClientSecret != null)
+              throw new Error('A client secret requires a client ID');
+            const callbacks = [NATIVE_MCP_CALLBACK];
+            try {
+              callbacks.push(mcpWebCallback(trustedOrigin(request)));
+            } catch {
+              if (request.headers.origin !== undefined)
+                throw new Error('Web OAuth requires HTTPS or localhost');
+            }
+            const registered = await registerMcpOAuthClient(
+              authority,
+              callbacks,
+              body.oauthScopes ?? '',
+            );
+            body.oauthClientId = registered.clientId;
+            body.oauthClientSecret = registered.clientSecret;
+            body.oauthTokenAuthMethod = registered.tokenAuthMethod;
+          }
         }
         parseHttpMcpUpstream(body.oauthAuthorizationEndpoint);
         parseHttpMcpUpstream(body.oauthTokenEndpoint);
       }
     } catch {
       reply.code(400);
-      return { error: 'MCP connection URL must be a public HTTPS endpoint' };
+      return {
+        error:
+          'MCP setup failed. Use public HTTPS endpoints and a valid OAuth client, or configure OAuth manually.',
+      };
     }
     const connection = {
       id: randomUUID(),
@@ -127,6 +183,7 @@ export function registerHttpMcpConnectionRoutes(app: FastifyInstance, store: Eve
       authType: body.authType ?? (body.authorization == null ? 'none' : 'static'),
       oauthClientId: body.oauthClientId ?? null,
       oauthClientSecret: body.oauthClientSecret ?? null,
+      oauthTokenAuthMethod: body.oauthTokenAuthMethod ?? 'client_secret_post',
       oauthAuthorizationEndpoint: body.oauthAuthorizationEndpoint ?? null,
       oauthTokenEndpoint: body.oauthTokenEndpoint ?? null,
       oauthScopes: body.oauthScopes ?? null,
@@ -162,26 +219,58 @@ export function registerHttpMcpConnectionRoutes(app: FastifyInstance, store: Eve
     };
   });
 
-  app.post('/mcp-connections/:connectionId/oauth/complete', async (request, reply) => {
+  app.post('/mcp-connections/:connectionId/oauth/start', async (request, reply) => {
     const { connectionId } = connectionParams.parse(request.params);
     const body = z
-      .object({
-        code: z.string().min(1).max(8192),
-        codeVerifier: z.string().min(43).max(128),
-        redirectUri: z.literal('https://verity.build/mcp/oauth/callback'),
-      })
+      .object({ platform: z.enum(['web', 'native', 'native-staging']) })
       .strict()
       .parse(request.body);
-    const connection = (await store.listHttpMcpConnections(connectionOwnerId(request))).find(
+    const ownerId = connectionOwnerId(request);
+    const connection = (await store.listHttpMcpConnections(ownerId)).find(
       (item) => item.id === connectionId,
     );
     if (connection === undefined)
       return reply.code(404).send({ error: 'MCP connection not found' });
+    reply.header('cache-control', 'no-store');
     try {
-      await completeHttpMcpOAuth(store, connection, body);
+      return flows.start(ownerId, connection, body.platform, trustedOrigin(request));
+    } catch (error) {
+      return reply
+        .code(400)
+        .send({ error: error instanceof Error ? error.message : 'MCP OAuth could not start' });
+    }
+  });
+
+  app.post('/mcp-connections/:connectionId/oauth/cancel', async (request, reply) => {
+    const { connectionId } = connectionParams.parse(request.params);
+    const body = z
+      .object({ state: z.string().min(1).max(128) })
+      .strict()
+      .parse(request.body);
+    flows.cancel(connectionOwnerId(request), connectionId, body.state);
+    return reply.code(204).send();
+  });
+
+  app.post('/mcp-connections/:connectionId/oauth/complete', async (request, reply) => {
+    const { connectionId } = connectionParams.parse(request.params);
+    const ownerId = connectionOwnerId(request);
+    const connection = (await store.listHttpMcpConnections(ownerId)).find(
+      (item) => item.id === connectionId,
+    );
+    if (connection === undefined)
+      return reply.code(404).send({ error: 'MCP connection not found' });
+    const body = z
+      .object({ code: z.string().min(1).max(8192), state: z.string().min(1).max(128) })
+      .strict()
+      .parse(request.body);
+    reply.header('cache-control', 'no-store');
+    try {
+      await flows.finish(ownerId, connection, body, trustedOrigin(request));
       return { connected: true };
     } catch {
-      return reply.code(400).send({ error: 'MCP OAuth authorization failed' });
+      return reply
+        .code(400)
+        .send({ error: 'MCP OAuth authorization failed or expired. Reconnect OAuth.' });
     }
   });
 

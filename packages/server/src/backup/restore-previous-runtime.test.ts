@@ -112,3 +112,61 @@ it('keeps previous container IDs and restart intent across interrupted stop and 
   await expect(runtime.stop(previous)).rejects.toThrow('no longer matches');
   expect(changes).toEqual([]);
 });
+
+it('starts the updater after the Server so immediate replacement cannot invalidate pending inspections', async () => {
+  const updater = 'a'.repeat(64);
+  const server = 'b'.repeat(64);
+  const previous = {
+    containers: [
+      {
+        id: updater,
+        name: 'verity-updater',
+        running: true,
+        restartPolicy: 'always' as const,
+        maximumRetryCount: 0,
+      },
+      {
+        id: server,
+        name: 'verity-server',
+        running: true,
+        restartPolicy: 'always' as const,
+        maximumRetryCount: 0,
+      },
+    ],
+    dataVolume: true,
+    databaseVolume: true,
+    managedVolume: true,
+    hostConfiguration: true,
+  };
+  let serverExists = true;
+  const started: string[] = [];
+  const docker = {
+    listContainers: async () =>
+      previous.containers.map((container) => ({
+        id: container.id,
+        names: [container.name],
+        labels: {
+          'com.docker.compose.service':
+            container.id === updater ? 'verity-updater' : 'verity-server',
+        },
+      })),
+    renameContainer: vi.fn(),
+    setContainerRestartPolicy: vi.fn(),
+    inspectContainer: async (id: string) => {
+      if (id === server && !serverExists) throw new Error('container_not_found');
+      return { running: false };
+    },
+    startContainer: async (id: string) => {
+      started.push(id);
+      if (id === updater) serverExists = false;
+    },
+  } as unknown as DockerClient;
+  const runtime = new RestorePreviousRuntime({
+    docker,
+    job: { id: randomUUID() },
+    composeProject: 'verity',
+    databaseVolume: 'verity_verity-db',
+  });
+  await runtime.resume(previous);
+  expect(started).toEqual([server, updater]);
+});

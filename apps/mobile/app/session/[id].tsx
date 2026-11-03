@@ -1,3 +1,11 @@
+import { qaAssignmentView } from '@verity/mobile';
+import { Card, CardHead } from '../../components/ui/Card';
+import { StatusTag } from '../../components/ui/Status';
+import { McpAppCard } from '../../components/McpAppCard';
+import { QAApprovalCard } from '../../components/QAApprovalCard';
+import { SchedulingApprovalEditor } from '../../components/SchedulingApprovalEditor';
+import { AssistantSchedulingOverview } from '../../components/AssistantSchedulingBar';
+import { SchedulingRequestsCard } from '../../components/SchedulingRequestsCard';
 import {
   managedServerApproval,
   confirmManagedServerApproval,
@@ -13,7 +21,7 @@ import {
   VulnerabilityStarterCard,
 } from '../../components/vulnerability/VulnerabilityStarterCard';
 import { SplitScreenRedirect } from '../../components/SplitScreenRedirect';
-import { SPLIT_SCREEN_MIN_WIDTH } from '../../lib/sessionLayout';
+import { sessionLayout } from '../../lib/sessionLayout';
 import type { GoogleMenuAccess } from '../../lib/attachMenu';
 import { driveOverview, singleDriveFolderPath } from '../../lib/driveHierarchy';
 import type { ProjectDriveFolder } from '@verity/mobile';
@@ -108,6 +116,10 @@ import {
   gmailSendSummary,
   matrixSendSummary,
   calendarChangeSummary,
+  schedulingApprovalSummary,
+  schedulingCardDecision,
+  schedulingCardEdit,
+  type SchedulingCardEdit,
   forgeRefUrl,
   providerName,
   isSessionImageFilePath,
@@ -538,6 +550,7 @@ export default function SessionScreen() {
   const client = useMemo(() => createVerityClient(), []);
   const baseUrl = getVerityBaseUrl();
   const { width } = useWindowDimensions();
+  const { wide: windowWide } = sessionLayout(width);
 
   if (!id) {
     return <CenteredMessage title="Session not found" subtitle="No session id was provided." />;
@@ -555,7 +568,7 @@ export default function SessionScreen() {
   // rather than the old per-route flat sidebar this screen used to render. Keeps
   // exactly one split implementation, so a new-session `replace('/session/[id]')`
   // (new.tsx) lands in the project-grouped overview like everywhere else.
-  if (width >= SPLIT_SCREEN_MIN_WIDTH) {
+  if (windowWide) {
     return (
       <SplitScreenRedirect
         id={id}
@@ -4785,6 +4798,9 @@ export const SessionChat = memo(function SessionChat({
           onImplement={() => implementPlan(planningRevision)}
         />
       ) : null}
+      {client ? <QAApprovalCard client={client} sessionId={sessionId} /> : null}
+      {client ? <SchedulingRequestsCard client={client} sessionId={sessionId} /> : null}
+      {client ? <AssistantSchedulingOverview client={client} sessionId={sessionId} /> : null}
       {/* Last above the composer: below the plan and the PR bar, never above them. */}
       {client ? <SessionVulnerabilityCard client={client} sessionId={sessionId} /> : null}
       <InputBar
@@ -6742,6 +6758,7 @@ function renderRow(item: Row, isLatest: boolean, bookmarkable = true) {
     case 'tool-call':
       return <ToolCard key={item.message.id} message={item.message} />; // single tool not in a run
     case 'agent-event':
+      if (item.message.event.t === 'mcp_app') return <McpAppCard event={item.message.event} />;
       return <EventRow message={item.message} isLatest={isLatest} />;
     case 'dependency-status':
       return <DependencyStatusRow text={item.message.text} />;
@@ -6986,7 +7003,7 @@ function AgentMarkdown({
 }) {
   const { theme } = useUnistyles();
   const searchHighlightQuery = useContext(SearchHighlightContext);
-  const blocks = useMemo(() => splitRichText(text), [text]);
+  const blocks = useMemo(() => splitRichText(text, { hideQADecisions: true }), [text]);
   const openSessionFile = useContext(SessionFileOpenContext);
   const openAppLink = useContext(AppLinkOpenContext);
   const sessionFileImageSource = useContext(SessionFileImageSourceContext);
@@ -7716,6 +7733,37 @@ function ToolCard({ message }: { message: ToolCallMessage }) {
   const skillBody = message.tool.skillBody;
   const running = message.tool.name === 'Skill' && message.tool.state === 'running';
   const expandable = Boolean(view.subtitle) || Boolean(view.preview) || Boolean(skillBody);
+  const assignment = qaAssignmentView(message.tool);
+  if (assignment)
+    return (
+      <Card stacked attention={assignment.status === 'blocked' || assignment.status === 'waiting'}>
+        <CardHead
+          title={assignment.title}
+          subtitle={assignment.reason}
+          trailing={
+            <StatusTag
+              intent={
+                assignment.status === 'completed'
+                  ? 'ready'
+                  : assignment.status === 'blocked' || assignment.status === 'waiting'
+                    ? 'needsSetup'
+                    : 'unknown'
+              }
+              label={assignment.label}
+            />
+          }
+        />
+        {assignment.sessionId ? (
+          <Button
+            label="Open project session"
+            onPress={() =>
+              router.push({ pathname: '/session/[id]', params: { id: assignment.sessionId! } })
+            }
+          />
+        ) : null}
+      </Card>
+    );
+
   if (
     planningToolName(message.tool.name) === START_PLANNING_TOOL &&
     message.tool.state === 'completed'
@@ -8849,6 +8897,7 @@ function PermissionPrompt({
   const isMatrix = pending.tool === 'verity_matrix';
   const isGmail = pending.tool === 'verity_gmail';
   const isCalendar = pending.tool === 'verity_google_calendar';
+  const isScheduling = pending.tool === 'verity_scheduling';
   const isKnowledge = pending.tool === 'verity_knowledge';
   const packageInstall =
     pending.tool === 'verity_package_install' ? packageInstallSummary(pending.input) : null;
@@ -8857,6 +8906,20 @@ function PermissionPrompt({
   const isPresentPlan = planningTool === 'verity_present_plan';
   const knowledgeSummary = isKnowledge ? knowledgePublishSummary(pending.input) : null;
   const calendarSummary = isCalendar ? calendarChangeSummary(pending.input) : null;
+  const schedulingSummary = isScheduling ? schedulingApprovalSummary(pending.input) : null;
+  const schedulingEditable = schedulingSummary?.editable ?? null;
+  // Keyed by the prompt, so edits never carry over to the next request's card.
+  const [schedulingDraft, setSchedulingDraft] = useState<{
+    toolUseId: string;
+    edit: SchedulingCardEdit;
+    error?: string;
+  }>();
+  const schedulingEdit =
+    schedulingEditable === null
+      ? null
+      : schedulingDraft?.toolUseId === pending.toolUseId
+        ? schedulingDraft.edit
+        : schedulingCardEdit(schedulingEditable);
   const httpSummary = isBrokeredHttp ? brokeredHttpSummary(pending.input) : null;
   const cliSummary = isTrustedCli ? trustedCliSummary(pending.input) : null;
   const handoffSummary = isSessionHandoff ? sessionHandoffSummary(pending.input) : null;
@@ -8909,6 +8972,7 @@ function PermissionPrompt({
     (isMatrix && matrixSummary === null) ||
     (isGmail && gmailSummary === null) ||
     (isCalendar && calendarSummary === null) ||
+    (isScheduling && schedulingSummary === null) ||
     (isKnowledge && knowledgeSummary === null)
       ? permissionInputText(pending.input)
       : null;
@@ -8957,6 +9021,7 @@ function PermissionPrompt({
         ? null
         : `Read ${String(recentSummary.count)} recent messages from session ${recentSummary.sessionId}?`,
       calendarSummary?.title ?? null,
+      schedulingSummary === null ? null : spellOutBidiControls(schedulingSummary.title),
       matrixSummary === null
         ? null
         : `Send Matrix message to ${spellOutBidiControls(matrixSummary.roomName)}?`,
@@ -8981,6 +9046,19 @@ function PermissionPrompt({
       allowTiming.current = undefined;
     allowTiming.current ??= beginSessionSwitch(sessionId, 'permission');
     markSessionSwitch(allowTiming.current, 'allow-js-press-handler');
+    if (schedulingEditable !== null && schedulingEdit !== null) {
+      const decision = schedulingCardDecision(schedulingEditable, schedulingEdit);
+      if ('error' in decision) {
+        setSchedulingDraft({
+          toolUseId: pending.toolUseId,
+          edit: schedulingEdit,
+          error: decision.error,
+        });
+        return;
+      }
+      onDecide(pending.toolUseId, { behavior: 'allow', ...decision });
+      return;
+    }
     onDecide(
       pending.toolUseId,
       packageInstall !== null
@@ -9182,6 +9260,52 @@ function PermissionPrompt({
               {spellOutBidiControls(detail)}
             </Text>
           ))}
+        </View>
+      ) : schedulingSummary !== null &&
+        schedulingSummary.editable !== null &&
+        schedulingEdit !== null ? (
+        <View style={styles.permissionHttpSummary}>
+          <Text style={styles.permissionSubtitle} selectable>
+            {spellOutBidiControls(schedulingSummary.editable.meeting)}
+          </Text>
+          {schedulingSummary.details.slice(1).map((detail, index) => (
+            <Text key={index} style={styles.permissionSubtitle} selectable>
+              {spellOutBidiControls(detail)}
+            </Text>
+          ))}
+          <SchedulingApprovalEditor
+            editable={schedulingSummary.editable}
+            edit={schedulingEdit}
+            onChange={(edit) => setSchedulingDraft({ toolUseId: pending.toolUseId, edit })}
+            error={
+              schedulingDraft?.toolUseId === pending.toolUseId ? schedulingDraft.error : undefined
+            }
+            disabled={!active}
+          />
+          <Text style={styles.permissionHttpMeta}>
+            {spellOutBidiControls(schedulingSummary.scope)}
+          </Text>
+        </View>
+      ) : schedulingSummary !== null ? (
+        <View style={styles.permissionHttpSummary}>
+          {schedulingSummary.details.map((detail, index) => (
+            <Text key={index} style={styles.permissionSubtitle} selectable>
+              {spellOutBidiControls(detail)}
+            </Text>
+          ))}
+          {schedulingSummary.email === null ? null : (
+            <>
+              <Text style={styles.permissionSubtitle} selectable>
+                Subject: {spellOutBidiControls(schedulingSummary.email.subject)}
+              </Text>
+              <Text style={styles.permissionHttpMeta} selectable>
+                {spellOutBidiControls(schedulingSummary.email.body)}
+              </Text>
+            </>
+          )}
+          <Text style={styles.permissionHttpMeta}>
+            {spellOutBidiControls(schedulingSummary.scope)}
+          </Text>
         </View>
       ) : matrixSummary !== null ? (
         <MatrixSendPreview summary={matrixSummary} />

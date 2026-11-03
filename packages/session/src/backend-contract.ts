@@ -209,6 +209,13 @@ export interface RunTurnOptions {
    * a backend that cannot enforce this must refuse the turn instead of running it.
    */
   toolless?: boolean;
+  /**
+   * Keep the Verity gateway tools but drop every built-in tool (shell, files, web) and
+   * other MCP server, for a session that reads untrusted mail and notes yet acts only
+   * through server-checked Verity tools. Like {@link toolless}, a backend that cannot
+   * enforce it must refuse the turn.
+   */
+  gatewayToolsOnly?: boolean;
   command?: string;
   extraArgs?: readonly string[];
   /** Wall-clock ceiling for the whole session; on expiry the process is killed. */

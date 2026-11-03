@@ -110,7 +110,7 @@ export function createRestoreHost(options: {
     } else {
       if (!job.verified) throw new Error('Verified deployment identity required');
       deploymentId = job.verified.deploymentId;
-      for (const name of ['pairing-identity.pem', 'tls-ca-cert.pem']) {
+      for (const name of ['pairing-identity.pem', 'tls-ca-cert.pem', 'tls-key.pem']) {
         const file = await openBackupPath(tree, 'identity/' + name, false);
         try {
           const info = await file.stat();
@@ -126,11 +126,14 @@ export function createRestoreHost(options: {
         throw new Error('Recovered CA expired; preserved identity cannot be activated');
       await save('tls-ca-key.pem', caPrivateKey);
     }
-    const leaf = generateKeyPairSync('ec', { namedCurve: 'prime256v1' }).privateKey.export({
-      type: 'pkcs8',
-      format: 'pem',
-    });
-    await save('tls-key.pem', leaf);
+    // Clients pin the leaf public point. Reissue for this host without changing that trust anchor.
+    if (job.selection.newIdentity) {
+      const leaf = generateKeyPairSync('ec', { namedCurve: 'prime256v1' }).privateKey.export({
+        type: 'pkcs8',
+        format: 'pem',
+      });
+      await save('tls-key.pem', leaf);
+    }
     const csr = join(root, 'tls.csr');
     try {
       await openssl([
@@ -189,10 +192,11 @@ export function createRestoreHost(options: {
       'pairing-expires-at',
       'tls-key.pem',
       'tls-cert.pem',
-      'tls-ca-cert.pem',
       'deployment-id',
     ])
       if (process.getuid?.() === 0) await chown(join(root, name), uid, gid);
+    // The root helper trusts this public certificate; the Server only needs read access.
+    await chmod(join(root, 'tls-ca-cert.pem'), 0o644);
     await chmod(root, 0o711);
     signal?.throwIfAborted();
   };

@@ -58,14 +58,17 @@ describe('durable backup schedule', () => {
     f.setCapture(async (signal) => {
       expect(signal.aborted).toBe(false);
       expect(f.state().failures).toBe(1);
+      expect(scheduler.capturing).toBe(true);
       f.events.push('capture');
       await pending;
     });
     const scheduler = new BackupScheduler(f.dependencies);
+    expect(scheduler.capturing).toBe(false);
     const first = scheduler.tick();
     expect(scheduler.tick()).toBe(first);
     finish();
     await first;
+    expect(scheduler.capturing).toBe(false);
     expect(f.events).toEqual(['revocations', 'capture', 'maintain']);
     await scheduler.tick();
     expect(f.events).toEqual(['revocations', 'capture', 'maintain', 'revocations']);
@@ -85,13 +88,15 @@ describe('durable backup schedule', () => {
     await new BackupScheduler(f.dependencies).tick();
     expect(f.state().failures).toBe(2);
     expect(f.events).not.toContain('maintain');
-    expect(backupScheduleAlerts(f.state(), f.dependencies.now())).toContain('consecutive-failures');
+    expect(backupScheduleAlerts(f.state(), f.dependencies.now(), 0)).toContain(
+      'consecutive-failures',
+    );
     f.change({ paused: true });
     f.advance(DEFAULT_BACKUP_INTERVAL_MS);
     await new BackupScheduler(f.dependencies).tick();
     expect(f.events.at(-1)).toBe('revocations');
     expect(f.state().failures).toBe(2);
-    expect(backupScheduleAlerts(f.state(), f.dependencies.now())).toEqual([]);
+    expect(backupScheduleAlerts(f.state(), f.dependencies.now(), 0)).toEqual([]);
   });
   it('preserves settings selected during a capture and skips maintenance after pause', async () => {
     const f = fixture();
@@ -113,6 +118,16 @@ describe('durable backup schedule', () => {
     await new BackupScheduler(f.dependencies).tick();
     expect(f.events).toEqual(['revocations']);
     expect(f.state().lastAttempt).toBeNull();
+  });
+  it('counts staleness before the first success from configuration time', () => {
+    const f = fixture();
+    const now = f.dependencies.now();
+    const threshold = 2 * DEFAULT_BACKUP_INTERVAL_MS;
+    expect(backupScheduleAlerts(f.state(), now, now)).toEqual([]);
+    expect(backupScheduleAlerts(f.state(), now, now - threshold + 1)).toEqual([]);
+    expect(backupScheduleAlerts(f.state(), now, now - threshold)).toEqual(['stale-backup']);
+    f.change({ lastSuccess: now - threshold });
+    expect(backupScheduleAlerts(f.state(), now, now)).toEqual(['stale-backup']);
   });
   it('caps restart retry backoff at the configured interval', async () => {
     const f = fixture();

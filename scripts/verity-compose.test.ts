@@ -104,6 +104,16 @@ const byTarget = (mounts: readonly NormalizedMount[]): Record<string, Normalized
 const controlRunnerSpec = (dockerSocket?: { hostPath: string; gid: string }) =>
   desiredSpec('ghcr.io/example/verity@sha256:0', 'dep-1', 'amd64', '1101', dockerSocket);
 
+// Existing-install fixtures keep a validated database outside Compose reconciliation.
+const existingDatabaseMock = `
+case "$*" in
+  'ps -aq --no-trunc --filter label=com.docker.compose.project=deploy --filter label=com.docker.compose.service=postgres') echo pg-old; exit 0 ;;
+  inspect*' pg-old')
+    case "$*" in *Aliases*) echo postgres ;; *) echo 'deploy|postgres|running|/deploy-postgres-1|deploy_verity-db|verity-net||' ;; esac
+    exit 0 ;;
+esac
+`;
+
 let tempRoot: string | null = null;
 
 afterEach(() => {
@@ -112,6 +122,37 @@ afterEach(() => {
 });
 
 describe('deploy/bin/verity-compose', () => {
+  it('favours core infrastructure over project workloads under host OOM pressure', () => {
+    const base = parse(readFileSync('deploy/docker-compose.yml', 'utf8')) as {
+      services: Record<string, { oom_score_adj?: string; environment?: Record<string, string> }>;
+    };
+    const overlay = parse(
+      readFileSync('deploy/docker-compose.runner-supervisor.yml', 'utf8'),
+    ) as typeof base;
+    const score = (value: string | undefined): number => {
+      const match = /^\$\{\w+:-(-?\d+)\}$/.exec(value ?? '');
+      expect(match).not.toBeNull();
+      return Number(match?.[1]);
+    };
+    const projectScore = score(
+      base.services['verity']?.environment?.['VERITY_SANDBOX_OOM_SCORE_ADJ'],
+    );
+    expect(projectScore).toBeGreaterThan(0);
+    for (const name of [
+      'verity',
+      'postgres',
+      'verity-agent-gateway',
+      'verity-managed-gateway',
+      'verity-updater',
+    ]) {
+      expect(score(base.services[name]?.oom_score_adj)).toBeLessThan(projectScore);
+      expect(score(base.services[name]?.oom_score_adj)).toBeGreaterThan(-1000);
+    }
+    expect(score(overlay.services['verity-control-runner']?.oom_score_adj)).toBe(
+      desiredSpec('image', 'deployment', 'amd64', '1101').oomScoreAdj,
+    );
+  });
+
   it('keeps the Compose sandbox PID default aligned with the provisioner', () => {
     const compose = parse(readFileSync('deploy/docker-compose.yml', 'utf8')) as {
       services: Record<string, { environment?: Record<string, string> }>;
@@ -243,6 +284,14 @@ describe('deploy/bin/verity-compose', () => {
     // Same failure for the swap allowance: excluded, the documented opt-in would be
     // inert on every managed host while Compose hosts honoured it.
     expect(excluded).not.toContain('VERITY_SANDBOX_SWAP');
+    for (const name of [
+      'VERITY_SANDBOX_MEMORY_RESERVATION',
+      'VERITY_SANDBOX_HOST_RESERVE',
+      'VERITY_SANDBOX_OOM_SCORE_ADJ',
+      'VERITY_SERVER_OOM_SCORE_ADJ',
+      'VERITY_CONTROL_PLANE_RUNNER_OOM_SCORE_ADJ',
+    ])
+      expect(excluded).not.toContain(name);
   });
 
   it('gives bootstrap and the Updater the same managed ACP environment sources', () => {
@@ -1029,7 +1078,7 @@ describe('deploy/bin/verity-compose', () => {
       writeFileSync(token, 'a'.repeat(64), { mode: 0o600 });
       writeFileSync(
         join(bin, 'docker'),
-        `#!/bin/sh\nprintf '%s\\n' "$*" >> '${calls}'\nif [ "$1" = ps ]; then printf '%s\\n' ${managedName}; fi\nif [ "$1" = start ] && [ "${failStart}" = true ]; then exit 1; fi\nif [ "$2:$3" = "-f:{{.State.Running}}" ]; then printf false; exit 0; fi\nif [ "$1" = inspect ]; then printf '%s\\n' 'managed-test-1 server false'; fi\ncase "$*" in *' ps --status running -q verity') printf '%s\\n' legacy-container ;; esac\n`,
+        `#!/bin/sh\nprintf '%s\\n' "$*" >> '${calls}'\n${existingDatabaseMock}\nif [ "$1:$2" = ps:-a ]; then printf '%s\\n' ${managedName}; fi\nif [ "$1:$2" = "start:${managedName}" ] && [ "${failStart}" = true ]; then exit 1; fi\nif [ "$2:$3" = "-f:{{.State.Running}}" ]; then printf false; exit 0; fi\nif [ "$1" = inspect ]; then printf '%s\\n' 'managed-test-1 server false'; fi\ncase "$*" in *' ps --status running -q verity') printf '%s\\n' legacy-container ;; esac\n`,
         { mode: 0o755 },
       );
       writeFileSync(
@@ -1062,8 +1111,8 @@ describe('deploy/bin/verity-compose', () => {
       expect(start).toBeGreaterThan(invocations.indexOf('stop verity\n'));
       if (failStart) {
         expect(invocations).not.toContain('exec -T verity-managed-gateway node -e');
-        expect(invocations).toContain(`stop ${managedName}\n`);
-        expect(invocations).toContain('up -d verity\n');
+        expect(invocations).not.toContain(`stop ${managedName}\n`);
+        expect(invocations).not.toContain('up -d verity\n');
         expect(invocations).not.toContain('rm -f');
       } else {
         expect(start).toBeLessThan(invocations.indexOf('exec -T verity-managed-gateway node -e'));
@@ -1086,7 +1135,7 @@ describe('deploy/bin/verity-compose', () => {
       // The extra names share the prefix but are not shapes this deployment owns:
       // an operator's backup, and a generation past the bound managed-gateway.ts:84
       // routes to. Counting either would read as a conflict and refuse the run.
-      `#!/bin/sh\nprintf '%s\\n' "$*" >> '${calls}'\nif [ "$1" = ps ]; then printf '%s\\n' verity-managed-server-g7 verity-managed-server-backup verity-managed-server-g2147483648; fi\nif [ "$1" = inspect ]; then printf '%s\\n' 'managed-test-1 server true'; fi\n`,
+      `#!/bin/sh\nprintf '%s\\n' "$*" >> '${calls}'\n${existingDatabaseMock}\nif [ "$1:$2" = ps:-a ]; then printf '%s\\n' verity-managed-server-g7 verity-managed-server-backup verity-managed-server-g2147483648; fi\nif [ "$1" = inspect ]; then printf '%s\\n' 'managed-test-1 server true'; fi\n`,
       { mode: 0o755 },
     );
     writeFileSync(
@@ -1117,7 +1166,7 @@ describe('deploy/bin/verity-compose', () => {
     expect(invocations).not.toContain('--remove-orphans');
   });
 
-  it('fences the generation Server rather than the bootstrap name on rollback', async () => {
+  it('preserves existing managed ownership when Repair readiness fails', async () => {
     tempRoot = mkdtempSync(join(tmpdir(), 'verity-compose-test-'));
     const bin = join(tempRoot, 'bin');
     const calls = join(tempRoot, 'calls.txt');
@@ -1127,7 +1176,7 @@ describe('deploy/bin/verity-compose', () => {
     writeFileSync(join(bin, 'sleep'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
     writeFileSync(
       join(bin, 'docker'),
-      `#!/bin/sh\nprintf '%s\\n' "$*" >> '${calls}'\nif [ "$1" = ps ]; then printf '%s\\n' verity-managed-server-g7; fi\ncase "$*" in\n  "inspect -f {{.State.Running}} verity-managed-server-g7") printf '%s\\n' false ;;\n  inspect*) printf '%s\\n' 'managed-test-1 server true' ;;\n  *' ps --status running -q verity') printf '%s\\n' legacy-container ;;\n  *' exec -T verity-managed-gateway '*) exit 1 ;;\nesac\n`,
+      `#!/bin/sh\nprintf '%s\\n' "$*" >> '${calls}'\n${existingDatabaseMock}\nif [ "$1:$2" = ps:-a ]; then printf '%s\\n' verity-managed-server-g7; fi\ncase "$*" in\n  "inspect -f {{.State.Running}} verity-managed-server-g7") printf '%s\\n' false ;;\n  inspect*) printf '%s\\n' 'managed-test-1 server true' ;;\n  *' ps --status running -q verity') printf '%s\\n' legacy-container ;;\n  *' exec -T verity-managed-gateway '*) exit 1 ;;\nesac\n`,
       { mode: 0o755 },
     );
     writeFileSync(
@@ -1153,11 +1202,136 @@ describe('deploy/bin/verity-compose', () => {
       }),
     ).rejects.toMatchObject({ code: 70 });
     const invocations = readFileSync(calls, 'utf8');
-    expect(invocations).toContain('stop verity-managed-server-g7');
+    expect(invocations).not.toContain('stop verity-managed-server-g7');
     // Removing the Server would destroy the deployment the Updater still owns.
     expect(invocations).not.toContain('rm -f');
-    expect(invocations).toContain('up -d verity');
+    expect(invocations).not.toContain('up -d verity');
   });
+
+  it.each([
+    { interrupted: false, abort: false, foreign: false, cleanup: false, network: 'normal' },
+    { interrupted: true, abort: false, foreign: false, cleanup: false, network: 'normal' },
+    { interrupted: true, abort: true, foreign: false, cleanup: false, network: 'normal' },
+    { interrupted: true, abort: false, foreign: true, cleanup: false, network: 'normal' },
+    { interrupted: true, abort: false, foreign: false, cleanup: true, network: 'normal' },
+    { interrupted: true, abort: false, foreign: false, cleanup: false, network: 'fail-once' },
+    { interrupted: true, abort: false, foreign: false, cleanup: false, network: 'detached' },
+    { interrupted: true, abort: false, foreign: false, cleanup: false, network: 'fail-cycle' },
+  ])(
+    'adopts a self-replaced updater and keeps PostgreSQL running ($interrupted, abort=$abort)',
+    async ({ interrupted, abort, foreign, cleanup, network }) => {
+      tempRoot = mkdtempSync(join(tmpdir(), 'verity-compose-recovery-'));
+      const bin = join(tempRoot, 'bin');
+      const calls = join(tempRoot, 'calls');
+      const running = join(tempRoot, 'db-running');
+      const removed = join(tempRoot, 'replacement-removed');
+      const token = join(tempRoot, 'updater-token');
+      const attached = join(tempRoot, 'network-attached');
+      const aliased = join(tempRoot, 'network-aliased');
+      const attempts = join(tempRoot, 'network-attempts');
+      mkdirSync(bin);
+      writeFileSync(token, 'a'.repeat(64), { mode: 0o600 });
+      if (!interrupted || foreign) writeFileSync(running, 'running');
+      if (network !== 'detached') writeFileSync(attached, 'attached');
+      if (network === 'normal') writeFileSync(aliased, 'aliased');
+      writeFileSync(
+        join(bin, 'docker'),
+        `#!/bin/sh
+printf '%s\\n' "$*" >> '${calls}'
+case "$*" in
+  'ps -a --filter name=^/verity-managed-server --format {{.Names}}') echo verity-managed-server-g7 ;;
+  inspect*' verity-managed-server-g7') echo 'managed-test-1 server true' ;;
+  'ps -aq --no-trunc --filter label=com.docker.compose.project=deploy --filter label=com.docker.compose.service=postgres')
+    echo pg-old
+    if [ '${interrupted}' = true ] && [ ! -f '${removed}' ]; then echo pg-created; fi ;;
+  inspect*' pg-old')
+    case "$*" in
+      *Aliases*) if [ -f '${aliased}' ]; then echo postgres; fi ;;
+      *com.docker.compose.project*)
+         if [ -f '${running}' ]; then state=running; else state=exited; fi
+         if [ -f '${attached}' ]; then net=verity-net; else net=''; fi
+         echo "deploy|postgres|$state|/deploy-postgres-1|deploy_verity-db|$net||" ;;
+      *) if [ -f '${attached}' ]; then echo verity-net; fi ;;
+
+    esac ;;
+  inspect*' pg-created') echo 'deploy|postgres|created|/pg-old_deploy-postgres-1|${foreign ? 'foreign-data' : 'deploy_verity-db'}|verity-net|pg-old|' ;;
+  'start pg-old') echo running > '${running}' ;;
+  'network inspect -f '*verity-net) echo 'deploy|default' ;;
+  'network disconnect verity-net pg-old') rm -f '${attached}' '${aliased}' ;;
+  'network connect --alias postgres verity-net pg-old')
+    if [ -f '${attempts}' ]; then count="$(cat '${attempts}')"; else count=0; fi
+    count=$((count + 1)); echo "$count" > '${attempts}'
+    if [ '${network}' = fail-once ] && [ "$count" -eq 1 ]; then exit 55; fi
+    if [ '${network}' = fail-cycle ] && [ "$count" -le 3 ]; then exit 55; fi
+    echo attached > '${attached}'; echo aliased > '${aliased}' ;;
+
+  'rm pg-created') [ '${cleanup}' = false ] || exit 24; echo removed > '${removed}' ;;
+  'ps -aq --filter label=com.docker.compose.project=deploy --filter label=com.docker.compose.service=verity-updater') echo updater-live ;;
+  inspect*' updater-live') echo 'deploy|verity-updater|running|none|verity-managed-deployment|deployment' ;;
+  *'stop pg-old'*|*'rm pg-old'*|*'stop updater-live'*|*'rm updater-live'*) exit 98 ;;
+  *' up -d'*)
+    case "$*" in *--no-deps*) ;; *) exit 99 ;; esac
+    case "$*" in *verity-managed-gateway*) [ '${abort}' = false ] || exit 23 ;; esac ;;
+esac
+`,
+        { mode: 0o755 },
+      );
+      writeFileSync(
+        join(bin, 'stat'),
+        `#!/bin/sh
+case "$2:$3" in
+  %a:'${token}') printf 600 ;;
+  %a:*) printf 755 ;;
+  %u:*) printf 0 ;;
+  *) exec /usr/bin/stat "$@" ;;
+esac
+`,
+        { mode: 0o755 },
+      );
+      const repair = () =>
+        execFileAsync('deploy/bin/verity-compose', ['managed-up'], {
+          cwd: process.cwd(),
+          env: {
+            ...process.env,
+            PATH: `${bin}:${process.env.PATH ?? ''}`,
+            COMPOSE_PROJECT_NAME: 'deploy',
+            VERITY_SERVER_IMAGE: `ghcr.io/heey-global/verity/verity-server@sha256:${'a'.repeat(64)}`,
+            VERITY_MANAGED_DEPLOYMENT_ID: 'managed-test-1',
+            VERITY_UPDATER_TOKEN_HOST_PATH: token,
+            VERITY_HOST_ARCHITECTURE: 'amd64',
+            VERITY_HOST_CLONE_ROOT: join(tempRoot!, 'workspaces'),
+            VERITY_SECRET_MATERIALIZATION_ROOT: join(tempRoot!, 'secrets'),
+          },
+        });
+      // Rerunning must neither lose the database nor recreate the adopted updater.
+      for (let run = 0; run < 2; run++) {
+        if (abort || foreign || cleanup || (network === 'fail-cycle' && run === 0))
+          await expect(repair()).rejects.toMatchObject({ code: 70 });
+        else await repair();
+        expect(readFileSync(running, 'utf8').trim()).toBe('running');
+        if (interrupted && !foreign && !cleanup)
+          expect(readFileSync(removed, 'utf8').trim()).toBe('removed');
+      }
+      const invocations = readFileSync(calls, 'utf8');
+      if (foreign) expect(invocations).not.toContain('rm pg-created');
+      if (interrupted && !foreign)
+        expect(invocations.indexOf('start pg-old')).toBeLessThan(
+          invocations.indexOf('rm pg-created'),
+        );
+      if (network !== 'normal') {
+        expect(readFileSync(aliased, 'utf8').trim()).toBe('aliased');
+        if (network === 'detached') expect(invocations).not.toContain('network disconnect');
+      }
+      expect(invocations).not.toContain('stop updater-live');
+      expect(invocations).not.toContain('start updater-live');
+      if (!foreign && !cleanup)
+        expect(invocations).toContain('{{if eq . "VERITY_MANAGED_DEPLOYMENT_ID=managed-test-1"}}');
+      expect(invocations).not.toContain('stop pg-old');
+      expect(invocations).not.toContain('rm -v');
+      expect(invocations).not.toContain('--remove-orphans');
+      expect(invocations).not.toContain('up -d --no-deps verity-updater');
+    },
+  );
 
   it('rejects a concurrent managed migration before touching Docker', async () => {
     tempRoot = mkdtempSync(join(tmpdir(), 'verity-compose-test-'));

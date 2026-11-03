@@ -4,7 +4,14 @@ import { createInterface } from 'node:readline';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 
-if (process.argv.slice(2).join(' ') === 'auth status --json') {
+if (
+  process.argv.some(
+    (argument, index) =>
+      argument === 'auth' &&
+      process.argv[index + 1] === 'status' &&
+      process.argv[index + 2] === '--json',
+  )
+) {
   process.stdout.write(`${JSON.stringify({ loggedIn: false })}\n`);
   process.exit(0);
 }
@@ -169,6 +176,17 @@ for await (const line of input) {
         },
         pending_permission_requests: [],
         pending_user_dialog_requests: [],
+      },
+    });
+    continue;
+  }
+  if (frame.type === 'control_request' && frame.request?.subtype === 'get_settings') {
+    emit({
+      type: 'control_response',
+      response: {
+        subtype: 'success',
+        request_id: frame.request_id,
+        response: { applied: { ultracodeAvailable: false, ultracodeRequested: false } },
       },
     });
     continue;

@@ -937,3 +937,38 @@ describe('DEFAULT_DOCKER_GC_POLICY', () => {
     expect(DEFAULT_DOCKER_GC_POLICY.relayMinAgeMs).toBeGreaterThan(0);
   });
 });
+
+it('coalesces admission and scheduled reclamation entrypoints', async () => {
+  let release!: () => void;
+  const wait = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const beforeSweep = vi.fn(() => wait);
+  const scheduler = startDockerGcScheduler(deps(fakeDocker({}), { beforeSweep }));
+  try {
+    const first = scheduler.runOnce();
+    const second = scheduler.runOnce();
+    release();
+    expect(await first).toBe(await second);
+    expect(beforeSweep).toHaveBeenCalledOnce();
+  } finally {
+    scheduler.stop();
+  }
+});
+
+it('reports unique managed image pins from stopped containers without counting foreign images', async () => {
+  const docker = fakeDocker({
+    images: [
+      image({ id: 'old', repoTags: ['verity-devc-org-repo:old'], size: 123 }),
+      image({ id: 'foreign', repoTags: ['postgres:18'], size: 900 }),
+    ],
+    containers: [
+      { id: 'one', imageId: 'old', state: 'exited' },
+      { id: 'two', imageId: 'old', state: 'created' },
+      { id: 'db', imageId: 'foreign', state: 'exited' },
+    ],
+  });
+  const report = await runDockerGc(deps(docker));
+  expect(report.stoppedContainerPins).toEqual({ images: 1, containers: 2, estimatedBytes: 123 });
+  expect(report.keptImageReasons[0]?.containers).toEqual(['one', 'two']);
+});

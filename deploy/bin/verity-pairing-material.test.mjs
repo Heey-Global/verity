@@ -276,3 +276,44 @@ test('address discovery falls back on hosts without usable ip tooling', () => {
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout.trim(), '192.168.1.42');
 });
+
+test('invitation-only refresh keeps published identity and certificate bytes unchanged', () => {
+  const state = mkdtempSync(join(tmpdir(), 'verity-pairing-invitation-'));
+  const first = run(state);
+  assert.equal(first.status, 0, first.stderr);
+  const names = [
+    'pairing-identity.pem',
+    'tls-key.pem',
+    'tls-cert.pem',
+    'tls-ca-key.pem',
+    'tls-ca-cert.pem',
+  ];
+  const before = names.map((name) => readFileSync(join(state, name)));
+  const old = JSON.parse(
+    Buffer.from(new URL(first.stdout.trim()).searchParams.get('payload'), 'base64url').toString(),
+  );
+  writeFileSync(join(state, 'pairing-expires-at'), '2000-01-01T00:00:00.000Z');
+  const refreshed = run(state, { VERITY_PAIRING_INVITATION_ONLY: '1' });
+  assert.equal(refreshed.status, 0, refreshed.stderr);
+  assert.deepEqual(
+    names.map((name) => readFileSync(join(state, name))),
+    before,
+  );
+  const current = JSON.parse(
+    Buffer.from(
+      new URL(refreshed.stdout.trim()).searchParams.get('payload'),
+      'base64url',
+    ).toString(),
+  );
+  assert.equal(current.identityKey, old.identityKey);
+  assert.equal(current.tlsPin, old.tlsPin);
+  assert.notEqual(current.code, old.code);
+  assert.ok(Date.parse(current.expiresAt) > Date.now() + 5 * 60_000);
+});
+
+test('invitation-only refresh refuses to invent a missing deployment identity', () => {
+  const state = mkdtempSync(join(tmpdir(), 'verity-pairing-invitation-empty-'));
+  const refreshed = run(state, { VERITY_PAIRING_INVITATION_ONLY: '1' });
+  assert.notEqual(refreshed.status, 0);
+  assert.match(refreshed.stderr, /requires existing identity material/);
+});

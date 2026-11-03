@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { expect, it, vi } from 'vitest';
-import { BackupOperationalAlerts } from './operational-alerts.js';
+import { BackupOperationalAlerts, backupAlertMessages } from './operational-alerts.js';
 
 it('persists sanitized alert episodes, retries delivery and clears resolved conditions across restarts', async () => {
   const root = await mkdtemp(join(tmpdir(), 'backup-alerts-'));
@@ -38,3 +38,41 @@ it('persists sanitized alert episodes, retries delivery and clears resolved cond
     await rm(root, { recursive: true, force: true });
   }
 });
+
+it.each(Object.keys(backupAlertMessages))(
+  'retries, deduplicates and clears the %s episode through a process-state reopen',
+  async (code) => {
+    const root = await mkdtemp(join(tmpdir(), 'backup-alert-episode-'));
+    try {
+      let alerts = await BackupOperationalAlerts.open(root);
+      const notify = vi.fn(async (code: string) => {
+        void code;
+        return false;
+      });
+      alerts.setNotifier(notify);
+      await alerts.refresh([code]);
+      expect(alerts.status()).toEqual([code]);
+      expect(notify).toHaveBeenCalledTimes(1);
+      alerts = await BackupOperationalAlerts.open(root);
+      alerts.setNotifier(notify);
+      notify.mockResolvedValue(true);
+      await alerts.refresh([code]);
+      await alerts.refresh([code]);
+      expect(notify).toHaveBeenCalledTimes(2);
+      alerts = await BackupOperationalAlerts.open(root);
+      alerts.setNotifier(notify);
+      await alerts.refresh([code]);
+      expect(notify).toHaveBeenCalledTimes(2);
+      await alerts.refresh([]);
+      expect(alerts.status()).toEqual([]);
+      alerts = await BackupOperationalAlerts.open(root);
+      expect(alerts.status()).toEqual([]);
+      alerts.setNotifier(notify);
+      await alerts.refresh([code]);
+      expect(notify).toHaveBeenCalledTimes(3);
+      expect(notify.mock.calls.map((call) => call[0])).toEqual([code, code, code]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  },
+);

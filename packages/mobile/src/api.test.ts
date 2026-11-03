@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { beginSessionSwitch, exportSessionSwitchTimings } from './sessionSwitchTiming.js';
 import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
@@ -4298,4 +4299,214 @@ it('preserves the provider snapshot returned with managed server views', async (
   expect((await client.listManagedDevServers('s'))?.[0]?.providerSnapshot).toEqual(
     providerSnapshot,
   );
+});
+
+it('loads MCP app documents and sends tool actions through authenticated session-scoped requests', async () => {
+  const fetcher = vi
+    .fn()
+    .mockResolvedValueOnce(new Response(JSON.stringify({ document: '<html>app</html>' })))
+    .mockResolvedValueOnce(
+      new Response(JSON.stringify({ content: [], structuredContent: { count: 2 } })),
+    );
+  const client = new VerityClient({
+    baseUrl: 'https://verity.example',
+    getToken: () => 'paired-device',
+    fetch: fetcher,
+  });
+  expect(await client.getMcpAppDocument('s', 'app')).toBe('<html>app</html>');
+  expect(await client.callMcpAppTool('s', 'app', { name: 'refresh', arguments: {} })).toMatchObject(
+    { structuredContent: { count: 2 } },
+  );
+  expect(fetcher.mock.calls[0]?.[0]).toBe('https://verity.example/sessions/s/mcp-apps/app');
+  expect(fetcher.mock.calls[1]?.[1]).toMatchObject({
+    method: 'POST',
+    body: JSON.stringify({ name: 'refresh', arguments: {} }),
+  });
+});
+
+it('preserves originating PR session responsibility while accepting older repair responses', async () => {
+  const incident = {
+    id: 'i',
+    resource: 'pr:42',
+    revision: 'sha',
+    state: 'open',
+    owner_session_id: null,
+    last_session_id: null,
+    attempts: 0,
+    evidence: '{}',
+  };
+  const { fetch } = fakeFetchSequence(
+    json({ mandate: null, incidents: [{ ...incident, originating_session_id: 'origin' }] }),
+    json({ mandate: null, incidents: [incident] }),
+  );
+  const client = new VerityClient({ baseUrl: 'http://host', fetch });
+  expect((await client.projectRepairs('p')).incidents?.[0]?.originating_session_id).toBe('origin');
+  expect((await client.projectRepairs('p')).incidents?.[0]?.originating_session_id).toBeUndefined();
+});
+
+it('uses server-bound MCP OAuth and sends only state and code on completion', async () => {
+  const discovery = {
+    authorizationEndpoint: 'https://identity.example/authorize',
+    tokenEndpoint: 'https://identity.example/token',
+    scopes: 'read',
+    registrationAvailable: true,
+  };
+  const flow = {
+    authorizationUrl: 'https://identity.example/authorize?state=state',
+    state: 'state',
+    redirectUri: 'https://host/app/mcp/oauth/callback',
+    expiresAt: 12345,
+  };
+  const { fetch, calls } = fakeFetchSequence(
+    json(discovery),
+    json(flow),
+    json({ connected: true }),
+    new Response(null, { status: 204 }),
+  );
+  const client = new VerityClient({ baseUrl: 'https://host', fetch });
+  expect(await client.discoverHttpMcpOAuth('https://tools.example/mcp')).toEqual(discovery);
+  expect(await client.startHttpMcpOAuth('tools/1', 'web')).toEqual(flow);
+  await client.completeHttpMcpOAuth('tools/1', {
+    code: 'code',
+    state: 'state',
+    kind: 'success',
+  } as { code: string; state: string });
+  await client.cancelHttpMcpOAuth('tools/1', 'state');
+  expect(calls.map((call) => call.url)).toEqual([
+    'https://host/mcp-connections/oauth/discover',
+    'https://host/mcp-connections/tools%2F1/oauth/start',
+    'https://host/mcp-connections/tools%2F1/oauth/complete',
+    'https://host/mcp-connections/tools%2F1/oauth/cancel',
+  ]);
+  expect(jsonBody(calls[2])).toEqual({ code: 'code', state: 'state' });
+  expect(jsonBody(calls[3])).toEqual({ state: 'state' });
+});
+
+describe('VerityClient calendar meetings', () => {
+  // The paths below are only right if the server registers them; a renamed route would
+  // otherwise leave these tests green while every request 404s.
+  const serverRoutes = [
+    'live-meeting-intake.ts',
+    'calendar-meeting-routes.ts',
+    'calendar-watch-routes.ts',
+  ]
+    .map((file) => readFileSync(new URL(`../../server/src/${file}`, import.meta.url), 'utf8'))
+    .join('\n');
+  const registered = (method: string, pattern: string) =>
+    expect(serverRoutes).toContain(`app.${method.toLowerCase()}('${pattern}'`);
+
+  it('reads running, unassigned and upcoming meetings', async () => {
+    const active = {
+      running: [
+        {
+          id: 'device',
+          sessionId: 'session',
+          title: null,
+          engine: 'fluid-nemotron',
+          startedAt: 1,
+          state: 'active',
+          captureStatus: 'listening',
+          sessionName: null,
+          projectId: null,
+          recorderLastSeenAt: 2,
+        },
+      ],
+      unassigned: [
+        {
+          id: 'm1',
+          title: null,
+          startedAt: 1,
+          endedAt: null,
+          state: 'active',
+          captureStatus: 'listening',
+          people: 2,
+        },
+      ],
+      retentionDays: 7,
+    };
+    const upcoming = {
+      eventKey: 'k1',
+      title: 'Weekly sync',
+      startsAt: 1,
+      endsAt: 2,
+      calendar: 'Work',
+      provider: 'webex',
+      decision: null,
+      meetingId: null,
+    };
+    const { fetch, calls } = fakeFetchSequence(json(active), json({ upcoming: [upcoming] }));
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    expect(await client.getActiveLiveMeetings()).toEqual(active);
+    // An unknown provider from a newer server still lists the meeting.
+    expect(await client.getUpcomingMeetings()).toEqual([{ ...upcoming, provider: 'meet' }]);
+    expect(calls.map((call) => call.url)).toEqual([
+      'http://host/live-meetings/active',
+      'http://host/live-meetings/upcoming',
+    ]);
+    registered('GET', '/live-meetings/active');
+    registered('GET', '/live-meetings/upcoming');
+  });
+
+  it('joins with or without a session, skips, assigns and discards', async () => {
+    const { fetch, calls } = fakeFetchSequence(
+      json({ meetingId: 'm1' }),
+      json({ meetingId: 'm2' }),
+      json({ skipped: true }),
+      json({ sessionId: 's1', meetingId: 'm1' }),
+      new Response(null, { status: 204 }),
+    );
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    expect(await client.joinCalendarMeeting('k/1')).toEqual({ meetingId: 'm1' });
+    expect(await client.joinCalendarMeeting('k/1', 's1')).toEqual({ meetingId: 'm2' });
+    await client.skipCalendarMeeting('k/1');
+    expect(await client.assignLiveMeeting('m/1', { projectId: 'p1' })).toEqual({
+      sessionId: 's1',
+      meetingId: 'm1',
+    });
+    await client.discardLiveMeeting('m/1');
+    expect(calls.map((call) => [call.init?.method, call.url])).toEqual([
+      ['POST', 'http://host/live-meetings/calendar/k%2F1/join'],
+      ['POST', 'http://host/live-meetings/calendar/k%2F1/join'],
+      ['POST', 'http://host/live-meetings/calendar/k%2F1/skip'],
+      ['POST', 'http://host/live-meetings/unassigned/m%2F1/assign'],
+      ['DELETE', 'http://host/live-meetings/unassigned/m%2F1'],
+    ]);
+    // Without a session the meeting starts unassigned; the body must not name one.
+    expect(jsonBody(calls[0])).toEqual({});
+    expect(jsonBody(calls[1])).toEqual({ sessionId: 's1' });
+    expect(jsonBody(calls[3])).toEqual({ projectId: 'p1' });
+    registered('POST', '/live-meetings/calendar/:eventKey/join');
+    registered('POST', '/live-meetings/calendar/:eventKey/skip');
+    registered('POST', '/live-meetings/unassigned/:meetingId/assign');
+    registered('DELETE', '/live-meetings/unassigned/:meetingId');
+  });
+
+  it('reads and changes which calendars are watched', async () => {
+    const watch = {
+      accounts: [
+        {
+          id: 'a1',
+          email: 'you@example.com',
+          displayName: null,
+          access: 'revoked',
+          calendars: [],
+        },
+      ],
+      retentionDays: 7,
+    };
+    const { fetch, calls } = fakeFetchSequence(json(watch), json({}));
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    // An access state from a newer server reads as unavailable instead of failing the screen.
+    expect(await client.getCalendarWatch()).toEqual({
+      ...watch,
+      accounts: [{ ...watch.accounts[0], access: 'unavailable' }],
+    });
+    const choice = { accountId: 'a1', calendarId: 'c1', watched: true, autoJoin: false };
+    await client.setCalendarWatch(choice);
+    expect(calls[1]?.init?.method).toBe('PUT');
+    expect(calls[1]?.url).toBe('http://host/settings/calendar-watch');
+    expect(jsonBody(calls[1])).toEqual(choice);
+    registered('GET', '/settings/calendar-watch');
+    registered('PUT', '/settings/calendar-watch');
+  });
 });

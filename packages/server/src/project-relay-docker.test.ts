@@ -1,3 +1,4 @@
+import { ProjectEgressLifecycle } from './project-egress-lifecycle.js';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
@@ -482,4 +483,62 @@ describe('Docker project relay adapter', () => {
     });
     await expect(untrusted(context)).rejects.toThrow('directory is not trusted');
   });
+});
+
+it('routes new, running and stopped experimental relays through host acknowledgement', async () => {
+  const h = harness();
+  const egress = new ProjectEgressLifecycle(async () => {
+    throw new Error('unexpected command');
+  }, {});
+  const prepare = vi.spyOn(egress, 'prepare').mockResolvedValue({
+    projectId: identity.projectId,
+    generation: identity.containerGeneration,
+    networkId: 'a'.repeat(64),
+    networkName: 'generation-network',
+    bridge: 'vep0123456789ab',
+  });
+  const start = vi.spyOn(egress, 'start').mockResolvedValue(undefined);
+  const retire = vi.spyOn(egress, 'retire').mockResolvedValue(undefined);
+  const current = vi.spyOn(egress, 'current').mockResolvedValue(await egress.prepare(identity));
+  prepare.mockClear();
+  const runtime = await h.start({ ...context, egress });
+  expect(h.createContainer.mock.calls[0]?.[0]).toMatchObject({
+    network: 'generation-network',
+    runtime: 'runsc-relay',
+    pidsLimit: 64,
+    memoryBytes: RELAY_MEMORY_BYTES,
+    nanoCpus: 250_000_000,
+    restartPolicy: 'no',
+  });
+  // Under the fence the relay answers names only from host-admitted direct grants.
+  expect(h.createContainer.mock.calls[0]?.[0].env).toContain('VERITY_DNS_CONTROLLED=1');
+  expect(start).toHaveBeenCalledWith(identity, 'relay', 'relay-cid');
+  expect(h.startContainer).not.toHaveBeenCalled();
+  for (const running of [true, false]) {
+    h.docker.inspectContainer.mockResolvedValue({ id: 'relay-cid', running });
+    await runtime.ensureRunning!();
+  }
+  expect(start).toHaveBeenCalledTimes(3);
+  start.mockRejectedValueOnce(new Error('host unavailable'));
+  await expect(runtime.ensureRunning!()).rejects.toThrow('host unavailable');
+  expect(h.startContainer).not.toHaveBeenCalled();
+  await runtime.quiesce();
+  expect(prepare).toHaveBeenCalledTimes(2);
+  await runtime.close();
+  expect(retire).toHaveBeenCalledWith(identity);
+  current.mockRejectedValueOnce(new Error('host unavailable'));
+  h.stopContainer.mockClear();
+  h.removeContainer.mockClear();
+  await runtime.close();
+  expect(h.stopContainer).toHaveBeenCalledWith('relay-cid');
+  expect(h.removeContainer).toHaveBeenCalledWith('relay-cid');
+});
+it('does not create an experimental relay without the host fence', async () => {
+  const h = harness();
+  const egress = new ProjectEgressLifecycle(async () => {
+    throw new Error('host unavailable');
+  }, {});
+  await expect(h.start({ ...context, egress })).rejects.toThrow('host unavailable');
+  expect(h.createContainer).not.toHaveBeenCalled();
+  expect(h.startContainer).not.toHaveBeenCalled();
 });

@@ -158,4 +158,57 @@ describe('audit log', () => {
     const found = await log.listOperations({ search: 'feed0' });
     expect(found.operations.map((ops) => ops[0]!.operationId)).toEqual(['op-second', 'op-first']);
   });
+  it('filters and pages by operation start while retaining outcomes outside the window', async () => {
+    const first = await log.append(requested('first'));
+    const second = await log.append(requested('second'));
+    await log.append(succeeded('second', 'sha256:second'));
+    const third = await log.append(requested('third'));
+    const window = { since: first.recordedAt, until: second.recordedAt, limit: 1 };
+    const page = await log.listOperations(window);
+    expect(page.operations.map((events) => events[0]!.operationId)).toEqual(['second']);
+    expect(page.operations[0]!.map((event) => event.kind)).toEqual([
+      'build.requested',
+      'build.succeeded',
+    ]);
+    expect(page.nextBefore).not.toBeNull();
+    const older = await log.listOperations({ ...window, before: page.nextBefore! });
+    expect(older.operations.map((events) => events[0]!.operationId)).toEqual(['first']);
+    expect(older.nextBefore).toBeNull();
+    expect((await log.listOperations({ since: third.recordedAt })).operations).toHaveLength(1);
+  });
+});
+
+it('pages individual events with equal timestamps without merging a build or skipping ties', async () => {
+  const first = await log.append(requested('same-build'));
+  const second = await log.append(succeeded('same-build', 'sha256:result'));
+  const third = await log.append(requested('other-build', 'p2'));
+  const at = '2026-10-29T12:00:00.000Z';
+  await ctx.db
+    .updateTable('audit_events')
+    .set({ recorded_at: at } as never)
+    .execute();
+  const expected = [first, second, third]
+    .map((e) => e.eventId)
+    .sort()
+    .reverse();
+  const ids: string[] = [];
+  let before: string | undefined;
+  for (let index = 0; index < 5; index++) {
+    const page = await log.listEvents({
+      limit: 1,
+      before,
+      since: '2026-10-29T11:00:00Z',
+      until: '2026-10-29T13:00:00Z',
+    });
+    ids.push(...page.events.map((e) => e.eventId));
+    before = page.nextBefore ?? undefined;
+    if (!before) break;
+  }
+  expect(ids).toEqual(expected);
+  expect((await log.listEvents({ since: '2026-10-29T13:00:00Z' })).events).toEqual([]);
+  expect((await log.listEvents({ until: '2026-10-29T11:00:00Z' })).events).toEqual([]);
+  expect((await log.listEvents({ domain: 'images' })).events).toEqual([]);
+  expect((await log.listEvents({ search: 'result' })).events.map((e) => e.eventId)).toEqual([
+    second.eventId,
+  ]);
 });

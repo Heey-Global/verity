@@ -133,6 +133,32 @@ describe('session keyboard avoidance', () => {
     expect(result.current.frameStyle).toMatchObject({ paddingBottom: 300 });
   });
 
+  it.each(['native', 'controller'] as const)(
+    'clears interrupted opening space when %s reports a late show without input focus',
+    (source) => {
+      const { result } = renderHook(useSessionKeyboardAvoidance);
+      // Opening can be interrupted by navigation before UIKit finishes showing.
+      act(() => controllerEvents.keyboardWillShow());
+      expect(result.current.frameStyle).toMatchObject({ paddingBottom: 300 });
+      act(() => finishTransition());
+      jest.mocked(TextInput.State.currentlyFocusedInput).mockReturnValue(noFocusedInput);
+      act(() => {
+        if (source === 'native') events.keyboardDidShow();
+        else controllerEvents.keyboardDidShow();
+      });
+      expect(result.current.enabled).toBe(false);
+      expect(result.current.frameStyle).toMatchObject({ paddingBottom: 0 });
+      // A subsequent tap must still be able to open the keyboard normally.
+      jest
+        .mocked(TextInput.State.currentlyFocusedInput)
+        .mockReturnValue(
+          {} as NonNullable<ReturnType<typeof TextInput.State.currentlyFocusedInput>>,
+        );
+      act(() => controllerEvents.keyboardDidShow());
+      expect(result.current.frameStyle).toMatchObject({ paddingBottom: 300 });
+    },
+  );
+
   it('uses the window bottom rather than subtracting the navigation header', async () => {
     visible = true;
     const { height: windowHeight } = ReactNative.Dimensions.get('window');
@@ -199,6 +225,10 @@ describe('session keyboard avoidance', () => {
     act(() => controllerEvents.keyboardDidHide?.());
     expect(result.current.enabled).toBe(false);
     expect(result.current.frameStyle).toMatchObject({ paddingBottom: 0 });
+    // Tapping the remounted composer restores focus before its next opening.
+    jest
+      .mocked(TextInput.State.currentlyFocusedInput)
+      .mockReturnValue({} as NonNullable<ReturnType<typeof TextInput.State.currentlyFocusedInput>>);
     act(() => events[Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow']());
     expect(result.current.frameStyle).toMatchObject({ paddingBottom: 300 });
   });

@@ -1,3 +1,5 @@
+import type { QAAnalysisDeps } from './qa-analysis-tool.js';
+import type { RepairDiscovery } from './repair-supervisor.js';
 import { documentWorkspace, documentViewForSession } from './document-workspace.js';
 import type { ProjectGitHubIssues } from './project-github-issues.js';
 import { Conductor, type Backend, type ConductorDeps, type EventBus } from '@verity/session';
@@ -46,6 +48,7 @@ import { createSessionChangeFeed } from './live/live-hub.js';
 import type { ReleaseChannelResolver } from './self-update/release-channel.js';
 
 export interface ControlPlaneDeps {
+  sessionStorage?: ServerDeps['sessionStorage'];
   backup?: ServerDeps['backup'];
   eventStore: EventStore;
   /** Durable server root for filesystem-backed project Knowledge. Forwarded to
@@ -100,9 +103,12 @@ export interface ControlPlaneDeps {
   /** Temporary public preview lifecycle. Absent keeps sharing routes disabled. */
   previewShareManager?: ServerDeps['previewShareManager'];
   attendeeEdge?: ServerDeps['attendeeEdge'];
+  googleAccessToken?: ServerDeps['googleAccessToken'];
   listenerDiscovery?: ServerDeps['listenerDiscovery'];
   localPreviewManager?: ServerDeps['localPreviewManager'];
   managedDevServerManager?: ServerDeps['managedDevServerManager'];
+  projectEgressResolve?: ServerDeps['projectEgressResolve'];
+  projectEgressAvailable?: ServerDeps['projectEgressAvailable'];
   previewSharingCapability?: ServerDeps['previewSharingCapability'];
   returnPathActivation?: ServerDeps['returnPathActivation'];
   coordinatedRecording?: ServerDeps['coordinatedRecording'];
@@ -181,6 +187,13 @@ export interface ControlPlaneDeps {
    * dropped here — now forwarded so the embedded composition actually wires it.) */
   branchPr?: ((branch: string, worktree: string) => Promise<number | null>) | undefined;
   /** Compact PR strip status for a branch: title, URL, check counts and mergeability. */
+  invalidateProjectPrStatus?: (projectId: string) => void;
+  repairPullRequest?: (
+    project: ProjectRecord,
+    number: number,
+  ) => Promise<{ state: 'open' | 'closed' | 'merged' } | null>;
+  qaAnalysisRead?: QAAnalysisDeps['read'];
+  repairDiscovery?: (project: ProjectRecord, page: number) => Promise<RepairDiscovery>;
   branchPrStatus?:
     ((branch: string, worktree: string) => Promise<PullRequestStatus | null>) | undefined;
   /** Compact PR strip status for a multi-branch session — the most-recently-updated
@@ -385,6 +398,12 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
     ...(deps.managedDevServerManager !== undefined
       ? { managedDevServerManager: deps.managedDevServerManager }
       : {}),
+    ...(deps.projectEgressResolve !== undefined
+      ? { projectEgressResolve: deps.projectEgressResolve }
+      : {}),
+    ...(deps.projectEgressAvailable !== undefined
+      ? { projectEgressAvailable: deps.projectEgressAvailable }
+      : {}),
     ...(deps.listenerDiscovery !== undefined ? { listenerDiscovery: deps.listenerDiscovery } : {}),
     ...(deps.localPreviewManager !== undefined
       ? { localPreviewManager: deps.localPreviewManager }
@@ -393,6 +412,7 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
       ? { previewSharingCapability: deps.previewSharingCapability }
       : {}),
     ...(deps.attendeeEdge !== undefined ? { attendeeEdge: deps.attendeeEdge } : {}),
+    ...(deps.googleAccessToken !== undefined ? { googleAccessToken: deps.googleAccessToken } : {}),
     ...(deps.previewShareManager !== undefined
       ? { previewShareManager: deps.previewShareManager }
       : {}),
@@ -454,6 +474,12 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
     ...(deps.worktrees !== undefined ? { worktrees: deps.worktrees } : {}),
     ...(deps.workspaceDir !== undefined ? { workspaceDir: deps.workspaceDir } : {}),
     ...(deps.branches !== undefined ? { branches: deps.branches } : {}),
+    ...(deps.invalidateProjectPrStatus !== undefined
+      ? { invalidateProjectPrStatus: deps.invalidateProjectPrStatus }
+      : {}),
+    ...(deps.repairPullRequest ? { repairPullRequest: deps.repairPullRequest } : {}),
+    ...(deps.qaAnalysisRead !== undefined ? { qaAnalysisRead: deps.qaAnalysisRead } : {}),
+    ...(deps.repairDiscovery !== undefined ? { repairDiscovery: deps.repairDiscovery } : {}),
     ...(deps.branchPr !== undefined ? { branchPr: deps.branchPr } : {}),
     ...(deps.branchPrStatus !== undefined ? { branchPrStatus: deps.branchPrStatus } : {}),
     ...(deps.branchPrStatusForBranches !== undefined
@@ -512,6 +538,7 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
       ? { meetingTranscriber: deps.meetingTranscriber }
       : {}),
     ...(deps.projectWorktrees !== undefined ? { projectWorktrees: deps.projectWorktrees } : {}),
+    ...(deps.sessionStorage ? { sessionStorage: deps.sessionStorage } : {}),
     ...(deps.deprovisioner !== undefined ? { deprovisioner: deps.deprovisioner } : {}),
     ...(deps.onProjectHidden !== undefined ? { onProjectHidden: deps.onProjectHidden } : {}),
     ...(deps.audit !== undefined ? { audit: deps.audit } : {}),

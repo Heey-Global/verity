@@ -1,3 +1,4 @@
+import { parseOomScoreAdj } from '../sandbox-memory-policy.js';
 import { normalizeSecurityOptions } from '../docker-security-options.js';
 import { readFile } from 'node:fs/promises';
 import type { ContainerInspect, ContainerSpec, DockerClient } from '../docker.js';
@@ -12,6 +13,7 @@ import {
   readManagedDevcontainerBuilderBackup,
   readManagedBuilderAdmissionBackup,
   readManagedHostDiagnosticBackup,
+  readManagedBackupMountCheckpoint,
 } from './managed-deployment.js';
 
 export const MANAGED_SERVER_NAME = 'verity-managed-server';
@@ -38,6 +40,8 @@ export interface ReconcileManagedServerOptions {
   /** Allow only the recorded install migrations (host diagnostics, devcontainer
    *  builder) on an already promoted Server. */
   readonly allowDiagnosticMountMigration?: boolean;
+  /** Only the existing bootstrap container confirmed by a rolled-back journal may be reused. */
+  readonly bootstrapRollbackContainerId?: string;
   readonly identity?: {
     readonly name: string;
     readonly operationId: string;
@@ -58,6 +62,7 @@ export interface ManagedServerReconcileResult {
    */
   readonly drift?: readonly string[];
   /** The running Server keeps serving until its next guarded replacement. */
+  readonly backupMountPending?: true;
   readonly diagnosticMountPending?: true;
   /** As {@link diagnosticMountPending}, for the devcontainer builder socket. */
   readonly devcontainerBuilderPending?: true;
@@ -80,6 +85,7 @@ export type ManagedServerReconcileVerdict =
   | {
       readonly status: 'drift';
       readonly environment: readonly string[];
+      readonly backupMountPending?: true;
       readonly diagnosticMountPending?: true;
       readonly devcontainerBuilderPending?: true;
     }
@@ -254,9 +260,13 @@ function effectiveEnvironment(
 const ceiling = (value: number | undefined): number =>
   value === undefined || value <= 0 ? 0 : value;
 
-/** Whether a container carries exactly the four host ceilings a spec states. */
+/** Whether a container carries the host ceilings and OOM preference a spec states. */
 function hostLimitsMatch(inspect: ContainerInspect, desired: ContainerSpec): boolean {
   return (
+    // Pre-priority Servers used Docker's zero default. Retain them when adopting
+    // the new default; replacement containers receive the protected priority.
+    ((inspect.oomScoreAdj ?? 0) === (desired.oomScoreAdj ?? 0) ||
+      ((inspect.oomScoreAdj ?? 0) === 0 && desired.oomScoreAdj === -250)) &&
     ceiling(inspect.memoryBytes) === ceiling(desired.memoryBytes) &&
     ceiling(inspect.memorySwapBytes) === ceiling(desired.memorySwapBytes) &&
     ceiling(inspect.nanoCpus) === ceiling(desired.nanoCpus) &&
@@ -706,6 +716,10 @@ function containerSpecFrom(spec: ServerDeploymentSpec, env: string[]): Container
     // A spec sealed before the field existed carries no value, and the fallback is
     // exactly what Compose states, so an old spec and a new one build the same
     // container.
+    oomScoreAdj:
+      parseOomScoreAdj(
+        env.find((entry) => entry.startsWith('VERITY_SERVER_OOM_SCORE_ADJ='))?.split('=')[1],
+      ) ?? -250,
     memoryBytes: resources.memoryBytes,
     // Set, not omitted: Docker's default is twice the memory limit, so leaving it
     // out would quietly grant the Server swap that Compose's matching
@@ -716,7 +730,7 @@ function containerSpecFrom(spec: ServerDeploymentSpec, env: string[]): Container
   };
 }
 
-type PendingMount = 'diagnostic' | 'builder' | 'builder-admission';
+type PendingMount = 'diagnostic' | 'builder' | 'builder-admission' | 'backup';
 
 /**
  * Install migrations that add a bind to an adopted spec, newest first. Each one
@@ -726,10 +740,18 @@ type PendingMount = 'diagnostic' | 'builder' | 'builder-admission';
 const PENDING_MOUNT_MIGRATIONS: readonly {
   readonly key: PendingMount;
   readonly target: string;
+  readonly additionalTarget?: string;
   readonly readBackup: (root: string) => Promise<ServerDeploymentSpec | null>;
   /** Groups the migration may have added alongside its bind. */
   readonly addsGroups: boolean;
 }[] = [
+  {
+    key: 'backup',
+    target: '/run/verity-backups',
+    additionalTarget: '/run/verity-backup-identity',
+    readBackup: (root) => readManagedBackupMountCheckpoint(root),
+    addsGroups: false,
+  },
   {
     key: 'builder-admission',
     target: DEVCONTAINER_BUILDER_SOCKET_DIRECTORY,
@@ -795,7 +817,8 @@ async function previousAuthority(
     !candidate.mounts.some((mount) => mount.target === migration.target) ||
     inspect.mounts?.some(
       (mount) =>
-        mount.destination === migration.target &&
+        (mount.destination === migration.target ||
+          mount.destination === migration.additionalTarget) &&
         (migration.key !== 'builder-admission' || mount.readWrite !== false),
     )
   )
@@ -812,7 +835,10 @@ async function previousAuthority(
         ? candidate.mounts.map((mount) =>
             mount.target === migration.target ? { ...mount, readOnly: true } : mount,
           )
-        : candidate.mounts.filter((mount) => mount.target !== migration.target),
+        : candidate.mounts.filter(
+            (mount) =>
+              mount.target !== migration.target && mount.target !== migration.additionalTarget,
+          ),
     user: {
       uid: candidate.user.uid,
       gid: candidate.user.gid,
@@ -885,6 +911,27 @@ export async function reconcileManagedServer(
   const spec = state.spec;
   const summaries = await listContainers();
   const identity = options.identity;
+  const generationsExist = summaries.some(
+    (container) =>
+      container.labels?.[MANAGED_DEPLOYMENT_LABEL] === spec.deploymentId &&
+      container.labels?.[MANAGED_ROLE_LABEL] === MANAGED_ROLE &&
+      container.names?.some((name) => /^verity-managed-server-g[1-9][0-9]*$/u.test(name)),
+  );
+  const bootstrapRollbackExists =
+    options.bootstrapRollbackContainerId !== undefined &&
+    summaries.some(
+      (container) =>
+        container.id === options.bootstrapRollbackContainerId &&
+        container.names?.includes(MANAGED_SERVER_NAME),
+    );
+  const refuseBootstrapCreation = () => {
+    if (identity === undefined && generationsExist)
+      throw new Error(
+        'Bootstrap reconciliation conflicts with the sealed deployment spec: a managed Server generation exists; restore the Gateway selection first',
+      );
+  };
+  if (!bootstrapRollbackExists) refuseBootstrapCreation();
+
   const withIdentity = (base: ContainerSpec): ContainerSpec => {
     if (identity === undefined) {
       // A deployment sealed before the bootstrap stopped forwarding it still names the
@@ -970,6 +1017,7 @@ export async function reconcileManagedServer(
       sealedHostLimitsMode(spec),
       sealedNames,
     );
+    let backupMountPending = false;
     let diagnosticMountPending = false;
     let devcontainerBuilderPending = false;
     if (
@@ -988,6 +1036,7 @@ export async function reconcileManagedServer(
         );
         if (previousVerdict.kind !== 'structural') {
           verdict = previousVerdict;
+          backupMountPending = previous.pending.has('backup');
           diagnosticMountPending = previous.pending.has('diagnostic');
           devcontainerBuilderPending =
             previous.pending.has('builder') || previous.pending.has('builder-admission');
@@ -1014,10 +1063,11 @@ export async function reconcileManagedServer(
       // that name, and the environment built without it therefore differs on
       // exactly that name. Adding the unresolved names separately would be a
       // second path to the same list that no test could tell apart from this one.
-      if (diagnosticMountPending || devcontainerBuilderPending)
+      if (backupMountPending || diagnosticMountPending || devcontainerBuilderPending)
         return {
           containerId: inspect.id,
           action: 'unchanged',
+          ...(backupMountPending ? { backupMountPending: true } : {}),
           ...(diagnosticMountPending ? { diagnosticMountPending: true } : {}),
           ...(devcontainerBuilderPending ? { devcontainerBuilderPending: true } : {}),
           ...(verdict.environment.length === 0 ? {} : { drift: verdict.environment }),
@@ -1030,7 +1080,12 @@ export async function reconcileManagedServer(
     // and there is no honest Server to produce here — by rebuilding or by
     // starting one that lacks a sealed variable.
     requireBuildable();
-    if (verdict.kind === 'environment' || diagnosticMountPending || devcontainerBuilderPending) {
+    if (
+      verdict.kind === 'environment' ||
+      backupMountPending ||
+      diagnosticMountPending ||
+      devcontainerBuilderPending
+    ) {
       if (!recreatable) {
         // The create-conflict path: something else put this container here while
         // we were creating one, and it is stopped and drifted. Replacing it is
@@ -1045,6 +1100,7 @@ export async function reconcileManagedServer(
       // removal, so this replaces the process and keeps every byte of durable
       // state. What it costs is the stopped container's identity, which is the
       // thing that is wrong.
+      refuseBootstrapCreation();
       await options.docker.removeContainer(inspect.id);
       return create();
     }
@@ -1052,6 +1108,7 @@ export async function reconcileManagedServer(
     return { containerId: inspect.id, action: 'started' };
   };
   const create = async (): Promise<ManagedServerReconcileResult> => {
+    refuseBootstrapCreation();
     requireBuildable();
     try {
       const created = await options.docker.createContainer(desired);

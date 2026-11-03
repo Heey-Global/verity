@@ -121,6 +121,11 @@ describe('audit routes', () => {
     expect((await app.inject('/audit/operations?domain=secrets')).statusCode).toBe(400);
     // Answering an unreadable cursor with page one would duplicate it in the client.
     expect((await app.inject('/audit/operations?before=not-a-cursor')).statusCode).toBe(400);
+    expect((await app.inject('/audit/operations?since=invalid')).statusCode).toBe(400);
+    expect(
+      (await app.inject('/audit/operations?since=2026-10-29T00:00:00Z&until=2026-10-28T00:00:00Z'))
+        .statusCode,
+    ).toBe(400);
     await app.close();
   });
 
@@ -170,4 +175,38 @@ describe('audit routes', () => {
       expect(await authorizePairedRoute(store, 'admin', 'GET', url, {})).toBe('allow');
     }
   });
+});
+
+it('returns separate safe event records and validates event cursors', async () => {
+  const recorder = createAuditRecorder(log, { server });
+  const build = await recorder.beginBuild(intent());
+  await build.succeeded({ imageId: 'sha256:one', sizeBytes: 1, baseImageDigest: null });
+  const app = await appFor(recorder);
+  try {
+    const response = await app.inject('/audit/events?domain=builds&limit=1');
+    expect(response.statusCode).toBe(200);
+    expect(response.headers['cache-control']).toBe('no-store');
+    const page = response.json<{
+      events: { kind: string; operationId: string }[];
+      nextBefore: string;
+    }>();
+    expect(page.events).toHaveLength(1);
+    expect(page.events[0]!.kind).toBe('build.succeeded');
+    expect(page.events[0]).not.toHaveProperty('initiator');
+    expect(page.events[0]).not.toHaveProperty('server');
+    const next = (
+      await app.inject(
+        `/audit/events?domain=builds&limit=1&before=${encodeURIComponent(page.nextBefore)}`,
+      )
+    ).json();
+    expect(next.events[0].kind).toBe('build.requested');
+    expect(next.events[0].operationId).toBe(page.events[0]!.operationId);
+    expect((await app.inject('/audit/events?before=garbage')).statusCode).toBe(400);
+    expect(
+      (await app.inject('/audit/events?since=2026-10-29T12:00:00Z&until=2026-10-29T11:00:00Z'))
+        .statusCode,
+    ).toBe(400);
+  } finally {
+    await app.close();
+  }
 });

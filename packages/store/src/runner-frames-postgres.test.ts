@@ -338,4 +338,53 @@ describePostgres('EventStore event-append ordering across overlapping Servers (P
       expect(String(frameOutcome?.reason)).toMatch(/abandoned/i);
     }
   });
+  it('admits one successor across two servers and rejects stale predecessor cleanup', async () => {
+    const sessionId = 'qa-settled-two-servers';
+    await storeA.createSession({ sessionId, worktree: '/wt/qa-settled', model: 'm' });
+    const { seq } = await storeA.appendEvent(sessionId, { t: 'prompt', text: 'previous' });
+    await storeA.markTurnRunning({ sessionId, promptSeq: seq, markerId: 'previous' });
+    await storeA.confirmTurnSettled(sessionId, seq, 'previous');
+    for (const id of ['qa-race-a', 'qa-race-b'])
+      await dbA
+        .insertInto('qa_dispatches')
+        .values({ id, session_id: sessionId, state: 'reserved', prompt_seq: null })
+        .execute();
+    const outcomes = await raceBehindAdvisoryBarrier(`events:${sessionId}`, gateDb, observerDb, [
+      () => storeA.admitBackgroundDispatch('qa-race-a', sessionId, { t: 'prompt', text: 'a' }),
+      () => storeB.admitBackgroundDispatch('qa-race-b', sessionId, { t: 'prompt', text: 'b' }),
+    ]);
+    expect(outcomes.every((row) => row.status === 'fulfilled')).toBe(true);
+    const admitted = outcomes.flatMap((row) =>
+      row.status === 'fulfilled' && row.value ? [row.value] : [],
+    );
+    expect(admitted).toHaveLength(1);
+    await storeB.clearRunningTurn(sessionId, seq, 'previous');
+    expect(
+      (await storeA.listRunningTurns()).find((row) => row.sessionId === sessionId)?.promptSeq,
+    ).toBe(admitted[0]!.seq);
+    expect(
+      (await storeA.getEvents(sessionId)).filter((event) => event.t === 'prompt'),
+    ).toHaveLength(2);
+  });
+
+  it('serializes duplicate admission with cleanup from another server', async () => {
+    const sessionId = 'qa-admission-cleanup-race';
+    await storeA.createSession({ sessionId, worktree: '/wt/qa-cleanup', model: 'm' });
+    await storeA.markTurnRunning({ sessionId, promptSeq: 0, markerId: 'old' });
+    await storeA.confirmTurnSettled(sessionId, 0, 'old');
+    await dbA
+      .insertInto('qa_dispatches')
+      .values({ id: 'qa-cleanup', session_id: sessionId, state: 'reserved', prompt_seq: null })
+      .execute();
+    const [first, second] = await Promise.all([
+      storeA.admitBackgroundDispatch('qa-cleanup', sessionId, { t: 'prompt', text: 'new' }),
+      storeB.admitBackgroundDispatch('qa-cleanup', sessionId, { t: 'prompt', text: 'duplicate' }),
+      storeB.clearRunningTurn(sessionId, 0, 'old'),
+    ]);
+    expect(first?.seq).toBe(second?.seq);
+    expect([first, second].filter((row) => row?.existing === false)).toHaveLength(1);
+    expect(
+      (await storeA.listRunningTurns()).find((row) => row.sessionId === sessionId)?.promptSeq,
+    ).toBe(first!.seq);
+  });
 });

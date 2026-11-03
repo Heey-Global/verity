@@ -99,6 +99,35 @@ export class BackupStateStore {
       await writeDurable(join(this.root, 'state'), Buffer.from(JSON.stringify(checked)), true);
     });
   }
+  /** The caller holds operation.lock and has durably reserved a new repository. */
+  async replace(previous: BackupState, next: BackupState): Promise<void> {
+    await withRepositoryLock(join(this.root, 'state.lock'), async () => {
+      const current = await this.load();
+      const checked = validateBackupState(next, this.installationId);
+      if (
+        !current ||
+        current.targetId !== checked.targetId ||
+        checked.repositoryNumber <= previous.repositoryNumber ||
+        checked.keyGeneration <= previous.keyGeneration ||
+        checked.host.recipient === previous.host.recipient
+      )
+        throw new Error('Invalid backup replacement');
+      if (
+        current.repositoryNumber === checked.repositoryNumber &&
+        JSON.stringify(current.host) === JSON.stringify(checked.host)
+      )
+        return;
+      if (
+        current.repositoryNumber !== previous.repositoryNumber ||
+        JSON.stringify(current.host) !== JSON.stringify(previous.host)
+      )
+        throw new Error('Backup replacement state changed');
+      // Pause and interval remain editable while capture/publication holds operation.lock.
+      checked.schedule.paused = current.schedule.paused;
+      checked.schedule.intervalMs = current.schedule.intervalMs;
+      await writeDurable(join(this.root, 'state'), Buffer.from(JSON.stringify(checked)), false);
+    });
+  }
   async update(change: (current: BackupState) => BackupState): Promise<BackupState> {
     return withRepositoryLock(join(this.root, 'state.lock'), async () => {
       const current = await this.load();

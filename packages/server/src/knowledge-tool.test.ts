@@ -2,6 +2,25 @@ import { describe, expect, it } from 'vitest';
 import { knowledgeToolRequestSchema } from './knowledge-tool.js';
 
 describe('knowledge tool boundary', () => {
+  it('keeps decision identity, provenance and pagination inside the project boundary', () => {
+    const decision = {
+      operation: 'record_decision',
+      requestId: 'exports-30',
+      title: 'Exports',
+      decision: '30 days',
+    };
+    expect(knowledgeToolRequestSchema.safeParse(decision).success).toBe(true);
+    for (const invalid of [
+      { ...decision, projectId: 'another-project' },
+      { ...decision, sessionId: 'another-session' },
+      { ...decision, requestId: '../outside' },
+      { ...decision, confirmationMessageSeq: -1 },
+      { ...decision, predecessor: { id: '../outside', digest: 'a'.repeat(64) } },
+      { operation: 'lookup_decisions', path: '/knowledge/shared' },
+      { operation: 'lookup_decisions', offset: -1 },
+    ])
+      expect(knowledgeToolRequestSchema.safeParse(invalid).success).toBe(false);
+  });
   it('accepts a bounded project source import and rejects destination traversal', () => {
     expect(
       knowledgeToolRequestSchema.parse({

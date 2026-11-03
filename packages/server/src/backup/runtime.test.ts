@@ -24,7 +24,7 @@ vi.mock('pg', () => ({
   },
 }));
 
-it('allocates nothing before acceptance and owns only a single read-only backup pool after capability checks', async () => {
+it('allocates nothing before capability checks and owns only a single read-only backup pool afterwards', async () => {
   pools.length = 0;
   const root = await mkdtemp(join(tmpdir(), 'backup-runtime-'));
   const paths = {
@@ -37,7 +37,6 @@ it('allocates nothing before acceptance and owns only a single read-only backup 
   );
   const onError = vi.fn();
   const options: BackupRuntimeOptions = {
-    recoveryAccepted: false,
     root,
     paths,
     databaseUrl: 'postgres://admin:privileged@postgres/verity?sslmode=require&options=unsafe',
@@ -55,26 +54,16 @@ it('allocates nothing before acceptance and owns only a single read-only backup 
     },
   };
   try {
-    expect((await openBackupRuntime(options)).service).toBeUndefined();
-    expect(currentImage).not.toHaveBeenCalled();
+    const missing = await openBackupRuntime(options);
+    expect(missing.service).toBeUndefined();
+    expect(missing.unavailableReason).toBe('installer-required');
     expect(pools).toHaveLength(0);
-    expect(
-      (await openBackupRuntime({ ...options, recoveryAccepted: true })).unavailableReason,
-    ).toBe('installer-required');
     expect(currentImage).not.toHaveBeenCalled();
     for (const path of Object.values(paths)) await mkdir(path);
     await writeFile(join(paths.pairing, 'installation-id'), randomUUID());
     await writeFile(join(paths.pairing, 'backup-postgres-password'), 'b'.repeat(64));
     await writeFile(join(paths.destination, '.verity-backup-target'), randomUUID());
-    const stillGated = await openBackupRuntime(options);
-    try {
-      expect(stillGated.service).toBeUndefined();
-      expect(currentImage).not.toHaveBeenCalled();
-      expect(pools).toHaveLength(0);
-    } finally {
-      await stillGated.close();
-    }
-    const runtime = await openBackupRuntime({ ...options, recoveryAccepted: true });
+    const runtime = await openBackupRuntime(options);
     try {
       expect(runtime.service).toBeDefined();
       expect(await runtime.service!.status()).toEqual({ configured: false, alerts: [] });
@@ -94,7 +83,6 @@ it('allocates nothing before acceptance and owns only a single read-only backup 
     }
     const invalid = await openBackupRuntime({
       ...options,
-      recoveryAccepted: true,
       currentImage: async () => 'ghcr.io/heey-global/verity/verity-server:latest',
     });
     expect(invalid.unavailableReason).toBe('runtime-unavailable');
@@ -102,7 +90,7 @@ it('allocates nothing before acceptance and owns only a single read-only backup 
     expect(pools).toHaveLength(1);
     await mkdir(join(root, 'backup-state'));
     await writeFile(join(root, 'backup-state/state'), '{invalid-state');
-    const damaged = await openBackupRuntime({ ...options, recoveryAccepted: true });
+    const damaged = await openBackupRuntime(options);
     expect(damaged.unavailableReason).toBe('runtime-unavailable');
     expect(pools).toHaveLength(2);
     expect(pools[1]!.end).toHaveBeenCalledOnce();

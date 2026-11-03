@@ -1,6 +1,13 @@
+import { Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-import { setVerityBaseUrl, getVerityBaseUrl, subscribeVerityBaseUrl } from './client';
+import {
+  setVerityBaseUrl,
+  getVerityBaseUrl,
+  subscribeVerityBaseUrl,
+  getActiveMeetingServerId,
+  hydrateVerityBaseUrl,
+} from './client';
 
 const mockResetVeritySettingsStore = jest.fn();
 
@@ -50,4 +57,24 @@ it('notifies live consumers after the runtime endpoint changes', async () => {
   unsubscribe();
   await setVerityBaseUrl('https://third.test');
   expect(seen).toEqual(['https://second.test']);
+});
+
+it('scopes browser meetings to the authenticated origin without a native pairing profile', async () => {
+  const previous = Platform.OS;
+  Object.defineProperty(Platform, 'OS', { configurable: true, value: 'web' });
+  const location = Object.getOwnPropertyDescriptor(window, 'location');
+  Object.defineProperty(window, 'location', {
+    configurable: true,
+    value: { origin: 'https://browser.test' },
+  });
+  try {
+    await hydrateVerityBaseUrl();
+    expect(getActiveMeetingServerId()).toBe('web:https://browser.test');
+    await setVerityBaseUrl('https://other.test');
+    expect(getActiveMeetingServerId()).toBe('web:https://other.test');
+  } finally {
+    Object.defineProperty(Platform, 'OS', { configurable: true, value: previous });
+    if (location) Object.defineProperty(window, 'location', location);
+    else Reflect.deleteProperty(window, 'location');
+  }
 });

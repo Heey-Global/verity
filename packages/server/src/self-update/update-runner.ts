@@ -12,6 +12,8 @@ import {
 } from './docker-update-preparation.js';
 import {
   MANAGED_SERVER_NAME,
+  MANAGED_DEPLOYMENT_LABEL,
+  MANAGED_ROLE_LABEL,
   reconcileManagedServer,
   specImageEnvironment,
   type ManagedServerReconcileResult,
@@ -39,6 +41,7 @@ import { openActivationGate } from './activation-gate.js';
 import {
   MANAGED_GATEWAY_CONTROL_SOCKET,
   waitForManagedGatewayStatus,
+  switchManagedGatewayBackend,
 } from './managed-gateway-control.js';
 import { readManagedDeployment } from './managed-deployment.js';
 import { reconcileManagedControlPlaneRunner } from './managed-control-plane-runner.js';
@@ -124,7 +127,7 @@ const defaultLog = (message: string): void => {
  */
 export function createOfficialImageVerifier(
   docker: Pick<DockerClient, 'inspectImageEnv'>,
-): (journal: UpdateJournal) => Promise<void> {
+): (journal: Pick<UpdateJournal, 'targetDigest'>) => Promise<void> {
   return async (journal) => {
     if (!OFFICIAL_DIGEST.test(journal.targetDigest))
       throw new Error('update target is not an official Verity Server digest');
@@ -352,7 +355,9 @@ export function createUpdateRunner(options: UpdateRunnerOptions): UpdateRunner {
         const delay = RESUME_RETRY_DELAYS_MS[attempt];
         if (
           current === null ||
-          isPreparingPhase(current.phase) ||
+          // Standby preparation may already have migrated durable authority:
+          // it stays resumable and needs the same retries as cutover phases.
+          isFailablePhase(current.phase) ||
           isTerminalOperationState(projectUpdateOperation(current).state)
         )
           return;
@@ -442,12 +447,14 @@ export async function recoverManagedUpdater(
   const runner = createUpdateRunner(options);
   const verdict = (result: ManagedServerReconcileResult): ManagedServerReconcileVerdict =>
     (result.drift === undefined || result.drift.length === 0) &&
+    result.backupMountPending !== true &&
     result.diagnosticMountPending !== true &&
     result.devcontainerBuilderPending !== true
       ? { status: 'ok' }
       : {
           status: 'drift',
           environment: result.drift ?? [],
+          ...(result.backupMountPending ? { backupMountPending: true } : {}),
           ...(result.diagnosticMountPending ? { diagnosticMountPending: true } : {}),
           ...(result.devcontainerBuilderPending ? { devcontainerBuilderPending: true } : {}),
         };
@@ -488,6 +495,15 @@ export async function recoverManagedUpdater(
         ? journal
         : null;
     try {
+      const deployment = await readManagedDeployment(options.managedRoot);
+      const generationsExist =
+        deployment.managed &&
+        ((await options.docker.listContainers?.()) ?? []).some(
+          (item) =>
+            item.labels?.[MANAGED_DEPLOYMENT_LABEL] === deployment.spec.deploymentId &&
+            item.labels?.[MANAGED_ROLE_LABEL] === 'server' &&
+            item.names?.some((name) => /^verity-managed-server-g[1-9][0-9]*$/u.test(name)),
+        );
       // A terminal promoted/rolled-back operation already owns a concrete routed
       // container identity. Falling back to the historical unsuffixed bootstrap
       // name here would create a second Server beside that generation.
@@ -495,7 +511,8 @@ export async function recoverManagedUpdater(
         journal?.phase === 'committed' ||
         journal?.phase === 'reconciling-companions' ||
         journal?.phase === 'completed' ||
-        journal?.phase === 'rolled-back'
+        journal?.phase === 'rolled-back' ||
+        generationsExist
       ) {
         const status =
           options.cutover?.gateway === undefined
@@ -505,7 +522,47 @@ export async function recoverManagedUpdater(
                 options.cutover?.gatewayControlSocket ?? MANAGED_GATEWAY_CONTROL_SOCKET,
               )
             : await options.cutover.gateway.status();
-        const host = status.backend.host;
+        let host = status.backend.host;
+        let restoreSelection = false;
+        let bootstrapRollbackContainerId: string | undefined;
+        if (host === MANAGED_SERVER_NAME) {
+          const deployment = await readManagedDeployment(options.managedRoot);
+          if (!deployment.managed) throw new Error('Managed Server authority is unavailable');
+          const servers = (await options.docker.listContainers!()).filter(
+            (item) =>
+              item.labels?.[MANAGED_DEPLOYMENT_LABEL] === deployment.spec.deploymentId &&
+              item.labels?.[MANAGED_ROLE_LABEL] === 'server',
+          );
+          const generations = servers.filter(
+            (item) =>
+              item.labels?.[MANAGED_DEPLOYMENT_LABEL] === deployment.spec.deploymentId &&
+              item.labels?.[MANAGED_ROLE_LABEL] === 'server' &&
+              item.names?.some((name) => /^verity-managed-server-g[1-9][0-9]*$/u.test(name)),
+          );
+          if (generations.length > 0) {
+            // The journal, not the highest container number, owns the serving generation.
+            // A newer retained standby must never be promoted by startup recovery.
+            const selected = servers.filter((item) =>
+              journal?.phase === 'rolled-back'
+                ? item.id === journal.previousContainerId
+                : journal !== null &&
+                  item.names?.includes(`verity-managed-server-g${String(journal.generation)}`),
+            );
+            if (selected.length !== 1)
+              throw new Error(
+                'Gateway selection is missing and no unique journal-owned Server generation exists',
+              );
+            const inspect = await options.docker.inspectContainer(selected[0]!.id);
+            if (inspect.image !== deployment.spec.image)
+              throw new Error('Journal-owned Server differs from the sealed image');
+            host = selected[0]!.names!.find(
+              (name) =>
+                name === MANAGED_SERVER_NAME || /^verity-managed-server-g[1-9][0-9]*$/u.test(name),
+            )!;
+            if (host === MANAGED_SERVER_NAME) bootstrapRollbackContainerId = selected[0]!.id;
+            else restoreSelection = true;
+          }
+        }
         const match = /^verity-managed-server-g([1-9][0-9]{0,9})$/.exec(host);
         if (host !== MANAGED_SERVER_NAME && match === null)
           throw new Error('Gateway selected an invalid managed Server identity');
@@ -533,7 +590,17 @@ export async function recoverManagedUpdater(
           ...(options.environment === undefined ? {} : { environment: options.environment }),
           ...(options.readFile === undefined ? {} : { readFile: options.readFile }),
           ...(identity === undefined ? {} : { identity }),
+          ...(bootstrapRollbackContainerId === undefined ? {} : { bootstrapRollbackContainerId }),
         });
+        if (restoreSelection) {
+          if (options.cutover?.gateway !== undefined)
+            await options.cutover.gateway.switchBackend(host);
+          else
+            await switchManagedGatewayBackend(
+              options.cutover?.gatewayControlSocket ?? MANAGED_GATEWAY_CONTROL_SOCKET,
+              { host, publicPort: 8082, internalPort: 8083 },
+            );
+        }
         reconcile = verdict(reconciled);
         reportDrift(reconcile);
         await reconcileManagedControlPlaneRunner(companion);

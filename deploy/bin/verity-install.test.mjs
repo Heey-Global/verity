@@ -135,6 +135,21 @@ function makeHost({
       `exit ${String(hostRuntimeStatus)}\n`,
     { mode: 0o755 },
   );
+  // Runtime installation has its own real-script transaction suite.
+  writeFileSync(
+    join(checkout, 'deploy', 'host', 'install-runtime-service.sh'),
+    `#!/bin/bash
+install -m 0755 "$(dirname "$0")/verity-host-runtime" "$VERITY_HOST_RUNTIME_LIBEXEC/verity-host-runtime"
+if [ -d "$VERITY_SYSTEMD_RUN_DIR" ]; then
+  for unit in verity-host-runtime.service verity-host-runtime.path; do
+    install -m 0644 "$(dirname "$0")/$unit" "$VERITY_SYSTEMD_UNIT_DIR/$unit"
+  done
+  systemctl daemon-reload
+  systemctl enable --now verity-host-runtime.path
+fi
+printf '{"version":1,"trigger":"%s","builder":"%s","runtimeArtifacts":["binary","archive"]}\\n' "$VERITY_HOST_BUILDER_TRIGGER" "$VERITY_HOST_BUILDER_TRIGGER" >"$VERITY_HOST_RUNTIME_DIR/agent.json"
+`,
+  );
   writeFileSync(
     join(checkout, 'deploy', 'host', 'verity-host-diagnostics'),
     '#!/usr/bin/env bash\nexit 0\n',
@@ -195,8 +210,8 @@ function makeHost({
     );
   }
   // The installer only checks these exist; the stub host runtime script is what would use
-  // them. The CI image (node:*-slim) ships neither, so a real one cannot be assumed.
-  for (const tool of ['curl', 'jq']) {
+  // them. The CI image (node:*-slim) ships none of them, so a real one cannot be assumed.
+  for (const tool of ['curl', 'jq', 'bzip2']) {
     writeFileSync(join(stubDir, tool), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
   }
   writeFileSync(join(stubDir, 'uname'), `#!/bin/sh\nprintf '%s\\n' ${shellQuote(architecture)}\n`, {
@@ -556,7 +571,7 @@ describe('verity-install', { skip: canFakeRoot ? false : 'user namespaces unavai
       JSON.parse(
         readFileSync(join(host.hostRuntime.VERITY_HOST_RUNTIME_DIR, 'agent.json'), 'utf8'),
       ),
-      { version: 1, trigger: 'none', builder: 'none' },
+      { version: 1, trigger: 'none', builder: 'none', runtimeArtifacts: ['binary', 'archive'] },
     );
     assert.equal(handoverEnv(host).argv, 'managed-up');
   });
@@ -610,7 +625,12 @@ describe('verity-install', { skip: canFakeRoot ? false : 'user namespaces unavai
       JSON.parse(
         readFileSync(join(host.hostRuntime.VERITY_HOST_RUNTIME_DIR, 'agent.json'), 'utf8'),
       ),
-      { version: 1, trigger: 'systemd-path', builder: 'systemd-path' },
+      {
+        version: 1,
+        trigger: 'systemd-path',
+        builder: 'systemd-path',
+        runtimeArtifacts: ['binary', 'archive'],
+      },
     );
   });
 
@@ -758,6 +778,56 @@ printf '%s\\n' '2: docker0 inet 172.17.0.1/16 scope global docker0' '3: br-abcde
     assert.equal(env.VERITY_RUNNER_SUPERVISOR, '1');
     assert.equal(env.VERITY_GVISOR_REQUIRED, '');
     assert.equal(stateFile(host, 'updater-token'), 'f'.repeat(64));
+  });
+
+  test('repair accepts a server GID without a named host group', () => {
+    const host = makeHost({
+      docker: runningServer('verity-managed-server-g4', 'host-abc', '["CHOWN"]', DIGEST_B),
+      state: { 'deployment-id': 'host-abc\n', 'compose-project': 'deploy\n' },
+    });
+    const realInstall = spawnSync('bash', ['-c', 'command -v install'], {
+      encoding: 'utf8',
+    }).stdout.trim();
+    const realChown = spawnSync('bash', ['-c', 'command -v chown'], {
+      encoding: 'utf8',
+    }).stdout.trim();
+    const ownershipLog = join(host.root, 'ownership.log');
+    writeFileSync(
+      join(host.stubDir, 'install'),
+      `#!/bin/bash
+args=("$@")
+while (( $# )); do
+  if [[ $1 = -g && \${2-} = 1000 ]]; then
+    echo "install: invalid group: '1000'" >&2
+    exit 1
+  fi
+  shift
+done
+exec ${shellQuote(realInstall)} "\${args[@]}"
+`,
+      { mode: 0o755 },
+    );
+    // Only root is mapped in this namespace. Record the requested ownership,
+    // then map the unnamed server group to root for the real filesystem call.
+    writeFileSync(
+      join(host.stubDir, 'chown'),
+      `#!/bin/bash
+printf '%s\\n' "$*" >>${shellQuote(ownershipLog)}
+owner=$1
+shift
+if [[ $owner = *:1000 ]]; then owner="\${owner%:1000}:0"; fi
+exec ${shellQuote(realChown)} "$owner" "$@"
+`,
+      { mode: 0o755 },
+    );
+    const result = run(host, [], { VERITY_SERVER_GID: '1000' });
+    assert.equal(result.status, 0, result.output);
+    assert.match(result.output, /Mode +host-side repair/);
+    const requestDir = host.hostRuntime.VERITY_BACKUP_IDENTITY_DIR;
+    assert.ok(readFileSync(ownershipLog, 'utf8').includes(`root:1000 ${requestDir}\n`));
+    assert.equal(statSync(requestDir).uid, statSync(host.stateDir).uid);
+    assert.equal(statSync(requestDir).mode & 0o777, 0o770);
+    assert.equal(handoverEnv(host).VERITY_SERVER_IMAGE, DIGEST_B);
   });
 
   test('a recovery-pinned rerun cannot reinterpret replace as the latest release', () => {

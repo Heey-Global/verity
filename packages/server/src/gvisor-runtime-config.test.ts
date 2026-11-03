@@ -45,14 +45,36 @@ describe('pinned gVisor runtime config', () => {
       readFileSync('deploy/Dockerfile', 'utf8'),
     );
     expect(label, 'deploy/Dockerfile no longer declares its host runtimes').not.toBeNull();
+    // A release gVisor ships as an archive pins the archive as well; both architectures or none.
+    const archived =
+      assignments.RUNSC_ARCHIVE_SHA512_X86_64 !== undefined ||
+      assignments.RUNSC_ARCHIVE_SHA512_AARCH64 !== undefined;
     expect(JSON.parse(label![1]!.replaceAll('\\"', '"'))).toEqual({
       release: assignments.RUNSC_RELEASE,
       sha512: {
         x86_64: assignments.RUNSC_SHA512_X86_64,
         aarch64: assignments.RUNSC_SHA512_AARCH64,
       },
+      ...(archived
+        ? {
+            archiveSha512: {
+              x86_64: assignments.RUNSC_ARCHIVE_SHA512_X86_64,
+              aarch64: assignments.RUNSC_ARCHIVE_SHA512_AARCH64,
+            },
+          }
+        : {}),
       runtimes: { runsc: [...PINNED_RUNSC_ARGS], 'runsc-project': [...PINNED_PROJECT_RUNSC_ARGS] },
     });
+    // How a host whose runtime service predates archive pins learns them through an update:
+    // the builder bundle's installer, run out of the verified target image, installs the
+    // bundled copy after that copy registered the runtimes.
+    const builderInstaller = readFileSync('deploy/buildkit/install.sh', 'utf8');
+    const registers = builderInstaller.indexOf('"$source_dir/../gvisor/install-runsc-host.sh"');
+    const replaces = builderInstaller.indexOf(
+      '"$source_dir/../host/verity-host-runtime" install-self',
+    );
+    expect(registers).toBeGreaterThan(-1);
+    expect(replaces).toBeGreaterThan(registers);
     const ciDaemon = readFileSync('deploy/gvisor-ci.Dockerfile', 'utf8');
     expect(ciDaemon).toContain('COPY deploy/gvisor/versions.env /tmp/versions.env');
     expect(ciDaemon).toContain('install -d -m 0755 /etc/docker');

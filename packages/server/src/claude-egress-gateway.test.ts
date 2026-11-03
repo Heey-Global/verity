@@ -1,3 +1,4 @@
+import { listenTestModelRelay } from './project-relay-test-transport.js';
 import { createServer, request as httpRequest, type Server } from 'node:http';
 import { Readable } from 'node:stream';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -18,8 +19,10 @@ const AUTHORITY = 'claude-proxy.project-1:9443';
  *  scaled down rather than faked. */
 const IDLE_MS = 150;
 const servers: Server[] = [];
+const relayCleanups: Array<() => Promise<void>> = [];
 
 afterEach(async () => {
+  for (const close of relayCleanups.splice(0)) await close();
   await Promise.all(
     servers
       .splice(0)
@@ -797,10 +800,9 @@ async function serve(
     }),
   );
   servers.push(server);
-  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const address = server.address();
-  if (typeof address !== 'object' || address === null) throw new Error('test server did not bind');
-  return address.port;
+  const relay = await listenTestModelRelay(server);
+  relayCleanups.push(() => relay.close());
+  return relay.port;
 }
 
 /** Start a streaming request and answer how its response ENDED — `broken` for a

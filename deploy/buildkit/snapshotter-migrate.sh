@@ -34,6 +34,8 @@ init() {
     fi
     chmod 0644 "$run_dir/build-admission.lock"
     install -d -m 0770 -g "$gid" "$run_dir/leases"
+    [[ ! -L $run_dir/reclamation-evidence ]] || return 1
+    install -d -m 0770 -g "$gid" "$run_dir/reclamation-evidence"
     install -d -m 0700 "$state"
 }
 selected() {
@@ -50,6 +52,12 @@ worker() {
       .["org.mobyproject.buildkit.worker.snapshotter"]'
 }
 restore() {
+    if [[ -e $state/native-retired && $(selected) != overlayfs ]]; then
+        status blocked "Native state was retired; native rollback is unavailable"; return 1
+    fi
+    if [[ -e $state/native-retired ]] && grep -Eq 'snapshotter[[:space:]]*=[[:space:]]*"(native|auto)"' "$backup"; then
+        status blocked "Native rollback is unavailable after retirement"; return 1
+    fi
     [[ -f $backup && ! -L $backup ]] || { status blocked 'Migration backup is unavailable'; return 1; }
     [[ $(sha256sum "$backup" | cut -d' ' -f1) == "$(jq -er .sha256 "$journal")" ]] || return 1
     cp -- "$backup" "$config.new"
@@ -60,6 +68,13 @@ restore() {
 }
 recover() {
     init
+    # Runtime admission markers disappear on reboot; only retirement recovery
+    # may release the fence backed by this durable journal (even if malformed).
+    if [[ -e $state/native-retirement.json || -L $state/native-retirement.json ]]; then
+        : > "$run_dir/migration-pending"
+        status blocked 'Native retirement recovery is pending'
+    fi
+    if [[ -e $state/native-retired && $(selected) != overlayfs ]]; then status blocked "Native state has been retired"; return 1; fi
     [[ -e $journal ]] || return 0
     local pid boot start actual
     pid=$(jq -er 'select(.version == 1) | .pid | select(type == "number" and . > 1)' "$journal")
@@ -96,7 +111,10 @@ recover_verify() {
         status blocked 'Previous worker could not be verified; recovery journal retained'
         return 1
     fi
-    rm -f "$journal" "$run_dir/migration-pending"
+    rm -f "$journal"
+    if [[ ! -e $state/native-retirement.json && ! -L $state/native-retirement.json ]]; then
+        rm -f "$run_dir/migration-pending"
+    fi
     sync -f "$state"
     status rolled-back 'Previous worker verified after interrupted migration recovery'
 }
@@ -117,11 +135,37 @@ clients_compatible() {
         fi
     done
 }
+drain_blocked() {
+    printf '%s\n' "$1" >&2
+    return 1
+}
 drained() {
-    [[ ! -e $run_dir/migration-pending && ! -e $journal ]] || return 1
-    clients_compatible || return 1
-    [[ -z $(find "$run_dir/leases" -mindepth 1 -maxdepth 1 -print -quit) ]] || return 1
-    ctl du --format '{{json .}}' | jq -se 'length == 1 and (.[0] | if . == null then true else type == "array" and all(.[]; .inUse == false) end)' >/dev/null
+    [[ ! -e $run_dir/migration-pending ]] || {
+        drain_blocked 'Builder migration pending'; return 1;
+    }
+    [[ ! -e $journal ]] || {
+        drain_blocked 'Builder migration recovery journal remains'; return 1;
+    }
+    clients_compatible || {
+        drain_blocked 'An incompatible or unverifiable builder client remains'; return 1;
+    }
+    local leases usage
+    leases=$(find "$run_dir/leases" -mindepth 1 -maxdepth 1 -printf '%f\n') || {
+        drain_blocked 'Builder admission leases could not be inspected'; return 1;
+    }
+    if [[ -n $leases ]]; then
+        local -a names
+        mapfile -t names <<< "$leases"
+        drain_blocked "${#names[@]} admission leases remain ($(IFS=,; echo "${names[*]}"))"
+        return 1
+    fi
+    usage=$(ctl du --format '{{json .}}') &&
+      jq -se 'length == 1 and (.[0] | if . == null then true else type == "array" and all(.[]; .inUse | type == "boolean") end)' <<< "$usage" >/dev/null || {
+        drain_blocked 'BuildKit cache activity could not be verified'; return 1;
+    }
+    jq -se '.[0] == null or all(.[0][]; .inUse == false)' <<< "$usage" >/dev/null || {
+        drain_blocked 'BuildKit cache is in use'; return 1;
+    }
 }
 probe() {
     # A local rootfs from the pinned BuildKit image avoids any network pull in the solve.
@@ -248,11 +292,16 @@ reconcile() {
     trap - EXIT TERM INT
     status converged 'overlayfs worker and gVisor RUN verified; native state retained for rollback'
 }
+source "$bin/native-retire.sh"
+
 case ${1:-} in
     init) init ;;
     recover) recover ;;
     recover-verify) recover_verify ;;
-    reconcile) reconcile ;;
+    reconcile)
+        if [[ -e $state/native-retirement.json ]]; then native_retire; else
+            reconcile; exec 8<&-; exec 7>&-; native_retire
+        fi ;;
     drained) drained ;;
     *) echo 'Expected init, recover, recover-verify, drained or reconcile' >&2; exit 2 ;;
 esac

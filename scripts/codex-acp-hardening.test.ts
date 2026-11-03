@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { spawnSync } from 'node:child_process';
 import { expect, it } from 'vitest';
 
@@ -71,4 +72,31 @@ it('requires the pinned adapter to match the audited security version', () => {
   );
   expect(refused.status).not.toBe(0);
   expect(refused.stderr).toContain('requires audited adapter version');
+});
+
+it('hardens the installed pinned adapter rather than only a source fixture', () => {
+  const require = createRequire(import.meta.url);
+  const entry = require.resolve('@agentclientprotocol/codex-acp');
+  const result = spawnSync(
+    process.execPath,
+    [
+      '--input-type=module',
+      '-e',
+      `
+      import { readFileSync } from 'node:fs';
+      import { hardenCodexAcpSource } from ${JSON.stringify(installer)};
+      const source = readFileSync(${JSON.stringify(entry)}, 'utf8');
+      const hardened = hardenCodexAcpSource(source);
+      const start = hardened.indexOf('projects: Object.fromEntries(sessionRoots.map(');
+      const end = hardened.indexOf(']))', start) + 3;
+      if (start < 0 || end < 3) throw new Error('Missing project trust configuration');
+      console.log(JSON.stringify(Function('sessionRoots', 'return ({' + hardened.slice(start, end) + '})')(['/work/project'])));
+    `,
+    ],
+    { encoding: 'utf8' },
+  );
+  expect(result.status, result.stderr).toBe(0);
+  expect(JSON.parse(result.stdout)).toEqual({
+    projects: { '/work/project': { trust_level: 'untrusted' } },
+  });
 });

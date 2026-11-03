@@ -119,9 +119,13 @@ export function changedSecretSettings(draft: SecretPasteDraft): VeritySettingsPa
   return patch;
 }
 
-/** Settings that only steer the app's own UI. They change nothing inside a
- *  project container, so saving one must not ask the operator to reprovision. */
-const APP_ONLY_PATCH_KEYS = new Set<string>(['advancedModeEnabled', 'transcribeBackendMode']);
+/** Settings applied without recreating running containers. Network protection
+ * deliberately takes effect only at the next container start. */
+const NO_CONTAINER_APPLY_KEYS = new Set<string>([
+  'advancedModeEnabled',
+  'transcribeBackendMode',
+  'projectEgressEnabled',
+]);
 
 /**
  * Whether a saved patch still has to reach ALREADY RUNNING project containers.
@@ -133,5 +137,5 @@ const APP_ONLY_PATCH_KEYS = new Set<string>(['advancedModeEnabled', 'transcribeB
  * because nobody remembered to list it here.
  */
 export function requiresContainerApply(patch: VeritySettingsPatch): boolean {
-  return Object.keys(patch).some((key) => !APP_ONLY_PATCH_KEYS.has(key));
+  return Object.keys(patch).some((key) => !NO_CONTAINER_APPLY_KEYS.has(key));
 }

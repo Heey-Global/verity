@@ -1105,6 +1105,25 @@ describe('explicit forge proxy relay', () => {
       expect(forwarded).toBe(target);
     },
   );
+  it('closes the Forge route entirely for an empty authority list', async () => {
+    const socketPath = join(temporaryDirectory(), 'broker.sock');
+    const upstream = createHttpServer();
+    let calls = 0;
+    upstream.on('connect', (_req, socket) => {
+      calls += 1;
+      socket.end('HTTP/1.1 200 Connection Established\r\n\r\n');
+    });
+    servers.push(upstream);
+    await listenUnix(upstream, socketPath);
+    const port = await listenTcp(
+      createBrokerRelayServer({ socketPath, forgeProxy: true, forgeAuthorities: [] }),
+    );
+    for (const target of ['github.com:443', 'api.github.com:443'])
+      expect(
+        await rawCall(port, `CONNECT ${target} HTTP/1.1\r\nHost: ${target}\r\n\r\n`),
+      ).not.toContain('200 Connection Established');
+    expect(calls).toBe(0);
+  });
   it.each(['github.com:443', 'forge.test:8443'])(
     'tunnels only configured provider %s to the fixed project socket with binary streaming',
     async (target) => {

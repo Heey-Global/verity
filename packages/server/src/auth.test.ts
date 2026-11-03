@@ -102,7 +102,7 @@ describe('paired device management', () => {
   afterAll(async () => ctx.close());
   beforeEach(async () => truncateAll(ctx.db));
 
-  it('keeps backup setup behind paired-device administrator authority and recovery acceptance', async () => {
+  it('keeps backup setup behind paired-device administrator authority and installer resources', async () => {
     const store = new EventStore(ctx.db);
     const registry = await createAuthTokenRegistry(store, { enabled: true });
     const device = await registry.mint('backup administrator');
@@ -125,7 +125,7 @@ describe('paired device management', () => {
       ).toBe(401);
       expect(
         (await app.inject({ method: 'GET', url: '/api/backups/status', headers })).json(),
-      ).toEqual({ available: false, reason: 'recovery-validation-pending' });
+      ).toEqual({ available: false, reason: 'installer-required' });
       expect(
         (await app.inject({ method: 'POST', url: '/api/backups/setup', headers })).statusCode,
       ).toBe(503);
@@ -326,6 +326,17 @@ describe('paired device management', () => {
       admin.mockRestore();
       expect((await app.inject({ ...operations[2], headers })).json().phase).toBe('stopped');
       expect((await app.inject({ ...operations[3], headers })).json().status.runId).toBe(runId);
+      expect((await app.inject({ ...operations[3], headers })).json()).not.toHaveProperty(
+        'failures',
+      );
+      expect(
+        (
+          await app.inject({
+            ...operations[3],
+            headers: { ...headers, 'x-verity-recording-failure-details': '1' },
+          })
+        ).json().failures,
+      ).toEqual({ stop: null, export: null });
       const v2Id = '11234567-0123-4123-8123-0123456789ab';
       expect(
         (
@@ -1292,6 +1303,49 @@ describe('global auth gate (onRequest)', () => {
       });
       expect(locked.statusCode).toBe(429);
       expect(locked.headers['retry-after']).toBeDefined();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('keeps the existing device entry when a paired device unlocks with its bearer', async () => {
+    const cipher = createSealableSecretCipher();
+    const store = new EventStore(ctx.db, cipher);
+    const registry = await createAuthTokenRegistry(store, { enabled: true });
+    const pairing = {
+      consumeBootstrap: (token: string) => token === 'initialization-bootstrap',
+    } as unknown as DevicePairingManager;
+    const app = buildServer({
+      eventStore: store,
+      bus: new InMemoryEventBus(),
+      conductor,
+      secretCipher: cipher,
+      devicePairing: pairing,
+      authRegistry: registry,
+    });
+    try {
+      const init = await app.inject({
+        method: 'POST',
+        url: '/secret/init',
+        headers: { 'x-verity-pairing': 'initialization-bootstrap' },
+        payload: { password: PASSWORD, deviceLabel: 'iPhone' },
+      });
+      expect(init.statusCode).toBe(200);
+      const device = init.json<{ token: string; tokenId: string }>();
+      cipher.seal();
+
+      const unlock = await app.inject({
+        method: 'POST',
+        url: '/secret/unlock',
+        headers: { authorization: `Bearer ${device.token}` },
+        payload: { password: PASSWORD, deviceLabel: 'iPhone' },
+      });
+
+      // A fresh token here adds the same phone to the device list on every
+      // manual unlock, and the replaced entry lingers as an inactive duplicate.
+      expect(unlock.statusCode).toBe(200);
+      expect(unlock.json()).toMatchObject({ token: device.token, tokenId: device.tokenId });
+      expect((await registry.list()).map(({ id }) => id)).toEqual([device.tokenId]);
     } finally {
       await app.close();
     }

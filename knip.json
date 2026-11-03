@@ -15,6 +15,12 @@
         "src/knowledge-source-worker.ts"
       ]
     },
-    "vendor/expo-router-query-string": {}
+    "vendor/expo-router-query-string": {},
+    ".": {
+      "entry": [
+        "scripts/probes/project-egress/adapter-smoke.ts",
+        "scripts/probes/project-egress/host-smoke.ts"
+      ]
+    }
   }
 }

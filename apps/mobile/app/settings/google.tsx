@@ -1,6 +1,7 @@
 import type { GoogleAccount, VerityClient } from '@verity/mobile';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Text } from 'react-native';
+import { router } from 'expo-router';
 import {
   SettingsScaffold,
   SettingsGroup,
@@ -107,6 +108,21 @@ function GoogleSettingsContent({ client }: { client: VerityClient }) {
           icon="plus"
           disabled={busy}
           onPress={() => void connect()}
+        />
+      </SettingsGroup>
+      <SettingsGroup
+        title="Calendar"
+        description="Times you offered through booking links, and calendars Verity watches for online meetings."
+      >
+        <SettingsNavRow
+          title="Scheduling requests"
+          icon="calendar"
+          onPress={() => router.push('/settings/scheduling-requests')}
+        />
+        <SettingsNavRow
+          title="Meeting calendars"
+          icon="video"
+          onPress={() => router.push('/settings/meeting-calendars')}
         />
       </SettingsGroup>
       <Sheet

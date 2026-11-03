@@ -15,6 +15,7 @@ export const CLAUDE_ACP_PROFILE: AcpBackendProfile = {
   telemetryBackend: 'claude-acp',
   httpMcpWhenUnspecified: true,
   enforcesToolless: true,
+  enforcesGatewayToolsOnly: true,
   loadSessionUnsupported: 'Claude ACP adapter does not support persistent session loading',
   clientCapabilitiesMeta: { 'subagent-transcript': true },
   sessionMeta: async (opts) => {
@@ -87,7 +88,9 @@ export const CLAUDE_ACP_PROFILE: AcpBackendProfile = {
           plugins: [],
           agents: {},
           settings: { apiKeyHelper: '' },
-          ...(opts.toolless === true ? { tools: [] } : {}),
+          // An empty built-in set keeps the MCP servers: the Verity gateway stays,
+          // shell, files and web go.
+          ...(opts.toolless === true || opts.gatewayToolsOnly === true ? { tools: [] } : {}),
         },
       },
     };

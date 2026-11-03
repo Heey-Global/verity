@@ -29,6 +29,30 @@ export async function registerBackupGeneration(root: string, current: BackupStat
   }
 }
 
+/** Publication remnants are never committed catalogs; leave them alone because a writer may still own them. */
+export async function readBackupGenerations(
+  root: string,
+  installationId: string,
+): Promise<BackupState[]> {
+  const states: BackupState[] = [];
+  let entries = 0;
+  for await (const entry of await opendir(join(root, 'generations'))) {
+    if (++entries > 100000) throw new Error('Backup generation entry budget exceeded');
+    if (/^\.pending-[a-f0-9]{32}$/.test(entry.name) && entry.isFile()) continue;
+    if (!/^[1-9][0-9]{0,8}$/.test(entry.name))
+      throw new Error('Unexpected backup generation entry');
+    if (states.length >= 1000) throw new Error('Backup generation budget exceeded');
+    const state = validateBackupState(
+      JSON.parse((await readBounded(join(root, 'generations', entry.name), 65536)).toString()),
+      installationId,
+    );
+    if (state.repositoryNumber !== Number(entry.name))
+      throw new Error('Invalid backup generation catalog');
+    states.push(state);
+  }
+  return states;
+}
+
 /** Caller holds the installation operation lock; every catalog is validated before the first prune. */
 export async function maintainBackupGenerations(
   root: string,
@@ -42,19 +66,8 @@ export async function maintainBackupGenerations(
   await destination.assertPresent();
   const records: { state: BackupState; repository: BackupRepository }[] = [];
   const known = new Set<string>();
-  for await (const entry of await opendir(join(root, 'generations'))) {
-    if (!/^[1-9][0-9]{0,8}$/.test(entry.name))
-      throw new Error('Unexpected backup generation entry');
-    if (records.length >= 1000) throw new Error('Backup generation budget exceeded');
-    const state = validateBackupState(
-      JSON.parse((await readBounded(join(root, 'generations', entry.name), 65536)).toString()),
-      current.installationId,
-    );
-    if (
-      String(state.repositoryNumber) !== entry.name ||
-      state.targetId !== current.targetId ||
-      state.repositoryNumber > current.repositoryNumber
-    )
+  for (const state of await readBackupGenerations(root, current.installationId)) {
+    if (state.targetId !== current.targetId || state.repositoryNumber > current.repositoryNumber)
       throw new Error('Invalid backup generation catalog');
     const name = `${state.installationId}-r${state.repositoryNumber}`;
     known.add(name);

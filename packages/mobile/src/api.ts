@@ -1,5 +1,8 @@
+import { storageReclamationActionSchema, type StorageReclamationAction } from '@verity/events';
+import { buildDiagnosticResponseSchema, systemLogResponseSchema } from './logs.js';
 import {
   auditHealthSchema,
+  auditEventListSchema,
   auditOperationListSchema,
   auditOperationResponseSchema,
   type AuditHealth,
@@ -27,6 +30,7 @@ import {
 } from './runtimeDiagnostics.js';
 import { recordingDigest, type RecordingDigest } from './recording-digest.js';
 import {
+  recordingFailureReasonSchema,
   selectedEvidenceMetadataSchema,
   selectedEvidenceExportSchema,
   selectedEvidenceHashInput,
@@ -853,6 +857,9 @@ export const veritySettingsSchema = z.object({
   uplinkSubscriptionKeyConfigured: z.boolean(),
   premiumSharingEnabled: z.boolean().optional(),
   premiumRemoteAccessEnabled: z.boolean().optional(),
+  /** System-wide network protection, and whether this host's egress service answers. */
+  projectEgressEnabled: z.boolean().optional(),
+  projectEgressAvailable: z.boolean().optional(),
   uplinkInstallationId: z.string().nullable(),
   transcribeBaseUrl: z.string().nullable(),
   transcribeModel: z.string().nullable(),
@@ -899,10 +906,80 @@ export const veritySettingsSchema = z.object({
   googleDriveAccountEmail: z.string().nullable(),
   googleDriveConnected: z.boolean(),
   advancedModeEnabled: z.boolean().default(false),
+  unassignedMeetingRetentionDays: z.number().int().nullable().optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
 export type VeritySettings = z.infer<typeof veritySettingsSchema>;
+
+const activeLiveMeetingsSchema = z.object({
+  running: z.array(
+    z.object({
+      sessionId: z.string(),
+      id: z.string(),
+      title: z.string().nullable(),
+      engine: z.string(),
+      startedAt: z.number(),
+      state: z.enum(['active', 'interrupted']),
+      captureStatus: z.string(),
+      recorderLastSeenAt: z.number().nullable().optional(),
+      sessionName: z.string().nullable(),
+      projectId: z.string().nullable(),
+    }),
+  ),
+  unassigned: z.array(
+    z.object({
+      id: z.string(),
+      title: z.string().nullable(),
+      startedAt: z.number(),
+      endedAt: z.number().nullable(),
+      state: z.enum(['active', 'interrupted', 'ended']),
+      captureStatus: z.string(),
+      people: z.number(),
+    }),
+  ),
+  retentionDays: z.number(),
+});
+export type ActiveLiveMeetings = z.infer<typeof activeLiveMeetingsSchema>;
+
+const calendarWatchSchema = z.object({
+  accounts: z.array(
+    z.object({
+      id: z.string(),
+      email: z.string(),
+      displayName: z.string().nullable(),
+      // `.catch` keeps a newer server's additional state readable as "unavailable".
+      access: z.enum(['ok', 'missing_scope', 'unavailable']).catch('unavailable'),
+      calendars: z.array(
+        z.object({
+          id: z.string(),
+          summary: z.string(),
+          primary: z.boolean(),
+          watched: z.boolean(),
+          autoJoin: z.boolean(),
+        }),
+      ),
+    }),
+  ),
+  retentionDays: z.number(),
+});
+export type CalendarWatch = z.infer<typeof calendarWatchSchema>;
+
+const upcomingMeetingsSchema = z.object({
+  upcoming: z.array(
+    z.object({
+      eventKey: z.string(),
+      title: z.string().nullable(),
+      startsAt: z.number(),
+      endsAt: z.number(),
+      calendar: z.string(),
+      provider: z.enum(['meet', 'teams', 'zoom']).catch('meet'),
+      decision: z.enum(['joined', 'skipped', 'failed']).nullable().catch(null),
+      meetingId: z.string().nullable(),
+    }),
+  ),
+});
+export type UpcomingMeeting = z.infer<typeof upcomingMeetingsSchema>['upcoming'][number];
 
 const httpMcpConnectionSchema = z.object({
   id: z.string(),
@@ -979,7 +1056,13 @@ const serverUpdateAttemptSchema = z.object({
 });
 export type ServerUpdateAttempt = z.infer<typeof serverUpdateAttemptSchema>;
 
+const hostPreparationSchema = z.object({
+  updateId: z.string().min(1),
+  targetDigest: z.string().min(1),
+  stage: z.enum(['renewing', 'registering', 'ready', 'restored', 'recovery-required', 'unchanged']),
+});
 const serverUpdateRecoverySchema = z.object({
+  hostPreparation: hostPreparationSchema.optional().catch(undefined),
   installed: z
     .object({
       version: z.string().min(1),
@@ -997,6 +1080,7 @@ export type ServerUpdateStatus = z.infer<typeof serverUpdateStatusSchema> & {
 } & Partial<{
     installed: { version: string; generation: number | null };
     attempt: ServerUpdateAttempt | null;
+    hostPreparation: z.infer<typeof hostPreparationSchema>;
     stalled: boolean;
     recovery: { retry: boolean; supersede: boolean };
   }>;
@@ -1110,6 +1194,7 @@ export type GoogleDriveImportResult = z.infer<typeof googleDriveImportResultSche
 
 type VeritySettingsKey =
   | 'advancedModeEnabled'
+  | 'unassignedMeetingRetentionDays'
   | 'gitUserName'
   | 'gitUserEmail'
   | 'gitSshPrivateKeyPath'
@@ -1134,6 +1219,7 @@ export type VeritySettingsPatch = {
   uplinkSubscriptionKey?: string | null | undefined;
   premiumSharingEnabled?: boolean | undefined;
   premiumRemoteAccessEnabled?: boolean | undefined;
+  projectEgressEnabled?: boolean | undefined;
   transcribeApiKey?: string | null | undefined;
   codexAuthJson?: string | null | undefined;
   opencodeBaseUrl?: string | null | undefined;
@@ -1164,6 +1250,47 @@ export const secretStatusSchema = z.object({
   status: z.enum(['unlocked', 'sealed', 'uninitialized', 'unmanaged']),
 });
 export type SecretStatus = z.infer<typeof secretStatusSchema>['status'];
+
+/** A restore probe as the server reports it. The server keeps no key in it.
+ *  `status` and `phase` stay plain strings so a newer server's values do not
+ *  make the whole backup status unreadable. */
+export const backupProbeJobSchema = z.object({
+  id: z.string().uuid(),
+  status: z.string(),
+  phase: z.string(),
+  startedAt: z.number(),
+  finishedAt: z.number().nullable(),
+  snapshot: z.unknown(),
+  error: z.string().nullable(),
+});
+export type BackupProbeJob = z.infer<typeof backupProbeJobSchema>;
+
+/** `GET /api/backups/status` (docs/BACKUP_API.md). `reason` stays a plain string:
+ *  older servers report reasons this app does not know. */
+export const backupStatusSchema = z.discriminatedUnion('available', [
+  z.object({ available: z.literal(false), reason: z.string() }),
+  z.object({
+    available: z.literal(true),
+    configured: z.boolean(),
+    paused: z.boolean().optional(),
+    intervalMs: z.number().optional(),
+    lastSuccess: z.number().nullable().optional(),
+    capturing: z.boolean().optional(),
+    keyGeneration: z.number().optional(),
+    lastProbe: z.object({ finishedAt: z.number(), sequence: z.number() }).nullable().optional(),
+    probe: backupProbeJobSchema.nullable().optional(),
+    alerts: z.array(z.string()),
+  }),
+]);
+export type BackupStatus = z.infer<typeof backupStatusSchema>;
+
+/** A newly generated recovery key, shown once. It becomes active on confirmation. */
+const backupKeyOfferSchema = z.object({
+  id: z.string().uuid(),
+  recoveryKey: z.string().min(1),
+  expiresAt: z.number(),
+});
+export type BackupKeyOffer = z.infer<typeof backupKeyOfferSchema>;
 
 /** The server's `GET /healthz` — a pre-auth liveness probe that also carries the
  *  server's own release version (baked into the deploy image, `-dev` on
@@ -1275,6 +1402,13 @@ export type SelectedConnectionRecordingStatus = z.infer<
 
 export const connectionRecordingExportSchema = z
   .object({
+    failures: z
+      .object({
+        stop: recordingFailureReasonSchema.nullable(),
+        export: recordingFailureReasonSchema.nullable(),
+      })
+      .strict()
+      .optional(),
     version: z.literal(1),
     status: connectionRecordingStatusSchema,
     core: z
@@ -2396,7 +2530,53 @@ export type LiveMeetingNote = z.infer<typeof liveMeetingNoteSchema>;
 export type LiveMeetingCommand = z.infer<typeof liveMeetingCommandSchema>;
 export type LiveMeetingInsight = z.infer<typeof liveMeetingInsightSchema>;
 
+const schedulingRequestViewSchema = z.object({
+  id: z.string(),
+  sessionId: z.string(),
+  /** The project the request was prepared in; older servers omit it. */
+  projectId: z.string().nullable().optional(),
+  state: z.enum(['draft', 'provisioning', 'open', 'booked', 'expired', 'revoked', 'failed']),
+  title: z.string(),
+  durationMinutes: z.number(),
+  addGoogleMeet: z.boolean(),
+  timeZone: z.string(),
+  guest: z.object({ email: z.string(), name: z.string().nullable() }),
+  colleagues: z.array(z.object({ email: z.string(), name: z.string().optional() })),
+  closesAt: z.string(),
+  windows: z.array(z.object({ start: z.string(), end: z.string(), state: z.string() })),
+  emailSentAt: z.string().nullable(),
+  booked: z.object({ start: z.string(), end: z.string() }).nullable(),
+  failure: z.string().nullable(),
+  pendingCleanups: z.number(),
+  link: z.string().nullable(),
+  createdAt: z.string(),
+});
+const schedulingRequestsSchema = z.object({ requests: z.array(schedulingRequestViewSchema) });
+/** A scheduling request as the app shows it: its state, windows and the guest's link. */
+export type SchedulingRequestView = z.infer<typeof schedulingRequestViewSchema>;
+
 export class VerityClient {
+  async getMcpAppDocument(sessionId: string, appId: string, signal?: AbortSignal): Promise<string> {
+    const response = await this.request(
+      `/sessions/${encodeURIComponent(sessionId)}/mcp-apps/${encodeURIComponent(appId)}`,
+      { method: 'GET', ...(signal ? { signal } : {}) },
+    );
+    return z.object({ document: z.string() }).parse(await response.json()).document;
+  }
+
+  async callMcpAppTool(
+    sessionId: string,
+    appId: string,
+    call: { name: string; arguments?: Record<string, unknown> },
+    signal?: AbortSignal,
+  ): Promise<Record<string, unknown>> {
+    const response = await this.request(
+      `/sessions/${encodeURIComponent(sessionId)}/mcp-apps/${encodeURIComponent(appId)}/call`,
+      { method: 'POST', body: JSON.stringify(call), ...(signal ? { signal } : {}) },
+    );
+    return z.record(z.string(), z.unknown()).parse(await response.json());
+  }
+
   async getAttendeeSettings(): Promise<{ configured: boolean }> {
     return z
       .object({ configured: z.boolean() })
@@ -2435,6 +2615,73 @@ export class VerityClient {
       `/sessions/${encodeURIComponent(sessionId)}/live-meetings/${encodeURIComponent(meetingId)}/online/stop`,
       { method: 'POST' },
     );
+  }
+  /** Running meetings of readable sessions and, for administrators, unassigned ones. */
+  async getActiveLiveMeetings(): Promise<ActiveLiveMeetings> {
+    return activeLiveMeetingsSchema.parse(
+      await (await this.request('/live-meetings/active', { method: 'GET' })).json(),
+    );
+  }
+  /** Meetings of the next hours from watched calendars. */
+  async getUpcomingMeetings(): Promise<UpcomingMeeting[]> {
+    return upcomingMeetingsSchema.parse(
+      await (await this.request('/live-meetings/upcoming', { method: 'GET' })).json(),
+    ).upcoming;
+  }
+  /** Joins a calendar meeting: into `sessionId` when given, otherwise unassigned. */
+  async joinCalendarMeeting(eventKey: string, sessionId?: string): Promise<{ meetingId: string }> {
+    return z.object({ meetingId: z.string() }).parse(
+      await (
+        await this.request(`/live-meetings/calendar/${encodeURIComponent(eventKey)}/join`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(sessionId ? { sessionId } : {}),
+        })
+      ).json(),
+    );
+  }
+  async skipCalendarMeeting(eventKey: string): Promise<void> {
+    await this.request(`/live-meetings/calendar/${encodeURIComponent(eventKey)}/skip`, {
+      method: 'POST',
+    });
+  }
+  /** The Google calendars Verity may watch for online meetings, with the current choices. */
+  async getCalendarWatch(): Promise<CalendarWatch> {
+    return calendarWatchSchema.parse(
+      await (await this.request('/settings/calendar-watch', { method: 'GET' })).json(),
+    );
+  }
+  async setCalendarWatch(choice: {
+    accountId: string;
+    calendarId: string;
+    watched: boolean;
+    autoJoin: boolean;
+  }): Promise<void> {
+    await this.request('/settings/calendar-watch', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(choice),
+    });
+  }
+  /** Assigns an unassigned meeting to a project (new session) or an existing session. */
+  async assignLiveMeeting(
+    meetingId: string,
+    target: { projectId: string } | { sessionId: string },
+  ): Promise<{ sessionId: string; meetingId: string }> {
+    return z.object({ sessionId: z.string(), meetingId: z.string() }).parse(
+      await (
+        await this.request(`/live-meetings/unassigned/${encodeURIComponent(meetingId)}/assign`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(target),
+        })
+      ).json(),
+    );
+  }
+  async discardLiveMeeting(meetingId: string): Promise<void> {
+    await this.request(`/live-meetings/unassigned/${encodeURIComponent(meetingId)}`, {
+      method: 'DELETE',
+    });
   }
   async editOnlineMeetingSpeakers(
     sessionId: string,
@@ -3213,6 +3460,8 @@ export class VerityClient {
     // Built by hand: React Native's URLSearchParams polyfill lacks `size` and has
     // dropped parameters before, which would silently unfilter the list.
     const params: [string, string][] = [];
+    if (query.since !== undefined) params.push(['since', query.since]);
+    if (query.until !== undefined) params.push(['until', query.until]);
     if (query.domain !== undefined) params.push(['domain', query.domain]);
     if (query.search !== undefined && query.search.trim().length > 0)
       params.push(['q', query.search.trim()]);
@@ -3229,6 +3478,49 @@ export class VerityClient {
       if (err instanceof VerityApiError && (err.status === 403 || err.status === 404)) return null;
       throw err;
     }
+  }
+
+  async auditEvents(query: AuditOperationQuery = {}) {
+    // Built by hand: React Native's URLSearchParams polyfill lacks `size` and has
+    // dropped parameters before, which would silently unfilter the list.
+    const params: [string, string][] = [];
+    if (query.since !== undefined) params.push(['since', query.since]);
+    if (query.until !== undefined) params.push(['until', query.until]);
+    if (query.domain !== undefined) params.push(['domain', query.domain]);
+    if (query.search !== undefined && query.search.trim().length > 0)
+      params.push(['q', query.search.trim()]);
+    if (query.before !== undefined) params.push(['before', query.before]);
+    if (query.limit !== undefined) params.push(['limit', String(query.limit)]);
+    const suffix =
+      params.length > 0
+        ? `?${params.map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join('&')}`
+        : '';
+    try {
+      const res = await this.request(`/audit/events${suffix}`, { method: 'GET' });
+      return auditEventListSchema.parse(await res.json());
+    } catch (err) {
+      if (err instanceof VerityApiError && (err.status === 403 || err.status === 404)) return null;
+      throw err;
+    }
+  }
+
+  async buildDiagnostic(operationId: string) {
+    const res = await this.request(
+      `/audit/operations/${encodeURIComponent(operationId)}/diagnostics`,
+      { method: 'GET' },
+    );
+    return buildDiagnosticResponseSchema.parse(await res.json());
+  }
+
+  async systemLogs(query: {
+    source: 'server' | 'host';
+    since: string;
+    until: string;
+    level?: 'all' | 'error' | 'warning' | 'info';
+  }) {
+    const params = new URLSearchParams(query);
+    const res = await this.request(`/diagnostics/logs?${params.toString()}`, { method: 'GET' });
+    return systemLogResponseSchema.parse(await res.json());
   }
 
   async auditOperation(operationId: string): Promise<AuditOperationDetail> {
@@ -3311,6 +3603,9 @@ export class VerityClient {
     return {
       ...serverUpdateStatusSchema.parse(body),
       ...serverUpdateEnvelopeSchema.parse(body),
+      ...(recovery.hostPreparation === undefined
+        ? {}
+        : { hostPreparation: recovery.hostPreparation }),
       ...(recovery.installed === undefined ? {} : { installed: recovery.installed }),
       ...(recovery.attempt === undefined ? {} : { attempt: recovery.attempt }),
       ...(recovery.stalled === undefined ? {} : { stalled: recovery.stalled }),
@@ -3811,9 +4106,91 @@ export class VerityClient {
     return secretStatusSchema.parse(await res.json()).status;
   }
 
+  async getBackupStatus(): Promise<BackupStatus> {
+    const res = await this.request('/api/backups/status', { method: 'GET' });
+    return backupStatusSchema.parse(await res.json());
+  }
+  async beginBackupSetup(): Promise<BackupKeyOffer> {
+    return backupKeyOfferSchema.parse(await this.backupPost('/api/backups/setup'));
+  }
+  /** Sends back the key the app was given; Verity keeps no copy of it. */
+  async confirmBackupSetup(offer: BackupKeyOffer): Promise<void> {
+    await this.backupCommand('/api/backups/setup/confirm', {
+      id: offer.id,
+      recoveryKey: offer.recoveryKey,
+    });
+  }
+  async cancelBackupSetup(): Promise<void> {
+    await this.backupCommand('/api/backups/setup/cancel');
+  }
+  /** Always the "lost" replacement: older snapshots stay readable with the old key. */
+  async beginBackupKeyReplacement(): Promise<BackupKeyOffer> {
+    return backupKeyOfferSchema.parse(
+      await this.backupPost('/api/backups/key-replacement', { reason: 'lost' }),
+    );
+  }
+  async confirmBackupKeyReplacement(offer: BackupKeyOffer): Promise<void> {
+    await this.backupCommand('/api/backups/key-replacement/confirm', {
+      id: offer.id,
+      recoveryKey: offer.recoveryKey,
+    });
+  }
+  async cancelBackupKeyReplacement(): Promise<void> {
+    await this.backupCommand('/api/backups/key-replacement/cancel');
+  }
+  async setBackupPolicy(policy: { paused?: boolean; intervalMs?: number }): Promise<void> {
+    await this.request('/api/backups/policy', {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(policy),
+    });
+  }
+  async startBackupProbe(recoveryKey: string): Promise<BackupProbeJob> {
+    return backupProbeJobSchema.parse(
+      await this.backupPost('/api/backups/probes', { recoveryKey }),
+    );
+  }
+  async getBackupProbe(id: string): Promise<BackupProbeJob> {
+    const res = await this.request(`/api/backups/probes/${encodeURIComponent(id)}`, {
+      method: 'GET',
+    });
+    return backupProbeJobSchema.parse(await res.json());
+  }
+  async cancelBackupProbe(id: string): Promise<BackupProbeJob> {
+    return backupProbeJobSchema.parse(
+      await this.backupPost(`/api/backups/probes/${encodeURIComponent(id)}/cancel`),
+    );
+  }
+  /** Confirm and cancel ignore the reply, so an empty success body is fine. */
+  private async backupCommand(path: string, body: object = {}): Promise<void> {
+    await this.request(path, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  }
+  private async backupPost(path: string, body: object = {}): Promise<unknown> {
+    const res = await this.request(path, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    return res.json();
+  }
+
   /** Pre-auth liveness probe carrying the server's own release version — used to
    *  show which server build the app is talking to. Re-read whenever the settings
    *  screen gains focus so a server update (restart) is reflected without polling. */
+  async getStorageReclamation(): Promise<StorageReclamationAction> {
+    return storageReclamationActionSchema.parse(
+      await (await this.request('/settings/storage/reclamation', { method: 'GET' })).json(),
+    );
+  }
+  async reclaimStorage(): Promise<StorageReclamationAction> {
+    return storageReclamationActionSchema.parse(
+      await (await this.request('/settings/storage/reclamation', { method: 'POST' })).json(),
+    );
+  }
   async getHealth(): Promise<Health> {
     const res = await this.request('/healthz', { method: 'GET' });
     return healthSchema.parse(await res.json());
@@ -3968,6 +4345,7 @@ export class VerityClient {
       `/api/remote-control/recordings/${runId}/export`,
       {
         method: 'GET',
+        headers: { 'x-verity-recording-failure-details': '1' },
       },
       this.recordingFetchImpl,
     );
@@ -4299,6 +4677,7 @@ export class VerityClient {
     authType?: 'none' | 'static' | 'oauth';
     oauthClientId?: string | null;
     oauthClientSecret?: string | null;
+    oauthTokenAuthMethod?: 'none' | 'client_secret_post' | 'client_secret_basic';
     oauthAuthorizationEndpoint?: string | null;
     oauthTokenEndpoint?: string | null;
     oauthScopes?: string | null;
@@ -4311,14 +4690,70 @@ export class VerityClient {
     return z.object({ connection: httpMcpConnectionSchema }).parse(await res.json()).connection;
   }
 
+  async discoverHttpMcpOAuth(url: string): Promise<{
+    authorizationEndpoint: string;
+    tokenEndpoint: string;
+    scopes: string;
+    registrationAvailable: boolean;
+  }> {
+    const res = await this.request('/mcp-connections/oauth/discover', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ url }),
+    });
+    return z
+      .object({
+        authorizationEndpoint: z.string(),
+        tokenEndpoint: z.string(),
+        scopes: z.string(),
+        registrationAvailable: z.boolean(),
+      })
+      .parse(await res.json());
+  }
+
+  async startHttpMcpOAuth(
+    connectionId: string,
+    platform: 'web' | 'native' | 'native-staging',
+  ): Promise<{
+    authorizationUrl: string;
+    state: string;
+    redirectUri: string;
+    expiresAt: number;
+  }> {
+    const res = await this.request(
+      `/mcp-connections/${encodeURIComponent(connectionId)}/oauth/start`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ platform }),
+      },
+    );
+    return z
+      .object({
+        authorizationUrl: z.string(),
+        state: z.string(),
+        redirectUri: z.string(),
+        expiresAt: z.number(),
+      })
+      .parse(await res.json());
+  }
+
+  async cancelHttpMcpOAuth(connectionId: string, state: string): Promise<void> {
+    await this.request(`/mcp-connections/${encodeURIComponent(connectionId)}/oauth/cancel`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ state }),
+    });
+  }
+
   async completeHttpMcpOAuth(
     connectionId: string,
-    input: { code: string; codeVerifier: string; redirectUri: string },
+    input: { code: string; state: string },
   ): Promise<void> {
     await this.request(`/mcp-connections/${encodeURIComponent(connectionId)}/oauth/complete`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(input),
+      body: JSON.stringify({ code: input.code, state: input.state }),
     });
   }
 
@@ -4969,6 +5404,13 @@ export class VerityClient {
         );
       } catch (error) {
         if (error instanceof VerityApiError && error.status === 404) {
+          // The versioned route also returns 404 when the session itself is gone.
+          // Only an unavailable route should suggest updating Core.
+          if (error.message === `session ${id} not found`) {
+            throw new Error('This session no longer exists. Return to the session list.', {
+              cause: error,
+            });
+          }
           throw new Error(
             'Bounded history is unavailable. Update Core and check that this session still exists.',
             { cause: error },
@@ -5627,6 +6069,170 @@ export class VerityClient {
       { method: 'GET' },
     );
     return res.arrayBuffer();
+  }
+
+  async qaApprovals(sessionId: string) {
+    const res = await this.request(`/sessions/${encodeURIComponent(sessionId)}/qa-approvals`, {
+      method: 'GET',
+    });
+    return z
+      .object({
+        proposals: z.array(
+          z.object({
+            id: z.string(),
+            project_id: z.string(),
+            owner: z.string(),
+            repo: z.string(),
+            resource: z.string(),
+          }),
+        ),
+      })
+      .parse(await res.json());
+  }
+  async sessionSchedulingRequests(sessionId: string): Promise<SchedulingRequestView[]> {
+    const res = await this.request(
+      `/sessions/${encodeURIComponent(sessionId)}/scheduling-requests`,
+      { method: 'GET' },
+    );
+    return schedulingRequestsSchema.parse(await res.json()).requests;
+  }
+  async schedulingRequests(): Promise<SchedulingRequestView[]> {
+    const res = await this.request('/scheduling-requests', { method: 'GET' });
+    return schedulingRequestsSchema.parse(await res.json()).requests;
+  }
+  /** The assistant's overview: its session id and the requests of the projects granted to it. */
+  async assistantSchedulingRequests(sessionId?: string): Promise<{
+    assistantSessionId: string | null;
+    requests: (SchedulingRequestView & { sessionAvailable?: boolean | undefined })[];
+  }> {
+    const res = await this.request(
+      `/assistant/scheduling-requests${sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : ''}`,
+      { method: 'GET' },
+    );
+    return z
+      .object({
+        assistantSessionId: z.string().nullable(),
+        requests: z.array(
+          schedulingRequestViewSchema.extend({ sessionAvailable: z.boolean().optional() }),
+        ),
+      })
+      .parse(await res.json());
+  }
+  async revokeSchedulingRequest(requestId: string): Promise<void> {
+    await this.request(`/scheduling-requests/${encodeURIComponent(requestId)}/revoke`, {
+      method: 'POST',
+    });
+  }
+  async decideQAApproval(projectId: string, proposalId: string, allow: boolean) {
+    await this.request(`/projects/${encodeURIComponent(projectId)}/repairs/approval`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ proposalId, allow }),
+    });
+  }
+  async qaSettings(enabled?: boolean) {
+    const res = await this.request(
+      '/settings/qa',
+      enabled === undefined
+        ? { method: 'GET' }
+        : {
+            method: 'PUT',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ enabled }),
+          },
+    );
+    return z
+      .object({ enabled: z.boolean(), health: z.string(), session_id: z.string().nullable() })
+      .parse(await res.json());
+  }
+
+  async projectRepairs(id: string, mode?: 'off' | 'monitor' | 'automatic') {
+    const res = await this.request(
+      `/projects/${encodeURIComponent(id)}/repairs`,
+      mode
+        ? {
+            method: 'PUT',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ mode }),
+          }
+        : { method: 'GET' },
+    );
+    return z
+      .object({
+        qaEnabled: z.boolean().optional(),
+        mandate: z
+          .object({
+            mode: z.enum(['off', 'monitor', 'automatic']),
+            health: z.string(),
+            checked_at: z.string().nullable(),
+          })
+          .nullable(),
+        incidents: z
+          .array(
+            z.object({
+              id: z.string(),
+              resource: z.string(),
+              revision: z.string(),
+              state: z.string(),
+              originating_session_id: z.string().nullable().optional(),
+              owner_session_id: z.string().nullable(),
+              last_session_id: z.string().nullable(),
+              attempts: z.number(),
+              evidence: z.string(),
+            }),
+          )
+          .optional(),
+      })
+      .parse(await res.json());
+  }
+  /** The Verity assistant: one Verity Control session plus per-project grants. */
+  async assistantSettings(enabled?: boolean) {
+    const res = await this.request(
+      '/settings/assistant',
+      enabled === undefined
+        ? { method: 'GET' }
+        : {
+            method: 'PUT',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ enabled }),
+          },
+    );
+    return z
+      .object({
+        enabled: z.boolean(),
+        sessionId: z.string().nullable(),
+        grants: z.array(
+          z.object({ projectId: z.string(), mode: z.enum(['off', 'tasks', 'delegate']) }),
+        ),
+      })
+      .parse(await res.json());
+  }
+
+  async projectAssistant(id: string, mode?: 'off' | 'tasks' | 'delegate') {
+    const res = await this.request(
+      `/projects/${encodeURIComponent(id)}/assistant`,
+      mode
+        ? {
+            method: 'PUT',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ mode }),
+          }
+        : { method: 'GET' },
+    );
+    return z
+      .object({
+        assistantEnabled: z.boolean().optional(),
+        mode: z.enum(['off', 'tasks', 'delegate']),
+      })
+      .parse(await res.json());
+  }
+
+  async retryRepair(projectId: string, incidentId: string): Promise<void> {
+    await this.request(`/projects/${encodeURIComponent(projectId)}/repairs/retry`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ incidentId }),
+    });
   }
 
   async vulnerabilitySettings(patch?: Partial<VulnerabilitySettings>) {

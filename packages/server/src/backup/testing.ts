@@ -31,7 +31,7 @@ export async function writeBackupIdentityFixture(
       '-out',
       join(identity, 'tls-ca-cert.pem'),
       '-days',
-      '1',
+      '3650',
       '-subj',
       '/CN=Verity Backup Test CA',
       '-addext',
@@ -73,7 +73,7 @@ export async function writeBackupIdentityFixture(
       '-out',
       join(identity, 'tls-cert.pem'),
       '-days',
-      '1',
+      '397',
     ],
     { env },
   );

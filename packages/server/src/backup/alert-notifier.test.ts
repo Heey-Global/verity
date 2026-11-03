@@ -1,43 +1,46 @@
 import type { EventStore } from '@verity/store';
 import { expect, it, vi } from 'vitest';
 import { createBackupAlertNotifier } from './alert-notifier.js';
-import { BackupOperationalAlerts } from './operational-alerts.js';
+import { BackupOperationalAlerts, backupAlertMessages } from './operational-alerts.js';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
-it('rechecks administrator authority after resolving devices and sends no private details', async () => {
-  const store = {
-    listActiveAdministratorIds: async () => ['admin', 'revoked'],
-    listDevicePushTokensForUsers: async (ids: string[]) =>
-      [
-        {
-          authTokenId: ids[0]!,
-          userId: ids[0]!,
-          expoToken: ids[0]!,
-          platform: 'ios' as const,
-          createdAt: 0,
-          updatedAt: 0,
-        },
-      ] satisfies Awaited<ReturnType<EventStore['listDevicePushTokensForUsers']>>,
-    isActiveAdministrator: vi.fn(async (id: string) => id === 'admin'),
-  };
-  const send = vi.fn(async () => ({
-    targets: 1,
-    ticketsAccepted: 1,
-    ticketErrors: 0,
-    receiptsQueued: 1,
-    pruned: 0,
-    transportErrors: 0,
-  }));
-  expect(await createBackupAlertNotifier(store, { send })('identity-unreadable')).toBe(true);
-  expect(send).toHaveBeenCalledTimes(1);
-  expect(send.mock.calls[0]).toMatchObject([
-    { data: { type: 'backup-alert', code: 'identity-unreadable' } },
-    [{ expoToken: 'admin' }],
-  ]);
-  expect(await createBackupAlertNotifier(store, undefined)('identity-unreadable')).toBe(false);
-});
+it.each(Object.keys(backupAlertMessages) as (keyof typeof backupAlertMessages)[])(
+  'rechecks administrator authority for %s after resolving devices and sends no private details',
+  async (code) => {
+    const store = {
+      listActiveAdministratorIds: async () => ['admin', 'revoked'],
+      listDevicePushTokensForUsers: async (ids: string[]) =>
+        [
+          {
+            authTokenId: ids[0]!,
+            userId: ids[0]!,
+            expoToken: ids[0]!,
+            platform: 'ios' as const,
+            createdAt: 0,
+            updatedAt: 0,
+          },
+        ] satisfies Awaited<ReturnType<EventStore['listDevicePushTokensForUsers']>>,
+      isActiveAdministrator: vi.fn(async (id: string) => id === 'admin'),
+    };
+    const send = vi.fn(async () => ({
+      targets: 1,
+      ticketsAccepted: 1,
+      ticketErrors: 0,
+      receiptsQueued: 1,
+      pruned: 0,
+      transportErrors: 0,
+    }));
+    expect(await createBackupAlertNotifier(store, { send })(code)).toBe(true);
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send.mock.calls[0]).toMatchObject([
+      { data: { type: 'backup-alert', code } },
+      [{ expoToken: 'admin' }],
+    ]);
+    expect(await createBackupAlertNotifier(store, undefined)(code)).toBe(false);
+  },
+);
 
 it('persists per-device delivery across partial failure and restart, then resets a resolved episode', async () => {
   const root = await mkdtemp(join(tmpdir(), 'backup-partial-alert-'));

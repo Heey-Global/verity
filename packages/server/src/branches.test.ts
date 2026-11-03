@@ -1,3 +1,4 @@
+import { matchesQAAssignmentContinuation } from './qa-assignment-tool.js';
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -1823,3 +1824,71 @@ describe('mergeIntoLocalBase against a hostile repository (real git)', () => {
     }
   });
 });
+
+it('reads the exact attached repair revision through the scoped git runner', async () => {
+  const repo = mkdtempSync(join(tmpdir(), 'verity-repair-head-'));
+  const git = (...args: string[]) =>
+    execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8' });
+  try {
+    git('init', '-q', '-b', 'main');
+    git('config', 'user.email', 'test@example.com');
+    git('config', 'user.name', 'Test');
+    git('config', 'commit.gpgsign', 'false');
+    git('commit', '--allow-empty', '-qm', 'initial');
+    const svc = createGitBranchService({
+      git: async () => {
+        throw new Error('unscoped git must not run');
+      },
+      withGit: async (worktree, read) => {
+        expect(worktree).toBe(repo);
+        return read(async (args) => execFileSync('git', [...args], { encoding: 'utf8' }));
+      },
+    });
+    const initial = git('rev-parse', 'HEAD').trim();
+    expect(await svc.headRevision!(repo)).toBe(initial);
+    git('commit', '--allow-empty', '-qm', 'next');
+    expect(await svc.headRevision!(repo)).toBe(git('rev-parse', 'HEAD').trim());
+    expect(await svc.headRevision!(repo)).not.toBe(initial);
+    git('checkout', '--detach', '-q', initial);
+    expect(await svc.headRevision!(repo)).toBeUndefined();
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+it('binds QA dirty-worktree continuations to tracked, staged and untracked contents', async () => {
+  const repo = mkdtempSync(join(tmpdir(), 'verity-qa-fingerprint-'));
+  const git = (...args: string[]) =>
+    execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8' });
+  try {
+    git('init', '-q', '-b', 'main');
+    git('config', 'user.email', 'test@example.com');
+    git('config', 'user.name', 'Test');
+    git('config', 'commit.gpgsign', 'false');
+    writeFileSync(join(repo, 'tracked'), 'before');
+    git('add', 'tracked');
+    git('commit', '-qm', 'initial');
+    const svc = createGitBranchService({
+      git: async (args) => execFileSync('git', [...args], { encoding: 'utf8' }),
+    });
+    writeFileSync(join(repo, 'tracked'), 'assignment changes');
+    writeFileSync(join(repo, 'new'), 'new file');
+    const fingerprint = await svc.worktreeFingerprint!(repo);
+    expect(fingerprint).toEqual(expect.any(String));
+    const evidence = JSON.stringify({ worktreeFingerprint: fingerprint, lastPromptSeq: 12 });
+    expect(
+      matchesQAAssignmentContinuation(evidence, await svc.worktreeFingerprint!(repo), 12),
+    ).toBe(true);
+    expect(matchesQAAssignmentContinuation(evidence, fingerprint, 13)).toBe(false);
+    writeFileSync(join(repo, 'new'), 'different contents');
+    expect(await svc.worktreeFingerprint!(repo)).not.toBe(fingerprint);
+    writeFileSync(join(repo, 'new'), 'new file');
+    git('add', 'tracked');
+    expect(await svc.worktreeFingerprint!(repo)).not.toBe(fingerprint);
+    git('reset', '--quiet', 'HEAD', '--', 'tracked');
+    writeFileSync(join(repo, 'tracked'), 'unrelated changes');
+    expect(await svc.worktreeFingerprint!(repo)).not.toBe(fingerprint);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+}, 120000);

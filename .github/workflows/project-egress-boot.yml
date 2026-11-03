@@ -1,0 +1,121 @@
+name: project-egress-boot
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/project-egress-boot.yml'
+      - 'scripts/probes/project-egress/boot-vm.py'
+      - 'scripts/probes/project-egress/vm-pins.env'
+      - 'scripts/probes/project-egress/test_boot_vm.py'
+      - 'scripts/probes/project-egress/boot-*'
+      - 'scripts/probes/project-egress/build-boot-assets.mjs'
+      - 'scripts/probes/project-egress/BootRunner.Dockerfile'
+      - 'packages/server/src/embedded.ts'
+      - 'deploy/egress/**'
+      - 'packages/server/src/project-egress-host-*.ts'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: project-egress-boot-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  boot-vm-preflight:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '26.13.0'
+      - uses: ./.github/actions/reclaim-runner-disk
+        with:
+          minimum-free-gib: '20'
+      - name: Prepare disposable KVM guest tooling
+        run: |
+          mkdir -p "$RUNNER_TEMP/project-egress-boot-evidence"
+          if [ ! -c /dev/kvm ]; then
+            echo 'Actual boot acceptance requires a KVM-capable disposable runner.' | tee "$RUNNER_TEMP/project-egress-boot-evidence/preflight-error.txt"
+            exit 1
+          fi
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 qemu-utils cloud-image-utils acl
+          sudo setfacl -m "u:$(id -u):rw" /dev/kvm
+      - name: Reject incomplete boot evidence
+        run: python3 -m unittest discover -s scripts/probes/project-egress -p test_boot_vm.py -v
+      - name: Verify pinned guest and execute an actual kernel reboot
+        env:
+          PROBE_EVIDENCE: ${{ runner.temp }}/project-egress-boot-evidence
+        run: |
+          set -euo pipefail
+          source scripts/probes/project-egress/vm-pins.env
+          mkdir -p "$PROBE_EVIDENCE"
+          curl --fail --location --retry 3 "$EGRESS_VM_URL" -o "$RUNNER_TEMP/egress-base.img"
+          printf '%s  %s\n' "$EGRESS_VM_SHA256" "$RUNNER_TEMP/egress-base.img" | sha256sum --check
+          cp scripts/probes/project-egress/vm-pins.env "$PROBE_EVIDENCE/"
+          qemu-system-x86_64 --version > "$PROBE_EVIDENCE/qemu-version.txt"
+          python3 scripts/probes/project-egress/boot-vm.py "$RUNNER_TEMP/egress-base.img" "$PROBE_EVIDENCE"
+      - name: Retain boot feasibility evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: project-egress-boot-evidence
+          path: ${{ runner.temp }}/project-egress-boot-evidence
+          if-no-files-found: error
+          retention-days: 7
+
+  boot-retained-topology:
+    needs: boot-vm-preflight
+    runs-on: ubuntu-26.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '26.13.0'
+          cache: npm
+      - uses: ./.github/actions/reclaim-runner-disk
+        with:
+          minimum-free-gib: '40'
+      - name: Prepare actual source and native guest assets
+        env:
+          PROBE_EVIDENCE: ${{ runner.temp }}/project-egress-boot-proof
+        run: |
+          set -euo pipefail
+          mkdir -p "$PROBE_EVIDENCE"
+          test -c /dev/kvm
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 qemu-utils cloud-image-utils acl
+          sudo setfacl -m "u:$(id -u):rw" /dev/kvm
+          npm ci --ignore-scripts
+          npx tsc -b packages/server
+          bash scripts/probes/project-egress/boot-build.sh
+      - uses: ./.github/actions/reclaim-runner-disk
+        with:
+          minimum-free-gib: '36'
+      - name: Retain actual topology across kernel, daemon and process events
+        env:
+          PROBE_EVIDENCE: ${{ runner.temp }}/project-egress-boot-proof
+        run: |
+          set -euo pipefail
+          source scripts/probes/project-egress/vm-pins.env
+          curl --fail --location --retry 3 "$EGRESS_VM_URL" -o "$RUNNER_TEMP/egress-base.img"
+          printf '%s  %s\n' "$EGRESS_VM_SHA256" "$RUNNER_TEMP/egress-base.img" | sha256sum --check
+          cp scripts/probes/project-egress/vm-pins.env "$PROBE_EVIDENCE/"
+          python3 scripts/probes/project-egress/boot-proof.py "$RUNNER_TEMP/egress-base.img" "$RUNNER_TEMP/verity-boot-assets.tar" "$PROBE_EVIDENCE"
+          python3 scripts/probes/project-egress/boot-proof.py verify "$PROBE_EVIDENCE"
+      - name: Retain independent lifecycle evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: project-egress-boot-proof
+          path: ${{ runner.temp }}/project-egress-boot-proof
+          if-no-files-found: error
+          retention-days: 7

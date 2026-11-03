@@ -16,8 +16,18 @@ const safeCodes = new Set([
   '42703',
 ]);
 
+const safeDockerKinds = new Set([
+  'image_not_found',
+  'container_not_found',
+  'conflict',
+  'other',
+  'network',
+  'pull_stalled',
+  'timeout',
+]);
+
 /** Recovery failures can carry private input in messages, causes and process output.
- * @param {{ code?: string, stack?: string, actual?: unknown, expected?: unknown } | null | undefined} error
+ * @param {{ code?: string, stack?: string, actual?: unknown, expected?: unknown, name?: string, kind?: string, status?: unknown } | null | undefined} error
  */
 export function formatRestoreFailure(error) {
   const code = safeCodes.has(error?.code) ? error.code : 'unknown';
@@ -36,6 +46,16 @@ export function formatRestoreFailure(error) {
     JSON.stringify({
       code,
       sites,
+      dockerKind:
+        error?.name === 'DockerError' && safeDockerKinds.has(error.kind) ? error.kind : undefined,
+      dockerStatus:
+        error?.name === 'DockerError' &&
+        error.kind === 'other' &&
+        Number.isInteger(error.status) &&
+        error.status >= 400 &&
+        error.status <= 599
+          ? error.status
+          : undefined,
       actual: numeric(error?.actual),
       expected: numeric(error?.expected),
     })

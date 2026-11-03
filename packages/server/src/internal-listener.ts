@@ -1,4 +1,5 @@
-import { createHash } from 'node:crypto';
+import { projectSocketBindingName } from './project-relay-identity.js';
+export { projectSocketBindingName } from './project-relay-identity.js';
 import {
   chmodSync,
   chownSync,
@@ -132,13 +133,10 @@ export function unlinkOwnedUnixSocket(
   }
 }
 
-export function projectSocketBindingName(identity: InternalConnectionIdentity): string {
-  const bindingHash = createHash('sha256')
-    .update(`${identity.projectId}\0${identity.containerGeneration}`)
-    .digest('hex')
-    .slice(0, 32);
-  return `project-${bindingHash}`;
-}
+/** Called by the relay itself, never forwarded for the Sandbox: the controlled DNS
+ *  answerer's lookup under the project fence (socket identity only), which keeps
+ *  Sandbox name lookups behind the answerer's own bounds. */
+export const RELAY_ANSWERER_ROUTES: ReadonlySet<string> = new Set(['POST /internal/dns']);
 
 /** Exported so the relay-drift test can hold the sidecar's forwarding allowlist to
  *  it: the relay is the only hop a Sandbox has to this socket. */
@@ -161,6 +159,7 @@ export const PROJECT_UDS_ROUTES: ReadonlySet<string> = new Set([
   'POST /internal/mcp-proxy',
   'GET /internal/mcp-proxy',
   'DELETE /internal/mcp-proxy',
+  ...RELAY_ANSWERER_ROUTES,
 ]);
 
 /**

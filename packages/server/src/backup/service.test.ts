@@ -7,11 +7,27 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, it, vi } from 'vitest';
 import { BackupService, type BackupServiceOptions } from './service.js';
+import { BackupSetupExpiredError } from './setup.js';
 import * as identityRequest from './identity-request.js';
 import { generateBackupKeys } from './crypto.js';
 import { sealCaIdentityReceipt } from './identity-receipt.js';
 import { readRevocations } from './revocations.js';
 import { writeBackupIdentityFixture } from './testing.js';
+
+vi.mock('node:fs/promises', async (originalImport) => {
+  const original = await originalImport<typeof import('node:fs/promises')>();
+  return {
+    ...original,
+    statfs: async (...args: Parameters<typeof original.statfs>) => {
+      const result = await original.statfs(...args);
+      // Alert transitions use explicit capacity fixtures, independent of host disk usage.
+      return {
+        ...result,
+        blocks: typeof result.bavail === 'bigint' ? result.bavail * 2n : result.bavail * 2,
+      };
+    },
+  };
+});
 
 it('commits only after identity confirmation, skips abandoned repositories and syncs revocations while paused', async () => {
   const root = await mkdtemp(join(tmpdir(), 'backup-service-'));
@@ -68,6 +84,17 @@ it('commits only after identity confirmation, skips abandoned repositories and s
     };
     service = await BackupService.open(options);
     expect(service).toBeDefined();
+    // Every provisioned installation runs the service; before setup it stays quiet.
+    const idle = vi.fn(async () => true);
+    service!.setAlertNotifier(idle);
+    await expect(service!.tick()).resolves.toBeUndefined();
+    expect(idle).not.toHaveBeenCalled();
+    expect(await service!.status()).toEqual({ configured: false, alerts: [] });
+    // A stale offer reaches the routes as the distinct expiry error, not a wrapped one.
+    const stale = await service!.beginSetup();
+    await expect(service!.confirmSetup(randomUUID(), stale.recoveryKey)).rejects.toBeInstanceOf(
+      BackupSetupExpiredError,
+    );
     const candidate = await service!.beginSetup();
     helper.mockRejectedValueOnce(new Error('Helper unavailable'));
     await expect(service!.confirmSetup(candidate.id, candidate.recoveryKey)).rejects.toThrow(
@@ -111,6 +138,10 @@ it('commits only after identity confirmation, skips abandoned repositories and s
       revokedAt: new Date().toISOString(),
     };
     store.listBackupRevocations.mockResolvedValueOnce([event]);
+    await writeFile(
+      join(root, 'backup-state/generations', '.pending-' + 'f'.repeat(32)),
+      'partial crash write',
+    );
     await notify!();
     expect(store.acknowledgeBackupRevocation).toHaveBeenCalledWith(event.id);
     expect(
@@ -148,7 +179,12 @@ it('commits only after identity confirmation, skips abandoned repositories and s
     await started;
     await expect(service!.startProbe(candidate.recoveryKey)).rejects.toThrow();
     await expect(service!.tick()).rejects.toThrow('already in progress');
-    finish();
+    try {
+      await service!.setPolicy({ paused: true });
+      expect((await service!.status()).paused).toBe(true);
+    } finally {
+      finish();
+    }
     await expect
       .poll(() => service!.probeStatus(job.id)?.status, { timeout: 10000 })
       .toBe('succeeded');
@@ -207,14 +243,73 @@ it('commits only after identity confirmation, skips abandoned repositories and s
     expect(await readFile(join(root, 'backup-state', 'probe-job'), 'utf8')).not.toContain(
       candidate.recoveryKey,
     );
+    await expect
+      .poll(
+        async () => {
+          try {
+            await service!.tick();
+            return true;
+          } catch {
+            return false;
+          }
+        },
+        { timeout: 10000 },
+      )
+      .toBe(true);
+    const beforeReplacement = await readFile(join(root, 'backup-state/state'), 'utf8');
+    const abandoned = await service!.beginKeyReplacement('lost');
+    await service!.cancelKeyReplacement();
+    await expect(
+      service!.confirmKeyReplacement(abandoned.id, abandoned.recoveryKey),
+    ).rejects.toThrow('expired');
+    expect(await readFile(join(root, 'backup-state/state'), 'utf8')).toBe(beforeReplacement);
+    const replacement = await service!.beginKeyReplacement('lost');
+    helper.mockRejectedValueOnce(new Error('temporary publication failure'));
+    await expect(
+      service!.confirmKeyReplacement(replacement.id, replacement.recoveryKey),
+    ).rejects.toThrow('temporary publication failure');
+    expect(await readFile(join(root, 'backup-state/state'), 'utf8')).toBe(beforeReplacement);
+    expect(await readFile(join(root, 'backup-state/key-replacement'), 'utf8')).not.toContain(
+      replacement.recoveryKey,
+    );
+    await expect(service!.cancelKeyReplacement()).rejects.toThrow('cannot be cancelled');
+    await service!.setPolicy({ paused: true, intervalMs: 7200000 });
     await service!.close();
     expect(unsubscribe).toHaveBeenCalledOnce();
     await expect(service!.beginSetup()).rejects.toThrow('closed');
     service = await BackupService.open(options);
+    expect(JSON.parse(await readFile(join(root, 'backup-state/state'), 'utf8'))).toMatchObject({
+      keyGeneration: 3,
+      repositoryNumber: 3,
+    });
+    const laterEvent = {
+      id: randomUUID(),
+      deviceId: 'revoked-after-replacement',
+      revokedAt: new Date().toISOString(),
+    };
+    store.listBackupRevocations.mockResolvedValueOnce([laterEvent]);
+    await notify!();
+    for (const key of [candidate.recoveryKey, replacement.recoveryKey])
+      expect((await readRevocations(destination, key)).revokedIds.has(laterEvent.deviceId)).toBe(
+        true,
+      );
+    const exposed = await service!.beginKeyReplacement('exposed');
+    const retire = vi.spyOn(identityRequest, 'retireBackupIdentity').mockResolvedValueOnce();
+    try {
+      await service!.confirmKeyReplacement(exposed.id, exposed.recoveryKey);
+      expect(retire).toHaveBeenCalledWith(
+        expect.objectContaining({ retiredGeneration: 3, keyGeneration: 4 }),
+      );
+      const replacementState = await readFile(join(root, 'backup-state/state'), 'utf8');
+      expect(JSON.parse(replacementState)).toMatchObject({ keyGeneration: 4, repositoryNumber: 4 });
+      expect(replacementState).not.toContain(exposed.recoveryKey);
+    } finally {
+      retire.mockRestore();
+    }
     expect(await service!.status()).toMatchObject({
       configured: true,
       paused: true,
-      intervalMs: 3600000,
+      intervalMs: 7200000,
       alerts: [],
     });
   } finally {

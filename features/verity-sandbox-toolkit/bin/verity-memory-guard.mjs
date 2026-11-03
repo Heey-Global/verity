@@ -43,7 +43,19 @@
  * limit, or outside gVisor, the guard exits quietly.
  */
 
-import { readdirSync, readFileSync, readlinkSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  readlinkSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+  writeSync,
+} from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { clearInterval, setInterval } from 'node:timers';
@@ -61,15 +73,41 @@ export const REARM_GROWTH_FRACTION = 0.25;
 export const MINIMUM_VICTIM_RSS_BYTES = 64 * 1024 ** 2;
 /**
  * Process names of agent CLIs that sit between an ACP adapter and the commands
- * they run. Only Claude has that layer (`claude-agent-acp` → `claude` → tool
- * shell); `codex-acp` and `opencode acp` are the agent themselves and run
- * commands as their own children. Matched on the `Name:` line of
- * `/proc/<pid>/status`, observed as `claude` for the Claude CLI in a project
- * Sandbox on 2026-10-08. A process can rename itself, so this is a heuristic,
- * not a boundary: a command calling itself `claude` gains only the CLI's higher
- * threshold, not immunity, and a CLI renamed away loses only its narrowing.
+ * they run. Recognize short proc names and actual executable/Node entrypoint
+ * paths, since Linux truncates process names and ACP agents can be nested.
+ * This is a selection heuristic, not an isolation boundary.
  */
-const AGENT_CLI_NAMES = new Set(['claude', 'codex']);
+const AGENT_CLI_NAMES = new Set(['claude', 'codex', 'codex-acp', 'claude-agent-acp']);
+
+/** A bounded, nonblocking stderr notice survives the ACP transport closing. */
+export function notifyMemoryKill(pid) {
+  let fd;
+  try {
+    fd = openSync(`/proc/${pid}/fd/2`, constants.O_WRONLY | constants.O_NONBLOCK);
+    // Validate the opened target: a process can redirect stderr to a read-only
+    // file descriptor which this root process could otherwise reopen for writing.
+    if (!fstatSync(fd).isFIFO()) return;
+    writeSync(fd, '\nVERITY_MEMORY_GUARD_KILL\n');
+  } catch {
+    // A closed/full stderr pipe must never block pressure relief.
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
+function isAgentCli(process) {
+  if (AGENT_CLI_NAMES.has(process.name)) return true;
+  const argv = (process.commandLine ?? '').split('\0');
+  const executable = argv[0]?.split('/').at(-1);
+  if (AGENT_CLI_NAMES.has(executable)) return true;
+  // Inspect only the executable or Node entrypoint, never a shell's payload.
+  return (
+    executable === 'node' &&
+    /(?:\/@agentclientprotocol\/(?:codex-acp|claude-agent-acp)\/|\/@anthropic-ai\/claude-code\/)/u.test(
+      argv[1] ?? '',
+    )
+  );
+}
 const DEFAULT_AGENT_UID = 1000;
 const DEFAULT_CONTROL_DIR = '/run/verity-runner-broker';
 const PID_FILE_NAME = 'memory-guard.pid';
@@ -193,7 +231,15 @@ export function listProcesses(readFile = readFsFile, listPids = listProcDir) {
     // Read with the rest of the snapshot: the signal fence compares against it,
     // so a pid reused after this point no longer matches.
     const startTime = statStartTime(readFile, pid);
-    processes.push({ pid, ppid, uid, rssBytes, name: fields.Name ?? '', startTime });
+    processes.push({
+      pid,
+      ppid,
+      uid,
+      rssBytes,
+      name: fields.Name ?? '',
+      startTime,
+      commandLine: tryRead(readFile, `/proc/${pid}/cmdline`) ?? '',
+    });
   }
   return processes;
 }
@@ -217,11 +263,10 @@ export function listProcesses(readFile = readFsFile, listPids = listProcDir) {
  * candidate trees are rooted at an anchor's children and at agent processes
  * detached under init (a backgrounded dev server or database); the largest by
  * summed RSS wins. A tree rooted at an anchor's child that is an agent CLI
- * (`AGENT_CLI_NAMES`) is first narrowed: unless the CLI's own RSS is most of
- * its tree, the guard takes its largest child tree, the command it ran. A
+ * is first narrowed: the guard takes its largest eligible tool command tree. A
  * runaway `npm test` is thus killed while the CLI survives to report exit 137,
- * also when several commands run at once. The CLI itself goes only when it is
- * where the memory is and its tree holds at least `minimumSessionRssBytes` (the
+ * also when several commands run at once. The CLI itself is a fallback only
+ * when no substantial command remains and its tree holds at least `minimumSessionRssBytes` (the
  * guard passes its reserve): an ordinary CLI is no runaway, and killing it for
  * cache pressure would cost a session for nothing. Any other child of an anchor
  * is a command an adapter ran directly and is a candidate
@@ -254,32 +299,24 @@ export function chooseVictim(
     a.treeRssBytes > b.treeRssBytes ||
     (a.treeRssBytes === b.treeRssBytes && a.pid > b.pid);
 
-  // A session tree resolves to the command holding its memory, or to the CLI
-  // when the CLI itself is the consumer. The CLI is that only when its own RSS
-  // is most of its tree; otherwise its commands are, even when no single one
-  // holds a majority — two parallel builds must not cost the session its agent.
-  // A CLI of ordinary size is not a runaway either: with nothing larger to
-  // blame, the pressure is likely cache or tmpfs, which no kill cures.
+  // An eligible tool command always gets the first chance to release memory.
+  // Only when no substantial command remains may an agent tree be a fallback.
   const resolveSession = (cli, treeRssBytes) => {
     // Not a CLI: a command an adapter ran directly, killable like any other.
-    if (!AGENT_CLI_NAMES.has(cli.name)) return { ...cli, tier: 'command', treeRssBytes };
-    if (cli.rssBytes * 2 > treeRssBytes) {
-      return treeRssBytes >= minimumSessionRssBytes
-        ? { ...cli, tier: 'session', treeRssBytes }
-        : undefined;
-    }
+    if (!isAgentCli(cli)) return { ...cli, tier: 'command', treeRssBytes };
     let largestChild;
     for (const child of processes) {
       if (child.ppid !== cli.pid || !isAgent(child)) continue;
       const childRssBytes = treeOf(child);
       if (childRssBytes === undefined) continue;
-      const scored = { ...child, tier: 'command', treeRssBytes: childRssBytes };
-      if (larger(scored, largestChild)) largestChild = scored;
+      const scored = resolveSession(child, childRssBytes);
+      if (scored !== undefined && scored.tier === 'command' && larger(scored, largestChild))
+        largestChild = scored;
     }
     if (largestChild !== undefined && largestChild.treeRssBytes >= MINIMUM_VICTIM_RSS_BYTES) {
       return largestChild;
     }
-    // Memory spread over many small commands: none is worth killing alone, so
+    // No substantial tool command remains: none is worth killing alone, so
     // the CLI's whole tree is the unit, under the same bar as the CLI itself.
     return treeRssBytes >= minimumSessionRssBytes
       ? { ...cli, tier: 'session', treeRssBytes }
@@ -295,14 +332,19 @@ export function chooseVictim(
     const treeRssBytes = treeOf(candidate);
     if (treeRssBytes === undefined) continue;
     const victim =
-      tier === 'session'
+      tier === 'session' || isAgentCli(candidate)
         ? resolveSession(candidate, treeRssBytes)
         : { ...candidate, tier, treeRssBytes };
     // A root whose start time could not be read can never pass the signal
     // fence; chosen anyway, it would be picked every cooldown and never hit.
     if (victim === undefined || victim.startTime === '') continue;
     if (victim.treeRssBytes < MINIMUM_VICTIM_RSS_BYTES) continue;
-    if (larger(victim, best)) best = victim;
+    if (
+      best === undefined ||
+      (best.tier === 'session' && victim.tier !== 'session') ||
+      ((best.tier === 'session') === (victim.tier === 'session') && larger(victim, best))
+    )
+      best = victim;
   }
   return best;
 }
@@ -363,6 +405,7 @@ export function createMemoryGuard(options) {
   const protectedPids = new Set(options.protectedPids ?? []);
   const cgroupRoot = options.cgroupRoot ?? '/sys/fs/cgroup';
   const dryRun = options.dryRun === true;
+  const notify = options.notifyMemoryKill ?? notifyMemoryKill;
   let cooldownUntil = 0;
   let reserveLogged = false;
   let lastOutcome;
@@ -407,6 +450,17 @@ export function createMemoryGuard(options) {
       [...processes].reverse().map((process) => [process.pid, process.startTime]);
     const targets = new Map(topDown([...descendants, victim]));
     const stopped = send(targets, 'SIGSTOP', stillTarget);
+    if (
+      victim.tier === 'session' &&
+      stopped.has(victim.pid) &&
+      stillTarget(victim.pid, victim.startTime)
+    ) {
+      try {
+        notify(victim.pid);
+      } catch {
+        /* Notification is best-effort. */
+      }
+    }
     while (stopped.has(victim.pid) && stillTarget(victim.pid, victim.startTime)) {
       const late = topDown(descendantsOf(victim.pid, listProcesses(readFile, listPids))).filter(
         ([pid]) => !targets.has(pid),

@@ -1,5 +1,10 @@
 import { createHash } from 'node:crypto';
-import { selectedEvidenceMetadataSchema, type SelectedEvidenceMetadata } from '@verity/events';
+import {
+  selectedEvidenceMetadataSchema,
+  recordingFailureReasonSchema,
+  type RecordingFailureReason,
+  type SelectedEvidenceMetadata,
+} from '@verity/events';
 import { performance } from 'node:perf_hooks';
 import { coreRecordingSummary } from './coordinated-recording-schema.js';
 import type { ReturnPathActivation } from './remote-return-path-activation.js';
@@ -48,6 +53,7 @@ export interface CoordinatedRecordingStatus {
 }
 type Run = {
   status: CoordinatedRecordingStatus;
+  stopFailureReason?: RecordingFailureReason;
   durationMs: number;
   diagnosticsVersion: 1 | 2 | 3;
   targetSessionId: string | undefined;
@@ -58,6 +64,21 @@ type Run = {
   records: unknown[];
   bytes: number;
 };
+function failureReason(error: unknown): RecordingFailureReason {
+  if (!(error instanceof Error)) return 'unknown';
+  if (error.message === 'Uplink offline') return 'control_offline';
+  if (/^Uplink diagnostics\.(?:stop|export) timed out$/u.test(error.message))
+    return 'control_timeout';
+  if (error.message.startsWith('Uplink closed the control connection (')) return 'control_closed';
+  if (
+    'code' in error &&
+    typeof error.code === 'string' &&
+    ['ECONNRESET', 'EPIPE', 'ETIMEDOUT'].includes(error.code)
+  )
+    return 'control_send_failed';
+  const parsed = recordingFailureReasonSchema.safeParse(error.message);
+  return parsed.success ? parsed.data : 'unknown';
+}
 const live = (run: Run) => ['starting', 'recording'].includes(run.status.phase);
 const UUID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/iu;
 export class CoordinatedRecordingManager {
@@ -118,7 +139,9 @@ export class CoordinatedRecordingManager {
     try {
       await this.uplink.stop(run.status.runId);
       run.status.uplink.state = 'stopped';
-    } catch {
+      delete run.stopFailureReason;
+    } catch (error) {
+      run.stopFailureReason = failureReason(error);
       run.status.uplink.state = 'unavailable';
       run.status.error ??= 'uplink_stop_failed';
     }
@@ -376,20 +399,26 @@ export class CoordinatedRecordingManager {
     run.bytes += bytes;
     run.status.core.records = run.records.length;
   }
-  async export(runId: string): Promise<unknown> {
+  async export(runId: string, includeFailureDetails = false): Promise<unknown> {
     const run = this.get(runId);
     let data: unknown = null;
     let available = false;
+    let exportFailureReason: RecordingFailureReason | null = null;
     try {
       const result = await this.uplink.export(runId);
-      if (Buffer.byteLength(JSON.stringify(result)) > 1024 * 1024) throw new Error('too_large');
+      if (Buffer.byteLength(JSON.stringify(result)) > 1024 * 1024)
+        throw new Error('export_too_large');
       data = structuredClone(result);
       available = true;
-    } catch {
+    } catch (error) {
+      exportFailureReason = failureReason(error);
       /* An unavailable source is explicit, never an empty successful capture. */
     }
     return {
       version: 1,
+      ...(includeFailureDetails
+        ? { failures: { stop: run.stopFailureReason ?? null, export: exportFailureReason } }
+        : {}),
       status: structuredClone(run.status),
       core: { records: structuredClone(run.records), dropped: run.status.core.dropped },
       uplink: { available, data, error: available ? null : 'uplink_export_failed' },

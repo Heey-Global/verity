@@ -19,8 +19,8 @@ function executable(path, body) {
   chmodSync(path, 0o755);
 }
 
-// The tools the bootstrap installs itself; the last two are the host runtime service's.
-const SYSTEM_TOOLS = ['tar', 'flock', 'openssl', 'curl', 'jq'];
+// The tools the bootstrap installs itself; the last three are the host runtime service's.
+const SYSTEM_TOOLS = ['tar', 'flock', 'openssl', 'curl', 'jq', 'bzip2'];
 
 function host({ architecture = 'x86_64', installTools = false, uid = 0 } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'verity-bootstrap-'));
@@ -100,7 +100,7 @@ test('install-missing installs basic tools and repeats the preflight', () => {
   const result = run(host({ installTools: true }), '--preflight', '--install-missing');
 
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /installing missing system tools: tar flock openssl curl jq/);
+  assert.match(result.stdout, /installing missing system tools: tar flock openssl curl jq bzip2/);
   assert.match(result.stdout, /preflight passed/);
 });
 
@@ -109,7 +109,7 @@ test('install-missing preserves the aggregated report without root or sudo', () 
 
   assert.equal(result.status, 1);
   assert.doesNotMatch(result.stdout, /installing missing system tools/);
-  assert.match(result.stderr, /preflight failed \(6 issues\)/);
+  assert.match(result.stderr, /preflight failed \(7 issues\)/);
   for (const tool of SYSTEM_TOOLS) assert.match(result.stderr, new RegExp(`${tool} is required`));
   assert.match(result.stderr, /root access is required/);
 });

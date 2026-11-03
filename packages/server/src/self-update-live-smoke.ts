@@ -392,6 +392,7 @@ function preparationOptions(managedRoot: string, databaseUrl: string, deployment
   return {
     managedRoot,
     docker: docker(),
+    hostRuntimeDir: required('VERITY_SMOKE_HOST_RUNTIME_DIR'),
     environment: serverEnvironment(databaseUrl, deploymentId),
     readFile: readSecret,
     // The signed-channel verifier (slice 1a) is exercised by its own unit suite

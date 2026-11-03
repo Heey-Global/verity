@@ -516,7 +516,7 @@ export async function readControlPlanePostgresState(options: {
  * and refuse, which would abort a Server cutover over a database that is serving
  * perfectly well from the successor.
  */
-async function findControlPlanePostgres(
+export async function findControlPlanePostgres(
   docker: Pick<DockerClient, 'inspectContainer' | 'listContainers'>,
   service: string,
   network: string,

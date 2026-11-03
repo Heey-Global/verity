@@ -135,10 +135,17 @@ it('stores production evidence and stops before uploading to Apple', () => {
     (step) => step.name === 'Build native release and upload staging only',
   )!.run!;
   const start = step.indexOf('if [[ "$VERITY_APP_VARIANT" == production ]]');
-  const end = step.indexOf('mkdir -p "$HOME/.appstoreconnect/private_keys"', start);
+  const end = step.indexOf('echo "$next_build" >', start);
   expect(start).toBeGreaterThan(-1);
   expect(end).toBeGreaterThan(start);
-  expect(step.indexOf('--upload-app')).toBeGreaterThan(end);
+  expect(step).not.toContain('--upload-app');
+  const upload = builder.jobs.build!.steps.find(
+    (candidate) => candidate.name === 'Upload and verify staging build',
+  )!;
+  expect(upload.run).toContain('--upload-app');
+  expect((upload as { if?: string }).if).toBe(
+    "inputs.profile-source != '' || inputs.variant == 'staging'",
+  );
   expect(step).not.toContain('--auto-submit');
   const f = fixture();
   try {

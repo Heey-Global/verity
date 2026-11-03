@@ -29,7 +29,7 @@ export interface SessionFactsRow {
 export interface SessionFactsSource<Row extends SessionFactsRow, Summary> {
   listSessions(): Promise<readonly Row[]>;
   /** A `stat`. Cheap next to `summarize`, which is the whole reason it runs first. */
-  worktreeExists(worktree: string): Promise<boolean>;
+  worktreeExists(worktree: string, row: Row): Promise<boolean>;
   /** Reads the session's entire event log. The expensive one. */
   summarize(row: Row): Promise<Summary>;
 }
@@ -146,7 +146,7 @@ export async function collectSessionFacts<Row extends SessionFactsRow, Summary>(
   // reads and the descriptors they hold are the resource being protected.
   const alive = requireResumable
     ? await mapPooled(named, SESSION_LISTING_HYDRATION_LIMIT, (row) =>
-        source.worktreeExists(row.worktree),
+        source.worktreeExists(row.worktree, row),
       )
     : undefined;
   const candidates = alive === undefined ? named : named.filter((_, index) => alive[index]);

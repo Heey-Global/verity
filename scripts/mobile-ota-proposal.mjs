@@ -218,6 +218,17 @@ export async function createOtaManifest(github, baselineSha, version) {
   );
 }
 
+/** @param {string} patch @returns {string | null} */
+export function releasePatchId(patch) {
+  const result = execFileSync('git', ['patch-id', '--verbatim'], {
+    input: patch,
+    encoding: 'utf8',
+  })
+    .trim()
+    .split(/\s+/u)[0];
+  return result && shaPattern.test(result) ? result : null;
+}
+
 /** @param {string} runtime */
 function mergedVersion(runtime) {
   const version = readFileSync(otaVersionPath, 'utf8').trim();
@@ -233,8 +244,16 @@ function mergedVersion(runtime) {
     throw new Error('OTA manifest and version marker differ');
   const commit = run('git', ['log', '-1', '--format=%H', '--', otaVersionPath]);
   const prs = /** @type {Pull[]} */ (api(`repos/${repository()}/commits/${commit}/pulls`));
-  // GitHub can omit commit associations even for a merged release PR.
-  if (prs.length === 0) {
+  /** @param {Pull} pr */
+  const trusted = (pr) =>
+    Boolean(pr.merged_at) &&
+    pr.base.ref === 'main' &&
+    pr.head.ref === 'release-please--branches--main--components--mobile-ota' &&
+    isReleaseBotLogin(pr.user?.login);
+  let pr = prs.find(trusted);
+  // Rewritten main history can retain a reviewed release patch under a new SHA.
+  // Never infer approval from its version or commit message alone.
+  if (!pr) {
     const owner = repository().split('/')[0];
     const pages = /** @type {Pull[][]} */ (
       api(
@@ -243,15 +262,26 @@ function mergedVersion(runtime) {
         `repos/${repository()}/pulls?state=closed&base=main&head=${owner}:release-please--branches--main--components--mobile-ota&per_page=100`,
       )
     );
-    prs.push(...pages.flat().filter((candidate) => candidate.merge_commit_sha === commit));
+    const candidates = pages.flat().filter(trusted);
+    pr = candidates.find((candidate) => candidate.merge_commit_sha === commit);
+    if (!pr) {
+      const actualPatch = run('git', ['show', '--format=', '--no-ext-diff', '--binary', commit]);
+      const actualId = releasePatchId(actualPatch);
+      pr = candidates.find((candidate) => {
+        const checked = /** @type {{content: string}} */ (
+          api(`repos/${repository()}/contents/${otaVersionPath}?ref=${candidate.head.sha}`)
+        );
+        if (Buffer.from(checked.content, 'base64').toString().trim() !== version) return false;
+        const reviewedPatch = run('gh', [
+          'api',
+          `repos/${repository()}/pulls/${candidate.number}`,
+          '-H',
+          'Accept: application/vnd.github.diff',
+        ]);
+        return actualId !== null && actualId === releasePatchId(reviewedPatch);
+      });
+    }
   }
-  const pr = prs.find(
-    (pr) =>
-      pr.merged_at &&
-      pr.base.ref === 'main' &&
-      pr.head.ref === 'release-please--branches--main--components--mobile-ota' &&
-      isReleaseBotLogin(pr.user?.login),
-  );
   if (!pr) throw new Error('OTA publication requires a merged Release Please Staging PR');
   const checked = /** @type {{content: string}} */ (
     api(`repos/${repository()}/contents/${otaVersionPath}?ref=${pr.head.sha}`)

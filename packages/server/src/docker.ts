@@ -99,7 +99,11 @@ export interface DockerClient {
   /** Wait until a container exits and return its process exit code. */
   waitContainer?(id: string): Promise<number>;
   /** Read a bounded tail of stdout/stderr for diagnostics. */
-  containerLogs?(id: string, tail: number): Promise<string>;
+  containerLogs?(
+    id: string,
+    tail: number,
+    window?: { since: string; until: string },
+  ): Promise<string>;
   /** Stop a running container (Engine `/containers/{id}/stop`) — gracefully SIGTERM
    *  with the timeout from the daemon default (10s). 404 → `ContainerNotFound`
    *  so deprovision is best-effort idempotent. */
@@ -124,6 +128,8 @@ export interface DockerClient {
    *  named volumes are unaffected by `v` — so taking them down with the
    *  container is both safe and the only correct lifetime. */
   removeContainer(id: string): Promise<void>;
+  /** GC only: never stop a running container and never delete attached volumes. */
+  removeStoppedContainer?(id: string): Promise<void>;
   /** Replace one host-infrastructure container with the same Docker config and
    * mounts but a different immutable image. The real client rolls the original
    * config back if creation or startup of the successor fails. Optional config
@@ -167,6 +173,8 @@ export interface DockerClient {
    *  network isolation (security review H2). Optional so pre-existing test fakes stay
    *  valid; the real {@link createDockerClient} always provides it. */
   ensureNetwork?(name: string, opts?: { labels?: Record<string, string> }): Promise<void>;
+  /** Create-only generation bridge. Conflicts must never adopt an existing network. */
+  createEgressNetwork?(name: string, bridge: string): Promise<{ id: string }>;
   /** Create a named local volume if absent (Engine `POST /volumes/create`) and
    *  resolve its daemon-side `Mountpoint`. Idempotent: the local driver answers a
    *  create for an existing name with that volume, labels untouched. Optional so
@@ -184,6 +192,8 @@ export interface DockerClient {
    *  Optional so pre-existing test fakes stay valid; the real
    *  {@link createDockerClient} always provides it. */
   hostCpuCount?(): Promise<number | undefined>;
+  /** Physical memory reported by the Docker daemon, not this process. */
+  hostMemoryBytes?(): Promise<number | undefined>;
   /** List images on the daemon (Engine `GET /images/json`). Read by the disk GC
    *  to find superseded devcontainer image generations. Optional so pre-existing
    *  test fakes stay valid; the real {@link createDockerClient} always provides it. */
@@ -238,6 +248,7 @@ export interface DockerContainerSummary {
   id: string;
   /** Resolved image content id (`sha256:…`), NOT the human-readable `repo:tag`. */
   imageId: string;
+  state?: string;
   /** Container names as the daemon reports them, WITHOUT the leading `/`. Only
    *  used for logging which container a sweep retired. Optional so pre-existing
    *  test fakes stay valid. */
@@ -331,6 +342,8 @@ export interface ContainerSpec {
   /** OCI runtime registered with the Docker daemon (`HostConfig.Runtime`). Secret jobs set this
    *  explicitly to `runsc`; omitting it preserves the daemon default for ordinary sandboxes. */
   runtime?: string;
+  /** Host PID visibility for the bounded host-systemd provisioning helper only. */
+  pidMode?: 'host';
   /** Mount the image root filesystem read-only (`HostConfig.ReadonlyRootfs`). */
   readOnlyRootfs?: boolean;
   /** Ephemeral in-memory mounts keyed by their absolute container path (`HostConfig.Tmpfs`). */
@@ -353,6 +366,10 @@ export interface ContainerSpec {
   pidsLimit?: number;
   /** Hard memory ceiling in bytes (`HostConfig.Memory`). Omit/0 → unlimited. */
   memoryBytes?: number;
+  /** Best-effort soft protection; not a guaranteed allocation. */
+  memoryReservationBytes?: number;
+  /** Host OOM preference (-1000..1000); positive favours eviction. */
+  oomScoreAdj?: number;
   /**
    * Combined memory+swap ceiling in bytes (`HostConfig.MemorySwap`). Setting it
    * equal to {@link memoryBytes} disables swap, which is what a Compose
@@ -430,6 +447,8 @@ export interface ContainerInspect {
   id: string;
   /** True while the container's state reports `Running: true`. */
   running: boolean;
+  finishedAt?: string;
+  exitCode?: number;
   /** Whether Docker keeps stdin open when no attach client is currently connected. */
   openStdin?: boolean;
   /** Container image reference recorded on the container config. */
@@ -461,12 +480,15 @@ export interface ContainerInspect {
   extraHosts?: string[] | undefined;
   sysctls?: Record<string, string> | undefined;
   networkMode?: string | undefined;
+  pidMode?: string | undefined;
   readOnlyRootfs?: boolean | undefined;
   tmpfs?: Record<string, string> | undefined;
   capDrop?: string[] | undefined;
   securityOpt?: string[] | undefined;
   pidsLimit?: number | undefined;
   memoryBytes?: number | undefined;
+  memoryReservationBytes?: number | undefined;
+  oomScoreAdj?: number | undefined;
   /** `HostConfig.MemorySwap`. Reported so a caller can tell a container Docker
    *  gave the default swap allowance (twice {@link memoryBytes}) from one whose
    *  combined ceiling matches its memory ceiling and therefore cannot swap. */
@@ -595,64 +617,77 @@ export interface DockerClientOptions {
   registryAuth?: string;
 }
 
-/** KNOWN GAP, recorded rather than quietly changed: `[truncated]` is added HERE, so it
- *  only ever reaches MULTIPLEXED output. Plain (unframed) logs leave through the early
- *  return below, before any marker — which means a read cut short by `containerLogs`'
- *  byte budget comes back indistinguishable from a complete one, at exactly the moment
- *  an operator is reading logs because something failed. The bound itself is right and
- *  should stay; what is missing is saying so. The likely fix is to append the sentinel
- *  where the budget is applied (`boundedResponseBytes`) rather than here, so it does not
- *  depend on which log format the Engine happened to serve. Both affected paths are
- *  pinned as they behave, under names carrying `unmarked`, in docker.test.ts — fixing
- *  this will fail those two tests, which is the point. */
-function decodeDockerLogFrames(bytes: Buffer): string {
-  const parts: Buffer[] = [];
-  let offset = 0;
-  while (offset + 8 <= bytes.length) {
-    const stream = bytes[offset];
-    if (
-      (stream !== 1 && stream !== 2) ||
-      bytes[offset + 1] !== 0 ||
-      bytes[offset + 2] !== 0 ||
-      bytes[offset + 3] !== 0
-    ) {
-      return bytes.toString('utf8');
-    }
-    const length = bytes.readUInt32BE(offset + 4);
-    if (offset + 8 + length > bytes.length) {
-      parts.push(bytes.subarray(offset + 8), Buffer.from('\n[truncated]\n'));
-      return Buffer.concat(parts).toString('utf8');
-    }
-    parts.push(bytes.subarray(offset + 8, offset + 8 + length));
-    offset += 8 + length;
-  }
-  if (offset < bytes.length && parts.length > 0) parts.push(Buffer.from('\n[truncated]\n'));
-  return parts.length === 0 ? bytes.toString('utf8') : Buffer.concat(parts).toString('utf8');
-}
-
-async function boundedResponseBytes(res: HttpResponse, limit: number): Promise<Buffer> {
-  if (res.body !== undefined && res.body !== null) {
-    const reader = res.body.getReader();
-    const chunks: Buffer[] = [];
-    let total = 0;
-    try {
-      while (total < limit) {
-        const next = await reader.read();
-        if (next.done) break;
-        const chunk = Buffer.from(next.value);
-        const remaining = limit - total;
-        chunks.push(chunk.subarray(0, remaining));
-        total += Math.min(chunk.length, remaining);
-        if (chunk.length > remaining) break;
+/** Decode frames incrementally and retain the latest output, on both transports.
+ * Frame headers must be removed before trimming: a byte tail can start inside a frame.
+ */
+async function dockerLogTail(res: HttpResponse, limit: number): Promise<string> {
+  let tail = Buffer.alloc(0);
+  let header = Buffer.alloc(0);
+  let mode: 'detect' | 'frames' | 'plain' = 'detect';
+  let remaining = 0;
+  let shortened = false;
+  const append = (bytes: Buffer) => {
+    if (!bytes.length) return;
+    shortened ||= tail.length + bytes.length > limit;
+    tail =
+      bytes.length >= limit
+        ? Buffer.from(bytes.subarray(-limit))
+        : Buffer.concat([tail.subarray(Math.max(0, tail.length + bytes.length - limit)), bytes]);
+  };
+  const consume = (input: Uint8Array) => {
+    let bytes = Buffer.from(input.buffer, input.byteOffset, input.byteLength);
+    while (bytes.length) {
+      if (mode === 'plain') {
+        append(bytes);
+        return;
       }
+      if (remaining > 0) {
+        const count = Math.min(bytes.length, remaining);
+        append(bytes.subarray(0, count));
+        remaining -= count;
+        bytes = bytes.subarray(count);
+        continue;
+      }
+      const count = Math.min(8 - header.length, bytes.length);
+      header = Buffer.concat([header, bytes.subarray(0, count)]);
+      bytes = bytes.subarray(count);
+      if (header.length < 8) continue;
+      if (
+        (header[0] !== 1 && header[0] !== 2) ||
+        header[1] !== 0 ||
+        header[2] !== 0 ||
+        header[3] !== 0
+      ) {
+        mode = 'plain';
+        append(header);
+        header = Buffer.alloc(0);
+        continue;
+      }
+      mode = 'frames';
+      remaining = header.readUInt32BE(4);
+      header = Buffer.alloc(0);
+    }
+  };
+  if (res.body) {
+    const reader = res.body.getReader();
+    try {
+      for (let next = await reader.read(); !next.done; next = await reader.read())
+        consume(next.value);
     } finally {
       await reader.cancel().catch(() => undefined);
     }
-    return Buffer.concat(chunks, total);
+  } else if (res.arrayBuffer) consume(new Uint8Array(await res.arrayBuffer()));
+  else consume(Buffer.from(res.text ? await res.text() : JSON.stringify(await res.json())));
+  if (mode === 'detect' || mode === 'plain') append(header);
+  else if (header.length || remaining) shortened = true;
+  // Omit a leading fragment after byte eviction, rather than displaying a broken
+  // credential-bearing JSON line. The latest complete lines remain intact.
+  if (shortened && tail.length >= limit) {
+    const newline = tail.indexOf(10);
+    tail = newline >= 0 ? tail.subarray(newline + 1) : Buffer.alloc(0);
+    while (tail.length && (tail[0]! & 0xc0) === 0x80) tail = tail.subarray(1);
   }
-  if (res.arrayBuffer !== undefined) return Buffer.from(await res.arrayBuffer()).subarray(0, limit);
-  const text = res.text === undefined ? JSON.stringify(await res.json()) : await res.text();
-  return Buffer.from(text, 'utf8').subarray(0, limit);
+  return tail.toString('utf8') + (shortened ? '\n[truncated]\n' : '');
 }
 
 /**
@@ -770,11 +805,13 @@ async function callDocker(
   method: string,
   timeoutMs: number,
   body?: unknown,
+  stream = false,
 ): Promise<HttpResponse> {
   const init: HttpFetchInit = {
     method,
     signal: AbortSignal.timeout(timeoutMs),
   };
+  if (stream) init.stream = true;
   if (body !== undefined) {
     init.headers = { 'content-type': 'application/json' };
     init.body = JSON.stringify(body);
@@ -1437,6 +1474,7 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
           : {}),
         ...(spec.extraHosts?.length ? { ExtraHosts: spec.extraHosts } : {}),
         ...(spec.runtime !== undefined ? { Runtime: spec.runtime } : {}),
+        ...(spec.pidMode !== undefined ? { PidMode: spec.pidMode } : {}),
         ...(spec.groupAdd?.length ? { GroupAdd: spec.groupAdd } : {}),
         ...(spec.readOnlyRootfs !== undefined ? { ReadonlyRootfs: spec.readOnlyRootfs } : {}),
         ...(spec.tmpfs !== undefined ? { Tmpfs: spec.tmpfs } : {}),
@@ -1450,6 +1488,10 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
         ...(spec.memoryBytes !== undefined && spec.memoryBytes > 0
           ? { Memory: spec.memoryBytes }
           : {}),
+        ...(spec.memoryReservationBytes !== undefined
+          ? { MemoryReservation: spec.memoryReservationBytes }
+          : {}),
+        ...(spec.oomScoreAdj !== undefined ? { OomScoreAdj: spec.oomScoreAdj } : {}),
         // Only alongside `Memory`: a swap ceiling on its own is not a weaker limit, it
         // is a create the daemon refuses ("You should always set the Memory limit when
         // using Memoryswap limit"). Dropping it keeps a half-specified spec from
@@ -1738,21 +1780,26 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
       }
       return json.StatusCode;
     },
-    containerLogs: async (id, tail) => {
+    containerLogs: async (id, tail, window) => {
       if (!Number.isSafeInteger(tail) || tail < 1 || tail > 1000) {
         throw new TypeError('container log tail must be between 1 and 1000');
       }
       const query = new URLSearchParams({ stdout: '1', stderr: '1', tail: String(tail) });
+      if (window !== undefined) {
+        query.set('since', window.since);
+        query.set('until', window.until);
+        query.set('timestamps', '1');
+      }
       const res = await callDocker(
         doFetch,
-        `${base}/containers/${id}/logs?${query.toString()}`,
+        `${base}/containers/${encodeURIComponent(id)}/logs?${query.toString()}`,
         'GET',
         timeoutMs,
+        undefined,
+        true,
       );
       if (!res.ok) throw await toDockerError(res, id);
-      // Reserve room for the decoder's explicit truncation marker.
-      const body = await boundedResponseBytes(res, 64 * 1024 - 32);
-      return decodeDockerLogFrames(body);
+      return dockerLogTail(res, 64 * 1024 - 32);
     },
     stopContainer: async (id) => {
       const res = await callDocker(doFetch, `${base}/containers/${id}/stop`, 'POST', timeoutMs);
@@ -1760,6 +1807,15 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
       // so the socket-proxy transport failed every stop of a stopped container,
       // including the rollback of a start that never got the container running.
       if (!res.ok && res.status !== 304) throw await toDockerError(res, id);
+    },
+    removeStoppedContainer: async (id) => {
+      const res = await callDocker(
+        doFetch,
+        `${base}/containers/${encodeURIComponent(id)}?force=false&v=false`,
+        'DELETE',
+        timeoutMs,
+      );
+      if (!res.ok && res.status !== 404) throw await toDockerError(res, id);
     },
     removeContainer: async (id) => {
       // `v=true` removes the anonymous volumes the daemon minted for this
@@ -2042,6 +2098,8 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
         Image?: unknown;
         RestartCount?: unknown;
         State?: {
+          FinishedAt?: string;
+          ExitCode?: number;
           Running?: unknown;
           Status?: unknown;
           Health?: { Status?: unknown };
@@ -2061,6 +2119,7 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
           PortBindings?: ContainerReplacementConfig['portBindings'];
           Runtime?: unknown;
           NetworkMode?: unknown;
+          PidMode?: unknown;
           ExtraHosts?: unknown;
           Sysctls?: unknown;
           ReadonlyRootfs?: unknown;
@@ -2070,6 +2129,8 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
           PidsLimit?: unknown;
           Memory?: unknown;
           MemorySwap?: unknown;
+          MemoryReservation?: unknown;
+          OomScoreAdj?: unknown;
           NanoCpus?: unknown;
           CpuShares?: unknown;
           Privileged?: unknown;
@@ -2130,6 +2191,10 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
           : {}),
         id: json.Id,
         running: json.State?.Running === true,
+        ...(typeof json.State?.FinishedAt === 'string'
+          ? { finishedAt: json.State.FinishedAt }
+          : {}),
+        ...(typeof json.State?.ExitCode === 'number' ? { exitCode: json.State.ExitCode } : {}),
         ...(typeof json.Config?.Image === 'string' ? { image: json.Config.Image } : {}),
         ...(typeof json.Image === 'string' ? { imageId: json.Image } : {}),
         ...(labels !== undefined ? { labels } : {}),
@@ -2142,6 +2207,9 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
         ...(typeof json.RestartCount === 'number' ? { restartCount: json.RestartCount } : {}),
         ...(typeof json.State?.Health?.Status === 'string'
           ? { healthStatus: json.State.Health.Status }
+          : {}),
+        ...(typeof json.HostConfig?.PidMode === 'string'
+          ? { pidMode: json.HostConfig.PidMode }
           : {}),
         ...(typeof json.HostConfig?.NetworkMode === 'string'
           ? { networkMode: json.HostConfig.NetworkMode }
@@ -2168,6 +2236,12 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
           : {}),
         ...(typeof json.HostConfig?.MemorySwap === 'number'
           ? { memorySwapBytes: json.HostConfig.MemorySwap }
+          : {}),
+        ...(typeof json.HostConfig?.MemoryReservation === 'number'
+          ? { memoryReservationBytes: json.HostConfig.MemoryReservation }
+          : {}),
+        ...(typeof json.HostConfig?.OomScoreAdj === 'number'
+          ? { oomScoreAdj: json.HostConfig.OomScoreAdj }
           : {}),
         ...(typeof json.HostConfig?.NanoCpus === 'number'
           ? { nanoCpus: json.HostConfig.NanoCpus }
@@ -2253,6 +2327,16 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
       }
       return { path: candidate.path, args: candidate.runtimeArgs };
     },
+    hostMemoryBytes: async () => {
+      const res = await callDocker(doFetch, `${base}/info`, 'GET', timeoutMs);
+      if (!res.ok) throw await toDockerError(res);
+      const json = (await res.json()) as { MemTotal?: unknown };
+      return typeof json.MemTotal === 'number' &&
+        Number.isSafeInteger(json.MemTotal) &&
+        json.MemTotal > 0
+        ? json.MemTotal
+        : undefined;
+    },
     hostCpuCount: async () => {
       const res = await callDocker(doFetch, `${base}/info`, 'GET', timeoutMs);
       if (!res.ok) throw await toDockerError(res);
@@ -2328,6 +2412,25 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
       });
       if (res.ok || res.status === 409) return;
       throw await toDockerError(res);
+    },
+    createEgressNetwork: async (name, bridge) => {
+      if (!/^verity-egress-[a-f0-9]{32}$/u.test(name) || !/^vep[a-f0-9]{12}$/u.test(bridge))
+        throw new Error('Invalid generation network');
+      const digest = name.slice('verity-egress-'.length);
+      const subnet = `fd${digest.slice(0, 2)}:${digest.slice(2, 6)}:${digest.slice(6, 10)}:${digest.slice(10, 14)}::/64`;
+      const res = await callDocker(doFetch, `${base}/networks/create`, 'POST', timeoutMs, {
+        Name: name,
+        Driver: 'bridge',
+        CheckDuplicate: true,
+        EnableIPv6: true,
+        IPAM: { Config: [{ Subnet: subnet }] },
+        Options: { 'com.docker.network.bridge.name': bridge },
+      });
+      if (!res.ok) throw await toDockerError(res);
+      const json = (await res.json()) as { Id?: unknown };
+      if (typeof json.Id !== 'string' || !/^[a-f0-9]{64}$/u.test(json.Id))
+        throw new Error('Invalid generation network identity');
+      return { id: json.Id };
     },
     ensureVolume: async (name, opts) => {
       const res = await callDocker(doFetch, `${base}/volumes/create`, 'POST', timeoutMs, {
@@ -2408,7 +2511,7 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
       return json.map((entry): DockerContainerSummary => {
         if (typeof entry !== 'object' || entry === null || Array.isArray(entry))
           throw invalidInventory();
-        const { Id, ImageID, Names, Labels, Created } = entry as Record<string, unknown>;
+        const { Id, ImageID, Names, Labels, Created, State } = entry as Record<string, unknown>;
         if (
           typeof Id !== 'string' ||
           Id.trim() === '' ||
@@ -2424,6 +2527,7 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
         return {
           id: Id,
           imageId: ImageID,
+          ...(typeof State === 'string' ? { state: State } : {}),
           names,
           labels: parseDockerLabels(Labels) ?? {},
           ...(typeof Created === 'number' ? { created: Created } : {}),

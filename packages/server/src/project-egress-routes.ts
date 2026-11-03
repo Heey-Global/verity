@@ -1,0 +1,145 @@
+import type { FastifyInstance, FastifyRequest } from 'fastify';
+import { z } from 'zod';
+import { ProjectEgressError, type ProjectEgressStore } from '@verity/store';
+import { isPublicEgressTarget } from './project-egress-policy.js';
+import { mandatoryEgressRoute } from './project-egress-classification.js';
+
+const params = z.object({ id: z.string().min(1) });
+const target = z
+  .object({
+    host: z.string().min(1).max(253),
+    protocol: z.enum(['tcp', 'udp']),
+    port: z.number().int().min(1).max(65535),
+  })
+  .strict();
+const decision = z
+  .object({
+    requestId: z.string().uuid(),
+    revision: z.number().int().nonnegative(),
+    allow: z.boolean(),
+  })
+  .strict();
+const reopen = z.object({ target, revision: z.number().int().nonnegative() }).strict();
+const revoke = z
+  .object({ grantId: z.string().uuid(), revision: z.number().int().nonnegative() })
+  .strict();
+
+/** Built-in broker/system hostnames never become direct rules or cards. IP literals
+ * and deployment-specific mandatoryHosts are only known to the host, which refuses
+ * them at admission; such requests can still be recorded here but never take effect.
+ */
+class BrokerRequiredError extends Error {
+  constructor(readonly route: string) {
+    super('broker required');
+  }
+}
+const directEligible = (input: z.infer<typeof target>): void => {
+  if (!isPublicEgressTarget(input)) throw new ProjectEgressError('invalid');
+  const route = mandatoryEgressRoute(input.host);
+  if (route) throw new BrokerRequiredError(route);
+};
+
+/** Draft management only. There is intentionally no protected-mode activation endpoint. */
+export function registerProjectEgressRoutes(app: FastifyInstance, store: ProjectEgressStore): void {
+  const user = (request: FastifyRequest): string => {
+    if (!request.localUserId) throw new ProjectEgressError('forbidden');
+    return request.localUserId;
+  };
+  app.register((app, _options, done) => {
+    app.setErrorHandler((error, _request, reply) => {
+      if (error instanceof ProjectEgressError) {
+        const status = { invalid: 400, forbidden: 403, missing: 404, stale: 409, capacity: 429 }[
+          error.code
+        ];
+        return reply.code(status).send({ error: error.code });
+      }
+      if (error instanceof BrokerRequiredError)
+        return reply.code(403).send({ error: 'broker_required', route: error.route });
+      if (error instanceof z.ZodError)
+        return reply.code(400).send({ error: 'invalid egress input' });
+      throw error;
+    });
+    app.get('/projects/:id/egress', async (request) => ({
+      enforcement: 'unavailable',
+      policy: await store.read(params.parse(request.params).id, user(request)),
+    }));
+    app.post('/projects/:id/egress/requests', async (request) => {
+      const input = target.parse(request.body);
+      directEligible(input);
+      return {
+        enforcement: 'unavailable',
+        request: await store.request(params.parse(request.params).id, user(request), input),
+      };
+    });
+    app.post('/projects/:id/egress/decisions', async (request) => {
+      const input = decision.parse(request.body);
+      if (input.allow) {
+        // Requests stored before classification existed cannot be approved either.
+        const policy = await store.read(params.parse(request.params).id, user(request));
+        const pending = Object.values(policy.requests).find((r) => r.id === input.requestId);
+        if (!pending) throw new ProjectEgressError('missing');
+        directEligible(pending.target);
+      }
+      return {
+        enforcement: 'unavailable',
+        request: await store.decide(
+          params.parse(request.params).id,
+          user(request),
+          input.requestId,
+          input.revision,
+          input.allow,
+        ),
+      };
+    });
+    app.post('/projects/:id/egress/reopen', async (request) => {
+      const input = reopen.parse(request.body);
+      directEligible(input.target);
+      return {
+        enforcement: 'unavailable',
+        request: await store.reopen(
+          params.parse(request.params).id,
+          user(request),
+          input.target,
+          input.revision,
+        ),
+      };
+    });
+    app.post('/projects/:id/egress/revoke', async (request) => {
+      const input = revoke.parse(request.body);
+      await store.revoke(
+        params.parse(request.params).id,
+        user(request),
+        input.grantId,
+        input.revision,
+      );
+      return { enforcement: 'unavailable' };
+    });
+    app.post('/projects/:id/egress/permanent', async (request) => {
+      const input = reopen.parse(request.body);
+      directEligible(input.target);
+      return {
+        enforcement: 'unavailable',
+        grant: await store.setPermanent(
+          params.parse(request.params).id,
+          user(request),
+          input.target,
+          input.revision,
+        ),
+      };
+    });
+    app.post('/projects/:id/egress/remove-request', async (request) => {
+      const input = z
+        .object({ requestId: z.string().uuid(), revision: z.number().int().nonnegative() })
+        .strict()
+        .parse(request.body);
+      await store.removeRequest(
+        params.parse(request.params).id,
+        user(request),
+        input.requestId,
+        input.revision,
+      );
+      return { enforcement: 'unavailable' };
+    });
+    done();
+  });
+}

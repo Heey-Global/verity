@@ -23,6 +23,14 @@ export interface PullRequestReadyMonitorOptions {
   statusFor(session: SessionRecord): Promise<PullRequestStatus | null>;
   wasSent(sessionId: string, marker: string): Promise<boolean>;
   markSent(sessionId: string, marker: string): Promise<boolean>;
+  claimAttempt(sessionId: string, marker: string, now: number): Promise<string | undefined>;
+  finishAttempt(
+    sessionId: string,
+    marker: string,
+    claim: string,
+    outcome: 'done' | 'failed' | 'unattempted',
+    now: number,
+  ): Promise<void>;
   describeSession(session: SessionRecord): Promise<PushSessionContext>;
   logger?: PushLogger | undefined;
   pollMs?: number | undefined;
@@ -73,20 +81,33 @@ export function startPullRequestReadyMonitor(
     const pendingKey = `${session.sessionId}\0${marker}`;
     if (pending.has(pendingKey) || (await options.wasSent(session.sessionId, marker))) return;
     pending.add(pendingKey);
+    let claim: string | undefined;
     try {
       const context = await options.describeSession(session);
+      const initiatorUserId = await options.initiatorOf?.(session.sessionId);
+      claim = await options.claimAttempt(session.sessionId, marker, Date.now());
+      if (claim === undefined) return;
       const outcome = await options.router.notify({
         key: `pr-ready:${session.sessionId}`,
         sessionId: session.sessionId,
-        initiatorUserId: await options.initiatorOf?.(session.sessionId),
+        initiatorUserId,
         notification: buildPullRequestReadyNotification(session.sessionId, pr, context),
       });
-      // A ready PR discovered before any device registers must remain eligible;
-      // likewise, an all-error batch should retry after token refresh/pruning.
-      // A user who already sees the session (or is in the app) has seen it.
-      if (outcome === 'undelivered') return;
-      await options.markSent(session.sessionId, marker);
+      const result =
+        outcome === 'undelivered' || outcome === 'deferred'
+          ? 'unattempted'
+          : outcome === 'failed'
+            ? 'failed'
+            : 'done';
+      await options.finishAttempt(session.sessionId, marker, claim, result, Date.now());
+      claim = undefined;
+      if (result === 'done') await options.markSent(session.sessionId, marker);
     } catch {
+      if (claim !== undefined) {
+        await options
+          .finishAttempt(session.sessionId, marker, claim, 'failed', Date.now())
+          .catch(() => undefined);
+      }
       options.logger?.warn(
         { component: 'push', kind: 'pull_request_ready' },
         'verity: PR-ready push failed',

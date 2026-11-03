@@ -124,6 +124,33 @@ export interface GoogleAccountsTable {
   created_at: ColumnType<Date, string | undefined, never>;
 }
 
+/** A watched calendar; a row exists only while watching is on. */
+export interface CalendarWatchCalendarsTable {
+  account_id: string;
+  calendar_id: string;
+  summary: string;
+  auto_join: ColumnType<boolean, boolean | undefined, boolean>;
+  updated_at: ColumnType<Date, string | undefined, string>;
+}
+
+/** A joinable event of a watched calendar; `title` and `meeting_url` are encrypted. */
+export interface CalendarWatchEventsTable {
+  event_key: string;
+  account_id: string;
+  calendar_id: string;
+  event_id: string;
+  title: string | null;
+  meeting_url: string;
+  starts_at: ColumnType<Date, string, string>;
+  ends_at: ColumnType<Date, string, string>;
+  accepted: ColumnType<boolean, boolean | undefined, boolean>;
+  notified_at: ColumnType<Date | null, string | null | undefined, string | null>;
+  decision: 'joined' | 'skipped' | 'failed' | null;
+  meeting_id: string | null;
+  started_notified_at: ColumnType<Date | null, string | null | undefined, string | null>;
+  updated_at: ColumnType<Date, string | undefined, string>;
+}
+
 export interface GoogleServiceOverridesTable {
   mode: 'inherit' | 'disabled' | 'account';
   revision: string;
@@ -219,6 +246,7 @@ export interface HttpMcpConnectionsTable {
   authorization: string | null;
   auth_type: ColumnType<string, string | undefined, string>;
   oauth_client_id: string | null;
+  oauth_token_auth_method: ColumnType<string, string | undefined, string>;
   oauth_client_secret: string | null;
   oauth_authorization_endpoint: string | null;
   oauth_token_endpoint: string | null;
@@ -530,6 +558,12 @@ export interface VeritySettingsTable {
   id: string;
   /** Shows internal Verity Control project/workspace surfaces when enabled. */
   advanced_mode_enabled: ColumnType<boolean, boolean | undefined, boolean>;
+  /** Days an unassigned live meeting is kept after it ends; null means the default. */
+  unassigned_meeting_retention_days: ColumnType<
+    number | null,
+    number | null | undefined,
+    number | null
+  >;
   git_user_name: ColumnType<string | null, string | null | undefined, string | null>;
   git_user_email: ColumnType<string | null, string | null | undefined, string | null>;
   git_ssh_private_key_path: ColumnType<string | null, string | null | undefined, string | null>;
@@ -597,6 +631,8 @@ export interface VeritySettingsTable {
   /** Operator switches for the paid Uplink features (see VeritySettingsRecord). */
   premium_sharing_enabled: ColumnType<boolean, boolean | undefined, boolean>;
   premium_remote_access_enabled: ColumnType<boolean, boolean | undefined, boolean>;
+  /** System-wide network protection: fence every project container (see VeritySettingsRecord). */
+  project_egress_enabled: ColumnType<boolean, boolean | undefined, boolean>;
   /** VESTIGIAL — no longer read or written. These were the nightly sandbox
    *  auto-update policy, removed once the relay reconciler started rebuilding
    *  every sandbox onto the current image after each Server restart: on a released
@@ -816,6 +852,8 @@ export interface QueuedTurnsTable {
  * row still present at startup means the turn was abandoned by a crash/restart.
  */
 interface RunningTurnsTable {
+  marker_id: ColumnType<string | null, string | null | undefined, string | null | undefined>;
+  settled: Generated<boolean>;
   session_id: string;
   /** Seq of the prompt event this turn is executing — recovery/reattach anchor. */
   prompt_seq: number;
@@ -912,6 +950,17 @@ interface SessionAutomationMarkerTable {
   session_id: string;
   marker: string;
   created_at: ColumnType<Date, string | undefined, never>;
+}
+
+/** Durable attempt budget and fenced transport claims for PR-ready notifications. */
+interface PrReadyDeliveryTable {
+  session_id: string;
+  marker: string;
+  attempts: number;
+  next_attempt_at: ColumnType<string, number, number>;
+  claim_id: string | null;
+  lease_until: ColumnType<string, number, number>;
+  completed: boolean;
 }
 
 /** GitHub-token-broker capabilities (security review #662). One row per project:
@@ -1592,6 +1641,25 @@ export interface VulnDigestsTable {
   day: string;
 }
 export interface Database {
+  qa_dispatches: QADispatchesTable;
+  qa_manual_repairs: QAManualRepairsTable;
+  qa_assignments: QAAssignmentsTable;
+  qa_assignment_notifications: QAAssignmentNotificationsTable;
+  repair_resource_budgets: RepairResourceBudgetsTable;
+  repair_mandates: RepairMandatesTable;
+  repair_incidents: RepairIncidentsTable;
+  repair_workflow_heads: RepairWorkflowHeadsTable;
+  repair_attempts: RepairAttemptsTable;
+  repair_session_history: RepairSessionHistoryTable;
+  repair_session_origins: RepairSessionOriginsTable;
+  qa_coordinator: QACoordinatorTable;
+  qa_inbox: QAInboxTable;
+  qa_proposals: QAProposalsTable;
+  qa_decisions: QADecisionsTable;
+  assistant_settings: AssistantSettingsTable;
+  assistant_project_grants: AssistantProjectGrantsTable;
+  scheduling_requests: SchedulingRequestsTable;
+  scheduling_holds: SchedulingHoldsTable;
   vuln_digests: VulnDigestsTable;
   vuln_ignores: VulnIgnoresTable;
   vuln_notifications: VulnNotificationsTable;
@@ -1630,6 +1698,8 @@ export interface Database {
   session_slide_decks: SessionSlideDecksTable;
   google_workspace_recents: GoogleWorkspaceRecentsTable;
   google_accounts: GoogleAccountsTable;
+  calendar_watch_calendars: CalendarWatchCalendarsTable;
+  calendar_watch_events: CalendarWatchEventsTable;
   google_service_overrides: GoogleServiceOverridesTable;
   project_google_drive_folders: ProjectGoogleDriveFoldersTable;
   project_google_connections: ProjectGoogleConnectionsTable;
@@ -1653,6 +1723,7 @@ export interface Database {
   project_identity_claims: ProjectIdentityClaimsTable;
   project_settings: ProjectSettingsTable;
   project_package_protection: ProjectPackageProtectionTable;
+  project_egress_policy: ProjectEgressPolicyTable;
   verity_settings: VeritySettingsTable;
   secret_key_meta: SecretKeyMetaTable;
   auth_tokens: AuthTokenTable;
@@ -1665,6 +1736,7 @@ export interface Database {
   session_backend_state: SessionBackendStateTable;
   session_pending_note: SessionPendingNoteTable;
   session_automation_marker: SessionAutomationMarkerTable;
+  pr_ready_delivery: PrReadyDeliveryTable;
   forge_connections: ForgeConnectionsTable;
   gh_token_capabilities: GhTokenCapabilitiesTable;
   signing_capabilities: SigningCapabilitiesTable;
@@ -1772,4 +1844,229 @@ interface LiveMeetingResultsTable {
   model: string | null;
   created_at: number;
   updated_at: number;
+}
+
+interface ProjectEgressPolicyTable {
+  project_id: string;
+  state: import('./project-egress.js').EgressPolicy;
+}
+
+interface RepairMandatesTable {
+  observation_error: string | null;
+  project_id: string;
+  sponsor_user_id: string;
+  mode: import('./repair-supervision.js').RepairMode;
+  revision: Generated<number>;
+  cursor: string | null;
+  health: Generated<string>;
+  checked_at: Date | null;
+}
+interface RepairIncidentsTable {
+  verified_success: Generated<boolean>;
+  repair_pr: number | null;
+  id: string;
+  project_id: string;
+  resource: string;
+  revision: string;
+  evidence: string;
+  state: Generated<import('./repair-supervision.js').RepairIncident['state']>;
+  owner_session_id: string | null;
+  last_session_id: string | null;
+  attempts: Generated<number>;
+  dispatch_id: string | null;
+  updated_at: Generated<Date>;
+}
+interface RepairWorkflowHeadsTable {
+  project_id: string;
+  workflow: string;
+  run_id: ColumnType<string, string | number, string | number>;
+}
+interface RepairAttemptsTable {
+  automation_marker: string | null;
+  dispatch_id: string;
+  incident_id: string;
+  session_id: string;
+  started_at: Generated<Date>;
+  ended_at: Date | null;
+  outcome: string | null;
+  start_seq: ColumnType<string | null, string | number | null, string | number | null>;
+}
+interface RepairSessionOriginsTable {
+  project_id: string;
+  resource: string;
+  session_id: string;
+}
+interface RepairSessionHistoryTable {
+  project_id: string;
+  resource: string;
+  session_id: string;
+  created_at: Generated<Date>;
+}
+interface AssistantSettingsTable {
+  id: number;
+  enabled: Generated<boolean>;
+  revision: Generated<number>;
+  sponsor_user_id: string | null;
+  session_id: string | null;
+  updated_at: Generated<Date>;
+}
+interface AssistantProjectGrantsTable {
+  project_id: string;
+  mode: import('./assistant.js').AssistantMode;
+  sponsor_user_id: string;
+  revision: Generated<number>;
+  updated_at: Generated<Date>;
+}
+interface SchedulingRequestsTable {
+  id: string;
+  session_id: string;
+  project_id: string | null;
+  google_account_id: string | null;
+  calendar_id: string;
+  time_zone: string;
+  language: 'en' | 'de';
+  title: string;
+  duration_minutes: number;
+  add_meet: boolean;
+  organizer_name: string;
+  organizer_email: string;
+  guest_email: string;
+  guest_name: string | null;
+  colleagues: ColumnType<unknown, string | undefined, string>;
+  email_subject: string;
+  email_body: string;
+  state: import('./scheduling.js').SchedulingRequestState;
+  failure: string | null;
+  closes_at: Date;
+  link_expires_at: Date | null;
+  approved_at: Date | null;
+  approval_digest: string | null;
+  sender_account_id: string | null;
+  share_secret: string | null;
+  share_revoked_at: Date | null;
+  email_sent_at: Date | null;
+  booked_event_id: string | null;
+  booked_start: Date | null;
+  booked_end: Date | null;
+  guest_note: string | null;
+  notified_no_slots_at: Date | null;
+  attempts: Generated<number>;
+  next_attempt_at: Date | null;
+  lease_owner: string | null;
+  lease_until: Date | null;
+  revision: Generated<number>;
+  created_at: Generated<Date>;
+  updated_at: Generated<Date>;
+}
+interface SchedulingHoldsTable {
+  request_id: string;
+  position: number;
+  window_start: Date;
+  window_end: Date;
+  event_id: string;
+  state: import('./scheduling.js').SchedulingHoldState;
+  attempts: Generated<number>;
+  next_attempt_at: Date | null;
+  last_error: string | null;
+  updated_at: Generated<Date>;
+}
+interface QACoordinatorTable {
+  id: number;
+  enabled: Generated<boolean>;
+  revision: Generated<number>;
+  sponsor: string | null;
+  session_id: string | null;
+  health: Generated<string>;
+  active_dispatch: string | null;
+  active_seq: ColumnType<string | null, string | number | null, string | number | null>;
+  active_revision: number | null;
+  active_snapshot: string | null;
+  wake_day: string | null;
+  wakes: Generated<number>;
+}
+interface QAInboxTable {
+  project_id: string;
+  fingerprint: string;
+  acknowledged: string | null;
+  updated_at: Generated<Date>;
+}
+interface QAProposalsTable {
+  id: string;
+  project_id: string;
+  incident_id: string;
+  mandate_revision: number;
+  qa_revision: number;
+  state: Generated<string>;
+  decided_by: string | null;
+  created_at: Generated<Date>;
+}
+interface QADecisionsTable {
+  dispatch_id: string;
+  session_id: string;
+  snapshot: string;
+  outcome: string | null;
+  created_at: Generated<Date>;
+}
+
+interface QAManualRepairsTable {
+  id: string;
+  project_id: string;
+  source_session_id: string;
+  user_id: string;
+  target_session_id: string;
+  number: number;
+  branch: string;
+  revision: string;
+  requires_card: Generated<boolean>;
+  qa_revision: number;
+  mandate_revision: number;
+  expires_at: Generated<Date>;
+  dispatch_id: string | null;
+  consent_key: string | null;
+  reason: string | null;
+}
+
+interface QADispatchesTable {
+  id: string;
+  session_id: string;
+  state: 'reserved' | 'admitted' | 'cancelled' | 'legacy';
+  prompt_seq: ColumnType<string | null, string | number | null, string | number | null>;
+  created_at: Generated<Date>;
+}
+interface RepairResourceBudgetsTable {
+  project_id: string;
+  resource: string;
+  used: Generated<number>;
+  cycle: Generated<number>;
+}
+
+interface QAAssignmentsTable {
+  id: string;
+  project_id: string;
+  source_session_id: string;
+  user_id: string;
+  target_session_id: string | null;
+  state: string;
+  title: string;
+  instruction: string;
+  criteria: string;
+  qa_revision: number;
+  mandate_revision: number;
+  consent_key: string | null;
+  attempt: Generated<number>;
+  dispatch_id: string | null;
+  feedback: Generated<string>;
+  evidence: Generated<string>;
+  reason: string | null;
+  version: Generated<number>;
+  created_at: Generated<Date>;
+  expires_at: Generated<Date>;
+}
+interface QAAssignmentNotificationsTable {
+  attempt: Generated<number>;
+  acknowledged: Generated<boolean>;
+  id: string;
+  assignment_id: string;
+  dispatch_id: string;
+  payload: string;
 }

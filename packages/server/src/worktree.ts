@@ -9,6 +9,7 @@ import {
   readFileSync,
   readdirSync,
   readlinkSync,
+  realpathSync,
   renameSync,
   rmSync,
   symlinkSync,
@@ -795,6 +796,18 @@ export function linkWorkspacePackages(repoDir: string, worktreePath: string): vo
   // Guard: without a real worktree dir (e.g. a mocked git runner in tests) there
   // is nothing to link into.
   if (!existsSync(worktreePath)) return;
+  try {
+    const manifest = join(repoDir, 'package.json');
+    if (existsSync(manifest) && realpathSync(manifest) !== resolve(manifest)) return;
+    const modules = join(worktreePath, 'node_modules');
+    if (
+      existsSync(modules) &&
+      (!lstatSync(modules).isDirectory() || lstatSync(modules).isSymbolicLink())
+    )
+      return;
+  } catch {
+    return;
+  }
   const isWorkspace = workspaceMatcher(repoDir);
   for (const glob of ['packages', 'apps']) {
     const dir = join(repoDir, glob);
@@ -802,9 +815,16 @@ export function linkWorkspacePackages(repoDir: string, worktreePath: string): vo
     for (const entry of readdirSync(dir)) {
       let name: string;
       try {
-        const pkg: unknown = JSON.parse(readFileSync(join(dir, entry, 'package.json'), 'utf8'));
+        const manifest = join(dir, entry, 'package.json');
+        if (realpathSync(manifest) !== resolve(manifest) || !lstatSync(manifest).isFile()) continue;
+        const pkg: unknown = JSON.parse(readFileSync(manifest, 'utf8'));
         const pkgName = (pkg as { name?: unknown }).name;
         if (typeof pkgName !== 'string' || pkgName.length === 0) continue;
+        if (
+          !/^(?:@[a-zA-Z0-9._~-]+\/)?[a-zA-Z0-9._~-]+$/.test(pkgName) ||
+          ['.', '..'].includes(pkgName)
+        )
+          continue;
         name = pkgName;
       } catch {
         continue; // not a package (no/invalid package.json)
@@ -828,7 +848,15 @@ export function linkWorkspacePackages(repoDir: string, worktreePath: string): vo
       const target = relative(dirname(dst), join(worktreePath, glob, entry));
       try {
         mkdirSync(dirname(dst), { recursive: true }); // creates the scope dir (e.g. @verity)
-        rmSync(dst, { force: true, recursive: true }); // replace any stale entry
+        if (realpathSync(dirname(dst)) !== resolve(dirname(dst))) continue;
+        // A private package directory may contain local patches. Only replace
+        // links; an existing real entry is never disposable workspace wiring.
+        try {
+          if (!lstatSync(dst).isSymbolicLink()) continue;
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') continue;
+        }
+        rmSync(dst, { force: true });
         symlinkSync(target, dst);
       } catch {
         // A single unlinkable package must not fail the spawn.

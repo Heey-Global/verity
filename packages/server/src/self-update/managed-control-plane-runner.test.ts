@@ -105,7 +105,7 @@ function client(
   return {
     listContainers: vi.fn(async () => summaries),
     inspectContainer: vi.fn(async (id: string) =>
-      id === 'created' ? { id, running: true } : inspections[id]!,
+      id === 'created' ? { id, running: true } : { oomScoreAdj: -250, ...inspections[id]! },
     ),
     // The preparation run and the Runner itself are told apart by id so a test can
     // assert the order of the two, which is the whole point of the preparation.
@@ -267,6 +267,7 @@ describe('managed control-plane Runner ownership', () => {
         // Omitting it would default to twice the limit, so taking ownership from
         // Compose — whose `memswap_limit` matched its `mem_limit` — would
         // silently hand the Runner a swap allowance Compose denied it.
+        oomScoreAdj: -250,
         memoryBytes: 4 * 1024 * 1024 * 1024,
         memorySwapBytes: 4 * 1024 * 1024 * 1024,
         env: expect.arrayContaining([
@@ -276,6 +277,19 @@ describe('managed control-plane Runner ownership', () => {
       }),
     );
     expect(docker.startContainer).toHaveBeenCalledWith('created');
+  });
+
+  it('uses the configured control-plane OOM priority on creation', async () => {
+    const docker = client();
+    await reconcileManagedControlPlaneRunner({
+      managedRoot: await authority(),
+      docker,
+      environment: { ...environment, VERITY_CONTROL_PLANE_RUNNER_OOM_SCORE_ADJ: '-100' },
+      ...immediate,
+    });
+    expect(docker.createContainer).toHaveBeenCalledWith(
+      expect.objectContaining({ name: MANAGED_CONTROL_PLANE_RUNNER_NAME, oomScoreAdj: -100 }),
+    );
   });
 
   it('retires the stale Compose companion before starting the managed one', async () => {
@@ -355,6 +369,46 @@ describe('managed control-plane Runner ownership', () => {
     );
     expect(docker.stopContainer).not.toHaveBeenCalledWith('managed');
   });
+
+  it.each([
+    { actual: undefined, desired: -250 },
+    { actual: 0, desired: -250 },
+    { actual: -250, desired: -100 },
+  ])(
+    'repairs OOM priority drift on an otherwise converged Runner: %j',
+    async ({ actual, desired }) => {
+      const docker = client(
+        [{ id: 'managed', imageId: 'sha256:new', names: [MANAGED_CONTROL_PLANE_RUNNER_NAME] }],
+        {
+          managed: {
+            id: 'managed',
+            running: true,
+            image,
+            oomScoreAdj: actual,
+            labels: {
+              [MANAGED_DEPLOYMENT_LABEL]: 'deployment-1',
+              [MANAGED_ROLE_LABEL]: 'control-plane-runner',
+            },
+            mounts: [
+              ...knowledgeMounts,
+              { type: 'bind', source: '/var/run/docker.sock', destination: '/var/run/docker.sock' },
+            ],
+            groupAdd: ['1101', '986'],
+          },
+        },
+      );
+      await reconcileManagedControlPlaneRunner({
+        managedRoot: await authority(),
+        docker,
+        environment: { ...environment, VERITY_CONTROL_PLANE_RUNNER_OOM_SCORE_ADJ: String(desired) },
+        ...immediate,
+      });
+      expect(docker.stopContainer).toHaveBeenCalledWith('managed');
+      expect(docker.createContainer).toHaveBeenCalledWith(
+        expect.objectContaining({ name: MANAGED_CONTROL_PLANE_RUNNER_NAME, oomScoreAdj: desired }),
+      );
+    },
+  );
 
   /**
    * ADR 0006 Amendment 1's kill switch, on the topology where it can remove the mount.

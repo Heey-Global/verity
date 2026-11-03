@@ -21,7 +21,7 @@ function testFiles(): string[] {
     .flatMap((dir) =>
       readdirSync(dir, { recursive: true })
         .map(String)
-        .filter((entry) => entry.endsWith('.test.ts'))
+        .filter((entry) => entry.endsWith('.test.ts') || entry.endsWith('.test-helper.ts'))
         .map((entry) => join(dir, entry)),
     );
 }

@@ -41,6 +41,8 @@ opt_check=0
 opt_advance_unpaired_from=''
 opt_update=0
 opt_reinstall=0
+opt_rotate_identity=0
+opt_restart_rotation=0
 opt_yes=0
 opt_restore=''
 opt_restore_action='trial'
@@ -114,6 +116,8 @@ Options:
   --restore-repository ID  Select the exact repository (required for a new restore).
   --restore-snapshot N Select the exact snapshot sequence (required for a new restore).
   --restore-kind KIND  Select manual, scheduled or pre-update (required for a new restore).
+  --restart-rotation  Begin another rotation after a completed one; requires --rotate-identity.
+  --rotate-identity   Revoke all devices and replace CA, TLS and pairing identity; resume safely after interruption.
   --new-identity      Generate new pairing identity and retain no previous devices.
   --restore-action ACTION  trial, status, devices, review, accept or abort.
   --keep-device ID    Explicitly retain a reviewed device; repeat for each device.
@@ -147,6 +151,8 @@ while [ "$#" -gt 0 ]; do
     --project=*) opt_project="${1#--project=}"; shift ;;
     --backup-dir) [ "$#" -ge 2 ] || die 'option --backup-dir needs a value'; opt_backup_dir="$2"; shift 2 ;;
     --backup-dir=*) opt_backup_dir="${1#--backup-dir=}"; shift ;;
+    --rotate-identity) opt_rotate_identity=1; shift ;;
+    --restart-rotation) opt_restart_rotation=1; shift ;;
     --restore) [ "$#" -ge 2 ] || die 'option --restore needs a value'; opt_restore="$2"; shift 2 ;;
     --restore-repository) [ "$#" -ge 2 ] || die 'option --restore-repository needs a value'; opt_restore_repository="$2"; shift 2 ;;
     --restore-snapshot) [ "$#" -ge 2 ] || die 'option --restore-snapshot needs a value'; opt_restore_snapshot="$2"; shift 2 ;;
@@ -165,6 +171,13 @@ while [ "$#" -gt 0 ]; do
     *) usage >&2; die "unknown argument: $1" ;;
   esac
 done
+
+[ "$opt_restart_rotation" = 0 ] || [ "$opt_rotate_identity" = 1 ] \
+  || die '--restart-rotation requires --rotate-identity'
+if [ "$opt_rotate_identity" = 1 ]; then
+  [ "$opt_update$opt_reinstall$opt_check" = 000 ] && [ -z "$opt_restore$opt_deployment_id$opt_advance_unpaired_from$opt_backup_dir$opt_project" ] \
+    || die '--rotate-identity cannot be combined with install, update or restore options'
+fi
 
 if [ -n "$opt_restore" ]; then
   [ "$opt_update$opt_reinstall$opt_check" = 000 ] || die '--restore cannot be combined with --update, --reinstall or --check'
@@ -268,7 +281,7 @@ select_pairing_host() {
 command -v docker >/dev/null || die 'docker is required'
 command -v flock >/dev/null || die 'the host flock utility is required'
 # The host runtime service registers the gVisor runtimes with these; refuse before any state changes.
-for tool in curl jq sha512sum; do
+for tool in curl jq sha512sum tar bzip2; do
   command -v "$tool" >/dev/null || die "the host $tool utility is required (the gVisor runtime registration uses it)"
 done
 
@@ -408,6 +421,15 @@ if [ -z "$opt_restore" ] && [ -f "$STATE_DIR/restore/job" ]; then
         || die 'recovery activation is incomplete; resume --restore-action accept' ;;
     *) die 'recovery is in progress; use --restore-action status, accept or abort' ;;
   esac
+fi
+if [ "$opt_rotate_identity" = 1 ]; then
+  source "$script_dir/verity-rotate-identity"
+  verity_rotate_identity
+  exit 0
+fi
+if [ -e "$STATE_DIR/identity-rotation/checkpoint" ]; then
+  [ "$(jq -er '.phase' "$STATE_DIR/identity-rotation/checkpoint")" = complete ] \
+    || die 'identity rotation is incomplete; resume --rotate-identity before other operations'
 fi
 if [ -n "$opt_restore" ]; then
   source "$script_dir/verity-restore-install"
@@ -995,8 +1017,6 @@ SYSTEMD_RUN_DIR="${VERITY_SYSTEMD_RUN_DIR:-/run/systemd/system}"
 heading 'Container runtimes'
 [ ! -L "$HOST_RUNTIME_DIR" ] || die "$HOST_RUNTIME_DIR must not be a symlink"
 install -d -m 0755 -o root -g root "$HOST_RUNTIME_LIBEXEC"
-install -m 0755 -o root -g root "$repo_root/deploy/host/verity-host-runtime" \
-  "$HOST_RUNTIME_LIBEXEC/verity-host-runtime"
 # Its sibling for the devcontainer builder: later updates install the builder their release
 # ships through it, after verifying that release's signature on the host.
 install -m 0755 -o root -g root "$repo_root/deploy/host/verity-host-builder" \
@@ -1004,25 +1024,20 @@ install -m 0755 -o root -g root "$repo_root/deploy/host/verity-host-builder" \
 install -d -m 0700 -o root -g root "$HOST_RUNTIME_DIR"
 host_runtime_trigger=none
 if [ -d "$SYSTEMD_RUN_DIR" ] && command -v systemctl >/dev/null; then
-  for unit in verity-host-runtime.path verity-host-runtime.service \
-    verity-host-builder.path verity-host-builder.service; do
+  for unit in verity-host-builder.path verity-host-builder.service; do
     install -m 0644 -o root -g root "$repo_root/deploy/host/$unit" "$SYSTEMD_UNIT_DIR/$unit"
   done
   systemctl daemon-reload
-  systemctl enable --now verity-host-runtime.path >/dev/null 2>&1 \
-    || die 'could not enable verity-host-runtime.path — see `systemctl status verity-host-runtime.path`'
   systemctl enable --now verity-host-builder.path >/dev/null 2>&1 \
     || die 'could not enable verity-host-builder.path — see `systemctl status verity-host-builder.path`'
   host_runtime_trigger=systemd-path
 else
   note 'No systemd on this host: runtime migrations that a later release needs will ask you to re-run the Verity installer'
 fi
-agent_tmp="$(mktemp "$HOST_RUNTIME_DIR/.agent.json.XXXXXX")"
-# `builder` tells the Updater it may ask verity-host-builder; hosts installed before it
-# existed lack the key, and their Updater asks for this installer instead.
-printf '{"version":1,"trigger":"%s","builder":"%s"}\n' "$host_runtime_trigger" "$host_runtime_trigger" >"$agent_tmp"
-chmod 0644 "$agent_tmp"
-mv -f "$agent_tmp" "$HOST_RUNTIME_DIR/agent.json"
+VERITY_HOST_RUNTIME_DIR="$HOST_RUNTIME_DIR" VERITY_HOST_RUNTIME_LIBEXEC="$HOST_RUNTIME_LIBEXEC" \
+  VERITY_HOST_BUILDER_TRIGGER="$host_runtime_trigger" \
+  VERITY_SYSTEMD_UNIT_DIR="$SYSTEMD_UNIT_DIR" VERITY_SYSTEMD_RUN_DIR="$SYSTEMD_RUN_DIR" \
+  bash "$repo_root/deploy/host/install-runtime-service.sh" || die 'could not install the host runtime service'
 note 'Registering the gVisor runtimes runsc and runsc-project (running containers are not restarted)'
 VERITY_HOST_RUNTIME_DIR="$HOST_RUNTIME_DIR" \
   "$HOST_RUNTIME_LIBEXEC/verity-host-runtime" apply-pins "$repo_root/deploy/gvisor/versions.env" \

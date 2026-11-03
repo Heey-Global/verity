@@ -1,3 +1,4 @@
+import { createBrokerRelayServer } from '../../project-relay/src/relay.js';
 import { secretAuditEventInputSchema } from '@verity/secret-contracts';
 import type { Backend, Conductor } from '@verity/session';
 import { InMemoryEventBus } from '@verity/session';
@@ -75,6 +76,7 @@ interface Harness {
 
 function build(
   options: {
+    qaAnalysisRead?: Parameters<typeof buildServer>[0]['qaAnalysisRead'];
     wire?: boolean;
     allow?: boolean;
     trustedCli?: boolean;
@@ -100,6 +102,7 @@ function build(
     planningOnApproval?: boolean;
     revisePlanOnApproval?: boolean;
     planningTurn?: boolean;
+    onApprovalInput?: (input: unknown) => void;
   } = {},
 ): Harness {
   const cipher = createSealableSecretCipher();
@@ -129,6 +132,8 @@ function build(
                   'verity_present_plan',
                   'verity_end_planning',
                   'verity_tasks',
+                  'verity_repairs',
+                  'verity_qa_analysis',
                   'verity_app_help',
                   'verity_http_request',
                 ]
@@ -194,6 +199,7 @@ function build(
       allowStandingGrant?: boolean;
       signal?: AbortSignal;
     }) => {
+      options.onApprovalInput?.(input);
       approvals.push({
         sessionId: input.sessionId,
         callId: input.toolUseId,
@@ -274,6 +280,7 @@ function build(
       : {}),
   } as unknown as Conductor;
   const app = buildServer({
+    ...(options.qaAnalysisRead ? { qaAnalysisRead: options.qaAnalysisRead } : {}),
     eventStore: store,
     runtimeDiagnostics: options.runtimeDiagnostics,
     bus: new InMemoryEventBus(),
@@ -308,20 +315,25 @@ function build(
   return { app, store, tokens, records, invocations, approvals, dispatches };
 }
 
+const relayPorts = new Map<string, number>();
 function postUnix(
   socketPath: string,
   authorization: string | undefined,
   payload: unknown,
+  extraHeaders: Record<string, string> = {},
 ): Promise<{ status: number; body: string }> {
   return new Promise((resolve, reject) => {
     const body = JSON.stringify(payload);
     const req = request(
       {
-        socketPath,
+        ...(relayPorts.has(socketPath)
+          ? { host: '127.0.0.1', port: relayPorts.get(socketPath)! }
+          : { socketPath }),
         method: 'POST',
         path: '/internal/mcp',
         headers: {
           ...(authorization !== undefined ? { authorization } : {}),
+          ...extraHeaders,
           'content-type': 'application/json',
           'content-length': Buffer.byteLength(body),
         },
@@ -345,7 +357,9 @@ function getUnix(
   return new Promise((resolve, reject) => {
     const req = request(
       {
-        socketPath,
+        ...(relayPorts.has(socketPath)
+          ? { host: '127.0.0.1', port: relayPorts.get(socketPath)! }
+          : { socketPath }),
         method: 'GET',
         path: '/internal/mcp',
         headers: { accept: 'text/event-stream' },
@@ -370,6 +384,7 @@ function getUnix(
 async function withListener(
   harness: Harness,
   run: (socketPath: string) => Promise<void>,
+  throughRelay = true,
 ): Promise<void> {
   const dir = mkdtempSync(join(tmpdir(), 'verity-mcp-route-'));
   await harness.app.ready();
@@ -379,9 +394,15 @@ async function withListener(
     ownerUid: TEST_UID,
     relayGid: TEST_GID,
   });
+  const relay = createBrokerRelayServer({ socketPath: listener.socketPath });
+  await new Promise<void>((resolve) => relay.listen(0, '127.0.0.1', resolve));
+  if (throughRelay) relayPorts.set(listener.socketPath, (relay.address() as AddressInfo).port);
   try {
     await run(listener.socketPath);
   } finally {
+    relayPorts.delete(listener.socketPath);
+    relay.closeAllConnections();
+    await new Promise<void>((resolve) => relay.close(() => resolve()));
     await listener.close();
     await harness.app.close();
     rmSync(dir, { recursive: true, force: true });
@@ -585,6 +606,9 @@ it('keeps the session task list available while planning, unlike external tools'
     const tasks = await call('verity_tasks', { action: 'list' });
     expect(tasks.result.isError).toBeUndefined();
     expect(tasks.body).not.toContain('planning mode');
+    const repairs = await call('verity_repairs', { action: 'status' });
+    expect(repairs.result.isError).toBeUndefined();
+    expect(repairs.body).toContain('incidents');
     // Explaining the app is read-only and belongs to planning as much as to any turn;
     // refusing it would leave the agent answering setup questions from memory.
     const help = await call('verity_app_help', { topic: 'github' });
@@ -1162,26 +1186,32 @@ describe('POST /internal/mcp (loopback MCP gateway)', () => {
   it('accepts an escaped 256 KiB payload within the route byte limit', async () => {
     const harness = build({ allow: true });
     const token = harness.tokens.issue({ projectId: 'p1', sessionId: 's1', turnId: 't1' });
-    await withListener(harness, async (socketPath) => {
-      const text = '\u0001'.repeat(256 * 1024);
-      const res = await postUnix(socketPath, `Bearer ${token}`, {
-        jsonrpc: '2.0',
-        id: 1,
-        method: 'tools/call',
-        params: {
-          name: 'verity_http_request',
-          arguments: {
-            method: 'POST',
-            url: 'https://api.example.com/documents',
-            secretAlias: 'API_TOKEN',
-            auth: { kind: 'static', header: 'authorization', scheme: 'Bearer' },
-            body: { text },
+    await withListener(
+      harness,
+      async (socketPath) => {
+        const text = '\u0001'.repeat(256 * 1024);
+        const res = await postUnix(socketPath, `Bearer ${token}`, {
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'tools/call',
+          params: {
+            name: 'verity_http_request',
+            arguments: {
+              method: 'POST',
+              url: 'https://api.example.com/documents',
+              secretAlias: 'API_TOKEN',
+              auth: { kind: 'static', header: 'authorization', scheme: 'Bearer' },
+              body: { text },
+            },
           },
-        },
-      });
-      expect(res.status).toBe(200);
-      expect(harness.records.some((record) => record.kind === 'gateway_call_received')).toBe(true);
-    });
+        });
+        expect(res.status).toBe(200);
+        expect(harness.records.some((record) => record.kind === 'gateway_call_received')).toBe(
+          true,
+        );
+      },
+      false,
+    ); // This tests the Server route byte ceiling; the relay has its own smaller bound.
   });
 
   it('serves a tool call for the session and turn the bearer was minted for', async () => {
@@ -2522,4 +2552,273 @@ it('serves vulnerability reads through the audited gateway and refuses foreign r
       (r) => r.toolName === 'verity_vulnerabilities' && r.kind === 'gateway_call_served',
     ),
   ).toBe(true);
+});
+
+it('rejects forged project/generation headers at the real relay before broker execution', async () => {
+  const harness = build();
+  await withListener(harness, async (socketPath) => {
+    const reply = await postUnix(
+      socketPath,
+      undefined,
+      { jsonrpc: '2.0', id: 1, method: 'tools/list' },
+      {
+        'x-verity-project-id': 'forged-project',
+        'x-verity-container-generation': 'forged-generation',
+      },
+    );
+    expect(reply.status).toBe(400);
+    expect(harness.invocations).toEqual([]);
+  });
+});
+
+it('lets QA read authorized CI evidence through the gateway but refuses all other tools', async () => {
+  const h = build({
+    planningTools: true,
+    unlocked: true,
+    allow: true,
+    qaAnalysisRead: async (_project, _request, authorize) => {
+      await authorize();
+      return { groups: [{ group: 'main:10', runs: 12 }], complete: true, continuation: null };
+    },
+  });
+  await h.store.createProject({
+    id: 'p1',
+    kind: 'github',
+    owner: 'team',
+    repo: 'app',
+    cloneDir: 'team-app',
+    containerName: 'app',
+    state: 'active',
+  });
+  await h.store.createSession({
+    sessionId: 'qa',
+    projectId: 'p1',
+    worktree: '/tmp/qa',
+    model: 'claude-opus-5',
+  });
+  await h.store.repairs.configureQA(true, 'admin');
+  await h.store.repairs.qaSession('qa');
+  await h.store.repairs.configure('p1', 'admin', 'monitor');
+  await sql`insert into users (id, role, status) values ('qa-reader', 'member', 'active')`.execute(
+    ctx.db,
+  );
+  await sql`insert into project_memberships(project_id,user_id,can_read,can_execute,can_manage) values ('p1','qa-reader',true,true,false)`.execute(
+    ctx.db,
+  );
+  const prompt = await h.store.appendEvent('qa', {
+    t: 'prompt',
+    text: 'Save the agreed prevention task',
+    initiatedBy: { userId: 'qa-reader' },
+  });
+  await h.store.markTurnRunning({ sessionId: 'qa', promptSeq: prompt.seq });
+  await h.store.bindTurnIdentity('qa', { turnId: 't1', startCommandId: 'qa-start' });
+  const token = h.tokens.issue({ projectId: 'p1', sessionId: 'qa', turnId: 't1' });
+  await withListener(h, async (socketPath) => {
+    let id = 0;
+    const call = async (name: string, args: object) => {
+      const r = await postUnix(socketPath, `Bearer ${token}`, {
+        jsonrpc: '2.0',
+        id: ++id,
+        method: 'tools/call',
+        params: { name, arguments: args },
+      });
+      return JSON.parse(r.body) as { result: { isError?: boolean; content: { text: string }[] } };
+    };
+    const listed = await call('verity_qa_analysis', { action: 'projects' });
+    expect(listed.result, JSON.stringify(listed)).toBeDefined();
+    expect(listed.result.isError).toBeUndefined();
+    expect(JSON.stringify(listed)).toContain('team/app');
+    const baseline = await call('verity_qa_analysis', { action: 'statistics', projectId: 'p1' });
+    expect(baseline.result.isError).toBeUndefined();
+    expect(JSON.stringify(baseline)).toContain('main:10');
+    const reportId = (JSON.parse(baseline.result.content[0]!.text) as { reportId: string })
+      .reportId;
+    await call('verity_qa_analysis', { action: 'save_report', projectId: 'p1', reportId });
+    const followup = await call('verity_qa_analysis', {
+      action: 'create_followup',
+      projectId: 'p1',
+      taskId: '10000000-0000-4000-8000-000000000042',
+      title: 'Prevent recurring typecheck failures',
+      detail:
+        'Inspect the failing jobs and move a matching scoped check before push; measure first-attempt success.',
+    });
+    expect(followup.result.isError, JSON.stringify(followup)).toBeUndefined();
+    expect(
+      (await h.store.tasks.get('10000000-0000-4000-8000-000000000042', 'qa-reader'))?.sessionId,
+    ).toBeNull();
+    expect(h.approvals).toEqual([
+      expect.objectContaining({ toolName: 'verity_qa_analysis', allowStandingGrant: false }),
+      expect.objectContaining({ toolName: 'verity_qa_analysis', allowStandingGrant: false }),
+    ]);
+
+    for (const name of ['verity_tasks', 'verity_app_help', 'verity_http_request']) {
+      const args =
+        name === 'verity_tasks'
+          ? { action: 'list' }
+          : name === 'verity_app_help'
+            ? { topic: 'github' }
+            : {
+                secretAlias: 'ATTENDEE_API_KEY',
+                method: 'GET',
+                url: 'https://example.com',
+                auth: { kind: 'static', header: 'authorization', scheme: 'Bearer' },
+              };
+      expect(JSON.stringify(await call(name, args))).toContain(
+        'QA uses server-validated decisions',
+      );
+    }
+    await h.store.repairs.configure('p1', 'admin', 'off');
+    expect(
+      (await call('verity_qa_analysis', { action: 'pulls', projectId: 'p1' })).result.isError,
+    ).toBe(true);
+  });
+});
+
+it.each([false, true])(
+  'gates one-time QA repair requests on trusted instruction or a non-standing card (instruction=%s)',
+  async (explicit) => {
+    const h = build({ planningTools: true, allow: false });
+    await h.store.createProject({
+      id: 'p1',
+      kind: 'github',
+      owner: 'team',
+      repo: 'app',
+      cloneDir: 'team-app',
+      containerName: 'app',
+      state: 'active',
+    });
+    await h.store.createSession({
+      sessionId: 'qa',
+      projectId: 'p1',
+      worktree: '/tmp/qa',
+      model: 'claude',
+    });
+    await h.store.repairs.configureQA(true, '00000000-0000-4000-8000-000000000001');
+    await h.store.repairs.qaSession('qa');
+    await h.store.repairs.configure('p1', '00000000-0000-4000-8000-000000000001', 'monitor');
+    const id = crypto.randomUUID();
+    await h.store.repairs.proposeManualRepair({
+      id,
+      project_id: 'p1',
+      source_session_id: 'qa',
+      user_id: '00000000-0000-4000-8000-000000000001',
+      target_session_id: 'target',
+      number: 2120,
+      branch: 'fix/ci',
+      revision: 'sha',
+      qa_revision: 1,
+      mandate_revision: 1,
+      requires_card: false,
+    });
+    await h.store.appendEvent('qa', {
+      t: 'tool_call',
+      id: 'resolve',
+      name: 'verity_qa_analysis',
+      input: { action: 'resolve_repair', projectId: 'p1', number: 2120 },
+    });
+    await h.store.appendEvent('qa', {
+      t: 'tool_result',
+      id: 'resolve',
+      isError: false,
+      output: { proposalId: id },
+    });
+    const row = await h.store.appendEvent('qa', {
+      t: 'prompt',
+      text: explicit ? 'fix PR #2120' : 'What failed?',
+      initiatedBy: { userId: '00000000-0000-4000-8000-000000000001' },
+    });
+    await h.store.markTurnRunning({ sessionId: 'qa', promptSeq: row.seq });
+    await h.store.bindTurnIdentity('qa', { turnId: 't1', startCommandId: 'start' });
+    const token = h.tokens.issue({ projectId: 'p1', sessionId: 'qa', turnId: 't1' });
+    await withListener(h, async (socketPath) => {
+      const reply = await postUnix(socketPath, `Bearer ${token}`, {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: {
+          name: 'verity_qa_analysis',
+          arguments: { action: 'request_repair', projectId: 'p1', proposalId: id },
+        },
+      });
+      // No discovery provider exists in this harness: authorized execution must still fail
+      // closed, while a request lacking chat consent must hit the card before execution.
+      expect(JSON.parse(reply.body)).toHaveProperty('result.isError', true);
+      if (explicit) expect(reply.body).toContain('PR revision or failure evidence changed');
+      expect(h.approvals, reply.body).toHaveLength(explicit ? 0 : 1);
+      if (!explicit)
+        expect(h.approvals[0]).toMatchObject({
+          toolName: 'verity_qa_analysis',
+          allowStandingGrant: false,
+        });
+      expect((await h.store.repairs.manualRepair(id))?.dispatch_id).toBeNull();
+    });
+  },
+);
+
+it('shows the stored general QA assignment on a one-time approval card', async () => {
+  let approvalInput: unknown;
+  const h = build({
+    planningTools: true,
+    allow: false,
+    onApprovalInput: (input) => {
+      approvalInput = input;
+    },
+  });
+  await h.store.createProject({
+    id: 'p1',
+    kind: 'github',
+    owner: 'team',
+    repo: 'app',
+    cloneDir: 'app',
+    containerName: 'app',
+    state: 'active',
+  });
+  await h.store.createSession({
+    sessionId: 'qa',
+    projectId: 'p1',
+    worktree: '/tmp/qa',
+    model: 'claude',
+  });
+  await h.store.repairs.configureQA(true, '00000000-0000-4000-8000-000000000001');
+  await h.store.repairs.qaSession('qa');
+  await h.store.repairs.configure('p1', '00000000-0000-4000-8000-000000000001', 'monitor');
+  const id = 'a'.repeat(64);
+  await h.store.qaAssignments.propose({
+    id,
+    project_id: 'p1',
+    source_session_id: 'qa',
+    user_id: '00000000-0000-4000-8000-000000000001',
+    target_session_id: null,
+    title: 'Optimize CI',
+    instruction: 'Optimize CI in team/app',
+    criteria: 'Preserve tests',
+    qa_revision: 1,
+    mandate_revision: 1,
+  });
+  const row = await h.store.appendEvent('qa', {
+    t: 'prompt',
+    text: 'What is slow?',
+    initiatedBy: { userId: '00000000-0000-4000-8000-000000000001' },
+  });
+  await h.store.markTurnRunning({ sessionId: 'qa', promptSeq: row.seq });
+  await h.store.bindTurnIdentity('qa', { turnId: 't1', startCommandId: 'start' });
+  const token = h.tokens.issue({ projectId: 'p1', sessionId: 'qa', turnId: 't1' });
+  await withListener(h, async (socketPath) => {
+    await postUnix(socketPath, `Bearer ${token}`, {
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'tools/call',
+      params: {
+        name: 'verity_qa_analysis',
+        arguments: { action: 'request_assignment', projectId: 'p1', assignmentId: id },
+      },
+    });
+    expect(h.approvals).toHaveLength(1);
+    expect(approvalInput).toMatchObject({
+      toolName: 'verity_qa_analysis',
+      allowStandingGrant: false,
+      input: { assignment: { instruction: 'Optimize CI in team/app', criteria: 'Preserve tests' } },
+    });
+    expect((await h.store.qaAssignments.get(id))?.state).toBe('proposed');
+  });
 });

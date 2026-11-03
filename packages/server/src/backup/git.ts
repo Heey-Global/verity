@@ -157,7 +157,9 @@ export async function runBackupGit(
         : ['worktree', 'repair', '--', ...worktrees]),
     ]);
     const child = spawn(commandPath, commandArgs, {
-      cwd: privateRoot,
+      // Git repair resolves the main worktree from cwd even with GIT_WORK_TREE set.
+      // Restore callers provide the validated private staging worktree here.
+      cwd: command === 'repair' ? work : privateRoot,
       env: {
         PATH: '/usr/bin:/bin',
         HOME: privateRoot,
@@ -349,13 +351,19 @@ export async function freezeGitDirectory(
       result.status = 'unstable';
       result.findings.push('changed-during-freeze');
     }
-    if (result.status === 'validated' && !(await checkFrozenGit(result.git, directory))) {
-      result.status = 'unstable';
+    if (
+      (result.status === 'validated' || result.status === 'alternates-dropped') &&
+      !(await checkFrozenGit(result.git, directory))
+    ) {
+      result.status = result.status === 'alternates-dropped' ? 'not-validated' : 'unstable';
       result.findings.push('connectivity');
     }
     return result;
   } catch (error) {
-    if (error instanceof BackupFileChangedError) {
+    if (
+      error instanceof BackupFileChangedError ||
+      (error as NodeJS.ErrnoException).code === 'ENOENT'
+    ) {
       result.status = 'unstable';
       result.findings.push('changed-during-freeze');
       return result;

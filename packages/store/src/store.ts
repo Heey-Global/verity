@@ -1,5 +1,11 @@
+import { AssistantStore } from './assistant.js';
+import { SchedulingStore } from './scheduling.js';
+import { QAAssignmentStore } from './qa-assignments.js';
+import { RepairSupervisionStore } from './repair-supervision.js';
+import { ProjectEgressStore } from './project-egress.js';
 import { VulnerabilityScanStore } from './vulnerability-scan.js';
 import { ForgeConnectionStore } from './forge-connections.js';
+import { CalendarWatchStore } from './calendar-watch.js';
 import { GoogleAccountStore } from './google-accounts.js';
 import {
   HISTORY_MAX_BYTES,
@@ -472,6 +478,7 @@ export interface HttpMcpConnectionRecord {
   authType?: 'none' | 'static' | 'oauth';
   oauthClientId?: string | null;
   oauthClientSecret?: string | null;
+  oauthTokenAuthMethod?: 'none' | 'client_secret_post' | 'client_secret_basic';
   oauthAuthorizationEndpoint?: string | null;
   oauthTokenEndpoint?: string | null;
   oauthScopes?: string | null;
@@ -743,13 +750,19 @@ export interface VeritySettingsRecord {
    * the switch decides whether this server uses it. Both default to on. */
   premiumSharingEnabled?: boolean;
   premiumRemoteAccessEnabled?: boolean;
+  /** System-wide network protection. When on, every project container starts behind
+   * the host egress fence from its next start. Defaults to off. */
+  projectEgressEnabled?: boolean;
   advancedModeEnabled?: boolean;
+  /** Days an unassigned live meeting is kept after it ends; null means the default. */
+  unassignedMeetingRetentionDays?: number | null;
   createdAt: Date;
   updatedAt: Date;
 }
 
 type VeritySettingsKey =
   | 'advancedModeEnabled'
+  | 'unassignedMeetingRetentionDays'
   | 'gitUserName'
   | 'gitUserEmail'
   | 'gitSshPrivateKeyPath'
@@ -784,7 +797,8 @@ type VeritySettingsKey =
   | 'uplinkSubscriptionKey'
   | 'uplinkInstallationId'
   | 'premiumSharingEnabled'
-  | 'premiumRemoteAccessEnabled';
+  | 'premiumRemoteAccessEnabled'
+  | 'projectEgressEnabled';
 
 export type VeritySettingsPatch = {
   [K in VeritySettingsKey]?: VeritySettingsRecord[K] | undefined;
@@ -1000,6 +1014,7 @@ export type QueuedTurnInput = Omit<QueuedTurnRecord, 'seq'>;
  * Written before a turn launches, cleared on its terminal event; a record still
  * present at startup means the turn was abandoned by a crash/restart. */
 export interface RunningTurnRecord {
+  markerId?: string | null;
   sessionId: string;
   /** Seq of the prompt event this turn is executing — recovery/reattach anchor. */
   promptSeq: number;
@@ -1410,18 +1425,28 @@ export class EventStore implements EventSink {
     private readonly db: Kysely<Database>,
     private readonly cipher: SecretCipher = createPassthroughCipher(),
   ) {
+    this.projectEgress = new ProjectEgressStore(db);
     this.knowledge = new KnowledgeStore(db);
     this.integrations = new IntegrationStore(db, cipher);
     this.liveMeetings = new LiveMeetingStore(db, cipher);
     this.managedDevServers = new ManagedDevServerStore(db);
     this.vulnerabilityScans = new VulnerabilityScanStore(db);
     this.tasks = new TaskStore(db, cipher);
+    this.repairs = new RepairSupervisionStore(db);
+    this.qaAssignments = new QAAssignmentStore(db);
+    this.assistant = new AssistantStore(db);
+    this.scheduling = new SchedulingStore(db, cipher);
   }
 
+  readonly projectEgress: ProjectEgressStore;
   readonly knowledge: KnowledgeStore;
   readonly integrations: IntegrationStore;
   readonly liveMeetings: LiveMeetingStore;
   readonly tasks: TaskStore;
+  readonly repairs: RepairSupervisionStore;
+  readonly qaAssignments: QAAssignmentStore;
+  readonly assistant: AssistantStore;
+  readonly scheduling: SchedulingStore;
   readonly managedDevServers: ManagedDevServerStore;
   readonly vulnerabilityScans: VulnerabilityScanStore;
 
@@ -2047,6 +2072,10 @@ export class EventStore implements EventSink {
 
   get googleAccounts(): GoogleAccountStore {
     return new GoogleAccountStore(this.db, this.cipher);
+  }
+
+  get calendarWatch(): CalendarWatchStore {
+    return new CalendarWatchStore(this.db, this.cipher);
   }
 
   async getGoogleServiceCredentials(sessionId: string, service: 'gmail' | 'calendar' | 'contacts') {
@@ -3490,6 +3519,43 @@ export class EventStore implements EventSink {
     return (result.numInsertedOrUpdatedRows ?? 0n) > 0n;
   }
 
+  /** Reserve before transport: a crash spends a bounded attempt instead of resetting it. */
+  async claimPrReadyDelivery(
+    sessionId: string,
+    marker: string,
+    now: number,
+  ): Promise<string | undefined> {
+    const claim = randomUUID();
+    const result = await sql<{ claim_id: string }>`
+      insert into pr_ready_delivery(session_id, marker, attempts, next_attempt_at, claim_id, lease_until)
+      values (${sessionId}, ${marker}, 1, ${now + 60_000}, ${claim}, ${now + 300_000})
+      on conflict (session_id, marker) do update set
+        attempts = pr_ready_delivery.attempts + 1,
+        next_attempt_at = case when pr_ready_delivery.attempts = 0 then ${now + 60_000}::bigint else ${now + 300_000}::bigint end, claim_id = ${claim}, lease_until = ${now + 300_000}
+      where not pr_ready_delivery.completed and pr_ready_delivery.attempts < 3
+        and pr_ready_delivery.next_attempt_at <= ${now} and pr_ready_delivery.lease_until <= ${now}
+      returning claim_id
+    `.execute(this.db);
+    return result.rows[0]?.claim_id;
+  }
+
+  async finishPrReadyDelivery(
+    sessionId: string,
+    marker: string,
+    claim: string,
+    outcome: 'done' | 'failed' | 'unattempted',
+    now: number,
+  ): Promise<void> {
+    // Claim identity fences a slow former sender after its lease expired.
+    await sql`update pr_ready_delivery set
+      attempts = attempts - ${outcome === 'unattempted' ? 1 : 0},
+      next_attempt_at = case when ${outcome === 'unattempted'} then ${now + 30_000} else next_attempt_at end,
+      completed = ${outcome === 'done'}, claim_id = null, lease_until = 0
+      where session_id = ${sessionId} and marker = ${marker} and claim_id = ${claim}`.execute(
+      this.db,
+    );
+  }
+
   async hasSessionAutomationMarker(sessionId: string, marker: string): Promise<boolean> {
     const row = await this.db
       .selectFrom('session_automation_marker')
@@ -3765,6 +3831,86 @@ export class EventStore implements EventSink {
         .executeTakeFirst();
       return result.numDeletedRows > 0n;
     });
+  }
+
+  /** Accept a background dispatch, its prompt and recovery marker in one commit.
+   * Cancellation races on the same receipt row; only the winner can run the backend. */
+  async admitBackgroundDispatch(
+    id: string,
+    sessionId: string,
+    event: AgentEvent,
+  ): Promise<{ seq: number; ts: number; existing: boolean; markerId?: string } | undefined> {
+    const eventRow = await this.prepareEventRow(event);
+    const result = await this.db.transaction().execute(async (trx) => {
+      const receipt = await trx
+        .selectFrom('qa_dispatches')
+        .selectAll()
+        .where('id', '=', id)
+        .where('session_id', '=', sessionId)
+        .forUpdate()
+        .executeTakeFirst();
+      if (!receipt || receipt.state === 'cancelled' || receipt.state === 'legacy') return undefined;
+      if (receipt.state === 'admitted')
+        return {
+          seq: Number(receipt.prompt_seq),
+          ts: receipt.created_at.getTime(),
+          existing: true,
+        };
+      await sql`select pg_advisory_xact_lock(hashtext(${this.sessionEventAppendLockKey(sessionId)}))`.execute(
+        trx,
+      );
+      const predecessor = await trx
+        .selectFrom('running_turns')
+        .selectAll()
+        .where('session_id', '=', sessionId)
+        .forUpdate()
+        .executeTakeFirst();
+      if (predecessor) {
+        // Transcript terminal events may be late, unrelated or merely announce
+        // cancellation. Only a server-confirmed completion or the exact
+        // Runner's durable terminal/fence claim establishes relinquished ownership.
+        const runnerClosed =
+          predecessor.turn_id === null
+            ? undefined
+            : await trx
+                .selectFrom('runner_frames')
+                .select('turn_id')
+                .where('session_id', '=', sessionId)
+                .where('turn_id', '=', predecessor.turn_id)
+                .where('terminal', '=', true)
+                .executeTakeFirst();
+        if (!predecessor.settled && !runnerClosed) return undefined;
+        await trx
+          .deleteFrom('running_turns')
+          .where('session_id', '=', sessionId)
+          .where('prompt_seq', '=', predecessor.prompt_seq)
+          .execute();
+      }
+      const markerId = randomUUID();
+      const row = await trx
+        .insertInto('events')
+        .values({ session_id: sessionId, type: eventRow.type, payload: eventRow.payload })
+        .returning(['id', 'created_at'])
+        .executeTakeFirstOrThrow();
+      await trx
+        .insertInto('running_turns')
+        .values({ session_id: sessionId, prompt_seq: row.id, marker_id: markerId })
+        .execute();
+      await trx
+        .updateTable('qa_dispatches')
+        .set({ state: 'admitted', prompt_seq: row.id })
+        .where('id', '=', id)
+        .execute();
+      return { seq: Number(row.id), ts: row.created_at.getTime(), existing: false, markerId };
+    });
+    if (result && !result.existing)
+      this.enqueuePersistedMessageEvent(
+        sessionId,
+        result.seq,
+        new Date(result.ts),
+        JSON.parse(eventRow.payload) as AgentEvent,
+      );
+    return result;
   }
 
   /**
@@ -4467,6 +4613,26 @@ export class EventStore implements EventSink {
     return parsed.data;
   }
 
+  /** Fetch one app snapshot without hydrating the surrounding transcript. */
+  async getMcpAppEvent(
+    sessionId: string,
+    appId: string,
+  ): Promise<Extract<AgentEvent, { t: 'mcp_app' }> | undefined> {
+    const row = await this.db
+      .selectFrom('events')
+      .select('payload')
+      .where('session_id', '=', sessionId)
+      .where('type', '=', 'mcp_app')
+      .where(sql<string>`payload->>'appId'`, '=', appId)
+      .orderBy('id', 'desc')
+      .limit(1)
+      .executeTakeFirst();
+    if (row === undefined) return undefined;
+    const parsed = parseAgentEvent(row.payload);
+    if (!parsed.success || parsed.data.t !== 'mcp_app') throw new Error('Corrupt MCP app snapshot');
+    return parsed.data;
+  }
+
   /** Read a session's full event log in append order. Validates each payload. */
   async getEvents(sessionId: string): Promise<AgentEvent[]> {
     const sequenced = await this.getEventsAfter(sessionId, 0);
@@ -4945,6 +5111,50 @@ export class EventStore implements EventSink {
     return slices;
   }
 
+  /** Batched fallback with one connection and at most one hydrated history plus a page.
+   * Keyset pages bound decoding bursts without a connection checkout per session. */
+  async visitSessionProjectionEvents(
+    boundaries: ReadonlyMap<string, number>,
+    visit: (sessionId: string, events: SequencedEvent[]) => Promise<void>,
+  ): Promise<void> {
+    if (boundaries.size === 0) return;
+    const input = JSON.stringify([...boundaries].map(([session_id, seq]) => ({ session_id, seq })));
+    await this.db.connection().execute(async (db) => {
+      let afterSession = '';
+      let afterSeq = 0;
+      let currentId: string | undefined;
+      let current: SequencedEvent[] = [];
+      for (;;) {
+        const page = await sql<{
+          session_id: string;
+          id: string | number;
+          payload: unknown;
+          created_at: Date;
+        }>`
+          select e.session_id, e.id, e.payload, e.created_at
+          from jsonb_to_recordset(${input}::jsonb) as boundary(session_id text, seq bigint)
+          join events e on e.session_id = boundary.session_id and e.id <= boundary.seq
+          where e.type = any(${[...SESSION_PROJECTION_EVENT_TYPES]}::text[])
+            and (e.session_id, e.id) > (${afterSession}, ${afterSeq}::bigint)
+          order by e.session_id, e.id limit 500
+        `.execute(db);
+        for (const row of page.rows) {
+          if (currentId !== undefined && currentId !== row.session_id) {
+            await visit(currentId, current);
+            current = [];
+          }
+          currentId = row.session_id;
+          current.push(sequencedEvent(row.session_id, row.id, row.payload, row.created_at));
+          afterSession = row.session_id;
+          afterSeq = Number(row.id);
+        }
+        if (page.rows.length < 500) break;
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+      if (currentId !== undefined) await visit(currentId, current);
+    });
+  }
+
   /**
    * The TAIL of one session's projection slice — its newest `limit` events, still
    * ascending by `seq`.
@@ -5241,16 +5451,25 @@ export class EventStore implements EventSink {
   /** Mark a turn in flight for `sessionId` (upsert — only one turn runs at a time).
    * Recovery reads these at startup: a marker still present means the turn was
    * abandoned by a crash/restart and must be settled rather than re-inferred. */
-  async markTurnRunning(input: { sessionId: string; promptSeq: number }): Promise<void> {
+  async markTurnRunning(input: {
+    sessionId: string;
+    promptSeq: number;
+    markerId?: string;
+  }): Promise<void> {
+    const markerId = input.markerId ?? randomUUID();
     await this.db
       .insertInto('running_turns')
       .values({
         session_id: input.sessionId,
         prompt_seq: input.promptSeq,
+        marker_id: markerId,
+        settled: false,
       })
       .onConflict((oc) =>
         oc.column('session_id').doUpdateSet({
           prompt_seq: input.promptSeq,
+          marker_id: markerId,
+          settled: false,
           started_at: sql`now()`,
           // Re-anchoring the marker (a resume-retry starts a FRESH attempt) drops the
           // previous attempt's bound identity — the new attempt rebinds via
@@ -5260,6 +5479,26 @@ export class EventStore implements EventSink {
           start_command_id: null,
         }),
       )
+      .execute();
+  }
+
+  /** Record backend-confirmed completion, independently of best-effort cleanup.
+   * A unique marker identity prevents late completion from settling a resumed
+   * attempt even when that attempt reuses the same prompt sequence. The Runner identity must match too; alternatively admission can use
+   * its durable terminal/fence claim. */
+  async confirmTurnSettled(
+    sessionId: string,
+    promptSeq: number,
+    markerId: string,
+    turnId: string | null = null,
+  ): Promise<void> {
+    await this.db
+      .updateTable('running_turns')
+      .set({ settled: true })
+      .where('session_id', '=', sessionId)
+      .where('prompt_seq', '=', promptSeq)
+      .where('marker_id', '=', markerId)
+      .where('turn_id', turnId === null ? 'is' : '=', turnId)
       .execute();
   }
 
@@ -5274,7 +5513,7 @@ export class EventStore implements EventSink {
   ): Promise<void> {
     await this.db
       .updateTable('running_turns')
-      .set({ turn_id: identity.turnId, start_command_id: identity.startCommandId })
+      .set({ turn_id: identity.turnId, start_command_id: identity.startCommandId, settled: false })
       .where('session_id', '=', sessionId)
       .execute();
   }
@@ -5283,13 +5522,23 @@ export class EventStore implements EventSink {
    * event. Idempotent — a no-op if no marker is present. When `promptSeq` is given,
    * the delete is SCOPED to that anchor (`prompt_seq = ?`), so a settling turn's
    * late clear can only remove ITS OWN marker, never a newer turn's marker that
-   * already replaced the row (the settle-vs-next-turn race). Omit `promptSeq` to
-   * drop the marker unconditionally (recovery). */
-  async clearRunningTurn(sessionId: string, promptSeq?: number): Promise<void> {
+   * already replaced the row (the settle-vs-next-turn race). `markerId` additionally
+   * distinguishes attempts reusing a prompt anchor; snapshots of legacy markers
+   * pass null. Omitting both scopes is reserved for deliberate unconditional cleanup. */
+  async clearRunningTurn(
+    sessionId: string,
+    promptSeq?: number,
+    markerId?: string | null,
+  ): Promise<void> {
     let query = this.db.deleteFrom('running_turns').where('session_id', '=', sessionId);
     if (promptSeq !== undefined) {
       query = query.where('prompt_seq', '=', promptSeq);
     }
+    if (markerId !== undefined)
+      query =
+        markerId === null
+          ? query.where('marker_id', 'is', null)
+          : query.where('marker_id', '=', markerId);
     await query.execute();
   }
 
@@ -5298,7 +5547,14 @@ export class EventStore implements EventSink {
   async listRunningTurns(): Promise<RunningTurnRecord[]> {
     const rows = await this.db
       .selectFrom('running_turns')
-      .select(['session_id', 'prompt_seq', 'started_at', 'turn_id', 'start_command_id'])
+      .select([
+        'session_id',
+        'prompt_seq',
+        'started_at',
+        'turn_id',
+        'start_command_id',
+        'marker_id',
+      ])
       .execute();
     return rows.map((row) => ({
       sessionId: row.session_id,
@@ -5306,6 +5562,7 @@ export class EventStore implements EventSink {
       startedAt: new Date(row.started_at),
       turnId: row.turn_id,
       startCommandId: row.start_command_id,
+      markerId: row.marker_id,
     }));
   }
 
@@ -6832,7 +7089,9 @@ export class EventStore implements EventSink {
       uplink_installation_id: string | null;
       premium_sharing_enabled: boolean;
       premium_remote_access_enabled: boolean;
+      project_egress_enabled: boolean;
       advanced_mode_enabled: boolean;
+      unassigned_meeting_retention_days: number | null;
       created_at: Date;
       updated_at: Date;
       // When false, secret columns are returned in their STORED (possibly
@@ -6843,6 +7102,7 @@ export class EventStore implements EventSink {
   ): VeritySettingsRecord {
     return {
       advancedModeEnabled: row.advanced_mode_enabled,
+      unassignedMeetingRetentionDays: row.unassigned_meeting_retention_days,
       gitUserName: row.git_user_name,
       gitUserEmail: row.git_user_email,
       gitSshPrivateKeyPath: row.git_ssh_private_key_path,
@@ -6895,6 +7155,7 @@ export class EventStore implements EventSink {
       uplinkInstallationId: row.uplink_installation_id,
       premiumSharingEnabled: row.premium_sharing_enabled,
       premiumRemoteAccessEnabled: row.premium_remote_access_enabled,
+      projectEgressEnabled: row.project_egress_enabled,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     };
@@ -6937,7 +7198,9 @@ export class EventStore implements EventSink {
     'uplink_installation_id',
     'premium_sharing_enabled',
     'premium_remote_access_enabled',
+    'project_egress_enabled',
     'advanced_mode_enabled',
+    'unassigned_meeting_retention_days',
     'created_at',
     'updated_at',
   ] as const;
@@ -6971,6 +7234,7 @@ export class EventStore implements EventSink {
     const values = {
       id: 'global',
       advanced_mode_enabled: patch.advancedModeEnabled ?? false,
+      unassigned_meeting_retention_days: patch.unassignedMeetingRetentionDays ?? null,
       git_user_name: normalizeSetting(patch.gitUserName),
       git_user_email: normalizeSetting(patch.gitUserEmail),
       git_ssh_private_key_path: normalizeSetting(patch.gitSshPrivateKeyPath),
@@ -7010,6 +7274,7 @@ export class EventStore implements EventSink {
       uplink_installation_id: normalizeSetting(patch.uplinkInstallationId),
       premium_sharing_enabled: patch.premiumSharingEnabled ?? true,
       premium_remote_access_enabled: patch.premiumRemoteAccessEnabled ?? true,
+      project_egress_enabled: patch.projectEgressEnabled ?? false,
     };
     const row = await this.db
       .insertInto('verity_settings')
@@ -7146,8 +7411,14 @@ export class EventStore implements EventSink {
           ...(patch.premiumRemoteAccessEnabled !== undefined
             ? { premium_remote_access_enabled: patch.premiumRemoteAccessEnabled }
             : {}),
+          ...(patch.projectEgressEnabled !== undefined
+            ? { project_egress_enabled: patch.projectEgressEnabled }
+            : {}),
           ...(patch.advancedModeEnabled !== undefined
             ? { advanced_mode_enabled: patch.advancedModeEnabled }
+            : {}),
+          ...(patch.unassignedMeetingRetentionDays !== undefined
+            ? { unassigned_meeting_retention_days: patch.unassignedMeetingRetentionDays }
             : {}),
           updated_at: sql`now()`,
         }),
@@ -8539,6 +8810,7 @@ export class EventStore implements EventSink {
         authorization: this.encryptSecret(record.authorization),
         auth_type: record.authType ?? (record.authorization === null ? 'none' : 'static'),
         oauth_client_id: record.oauthClientId ?? null,
+        oauth_token_auth_method: record.oauthTokenAuthMethod ?? 'client_secret_post',
         oauth_client_secret: this.encryptSecret(record.oauthClientSecret ?? null),
         oauth_authorization_endpoint: record.oauthAuthorizationEndpoint ?? null,
         oauth_token_endpoint: record.oauthTokenEndpoint ?? null,
@@ -8555,6 +8827,7 @@ export class EventStore implements EventSink {
           authorization: this.encryptSecret(record.authorization),
           auth_type: record.authType ?? (record.authorization === null ? 'none' : 'static'),
           oauth_client_id: record.oauthClientId ?? null,
+          oauth_token_auth_method: record.oauthTokenAuthMethod ?? 'client_secret_post',
           oauth_client_secret: this.encryptSecret(record.oauthClientSecret ?? null),
           oauth_authorization_endpoint: record.oauthAuthorizationEndpoint ?? null,
           oauth_token_endpoint: record.oauthTokenEndpoint ?? null,
@@ -8584,6 +8857,9 @@ export class EventStore implements EventSink {
       authorization: this.decryptSecret(row.authorization),
       authType: row.auth_type as NonNullable<HttpMcpConnectionRecord['authType']>,
       oauthClientId: row.oauth_client_id,
+      oauthTokenAuthMethod: row.oauth_token_auth_method as NonNullable<
+        HttpMcpConnectionRecord['oauthTokenAuthMethod']
+      >,
       oauthClientSecret: this.decryptSecret(row.oauth_client_secret),
       oauthAuthorizationEndpoint: row.oauth_authorization_endpoint,
       oauthTokenEndpoint: row.oauth_token_endpoint,

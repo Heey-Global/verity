@@ -83,3 +83,44 @@ for switch 17's first history request, followed by 70.5 ms native work and 551.7
 until JS return. Switch 10 has a 2402.9 ms native-ready-to-JS gap. These locate
 waiting intervals; the responsible workload and the new build's improvement remain
 unproven until device verification.
+
+### Selection scheduling probes
+
+With **Record interaction diagnostics** enabled, gesture events with source
+`scheduling` record sidebar/session layout and passive effects, followed by
+microtask and zero-delay timer callback waits (`waitMs`). These are scheduling
+boundaries, not measurements of continuous JS blockage or paint. The fixed
+Profiler boundaries also emit `*-react-profile` with React's durations and
+start/commit timestamps when the React build supports profiling. Standard
+production builds may emit no profiler callbacks; their absence is not zero
+render cost. Recording does not change the boundary tree or gesture behavior.
+
+Row touch-down/up/cancel events additionally carry `uiReceivedWallMs` captured
+in the UI worklet and `jsReceivedWallMs` at JS delivery. Their difference helps
+locate delayed bridge delivery. The UI timestamp is recognizer callback time,
+not hardware touch receipt; wall-clock adjustments can invalidate the difference.
+Native React touch timestamps in switch phases use a separate clock and must
+not be subtracted from these wall timestamps. Existing event limits, dropped
+counts, recording reset and export size limits apply to these probes.
+
+### Diagnostic retention (schema 8)
+
+The 300-event gesture buffer admits at most 60 raw scheduling events. A new
+scheduling probe cannot evict a touch, swipe or reorder event; when the buffer
+is full, interaction events evict scheduling entries first. A bounded summary
+for each of the ten fixed scheduling probe names retains its count, first/last
+wall timestamp, maximum wait and its wall timestamp, and maximum React actual
+render duration when available. Summaries cover the current recording even
+when raw events are omitted, and reset with the recording. They do not replace
+a chronological profile or identify a blocking function. `dropped` counts raw
+events omitted, including entries whose measurements remain in a summary.
+
+The shared report still has a 256 KiB UTF-8 ceiling, reserving half for update
+and recovery logs. Under pressure it removes raw scheduling events first,
+then older runtime samples (keeping the separate baseline and latest sample),
+then native records unrelated to retained switch requests, then remaining
+native records, then older switch traces, and finally interaction events.
+The latest switch and scheduling summaries remain. Every removed record updates
+its stream's omission count. Export pruning operates on snapshots and does not
+drain the live recording. This prioritizes selection evidence without promising
+that an arbitrarily crowded capture can retain every switch or native metric.

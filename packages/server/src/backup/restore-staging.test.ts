@@ -5,13 +5,19 @@ import { tmpdir } from 'node:os';
 import { expect, it, vi } from 'vitest';
 import { InstallerRestoreStaging } from './restore-staging.js';
 import type { RestoreJob } from './restore-job.js';
-const fake = vi.hoisted(() => ({ snapshot: vi.fn(), extract: vi.fn(), identity: vi.fn() }));
+const fake = vi.hoisted(() => ({
+  snapshot: vi.fn(),
+  extract: vi.fn(),
+  identity: vi.fn(),
+  history: vi.fn(),
+}));
 vi.mock('./repository.js', async (original) => ({
   ...(await original<typeof import('./repository.js')>()),
   readSnapshot: fake.snapshot,
 }));
 vi.mock('./staging.js', () => ({ stageSnapshot: fake.extract }));
 vi.mock('./restore-identity.js', () => ({ verifyRestoredIdentity: fake.identity }));
+vi.mock('./restore-identity-history.js', () => ({ assertRestorableIdentity: fake.history }));
 it('authenticates the release, architecture and recovery capability before extracting or touching a database', async () => {
   vi.resetAllMocks();
   const root = await mkdtemp(join(tmpdir(), 'restore-verification-'));
@@ -39,6 +45,7 @@ it('authenticates the release, architecture and recovery capability before extra
   const staging = new InstallerRestoreStaging({
     root,
     liveRoot: '/srv/verity',
+    identityHistoryRoot: root,
     checkRelease,
     supportsRecovery,
     withFreshDatabase,
@@ -80,6 +87,12 @@ it('authenticates the release, architecture and recovery capability before extra
       sourceInstallationId: installationId,
     });
     const verified = await staging.verify(job, 'key');
+    fake.history.mockRejectedValueOnce(
+      new Error('Snapshot identity was retired; restore requires --new-identity'),
+    );
+    await expect(staging.verify(job, 'key')).rejects.toThrow('identity was retired');
+    expect(withFreshDatabase).not.toHaveBeenCalled();
+    expect(stageHost).not.toHaveBeenCalled();
     fake.snapshot.mockResolvedValue({ ...manifest, release: 'replaced-after-verification' });
     await expect(staging.stage({ ...job, verified, phase: 'staging' }, 'key')).rejects.toThrow(
       'Snapshot changed',

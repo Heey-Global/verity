@@ -1294,6 +1294,7 @@ export class SupervisorRunnerClient implements RunnerClient {
       ...(opts.allowedTools !== undefined ? { allowedTools: [...opts.allowedTools] } : {}),
       ...(opts.disallowedTools !== undefined ? { disallowedTools: [...opts.disallowedTools] } : {}),
       ...(opts.toolless === true ? { toolless: true } : {}),
+      ...(opts.gatewayToolsOnly === true ? { gatewayToolsOnly: true } : {}),
       ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
       ...(Object.keys(sessionEnv).length > 0 ? { sessionEnv } : {}),
     };

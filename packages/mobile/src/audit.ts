@@ -70,8 +70,27 @@ export type AuditHealth = z.infer<typeof auditHealthSchema>;
 export type AuditDomain = 'builds' | 'images' | 'resources' | 'integrity';
 
 export interface AuditOperationQuery {
+  since?: string;
+  until?: string;
   domain?: AuditDomain;
   search?: string;
   before?: string;
   limit?: number;
 }
+
+const auditEventSchema = z.object({
+  eventId: z.string(),
+  operationId: z.string(),
+  kind: z.string(),
+  recordedAt: z.string(),
+  domain: z.string(),
+  project: z.object({ id: z.string(), label: z.string().nullable() }).nullable(),
+  imageId: z.string().nullable(),
+  payload: z.record(z.string(), z.unknown()),
+});
+export type AuditEvent = z.infer<typeof auditEventSchema>;
+export const auditEventListSchema = z.object({
+  events: z.array(auditEventSchema),
+  nextBefore: z.string().nullable(),
+  oldestRecordedAt: z.string().nullable(),
+});

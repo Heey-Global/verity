@@ -12,9 +12,10 @@ it('uses the shared layout decision in every session entry route', () => {
     const source = read(path);
     // A private cutoff silently sends tablet-sized sessions to a different
     // layout than the overview even while the layout helper's tests stay green.
-    expect(source).toMatch(/import \{ SPLIT_SCREEN_MIN_WIDTH \} from '[^']*lib\/sessionLayout'/u);
+    expect(source).toMatch(/import \{ sessionLayout \} from '[^']*lib\/sessionLayout'/u);
     expect(source).not.toMatch(/const SPLIT_SCREEN_MIN_WIDTH\s*=/u);
-    expect(source).toMatch(/width >= SPLIT_SCREEN_MIN_WIDTH/u);
+    expect(source).toContain('const { wide: windowWide } = sessionLayout(width)');
+    expect(source).not.toMatch(/width [<>]=? SPLIT_SCREEN_MIN_WIDTH/u);
   }
   expect(read('app/session/[id].tsx')).toContain('<SplitScreenRedirect');
 });

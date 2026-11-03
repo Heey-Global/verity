@@ -35,6 +35,8 @@ export interface SettingsRouteDeps {
     ((settings: VeritySettingsRecord) => void | Promise<void>) | undefined;
   onOpenCodeSettingsChanged?:
     ((settings: VeritySettingsRecord) => void | Promise<void>) | undefined;
+  /** Network protection can only be switched on while the host egress service answers. */
+  projectEgressAvailable?: (() => Promise<boolean>) | undefined;
 }
 
 export const SELECTABLE_TRANSCRIBE_BACKEND_MODES = ['external'] as const;
@@ -139,6 +141,11 @@ export function registerSettingsRoutes(
     serialize(async () => {
       if (deps.secretCipher?.isSealed() === true) throw new SealedError();
       const patch = deps.parseSettingsPatch(request.body);
+      if (patch.projectEgressEnabled === true && !(await deps.projectEgressAvailable?.())) {
+        throw Object.assign(new Error('Network protection is not installed on this host.'), {
+          statusCode: 409,
+        });
+      }
       const changesOpenCodeCredentials =
         patch.opencodeBaseUrl !== undefined || patch.opencodeApiKey !== undefined;
       const changesOpenCode =

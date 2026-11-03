@@ -93,6 +93,23 @@ connected calendar and Google account. Contacts lookup is optional: email
 addresses supplied or confirmed by you also work without an address book.
 
 
+## Meeting calendars
+
+Verity can watch calendars for online meetings and join them; see
+[Calendar meetings](live-meeting-calendar.md). Watching uses the same Calendar
+scopes: `calendar.calendarlist.readonly` to list the calendars you can choose
+and `calendar.events` to read their events. It never changes an event. An
+account connected without Calendar access is listed in the settings with a
+prompt to grant it.
+
+## Scheduling requests
+
+`verity_scheduling` builds on the same Calendar and Gmail connections: it holds
+offered windows in the session's calendar, emails the guest a booking link and books
+the chosen time without a separate approval per change. One approval covers the
+whole request and is limited to the events that request created. See
+[Scheduling requests](scheduling-requests.md).
+
 ## Gmail sender addresses
 
 Gmail drafts can use an existing verified “Send mail as” address. The Gmail tool's

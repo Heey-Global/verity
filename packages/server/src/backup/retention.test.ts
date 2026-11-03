@@ -19,6 +19,77 @@ describe('backup retention', () => {
     expect(retained.has('1/1')).toBe(false);
     expect(retained.size).toBeLessThan(30);
   });
+  it('matches an independently enumerated UTC calendar set including boundaries and clock rollback', () => {
+    const now = Date.parse('2026-10-26T00:00:00Z');
+    // Ordered oldest to newest. Duplicate bucket entries must not consume another slot.
+    const dates = [
+      '2026-02-01T00:00:00Z',
+      '2026-03-01T00:00:00Z',
+      '2026-04-01T00:00:00Z',
+      '2026-05-01T00:00:00Z',
+      '2026-06-01T00:00:00Z',
+      '2026-07-01T00:00:00Z',
+      '2026-08-01T00:00:00Z',
+      '2026-09-01T00:00:00Z',
+      '2026-09-27T23:59:59Z',
+      '2026-09-28T00:00:00Z',
+      '2026-10-04T23:59:59Z',
+      '2026-10-05T00:00:00Z',
+      '2026-10-11T23:59:59Z',
+      '2026-10-12T00:00:00Z',
+      '2026-10-17T23:59:59Z',
+      '2026-10-18T00:00:00Z',
+      '2026-10-19T00:00:00Z',
+      '2026-10-20T00:00:00Z',
+      '2026-10-21T00:00:00Z',
+      '2026-10-22T00:00:00Z',
+      '2026-10-23T00:00:00Z',
+      '2026-10-23T23:59:59Z',
+      '2026-10-24T00:00:00Z',
+      '2026-10-24T00:00:01Z',
+      '2026-10-25T23:59:59Z',
+      '2026-10-25T23:59:59.999Z',
+    ];
+    const snapshots = dates.map((capturedAt, index) => ({
+      repositoryNumber: index < 8 ? 1 : 2,
+      sequence: index + 1,
+      capturedAt,
+      preUpdate: index < 3,
+    }));
+    // Recent: 23..25; daily: 22,20,19,18,17,16,15;
+    // weekly: 22,16,13,11; monthly: 22,10,7,6,5,4;
+    // pre-update: 2,3; recent: 26.
+    const expected = new Set([
+      '1/2',
+      '1/3',
+      '1/4',
+      '1/5',
+      '1/6',
+      '1/7',
+      '2/10',
+      '2/11',
+      '2/13',
+      '2/15',
+      '2/16',
+      '2/17',
+      '2/18',
+      '2/19',
+      '2/20',
+      '2/22',
+      '2/23',
+      '2/24',
+      '2/25',
+      '2/26',
+    ]);
+    expect(retainedSnapshots(snapshots, now)).toEqual(expected);
+    expect(retainedSnapshots([...snapshots].reverse(), now)).toEqual(expected);
+    // The contract orders by repository/sequence, never wall time. A clock rollback
+    // consumes one slot in each calendar tier while still preserving the newest.
+    snapshots[25]!.capturedAt = '2020-01-01T00:00:00Z';
+    const rolledBack = new Set(expected);
+    for (const displaced of ['2/15', '2/11', '1/4']) rolledBack.delete(displaced);
+    expect(retainedSnapshots(snapshots, now)).toEqual(rolledBack);
+  });
   it('uses repository and sequence for newest even when timestamps move backwards', () => {
     const snapshots = [
       { repositoryNumber: 1, sequence: 100, capturedAt: '2026-10-25T00:00:00Z', preUpdate: false },

@@ -1,3 +1,4 @@
+import { stripTrailingSlashes } from './path-text.js';
 import {
   AcpClaudeBackend,
   nodeSpawner,
@@ -38,10 +39,6 @@ export interface DockerExecBackendOptions {
 const AGENT_EXEC_BASE_ENV: Record<string, string> = {
   PATH: '/opt/verity/package-managers:/opt/agent-seed/bin:/usr/local/share/nvm/current/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
 };
-
-function stripTrailingSlashes(path: string): string {
-  return path.replace(/\/+$/, '');
-}
 
 /** Map a host bind-mount path under the project clone to its in-container path. */
 export function containerPathFor(

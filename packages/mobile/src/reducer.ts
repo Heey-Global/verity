@@ -507,6 +507,20 @@ export class SessionReducer {
         // marker — the honest chronological placement of when the merge happened.
         this.emitAgentEvent(seq, ts, event);
         break;
+      case 'mcp_app': {
+        this.active = null;
+        const previous = this._messages.find(
+          (message) =>
+            message.kind === 'agent-event' &&
+            message.event.t === 'mcp_app' &&
+            message.event.appId === event.appId,
+        );
+        if (previous?.kind === 'agent-event') {
+          this.messageChanged(previous);
+          previous.event = event;
+        } else this.emitAgentEvent(seq, ts, event);
+        break;
+      }
       case 'compaction':
       case 'error':
       case 'raw':

@@ -1,5 +1,13 @@
+import {
+  resolveSandboxMemory,
+  DEFAULT_SANDBOX_OOM_SCORE_ADJ,
+  FALLBACK_SANDBOX_MEMORY_BYTES,
+} from './sandbox-memory-policy.js';
+import { stripTrailingSlashes } from './path-text.js';
+import type { ProjectEgressLifecycle } from './project-egress-lifecycle.js';
 import { backupLifecycle } from './backup/lifecycle.js';
 import type { BuildStorage, BuildStorageLease } from './build-storage.js';
+import type { BuildDiagnosticStore } from './build-diagnostics.js';
 import type { DerivedImageReferences } from './derived-image-references.js';
 import { connectDocumentCode } from './document-code.js';
 import { migrateLocalDocuments } from './document-migration.js';
@@ -194,29 +202,12 @@ export interface ProjectRelayControl {
 
 const execFileAsync = promisify(execFile);
 
-// Default hard memory ceiling per project sandbox (HostConfig.Memory). Sandboxes
-// are UNTRUSTED and run arbitrary agent workloads (builds, tests, memory-leaky
-// tooling); without a cap a single runaway can exhaust host RAM and trigger a
-// GLOBAL OOM that thrashes the whole box unreachable (observed in prod: one
-// sandbox process ballooned and took the dev-server down). Capping each sandbox
-// keeps an OOM contained to that container's cgroup — the box stays healthy.
-//
-// Sized for gVisor, the default project runtime. Under runsc the whole guest is
-// one Sentry process whose memory is a host shmem file charged to this cgroup,
-// and there is no guest OOM killer: when the ceiling is hit the HOST kills the
-// Sentry, and every session of the project dies with it rather than one runaway
-// build. 4 GiB was hit that way four times in one evening (memcg 3.80 of 3.94 GB
-// shmem), and 6 GiB the same way on 2026-10-08, so the ceiling has to fit all of
-// a project's concurrent turns, not a single process. The toolkit's memory guard
-// (features/verity-sandbox-toolkit/bin/verity-memory-guard.mjs) stands in for
-// the missing guest OOM killer: it kills the largest agent-owned command a
-// reserve below this ceiling, so the common overrun costs one build rather than
-// the project. Override per-host with VERITY_SANDBOX_MEMORY (server-main.ts)
-// where the available RAM differs.
+// The hard limit is derived from Docker host capacity. The 6 GiB constant below
+// is only the fallback for daemons that cannot report capacity.
 // gVisor counts Sentry host threads as well as guest workload threads.
 export const DEFAULT_SANDBOX_PIDS_LIMIT = 4096;
 
-export const DEFAULT_SANDBOX_MEMORY_BYTES = 6 * 1024 * 1024 * 1024; // 6 GiB
+export const DEFAULT_SANDBOX_MEMORY_BYTES = FALLBACK_SANDBOX_MEMORY_BYTES;
 // Swap allowed per sandbox ON TOP of the memory ceiling (VERITY_SANDBOX_SWAP).
 // Off by default; see the `memorySwapBytes` comment at the container spec.
 export const DEFAULT_SANDBOX_SWAP_BYTES = 0;
@@ -267,7 +258,7 @@ export const RUNNER_BROKER_CAPABILITIES = ['CHOWN', 'SETUID', 'SETGID', 'KILL', 
 // Digest verified against the public OCI manifest; mutable aliases never enter builds.
 export const DEVCONTAINER_NODE_FEATURE_REF =
   'ghcr.io/devcontainers/features/node@sha256:8c0de46939b61958041700ee89e3493f3b2e4131a06dc46b4d9423427d06e5f6';
-const DEVCONTAINER_NODE_FEATURE_OPTIONS = { version: '26.12.1' } as const;
+const DEVCONTAINER_NODE_FEATURE_OPTIONS = { version: '26.13.0' } as const;
 const DEVCONTAINER_TOOLKIT_FEATURE_OPTIONS = { installRunnerSupervisor: true } as const;
 const DEVCONTAINER_TOOLKIT_ENTRYPOINT = ['/bin/sh', '-lc'];
 const DEVCONTAINER_POST_CREATE_READY_FILE = '/tmp/verity-post-create-complete';
@@ -762,6 +753,11 @@ export interface LinkCloneToGitHubResult {
 }
 
 export interface ProvisionerOptions {
+  /** Host egress service client; present only when the host service is configured. */
+  projectEgress?: ProjectEgressLifecycle;
+  /** The system-wide network protection switch, read at each container start. When
+   * absent, a configured `projectEgress` protects every start. */
+  projectEgressEnabled?: () => Promise<boolean>;
   /** EventStore the provisioner drives `projects.state` through. */
   store: EventStore;
   /** Raw kysely handle (used for the `SELECT … FOR UPDATE` lock tx — the
@@ -921,8 +917,13 @@ export interface ProvisionerOptions {
    *  a project whose devcontainer legitimately needs more. */
   /** Max PIDs per sandbox (fork-bomb guard). Default 512. */
   sandboxPidsLimit?: number | undefined;
-  /** Hard memory ceiling per sandbox, in bytes. Default 6 GiB. */
+  /** Explicit hard ceiling; unset derives Docker host RAM minus the host reserve. */
   sandboxMemoryBytes?: number | undefined;
+  /** Soft protection, default 4 GiB clamped to the resolved hard ceiling. */
+  sandboxMemoryReservationBytes?: number | undefined;
+  /** Amount subtracted from Docker host capacity, default 4 GiB. */
+  sandboxHostReserveBytes?: number | undefined;
+  sandboxOomScoreAdj?: number | undefined;
   /** Swap a sandbox may use beyond {@link sandboxMemoryBytes}, in bytes. Default 0
    *  (swap disabled). Only takes effect on a host that has swap configured. */
   sandboxSwapBytes?: number | undefined;
@@ -989,6 +990,7 @@ export interface ProvisionerOptions {
   /** Durable audit trail for project image builds (ADR 0028). When wired, a build
    *  whose intent cannot be recorded is refused. */
   audit?: AuditRecorder | undefined;
+  buildDiagnostics?: BuildDiagnosticStore | undefined;
   /** Mints a short-lived ghcr.io token (GitHub App installation token, `packages:read`)
    *  used to authenticate the devcontainer build so it can resolve the PRIVATE
    *  `verity-sandbox-toolkit` Feature and pull the base image as the App. Absent (or
@@ -1023,7 +1025,7 @@ export { AGENT_GATEWAY_PEER_FINGERPRINT_LABEL };
  *  to one, so the rewritten `(owner, repo)` cannot silently point the mount — and
  *  every session worktree persisted underneath it — at a different directory. */
 export function projectClonePath(hostCloneRoot: string, project: ProjectRecord): string {
-  const root = hostCloneRoot.replace(/\/+$/, '');
+  const root = stripTrailingSlashes(hostCloneRoot);
   return `${root}/${project.cloneDir ?? `${project.owner}-${project.repo}`}`;
 }
 
@@ -1900,11 +1902,16 @@ export interface Provisioner {
   ): Promise<LinkCloneToGitHubResult>;
   /** Run a project mutation while new turns wait at the same admission barrier
    * used by Sandbox repair, and reject when existing work is active. */
-  withProjectExclusiveMutation?<T>(projectId: string, mutation: () => Promise<T>): Promise<T>;
+  withProjectExclusiveMutation?<T>(
+    projectId: string,
+    mutation: () => Promise<T>,
+    exceptSessionIds?: ReadonlySet<string>,
+    waitForMutation?: AbortSignal,
+  ): Promise<T>;
   /** Stop and retain an idle Sandbox, revoking all of its live authority first. */
   sleepProject?(
     projectId: string,
-    options?: { shouldRestore?: () => boolean },
+    options?: { shouldRestore?: () => boolean; restoreSleepingSince?: Date | null },
   ): Promise<ProjectRecord>;
   /** Finish authority cleanup after a process died during an explicit sleep. */
   recoverInterruptedSleep?(projectId: string): Promise<ProjectRecord>;
@@ -1924,6 +1931,8 @@ export interface Provisioner {
   /** Recreate only the project container using the existing clone path.
    * Does not fetch, reset, delete, or otherwise mutate the project worktree. */
   recreateContainer?(projectId: string, opts?: RecreateContainerOptions): Promise<ProjectRecord>;
+  /** Reattach a verified retained relay without replacing its Sandbox. */
+  resumeProjectRelay?(projectId: string): Promise<void>;
   /** Best-effort Stage 3 watchdog: re-probe/relaunch supervisors for active
    * Sandboxes that already carry a protected runtime mount. */
   reconcileRunnerSupervisors?(projects: readonly ProjectRecord[]): Promise<void>;
@@ -2522,6 +2531,8 @@ export function sandboxSleepCompatibilityFingerprint(inspect: ContainerInspect):
     pidsLimit: inspect.pidsLimit ?? null,
     memoryBytes: inspect.memoryBytes ?? null,
     memorySwapBytes: inspect.memorySwapBytes ?? null,
+    memoryReservationBytes: inspect.memoryReservationBytes ?? null,
+    oomScoreAdj: inspect.oomScoreAdj ?? null,
     nanoCpus: inspect.nanoCpus ?? null,
     env: [...(inspect.env ?? [])].sort(),
     mounts: [...(inspect.mounts ?? [])].sort((a, b) =>
@@ -2757,6 +2768,16 @@ export class ProvisionerImpl implements Provisioner {
   }
 
   constructor(private readonly opts: ProvisionerOptions) {
+    if (
+      opts.projectEgress !== undefined &&
+      (opts.sandboxRuntime !== PROJECT_RUNSC_RUNTIME ||
+        opts.sandboxCapAdd?.length ||
+        opts.sandboxAllowPrivilegeEscalation === true)
+    ) {
+      throw new Error(
+        'Experimental egress requires the isolated gVisor runtime without added privileges',
+      );
+    }
     if (opts.docker.ensureNetwork === undefined) {
       throw new ProvisioningError('project relay provisioning requires Docker network creation');
     }
@@ -2793,6 +2814,16 @@ export class ProvisionerImpl implements Provisioner {
         }
       });
     this.localConfigState = opts.localConfigState ?? inspectLocalConfig;
+  }
+
+  async resumeProjectRelay(projectId: string): Promise<void> {
+    const project = await this.opts.store.getProject(projectId);
+    if (project === undefined || project.state !== 'active' || project.kind === 'control_plane')
+      return;
+    // Classification already validates and resumes the retained generation. It
+    // makes no migration/replacement decision; an empty process-local map alone
+    // must not force a fresh Sandbox during secret-unlock identity projection.
+    await this.classifyProjectSandbox(project);
   }
 
   async reconcileRunnerSupervisors(projects: readonly ProjectRecord[]): Promise<void> {
@@ -3127,10 +3158,33 @@ export class ProvisionerImpl implements Provisioner {
     projectId: string,
     mutation: () => Promise<T>,
     exceptSessionIds?: ReadonlySet<string>,
+    waitForMutation?: AbortSignal,
   ): Promise<T> {
-    if (this.turnSandboxRepairs.has(projectId) || this.inFlightProvisions.has(projectId)) {
-      throw new ProvisioningError(`project ${projectId} already has a mutation in progress`);
+    for (;;) {
+      const owner =
+        this.turnSandboxRepairs.get(projectId)?.promise ?? this.inFlightProvisions.get(projectId);
+      if (!owner) break;
+      if (!waitForMutation)
+        throw new ProvisioningError(`project ${projectId} already has a mutation in progress`);
+      waitForMutation.throwIfAborted();
+      // Wait for the actual owner; a timeout must never release its barrier.
+      await new Promise<void>((resolve, reject) => {
+        const abort = () =>
+          reject(
+            new ProvisioningError(
+              `project ${projectId} storage maintenance timed out waiting for an existing mutation`,
+            ),
+          );
+        waitForMutation.addEventListener('abort', abort, { once: true });
+        void owner
+          .catch(() => undefined)
+          .then(() => {
+            waitForMutation.removeEventListener('abort', abort);
+            resolve();
+          });
+      });
     }
+    waitForMutation?.throwIfAborted();
     let releaseBarrier!: (result: boolean) => void;
     const barrier = new Promise<boolean>((resolve) => {
       releaseBarrier = resolve;
@@ -3158,7 +3212,7 @@ export class ProvisionerImpl implements Provisioner {
 
   async sleepProject(
     projectId: string,
-    options?: { shouldRestore?: () => boolean },
+    options?: { shouldRestore?: () => boolean; restoreSleepingSince?: Date | null },
   ): Promise<ProjectRecord> {
     const startedAt = Date.now();
     try {
@@ -3198,7 +3252,15 @@ export class ProvisionerImpl implements Provisioner {
           await this.confirmSandboxStopped(project.containerName);
           return (await this.opts.store.updateProjectSleepState(project.id, 'sleeping', {
             sleepCompatibilityFingerprint: fingerprint,
-            sleepingSince: new Date(),
+            // A scan-owned wake must not renew the idle-container grace.
+            sleepingSince:
+              options?.shouldRestore &&
+              options.restoreSleepingSince &&
+              Number.isFinite(options.restoreSleepingSince.getTime()) &&
+              options.restoreSleepingSince.getTime() > 0 &&
+              options.restoreSleepingSince.getTime() <= Date.now()
+                ? options.restoreSleepingSince
+                : new Date(),
             wakeStartedAt: null,
           })) as ProjectRecord;
         } catch (cause) {
@@ -3296,7 +3358,13 @@ export class ProvisionerImpl implements Provisioner {
         if (this.opts.projectRelay.resume === undefined) {
           throw new Error('project relay does not support recovery adoption');
         }
-        await this.opts.projectRelay.resume(this.relayBinding(project, retained.generation));
+        await this.opts.projectRelay.resume(
+          this.relayBinding(
+            project,
+            retained.generation,
+            await this.generationEgress(project.id, retained.generation),
+          ),
+        );
       }
     } catch (error) {
       failures.push(error);
@@ -3479,6 +3547,13 @@ export class ProvisionerImpl implements Provisioner {
                         project.sleepCompatibilityFingerprint
                       ? 'contract_mismatch'
                       : undefined;
+          const egress = await this.egressFor();
+          const retainedEgress =
+            generation === undefined
+              ? undefined
+              : await this.generationEgress(project.id, generation);
+          const needsFreshGeneration =
+            egress !== undefined && (await egress.requiresFreshWakeGeneration(project.id));
           await this.opts.store.updateProjectSleepState(project.id, 'waking', {
             sleepCompatibilityFingerprint: project.sleepCompatibilityFingerprint,
             sleepingSince: project.sleepingSince ?? null,
@@ -3520,6 +3595,19 @@ export class ProvisionerImpl implements Provisioner {
               throw cause;
             }
           };
+          if (
+            egress !== retainedEgress ||
+            needsFreshGeneration ||
+            (egress === undefined &&
+              inspect !== null &&
+              !Object.hasOwn(inspect.networks ?? {}, projectNetworkName(project.id)))
+          ) {
+            // The protection switch changed since this Sandbox started, or Docker
+            // allocates new veth attachments after a stopped protected Sandbox while
+            // packet registrations are immutable: cold wake retains project data but
+            // retires the old network and creates a fresh generation in the current mode.
+            return await replaceRetained('contract_mismatch');
+          }
           if (fallbackReason !== undefined) {
             // The retained object is no longer the exact Sandbox we put to sleep.
             // Reuse the established replacement path rather than starting unknown
@@ -3532,7 +3620,9 @@ export class ProvisionerImpl implements Provisioner {
 
           let relayAwake = false;
           try {
-            const activation = await reactivateRelay(this.relayBinding(project, generation));
+            const activation = await reactivateRelay(
+              this.relayBinding(project, generation, egress),
+            );
             relayAwake = true;
             if (this.opts.gitSecretRoot !== undefined) {
               const mountedDestinations = new Set(
@@ -3592,7 +3682,22 @@ export class ProvisionerImpl implements Provisioner {
                 });
               }
             }
-            await this.opts.docker.startContainer(inspect.id);
+            if (egress !== undefined) {
+              await egress.start(
+                { projectId: project.id, containerGeneration: generation },
+                'sandbox',
+                inspect.id,
+              );
+              const identity = { projectId: project.id, containerGeneration: generation };
+              const address = await egress.connect(identity);
+              if (
+                !inspect.extraHosts?.length ||
+                inspect.extraHosts.some((entry) => !entry.endsWith(`:${address}`))
+              ) {
+                await egress.prepare(identity);
+                throw new Error('Retained relay projection differs from host transport binding');
+              }
+            } else await this.opts.docker.startContainer(inspect.id);
             const running = await this.opts.docker.inspectContainer(project.containerName);
             if (!running.running) throw new Error('Docker did not report the Sandbox as running');
             await this.opts.onContainerStarted?.(project);
@@ -3629,6 +3734,9 @@ export class ProvisionerImpl implements Provisioner {
               wakeStartedAt: null,
             })) as ProjectRecord;
           } catch (cause) {
+            await egress
+              ?.prepare({ projectId: project.id, containerGeneration: generation })
+              .catch(() => undefined);
             const cleanup = await Promise.allSettled([
               this.opts.docker.stopContainer(project.containerName),
               ...(relayAwake && sleepRelay !== undefined ? [sleepRelay(project.id)] : []),
@@ -3792,7 +3900,7 @@ export class ProvisionerImpl implements Provisioner {
     const input = {
       inspect,
       projectId: project.id,
-      projectNetwork: projectNetworkName(project.id),
+      projectNetwork: await this.expectedProjectNetwork(project.id),
       relayHealthy: await this.isRelayHealthy(project, containerGenerationOf(inspect)),
       considerEnvDrift: this.opts.recreateEnvDriftedSandboxes !== false,
     };
@@ -3900,15 +4008,81 @@ export class ProvisionerImpl implements Provisioner {
     try {
       if (await isHealthy({ projectId: project.id, containerGeneration })) return true;
       if (this.opts.projectRelay.resume === undefined) return false;
-      if (!(await this.opts.projectRelay.resume(this.relayBinding(project, containerGeneration))))
-        return false;
+      const binding = this.relayBinding(
+        project,
+        containerGeneration,
+        await this.generationEgress(project.id, containerGeneration),
+      );
+      if (!(await this.opts.projectRelay.resume(binding))) return false;
       return await isHealthy({ projectId: project.id, containerGeneration });
     } catch {
       return undefined;
     }
   }
 
-  private relayBinding(project: ProjectRecord, containerGeneration: string): ProjectRelayBinding {
+  private async projectEgressEnabled(): Promise<boolean> {
+    return this.opts.projectEgressEnabled
+      ? await this.opts.projectEgressEnabled()
+      : this.opts.projectEgress !== undefined;
+  }
+
+  /** Network protection for a new generation: the host lifecycle while the switch is on.
+   * A switched-on server without a host egress service fails closed. */
+  private async egressFor(): Promise<ProjectEgressLifecycle | undefined> {
+    if (!(await this.projectEgressEnabled())) return undefined;
+    if (this.opts.projectEgress === undefined)
+      throw new ProvisioningError('Network protection is on, but this host has no egress service');
+    return this.opts.projectEgress;
+  }
+
+  /** The lifecycle when this existing generation is registered with the host, so it keeps
+   * the mode it started with. An unreachable host is unknown state: closed while on. */
+  private async generationEgress(
+    projectId: string,
+    containerGeneration: string,
+  ): Promise<ProjectEgressLifecycle | undefined> {
+    const egress = this.opts.projectEgress;
+    if (egress === undefined) return undefined;
+    try {
+      return (await egress.current(projectId))?.generation === containerGeneration
+        ? egress
+        : undefined;
+    } catch (error) {
+      if (await this.projectEgressEnabled()) throw error;
+      return undefined;
+    }
+  }
+
+  /** The network a running Sandbox belongs on: its host-registered generation network, or
+   * the open project network. Switching protection takes effect at the next start. */
+  private async expectedProjectNetwork(projectId: string): Promise<string> {
+    const egress = this.opts.projectEgress;
+    if (egress === undefined) return projectNetworkName(projectId);
+    // An unreachable host cannot establish network drift. Let reconciliation defer
+    // instead of replacing a running protected generation with an open one.
+    return (await egress.current(projectId))?.networkName ?? projectNetworkName(projectId);
+  }
+
+  private async retireEgressGeneration(projectId: string): Promise<void> {
+    const egress = this.opts.projectEgress;
+    if (egress === undefined) return;
+    try {
+      const binding = await egress.current(projectId);
+      if (binding !== undefined)
+        await egress.retire({ projectId, containerGeneration: binding.generation });
+    } catch (error) {
+      // With protection off a stale host registration cannot admit anything; never let
+      // an unreachable host service block an open start.
+      if (await this.projectEgressEnabled()) throw error;
+    }
+    await this.opts.projectRelay.stop(projectId);
+  }
+
+  private relayBinding(
+    project: ProjectRecord,
+    containerGeneration: string,
+    egress: ProjectEgressLifecycle | undefined,
+  ): ProjectRelayBinding {
     const { selected: projectClaudeGateway, url: claudeGateway } =
       this.resolveRelayClaudeGateway(project);
     const codexGateway = resolvedCodexGatewayUrl(
@@ -3917,6 +4091,7 @@ export class ProvisionerImpl implements Provisioner {
     );
     return {
       projectId: project.id,
+      ...(egress === undefined ? {} : { egress }),
       forgeConnectionId: project.forgeConnectionId ?? null,
       owner: project.owner,
       repo: project.repo,
@@ -4342,13 +4517,24 @@ export class ProvisionerImpl implements Provisioner {
     const running = this.inFlightProvisions.get(projectId);
     if (running !== undefined) return running;
     const attempt = this.provisionOnce(projectId, opts);
-    this.inFlightProvisions.set(projectId, attempt);
-    try {
-      return await attempt;
-    } finally {
-      await this.opts.imageReferences?.releaseProject(projectId);
-      this.inFlightProvisions.delete(projectId);
-    }
+    return this.trackProvision(projectId, attempt);
+  }
+
+  /** The ownership promise settles only after reference cleanup has released the gate. */
+  private trackProvision(
+    projectId: string,
+    attempt: Promise<ProjectRecord>,
+  ): Promise<ProjectRecord> {
+    const owned = attempt.finally(async () => {
+      try {
+        await this.opts.imageReferences?.releaseProject(projectId);
+      } finally {
+        if (this.inFlightProvisions.get(projectId) === owned)
+          this.inFlightProvisions.delete(projectId);
+      }
+    });
+    this.inFlightProvisions.set(projectId, owned);
+    return owned;
   }
 
   private async provisionOnce(projectId: string, opts: ProvisionOptions): Promise<ProjectRecord> {
@@ -4385,13 +4571,7 @@ export class ProvisionerImpl implements Provisioner {
       throw new ProvisioningError(`project ${projectId} is already provisioning`);
     }
     const attempt = this.recreateContainerOnce(projectId, opts);
-    this.inFlightProvisions.set(projectId, attempt);
-    try {
-      return await attempt;
-    } finally {
-      await this.opts.imageReferences?.releaseProject(projectId);
-      this.inFlightProvisions.delete(projectId);
-    }
+    return this.trackProvision(projectId, attempt);
   }
 
   /** Whether this process still owns provisioning/replacement work for a project.
@@ -4415,6 +4595,9 @@ export class ProvisionerImpl implements Provisioner {
     if (project.state === 'absent') {
       throw new ProvisioningError(`project ${projectId} is absent; provision it instead`);
     }
+
+    // Reject missing protection infrastructure before retiring a usable Sandbox.
+    await this.egressFor();
 
     const warning = await this.devcontainerWarningForProject(project);
     if (warning !== null && opts.confirmWarnings !== true) {
@@ -4491,6 +4674,7 @@ export class ProvisionerImpl implements Provisioner {
     const replace = async (): Promise<ProjectRecord> => {
       this.resolveRelayClaudeGateway(project);
       await this.ensureSandboxRuntime(project);
+      await this.retireEgressGeneration(project.id);
       replacementStarted = true;
       this.retiringSandboxes.add(project.id);
       this.sandboxReplacementGenerations.set(
@@ -5064,19 +5248,33 @@ export class ProvisionerImpl implements Provisioner {
     );
     const canonicalClaudeGatewayUrl = claudeGateway.href;
     const canonicalCodexGatewayUrl = codexGateway.href;
-    const sandboxNetwork = projectNetworkName(project.id);
-    await this.opts.docker.ensureNetwork!(sandboxNetwork, {
-      labels: { 'verity.project-id': project.id },
-    });
-    // Before the running Sandbox is removed (see ensureSandboxRuntime).
     await this.ensureSandboxRuntime(project);
+    const generation = randomUUID();
+    const egress = await this.egressFor();
+    let sandboxNetwork: string;
+    // A fenced predecessor is retired either way; a switched-off server starts open.
+    await this.retireEgressGeneration(project.id);
+    if (egress !== undefined) {
+      sandboxNetwork = (
+        await egress.create({
+          projectId: project.id,
+          containerGeneration: generation,
+        })
+      ).networkName;
+    } else {
+      sandboxNetwork = projectNetworkName(project.id);
+      await this.opts.docker.ensureNetwork!(sandboxNetwork, {
+        labels: { 'verity.project-id': project.id },
+      });
+    }
+
     // Capabilities are currently one-row-per-project, so two generations cannot
     // authenticate concurrently. Fail closed: retire the old Sandbox before
     // revoking its relay, then construct the complete replacement generation.
     if (!forcePull) await stopAndRemoveExistingContainer(this.opts.docker, project.containerName);
     await this.opts.projectRelay.stop(project.id);
     const relayActivation = await this.opts.projectRelay.start(
-      this.relayBinding(project, randomUUID()),
+      this.relayBinding(project, generation, egress),
     );
     relayAttempt.started = true;
     const effectiveBrokerUrl = this.opts.projectRelay.brokerUrl(relayActivation);
@@ -5102,7 +5300,9 @@ export class ProvisionerImpl implements Provisioner {
           effectiveCodexGatewayUrl,
         ]);
         const servers =
-          this.opts.sandboxDnsServers !== undefined && this.opts.sandboxDnsServers.length > 0
+          egress === undefined &&
+          this.opts.sandboxDnsServers !== undefined &&
+          this.opts.sandboxDnsServers.length > 0
             ? this.opts.sandboxDnsServers
             : [relayResolverAddress(effectiveClaudeGatewayUrl, gvisorExtraHosts)];
         if (this.opts.gitSecretRoot === undefined) {
@@ -5558,7 +5758,18 @@ export class ProvisionerImpl implements Provisioner {
     // Bound once, then used for BOTH `Memory` and `MemorySwap` below, so the swap
     // allowance cannot drift away from the ceiling it is added to when someone
     // changes where the ceiling comes from.
-    const sandboxMemoryBytes = this.opts.sandboxMemoryBytes ?? DEFAULT_SANDBOX_MEMORY_BYTES;
+    let hostMemoryBytes: number | undefined;
+    try {
+      hostMemoryBytes = await this.opts.docker.hostMemoryBytes?.();
+    } catch {
+      // A transient daemon-info failure must not produce an unlimited sandbox.
+    }
+    const { memoryBytes: sandboxMemoryBytes, memoryReservationBytes } = resolveSandboxMemory({
+      hostMemoryBytes,
+      memoryBytes: this.opts.sandboxMemoryBytes,
+      reservationBytes: this.opts.sandboxMemoryReservationBytes,
+      hostReserveBytes: this.opts.sandboxHostReserveBytes,
+    });
     const hostCpus = await this.resolveHostCpuCount();
     // Dependencies get their own volume (see nodeModulesMountHint). Only on the
     // Runner runtime path, because its root stack start is what hands the fresh,
@@ -5714,7 +5925,7 @@ export class ProvisionerImpl implements Provisioner {
             ),
           }
         : {}),
-      restartPolicy: 'unless-stopped',
+      restartPolicy: egress === undefined ? 'unless-stopped' : 'no',
       // Public traffic reaches project dev servers through the preview connector.
       // Keep those workloads behind gVisor's userspace-kernel boundary rather than
       // exposing a runc workload to arbitrary internet input. The root filesystem
@@ -5742,6 +5953,8 @@ export class ProvisionerImpl implements Provisioner {
         this.opts.sandboxAllowPrivilegeEscalation === true ? [] : ['no-new-privileges=true'],
       pidsLimit: this.opts.sandboxPidsLimit ?? DEFAULT_SANDBOX_PIDS_LIMIT,
       memoryBytes: sandboxMemoryBytes,
+      memoryReservationBytes,
+      oomScoreAdj: this.opts.sandboxOomScoreAdj ?? DEFAULT_SANDBOX_OOM_SCORE_ADJ,
       // `MemorySwap` is the COMBINED memory+swap ceiling, so it is always derived
       // from the memory ceiling: equal to it means no swap. Leaving it out is not
       // neutral: Docker then grants twice the memory limit as the combined ceiling,
@@ -5808,9 +6021,19 @@ export class ProvisionerImpl implements Provisioner {
         }
       }
       try {
-        await this.opts.docker.startContainer(containerId);
+        if (egress !== undefined) {
+          await egress.start(relayActivation.identity, 'sandbox', containerId);
+          const relayAddress = await egress.connect(relayActivation.identity);
+          if (
+            !gvisorExtraHosts.length ||
+            gvisorExtraHosts.some((entry) => !entry.endsWith(`:${relayAddress}`))
+          ) {
+            await egress.prepare(relayActivation.identity);
+            throw new Error('Sandbox relay projection differs from host transport binding');
+          }
+        } else await this.opts.docker.startContainer(containerId);
       } catch (cause) {
-        if (!reusedExisting || !isStaleGvisorFilestore(cause)) throw cause;
+        if (egress !== undefined || !reusedExisting || !isStaleGvisorFilestore(cause)) throw cause;
         // Starting a retained container reuses its id, which gVisor also uses as
         // the sandbox id. A sandbox torn down without `runsc delete` (host memory
         // pressure, a killed shim, a daemon restart) leaves its rootfs filestore
@@ -5831,6 +6054,9 @@ export class ProvisionerImpl implements Provisioner {
       await this.opts.onContainerStarted?.(project);
     } catch (cause) {
       const message = `post-start projection failed: ${failureMessage(cause)}`;
+      // Revoke the pair before rollback removes either endpoint. The host
+      // attempts containment itself if kernel revocation fails.
+      await egress?.prepare(relayActivation.identity).catch(() => undefined);
       await this.opts.docker.stopContainer(dirs.containerName).catch(() => undefined);
       let removalFailure: unknown;
       try {
@@ -5884,6 +6110,9 @@ export class ProvisionerImpl implements Provisioner {
         const component =
           runnerRuntimePath !== undefined ? 'Runner supervisor' : 'Sandbox egress connector';
         const message = `${component} failed to start: ${commandFailureMessage(cause)}`;
+        // Revoke the pair before rollback removes either endpoint. The host
+        // attempts containment itself if kernel revocation fails.
+        await egress?.prepare(relayActivation.identity).catch(() => undefined);
         await this.opts.docker.stopContainer(dirs.containerName).catch(() => undefined);
         let removalFailure: unknown;
         try {
@@ -5992,6 +6221,9 @@ export class ProvisionerImpl implements Provisioner {
       }
     } catch (cause) {
       const message = `devcontainer ${lifecycleFailureLabel} failed: ${commandFailureMessage(cause)}`;
+      // Revoke the pair before rollback removes either endpoint. The host
+      // attempts containment itself if kernel revocation fails.
+      await egress?.prepare(relayActivation.identity).catch(() => undefined);
       await this.opts.docker.stopContainer(dirs.containerName).catch(() => undefined);
       let removalFailure: unknown;
       try {
@@ -6098,6 +6330,8 @@ export class ProvisionerImpl implements Provisioner {
         usesConfiguredOverride: !usesDefaultImage,
       };
     }
+    if (await this.projectEgressEnabled())
+      throw new Error('Devcontainer builds are unavailable while network protection is on');
     if (build === undefined || dockerHost === undefined) {
       throw new Error(
         'Devcontainer build support is unavailable; configure the secure builder or disable repository devcontainers for this project',
@@ -6223,7 +6457,9 @@ export class ProvisionerImpl implements Provisioner {
             // Missing/pruned images and unavailable diagnostics use the fallback.
           }
         }
-        storageLease.reserveBuild(imageBytes);
+        if (storageLease.reserveBuildWithReclamation)
+          await storageLease.reserveBuildWithReclamation(imageBytes);
+        else storageLease.reserveBuild(imageBytes);
       }
       // Mint a ghcr token (GitHub App installation, packages:read) so the build can
       // resolve the PRIVATE verity-sandbox-toolkit Feature + pull the base image as
@@ -6282,6 +6518,11 @@ export class ProvisionerImpl implements Provisioner {
         });
       } catch (cause) {
         // Best-effort: the build error, not an audit error, is what the caller reports.
+        if (audit !== undefined) {
+          await this.opts.buildDiagnostics
+            ?.save(audit.operationId, cause, registryToken === undefined ? [] : [registryToken])
+            .catch(() => undefined);
+        }
         await audit?.failed().catch(() => undefined);
         // The scoped registry token is not in process.env. Remove both forms
         // before diagnostics escape into persisted project state or request logs.
