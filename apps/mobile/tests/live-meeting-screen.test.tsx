@@ -2435,3 +2435,35 @@ it('does not join a later in-person selection after switching to online', async 
   expect(joinCalendarMeeting).not.toHaveBeenCalled();
   expect(startOnlineMeeting).not.toHaveBeenCalled();
 });
+
+it('preserves a typed title when calendar loading finishes and uses a deliberately selected title', async () => {
+  let resolveEvents!: (events: unknown[]) => void;
+  const pending = new Promise<unknown[]>((resolve) => {
+    resolveEvents = resolve;
+  });
+  jest
+    .mocked(createVerityClient)
+    .mockReturnValue({ getUpcomingMeetings: jest.fn().mockReturnValue(pending) } as never);
+  render(<MeetingScreen />);
+  fireEvent.changeText(await screen.findByLabelText('Meeting title'), 'My notes');
+  await act(async () => {
+    resolveEvents([
+      {
+        eventKey: 'office',
+        title: 'Office review',
+        startsAt: Date.now(),
+        endsAt: Date.now() + 3_600_000,
+        calendar: 'Work',
+        provider: null,
+        decision: null,
+        meetingId: null,
+      },
+    ]);
+  });
+  await screen.findByText('Office review');
+  expect(screen.getByLabelText('Meeting title').props.value).toBe('My notes');
+  fireEvent.press(screen.getByText('Office review'));
+  await waitFor(() =>
+    expect(screen.getByLabelText('Meeting title').props.value).toBe('Office review'),
+  );
+});

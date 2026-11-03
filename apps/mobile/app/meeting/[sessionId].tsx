@@ -186,11 +186,12 @@ export default function MeetingScreen() {
   const [confirm, confirmSheet] = useConfirm();
   const [meetingTitle, setMeetingTitle] = useState('');
   const titledEvent = useRef<string | null>(null);
+  const titleEdited = useRef(false);
   useEffect(() => {
     const chosen = upcoming?.find((event) => event.eventKey === selectedEventKey);
     if (chosen && titledEvent.current !== chosen.eventKey) {
       titledEvent.current = chosen.eventKey;
-      setMeetingTitle(chosen.title ?? '');
+      if (!titleEdited.current) setMeetingTitle(chosen.title ?? '');
     }
   }, [selectedEventKey, upcoming]);
   const [attendeeConfigured, setAttendeeConfigured] = useState(false);
@@ -1787,7 +1788,10 @@ export default function MeetingScreen() {
               label="Title"
               accessibilityLabel="Meeting title"
               value={meetingTitle}
-              onChangeText={setMeetingTitle}
+              onChangeText={(value) => {
+                titleEdited.current = true;
+                setMeetingTitle(value);
+              }}
               maxLength={200}
               placeholder="Optional"
             />
@@ -1817,7 +1821,15 @@ export default function MeetingScreen() {
             inPerson={meetingSource === 'presence'}
             onChooseCalendars={() => router.push('/settings/meeting-calendars')}
             selectedKey={meetingSource === 'presence' || selectedEvent ? selectedEventKey : null}
-            onSelect={setSelectedEventKey}
+            onSelect={(eventKey) => {
+              titleEdited.current = false;
+              setSelectedEventKey(eventKey);
+              const chosen = upcoming?.find((event) => event.eventKey === eventKey);
+              if (chosen) {
+                titledEvent.current = eventKey;
+                setMeetingTitle(chosen.title ?? '');
+              }
+            }}
             manual={manualLink}
             onManualChange={setManualLink}
             meetingUrl={meetingUrl}
