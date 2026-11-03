@@ -24,6 +24,9 @@ UNITS = {
     'verity-egress-host.service': 'etc/systemd/system/verity-egress-host.service',
     'docker-egress.conf': 'etc/systemd/system/docker.service.d/egress.conf',
 }
+# Populate only with exact releases backed by native install/upgrade/recovery
+# evidence. Tool availability alone does not establish kernel compatibility.
+ACCEPTED_KERNEL_RELEASES = frozenset()
 
 
 def command(*args):
@@ -106,6 +109,8 @@ def preflight(root, run=command):
         raise ValueError('Requires validated rootful Docker 29.9.2 with live restore off')
     if not {'runsc-project', 'runsc-relay'} <= set(info.get('Runtimes', {})):
         raise ValueError('Requires reviewed runsc-project and runsc-relay runtimes')
+    if platform.release() not in ACCEPTED_KERNEL_RELEASES:
+        raise ValueError('Kernel has no accepted native installation profile; host installation is unavailable')
     for path in ('usr/sbin/nft', 'usr/sbin/bpftool', 'sbin/tc', 'sbin/ip',
                  'usr/bin/flock', 'usr/bin/nsenter', 'usr/bin/python3'):
         if not os.access(root / path, os.X_OK):

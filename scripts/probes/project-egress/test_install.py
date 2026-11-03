@@ -138,6 +138,7 @@ class InstallTests(unittest.TestCase):
             ('systemd 259', 'v26.12.1', {**good, 'LiveRestoreEnabled': True}, 'Docker'),
             ('systemd 259', 'v26.12.1', {**good, 'SecurityOptions': ['rootless']}, 'Docker'),
             ('systemd 259', 'v26.12.1', {**good, 'Runtimes': {}}, 'runtimes'),
+            ('systemd 259', 'v26.12.1', good, 'native installation profile'),
         ]
         for systemd, node, docker, error in cases:
             with self.subTest(error=error, node=node, docker=docker):

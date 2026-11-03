@@ -296,7 +296,7 @@ On the separately authorized target Linux host, use the read-only preflight:
 sudo python3 project-egress-install.py preflight
 ```
 
-It accepts only x86_64 little-endian Linux and requires systemd >=249 as PID 1,
+Its candidate requirements are x86_64 little-endian Linux, systemd >=249 as PID 1,
 Node >=26.12.1 within 26.x, rootful local
 Docker 29.9.2 with live restore disabled, the reviewed `runsc-project` and
 `runsc-relay` runtimes, required network/BPF utilities, Python `setns`, libnftables,
@@ -304,13 +304,16 @@ the private pin directory, and trusted configuration paths. Runtime names do not
 attest their executable versions or runtime arguments; those remain a release
 and native-host validation obligation. A successful preflight does not prove
 boot persistence, kernel BPF compatibility, socket reachability from the Server,
-or receiver-side isolation. The candidate has no accepted target-kernel profile
-yet: exact kernel compatibility remains unaccepted until native-host evidence
+or receiver-side isolation. The installer currently rejects every target kernel:
+`ACCEPTED_KERNEL_RELEASES` is empty. Both preflight and apply remain unavailable
+until an exact profile is accepted through a reviewed code change backed by
+native install, upgrade and recovery evidence. Kernel compatibility remains unaccepted until native-host evidence
 identifies and verifies that kernel, compiled BPF objects and gVisor release
 together. The architecture gate does not imply that every x86_64 Linux kernel
 is supported.
 
-After the separate installation approval, the explicit command is:
+Once an accepted profile exists and separate installation approval is given,
+the explicit command will be:
 
 ```sh
 sudo python3 project-egress-install.py apply /path/to/new-release --experimental-host-install

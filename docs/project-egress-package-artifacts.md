@@ -70,5 +70,13 @@ the final gVisor, boot and deadline workflows and independent receiver evidence
 remain separate gates. Protected previews are also unavailable until their own
 attested ingress adapter is implemented.
 
+`package-artifact-native.test.ts` additionally runs installed npm and pip against
+loopback HTTP fixtures with synthetic provider responses. npm install preserves
+audit and the three-day release floor; frozen `npm ci` re-fetches the archive
+after broker reconstruction with a fresh cache and an unchanged lockfile. pip
+downloads a synthetic wheel and reuses its selector after broker reconstruction.
+These tests do not exercise the project relay, Docker, kernel enforcement or
+container replacement and do not establish support for other package managers.
+
 Relevant native configuration references: [Bun npmrc support](https://bun.sh/docs/pm/npmrc)
 and [Yarn registry configuration](https://yarnpkg.com/configuration/yarnrc).
