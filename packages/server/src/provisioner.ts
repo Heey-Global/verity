@@ -753,8 +753,11 @@ export interface LinkCloneToGitHubResult {
 }
 
 export interface ProvisionerOptions {
-  /** Experimental deny-only fixture injection; no production activation. */
+  /** Host egress service client; present only when the host service is configured. */
   projectEgress?: ProjectEgressLifecycle;
+  /** The system-wide network protection switch, read at each container start. When
+   * absent, a configured `projectEgress` protects every start. */
+  projectEgressEnabled?: () => Promise<boolean>;
   /** EventStore the provisioner drives `projects.state` through. */
   store: EventStore;
   /** Raw kysely handle (used for the `SELECT … FOR UPDATE` lock tx — the
@@ -3355,7 +3358,13 @@ export class ProvisionerImpl implements Provisioner {
         if (this.opts.projectRelay.resume === undefined) {
           throw new Error('project relay does not support recovery adoption');
         }
-        await this.opts.projectRelay.resume(this.relayBinding(project, retained.generation));
+        await this.opts.projectRelay.resume(
+          this.relayBinding(
+            project,
+            retained.generation,
+            await this.generationEgress(project.id, retained.generation),
+          ),
+        );
       }
     } catch (error) {
       failures.push(error);
@@ -3538,6 +3547,13 @@ export class ProvisionerImpl implements Provisioner {
                         project.sleepCompatibilityFingerprint
                       ? 'contract_mismatch'
                       : undefined;
+          const egress = await this.egressFor();
+          const retainedEgress =
+            generation === undefined
+              ? undefined
+              : await this.generationEgress(project.id, generation);
+          const needsFreshGeneration =
+            egress !== undefined && (await egress.requiresFreshWakeGeneration(project.id));
           await this.opts.store.updateProjectSleepState(project.id, 'waking', {
             sleepCompatibilityFingerprint: project.sleepCompatibilityFingerprint,
             sleepingSince: project.sleepingSince ?? null,
@@ -3579,10 +3595,17 @@ export class ProvisionerImpl implements Provisioner {
               throw cause;
             }
           };
-          if (await this.opts.projectEgress?.requiresFreshWakeGeneration(project.id)) {
-            // Docker allocates new veth attachments after a stopped Sandbox.
-            // Packet registrations are immutable: cold wake retains project data
-            // but retires the old network and creates a fresh protected generation.
+          if (
+            egress !== retainedEgress ||
+            needsFreshGeneration ||
+            (egress === undefined &&
+              inspect !== null &&
+              !Object.hasOwn(inspect.networks ?? {}, projectNetworkName(project.id)))
+          ) {
+            // The protection switch changed since this Sandbox started, or Docker
+            // allocates new veth attachments after a stopped protected Sandbox while
+            // packet registrations are immutable: cold wake retains project data but
+            // retires the old network and creates a fresh generation in the current mode.
             return await replaceRetained('contract_mismatch');
           }
           if (fallbackReason !== undefined) {
@@ -3597,7 +3620,9 @@ export class ProvisionerImpl implements Provisioner {
 
           let relayAwake = false;
           try {
-            const activation = await reactivateRelay(this.relayBinding(project, generation));
+            const activation = await reactivateRelay(
+              this.relayBinding(project, generation, egress),
+            );
             relayAwake = true;
             if (this.opts.gitSecretRoot !== undefined) {
               const mountedDestinations = new Set(
@@ -3657,19 +3682,19 @@ export class ProvisionerImpl implements Provisioner {
                 });
               }
             }
-            if (this.opts.projectEgress !== undefined) {
-              await this.opts.projectEgress.start(
+            if (egress !== undefined) {
+              await egress.start(
                 { projectId: project.id, containerGeneration: generation },
                 'sandbox',
                 inspect.id,
               );
               const identity = { projectId: project.id, containerGeneration: generation };
-              const address = await this.opts.projectEgress.connect(identity);
+              const address = await egress.connect(identity);
               if (
                 !inspect.extraHosts?.length ||
                 inspect.extraHosts.some((entry) => !entry.endsWith(`:${address}`))
               ) {
-                await this.opts.projectEgress.prepare(identity);
+                await egress.prepare(identity);
                 throw new Error('Retained relay projection differs from host transport binding');
               }
             } else await this.opts.docker.startContainer(inspect.id);
@@ -3709,7 +3734,7 @@ export class ProvisionerImpl implements Provisioner {
               wakeStartedAt: null,
             })) as ProjectRecord;
           } catch (cause) {
-            await this.opts.projectEgress
+            await egress
               ?.prepare({ projectId: project.id, containerGeneration: generation })
               .catch(() => undefined);
             const cleanup = await Promise.allSettled([
@@ -3875,11 +3900,7 @@ export class ProvisionerImpl implements Provisioner {
     const input = {
       inspect,
       projectId: project.id,
-      projectNetwork:
-        this.opts.projectEgress === undefined
-          ? projectNetworkName(project.id)
-          : ((await this.opts.projectEgress.current(project.id))?.networkName ??
-            'unregistered-egress-generation'),
+      projectNetwork: await this.expectedProjectNetwork(project.id),
       relayHealthy: await this.isRelayHealthy(project, containerGenerationOf(inspect)),
       considerEnvDrift: this.opts.recreateEnvDriftedSandboxes !== false,
     };
@@ -3987,24 +4008,81 @@ export class ProvisionerImpl implements Provisioner {
     try {
       if (await isHealthy({ projectId: project.id, containerGeneration })) return true;
       if (this.opts.projectRelay.resume === undefined) return false;
-      if (!(await this.opts.projectRelay.resume(this.relayBinding(project, containerGeneration))))
-        return false;
+      const binding = this.relayBinding(
+        project,
+        containerGeneration,
+        await this.generationEgress(project.id, containerGeneration),
+      );
+      if (!(await this.opts.projectRelay.resume(binding))) return false;
       return await isHealthy({ projectId: project.id, containerGeneration });
     } catch {
       return undefined;
     }
   }
 
+  private async projectEgressEnabled(): Promise<boolean> {
+    return this.opts.projectEgressEnabled
+      ? await this.opts.projectEgressEnabled()
+      : this.opts.projectEgress !== undefined;
+  }
+
+  /** Network protection for a new generation: the host lifecycle while the switch is on.
+   * A switched-on server without a host egress service fails closed. */
+  private async egressFor(): Promise<ProjectEgressLifecycle | undefined> {
+    if (!(await this.projectEgressEnabled())) return undefined;
+    if (this.opts.projectEgress === undefined)
+      throw new ProvisioningError('Network protection is on, but this host has no egress service');
+    return this.opts.projectEgress;
+  }
+
+  /** The lifecycle when this existing generation is registered with the host, so it keeps
+   * the mode it started with. An unreachable host is unknown state: closed while on. */
+  private async generationEgress(
+    projectId: string,
+    containerGeneration: string,
+  ): Promise<ProjectEgressLifecycle | undefined> {
+    const egress = this.opts.projectEgress;
+    if (egress === undefined) return undefined;
+    try {
+      return (await egress.current(projectId))?.generation === containerGeneration
+        ? egress
+        : undefined;
+    } catch (error) {
+      if (await this.projectEgressEnabled()) throw error;
+      return undefined;
+    }
+  }
+
+  /** The network a running Sandbox belongs on: its host-registered generation network, or
+   * the open project network. Switching protection takes effect at the next start. */
+  private async expectedProjectNetwork(projectId: string): Promise<string> {
+    const egress = this.opts.projectEgress;
+    if (egress === undefined) return projectNetworkName(projectId);
+    // An unreachable host cannot establish network drift. Let reconciliation defer
+    // instead of replacing a running protected generation with an open one.
+    return (await egress.current(projectId))?.networkName ?? projectNetworkName(projectId);
+  }
+
   private async retireEgressGeneration(projectId: string): Promise<void> {
     const egress = this.opts.projectEgress;
     if (egress === undefined) return;
-    const binding = await egress.current(projectId);
-    if (binding !== undefined)
-      await egress.retire({ projectId, containerGeneration: binding.generation });
+    try {
+      const binding = await egress.current(projectId);
+      if (binding !== undefined)
+        await egress.retire({ projectId, containerGeneration: binding.generation });
+    } catch (error) {
+      // With protection off a stale host registration cannot admit anything; never let
+      // an unreachable host service block an open start.
+      if (await this.projectEgressEnabled()) throw error;
+    }
     await this.opts.projectRelay.stop(projectId);
   }
 
-  private relayBinding(project: ProjectRecord, containerGeneration: string): ProjectRelayBinding {
+  private relayBinding(
+    project: ProjectRecord,
+    containerGeneration: string,
+    egress: ProjectEgressLifecycle | undefined,
+  ): ProjectRelayBinding {
     const { selected: projectClaudeGateway, url: claudeGateway } =
       this.resolveRelayClaudeGateway(project);
     const codexGateway = resolvedCodexGatewayUrl(
@@ -4013,7 +4091,7 @@ export class ProvisionerImpl implements Provisioner {
     );
     return {
       projectId: project.id,
-      ...(this.opts.projectEgress === undefined ? {} : { egress: this.opts.projectEgress }),
+      ...(egress === undefined ? {} : { egress }),
       forgeConnectionId: project.forgeConnectionId ?? null,
       owner: project.owner,
       repo: project.repo,
@@ -4517,6 +4595,9 @@ export class ProvisionerImpl implements Provisioner {
     if (project.state === 'absent') {
       throw new ProvisioningError(`project ${projectId} is absent; provision it instead`);
     }
+
+    // Reject missing protection infrastructure before retiring a usable Sandbox.
+    await this.egressFor();
 
     const warning = await this.devcontainerWarningForProject(project);
     if (warning !== null && opts.confirmWarnings !== true) {
@@ -5169,11 +5250,13 @@ export class ProvisionerImpl implements Provisioner {
     const canonicalCodexGatewayUrl = codexGateway.href;
     await this.ensureSandboxRuntime(project);
     const generation = randomUUID();
+    const egress = await this.egressFor();
     let sandboxNetwork: string;
-    if (this.opts.projectEgress !== undefined) {
-      await this.retireEgressGeneration(project.id);
+    // A fenced predecessor is retired either way; a switched-off server starts open.
+    await this.retireEgressGeneration(project.id);
+    if (egress !== undefined) {
       sandboxNetwork = (
-        await this.opts.projectEgress.create({
+        await egress.create({
           projectId: project.id,
           containerGeneration: generation,
         })
@@ -5191,7 +5274,7 @@ export class ProvisionerImpl implements Provisioner {
     if (!forcePull) await stopAndRemoveExistingContainer(this.opts.docker, project.containerName);
     await this.opts.projectRelay.stop(project.id);
     const relayActivation = await this.opts.projectRelay.start(
-      this.relayBinding(project, generation),
+      this.relayBinding(project, generation, egress),
     );
     relayAttempt.started = true;
     const effectiveBrokerUrl = this.opts.projectRelay.brokerUrl(relayActivation);
@@ -5217,7 +5300,7 @@ export class ProvisionerImpl implements Provisioner {
           effectiveCodexGatewayUrl,
         ]);
         const servers =
-          this.opts.projectEgress === undefined &&
+          egress === undefined &&
           this.opts.sandboxDnsServers !== undefined &&
           this.opts.sandboxDnsServers.length > 0
             ? this.opts.sandboxDnsServers
@@ -5842,7 +5925,7 @@ export class ProvisionerImpl implements Provisioner {
             ),
           }
         : {}),
-      restartPolicy: this.opts.projectEgress === undefined ? 'unless-stopped' : 'no',
+      restartPolicy: egress === undefined ? 'unless-stopped' : 'no',
       // Public traffic reaches project dev servers through the preview connector.
       // Keep those workloads behind gVisor's userspace-kernel boundary rather than
       // exposing a runc workload to arbitrary internet input. The root filesystem
@@ -5938,24 +6021,19 @@ export class ProvisionerImpl implements Provisioner {
         }
       }
       try {
-        if (this.opts.projectEgress !== undefined) {
-          await this.opts.projectEgress.start(relayActivation.identity, 'sandbox', containerId);
-          const relayAddress = await this.opts.projectEgress.connect(relayActivation.identity);
+        if (egress !== undefined) {
+          await egress.start(relayActivation.identity, 'sandbox', containerId);
+          const relayAddress = await egress.connect(relayActivation.identity);
           if (
             !gvisorExtraHosts.length ||
             gvisorExtraHosts.some((entry) => !entry.endsWith(`:${relayAddress}`))
           ) {
-            await this.opts.projectEgress.prepare(relayActivation.identity);
+            await egress.prepare(relayActivation.identity);
             throw new Error('Sandbox relay projection differs from host transport binding');
           }
         } else await this.opts.docker.startContainer(containerId);
       } catch (cause) {
-        if (
-          this.opts.projectEgress !== undefined ||
-          !reusedExisting ||
-          !isStaleGvisorFilestore(cause)
-        )
-          throw cause;
+        if (egress !== undefined || !reusedExisting || !isStaleGvisorFilestore(cause)) throw cause;
         // Starting a retained container reuses its id, which gVisor also uses as
         // the sandbox id. A sandbox torn down without `runsc delete` (host memory
         // pressure, a killed shim, a daemon restart) leaves its rootfs filestore
@@ -5978,7 +6056,7 @@ export class ProvisionerImpl implements Provisioner {
       const message = `post-start projection failed: ${failureMessage(cause)}`;
       // Revoke the pair before rollback removes either endpoint. The host
       // attempts containment itself if kernel revocation fails.
-      await this.opts.projectEgress?.prepare(relayActivation.identity).catch(() => undefined);
+      await egress?.prepare(relayActivation.identity).catch(() => undefined);
       await this.opts.docker.stopContainer(dirs.containerName).catch(() => undefined);
       let removalFailure: unknown;
       try {
@@ -6034,7 +6112,7 @@ export class ProvisionerImpl implements Provisioner {
         const message = `${component} failed to start: ${commandFailureMessage(cause)}`;
         // Revoke the pair before rollback removes either endpoint. The host
         // attempts containment itself if kernel revocation fails.
-        await this.opts.projectEgress?.prepare(relayActivation.identity).catch(() => undefined);
+        await egress?.prepare(relayActivation.identity).catch(() => undefined);
         await this.opts.docker.stopContainer(dirs.containerName).catch(() => undefined);
         let removalFailure: unknown;
         try {
@@ -6145,7 +6223,7 @@ export class ProvisionerImpl implements Provisioner {
       const message = `devcontainer ${lifecycleFailureLabel} failed: ${commandFailureMessage(cause)}`;
       // Revoke the pair before rollback removes either endpoint. The host
       // attempts containment itself if kernel revocation fails.
-      await this.opts.projectEgress?.prepare(relayActivation.identity).catch(() => undefined);
+      await egress?.prepare(relayActivation.identity).catch(() => undefined);
       await this.opts.docker.stopContainer(dirs.containerName).catch(() => undefined);
       let removalFailure: unknown;
       try {
@@ -6252,8 +6330,8 @@ export class ProvisionerImpl implements Provisioner {
         usesConfiguredOverride: !usesDefaultImage,
       };
     }
-    if (this.opts.projectEgress !== undefined)
-      throw new Error('Devcontainer builds are unavailable with experimental egress');
+    if (await this.projectEgressEnabled())
+      throw new Error('Devcontainer builds are unavailable while network protection is on');
     if (build === undefined || dockerHost === undefined) {
       throw new Error(
         'Devcontainer build support is unavailable; configure the secure builder or disable repository devcontainers for this project',

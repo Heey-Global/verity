@@ -5190,3 +5190,16 @@ migrations['0186_pr_ready_delivery'] = {
     await sql`drop table pr_ready_delivery`.execute(db);
   },
 };
+
+migrations['0187_project_egress_switch'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    // Default off: network protection only applies once an administrator enables it.
+    await db.schema
+      .alterTable('verity_settings')
+      .addColumn('project_egress_enabled', 'boolean', (c) => c.notNull().defaultTo(false))
+      .execute();
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await db.schema.alterTable('verity_settings').dropColumn('project_egress_enabled').execute();
+  },
+};

@@ -1,3 +1,4 @@
+import { networkProtectionStatus } from '../../lib/networkProtection';
 import { resetFeatureHints } from '../../lib/featureHints';
 import { useTaskPreferences } from '../../lib/taskPreferences';
 // Settings, top level: what is left to set up, where everything lives, and the
@@ -271,6 +272,12 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
                 : undefined
             }
             onPress={() => router.push('/settings/server-update')}
+          />
+          <SettingsNavRow
+            icon="shield"
+            title="Network protection"
+            subtitle={networkProtectionStatus(settings)}
+            onPress={() => router.push('/settings/network-protection' as Href)}
           />
           {backup !== null ? (
             <SettingsNavRow

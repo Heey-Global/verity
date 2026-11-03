@@ -738,6 +738,131 @@ describe('ProvisionerImpl (#174)', () => {
     },
   );
 
+  it('starts open while the protection switch is off, even with an unreachable host service', async () => {
+    const id = await seedProject();
+    const root = mkdtempSync(join(tmpdir(), 'egress-switch-'));
+    const hostCreate = vi.fn();
+    const egress = {
+      current: vi.fn(async () => {
+        throw new Error('host egress service unavailable');
+      }),
+      create: hostCreate,
+    } as unknown as ProjectEgressLifecycle;
+    const { client: docker, calls } = fakeDocker({
+      inspectContainer: async (name) => ({
+        id: name,
+        running: true,
+        networks: { [projectNetworkName(id)]: { ipAddress: '172.30.0.2' } },
+      }),
+    });
+    const { runner: git } = fakeGit([{ match: /\bclone\b/ }, { match: /remote set-url/ }]);
+    const provisioner = createProvisioner({
+      store: ctx.store,
+      db: ctx.db,
+      docker,
+      git,
+      projectEgress: egress,
+      projectEgressEnabled: async () => false,
+      sandboxRuntime: 'runsc-project',
+      verifySandboxRuntime: async () => {},
+      projectTokenMint: async () => 'tok',
+      defaultImageRef: 'image:test',
+      hostCloneRoot: root,
+      gitSecretRoot: join(root, 'secrets'),
+    });
+    try {
+      await provisioner.provision(id);
+      expect(hostCreate).not.toHaveBeenCalled();
+      const spec = calls.filter((call) => call.method === 'createContainer').at(-1)!
+        .payload as ContainerSpec;
+      expect(spec).toMatchObject({
+        network: projectNetworkName(id),
+        restartPolicy: 'unless-stopped',
+      });
+      expect(calls.some((call) => call.method === 'startContainer')).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves an existing Sandbox when replacement protection infrastructure is missing', async () => {
+    const id = await seedProject('active');
+    const { client: docker, calls } = fakeDocker();
+    const provisioner = createProvisioner({
+      store: ctx.store,
+      db: ctx.db,
+      docker,
+      projectEgressEnabled: async () => true,
+      projectTokenMint: async () => undefined,
+      defaultImageRef: 'sandbox:test',
+      hostCloneRoot: '/work',
+    });
+    await expect(provisioner.recreateContainer(id, { confirmWarnings: true })).rejects.toThrow(
+      'no egress service',
+    );
+    expect(
+      calls.some(({ method }) => method === 'stopContainer' || method === 'removeContainer'),
+    ).toBe(false);
+    expect(await ctx.store.getProject(id)).toMatchObject({ state: 'active' });
+  });
+
+  it('defers network drift reconciliation when protection is off and the host is unreachable', async () => {
+    const id = await seedProject('active');
+    const { client: docker } = fakeDocker({
+      inspectContainer: async () => ({
+        id: 'retained',
+        running: true,
+        labels: { [PROJECT_ID_LABEL]: id, [CONTAINER_GENERATION_LABEL]: 'gen-1' },
+        networks: { 'protected-generation-network': {} },
+      }),
+    });
+    const egress = new ProjectEgressLifecycle(async () => {
+      throw new Error('host unavailable');
+    }, {});
+    const provisioner = createProvisioner({
+      store: ctx.store,
+      db: ctx.db,
+      docker,
+      projectEgress: egress,
+      sandboxRuntime: 'runsc-project',
+      projectEgressEnabled: async () => false,
+      projectTokenMint: async () => undefined,
+      defaultImageRef: 'sandbox:test',
+      hostCloneRoot: '/work',
+    });
+    provisioner.attachProjectBusyProbe(async () => false);
+    const recreate = vi.spyOn(provisioner, 'recreateContainer');
+    await expect(
+      provisioner.reconcileRelays([(await ctx.store.getProject(id))!], {}),
+    ).rejects.toMatchObject({ errors: [expect.objectContaining({ message: 'host unavailable' })] });
+    expect(recreate).not.toHaveBeenCalled();
+    expect(await ctx.store.getProject(id)).toMatchObject({ state: 'active' });
+  });
+
+  it('fails a start closed when protection is on but the host has no egress service', async () => {
+    const id = await seedProject();
+    const root = mkdtempSync(join(tmpdir(), 'egress-switch-'));
+    const { client: docker, calls } = fakeDocker();
+    const { runner: git } = fakeGit([{ match: /\bclone\b/ }, { match: /remote set-url/ }]);
+    const provisioner = createProvisioner({
+      store: ctx.store,
+      db: ctx.db,
+      docker,
+      git,
+      projectEgressEnabled: async () => true,
+      projectTokenMint: async () => 'tok',
+      defaultImageRef: 'image:test',
+      hostCloneRoot: root,
+      gitSecretRoot: join(root, 'secrets'),
+    });
+    try {
+      await expect(provisioner.provision(id)).rejects.toThrow(/Network protection is on/);
+      expect(calls.some((call) => call.method === 'startContainer')).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it.each([false, true])(
     'sleeps an owned active Sandbox after revocation (scan restoration=%s)',
     async (scanRestore) => {
@@ -1043,7 +1168,7 @@ describe('ProvisionerImpl (#174)', () => {
     );
   });
 
-  it.each([false, true, 'packet'] as const)(
+  it.each([false, true, 'packet', 'switched-off', 'host-down', 'missing-host'] as const)(
     'wakes with the host-required generation and fresh relay capabilities (host: %s)',
     async (protectedStart) => {
       const id = await seedProject('active');
@@ -1052,7 +1177,7 @@ describe('ProvisionerImpl (#174)', () => {
         running: false,
         image: 'verity-devc-test:latest',
         extraHosts: ['relay:172.20.0.2'],
-        networks: { 'project-network': {} },
+        networks: { [protectedStart ? 'project-network' : projectNetworkName(id)]: {} },
         labels: { [PROJECT_ID_LABEL]: id, [CONTAINER_GENERATION_LABEL]: 'generation-1' },
         mounts: [
           { source: '/opt/agent-seed', destination: '/opt/agent-seed', readWrite: false },
@@ -1066,7 +1191,11 @@ describe('ProvisionerImpl (#174)', () => {
         sleepCompatibilityFingerprint: sandboxSleepCompatibilityFingerprint({
           ...retained,
           running: true,
-          networks: { 'project-network': { ipAddress: '172.20.0.2' } },
+          networks: {
+            [protectedStart ? 'project-network' : projectNetworkName(id)]: {
+              ipAddress: '172.20.0.2',
+            },
+          },
         }),
         sleepingSince: new Date(),
         wakeStartedAt: null,
@@ -1094,6 +1223,15 @@ describe('ProvisionerImpl (#174)', () => {
       vi.spyOn(egress, 'requiresFreshWakeGeneration').mockResolvedValue(
         protectedStart === 'packet',
       );
+      // The retained Sandbox started protected, so the host still holds its generation.
+      const current = vi.spyOn(egress, 'current').mockResolvedValue({
+        projectId: id,
+        generation: 'generation-1',
+        networkId: 'a'.repeat(64),
+        networkName: 'project-network',
+        bridge: 'vep0123456789ab',
+      });
+      if (protectedStart === 'host-down') current.mockRejectedValue(new Error('host unavailable'));
       const hostStart = vi.spyOn(egress, 'start').mockResolvedValue(undefined);
       vi.spyOn(egress, 'connect').mockResolvedValue('172.20.0.2');
       const provisioner = createProvisioner({
@@ -1105,7 +1243,12 @@ describe('ProvisionerImpl (#174)', () => {
         hostCloneRoot: '/work',
         projectRelay: relay,
         ...(protectedStart
-          ? { projectEgress: egress, sandboxRuntime: 'runsc-project' as const }
+          ? {
+              ...(protectedStart === 'missing-host' ? {} : { projectEgress: egress }),
+              projectEgressEnabled: async () =>
+                protectedStart !== 'switched-off' && protectedStart !== 'host-down',
+              sandboxRuntime: 'runsc-project' as const,
+            }
           : {}),
         onSandboxLifecycle: lifecycle,
       });
@@ -1116,7 +1259,23 @@ describe('ProvisionerImpl (#174)', () => {
       );
       provisioner.attachProjectBusyProbe(busyProbe);
 
-      if (protectedStart === 'packet') {
+      if (protectedStart === 'missing-host') {
+        await expect(
+          provisioner.ensureProjectSandboxAwake(id, requestingSessionIds),
+        ).rejects.toThrow('no egress service');
+        expect(await ctx.store.getProject(id)).toMatchObject({
+          state: 'sleeping',
+          wakeStartedAt: null,
+        });
+        return;
+      }
+      // A packet-enforcing host, or protection switched off since the Sandbox started
+      // protected, both replace the retained generation instead of waking it.
+      if (
+        protectedStart === 'packet' ||
+        protectedStart === 'switched-off' ||
+        protectedStart === 'host-down'
+      ) {
         const replace = vi.spyOn(provisioner, 'recreateContainer').mockImplementation(async () => {
           await ctx.store.updateProjectState(id, 'active');
           return (await ctx.store.getProject(id))!;
@@ -1182,6 +1341,7 @@ describe('ProvisionerImpl (#174)', () => {
       writeFileSync(join(keyDir, `egress_ca.${id}.crt`), 'OLD-CA');
       writeFileSync(join(keyDir, `egress_client.${id}.crt`), 'OLD-CERT');
       const retained = {
+        networks: { [projectNetworkName(id)]: {} },
         id: 'container-1',
         running: false,
         image: 'sandbox:test',
@@ -1260,6 +1420,7 @@ describe('ProvisionerImpl (#174)', () => {
       writeFileSync(certPath, created.clientCertPem);
       writeFileSync(keyPath, created.clientKeyPem, { mode: 0o600 });
       const running = {
+        networks: { [projectNetworkName(id)]: {} },
         id: 'container-1',
         running: true,
         image: 'sandbox:test',
@@ -1385,6 +1546,7 @@ describe('ProvisionerImpl (#174)', () => {
       // Returning it to sleep would fail every later wake the same way.
       const id = await seedProject('active');
       const retained = {
+        networks: { [projectNetworkName(id)]: {} },
         id: 'container-1',
         running: false,
         image: 'sandbox:test',
@@ -1502,6 +1664,7 @@ describe('ProvisionerImpl (#174)', () => {
     const id = await seedProject('active');
     const retained = {
       id: 'container-1',
+      networks: { [projectNetworkName(id)]: {} },
       running: false,
       image: 'sandbox:test',
       labels: { [PROJECT_ID_LABEL]: id, [CONTAINER_GENERATION_LABEL]: 'generation-1' },
@@ -1644,6 +1807,7 @@ describe('ProvisionerImpl (#174)', () => {
     const id = await seedProject('active');
     const retained = {
       id: 'container-1',
+      networks: { [projectNetworkName(id)]: {} },
       running: false,
       image: 'sandbox:test',
       labels: { [PROJECT_ID_LABEL]: id, [CONTAINER_GENERATION_LABEL]: 'generation-1' },
