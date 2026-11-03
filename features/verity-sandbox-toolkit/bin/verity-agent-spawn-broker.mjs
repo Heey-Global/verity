@@ -1230,6 +1230,14 @@ export async function reclaimPackageCaches(request, options) {
   let lease;
   try {
     lease = await acquirePackageCacheLease(options, true);
+    let retainedEntries = false;
+    const entries = await opendir(npmCachePath(options));
+    for await (const entry of entries) {
+      if (++budget.entries > 100_000 || Date.now() > budget.deadline)
+        throw new Error('package cache inventory limit');
+      if (entry.name !== '_cacache') retainedEntries = true;
+    }
+    if (retainedEntries) block('Retained non-cacache npm cache entries have unknown allocation');
     const cache = await validatedCacache(npmCachePath(options), options, budget);
     if (cache.bytes > request.maxBytes) {
       await rm(cache.path, { recursive: true });
@@ -1237,6 +1245,7 @@ export async function reclaimPackageCaches(request, options) {
       report.sharedCachePruned = true;
       report.sharedBytes = 0;
     } else report.sharedBytes = cache.bytes;
+    if (retainedEntries) report.sharedBytes = null;
   } catch (error) {
     block(error.message);
   } finally {

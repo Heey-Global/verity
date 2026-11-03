@@ -246,6 +246,34 @@ describe('broker package caches', () => {
     expect((await lstat(path)).isDirectory()).toBe(true);
   });
 
+  it.each([1, cap])(
+    'retains non-cacache shared entries with unknown usage while applying the %i-byte cacache target',
+    async (maxBytes) => {
+      await (await acquirePackageCacheLease(options)).close();
+      const npm = join(root, 'package-cache', 'npm');
+      const cacache = await cache(npm);
+      await mkdir(join(npm, '_npx'));
+      await writeFile(join(npm, '_npx', 'keep'), 'retained execution cache');
+      const report = await reclaimPackageCaches({ sessionIds: [], maxBytes }, options);
+      expect(report).toMatchObject({
+        sharedBytes: null,
+        usageComplete: false,
+        sharedCachePruned: maxBytes === 1,
+      });
+      expect(report.blockers).toContain(
+        'Retained non-cacache npm cache entries have unknown allocation',
+      );
+      expect(await readFile(join(npm, '_npx', 'keep'), 'utf8')).toBe('retained execution cache');
+      if (maxBytes === 1) {
+        expect(report.removedBytes).toBeGreaterThan(0);
+        await expect(lstat(cacache)).rejects.toMatchObject({ code: 'ENOENT' });
+      } else {
+        expect(report.removedBytes).toBe(0);
+        expect((await lstat(cacache)).isDirectory()).toBe(true);
+      }
+    },
+  );
+
   it('rejects a redirected session-homes root even when the requested home is absent', async () => {
     const outside = join(root, 'outside');
     await mkdir(outside);

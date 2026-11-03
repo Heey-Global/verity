@@ -52,13 +52,17 @@ The embedded Server's `runnerCacheMaxBytes` setting defaults to 4 GiB per projec
 For the Server entrypoint, set `VERITY_RUNNER_NPM_CACHE_MAX_BYTES` to a positive
 safe-integer byte count to override the target; unset or blank uses the default,
 and invalid values prevent startup.
-When a shared npm cache exceeds that target, collection clears its regenerable
+When the shared npm `_cacache` allocation exceeds that target, collection clears its regenerable
 `_cacache` under exclusive maintenance access. Cache users hold shared leases;
 maintenance does not interrupt users, and new users cannot enter destructive
 maintenance. An active writer defers cleanup and remains visible as a blocker.
 The target is a maintenance threshold, not an instantaneous disk quota: an active
 project can exceed it until a safe collection pass. `npm cache verify` alone is
 not used as a size cap. Cleanup never forces an install or changes a lockfile.
+Other entries in the shared npm cache, such as `_npx`, are retained. Their presence
+keeps the reported shared allocation unknown/incomplete with an explicit blocker;
+eligible `_cacache` cleanup can still proceed independently. The target does not
+bound these retained entries.
 
 Runner cache reports expose remaining allocated bytes, removed allocated bytes,
 legacy-cache removal counts, shared-cache cleanup counts and blockers. Missing or
