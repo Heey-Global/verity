@@ -1,6 +1,6 @@
 import path from 'node:path';
 jest.mock('expo/metro-config', () => ({
-  getDefaultConfig: () => ({ resolver: { assetExts: [] } }),
+  getDefaultConfig: () => ({ resolver: { assetExts: [] }, transformer: {} }),
 }));
 jest.mock('metro-config/private/defaults/exclusionList', () => ({
   __esModule: true,

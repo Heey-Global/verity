@@ -1254,6 +1254,87 @@ describe('GET /sessions', () => {
     );
   });
 
+  it('refreshes idle list branches once a minute while active sessions retain the short TTL', async () => {
+    const current = vi.fn(async () => 'feat/one');
+    const server = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      spawnWorktreeRoot: worktreeRoot,
+      branches: { ...branchSvc, current } as unknown as NonNullable<
+        Parameters<typeof buildServer>[0]['branches']
+      >,
+    });
+    let now = 0;
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    try {
+      for (const id of ['idle', 'active']) {
+        const worktree = join(worktreeRoot, id);
+        mkdirSync(worktree, { recursive: true });
+        await ctx.store.createSession({ sessionId: id, worktree, model: 'm' });
+        await ctx.store.appendEvent(id, {
+          t: 'status',
+          state: id === 'active' ? 'running' : 'completed',
+        });
+      }
+      const poll = async () => {
+        await server.inject({ method: 'GET', url: '/sessions' });
+        await new Promise((resolve) => setImmediate(resolve));
+      };
+      await poll();
+      expect(current).toHaveBeenCalledTimes(2);
+      current.mockClear();
+      now = 10_001;
+      await poll();
+      expect(current.mock.calls).toEqual([[join(worktreeRoot, 'active')]]);
+      current.mockClear();
+      now = 60_001;
+      await poll();
+      expect(current).toHaveBeenCalledTimes(2);
+    } finally {
+      clock.mockRestore();
+      await server.close();
+    }
+  });
+
+  it('bounds fleet-wide branch reads and coalesces queued worktrees across list polls', async () => {
+    const releases: (() => void)[] = [];
+    const current = vi.fn(
+      () => new Promise<string>((resolve) => releases.push(() => resolve('feat/one'))),
+    );
+    const server = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      spawnWorktreeRoot: worktreeRoot,
+      branches: { ...branchSvc, current } as unknown as NonNullable<
+        Parameters<typeof buildServer>[0]['branches']
+      >,
+    });
+    try {
+      for (let i = 0; i < 5; i++) {
+        const worktree = join(worktreeRoot, `bounded-${i}`);
+        mkdirSync(worktree, { recursive: true });
+        await ctx.store.createSession({ sessionId: `bounded-${i}`, worktree, model: 'm' });
+      }
+      await server.inject({ method: 'GET', url: '/sessions' });
+      await server.inject({ method: 'GET', url: '/sessions' });
+      expect(current).toHaveBeenCalledTimes(2);
+      releases.shift()!();
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(current).toHaveBeenCalledTimes(3);
+      for (let i = 0; i < 4; i++) {
+        releases.shift()!();
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+      await server.inject({ method: 'GET', url: '/sessions' });
+      expect(current).toHaveBeenCalledTimes(5);
+    } finally {
+      for (const release of releases) release();
+      await server.close();
+    }
+  });
+
   it('carries the cached branch on each summary without awaiting git', async () => {
     let release: (branch: string) => void = () => undefined;
     const current = vi.fn(

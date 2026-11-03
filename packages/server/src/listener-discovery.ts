@@ -70,6 +70,29 @@ export class ListenerDiscovery {
     return this.attribute(project, sessionId, processes);
   }
 
+  /** Shared by discovery, managed-server supervision, and preview consumers. */
+  async listListeningProcesses(
+    project: ProjectRecord,
+    options: { fresh?: boolean } = {},
+  ): Promise<ListeningProcess[]> {
+    if (this.closed) throw new Error('Listener discovery is closed');
+    if (!this.active(project)) {
+      this.invalidateProject(project.id);
+      return [];
+    }
+    await this.watch(project);
+    return this.scan(project, options.fresh);
+  }
+
+  /** A retained container can restart under the same name with entirely new processes. */
+  invalidateProject(projectId: string): void {
+    const watcher = this.watchers.get(projectId);
+    this.watchers.delete(projectId);
+    watcher?.child.stdin?.end();
+    watcher?.child.kill();
+    this.clearScans(projectId);
+  }
+
   private scan(project: ProjectRecord, fresh = false): Promise<ListeningProcess[]> {
     const pending = this.scans.get(project.id);
     if (pending?.containerName === project.containerName) return pending.promise;

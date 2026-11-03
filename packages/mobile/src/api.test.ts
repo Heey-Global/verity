@@ -4434,14 +4434,20 @@ describe('VerityClient calendar meetings', () => {
       decision: null,
       meetingId: null,
     };
-    const { fetch, calls } = fakeFetchSequence(json(active), json({ upcoming: [upcoming] }));
+    const { fetch, calls } = fakeFetchSequence(
+      json(active),
+      json({ upcoming: [upcoming] }),
+      json({ upcoming: [{ ...upcoming, provider: null }] }),
+    );
     const client = new VerityClient({ baseUrl: 'http://host', fetch });
     expect(await client.getActiveLiveMeetings()).toEqual(active);
     // An unknown provider from a newer server still lists the meeting.
     expect(await client.getUpcomingMeetings()).toEqual([{ ...upcoming, provider: 'meet' }]);
+    expect(await client.getUpcomingMeetings(true)).toEqual([{ ...upcoming, provider: null }]);
     expect(calls.map((call) => call.url)).toEqual([
       'http://host/live-meetings/active',
       'http://host/live-meetings/upcoming',
+      'http://host/live-meetings/upcoming?includeInPerson=true',
     ]);
     registered('GET', '/live-meetings/active');
     registered('GET', '/live-meetings/upcoming');
