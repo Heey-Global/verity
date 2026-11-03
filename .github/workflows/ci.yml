@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       lint-comparison-only:
-        description: Run the isolated lint comparison instead of the full check suite
+        description: Run the isolated lint metadata-cache comparison instead of the full check suite
         required: false
         type: boolean
         default: false
