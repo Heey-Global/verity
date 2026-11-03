@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.83.5](https://github.com/Heey-Global/verity/compare/mobile-v1.83.4...mobile-v1.83.5) (2026-11-03)
+
+
+### Bug Fixes
+
+* **meetings:** restore calendar selection and reliable web startup ([#2205](https://github.com/Heey-Global/verity/issues/2205)) ([4dac91e](https://github.com/Heey-Global/verity/commit/4dac91e1bf9cd97d8114938add501b7b1e6fb61d))
+* **projects:** restore local code workspaces and GitHub disconnect ([#2211](https://github.com/Heey-Global/verity/issues/2211)) ([9acc428](https://github.com/Heey-Global/verity/commit/9acc42872d8f1097cd83a9ecffdeee944e1a3867))
+
+
+### Performance Improvements
+
+* **server:** reduce polling-driven Docker execs ([#2208](https://github.com/Heey-Global/verity/issues/2208)) ([7e200b1](https://github.com/Heey-Global/verity/commit/7e200b12402c1f4c065e8334c45091607bf4b186))
+
 ## [1.83.4](https://github.com/Heey-Global/verity/compare/mobile-v1.83.3...mobile-v1.83.4) (2026-11-03)
 
 
