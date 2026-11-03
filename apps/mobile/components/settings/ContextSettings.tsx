@@ -19,23 +19,26 @@ export function ContextSettings({
   const [error, setError] = useState<string>();
   const [saving, setSaving] = useState(false);
   const title = kind === 'instructions' ? 'Instructions' : 'Memory';
-  const load = useCallback(async () => {
-    if (!client) return;
-    try {
-      let next: Snapshot;
-      if (!projectId) next = await client.getUserContext();
-      else if (kind === 'instructions')
-        next = { ...(await client.getProjectInstructions(projectId)), memory: '' };
-      else {
-        next = { ...(await client.getProjectMemory(projectId)), instructions: '' };
+  const load = useCallback(
+    async (preserveDraft = false) => {
+      if (!client) return;
+      try {
+        let next: Snapshot;
+        if (!projectId) next = await client.getUserContext();
+        else if (kind === 'instructions')
+          next = { ...(await client.getProjectInstructions(projectId)), memory: '' };
+        else {
+          next = { ...(await client.getProjectMemory(projectId)), instructions: '' };
+        }
+        setSnapshot(next);
+        if (!preserveDraft) setDraft(next[kind]);
+        setError(undefined);
+      } catch (failure) {
+        setError(failure instanceof Error ? failure.message : 'Could not load context');
       }
-      setSnapshot(next);
-      setDraft(next[kind]);
-      setError(undefined);
-    } catch (failure) {
-      setError(failure instanceof Error ? failure.message : 'Could not load context');
-    }
-  }, [client, projectId, kind]);
+    },
+    [client, projectId, kind],
+  );
   useEffect(() => {
     void load();
   }, [load]);
@@ -92,7 +95,7 @@ export function ContextSettings({
       detail
       state={{ error, saving }}
       onRetry={() => {
-        void load();
+        void load(!!snapshot);
       }}
     >
       <SettingsGroup

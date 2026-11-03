@@ -5,7 +5,7 @@ description: Use before publishing code, creating a pull request or choosing bra
 
 # Pull requests
 
-Open every pull request as a normal, review-ready PR — never a draft. Do not pass `--draft` to `gh pr create` and do not create drafts through the API. If a PR you are working on already exists as a draft, mark it ready with `gh pr ready <number>`. Draft PRs hold back reviews and ready-gated workflows, and they make the session's PR status read as stalled.
+Open every pull request as a normal, review-ready PR — never a draft. Use `verity repo pr create` and `verity repo pr ready <number>` through the project's code host; these commands support GitHub and Forgejo. If using GitHub-specific tooling, do not pass `--draft` to `gh pr create` and do not create drafts through the API. If a PR you are working on already exists as a draft, mark it ready before delivery. Draft PRs hold back reviews and ready-gated workflows, and they make the session's PR status read as stalled.
 
 # Branch and commit conventions
 

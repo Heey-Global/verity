@@ -2,10 +2,17 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { rename } from 'node:fs/promises';
+
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  return { ...actual, rename: vi.fn(actual.rename) };
+});
 import { PROJECT_MEMORY_MAX_CHARS } from '@verity/store';
 
 import { OVERVIEW_FILE_NAME, projectKnowledgeDir } from './knowledge-folder.js';
+import { acquireKnowledgeMutationLock } from './knowledge-mutation-lock.js';
 import {
   appendProjectOverview,
   projectMemoryRevision,
@@ -57,6 +64,49 @@ describe('project overview file', () => {
     );
     expect(body).toBe('First fact\nSecond fact\n');
     expect(await readProjectOverview(dataRoot, 'project')).toBe('First fact\nSecond fact');
+  });
+
+  it('holds the Explorer lock between revision checking and atomic replacement', async () => {
+    await appendProjectOverview(dataRoot, 'project', 'Original fact');
+    const root = projectKnowledgeDir(dataRoot, 'project');
+    const actual = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
+    let signalRename!: () => void;
+    let releaseRename!: () => void;
+    const reachedRename = new Promise<void>((resolve) => {
+      signalRename = resolve;
+    });
+    const allowRename = new Promise<void>((resolve) => {
+      releaseRename = resolve;
+    });
+    vi.mocked(rename).mockImplementationOnce(async (from, to) => {
+      signalRename();
+      await allowRename;
+      await actual.rename(from, to);
+    });
+    const replacement = replaceProjectOverview(
+      dataRoot,
+      'project',
+      projectMemoryRevision('Original fact'),
+      'Settings fact',
+    );
+    await reachedRename;
+    let explorerFinished = false;
+    const explorer = acquireKnowledgeMutationLock(root).then((release) => {
+      try {
+        writeFileSync(join(root, OVERVIEW_FILE_NAME), 'Explorer fact\n');
+        explorerFinished = true;
+      } finally {
+        release();
+      }
+    });
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(explorerFinished).toBe(false);
+    } finally {
+      releaseRename();
+      await Promise.all([replacement, explorer]);
+    }
+    expect(await readProjectOverview(dataRoot, 'project')).toBe('Explorer fact');
   });
 
   it('does not create content for a blank append', async () => {

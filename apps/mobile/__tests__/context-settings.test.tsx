@@ -8,11 +8,20 @@ jest.mock('../lib/client', () => ({ createVerityClient: () => mockClient() }));
 import { ContextSettings } from '../components/settings/ContextSettings';
 
 it('preserves the other personal field and retains the draft after a revision conflict', async () => {
-  const replace = jest.fn().mockRejectedValue(new Error('Context changed; reload and try again'));
+  const replace = jest
+    .fn()
+    .mockRejectedValueOnce(new Error('Context changed; reload and try again'))
+    .mockResolvedValue({ instructions: 'New rules', memory: 'Updated fact', revision: 5 });
+  const read = jest
+    .fn()
+    .mockResolvedValueOnce({
+      instructions: 'Original rules',
+      memory: 'Keep this fact',
+      revision: 3,
+    })
+    .mockResolvedValue({ instructions: 'Other rules', memory: 'Updated fact', revision: 4 });
   mockClient.mockReturnValue({
-    getUserContext: jest
-      .fn()
-      .mockResolvedValue({ instructions: 'Original rules', memory: 'Keep this fact', revision: 3 }),
+    getUserContext: read,
     replaceUserContext: replace,
   } as unknown as VerityClient);
   render(<ContextSettings kind="instructions" />);
@@ -28,6 +37,19 @@ it('preserves the other personal field and retains the draft after a revision co
   );
   expect(await screen.findByText('Context changed; reload and try again')).toBeTruthy();
   expect(screen.getByDisplayValue('New rules')).toBeTruthy();
+  fireEvent.press(screen.getByText('Retry'));
+  await waitFor(() =>
+    expect(screen.queryByText('Context changed; reload and try again')).toBeNull(),
+  );
+  expect(screen.getByDisplayValue('New rules')).toBeTruthy();
+  fireEvent.press(screen.getByText('Save'));
+  await waitFor(() =>
+    expect(replace).toHaveBeenLastCalledWith({
+      instructions: 'New rules',
+      memory: 'Updated fact',
+      revision: 4,
+    }),
+  );
 });
 
 it('clears personal Memory without clearing Instructions', async () => {
