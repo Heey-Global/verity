@@ -75,9 +75,8 @@ function fixture() {
       events.push('relay-clear');
     }),
   };
-  const readForAdmission = vi.fn(async (_project: string, _sponsor: string, _revision?: number) => {
+  const readForAdmission = vi.fn(async (_project: string, _revision?: number) => {
     void _project;
-    void _sponsor;
     void _revision;
     return { revision: 1, grants: [grant], requests: {} };
   });
@@ -92,7 +91,6 @@ function fixture() {
   const enforcement = createProjectEgressHostEnforcement({
     deadline,
     store: { readForAdmission },
-    sponsor: () => 'sponsor',
     directAuthority: () => true,
     inspect,
     dependencies: {
@@ -120,10 +118,10 @@ it('requires TC and direct denial before enabling the exact relay pair, without 
     codex: false,
   });
   const rules = f.apply.mock.calls.at(-1)![0];
-  expect(rules).toContain('tcp dport { 8080, 8443 }');
+  expect(rules).toContain('tcp dport { 53, 8080, 8443 }');
   expect(rules).not.toContain('elements =');
   await f.enforcement.refresh(network);
-  expect(f.readForAdmission).toHaveBeenCalledWith('a', 'sponsor', 1);
+  expect(f.readForAdmission).toHaveBeenCalledWith('a', 1);
   expect(f.deadline.arm).toHaveBeenCalledOnce();
 });
 it('direct revocation retains the relay but complete denial clears both paths', async () => {
@@ -132,10 +130,10 @@ it('direct revocation retains the relay but complete denial clears both paths', 
   await f.enforcement.refresh(network);
   await f.enforcement.revoke(network);
   expect(f.deadline.clearRelay).not.toHaveBeenCalled();
-  expect(f.apply.mock.calls.at(-1)![0]).toContain('tcp dport { 8080, 8443 }');
+  expect(f.apply.mock.calls.at(-1)![0]).toContain('tcp dport { 53, 8080, 8443 }');
   await f.enforcement.deny(network);
   expect(f.deadline.clearRelay).toHaveBeenCalledWith(corridor.binding);
-  expect(f.apply.mock.calls.at(-1)![0]).not.toContain('tcp dport { 8080, 8443 }');
+  expect(f.apply.mock.calls.at(-1)![0]).not.toContain('tcp dport { 53, 8080, 8443 }');
   await expect(f.enforcement.refresh(network)).rejects.toThrow('not ready');
 });
 it('clears kernel exceptions and refuses readiness after a post-install endpoint change', async () => {
@@ -147,7 +145,7 @@ it('clears kernel exceptions and refuses readiness after a post-install endpoint
   });
   await expect(f.enforcement.connect(network, ids, relay)).rejects.toThrow('admission failed');
   expect(f.deadline.clearRelay).toHaveBeenCalledOnce();
-  expect(f.apply.mock.calls.at(-1)![0]).not.toContain('tcp dport { 8080, 8443 }');
+  expect(f.apply.mock.calls.at(-1)![0]).not.toContain('tcp dport { 53, 8080, 8443 }');
   await expect(f.enforcement.refresh(network)).rejects.toThrow('not ready');
 });
 it('invalidates pending authority reads immediately when a lifecycle operation arrives', async () => {
@@ -180,7 +178,7 @@ it('routes only bound routed addresses through the later direct fence and preser
     expect(rules).toContain('counter drop');
     expect(rules).not.toContain('ct state established accept');
   }
-  expect(fence).toContain('tcp dport { 8080, 8443 }');
+  expect(fence).toContain('tcp dport { 53, 8080, 8443 }');
   expect(fence).toContain(`meta ibrname "${network.bridge}" counter drop`);
   expect(fence).not.toContain('elements =');
   expect(() =>
@@ -254,76 +252,104 @@ it('preserves same-boot generations but permanently retires them before a new ho
   ).rejects.toThrow('Retired');
 });
 
-it('contains admission failures to direct access but closes both paths on topology failure', async () => {
-  const f = fixture();
-  const inspectTransport = vi.fn(async () => relay.transport);
-  const host = new ProjectEgressHost(
-    { version: 1, records: [{ binding: network, containers: ids, retired: false }] },
-    {
-      enforcement: f.enforcement,
-      save: async () => undefined,
-      apply: async () => undefined,
-      inspectContainer: async () => undefined,
-      inspectNetwork: async () => undefined,
-      inspectTransport,
-      startContainer: async () => undefined,
-      stopContainer: async () => undefined,
-    },
-  );
-  await host.execute({ operation: 'connect', projectId: 'a', generation: 'g1' });
-  f.readForAdmission.mockRejectedValueOnce(new Error('database unavailable'));
-  await expect(
-    host.execute({ operation: 'refresh-direct', projectId: 'a', generation: 'g1' }),
-  ).rejects.toThrow('database unavailable');
-  expect(f.deadline.clearRelay).not.toHaveBeenCalled();
-  expect(f.apply.mock.calls.at(-1)![0]).toContain('tcp dport { 8080, 8443 }');
-  await expect(
-    host.execute({ operation: 'refresh-direct', projectId: 'a', generation: 'g1' }),
-  ).resolves.toMatchObject({ state: 'direct-refreshed' });
-  inspectTransport.mockRejectedValueOnce(new Error('endpoint changed'));
-  await expect(
-    host.execute({ operation: 'refresh-direct', projectId: 'a', generation: 'g1' }),
-  ).rejects.toThrow('endpoint changed');
-  expect(f.deadline.clearRelay).toHaveBeenCalled();
-});
+it.each([false, true])(
+  'contains admission failures but closes topology failures with batched inspection=%s',
+  async (batched) => {
+    const f = fixture();
+    const inspectTransport = vi.fn(async () => relay.transport);
+    const host = new ProjectEgressHost(
+      { version: 1, records: [{ binding: network, containers: ids, retired: false }] },
+      {
+        enforcement: f.enforcement,
+        save: async () => undefined,
+        apply: async () => undefined,
+        inspectContainer: async () => undefined,
+        inspectNetwork: async () => undefined,
+        inspectTransport,
+        ...(batched ? { inspectDirectTransport: inspectTransport } : {}),
+        startContainer: async () => undefined,
+        stopContainer: async () => undefined,
+      },
+    );
+    await host.execute({ operation: 'connect', projectId: 'a', generation: 'g1' });
+    f.readForAdmission.mockRejectedValueOnce(new Error('database unavailable'));
+    await expect(
+      host.execute({ operation: 'refresh-direct', projectId: 'a', generation: 'g1' }),
+    ).rejects.toThrow('database unavailable');
+    expect(f.deadline.clearRelay).not.toHaveBeenCalled();
+    expect(f.apply.mock.calls.at(-1)![0]).toContain('tcp dport { 53, 8080, 8443 }');
+    await expect(
+      host.execute({ operation: 'refresh-direct', projectId: 'a', generation: 'g1' }),
+    ).resolves.toMatchObject({ state: 'direct-refreshed' });
+    inspectTransport.mockRejectedValueOnce(new Error('endpoint changed'));
+    await expect(
+      host.execute({ operation: 'refresh-direct', projectId: 'a', generation: 'g1' }),
+    ).rejects.toThrow('endpoint changed');
+    expect(f.deadline.clearRelay).toHaveBeenCalled();
+  },
+);
 
-it('checks fresh transport facts concurrently and waits for every read before containment', async () => {
-  const f = fixture();
-  const inspectContainer = vi.fn(async (): Promise<void> => undefined);
-  const inspectNetwork = vi.fn(async () => undefined);
-  const inspectTransport = vi.fn(async () => relay.transport);
-  const host = new ProjectEgressHost(
-    { version: 1, records: [{ binding: network, containers: ids, retired: false }] },
-    {
-      enforcement: f.enforcement,
-      save: async () => undefined,
-      apply: async () => undefined,
-      inspectContainer,
-      inspectNetwork,
-      inspectTransport,
-      startContainer: async () => undefined,
-      stopContainer: async () => undefined,
-    },
-  );
-  await host.execute({ operation: 'connect', projectId: 'a', generation: 'g1' });
-  inspectContainer.mockClear();
-  inspectNetwork.mockClear();
-  inspectTransport.mockClear();
-  let release!: () => void;
-  inspectContainer.mockImplementationOnce(
-    () =>
-      new Promise<void>((resolve) => {
-        release = resolve;
-      }),
-  );
-  inspectTransport.mockRejectedValueOnce(new Error('changed transport'));
-  const refresh = host.execute({ operation: 'refresh-direct', projectId: 'a', generation: 'g1' });
-  const rejected = expect(refresh).rejects.toThrow('changed transport');
-  await vi.waitFor(() => expect(inspectTransport).toHaveBeenCalledTimes(1));
-  expect(inspectContainer).toHaveBeenCalledTimes(2);
-  expect(inspectNetwork).toHaveBeenCalledTimes(1);
-  expect(f.deadline.clearRelay).not.toHaveBeenCalled();
-  release();
-  await rejected;
-  expect(f.deadline.clearRelay).toHaveBeenCalled();
+it('records one Sandbox HTTPS request per ungranted name and caps a project', async () => {
+  vi.useFakeTimers({ now: 1_000_000 });
+  try {
+    const f = fixture();
+    const request = vi.fn(async () => ({ covered: true as const }));
+    const reportRequestFailure = vi.fn();
+    let authority = true;
+    const enforcement = createProjectEgressHostEnforcement({
+      deadline: f.deadline,
+      store: { readForAdmission: f.readForAdmission },
+      requests: { requestFromSandbox: request },
+      reportRequestFailure,
+      systemTargets: [{ host: 'mcp.exa.ai', protocol: 'tcp', port: 443 }],
+      directAuthority: () => authority,
+      inspect: f.inspect,
+      dependencies: {
+        inspect: async (b) => ({ ...b }),
+        apply: f.apply,
+        // `random.example.com` stands in for a broker-only name.
+        directTargetAllowed: async (host) => host !== 'random.example.com',
+        destinationAllowed: async () => true,
+        resolve: async () => {
+          throw new Error('Unexpected DNS');
+        },
+      },
+    });
+    const settle = () => vi.advanceTimersByTimeAsync(0);
+    enforcement.requestDirect!(network, 'api.example.com');
+    enforcement.requestDirect!(network, 'api.example.com');
+    // Broker names never become cards that could not take effect.
+    enforcement.requestDirect!(network, 'random.example.com');
+    enforcement.requestDirect!(network, 'mcp.exa.ai');
+    await settle();
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(request).toHaveBeenCalledWith('a', {
+      host: 'api.example.com',
+      protocol: 'tcp',
+      port: 443,
+    });
+    await vi.advanceTimersByTimeAsync(60_001);
+    enforcement.requestDirect!(network, 'api.example.com');
+    await settle();
+    expect(request).toHaveBeenCalledTimes(2);
+    // Without configured direct authority no grant could take effect, so nothing is asked.
+    authority = false;
+    enforcement.requestDirect!(network, 'down.example.com');
+    await settle();
+    expect(request).toHaveBeenCalledTimes(2);
+    authority = true;
+    request.mockRejectedValueOnce(new Error('store down'));
+    enforcement.requestDirect!(network, 'down.example.com');
+    await settle();
+    expect(reportRequestFailure).toHaveBeenCalledWith(new Error('store down'));
+    // A Sandbox resolving many names files at most 20 new requests per project and minute.
+    await vi.advanceTimersByTimeAsync(60_001);
+    request.mockClear();
+    for (let i = 0; i < 30; i++) enforcement.requestDirect!(network, `api.example.com`);
+    for (let i = 0; i < 30; i++) enforcement.requestDirect!(network, `n${String(i)}.example.com`);
+    await settle();
+    expect(request).toHaveBeenCalledTimes(20);
+  } finally {
+    vi.useRealTimers();
+  }
 });

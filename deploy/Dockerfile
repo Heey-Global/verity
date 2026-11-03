@@ -394,6 +394,7 @@ LABEL org.verity.host-runtimes="{\"release\":\"release-20261026.0\",\"sha512\":{
 # image to that host component, which verifies the release signature itself and installs the
 # bundle when it differs from the installed builder. devcontainer-builder.test.ts keeps the
 # contract value equal in all three places.
+LABEL org.verity.host-runtime-service="{\"revision\":1,\"renewalProtocol\":1,\"features\":[\"binary\",\"archive\"]}"
 LABEL org.verity.devcontainer-builder="2"
 LABEL org.verity.build-admission="1"
 LABEL org.verity.recovery="1"

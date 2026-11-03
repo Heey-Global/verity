@@ -53,6 +53,16 @@ export class ProjectEgressLifecycle {
     };
     await tick();
   }
+  /** Whether the host egress service answers with packet enforcement. A read-only probe:
+   * `current` for a reserved project id alters no rules and renews nothing. */
+  async available(): Promise<boolean> {
+    if (this.closed) return false;
+    try {
+      return await this.requiresFreshWakeGeneration('verity-availability-probe');
+    } catch {
+      return false;
+    }
+  }
   async requiresFreshWakeGeneration(projectId: string): Promise<boolean> {
     const reply = await this.command({ operation: 'current', projectId });
     if (
@@ -170,6 +180,23 @@ export class ProjectEgressLifecycle {
     const reply = await this.command({ operation: 'revoke-direct', ...this.reference(identity) });
     if (reply.state !== 'direct-revoked' || reply.generation !== identity.containerGeneration)
       throw new Error('Direct revocation was not acknowledged');
+  }
+  /** Addresses the host admitted for a granted name of exactly this generation. */
+  async resolveDirect(
+    identity: InternalConnectionIdentity,
+    name: string,
+  ): Promise<{ addresses: readonly string[]; ttlSeconds: number } | undefined> {
+    if (this.closed) return undefined;
+    const reply = await this.command({
+      operation: 'resolve-direct',
+      ...this.reference(identity),
+      name,
+    });
+    if (reply.state === 'unresolved' && reply.generation === identity.containerGeneration)
+      return undefined;
+    if (reply.state !== 'resolved' || reply.generation !== identity.containerGeneration)
+      throw new Error('Direct name answer was not acknowledged');
+    return { addresses: reply.addresses, ttlSeconds: reply.ttlSeconds };
   }
   async retire(identity: InternalConnectionIdentity): Promise<void> {
     this.stopRenewal(identity);

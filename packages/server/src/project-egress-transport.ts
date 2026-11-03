@@ -48,10 +48,9 @@ export async function inspectEgressTransport(
   ids: { sandbox: string; relay: string },
   codex: boolean,
   io = transportIO,
+  docker = io.docker,
 ): Promise<EgressTransport | undefined> {
-  const networkReply: unknown = JSON.parse(
-    await io.docker('network', 'inspect', binding.networkId),
-  );
+  const networkReply: unknown = JSON.parse(await docker('network', 'inspect', binding.networkId));
   verifyEgressHostNetwork(binding, networkReply, [ids.sandbox, ids.relay]);
   const topology = z
     .array(
@@ -67,7 +66,7 @@ export async function inspectEgressTransport(
   const result: Partial<Record<'sandbox' | 'relay', z.infer<typeof endpoint>>> = {};
   const peers = await Promise.allSettled(
     (['sandbox', 'relay'] as const).map(async (role) => {
-      const raw: unknown = JSON.parse(await io.docker('inspect', ids[role]));
+      const raw: unknown = JSON.parse(await docker('inspect', ids[role]));
       const state = z
         .array(z.object({ Id: z.string(), State: z.object({ Running: z.boolean() }) }))
         .length(1)
@@ -179,7 +178,8 @@ export function transportRules(
   );
   const label = bits.length > 0 ? `(${bits.join(' | ')})` : '(0 & 1)';
   const t = egressTransportSchema.parse(input);
-  const ports = t.codex ? '{ 8080, 8443, 8444 }' : '{ 8080, 8443 }';
+  // Port 53 is the relay's controlled DNS answerer; it never forwards to another resolver.
+  const ports = t.codex ? '{ 53, 8080, 8443, 8444 }' : '{ 53, 8080, 8443 }';
   const pair = (reverse: boolean) => {
     const [a, b] = reverse ? [t.relay, t.sandbox] : [t.sandbox, t.relay];
     return family === 'bridge'
@@ -191,6 +191,10 @@ export function transportRules(
   let rules = `${pair(false)} ip saddr ${t.sandbox.address} ip daddr ${t.relay.address} tcp dport ${ports} ct state new tcp flags & (syn | ack | rst | fin) == syn ct label set ${label};\n`;
   rules += `${pair(false)} ip saddr ${t.sandbox.address} ip daddr ${t.relay.address} tcp dport ${ports} ct state { new, established } ct label == ${label} counter return;\n`;
   rules += `${pair(true)} ip saddr ${t.relay.address} ip daddr ${t.sandbox.address} tcp sport ${ports} ct state established ct label == ${label} counter return;\n`;
+  // UDP is limited to DNS queries to the relay and their replies, under the same label.
+  rules += `${pair(false)} ip saddr ${t.sandbox.address} ip daddr ${t.relay.address} udp dport 53 ct state new ct label set ${label};\n`;
+  rules += `${pair(false)} ip saddr ${t.sandbox.address} ip daddr ${t.relay.address} udp dport 53 ct state { new, established } ct label == ${label} counter return;\n`;
+  rules += `${pair(true)} ip saddr ${t.relay.address} ip daddr ${t.sandbox.address} udp sport 53 ct state established ct label == ${label} counter return;\n`;
   if (family === 'bridge') {
     for (const [a, b] of [
       [t.sandbox, t.relay],

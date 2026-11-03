@@ -13,6 +13,7 @@ import {
 } from '../gvisor-runtime-config.js';
 import {
   HOST_RUNTIMES_LABEL,
+  hostRuntimePreparationReady,
   HostRuntimeError,
   parseHostRuntimeRequirements,
   readTargetHostRuntimes,
@@ -411,7 +412,7 @@ describe('a release that pins a gVisor release archive', () => {
     expect(runtimes.runsc?.path).toBe(archivePath);
   });
 
-  it('names why the refresh did not happen and keeps the current version', async () => {
+  it('keeps builder refresh details out of the runtime error and keeps the current version', async () => {
     const { docker, runtimes } = daemon(binaryOnly);
     const dir = await requestDir(legacyAgent);
     await expect(
@@ -420,11 +421,209 @@ describe('a release that pins a gVisor release archive', () => {
         requirements: archived,
         requestId: 'a5',
         requestDir: dir,
-        refreshHostComponents: async () => 'builds are still running; builder update deferred',
+        refreshHostComponents: async () =>
+          'The host could not update the devcontainer builder: builds are still running; builder update deferred',
         ...fast,
       }),
-    ).rejects.toThrow(/builds are still running.*keeps serving/su);
+    ).rejects.toThrow(
+      `This release needs Docker runtime runsc and runsc-project (${archived.release}), ` +
+        "which gVisor ships as a release archive, and this host's runtime service predates archives. " +
+        'The current version keeps serving. Re-run the Verity installer once on the host ' +
+        '(it installs the host runtime service and registers the runtimes), then retry the update.',
+    );
     expect(runtimes.runsc?.path).toBe(binaryPath);
     await expect(readFile(join(dir, 'request.json'))).rejects.toThrow(/ENOENT/u);
+  });
+});
+
+describe('runtime service renewal independent of the builder', () => {
+  const serviceRequirements = { revision: 1, renewalProtocol: 1, features: ['binary', 'archive'] };
+  const renewed = {
+    version: 1,
+    trigger: 'systemd-path',
+    runtimeArtifacts: ['binary', 'archive'],
+    runtimeService: serviceRequirements,
+  };
+  it('renews an old service and registers archive runtimes without requesting builder admission', async () => {
+    const { docker, runtimes } = daemon({});
+    const dir = await requestDir({ version: 1, trigger: 'systemd-path' });
+    const refreshHostComponents = vi.fn(async () => 'builder compatibility unknown');
+    const renewHostRuntimeService = vi.fn(async () => {
+      await writeFile(join(dir, 'agent.json'), JSON.stringify(renewed));
+      Object.assign(runtimes, both);
+    });
+    const onProgress = vi.fn(async () => undefined);
+    await reconcileHostRuntimes({
+      docker,
+      requirements: declared!,
+      requestId: 'renew-1',
+      requestDir: dir,
+      serviceRequirements,
+      renewHostRuntimeService,
+      refreshHostComponents,
+      onProgress,
+    });
+    expect(renewHostRuntimeService).toHaveBeenCalledOnce();
+    expect(refreshHostComponents).not.toHaveBeenCalled();
+    expect(onProgress).toHaveBeenCalledWith('renewing');
+  });
+  it('renews for a future capability even when runtime registrations already match', async () => {
+    const { docker } = daemon(both);
+    const dir = await requestDir(renewed);
+    const renewHostRuntimeService = vi.fn(async () => {
+      await writeFile(
+        join(dir, 'agent.json'),
+        JSON.stringify({
+          ...renewed,
+          runtimeService: {
+            ...serviceRequirements,
+            revision: 2,
+            features: ['binary', 'archive', 'future'],
+          },
+        }),
+      );
+    });
+    await reconcileHostRuntimes({
+      docker,
+      requirements: declared!,
+      requestId: 'renew-2',
+      requestDir: dir,
+      serviceRequirements: { ...serviceRequirements, revision: 2, features: ['future'] },
+      renewHostRuntimeService,
+    });
+    expect(renewHostRuntimeService).toHaveBeenCalledOnce();
+  });
+  it('does not renew an already capable service', async () => {
+    const { docker } = daemon(both);
+    const dir = await requestDir(renewed);
+    const renewHostRuntimeService = vi.fn();
+    await reconcileHostRuntimes({
+      docker,
+      requirements: declared!,
+      requestId: 'renew-3',
+      requestDir: dir,
+      serviceRequirements,
+      renewHostRuntimeService,
+    });
+    expect(renewHostRuntimeService).not.toHaveBeenCalled();
+  });
+  it('recovers an uncommitted service despite matching advertised capabilities', async () => {
+    const { docker } = daemon(both);
+    const dir = await requestDir(renewed);
+    await writeFile(join(dir, 'service-install.pending'), '');
+    const renewHostRuntimeService = vi.fn(async () => {
+      await rm(join(dir, 'service-install.pending'));
+    });
+    await reconcileHostRuntimes({
+      docker,
+      requirements: declared!,
+      requestId: 'pending-service',
+      requestDir: dir,
+      serviceRequirements,
+      renewHostRuntimeService,
+    });
+    expect(renewHostRuntimeService).toHaveBeenCalledOnce();
+  });
+  it('resolves a pending daemon transaction even with matching live registrations and an old success', async () => {
+    const { docker } = daemon(both);
+    const dir = await requestDir(renewed);
+    await writeFile(join(dir, 'daemon-install.pending'), '');
+    await writeFile(
+      join(dir, 'result.json'),
+      JSON.stringify({ version: 1, id: 'pending-daemon', ok: true, message: 'old success' }),
+    );
+    await reconcileHostRuntimes({
+      docker,
+      requirements: declared!,
+      requestId: 'pending-daemon',
+      requestDir: dir,
+      serviceRequirements,
+      timeoutMs: 2_000,
+      pollMs: 5,
+      sleep: async () => {
+        const request = JSON.parse(await readFile(join(dir, 'request.json'), 'utf8')) as {
+          id: string;
+        };
+        expect(request.id).not.toBe('pending-daemon');
+        await rm(join(dir, 'daemon-install.pending'), { force: true });
+        await writeFile(
+          join(dir, 'result.json'),
+          JSON.stringify({ version: 1, id: request.id, ok: true, message: 'recovered' }),
+        );
+      },
+    });
+    await expect(readFile(join(dir, 'daemon-install.pending'))).rejects.toThrow(/ENOENT/u);
+  });
+  it('accepts installer-registered runtimes without a systemd watcher', async () => {
+    const { docker } = daemon(both);
+    const dir = await requestDir({ ...renewed, trigger: 'none' });
+    const renewHostRuntimeService = vi.fn();
+    await reconcileHostRuntimes({
+      docker,
+      requirements: declared!,
+      requestId: 'registered-without-systemd',
+      requestDir: dir,
+      serviceRequirements,
+      renewHostRuntimeService,
+    });
+    expect(renewHostRuntimeService).not.toHaveBeenCalled();
+    await expect(readFile(join(dir, 'request.json'))).rejects.toThrow(/ENOENT/u);
+  });
+  it('fails after one renewal if the installed service still lacks a declared capability', async () => {
+    const { docker } = daemon(both);
+    const dir = await requestDir(renewed);
+    const renewHostRuntimeService = vi.fn(async () => undefined);
+    await expect(
+      reconcileHostRuntimes({
+        docker,
+        requirements: declared!,
+        requestId: 'renew-4',
+        requestDir: dir,
+        serviceRequirements: { ...serviceRequirements, features: ['future'] },
+        renewHostRuntimeService,
+      }),
+    ).rejects.toThrow(/does not advertise.*keeps serving/u);
+    expect(renewHostRuntimeService).toHaveBeenCalledOnce();
+    await expect(readFile(join(dir, 'request.json'))).rejects.toThrow(/ENOENT/u);
+  });
+});
+
+describe('runtime readiness after external Repair', () => {
+  const service = { revision: 1, renewalProtocol: 1, features: ['binary', 'archive'] };
+  const target = `ghcr.io/heey-global/verity/verity-server@sha256:${'b'.repeat(64)}`;
+  const readyAgent = {
+    version: 1,
+    trigger: 'systemd-path',
+    runtimeArtifacts: ['binary', 'archive'],
+    runtimeService: service,
+  };
+  const client = () => ({
+    ...daemon(both).docker,
+    inspectImageLabels: vi.fn(async () => ({
+      [HOST_RUNTIMES_LABEL]: JSON.stringify(declared),
+      'org.verity.host-runtime-service': JSON.stringify(service),
+    })),
+  });
+  it('reads fresh capabilities and exact registrations after Repair', async () => {
+    const dir = await requestDir({ ...readyAgent, runtimeService: undefined });
+    const docker = client();
+    expect(await hostRuntimePreparationReady(docker, target, dir)).toBe(false);
+    await writeFile(join(dir, 'agent.json'), JSON.stringify(readyAgent));
+    expect(await hostRuntimePreparationReady(docker, target, dir)).toBe(true);
+    expect(docker.inspectImageLabels).toHaveBeenCalledWith(target);
+  });
+  it.each(['service-install.pending', 'daemon-install.pending'])(
+    'refuses readiness while %s exists',
+    async (marker) => {
+      const dir = await requestDir(readyAgent);
+      await writeFile(join(dir, marker), '');
+      expect(await hostRuntimePreparationReady(client(), target, dir)).toBe(false);
+    },
+  );
+  it('refuses capabilities without the target runtime registration', async () => {
+    const docker = { ...client(), ...daemon(secretOnly).docker };
+    expect(await hostRuntimePreparationReady(docker, target, await requestDir(readyAgent))).toBe(
+      false,
+    );
   });
 });

@@ -1,8 +1,6 @@
+import { inspectEgressHostDirectTransport } from '../../../packages/server/src/project-egress-host-inspection.js';
 import { createProjectEgressHostEnforcement } from '../../../packages/server/src/project-egress-host-enforcement.js';
-import {
-  hostProjectDeadlineEnforcer,
-  type ProjectDeadlineTiming,
-} from '../../../packages/server/src/project-egress-deadline.js';
+import { hostProjectDeadlineEnforcer } from '../../../packages/server/src/project-egress-deadline.js';
 import { inspectProjectFenceAttachment } from '../../../packages/server/src/project-egress-attachment.js';
 import { projectFenceTable } from '../../../packages/server/src/project-egress-fence.js';
 import { inspectEgressHostDirect } from '../../../packages/server/src/project-egress-host-runtime.js';
@@ -21,15 +19,26 @@ import { ProjectEgressLifecycle } from '../../../packages/server/src/project-egr
 /** Deny-before-first-instruction fixture; no production daemon or credentials. */
 import assert from 'node:assert/strict';
 import { createServer, request, type Server } from 'node:http';
-import { mkdtemp, readFile, writeFile, rm, mkdir, chmod, chown } from 'node:fs/promises';
+import {
+  mkdtemp,
+  readFile,
+  writeFile,
+  appendFile,
+  rm,
+  mkdir,
+  chmod,
+  chown,
+} from 'node:fs/promises';
 import {
   createServer as createNetServer,
   createConnection,
+  isIP,
   type Server as NetServer,
 } from 'node:net';
 import { randomBytes } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { inspect, promisify } from 'node:util';
+import { appendFileSync } from 'node:fs';
 import { execFile, spawn } from 'node:child_process';
 import {
   ProjectEgressHost,
@@ -40,7 +49,6 @@ import {
   openProjectEgressHostStore,
   inspectEgressHostContainer,
   inspectEgressHostNetwork,
-  projectEgressHostDocker as docker,
 } from '../../../packages/server/src/project-egress-host-runtime.js';
 import { listenProjectEgressHost } from '../../../packages/server/src/project-egress-host-control.js';
 import { applyProjectFenceRules } from '../../../packages/server/src/project-egress-fence.js';
@@ -54,6 +62,16 @@ class ProbeHost extends ProjectEgressHost {
   }
 }
 const exec = promisify(execFile);
+// Disposable fixture management retains CLI operations; enforcement uses the actual API reader.
+const docker = async (...args: string[]) =>
+  (
+    await exec('/usr/bin/docker', args, {
+      timeout: 5000,
+      maxBuffer: 2 * 1024 * 1024,
+      env: { PATH: '/usr/sbin:/usr/bin:/sbin:/bin', DOCKER_HOST: 'unix:///var/run/docker.sock' },
+    })
+  ).stdout;
+let packetCapture: ReturnType<typeof spawn> | undefined;
 let bridge = '';
 let generationNetwork = '';
 const directory = await mkdtemp('/tmp/egress-host-');
@@ -62,55 +80,25 @@ const store = await openProjectEgressHostStore(directory);
 let relayPolicy: EgressRelayPolicy | undefined;
 const starts: string[] = [];
 const composedTargets = ['11.77.106.2', '2001:4860:feed:106::2'];
+// A granted hostname: the relay's controlled DNS answers it with exactly these admitted addresses.
+const dnsName = 'dns-fixture.example.com';
 let directEnabled = true;
-// Fixed stage names only: no targets, policy contents, identifiers or per-call growth.
-const stageTimings = new Map<
-  string,
-  { count: number; totalMs: number; maxMs: number; failures: number }
->();
-function measured<A extends unknown[], R>(stage: string, operation: (...args: A) => Promise<R>) {
-  return async (...args: A): Promise<R> => {
-    const started = performance.now();
-    let failed = true;
-    try {
-      const result = await operation(...args);
-      failed = false;
-      return result;
-    } finally {
-      const durationMs = performance.now() - started;
-      const summary = stageTimings.get(stage) ?? { count: 0, totalMs: 0, maxMs: 0, failures: 0 };
-      summary.count++;
-      summary.totalMs += durationMs;
-      summary.maxMs = Math.max(summary.maxMs, durationMs);
-      summary.failures += Number(failed);
-      stageTimings.set(stage, summary);
-    }
-  };
-}
-const leaseBudget: ProjectDeadlineTiming[] = [];
-const deadline = hostProjectDeadlineEnforcer((timing) => {
-  if (leaseBudget.length < 256) leaseBudget.push(timing);
-});
+let deadlineHelper: ReturnType<typeof hostProjectDeadlineEnforcer>;
 function createEnforcement() {
+  deadlineHelper = hostProjectDeadlineEnforcer((timing) => {
+    appendFileSync('/evidence/worker-timings.jsonl', JSON.stringify(timing) + '\n');
+  });
   return createProjectEgressHostEnforcement({
-    deadline: {
-      ...deadline,
-      clock: measured('kernel-clock', () => deadline.clock()),
-      arm: measured('kernel-arm', deadline.arm.bind(deadline)),
-      renew: measured('kernel-renew', deadline.renew!.bind(deadline)),
-      revoke: measured('kernel-revoke', deadline.revoke.bind(deadline)),
-    },
-    sponsor: () => 'fixture-sponsor',
+    deadline: deadlineHelper,
     directAuthority: () => true,
     store: {
-      readForAdmission: measured('authority', (projectId, sponsor) => {
+      readForAdmission: (projectId) => {
         assert.equal(projectId, 'host-smoke');
-        assert.equal(sponsor, 'fixture-sponsor');
         return Promise.resolve({
           revision: 1,
           requests: {},
           grants: directEnabled
-            ? composedTargets.flatMap((host) =>
+            ? [...composedTargets, dnsName].flatMap((host) =>
                 [
                   { host, protocol: 'tcp' as const, port: 443 },
                   { host, protocol: 'udp' as const, port: 8080 },
@@ -124,15 +112,24 @@ function createEnforcement() {
               )
             : [],
         });
-      }),
+      },
     },
-    inspect: measured('direct-inspection', inspectEgressHostDirect),
+    inspect: inspectEgressHostDirect,
     dependencies: {
-      inspect: measured('attachment', inspectProjectFenceAttachment),
-      apply: measured('kernel-rules', applyProjectFenceRules),
-      directTargetAllowed: (host) => Promise.resolve(composedTargets.includes(host)),
+      observe: (stage, durationMs) =>
+        appendFileSync(
+          '/evidence/renewal-stages.jsonl',
+          JSON.stringify({ stage, durationMs }) + '\n',
+        ),
+      inspect: inspectProjectFenceAttachment,
+      apply: applyProjectFenceRules,
+      directTargetAllowed: (host) =>
+        Promise.resolve(composedTargets.includes(host) || host === dnsName),
       destinationAllowed: (address) => Promise.resolve(composedTargets.includes(address)),
-      resolve: () => Promise.reject(new Error('Exact address fixture')),
+      resolve: (host) =>
+        host === dnsName
+          ? Promise.resolve({ addresses: composedTargets, expiresAt: Date.now() + 3_600_000 })
+          : Promise.reject(new Error('Exact address fixture')),
       existing: async (binding) => {
         const rules = await exec('/usr/sbin/nft', ['-j', 'list', 'tables']);
         return (
@@ -146,19 +143,33 @@ function createEnforcement() {
 }
 const dependencies = {
   enforcement: createEnforcement(),
+  inspectDirectTransport: async (
+    binding: Parameters<typeof inspectEgressHostDirectTransport>[0],
+    ids: Parameters<typeof inspectEgressHostDirectTransport>[1],
+  ) => {
+    if (!relayPolicy) throw new Error('Missing relay policy');
+    const started = performance.now();
+    try {
+      return await inspectEgressHostDirectTransport(binding, ids, relayPolicy);
+    } finally {
+      await appendFile(
+        '/evidence/renewal-stages.jsonl',
+        JSON.stringify({ stage: 'host-inspection', durationMs: performance.now() - started }) +
+          '\n',
+      );
+    }
+  },
   inspectTransport: (
     binding: Parameters<typeof inspectEgressTransport>[0],
     ids: Parameters<typeof inspectEgressTransport>[1],
   ) =>
-    measured('transport', inspectEgressTransport)(
-      binding,
-      ids,
-      relayPolicy?.codexSubpath !== undefined,
-    ).catch(async (error: unknown) => {
-      process.stderr.write(`Transport inspection failed: ${String(error)}\n`);
-      await writeFile('/evidence/transport-inspection-error.txt', String(error));
-      throw error;
-    }),
+    inspectEgressTransport(binding, ids, relayPolicy?.codexSubpath !== undefined).catch(
+      async (error: unknown) => {
+        process.stderr.write(`Transport inspection failed: ${String(error)}\n`);
+        await writeFile('/evidence/transport-inspection-error.txt', String(error));
+        throw error;
+      },
+    ),
   save: (state: Parameters<typeof store.save>[0]) => store.save(state),
   apply: async (script: string) => {
     try {
@@ -176,7 +187,7 @@ const dependencies = {
       throw error;
     }
   },
-  inspectNetwork: measured('network', inspectEgressHostNetwork),
+  inspectNetwork: inspectEgressHostNetwork,
   inspectContainer: async (
     binding: Parameters<typeof inspectEgressHostContainer>[0],
     id: string,
@@ -459,6 +470,7 @@ try {
     codexSubpath: 'codex',
   };
   let brokerRequests = 0;
+  const dnsLookups = new Set<string>();
   const receipts: Record<string, number[]> = {
     'broker.sock': [],
     'claude.sock': [],
@@ -474,7 +486,32 @@ try {
       item.socket === 'broker.sock'
         ? createServer((request, response) => {
             brokerRequests++;
-            if (request.url === '/internal/mcp-proxy') {
+            if (request.url === '/internal/dns') {
+              // The Server's DNS route, reduced to its host call: the answer is what the
+              // host admitted for this generation, never a resolver lookup.
+              const chunks: Buffer[] = [];
+              request.on('data', (chunk: Buffer) => chunks.push(chunk));
+              request.on('end', () => {
+                const query = JSON.parse(Buffer.concat(chunks).toString('utf8')) as {
+                  name: string;
+                  type: 'A' | 'AAAA';
+                };
+                dnsLookups.add(query.name);
+                lifecycle.resolveDirect(identity, query.name).then(
+                  (answer) =>
+                    response.end(
+                      JSON.stringify({
+                        granted: answer !== undefined,
+                        addresses: (answer?.addresses ?? []).filter(
+                          (address) => isIP(address) === (query.type === 'A' ? 4 : 6),
+                        ),
+                        ttlSeconds: answer?.ttlSeconds ?? 1,
+                      }),
+                    ),
+                  () => response.writeHead(503).end(),
+                );
+              });
+            } else if (request.url === '/internal/mcp-proxy') {
               response.writeHead(200, { 'content-type': 'text/event-stream' });
               const timer = setInterval(() => response.write('transport-stream-marker\n'), 50);
               response.once('close', () => clearInterval(timer));
@@ -759,7 +796,18 @@ try {
     'foreign registered generation is unreachable despite a successful receiver control',
   );
 
-  for (const port of [53])
+  // Port 53 is the relay's controlled DNS answerer and is admitted; a port outside the bound
+  // transport set stays closed.
+  await docker(
+    'exec',
+    '--user',
+    '1000:1000',
+    containerId,
+    'python3',
+    '-c',
+    `import socket; socket.create_connection(('${relayAddress}',53),timeout=2).close()`,
+  );
+  for (const port of [5353])
     assert.ok((await client('negative', relayAddress, port)).includes('transport-denied'));
   await docker(
     'exec',
@@ -936,12 +984,36 @@ try {
       await exited;
     };
   };
-  const directCases: { phase: string; family: number; expected: boolean; observed: boolean }[] = [];
+  packetCapture = spawn(
+    '/usr/bin/tcpdump',
+    // Immediate mode keeps the final pre-failure packets that a buffered ring loses on SIGINT.
+    ['-i', bridge, '--immediate-mode', '-U', '-s', '256', '-w', '/evidence/composed-packets.pcap'],
+    { stdio: 'ignore' },
+  );
+  await new Promise<void>((resolve, reject) => {
+    packetCapture!.once('spawn', resolve);
+    packetCapture!.once('error', reject);
+  });
+  const directCases: {
+    phase: string;
+    family: number;
+    expected: boolean;
+    observed: boolean;
+    resolution?: {
+      phase: string;
+      family: number;
+      terminal: string;
+      hostBeforeNs: string;
+      hostAfterNs: string;
+    };
+    connect?: { phase: string; family: number; connectNs: string };
+  }[] = [];
   const directProbe = async (phase: string, expected: boolean) => {
     const stop = expected ? await beginRenewal() : undefined;
     try {
       for (const [family, target] of composedTargets.entries()) {
-        await docker(
+        const before = phase === 'before-admission' ? await deadlineHelper!.clock() : undefined;
+        const output = await docker(
           'exec',
           '--user',
           '1000:1000',
@@ -952,12 +1024,46 @@ try {
           `${phase}-${family}`,
           expected ? 'positive' : 'negative',
         );
+        let resolution;
+        if (before) {
+          const after = await deadlineHelper!.clock();
+          const result = JSON.parse(output.trim()) as {
+            phase: string;
+            family: number;
+            terminal: string;
+          };
+          assert.equal(result.phase, `${phase}-${family}`);
+          assert.equal(result.family, family === 0 ? 4 : 6);
+          assert.equal(result.terminal, 'EHOSTUNREACH');
+          resolution = {
+            ...result,
+            hostBeforeNs: before.bootBeforeNs,
+            hostAfterNs: after.bootAfterNs,
+          };
+        }
+        let connect;
+        if (expected) {
+          connect = JSON.parse(output.trim()) as {
+            phase: string;
+            family: number;
+            connectNs: string;
+          };
+          assert.equal(connect.phase, `${phase}-${family}`);
+          assert.equal(connect.family, family === 0 ? 4 : 6);
+        }
         const log = await docker('logs', 'veh-direct');
         const observed =
           log.includes(`${phase}-${family}-tcp`) && log.includes(`${phase}-${family}-udp`);
         assert.equal(observed, expected, `${phase}/${family}`);
         if (!expected) assert.ok(!log.includes(`${phase}-${family}-`));
-        directCases.push({ phase, family, expected, observed });
+        directCases.push({
+          phase,
+          family,
+          expected,
+          observed,
+          ...(resolution ? { resolution } : {}),
+          ...(connect ? { connect } : {}),
+        });
       }
     } finally {
       await stop?.();
@@ -965,11 +1071,12 @@ try {
   };
   await directProbe('before-admission', false);
   await directProbe('admitted', true);
+  const kernelComparison = await exec('/usr/bin/python3', ['/probe/kernel-read-proof.py']);
+  await writeFile('/evidence/kernel-read-comparison.json', kernelComparison.stdout);
   // Stopping renewal must close direct access while the independent relay stays usable.
   await delay(1200);
   await directProbe('lease-expired', false);
   assert.ok((await client('positive', relayAddress)).includes('transport-positive'));
-  await rm(`${worktree}/composed-stream-stop`, { force: true });
   const stopRenewalProcess = await beginRenewal();
   await docker(
     'exec',
@@ -989,12 +1096,13 @@ try {
   const actualBinding = (
     await inspectEgressHostDirect(binding, { sandbox: containerId, relay: relayId })
   ).corridor.binding;
-  const kernel = async () =>
+  const kernel = async (containment = false) =>
     JSON.parse(
       (
         await exec('/usr/bin/python3', [
           '/probe/deadline-observe.py',
           JSON.stringify(actualBinding),
+          ...(containment ? ['--containment'] : []),
         ])
       ).stdout,
     ) as {
@@ -1003,6 +1111,8 @@ try {
       denied: number;
       last_accepted_boot_ns: string;
       clocks: { bootBeforeNs: string };
+      containers: { Id: string; State: { Running: boolean } }[] | null;
+      state: { binding: { containerId: string }; relayRegistration: { containerId: string } };
     };
   // Keep the same retained TCP flow live across multiple kernel-checked renewals.
   await delay(2200);
@@ -1035,8 +1145,8 @@ try {
       Math.ceil(Number(lateBarrier - BigInt(attempted.clocks.bootBeforeNs)) / 1_000_000),
     ) + 20,
   );
-  const late = await kernel();
-  assert.ok(BigInt(late.clocks.bootBeforeNs) > lateBarrier);
+  const heartbeatWindowStart = await kernel();
+  assert.ok(BigInt(heartbeatWindowStart.clocks.bootBeforeNs) > lateBarrier);
   const readHeartbeat = async () =>
     JSON.parse(await readFile(`${worktree}/composed-stream.json`, 'utf8')) as {
       attempts: number;
@@ -1044,51 +1154,58 @@ try {
     };
   const beforeHeartbeat = await readHeartbeat();
   await delay(300);
-  const earlyHeartbeat = {
-    ...(await readHeartbeat()),
-    lateAttempts: beforeHeartbeat.attempts,
-    hostBootBeforeNs: late.clocks.bootBeforeNs,
-  };
-  assert.ok(earlyHeartbeat.attempts > 10 && earlyHeartbeat.attempts > earlyHeartbeat.lateAttempts);
+  const heartbeat = await readHeartbeat();
+  const heartbeatWindowEnd = await kernel();
+  assert.ok(heartbeat.attempts > 10 && heartbeat.attempts > beforeHeartbeat.attempts);
+  assert.ok(BigInt(heartbeat.boot_ns) > BigInt(beforeHeartbeat.boot_ns));
   await directProbe('fresh-after-expiry', true);
+  const dns = async (name: string, expected: readonly string[]) =>
+    docker(
+      'exec',
+      '--user',
+      '1000:1000',
+      containerId,
+      'python3',
+      '/probe/transport-client.py',
+      relayAddress,
+      'dns',
+      name,
+      ...expected,
+    );
+  const stopDnsRenewal = await beginRenewal();
+  try {
+    assert.ok((await dns(dnsName, composedTargets)).includes('dns-granted'));
+    assert.ok((await dns('ungranted.example.com', [])).includes('dns-refused'));
+  } finally {
+    await stopDnsRenewal();
+  }
   await lifecycle.revokeDirect(identity);
   await directProbe('direct-revoked', false);
+  assert.ok((await dns(dnsName, [])).includes('dns-refused'));
+  // Every answer came from the host through the broker socket, for both names.
+  assert.ok(dnsLookups.has(dnsName) && dnsLookups.has('ungranted.example.com'));
+  results.push(
+    'relay DNS answers a granted name over UDP/TCP with exactly the host-admitted addresses and refuses ungranted or revoked names',
+  );
   assert.ok((await client('positive', relayAddress)).includes('transport-positive'));
   directEnabled = false;
   await lifecycle.refreshDirect(identity);
   await directProbe('authority-empty', false);
   directEnabled = true;
   await delay(2500);
-  // The gVisor sender and host need not share a BOOTTIME origin. Observe sender
-  // progress inside a host-clock window instead of comparing their timestamps.
-  const heartbeatWindowStart = await kernel();
-  const heartbeatBefore = await readHeartbeat();
-  await delay(300);
-  const heartbeat = {
-    ...(await readHeartbeat()),
-    lateAttempts: beforeHeartbeat.attempts,
-    hostBootBeforeNs: late.clocks.bootBeforeNs,
-  };
-  const heartbeatWindowEnd = await kernel();
   await writeFile(
     '/evidence/composed-stream-proof.json',
     JSON.stringify({
       live,
       expired,
       attempted,
-      heartbeatBefore,
       heartbeat,
+      heartbeatBefore: beforeHeartbeat,
       heartbeatWindowStart,
       heartbeatWindowEnd,
     }),
   );
-  assert.ok(
-    BigInt(heartbeatWindowStart.clocks.bootBeforeNs) > BigInt(live.deadline_ns) + 2_000_000_000n,
-  );
-  assert.ok(heartbeatBefore.attempts > 10 && heartbeat.attempts > heartbeatBefore.attempts);
-  assert.ok(BigInt(heartbeat.boot_ns) > BigInt(heartbeatBefore.boot_ns));
-  await writeFile(`${worktree}/composed-stream-stop`, 'stop');
-  await writeFile('/evidence/composed-receiver.txt', await docker('logs', 'veh-direct'));
+
   await writeFile(
     '/evidence/composed-result.json',
     JSON.stringify({ complete: true, cases: directCases }),
@@ -1096,21 +1213,110 @@ try {
   results.push(
     'actual startup/TC/nft composition admits only current direct grants and retains the relay after direct expiry/revoke',
   );
+  // Kill the actual resident helper while a separate Server continues requesting renewals.
+  const stopAfterHelperFailure = await beginRenewal();
+  await docker(
+    'exec',
+    '-d',
+    '--user',
+    '1000:1000',
+    containerId,
+    'python3',
+    '/probe/composed-client.py',
+    composedTargets[0]!,
+    'helper',
+    'stream',
+  );
+  for (let i = 0; i < 20 && !(await docker('logs', 'veh-direct')).includes('helper-retained'); i++)
+    await delay(20);
+  assert.ok((await docker('logs', 'veh-direct')).includes('helper-retained'));
+
+  const children = (await readFile(`/proc/self/task/${process.pid}/children`, 'utf8'))
+    .trim()
+    .split(/\s+/u);
+  const helpers: { pid: number; command: string }[] = [];
+  for (const pid of children) {
+    const command = await readFile(`/proc/${pid}/cmdline`, 'utf8').catch(() => '');
+    if (command.includes('/opt/verity-egress/project-egress-deadline.py\0--worker'))
+      helpers.push({ pid: Number(pid), command });
+  }
+  assert.equal(helpers.length, 1, 'Exactly one actual resident deadline helper must be present');
+  const helperBeforeKill = await kernel();
+  process.kill(helpers[0]!.pid, 'SIGKILL');
+  const helperLive = await kernel(true);
+  const helperAfterKillState = await readFile(`/proc/${helpers[0]!.pid}/stat`, 'utf8')
+    .then((value) => value.split(') ')[1]!.split(' ')[0]!)
+    .catch(() => 'gone');
+  assert.ok(['gone', 'Z'].includes(helperAfterKillState));
+  // Sample against this host's actual captured deadline, leaving observation time
+  // inside the unchanged two-second bound rather than adding fixed sleeps to it.
+  const helperRemainingNs = BigInt(helperLive.deadline_ns) - BigInt(helperLive.clocks.bootBeforeNs);
+  await delay(Math.max(0, Number(helperRemainingNs) / 1_000_000) + 50);
+  const helperExpired = await kernel(true);
+  await delay(200);
+  const helperAttempted = await kernel(true);
+  await writeFile(
+    '/evidence/composed-helper-proof.json',
+    JSON.stringify({
+      helper: helpers[0],
+      beforeKill: helperBeforeKill,
+      signal: 'SIGKILL',
+      afterKillState: helperAfterKillState,
+      live: helperLive,
+      expired: helperExpired,
+      attempted: helperAttempted,
+    }),
+  );
+  await stopAfterHelperFailure();
+  assert.ok(BigInt(helperExpired.clocks.bootBeforeNs) >= BigInt(helperLive.deadline_ns));
+  assert.ok(
+    BigInt(helperAttempted.clocks.bootBeforeNs) - BigInt(helperBeforeKill.clocks.bootBeforeNs) <=
+      2_000_000_000n,
+  );
+  assert.equal(helperExpired.accepted, helperAttempted.accepted);
+  assert.ok(helperAttempted.containers?.every((row) => row.State.Running === false));
+  assert.ok(BigInt(helperAttempted.last_accepted_boot_ns) < BigInt(helperLive.deadline_ns));
+  for (const family of [0, 1])
+    directCases.push({ phase: 'helper-expired', family, expected: false, observed: false });
   // Reconstruct the host controller from its real fsynced state while traffic continues.
   await new Promise<void>((resolve, reject) =>
     server!.close((error) => (error ? reject(error) : resolve())),
   );
   server = undefined;
+  deadlineHelper!.close?.();
   dependencies.enforcement = createEnforcement();
   const recovered = new ProbeHost(await store.load(), dependencies);
+  // Helper-failure containment already stopped both senders. Restore first;
+  // retained-stream revocation can only be measured after fresh starts.
+  await recovered.restore();
+  await recovered.revalidate();
+  for (const [role, id] of [
+    ['sandbox', containerId],
+    ['relay', relayId],
+  ] as const)
+    await recovered.execute({
+      operation: 'start',
+      projectId: identity.projectId,
+      generation: identity.containerGeneration,
+      role,
+      containerId: id,
+    } satisfies ProjectEgressHostRequest);
+  server = await listenProjectEgressHost({ directory, token, controller: recovered });
+  await lifecycle.connect(identity);
   await revokeAndMeasure(() => recovered.restore(), 'controller-restore');
   await recovered.revalidate();
-  server = await listenProjectEgressHost({ directory, token, controller: recovered });
   await delay(500);
   assert.ok(!(await docker('logs', 'veh-receiver')).includes('host-startup-marker'));
   assert.deepEqual(await lifecycle.current(binding.projectId), binding);
   assert.ok((await client('negative', relayAddress, 8080)).includes('transport-denied'));
   await verifyNoRevival('controller-restore');
+  await directProbe('fresh-after-helper', true);
+  await lifecycle.revokeDirect(identity);
+  await writeFile('/evidence/composed-receiver.txt', await docker('logs', 'veh-direct'));
+  await writeFile(
+    '/evidence/composed-result.json',
+    JSON.stringify({ complete: true, cases: directCases }),
+  );
   results.push('registry recovery denies old transports and requires explicit revalidation');
   const directBinding = (
     await inspectEgressHostDirect(binding, { sandbox: containerId, relay: relayId })
@@ -1260,14 +1466,14 @@ try {
     '/evidence/host-failure-tc.txt',
     await exec('/bin/sh', [
       '-c',
-      'for p in /sys/fs/bpf/verity_egress_deadline/*/maps/deadline; do /usr/sbin/bpftool map dump pinned "$p"; done',
+      'for p in /sys/fs/bpf/verity_egress_deadline/*/maps/*; do /usr/sbin/bpftool map dump pinned "$p"; done',
     ])
       .then((r) => r.stdout)
       .catch(String),
   );
   await writeFile(
     '/evidence/host-failure-rules.txt',
-    await exec('/usr/sbin/nft', ['list', 'ruleset'])
+    await exec('/usr/sbin/nft', ['-j', 'list', 'ruleset'])
       .then((r) => r.stdout)
       .catch(String),
   );
@@ -1283,12 +1489,8 @@ try {
   );
   throw error;
 } finally {
-  deadline.close();
-  await writeFile('/evidence/lease-budget.json', JSON.stringify(leaseBudget, null, 2));
-  await writeFile(
-    '/evidence/renewal-stages.json',
-    JSON.stringify(Object.fromEntries(stageTimings), null, 2),
-  );
+  packetCapture?.kill('SIGINT');
+  deadlineHelper!.close?.();
   if (server)
     await new Promise<void>((resolve, reject) =>
       server.close((error) => (error ? reject(error) : resolve())),

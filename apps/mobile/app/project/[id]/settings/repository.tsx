@@ -51,6 +51,9 @@ function ProjectRepositoryView({ client, projectId }: { client: VerityClient; pr
   const { theme } = useUnistyles();
   const { detail, loading, error, load, onProjectUpdated } = useProjectDetail(client, projectId);
   const [connections, setConnections] = useState<ForgeConnection[] | null>(null);
+  const [confirm, confirmSheet] = useConfirm();
+  const [disconnecting, setDisconnecting] = useState(false);
+  const [disconnectError, setDisconnectError] = useState<string>();
   useEffect(() => {
     let active = true;
     void Promise.resolve()
@@ -87,7 +90,7 @@ function ProjectRepositoryView({ client, projectId }: { client: VerityClient; pr
     <SettingsScaffold
       title="Repository"
       detail
-      state={{ error, saving: false }}
+      state={{ error: disconnectError ?? error, saving: disconnecting }}
       onRetry={() => load()}
     >
       {project.kind === 'local' ? (
@@ -129,9 +132,41 @@ function ProjectRepositoryView({ client, projectId }: { client: VerityClient; pr
                 />
               </View>
             ) : null}
+            {project.kind === 'github' ? (
+              <Button
+                label="Disconnect GitHub"
+                variant="secondary"
+                disabled={disconnecting}
+                onPress={() =>
+                  confirm({
+                    title: 'Disconnect GitHub?',
+                    message:
+                      'This project becomes local. Documents, code, commits and session history stay on this server. The GitHub repository is not deleted. Finish running sessions before disconnecting; the Sandbox will restart.',
+                    confirmLabel: 'Disconnect',
+                    destructive: true,
+                    onConfirm: () => {
+                      setDisconnecting(true);
+                      setDisconnectError(undefined);
+                      void client
+                        .disconnectProjectFromGitHub(project.id)
+                        .then((result) => onProjectUpdated(result.project))
+                        .catch((caught: unknown) =>
+                          setDisconnectError(
+                            caught instanceof Error
+                              ? caught.message
+                              : 'Could not disconnect GitHub',
+                          ),
+                        )
+                        .finally(() => setDisconnecting(false));
+                    },
+                  })
+                }
+              />
+            ) : null}
           </SettingsPanel>
         </SettingsGroup>
       )}
+      {confirmSheet}
     </SettingsScaffold>
   );
 }
@@ -254,11 +289,11 @@ function LinkRepositorySection({
     return (
       <SettingsGroup
         title="Code host"
-        description="This project lives only on this Verity server. Connect GitHub or Forgejo in Connections to link it to a repository there."
+        description="This project lives only on this Verity server. Connect GitHub or Forgejo in Connectors to link it to a repository there."
       >
         <View style={styles.selfStart}>
           <Button
-            label="Open Connections"
+            label="Open Connectors"
             variant="secondary"
             size="compact"
             onPress={() => router.push('/settings/services')}

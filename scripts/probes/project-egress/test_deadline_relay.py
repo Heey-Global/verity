@@ -86,15 +86,42 @@ class RelayPacketTests(unittest.TestCase):
                 self.assertEqual(kernel_packet(data), data)
 
 
+    def udp(self, reverse=False, port=53, payload=20):
+        data = self.packet(reverse, port)[:42] + bytearray(payload)
+        data[16:18] = struct.pack('!H', 28 + payload)
+        data[23] = 17
+        data[38:40] = struct.pack('!H', 8 + payload)
+        return data
+
     def test_only_exact_service_ports_in_both_directions(self):
         for reverse in (False, True):
-            for port in (8080, 8443):
+            for port in (53, 8080, 8443):
                 self.assertTrue(self.matches(self.packet(reverse, port)))
-            for port in (0, 53, 80, 443, 8079, 8081, 8442, 8444, 8445, 65535):
+            for port in (0, 52, 54, 80, 443, 8079, 8081, 8442, 8444, 8445, 65535):
                 self.assertFalse(self.matches(self.packet(reverse, port)))
             self.policy.codex = 1
             self.assertTrue(self.matches(self.packet(reverse, 8444)))
             self.policy.codex = 0
+
+    def test_udp_reaches_only_the_controlled_dns_answerer(self):
+        for reverse in (False, True):
+            self.assertTrue(self.matches(self.udp(reverse)))
+            for port in (0, 52, 54, 123, 443, 8080, 8443, 8444):
+                self.assertFalse(self.matches(self.udp(reverse, port)), (reverse, port))
+            self.policy.codex = 1
+            self.assertFalse(self.matches(self.udp(reverse, 8444)))
+            self.policy.codex = 0
+        data = self.udp()
+        for length in range(len(data)):
+            self.assertFalse(self.matches(data, length), length)
+        for position, value in ((38, 1), (39, 27), (39, 29), (16, 1), (17, 47), (17, 49), (20, 0x20), (14, 0x46)):
+            changed = data.copy()
+            changed[position] = value
+            self.assertFalse(self.matches(changed), (position, value))
+        for position in list(range(12)) + list(range(26, 34)):
+            changed = data.copy()
+            changed[position] ^= 1
+            self.assertFalse(self.matches(changed), position)
 
     def test_no_exception_without_an_enabled_unambiguous_policy(self):
         data = self.packet()

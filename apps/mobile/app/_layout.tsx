@@ -1,3 +1,4 @@
+import { completeMcpOAuthPopup } from '../lib/mcpOAuth';
 import { startRuntimeDiagnostics, setRuntimeDiagnosticsScreen } from '../lib/runtimeDiagnostics';
 // Root layout mounts the provider stack (gesture handler + safe area) and the themed router
 // Stack. The header colors come from the live theme via useUnistyles; the app is
@@ -66,6 +67,9 @@ import { NO_WINDOW_CONTROLS_INSET, type WindowControlsInset } from '../lib/windo
 if (Platform.OS !== 'web') Appearance.setColorScheme('dark');
 
 installBrowserAlerts();
+
+// Complete the popup before setup/auth redirects can discard the OAuth callback.
+completeMcpOAuthPopup();
 
 const FOREGROUND_UPDATE_POLL_MS = 30_000;
 
@@ -150,7 +154,7 @@ export default function RootLayout() {
 }
 
 function HydratedRoot() {
-  useEffect(() => (isDemoMode() || Platform.OS === 'web' ? undefined : startLiveMeetingSync()), []);
+  useEffect(() => (isDemoMode() ? undefined : startLiveMeetingSync()), []);
   const { theme } = useUnistyles();
   const gate = useOnboardingGate();
   const pathname = usePathname();
@@ -264,7 +268,7 @@ function HydratedRoot() {
               />
               <Stack.Screen
                 name="project/[id]/settings/services"
-                options={{ title: 'Connections' }}
+                options={{ title: 'Connectors' }}
               />
               <Stack.Screen name="project/[id]/settings/sandbox" options={{ title: 'Sandbox' }} />
               <Stack.Screen
@@ -285,6 +289,10 @@ function HydratedRoot() {
                 name="settings/scheduling-requests"
                 options={{ title: 'Scheduling requests' }}
               />
+              <Stack.Screen
+                name="settings/meeting-calendars"
+                options={{ title: 'Meeting calendars' }}
+              />
               <Stack.Screen name="settings/premium" options={{ title: 'Verity Premium' }} />
               <Stack.Screen name="settings/diagnostics" options={{ title: 'Diagnostics' }} />
               <Stack.Screen name="settings/design-system" options={{ title: 'Design system' }} />
@@ -298,7 +306,7 @@ function HydratedRoot() {
               <Stack.Screen name="settings/services/claude" options={{ title: 'Claude' }} />
               <Stack.Screen name="settings/services/codex" options={{ title: 'Codex' }} />
               <Stack.Screen name="settings/services/doppler" options={{ title: 'Doppler' }} />
-              <Stack.Screen name="settings/services/index" options={{ title: 'Connections' }} />
+              <Stack.Screen name="settings/services/index" options={{ title: 'Connectors' }} />
               <Stack.Screen
                 name="settings/services/mcp/index"
                 options={{ title: 'MCP connections' }}

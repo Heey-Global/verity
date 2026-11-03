@@ -78,8 +78,9 @@ def verify(directory):
     guard = result['mutations']['guard']
     assert guard['map']['deadline_ns'] == 0
     assert not any(q['kind'] in ('clsact', 'ingress') for q in guard['removed']['qdiscs'])
-    assert guard['before']['accepted'] == guard['after']['accepted']
-    assert guard['before']['denied'] == guard['after']['denied']
+    assert guard['before']['accepted'] == guard['removed']['stats']['accepted']
+    assert guard['removed']['stats']['accepted'] == guard['after']['accepted']
+    assert guard['removed']['stats']['denied'] == guard['after']['denied']
     return {'cases': len(expected), 'complete': True}
 
 

@@ -59,6 +59,7 @@ export function createProjectDeadlineWorker(
     pending.reject(error);
   };
   const fail = (error: Error) => {
+    stopped = true;
     retiring = true;
     if (active) reject(active, error);
     active = undefined;
@@ -164,10 +165,11 @@ export function createProjectDeadlineWorker(
       if (stopped) return Promise.reject(new Error('Host deadline worker is unavailable'));
       if (queue.length + Number(active !== undefined) >= 16)
         return Promise.reject(new Error('Host deadline worker queue is full'));
-      const id = ++sequence;
+      const id = sequence + 1;
       const frame = JSON.stringify({ id, request: input }) + '\n';
       if (Buffer.byteLength(frame) > 65536)
         return Promise.reject(new Error('Oversized host deadline request'));
+      sequence = id;
       return new Promise((resolve, rejectPromise) => {
         const pending: Pending = {
           id,

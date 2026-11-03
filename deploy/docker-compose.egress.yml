@@ -1,0 +1,21 @@
+# Optional overlay for network protection (the host egress service). Layer it only on a
+# host where `verity-egress-host.service` is installed: it mounts that service's control
+# socket and key into the Server, which then reports network protection as available.
+# Whether protection applies is the system-wide "Network protection" setting; without
+# this overlay protection is unavailable; an enabled setting blocks new project starts.
+#
+# The control socket directory is created by systemd (`RuntimeDirectory=verity-egress`,
+# group `verity-egress-control`); the Server joins that group by GID. The key must be
+# readable by that group (0640 root:verity-egress-control).
+#
+#   docker compose -f docker-compose.yml -f docker-compose.egress.yml up -d
+services:
+  verity:
+    environment:
+      VERITY_PROJECT_EGRESS_SOCKET: /run/verity-egress/control.sock
+      VERITY_PROJECT_EGRESS_KEY_PATH: /run/verity-egress-key/control.key
+    volumes:
+      - /run/verity-egress:/run/verity-egress
+      - /etc/verity-egress/control.key:/run/verity-egress-key/control.key:ro
+    group_add:
+      - ${VERITY_EGRESS_CONTROL_GID:?set to the verity-egress-control group id}

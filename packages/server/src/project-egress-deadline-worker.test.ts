@@ -12,8 +12,10 @@ const source = `
 const {createInterface} = require('node:readline');
 const {appendFileSync} = require('node:fs');
 let pending = 0;
+let sequence = 0;
 createInterface({input:process.stdin}).on('line', line => {
  const {id,request:r} = JSON.parse(line);
+ if (id !== ++sequence) process.exit(12);
  if (process.env.MARKER) appendFileSync(process.env.MARKER, JSON.stringify(r)+'\\n');
  if (++pending > 1) process.exit(11);
  const response = {id,result:{pid:process.pid,value:r.value},startedBootNs:'100',finishedBootNs:'200'};
@@ -75,8 +77,8 @@ it.each(['mismatch', 'double', 'malformed', 'oversize', 'utf8', 'exit'])(
     if (children[0]!.exitCode === null && children[0]!.signalCode === null)
       await once(children[0]!, 'close');
     expect(children).toHaveLength(1);
-    await expect(worker.request({ value: 'fresh' })).resolves.toMatchObject({ value: 'fresh' });
-    expect(children).toHaveLength(2);
+    await expect(worker.request({ value: 'fresh' })).rejects.toThrow('unavailable');
+    expect(children).toHaveLength(1);
   },
 );
 it('rejects invalid operation results and terminates the worker', async () => {
@@ -108,6 +110,12 @@ it('applies deadlines from enqueue time, including time behind another operation
   expect(results[1].status).toBe('rejected');
   if (results[1].status === 'rejected') expect(String(results[1].reason)).toContain('timed out');
 });
+it('allocates contiguous wire IDs only after a frame passes validation', async () => {
+  const { worker, children } = fixture();
+  await expect(worker.request({ value: 'x'.repeat(65536) })).rejects.toThrow('Oversized');
+  await expect(worker.request({ value: 'valid' })).resolves.toMatchObject({ value: 'valid' });
+  expect(children).toHaveLength(1);
+});
 it('bounds requests and the queue even when pipe output never completes', async () => {
   const { worker } = fixture(150);
   await expect(worker.request({ value: 'x'.repeat(65536) })).rejects.toThrow('Oversized');
@@ -126,12 +134,12 @@ it('never replays a partially applied mutation after worker death', async () => 
   });
   await expect(worker.request({ mode: 'exit', value: 'mutation' })).rejects.toThrow();
   await exited;
-  await worker.request({ value: 'fresh' });
+  await expect(worker.request({ value: 'fresh' })).rejects.toThrow('unavailable');
   const lines = (await readFile(marker, 'utf8'))
     .trim()
     .split('\n')
     .map((line): unknown => JSON.parse(line));
-  expect(lines).toEqual([{ mode: 'exit', value: 'mutation' }, { value: 'fresh' }]);
+  expect(lines).toEqual([{ mode: 'exit', value: 'mutation' }]);
 });
 it('explicit shutdown rejects active and queued work and prevents restart', async () => {
   const { worker } = fixture();
@@ -181,10 +189,11 @@ it('bounds an input pipe whose worker never reads requests', async () => {
   await expect(worker.request({ value: 'x'.repeat(65000) })).rejects.toThrow('timed out');
 });
 
-it('waits for confirmed worker exit before dispatching a fresh containment request', async () => {
+it('requires explicit reconstruction after worker failure, including for containment', async () => {
   const { worker, children } = fixture();
   await expect(worker.request({ mode: 'malformed' })).rejects.toThrow();
-  await expect(worker.request({ value: 'deny' })).resolves.toMatchObject({ value: 'deny' });
-  expect(children).toHaveLength(2);
-  expect(children[0]!.exitCode !== null || children[0]!.signalCode !== null).toBe(true);
+  await expect(worker.request({ value: 'deny' })).rejects.toThrow('unavailable');
+  expect(children).toHaveLength(1);
+  const fresh = fixture();
+  await expect(fresh.worker.request({ value: 'deny' })).resolves.toMatchObject({ value: 'deny' });
 });

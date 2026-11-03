@@ -1,0 +1,146 @@
+[
+  {
+    "name": "verity_drive_read_document_url",
+    "title": "Verity · Drive · Read Document Url",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": "drive",
+    "skill": null,
+    "compatibility": {
+      "name": "verity_google_drive",
+      "action": "read_document_url"
+    }
+  },
+  {
+    "name": "verity_drive_select_workspace_file",
+    "title": "Verity · Drive · Select Workspace File",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": "drive",
+    "skill": null,
+    "compatibility": {
+      "name": "verity_google_drive",
+      "action": "select_workspace_file"
+    }
+  },
+  {
+    "name": "verity_drive_capabilities",
+    "title": "Verity · Drive · Capabilities",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": "drive",
+    "skill": null,
+    "compatibility": {
+      "name": "verity_google_drive",
+      "action": "capabilities"
+    }
+  },
+  {
+    "name": "verity_drive_list",
+    "title": "Verity · Drive · List",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": "drive",
+    "skill": null,
+    "compatibility": {
+      "name": "verity_google_drive",
+      "action": "list"
+    }
+  },
+  {
+    "name": "verity_drive_search",
+    "title": "Verity · Drive · Search",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": "drive",
+    "skill": null,
+    "compatibility": {
+      "name": "verity_google_drive",
+      "action": "search"
+    }
+  },
+  {
+    "name": "verity_drive_read",
+    "title": "Verity · Drive · Read",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": "drive",
+    "skill": null,
+    "compatibility": {
+      "name": "verity_google_drive",
+      "action": "read"
+    }
+  },
+  {
+    "name": "verity_drive_upload",
+    "title": "Verity · Drive · Upload",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": "drive",
+    "skill": null,
+    "compatibility": {
+      "name": "verity_google_drive",
+      "action": "upload"
+    }
+  },
+  {
+    "name": "verity_drive_create_folder",
+    "title": "Verity · Drive · Create Folder",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": "drive",
+    "skill": null,
+    "compatibility": {
+      "name": "verity_google_drive",
+      "action": "create_folder"
+    }
+  },
+  {
+    "name": "verity_drive_overwrite",
+    "title": "Verity · Drive · Overwrite",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": "drive",
+    "skill": null,
+    "compatibility": {
+      "name": "verity_google_drive",
+      "action": "overwrite"
+    }
+  },
+  {
+    "name": "verity_drive_rename",
+    "title": "Verity · Drive · Rename",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": "drive",
+    "skill": null,
+    "compatibility": {
+      "name": "verity_google_drive",
+      "action": "rename"
+    }
+  },
+  {
+    "name": "verity_drive_move",
+    "title": "Verity · Drive · Move",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": "drive",
+    "skill": null,
+    "compatibility": {
+      "name": "verity_google_drive",
+      "action": "move"
+    }
+  },
+  {
+    "name": "verity_drive_trash",
+    "title": "Verity · Drive · Trash",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": "drive",
+    "skill": null,
+    "compatibility": {
+      "name": "verity_google_drive",
+      "action": "trash"
+    }
+  }
+]

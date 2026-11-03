@@ -81,6 +81,10 @@ export interface ServerDeps {
    * knowledge roots reporting "not found" and changes nothing else.
    */
   dataRoot?: string | undefined;
+  /** Persist artifact ownership before the session's foreign-key cascade. Failures abort deletion. */
+  queueSessionArtifacts?: ((sessionId: string) => Promise<void>) | undefined;
+  /** Wake the durable cleanup worker after the session row has been removed. */
+  scheduleSessionCleanup?: (() => void) | undefined;
   /**
    * Delete the backend transcript files a session left on the runner runtime, so a
    * deleted session takes its conversation with it and not just its row (see
@@ -108,6 +112,15 @@ export interface ServerDeps {
   localPreviewManager?: LocalPreviewManager | undefined;
   /** Dev servers the agent sets up and Verity runs (concept 2.6). */
   managedDevServerManager?: ManagedDevServerManager | undefined;
+  /** Host-admitted names for the relay's DNS answerer under the project fence. */
+  projectEgressResolve?:
+    | ((
+        identity: import('./internal-listener.js').InternalConnectionIdentity,
+        name: string,
+      ) => Promise<{ addresses: readonly string[]; ttlSeconds: number } | undefined>)
+    | undefined;
+  /** Whether the host egress service answers; network protection can only be enabled then. */
+  projectEgressAvailable?: (() => Promise<boolean>) | undefined;
   previewSharingCapability?:
     (() => Promise<PreviewSharingCapability> | PreviewSharingCapability) | undefined;
   previewShareManager?: PreviewShareManager | undefined;

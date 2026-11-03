@@ -152,6 +152,15 @@ export {
   type AttentionNotice,
 } from './ui/attentionNotice.js';
 export { sessionLabel } from './ui/sessionLabel.js';
+export {
+  inboxItems,
+  inboxSummary,
+  MEETING_LEAD_MS,
+  type InboxAction,
+  type InboxInput,
+  type InboxItem,
+  type InboxItemKind,
+} from './ui/inbox.js';
 export { parseBranchIssue, forgeRefUrl, type RefHost, type RepoIdentity } from './ui/branchRef.js';
 export {
   LEGACY_GITHUB_CONNECTION_ID,
@@ -484,7 +493,12 @@ export {
   type ProjectSettingsDraft,
 } from './projectSettings.js';
 export { secretStatusSchema, type SecretStatus } from './api.js';
-export type { SchedulingRequestView } from './api.js';
+export type {
+  ActiveLiveMeetings,
+  CalendarWatch,
+  SchedulingRequestView,
+  UpcomingMeeting,
+} from './api.js';
 export { type IntegrationAccount, type IntegrationSource } from './api.js';
 export {
   type LiveMeeting,
@@ -598,6 +612,12 @@ export {
   type PushOutboxOptions,
   type PushOutboxStorage,
 } from './push/outbox.js';
+export {
+  parseMeetingPush,
+  resolveMeetingPushResponse,
+  type MeetingPush,
+  type MeetingPushIntent,
+} from './push/meeting.js';
 
 export {
   type KnowledgeSource,
@@ -694,3 +714,5 @@ export type {
   AuditOperationQuery,
   AuditOperationSummary,
 } from './audit.js';
+
+export { qaAssignmentView } from './ui/qaAssignment.js';

@@ -499,7 +499,7 @@ it('routes new, running and stopped experimental relays through host acknowledge
   });
   const start = vi.spyOn(egress, 'start').mockResolvedValue(undefined);
   const retire = vi.spyOn(egress, 'retire').mockResolvedValue(undefined);
-  vi.spyOn(egress, 'current').mockResolvedValue(await egress.prepare(identity));
+  const current = vi.spyOn(egress, 'current').mockResolvedValue(await egress.prepare(identity));
   prepare.mockClear();
   const runtime = await h.start({ ...context, egress });
   expect(h.createContainer.mock.calls[0]?.[0]).toMatchObject({
@@ -510,6 +510,8 @@ it('routes new, running and stopped experimental relays through host acknowledge
     nanoCpus: 250_000_000,
     restartPolicy: 'no',
   });
+  // Under the fence the relay answers names only from host-admitted direct grants.
+  expect(h.createContainer.mock.calls[0]?.[0].env).toContain('VERITY_DNS_CONTROLLED=1');
   expect(start).toHaveBeenCalledWith(identity, 'relay', 'relay-cid');
   expect(h.startContainer).not.toHaveBeenCalled();
   for (const running of [true, false]) {
@@ -524,6 +526,12 @@ it('routes new, running and stopped experimental relays through host acknowledge
   expect(prepare).toHaveBeenCalledTimes(2);
   await runtime.close();
   expect(retire).toHaveBeenCalledWith(identity);
+  current.mockRejectedValueOnce(new Error('host unavailable'));
+  h.stopContainer.mockClear();
+  h.removeContainer.mockClear();
+  await runtime.close();
+  expect(h.stopContainer).toHaveBeenCalledWith('relay-cid');
+  expect(h.removeContainer).toHaveBeenCalledWith('relay-cid');
 });
 it('does not create an experimental relay without the host fence', async () => {
   const h = harness();

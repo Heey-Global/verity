@@ -26,6 +26,34 @@ const sourcePath = z
 export const knowledgeToolRequestSchema = z.discriminatedUnion('operation', [
   z
     .object({
+      operation: z.literal('record_decision'),
+      requestId: z.string().regex(/^[A-Za-z0-9_-]{1,100}$/u),
+      title: z.string().trim().min(1).max(160),
+      decision: z.string().trim().min(1).max(8000),
+      rationale: z.string().trim().max(4000).optional(),
+      confirmationMessageSeq: z.number().int().positive().optional(),
+      predecessor: z
+        .object({
+          id: z.string().regex(/^[a-f0-9]{32}$/u),
+          digest: z.string().regex(/^[a-f0-9]{64}$/u),
+        })
+        .strict()
+        .optional(),
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal('lookup_decisions'),
+      id: z
+        .string()
+        .regex(/^[a-f0-9]{32}$/u)
+        .optional(),
+      query: z.string().trim().max(300).optional(),
+      offset: z.number().int().min(0).max(500).optional(),
+    })
+    .strict(),
+  z
+    .object({
       operation: z.literal('import_source'),
       sourcePath: z.string().trim().min(1).max(512),
       destination: z.enum(['meetings', 'documents']),
@@ -61,6 +89,9 @@ export const knowledgeToolRequestSchema = z.discriminatedUnion('operation', [
 ]);
 
 export const KNOWLEDGE_TOOL_DESCRIPTION =
+  'Record explicitly confirmed project decisions with record_decision in the current turn; use a stable requestId for retries, a short title, decision and stated rationale. Confirmation is model-assessed, not verified by the storage receipt. confirmationMessageSeq may reference an earlier user prompt in this session; otherwise the server binds the latest delivered user prompt, including mid-turn steering; peer prompts cannot confirm decisions. ' +
+  'Use lookup_decisions before answering decision questions or changing an existing decision; it returns full records, digests, provenance and computed statuses. Supply predecessor id and digest only for a confirmed replacement. Keyword query matches all supplied words; reformulate when needed. Pagination uses offset; warnings and incomplete scans prevent definitive claims. ' +
+  'A record_decision success is a durable-save receipt: acknowledge it briefly with the returned document link; surface errors rather than claiming a save. Do not write structured decision records directly. ' +
   "Import a file from this session worktree into this project's immutable Sources when the user asks to move or preserve it there. " +
   'For import_source, sourcePath is relative to the worktree; destination is meetings or documents; path is relative to that destination folder. Missing subfolders are created. Existing destinations are never overwritten. ' +
   'Use create_source_folder for an empty subfolder, or move_source to move an existing file within project Sources; sourcePath is relative to sources and path is relative to the destination folder. ' +
@@ -71,6 +102,7 @@ export const KNOWLEDGE_TOOL_DESCRIPTION =
   'Read knowledge through ordinary filesystem tools. Write project documents in the session Documents working copy when one is supplied; Verity publishes it automatically.';
 
 export const KNOWLEDGE_CONTEXT_INSTRUCTIONS =
+  'When the user explicitly confirms a project decision, record it in the current turn using verity_knowledge record_decision, without requiring a separate save request. Preserve the stated rationale and confirmation reference; do not treat suggestions or hypotheses as decisions. Ask before storing sensitive information or disputed interpretations. Look up related decisions first and use predecessor id and digest only when replacement is confirmed; ask when the relationship is uncertain. Acknowledge persistence only after the tool succeeds, linking its returned path. Before answering project decision questions, use lookup_decisions to read relevant current records and cite their document paths and provenance. Surface unresolved conflicts, invalid records, missing evidence and persistence errors. Recognition and retrieval still depend on the model; a successful receipt proves storage only. ' +
   'Durable project knowledge is mounted at `/knowledge`. Immutable source material is under ' +
   '`/knowledge/sources`, with documents and meeting artifacts in separate subfolders. ' +
   'When asked to move an existing worktree file into Sources, use `verity_knowledge` with `import_source`, verify the result, then remove the original and update references. Use nested destination paths to organize imports; use `create_source_folder` for empty folders and `move_source` to reorganize existing project Sources files. ' +

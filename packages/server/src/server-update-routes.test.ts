@@ -242,3 +242,35 @@ describe('POST /server/updates/retry', () => {
     expect(res.statusCode).toBe(503);
   });
 });
+
+describe('host preparation status projection', () => {
+  it('includes current sidecar progress while retaining the existing operation shape', async () => {
+    const operation = { ...stuck, state: 'preparing' as const, phase: 'preflight' as const };
+    const hostPreparation = {
+      updateId: operation.updateId,
+      targetDigest: operation.targetDigest,
+      stage: 'renewing' as const,
+    };
+    const response = await status(
+      routes({
+        readOperation: async () => operation,
+        readHostPreparation: async () => hostPreparation,
+      }),
+    );
+    expect(response.hostPreparation).toEqual(hostPreparation);
+    expect(response.operation).toEqual(operation);
+  });
+  it('does not report a stale sidecar as current work', async () => {
+    const response = await status(
+      routes({
+        readOperation: async () => stuck,
+        readHostPreparation: async () => ({
+          updateId: 'old-operation',
+          targetDigest: stuck.targetDigest,
+          stage: 'renewing',
+        }),
+      }),
+    );
+    expect(response).not.toHaveProperty('hostPreparation');
+  });
+});

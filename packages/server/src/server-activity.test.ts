@@ -5,6 +5,8 @@ import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { gunzipSync } from 'node:zlib';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { PgliteDriver } from '../../store/src/pglite.js';
+import { SessionStorage } from './session-storage.js';
 import { createAuthTokenRegistry } from './auth.js';
 import type { ReleaseSummary } from './github.js';
 import { ResourceObserver } from './live/resource-observer.js';
@@ -902,6 +904,7 @@ describe('GET /sessions', () => {
       sessionStorage: {
         bind: () => {},
         canRestore: async (session: { sessionId: string }) => session.sessionId === 'retired',
+        canRestoreMany: async () => new Map([['retired', true]]),
       } as unknown as import('./session-storage.js').SessionStorage,
     });
     try {
@@ -1249,6 +1252,87 @@ describe('GET /sessions', () => {
     expect(summary?.eventCount).toBe(
       written.filter((event) => event.t === 'text' && event.delta.length > 0).length,
     );
+  });
+
+  it('refreshes idle list branches once a minute while active sessions retain the short TTL', async () => {
+    const current = vi.fn(async () => 'feat/one');
+    const server = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      spawnWorktreeRoot: worktreeRoot,
+      branches: { ...branchSvc, current } as unknown as NonNullable<
+        Parameters<typeof buildServer>[0]['branches']
+      >,
+    });
+    let now = 0;
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    try {
+      for (const id of ['idle', 'active']) {
+        const worktree = join(worktreeRoot, id);
+        mkdirSync(worktree, { recursive: true });
+        await ctx.store.createSession({ sessionId: id, worktree, model: 'm' });
+        await ctx.store.appendEvent(id, {
+          t: 'status',
+          state: id === 'active' ? 'running' : 'completed',
+        });
+      }
+      const poll = async () => {
+        await server.inject({ method: 'GET', url: '/sessions' });
+        await new Promise((resolve) => setImmediate(resolve));
+      };
+      await poll();
+      expect(current).toHaveBeenCalledTimes(2);
+      current.mockClear();
+      now = 10_001;
+      await poll();
+      expect(current.mock.calls).toEqual([[join(worktreeRoot, 'active')]]);
+      current.mockClear();
+      now = 60_001;
+      await poll();
+      expect(current).toHaveBeenCalledTimes(2);
+    } finally {
+      clock.mockRestore();
+      await server.close();
+    }
+  });
+
+  it('bounds fleet-wide branch reads and coalesces queued worktrees across list polls', async () => {
+    const releases: (() => void)[] = [];
+    const current = vi.fn(
+      () => new Promise<string>((resolve) => releases.push(() => resolve('feat/one'))),
+    );
+    const server = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      spawnWorktreeRoot: worktreeRoot,
+      branches: { ...branchSvc, current } as unknown as NonNullable<
+        Parameters<typeof buildServer>[0]['branches']
+      >,
+    });
+    try {
+      for (let i = 0; i < 5; i++) {
+        const worktree = join(worktreeRoot, `bounded-${i}`);
+        mkdirSync(worktree, { recursive: true });
+        await ctx.store.createSession({ sessionId: `bounded-${i}`, worktree, model: 'm' });
+      }
+      await server.inject({ method: 'GET', url: '/sessions' });
+      await server.inject({ method: 'GET', url: '/sessions' });
+      expect(current).toHaveBeenCalledTimes(2);
+      releases.shift()!();
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(current).toHaveBeenCalledTimes(3);
+      for (let i = 0; i < 4; i++) {
+        releases.shift()!();
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+      await server.inject({ method: 'GET', url: '/sessions' });
+      expect(current).toHaveBeenCalledTimes(5);
+    } finally {
+      for (const release of releases) release();
+      await server.close();
+    }
   });
 
   it('carries the cached branch on each summary without awaiting git', async () => {
@@ -1846,6 +1930,61 @@ describe('overview projections read only the narrow event slice', () => {
     }
   });
 
+  it('keeps actual connection acquisitions constant for growing lists with missing worktrees and fallback histories', async () => {
+    const storage = new SessionStorage({
+      listProjects: () => ctx.store.listProjects(),
+      root: () => worktreeRoot,
+      listSessions: () => ctx.store.listSessions(),
+      activity: async () => null,
+      withGit: async () => {
+        throw new Error('unused');
+      },
+      mutate: async (_projectId, _sessionId, run) => run(),
+      pr: async () => null,
+    });
+    const server = buildServer({ eventStore: ctx.store, bus, conductor, sessionStorage: storage });
+    await server.ready();
+    const original = ctx.store.listSessionProjectionFacts.bind(ctx.store);
+    const facts = vi
+      .spyOn(ctx.store, 'listSessionProjectionFacts')
+      .mockImplementation(async (...args) => {
+        const result = await original(...args);
+        for (const entry of result.values()) {
+          entry.eventsTruncated = true;
+          entry.events = entry.events.filter(({ event }) => event.t !== 'prompt');
+        }
+        return result;
+      });
+    const acquire = vi.spyOn(PgliteDriver.prototype, 'acquireConnection');
+    const seed = async (n: number) => {
+      await ctx.store.createSession({
+        sessionId: `pool-${n}`,
+        worktree: `/missing/pool-${n}`,
+        model: 'm',
+      });
+      await ctx.store.appendEvent(`pool-${n}`, { t: 'prompt', text: 'go' });
+      await ctx.store.appendEvent(`pool-${n}`, { t: 'status', state: 'running' });
+    };
+    try {
+      await seed(0);
+      acquire.mockClear();
+      expect((await server.inject('/sessions')).statusCode).toBe(200);
+      const small = acquire.mock.calls.length;
+      expect(small).toBeGreaterThan(0);
+      for (let n = 1; n < 40; n++) await seed(n);
+      acquire.mockClear();
+      const large = await server.inject('/sessions');
+      expect(large.statusCode).toBe(200);
+      expect(large.json()).toHaveLength(40);
+      expect(acquire.mock.calls.length).toBeLessThanOrEqual(small);
+      expect(acquire.mock.calls.length).toBeLessThanOrEqual(12);
+    } finally {
+      acquire.mockRestore();
+      facts.mockRestore();
+      await server.close();
+    }
+  });
+
   it('bounds full projection reads across overlapping overview requests', async () => {
     for (let i = 0; i < 12; i += 1) {
       await ctx.store.createSession({
@@ -1867,11 +2006,11 @@ describe('overview projections read only the narrow event slice', () => {
         }
         return result;
       });
-    const originalRead = ctx.store.listSessionProjectionEvents.bind(ctx.store);
+    const originalRead = ctx.store.visitSessionProjectionEvents.bind(ctx.store);
     let active = 0;
     let peak = 0;
     const reads = vi
-      .spyOn(ctx.store, 'listSessionProjectionEvents')
+      .spyOn(ctx.store, 'visitSessionProjectionEvents')
       .mockImplementation(async (...args) => {
         active += 1;
         peak = Math.max(peak, active);
@@ -1897,14 +2036,15 @@ describe('overview projections read only the narrow event slice', () => {
         ).toBe(true);
       }
       // Identical badges would hide a queue large enough to monopolize the pool.
-      expect(reads).toHaveBeenCalledTimes(24);
+      expect(reads).toHaveBeenCalledTimes(1);
+      expect(facts).toHaveBeenCalledTimes(1);
       expect(peak).toBe(1);
       reads.mockRejectedValueOnce(new Error('projection read failed'));
-      const failed = await app.inject({ method: 'GET', url: '/sessions/fallback-0' });
+      const failed = await app.inject({ method: 'GET', url: '/sessions' });
       expect(failed.statusCode).toBe(500);
-      const recovered = await app.inject({ method: 'GET', url: '/sessions/fallback-0' });
+      const recovered = await app.inject({ method: 'GET', url: '/sessions' });
       expect(recovered.statusCode).toBe(200);
-      expect(recovered.json()).toMatchObject({ status: 'running' });
+      expect(recovered.json()[0]).toMatchObject({ status: 'running' });
     } finally {
       facts.mockRestore();
       reads.mockRestore();
@@ -2820,5 +2960,64 @@ describe('GET /sessions/:id', () => {
     const res = await app.inject({ method: 'GET', url: '/sessions/bad%20id' });
     expect(res.statusCode).toBe(400);
     expect(res.json()).toEqual({ error: 'invalid request' });
+  });
+});
+
+describe('GET /sessions inbox facts', () => {
+  it('carries the open question until a prompt answers it', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    await ctx.store.appendEvent('s1', { t: 'prompt', text: 'Build the form' });
+    await ctx.store.appendEvent('s1', {
+      t: 'choices',
+      question: 'Which validation library?',
+      options: [{ label: 'Zod', recommended: true }, { label: 'Valibot' }],
+    });
+    await ctx.store.appendEvent('s1', { t: 'status', state: 'completed' });
+    const open = await app.inject({ method: 'GET', url: '/sessions' });
+    expect(open.json()[0]).toMatchObject({
+      openChoices: {
+        question: 'Which validation library?',
+        options: [{ label: 'Zod', recommended: true }, { label: 'Valibot' }],
+      },
+    });
+    // A busy conductor means the answer is already being worked on.
+    isBusy.mockReturnValue(true);
+    const busy = await app.inject({ method: 'GET', url: '/sessions' });
+    expect(busy.json()[0]).not.toHaveProperty('openChoices');
+    isBusy.mockReturnValue(false);
+    await ctx.store.appendEvent('s1', { t: 'prompt', text: 'Zod' });
+    await ctx.store.appendEvent('s1', { t: 'status', state: 'completed' });
+    const answered = await app.inject({ method: 'GET', url: '/sessions' });
+    expect(answered.json()[0]).not.toHaveProperty('openChoices');
+  });
+
+  it('describes the permission prompts the conductor still has parked', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    await ctx.store.appendEvent('s1', { t: 'prompt', text: 'Search the web' });
+    await ctx.store.appendEvent('s1', {
+      t: 'permission',
+      id: 'toolu_egress',
+      tool: 'verity_http_request',
+      input: { url: 'https://api.exa.ai/search' },
+      riskClass: 'ask',
+    });
+    await ctx.store.appendEvent('s1', { t: 'status', state: 'awaiting_input' });
+    pendingPermissions.mockReturnValue(['toolu_egress']);
+    const res = await app.inject({ method: 'GET', url: '/sessions' });
+    expect(res.json()[0]).toMatchObject({
+      pendingPermissions: ['toolu_egress'],
+      pendingPermissionRequests: [
+        {
+          toolUseId: 'toolu_egress',
+          tool: 'verity_http_request',
+          riskClass: 'ask',
+          input: { url: 'https://api.exa.ai/search' },
+        },
+      ],
+    });
+    // Once answered the conductor drops it; the durable event alone is not a prompt.
+    pendingPermissions.mockReturnValue([]);
+    const answered = await app.inject({ method: 'GET', url: '/sessions' });
+    expect(answered.json()[0]).not.toHaveProperty('pendingPermissionRequests');
   });
 });

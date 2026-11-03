@@ -1,0 +1,98 @@
+[
+  {
+    "name": "verity_gmail_list_senders",
+    "title": "Verity · Gmail · List Senders",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": "gmail",
+    "skill": null,
+    "compatibility": {
+      "name": "verity_gmail",
+      "action": "list_senders"
+    }
+  },
+  {
+    "name": "verity_gmail_download_attachment",
+    "title": "Verity · Gmail · Download Attachment",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": "gmail",
+    "skill": null,
+    "compatibility": {
+      "name": "verity_gmail",
+      "action": "download_attachment"
+    }
+  },
+  {
+    "name": "verity_gmail_search",
+    "title": "Verity · Gmail · Search",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": "gmail",
+    "skill": null,
+    "compatibility": {
+      "name": "verity_gmail",
+      "action": "search"
+    }
+  },
+  {
+    "name": "verity_gmail_read_thread",
+    "title": "Verity · Gmail · Read Thread",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": "gmail",
+    "skill": null,
+    "compatibility": {
+      "name": "verity_gmail",
+      "action": "read_thread"
+    }
+  },
+  {
+    "name": "verity_gmail_create_reply_draft",
+    "title": "Verity · Gmail · Create Reply Draft",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": "gmail",
+    "skill": null,
+    "compatibility": {
+      "name": "verity_gmail",
+      "action": "create_reply_draft"
+    }
+  },
+  {
+    "name": "verity_gmail_create_draft",
+    "title": "Verity · Gmail · Create Draft",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": "gmail",
+    "skill": null,
+    "compatibility": {
+      "name": "verity_gmail",
+      "action": "create_draft"
+    }
+  },
+  {
+    "name": "verity_gmail_prepare_draft_send",
+    "title": "Verity · Gmail · Prepare Draft Send",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": "gmail",
+    "skill": null,
+    "compatibility": {
+      "name": "verity_gmail",
+      "action": "prepare_draft_send"
+    }
+  },
+  {
+    "name": "verity_gmail_send_draft",
+    "title": "Verity · Gmail · Send Draft",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": "gmail",
+    "skill": null,
+    "compatibility": {
+      "name": "verity_gmail",
+      "action": "send_draft"
+    }
+  }
+]

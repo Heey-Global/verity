@@ -1,5 +1,32 @@
 # Changelog
 
+## [1.84.0](https://github.com/Heey-Global/verity/compare/mobile-v1.83.0...mobile-v1.84.0) (2026-11-03)
+
+
+### Features
+
+* **agent:** add scoped context and trusted capabilities ([#2212](https://github.com/Heey-Global/verity/issues/2212)) ([5f5ada5](https://github.com/Heey-Global/verity/commit/5f5ada50b097ab2b3d73413a1d70b54377c62dab))
+* **egress:** wire global network protection into server starts ([#2192](https://github.com/Heey-Global/verity/issues/2192)) ([6e7c5e2](https://github.com/Heey-Global/verity/commit/6e7c5e222dcb9d12774fd8375cf33977c2510cd9))
+* **knowledge:** add direct project browsing and protect Wiki writes ([#2215](https://github.com/Heey-Global/verity/issues/2215)) ([b9c6a74](https://github.com/Heey-Global/verity/commit/b9c6a74e540b4e94a06b34b6115507eaa56acf5b))
+* **mcp:** discover OAuth and complete native/web sign-ins ([#2160](https://github.com/Heey-Global/verity/issues/2160)) ([d23b893](https://github.com/Heey-Global/verity/commit/d23b893d390210052c61477f08efb84c982c65b2))
+* **meetings:** join online meetings from watched Google calendars ([#2167](https://github.com/Heey-Global/verity/issues/2167)) ([b0cd9fe](https://github.com/Heey-Global/verity/commit/b0cd9fec970bb1df48cc405a92e79d188b09af1b))
+* **qa:** delegate and supervise project assignments ([#2171](https://github.com/Heey-Global/verity/issues/2171)) ([cb7d6d8](https://github.com/Heey-Global/verity/commit/cb7d6d8f310a2b6a89763968ce40d69b51ef89d2))
+
+
+### Bug Fixes
+
+* **ci:** restore session repairs and analyze recurring failures ([#2168](https://github.com/Heey-Global/verity/issues/2168)) ([0a167fa](https://github.com/Heey-Global/verity/commit/0a167fab989fd33724799c7fd279740ff4ae3385))
+* **meetings:** restore calendar selection and reliable web startup ([#2205](https://github.com/Heey-Global/verity/issues/2205)) ([4dac91e](https://github.com/Heey-Global/verity/commit/4dac91e1bf9cd97d8114938add501b7b1e6fb61d))
+* **meetings:** show ongoing recordings on other devices ([#2185](https://github.com/Heey-Global/verity/issues/2185)) ([2b7eb75](https://github.com/Heey-Global/verity/commit/2b7eb754d031bc1f0bbe3b4ff50636a0c33e1dd1))
+* **mobile:** expose native pre-data read transitions ([#2206](https://github.com/Heey-Global/verity/issues/2206)) ([1a5b444](https://github.com/Heey-Global/verity/commit/1a5b44470ed0e49dec08f69a7b1bbc1586aa52f8))
+* **projects:** restore local code workspaces and GitHub disconnect ([#2211](https://github.com/Heey-Global/verity/issues/2211)) ([9acc428](https://github.com/Heey-Global/verity/commit/9acc42872d8f1097cd83a9ecffdeee944e1a3867))
+
+
+### Performance Improvements
+
+* **mobile:** isolate project group selection updates ([#2169](https://github.com/Heey-Global/verity/issues/2169)) ([3afb866](https://github.com/Heey-Global/verity/commit/3afb866bbc31142885c74c5623e1619acc87c717))
+* **server:** reduce polling-driven Docker execs ([#2208](https://github.com/Heey-Global/verity/issues/2208)) ([7e200b1](https://github.com/Heey-Global/verity/commit/7e200b12402c1f4c065e8334c45091607bf4b186))
+
 ## [1.83.0](https://github.com/Heey-Global/verity/compare/mobile-v1.82.0...mobile-v1.83.0) (2026-11-01)
 
 

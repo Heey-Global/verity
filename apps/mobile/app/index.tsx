@@ -123,9 +123,16 @@ import { createSessionConfirmingWarnings } from '../lib/startSession';
 import { repairProject } from '../lib/projectRepair';
 import { sessionLoadError } from '../lib/sessionLoadError';
 import type { ProjectOverviewStatus } from '../lib/projectSetup';
-import { projectGroups, type SessionProjectGroup } from '../lib/projectGroups';
+import {
+  projectGroups,
+  projectGroupSessionId,
+  type SessionProjectGroup,
+} from '../lib/projectGroups';
 import { formatResetDisplay } from '../lib/time';
 import { SessionChat } from './session/[id]';
+import { HomeInbox } from '../components/home/HomeInbox';
+import { HomeTabBar, type HomeTab } from '../components/home/HomeTabBar';
+import { useHomePreferences } from '../lib/homePreferences';
 import { toneColor } from '../theme/tokens';
 import { tint } from '../components/ui/tint';
 
@@ -605,6 +612,26 @@ function SessionList({ client }: { client: VerityClient }) {
     },
     [client, refresh, refreshProjects],
   );
+  // The "New Home" preview (Settings › This app): Home beside the project list.
+  // Off, the overview below renders exactly as it always has.
+  const homePreferences = useHomePreferences();
+  const [homeTab, setHomeTab] = useState<HomeTab>('home');
+  const [homeCount, setHomeCount] = useState(0);
+  const openSessionFromHome = useCallback(
+    (sessionId: string) => {
+      const session = sessions.find((candidate) => candidate.sessionId === sessionId);
+      // `onOpenSession` only prefetches and marks the session seen; the rows
+      // navigate through their own Link, so Home navigates here, once.
+      if (session) onOpenSession(session);
+      if (wide) setSelectedId(sessionId);
+      else router.push({ pathname: '/session/[id]', params: { id: sessionId } });
+    },
+    [sessions, onOpenSession, wide],
+  );
+  const repairFromHome = useCallback(
+    (projectId: string) => void repairProjectRow(projectId),
+    [repairProjectRow],
+  );
 
   const confirmSandboxUpdate = useCallback(
     (project: ProjectRecord) => {
@@ -699,8 +726,8 @@ function SessionList({ client }: { client: VerityClient }) {
           unread={unread}
           previewUrls={previewUrls}
           publicPreviews={publicPreviews}
-          selectedId={wide ? selectedId : null}
-          renamingId={renaming?.sessionId ?? null}
+          selectedId={wide ? projectGroupSessionId(item, selectedId) : null}
+          renamingId={projectGroupSessionId(item, renaming?.sessionId)}
           updatingProjectIds={updatingProjectIds}
           repairingProjectIds={repairingProjectIds}
         />
@@ -962,13 +989,42 @@ function SessionList({ client }: { client: VerityClient }) {
     </View>
   );
 
+  const sidebar = homePreferences.inbox ? (
+    <View style={styles.flex}>
+      {/* Both stay mounted so switching keeps scroll positions and Home's count
+          stays current while the project list is open. */}
+      <View style={[styles.flex, homeTab === 'home' ? null : styles.hiddenPane]}>
+        <HomeInbox
+          client={client}
+          sessions={sessions}
+          projects={projects}
+          selectedSessionId={wide ? selectedId : null}
+          refreshing={refreshingOverview}
+          onRefresh={() => void onRefreshOverview()}
+          onOpenSession={openSessionFromHome}
+          onRepairProject={repairFromHome}
+          onCountChange={setHomeCount}
+        />
+      </View>
+      <View style={[styles.flex, homeTab === 'projects' ? null : styles.hiddenPane]}>{master}</View>
+      <HomeTabBar
+        tab={homeTab}
+        onChange={setHomeTab}
+        count={homeCount}
+        bottomInset={insets.bottom}
+      />
+    </View>
+  ) : (
+    master
+  );
+
   finishHomeWork();
-  if (!wide) return <SchedulingDiagnostics stage="sidebar">{master}</SchedulingDiagnostics>;
+  if (!wide) return <SchedulingDiagnostics stage="sidebar">{sidebar}</SchedulingDiagnostics>;
 
   return (
     <View style={styles.splitRow}>
       <View style={[styles.leftPane, { width: sidebarWidth }]}>
-        <SchedulingDiagnostics stage="sidebar">{master}</SchedulingDiagnostics>
+        <SchedulingDiagnostics stage="sidebar">{sidebar}</SchedulingDiagnostics>
       </View>
       <View style={styles.rightPane}>
         {selectedId && baseUrl ? (
@@ -2139,6 +2195,7 @@ const styles = StyleSheet.create((theme) => ({
     flex: 1,
     backgroundColor: theme.colors.background,
   },
+  hiddenPane: { display: 'none' },
   limitMeters: {
     gap: 1,
     paddingHorizontal: theme.spacing.md,

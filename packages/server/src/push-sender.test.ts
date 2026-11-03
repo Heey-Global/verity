@@ -119,6 +119,260 @@ function fakeLogger(): Omit<PushLogger, 'info' | 'warn'> & {
 }
 
 describe('PushSender', () => {
+  const notification = { title: 'Verity', body: 'Open Verity.', categoryId: 'DONE', data: {} };
+
+  it('backs off a failed device across producers and resets after acceptance', async () => {
+    let now = 0;
+    const store = new FakeStore('ExpoPushToken[one]');
+    const transport = new FakeTransport();
+    transport.tickets = [
+      { status: 'error', message: 'private', details: { error: 'MessageRateExceeded' } },
+    ];
+    const logger = fakeLogger();
+    const sender = createPushSender({ store, transport, logger, now: () => now });
+    await sender.send(notification);
+    for (let i = 0; i < 100; i++) await sender.send({ ...notification, data: { finding: i } });
+    expect(transport.sent).toHaveLength(1);
+    expect(logger.info).toHaveBeenCalledTimes(1);
+    now = 60_000;
+    transport.tickets = [
+      { status: 'error', message: 'private', details: { error: 'MessageRateExceeded' } },
+    ];
+    await sender.send(notification);
+    now = 179_999;
+    await sender.send(notification);
+    expect(transport.sent).toHaveLength(2);
+    now = 180_000;
+    transport.tickets = [{ status: 'ok', id: 'recovered' }];
+    await expect(sender.send(notification)).resolves.toMatchObject({ ticketsAccepted: 1 });
+    transport.tickets = [{ status: 'ok', id: 'next' }];
+    await expect(sender.send({ ...notification, data: { next: true } })).resolves.toMatchObject({
+      ticketsAccepted: 1,
+    });
+    expect(logger.warn).toHaveBeenCalledWith(
+      { component: 'push', errorCode: 'MessageRateExceeded', attempts: 2, retryAfterMs: 120_000 },
+      'verity: Expo push target deferred',
+    );
+  });
+
+  it('deduplicates concurrent identical sends and gates different producers after failure', async () => {
+    const store = new FakeStore('ExpoPushToken[one]');
+    const transport = new FakeTransport();
+    let finish!: (tickets: ExpoPushTicket[]) => void;
+    const send = vi.spyOn(transport, 'sendPushNotificationsAsync').mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const sender = createPushSender({ store, transport, now: () => 0 });
+    const first = sender.send(notification, store.tokens);
+    const duplicate = sender.send(
+      notification,
+      store.tokens.map((token) => ({ ...token, updatedAt: 1, userId: 'user' })),
+    );
+    const different = sender.send({ ...notification, data: { finding: 2 } }, store.tokens);
+    await vi.waitFor(() => expect(finish).toBeTypeOf('function'));
+    finish([{ status: 'error', message: 'private', details: { error: 'InvalidCredentials' } }]);
+    await expect(first).resolves.toMatchObject({ ticketErrors: 1 });
+    await expect(duplicate).resolves.toMatchObject({ ticketErrors: 1 });
+    await expect(different).resolves.toMatchObject({ ticketsAccepted: 0 });
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(store.tokens).toHaveLength(1);
+  });
+
+  it('pauses credential failures without pruning and recovers after the cooldown', async () => {
+    let now = 0;
+    const store = new FakeStore('ExpoPushToken[one]');
+    const transport = new FakeTransport();
+    transport.tickets = [
+      { status: 'error', message: 'credential secret', details: { error: 'InvalidCredentials' } },
+    ];
+    const logger = fakeLogger();
+    const sender = createPushSender({ store, transport, logger, now: () => now });
+    await sender.send(notification);
+    now = 899_999;
+    await sender.send(notification);
+    expect(transport.sent).toHaveLength(1);
+    expect(store.tokens).toHaveLength(1);
+    now = 900_000;
+    transport.tickets = [{ status: 'ok', id: 'fixed' }];
+    await expect(sender.send(notification)).resolves.toMatchObject({ ticketsAccepted: 1 });
+    expect(logger.info).toHaveBeenCalledWith(
+      expect.objectContaining({ ticketErrorCodes: { InvalidCredentials: 1 } }),
+      'verity: Expo push send completed',
+    );
+    expect(JSON.stringify([...logger.warn.mock.calls, ...logger.info.mock.calls])).not.toMatch(
+      /credential secret|ExpoPushToken/,
+    );
+  });
+
+  it('contains transport and missing-ticket storms while allowing healthy targets', async () => {
+    const store = new FakeStore('ExpoPushToken[one]');
+    const transport = new FakeTransport();
+    transport.failSend = true;
+    const sender = createPushSender({ store, transport, now: () => 0 });
+    await sender.send(notification);
+    transport.failSend = false;
+    await sender.send(notification);
+    expect(transport.sent).toHaveLength(1);
+    const healthy = new FakeStore('ExpoPushToken[healthy]');
+    transport.tickets = [{ status: 'ok', id: 'healthy' }];
+    await expect(sender.send(notification, healthy.tokens)).resolves.toMatchObject({
+      ticketsAccepted: 1,
+    });
+    const missing = new FakeStore('ExpoPushToken[missing]');
+    await sender.send(notification, missing.tokens);
+    await sender.send(notification, missing.tokens);
+    expect(transport.sent).toHaveLength(3);
+  });
+
+  it('suppresses stale explicit targets after pruning and deduplicates target lists', async () => {
+    const store = new FakeStore('ExpoPushToken[dead]');
+    const stale = [...store.tokens, ...store.tokens];
+    const transport = new FakeTransport();
+    transport.tickets = [
+      { status: 'error', message: 'gone', details: { error: 'DeviceNotRegistered' } },
+    ];
+    const sender = createPushSender({ store, transport, now: () => 0 });
+    await expect(sender.send(notification, stale)).resolves.toMatchObject({
+      targets: 1,
+      pruned: 1,
+    });
+    await sender.send(notification, stale);
+    expect(transport.sent.flat()).toHaveLength(1);
+    expect(store.tokens).toHaveLength(0);
+  });
+
+  it('caps exponential backoff at an hour and resets it after success', async () => {
+    let now = 0;
+    const store = new FakeStore('ExpoPushToken[one]');
+    const transport = new FakeTransport();
+    const logger = fakeLogger();
+    const sender = createPushSender({ store, transport, logger, now: () => now });
+    for (let attempt = 0; attempt < 10; attempt++) {
+      transport.tickets = [
+        { status: 'error', message: 'private', details: { error: 'MessageRateExceeded' } },
+      ];
+      await sender.send(notification);
+      const delay = Math.min(60_000 * 2 ** attempt, 3_600_000);
+      now += delay - 1;
+      await sender.send(notification);
+      expect(transport.sent).toHaveLength(attempt + 1);
+      now++;
+    }
+    expect(logger.warn.mock.calls.at(-1)?.[0]).toMatchObject({ retryAfterMs: 3_600_000 });
+    transport.tickets = [{ status: 'ok', id: 'recovered' }];
+    await sender.send(notification);
+    transport.tickets = [
+      { status: 'error', message: 'private', details: { error: 'MessageRateExceeded' } },
+    ];
+    await sender.send(notification);
+    expect(logger.warn.mock.calls.at(-1)?.[0]).toMatchObject({ attempts: 1, retryAfterMs: 60_000 });
+  });
+
+  it('backs off receipt credential failures and logs only allowlisted codes', async () => {
+    const store = new FakeStore('ExpoPushToken[one]');
+    store.receipts.push({
+      receiptId: 'r',
+      expoToken: store.tokens[0]!.expoToken,
+      availableAt: 0,
+      attempts: 0,
+      createdAt: 0,
+    });
+    const transport = new FakeTransport();
+    transport.receipts = {
+      r: { status: 'error', message: 'private', details: { error: 'InvalidCredentials' } },
+    };
+    const logger = fakeLogger();
+    const sender = createPushSender({ store, transport, logger, now: () => 0 });
+    await sender.processDueReceipts();
+    await sender.send(notification);
+    expect(transport.sent).toHaveLength(0);
+    expect(store.tokens).toHaveLength(1);
+    expect(logger.warn.mock.calls[0]?.[0]).toMatchObject({
+      errorCode: 'InvalidCredentials',
+      retryAfterMs: 900_000,
+    });
+    const other = new FakeStore('ExpoPushToken[other]');
+    const ticket: ExpoPushTicket = { status: 'error', message: 'private', details: {} };
+    Object.assign(ticket.details!, { error: 'ExpoPushToken[secret]' });
+    transport.tickets = [ticket];
+    await sender.send(notification, other.tokens);
+    expect(logger.warn.mock.calls.at(-1)?.[0]).toMatchObject({ errorCode: 'UnknownError' });
+    expect(JSON.stringify([...logger.warn.mock.calls, ...logger.info.mock.calls])).not.toMatch(
+      /private|ExpoPushToken|Open Verity/,
+    );
+  });
+
+  it('drains queued sends before closing', async () => {
+    const store = new FakeStore('ExpoPushToken[one]');
+    const transport = new FakeTransport();
+    let finish!: (tickets: ExpoPushTicket[]) => void;
+    const send = vi.spyOn(transport, 'sendPushNotificationsAsync').mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    transport.tickets = [{ status: 'ok', id: 'second' }];
+    const sender = createPushSender({ store, transport });
+    const first = sender.send(notification, store.tokens);
+    const second = sender.send({ ...notification, data: { next: true } }, store.tokens);
+    let closed = false;
+    const closing = sender.close().then(() => {
+      closed = true;
+    });
+    await vi.waitFor(() => expect(finish).toBeTypeOf('function'));
+    expect(closed).toBe(false);
+    finish([{ status: 'ok', id: 'first' }]);
+    await Promise.all([first, second, closing]);
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(closed).toBe(true);
+  });
+
+  it('drains broadcasts still looking up tokens before closing', async () => {
+    const store = new FakeStore('ExpoPushToken[one]');
+    let finishLookup!: (tokens: DevicePushTokenRecord[]) => void;
+    vi.spyOn(store, 'listDevicePushTokens').mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishLookup = resolve;
+        }),
+    );
+    const transport = new FakeTransport();
+    transport.tickets = [{ status: 'ok', id: 'broadcast' }];
+    const sender = createPushSender({ store, transport });
+    const broadcast = sender.send(notification);
+    let closed = false;
+    const closing = sender.close().then(() => {
+      closed = true;
+    });
+    await vi.waitFor(() => expect(finishLookup).toBeTypeOf('function'));
+    expect(closed).toBe(false);
+    finishLookup(store.tokens);
+    await Promise.all([broadcast, closing]);
+    expect(transport.sent).toHaveLength(1);
+    expect(store.receipts).toHaveLength(1);
+    expect(closed).toBe(true);
+  });
+
+  it('contains oversized payload retries without blocking valid notifications', async () => {
+    const store = new FakeStore('ExpoPushToken[one]');
+    const transport = new FakeTransport();
+    transport.tickets = [
+      { status: 'error', message: 'large', details: { error: 'MessageTooBig' } },
+    ];
+    const sender = createPushSender({ store, transport, now: () => 0 });
+    await sender.send(notification);
+    await expect(sender.send(notification)).resolves.toMatchObject({ deferred: 1 });
+    transport.tickets = [{ status: 'ok', id: 'valid' }];
+    await expect(sender.send({ ...notification, body: 'smaller' })).resolves.toMatchObject({
+      ticketsAccepted: 1,
+    });
+    expect(transport.sent).toHaveLength(2);
+  });
+
   it('fans out in chunks, persists accepted tickets, and prunes immediate dead tokens', async () => {
     const store = new FakeStore('ExpoPushToken[one]', 'ExpoPushToken[two]', 'ExpoPushToken[dead]');
     const transport = new FakeTransport();
@@ -140,6 +394,7 @@ describe('PushSender', () => {
       }),
     ).resolves.toEqual({
       targets: 3,
+      deferred: 0,
       ticketsAccepted: 1,
       ticketErrors: 2,
       receiptsQueued: 1,

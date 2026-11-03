@@ -1,4 +1,4 @@
-"""Negative observation must finish the pinned netstack's queued resolution."""
+"""Initial denial must finish neighbor resolution before authority can change."""
 import errno
 from pathlib import Path
 import runpy
@@ -6,27 +6,52 @@ import socket
 import unittest
 from unittest.mock import MagicMock, patch
 
-SOURCE = Path(__file__).with_name('composed-client.py')
 
-
-class ComposedClientTests(unittest.TestCase):
-    def probe(self, phase, expectation, error):
+class InitialDenialTests(unittest.TestCase):
+    def run_client(self, error, expectation='negative', phase='before-admission-0'):
         channel = MagicMock()
         channel.__enter__.return_value = channel
         channel.connect.side_effect = error
-        with patch('socket.socket', return_value=channel), patch('sys.argv', [str(SOURCE), '11.77.106.2', phase, expectation]):
-            runpy.run_path(str(SOURCE), run_name='__main__')
+        with patch('socket.socket', return_value=channel), patch('sys.argv', [
+                'composed-client.py', '11.77.106.2', phase, expectation]):
+            runpy.run_path(str(Path(__file__).with_name('composed-client.py')))
         return channel
 
-    def test_initial_denial_requires_terminal_resolution_failure(self):
-        channel = self.probe('before-admission-0', 'negative', OSError(errno.EHOSTUNREACH, 'No route'))
+    def test_requires_terminal_unreachable_instead_of_application_timeout(self):
+        channel = self.run_client(OSError(errno.EHOSTUNREACH, 'unreachable'))
         channel.settimeout.assert_called_once_with(4)
-        for error in [TimeoutError('timed out'), OSError(errno.ECONNREFUSED, 'Refused')]:
-            with self.subTest(error=error), self.assertRaisesRegex(RuntimeError, 'neighbor resolution'):
-                self.probe('before-admission-1', 'negative', error)
+        with self.assertRaisesRegex(RuntimeError, 'finish neighbor resolution'):
+            self.run_client(TimeoutError('application deadline'))
+        with self.assertRaisesRegex(RuntimeError, 'finish neighbor resolution'):
+            self.run_client(OSError(errno.ECONNREFUSED, 'refused'))
 
-    def test_positive_and_later_denials_keep_short_connection_bound(self):
-        channel = self.probe('lease-expired-0', 'negative', TimeoutError('timed out'))
-        channel.settimeout.assert_called_once_with(0.4)
+    def test_positive_control_still_fails_on_timeout(self):
         with self.assertRaises(TimeoutError):
-            self.probe('admitted-0', 'positive', TimeoutError('timed out'))
+            self.run_client(TimeoutError('application deadline'), 'positive', 'admitted-0')
+
+    def test_positive_control_outlasts_one_neighbor_probe_interval(self):
+        with patch('socket.socket') as factory:
+            channel = factory.return_value.__enter__.return_value
+            channel.recv.return_value = b'external-positive'
+            with patch('sys.argv', ['composed-client.py', '11.77.106.2', 'admitted-0', 'positive']):
+                runpy.run_path(str(Path(__file__).with_name('composed-client.py')))
+        channel.settimeout.assert_called_once_with(3)
+
+    def test_positive_control_reports_its_connect_duration(self):
+        import contextlib, io, json
+        output = io.StringIO()
+        with patch('socket.socket') as factory, contextlib.redirect_stdout(output):
+            factory.return_value.__enter__.return_value.recv.return_value = b'external-positive'
+            with patch('sys.argv', ['composed-client.py', '2001:4860:feed:106::2', 'admitted-1', 'positive']):
+                runpy.run_path(str(Path(__file__).with_name('composed-client.py')))
+        result = json.loads(output.getvalue())
+        self.assertEqual((result['phase'], result['family']), ('admitted-1', 6))
+        self.assertGreaterEqual(int(result['connectNs']), 0)
+
+    def test_later_denial_keeps_short_observation(self):
+        channel = self.run_client(TimeoutError('denied'), 'negative', 'lease-expired-0')
+        channel.settimeout.assert_called_once_with(0.4)
+
+
+if __name__ == '__main__':
+    unittest.main()

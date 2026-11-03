@@ -1,6 +1,17 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
-import { mkdir, open, readdir, readFile, rename, unlink, link, mkdtemp } from 'node:fs/promises';
+import {
+  mkdir,
+  open,
+  readdir,
+  readFile,
+  rename,
+  unlink,
+  link,
+  mkdtemp,
+  lstat,
+  realpath,
+} from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { acquireKnowledgeMutationLock } from './knowledge-mutation-lock.js';
 import { FILE_HISTORY_DIR, openFileHistory } from './session-file-history.js';
@@ -20,9 +31,49 @@ interface Intent {
 const digest = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
 const missing = (error: unknown) => (error as NodeJS.ErrnoException).code === 'ENOENT';
 const ignored = new Set([FILE_HISTORY_DIR, '.git']);
+const generatedDirectories = new Set([
+  'node_modules',
+  'dist',
+  '.expo',
+  '.cache',
+  'coverage',
+  '.next',
+  '.venv',
+  '__pycache__',
+]);
+const skippedVersion = 'snapshot-skipped';
+const ignoredPath = (path: string) =>
+  path
+    .split('/')
+    .some(
+      (part, index, parts) =>
+        ignored.has(part) || (index < parts.length - 1 && generatedDirectories.has(part)),
+    );
+const isSkipped = (files: Versions, path: string) =>
+  path
+    .split('/')
+    .some((_, index, parts) => files[parts.slice(0, index + 1).join('/')] === skippedVersion);
 const oversizedVersion = 'snapshot-too-large';
 const isOversized = (error: unknown) =>
   (error as NodeJS.ErrnoException).code === 'DOCUMENT_SNAPSHOT_TOO_LARGE';
+
+async function pinnedDirectory(path: string) {
+  const before = await lstat(path);
+  if (!before.isDirectory() || before.isSymbolicLink())
+    throw Object.assign(new Error('unsafe document directory'), {
+      code: before.isSymbolicLink() ? 'ELOOP' : 'ENOTDIR',
+    });
+  const directory = await open(
+    path,
+    constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+  );
+  const after = await directory.stat();
+  if (before.dev !== after.dev || before.ino !== after.ino) {
+    await directory.close();
+    throw Object.assign(new Error('document directory changed'), { code: 'ELOOP' });
+  }
+  return directory;
+}
 
 async function durableWrite(path: string, bytes: string | Buffer): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
@@ -49,23 +100,23 @@ async function parentSlot(root: string, path: string, create: boolean) {
   const parts = path.split('/');
   if (parts.some((p) => !p || p === '.' || p === '..' || p.includes('\\') || p.includes('\0')))
     throw new Error('invalid document path');
-  let directory = await open(
-    root,
-    constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
-  );
+  const actualRoot = await realpath(root);
+  let directory = await pinnedDirectory(root);
   try {
     for (const part of parts.slice(0, -1)) {
       const next = `/proc/self/fd/${directory.fd}/${part}`;
-      if (create)
+      if (create) {
         await mkdir(next).catch((error: NodeJS.ErrnoException) => {
           if (error.code !== 'EEXIST') throw error;
         });
-      const child = await open(
-        next,
-        constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
-      );
+        await directory.sync();
+      }
+      const child = await pinnedDirectory(next);
       await directory.close();
       directory = child;
+      const actual = await realpath(`/proc/self/fd/${directory.fd}`);
+      if (actual !== actualRoot && !actual.startsWith(`${actualRoot}/`))
+        throw new Error('document directory escaped its root');
     }
     return {
       directory,
@@ -78,27 +129,35 @@ async function parentSlot(root: string, path: string, create: boolean) {
   }
 }
 
-async function readDocument(
+export async function readDocument(
   root: string,
   path: string,
   absentAfterReplacement = false,
+  maxBytes = 64 * 1024 * 1024,
 ): Promise<Buffer | undefined> {
   let slot;
   try {
     slot = await parentSlot(root, path, false);
+    const expected = await lstat(slot.path);
+    if (!expected.isFile() || expected.isSymbolicLink())
+      throw Object.assign(new Error('unsafe document file'), {
+        code: expected.isDirectory() ? 'EISDIR' : 'ELOOP',
+      });
     const file = await open(
       slot.path,
       constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
     );
     try {
       const before = await file.stat();
+      if (before.dev !== expected.dev || before.ino !== expected.ino)
+        throw Object.assign(new Error('document file changed'), { code: 'DOCUMENT_ENTRY_CHANGED' });
       if (!before.isFile())
         throw Object.assign(new Error(`document is not a regular file: ${path}`), {
           code: 'EISDIR',
         });
       // Bound one snapshot; large files stay visible in the view rather than
       // allowing an agent to exhaust the server's memory during publication.
-      if (before.size > 64 * 1024 * 1024)
+      if (before.size > maxBytes)
         throw Object.assign(new Error(`document exceeds snapshot limit: ${path}`), {
           code: 'DOCUMENT_SNAPSHOT_TOO_LARGE',
         });
@@ -119,7 +178,9 @@ async function readDocument(
         before.mtimeMs !== after.mtimeMs ||
         before.ctimeMs !== after.ctimeMs
       )
-        throw new Error(`document is still being written: ${path}`);
+        throw Object.assign(new Error(`document is still being written: ${path}`), {
+          code: 'DOCUMENT_ENTRY_CHANGED',
+        });
       return bytes;
     } finally {
       await file.close();
@@ -137,8 +198,50 @@ async function readDocument(
   }
 }
 
-async function inventory(root: string): Promise<Versions> {
+/** Caller holds the project Knowledge mutation lock. New immutable records never
+ * replace an editor's file, even if the pathname appeared during the write. */
+export async function createCanonicalDocument(root: string, path: string, bytes: Buffer) {
+  const slot = await parentSlot(root, path, true);
+  const temporary = `/proc/self/fd/${slot.directory.fd}/.document-${randomUUID()}`;
+  try {
+    const file = await open(temporary, 'wx', 0o644);
+    try {
+      await file.writeFile(bytes);
+      await file.sync();
+    } finally {
+      await file.close();
+    }
+    await link(temporary, slot.path);
+    await slot.directory.sync();
+  } finally {
+    try {
+      await unlink(temporary).catch((error: unknown) => {
+        if (!missing(error)) throw error;
+      });
+    } finally {
+      await slot.directory.close();
+    }
+  }
+}
+
+/** Pin the directory before enumerating; never follow an agent-authored symlink. */
+export async function openDocumentDirectory(root: string, path: string) {
+  return (await parentSlot(root, `${path}/placeholder`, false)).directory;
+}
+
+async function inventory(
+  root: string,
+  base: Versions = {},
+  warnings: Set<string> = new Set(),
+): Promise<Versions> {
   const result: Versions = Object.create(null) as Versions;
+  const skip = (path: string) => {
+    warnings.add(path);
+    result[path] = skippedVersion;
+    for (const previous of Object.keys(base))
+      if (previous.startsWith(`${path}/`)) result[previous] = skippedVersion;
+  };
+  for (const path of Object.keys(base)) if (ignoredPath(path)) result[path] = skippedVersion;
   async function walk(path: string): Promise<void> {
     const slot = path ? await parentSlot(root, `${path}/placeholder`, false) : undefined;
     const handle =
@@ -149,13 +252,39 @@ async function inventory(root: string): Promise<Versions> {
       for (const entry of entries) {
         if (ignored.has(entry.name)) continue;
         const rel = path ? `${path}/${entry.name}` : entry.name;
-        if (entry.isSymbolicLink()) throw new Error(`document symlinks are not supported: ${rel}`);
-        if (entry.isDirectory()) await walk(rel);
-        else {
+        if (
+          entry.isSymbolicLink() ||
+          (entry.isDirectory() && generatedDirectories.has(entry.name)) ||
+          (!entry.isFile() && !entry.isDirectory())
+        ) {
+          skip(rel);
+          continue;
+        }
+        if (entry.isDirectory()) {
+          try {
+            await walk(rel);
+          } catch (error) {
+            if (
+              !['ELOOP', 'ENOTDIR', 'ENOENT', 'EACCES', 'DOCUMENT_ENTRY_CHANGED'].includes(
+                (error as NodeJS.ErrnoException).code ?? '',
+              )
+            )
+              throw error;
+            skip(rel);
+          }
+        } else {
           try {
             const bytes = await readDocument(root, rel);
             if (bytes) result[rel] = digest(bytes);
           } catch (error) {
+            if (
+              ['ELOOP', 'ENOTDIR', 'EISDIR', 'ENOENT', 'EACCES', 'DOCUMENT_ENTRY_CHANGED'].includes(
+                (error as NodeJS.ErrnoException).code ?? '',
+              )
+            ) {
+              skip(rel);
+              continue;
+            }
             if (!isOversized(error)) throw error;
             // Keep an entry: omission would misinterpret an oversized edit as deletion.
             result[rel] = oversizedVersion;
@@ -173,6 +302,12 @@ async function inventory(root: string): Promise<Versions> {
 /** One private filesystem view of Documents. No Git is involved. Publication
  * uses the SAME knowledge-root lock as Explorer saves, uploads, moves and deletes. */
 export class DocumentWorkspace {
+  readonly skippedPaths = new Set<string>();
+  get warning(): string | undefined {
+    if (!this.skippedPaths.size) return undefined;
+    return `Documents sync skipped unsupported or generated entries: ${[...this.skippedPaths].slice(0, 10).join(', ')}${this.skippedPaths.size > 10 ? ' (and more)' : ''}. These entries remain on disk and are not published. Move code, builds and package installs to the code working directory; replace document symlinks with regular files.`;
+  }
+
   constructor(
     readonly documents: string,
     readonly view: string,
@@ -250,7 +385,9 @@ export class DocumentWorkspace {
     } catch (error) {
       if (
         !isOversized(error) &&
-        !['EISDIR', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')
+        !['EISDIR', 'ENOTDIR', 'ELOOP', 'EACCES'].includes(
+          (error as NodeJS.ErrnoException).code ?? '',
+        )
       )
         throw error;
       // Another writer replaced the path or an ancestor after the intent was
@@ -271,9 +408,11 @@ export class DocumentWorkspace {
 
   async hasPendingChanges(): Promise<boolean> {
     const state = await this.state();
-    const local = await inventory(this.view);
+    const local = await inventory(this.view, state.files, this.skippedPaths);
+    await inventory(this.documents, state.files, this.skippedPaths);
     return [...new Set([...Object.keys(state.files), ...Object.keys(local)])].some(
-      (path) => (state.files[path] ?? null) !== (local[path] ?? null),
+      (path) =>
+        local[path] !== skippedVersion && (state.files[path] ?? null) !== (local[path] ?? null),
     );
   }
 
@@ -285,10 +424,17 @@ export class DocumentWorkspace {
     try {
       const state = await this.state();
       await this.recover(state);
-      const local = await inventory(this.view);
-      const current = await inventory(this.documents);
+      const local = await inventory(this.view, state.files, this.skippedPaths);
+      const current = await inventory(this.documents, state.files, this.skippedPaths);
       for (const path of new Set([...Object.keys(state.files), ...Object.keys(current)])) {
-        if (local[path] === oversizedVersion || current[path] === oversizedVersion) continue;
+        if (
+          [oversizedVersion, skippedVersion].includes(local[path] ?? '') ||
+          [oversizedVersion, skippedVersion].includes(current[path] ?? '') ||
+          ignoredPath(path) ||
+          isSkipped(local, path) ||
+          isSkipped(current, path)
+        )
+          continue;
         if ((local[path] ?? null) !== (state.files[path] ?? null)) continue;
         if ((local[path] ?? null) === (current[path] ?? null)) continue;
         try {
@@ -302,7 +448,9 @@ export class DocumentWorkspace {
         } catch (error) {
           if (
             !isOversized(error) &&
-            !['EISDIR', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')
+            !['EISDIR', 'ENOTDIR', 'ELOOP', 'EACCES'].includes(
+              (error as NodeJS.ErrnoException).code ?? '',
+            )
           )
             throw error;
           // Retain both trees and their bases on a structural collision. Refresh
@@ -319,10 +467,15 @@ export class DocumentWorkspace {
    * their original project. A unique namespace avoids overwriting target files. */
   async transferPending(target: DocumentWorkspace, prefix: string): Promise<string[]> {
     const state = await this.state();
-    const before = await inventory(this.view);
+    const before = await inventory(this.view, state.files, this.skippedPaths);
     const copied: string[] = [];
     for (const path of new Set([...Object.keys(state.files), ...Object.keys(before)])) {
-      if ((state.files[path] ?? null) === (before[path] ?? null)) continue;
+      if (
+        before[path] === skippedVersion ||
+        ignoredPath(path) ||
+        (state.files[path] ?? null) === (before[path] ?? null)
+      )
+        continue;
       const bytes = await readDocument(this.view, path, before[path] === undefined);
       const destination =
         bytes === undefined
@@ -335,7 +488,10 @@ export class DocumentWorkspace {
       if (existing === undefined) await target.replace(target.view, destination, proposal);
       copied.push(destination);
     }
-    if (JSON.stringify(before) !== JSON.stringify(await inventory(this.view)))
+    if (
+      JSON.stringify(before) !==
+      JSON.stringify(await inventory(this.view, state.files, this.skippedPaths))
+    )
       throw new Error('Source documents changed during transfer; retry after writers have stopped');
     return copied;
   }
@@ -346,11 +502,18 @@ export class DocumentWorkspace {
     try {
       const state = await this.state();
       await this.recover(state);
-      const local = await inventory(this.view);
+      const local = await inventory(this.view, state.files, this.skippedPaths);
       for (const path of new Set([...Object.keys(state.files), ...Object.keys(local)])) {
+        if (isSkipped(local, path)) continue;
         const base = state.files[path] ?? null;
         const next = local[path] ?? null;
-        if (next === oversizedVersion || base === next) continue;
+        if (
+          next === oversizedVersion ||
+          next === skippedVersion ||
+          ignoredPath(path) ||
+          base === next
+        )
+          continue;
         const bytes = await readDocument(this.view, path, next === null);
         if ((bytes === undefined ? null : digest(bytes)) !== next)
           throw new Error(`document changed during publication: ${path}`);
@@ -358,7 +521,13 @@ export class DocumentWorkspace {
         try {
           current = await readDocument(this.documents, path);
         } catch (error) {
-          if (isOversized(error)) continue;
+          if (
+            isOversized(error) ||
+            ['ELOOP', 'EACCES'].includes((error as NodeJS.ErrnoException).code ?? '')
+          ) {
+            this.skippedPaths.add(path);
+            continue;
+          }
           if (!['ENOTDIR', 'EISDIR'].includes((error as NodeJS.ErrnoException).code ?? ''))
             throw error;
           // File/directory collisions are conflicts, never recursive replacements.

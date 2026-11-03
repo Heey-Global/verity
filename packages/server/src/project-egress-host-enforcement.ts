@@ -1,4 +1,4 @@
-import type { ProjectEgressStore } from '@verity/store';
+import type { EgressTarget, ProjectEgressStore } from '@verity/store';
 import { createProjectEgressAdmission } from './project-egress-admission.js';
 import type { ProjectDeadlineRelayEnforcer } from './project-egress-deadline.js';
 import type {
@@ -12,6 +12,10 @@ import type {
 } from './project-egress-host.js';
 import type { EgressDirectCorridor } from './project-egress-transport.js';
 
+/** Repeated lookups of one name record at most one request per interval, and a project
+ * records at most this many new requests per interval. */
+const REQUEST_INTERVAL_MS = 60_000;
+const REQUESTS_PER_INTERVAL = 20;
 const key = (b: { projectId: string; generation: string }) => `${b.projectId}:${b.generation}`;
 type Admission = ReturnType<typeof createProjectEgressAdmission>;
 interface Generation {
@@ -23,13 +27,16 @@ interface Generation {
 }
 
 /** Owned by the serialized host controller, outside every project namespace.
- * Policy and sponsorship are loaded by trusted host configuration, not commands.
+ * Policy is loaded from the project's stored grants, never from commands.
  * No renewal timer runs here: a lost Server cannot keep direct authority alive.
  */
 export function createProjectEgressHostEnforcement(options: {
   deadline: ProjectDeadlineRelayEnforcer;
   store: Pick<ProjectEgressStore, 'readForAdmission'>;
-  sponsor(binding: ProjectEgressNetworkBinding): string;
+  systemTargets?: readonly EgressTarget[];
+  /** Records destination requests for ungranted names; absent, none are recorded. */
+  requests?: Pick<ProjectEgressStore, 'requestFromSandbox'>;
+  reportRequestFailure?(error: unknown): void;
   directAuthority(binding: ProjectEgressNetworkBinding): boolean;
   inspect(
     binding: ProjectEgressNetworkBinding,
@@ -41,6 +48,10 @@ export function createProjectEgressHostEnforcement(options: {
   dependencies: Omit<ProjectFenceDependencies, 'deadline' | 'policyCurrent' | 'relay'>;
 }): ProjectEgressHostEnforcement {
   const generations = new Map<string, Generation>();
+  // Last request per project and name, and recent request times per project. Any public
+  // name can become a card, so both are bounded: a Sandbox cannot flood the project.
+  const requested = new Map<string, number>();
+  const recent = new Map<string, number[]>();
   const current = (binding: ProjectEgressNetworkBinding) => {
     const state = generations.get(key(binding));
     if (!state?.ready) throw new Error('Host packet enforcement is not ready');
@@ -77,8 +88,8 @@ export function createProjectEgressHostEnforcement(options: {
         generation.admission = createProjectEgressAdmission({
           continuous: true,
           binding: b,
-          sponsorUserId: options.sponsor(binding),
           store: options.store,
+          ...(options.systemTargets ? { systemTargets: options.systemTargets } : {}),
           dependencies: {
             ...options.dependencies,
             deadline: options.deadline,
@@ -138,8 +149,45 @@ export function createProjectEgressHostEnforcement(options: {
     async refresh(binding) {
       return current(binding).admission.refresh();
     },
+    admitted(binding, name) {
+      const state = generations.get(key(binding));
+      return state?.ready ? state.admission.admitted(name) : undefined;
+    },
     async revoke(binding) {
       return current(binding).admission.revoke();
+    },
+    requestDirect(binding, name) {
+      const requests = options.requests;
+      // System targets are admitted by the host itself; they never become cards.
+      if (
+        !requests ||
+        !options.directAuthority(binding) ||
+        options.systemTargets?.some((target) => target.host === name)
+      )
+        return;
+      void options.dependencies
+        .directTargetAllowed(name)
+        .then((allowed) => {
+          const id = `${binding.projectId}|${name}`;
+          const now = Date.now();
+          // Broker and system names never become cards that could not take effect.
+          if (!allowed || (requested.get(id) ?? -Infinity) > now - REQUEST_INTERVAL_MS) return;
+          const times = (recent.get(binding.projectId) ?? []).filter(
+            (at) => at > now - REQUEST_INTERVAL_MS,
+          );
+          if (times.length >= REQUESTS_PER_INTERVAL) return;
+          recent.set(binding.projectId, [...times, now]);
+          for (const [entry, at] of requested)
+            if (at <= now - REQUEST_INTERVAL_MS) requested.delete(entry);
+          requested.set(id, now);
+          // A DNS query names no port; the card asks for HTTPS, the common provider case.
+          return requests.requestFromSandbox(binding.projectId, {
+            host: name,
+            protocol: 'tcp',
+            port: 443,
+          });
+        })
+        .catch((error: unknown) => options.reportRequestFailure?.(error));
     },
   };
 }

@@ -667,6 +667,18 @@ describe('update runner', () => {
  * the one state where reconciling first would be fatal.
  */
 describe('updater startup recovery', () => {
+  it('starts the stopped promoted generation without replacing it', async () => {
+    const { root, daemon } = await adoptedDeployment('stopped-promoted-recovery');
+    await journalled(root);
+    const configured = options(root, daemon);
+    await createUpdateRunner(configured).run();
+    const retained = daemon.find('verity-managed-server-g1')!;
+    await daemon.docker.stopContainer(retained);
+    await recoverManagedUpdater(configured);
+    expect(daemon.find('verity-managed-server-g1')).toBe(retained);
+    expect(daemon.status('verity-managed-server-g1')).toBe('running');
+  });
+
   it('recreates the Gateway-selected promoted generation after Docker loses it', async () => {
     const { root, daemon } = await adoptedDeployment('update-runner-recovery');
     await journalled(root);
@@ -680,6 +692,62 @@ describe('updater startup recovery', () => {
 
     expect(daemon.status('verity-managed-server-g1')).toBe('running');
     expect(daemon.find('verity-managed-server-g1')).not.toBe(lost);
+    expect(daemon.names()).toEqual(['verity-managed-server-g1']);
+  });
+
+  it('restores the journal-owned generation when the Gateway reports its bootstrap default', async () => {
+    const { root, daemon } = await adoptedDeployment('update-runner-recovery');
+    await journalled(root);
+    const configured = options(root, daemon);
+    await createUpdateRunner(configured).run();
+    await configured.cutover.gateway.switchBackend(MANAGED_SERVER_NAME);
+    await recoverManagedUpdater(configured);
+    expect((await configured.cutover.gateway.status()).backend.host).toBe(
+      'verity-managed-server-g1',
+    );
+    expect(daemon.names()).toEqual(['verity-managed-server-g1']);
+  });
+
+  it('reuses the journal-owned bootstrap rollback beside a retained stopped candidate', async () => {
+    const { root, daemon, oldContainerId } = await adoptedDeployment('update-runner-recovery');
+    await journalled(root);
+    daemon.exitCodes.set('verity-managed-probe-ready-g1', 1);
+    const remove = vi.mocked(daemon.docker.removeContainer).getMockImplementation()!;
+    vi.spyOn(daemon.docker, 'removeContainer').mockImplementation(async (id) => {
+      if (id !== daemon.find('verity-managed-server-g1')) await remove(id);
+    });
+    const configured = options(root, daemon);
+    await createUpdateRunner(configured).run();
+    expect(await readUpdateJournal(root)).toMatchObject({
+      phase: 'rolled-back',
+      previousContainerId: oldContainerId,
+    });
+    expect(daemon.status('verity-managed-server-g1')).not.toBe('running');
+    await recoverManagedUpdater(configured);
+    expect(daemon.find(MANAGED_SERVER_NAME)).toBe(oldContainerId);
+    expect(daemon.status(MANAGED_SERVER_NAME)).toBe('running');
+    expect(daemon.names().sort()).toEqual([MANAGED_SERVER_NAME, 'verity-managed-server-g1'].sort());
+  });
+
+  it('keeps the routed generation after a later update fails preparation', async () => {
+    const { root, daemon } = await adoptedDeployment('update-runner-recovery');
+    await journalled(root);
+    const configured = options(root, daemon);
+    await createUpdateRunner(configured).run();
+    await archiveUpdateJournal(root);
+    await beginUpdate({
+      root,
+      deploymentId: DEPLOYMENT_ID,
+      idempotencyKey: 'second-update',
+      previousDigest: newImage,
+      targetDigest: oldImage,
+      currentGeneration: 1,
+    });
+    daemon.exitCodes.set('verity-managed-preflight-g2', 3);
+    await createUpdateRunner(configured).run();
+    expect(await readUpdateJournal(root)).toMatchObject({ phase: 'failed' });
+    await recoverManagedUpdater(configured);
+    expect(daemon.status('verity-managed-server-g1')).toBe('running');
     expect(daemon.names()).toEqual(['verity-managed-server-g1']);
   });
 

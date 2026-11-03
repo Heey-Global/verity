@@ -1,0 +1,62 @@
+[
+  {
+    "name": "verity_tasks_list",
+    "title": "Verity · Tasks · List",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": null,
+    "skill": "tasks",
+    "compatibility": {
+      "name": "verity_tasks",
+      "action": "list"
+    }
+  },
+  {
+    "name": "verity_tasks_add",
+    "title": "Verity · Tasks · Add",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": null,
+    "skill": "tasks",
+    "compatibility": {
+      "name": "verity_tasks",
+      "action": "add"
+    }
+  },
+  {
+    "name": "verity_tasks_update",
+    "title": "Verity · Tasks · Update",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": null,
+    "skill": "tasks",
+    "compatibility": {
+      "name": "verity_tasks",
+      "action": "update"
+    }
+  },
+  {
+    "name": "verity_tasks_complete",
+    "title": "Verity · Tasks · Complete",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": null,
+    "skill": "tasks",
+    "compatibility": {
+      "name": "verity_tasks",
+      "action": "complete"
+    }
+  },
+  {
+    "name": "verity_tasks_drop",
+    "title": "Verity · Tasks · Drop",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": null,
+    "skill": "tasks",
+    "compatibility": {
+      "name": "verity_tasks",
+      "action": "drop"
+    }
+  }
+]

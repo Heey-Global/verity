@@ -97,7 +97,7 @@ async function appendMemory(
     if (error instanceof ProjectMemoryTooLargeError) {
       reply.code(413);
       return {
-        error: `project memory limit is ${PROJECT_MEMORY_MAX_CHARS} characters; edit or prune overview.md in the Explorer`,
+        error: `project memory limit is ${PROJECT_MEMORY_MAX_CHARS} characters; edit or prune Memory in Project Settings`,
       };
     }
     throw error;

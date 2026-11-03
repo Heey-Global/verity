@@ -206,3 +206,9 @@ describe('requiresContainerApply', () => {
     expect(requiresContainerApply({})).toBe(false);
   });
 });
+
+it('does not recreate containers when protection changes for the next start', () => {
+  expect(requiresContainerApply({ projectEgressEnabled: true })).toBe(false);
+  expect(requiresContainerApply({ projectEgressEnabled: false })).toBe(false);
+  expect(requiresContainerApply({ projectEgressEnabled: true, gitUserName: 'Ada' })).toBe(true);
+});

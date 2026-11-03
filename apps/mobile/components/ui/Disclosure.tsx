@@ -9,15 +9,25 @@ export function Disclosure({
   title,
   subtitle,
   children,
+  expanded: controlled,
+  onExpandedChange,
 }: {
   title: string;
   subtitle?: string;
   children: ReactNode;
+  /** Set to control it from outside, e.g. to open it when it is the only way forward. */
+  expanded?: boolean;
+  onExpandedChange?: (expanded: boolean) => void;
 }) {
   const { theme } = useUnistyles();
-  const [expanded, setExpanded] = useState(false);
+  const [own, setOwn] = useState(false);
+  const expanded = controlled ?? own;
+  const setExpanded = (next: boolean) => {
+    if (controlled === undefined) setOwn(next);
+    onExpandedChange?.(next);
+  };
   return (
-    <View>
+    <View style={styles.root}>
       <Row
         title={title}
         subtitle={subtitle}
@@ -37,6 +47,8 @@ export function Disclosure({
   );
 }
 const styles = StyleSheet.create((theme) => ({
+  // A flush Card is a horizontal container; claim its width before the Row lays out text.
+  root: { width: '100%', minWidth: 0 },
   content: {
     paddingHorizontal: theme.spacing.md,
     paddingBottom: theme.spacing.md,

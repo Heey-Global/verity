@@ -26,6 +26,14 @@ export function schedulingRole(event: CalendarEventRecord): SchedulingRole | und
   return role === 'hold' || role === 'booked' ? role : undefined;
 }
 
+/** Whether the calendar's owner declined the event. */
+export function declinedBySelf(event: CalendarEventRecord): boolean {
+  return (
+    event.attendees?.some((attendee) => attendee.self && attendee.responseStatus === 'declined') ??
+    false
+  );
+}
+
 export interface Interval {
   start: number;
   end: number;
@@ -102,8 +110,7 @@ function isBlocking(event: CalendarEventRecord): boolean {
   if (event.status === 'cancelled') return false;
   if (event.transparency === 'transparent') return false;
   if (schedulingRole(event) === 'hold') return false;
-  if (event.attendees?.some((attendee) => attendee.self && attendee.responseStatus === 'declined'))
-    return false;
+  if (declinedBySelf(event)) return false;
   return true;
 }
 

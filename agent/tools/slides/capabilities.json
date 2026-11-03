@@ -1,0 +1,62 @@
+[
+  {
+    "name": "verity_slides_inspect_deck",
+    "title": "Verity · Slides · Inspect Deck",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": "slides",
+    "skill": null,
+    "compatibility": {
+      "name": "verity_google_slides",
+      "action": "inspect_deck"
+    }
+  },
+  {
+    "name": "verity_slides_read_slide",
+    "title": "Verity · Slides · Read Slide",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": "slides",
+    "skill": null,
+    "compatibility": {
+      "name": "verity_google_slides",
+      "action": "read_slide"
+    }
+  },
+  {
+    "name": "verity_slides_edit",
+    "title": "Verity · Slides · Edit",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": "slides",
+    "skill": null,
+    "compatibility": {
+      "name": "verity_google_slides",
+      "action": "edit"
+    }
+  },
+  {
+    "name": "verity_slides_thumbnail",
+    "title": "Verity · Slides · Thumbnail",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": "slides",
+    "skill": null,
+    "compatibility": {
+      "name": "verity_google_slides",
+      "action": "thumbnail"
+    }
+  },
+  {
+    "name": "verity_slides_insert_image",
+    "title": "Verity · Slides · Insert Image",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": "slides",
+    "skill": null,
+    "compatibility": {
+      "name": "verity_google_slides",
+      "action": "insert_image"
+    }
+  }
+]

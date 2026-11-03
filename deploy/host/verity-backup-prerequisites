@@ -48,7 +48,9 @@ setup_backup_prerequisites() {
       [[ -d $directory && $(stat -c %u "$directory") = 0 ]] || die 'backup helper directories must be root-owned'
     fi
   done
-  install -d -o root -g "$server_gid" -m 0770 "$request_dir"
+  # Some install implementations require a group name even for a numeric GID.
+  install -d -o root -g root -m 0770 "$request_dir"
+  chown root:"$server_gid" "$request_dir"
   install -d -o root -g root -m 0755 "$backup_dir/identity"
   local libexec unit_dir run_dir
   libexec="${VERITY_HOST_RUNTIME_LIBEXEC:-/usr/local/libexec/verity}"

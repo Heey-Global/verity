@@ -51,10 +51,10 @@ class DockerReadTests(unittest.TestCase):
                 requests = []
                 def reply(handler, request):
                     requests.append(request.strip())
-                    handler.wfile.write(b'HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n{"Id":"fixture"}')
+                    handler.wfile.write(b'HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n' + json.dumps({'Id': self.identity}).encode())
                 with daemon(reply):
-                    self.assertEqual(json.loads(host.docker_inspect(kind, self.identity)), [{'Id': 'fixture'}])
-                self.assertEqual(requests, ['GET ' + path + ' HTTP/1.1'])
+                    self.assertEqual(json.loads(host.docker_inspect(kind, self.identity)), [{'Id': self.identity}])
+                self.assertEqual(requests, ['GET /v1.47' + path + ' HTTP/1.1'])
 
     def test_rejects_failed_malformed_truncated_and_oversized_responses(self):
         for response in [
@@ -71,10 +71,16 @@ class DockerReadTests(unittest.TestCase):
                         host.docker_inspect('container', self.identity)
 
     def test_deadline_is_not_restarted_by_trickling_body_bytes(self):
+        self.trickling_deadline(b'')
+
+    def test_deadline_retains_socket_after_connection_close_response(self):
+        self.trickling_deadline(b'Connection: close\r\n')
+
+    def trickling_deadline(self, headers):
         stopped = threading.Event()
         def reply(handler, request):
             try:
-                handler.wfile.write(b'HTTP/1.1 200 OK\r\nContent-Length: 100000\r\n\r\n')
+                handler.wfile.write(b'HTTP/1.1 200 OK\r\nContent-Length: 100000\r\n' + headers + b'\r\n')
                 for _ in range(300):
                     handler.wfile.write(b' ')
                     time.sleep(0.01)

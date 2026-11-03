@@ -239,6 +239,14 @@ describe('Google Calendar scheduling helpers', () => {
               start: { date: '2026-11-04' },
               end: { date: '2026-11-05' },
               transparency: 'transparent',
+              location: 'Room 4',
+              conferenceData: {
+                entryPoints: [
+                  { entryPointType: 'video', uri: 'https://zoom.us/j/1', pin: 'dropped' },
+                  { entryPointType: 'phone' },
+                ],
+                conferenceSolution: { name: 'dropped' },
+              },
             },
           ],
         }),
@@ -265,6 +273,8 @@ describe('Google Calendar scheduling helpers', () => {
         start: { date: '2026-11-04' },
         end: { date: '2026-11-05' },
         transparency: 'transparent',
+        location: 'Room 4',
+        conferenceData: { entryPoints: [{ entryPointType: 'video', uri: 'https://zoom.us/j/1' }] },
       },
     ]);
     expect(new URL(fetch.mock.calls[1]![0] as string).searchParams.get('pageToken')).toBe('p2');

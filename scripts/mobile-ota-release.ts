@@ -35,6 +35,44 @@ interface Update {
   id?: string;
   manifestPermalink?: string;
 }
+/** Expo's permalink currently returns text/plain with a MIME body, so the
+ * opening delimiter is authoritative even when the HTTP content type is absent. */
+export function parsePublishedManifest(body: string): unknown {
+  const firstEnd = body.indexOf('\r\n');
+  const delimiter = body.slice(0, firstEnd);
+  if (firstEnd < 0 || !/^--[A-Za-z0-9'()+_,./:=?-]{1,70}$/u.test(delimiter))
+    throw new Error('Published manifest has no valid multipart delimiter');
+  const closing = `\r\n${delimiter}--`;
+  const closingIndex = body.indexOf(closing);
+  if (closingIndex < 0 || body.slice(closingIndex + closing.length).trim() !== '')
+    throw new Error('Published manifest multipart body is incomplete');
+  const parts = body.slice(delimiter.length + 2, closingIndex).split(`\r\n${delimiter}\r\n`);
+  const manifests: unknown[] = [];
+  for (const part of parts) {
+    const separator = part.indexOf('\r\n\r\n');
+    if (separator < 0) throw new Error('Published manifest multipart headers are missing');
+    const headers = new Map<string, string>();
+    for (const line of part.slice(0, separator).split('\r\n')) {
+      const colon = line.indexOf(':');
+      const key = line.slice(0, colon).trim().toLowerCase();
+      if (colon <= 0 || headers.has(key)) throw new Error('Invalid multipart headers');
+      headers.set(key, line.slice(colon + 1).trim());
+    }
+    const disposition = headers.get('content-disposition') ?? '';
+    if (!/^form-data\s*;/iu.test(disposition)) throw new Error('Invalid multipart disposition');
+    if (!/;\s*name="manifest"(?:\s*;|\s*$)/iu.test(disposition)) continue;
+    if (!/^application\/json(?:\s*;|$)/iu.test(headers.get('content-type') ?? ''))
+      throw new Error('Published manifest part is not JSON');
+    manifests.push(JSON.parse(part.slice(separator + 4)));
+  }
+  if (manifests.length !== 1)
+    throw new Error('Published response must contain exactly one manifest');
+  const manifest = manifests[0];
+  if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest))
+    throw new Error('Published manifest must be an object');
+  return manifest;
+}
+
 // Verify the published launch asset rather than trusting an artifact name or commit.
 export function validateOTAProfile(
   root: string,
@@ -593,7 +631,7 @@ function stage(runtime: string, version: string, prepareOnly = false) {
   const ios = updates.filter((update) => update.platform === 'ios');
   if (ios.length !== 1 || !ios[0].manifestPermalink?.startsWith('https://'))
     throw new Error('Published iOS manifest evidence is missing');
-  const publishedManifest = JSON.parse(
+  const publishedManifest = parsePublishedManifest(
     run('curl', [
       '--fail',
       '--silent',
@@ -601,7 +639,7 @@ function stage(runtime: string, version: string, prepareOnly = false) {
       '--max-time',
       '60',
       '--header',
-      'Accept: application/json',
+      'Accept: multipart/mixed',
       ios[0].manifestPermalink,
     ]),
   ) as Parameters<typeof validateOTAProfile>[2];

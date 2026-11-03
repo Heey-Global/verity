@@ -331,6 +331,12 @@ it.each([
   [Object.assign(new Error('private socket'), { code: 'EPIPE' }), 'control_send_failed'],
   [new Error('diagnostics_not_entitled'), 'diagnostics_not_entitled'],
   [new Error('invalid_diagnostics_response'), 'invalid_diagnostics_response'],
+  [new Error('invalid_diagnostics_response_size'), 'invalid_diagnostics_response_size'],
+  [new Error('invalid_diagnostics_response_version'), 'invalid_diagnostics_response_version'],
+  [new Error('invalid_diagnostics_response_schema'), 'invalid_diagnostics_response_schema'],
+  [new Error('invalid_diagnostics_response_run_id'), 'invalid_diagnostics_response_run_id'],
+  [new Error('invalid_diagnostics_response_lifecycle'), 'invalid_diagnostics_response_lifecycle'],
+
   [new Error('invalid_diagnostics_hash'), 'invalid_diagnostics_hash'],
   [new Error('invalid_diagnostics_cursor'), 'invalid_diagnostics_cursor'],
   [new Error('private-token'), 'unknown'],

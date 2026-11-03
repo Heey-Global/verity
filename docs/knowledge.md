@@ -1,9 +1,9 @@
 # Knowledge folders
 
-Each project has a durable Knowledge folder on the Verity server. Open a
-session's file explorer and choose **Sources** for reference material,
-**Documents** for project outputs, or **Global** for files every project may read. Replacing a Sandbox does not remove these
-files.
+Each project has a durable Knowledge folder on the Verity server. Open the
+project settings and choose **Project knowledge** for Decisions, Wiki and Raw Sources,
+or open a session's file explorer for project files. Shared reference material lives
+under **Settings > Shared knowledge**. Replacing a Sandbox does not remove these files.
 
 Verity creates this layout automatically:
 
@@ -72,9 +72,10 @@ as originals with an extraction note.
 
 ## Managing scope
 
-Upload, delete, and move files from the explorer. Moving a file to Global makes
-it readable by every project; moving it back to Documents limits it to the
-current project. The hidden extracted text follows its source file.
+Upload, delete, and move project files from the session explorer. Shared browsing
+is central under Settings; it is absent from project and session tabs. Publishing
+project material to Shared requires explicit approval. The hidden extracted text
+follows its source file when supported file operations move it.
 
 Agents publish a finished project insight to `shared/insights/` with the
 `verity_knowledge` `publish_shared` operation only when explicitly asked to make it
@@ -86,8 +87,8 @@ Knowledge folders are separate from repositories. Code, tests, build
 instructions, and versioned architecture decisions still belong in the project
 repository. New meeting recordings are not written to `docs/meetings/`.
 
-There is no Wiki, folder grant screen, overview approval, or Knowledge model
-setting. Retrieval indexing and semantic search may be added later on top of the
+Wiki is the user-facing name for project Documents. There is no folder grant
+screen, overview approval, or Knowledge model setting. Retrieval indexing and semantic search may be added later on top of the
 same files; the folder remains the source of truth.
 
 ## Parallel sessions and automatic publication
@@ -107,7 +108,9 @@ files without exporting Documents or archived local Git history.
 
 ## Explorer editing and versions
 
-The explorer can edit UTF-8 text files up to 1 MB in Code, Documents, and Global.
+The session explorer can edit UTF-8 text files up to 1 MB in Code and Wiki.
+The central Shared browser and direct Project knowledge browser support revision-checked
+Wiki text edits and original downloads; project edits require management access.
 Markdown files can also be created from the New menu. Sources and retained session
 working copies are read-only in the text editor.
 Saving checks the version opened by the editor; a conflict offers reload,
@@ -129,3 +132,61 @@ A durable capture record allows the explorer to restore an interrupted save
 when its folder or file is next opened. Recovery never replaces a file already
 at that name. Completed edits do not resurrect files deleted later. Private
 history is local to the filesystem and is not a substitute for external backup.
+
+## Confirmed project decisions
+
+Agents record explicitly confirmed project decisions during the same chat turn
+with `verity_knowledge record_decision`. This does not require a separate request
+to save, but recognizing confirmation remains the model's responsibility. Ideas,
+hypotheses and unapproved proposals are not decisions. Existing consent rules for
+sensitive information still apply. This feature does not append to `overview.md`
+or publish to Global.
+
+Each decision is readable Markdown under Documents → decisions, with a stable ID,
+confirmation session and user-message sequence, recording date and stated
+rationale. The tool binds provenance to the calling project/session and checks
+that the referenced message is a user prompt rather than a linked-peer message;
+with authentication enabled it also requires user attribution. By default it uses
+the latest delivered user prompt, including mid-turn steering. It does not verify
+the meaning of that prompt. Only a successful durable-save receipt warrants a saved acknowledgement
+and document link in chat. Errors must be reported rather than described as saves.
+
+Before answering decision questions, agents use `lookup_decisions` to read full
+records and cite them. Each new or resumed turn receives a bounded directory of
+up to 20 decision references. Keyword lookup supports pagination and reformulated
+queries; it is not semantic search. Existing source and Global file access remains
+available, including extracted binary text under `.text`.
+
+Confirmed replacements supply the previous decision ID and exact digest. The
+previous record is retained; its status is computed as superseded by its successor.
+Concurrent or stale replacements fail rather than overwrite an intervening change.
+Repeated requests with the same session/request ID are idempotent if their contents
+and confirmation reference match. Retries after a new turn must retain the original
+`confirmationMessageSeq`. Manual document edits remain visible to lookup and change
+the digest; altered or malformed records must be inspected before retrying a write.
+
+Decision writes use the same project mutation lock as Documents publication and
+Explorer edits. Session working copies refresh through the existing publication
+flow; local pending edits remain protected by its conflict handling. Receipts refer
+to canonical persisted Documents, which may precede a working-copy refresh.
+
+Lookup scans at most 500 directory entries and reads records up to 24,000 bytes.
+Responses return at most 10 records and normally about 32 KB per page (one complete
+record may exceed that response target after JSON escaping). Invalid, oversized,
+missing-predecessor or competing records produce explicit warnings and unresolved
+statuses. An incomplete or invalid directory blocks new structured writes until
+repaired; no valid decision is silently selected from partial evidence. Deleting
+an entire decision removes it from discovery; deleting an ancestor leaves its
+successor unresolved. The directory is derived from the Markdown files, not a
+second database. Structured writes do not migrate existing free-form documents.
+
+
+## Shared knowledge in the app
+
+Project settings > Project knowledge opens Decisions (`insights/decisions/`), Wiki (`insights/`) and Raw Sources (`sources/`) without requiring a session. Project context remains separately editable through Instructions and Memory.
+
+Settings > Shared knowledge is the central browser for cross-project reference material. Personal Instructions and Memory remain separate under Settings > Personal context; project Instructions and Memory remain in project settings. Project and session file browsers show project files only. Existing Shared file links open the central Settings view.
+
+Active users can browse and download Shared files without selecting a project or session. Administrators can edit supported text files under Shared Wiki (`insights/`); writes require the version last read so concurrent changes cannot silently overwrite one another. Original sources and derived files remain protected in this editor. Publishing from a project continues to use the existing explicit publication approval.
+
+This navigation change does not move existing files, convert shared material into private context, or remove agent read access to `/knowledge/shared`.

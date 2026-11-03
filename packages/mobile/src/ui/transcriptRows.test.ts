@@ -418,3 +418,18 @@ it('keeps planning start visible outside surrounding tool groups for every backe
     expect(rows[1]).toEqual({ kind: 'message', message: start });
   }
 });
+
+it('keeps confirmed QA assignments visible between generic tool groups', () => {
+  const assignment = toolCall('qa', { name: 'verity_qa_analysis' });
+  assignment.tool.result = {
+    assignmentId: 'a'.repeat(64),
+    projectId: 'p',
+    title: 'Optimize CI',
+    status: 'running',
+    sessionId: 's',
+    version: 2,
+  };
+  expect(
+    groupRows([toolCall('before'), assignment, toolCall('after')]).map((row) => row.kind),
+  ).toEqual(['tool-group', 'message', 'tool-group']);
+});

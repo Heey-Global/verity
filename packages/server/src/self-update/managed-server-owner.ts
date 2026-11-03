@@ -40,6 +40,8 @@ export interface ReconcileManagedServerOptions {
   /** Allow only the recorded install migrations (host diagnostics, devcontainer
    *  builder) on an already promoted Server. */
   readonly allowDiagnosticMountMigration?: boolean;
+  /** Only the existing bootstrap container confirmed by a rolled-back journal may be reused. */
+  readonly bootstrapRollbackContainerId?: string;
   readonly identity?: {
     readonly name: string;
     readonly operationId: string;
@@ -909,6 +911,27 @@ export async function reconcileManagedServer(
   const spec = state.spec;
   const summaries = await listContainers();
   const identity = options.identity;
+  const generationsExist = summaries.some(
+    (container) =>
+      container.labels?.[MANAGED_DEPLOYMENT_LABEL] === spec.deploymentId &&
+      container.labels?.[MANAGED_ROLE_LABEL] === MANAGED_ROLE &&
+      container.names?.some((name) => /^verity-managed-server-g[1-9][0-9]*$/u.test(name)),
+  );
+  const bootstrapRollbackExists =
+    options.bootstrapRollbackContainerId !== undefined &&
+    summaries.some(
+      (container) =>
+        container.id === options.bootstrapRollbackContainerId &&
+        container.names?.includes(MANAGED_SERVER_NAME),
+    );
+  const refuseBootstrapCreation = () => {
+    if (identity === undefined && generationsExist)
+      throw new Error(
+        'Bootstrap reconciliation conflicts with the sealed deployment spec: a managed Server generation exists; restore the Gateway selection first',
+      );
+  };
+  if (!bootstrapRollbackExists) refuseBootstrapCreation();
+
   const withIdentity = (base: ContainerSpec): ContainerSpec => {
     if (identity === undefined) {
       // A deployment sealed before the bootstrap stopped forwarding it still names the
@@ -1077,6 +1100,7 @@ export async function reconcileManagedServer(
       // removal, so this replaces the process and keeps every byte of durable
       // state. What it costs is the stopped container's identity, which is the
       // thing that is wrong.
+      refuseBootstrapCreation();
       await options.docker.removeContainer(inspect.id);
       return create();
     }
@@ -1084,6 +1108,7 @@ export async function reconcileManagedServer(
     return { containerId: inspect.id, action: 'started' };
   };
   const create = async (): Promise<ManagedServerReconcileResult> => {
+    refuseBootstrapCreation();
     requireBuildable();
     try {
       const created = await options.docker.createContainer(desired);

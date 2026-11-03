@@ -1,10 +1,10 @@
 import { z } from 'zod';
-import { lookup as dnsLookup } from 'node:dns';
-import { request as httpsRequest } from 'node:https';
 
 import type { EventStore, HttpMcpConnectionRecord } from '@verity/store';
 
-import { isForbiddenHttpMcpAddress, parseHttpMcpUpstream } from './http-mcp-proxy.js';
+import { parseHttpMcpUpstream } from './http-mcp-proxy.js';
+import { oauthHttpRequest } from './http-mcp-oauth-discovery.js';
+import { McpOAuthAuthorizationRequired } from './http-mcp-oauth-errors.js';
 
 const tokenResponseSchema = z.object({
   access_token: z.string().min(1),
@@ -47,65 +47,54 @@ function endpoint(value: string | null | undefined): string {
 type TokenRequest = (
   url: string,
   body: URLSearchParams,
+  authorization?: string,
 ) => Promise<z.infer<typeof tokenResponseSchema>>;
 
-async function tokenRequest(url: string, body: URLSearchParams) {
-  const parsed = new URL(endpoint(url));
-  const encoded = body.toString();
-  const raw = await new Promise<string>((resolve, reject) => {
-    const request = httpsRequest(
-      {
-        protocol: 'https:',
-        hostname: parsed.hostname,
-        port: 443,
-        path: `${parsed.pathname}${parsed.search}`,
-        method: 'POST',
-        servername: parsed.hostname,
-        agent: false,
-        headers: {
-          'content-type': 'application/x-www-form-urlencoded',
-          accept: 'application/json',
-          'content-length': String(Buffer.byteLength(encoded)),
-        },
-        lookup: (hostname, options, callback) => {
-          dnsLookup(hostname, { all: true, verbatim: true }, (error, addresses) => {
-            if (
-              error !== null ||
-              addresses.length === 0 ||
-              addresses.some((item) => isForbiddenHttpMcpAddress(item.address))
-            ) {
-              callback(new Error('MCP OAuth endpoint resolution rejected'), []);
-            } else if (typeof options === 'object' && options.all) {
-              callback(null, addresses);
-            } else {
-              const first = addresses[0]!;
-              callback(null, first.address, first.family);
-            }
-          });
-        },
-      },
-      (response) => {
-        let value = '';
-        response.setEncoding('utf8');
-        response.on('data', (chunk: string) => {
-          value += chunk;
-          if (value.length > 1024 * 1024)
-            response.destroy(new Error('MCP OAuth response too large'));
-        });
-        response.on('end', () => {
-          if ((response.statusCode ?? 500) >= 300)
-            reject(new Error(`MCP OAuth token exchange failed (${response.statusCode ?? 500})`));
-          else resolve(value);
-        });
-      },
-    );
-    request.setTimeout(60_000, () =>
-      request.destroy(new Error('MCP OAuth token endpoint timed out')),
-    );
-    request.on('error', reject);
-    request.end(encoded);
-  });
-  return tokenResponseSchema.parse(JSON.parse(raw));
+async function tokenRequest(url: string, body: URLSearchParams, authorization?: string) {
+  const response = await oauthHttpRequest(
+    endpoint(url),
+    body.toString(),
+    'application/x-www-form-urlencoded',
+    authorization,
+  );
+  if (response.status === 401 || response.status === 403) throw new McpOAuthAuthorizationRequired();
+  if (response.status >= 300) {
+    let error: unknown;
+    try {
+      error = JSON.parse(response.body);
+    } catch {
+      /* Upstream errors need not contain JSON. */
+    }
+    if (
+      typeof error === 'object' &&
+      error !== null &&
+      'error' in error &&
+      (error.error === 'invalid_grant' ||
+        error.error === 'invalid_client' ||
+        error.error === 'unauthorized_client')
+    ) {
+      throw new McpOAuthAuthorizationRequired();
+    }
+    throw new Error('MCP OAuth token endpoint is unavailable');
+  }
+  return tokenResponseSchema.parse(JSON.parse(response.body));
+}
+
+function clientAuthorization(
+  connection: HttpMcpConnectionRecord,
+  body: URLSearchParams,
+): string | undefined {
+  if (connection.oauthTokenAuthMethod === 'client_secret_basic') {
+    if (connection.oauthClientId == null || connection.oauthClientSecret == null)
+      throw new McpOAuthAuthorizationRequired();
+    // RFC 6749 requires form-encoding each component before joining with a colon.
+    const encode = (value: string) => new URLSearchParams({ v: value }).toString().slice(2);
+    body.delete('client_id');
+    return `Basic ${Buffer.from(`${encode(connection.oauthClientId)}:${encode(connection.oauthClientSecret)}`).toString('base64')}`;
+  }
+  if (connection.oauthTokenAuthMethod !== 'none' && connection.oauthClientSecret != null)
+    body.set('client_secret', connection.oauthClientSecret);
+  return undefined;
 }
 
 function expiry(expiresIn: number | undefined): Date | null {
@@ -130,9 +119,8 @@ export async function completeHttpMcpOAuth(
       client_id: connection.oauthClientId,
       resource: connection.url,
     });
-    if (connection.oauthClientSecret != null)
-      body.set('client_secret', connection.oauthClientSecret);
-    const token = await requestToken(endpoint(connection.oauthTokenEndpoint), body);
+    const authorization = clientAuthorization(connection, body);
+    const token = await requestToken(endpoint(connection.oauthTokenEndpoint), body, authorization);
     if (
       !(await store.updateHttpMcpOAuthTokens(connection.id, {
         accessToken: token.access_token,
@@ -169,7 +157,7 @@ export async function httpMcpAuthorization(
       return `Bearer ${current.oauthAccessToken}`;
     }
     if (current.oauthRefreshToken == null || current.oauthClientId == null) {
-      throw new Error('MCP OAuth connection is not authorized');
+      throw new McpOAuthAuthorizationRequired();
     }
     const body = new URLSearchParams({
       grant_type: 'refresh_token',
@@ -177,8 +165,8 @@ export async function httpMcpAuthorization(
       client_id: current.oauthClientId,
       resource: current.url,
     });
-    if (current.oauthClientSecret != null) body.set('client_secret', current.oauthClientSecret);
-    const token = await requestToken(endpoint(current.oauthTokenEndpoint), body);
+    const authorization = clientAuthorization(current, body);
+    const token = await requestToken(endpoint(current.oauthTokenEndpoint), body, authorization);
     if (
       !(await store.updateHttpMcpOAuthTokens(current.id, {
         accessToken: token.access_token,
