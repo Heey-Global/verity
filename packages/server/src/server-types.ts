@@ -13,6 +13,7 @@ import type { PullRequestStatus } from './forge-provider.js';
 import type { ProjectAgent } from './project-agent-policy.js';
 import type { SandboxUpdateStatus } from './sandbox-updates.js';
 import type { SessionGoogleStatus } from './session-google-status.js';
+import type { OpenChoices, PendingPermissionRequest } from './session-inbox-facts.js';
 import type { SessionStatus } from './status.js';
 import type { ToolkitCarrier, ToolkitDriftVerdict } from './toolkit-drift.js';
 import type { VulnerabilitySummary } from './vulnerability-session.js';
@@ -280,6 +281,14 @@ export interface SessionSummary extends SessionRecord {
   pendingPermissions: string[];
   /** Present only when awaiting_input is specifically the parked permission above. */
   permissionAwaitingInput?: true;
+  /** What each open permission prompt asks, so an overview can decide it without
+   * opening the session. Absent when nothing is pending; ids without a durable
+   * event in the current turn (linked-session approvals) stay only in
+   * {@link pendingPermissions}. */
+  pendingPermissionRequests?: PendingPermissionRequest[];
+  /** The current turn's unanswered `verity:choices` block, while the session waits
+   * on it. Absent while running, after an answer, and on sessions without one. */
+  openChoices?: OpenChoices;
   /** Cumulative token usage across the session's turns (§13a). */
   usage: UsageTotals;
   /** Latest 5-hour rate-limit state observed in the session log, if any. */

@@ -150,6 +150,40 @@ it.each([undefined, 'dev-servers-excluded-v1', 'agent-text-v2'])(
   },
 );
 
+it('carries inbox facts and tolerates their absence or a malformed copy', () => {
+  const base = {
+    sessionId: 's1',
+    worktree: '/wt/s1',
+    model: 'm',
+    name: null,
+    status: 'awaiting_input',
+    usage: ZERO_USAGE,
+  };
+  // An older server sends neither; Home must simply show nothing for them.
+  const legacy = sessionSummarySchema.parse(base);
+  expect(legacy.openChoices).toBeUndefined();
+  expect(legacy.pendingPermissionRequests).toBeUndefined();
+  const current = sessionSummarySchema.parse({
+    ...base,
+    pendingPermissions: ['toolu_1'],
+    pendingPermissionRequests: [
+      { toolUseId: 'toolu_1', tool: 'verity_http_request', riskClass: 'ask', input: { url: 'x' } },
+    ],
+    openChoices: { question: 'Which?', options: [{ label: 'Zod', recommended: true }] },
+  });
+  expect(current.pendingPermissionRequests?.[0]).toMatchObject({ toolUseId: 'toolu_1' });
+  expect(current.openChoices?.options[0]?.label).toBe('Zod');
+  // One bad field must not take the whole session list down with it.
+  const malformed = sessionSummarySchema.parse({
+    ...base,
+    pendingPermissionRequests: [{ tool: 'x' }],
+    openChoices: { options: [] },
+  });
+  expect(malformed.pendingPermissionRequests).toBeUndefined();
+  expect(malformed.openChoices).toBeUndefined();
+  expect(malformed.status).toBe('awaiting_input');
+});
+
 interface Call {
   url: string;
   init: RequestInit | undefined;

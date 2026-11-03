@@ -200,6 +200,29 @@ export const attentionSignalSchema = z.object({
 });
 export type AttentionSignal = z.infer<typeof attentionSignalSchema>;
 
+/**
+ * The current turn's unanswered `verity:choices` block, as the session list
+ * carries it. Options keep the agent's labels verbatim: a label is what is sent
+ * as the answer. A block that no longer parses (a newer server, a malformed
+ * option) reads as "no open question" rather than failing the whole list.
+ */
+const openChoicesSchema = z.object({
+  question: z.string().optional(),
+  options: z
+    .array(z.object({ label: z.string().min(1), recommended: z.boolean().optional() }))
+    .min(1),
+  multiSelect: z.boolean().optional(),
+});
+
+/** One parked permission prompt with what it asks. `input` is absent when the
+ * server judged it too large to carry; the app then opens the session instead. */
+const pendingPermissionRequestSchema = z.object({
+  toolUseId: z.string().min(1),
+  tool: z.string().min(1),
+  riskClass: z.string().min(1),
+  input: z.unknown().optional(),
+});
+
 export const sessionSummarySchema = z
   .object({
     sessionId: z.string().min(1),
@@ -218,6 +241,12 @@ export const sessionSummarySchema = z
     pendingPermissions: z.array(z.string().min(1)).optional(),
     /** True only when awaiting_input is caused by those permissions. */
     permissionAwaitingInput: z.literal(true).optional(),
+    /** What each parked permission asks, so Home can decide it in place. Absent on
+     * older servers and when nothing is pending; a malformed list reads as absent. */
+    pendingPermissionRequests: z.array(pendingPermissionRequestSchema).optional().catch(undefined),
+    /** The unanswered question of the current turn. Absent on older servers, while
+     * the session works and after an answer. */
+    openChoices: openChoicesSchema.optional().catch(undefined),
     usage: usageTotalsSchema,
     /** Latest rate-limit state for this session. Optional for rollout with
      * older servers and absent until a runtime emits one. */
@@ -248,6 +277,9 @@ export const sessionSummarySchema = z
     eventCount: z.number().int().nonnegative().optional(),
     /** Active subagents can keep working while the main agent awaits input. */
     backgroundWorking: z.boolean().optional(),
+    /** Epoch ms of the newest event, for ordering Home's items. Absent on older
+     * servers and null for an empty log; both sort as oldest. */
+    lastActivityAt: z.number().nullable().optional().catch(undefined),
     /** Version associated with this count; forward it unchanged when marking seen. */
     eventCountVersion: z.string().optional(),
     agentTextCounterVersion: z.literal('agent-text-v2').optional(),
