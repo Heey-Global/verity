@@ -66,13 +66,15 @@ describe('settings index — destinations', () => {
 
     const groups = UNSAFE_getAllByType(SettingsGroup);
     expect(groups.map((group) => group.props.title)).toEqual([
-      'Personal',
+      'Personal context',
+      'Knowledge',
       'Features',
       'App & Server',
       'This app',
     ]);
     const expectedRows = [
       ['Instructions', 'Memory'],
+      ['Shared knowledge'],
       [
         'Assistant',
         'QA · CI supervision',
@@ -155,6 +157,7 @@ describe('settings index — destinations', () => {
 
   // Each destination must still reach its settings or recovery screen.
   it.each([
+    ['Shared knowledge', '/settings/shared-knowledge'],
     ['Vulnerability scan', '/settings/vulnerability-scan'],
     ['Verity Premium', '/settings/premium'],
     ['Diagnostics', '/settings/diagnostics'],
