@@ -75,6 +75,10 @@ it.each(['pip', 'uv'])(
     expect(result.config).toBeUndefined();
   },
 );
+it.each(['npm', 'pnpm', 'bun'])('does not forward registry flags to %s scripts', (manager) => {
+  for (const args of [['run', 'build'], ['test'], ['run', 'test', '--', '--watch']])
+    expect(configure(manager, args).args).toEqual(args);
+});
 it('configures Yarn registry reads with no install-script bypass', () => {
   const result = configure('yarn');
   expect(result.env.YARN_NPM_REGISTRY_SERVER).toBe(

@@ -83,6 +83,16 @@ it('reauthorizes a frozen lockfile selector after broker restart and generation 
   });
 });
 
+it('resolves ordinary npm lockfile tarball paths only through current metadata and integrity', async () => {
+  const f = fixture();
+  expect((await f.serve('npm/example/-/example-1.0.0.tgz')).body).toEqual(bytes);
+  await expect(f.serve('npm/example/-/foreign.tgz')).rejects.toMatchObject({ status: 404 });
+  f.transport.mockImplementation(async ({ path }) =>
+    response(metadataPath(path) ? manifest() : Buffer.from('corrupted')),
+  );
+  await expect(f.serve('npm/example/-/example-1.0.0.tgz')).rejects.toMatchObject({ status: 502 });
+});
+
 it('never returns wrong-integrity bytes or a selector no longer present in provider metadata', async () => {
   const f = fixture();
   const path = await selector(f);
@@ -175,6 +185,12 @@ it('serves PyPI JSON selectors and preserves resolver/release-age fields across 
     name: 'Example',
     files: [
       {
+        filename: 'example-0.1.tar.bz2',
+        url: 'https://files.pythonhosted.org/packages/old/example.tar.bz2',
+        hashes: { sha256: hash },
+        size: bytes.length,
+      },
+      {
         filename: 'example-1.0-py3-none-any.whl',
         url: 'https://files.pythonhosted.org/packages/aa/bb/example.whl',
         hashes: { sha256: hash },
@@ -191,6 +207,7 @@ it('serves PyPI JSON selectors and preserves resolver/release-age fields across 
   const result = await f.serve('pypi/simple/example/');
   expect(result.contentType).toBe('application/vnd.pypi.simple.v1+json');
   const metadata = JSON.parse(result.body.toString()) as { files: { url: string }[] };
+  expect(metadata.files).toHaveLength(1);
   expect(metadata.files[0]).toMatchObject({
     'upload-time': '2020-01-01T00:00:00Z',
     'requires-python': '>=3.9',

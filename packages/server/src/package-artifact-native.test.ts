@@ -177,6 +177,19 @@ it.skipIf(!npm)(
     expect(upstreamPaths.slice(before)).toContain(
       `GET registry.npmjs.org/${packageName}/-/${packageName}-1.0.0.tgz`,
     );
+    // Activation must also preserve lockfiles created before the broker existed.
+    const ordinaryLock = lockfile.replace(
+      /http:\/\/127\.0\.0\.1:\d+\/internal\/package-artifacts\/file\/npm\/[^"\s]+/gu,
+      `https://registry.npmjs.org/${packageName}/-/${packageName}-1.0.0.tgz`,
+    );
+    expect(ordinaryLock).not.toBe(lockfile);
+    await writeFile(join(project, 'package-lock.json'), ordinaryLock);
+    await rm(join(project, 'node_modules'), { recursive: true });
+    await run(['ci'], { ...environment, npm_config_cache: join(directory, 'ordinary-lock-cache') });
+    expect(await readFile(join(project, 'package-lock.json'), 'utf8')).toBe(ordinaryLock);
+    expect(await readFile(join(project, 'node_modules', packageName, 'index.js'), 'utf8')).toBe(
+      'module.exports = 42;\n',
+    );
     // The proxy retains release times; npm's three-day check still rejects fresh releases.
     publishedAt = new Date().toISOString();
     const young = join(directory, 'young-consumer');

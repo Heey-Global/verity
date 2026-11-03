@@ -122,3 +122,26 @@ it('aborts a live provider signal when a sponsor check hangs and cannot revive i
 it('leaves unrelated control-plane operations outside project authority', async () => {
   await expect(assertProjectTransportAuthority()).resolves.toBeUndefined();
 });
+
+it.each(['retire', 'timeout'])(
+  'settles a stalled initial check on %s without starting work',
+  async (cause) => {
+    vi.useFakeTimers();
+    const generation = new AbortController();
+    const execute = vi.fn(async () => 'unexpected');
+    const run = withProjectTransportAuthority(
+      {
+        projectId: 'a',
+        containerGeneration: 'g',
+        signal: generation.signal,
+        authorize: () => new Promise<void>(() => {}),
+      },
+      execute,
+    );
+    const assertion = expect(run).rejects.toThrow();
+    if (cause === 'retire') generation.abort();
+    else await vi.advanceTimersByTimeAsync(1000);
+    await assertion;
+    expect(execute).not.toHaveBeenCalled();
+  },
+);

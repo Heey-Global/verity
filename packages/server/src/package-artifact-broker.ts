@@ -238,6 +238,11 @@ export function createPackageArtifactBroker(
           /^file\/(npm|pypi)\/([A-Za-z0-9_-]+)\/(sha256|sha512)\/([a-f0-9]{64}|[a-f0-9]{128})\/([^/]+)$/u.exec(
             path,
           );
+        // npm replaces the default registry host in pre-existing lockfiles but
+        // retains their ordinary tarball paths. Resolve those through metadata
+        // just like content selectors; the path itself grants no upstream URL.
+        const legacyNpm = /^npm\/((?:@[^/]+\/)?[^/]+)\/-\/([A-Za-z0-9._-]+\.tgz)$/u.exec(path);
+        if (legacyNpm) path = `npm/${legacyNpm[1]!}`;
         let selected: Artifact | undefined;
         if (selector) {
           const name = Buffer.from(selector[2]!, 'base64url').toString('utf8');
@@ -246,6 +251,8 @@ export function createPackageArtifactBroker(
           path = selector[1] === 'npm' ? `npm/${name}` : `pypi/simple/${name}/`;
         }
         const select = (value: Artifact): void => {
+          if (legacyNpm && new URL(value.url).pathname === `/${legacyNpm[1]!}/-/${legacyNpm[2]!}`)
+            selected = value;
           if (
             selector &&
             selector[3] === value.algorithm &&
@@ -312,7 +319,7 @@ export function createPackageArtifactBroker(
               },
             };
           }
-          if (selector) return await download();
+          if (selector || legacyNpm) return await download();
           const tags = record.parse(data['dist-tags']);
           data['dist-tags'] = Object.fromEntries(
             Object.entries(tags).filter(
@@ -359,10 +366,12 @@ export function createPackageArtifactBroker(
             );
           if (data.name.toLowerCase().replace(/[-_.]+/gu, '-') !== name) reject(502);
           const files = data.files
-            .filter((entry) => entry.size <= ARTIFACT_LIMIT)
+            .filter(
+              (entry) =>
+                entry.size <= ARTIFACT_LIMIT &&
+                /^[A-Za-z0-9][A-Za-z0-9._+-]{0,239}\.(?:whl|tar\.gz|zip)$/u.test(entry.filename),
+            )
             .map((entry) => {
-              if (!/^[A-Za-z0-9][A-Za-z0-9._+-]{0,239}\.(?:whl|tar\.gz|zip)$/u.test(entry.filename))
-                reject(502);
               const url = upstreamUrl(entry.url, 'files.pythonhosted.org', '/packages/');
               const artifact: Artifact = {
                 url: url.href,

@@ -84,7 +84,8 @@ export function configurePackageArtifacts(manager, args, environment) {
     // still escape this adapter remain blocked by the external project fence.
     return {
       args:
-        manager === 'yarn'
+        manager === 'yarn' ||
+        !['install', 'i', 'ci', 'add', 'update', 'up', 'upgrade', 'fetch'].includes(args[0])
           ? args
           : (() => {
               const separator = args.indexOf('--');

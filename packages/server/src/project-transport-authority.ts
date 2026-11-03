@@ -13,7 +13,23 @@ export async function assertProjectTransportAuthority(): Promise<void> {
   const authority = authorityScope.getStore();
   if (!authority) return; // Control-plane and non-project API routes retain their own auth.
   authority.signal.throwIfAborted();
-  await authority.authorize();
+  let abort: (() => void) | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      Promise.resolve().then(() => authority.authorize()),
+      new Promise<never>((_resolve, reject) => {
+        abort = () => reject(authority.signal.reason ?? new Error('Project authority retired'));
+        authority.signal.addEventListener('abort', abort, { once: true });
+        if (authority.signal.aborted) abort();
+        timer = setTimeout(() => reject(new Error('Project authority check timed out')), 1000);
+        timer.unref();
+      }),
+    ]);
+  } finally {
+    if (abort) authority.signal.removeEventListener('abort', abort);
+    clearTimeout(timer);
+  }
   authority.signal.throwIfAborted();
 }
 

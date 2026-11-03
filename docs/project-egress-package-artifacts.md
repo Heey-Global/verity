@@ -22,6 +22,7 @@ a provider URL or a project identity.
 | Path | Provider operation |
 | --- | --- |
 | `GET`/automatic `HEAD` `npm/<package>` | Bounded JSON metadata from `registry.npmjs.org` |
+| `GET`/automatic `HEAD` `npm/<package>/-/<filename>.tgz` | Existing npm lockfile path; re-resolve metadata and verify strong content integrity |
 | `GET`/automatic `HEAD` `pypi/simple/<name>/` | PEP 691 JSON metadata from `pypi.org` |
 | `GET`/automatic `HEAD` `file/<ecosystem>/<package-selector>/<algorithm>/<digest>/<filename>` | Re-resolve provider metadata and download only its matching artifact |
 | `POST` `npm/-/npm/v1/security/advisories/bulk` | Schema-validated public npm advisory lookup; no registry writes |
@@ -73,7 +74,9 @@ attested ingress adapter is implemented.
 `package-artifact-native.test.ts` additionally runs installed npm and pip against
 loopback HTTP fixtures with synthetic provider responses. npm install preserves
 audit and the three-day release floor; frozen `npm ci` re-fetches the archive
-after broker reconstruction with a fresh cache and an unchanged lockfile. pip
+after broker reconstruction with a fresh cache and an unchanged lockfile.
+The npm test also installs from an unchanged lockfile containing ordinary
+`registry.npmjs.org` tarball URLs generated before broker activation. pip
 downloads a synthetic wheel and reuses its selector after broker reconstruction.
 These tests do not exercise the project relay, Docker, kernel enforcement or
 container replacement and do not establish support for other package managers.
