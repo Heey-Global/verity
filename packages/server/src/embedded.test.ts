@@ -2764,6 +2764,26 @@ describe('buildEmbeddedServer', () => {
     ).toEqual({ publicSharing: 'premium-required' });
   });
 
+  it('does not launch runner stack reconciliation when listing projects', async () => {
+    const reconcile = vi
+      .spyOn(ProvisionerImpl.prototype, 'reconcileRunnerSupervisors')
+      .mockResolvedValue();
+    try {
+      server = await buildTestEmbeddedServer({
+        ...testProjectRelayConfig,
+        dockerBaseUrl: 'http://127.0.0.1:1',
+        hostCloneRoot: '/tmp/verity-projects',
+      });
+      reconcile.mockClear();
+      const response = await server.app.inject({ method: 'GET', url: '/projects' });
+      expect(response.statusCode).toBe(200);
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(reconcile).not.toHaveBeenCalled();
+    } finally {
+      reconcile.mockRestore();
+    }
+  });
+
   it('wires /projects without a static GitHub token so DB-backed Apps can list repos', async () => {
     // The first-project onboarding step uses GET /projects after the GitHub App
     // has been configured through the encrypted DB settings. That deployment has

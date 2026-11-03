@@ -2575,6 +2575,16 @@ export class ProvisionerImpl implements Provisioner {
       promise: Promise<unknown>;
     }
   >();
+  private readonly supervisorRetry = new Map<
+    string,
+    {
+      containerName: string;
+      generation: number | undefined;
+      failures: number;
+      retryAt: number;
+      error: unknown;
+    }
+  >();
   /** Per-project tail promises serialize managed-checkout fetch/reset operations.
    *  Unlike provisioning single-flight, every queued synchronization must run:
    *  a later request may correspond to a newer merge that was not visible when
@@ -2837,6 +2847,12 @@ export class ProvisionerImpl implements Provisioner {
     if ((!supervisorEnabled && !connectorEnabled) || this.opts.dockerHostForBuild === undefined)
       return;
     const dockerHost = this.opts.dockerHostForBuild;
+    const activeIds = new Set(
+      projects.filter((project) => project.state === 'active').map((project) => project.id),
+    );
+    for (const id of this.supervisorRetry.keys()) {
+      if (!activeIds.has(id)) this.supervisorRetry.delete(id);
+    }
     const outcomes = await Promise.all(
       projects
         .filter((project) => project.state === 'active' && project.kind !== 'control_plane')
@@ -2855,6 +2871,12 @@ export class ProvisionerImpl implements Provisioner {
           ) {
             return pending.promise;
           }
+          const retry = this.supervisorRetry.get(project.id);
+          const sameGeneration =
+            retry?.containerName === project.containerName &&
+            retry.generation === replacementGeneration;
+          if (sameGeneration && Date.now() < retry.retryAt) return retry.error;
+          if (!sameGeneration) this.supervisorRetry.delete(project.id);
           // A replacement stops and removes the old sandbox while the row still
           // reads `active` (it only moves to `container_starting` once the new
           // container phase begins), and starts the stack itself in the new one.
@@ -2878,15 +2900,27 @@ export class ProvisionerImpl implements Provisioner {
                       : 'verity-egress-connector-start --standalone',
                     timeoutMs: 12_000,
                   });
+                  if (this.supervisorReconciliations.get(project.id) === entry) {
+                    this.supervisorRetry.delete(project.id);
+                  }
                   return undefined;
                 } catch (error) {
                   // The same race from the other side: the replacement began while
                   // this exec was already in flight.
                   if (
-                    this.sandboxReplacementGenerations.get(project.id) !== replacementGeneration
+                    this.sandboxReplacementGenerations.get(project.id) !== replacementGeneration ||
+                    this.supervisorReconciliations.get(project.id) !== entry
                   ) {
                     return undefined;
                   }
+                  const failures = (sameGeneration ? retry.failures : 0) + 1;
+                  this.supervisorRetry.set(project.id, {
+                    containerName: project.containerName,
+                    generation: replacementGeneration,
+                    failures,
+                    retryAt: Date.now() + Math.min(60_000, 5_000 * 2 ** Math.min(failures - 1, 4)),
+                    error,
+                  });
                   return error;
                 }
               })
