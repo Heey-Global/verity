@@ -667,6 +667,18 @@ describe('update runner', () => {
  * the one state where reconciling first would be fatal.
  */
 describe('updater startup recovery', () => {
+  it('starts the stopped promoted generation without replacing it', async () => {
+    const { root, daemon } = await adoptedDeployment('stopped-promoted-recovery');
+    await journalled(root);
+    const configured = options(root, daemon);
+    await createUpdateRunner(configured).run();
+    const retained = daemon.find('verity-managed-server-g1')!;
+    await daemon.docker.stopContainer(retained);
+    await recoverManagedUpdater(configured);
+    expect(daemon.find('verity-managed-server-g1')).toBe(retained);
+    expect(daemon.status('verity-managed-server-g1')).toBe('running');
+  });
+
   it('recreates the Gateway-selected promoted generation after Docker loses it', async () => {
     const { root, daemon } = await adoptedDeployment('update-runner-recovery');
     await journalled(root);

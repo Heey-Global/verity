@@ -5,12 +5,25 @@ import type {
   ToolCall,
   ToolCallUpdate,
 } from '@agentclientprotocol/sdk/unstable';
-import { parseAutomationProposal, parseChoicesBlock, type AgentEvent } from '@verity/events';
+import {
+  actionTitle,
+  parseAutomationProposal,
+  parseChoicesBlock,
+  type AgentEvent,
+} from '@verity/events';
 import {
   lifecycleSignalsFromMeta,
   StructuredLifecycleMapper,
   type StructuredLifecycleSignal,
 } from './structured-lifecycle.js';
+
+/** ACP titles may be commands or file paths. Derive display metadata only from
+ * the resolved MCP routing name, preserving native tool headlines. */
+function toolDisplayMetadata(name: string): { title?: string; source?: string } {
+  const qualified = /^mcp__([^_]+)__/.exec(name);
+  if (!qualified && !name.startsWith('verity_')) return {};
+  return { title: actionTitle(name), source: (qualified?.[1] ?? 'verity').slice(0, 200) };
+}
 
 /** Each ACP agent carries its non-standard extras under its own `_meta` key.
  *  The Claude adapter uses `claudeCode`; codex-acp uses `codex`. */
@@ -356,11 +369,24 @@ export class AcpEventAdapter {
     const events: AgentEvent[] = [];
     if (!seen.has('start')) {
       seen.add('start');
-      events.push({ t: 'tool_call_start', id, name, parentToolId: parent });
+      events.push({
+        t: 'tool_call_start',
+        id,
+        name,
+        ...toolDisplayMetadata(name),
+        parentToolId: parent,
+      });
     }
     if (!seen.has('call') && snapshot.rawInput !== undefined) {
       seen.add('call');
-      events.push({ t: 'tool_call', id, name, input: snapshot.rawInput, parentToolId: parent });
+      events.push({
+        t: 'tool_call',
+        id,
+        name,
+        ...toolDisplayMetadata(name),
+        input: snapshot.rawInput,
+        parentToolId: parent,
+      });
     }
     if (snapshot.status === 'completed' || snapshot.status === 'failed') {
       this.pendingTerminal.add(id);
@@ -395,7 +421,14 @@ export class AcpEventAdapter {
     const events: AgentEvent[] = [];
     if (!seen.has('call')) {
       seen.add('call');
-      events.push({ t: 'tool_call', id, name, input: tool.rawInput ?? {}, parentToolId: parent });
+      events.push({
+        t: 'tool_call',
+        id,
+        name,
+        ...toolDisplayMetadata(name),
+        input: tool.rawInput ?? {},
+        parentToolId: parent,
+      });
     }
     seen.add('result');
     this.pendingTerminal.delete(id);

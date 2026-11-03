@@ -55,7 +55,7 @@ export default function ProjectServicesScreen() {
       <SettingsMessage
         title="Project unavailable"
         subtitle="This project could not be opened. Go back and pick it again."
-        screenTitle="Connections"
+        screenTitle="Connectors"
       />
     );
   }
@@ -82,7 +82,7 @@ function ProjectServicesView({
           ? 'MCP'
           : section === 'matrix'
             ? 'Matrix'
-            : 'Connections';
+            : 'Connectors';
 
   if (loading && detail === undefined) {
     return (

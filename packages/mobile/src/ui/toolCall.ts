@@ -1,4 +1,4 @@
-import { extractToolResultImages } from '@verity/events';
+import { actionTitle, extractToolResultImages } from '@verity/events';
 import type { Message, ToolCall, ToolCallMessage } from '../happy/message.js';
 import { spellOutBidiControls } from './bidi.js';
 
@@ -120,59 +120,10 @@ const ONLY_PRIMARY_FIELD = new Set([
   'verity_end_planning',
 ]);
 
-/**
- * Display labels for Verity's gateway tools. Verity's own features keep the product name
- * ("Verity Secret Run"); the Google connectors read as the service they reach ("Gmail"). Each backend reports them under its own
- * qualified name — Claude as `mcp__verity__verity_gmail`, OpenCode as `verity_verity_gmail` —
- * so without this the row reads as that raw, doubled identifier instead of what it does.
- */
-const VERITY_TOOL_LABELS: Record<string, string> = {
-  verity_gmail: 'Gmail',
-  verity_matrix: 'Matrix',
-  verity_google_calendar: 'Google Calendar',
-  verity_scheduling: 'Scheduling',
-  verity_google_contacts: 'Google Contacts',
-  verity_google_docs: 'Google Docs',
-  verity_google_drive: 'Google Drive',
-  verity_google_sheets: 'Google Sheets',
-  verity_google_slides: 'Google Slides',
-  verity_http_request: 'Verity HTTP Request',
-  verity_secret_run: 'Verity Secret Run',
-  verity_secret_job: 'Verity Secret Job',
-  verity_knowledge: 'Verity Knowledge',
-  verity_session_handoff: 'Verity Handoff',
-  verity_send_session_message: 'Verity Session Message',
-  verity_list_sessions: 'Verity Sessions',
-  verity_list_linked_sessions: 'Verity Linked Sessions',
-  verity_recent_session_messages: 'Verity Session Messages',
-  verity_session_progress: 'Verity Session Progress',
-  verity_publish_session_progress: 'Verity Published Progress',
-  verity_diagnostics: 'Verity Diagnostics',
-  verity_start_planning: 'Verity Planning Mode',
-  verity_present_plan: 'Verity Plan',
-  verity_end_planning: 'Verity Implement Plan',
-  verity_repairs: 'QA · CI supervision',
-  verity_tasks: 'Verity Tasks',
-  verity_app_help: 'Verity Help',
-  verity_vulnerabilities: 'Verity Vulnerability Scan',
-};
-
 /** Strip only Verity's own backend qualification, including tools added by the platform. */
 function canonicalToolName(name: string): string {
   if (name.startsWith('mcp__verity__verity_')) return name.slice('mcp__verity__'.length);
   if (name.startsWith('verity_verity_')) return name.slice('verity_'.length);
-  return name;
-}
-
-/** New platform tools must remain readable before a client ships a dedicated label. */
-function toolDisplayName(name: string): string {
-  const canonical = canonicalToolName(name);
-  // Own-property check: a tool named `constructor` must not resolve to Object's.
-  if (Object.hasOwn(VERITY_TOOL_LABELS, canonical)) return VERITY_TOOL_LABELS[canonical]!;
-  if (/^verity_[a-z][a-z0-9]*(?:_[a-z0-9]+)*$/.test(canonical)) {
-    const words = canonical.slice('verity_'.length).split('_');
-    return `Verity ${words.map((word) => word.charAt(0).toUpperCase() + word.slice(1)).join(' ')}`;
-  }
   return name;
 }
 
@@ -189,7 +140,18 @@ function verityCliHeadline(input: unknown): string | null {
   if (!input || typeof input !== 'object') return null;
   const command = (input as Record<string, unknown>).command;
   if (typeof command !== 'string') return null;
-  const [program, subcommand] = command.trim().split(/\s+/);
+  const [program, subcommand, verb, nestedVerb] = command.trim().split(/\s+/);
+  if (program === 'verity' && subcommand && /^[a-z][a-z-]*$/.test(subcommand)) {
+    if (
+      subcommand === 'repo' &&
+      (verb === 'pr' || verb === 'issue') &&
+      nestedVerb &&
+      /^[a-z][a-z-]*$/.test(nestedVerb)
+    ) {
+      return `Verity · Repository · ${verb === 'pr' ? 'PR' : 'Issue'} ${actionTitle(nestedVerb)}`;
+    }
+    return `Verity · ${subcommand === 'skill' ? 'Skills' : actionTitle(subcommand)}${verb && /^[a-z][a-z-]*$/.test(verb) ? ` · ${actionTitle(verb)}` : ''}`;
+  }
   if (program === undefined || !Object.hasOwn(VERITY_CLI_LABELS, program)) return null;
   const label = VERITY_CLI_LABELS[program]!;
   return subcommand !== undefined && /^[a-z][a-z-]*$/.test(subcommand)
@@ -205,8 +167,8 @@ export function toolCallView(tool: ToolCall): ToolCallView {
     tool.state === 'error' ? 'error' : tool.state === 'completed' ? 'done' : 'running';
   const name = canonicalToolName(tool.name);
   return {
-    title: toolDisplayName(name),
-    headline: buildHeadline(name, tool.input),
+    title: actionTitle(name, tool.title, tool.source),
+    headline: buildHeadline(name, tool.input, tool.title, tool.source),
     subtitle: summarizeInput(name, tool.input),
     tone,
     // No result preview/images until the call settles — a running call has none yet.
@@ -232,7 +194,7 @@ export function extractToolImages(result: unknown): ToolImage[] {
 /** A compact `verb object` line for the collapsed row. For file tools the object
  * is the basename; for Bash the human `description` (falling back to the
  * command); otherwise the primary field. */
-function buildHeadline(name: string, input: unknown): string {
+function buildHeadline(name: string, input: unknown, title?: string, source?: string): string {
   // A skill/slash-command reads as its own name, title-cased — "code-review" →
   // "Code Review", "review-loop" → "Review Loop" — not "Skill code-review".
   if (name === 'Skill') return skillLabel(input) ?? name;
@@ -240,7 +202,7 @@ function buildHeadline(name: string, input: unknown): string {
     const cli = verityCliHeadline(input);
     if (cli !== null) return cli;
   }
-  const verb = ACTION[name] ?? toolDisplayName(name);
+  const verb = Object.hasOwn(ACTION, name) ? ACTION[name]! : actionTitle(name, title, source);
   const object = headlineObject(name, input);
   return object ? `${verb} ${object}` : verb;
 }

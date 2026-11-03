@@ -973,7 +973,7 @@ const upcomingMeetingsSchema = z.object({
       startsAt: z.number(),
       endsAt: z.number(),
       calendar: z.string(),
-      provider: z.enum(['meet', 'teams', 'zoom']).catch('meet'),
+      provider: z.enum(['meet', 'teams', 'zoom']).nullable().catch('meet'),
       decision: z.enum(['joined', 'skipped', 'failed']).nullable().catch(null),
       meetingId: z.string().nullable(),
     }),
@@ -1937,7 +1937,10 @@ export type SessionFileRoot =
   'worktree' | 'knowledge' | 'shared' | 'sources' | 'documents' | 'drafts';
 
 export const sessionDirectorySchema = z.object({
-  documentStatus: z.object({ pending: z.boolean(), running: z.boolean() }).optional(),
+  documentStatus: z
+    .object({ pending: z.boolean(), running: z.boolean(), warning: z.string().optional() })
+    .optional(),
+  codeAvailable: z.boolean().optional(),
   workspaceKind: z.enum(['documents', 'code']).optional(),
   root: z.enum(['worktree', 'knowledge', 'shared', 'sources', 'documents', 'drafts']).optional(),
   path: z.string(),
@@ -2623,9 +2626,14 @@ export class VerityClient {
     );
   }
   /** Meetings of the next hours from watched calendars. */
-  async getUpcomingMeetings(): Promise<UpcomingMeeting[]> {
+  async getUpcomingMeetings(includeInPerson = false): Promise<UpcomingMeeting[]> {
     return upcomingMeetingsSchema.parse(
-      await (await this.request('/live-meetings/upcoming', { method: 'GET' })).json(),
+      await (
+        await this.request(
+          `/live-meetings/upcoming${includeInPerson ? '?includeInPerson=true' : ''}`,
+          { method: 'GET' },
+        )
+      ).json(),
     ).upcoming;
   }
   /** Joins a calendar meeting: into `sessionId` when given, otherwise unassigned. */
@@ -4649,6 +4657,54 @@ export class VerityClient {
     return signingKeySchema.parse(await res.json());
   }
 
+  async getUserContext(): Promise<{ instructions: string; memory: string; revision: number }> {
+    const res = await this.request('/me/context', { method: 'GET' });
+    return z
+      .object({ instructions: z.string(), memory: z.string(), revision: z.number().int() })
+      .parse(await res.json());
+  }
+
+  async replaceUserContext(input: { instructions: string; memory: string; revision: number }) {
+    const res = await this.request('/me/context', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+    return z
+      .object({ instructions: z.string(), memory: z.string(), revision: z.number().int() })
+      .parse(await res.json());
+  }
+
+  async getProjectMemory(id: string) {
+    const res = await this.request(`/projects/${encodeURIComponent(id)}/memory`, { method: 'GET' });
+    return z.object({ memory: z.string(), revision: z.string() }).parse(await res.json());
+  }
+
+  async replaceProjectMemory(id: string, input: { memory: string; revision: string }) {
+    const res = await this.request(`/projects/${encodeURIComponent(id)}/memory`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+    return z.object({ memory: z.string(), revision: z.string() }).parse(await res.json());
+  }
+
+  async getProjectInstructions(id: string) {
+    const res = await this.request(`/projects/${encodeURIComponent(id)}/instructions`, {
+      method: 'GET',
+    });
+    return z.object({ instructions: z.string(), revision: z.string() }).parse(await res.json());
+  }
+
+  async replaceProjectInstructions(id: string, input: { instructions: string; revision: string }) {
+    const res = await this.request(`/projects/${encodeURIComponent(id)}/instructions`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+    return z.object({ instructions: z.string(), revision: z.string() }).parse(await res.json());
+  }
+
   async getProject(id: string): Promise<ProjectDetail> {
     const res = await this.request(`/projects/${encodeURIComponent(id)}`, { method: 'GET' });
     return projectDetailSchema.parse(await res.json());
@@ -4802,6 +4858,13 @@ export class VerityClient {
    * branch plus a pull request the operator still has to merge — so callers must
    * surface {@link LinkedProject.pullRequest}. The sandbox is recreated as part of
    * this, so callers should warn that running sessions restart. */
+  async disconnectProjectFromGitHub(id: string): Promise<LinkedProject> {
+    const res = await this.request(`/projects/${encodeURIComponent(id)}/disconnect-github`, {
+      method: 'POST',
+    });
+    return linkedProjectSchema.parse(await res.json());
+  }
+
   async linkProjectToGitHub(id: string, repo: string): Promise<LinkedProject> {
     const res = await this.request(`/projects/${encodeURIComponent(id)}/link-github`, {
       method: 'POST',
@@ -5795,6 +5858,89 @@ export class VerityClient {
       ...(signal ? { signal } : {}),
     });
     return branchListSchema.parse(await res.json());
+  }
+
+  async listProjectKnowledgeFiles(projectId: string, path = ''): Promise<SessionDirectory> {
+    const res = await this.request(
+      `/projects/${encodeURIComponent(projectId)}/knowledge/files?path=${encodeURIComponent(path)}`,
+      {
+        method: 'GET',
+      },
+    );
+    const directory = sessionDirectorySchema.parse(await res.json());
+    if (directory.root !== 'knowledge')
+      throw new Error('Update the Verity server to browse project knowledge');
+    return directory;
+  }
+
+  async getProjectKnowledgeFile(projectId: string, path: string): Promise<SessionFileContent> {
+    const res = await this.request(
+      `/projects/${encodeURIComponent(projectId)}/knowledge/files/content?path=${encodeURIComponent(path)}`,
+      { method: 'GET' },
+    );
+    return sessionFileContentSchema.parse(await res.json());
+  }
+
+  async downloadProjectKnowledgeFile(projectId: string, path: string): Promise<Blob> {
+    const res = await this.request(
+      `/projects/${encodeURIComponent(projectId)}/knowledge/files/download?path=${encodeURIComponent(path)}`,
+      { method: 'GET' },
+    );
+    return res.blob();
+  }
+
+  async writeProjectKnowledgeFile(
+    projectId: string,
+    path: string,
+    content: string,
+    expectedVersion: string,
+  ): Promise<SessionFileContent> {
+    const res = await this.request(
+      `/projects/${encodeURIComponent(projectId)}/knowledge/files/content`,
+      {
+        method: 'PUT',
+        body: JSON.stringify({ root: 'knowledge', path, content, expectedVersion }),
+      },
+    );
+    return sessionFileContentSchema.parse(await res.json());
+  }
+
+  async listSharedKnowledgeFiles(path = ''): Promise<SessionDirectory> {
+    const res = await this.request(`/knowledge/shared/files?path=${encodeURIComponent(path)}`, {
+      method: 'GET',
+    });
+    const directory = sessionDirectorySchema.parse(await res.json());
+    if (directory.root !== 'shared')
+      throw new Error('Update the Verity server to browse Shared knowledge');
+    return directory;
+  }
+
+  async getSharedKnowledgeFile(path: string): Promise<SessionFileContent> {
+    const res = await this.request(
+      `/knowledge/shared/files/content?path=${encodeURIComponent(path)}`,
+      { method: 'GET' },
+    );
+    return sessionFileContentSchema.parse(await res.json());
+  }
+
+  async downloadSharedKnowledgeFile(path: string): Promise<Blob> {
+    const res = await this.request(
+      `/knowledge/shared/files/download?path=${encodeURIComponent(path)}`,
+      { method: 'GET' },
+    );
+    return res.blob();
+  }
+
+  async writeSharedKnowledgeFile(
+    path: string,
+    content: string,
+    expectedVersion: string,
+  ): Promise<SessionFileContent> {
+    const res = await this.request('/knowledge/shared/files/content', {
+      method: 'PUT',
+      body: JSON.stringify({ root: 'shared', path, content, expectedVersion }),
+    });
+    return sessionFileContentSchema.parse(await res.json());
   }
 
   /** Browse a session's local worktree. Includes uncommitted and generated files,

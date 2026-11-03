@@ -86,7 +86,7 @@ export function CalendarMeetingPrompt({
         <Button
           label="Join"
           accessibilityLabel="Join meeting with Verity"
-          disabled={busy || meeting === null || joined}
+          disabled={busy || meeting === null || !meeting.provider || joined}
           onPress={() => void run('join')}
           fullWidth
         />
@@ -98,7 +98,7 @@ export function CalendarMeetingPrompt({
             {[
               `${time(meeting.startsAt)}–${time(meeting.endsAt)}`,
               meeting.calendar,
-              PROVIDER[meeting.provider],
+              meeting.provider ? PROVIDER[meeting.provider] : 'In person',
             ].join(' · ')}
           </Text>
         ) : null}

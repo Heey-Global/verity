@@ -23622,6 +23622,8 @@ var agentEventSchema = import_zod.z.discriminatedUnion("t", [
   }),
   import_zod.z.object({
     t: import_zod.z.literal("mcp_app"),
+    title: import_zod.z.string().max(200).optional(),
+    source: import_zod.z.string().max(200).optional(),
     appId: import_zod.z.string().uuid(),
     projectId: import_zod.z.string().min(1),
     sessionId: import_zod.z.string().min(1),
@@ -23635,12 +23637,16 @@ var agentEventSchema = import_zod.z.discriminatedUnion("t", [
   }),
   import_zod.z.object({
     t: import_zod.z.literal("tool_call_start"),
+    title: import_zod.z.string().max(200).optional(),
+    source: import_zod.z.string().max(200).optional(),
     id: import_zod.z.string().min(1),
     name: import_zod.z.string().min(1),
     parentToolId
   }),
   import_zod.z.object({
     t: import_zod.z.literal("tool_call"),
+    title: import_zod.z.string().max(200).optional(),
+    source: import_zod.z.string().max(200).optional(),
     id: import_zod.z.string().min(1),
     name: import_zod.z.string().min(1),
     input: import_zod.z.unknown(),
@@ -24683,6 +24689,15 @@ var PLANNING_TOOLS = [
   END_PLANNING_TOOL
 ];
 function planningToolName(name2) {
+  const canonical = name2.replace(/^mcp__verity__/u, "").replace(/^verity_verity_/u, "verity_");
+  const aliases = {
+    verity_planning_start: START_PLANNING_TOOL,
+    verity_planning_present: PRESENT_PLAN_TOOL,
+    verity_planning_implement: END_PLANNING_TOOL,
+    verity_planning_discard: END_PLANNING_TOOL
+  };
+  if (Object.hasOwn(aliases, canonical))
+    return aliases[canonical];
   return PLANNING_TOOLS.find((tool) => name2 === tool || name2 === `mcp__verity__${tool}` || name2 === `verity_${tool}`);
 }
 var PLANNING_SYSTEM_PROMPT = `# Planning mode (Verity)
@@ -25448,6 +25463,49 @@ var recordingFailureReasonSchema = import_zod15.z.enum([
   "invalid_diagnostics_cursor",
   "export_too_large"
 ]);
+
+// node_modules/@verity/events/dist/action-title.js
+function actionTitle(name2, title3, source) {
+  const clean = (value) => value.replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/gu, "").replace(/\s+/gu, " ").trim().slice(0, 200);
+  const words = (value) => value.split(/[_\s-]+/u).filter(Boolean).map((word) => {
+    const acronyms = {
+      api: "API",
+      cli: "CLI",
+      http: "HTTP",
+      qa: "QA",
+      github: "GitHub",
+      mcp: "MCP"
+    };
+    return Object.hasOwn(acronyms, word.toLowerCase()) ? acronyms[word.toLowerCase()] : word.charAt(0).toUpperCase() + word.slice(1);
+  }).join(" ");
+  const provided = title3 ? clean(title3) : "";
+  const readable = provided.includes("_") ? words(provided) : provided;
+  if (readable)
+    return readable;
+  const qualified = /^mcp__([^_]+)__(.+)$/u.exec(name2);
+  let normalized = clean(qualified?.[2] ?? name2).replace(/^verity_verity_/u, "verity_");
+  const aliases = {
+    verity_start_planning: "verity_planning_start",
+    verity_present_plan: "verity_planning_present",
+    verity_end_planning: "verity_planning_implement",
+    verity_list_sessions: "verity_session_list",
+    verity_send_session_message: "verity_session_send_message",
+    verity_list_linked_sessions: "verity_session_list_links",
+    verity_recent_session_messages: "verity_session_read_recent_messages",
+    verity_publish_session_progress: "verity_session_publish_progress"
+  };
+  if ((!qualified || qualified[1] === "verity") && Object.hasOwn(aliases, normalized))
+    normalized = aliases[normalized];
+  source ??= qualified?.[1];
+  if (source && source.toLowerCase() !== "verity")
+    return `${words(clean(source))} \xB7 ${words(normalized)}`;
+  const parts = normalized.split("_");
+  if (parts[0] === "verity" && parts.length === 2)
+    return `Verity \xB7 ${words(parts[1])}`;
+  if (parts[0] === "verity" && parts.length > 2)
+    return `Verity \xB7 ${words(parts[1])} \xB7 ${words(parts.slice(2).join("_"))}`;
+  return [source ? clean(source) : void 0, words(normalized)].filter(Boolean).join(" \xB7 ");
+}
 
 // packages/session/dist/image-references.js
 import { createHash } from "node:crypto";
@@ -26646,6 +26704,8 @@ var zSubagentUpdate = z18.object({
   description: defaultOnError(z18.string().nullish(), () => void 0),
   capabilities: defaultOnError(zSubagentSessionCapabilities.nullish(), () => void 0),
   state: defaultOnError(zStateUpdate.nullish(), () => void 0),
+  cwd: z18.string().nullish(),
+  additionalDirectories: z18.array(z18.string()).nullish(),
   _meta: defaultOnError(z18.record(z18.string(), z18.unknown()).nullish(), () => void 0)
 });
 var zSessionMessage = z18.object({
@@ -27108,6 +27168,17 @@ var zCancelRequestNotification = z18.object({
 
 // node_modules/@agentclientprotocol/sdk/dist/core/jsonrpc.js
 var CANCEL_REQUEST_METHOD = "$/cancel_request";
+function treatSessionNotFoundAsSuccess(method, response, success) {
+  if (method !== "session/close" && method !== "session/delete") {
+    return response;
+  }
+  return response.catch((error) => {
+    if (error instanceof RequestError && error.code === -32002) {
+      return success();
+    }
+    throw error;
+  });
+}
 function isRequestMessage(value) {
   return isJsonRpcEnvelope(value) && "id" in value && typeof value["method"] === "string" && isJsonRpcId(value["id"]);
 }
@@ -27139,28 +27210,6 @@ function isJsonRpcId(value) {
 }
 function isResponseShapedMessage(value) {
   return isRecord(value) && !("method" in value) && ("id" in value || "result" in value || "error" in value);
-}
-function isResponseBatch(batch) {
-  let hasValidCall = false;
-  let hasValidResponse = false;
-  let hasCallShape = false;
-  let hasResponseShape = false;
-  for (const entry of batch) {
-    hasValidCall ||= isRequestMessage(entry) || isNotificationMessage(entry);
-    hasValidResponse ||= isResponseMessage(entry);
-    if (!isRecord(entry)) {
-      continue;
-    }
-    hasCallShape ||= "method" in entry;
-    hasResponseShape ||= "result" in entry || "error" in entry;
-  }
-  if (hasValidCall) {
-    return false;
-  }
-  if (hasValidResponse) {
-    return true;
-  }
-  return hasResponseShape && !hasCallShape;
 }
 function cancelRequestId(params) {
   if (!isRecord(params) || !isJsonRpcId(params["requestId"])) {
@@ -27293,7 +27342,6 @@ var RequestResponder = class {
     });
   }
 };
-var requestBatchSizes = /* @__PURE__ */ new WeakMap();
 var nullIdResponders = /* @__PURE__ */ new WeakSet();
 var HandlerRegistration = class {
   disposeHandler;
@@ -27342,12 +27390,6 @@ var ConnectionContext = class {
     return this.connection.sendNotification(method, params);
   }
   /**
-   * Sends a non-empty JSON-RPC batch in one transport message.
-   */
-  sendBatch(entries) {
-    return this.connection.sendBatch(entries);
-  }
-  /**
    * Sends a protocol-level request cancellation notification.
    */
   sendCancelRequest(requestId) {
@@ -27386,7 +27428,6 @@ var Connection = class {
   retryQueue = [];
   context = new ConnectionContext(this);
   receiveReader;
-  allowBatches = true;
   constructor(requestHandlerOrStream, notificationHandlerOrHandlers, streamOrOptions, options) {
     if (typeof requestHandlerOrStream === "function") {
       const requestHandler = requestHandlerOrStream;
@@ -27476,67 +27517,13 @@ var Connection = class {
       return rejectedPromise(this.closedReason());
     }
     const request2 = this.prepareRequest(method, params, mapResponse, options);
-    const requestSent = this.sendWireMessage(request2.message);
+    const requestSent = this.sendMessage(request2.message);
     void requestSent.catch(() => {
     });
     if (options.cancellationSignal?.aborted) {
       request2.cancel();
     }
     return request2.response;
-  }
-  /**
-   * Sends a non-empty JSON-RPC batch in one transport message.
-   *
-   * Requests and notifications are processed independently by the peer, and
-   * array position does not establish processing order. Callers **MUST NOT**
-   * batch messages whose correctness depends on their relative order, such as
-   * two `session/update` notifications for the same entity; send those as
-   * separate messages instead. The returned tuple preserves the input order:
-   * request entries resolve to their mapped response, while notification
-   * entries resolve to `undefined`.
-   */
-  sendBatch(entries) {
-    if (this.abortController.signal.aborted) {
-      return rejectedPromise(this.closedReason());
-    }
-    if (!this.allowBatches) {
-      return rejectedPromise(new TypeError("JSON-RPC batches are not supported on this connection"));
-    }
-    if (entries.length === 0) {
-      return rejectedPromise(new TypeError("JSON-RPC batch must contain at least one entry"));
-    }
-    const messages = [];
-    const cancellations = [];
-    const outputs = [];
-    for (const entry of entries) {
-      if (entry.kind === "notification") {
-        messages.push({
-          jsonrpc: "2.0",
-          method: entry.method,
-          params: entry.params
-        });
-        outputs.push(Promise.resolve(void 0));
-        continue;
-      }
-      const request2 = this.prepareRequest(entry.method, entry.params, entry.mapResponse, entry.options);
-      messages.push(request2.message);
-      outputs.push(request2.response);
-      cancellations.push({
-        signal: entry.options?.cancellationSignal,
-        cancel: request2.cancel
-      });
-    }
-    const batch = messages;
-    const batchSent = this.sendWireMessage(batch);
-    for (const cancellation of cancellations) {
-      if (cancellation.signal?.aborted) {
-        cancellation.cancel();
-      }
-    }
-    const response = Promise.all([batchSent, ...outputs]).then(([, ...resolved]) => resolved);
-    response.catch(() => {
-    });
-    return response;
   }
   /**
    * Sends a protocol-level request cancellation notification.
@@ -27551,7 +27538,7 @@ var Connection = class {
     if (this.abortController.signal.aborted) {
       return rejectedPromise(this.closedReason());
     }
-    return this.sendWireMessage({ jsonrpc: "2.0", method, params });
+    return this.sendMessage({ jsonrpc: "2.0", method, params });
   }
   prepareRequest(method, params, mapResponse, options = {}) {
     const id3 = this.nextRequestId++;
@@ -27618,7 +27605,6 @@ var Connection = class {
     this.stream = stream;
     this.staticHandlers = handlers;
     this.fallbackHandlers = [...options?.fallbackHandlers ?? []];
-    this.allowBatches = options?.allowBatches ?? true;
     this.closedPromise = new Promise((resolve4) => {
       this.abortController.signal.addEventListener("abort", () => resolve4());
     });
@@ -27651,7 +27637,7 @@ var Connection = class {
           if (done) {
             break;
           }
-          this.receiveWireMessage(message);
+          this.receiveUnvalidatedMessage(message);
         }
       } finally {
         if (this.receiveReader === reader) {
@@ -27665,68 +27651,20 @@ var Connection = class {
       this.close(closeError);
     }
   }
-  receiveWireMessage(message) {
+  receiveUnvalidatedMessage(message) {
     if (Array.isArray(message)) {
-      if (!this.allowBatches) {
-        this.close(new TypeError("JSON-RPC batches are not supported on this connection"));
-        return;
-      }
-      this.receiveBatch(message);
+      void this.sendMessage(protocolErrorResponse(RequestError.invalidRequest(void 0, "JSON-RPC batches are not supported"))).catch(() => {
+      });
       return;
     }
     if (!isRequestMessage(message) && !isNotificationMessage(message) && !isResponseShapedMessage(message)) {
-      void this.sendWireMessage(protocolErrorResponse(RequestError.invalidRequest(message))).catch(() => {
+      void this.sendMessage(protocolErrorResponse(RequestError.invalidRequest(message))).catch(() => {
       });
       return;
     }
     this.receiveMessage(message);
   }
-  receiveBatch(batch) {
-    if (batch.length === 0) {
-      void this.sendWireMessage(protocolErrorResponse(RequestError.invalidRequest(batch))).catch(() => {
-      });
-      return;
-    }
-    const responseBatch = isResponseBatch(batch);
-    const responseCount = responseBatch ? 0 : batch.reduce((count3, message) => count3 + (isNotificationMessage(message) ? 0 : 1), 0);
-    let remaining = responseCount;
-    let remainingNotifications = batch.reduce((count3, message) => count3 + (isNotificationMessage(message) ? 1 : 0), 0);
-    let responseSent = false;
-    const responses = [];
-    const sendResponsesIfReady = async () => {
-      if (responseSent || remaining !== 0 || remainingNotifications !== 0 || responses.length === 0) {
-        return;
-      }
-      responseSent = true;
-      await this.sendWireMessage(responses);
-    };
-    const collectResponse = async (response) => {
-      responses.push(response);
-      remaining -= 1;
-      await sendResponsesIfReady();
-    };
-    for (const message of batch) {
-      if (responseBatch) {
-        if (isResponseShapedMessage(message)) {
-          this.receiveMessage(message);
-        }
-        continue;
-      }
-      if (!isRequestMessage(message) && !isNotificationMessage(message)) {
-        void collectResponse(protocolErrorResponse(RequestError.invalidRequest(message))).catch(() => {
-        });
-        continue;
-      }
-      const processing = this.receiveMessage(message, isRequestMessage(message) ? collectResponse : void 0, batch.length);
-      if (isNotificationMessage(message)) {
-        void processing.finally(() => {
-          remainingNotifications -= 1;
-          void sendResponsesIfReady().catch((error) => this.close(error));
-        });
-      }
-    }
-  }
-  receiveMessage(message, sendResponse, batchSize) {
+  receiveMessage(message) {
     if (this.abortController.signal.aborted) {
       return Promise.resolve();
     }
@@ -27738,7 +27676,7 @@ var Connection = class {
       if (!("id" in message)) {
         this.handleProtocolNotification(message);
       }
-      return this.processIncomingMessage(this.toIncomingMessage(message, sendResponse, batchSize)).catch((error) => this.close(error));
+      return this.processIncomingMessage(this.toIncomingMessage(message)).catch((error) => this.close(error));
     } else if ("id" in message) {
       this.handleResponse(message);
     } else {
@@ -27793,7 +27731,7 @@ var Connection = class {
       }
     }
   }
-  toIncomingMessage(message, sendResponse, batchSize) {
+  toIncomingMessage(message) {
     if ("id" in message) {
       const abortController = new AbortController();
       this.incomingRequests.set(message.id, abortController);
@@ -27808,11 +27746,8 @@ var Connection = class {
           id: nullIdResponders.has(responder) ? null : message.id,
           ...result3
         };
-        return sendResponse ? sendResponse(response) : this.sendWireMessage(response);
+        return this.sendMessage(response);
       }, abortController.signal, finishRequest);
-      if (batchSize !== void 0) {
-        requestBatchSizes.set(responder, batchSize);
-      }
       return {
         kind: "request",
         method: message.method,
@@ -27863,7 +27798,7 @@ var Connection = class {
   closedReason() {
     return this.abortController.signal.reason ?? new Error("ACP connection closed");
   }
-  async sendWireMessage(message) {
+  async sendMessage(message) {
     if (this.abortController.signal.aborted) {
       return rejectedPromise(this.closedReason());
     }
@@ -28275,7 +28210,9 @@ function ndJsonStream(output, input, options = {}) {
           await writeJson(protocolErrorResponse(RequestError.parseError()));
           return;
         }
-        if (isRecord(message) || Array.isArray(message)) {
+        if (Array.isArray(message)) {
+          await writeJson(protocolErrorResponse(RequestError.invalidRequest(void 0, "JSON-RPC batches are not supported")));
+        } else if (isRecord(message)) {
           controller.enqueue(message);
         } else {
           await writeJson(protocolErrorResponse(RequestError.invalidRequest(message)));
@@ -28650,7 +28587,7 @@ var ClientContext = class _ClientContext extends AcpContext {
   }
   request(method, params, options) {
     const spec = agentRequestSpecsByMethod[method];
-    return this.sendRequest(method, params, spec?.mapResponse, options);
+    return treatSessionNotFoundAsSuccess(method, this.sendRequest(method, params, spec?.mapResponse, options), () => spec?.mapResponse ? spec.mapResponse({}) : {});
   }
   notify(method, params) {
     return this.sendNotification(method, params);
@@ -29114,7 +29051,6 @@ function runConnectHandlers(connection, handlers) {
 var appBuilder = /* @__PURE__ */ Symbol("appBuilder");
 var runAgentConnectHandlers = /* @__PURE__ */ Symbol("runAgentConnectHandlers");
 var runClientConnectHandlers = /* @__PURE__ */ Symbol("runClientConnectHandlers");
-var stableConnectionOptions = { allowBatches: false };
 var AgentApp = class {
   builder = Connection.builder();
   connectHandlers = [];
@@ -29227,7 +29163,7 @@ var AgentApp = class {
       return state2;
     }
     const [thisStream, peerStream] = memoryStreamPair();
-    const peerRawConnection = target2[appBuilder]().connect(peerStream, stableConnectionOptions);
+    const peerRawConnection = target2[appBuilder]().connect(peerStream);
     const peerConnection = clientConnection(peerRawConnection);
     const state = this.openStreamConnection(thisStream);
     void state.rawConnection.closed.then(() => peerConnection.close());
@@ -29243,7 +29179,7 @@ var AgentApp = class {
     return state;
   }
   openStreamConnection(stream) {
-    const rawConnection = this.builder.connect(stream, stableConnectionOptions);
+    const rawConnection = this.builder.connect(stream);
     return {
       rawConnection,
       connection: agentConnection(rawConnection, this.connectHandlers)
@@ -29348,7 +29284,7 @@ var ClientApp = class {
       return state2;
     }
     const [thisStream, peerStream] = memoryStreamPair();
-    const peerRawConnection = target2[appBuilder]().connect(peerStream, stableConnectionOptions);
+    const peerRawConnection = target2[appBuilder]().connect(peerStream);
     const peerConnection = agentConnection(peerRawConnection);
     const state = this.openStreamConnection(thisStream);
     void state.rawConnection.closed.then(() => peerConnection.close());
@@ -29364,7 +29300,7 @@ var ClientApp = class {
     return state;
   }
   openStreamConnection(stream) {
-    const rawConnection = this.builder.connect(stream, stableConnectionOptions);
+    const rawConnection = this.builder.connect(stream);
     return {
       rawConnection,
       connection: clientConnection(rawConnection, this.connectHandlers)
@@ -29546,6 +29482,12 @@ var StructuredLifecycleMapper = class {
 };
 
 // packages/session/dist/acp-adapter.js
+function toolDisplayMetadata(name2) {
+  const qualified = /^mcp__([^_]+)__/.exec(name2);
+  if (!qualified && !name2.startsWith("verity_"))
+    return {};
+  return { title: actionTitle(name2), source: (qualified?.[1] ?? "verity").slice(0, 200) };
+}
 var CLAUDE_ACP_META = "claudeCode";
 var CLAUDE_WEEKLY_RATE_LIMIT_TYPES = /* @__PURE__ */ new Set([
   // `weekly` was emitted by the native Claude stream before the ACP migration.
@@ -29772,11 +29714,24 @@ var AcpEventAdapter = class {
     const events = [];
     if (!seen.has("start")) {
       seen.add("start");
-      events.push({ t: "tool_call_start", id: id3, name: name2, parentToolId: parent });
+      events.push({
+        t: "tool_call_start",
+        id: id3,
+        name: name2,
+        ...toolDisplayMetadata(name2),
+        parentToolId: parent
+      });
     }
     if (!seen.has("call") && snapshot2.rawInput !== void 0) {
       seen.add("call");
-      events.push({ t: "tool_call", id: id3, name: name2, input: snapshot2.rawInput, parentToolId: parent });
+      events.push({
+        t: "tool_call",
+        id: id3,
+        name: name2,
+        ...toolDisplayMetadata(name2),
+        input: snapshot2.rawInput,
+        parentToolId: parent
+      });
     }
     if (snapshot2.status === "completed" || snapshot2.status === "failed") {
       this.pendingTerminal.add(id3);
@@ -29811,7 +29766,14 @@ var AcpEventAdapter = class {
     const events = [];
     if (!seen.has("call")) {
       seen.add("call");
-      events.push({ t: "tool_call", id: id3, name: name2, input: tool.rawInput ?? {}, parentToolId: parent });
+      events.push({
+        t: "tool_call",
+        id: id3,
+        name: name2,
+        ...toolDisplayMetadata(name2),
+        input: tool.rawInput ?? {},
+        parentToolId: parent
+      });
     }
     seen.add("result");
     this.pendingTerminal.delete(id3);

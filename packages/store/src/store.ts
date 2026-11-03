@@ -1,3 +1,4 @@
+import { UserContextStore } from './user-context.js';
 import { AssistantStore } from './assistant.js';
 import { SchedulingStore } from './scheduling.js';
 import { QAAssignmentStore } from './qa-assignments.js';
@@ -365,6 +366,7 @@ export interface ProjectUpsertInput {
 }
 
 export interface SessionBackendStateRecord {
+  contextFingerprint?: string;
   sessionId: string;
   backend: string;
   backendSessionId: string;
@@ -1425,6 +1427,7 @@ export class EventStore implements EventSink {
     private readonly db: Kysely<Database>,
     private readonly cipher: SecretCipher = createPassthroughCipher(),
   ) {
+    this.userContext = new UserContextStore(db);
     this.projectEgress = new ProjectEgressStore(db);
     this.knowledge = new KnowledgeStore(db);
     this.integrations = new IntegrationStore(db, cipher);
@@ -1438,6 +1441,7 @@ export class EventStore implements EventSink {
     this.scheduling = new SchedulingStore(db, cipher);
   }
 
+  readonly userContext: UserContextStore;
   readonly projectEgress: ProjectEgressStore;
   readonly knowledge: KnowledgeStore;
   readonly integrations: IntegrationStore;
@@ -3195,7 +3199,14 @@ export class EventStore implements EventSink {
   ): Promise<SessionBackendStateRecord | undefined> {
     const row = await this.db
       .selectFrom('session_backend_state')
-      .select(['session_id', 'backend', 'backend_session_id', 'context_seq', 'updated_at'])
+      .select([
+        'session_id',
+        'backend',
+        'backend_session_id',
+        'context_seq',
+        'updated_at',
+        'context_fingerprint',
+      ])
       .where('session_id', '=', sessionId)
       .where('backend', '=', backend)
       .executeTakeFirst();
@@ -3205,6 +3216,7 @@ export class EventStore implements EventSink {
       backend: row.backend,
       backendSessionId: row.backend_session_id,
       contextSeq: Number(row.context_seq),
+      ...(row.context_fingerprint ? { contextFingerprint: row.context_fingerprint } : {}),
       updatedAt: row.updated_at,
     };
   }
@@ -3225,6 +3237,7 @@ export class EventStore implements EventSink {
     backend: string;
     backendSessionId: string;
     contextSeq: number;
+    contextFingerprint?: string;
   }): Promise<SessionBackendStateRecord[]> {
     return await this.db.transaction().execute(async (tx) => {
       // Read before delete rather than `DELETE … RETURNING`: this runs on every bind,
@@ -3232,7 +3245,14 @@ export class EventStore implements EventSink {
       // the transaction is cheaper than a dialect-specific surprise here.
       const displaced = await tx
         .selectFrom('session_backend_state')
-        .select(['session_id', 'backend', 'backend_session_id', 'context_seq', 'updated_at'])
+        .select([
+          'session_id',
+          'backend',
+          'backend_session_id',
+          'context_seq',
+          'updated_at',
+          'context_fingerprint',
+        ])
         .where('session_id', '=', input.sessionId)
         .where('backend', '!=', input.backend)
         .execute();
@@ -3248,11 +3268,13 @@ export class EventStore implements EventSink {
           backend: input.backend,
           backend_session_id: input.backendSessionId,
           context_seq: input.contextSeq,
+          context_fingerprint: input.contextFingerprint ?? null,
         })
         .onConflict((oc) =>
           oc.columns(['session_id', 'backend']).doUpdateSet({
             backend_session_id: input.backendSessionId,
             context_seq: input.contextSeq,
+            context_fingerprint: input.contextFingerprint ?? null,
             updated_at: sql`now()`,
           }),
         )
@@ -3262,6 +3284,7 @@ export class EventStore implements EventSink {
         backend: row.backend,
         backendSessionId: row.backend_session_id,
         contextSeq: Number(row.context_seq),
+        ...(row.context_fingerprint ? { contextFingerprint: row.context_fingerprint } : {}),
         updatedAt: row.updated_at,
       }));
     });
@@ -3279,7 +3302,14 @@ export class EventStore implements EventSink {
   async getSessionBackendStates(sessionId: string): Promise<SessionBackendStateRecord[]> {
     const rows = await this.db
       .selectFrom('session_backend_state')
-      .select(['session_id', 'backend', 'backend_session_id', 'context_seq', 'updated_at'])
+      .select([
+        'session_id',
+        'backend',
+        'backend_session_id',
+        'context_seq',
+        'updated_at',
+        'context_fingerprint',
+      ])
       .where('session_id', '=', sessionId)
       .execute();
     return rows.map((row) => ({
@@ -3287,6 +3317,7 @@ export class EventStore implements EventSink {
       backend: row.backend,
       backendSessionId: row.backend_session_id,
       contextSeq: Number(row.context_seq),
+      ...(row.context_fingerprint ? { contextFingerprint: row.context_fingerprint } : {}),
       updatedAt: row.updated_at,
     }));
   }
@@ -6202,6 +6233,60 @@ export class EventStore implements EventSink {
           .where('project_id', '=', id)
           .execute();
       }
+      return updated;
+    });
+    return row ? this.projectRowToRecord(row) : undefined;
+  }
+
+  /** Disconnect by stable ID; pin the existing clone and preserve all dependent records. */
+  async disconnectProjectFromGitHub(id: string): Promise<ProjectRecord | undefined> {
+    const row = await this.db.transaction().execute(async (tx) => {
+      // Match project creation and lifecycle lock order before allocating a local identity.
+      await sql`select pg_advisory_xact_lock(1447383636, 18)`.execute(tx);
+      const existing = await tx
+        .selectFrom('projects')
+        .select(this.projectColumns)
+        .where('id', '=', id)
+        .forUpdate()
+        .executeTakeFirst();
+      if (!existing || existing.hidden_at !== null || !['github', 'local'].includes(existing.kind))
+        return undefined;
+      if (existing.kind === 'local') return existing;
+      let localRepo = existing.repo;
+      for (let attempt = 1; ; attempt++) {
+        const collision = await tx
+          .selectFrom('projects')
+          .select('id')
+          .where('owner', '=', LOCAL_PROJECT_OWNER)
+          .where('repo', '=', localRepo)
+          .executeTakeFirst();
+        const claim = await tx
+          .selectFrom('project_identity_claims')
+          .select('project_id')
+          .where('owner', '=', LOCAL_PROJECT_OWNER)
+          .where('repo', '=', localRepo)
+          .executeTakeFirst();
+        if (!collision && (!claim || claim.project_id === id)) break;
+        localRepo = `${existing.repo}-${id}${attempt === 1 ? '' : `-${attempt}`}`;
+      }
+      const updated = await tx
+        .updateTable('projects')
+        .set({
+          kind: 'local',
+          owner: LOCAL_PROJECT_OWNER,
+          repo: localRepo,
+          forge_connection_id: null,
+          clone_dir: existing.clone_dir ?? `${existing.owner}-${existing.repo}`,
+          latest_release_tag: null,
+          latest_release_name: null,
+          latest_release_url: null,
+          latest_release_published_at: null,
+          updated_at: sql`now()`,
+        })
+        .where('id', '=', id)
+        .returningAll()
+        .executeTakeFirst();
+      await tx.deleteFrom('project_identity_claims').where('project_id', '=', id).execute();
       return updated;
     });
     return row ? this.projectRowToRecord(row) : undefined;

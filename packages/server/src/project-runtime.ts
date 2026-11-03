@@ -99,7 +99,10 @@ export interface ProjectRuntime {
     settings: ProjectRuntimeSettings,
   ): Promise<ProjectRuntimeHealth>;
   /** Every TCP listener in the sandbox the exec user can attribute to a process. */
-  listListeningProcesses?(project: ProjectRecord): Promise<ListeningProcess[]>;
+  listListeningProcesses?(
+    project: ProjectRecord,
+    options?: { fresh?: boolean },
+  ): Promise<ListeningProcess[]>;
 }
 
 interface RuntimeRunResult {
@@ -192,6 +195,10 @@ const defaultRunner: RuntimeRunner = async (command, args, opts) => {
 };
 
 export interface DockerProjectRuntimeOptions {
+  listListeningProcesses?: (
+    project: ProjectRecord,
+    options?: { fresh?: boolean },
+  ) => Promise<ListeningProcess[]>;
   resolveUser?: (project: ProjectRecord) => Promise<string | undefined>;
   isSecretManagedServer?: (instanceId: string) => Promise<boolean>;
   dockerCommand?: string | undefined;
@@ -532,7 +539,7 @@ export class DockerProjectRuntime implements ProjectRuntime {
 
   /** A separate high port avoids colliding with the original loopback socket. */
   async ensurePreviewTarget(project: ProjectRecord, port: number): Promise<number> {
-    const listener = (await this.listListeningProcesses(project)).find(
+    const listener = (await this.listListeningProcesses(project, { fresh: true })).find(
       (value) => value.port === port,
     );
     if (!listener) throw new Error('the preview target stopped listening');
@@ -559,7 +566,11 @@ export class DockerProjectRuntime implements ProjectRuntime {
     return targetPort;
   }
 
-  async listListeningProcesses(project: ProjectRecord): Promise<ListeningProcess[]> {
+  async listListeningProcesses(
+    project: ProjectRecord,
+    options?: { fresh?: boolean },
+  ): Promise<ListeningProcess[]> {
+    if (this.opts.listListeningProcesses) return this.opts.listListeningProcesses(project, options);
     const result = await this.runner(
       this.opts.dockerCommand ?? 'docker',
       [

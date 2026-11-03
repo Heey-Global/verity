@@ -1,0 +1,13 @@
+[
+  {
+    "name": "verity_diagnostics_read",
+    "title": "Verity · Diagnostics · Read",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": null,
+    "skill": null,
+    "compatibility": {
+      "name": "verity_diagnostics"
+    }
+  }
+]

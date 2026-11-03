@@ -9,8 +9,9 @@ import { backupLifecycle } from './backup/lifecycle.js';
 import type { BuildStorage, BuildStorageLease } from './build-storage.js';
 import type { BuildDiagnosticStore } from './build-diagnostics.js';
 import type { DerivedImageReferences } from './derived-image-references.js';
-import { connectDocumentCode } from './document-code.js';
-import { migrateLocalDocuments } from './document-migration.js';
+import { createSignedEmptyCommit, createSignedMergeCommit } from './signed-bootstrap.js';
+import type { HistorySigningIdentity } from './sign-history.js';
+import { createGitWorktreeProvisioner } from './worktree.js';
 import { mkdir as mkdirDocumentRoot } from 'node:fs/promises';
 import { FORGE_PROXY_CA_FILE } from './brokered-forge-proxy.js';
 import { DEVCONTAINER_BUILDER_SOCKET_DIRECTORY } from './self-update/deployment-spec.js';
@@ -742,10 +743,11 @@ export type DevcontainerFeatureSource =
   | { ref: string; version: string; identity: string }
   | (() => Promise<{ ref: string; version: string; identity: string } | undefined>);
 
-/** Outcome of linking a local project to a GitHub repository. Empty when the history
- *  went straight onto the (empty) repository's default branch; otherwise it names the
- *  import branch the history was published on and the pull request carrying it in. */
+/** Outcome of publishing local history, including the destination default branch
+ *  and, for a nonempty target, the import branch and its pull request. */
 export interface LinkCloneToGitHubResult {
+  /** Persist before recreating the linked Sandbox. */
+  defaultBranch?: string | undefined;
   importBranch?: string | undefined;
   pullRequest?: { number: number; url: string } | undefined;
   /** Set when the branch is published but its pull request could not be opened. */
@@ -1900,6 +1902,7 @@ export interface Provisioner {
     target: { owner: string; repo: string; forgeConnectionId?: string | null },
     token: string | undefined,
   ): Promise<LinkCloneToGitHubResult>;
+  disconnectGitHub?(project: ProjectRecord): Promise<ProjectRecord>;
   /** Run a project mutation while new turns wait at the same admission barrier
    * used by Sandbox repair, and reject when existing work is active. */
   withProjectExclusiveMutation?<T>(
@@ -2575,6 +2578,16 @@ export class ProvisionerImpl implements Provisioner {
       promise: Promise<unknown>;
     }
   >();
+  private readonly supervisorRetry = new Map<
+    string,
+    {
+      containerName: string;
+      generation: number | undefined;
+      failures: number;
+      retryAt: number;
+      error: unknown;
+    }
+  >();
   /** Per-project tail promises serialize managed-checkout fetch/reset operations.
    *  Unlike provisioning single-flight, every queued synchronization must run:
    *  a later request may correspond to a newer merge that was not visible when
@@ -2837,6 +2850,12 @@ export class ProvisionerImpl implements Provisioner {
     if ((!supervisorEnabled && !connectorEnabled) || this.opts.dockerHostForBuild === undefined)
       return;
     const dockerHost = this.opts.dockerHostForBuild;
+    const activeIds = new Set(
+      projects.filter((project) => project.state === 'active').map((project) => project.id),
+    );
+    for (const id of this.supervisorRetry.keys()) {
+      if (!activeIds.has(id)) this.supervisorRetry.delete(id);
+    }
     const outcomes = await Promise.all(
       projects
         .filter((project) => project.state === 'active' && project.kind !== 'control_plane')
@@ -2855,6 +2874,12 @@ export class ProvisionerImpl implements Provisioner {
           ) {
             return pending.promise;
           }
+          const retry = this.supervisorRetry.get(project.id);
+          const sameGeneration =
+            retry?.containerName === project.containerName &&
+            retry.generation === replacementGeneration;
+          if (sameGeneration && Date.now() < retry.retryAt) return retry.error;
+          if (!sameGeneration) this.supervisorRetry.delete(project.id);
           // A replacement stops and removes the old sandbox while the row still
           // reads `active` (it only moves to `container_starting` once the new
           // container phase begins), and starts the stack itself in the new one.
@@ -2878,15 +2903,27 @@ export class ProvisionerImpl implements Provisioner {
                       : 'verity-egress-connector-start --standalone',
                     timeoutMs: 12_000,
                   });
+                  if (this.supervisorReconciliations.get(project.id) === entry) {
+                    this.supervisorRetry.delete(project.id);
+                  }
                   return undefined;
                 } catch (error) {
                   // The same race from the other side: the replacement began while
                   // this exec was already in flight.
                   if (
-                    this.sandboxReplacementGenerations.get(project.id) !== replacementGeneration
+                    this.sandboxReplacementGenerations.get(project.id) !== replacementGeneration ||
+                    this.supervisorReconciliations.get(project.id) !== entry
                   ) {
                     return undefined;
                   }
+                  const failures = (sameGeneration ? retry.failures : 0) + 1;
+                  this.supervisorRetry.set(project.id, {
+                    containerName: project.containerName,
+                    generation: replacementGeneration,
+                    failures,
+                    retryAt: Date.now() + Math.min(60_000, 5_000 * 2 ** Math.min(failures - 1, 4)),
+                    error,
+                  });
                   return error;
                 }
               })
@@ -3418,32 +3455,49 @@ export class ProvisionerImpl implements Provisioner {
     });
   }
 
-  private async localDocumentsNeedMigration(project: ProjectRecord): Promise<boolean> {
-    if (!isLocalProject(project) || !this.opts.dataVolumeRoot) return false;
-    const workspace = projectClonePath(this.opts.hostCloneRoot, project);
-    if (existsSync(join(workspace, '.git', 'verity-document-code'))) return false;
-    const manifest = join(
-      this.opts.dataVolumeRoot,
-      'document-migrations',
-      project.id,
-      'manifest.json',
-    );
-    if (existsSync(manifest)) {
-      const { readFile } = await import('node:fs/promises');
-      const state = JSON.parse(await readFile(manifest, 'utf8')) as { stage: string };
-      return state.stage !== 'complete';
-    }
-    return existsSync(join(workspace, '.git'));
-  }
-
+  /** Keep legacy Documents views intact while providing a separate Git code workspace. */
   async prepareLocalDocuments(projectId: string): Promise<void> {
     const project = await this.opts.store.getProject(projectId);
-    if (!project || !(await this.localDocumentsNeedMigration(project))) return;
-    await this.withProjectExclusiveMutation(projectId, async () => {
-      await this.recreateContainer(projectId, {
-        confirmWarnings: true,
-        initiator: { kind: 'system', trigger: 'sandbox_reconcile' },
-      });
+    if (!project || !isLocalProject(project)) return;
+    const clonePath = projectClonePath(this.opts.hostCloneRoot, project);
+    const initialize = async () => {
+      // A pre-Code Sandbox has no frozen Git config mount. Stop it before creating
+      // host-operated Git metadata, then recreate it with the normal config boundary.
+      if (!this.isRepoDir(clonePath) && project.state === 'active') {
+        await this.retireEgressGeneration(project.id);
+        await this.opts.projectRelay.stop(project.id);
+        await stopAndRemoveExistingContainer(this.opts.docker, project.containerName);
+        await this.doClone(project);
+        await this.recreateContainer(project.id, {
+          confirmWarnings: true,
+          initiator: { kind: 'system', trigger: 'sandbox_reconcile' },
+        });
+      }
+    };
+    if (!this.isRepoDir(clonePath) && project.state === 'active') {
+      if (this.turnSandboxRepairs.has(projectId)) await initialize();
+      else await this.withProjectExclusiveMutation(projectId, initialize);
+    }
+    await this.serializeProjectCheckoutOperation(projectId, async () => {
+      await this.doClone(project);
+      const sessions = await this.opts.store.listSessions();
+      for (const session of sessions) {
+        if (
+          session.projectId !== projectId ||
+          !session.worktree.split('/').includes('.verity-document-sessions')
+        )
+          continue;
+        const branch = `code-${session.sessionId}`;
+        const path = join(clonePath, '.verity-sessions', branch);
+        if (this.isDir(path)) continue;
+        await createGitWorktreeProvisioner({
+          repoDir: clonePath,
+          worktreeRoot: join(clonePath, '.verity-sessions'),
+          git: async (args) => {
+            await this.git(['-c', 'core.hooksPath=/dev/null', ...args]);
+          },
+        }).add(branch);
+      }
     });
   }
 
@@ -4682,13 +4736,6 @@ export class ProvisionerImpl implements Provisioner {
         (this.sandboxReplacementGenerations.get(project.id) ?? 0) + 1,
       );
       await stopAndRemoveExistingContainer(this.opts.docker, project.containerName);
-      if (this.opts.dataVolumeRoot && (await this.localDocumentsNeedMigration(project)))
-        await migrateLocalDocuments({
-          dataRoot: this.opts.dataVolumeRoot,
-          projectId: project.id,
-          workspace: dirs.clonePath,
-          store: this.opts.store,
-        });
 
       // ADR 0004 — "Update & restart" actively fetched the target image in the
       // non-destructive preflight above. Keep forcePull true here to retain the
@@ -4759,26 +4806,34 @@ export class ProvisionerImpl implements Provisioner {
    *  `projects.state` — the caller is responsible for the `failed` transition
    *  on error. On success, the caller transitions to `container_starting`.
    *
-   * Local projects allocate a plain document workspace. Connected projects clone
+   * Local projects retain an internal Git repository. Connected projects clone
    * or fetch their Code repository; document storage never enters that clone. */
   private async doClone(project: ProjectRecord): Promise<void> {
     const dirs = projectDirs(this.opts.hostCloneRoot, project);
     const settings = await this.opts.store.getProjectSettingsRaw(project.id);
     const configuredDefaultBranch = settings?.defaultBranch?.trim() || undefined;
     if (isLocalProject(project)) {
-      if (this.opts.dataVolumeRoot && (await this.localDocumentsNeedMigration(project))) {
-        if (await this.isProjectBusy(project.id))
-          throw new ProvisioningError('Finish project activity before migrating local documents');
-        await stopAndRemoveExistingContainer(this.opts.docker, project.containerName);
-        await migrateLocalDocuments({
-          dataRoot: this.opts.dataVolumeRoot,
-          projectId: project.id,
-          workspace: dirs.clonePath,
-          store: this.opts.store,
-        });
-      }
       if (this.opts.prepareLocalWorkspace) await this.opts.prepareLocalWorkspace(dirs.clonePath);
-      else await mkdirDocumentRoot(dirs.clonePath, { recursive: true });
+      else {
+        await mkdirDocumentRoot(dirs.clonePath, { recursive: true });
+        try {
+          const metadata = lstatSync(join(dirs.clonePath, '.git'));
+          if (!metadata.isDirectory() || metadata.isSymbolicLink())
+            throw new ProvisioningError(
+              'Local Git metadata must be a directory, not a symlink. Repair the project before continuing.',
+            );
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+        }
+        // Never execute repository-controlled hooks or included host config while
+        // opening a pre-Code checkout. This config-only pass executes no repo code.
+        await this.sanitizeLocalCloneConfig(
+          project,
+          dirs.clonePath,
+          this.localConfigState(dirs.clonePath),
+        );
+        await this.initLocalRepo(dirs.clonePath, configuredDefaultBranch ?? 'main');
+      }
       return;
     }
     const access = await this.opts.forgeRepositoryAccess?.(project);
@@ -4888,7 +4943,67 @@ export class ProvisionerImpl implements Provisioner {
     }
   }
 
-  /** Finish an empty GitHub clone so worktrees and pull requests have a real base. */
+  /** Use the configured identity for new server-signed commits. */
+  private async signingIdentity(): Promise<HistorySigningIdentity | undefined> {
+    const settings = await this.opts.veritySettings?.();
+    const privateKey = resolveSigningPrivateKey(settings);
+    if (!privateKey) return undefined;
+    const name = settings?.gitUserName?.trim();
+    const email = settings?.gitUserEmail?.trim();
+    if (!name || !email)
+      throw new ProvisioningError(
+        'Configure the Git commit name and verified email before initializing a signed repository.',
+      );
+    return { privateKey, committerName: name, committerEmail: email };
+  }
+
+  /** Finish an empty clone without rewriting existing history. */
+  private async signedBootstrap(clonePath: string, git: GitRunner = this.git): Promise<boolean> {
+    const identity = await this.signingIdentity();
+    if (!identity) return false;
+    try {
+      await createSignedEmptyCommit(git, clonePath, identity);
+    } catch (cause) {
+      throw new ProvisioningError(
+        'Creating the signed initial commit failed. Check the Git signing key and verified Git email.',
+        new Error(redactSensitive(commandFailureMessage(cause), [identity.privateKey])),
+      );
+    }
+    return true;
+  }
+
+  private async initLocalRepo(clonePath: string, defaultBranch: string): Promise<void> {
+    const repoExists = this.isDir(clonePath) && this.isRepoDir(clonePath);
+    if (repoExists) {
+      try {
+        await this.git(['-C', clonePath, 'rev-parse', '--verify', 'HEAD']);
+        return;
+      } catch {
+        // An interrupted first attempt can leave `.git` behind with an unborn
+        // HEAD. Finish the bootstrap commit instead of treating it as complete.
+      }
+    } else {
+      await this.git(['init', '-b', defaultBranch, clonePath]);
+    }
+    if (await this.signedBootstrap(clonePath)) return;
+    await this.git([
+      '-C',
+      clonePath,
+      '-c',
+      'user.name=Verity',
+      '-c',
+      'user.email=verity@localhost',
+      '-c',
+      'commit.gpgsign=false',
+      '-c',
+      'core.hooksPath=/dev/null',
+      'commit',
+      '--allow-empty',
+      '-m',
+      'chore: initialize project',
+    ]);
+  }
+
   private async bootstrapEmptyGitHubRepo(
     clonePath: string,
     defaultBranch: string,
@@ -4909,7 +5024,10 @@ export class ProvisionerImpl implements Provisioner {
       await git(['-C', clonePath, 'update-ref', `refs/heads/${defaultBranch}`, existingHead]);
     }
     await git(['-C', clonePath, 'symbolic-ref', 'HEAD', `refs/heads/${defaultBranch}`]);
-    if (existingHead === undefined || existingHead.length === 0) {
+    if (
+      (existingHead === undefined || existingHead.length === 0) &&
+      !(await this.signedBootstrap(clonePath, git))
+    ) {
       await git([
         '-C',
         clonePath,
@@ -4919,6 +5037,8 @@ export class ProvisionerImpl implements Provisioner {
         'user.email=verity@localhost',
         '-c',
         'commit.gpgsign=false',
+        '-c',
+        'core.hooksPath=/dev/null',
         'commit',
         '--allow-empty',
         '-m',
@@ -5004,54 +5124,417 @@ export class ProvisionerImpl implements Provisioner {
     }
   }
 
-  /**
-   * Point a project's clone at a GitHub repository and publish its history there
-   * (the "connect this local project to GitHub later" path). Local Documents are
-   * migrated first; the connected Code repository is fetched without importing
-   * project knowledge. Document storage is required so legacy files can be retained
-   * before any Code repository is connected.
-   */
+  /** Publish the local code history while retaining Documents and the clone path. */
   async linkCloneToGitHub(
     project: ProjectRecord,
     target: { owner: string; repo: string; forgeConnectionId?: string | null },
     token: string | undefined,
   ): Promise<LinkCloneToGitHubResult> {
+    await this.prepareLocalDocuments(project.id);
     const clonePath = projectClonePath(this.opts.hostCloneRoot, project);
-    if (this.opts.dataVolumeRoot) {
-      if (isLocalProject(project)) await this.doClone(project);
-      const access = await this.opts.forgeRepositoryAccess?.(target);
-      const repositoryToken = access?.token ?? token;
-      const authorization = access?.authorization ?? gitAuthHeader(repositoryToken);
-      const url = access?.url ?? `https://github.com/${target.owner}/${target.repo}`;
-      const git = this.forgeGitRunner(access, target.forgeConnectionId ?? project.id);
-      try {
-        const { empty } = await connectDocumentCode({
-          workspace: clonePath,
-          url,
-          authorization,
-          git,
-        });
-        if (empty)
-          await this.bootstrapEmptyGitHubRepo(
-            clonePath,
-            'main',
-            repositoryToken,
-            authorization,
-            git,
-          );
-        return {};
-      } catch (cause) {
+    if (!this.isDir(clonePath) || !this.isRepoDir(clonePath)) {
+      throw new ProvisioningError('project clone is missing; repair the project first');
+    }
+    const access = await this.opts.forgeRepositoryAccess?.(target);
+    token = access?.token ?? token;
+    const url = access?.url ?? `https://github.com/${target.owner}/${target.repo}`;
+    const authHeader = access?.authorization ?? gitAuthHeader(token);
+    const git = this.forgeGitRunner(access, target.forgeConnectionId ?? project.id);
+    const branch = (await git(['-C', clonePath, 'symbolic-ref', '--short', 'HEAD'])).stdout.trim();
+    const localHead = (await git(['-C', clonePath, 'rev-parse', '--verify', 'HEAD'])).stdout.trim();
+    // Recreation resets the base checkout even for an empty target. Refuse dirty
+    // tracked files before publication so that transition cannot discard edits.
+    let localStatus: string;
+    try {
+      localStatus = (
+        await git(['-C', clonePath, 'status', '--porcelain', '--untracked-files=no'])
+      ).stdout.trim();
+    } catch (cause) {
+      throw new ProvisioningError(
+        'checking the local project status failed',
+        new Error(redactSensitive(commandFailureMessage(cause), [token, authHeader])),
+      );
+    }
+    if (localStatus !== '')
+      throw new ProvisioningError(
+        'the local project has uncommitted changes; commit, stash, or discard them before linking GitHub',
+      );
+    let originExists = false;
+    try {
+      const existingOrigin = (
+        await git(['-C', clonePath, 'remote', 'get-url', 'origin'])
+      ).stdout.trim();
+      originExists = true;
+      const originMatchesTarget = existingOrigin === url || existingOrigin === `${url}.git`;
+      if (!originMatchesTarget) {
         throw new ProvisioningError(
-          'Connecting Code failed; Documents were retained',
-          new Error(
-            redactSensitive(commandFailureMessage(cause), [repositoryToken, authorization]),
-          ),
+          'origin already points to another repository; remove or rename it before linking',
+        );
+      }
+    } catch (error) {
+      if (error instanceof ProvisioningError) throw error;
+    }
+    let remoteRefs: Awaited<ReturnType<GitRunner>>;
+    try {
+      remoteRefs = await git([
+        '-c',
+        `http.extraheader=${authHeader}`,
+        'ls-remote',
+        '--heads',
+        '--tags',
+        url,
+      ]);
+    } catch (cause) {
+      const safeCause = new Error(
+        redactSensitive(commandFailureMessage(cause), [token, authHeader]),
+      );
+      throw new ProvisioningError('inspecting the existing GitHub repository failed', safeCause);
+    }
+    const refs = remoteRefs.stdout
+      .trim()
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line !== '');
+    const remoteHeads = refs.filter((line) => /\srefs\/heads\//.test(line));
+    let destinationBranch = branch;
+    let mergedExistingHistory = false;
+    if (!originExists) {
+      await git(['-C', clonePath, 'remote', 'add', 'origin', url]);
+    }
+    if (remoteHeads.length > 0) {
+      const [sha, ref, extra] = refs.length === 1 ? refs[0]!.split(/\s+/) : [];
+      // A prior attempt may have pushed before finalization. The local config
+      // sanitizer removes remotes between turns, so compare the exact target
+      // history rather than requiring a retained origin entry.
+      if (extra === undefined && sha === localHead && ref === `refs/heads/${branch}`) {
+        return { defaultBranch: branch };
+      }
+    }
+    if (remoteHeads.length > 0) {
+      let remoteBranch: string | undefined;
+      try {
+        const remoteHead = await git([
+          '-c',
+          `http.extraheader=${authHeader}`,
+          'ls-remote',
+          '--symref',
+          url,
+          'HEAD',
+        ]);
+        remoteBranch = remoteHead.stdout
+          .split('\n')
+          .map((line) => line.match(/^ref:\s+refs\/heads\/(.+)\s+HEAD$/)?.[1])
+          .find((candidate) => candidate !== undefined);
+      } catch (cause) {
+        if (!originExists) {
+          await git(['-C', clonePath, 'remote', 'remove', 'origin']);
+        }
+        const safeCause = new Error(
+          redactSensitive(commandFailureMessage(cause), [token, authHeader]),
+        );
+        throw new ProvisioningError(
+          'determining the GitHub repository default branch failed',
+          safeCause,
+        );
+      }
+      remoteBranch ??= refs
+        .map((line) => line.split(/\s+/))
+        .find(([, ref]) => ref === `refs/heads/${branch}`)?.[1]
+        ?.replace(/^refs\/heads\//, '');
+      if (remoteBranch === undefined) {
+        if (!originExists) {
+          await git(['-C', clonePath, 'remote', 'remove', 'origin']);
+        }
+        throw new ProvisioningError('the GitHub repository default branch could not be determined');
+      }
+      destinationBranch = remoteBranch;
+      try {
+        await git([
+          '-C',
+          clonePath,
+          '-c',
+          `http.extraheader=${authHeader}`,
+          'fetch',
+          'origin',
+          `+refs/heads/${remoteBranch}:refs/remotes/origin/${remoteBranch}`,
+        ]);
+      } catch (cause) {
+        if (!originExists) {
+          await git(['-C', clonePath, 'remote', 'remove', 'origin']);
+        }
+        const safeCause = new Error(
+          redactSensitive(commandFailureMessage(cause), [token, authHeader]),
+        );
+        throw new ProvisioningError(
+          'fetching the existing GitHub repository history failed',
+          safeCause,
+        );
+      }
+      const signingIdentity = await this.signingIdentity();
+      try {
+        // Merge strategies may overwrite ignored files even with the porcelain
+        // flag. Protect untracked files (including ignored dependencies/assets)
+        // before either merging or recreating the linked checkout.
+        const localOnly = (
+          await git(['-C', clonePath, 'ls-files', '--others', '--directory', '-z'])
+        ).stdout
+          .split('\0')
+          .filter(Boolean)
+          .map((path) => path.replace(/\/$/u, ''));
+        const incoming = (
+          await git([
+            '-C',
+            clonePath,
+            'ls-tree',
+            '-r',
+            '--name-only',
+            '-z',
+            `refs/remotes/origin/${remoteBranch}`,
+          ])
+        ).stdout
+          .split('\0')
+          .filter(Boolean);
+        const hasAncestor = (paths: Set<string>, path: string) =>
+          path.split('/').some((_, index, parts) => paths.has(parts.slice(0, index + 1).join('/')));
+        const localPaths = new Set(localOnly);
+        const incomingPaths = new Set(incoming);
+        if (
+          incoming.some((path) => hasAncestor(localPaths, path)) ||
+          localOnly.some((path) => hasAncestor(incomingPaths, path))
+        )
+          throw new ProvisioningError(
+            'The destination contains files that would replace local untracked or ignored files. Move those files out of the code workspace before linking.',
+          );
+        // Leave the merge pending for the server signer when configured. Git's
+        // automatic signer cannot access the broker's private key on this path.
+        await git([
+          '-C',
+          clonePath,
+          '-c',
+          'user.name=Verity',
+          '-c',
+          'user.email=verity@localhost',
+          '-c',
+          'commit.gpgsign=false',
+          '-c',
+          'core.hooksPath=/dev/null',
+          'merge',
+          '--allow-unrelated-histories',
+          '--no-overwrite-ignore',
+          ...(signingIdentity ? ['--no-commit', '--no-ff'] : []),
+          '--no-edit',
+          '-X',
+          'ours',
+          `refs/remotes/origin/${remoteBranch}`,
+        ]);
+        if (signingIdentity) {
+          const pending = await git([
+            '-C',
+            clonePath,
+            'rev-parse',
+            '--verify',
+            '--quiet',
+            'MERGE_HEAD',
+          ]).then(
+            () => true,
+            () => false,
+          );
+          if (pending) {
+            try {
+              await createSignedMergeCommit(git, clonePath, signingIdentity);
+            } catch (cause) {
+              // eslint-disable-next-line preserve-caught-error -- signer errors may contain private key material.
+              throw new Error(
+                redactSensitive(commandFailureMessage(cause), [signingIdentity.privateKey]),
+              );
+            }
+          }
+        }
+        mergedExistingHistory = true;
+      } catch (cause) {
+        // A merge that never started leaves no MERGE_HEAD, and `git merge --abort`
+        // then fails with "there is no merge to abort". Only abort a merge that
+        // actually touched the tree: reporting the abort failure as damage would
+        // send the operator to repair a clone that was never modified.
+        let midMerge = true;
+        try {
+          await git(['-C', clonePath, 'rev-parse', '--verify', '--quiet', 'MERGE_HEAD']);
+        } catch {
+          midMerge = false;
+        }
+        let abortCause: unknown;
+        if (midMerge) {
+          try {
+            await git(['-C', clonePath, 'merge', '--abort']);
+          } catch (error) {
+            abortCause = error;
+          }
+        }
+        if (abortCause !== undefined) {
+          const failure = `${commandFailureMessage(cause)}; aborting the merge also failed: ${commandFailureMessage(abortCause)}`;
+          const safeCause = new Error(redactSensitive(failure, [token, authHeader]));
+          throw new AmbiguousGitPushError(
+            'merging GitHub history failed and the local project needs repair before retrying',
+            safeCause,
+          );
+        }
+        if (!originExists) {
+          await git(['-C', clonePath, 'remote', 'remove', 'origin']);
+        }
+        const safeCause = new Error(
+          redactSensitive(commandFailureMessage(cause), [token, authHeader]),
+        );
+        throw new ProvisioningError(
+          'merging the existing GitHub repository into the local project failed',
+          safeCause,
         );
       }
     }
-    throw new ProvisioningError(
-      'Connecting Code requires configured document storage; local history was not published.',
+    // A repository that already has history keeps its default branch under whatever
+    // protection the operator put on it: publish onto an import branch and let a
+    // pull request carry the history in. A straight push onto the default branch is
+    // reserved for the empty repository this flow was written for — there is nothing
+    // to review there, and nothing a ruleset would reject. Where a rule does exist,
+    // the direct push fails with "retry to recover", which no retry ever satisfies.
+    let importBranch: string | undefined;
+    if (mergedExistingHistory) {
+      const mergedHead = (
+        await git(['-C', clonePath, 'rev-parse', '--verify', 'HEAD'])
+      ).stdout.trim();
+      const remoteShaByBranch = new Map(
+        remoteHeads
+          .map((line) => line.split(/\s+/))
+          .flatMap(([sha, ref]) =>
+            sha !== undefined && ref !== undefined && ref.startsWith('refs/heads/')
+              ? [[ref.slice('refs/heads/'.length), sha] as const]
+              : [],
+          ),
+      );
+      // Reuse the branch when it already carries this exact merge — a retry after a
+      // pull request that failed to open must not litter the repository with
+      // `-2`, `-3`, … copies of the same import.
+      const base = `verity/import-${branch}`;
+      importBranch = base;
+      for (
+        let attempt = 2;
+        remoteShaByBranch.has(importBranch) && remoteShaByBranch.get(importBranch) !== mergedHead;
+        attempt++
+      ) {
+        importBranch = `${base}-${String(attempt)}`;
+      }
+    }
+    const pushTarget =
+      importBranch === undefined
+        ? destinationBranch === branch
+          ? branch
+          : `${branch}:${destinationBranch}`
+        : `HEAD:refs/heads/${importBranch}`;
+    try {
+      await git([
+        '-C',
+        clonePath,
+        '-c',
+        `http.extraheader=${authHeader}`,
+        'push',
+        // `-u` only where the pushed branch IS the project's lasting upstream. The
+        // import branch is transport for one pull request; pointing the local branch
+        // at it would outlive the merge that retires it.
+        ...(importBranch === undefined ? ['-u'] : []),
+        'origin',
+        pushTarget,
+      ]);
+    } catch (cause) {
+      // GitHub may already have accepted this exact merge. Keep it and origin
+      // so a retry reuses its hash/import branch rather than generating a new
+      // timestamped merge and publishing a duplicate suffixed branch.
+      const failure = commandFailureMessage(cause);
+      const safeCause = new Error(redactSensitive(failure, [token, authHeader]));
+      throw new AmbiguousGitPushError(
+        `pushing ${importBranch ?? branch} to ${target.owner}/${target.repo} failed; retry to recover`,
+        safeCause,
+      );
+    }
+    if (importBranch === undefined) return { defaultBranch: destinationBranch };
+    // The branch is published. A pull request that cannot be opened is REPORTED,
+    // never rolled back: the operator can open it by hand from a branch that is
+    // already on GitHub, whereas failing the link here would strand that branch
+    // behind a project that still believes it is local.
+    if (this.opts.openPullRequest === undefined || token === undefined) {
+      return {
+        defaultBranch: destinationBranch,
+        importBranch,
+        pullRequestError: 'opening pull requests is not configured',
+      };
+    }
+    try {
+      const pullRequest = await this.opts.openPullRequest(target, token, {
+        head: importBranch,
+        base: destinationBranch,
+        title: `feat: import the ${project.repo} project history`,
+        body:
+          `Verity linked the local project \`${project.repo}\` to this repository.\n\n` +
+          `\`${importBranch}\` carries the project's history, merged with the existing ` +
+          `\`${destinationBranch}\` (unrelated histories; the project's own files win any ` +
+          `conflict). Merging this pull request publishes it.`,
+      });
+      return { defaultBranch: destinationBranch, importBranch, pullRequest };
+    } catch (cause) {
+      return {
+        defaultBranch: destinationBranch,
+        importBranch,
+        pullRequestError: redactSensitive(
+          cause instanceof Error ? cause.message : 'opening the pull request failed',
+          [token, authHeader],
+        ),
+      };
+    }
+  }
+
+  async disconnectGitHub(project: ProjectRecord): Promise<ProjectRecord> {
+    if (project.kind !== 'github' && project.kind !== 'local')
+      throw new ProvisioningError('Only GitHub projects can be disconnected.');
+    await this.retireEgressGeneration(project.id);
+    await this.opts.projectRelay.stop(project.id);
+    await this.opts.claudeEgressIdentity?.revokeProject(project.id);
+    await stopAndRemoveExistingContainer(this.opts.docker, project.containerName);
+    const clonePath = projectClonePath(this.opts.hostCloneRoot, project);
+    // Sanitize only after the Sandbox has stopped; its frozen config mount then no longer exists.
+    await this.sanitizeLocalCloneConfig(
+      { ...project, kind: 'local' },
+      clonePath,
+      this.localConfigState(clonePath),
     );
+    const branch = await this.git([
+      '-C',
+      clonePath,
+      'symbolic-ref',
+      '--quiet',
+      '--short',
+      'HEAD',
+    ]).then(
+      (result) => result.stdout.trim(),
+      () => undefined,
+    );
+    const local = await this.opts.store.disconnectProjectFromGitHub(project.id);
+    if (!local) throw new ProvisioningError('Project changed while disconnecting; retry.');
+    if (branch) await this.opts.store.updateProjectSettings(local.id, { defaultBranch: branch });
+    if (local.state === 'absent') return local;
+    try {
+      return await this.recreateContainer(local.id, {
+        confirmWarnings: true,
+        initiator: { kind: 'system', trigger: 'sandbox_reconcile' },
+      });
+    } catch (cause) {
+      await this.opts.store.updateProjectState(
+        local.id,
+        'failed',
+        'GitHub was disconnected. Repair the Sandbox to continue; local files and history were retained.',
+      );
+      throw new ProvisioningError(
+        'GitHub was disconnected, but the Sandbox could not restart. Repair it or retry disconnecting; local files and history were retained.',
+        cause,
+      );
+    }
   }
 
   async syncProjectCheckout(projectId: string): Promise<void> {

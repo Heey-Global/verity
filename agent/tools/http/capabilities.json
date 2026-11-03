@@ -1,0 +1,13 @@
+[
+  {
+    "name": "verity_http_request",
+    "title": "Verity · HTTP · Request",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": null,
+    "skill": null,
+    "compatibility": {
+      "name": "verity_http_request"
+    }
+  }
+]

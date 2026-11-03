@@ -1,3 +1,5 @@
+import { registerProjectContextRoutes } from './project-context-routes.js';
+import { registerUserContextRoutes } from './user-context-routes.js';
 import { PreviewConnector } from '@verity/preview-tunnel';
 import { SchedulingPageListeners } from './scheduling-page.js';
 import { registerSchedulingRoutes } from './scheduling-routes.js';
@@ -371,6 +373,7 @@ const PROJECT_RELAY_HANDOFF_RETRY_WINDOW_MS = 30_000;
 /** Default lifetime of a cached session branch label — see the cache in
  *  `buildServer` and {@link ServerDeps.branchCacheTtlMs}. */
 const BRANCH_TTL_MS = 10_000;
+const IDLE_LIST_BRANCH_TTL_MS = 60_000;
 
 /** Shared empty answer for a deployment whose provisioner does not classify
  *  sandboxes (tests, non-relay setups) — allocating one per session summary on a
@@ -1426,6 +1429,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
    * runs FIRST because it needs `session_backend_state` to know which files are the
    * session's, and the cascade is about to delete exactly that.
    *
+   * Managed runners persist cleanup ownership through `queueSessionArtifacts` before
+   * the cascade, then wake a background worker after deletion. That durable write must
+   * succeed; supervisor calls and filesystem purges never run in the request.
+   *
    * A purge failure never blocks the delete: leaving the row behind because a file
    * could not be unlinked would strand the session in the UI, which is strictly
    * worse than the leak it is trying to prevent. A purge that neither succeeds nor
@@ -1453,6 +1460,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         app.log.warn({ err: error, sessionId }, 'verity: could not stop managed dev servers');
       }
       await deps.localPreviewManager?.stopSession(sessionId);
+      await deps.queueSessionArtifacts?.(sessionId);
       // `.catch()` alone would only cover a REJECTED promise; an implementation that
       // throws before returning one would escape and fail the delete — the outcome the
       // paragraph above says must never happen. try/catch covers both.
@@ -1475,7 +1483,9 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       } catch {
         // Logged by the implementation; never fatal here.
       }
-      return await deps.eventStore.deleteSession(sessionId);
+      const deleted = await deps.eventStore.deleteSession(sessionId);
+      if (deleted) deps.scheduleSessionCleanup?.();
+      return deleted;
     } finally {
       release?.();
     }
@@ -3323,6 +3333,20 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
    */
   const branchTtlMs = deps.branchCacheTtlMs ?? BRANCH_TTL_MS;
   const branchCache = new Map<string, { branch: string; at: number }>();
+  // A fleet-wide list must not launch one Docker exec per retained worktree at once.
+  let branchReads = 0;
+  const branchReadQueue: (() => void)[] = [];
+  const limitBranchRead = async <T>(read: () => Promise<T>): Promise<T> => {
+    if (branchReads >= 2) await new Promise<void>((resolve) => branchReadQueue.push(resolve));
+    else branchReads++;
+    try {
+      return await read();
+    } finally {
+      const next = branchReadQueue.shift();
+      if (next) next();
+      else branchReads--;
+    }
+  };
   type BranchMetadata = { current: string; switchable: string[]; previewableRaw: string[] };
   const branchMetadata = new Map<string, { value: BranchMetadata; at: number }>();
   const branchMetadataInFlight = new Map<
@@ -3361,7 +3385,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     // can remain unsettled for arbitrarily long. A poll arriving in that window
     // must start a post-switch read rather than joining the known-stale one.
     if (running !== undefined && !running.disowned) return running.read;
-    const token = { disowned: false, read: branches.current(worktree) };
+    const token = { disowned: false, read: limitBranchRead(() => branches.current(worktree)) };
     branchInFlight.set(worktree, token);
     token.read
       .then((branch) => {
@@ -3388,7 +3412,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     branches: GitBranchService,
     worktree: string,
   ): Promise<string | undefined> => {
-    if (branchTtlMs <= 0) return branches.current(worktree);
+    if (branchTtlMs <= 0) return limitBranchRead(() => branches.current(worktree));
     const cached = branchCache.get(worktree);
     // A cold read is awaited so the first poll after opening a session shows a
     // branch at all; a stale one is answered from memory while git runs behind
@@ -3417,11 +3441,11 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     const token = {
       disowned: false,
       read: branches.metadata
-        ? branches.metadata(worktree)
+        ? limitBranchRead(() => branches.metadata!(worktree))
         : Promise.all([
             readBranch(branches, worktree),
-            branches.switchable(worktree),
-            branches.previewable(worktree),
+            limitBranchRead(() => branches.switchable(worktree)),
+            limitBranchRead(() => branches.previewable(worktree)),
           ]).then(([current, switchable, previewableRaw]) => ({
             current,
             switchable,
@@ -3445,6 +3469,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   };
   /**
    * The branch for the session LIST, answered from {@link branchCache} only.
+   * Idle summaries refresh at most once a minute; active sessions keep the
+   * header cadence. Turn completion and explicit branch changes invalidate both.
    *
    * The overview derives a session's issue chip from it, but the list is polled
    * every 2 s for every session at once, so unlike the header it never awaits
@@ -3454,13 +3480,18 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
    * one per poll. The app reads an empty branch as "no branch" in both places
    * (the header falls back to its branch list), and the next read replaces it.
    */
-  const listBranchFor = (session: SessionRecord, exists: boolean): string | undefined => {
+  const listBranchFor = (
+    session: SessionRecord,
+    exists: boolean,
+    active: boolean,
+  ): string | undefined => {
     const { worktree } = session;
     // A gone worktree has no branch to read; asking git would fail on every poll.
     if (!exists || deps.branches === undefined) return undefined;
     if (deps.projectWorktreeBranchesOnly === true && session.projectId === null) return undefined;
     const cached = branchCache.get(worktree);
-    if (cached === undefined || Date.now() - cached.at >= branchTtlMs) {
+    const ttlMs = active ? branchTtlMs : Math.max(branchTtlMs, IDLE_LIST_BRANCH_TTL_MS);
+    if (cached === undefined || Date.now() - cached.at >= ttlMs) {
       void branchesForSession(session)
         .then((branches) => {
           // A project without branch reads (control plane) is stamped empty too,
@@ -4023,7 +4054,6 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     const pr = prSummaryFor(session);
     const pullRequest = pr === undefined ? undefined : sessionPrCache.peek(session.worktree);
     const resumable = preparedResumable ?? (await sessionResumable(session));
-    const branch = listBranchFor(session, resumable);
     // Not from `events`: the quota state in force can be older than any tail, so
     // the store reads the newest one per window separately. See
     // `SessionProjectionFacts.rateLimitEvents`.
@@ -4052,6 +4082,11 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             ? 'running'
             : 'completed'
           : projectedStatus;
+    const branch = listBranchFor(
+      session,
+      resumable,
+      conductor.isBusy(session.sessionId) || status === 'running' || sessionHasOpenTasks(events),
+    );
     // A `Set` the relay reconciler already maintains; this adds one `Set.has` per
     // session and no I/O, so it is safe on a route polled every 2 s per device.
     const attention = sessionAttentionSignals({
@@ -4397,6 +4432,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       repositoryFor: deps.projectRepository,
     });
   }
+  registerUserContextRoutes(app, deps.eventStore.userContext);
+  if (deps.dataRoot) registerProjectContextRoutes(app, deps.eventStore, deps.dataRoot);
   registerProjectMemoryRoute(app, {
     ...(deps.mcpGateway === undefined
       ? {}
@@ -5485,12 +5522,21 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
               'verity: linking a project to GitHub failed',
             );
             reply.code(409);
-            return { error: error.message };
+            return {
+              error:
+                error.cause instanceof Error
+                  ? `${error.message}: ${error.cause.message}${/signature|GH013|verified/i.test(error.cause.message) ? '. Configure a Git signing key and verified Git email; existing history is retained. If existing commits are unsigned, choose a target that accepts them or resolve the repository policy before retrying.' : ''}`
+                  : error.message,
+            };
           }
           throw error;
         }
         let linked: ProjectRecord | undefined;
         try {
+          if (published.defaultBranch)
+            await deps.eventStore.updateProjectSettings(project.id, {
+              defaultBranch: published.defaultBranch,
+            });
           linked = await deps.eventStore.linkProjectToGitHub(project.id, target);
         } catch (error) {
           // Publication is already externally visible. Retain the durable claim
@@ -5575,6 +5621,32 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         }
       }
     },
+  });
+
+  app.post('/projects/:id/disconnect-github', async (request, reply) => {
+    const { id } = z.object({ id: z.string().min(1) }).parse(request.params);
+    const project = await deps.eventStore.getProject(id);
+    if (!project || project.hiddenAt !== null)
+      return reply.code(404).send({ error: 'Project not found' });
+    if (!['github', 'local'].includes(project.kind ?? 'github'))
+      return reply.code(409).send({ error: 'Only GitHub projects can be disconnected.' });
+    const provisioner = deps.provisioner;
+    if (!provisioner?.disconnectGitHub || !provisioner.withProjectExclusiveMutation)
+      return reply.code(503).send({ error: 'GitHub disconnection is unavailable.' });
+    try {
+      const local = await provisioner.withProjectExclusiveMutation(id, () =>
+        provisioner.disconnectGitHub!(project),
+      );
+      await afterProjectProvision(local.id);
+      return { project: local };
+    } catch (error) {
+      if (error instanceof ProvisioningError) return reply.code(409).send({ error: error.message });
+      request.log.warn({ err: error, projectId: id }, 'GitHub disconnection failed');
+      return reply.code(409).send({
+        error:
+          'Could not disconnect GitHub. Local files and history were retained; retry or repair the Sandbox.',
+      });
+    }
   });
 
   registerVerityControlSessionRoute(app, {

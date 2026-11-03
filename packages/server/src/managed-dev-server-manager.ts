@@ -47,7 +47,10 @@ export interface ManagedDevServerRuntime {
     instanceId: string,
   ): Promise<{ alive: boolean; exitCode: number | null }>;
   managedServerLogs(project: ProjectRecord, instanceId: string, lines?: number): Promise<string>;
-  listListeningProcesses(project: ProjectRecord): Promise<ListeningProcess[]>;
+  listListeningProcesses(
+    project: ProjectRecord,
+    options?: { fresh?: boolean },
+  ): Promise<ListeningProcess[]>;
 }
 
 /** The subset of the local preview manager a managed instance publishes through. */
@@ -767,7 +770,9 @@ export class ManagedDevServerManager {
     }
     if (project.state !== 'active' || !project.containerName)
       throw new ManagedDevServerError('the project sandbox is not running', 409);
-    const processes = await this.options.runtime.listListeningProcesses(project).catch(() => []);
+    const processes = await this.options.runtime
+      .listListeningProcesses(project, { fresh: true })
+      .catch(() => []);
     const busy = new Set(processes.map((process) => process.port));
     let instance = await this.servers.ensureInstance({
       serverId: entry.id,

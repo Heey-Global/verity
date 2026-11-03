@@ -1,3 +1,5 @@
+import { AGENT_SKILL_MANIFEST_HASH } from '@verity/events';
+import { resolveAgentContext } from './agent-context.js';
 import { createGitHubQAAnalysis } from './github-qa-analysis.js';
 import { projectDecisionDirectory } from './knowledge-decisions.js';
 import {
@@ -219,6 +221,7 @@ import {
   queueSessionCleanup,
   finishSessionCleanup,
   pendingSessionCleanups,
+  createSessionCleanupWorker,
 } from './pending-session-cleanup.js';
 import { supervisorSocketReachable } from './runner-supervisor-socket.js';
 import { codexRolloutFiles, ServerCodexTranscript, ServerTranscript } from './runner-transcript.js';
@@ -2074,6 +2077,7 @@ export async function buildEmbeddedServer(
             'verity_google_slides',
             'verity_google_docs',
             'verity_knowledge',
+            'verity_memory_append',
             'verity_google_sheets',
             'verity_gmail',
             'verity_matrix',
@@ -2098,6 +2102,7 @@ export async function buildEmbeddedServer(
             'verity_google_slides',
             'verity_google_docs',
             'verity_knowledge',
+            'verity_memory_append',
             'verity_google_sheets',
             'verity_gmail',
             'verity_matrix',
@@ -2794,6 +2799,13 @@ export async function buildEmbeddedServer(
   };
   // Filled once the managed dev server manager exists, further down.
   const managedLinkEnded: { current?: (instanceId: string, shareId: string) => void } = {};
+  const listenerRuntime = new DockerProjectRuntime({
+    resolveUser: resolvePreviewUser,
+    dockerBaseUrl: config.dockerBaseUrl,
+  });
+  const listListeningProcesses = (project: ProjectRecord, options?: { fresh?: boolean }) =>
+    listenerDiscovery?.listListeningProcesses(project, options) ??
+    listenerRuntime.listListeningProcesses(project);
   let previewShareManager: PreviewShareManager | undefined;
   const withPreviewProjectMutation = async <T>(
     projectId: string,
@@ -2939,14 +2951,11 @@ export async function buildEmbeddedServer(
         new DockerProjectRuntime({
           resolveUser: resolvePreviewUser,
           dockerBaseUrl: config.dockerBaseUrl,
+          listListeningProcesses,
         }).ensurePreviewTarget(project, port),
       listSessionServers: (sessionId) =>
         listenerDiscovery?.listSessionDevServers(sessionId) ?? Promise.resolve([]),
-      listListeningProcesses: async (project) =>
-        await new DockerProjectRuntime({
-          resolveUser: resolvePreviewUser,
-          dockerBaseUrl: config.dockerBaseUrl,
-        }).listListeningProcesses(project),
+      listListeningProcesses,
       edge: uplinkControl,
       // The same deferred logger as the client's: this manager is built just as
       // far ahead of `app`, and its timing lines belong next to the Uplink's.
@@ -4056,7 +4065,8 @@ export async function buildEmbeddedServer(
           }
         : {}),
       recreateEnvDriftedSandboxes: config.recreateEnvDriftedSandboxes ?? true,
-      onContainerStarted: async () => {
+      onContainerStarted: async (project) => {
+        listenerDiscovery?.invalidateProject(project.id);
         await projectAgentGatewayIdentity(true);
       },
       onSandboxLifecycle: (event) => projectSandboxLifecycleTelemetry.record(event),
@@ -4192,11 +4202,7 @@ export async function buildEmbeddedServer(
           onScan: (project, processes) => {
             void managedDevServerManager?.sweepOrphans(project, processes);
           },
-          scan: (project) =>
-            new DockerProjectRuntime({
-              resolveUser: resolvePreviewUser,
-              dockerBaseUrl: config.dockerBaseUrl,
-            }).listListeningProcesses(project),
+          scan: (project) => listenerRuntime.listListeningProcesses(project),
         })
       : undefined;
 
@@ -4217,17 +4223,14 @@ export async function buildEmbeddedServer(
           ...(config.dataVolumeRoot ? { dataVolumeRoot: config.dataVolumeRoot } : {}),
           ...(config.agentSeedHostPath ? { agentSeedHostPath: config.agentSeedHostPath } : {}),
           isDevServerRunning: () => Promise.resolve(false),
-          listListeningProcesses: (project) =>
-            new DockerProjectRuntime({
-              resolveUser: resolvePreviewUser,
-              dockerBaseUrl: config.dockerBaseUrl,
-            }).listListeningProcesses(project),
+          listListeningProcesses,
           listSessionServers: (sessionId) =>
             listenerDiscovery?.listSessionDevServers(sessionId) ?? Promise.resolve([]),
           prepareTargetPort: (project, port) =>
             new DockerProjectRuntime({
               resolveUser: resolvePreviewUser,
               dockerBaseUrl: config.dockerBaseUrl,
+              listListeningProcesses,
             }).ensurePreviewTarget(project, port),
           publicHost: process.env.VERITY_LOCAL_PREVIEW_HOST ?? 'localhost',
           connectorHost: hostname(),
@@ -4264,6 +4267,7 @@ export async function buildEmbeddedServer(
         resolveSecret: resolveBrokerDopplerSecret,
       }),
       runtime: new DockerProjectRuntime({
+        listListeningProcesses,
         isSecretManagedServer: async (id) =>
           ((await eventStore.managedDevServers.getInstance(id))?.lastRunSecretBindings.length ??
             0) > 0,
@@ -4556,13 +4560,15 @@ export async function buildEmbeddedServer(
 
             const sandboxCwd = sessionSandboxCwd(session.worktree);
             const cleanupRoot = join(dataVolumeRoot, 'pending-session-cleanup');
-            if (scope === 'session-delete')
+            if (scope === 'session-delete') {
               await queueSessionCleanup(cleanupRoot, {
                 sessionId,
                 sandboxCwd,
                 runnerProjectIds: [...runnerProjectIds],
                 bindings: [...bindings],
               });
+              return;
+            }
 
             const removed: string[] = [];
             const absent: string[] = [];
@@ -4577,14 +4583,6 @@ export async function buildEmbeddedServer(
               // Control sessions may name a historical project with no runner runtime.
               if (!existsSync(runtimeDir)) continue;
               try {
-                if (scope === 'session-delete') {
-                  const deleted = await requestRunnerSupervisor(
-                    join(runtimeDir, 'supervisor.sock'),
-                    { kind: 'delete-session-home', sessionId },
-                    30_000,
-                  );
-                  if (deleted.ok !== true) throw new Error('Session home deletion failed');
-                }
                 const purge = await purgeSessionArtifactFiles({
                   runtimeDir,
                   sandboxCwd,
@@ -4608,14 +4606,6 @@ export async function buildEmbeddedServer(
                 );
               }
             }
-            if (
-              scope === 'session-delete' &&
-              failed.length === 0 &&
-              outsideRuntime.length === 0 &&
-              unresolved.length === 0 &&
-              unknownBackends.size === 0
-            )
-              await finishSessionCleanup(cleanupRoot, sessionId);
             // A path that resolved OUT of the runtime means something planted a symlink in
             // a directory the Sandbox can write. Nothing was deleted — but this is not a
             // cleanup problem, so it gets its own message rather than being read as one.
@@ -4681,16 +4671,13 @@ export async function buildEmbeddedServer(
               );
             }
           } catch (error) {
-            // Both call sites — the session delete in `server.ts` and the backend switch
-            // on the Conductor — swallow a rejection here on the grounds that it is
-            // "logged by the implementation". This is what makes that true. The store
-            // reads above happen BEFORE the per-file loop that reports its own outcome,
-            // so a failure there would otherwise leave a leaked transcript with no record
-            // anywhere — and an invisible leak is the thing this module exists to end.
+            // Backend switches remain best effort. Deletion must retain the session
+            // if its durable cleanup ownership could not be recorded.
             app.log.error(
               { err: error, sessionId, scope },
               'verity: could not purge the backend transcripts of a session',
             );
+            if (scope === 'session-delete') throw error;
           }
         };
 
@@ -4725,12 +4712,6 @@ export async function buildEmbeddedServer(
                   )
                 : projects;
             const result = await reconciled;
-            // Nudge Runner-supervisor reconciliation OFF the hot path: reconcile
-            // fans out a `docker exec` into every active sandbox, so awaiting it
-            // here would add per-container Docker latency to project listing. The
-            // periodic reconciler (below) is the primary driver and surfaces its
-            // own failures; this list-triggered call is best-effort.
-            void provisioner?.reconcileRunnerSupervisors(result).catch(() => undefined);
             return result;
           },
           { ttlMs: 3_000 },
@@ -4871,6 +4852,61 @@ export async function buildEmbeddedServer(
           pr: (project, branch) => readProjectStatus(project, branch),
         })
       : undefined;
+  const cleanupAbort = new AbortController();
+  const sessionCleanupWorker =
+    dataVolumeRoot === undefined
+      ? undefined
+      : createSessionCleanupWorker(
+          async () => {
+            const cleanupRoot = join(dataVolumeRoot, 'pending-session-cleanup');
+            for (const pending of await pendingSessionCleanups(cleanupRoot)) {
+              if (cleanupAbort.signal.aborted) break;
+              // A queued record can survive a failed DB deletion. Never purge a live session.
+              if (await eventStore.getSession(pending.sessionId)) continue;
+              try {
+                let clean = true;
+                for (const projectId of pending.runnerProjectIds) {
+                  const runtimeDir = join(dataVolumeRoot, 'runners', projectId);
+                  if (!existsSync(runtimeDir)) continue;
+                  try {
+                    const response = await requestRunnerSupervisor(
+                      join(runtimeDir, 'supervisor.sock'),
+                      { kind: 'delete-session-home', sessionId: pending.sessionId },
+                      10_000,
+                    );
+                    if (response.ok !== true)
+                      throw new Error('Pending session home cleanup failed');
+                    const result = await purgeSessionArtifactFiles({
+                      runtimeDir,
+                      sandboxCwd: pending.sandboxCwd,
+                      sessionId: pending.sessionId,
+                      bindings: pending.bindings,
+                      scope: 'session-delete',
+                    });
+                    clean &&=
+                      result.failed.length === 0 &&
+                      result.outsideRuntime.length === 0 &&
+                      result.unknownBackends.length === 0 &&
+                      !result.unresolved;
+                  } catch (error) {
+                    clean = false;
+                    app.log.warn(
+                      { err: error, sessionId: pending.sessionId, projectId },
+                      'verity: runner session cleanup remains pending',
+                    );
+                  }
+                }
+                if (clean) await finishSessionCleanup(cleanupRoot, pending.sessionId);
+              } catch (error) {
+                app.log.warn(
+                  { err: error, sessionId: pending.sessionId },
+                  'verity: session cleanup remains pending',
+                );
+              }
+            }
+          },
+          (error) => app.log.warn({ err: error }, 'verity: pending cleanup scan failed'),
+        );
   const app = buildControlPlane({
     ...(sessionStorage ? { sessionStorage } : {}),
     eventStore,
@@ -4901,7 +4937,8 @@ export async function buildEmbeddedServer(
     ...(purgeRunnerArtifacts === undefined
       ? {}
       : {
-          purgeSessionArtifacts: async (sessionId: string): Promise<void> => {
+          scheduleSessionCleanup: () => sessionCleanupWorker?.run(),
+          queueSessionArtifacts: async (sessionId: string): Promise<void> => {
             // Read the bindings HERE rather than in the helper: this is the delete path,
             // and the rows are about to go with the FK cascade.
             await purgeRunnerArtifacts(
@@ -5495,6 +5532,32 @@ export async function buildEmbeddedServer(
       transcript: transcriptStore,
       ...(config.dataVolumeRoot !== undefined
         ? {
+            agentContext: async (session, initiatedBy) => {
+              const status =
+                session.projectId && config.runnerSupervisor === true
+                  ? await requestRunnerSupervisor(
+                      join(config.dataVolumeRoot!, 'runners', session.projectId, 'supervisor.sock'),
+                      { kind: 'status' },
+                    ).catch(() => undefined)
+                  : undefined;
+              return resolveAgentContext(
+                eventStore,
+                config.dataVolumeRoot!,
+                session,
+                (projectId) =>
+                  readOrMigrateProjectOverview(config.dataVolumeRoot!, projectId, async () => {
+                    const approved = await eventStore.knowledge.getProjectOverview(projectId);
+                    return (
+                      approved?.bodyMarkdown ??
+                      (await eventStore.getProjectSettingsRaw(projectId))?.memory ??
+                      undefined
+                    );
+                  }),
+                status?.['builtInSkillsVersion'] === 1 &&
+                  status['builtInSkillsManifestHash'] === AGENT_SKILL_MANIFEST_HASH,
+                initiatedBy,
+              );
+            },
             projectOverview: async (projectId: string) => {
               return readOrMigrateProjectOverview(config.dataVolumeRoot!, projectId, async () => {
                 const approved = await eventStore.knowledge.getProjectOverview(projectId);
@@ -5936,49 +5999,6 @@ export async function buildEmbeddedServer(
         ]);
       } finally {
         storeReadsDone();
-      }
-      const cleanupRoot = join(dataVolumeRoot, 'pending-session-cleanup');
-      for (const pending of await pendingSessionCleanups(cleanupRoot)) {
-        if (sweepAbort.signal.aborted) break;
-        try {
-          let clean = true;
-          for (const projectId of pending.runnerProjectIds) {
-            const runtimeDir = join(dataVolumeRoot, 'runners', projectId);
-            if (!existsSync(runtimeDir)) continue;
-            try {
-              const response = await requestRunnerSupervisor(
-                join(runtimeDir, 'supervisor.sock'),
-                { kind: 'delete-session-home', sessionId: pending.sessionId },
-                10_000,
-              );
-              if (response.ok !== true) throw new Error('Pending session home cleanup failed');
-              const result = await purgeSessionArtifactFiles({
-                runtimeDir,
-                sandboxCwd: pending.sandboxCwd,
-                sessionId: pending.sessionId,
-                bindings: pending.bindings,
-                scope: 'session-delete',
-              });
-              clean &&=
-                result.failed.length === 0 &&
-                result.outsideRuntime.length === 0 &&
-                result.unknownBackends.length === 0 &&
-                !result.unresolved;
-            } catch (error) {
-              clean = false;
-              app.log.warn(
-                { err: error, sessionId: pending.sessionId, projectId },
-                'verity: runner session cleanup remains pending',
-              );
-            }
-          }
-          if (clean) await finishSessionCleanup(cleanupRoot, pending.sessionId);
-        } catch (error) {
-          app.log.warn(
-            { err: error, sessionId: pending.sessionId },
-            'verity: session cleanup remains pending',
-          );
-        }
       }
       const result = await sweepOrphanArtifacts({
         runnersRoot,
@@ -6427,6 +6447,7 @@ export async function buildEmbeddedServer(
   // the `return` below: everything that could still have thrown has run, so the caller is
   // guaranteed to receive the handle that can stop this walk.
   startTranscriptSweep();
+  sessionCleanupWorker?.start();
 
   // Latch so a double SIGINT/SIGTERM (or any repeat call) coalesces onto one
   // teardown instead of double-closing the app/db.
@@ -6470,8 +6491,10 @@ export async function buildEmbeddedServer(
         // exiting anyway. `ref: false` so the losing timer cannot itself hold the process
         // open for the rest of the window.
         sweepAbort.abort();
+        cleanupAbort.abort();
+        sessionCleanupWorker?.stop();
         await Promise.race([
-          Promise.all([transcriptSweep, transcriptSweepWalk]),
+          Promise.all([transcriptSweep, transcriptSweepWalk, sessionCleanupWorker?.settled()]),
           delay(SWEEP_SHUTDOWN_WAIT_MS, undefined, { ref: false }),
         ]);
         await db.destroy();
