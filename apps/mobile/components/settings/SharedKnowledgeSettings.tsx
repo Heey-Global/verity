@@ -2,7 +2,7 @@ import { Platform } from 'react-native';
 import { Directory, File, Paths } from 'expo-file-system';
 import { loadSharingModule } from '../../lib/sessionFileUi';
 import { fileNameFromPath } from '../../lib/fileSelection';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { SessionDirectory, SessionFileContent } from '@verity/mobile';
 import { createVerityClient } from '../../lib/client';
 import { Button, TextField } from '../ui';
@@ -25,19 +25,25 @@ export function SharedKnowledgeSettings({ initialPath }: { initialPath?: string 
   const [error, setError] = useState<string>();
   const [saving, setSaving] = useState(false);
   const [reload, setReload] = useState(0);
+  const [loading, setLoading] = useState(false);
+  const retryDraft = useRef<{ path: string; content: string } | undefined>(undefined);
   useEffect(() => {
     if (!client) return;
     let active = true;
     setFile(undefined);
     setDirectory(undefined);
     setError(undefined);
+    setLoading(true);
     const load = async () => {
       try {
         if (filePath !== undefined) {
           const next = await client.getSharedKnowledgeFile(filePath);
           if (active) {
             setFile(next);
-            setDraft(next.content);
+            setDraft(
+              retryDraft.current?.path === filePath ? retryDraft.current.content : next.content,
+            );
+            retryDraft.current = undefined;
           }
         } else {
           const next = await client.listSharedKnowledgeFiles(path);
@@ -46,6 +52,8 @@ export function SharedKnowledgeSettings({ initialPath }: { initialPath?: string 
       } catch (failure) {
         if (active)
           setError(failure instanceof Error ? failure.message : 'Could not load Shared knowledge');
+      } finally {
+        if (active) setLoading(false);
       }
     };
     void load();
@@ -68,7 +76,7 @@ export function SharedKnowledgeSettings({ initialPath }: { initialPath?: string 
     } else setPath(path.split('/').slice(0, -1).join('/'));
   };
   const save = async () => {
-    if (!file || !file.version || filePath === undefined || saving) return;
+    if (!file || !file.version || filePath === undefined || saving || loading) return;
     setSaving(true);
     try {
       const next = await client.writeSharedKnowledgeFile(filePath, draft, file.version);
@@ -115,7 +123,11 @@ export function SharedKnowledgeSettings({ initialPath }: { initialPath?: string 
       title="Shared knowledge"
       detail
       state={{ error, saving }}
-      onRetry={() => setReload((value) => value + 1)}
+      onRetry={() => {
+        if (saving || loading) return;
+        if (filePath !== undefined && file) retryDraft.current = { path: filePath, content: draft };
+        setReload((value) => value + 1);
+      }}
     >
       <SettingsGroup
         title={filePath ?? (path || 'Shared library')}
@@ -174,12 +186,12 @@ export function SharedKnowledgeSettings({ initialPath }: { initialPath?: string 
               value={draft}
               onChangeText={setDraft}
               multiline
-              disabled={file.editable !== true || saving}
+              disabled={file.editable !== true || saving || loading}
             />
             {file.editable && file.version ? (
               <Button
                 label="Save"
-                disabled={saving || draft === file.content}
+                disabled={saving || loading || draft === file.content}
                 onPress={() => void save()}
               />
             ) : null}
