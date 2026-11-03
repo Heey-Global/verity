@@ -13,8 +13,8 @@ const REFRESH_MS = 30_000;
 /** Matches the server's limit on joining early (`calendar-meeting-routes.ts`). */
 const JOIN_EARLY_MS = 15 * 60_000;
 
-const canJoinNow = (meeting: UpcomingMeeting, now: number) =>
-  meeting.startsAt - now <= JOIN_EARLY_MS;
+export const canJoinCalendarMeeting = (meeting: UpcomingMeeting, now: number) =>
+  meeting.startsAt - now <= JOIN_EARLY_MS && meeting.endsAt > now;
 
 const clock = (ms: number) =>
   new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -70,7 +70,7 @@ export function useCalendarMeetingChoice(upcoming: UpcomingMeeting[] | null, now
     // meeting behind the operator's back, and one hours ahead cannot be joined yet.
     if (!preselected.current) {
       preselected.current = true;
-      const soon = upcoming.find((item) => canJoinNow(item, now));
+      const soon = upcoming.find((item) => canJoinCalendarMeeting(item, now));
       if (soon) setSelectedEventKey(soon.eventKey);
       return;
     }
@@ -154,7 +154,7 @@ export function CalendarMeetingPicker({
               title={meeting.title || 'Online meeting'}
               subtitle={`${when(meeting)} · ${meeting.provider ? PROVIDER[meeting.provider] : 'In person'}`}
               selected={!manual && selectedKey === meeting.eventKey}
-              disabled={!inPerson && (!meeting.provider || !canJoinNow(meeting, now))}
+              disabled={!inPerson && (!meeting.provider || !canJoinCalendarMeeting(meeting, now))}
               onPress={() => {
                 onSelect(meeting.eventKey);
                 onManualChange(false);

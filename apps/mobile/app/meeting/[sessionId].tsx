@@ -103,6 +103,7 @@ import {
 } from '../../components/ui';
 import {
   CalendarMeetingPicker,
+  canJoinCalendarMeeting,
   UnassignedMeetingCard,
   useCalendarMeetingChoice,
   useUnassignedMeetings,
@@ -176,7 +177,10 @@ export default function MeetingScreen() {
     setManualLink,
     selectedEvent: selectedCalendarEvent,
   } = useCalendarMeetingChoice(upcoming, now);
-  const selectedEvent = selectedCalendarEvent?.provider ? selectedCalendarEvent : null;
+  const selectedEvent =
+    selectedCalendarEvent?.provider && canJoinCalendarMeeting(selectedCalendarEvent, now)
+      ? selectedCalendarEvent
+      : null;
   const [unassignedMeetings, reloadUnassigned] = useUnassignedMeetings();
   const [continuing, setContinuing] = useState<string | null>(null);
   const [confirm, confirmSheet] = useConfirm();

@@ -2402,3 +2402,36 @@ it('shows calendar entries for in-person meetings and uses the selected title', 
     expect(startMeeting).toHaveBeenCalledWith('session-1', 'fluid-nemotron', 4, 'Office review'),
   );
 });
+
+it('does not join a later in-person selection after switching to online', async () => {
+  const joinCalendarMeeting = jest.fn();
+  const startOnlineMeeting = jest.fn();
+  jest.mocked(createVerityClient).mockReturnValue({
+    getAttendeeSettings: jest.fn().mockResolvedValue({ configured: true }),
+    getUpcomingMeetings: jest.fn().mockResolvedValue([
+      {
+        eventKey: 'later',
+        title: 'Later review',
+        startsAt: Date.now() + 3_600_000,
+        endsAt: Date.now() + 7_200_000,
+        calendar: 'Work',
+        provider: 'meet',
+        decision: null,
+        meetingId: null,
+      },
+    ]),
+    joinCalendarMeeting,
+    startOnlineMeeting,
+  } as never);
+  render(<MeetingScreen />);
+  fireEvent.press(await screen.findByText('Later review'));
+  await waitFor(() =>
+    expect(screen.getByLabelText('Meeting title').props.value).toBe('Later review'),
+  );
+  fireEvent.press(screen.getByText('Online meeting'));
+  await waitFor(() => expect(screen.queryByText('Configure online meetings')).toBeNull());
+  await waitFor(() => expect(screen.getByLabelText('Start meeting')).toBeDisabled());
+  fireEvent.press(screen.getByLabelText('Start meeting'));
+  expect(joinCalendarMeeting).not.toHaveBeenCalled();
+  expect(startOnlineMeeting).not.toHaveBeenCalled();
+});
