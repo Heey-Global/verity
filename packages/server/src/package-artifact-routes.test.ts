@@ -1,7 +1,7 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createBrokerRelayServer } from '@verity/project-relay/dist/relay.js';
+import { createBrokerRelayServer } from '../../project-relay/src/relay.js';
 import { EventEmitter } from 'node:events';
 import { createHash } from 'node:crypto';
 import { Readable } from 'node:stream';
