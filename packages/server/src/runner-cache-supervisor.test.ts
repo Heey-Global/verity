@@ -1,5 +1,5 @@
 import { createServer, type Server } from 'node:net';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, expect, it, vi } from 'vitest';
@@ -178,3 +178,24 @@ it('distinguishes an absent broker from unknown turn ownership', async () => {
     }),
   ).rejects.toMatchObject({ runnerCacheFailure: { code: 'broker-unavailable' } });
 });
+
+it.skipIf(process.getuid!() === 0)(
+  'distinguishes broker socket access denial without exposing paths',
+  async () => {
+    const { root } = await fixture();
+    const socket = join(root, 'broker.sock');
+    await chmod(socket, 0o000);
+    try {
+      await expect(
+        handleSupervisorRequest(root, 'runner', {
+          protocolVersion: 1,
+          kind: 'reclaim-package-caches',
+          sessionIds: [],
+          maxBytes: 4096,
+        }),
+      ).rejects.toMatchObject({ runnerCacheFailure: { code: 'broker-access-denied' } });
+    } finally {
+      await chmod(socket, 0o600);
+    }
+  },
+);

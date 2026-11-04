@@ -3633,3 +3633,30 @@ describe('cache maintenance error evidence', () => {
     ).rejects.toMatchObject({ runnerCacheFailure: failure });
   });
 });
+
+it('classifies malformed cache response frames as invalid rather than leaking JSON content', async () => {
+  const path = join(dir, 'invalid-cache.sock');
+  const server = createServer((socket) => {
+    sockets.add(socket);
+    socket.once('close', () => sockets.delete(socket));
+    socket.once('data', () => socket.end('{private-invalid-json\n'));
+  });
+  servers.push(server);
+  await new Promise<void>((resolve) => server.listen(path, resolve));
+  await expect(
+    requestRunnerSupervisor(path, { kind: 'reclaim-package-caches' }),
+  ).rejects.toMatchObject({ runnerCacheFailure: { code: 'invalid-response' } });
+});
+it('marks a silent cache supervisor timeout with a safe transport code', async () => {
+  const path = join(dir, 'silent-cache.sock');
+  const server = createServer((socket) => {
+    sockets.add(socket);
+    socket.once('close', () => sockets.delete(socket));
+    socket.resume();
+  });
+  servers.push(server);
+  await new Promise<void>((resolve) => server.listen(path, resolve));
+  await expect(
+    requestRunnerSupervisor(path, { kind: 'reclaim-package-caches' }, 10),
+  ).rejects.toMatchObject({ code: 'ETIMEDOUT' });
+});
