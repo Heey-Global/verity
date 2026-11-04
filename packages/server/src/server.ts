@@ -5965,7 +5965,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         meetingId,
       }),
     onDiscarded: async (sessionId, meeting) => {
-      // Independent steps: a provider failure must not leave the filed transcript behind.
+      // Independent steps, all attempted: a provider failure must not skip removing the
+      // filed transcript. Any failure is reported so the discard is retried.
       const steps = await Promise.allSettled([
         // The attendee owner is created below; a request can only arrive once it exists.
         meeting.engine === 'attendee'

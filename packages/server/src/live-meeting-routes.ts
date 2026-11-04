@@ -602,8 +602,9 @@ export function registerLiveMeetingRoutes(
     }
     forgetAnalysis(meetingId);
     resultWorker.cancel(meetingId);
-    // Cleanup outside the meeting tables comes first: if it fails nothing is deleted, every
-    // device keeps the meeting, and discarding again retries it.
+    // Cleanup outside the meeting tables comes first. If a step fails the meeting itself is
+    // kept on every device (earlier steps may already be done), and discarding again
+    // repeats the cleanup before deleting it.
     try {
       await opts.onDiscarded?.(sessionId, meeting);
     } catch (error) {
