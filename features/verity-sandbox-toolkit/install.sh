@@ -583,6 +583,7 @@ if [ "$INSTALL_RUNNER_SUPERVISOR" = 'true' ]; then
     /usr/local/bin/verity-egress-connector-start
   install -m 0755 "$FEATURE_DIR/bin/verity-memory-guard.mjs" \
     /usr/local/bin/verity-memory-guard
+  install -m 0644 "$FEATURE_DIR/bin/verity-memory-guard.mjs" /usr/local/bin/verity-memory-guard.mjs
   # Every binary above starts with `#!/usr/bin/env node`, and the server runs
   # lifecycle commands with a deliberately fixed PATH so they cannot depend on a
   # shell profile. A devcontainer image normally keeps node under nvm, which that

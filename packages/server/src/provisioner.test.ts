@@ -441,6 +441,7 @@ function createProvisioner(
   return new ProvisionerImpl({
     // No real supervisor runs here; tests that care pass their own.
     supervisorReachable: async () => undefined,
+    supervisorStackHealth: async () => undefined,
     prepareLocalWorkspace: async () => undefined,
     // A host larger than any quota asserted here, so CPU expectations do not depend
     // on the machine running the suite. The clamp itself is tested on its own.
@@ -595,6 +596,77 @@ describe('ProvisionerImpl (#174)', () => {
     await ctx.store.upsertProject({ id, ...baseInput, state: stateOverride });
     return id;
   }
+
+  it('drains pending cleanup after the runner starts and before a retained wake admits turns', async () => {
+    const id = await seedProject('active');
+    const retained = {
+      id: 'container-1',
+      running: false,
+      image: 'sandbox:test',
+      networks: { [projectNetworkName(id)]: {} },
+      labels: { [PROJECT_ID_LABEL]: id, [CONTAINER_GENERATION_LABEL]: 'generation-1' },
+    };
+    const { client: docker } = fakeDocker({
+      inspectContainer: vi.fn().mockResolvedValueOnce(retained).mockResolvedValue({ ...retained, running: true }),
+    });
+    const relay = defaultProjectRelay();
+    relay.reactivate = relay.start.bind(relay);
+    const order: string[] = [];
+    const containerCommand = vi.fn<ContainerCommandRunner>(async () => {
+      order.push('stack-start');
+      return { stdout: '', stderr: '' };
+    });
+    let finishCleanup!: () => void;
+    let enteredCleanup!: () => void;
+    const entered = new Promise<void>((resolve) => { enteredCleanup = resolve; });
+    const cleanup = new Promise<void>((resolve) => { finishCleanup = resolve; });
+    const beforeRunnerAdmission = vi.fn(async () => {
+      order.push('cleanup');
+      enteredCleanup();
+      await cleanup;
+    });
+    const provisioner = createProvisioner({
+      store: ctx.store,
+      db: ctx.db,
+      docker,
+      projectTokenMint: async () => undefined,
+      defaultImageRef: 'sandbox:test',
+      hostCloneRoot: '/work',
+      dataVolumeRoot: '/srv',
+      runnerSupervisor: true,
+      dockerHostForBuild: 'unix:///var/run/docker.sock',
+      projectRelay: relay,
+      containerCommand,
+      beforeRunnerAdmission,
+      isDirectory: () => true,
+    });
+    // Seed the legacy success cache before a same-name retained restart.
+    await provisioner.reconcileRunnerSupervisors([(await ctx.store.getProject(id))!]);
+    await ctx.store.updateProjectSleepState(id, 'sleeping', {
+      sleepCompatibilityFingerprint: sandboxSleepCompatibilityFingerprint(retained),
+      sleepingSince: new Date(),
+      wakeStartedAt: null,
+    });
+    order.length = 0;
+    const wake = provisioner.ensureProjectSandboxAwake(id);
+    try {
+      await Promise.race([
+        entered,
+        wake.then(() => { throw new Error('wake admitted turns without cleanup'); }),
+      ]);
+      expect(order).toEqual(['stack-start', 'cleanup']);
+      expect((await ctx.store.getProject(id))?.state).toBe('waking');
+    } finally {
+      finishCleanup();
+    }
+    const active = await wake;
+    expect(active.state).toBe('active');
+    expect(beforeRunnerAdmission).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ id }));
+    // A success from before sleep must not suppress reconciliation of this start.
+    const commands = containerCommand.mock.calls.length;
+    await provisioner.reconcileRunnerSupervisors([active]);
+    expect(containerCommand).toHaveBeenCalledTimes(commands + 1);
+  });
 
   it.each([false, true])(
     'provisions and replaces experimental generations only through the host (Runner: %s)',
@@ -2953,9 +3025,111 @@ describe('ProvisionerImpl (#174)', () => {
       expect.objectContaining({ timeoutMs: 12_000 }),
     );
     containerCommand.mockRejectedValueOnce(new Error('docker exec unavailable'));
-    await expect(provisioner.reconcileRunnerSupervisors([result])).rejects.toThrow(
-      /reconciliation failed for 1 project/,
-    );
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 60_001);
+    try {
+      await expect(provisioner.reconcileRunnerSupervisors([result])).rejects.toThrow(
+        /reconciliation failed for 1 project/,
+      );
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it('uses stack health without Docker execs even after the legacy refresh interval', async () => {
+    const id = await seedProject();
+    const project = { ...(await ctx.store.getProject(id))!, state: 'active' as const };
+    const { client: docker } = fakeDocker();
+    const health = vi.fn(async () => true);
+    const containerCommand = vi.fn<ContainerCommandRunner>();
+    const provisioner = createProvisioner({
+      store: ctx.store,
+      db: ctx.db,
+      docker,
+      projectTokenMint: async () => 'tok',
+      defaultImageRef: 'sandbox:test',
+      hostCloneRoot: '/srv/workspaces',
+      dataVolumeRoot: '/srv',
+      runnerSupervisor: true,
+      dockerHostForBuild: 'unix:///var/run/docker.sock',
+      supervisorStackHealth: health,
+      containerCommand,
+      isDirectory: () => true,
+    });
+    await provisioner.reconcileRunnerSupervisors([project]);
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 120_000);
+    try {
+      await provisioner.reconcileRunnerSupervisors([project]);
+      expect(health).toHaveBeenCalledTimes(2);
+      expect(health).toHaveBeenCalledWith(`/srv/runners/${id}`);
+      expect(containerCommand).not.toHaveBeenCalled();
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it('repairs an unhealthy stack once and verifies readiness before accepting success', async () => {
+    const id = await seedProject();
+    const project = { ...(await ctx.store.getProject(id))!, state: 'active' as const };
+    const { client: docker } = fakeDocker();
+    const health = vi.fn(async () => true).mockResolvedValueOnce(false);
+    const containerCommand = vi.fn<ContainerCommandRunner>(async () => ({ stdout: '', stderr: '' }));
+    const provisioner = createProvisioner({
+      store: ctx.store,
+      db: ctx.db,
+      docker,
+      projectTokenMint: async () => 'tok',
+      defaultImageRef: 'sandbox:test',
+      hostCloneRoot: '/srv/workspaces',
+      dataVolumeRoot: '/srv',
+      runnerSupervisor: true,
+      dockerHostForBuild: 'unix:///var/run/docker.sock',
+      supervisorStackHealth: health,
+      containerCommand,
+      isDirectory: () => true,
+    });
+    await provisioner.reconcileRunnerSupervisors([project]);
+    await provisioner.reconcileRunnerSupervisors([project]);
+    expect(containerCommand).toHaveBeenCalledOnce();
+    expect(health).toHaveBeenCalledTimes(3);
+    expect(health.mock.invocationCallOrder[0]).toBeLessThan(containerCommand.mock.invocationCallOrder[0]!);
+    expect(containerCommand.mock.invocationCallOrder[0]).toBeLessThan(health.mock.invocationCallOrder[1]!);
+  });
+
+  it('backs off a repair that exits successfully but leaves the stack unhealthy', async () => {
+    const id = await seedProject();
+    const project = { ...(await ctx.store.getProject(id))!, state: 'active' as const };
+    const { client: docker } = fakeDocker();
+    const health = vi.fn(async () => false);
+    const containerCommand = vi.fn<ContainerCommandRunner>(async () => ({ stdout: '', stderr: '' }));
+    const provisioner = createProvisioner({
+      store: ctx.store,
+      db: ctx.db,
+      docker,
+      projectTokenMint: async () => 'tok',
+      defaultImageRef: 'sandbox:test',
+      hostCloneRoot: '/srv/workspaces',
+      dataVolumeRoot: '/srv',
+      runnerSupervisor: true,
+      dockerHostForBuild: 'unix:///var/run/docker.sock',
+      supervisorStackHealth: health,
+      containerCommand,
+      isDirectory: () => true,
+    });
+    let now = 0;
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    try {
+      await expect(provisioner.reconcileRunnerSupervisors([project])).rejects.toThrow(/reconciliation failed/);
+      await expect(provisioner.reconcileRunnerSupervisors([project])).rejects.toThrow(/reconciliation failed/);
+      expect(containerCommand).toHaveBeenCalledOnce();
+      expect(health).toHaveBeenCalledTimes(2);
+      now = 5_000;
+      health.mockResolvedValue(true);
+      await provisioner.reconcileRunnerSupervisors([project]);
+      expect(containerCommand).toHaveBeenCalledOnce();
+      expect(health).toHaveBeenCalledTimes(3);
+    } finally {
+      clock.mockRestore();
+    }
   });
 
   it('backs off failed runner starts to one minute and clears backoff for a replacement', async () => {
@@ -3002,6 +3176,9 @@ describe('ProvisionerImpl (#174)', () => {
       await provisioner.reconcileRunnerSupervisors([{ ...project, containerName: 'replacement' }]);
       expect(containerCommand).toHaveBeenCalledTimes(calls + 1);
       await provisioner.reconcileRunnerSupervisors([{ ...project, containerName: 'replacement' }]);
+      expect(containerCommand).toHaveBeenCalledTimes(calls + 1);
+      now += 60_001;
+      await provisioner.reconcileRunnerSupervisors([{ ...project, containerName: 'replacement' }]);
       expect(containerCommand).toHaveBeenCalledTimes(calls + 2);
     } finally {
       clock.mockRestore();
@@ -3035,6 +3212,9 @@ describe('ProvisionerImpl (#174)', () => {
       containerCommand,
       isDirectory: () => true,
     });
+    let now = Date.now();
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    try {
     const first = provisioner.reconcileRunnerSupervisors([project]);
     const second = provisioner.reconcileRunnerSupervisors([project, other]);
     await new Promise((done) => setImmediate(done));
@@ -3046,6 +3226,7 @@ describe('ProvisionerImpl (#174)', () => {
     ).toHaveLength(1);
     release({ stdout: '', stderr: '' });
     await Promise.all([first, second]);
+    now += 60_001;
     let reject!: (reason: Error) => void;
     containerCommand.mockImplementationOnce(
       () =>
@@ -3066,12 +3247,8 @@ describe('ProvisionerImpl (#174)', () => {
       /reconciliation failed/,
     );
     expect(containerCommand).toHaveBeenCalledTimes(3);
-    const retryClock = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 5_001);
-    try {
-      await provisioner.reconcileRunnerSupervisors([project]);
-    } finally {
-      retryClock.mockRestore();
-    }
+    now += 5_001;
+    await provisioner.reconcileRunnerSupervisors([project]);
     expect(containerCommand).toHaveBeenCalledTimes(4);
     const releases = new Map<string, (value: { stdout: string; stderr: string }) => void>();
     containerCommand.mockImplementation(
@@ -3080,6 +3257,7 @@ describe('ProvisionerImpl (#174)', () => {
           releases.set(options.containerName, done);
         }),
     );
+    now += 60_001;
     const oldRun = provisioner.reconcileRunnerSupervisors([project]);
     const replacement = { ...project, containerName: 'replacement-container' };
     const freshRun = provisioner.reconcileRunnerSupervisors([replacement]);
@@ -3093,6 +3271,9 @@ describe('ProvisionerImpl (#174)', () => {
     expect(containerCommand).toHaveBeenCalledTimes(6);
     releases.get(replacement.containerName)!({ stdout: '', stderr: '' });
     await Promise.all([freshRun, sharedRun]);
+    } finally {
+      clock.mockRestore();
+    }
   });
 
   it('does not exec the Runner watchdog into a sandbox that a replacement is retiring', async () => {

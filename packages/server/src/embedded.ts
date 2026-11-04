@@ -50,6 +50,7 @@ import { LocalPreviewManager } from './local-preview-manager.js';
 import { localPreviewPorts } from './local-preview-ports.js';
 import { ManagedDevServerManager } from './managed-dev-server-manager.js';
 import { ListenerDiscovery } from './listener-discovery.js';
+import { getDockerExecDiagnostics } from './docker-exec-diagnostics.js';
 export { parsePort } from './deployment-port.js';
 import { sandboxNotReadyError } from '@verity/events';
 import {
@@ -220,8 +221,7 @@ import {
 } from './runtime-readiness-gate.js';
 import {
   queueSessionCleanup,
-  finishSessionCleanup,
-  pendingSessionCleanups,
+  createSessionCleanupProcessor,
   createSessionCleanupWorker,
 } from './pending-session-cleanup.js';
 import { supervisorSocketReachable } from './runner-supervisor-socket.js';
@@ -3066,6 +3066,7 @@ export async function buildEmbeddedServer(
   let docker: DockerClient | undefined;
   let projectEgress: ProjectEgressLifecycle | undefined = config.projectEgress;
   let provisioner: ProvisionerImpl | undefined;
+  let runPendingCleanup: ((projectId: string) => Promise<void>) | undefined;
   let stopNativeEvidence: (() => void) | undefined;
   let buildStorage: BuildStorage | undefined;
   const projectSandboxLifecycleTelemetry = new ProjectSandboxLifecycleTelemetry();
@@ -3989,6 +3990,9 @@ export async function buildEmbeddedServer(
     // Registered after app construction below.
     stopNativeEvidence = () => nativeEvidence.stop();
     provisioner = new ProvisionerImpl({
+      beforeRunnerAdmission: async (project) => {
+        await runPendingCleanup?.(project.id);
+      },
       ...(projectEgress === undefined ? {} : { projectEgress }),
       projectEgressEnabled: async () =>
         (await eventStore.getVeritySettingsRaw())?.projectEgressEnabled === true,
@@ -4891,58 +4895,58 @@ export async function buildEmbeddedServer(
             ),
         });
   const cleanupAbort = new AbortController();
-  const sessionCleanupWorker =
+  const cleanupProcessor =
     dataVolumeRoot === undefined
       ? undefined
-      : createSessionCleanupWorker(
-          async () => {
-            const cleanupRoot = join(dataVolumeRoot, 'pending-session-cleanup');
-            for (const pending of await pendingSessionCleanups(cleanupRoot)) {
-              if (cleanupAbort.signal.aborted) break;
-              // A queued record can survive a failed DB deletion. Never purge a live session.
-              if (await eventStore.getSession(pending.sessionId)) continue;
-              try {
-                let clean = true;
-                for (const projectId of pending.runnerProjectIds) {
-                  const runtimeDir = join(dataVolumeRoot, 'runners', projectId);
-                  if (!existsSync(runtimeDir)) continue;
-                  try {
-                    const response = await requestRunnerSupervisor(
-                      join(runtimeDir, 'supervisor.sock'),
-                      { kind: 'delete-session-home', sessionId: pending.sessionId },
-                      10_000,
-                    );
-                    if (response.ok !== true)
-                      throw new Error('Pending session home cleanup failed');
-                    const result = await purgeSessionArtifactFiles({
-                      runtimeDir,
-                      sandboxCwd: pending.sandboxCwd,
-                      sessionId: pending.sessionId,
-                      bindings: pending.bindings,
-                      scope: 'session-delete',
-                    });
-                    clean &&=
-                      result.failed.length === 0 &&
-                      result.outsideRuntime.length === 0 &&
-                      result.unknownBackends.length === 0 &&
-                      !result.unresolved;
-                  } catch (error) {
-                    clean = false;
-                    app.log.warn(
-                      { err: error, sessionId: pending.sessionId, projectId },
-                      'verity: runner session cleanup remains pending',
-                    );
-                  }
-                }
-                if (clean) await finishSessionCleanup(cleanupRoot, pending.sessionId);
-              } catch (error) {
-                app.log.warn(
-                  { err: error, sessionId: pending.sessionId },
-                  'verity: session cleanup remains pending',
-                );
-              }
-            }
+      : createSessionCleanupProcessor({
+          root: join(dataVolumeRoot, 'pending-session-cleanup'),
+          sessionExists: async (sessionId) =>
+            (await eventStore.getSession(sessionId)) !== undefined,
+          runtimeState: async (projectId) => {
+            if (!existsSync(join(dataVolumeRoot, 'runners', projectId))) return 'absent';
+            if (projectId === CONTROL_PLANE_RUNNER_PROJECT_ID && config.controlPlaneRunner)
+              return 'ready';
+            const project = await eventStore.getProject(projectId);
+            if (project?.state === 'active') return 'ready';
+            if (project?.state === 'sleeping') return 'sleeping';
+            return 'unavailable';
           },
+          deleteHome: async (projectId, pending) => {
+            const response = await requestRunnerSupervisor(
+              join(dataVolumeRoot, 'runners', projectId, 'supervisor.sock'),
+              { kind: 'delete-session-home', sessionId: pending.sessionId },
+              10_000,
+            );
+            if (response.ok !== true) throw new Error('Pending session home cleanup failed');
+          },
+          purgeArtifacts: async (projectId, pending) => {
+            const result = await purgeSessionArtifactFiles({
+              runtimeDir: join(dataVolumeRoot, 'runners', projectId),
+              sandboxCwd: pending.sandboxCwd,
+              sessionId: pending.sessionId,
+              bindings: pending.bindings,
+              scope: 'session-delete',
+            });
+            if (result.outsideRuntime.length > 0 || result.unknownBackends.length > 0)
+              return 'unsafe';
+            return result.failed.length === 0 && !result.unresolved ? 'clean' : 'retry';
+          },
+          report: (projectId, pending, reason, error) =>
+            app.log.warn(
+              { err: error, sessionId: pending.sessionId, projectId, reason },
+              reason === 'unsafe'
+                ? 'verity: session artifact cleanup requires attention'
+                : 'verity: runner session cleanup deferred with backoff',
+            ),
+          stopped: () => cleanupAbort.signal.aborted,
+        });
+  runPendingCleanup =
+    cleanupProcessor === undefined ? undefined : (projectId) => cleanupProcessor.run(projectId);
+  const sessionCleanupWorker =
+    cleanupProcessor === undefined
+      ? undefined
+      : createSessionCleanupWorker(
+          () => cleanupProcessor.run(),
           (error) => app.log.warn({ err: error }, 'verity: pending cleanup scan failed'),
         );
   const app = buildControlPlane({
@@ -6251,6 +6255,20 @@ export async function buildEmbeddedServer(
     buildStorageTimer.unref();
     app.addHook('onClose', () => clearInterval(buildStorageTimer));
   }
+  // Fixed-purpose counters exclude command arguments, environment values and identities.
+  let previousDockerExecCounts = getDockerExecDiagnostics();
+  const dockerExecDiagnosticTimer = setInterval(() => {
+    const current = getDockerExecDiagnostics();
+    if (
+      current.started === previousDockerExecCounts.started &&
+      current.active === previousDockerExecCounts.active
+    )
+      return;
+    previousDockerExecCounts = current;
+    app.log.info({ dockerExec: current }, 'verity: docker exec activity diagnostic');
+  }, 60_000);
+  dockerExecDiagnosticTimer.unref();
+  app.addHook('onClose', () => clearInterval(dockerExecDiagnosticTimer));
   app.addHook('onClose', () => listenerDiscovery?.close());
   app.addHook('onClose', () => projectEgress?.close());
   if (!localPreviewManager) previewRecoveryReady = true;

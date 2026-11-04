@@ -1170,8 +1170,7 @@ export const SessionChat = memo(function SessionChat({
     dismissedPullRequests.store.add(pullRequestKey);
     dismissedPullRequests.persist();
     bumpPullRequestBarVersion((version) => version + 1);
-    branchesRefresh();
-  }, [branchesRefresh, pullRequestKey]);
+  }, [pullRequestKey]);
   // When the live branch diverges from the load-once branch list (an external/agent
   // checkout the switcher didn't initiate), refresh the list so its rows AND the PR
   // chip track the new branch too. Converges in one step (refresh makes them match),

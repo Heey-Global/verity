@@ -55,10 +55,24 @@ export class ResourceObserver {
     for (const entry of this.entries.values()) {
       const watched = entry.resource.path.split('?')[0]!.split('/');
       let affected = false;
-      if (parts[1] === 'sessions')
+      if (parts[1] === 'sessions') {
         affected =
           watched[1] === 'sessions' && (watched[2] === undefined || watched[2] === parts[2]);
-      else if (parts[1] === 'projects')
+        if (affected && watched[2] !== undefined) {
+          const family = parts[3];
+          // Read-state and presentation writes cannot change Git or listeners.
+          // Keep unknown mutations broad so new routes retain safe invalidation.
+          if (family === 'seen') affected = false;
+          else if (family === 'links' || family === 'linked-message-approvals')
+            affected = watched[3] === 'links' || watched[3] === 'linked-message-approvals';
+          else if (family === 'permissions' || family === 'queue')
+            affected = watched[3] === 'activity' || watched[3] === 'linked-message-approvals';
+          else if (
+            ['branches', 'activity', 'google-status', 'vulnerability-scan'].includes(family ?? '')
+          )
+            affected = watched[3] === family;
+        }
+      } else if (parts[1] === 'projects')
         affected =
           watched[1] === 'projects' &&
           (watched[2] === undefined || parts[2] === undefined || watched[2] === parts[2]);

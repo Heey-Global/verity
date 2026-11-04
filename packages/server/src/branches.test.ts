@@ -224,7 +224,7 @@ describe('createGitBranchService', () => {
         'for-each-ref --points-at HEAD --format=%(refname:short) refs/remotes/origin': () =>
           'origin/feature\n',
         'reflog show --format=%gs HEAD': () => 'checkout: moving from earlier to feature\n',
-        'show-ref --verify --quiet refs/heads/earlier': () => '',
+        'for-each-ref --format=%(refname) refs/heads': () => 'refs/heads/earlier\n',
       });
       const scoped = vi.fn();
       const svc = createGitBranchService({
@@ -256,9 +256,8 @@ describe('createGitBranchService', () => {
             'checkout: moving from main to security/audit-phase2',
             'commit (initial): scaffold',
           ].join('\n') + '\n',
-        // Every audit branch is a real local branch; the base is excluded before this
-        // is ever consulted.
-        'show-ref --verify --quiet refs/heads/security/audit-phase': () => '',
+        'for-each-ref --format=%(refname) refs/heads': () =>
+          'refs/heads/security/audit-phase5\nrefs/heads/security/audit-phase4\nrefs/heads/security/audit-phase2\nrefs/heads/main\n',
       });
       const svc = createGitBranchService({ repoDir: '/repo', git });
       expect(await svc.sessionBranches('/wt')).toEqual([
@@ -267,8 +266,8 @@ describe('createGitBranchService', () => {
         'security/audit-phase4',
         'security/audit-phase2',
       ]);
-      // The base branch is never probed for existence — it's dropped up front.
-      expect(calls.some((c) => c.join(' ').includes('refs/heads/main'))).toBe(false);
+      expect(calls).toHaveLength(3);
+      expect(calls.some((c) => c.includes('show-ref'))).toBe(false);
     });
 
     it('drops reflog tokens that are not real local branches (e.g. detached SHAs)', async () => {
@@ -279,11 +278,27 @@ describe('createGitBranchService', () => {
             'checkout: moving from feat/real to agent/x',
             'checkout: moving from 1a2b3c4 to feat/real', // a bare SHA (detached preview)
           ].join('\n') + '\n',
-        'show-ref --verify --quiet refs/heads/feat/real': () => '',
-        'show-ref --verify --quiet refs/heads/1a2b3c4': fails(), // not a local branch
+        'for-each-ref --format=%(refname) refs/heads': () => 'refs/heads/feat/real\n',
       });
       const svc = createGitBranchService({ repoDir: '/repo', git });
       expect(await svc.sessionBranches('/wt')).toEqual(['agent/x', 'feat/real']);
+    });
+
+    it('bounds Git reads independently of the number of reflog branches', async () => {
+      const names = Array.from({ length: 100 }, (_, index) => `feature/${index}`);
+      const { git, calls } = fakeGit({
+        'rev-parse --abbrev-ref HEAD': () => 'current\n',
+        'reflog show --format=%gs HEAD': () =>
+          names.map((name) => `checkout: moving from ${name} to current`).join('\n'),
+        'for-each-ref --format=%(refname) refs/heads': () =>
+          names.map((name) => `refs/heads/${name}`).join('\n'),
+      });
+      const svc = createGitBranchService({ repoDir: '/repo', git });
+      await expect(svc.sessionBranches('/wt')).resolves.toEqual(['current', ...names]);
+      expect(calls).toHaveLength(3);
+      expect(calls.at(-1)).toEqual([
+        '-C', '/repo', 'for-each-ref', '--format=%(refname)', 'refs/heads',
+      ]);
     });
 
     it('falls back to just the current branch when the reflog is unavailable', async () => {

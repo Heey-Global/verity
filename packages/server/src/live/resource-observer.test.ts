@@ -83,6 +83,78 @@ describe('ResourceObserver', () => {
     expect(other).toHaveBeenCalledTimes(1);
   });
 
+  it('keeps branch observation bounded while explicit branch changes refresh immediately', async () => {
+    const read = vi.fn(async () => ({ statusCode: 200, body: '{}' }));
+    observer.watch('alice', { path: '/sessions/s/branches' }, read, () => {});
+    await vi.advanceTimersByTimeAsync(0);
+    expect(read).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(29_999);
+    expect(read).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(read).toHaveBeenCalledTimes(2);
+    observer.invalidate('/sessions/s/branch');
+    await vi.advanceTimersByTimeAsync(1);
+    expect(read).toHaveBeenCalledTimes(3);
+  });
+
+  it.each(['seen', 'permissions/tool', 'queue/item/cancel', 'links/peer'])(
+    'does not rescan Git or listeners for a %s write',
+    async (suffix) => {
+      const overview = vi.fn(async () => ({ statusCode: 200, body: '{}' }));
+      const branches = vi.fn(async () => ({ statusCode: 200, body: '{}' }));
+      const listeners = vi.fn(async () => ({ statusCode: 200, body: '{}' }));
+      observer.watch('alice', { path: '/sessions' }, overview, () => {});
+      observer.watch('alice', { path: '/sessions/s/branches' }, branches, () => {});
+      observer.watch('alice', { path: '/sessions/s/dev-servers' }, listeners, () => {});
+      await vi.advanceTimersByTimeAsync(1);
+      observer.invalidate(`/sessions/s/${suffix}`);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(overview).toHaveBeenCalledTimes(2);
+      expect(branches).toHaveBeenCalledOnce();
+      expect(listeners).toHaveBeenCalledOnce();
+    },
+  );
+
+  it('limits resource-specific invalidations to their family and retains broad unknown mutations', async () => {
+    const branches = vi.fn(async () => ({ statusCode: 200, body: '{}' }));
+    const listeners = vi.fn(async () => ({ statusCode: 200, body: '{}' }));
+    const activity = vi.fn(async () => ({ statusCode: 200, body: '{}' }));
+    observer.watch('alice', { path: '/sessions/s/branches' }, branches, () => {});
+    observer.watch('alice', { path: '/sessions/s/dev-servers' }, listeners, () => {});
+    observer.watch('alice', { path: '/sessions/s/activity' }, activity, () => {});
+    await vi.advanceTimersByTimeAsync(1);
+    observer.invalidate('/sessions/s/branches');
+    await vi.advanceTimersByTimeAsync(1);
+    expect(branches).toHaveBeenCalledTimes(2);
+    expect(listeners).toHaveBeenCalledOnce();
+    expect(activity).toHaveBeenCalledOnce();
+    observer.invalidate('/sessions/s/new-storage-mutation');
+    await vi.advanceTimersByTimeAsync(1);
+    expect(branches).toHaveBeenCalledTimes(3);
+    expect(listeners).toHaveBeenCalledTimes(2);
+    expect(activity).toHaveBeenCalledTimes(2);
+  });
+
+  it('preserves focused link and permission refreshes', async () => {
+    const links = vi.fn(async () => ({ statusCode: 200, body: '{}' }));
+    const approvals = vi.fn(async () => ({ statusCode: 200, body: '{}' }));
+    const activity = vi.fn(async () => ({ statusCode: 200, body: '{}' }));
+    observer.watch('alice', { path: '/sessions/s/links' }, links, () => {});
+    observer.watch('alice', { path: '/sessions/s/linked-message-approvals' }, approvals, () => {});
+    observer.watch('alice', { path: '/sessions/s/activity' }, activity, () => {});
+    await vi.advanceTimersByTimeAsync(1);
+    observer.invalidate('/sessions/s/links/peer');
+    await vi.advanceTimersByTimeAsync(1);
+    expect(links).toHaveBeenCalledTimes(2);
+    expect(approvals).toHaveBeenCalledTimes(2);
+    expect(activity).toHaveBeenCalledOnce();
+    observer.invalidate('/sessions/s/permissions/tool');
+    await vi.advanceTimersByTimeAsync(1);
+    expect(links).toHaveBeenCalledTimes(2);
+    expect(approvals).toHaveBeenCalledTimes(3);
+    expect(activity).toHaveBeenCalledTimes(2);
+  });
+
   it('never reports changes in resources the user cannot read', async () => {
     let statusCode = 403;
     let body = 'forbidden';
