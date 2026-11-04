@@ -238,8 +238,32 @@ describe('standby promotion cutover', () => {
     );
   });
 
+  it('never lets leftover log copies evict the retired generation logs', async () => {
+    const { root, daemon } = await prepared();
+    const serverSpec = daemon.spec(MANAGED_SERVER_NAME)!;
+    for (const name of [
+      'verity-managed-server-g5',
+      'verity-managed-server-g6',
+      'verity-managed-server-g7',
+    ])
+      await daemon.docker.createContainer({ ...serverSpec, name });
+    daemon.logs.set(MANAGED_SERVER_NAME, 'the retired generation\n');
+    daemon.logs.set('verity-managed-server-g5', 'leftover five\n');
+    daemon.logs.set('verity-managed-server-g6', 'leftover six\n');
+    // g7 stopped long ago and has nothing in the window: no empty copy is written.
+
+    await resumeUpdateCutover(await cutover(root, daemon));
+
+    expect(daemon.names()).toEqual(['verity-managed-server-g1']);
+    const kept = await readdir(join(root, 'server-logs'));
+    expect(kept).toHaveLength(2);
+    expect(kept).toContain('verity-managed-server.log');
+    expect(kept).not.toContain('verity-managed-server-g7.log');
+  });
+
   it('keeps only the two most recent retired Server logs', async () => {
     const { root, daemon } = await prepared();
+    daemon.logs.set(MANAGED_SERVER_NAME, 'retired\n');
     const logs = join(root, 'server-logs');
     await mkdir(logs, { recursive: true });
     for (const [name, age] of [

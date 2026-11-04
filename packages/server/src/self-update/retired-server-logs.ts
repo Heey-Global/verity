@@ -38,6 +38,9 @@ export async function archiveRetiredServerLogs(options: {
       since: new Date(until - WINDOW_MS).toISOString(),
       until: new Date(until).toISOString(),
     });
+    // A long-stopped container has nothing in the window; an empty copy would only
+    // displace real evidence from the retained set.
+    if (raw.trim() === '') return;
     const dir = join(options.managedRoot, RETIRED_SERVER_LOG_DIR);
     await mkdir(dir, { recursive: true, mode: 0o700 });
     await chmod(dir, 0o700);

@@ -685,8 +685,6 @@ export async function dockerStandbyPromotion(
           containerName,
           log,
         });
-      await keepLogs(state.oldContainerId, oldHost);
-      await ignoreMissing(() => docker.removeContainer(state.oldContainerId));
       // An earlier cutover whose retirement never completed, or an installer repair
       // that recreated the bootstrap Server, can leave a stopped Server of this
       // deployment behind. Nothing retries that removal once its journal is gone,
@@ -695,8 +693,8 @@ export async function dockerStandbyPromotion(
       // under another name is not this cutover's to stop.
       try {
         // Without a deployment identity no container can be proven to be ours.
-        if (!journal.deploymentId) return;
-        for (const container of (await docker.listContainers?.()) ?? []) {
+        const inventory = journal.deploymentId ? ((await docker.listContainers?.()) ?? []) : [];
+        for (const container of inventory) {
           if (container.id === state.oldContainerId || container.id === state.candidateContainerId)
             continue;
           if (
@@ -723,6 +721,10 @@ export async function dockerStandbyPromotion(
           `Could not remove leftover Server containers: ${error instanceof Error ? error.message : 'unknown error'}`,
         );
       }
+      // The generation this cutover replaced goes last, so its logs are the newest
+      // copy kept and leftover copies can never evict them.
+      await keepLogs(state.oldContainerId, oldHost);
+      await ignoreMissing(() => docker.removeContainer(state.oldContainerId));
     },
 
     /**
