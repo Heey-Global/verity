@@ -444,8 +444,8 @@ Derived sections also appear in the filed meeting source without replacing its t
 ### Discarding a finished meeting
 
 The result page's actions menu offers **Discard meeting…**. A confirmation names what is
-deleted and where. `DELETE /sessions/:id/live-meetings/:meetingId` requires the same session
-permission as uploading the meeting and only accepts ended meetings (`409` with
+deleted and where. `DELETE /sessions/:id/live-meetings/:meetingId` requires management rights
+for the session, like other destructive changes, and only accepts ended meetings (`409` with
 `meeting_running` otherwise). It deletes the meeting with its transcript, timed words,
 speaker data, notes, insights and derived result, removes the filed Markdown and its index
 line, and for online meetings drops the remaining provider state. Tasks already created from

@@ -206,6 +206,8 @@ const styles = StyleSheet.create((theme) => {
     pane: {
       flex: 1,
       padding: EDGE,
+      // Android draws elevation only for a view with a background; the edge covers it.
+      backgroundColor: colors.surface,
       // The pane's glow is Verity's: signature, like every brand moment.
       shadowColor: colors.signature,
       ...theme.elevation.glow,

@@ -588,6 +588,11 @@ export function registerLiveMeetingRoutes(
     const meeting = (await store.liveMeetings.changes(sessionId, 0)).meetings.find(
       (item) => item.id === meetingId,
     );
+    if (meeting && meeting.state !== 'active') {
+      // Stop analysis and result work first so nothing derived is written after deletion.
+      forgetAnalysis(meetingId);
+      resultWorker.cancel(meetingId);
+    }
     const outcome = meeting
       ? await store.liveMeetings.deleteMeeting(sessionId, meetingId)
       : 'not_found';
@@ -599,8 +604,6 @@ export function registerLiveMeetingRoutes(
       reply.code(404);
       return { error: 'meeting not found' };
     }
-    forgetAnalysis(meetingId);
-    resultWorker.cancel(meetingId);
     try {
       await opts.onDiscarded?.(sessionId, meeting);
     } catch (error) {

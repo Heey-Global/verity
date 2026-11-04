@@ -269,6 +269,12 @@ export default function MeetingScreen() {
   const transcriptList = useRef<FlatList<TranscriptRow>>(null);
   const transcriptAtEnd = useRef(true);
   const [transcriptBehind, setTranscriptBehind] = useState(false);
+  // Reopened, the transcript starts at the newest words and follows them again.
+  useEffect(() => {
+    if (transcriptExpanded) return;
+    transcriptAtEnd.current = true;
+    setTranscriptBehind(false);
+  }, [transcriptExpanded]);
 
   useEffect(
     () =>
@@ -2184,7 +2190,10 @@ export default function MeetingScreen() {
         ? 'Preparing language model…'
         : preparing
           ? 'Preparing microphone…'
-          : 'Recording';
+          : !active && !recorderOnline && meeting.engine !== 'attendee'
+            ? // Viewed from another device whose recorder stopped reporting.
+              'Meeting'
+            : 'Recording';
   const statusLine = [
     stateWord,
     paused || preparing ? null : elapsed(meeting.startedAt, now),

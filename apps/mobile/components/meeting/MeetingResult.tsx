@@ -130,17 +130,26 @@ export function MeetingResult(props: {
       const client = createVerityClient();
       if (!client) throw new Error('Connect to your server first.');
       let current = result;
-      // One at a time: every change bumps the result revision the next one must name.
-      for (const task of current?.tasks ?? []) {
-        if (!current || task.state !== 'proposed') continue;
-        current = await client.updateLiveMeetingResultTask(meeting.sessionId, meeting.id, task.id, {
-          revision: current.revision,
-          state: 'added',
-          taskId: task.taskId || task.id,
-        });
-        setResult(current);
+      try {
+        // One at a time: every change bumps the result revision the next one must name.
+        for (const task of current?.tasks ?? []) {
+          if (!current || task.state !== 'proposed') continue;
+          current = await client.updateLiveMeetingResultTask(
+            meeting.sessionId,
+            meeting.id,
+            task.id,
+            {
+              revision: current.revision,
+              state: 'added',
+              taskId: task.taskId || task.id,
+            },
+          );
+          setResult(current);
+        }
+      } finally {
+        // Tasks added before a failure must still show up in the task list.
+        void refreshTasks(true).catch(() => undefined);
       }
-      void refreshTasks(true).catch(() => undefined);
     });
   };
   const ready = result?.status === 'ready';
@@ -206,6 +215,8 @@ export function MeetingResult(props: {
       ) : null}
       {props.notes ? (
         <Disclosure
+          // Reopens when a note becomes unfinished again, e.g. after a failed save.
+          key={props.notesOpen ? 'notes-open' : 'notes'}
           title={props.noteCount ? `Your notes · ${props.noteCount}` : 'Your notes'}
           initiallyExpanded={props.notesOpen}
         >

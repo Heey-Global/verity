@@ -1254,3 +1254,23 @@ it('refuses to discard a running or unknown meeting', async () => {
   ).json<{ meetings: unknown[] }>();
   expect(still.meetings).toHaveLength(1);
 });
+
+// The deletion has committed before cleanup runs; reporting a failure here would make the
+// client retry into a 404 and believe nothing happened.
+it('keeps a discard committed when cleanup outside the meeting tables fails', async () => {
+  const onDiscarded = vi.fn(async () => {
+    throw new Error('provider unavailable');
+  });
+  const discardApp = Fastify();
+  registerLiveMeetingRoutes(discardApp, ctx.store, { onDiscarded });
+  await discardApp.ready();
+  try {
+    const ended = { ...meeting, state: 'ended', endedAt: 200 };
+    await discardApp.inject({ method: 'PUT', url, payload: ended });
+    expect((await discardApp.inject({ method: 'DELETE', url })).statusCode).toBe(200);
+    expect(onDiscarded).toHaveBeenCalledTimes(1);
+    expect(await ctx.store.liveMeetings.isDeleted('session-1', 'meeting-1')).toBe(true);
+  } finally {
+    await discardApp.close();
+  }
+});

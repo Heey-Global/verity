@@ -5965,15 +5965,21 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         meetingId,
       }),
     onDiscarded: async (sessionId, meeting) => {
-      // The attendee owner is created below; a request can only arrive once it exists.
-      if (meeting.engine === 'attendee')
-        await attendeeMeetings.discardFinished(sessionId, meeting.id);
-      await removeFiledLiveMeeting({
-        eventStore: deps.eventStore,
-        dataRoot: deps.dataRoot,
-        sessionId,
-        meeting,
-      });
+      // Independent steps: a provider failure must not leave the filed transcript behind.
+      const steps = await Promise.allSettled([
+        // The attendee owner is created below; a request can only arrive once it exists.
+        meeting.engine === 'attendee'
+          ? attendeeMeetings.discardFinished(sessionId, meeting.id)
+          : Promise.resolve(true),
+        removeFiledLiveMeeting({
+          eventStore: deps.eventStore,
+          dataRoot: deps.dataRoot,
+          sessionId,
+          meeting,
+        }),
+      ]);
+      const failed = steps.find((step) => step.status === 'rejected');
+      if (failed) throw failed.reason;
     },
     knowledge: async (sessionId, transcript) => {
       if (!deps.dataRoot) return [];

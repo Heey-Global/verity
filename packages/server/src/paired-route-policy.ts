@@ -166,9 +166,10 @@ const resourceRules: ReadonlyMap<string, ResourceRule> = new Map([
     { kind: 'session', parameter: 'id', permission: 'execute' },
   ],
   [
-    // Discarding is an edit of the meeting, so it needs the right to upload one.
+    // Discarding deletes what everyone in the session heard; like other destructive
+    // replacements it needs management rights, not only the right to record.
     routeScopeKey('DELETE', '/sessions/:id/live-meetings/:meetingId'),
-    { kind: 'session', parameter: 'id', permission: 'execute' },
+    { kind: 'session', parameter: 'id', permission: 'manage' },
   ],
   [
     routeScopeKey('POST', '/sessions/:id/live-meetings/:meetingId/addressed'),
