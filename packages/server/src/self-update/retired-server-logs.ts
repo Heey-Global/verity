@@ -30,6 +30,7 @@ export async function archiveRetiredServerLogs(options: {
   readonly log?: (message: string) => void;
 }): Promise<void> {
   const now = options.now ?? Date.now;
+  let temporary: string | undefined;
   try {
     if (!NAME.test(options.containerName) || options.docker.containerLogs === undefined) return;
     const until = now();
@@ -41,11 +42,12 @@ export async function archiveRetiredServerLogs(options: {
     await mkdir(dir, { recursive: true, mode: 0o700 });
     await chmod(dir, 0o700);
     const target = join(dir, `${options.containerName}.log`);
-    const temporary = `${target}.${String(process.pid)}.tmp`;
+    temporary = `${target}.${String(process.pid)}.tmp`;
     await writeFile(temporary, sanitizeDiagnostic(raw), { mode: 0o600 });
     await rename(temporary, target);
     await prune(dir);
   } catch (error) {
+    if (temporary !== undefined) await rm(temporary, { force: true }).catch(() => undefined);
     options.log?.(
       `Could not keep the logs of ${options.containerName}: ${error instanceof Error ? error.message : 'unknown error'}`,
     );

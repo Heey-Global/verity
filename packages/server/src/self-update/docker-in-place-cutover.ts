@@ -694,12 +694,14 @@ export async function dockerStandbyPromotion(
       // stopped ones are retired: the candidate now serves, and a running Server
       // under another name is not this cutover's to stop.
       try {
+        // Without a deployment identity no container can be proven to be ours.
+        if (!journal.deploymentId) return;
         for (const container of (await docker.listContainers?.()) ?? []) {
           if (container.id === state.oldContainerId || container.id === state.candidateContainerId)
             continue;
           if (
             container.labels?.[MANAGED_DEPLOYMENT_LABEL] !== journal.deploymentId ||
-            container.labels[MANAGED_ROLE_LABEL] !== 'server'
+            container.labels?.[MANAGED_ROLE_LABEL] !== 'server'
           )
             continue;
           const name = container.names?.find((entry) =>
