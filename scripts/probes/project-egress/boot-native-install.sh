@@ -121,3 +121,7 @@ fixture_volume_root=$(docker volume inspect --format '{{.Mountpoint}}' verity-bo
 setfacl -m u:1000:x "$(dirname "$fixture_volume_root")"
 chown 1000:1000 "$fixture_volume_root"
 docker run --rm --runtime runsc-project --entrypoint /bin/true verity-boot-observed-runner:local
+
+# Exercise the real managed preparer twice on native systemd/Docker without
+# treating experimental lifecycle composition as production certification.
+python3 "$assets/probe/boot-managed-stage.py"

@@ -53,7 +53,7 @@ export async function listenProjectEgressHost(options: {
         for await (const chunk of request) {
           const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as string);
           size += buffer.length;
-          if (size > 8192) {
+          if (size > 32768) {
             response.writeHead(413).end();
             request.destroy();
             return;

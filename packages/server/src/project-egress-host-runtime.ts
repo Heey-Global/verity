@@ -137,6 +137,26 @@ export function verifyEgressHostRuntime(
     throw new Error('Unsupported host runtime network profile');
 }
 
+/** Native preflight accepted this exact serving registration. A later updater may
+ * install another individually valid runsc release before egress renewal fails;
+ * the retained controller must then stop admitting under its old profile.
+ */
+export function createEgressHostRuntimeRegistrationGuard(
+  initial: unknown,
+): (reply: unknown) => void {
+  const registration = (reply: unknown): string => {
+    verifyEgressHostRuntime(reply, 'sandbox');
+    verifyEgressHostRuntime(reply, 'relay');
+    const runtime = z.object({ path: z.string(), runtimeArgs: z.array(z.string()) });
+    const runtimes = z.object({ 'runsc-project': runtime, 'runsc-relay': runtime }).parse(reply);
+    return JSON.stringify([runtimes['runsc-project'], runtimes['runsc-relay']]);
+  };
+  const accepted = registration(initial);
+  return (reply) => {
+    if (registration(reply) !== accepted) throw new Error('Serving runtime registration changed');
+  };
+}
+
 export async function inspectEgressHostContainer(
   binding: ProjectEgressNetworkBinding,
   id: string,

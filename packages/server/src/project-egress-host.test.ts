@@ -12,6 +12,7 @@ import {
   openProjectEgressHostStore,
   verifyEgressHostContainer,
   verifyEgressHostRuntime,
+  createEgressHostRuntimeRegistrationGuard,
   verifyEgressHostNetwork,
 } from './project-egress-host-runtime.js';
 import { listenProjectEgressHost } from './project-egress-host-control.js';
@@ -608,4 +609,26 @@ it('does not advertise health when read-only host compatibility checks fail', as
   expect(deps.save).not.toHaveBeenCalled();
   expect(deps.apply).not.toHaveBeenCalled();
   expect(deps.inspectNetwork).not.toHaveBeenCalled();
+});
+
+it('pins serving runtime registrations even when a replacement is otherwise supported', () => {
+  const runtimes = {
+    'runsc-project': {
+      path: '/opt/verity/runsc/release-20261101.0/runsc',
+      runtimeArgs: ['--host-uds=create', '--network=sandbox', '--platform=systrap'],
+    },
+    'runsc-relay': {
+      path: '/opt/verity/runsc/release-20261101.0/runsc',
+      runtimeArgs: ['--host-uds=open', '--network=sandbox', '--platform=systrap'],
+    },
+  };
+  const verify = createEgressHostRuntimeRegistrationGuard(runtimes);
+  verify(structuredClone(runtimes));
+  const changed = structuredClone(runtimes);
+  changed['runsc-relay'].path = '/opt/verity/runsc/release-20261102.0/runsc';
+  verifyEgressHostRuntime(changed, 'relay');
+  expect(() => verify(changed)).toThrow('registration changed');
+  changed['runsc-relay'] = structuredClone(runtimes['runsc-relay']);
+  changed['runsc-project'].runtimeArgs.reverse();
+  expect(() => verify(changed)).toThrow('registration changed');
 });

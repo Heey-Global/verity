@@ -1563,9 +1563,28 @@ logs a fixed skip reason. Root-owned installation diagnostics explain failures
 but cannot establish readiness.
 
 Managed controller renewal persists its rollback snapshots and immutable release
-identities before changing the controller, link or configuration. A subsequent
-provisioner invocation recovers an interrupted transaction under the installation
-lock, establishing denial before restoring prior files and leaving the controller
-stopped. This is invocation recovery, not proof of unattended boot recovery.
-Native managed-host lifecycle acceptance and the complete destination inventory
-remain required before production activation.
+identities before changing the controller, link or configuration. A content-addressed recovery helper is installed before journal mutations. Its
+boot oneshot precedes Docker and bootstrap, takes the installation lock and
+establishes denial before restoring prior files. Subsequent provisioner invocations
+use the same recovery path. A failed recovery retains the journal and blocks
+startup; native boot ordering and crash acceptance remain required.
+
+Release-owned native profiles bind exact kernel, OS, Docker, runtime tree,
+controller/Node/BPF artifacts, pinned prerequisite packages and retained acceptance
+evidence. Startup revalidates those inputs. No native profile is accepted yet.
+Preparation adds the reviewed relay runtime through Docker reload and installs
+persistent private bpffs without restarting Docker. Old updater caller deadlines
+must be tested independently from the longer new host oneshot deadline.
+
+Authoritative destination mutations fence direct corridors before persistence,
+then acknowledge the conservative old/new inventory under the database mutation
+lock. A leased heartbeat closes readiness when synchronization expires. Retained
+hostname and public-IP history protects cached clients across mutations and host
+controller restarts. Incomplete or unrepresentable inventory cannot grant admission.
+Relay cutover permits at most the target image and one still-active prior image
+under the same execution contract; unknown or additional retained images fail.
+
+Native managed-host lifecycle acceptance, signed compatibility-update acceptance
+and application positive controls remain required before production activation.
+Staging preparation and unit tests do not supply that evidence. See
+[native profiles](../project-egress-native-profiles.md) for the evidence boundary.

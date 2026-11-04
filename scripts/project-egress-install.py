@@ -29,11 +29,186 @@ UNITS = {
 }
 # Populate only with exact releases backed by native install/upgrade/recovery
 # evidence. Tool availability alone does not establish kernel compatibility.
-ACCEPTED_KERNEL_RELEASES = frozenset()
+# Each entry binds the platform, release artifacts, distro packages and reviewed
+# runtime binary/arguments. Add only entries backed by retained native managed
+# install/update/reboot/rollback and independent packet evidence.
+ACCEPTED_NATIVE_PROFILES = ()
+RELAY_RUNTIME_ARGS = ['--platform=systrap', '--network=sandbox', '--host-uds=open']
+PROJECT_RUNTIME_ARGS = ['--platform=systrap', '--network=sandbox', '--host-uds=create']
+NATIVE_PACKAGES = frozenset(('python3', 'iproute2', 'nftables', 'bpftool', 'libnftables1',
+                             'util-linux', 'libatomic1', 'libstdc++6'))
+BPFFS_UNIT = b"""[Unit]
+Description=Persistent BPF filesystem for managed network protection
+Before=verity-egress-bootstrap.service docker.service
+[Mount]
+What=bpf
+Where=/sys/fs/bpf
+Type=bpf
+Options=nosuid,nodev,noexec,mode=0700
+[Install]
+WantedBy=multi-user.target
+"""
+
+
+def os_identity(root):
+    values = {}
+    for line in (root / 'etc/os-release').read_text().splitlines():
+        if '=' in line and not line.startswith('#'):
+            key, value = line.split('=', 1)
+            values[key] = value.strip('"')
+    return {'id': values.get('ID'), 'version': values.get('VERSION_ID')}
+
+
+def runtime_tree_digest(directory):
+    entries = []
+    for path in sorted(directory.rglob('*')):
+        metadata = path.lstat()
+        if path.is_symlink() or metadata.st_uid != os.geteuid() or metadata.st_mode & 0o022:
+            raise ValueError('Untrusted native runtime tree')
+        if stat.S_ISREG(metadata.st_mode):
+            entries.append(str(path.relative_to(directory)) + '\0' + digest(path.read_bytes()))
+        elif not stat.S_ISDIR(metadata.st_mode):
+            raise ValueError('Unexpected native runtime tree entry')
+    return digest('\n'.join(entries).encode())
+
+
+def accepted_native_profile(root, run, node_path):
+    """Select release-owned evidence, never a host/project supplied acceptance flag."""
+    if not ACCEPTED_NATIVE_PROFILES:
+        raise ValueError('Host has no accepted native installation profile')
+    info = json.loads(run('/usr/bin/docker', '--host=unix:///var/run/docker.sock',
+                          'info', '--format', '{{json .}}'))
+    if (info.get('OSType') != 'linux' or info.get('LiveRestoreEnabled') is not False
+            or any('rootless' in option for option in info.get('SecurityOptions', []))):
+        raise ValueError('Native profile requires rootful Linux Docker with live restore off')
+    platform_identity = {'kernel': platform.release(), 'architecture': platform.machine(),
+                         'os': os_identity(root), 'docker': info.get('ServerVersion')}
+    artifacts = {}
+    # The managed current-release link is intentional; attest the immutable
+    # resolved release and every canonical ancestor before hashing its assets.
+    node = Path(node_path).resolve(strict=True)
+    for name, path in [('node', node), *[(name, node.parent / name) for name in
+            ('project-egress-host-main.mjs', 'project-egress-deadline.bpf.o', 'project-egress-renew.bpf.o')]]:
+        trusted_parent(path, root)
+        metadata = path.lstat()
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.geteuid() or metadata.st_mode & 0o222:
+            raise ValueError('Untrusted managed native artifact')
+        artifacts[name] = digest(path.read_bytes())
+    matches = [profile for profile in ACCEPTED_NATIVE_PROFILES
+               if profile.get('platform') == platform_identity and profile.get('artifacts') == artifacts]
+    if len(matches) != 1:
+        raise ValueError('Host has no unique accepted native installation profile')
+    profile = matches[0]
+    packages = profile.get('packages')
+    runtime = profile.get('runtime')
+    if (set(profile) != {'platform', 'artifacts', 'packages', 'runtime', 'evidence'}
+            or not isinstance(profile['evidence'], str) or not re.fullmatch('[a-f0-9]{64}', profile['evidence'])
+            or platform_identity['os']['id'] != 'ubuntu'
+            or not isinstance(packages, dict) or set(packages) != NATIVE_PACKAGES
+            or any(not isinstance(v, str) or not re.fullmatch(r'[A-Za-z0-9.+:~_-]{1,128}', v)
+                   for v in packages.values())
+            or not isinstance(runtime, dict) or set(runtime) != {'path', 'sha512', 'treeSha256'}
+            or not re.fullmatch(r'/opt/verity/runsc/release-[0-9]{8}\.[0-9]+/runsc', runtime['path'])
+            or not re.fullmatch('[a-f0-9]{128}', runtime['sha512'])
+            or not re.fullmatch('[a-f0-9]{64}', runtime['treeSha256'])):
+        raise ValueError('Invalid release-owned native profile')
+    runtime_path = root / runtime['path'].lstrip('/')
+    trusted_parent(runtime_path, root)
+    metadata = runtime_path.lstat()
+    if (not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.geteuid() or metadata.st_mode & 0o022
+            or hashlib.sha512(runtime_path.read_bytes()).hexdigest() != runtime['sha512']
+            or runtime_tree_digest(runtime_path.parent) != runtime['treeSha256']):
+        raise ValueError('Native runtime does not match accepted profile')
+    actual = info.get('Runtimes', {}).get('runsc-project', {})
+    project = {'path': actual.get('path'), 'runtimeArgs': actual.get('runtimeArgs', [])}
+    if project != {'path': runtime['path'], 'runtimeArgs': PROJECT_RUNTIME_ARGS}:
+        raise ValueError('Project runtime does not match accepted native profile')
+    return profile
+
+
+def trusted_native_file(path, root):
+    trusted_parent(path, root)
+    if path.exists() or path.is_symlink():
+        metadata = path.lstat()
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.geteuid() or metadata.st_mode & 0o022:
+            raise ValueError('Untrusted managed prerequisite destination')
+
+
+def prepare_managed_prerequisites(root, run, node_path='/opt/verity-egress/node'):
+    """Prepare only the exact accepted platform; never restart Docker or select latest packages."""
+    if (root / 'proc/1/comm').read_text().strip() != 'systemd':
+        raise ValueError('Managed prerequisites require native systemd')
+    profile = accepted_native_profile(root, run, node_path)
+    packages = profile['packages']
+    try:
+        versions = run('/usr/bin/dpkg-query', '--show', '--showformat=${Package}=${Version}\n',
+                       *sorted(packages)).splitlines()
+    except subprocess.SubprocessError:
+        versions = []
+    expected = [name + '=' + packages[name] for name in sorted(packages)]
+    if sorted(versions) != expected:
+        package_env = ('/usr/bin/env', 'DEBIAN_FRONTEND=noninteractive', 'NEEDRESTART_MODE=l',
+                       'SYSTEMD_OFFLINE=1')
+        run(*package_env, '/usr/bin/apt-get', 'update')
+        run(*package_env, '/usr/bin/apt-get', 'install', '-y', '--no-install-recommends', '--no-remove',
+            '-o', 'Dpkg::Options::=--force-confold', *expected)
+        if sorted(run('/usr/bin/dpkg-query', '--show', '--showformat=${Package}=${Version}\n',
+                      *sorted(packages)).splitlines()) != expected:
+            raise ValueError('Native package versions did not converge')
+    daemon = root / 'etc/docker/daemon.json'
+    trusted_native_file(daemon, root)
+    original = daemon.read_bytes()
+    config = json.loads(original)
+    runtime = {'path': profile['runtime']['path'], 'runtimeArgs': RELAY_RUNTIME_ARGS}
+    runtimes = config.setdefault('runtimes', {})
+    if 'runsc-relay' in runtimes and runtimes['runsc-relay'] != runtime:
+        raise ValueError('Unmanaged relay runtime registration collision')
+    if runtimes.get('runsc-relay') != runtime:
+        runtimes['runsc-relay'] = runtime
+        candidate = daemon.with_name('.verity-egress-daemon.json')
+        trusted_native_file(candidate, root)
+        atomic_file(candidate, (json.dumps(config) + '\n').encode())
+        try:
+            run('/usr/bin/dockerd', '--validate', '--config-file', str(candidate))
+            atomic_file(daemon, candidate.read_bytes())
+            try:
+                run('/usr/bin/systemctl', 'reload', 'docker.service')
+                info = json.loads(run('/usr/bin/docker', 'info', '--format', '{{json .}}'))
+                actual = info.get('Runtimes', {}).get('runsc-relay', {})
+                if {'path': actual.get('path'), 'runtimeArgs': actual.get('runtimeArgs', [])} != runtime:
+                    raise ValueError('Relay runtime reload did not converge')
+            except Exception:
+                atomic_file(daemon, original)
+                run('/usr/bin/systemctl', 'reload', 'docker.service')
+                raise
+        finally:
+            candidate.unlink(missing_ok=True)
+    unit = root / 'etc/systemd/system/sys-fs-bpf.mount'
+    trusted_native_file(unit, root)
+    if unit.exists() and unit.read_bytes() != BPFFS_UNIT:
+        raise ValueError('Unmanaged persistent bpffs unit collision')
+    mounts = (root / 'proc/mounts').read_text().splitlines()
+    mounted = [line.split()[2] for line in mounts if len(line.split()) >= 3
+               and line.split()[1] == '/sys/fs/bpf']
+    if mounted and mounted != ['bpf']:
+        raise ValueError('BPF mountpoint has an unrelated filesystem')
+    atomic_file(unit, BPFFS_UNIT)
+    run('/usr/bin/systemctl', 'daemon-reload')
+    run('/usr/bin/systemctl', 'enable', '--now', 'sys-fs-bpf.mount')
+    pin = root / 'sys/fs/bpf/verity_egress_deadline'
+    trusted_parent(pin / 'entry', root)
+    durable_mkdir(pin, 0o700)
+    metadata = pin.lstat()
+    if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.geteuid() or metadata.st_mode & 0o077:
+        raise ValueError('Untrusted persistent BPF pin directory')
+    tmpfiles = root / 'etc/tmpfiles.d/verity-egress-bpf.conf'
+    trusted_native_file(tmpfiles, root)
+    atomic_file(tmpfiles, b'd /sys/fs/bpf/verity_egress_deadline 0700 root root -\n')
+
 
 
 def command(*args):
-    return subprocess.run(args, check=True, capture_output=True, text=True, timeout=45,
+    return subprocess.run(args, check=True, capture_output=True, text=True, timeout=600 if '/usr/bin/apt-get' in args else 45,
                           env={'PATH': '/usr/sbin:/usr/bin:/sbin:/bin',
                                'DOCKER_HOST': 'unix:///var/run/docker.sock'}).stdout
 
@@ -113,8 +288,15 @@ def runtime_preflight(root, run=command, node_path='/usr/bin/node'):
         raise ValueError('Requires validated rootful Docker 29.9.2 with live restore off')
     if not {'runsc-project', 'runsc-relay'} <= set(info.get('Runtimes', {})):
         raise ValueError('Requires reviewed runsc-project and runsc-relay runtimes')
-    if platform.release() not in ACCEPTED_KERNEL_RELEASES:
-        raise ValueError('Kernel has no accepted native installation profile; host installation is unavailable')
+    profile = accepted_native_profile(root, run, node_path)
+    relay = {'path': profile['runtime']['path'], 'runtimeArgs': RELAY_RUNTIME_ARGS}
+    actual = info.get('Runtimes', {}).get('runsc-relay', {})
+    if {'path': actual.get('path'), 'runtimeArgs': actual.get('runtimeArgs', [])} != relay:
+        raise ValueError('Relay runtime does not match accepted native profile')
+    packages = profile['packages']
+    if sorted(run('/usr/bin/dpkg-query', '--show', '--showformat=${Package}=${Version}\n',
+                  *sorted(packages)).splitlines()) != [name + '=' + packages[name] for name in sorted(packages)]:
+        raise ValueError('Native packages no longer match accepted profile')
     for path in ('usr/sbin/nft', 'usr/sbin/bpftool', 'sbin/tc', 'sbin/ip',
                  'usr/bin/flock', 'usr/bin/nsenter', 'usr/bin/python3'):
         if not os.access(root / path, os.X_OK):

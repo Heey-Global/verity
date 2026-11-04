@@ -33,6 +33,7 @@ const PROJECT_EGRESS_PROVISION_BINDS = [
   '/etc/verity-egress-server:/etc/verity-egress-server',
   '/var/lib/verity-egress:/var/lib/verity-egress',
   '/opt/verity-egress-releases:/opt/verity-egress-releases',
+  '/opt/verity-egress-recovery:/opt/verity-egress-recovery',
   '/etc/systemd/system:/etc/systemd/system',
   '/etc/tmpfiles.d:/etc/tmpfiles.d',
   '/run/systemd:/run/systemd',
@@ -163,7 +164,7 @@ export async function provisionProjectEgressHost(options: {
       ...PROJECT_EGRESS_PROVISION_BINDS,
       `${state.source.path}/.verity-install.lock:/run/verity-install.lock`,
     ],
-    entrypoint: ['timeout', '--kill-after=5s', '110s', 'bash'],
+    entrypoint: ['timeout', '--kill-after=5s', '750s', 'bash'],
     command: ['/opt/verity-install/deploy/host/verity-egress-provision'],
     env: [
       ...(server.env ?? []).filter((entry) =>

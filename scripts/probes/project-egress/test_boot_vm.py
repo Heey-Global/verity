@@ -611,3 +611,23 @@ class ApiReadinessTests(unittest.TestCase):
         with patch.object(guest.urllib.request, 'urlopen', side_effect=error):
             with self.assertRaisesRegex(ValueError, '409.*conflict-detail'):
                 guest.api('/action')
+
+
+class ManagedStagingEvidenceTests(unittest.TestCase):
+    def test_requires_real_safety_observations_without_claiming_production_acceptance(self):
+        evidence = {'version': 1, 'scope': 'native-managed-staging-only',
+                    'productionAccepted': False, 'directAuthorityConfigured': False,
+                    'keyPreserved': True, 'dockerProcessPreserved': True,
+                    'firewallTablesPreserved': True, 'activeUnitsPreserved': True,
+                    'repeatedPreparationStable': True, 'releaseManifest': {'node': 'a' * 64}}
+        boot_proof.verify_managed_staging(evidence)
+        for key in evidence:
+            if key == 'releaseManifest':
+                continue
+            changed = dict(evidence)
+            del changed[key]
+            with self.subTest(missing=key), self.assertRaises((AssertionError, KeyError)):
+                boot_proof.verify_managed_staging(changed)
+        for key in ('productionAccepted', 'directAuthorityConfigured'):
+            with self.subTest(claim=key), self.assertRaises(AssertionError):
+                boot_proof.verify_managed_staging({**evidence, key: True})

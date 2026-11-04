@@ -31,6 +31,7 @@ if [[ ! -f $stage/ready ]]; then
   install -m 0600 /opt/verity-install/scripts/project-egress-install.py "$stage/project-egress-install.py"
   install -m 0600 /opt/verity-install/scripts/project-egress-managed.py "$stage/project-egress-managed.py"
   export VERITY_EGRESS_EXISTING_AUTHORITY=/etc/verity-egress/authority.json
+  export VERITY_EGRESS_EXISTING_RELAY=/etc/verity-egress/relay.json
   node /app/packages/server/dist/project-egress-managed-config-main.js "$stage/config"
   # The fixed host wrapper persists completion even if the Docker caller disconnects.
   cat >"$stage/apply.sh" <<APPLY
@@ -61,6 +62,6 @@ fi
 # mount and network namespaces. No firewall capability enters this Docker job.
 # The host oneshot has its own timeout and persists after a caller disconnects.
 systemd-run --quiet --wait --collect --unit="$unit" --service-type=exec \
-  --property=TimeoutStartSec=100s --property=RuntimeMaxSec=100s \
+  --property=TimeoutStartSec=720s --property=RuntimeMaxSec=720s \
   --property=NoNewPrivileges=yes --property=PrivateTmp=yes \
   /bin/bash "$stage/apply.sh"

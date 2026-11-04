@@ -111,3 +111,7 @@ await cp(
   'packages/server/dist/project-egress-host-main.mjs',
   join(output, 'project-egress-host-main.mjs'),
 );
+
+await mkdir(join(output, 'installer'), { recursive: true });
+for (const name of ['project-egress-install.py', 'project-egress-managed.py'])
+  await cp(join('scripts', name), join(output, 'installer', name));

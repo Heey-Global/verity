@@ -5,6 +5,7 @@ import { isIP } from 'node:net';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { managedEgressConfiguration } from './project-egress-managed-config.js';
+import { openProjectEgressHostStore } from './project-egress-host-runtime.js';
 import { readEgressHostConfiguration } from './project-egress-host-authority.js';
 
 const output = process.argv[2];
@@ -55,11 +56,37 @@ try {
   const previousAuthority = await readEgressHostConfiguration(
     process.env.VERITY_EGRESS_EXISTING_AUTHORITY ?? '/host/etc/verity-egress/authority.json',
   );
+  const previousRelay = await readEgressHostConfiguration(
+    process.env.VERITY_EGRESS_EXISTING_RELAY ?? '/host/etc/verity-egress/relay.json',
+  );
+  const registry = await (await openProjectEgressHostStore('/var/lib/verity-egress')).load();
+  const activeRelayImages: string[] = [];
+  for (const record of registry.records) {
+    if (record.retired || record.containers.relay === undefined) continue;
+    const inspected: unknown = JSON.parse(
+      (
+        await run(
+          '/usr/local/bin/docker',
+          ['--host=unix:///var/run/docker.sock', 'container', 'inspect', record.containers.relay],
+          { timeout: 10000, maxBuffer: 1024 * 1024 },
+        )
+      ).stdout,
+    );
+    if (
+      !Array.isArray(inspected) ||
+      inspected.length !== 1 ||
+      typeof (inspected[0] as { Config?: { Image?: unknown } }).Config?.Image !== 'string'
+    )
+      throw new Error('Protected relay inspection is incomplete');
+    activeRelayImages.push((inspected[0] as { Config: { Image: string } }).Config.Image);
+  }
   const configuration = managedEgressConfiguration({
     env: process.env,
     databaseInspection: inspection,
     dnsServers,
     ...(previousAuthority === undefined ? {} : { previousAuthority }),
+    ...(previousRelay === undefined ? {} : { previousRelay }),
+    activeRelayImages,
   });
   await mkdir(output, { mode: 0o700 });
   // Reuse the installed authority's credential on upgrades; changing it here

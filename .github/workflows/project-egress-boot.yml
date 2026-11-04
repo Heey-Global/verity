@@ -12,6 +12,11 @@ on:
       - 'scripts/probes/project-egress/BootRunner.Dockerfile'
       - 'packages/server/src/embedded.ts'
       - 'deploy/egress/**'
+      - 'scripts/project-egress-managed.py'
+      - 'scripts/project-egress-install.py'
+      - 'scripts/build-project-egress-release.mjs'
+      - 'deploy/host/verity-egress-provision'
+      - 'scripts/probes/project-egress/test_native_profile.py'
       - 'packages/server/src/project-egress-host-*.ts'
   workflow_dispatch: {}
 

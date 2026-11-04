@@ -1,3 +1,7 @@
+import {
+  createManagedSystemInventory,
+  projectEgressSystemInventoryHash,
+} from './project-egress-system-inventory.js';
 import { expect, it, vi } from 'vitest';
 import { createProjectEgressHostEnforcement } from './project-egress-host-enforcement.js';
 import {
@@ -50,7 +54,7 @@ const grant = {
   approvedAt: 100,
   expiresAt: null,
 };
-function fixture() {
+function fixture(ready: () => boolean = () => true) {
   const events: string[] = [];
   const deadline = {
     prepare: vi.fn(async () => {
@@ -78,6 +82,7 @@ function fixture() {
   const readForAdmission = vi.fn(async (_project: string, _revision?: number) => {
     void _project;
     void _revision;
+    if (!ready()) throw new Error('System inventory expired');
     return { revision: 1, grants: [grant], requests: {} };
   });
   const inspect = vi.fn(async () => ({
@@ -97,8 +102,8 @@ function fixture() {
       inspect: async (b) => ({ ...b }),
       apply,
       now: () => 1000,
-      directTargetAllowed: async () => true,
-      destinationAllowed: async () => true,
+      directTargetAllowed: async () => ready(),
+      destinationAllowed: async () => ready(),
       resolve: async () => {
         throw new Error('Unexpected DNS');
       },
@@ -352,4 +357,58 @@ it('records one Sandbox HTTPS request per ungranted name and caps a project', as
   } finally {
     vi.useRealTimers();
   }
+});
+
+it('fences existing packet grants before inventory ACK and leaves unchanged heartbeats connected', async () => {
+  let now = 0;
+  const inventory = createManagedSystemInventory({
+    managed: true,
+    now: () => now,
+    replace: async () => undefined,
+    invalidate: () => undefined,
+  });
+  const initial = '00000000-0000-4000-8000-000000000001';
+  inventory.begin(initial);
+  await inventory.commit(initial, []);
+  const f = fixture(() => inventory.ready());
+  const host = new ProjectEgressHost(
+    { version: 1, records: [{ binding: network, containers: ids, retired: false }] },
+    {
+      enforcement: f.enforcement,
+      systemInventory: inventory,
+      save: async () => undefined,
+      apply: async () => undefined,
+      inspectContainer: async () => undefined,
+      inspectNetwork: async () => undefined,
+      inspectTransport: async () => relay.transport,
+      startContainer: async () => undefined,
+      stopContainer: async () => undefined,
+    },
+  );
+  await host.execute({ operation: 'connect', projectId: 'a', generation: 'g1' });
+  await host.execute({ operation: 'refresh-direct', projectId: 'a', generation: 'g1' });
+  expect(f.deadline.arm).toHaveBeenCalledOnce();
+  const priorRevokes = f.deadline.revoke.mock.calls.length;
+  const token = '00000000-0000-4000-8000-000000000002';
+  expect(await host.execute({ operation: 'inventory-begin', token })).toEqual({
+    state: 'inventory-denied',
+    token,
+  });
+  expect(f.deadline.revoke.mock.calls.length).toBeGreaterThan(priorRevokes);
+  expect(f.deadline.clearRelay).not.toHaveBeenCalled();
+  expect(f.apply.mock.calls.at(-1)?.[0]).toContain('tcp dport { 53, 8080, 8443 }');
+  await host.execute({ operation: 'inventory-commit', token, hosts: [], addresses: [] });
+  const revokes = f.deadline.revoke.mock.calls.length;
+  await host.execute({
+    operation: 'inventory-renew',
+    token,
+    hash: projectEgressSystemInventoryHash([]),
+  });
+  expect(f.deadline.revoke.mock.calls.length).toBe(revokes);
+  now = 25_001;
+  await expect(
+    host.execute({ operation: 'refresh-direct', projectId: 'a', generation: 'g1' }),
+  ).rejects.toThrow('System inventory expired');
+  expect(f.deadline.arm).toHaveBeenCalledOnce();
+  expect(f.deadline.revoke.mock.calls.length).toBeGreaterThan(revokes);
 });

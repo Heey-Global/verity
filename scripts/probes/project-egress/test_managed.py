@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import tempfile
+import sys
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -54,6 +55,8 @@ class ManagedTests(unittest.TestCase):
 
     def execute(self, *args):
         self.calls.append(args)
+        if '--property=ActiveState' in args:
+            return 'inactive'
         if 'show' in args:
             return 'loaded' if self.loaded else 'not-found'
         if 'daemon-reload' in args:
@@ -160,13 +163,16 @@ class ManagedTests(unittest.TestCase):
         self.assertIn(f'Group={CONTROL_GID}', host)
         self.assertIn('/opt/verity-egress/node ', host)
         self.assertIn('project-egress-managed.py refresh-authority', host)
+        self.assertLess(host.index('project-egress-managed.py verify-runtime'),
+                        host.index('project-egress-managed.py refresh-authority'))
+        self.assertNotIn('not installed by verity-install', host)
         writable = ' '.join(line.partition('=')[2] for line in host.splitlines()
                             if line.startswith('ReadWritePaths='))
         self.assertIn('/etc/verity-egress', writable.split())
         self.assertEqual((self.root / 'usr/local/libexec/verity/project-egress-managed.py').read_bytes(),
                          SOURCE.read_bytes())
         self.assertLess(next(i for i, cmd in enumerate(self.calls) if cmd[-1] == 'deny'),
-                        next(i for i, cmd in enumerate(self.calls) if 'daemon-reload' in cmd))
+                        max(i for i, cmd in enumerate(self.calls) if 'daemon-reload' in cmd))
         self.assertEqual((self.root / 'opt/verity-egress/node').stat().st_mode & 0o777, 0o555)
 
     def test_unmanaged_prefix_collision_never_applies_rules(self):
@@ -310,7 +316,7 @@ class ManagedTests(unittest.TestCase):
     def test_interrupted_first_install_removes_partial_units_after_denial(self):
         def crash(*args):
             self.execute(*args)
-            if 'daemon-reload' in args:
+            if 'daemon-reload' in args and (self.root / managed.JOURNAL).exists():
                 raise KeyboardInterrupt('simulated process death')
             return 'loaded' if self.loaded else 'not-found'
 
@@ -323,6 +329,99 @@ class ManagedTests(unittest.TestCase):
         self.assertFalse((self.root / managed.JOURNAL).exists())
         self.assertTrue(any(cmd[-1] == 'deny' for cmd in self.calls))
         self.assertFalse(any('start' in cmd for cmd in self.calls))
+
+    def test_recovery_dependency_is_durable_before_first_activation_journal(self):
+        observed = []
+
+        def run(*args):
+            self.execute(*args)
+            if args[-1] == 'verity-egress-recovery.service':
+                self.assertFalse((self.root / managed.JOURNAL).exists())
+                unit = (self.root / managed.RECOVERY_UNIT).read_text()
+                entry = next(line.split(' ', 2)[2].rsplit(' ', 1)[0]
+                             for line in unit.splitlines() if line.startswith('ExecStart='))
+                helper = Path(entry)
+                self.assertTrue(helper.is_file())
+                self.assertEqual(helper.stat().st_mode & 0o777, 0o444)
+                self.assertEqual(helper.parent.stat().st_mode & 0o777, 0o555)
+                self.assertIn('Before=verity-egress-bootstrap.service docker.service', unit)
+                for relative in (managed.RECOVERY_DROPIN, managed.RECOVERY_DOCKER_DROPIN):
+                    dropin = (self.root / relative).read_text()
+                    self.assertIn('Requires=verity-egress-recovery.service', dropin)
+                    self.assertIn('After=verity-egress-recovery.service', dropin)
+                observed.append(helper)
+            return 'loaded' if self.loaded else 'not-found'
+
+        self.provision(run=run)
+        self.assertEqual(len(observed), 1)
+        self.assertNotIn(managed.RECOVERY_UNIT, managed.TRANSACTION_FILES)
+        self.assertNotIn(managed.RECOVERY_DOCKER_DROPIN, managed.TRANSACTION_FILES)
+
+    def test_boot_recovery_uses_immutable_helper_after_mutable_helper_replacement(self):
+        self.crash_upgrade()
+        unit = (self.root / managed.RECOVERY_UNIT).read_text()
+        entry = next(line.split(' ', 2)[2].rsplit(' ', 1)[0]
+                     for line in unit.splitlines() if line.startswith('ExecStart='))
+        helper = Path(entry)
+        mutable = self.root / 'usr/local/libexec/verity/project-egress-managed.py'
+        mutable.write_text('raise RuntimeError("incomplete helper replacement")')
+        copy_spec = importlib.util.spec_from_file_location('immutable_recovery', helper)
+        copy = importlib.util.module_from_spec(copy_spec)
+        with patch.object(sys, 'dont_write_bytecode', True):
+            copy_spec.loader.exec_module(copy)
+        self.assertTrue(copy.recover_boot(self.root, self.execute))
+        self.assertFalse((self.root / managed.JOURNAL).exists())
+        self.assertNotIn('incomplete helper replacement', mutable.read_text())
+        status = json.loads((self.root / 'run/verity-egress/status.json').read_text())
+        self.assertEqual(status['reason'], 'controller_failed')
+        self.assertEqual(status['state'], 'unavailable')
+
+    def test_boot_recovery_needs_no_source_or_runtime_admission_and_is_locked(self):
+        previous, config, key = self.crash_upgrade()
+        lock = self.root / 'var/lib/verity-egress/install.lock'
+        with lock.open('a') as owner:
+            managed.fcntl.flock(owner, managed.fcntl.LOCK_EX | managed.fcntl.LOCK_NB)
+            with self.assertRaises(BlockingIOError):
+                managed.recover_boot(self.root, self.execute)
+        self.calls.clear()
+        self.assertTrue(managed.recover_boot(self.root, self.execute))
+        self.assertFalse(any('stop' in cmd for cmd in self.calls))
+        self.assertEqual((self.root / 'opt/verity-egress').resolve(), previous)
+        self.assertEqual((self.root / 'etc/verity-egress/authority.json').read_bytes(), config)
+        self.assertEqual((self.root / 'etc/verity-egress/control.key').read_bytes(), key)
+        self.assertFalse((self.root / managed.JOURNAL).exists())
+        self.assertFalse(any('start' in cmd for cmd in self.calls))
+        self.calls.clear()
+        self.assertFalse(managed.recover_boot(self.root, self.execute))
+        self.assertEqual(self.calls, [])
+
+    def test_boot_recovery_stops_a_live_controller_before_independent_denial(self):
+        self.crash_upgrade()
+        self.calls.clear()
+
+        def active(*args):
+            result = self.execute(*args)
+            return 'active' if '--property=ActiveState' in args else result
+
+        self.assertTrue(managed.recover_boot(self.root, active))
+        stop = next(i for i, cmd in enumerate(self.calls) if 'stop' in cmd)
+        deny = next(i for i, cmd in enumerate(self.calls) if cmd[-1] == 'deny')
+        self.assertLess(stop, deny)
+        self.assertFalse(any('start' in cmd for cmd in self.calls))
+
+    def test_unknown_boot_controller_state_denies_but_retains_journal(self):
+        self.crash_upgrade()
+        self.calls.clear()
+
+        def unknown(*args):
+            result = self.execute(*args)
+            return 'unknown' if '--property=ActiveState' in args else result
+
+        with self.assertRaisesRegex(ValueError, 'boot controller state'):
+            managed.recover_boot(self.root, unknown)
+        self.assertTrue((self.root / managed.JOURNAL).exists())
+        self.assertTrue(any(cmd[-1] == 'deny' for cmd in self.calls))
+        self.assertFalse(any('daemon-reload' in cmd for cmd in self.calls))
 
     def test_unsupported_upgrade_preserves_running_bundle_units_and_config(self):
         self.provision()

@@ -374,3 +374,17 @@ it('accepts only the brokered Forge route settings in the relay environment', ()
   ])
     expect(check(env), env.join(' ')).toThrow('Untrusted relay');
 });
+
+it('accepts exactly the pinned old/new relay images with the same execution contract', () => {
+  const next = { ...policy, image: `repo@sha256:${'d'.repeat(64)}`, previousImage: policy.image };
+  const old = fixture();
+  expect(verifyEgressRelay(binding, next, old.reply, image, old.volume)).toHaveLength(3);
+  const latest = fixture();
+  latest.reply[0]!.Config.Image = next.image;
+  expect(verifyEgressRelay(binding, next, latest.reply, image, latest.volume)).toHaveLength(3);
+  old.reply[0]!.Config.Image = `repo@sha256:${'e'.repeat(64)}`;
+  expect(() => verifyEgressRelay(binding, next, old.reply, image, old.volume)).toThrow();
+  const altered = fixture();
+  altered.reply[0]!.Config.User = '0:0';
+  expect(() => verifyEgressRelay(binding, next, altered.reply, image, altered.volume)).toThrow();
+});

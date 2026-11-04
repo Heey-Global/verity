@@ -1204,12 +1204,14 @@ if [ -n "$egress_control_gid" ]; then
     --tmpfs /tmp:rw,nosuid,nodev,size=16m \
     -v /var/run/docker.sock:/var/run/docker.sock \
     -v /etc/verity-egress:/etc/verity-egress:ro \
+    -v /var/lib/verity-egress:/var/lib/verity-egress:ro \
     -v /etc/resolv.conf:/host/etc/resolv.conf:ro \
     -v "$egress_config:/egress-config" \
     -e "DATABASE_URL=postgres://verity:$postgres_password@postgres:5432/verity" \
     -e VERITY_EGRESS_DEPLOYMENT_NETWORK=verity-net \
     -e "VERITY_EGRESS_DATABASE_CONTAINER=$postgres_container" \
     -e VERITY_EGRESS_EXISTING_AUTHORITY=/etc/verity-egress/authority.json \
+    -e VERITY_EGRESS_EXISTING_RELAY=/etc/verity-egress/relay.json \
     -e VERITY_DATA_VOLUME=verity-data -e VERITY_SERVER_UID=1000 \
     -e "VERITY_PROJECT_RELAY_IMAGE=$egress_relay_image" \
     -e "VERITY_PROJECT_RELAY_GID=${VERITY_PROJECT_RELAY_GID:-65532}" \
