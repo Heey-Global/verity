@@ -7,6 +7,8 @@ import { tint } from '../ui/tint';
 
 export type HomeTab = 'home' | 'projects';
 
+const ICON_SIZE = 22;
+
 const TABS: { tab: HomeTab; label: string; icon: IconName }[] = [
   { tab: 'home', label: 'Home', icon: 'inbox' },
   { tab: 'projects', label: 'Projects', icon: 'layers' },
@@ -48,10 +50,12 @@ export function HomeTabBar({
             onPress={() => onChange(id)}
             style={styles.tab}
           >
-            <View style={styles.iconRow}>
-              <Icon name={icon} size={22} color={color} />
+            {/* The badge overlays the icon's corner instead of sitting beside it, so
+                icon and label share one centre line in every tab. */}
+            <View style={styles.icon}>
+              <Icon name={icon} size={ICON_SIZE} color={color} />
               {badge ? (
-                <View style={styles.badge}>
+                <View style={styles.badge} testID="home-tab-badge">
                   <Text variant="caption" style={styles.badgeText}>
                     {String(count)}
                   </Text>
@@ -77,8 +81,11 @@ const styles = StyleSheet.create((theme) => ({
     paddingTop: theme.spacing.sm,
   },
   tab: { flex: 1, alignItems: 'center', gap: theme.spacing.xs, minHeight: 44 },
-  iconRow: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.xs },
+  icon: { width: ICON_SIZE, height: ICON_SIZE },
   badge: {
+    position: 'absolute',
+    top: -theme.spacing.xs,
+    left: ICON_SIZE - theme.spacing.xs,
     minWidth: 20,
     paddingHorizontal: theme.spacing.xs,
     borderRadius: theme.radius.tag,

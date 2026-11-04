@@ -1,3 +1,4 @@
+import { setGestureDiagnosticsEnabled } from './gestureDiagnostics';
 import { AppState, type AppStateStatus } from 'react-native';
 import { beginSessionSwitch } from '@verity/mobile';
 import { markInitialListLoad, startStallSampling } from './sessionSwitchTiming';
@@ -6,6 +7,7 @@ let clock = 0;
 let background: (state: AppStateStatus) => void;
 const remove = jest.fn();
 beforeEach(() => {
+  setGestureDiagnosticsEnabled(true);
   clock = 0;
   jest.useFakeTimers();
   jest.spyOn(performance, 'now').mockImplementation(() => clock);
@@ -16,7 +18,8 @@ beforeEach(() => {
   Object.defineProperty(AppState, 'currentState', { configurable: true, value: 'active' });
 });
 afterEach(() => {
-  background('background');
+  setGestureDiagnosticsEnabled(false);
+  background?.('background');
   jest.useRealTimers();
   jest.restoreAllMocks();
 });
@@ -82,4 +85,20 @@ it('locates the peak interval among client phases without growing on every sampl
   expect(phase('js-timer-peak-observed-ms')?.value).toBe(900);
   expect(phase('js-timer-lag-max-ms')?.value).toBe(650);
   expect(phase('js-timer-pending-at-list-load-ms')?.value).toBe(750);
+});
+
+it('starts no stall timer while off and cancels synchronously on switch-off', () => {
+  setGestureDiagnosticsEnabled(false);
+  const trace = beginSessionSwitch('off');
+  startStallSampling(trace);
+  expect(jest.getTimerCount()).toBe(0);
+  setGestureDiagnosticsEnabled(true);
+  startStallSampling(trace);
+  expect(jest.getTimerCount()).toBe(1);
+  setGestureDiagnosticsEnabled(false);
+  expect(jest.getTimerCount()).toBe(0);
+  setGestureDiagnosticsEnabled(true);
+  clock = 900;
+  jest.advanceTimersByTime(1000);
+  expect(trace.phases).toEqual([]);
 });

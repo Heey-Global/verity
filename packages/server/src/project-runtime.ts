@@ -1,3 +1,4 @@
+import { measureDockerExec } from './docker-exec-diagnostics.js';
 import { execFile } from 'node:child_process';
 import { posix } from 'node:path';
 import { promisify } from 'node:util';
@@ -166,31 +167,46 @@ child.on('message',value=>{fs.writeFileSync(path,JSON.stringify({pid:child.pid,p
 
 const defaultRunner: RuntimeRunner = async (command, args, opts) => {
   if (opts?.stdin !== undefined) {
-    return await new Promise<RuntimeRunResult>((resolve, reject) => {
-      const child = execFile(
-        command,
-        [...args],
-        {
-          env: opts.env,
-          timeout: opts.timeoutMs,
-          maxBuffer: opts.maxBuffer,
-          encoding: 'utf8',
-        },
-        (error, stdout, stderr) => {
-          if (error) reject(new Error('Managed secret server transport failed.'));
-          else resolve({ stdout, stderr });
-        },
-      );
-      child.stdin?.on('error', () => undefined);
-      child.stdin?.end(opts.stdin);
-    });
+    const operation = () =>
+      new Promise<RuntimeRunResult>((resolve, reject) => {
+        const child = execFile(
+          command,
+          [...args],
+          {
+            env: opts.env,
+            timeout: opts.timeoutMs,
+            maxBuffer: opts.maxBuffer,
+            encoding: 'utf8',
+          },
+          (error, stdout, stderr) => {
+            if (error)
+              reject(
+                error instanceof Error
+                  ? error
+                  : new Error('Managed secret server transport failed.', { cause: error }),
+              );
+            else resolve({ stdout, stderr });
+          },
+        );
+        child.stdin?.on('error', () => undefined);
+        child.stdin?.end(opts.stdin);
+      });
+    return await (args[0] === 'exec' ? measureDockerExec('runtime', operation) : operation()).catch(
+      () => {
+        throw new Error('Managed secret server transport failed.');
+      },
+    );
   }
-  const { stdout, stderr } = await execFileAsync(command, [...args], {
-    env: opts?.env,
-    timeout: opts?.timeoutMs,
-    maxBuffer: opts?.maxBuffer,
-    encoding: 'utf8',
-  });
+  const operation = () =>
+    execFileAsync(command, [...args], {
+      env: opts?.env,
+      timeout: opts?.timeoutMs,
+      maxBuffer: opts?.maxBuffer,
+      encoding: 'utf8',
+    });
+  const { stdout, stderr } = await (args[0] === 'exec'
+    ? measureDockerExec('runtime', operation)
+    : operation());
   return { stdout: String(stdout), stderr: String(stderr) };
 };
 

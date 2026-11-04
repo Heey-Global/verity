@@ -1,5 +1,6 @@
 import { act, renderHook, waitFor } from '@testing-library/react-native';
 import type { VerityClient } from '@verity/mobile';
+import { AppState, type AppStateStatus } from 'react-native';
 import { useSessionPreviewReads } from './useSessionPreviewReads';
 import { subscribeLiveRefresh } from '../lib/liveConnection';
 
@@ -7,7 +8,29 @@ jest.mock('../lib/liveConnection', () => ({
   subscribeLiveRefresh: jest.fn(() => jest.fn()),
 }));
 
-beforeEach(() => jest.clearAllMocks());
+let mockFocused = true;
+let appStateListeners: Set<(state: AppStateStatus) => void>;
+jest.mock('expo-router', () => ({
+  useFocusEffect: (callback: () => (() => void) | undefined) => {
+    const React = require('react') as typeof import('react');
+    React.useEffect(() => (mockFocused ? callback() : undefined), [callback, mockFocused]);
+  },
+}));
+beforeEach(() => {
+  jest.clearAllMocks();
+  mockFocused = true;
+  AppState.currentState = 'active';
+  appStateListeners = new Set();
+  jest.spyOn(AppState, 'addEventListener').mockImplementation((_, listener) => {
+    appStateListeners.add(listener);
+    return {
+      remove: () => {
+        appStateListeners.delete(listener);
+      },
+    };
+  });
+});
+afterEach(() => jest.restoreAllMocks());
 
 function deferredRead() {
   const pending: { resolve: (value: unknown[]) => void; reject: (error: Error) => void }[] = [];
@@ -314,4 +337,33 @@ it('admits preview work only when enabled and aborts an early-open read on sessi
   await act(async () => pending[0]!.resolve([]));
   expect(hook.result.current.managedByInstance.size).toBe(0);
   expect(read).toHaveBeenCalledTimes(1);
+});
+
+it('detaches and aborts all preview sources while hidden, then refreshes on return', async () => {
+  const sources = setup();
+  const firstSignals = [sources.managed, sources.dev, sources.publicShares, sources.local].map(
+    ({ read }) => read.mock.calls[0]![1],
+  );
+  const initialDetaches = jest.mocked(subscribeLiveRefresh).mock.results.map(({ value }) => value);
+  await act(async () => {
+    mockFocused = false;
+    sources.rerender({ projectId: 'p1', sessionId: 's1', loaded: true, completedServerTools: 0 });
+  });
+  for (const signal of firstSignals) expect(signal.aborted).toBe(true);
+  for (const detach of initialDetaches) expect(detach).toHaveBeenCalledTimes(1);
+  await act(async () => {
+    mockFocused = true;
+    sources.rerender({ projectId: 'p1', sessionId: 's1', loaded: true, completedServerTools: 0 });
+  });
+  for (const { read } of [sources.managed, sources.dev, sources.publicShares, sources.local])
+    expect(read).toHaveBeenCalledTimes(2);
+  await act(async () => appStateListeners.forEach((listener) => listener('background')));
+  const count = jest.mocked(subscribeLiveRefresh).mock.calls.length;
+  await act(async () => sources.result.current.refreshStaticPreview());
+  expect(jest.mocked(subscribeLiveRefresh)).toHaveBeenCalledTimes(count);
+  for (const { read } of [sources.managed, sources.dev, sources.publicShares, sources.local]) {
+    expect(read.mock.calls[1]![1].aborted).toBe(true);
+    expect(read).toHaveBeenCalledTimes(2);
+  }
+  sources.unmount();
 });

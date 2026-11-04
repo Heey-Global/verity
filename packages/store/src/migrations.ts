@@ -5222,3 +5222,57 @@ migrations['0188_user_context'] = {
     await db.schema.alterTable('session_backend_state').dropColumn('context_fingerprint').execute();
   },
 };
+
+migrations['0189_user_view_state'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    // How a person sees the overview, kept per person instead of on the project or
+    // session row: one member folding a project or reading a session must not
+    // change what another member sees. Exactly one subject column is set, so each
+    // row disappears with its project, session or person.
+    await sql`create table user_view_state (
+      user_id text not null references users(id) on delete cascade,
+      project_id text references projects(id) on delete cascade,
+      session_id text references sessions(session_id) on delete cascade,
+      collapsed boolean not null default false,
+      last_seen_event_count integer check (last_seen_event_count >= 0),
+      inbox_dismissed jsonb not null default '[]'::jsonb
+        check (jsonb_typeof(inbox_dismissed) = 'array' and jsonb_array_length(inbox_dismissed) <= 16),
+      check ((project_id is null) <> (session_id is null))
+    )`.execute(db);
+    await sql`create unique index user_view_state_project_idx
+      on user_view_state (user_id, project_id) where project_id is not null`.execute(db);
+    await sql`create unique index user_view_state_session_idx
+      on user_view_state (user_id, session_id) where session_id is not null`.execute(db);
+    // The shared state so far becomes everyone's starting point, so nobody finds
+    // their folded projects open or read sessions unread after the upgrade.
+    await sql`insert into user_view_state (user_id, project_id, collapsed)
+      select u.id, p.id, true from users u cross join projects p where p.collapsed`.execute(db);
+    await sql`insert into user_view_state (user_id, session_id, last_seen_event_count)
+      select u.id, s.session_id, s.last_seen_event_count
+      from users u cross join sessions s where s.last_seen_event_count is not null`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table user_view_state`.execute(db);
+  },
+};
+
+migrations['0190_live_meeting_deletions'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    // A tombstone per discarded meeting: the change feed tells other devices to remove
+    // it, and a recorder still holding an unsent revision cannot upload it again.
+    await sql`create table live_meeting_deletions (
+      meeting_id text primary key,
+      session_id text not null references sessions(session_id) on delete cascade,
+      deleted_seq bigint not null,
+      deleted_at bigint not null,
+      -- What cleanup outside the meeting tables needs, so a failed step can be repeated.
+      engine text not null,
+      started_at bigint not null
+    )`.execute(db);
+    await sql`create index live_meeting_deletions_session_updates
+      on live_meeting_deletions(session_id, deleted_seq)`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table live_meeting_deletions`.execute(db);
+  },
+};

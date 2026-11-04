@@ -13,6 +13,26 @@ import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 describe('Control runner script sandbox image provisioning', () => {
+  it('installs broker module dependencies in both image paths', () => {
+    const broker = readFileSync(
+      'features/verity-sandbox-toolkit/bin/verity-agent-spawn-broker.mjs',
+      'utf8',
+    );
+    const dependencies = [...broker.matchAll(/from '\.\/(.*?)'/gu)].map((match) => match[1]!);
+    expect(dependencies.length).toBeGreaterThan(0);
+    for (const path of ['deploy/Dockerfile', 'features/verity-sandbox-toolkit/install.sh']) {
+      const install = readFileSync(path, 'utf8').replaceAll('\\\n', ' ');
+      const commands = install.split(/\n|&&/u);
+      for (const dependency of dependencies) {
+        // A missing module prevents the broker from starting before it can report health.
+        const command = commands.find((line) => line.includes(`/usr/local/bin/${dependency}`));
+        expect(command, `${path}: ${dependency}`).toBeDefined();
+        expect(command).toContain(`/bin/${dependency}`);
+        expect(command).toMatch(/install -m 0[0-7]{3}/u);
+      }
+    }
+  });
+
   it.each(['amd64', 'arm64'])(
     'installs the verified %s helper and refuses corrupt artifacts',
     (architecture) => {

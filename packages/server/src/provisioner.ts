@@ -770,6 +770,8 @@ export interface ProvisionerOptions {
   docker: DockerClient;
   /** Runs after a project container has started, before provisioning succeeds. */
   onContainerStarted?: ((project: ProjectRecord) => Promise<void>) | undefined;
+  /** Runs with lifecycle admission fenced, after the Runner stack is ready. */
+  beforeRunnerAdmission?: ((project: ProjectRecord) => Promise<void>) | undefined;
   /** Data-minimised lifecycle observer. It must never affect a transition. */
   onSandboxLifecycle?: ((event: ProjectSandboxLifecycleEvent) => void) | undefined;
   /** Reports why a sleeping Sandbox could not use the retained-container fast path. */
@@ -958,6 +960,8 @@ export interface ProvisionerOptions {
    *  how a gVisor runtime without `--host-uds=create` left projects "active" whose every
    *  turn failed with "the project supervisor socket is missing". Tests inject this. */
   supervisorReachable?: ((runtimePath: string) => Promise<void>) | undefined;
+  /** Read-only stack probe; undefined means a retained older Runner lacks this operation. */
+  supervisorStackHealth?: ((runtimePath: string) => Promise<boolean | undefined>) | undefined;
   /** Resolvers written into a gVisor Sandbox's resolv.conf instead of its relay, which
    *  otherwise answers for it: Docker's embedded resolver is unreachable from gVisor's
    *  netstack (`gvisor-project-network.ts`). */
@@ -1764,6 +1768,22 @@ function devcontainerFailureHint(output: string): string | undefined {
     );
   }
   return undefined;
+}
+
+async function readSupervisorStackHealth(runtimePath: string): Promise<boolean | undefined> {
+  const socketPath = join(runtimePath, 'supervisor.sock');
+  try {
+    const response = await requestRunnerSupervisor(socketPath, { kind: 'stack-health' }, 2_000);
+    return response.stackHealthVersion === 1 ? response.healthy === true : undefined;
+  } catch (error) {
+    // Old images keep their existing recovery path at a bounded cadence. Transport
+    // errors must still cause repair rather than being mistaken for compatibility.
+    if (error instanceof Error && /unknown supervisor request/u.test(error.message)) {
+      await requestRunnerSupervisor(socketPath, { kind: 'status' }, 2_000);
+      return undefined;
+    }
+    return false;
+  }
 }
 
 const SUPERVISOR_REACHABLE_TIMEOUT_MS = 10_000;
@@ -2578,6 +2598,10 @@ export class ProvisionerImpl implements Provisioner {
       promise: Promise<unknown>;
     }
   >();
+  private readonly supervisorHealthy = new Map<
+    string,
+    { containerName: string; generation: number | undefined; at: number }
+  >();
   private readonly supervisorRetry = new Map<
     string,
     {
@@ -2860,6 +2884,9 @@ export class ProvisionerImpl implements Provisioner {
     for (const id of this.supervisorRetry.keys()) {
       if (!activeIds.has(id)) this.supervisorRetry.delete(id);
     }
+    for (const id of this.supervisorHealthy.keys()) {
+      if (!activeIds.has(id)) this.supervisorHealthy.delete(id);
+    }
     const outcomes = await Promise.all(
       projects
         .filter((project) => project.state === 'active' && project.kind !== 'control_plane')
@@ -2895,6 +2922,26 @@ export class ProvisionerImpl implements Provisioner {
             promise: Promise.resolve()
               .then(async () => {
                 try {
+                  const last = this.supervisorHealthy.get(project.id);
+                  const retained =
+                    last?.containerName === project.containerName &&
+                    last.generation === replacementGeneration;
+                  const runtime = hasRunnerRuntime
+                    ? join(runtimeRoot, 'runners', project.id)
+                    : undefined;
+                  const health =
+                    runtime === undefined
+                      ? undefined
+                      : await (this.opts.supervisorStackHealth ?? readSupervisorStackHealth)(
+                          runtime,
+                        );
+                  if (
+                    health === true ||
+                    (health === undefined && retained && Date.now() - last.at < 60_000)
+                  ) {
+                    this.supervisorRetry.delete(project.id);
+                    return undefined;
+                  }
                   await this.containerCommand({
                     containerName: project.containerName,
                     dockerHost,
@@ -2907,8 +2954,21 @@ export class ProvisionerImpl implements Provisioner {
                       : 'verity-egress-connector-start --standalone',
                     timeoutMs: 12_000,
                   });
+                  if (
+                    runtime !== undefined &&
+                    health !== undefined &&
+                    (await (this.opts.supervisorStackHealth ?? readSupervisorStackHealth)(
+                      runtime,
+                    )) === false
+                  )
+                    throw new Error('Runner stack remains unhealthy after repair');
                   if (this.supervisorReconciliations.get(project.id) === entry) {
                     this.supervisorRetry.delete(project.id);
+                    this.supervisorHealthy.set(project.id, {
+                      containerName: project.containerName,
+                      generation: replacementGeneration,
+                      at: Date.now(),
+                    });
                   }
                   return undefined;
                 } catch (error) {
@@ -3758,6 +3818,7 @@ export class ProvisionerImpl implements Provisioner {
             } else await this.opts.docker.startContainer(inspect.id);
             const running = await this.opts.docker.inspectContainer(project.containerName);
             if (!running.running) throw new Error('Docker did not report the Sandbox as running');
+            this.supervisorHealthy.delete(project.id);
             await this.opts.onContainerStarted?.(project);
 
             const runnerRuntimePath =
@@ -3786,6 +3847,7 @@ export class ProvisionerImpl implements Provisioner {
                     : 'verity-egress-connector-start --standalone',
               });
             }
+            await this.opts.beforeRunnerAdmission?.(project);
             return (await this.opts.store.updateProjectSleepState(project.id, 'active', {
               sleepCompatibilityFingerprint: null,
               sleepingSince: null,
@@ -6575,6 +6637,7 @@ export class ProvisionerImpl implements Provisioner {
       throw new ProvisioningError(message, cause);
     }
     try {
+      this.supervisorHealthy.delete(project.id);
       await this.opts.onContainerStarted?.(project);
     } catch (cause) {
       const message = `post-start projection failed: ${failureMessage(cause)}`;
@@ -6658,8 +6721,10 @@ export class ProvisionerImpl implements Provisioner {
         throw new ProvisioningError(message, cause);
       }
     }
-    let lifecycleFailureLabel = 'postCreateCommand';
+    let lifecycleFailureLabel = 'pending session cleanup';
     try {
+      await this.opts.beforeRunnerAdmission?.(project);
+      lifecycleFailureLabel = 'postCreateCommand';
       if (image.usesDevcontainerImage && this.opts.dockerHostForBuild !== undefined) {
         if (devcontainerRuntime.remoteUser !== undefined) {
           lifecycleFailureLabel = 'remoteUser secret access check';
