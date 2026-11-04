@@ -121,6 +121,8 @@ esac\n`,
     const drained = f.invoke('drained');
     expect(drained.status).not.toBe(0);
     expect(drained.stderr).toContain('incompatible or unverifiable builder client');
+    expect(drained.stderr).toContain('Could not inspect builder client stuck');
+    expect(drained.stderr).toContain('context deadline exceeded');
   });
   it('accepts null usage from an empty real BuildKit worker', () => {
     const f = fixture({ usage: 'null' });

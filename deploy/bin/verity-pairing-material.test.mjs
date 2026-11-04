@@ -106,9 +106,11 @@ test('creates stable identity and TLS material with a fresh compact one-time cod
 
 test('leaves no certificate-issuing side files behind and sweeps earlier leftovers', () => {
   const state = mkdtempSync(join(tmpdir(), 'verity-pairing-leftovers-'));
-  // Leftovers of earlier releases, whose cleanup missed the files `openssl ca` adds.
-  writeFileSync(join(state, 'tls-cert.pem.646406.index.tmp.attr'), 'unique_subject = no\n');
-  writeFileSync(join(state, 'tls-cert.pem.646406.serial.tmp.old'), '00\n');
+  // Leftovers of earlier releases, whose cleanup missed the files `openssl ca` adds,
+  // owned by a run that has certainly exited.
+  const exited = spawnSync('true').pid;
+  writeFileSync(join(state, `tls-cert.pem.${exited}.index.tmp.attr`), 'unique_subject = no\n');
+  writeFileSync(join(state, `tls-cert.pem.${exited}.serial.tmp.old`), '00\n');
   writeFileSync(join(state, 'unrelated.tmp'), 'kept');
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const result = run(state);

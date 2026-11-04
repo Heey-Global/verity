@@ -122,9 +122,14 @@ clients_compatible() {
     local ids id metadata
     ids=$(timeout 10 docker ps -q) || return 1
     for id in $ids; do
+        local inspect_error
         if ! metadata=$(timeout 5 docker inspect --format '{"mounts":{{json .Mounts}},"admission":{{json (index .Config.Labels "org.verity.build-admission")}}}' "$id" 2>/dev/null); then
             # container_gone comes from native-retire.sh, sourced before any dispatch.
             container_gone "$id" && continue
+            # Re-ask for the daemon's reason only now; run_dir is shared with clients,
+            # so no error file is written there.
+            inspect_error=$(timeout 5 docker inspect --format '{{.Id}}' "$id" 2>&1 >/dev/null | head -c 512 || true)
+            printf 'Could not inspect builder client %s: %s\n' "$id" "${inspect_error:-unknown error}" >&2
             return 1
         fi
         [[ ${#metadata} -le 262144 ]] || return 1
