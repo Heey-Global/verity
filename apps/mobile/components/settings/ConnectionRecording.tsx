@@ -160,6 +160,7 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
   currentServer.current = serverId;
   const [reports, setReports] = useState<ConnectionDiagnosticReport[]>([]);
   const [reportMessage, setReportMessage] = useTransientMessage();
+  const [reportsUnavailable, setReportsUnavailable] = useState(false);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [problemReport, setProblemReport] = useState<ConnectionDiagnosticReport | null>(null);
   const [problemArchived, setProblemArchived] = useState(false);
@@ -179,16 +180,18 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
     if (!serverId) return;
     void loadConnectionDiagnosticReports(serverId).then(
       (values) => {
-        if (currentServer.current === serverId) setReports(values);
+        if (currentServer.current !== serverId) return;
+        setReports(values);
+        setReportsUnavailable(false);
       },
       () => {
-        if (currentServer.current === serverId)
-          setReportMessage('Saved reports could not be loaded. Nothing was deleted.');
+        if (currentServer.current === serverId) setReportsUnavailable(true);
       },
     );
   }, [serverId]);
   useEffect(() => {
     setReports([]);
+    setReportsUnavailable(false);
     setReportMessage('');
     refreshReports();
   }, [refreshReports]);
@@ -741,6 +744,7 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
       runRef.current?.runId === expected.runId;
     collectingRef.current = token;
     setCollecting(true);
+    let stage: 'stop' | 'storage' = 'stop';
     try {
       // Only a confirmed local Stop lets the unfinished run go; saved reports stay.
       if (!(await stopRemoteDataRecording())) throw new Error('Stop unconfirmed');
@@ -764,6 +768,7 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
         : false;
       if (!current()) return;
       // Persist the wait before the run disappears, so no reopening skips it.
+      stage = 'storage';
       if (!remoteStopped) await holdUntil(expected.expiresAt + SERVER_EXPIRY_MARGIN_MS);
       await AsyncStorage.removeItem(key);
       if (!current()) return;
@@ -778,7 +783,9 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
     } catch {
       if (current())
         setMessage(
-          'The app could not confirm that this device stopped recording. Wait a moment and try again.',
+          stage === 'stop'
+            ? 'The app could not confirm that this device stopped recording. Wait a moment and try again.'
+            : 'This device could not update its saved test. Nothing was discarded; try again.',
         );
     } finally {
       if (collectingRef.current === token) {
@@ -955,6 +962,13 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
         </TestCard>
       </View>
       <Toast message={reportMessage} />
+      {reportsUnavailable ? (
+        <StatusLine
+          tone="problem"
+          title="Saved reports could not be loaded"
+          detail="Nothing was deleted. Close and reopen Diagnostics to try again."
+        />
+      ) : null}
       {reports.length > 0 ? (
         <>
           <Eyebrow>Saved reports</Eyebrow>

@@ -830,3 +830,19 @@ it('releases both tests at once when Core and Uplink confirm Stop while discardi
   expect(screen.queryByText(/still finishing the previous test/)).toBeNull();
   expect(screen.getByText('Mock selected start')).toBeEnabled();
 });
+
+it('stays idle without a saved long test even while a native capture is reported', async () => {
+  // A quick test's native capture must never read as a running long test.
+  mockRemaining.mockResolvedValue(25_000);
+  const api = client();
+  testingRender(<ConnectionRecording client={api as never} />);
+  await waitFor(() => expect(mockRemaining).toHaveBeenCalled());
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+  });
+  expect(screen.queryByText(/^Recording/)).toBeNull();
+  expect(screen.queryByText('Stop recording')).toBeNull();
+  expect(screen.getByText('Mock selected start')).toBeEnabled();
+  expect(api.getConnectionRecording).not.toHaveBeenCalled();
+  expect(mockStop).not.toHaveBeenCalled();
+});

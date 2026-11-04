@@ -134,7 +134,7 @@ export function SelectedConnectionTest({
   const [message, setMessage] = useState('');
   const [result, setResult] = useState<Result | null>(null);
   const [toast, showToast] = useTransientMessage();
-  const [holdLeft, holdUntil, held] = useHold(
+  const [holdLeft, holdUntil, held, holdLoaded] = useHold(
     serverId ? `verity.selectedConnectionTest.hold.v1.${serverId}` : null,
   );
   const [report, setReport] = useState<ConnectionDiagnosticReport | null>(null);
@@ -146,9 +146,14 @@ export function SelectedConnectionTest({
   const [canStartAnother, setCanStartAnother] = useState(false);
   useEffect(() => {
     onCaptureBlocked?.(
-      !loaded || busy || holdLeft > 0 || (saved !== null && !(archived && canStartAnother)),
+      // Until the stored wait is read, a just-discarded run may still be recording.
+      !loaded ||
+        !holdLoaded ||
+        busy ||
+        holdLeft > 0 ||
+        (saved !== null && !(archived && canStartAnother)),
     );
-  }, [loaded, busy, holdLeft, saved, archived, canStartAnother, onCaptureBlocked]);
+  }, [loaded, holdLoaded, busy, holdLeft, saved, archived, canStartAnother, onCaptureBlocked]);
 
   const [localFailure, setLocalFailure] = useState<{
     kind: string;

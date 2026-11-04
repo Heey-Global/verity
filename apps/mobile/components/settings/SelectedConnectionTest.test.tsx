@@ -597,3 +597,39 @@ it('explains why the quick test is unavailable instead of only greying it out', 
   await screen.findByText('Finish the long test first.');
   expect(screen.getByRole('button', { name: 'Start quick test' })).toBeDisabled();
 });
+
+it('keeps the other test blocked after reopening until the stored wait is read', async () => {
+  await AsyncStorage.setItem(
+    'verity.selectedConnectionTest.hold.v1.paired',
+    String(Date.now() + 40_000),
+  );
+  // Read the stored wait only after the saved test has loaded: the window the guard covers.
+  const getItem = jest.mocked(AsyncStorage.getItem).getMockImplementation()!;
+  let releaseHold!: () => void;
+  const holdRead = new Promise<void>((resolve) => {
+    releaseHold = resolve;
+  });
+  const read = jest
+    .spyOn(AsyncStorage, 'getItem')
+    .mockImplementation(async (name: string) =>
+      name.includes('.hold.') ? holdRead.then(() => getItem(name)) : getItem(name),
+    );
+  const blocked = jest.fn();
+  try {
+    render(
+      <SelectedConnectionTest disabled={false} onBusy={jest.fn()} onCaptureBlocked={blocked} />,
+    );
+    await waitFor(() => expect(read).toHaveBeenCalledWith(key));
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+    expect(blocked).not.toHaveBeenCalledWith(false);
+    releaseHold();
+    await screen.findByText(/still finishing the previous test · ready in \d+ s/);
+  } finally {
+    read.mockRestore();
+  }
+  // The run itself is gone, but the long test must never have been released.
+  expect(blocked).not.toHaveBeenCalledWith(false);
+  expect(screen.getByRole('button', { name: 'Start quick test' })).toBeDisabled();
+});

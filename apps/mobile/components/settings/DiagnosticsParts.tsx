@@ -145,11 +145,13 @@ export function useHold(persistKey: string | null) {
   const until = useRef(0);
   const restored = useRef(false);
   const [left, setLeft] = useState(0);
+  const [loaded, setLoaded] = useState(false);
   useEffect(() => {
     let live = true;
     until.current = 0;
     restored.current = false;
     setLeft(0);
+    setLoaded(false);
     void (async () => {
       try {
         const raw = persistKey ? await AsyncStorage.getItem(persistKey) : null;
@@ -162,7 +164,10 @@ export function useHold(persistKey: string | null) {
       } catch {
         /* An unreadable deadline must not block testing forever. */
       } finally {
-        if (live) restored.current = true;
+        if (live) {
+          restored.current = true;
+          setLoaded(true);
+        }
       }
     })();
     return () => {
@@ -187,7 +192,7 @@ export function useHold(persistKey: string | null) {
     [persistKey],
   );
   const held = useCallback(() => !restored.current || until.current > Date.now(), []);
-  return [left, hold, held] as const;
+  return [left, hold, held, loaded] as const;
 }
 
 export function holdReason(seconds: number) {
