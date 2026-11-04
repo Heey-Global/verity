@@ -39,9 +39,10 @@ usage() {
 Usage: install.sh [bootstrap options] [verity-install options]
 
 Bootstrap options:
-  --preflight         Check every host prerequisite and exit without changing anything.
-  --install-missing   Install missing basic system tools (tar, flock, and OpenSSL) with the host
-                      package manager. Docker and Compose are never installed automatically.
+  --preflight         Check every host prerequisite and exit without changing anything
+                      (with --install-missing, install the missing tools first).
+  --install-missing   Install missing basic system tools (tar, flock, OpenSSL, curl, jq, and bzip2)
+                      with the host package manager. Docker and Compose are never installed automatically.
   -h, --help          Show this help.
 
 All other options are passed to the release-matched verity-install.
@@ -191,7 +192,15 @@ if [ "${#preflight_errors[@]}" -gt 0 ]; then
   printf 'verity-install: preflight failed (%d issues):\n' "${#preflight_errors[@]}" >&2
   printf '  - %s\n' "${preflight_errors[@]}" >&2
   if [ "${#missing_system_tools[@]}" -gt 0 ] && [ "$INSTALL_MISSING" -eq 0 ]; then
-    printf '%s\n' 'verity-install: re-run with --install-missing to install tar/flock/OpenSSL automatically.' >&2
+    printf 'verity-install: re-run with --install-missing to install %s automatically.\n' "${missing_system_tools[*]}" >&2
+    # The ready-made command assumes the public bootstrap. It is left out without curl, and
+    # when it would silently drop passthrough options or an --image override.
+    # A preflight-only run is offered another preflight, not an install.
+    if command -v curl >/dev/null 2>&1 && [ "${#installer_args[@]}" -eq 0 ] &&
+      [ -z "$source_image_override" ]; then
+      printf '  curl -fsSL https://verity.build/install.sh | bash -s --%s --install-missing\n' \
+        "$([ "$PREFLIGHT_ONLY" -eq 1 ] && printf ' --preflight')" >&2
+    fi
   fi
   exit 1
 fi
