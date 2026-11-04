@@ -27,6 +27,7 @@ it('shares overlapping bare/envelope reads after authorization, then reads afres
       listSessions,
       linkedSessionIds: async () => new Set(),
       sessionSortOrders: async () => new Map(),
+      viewState: { sessionViews: async () => new Map() } as never,
     },
     summarizeSessions,
     collectAttention: async () => [],
@@ -46,7 +47,9 @@ it('shares overlapping bare/envelope reads after authorization, then reads afres
     await new Promise<void>((resolve) => setImmediate(resolve));
     release();
     const [a, b] = await Promise.all([bare, envelope]);
-    expect(a.json()).toEqual([{ sessionId: 's1', sortOrder: null }]);
+    expect(a.json()).toEqual([
+      { sessionId: 's1', sortOrder: null, lastSeenEventCount: null, inboxDismissed: [] },
+    ]);
     expect(b.json()).toEqual({ sessions: a.json(), sessionReordering: true });
     expect(listSessions).toHaveBeenCalledTimes(1);
     expect(summarizeSessions).toHaveBeenCalledTimes(1);
@@ -59,6 +62,55 @@ it('shares overlapping bare/envelope reads after authorization, then reads afres
     expect(
       (await app.inject({ url: '/sessions', headers: { authorization: 'allowed' } })).statusCode,
     ).toBe(200);
+  } finally {
+    await app.close();
+  }
+});
+
+it('gives each person their own read mark and dismissed items from one shared load', async () => {
+  // The load is shared between concurrent readers. Writing the requester's state
+  // into the shared summaries instead of copies would hand one person's read
+  // marks to whoever asked at the same moment.
+  const app = Fastify();
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  app.addHook('onRequest', async (request) => {
+    request.localUserId = String(request.headers['x-user']);
+  });
+  const views = new Map([
+    ['a', new Map([['s1', { lastSeenEventCount: 3, inboxDismissed: ['question:s1'] }]])],
+    ['b', new Map()],
+  ]);
+  const listSessions = vi.fn(async () => {
+    await gate;
+    return [];
+  });
+  registerSessionListRoute(app, {
+    store: {
+      listSessions,
+      linkedSessionIds: async () => new Set(),
+      sessionSortOrders: async () => new Map(),
+      viewState: { sessionViews: async (user: string) => views.get(user)! } as never,
+    },
+    summarizeSessions: async () =>
+      [{ sessionId: 's1', lastSeenEventCount: 9 }] as unknown as SessionSummary[],
+    collectAttention: async () => [],
+    prunePrSummaryCache: () => {},
+    pruneBranchCache: () => {},
+  });
+  try {
+    const a = app.inject({ url: '/sessions', headers: { 'x-user': 'a' } });
+    const b = app.inject({ url: '/sessions', headers: { 'x-user': 'b' } });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    release();
+    expect((await a).json()[0]).toMatchObject({
+      lastSeenEventCount: 3,
+      inboxDismissed: ['question:s1'],
+    });
+    expect((await b).json()[0]).toMatchObject({ lastSeenEventCount: null, inboxDismissed: [] });
+    expect(listSessions).toHaveBeenCalledTimes(1);
   } finally {
     await app.close();
   }

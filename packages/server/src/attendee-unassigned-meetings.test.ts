@@ -181,3 +181,28 @@ it('finds the meeting whose bot is in a call, assigned or not, until it stops', 
   expect(await service.runningFor('https://zoom.us/j/3')).toBeUndefined();
   expect(await service.runningFor('https://meet.google.com/other')).toBeUndefined();
 });
+
+// Discarding a finished session meeting deletes the published copy; without this the
+// provider state would keep what the bot heard after the user chose to delete it.
+it('forgets a finished session meeting only for the session that owns it', async () => {
+  const { rows, store } = memoryStore([
+    [
+      'meeting:a',
+      running('a', 'session', {
+        phase: 'ended',
+        meeting: { ...running('a', 'session').meeting, transcript: 'secret' },
+      }),
+    ],
+  ]);
+  const request = vi.fn(async () => ({ state: 'ended' }));
+  const service = new AttendeeMeetings({
+    store,
+    ingest: vi.fn(),
+    client: () => ({ request }) as unknown as AttendeeClient,
+  });
+
+  expect(await service.discardFinished('other-session', 'a')).toBe(false);
+  expect(rows.get('meeting:a')).toMatchObject({ meeting: { transcript: 'secret' } });
+  expect(await service.discardFinished('session', 'a')).toBe(true);
+  expect(JSON.stringify(rows.get('meeting:a') ?? null)).not.toContain('secret');
+});

@@ -9,13 +9,21 @@ export function dispatchVoiceShortcut(): void {
   for (const listener of listeners) listener();
 }
 
-const taskListeners = new Set<() => void>();
+/** `assistant` preselects the Verity assistant as the target when it is available;
+ * otherwise capture opens with its usual project choice. */
+export interface TaskCaptureRequest {
+  target?: 'assistant';
+}
 
-export function subscribeTaskVoiceShortcut(listener: () => void): () => void {
+const taskListeners = new Set<(request: TaskCaptureRequest) => void>();
+
+export function subscribeTaskVoiceShortcut(
+  listener: (request: TaskCaptureRequest) => void,
+): () => void {
   taskListeners.add(listener);
   return () => taskListeners.delete(listener);
 }
 
-export function dispatchTaskVoiceShortcut(): void {
-  for (const listener of taskListeners) listener();
+export function dispatchTaskVoiceShortcut(request: TaskCaptureRequest = {}): void {
+  for (const listener of taskListeners) listener(request);
 }

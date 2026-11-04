@@ -24884,7 +24884,11 @@ var SESSION_PROJECTION_EVENT_TYPES = [
   "error",
   "permission",
   // Read by `aggregateUsage` (`result`, already listed) and `latestRateLimits`.
-  "rate_limit"
+  "rate_limit",
+  // Read by the summary's open-question fact (`openChoicesFromProjection` in the
+  // server), so an overview can answer a session's last question without its log.
+  // Status projections skip it; a small payload emitted at most once per turn.
+  "choices"
 ];
 var PROJECTION_TYPES = new Set(SESSION_PROJECTION_EVENT_TYPES);
 

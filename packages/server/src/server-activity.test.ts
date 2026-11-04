@@ -363,7 +363,7 @@ describe('POST /sessions/:id/debug/scroll', () => {
     // Telemetry must not trigger Git metadata reads or sandbox listener scans.
     expect(invalidate).not.toHaveBeenCalled();
     await app.inject({ method: 'PATCH', url: '/sessions/s1', payload: { name: 'Renamed' } });
-    expect(invalidate).toHaveBeenCalledWith('/sessions/s1');
+    expect(invalidate).toHaveBeenCalledWith('/sessions/s1/activity');
     invalidate.mockRestore();
   });
 
@@ -975,6 +975,7 @@ describe('GET /sessions', () => {
         agentTextCounterVersion: 'agent-text-v2',
         lastActivityAt: expect.any(Number),
         lastSeenEventCount: null,
+        inboxDismissed: [],
       },
       {
         sessionId: 's2',
@@ -993,6 +994,7 @@ describe('GET /sessions', () => {
         agentTextCounterVersion: 'agent-text-v2',
         lastActivityAt: null,
         lastSeenEventCount: null,
+        inboxDismissed: [],
       },
     ]);
   });
@@ -1166,6 +1168,7 @@ describe('GET /sessions', () => {
         agentTextCounterVersion: 'agent-text-v2',
         lastActivityAt: expect.any(Number),
         lastSeenEventCount: null,
+        inboxDismissed: [],
       },
     ]);
   });
@@ -2890,6 +2893,7 @@ describe('GET /sessions/:id', () => {
       agentTextCounterVersion: 'agent-text-v2',
       lastActivityAt: expect.any(Number),
       lastSeenEventCount: null,
+      inboxDismissed: [],
       busy: false,
       queued: [],
     });
@@ -2960,5 +2964,64 @@ describe('GET /sessions/:id', () => {
     const res = await app.inject({ method: 'GET', url: '/sessions/bad%20id' });
     expect(res.statusCode).toBe(400);
     expect(res.json()).toEqual({ error: 'invalid request' });
+  });
+});
+
+describe('GET /sessions inbox facts', () => {
+  it('carries the open question until a prompt answers it', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    await ctx.store.appendEvent('s1', { t: 'prompt', text: 'Build the form' });
+    await ctx.store.appendEvent('s1', {
+      t: 'choices',
+      question: 'Which validation library?',
+      options: [{ label: 'Zod', recommended: true }, { label: 'Valibot' }],
+    });
+    await ctx.store.appendEvent('s1', { t: 'status', state: 'completed' });
+    const open = await app.inject({ method: 'GET', url: '/sessions' });
+    expect(open.json()[0]).toMatchObject({
+      openChoices: {
+        question: 'Which validation library?',
+        options: [{ label: 'Zod', recommended: true }, { label: 'Valibot' }],
+      },
+    });
+    // A busy conductor means the answer is already being worked on.
+    isBusy.mockReturnValue(true);
+    const busy = await app.inject({ method: 'GET', url: '/sessions' });
+    expect(busy.json()[0]).not.toHaveProperty('openChoices');
+    isBusy.mockReturnValue(false);
+    await ctx.store.appendEvent('s1', { t: 'prompt', text: 'Zod' });
+    await ctx.store.appendEvent('s1', { t: 'status', state: 'completed' });
+    const answered = await app.inject({ method: 'GET', url: '/sessions' });
+    expect(answered.json()[0]).not.toHaveProperty('openChoices');
+  });
+
+  it('describes the permission prompts the conductor still has parked', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    await ctx.store.appendEvent('s1', { t: 'prompt', text: 'Search the web' });
+    await ctx.store.appendEvent('s1', {
+      t: 'permission',
+      id: 'toolu_egress',
+      tool: 'verity_http_request',
+      input: { url: 'https://api.exa.ai/search' },
+      riskClass: 'ask',
+    });
+    await ctx.store.appendEvent('s1', { t: 'status', state: 'awaiting_input' });
+    pendingPermissions.mockReturnValue(['toolu_egress']);
+    const res = await app.inject({ method: 'GET', url: '/sessions' });
+    expect(res.json()[0]).toMatchObject({
+      pendingPermissions: ['toolu_egress'],
+      pendingPermissionRequests: [
+        {
+          toolUseId: 'toolu_egress',
+          tool: 'verity_http_request',
+          riskClass: 'ask',
+          input: { url: 'https://api.exa.ai/search' },
+        },
+      ],
+    });
+    // Once answered the conductor drops it; the durable event alone is not a prompt.
+    pendingPermissions.mockReturnValue([]);
+    const answered = await app.inject({ method: 'GET', url: '/sessions' });
+    expect(answered.json()[0]).not.toHaveProperty('pendingPermissionRequests');
   });
 });

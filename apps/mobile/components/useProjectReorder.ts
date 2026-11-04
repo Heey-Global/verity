@@ -1,5 +1,13 @@
 import * as Haptics from 'expo-haptics';
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from 'react';
 import { AppState, type View } from 'react-native';
 import { Gesture } from 'react-native-gesture-handler';
 import {
@@ -20,7 +28,9 @@ import {
 import {
   gestureRowNumber,
   recordGesture,
-  useGestureDiagnosticsEnabled,
+  gestureDiagnosticsEnabled,
+  gestureRecordingGeneration,
+  subscribeGestureDiagnostics,
 } from '../lib/gestureDiagnostics';
 import { projectHandleRef } from '../lib/projectHandleRef';
 
@@ -40,13 +50,16 @@ type Header = {
   slot: AnimatedRef<View>;
   excluded?: readonly AnimatedRef<View>[];
 };
+function measureMounted(ref: AnimatedRef<View>) {
+  'worklet';
+  // A ref may detach before its passive registration cleanup runs. Native
+  // measure cannot convert a null shadow node, so skip it before crossing native.
+  return ref() === null ? null : measure(ref);
+}
 function hitsExcluded(header: Header, x: number, y: number) {
   'worklet';
   return (header.excluded ?? []).some((ref) => {
-    // Optional issue links may never mount. Reanimated passes their null shadow
-    // node to native measure(), which throws instead of returning null.
-    if (ref() === null) return false;
-    const bounds = measure(ref);
+    const bounds = measureMounted(ref);
     // Include the issue link's touch padding so a near-edge press stays a link.
     return (
       bounds !== null &&
@@ -196,7 +209,7 @@ export function useProjectReorder({
       if (header.scope !== current.scope) continue;
       const candidate = current.startOrder.indexOf(header.id);
       if (candidate < current.range.min || candidate > current.range.max) continue;
-      const slot = measure(header.slot);
+      const slot = measureMounted(header.slot);
       if (!slot || slot.height <= 0) continue;
       const nextDistance = Math.abs(slot.pageY - screenTop);
       if (nextDistance < distance) {
@@ -235,9 +248,16 @@ export function useProjectReorder({
   });
 
   // Off unless switched on in Settings → Diagnostics; toggling rebuilds the pan.
-  const recording = useGestureDiagnosticsEnabled();
+  const recordingGeneration = useSyncExternalStore(
+    subscribeGestureDiagnostics,
+    gestureRecordingGeneration,
+    gestureRecordingGeneration,
+  );
+  const recording = gestureDiagnosticsEnabled();
   const recordReorder = useCallback(
-    (event: string, headerId: string | null, detail: Record<string, string | number | boolean>) =>
+    (event: string, headerId: string | null, detail: Record<string, string | number | boolean>) => {
+      if (!gestureDiagnosticsEnabled() || gestureRecordingGeneration() !== recordingGeneration)
+        return;
       recordGesture({
         source: 'reorder',
         event,
@@ -248,8 +268,9 @@ export function useProjectReorder({
             ? { target: headerId.startsWith('session:') ? 'session' : 'project' }
             : {}),
         },
-      }),
-    [],
+      });
+    },
+    [recordingGeneration],
   );
   const gesture = useMemo(
     () =>
@@ -276,7 +297,7 @@ export function useProjectReorder({
                 excluded = true;
                 return false;
               }
-              const bounds = measure(header.handle);
+              const bounds = measureMounted(header.handle);
               const inside =
                 bounds !== null &&
                 touch.absoluteX >= bounds.pageX &&
@@ -302,7 +323,7 @@ export function useProjectReorder({
         .onStart((event) => {
           if (recording) runOnJS(recordReorder)('start', null, {});
           if (drag.value && !drag.value.dropping) return;
-          const host = measure(hostRef);
+          const host = measureMounted(hostRef);
           if (!host) return;
           for (const header of registeredHeaders.value) {
             const allowed =
@@ -314,7 +335,7 @@ export function useProjectReorder({
               hitsExcluded(header, event.absoluteX, event.absoluteY)
             )
               continue;
-            const handle = measure(header.handle);
+            const handle = measureMounted(header.handle);
             if (
               !handle ||
               event.absoluteX < handle.pageX ||
@@ -323,7 +344,7 @@ export function useProjectReorder({
               event.absoluteY > handle.pageY + handle.height
             )
               continue;
-            const row = measure(header.row);
+            const row = measureMounted(header.row);
             if (!row) continue;
             const token = ++sequence.value;
             fingerY.value = event.absoluteY;

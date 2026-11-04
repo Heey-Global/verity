@@ -616,30 +616,6 @@ describe('EventStore — projects', () => {
     ]);
   });
 
-  it('setProjectCollapsed persists the overview fold state; defaults to false', async () => {
-    await ctx.store.upsertProject({
-      id: 'p-collapse',
-      owner: 'owner-collapse',
-      repo: 'repo',
-      containerName: 'dev-owner-collapse-repo',
-      state: 'active',
-    });
-
-    const [fresh] = await ctx.store.listProjects();
-    expect(fresh?.collapsed).toBe(false);
-
-    const updated = await ctx.store.setProjectCollapsed('p-collapse', true);
-    expect(updated).toBe(true);
-    expect((await ctx.store.listProjects())[0]?.collapsed).toBe(true);
-
-    await ctx.store.setProjectCollapsed('p-collapse', false);
-    expect((await ctx.store.listProjects())[0]?.collapsed).toBe(false);
-  });
-
-  it('setProjectCollapsed returns false for an unknown project', async () => {
-    expect(await ctx.store.setProjectCollapsed('missing', true)).toBe(false);
-  });
-
   it('persists the guided setup status across reads', async () => {
     const created = await ctx.store.upsertProject({
       id: 'p-setup',

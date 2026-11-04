@@ -57,6 +57,23 @@ export function routeScopeKey(method: string, url: string): string {
   return `${method.toUpperCase()} ${url}`;
 }
 
+/** Only this read-only registry namespace has a pattern exception. Fastify's
+ * matched route must agree; a caller pathname/header cannot choose an exception. */
+export function nonOperatorRequestKey(
+  method: string,
+  pathname: string,
+  matchedUrl?: string,
+): string {
+  if (
+    (method === 'GET' || method === 'HEAD') &&
+    matchedUrl === '/internal/package-artifacts/*' &&
+    pathname.startsWith('/internal/package-artifacts/')
+  ) {
+    return routeScopeKey(method, matchedUrl);
+  }
+  return routeScopeKey(method, pathname);
+}
+
 const declare = (
   method: string,
   url: string,
@@ -232,6 +249,18 @@ export const NON_OPERATOR_ROUTES: ReadonlyMap<string, RouteScopeDeclaration> = n
     'container-capability',
     'per-container capability, presented by the sandbox package-manager shims',
   ),
+  declare(
+    'GET',
+    '/internal/package-artifacts/*',
+    'container-capability',
+    'read-only package registry adapter; trusted project generation and scoped capability',
+  ),
+  declare(
+    'POST',
+    '/internal/package-artifacts/npm/-/npm/v1/security/advisories/bulk',
+    'container-capability',
+    'bounded public advisory lookup; no registry publishing or credential forwarding',
+  ),
   // Both methods: the MCP endpoint answers POST for calls and GET for the
   // server-sent event stream, and the same per-turn bearer covers both.
   declare(
@@ -330,13 +359,9 @@ export function missingLockoutKeys(
 
 /**
  * The gate matches on the concrete request pathname with the query stripped,
- * deliberately not on Fastify's route pattern. That is only sound while no
- * exception carries a path parameter or wildcard — otherwise the declared key
- * would never equal a real pathname and the route would fall back to requiring
- * the operator token, which fails closed but fails confusingly.
- *
- * The assumption used to live in a comment. `buildServer` now refuses to
- * register such a route, so it cannot be introduced by accident.
+ * except for the narrowly matched read-only package registry pattern. Other
+ * exceptions cannot carry a parameter or wildcard: those declarations could
+ * never match a concrete pathname. `buildServer` rejects them at registration.
  *
  * `routes` is a parameter so a test can drive the guard with a fixture instead
  * of mutating the shared map.
@@ -348,6 +373,12 @@ export function nonOperatorDeclarationError(
 ): string | undefined {
   const declaration = routes.get(routeScopeKey(method, url));
   if (declaration === undefined) return undefined;
+  if (
+    method === 'GET' &&
+    url === '/internal/package-artifacts/*' &&
+    declaration.scope === 'container-capability'
+  )
+    return undefined;
   if (url.includes(':') || url.includes('*')) {
     return `route ${routeScopeKey(method, url)} is declared as \`${declaration.scope}\` but carries a path parameter or wildcard; the auth gate matches exception routes on the exact pathname, so such a route can never match its declaration`;
   }

@@ -9,6 +9,7 @@ import {
   declaredNonOperatorKeys,
   missingLockoutKeys,
   nonOperatorDeclarationError,
+  nonOperatorRequestKey,
   routeScopeKey,
   type RouteScopeDeclaration,
 } from './route-scopes.js';
@@ -524,4 +525,55 @@ describe('the onRoute hook in buildServer', () => {
     });
     expect(() => app.get('/probe/:id', async () => ({}))).toThrow(/path parameter/);
   });
+});
+
+it('admits only matched read-only package artifact routes through the device gate', () => {
+  const keys = new Set(
+    ['GET', 'HEAD'].flatMap((method) =>
+      declaredNonOperatorKeys({ method, url: '/internal/package-artifacts/*' }),
+    ),
+  );
+  for (const method of ['GET', 'HEAD']) {
+    expect(
+      keys.has(
+        nonOperatorRequestKey(
+          method,
+          '/internal/package-artifacts/npm/example',
+          '/internal/package-artifacts/*',
+        ),
+      ),
+    ).toBe(true);
+    expect(
+      keys.has(
+        nonOperatorRequestKey(
+          method,
+          '/internal/package-artifacts/npm/example',
+          '/internal/other/*',
+        ),
+      ),
+    ).toBe(false);
+  }
+  for (const method of ['POST', 'PUT', 'DELETE']) {
+    expect(
+      keys.has(
+        nonOperatorRequestKey(
+          method,
+          '/internal/package-artifacts/npm/example',
+          '/internal/package-artifacts/*',
+        ),
+      ),
+    ).toBe(false);
+  }
+  expect(
+    nonOperatorDeclarationError(
+      'GET',
+      '/internal/arbitrary/*',
+      new Map([
+        [
+          'GET /internal/arbitrary/*',
+          { scope: 'container-capability', credential: 'fixture capability' },
+        ],
+      ]),
+    ),
+  ).toContain('wildcard');
 });

@@ -1,3 +1,4 @@
+import { measureDockerExec } from './docker-exec-diagnostics.js';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
@@ -37,25 +38,27 @@ export const defaultContainerCommandRunner: ContainerCommandRunner = async ({
   workdir = '/work',
   timeoutMs,
 }) =>
-  execFileAsync(
-    'docker',
-    [
-      'exec',
-      ...(user !== undefined && user.length > 0 ? ['--user', user] : []),
-      '--env',
-      `PATH=${devcontainerLifecyclePath(user)}`,
-      '-w',
-      workdir,
-      containerName,
-      'sh',
-      '-lc',
-      devcontainerLifecycleCommand(user, command),
-    ],
-    {
-      env: { ...process.env, DOCKER_HOST: dockerHost },
-      maxBuffer: DEVCONTAINER_POST_CREATE_MAX_BUFFER_BYTES,
-      ...(timeoutMs !== undefined ? { timeout: timeoutMs } : {}),
-    },
+  measureDockerExec('lifecycle', () =>
+    execFileAsync(
+      'docker',
+      [
+        'exec',
+        ...(user !== undefined && user.length > 0 ? ['--user', user] : []),
+        '--env',
+        `PATH=${devcontainerLifecyclePath(user)}`,
+        '-w',
+        workdir,
+        containerName,
+        'sh',
+        '-lc',
+        devcontainerLifecycleCommand(user, command),
+      ],
+      {
+        env: { ...process.env, DOCKER_HOST: dockerHost },
+        maxBuffer: DEVCONTAINER_POST_CREATE_MAX_BUFFER_BYTES,
+        ...(timeoutMs !== undefined ? { timeout: timeoutMs } : {}),
+      },
+    ),
   );
 
 /** How long a postCreateCommand waits for the dependency install it shares

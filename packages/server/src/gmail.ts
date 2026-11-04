@@ -1,3 +1,4 @@
+import { projectTransportFetch } from './project-transport-authority.js';
 const GMAIL_API = 'https://gmail.googleapis.com/gmail/v1/users/me';
 const GMAIL_UPLOAD_API = 'https://gmail.googleapis.com/upload/gmail/v1/users/me';
 const MAX_BODY_CHARS = 100_000;
@@ -43,7 +44,7 @@ async function gmailJson<T>(
   init: RequestInit = {},
   fetchImpl: FetchLike = fetch,
 ): Promise<T> {
-  const response = await fetchImpl(`${GMAIL_API}${path}`, {
+  const response = await projectTransportFetch(fetchImpl, `${GMAIL_API}${path}`, {
     ...init,
     headers: {
       Authorization: `Bearer ${accessToken}`,
@@ -773,15 +774,19 @@ async function postGmailMessage<T>(
     Buffer.from(raw, 'base64url'),
     Buffer.from(`\r\n--${boundary}--\r\n`, 'utf8'),
   ]);
-  const response = await fetchImpl(`${GMAIL_UPLOAD_API}${path}?uploadType=multipart`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      Accept: 'application/json',
-      'Content-Type': `multipart/related; boundary=${boundary}`,
+  const response = await projectTransportFetch(
+    fetchImpl,
+    `${GMAIL_UPLOAD_API}${path}?uploadType=multipart`,
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        Accept: 'application/json',
+        'Content-Type': `multipart/related; boundary=${boundary}`,
+      },
+      body,
     },
-    body,
-  });
+  );
   if (!response.ok) {
     throw new GmailError(`Gmail request failed (HTTP ${String(response.status)})`, response.status);
   }
@@ -1117,7 +1122,8 @@ export async function sendGmailDraft(
     ) {
       draftCleanup = 'changed';
     } else {
-      const response = await fetchImpl(
+      const response = await projectTransportFetch(
+        fetchImpl,
         `${GMAIL_API}/drafts/${encodeURIComponent(approved.draftId)}`,
         {
           method: 'DELETE',

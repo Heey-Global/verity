@@ -1,26 +1,35 @@
 import Fastify from 'fastify';
-import { createServer, request as httpRequest, type IncomingMessage } from 'node:http';
+import { Agent, createServer, request as httpRequest, type IncomingMessage } from 'node:http';
 import type { RequestOptions } from 'node:https';
 import { EventEmitter, once } from 'node:events';
 import { PassThrough } from 'node:stream';
-import { expect, it, vi } from 'vitest';
+import { beforeEach, expect, it, vi } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { createMcpAppsInterceptor } from './mcp-apps.js';
 import { registerHttpMcpProxyRoute } from './http-mcp-proxy.js';
 
-const transport = vi.hoisted(() => ({ request: vi.fn() }));
+const transport = vi.hoisted(() => ({ request: vi.fn(), generation: new AbortController() }));
+beforeEach(() => {
+  transport.generation = new AbortController();
+});
 vi.mock('node:https', async (original) => ({
   ...(await original<typeof import('node:https')>()),
   request: transport.request,
 }));
 vi.mock('./internal-listener.js', () => ({
+  internalConnectionGenerationSignal: () => transport.generation.signal,
   internalConnectionIdentity: () => ({ projectId: 'project', containerGeneration: 'generation' }),
 }));
 
-it.each([false, true])(
-  'completes an SDK handshake and tool call (SSE/session: %s)',
-  async (sse) => {
+it.each([
+  { sse: false, singleConnection: false },
+  { sse: true, singleConnection: false },
+  { sse: false, singleConnection: true },
+])(
+  'completes an SDK handshake and tool call ($sse SSE/session, $singleConnection single connection)',
+  async ({ sse, singleConnection }) => {
+    const agent = singleConnection ? new Agent({ keepAlive: true, maxSockets: 1 }) : undefined;
     const calls: string[] = [];
     const upstream = createServer((request, response) => {
       void (async () => {
@@ -30,6 +39,7 @@ it.each([false, true])(
         }
         const chunks: Buffer[] = [];
         for await (const chunk of request) chunks.push(chunk as Buffer);
+        expect(Number(request.headers['content-length'])).toBe(Buffer.concat(chunks).byteLength);
         const message = JSON.parse(Buffer.concat(chunks).toString()) as {
           id?: number;
           method: string;
@@ -65,6 +75,7 @@ it.each([false, true])(
         response.destroy(error instanceof Error ? error : new Error('stub failed')),
       );
     });
+    upstream.keepAliveTimeout = 60_000;
     upstream.listen(0, '127.0.0.1');
     await once(upstream, 'listening');
     const upstreamAddress = upstream.address();
@@ -79,6 +90,8 @@ it.each([false, true])(
             hostname: '127.0.0.1',
             port: upstreamAddress.port,
             lookup: undefined,
+            // Exercise response draining even with a stricter pool than production.
+            ...(agent === undefined ? {} : { agent }),
           },
           callback,
         ),
@@ -111,7 +124,9 @@ it.each([false, true])(
     );
     try {
       await client.connect(clientTransport);
-      expect(await client.callTool({ name: 'echo', arguments: {} })).toMatchObject({
+      expect(
+        await client.callTool({ name: 'echo', arguments: { message: 'Grüße 👋' } }),
+      ).toMatchObject({
         content: [{ text: 'tool completed' }],
       });
       expect(calls).toEqual([
@@ -125,7 +140,19 @@ it.each([false, true])(
         const entries = logs
           .map((line) => JSON.parse(line) as Record<string, unknown>)
           .filter((entry) => entry.rpcMethod === 'tools/call');
+        const written = entries.find((entry) => entry.stage === 'request-written');
+        expect(written).toMatchObject({
+          bodyBytes: expect.any(Number),
+          requestWrittenMs: expect.any(Number),
+          hasProtocolSession: sse,
+          acceptsJson: true,
+          acceptsEventStream: true,
+          requestContentType: 'application/json',
+          protocolVersion: '2025-06-18',
+        });
+        expect(Number(written?.bodyBytes)).toBeGreaterThan(0);
         const headers = entries.find((entry) => entry.stage === 'headers');
+        expect(written?.reqId).toBe(headers?.reqId);
         const firstByte = entries.find((entry) => entry.stage === 'first-byte');
         expect(headers).toMatchObject({
           upstreamStatus: 200,
@@ -157,6 +184,7 @@ it.each([false, true])(
       expect(logs.join('')).not.toMatch(/pin=|private/u);
     } finally {
       await client.close();
+      agent?.destroy();
       upstream.closeAllConnections();
       await new Promise<void>((resolve) => upstream.close(() => resolve()));
       await app.close();
@@ -164,9 +192,13 @@ it.each([false, true])(
   },
 );
 
-it.each([false, true])(
-  'reports pre-response failures without leaking credentials (timeout: %s)',
-  async (timeout) => {
+it.each([
+  { timeout: false, connected: false },
+  { timeout: true, connected: false },
+  { timeout: true, connected: true },
+])(
+  'reports pre-response failures without leaking credentials ($timeout timeout, $connected connected)',
+  async ({ timeout, connected }) => {
     const logs: string[] = [];
     const app = Fastify({
       logger: {
@@ -188,6 +220,12 @@ it.each([false, true])(
         },
         end: () => {
           queueMicrotask(() => {
+            if (connected) {
+              const socket = new EventEmitter();
+              outgoing.emit('socket', socket);
+              socket.emit('secureConnect');
+              outgoing.emit('finish');
+            }
             if (timeout) onTimeout?.();
             else
               outgoing.emit(
@@ -212,18 +250,39 @@ it.each([false, true])(
         method: 'POST',
         url: '/internal/mcp-proxy',
         payload: { jsonrpc: '2.0', id: 1, method: 'initialize' },
-        headers: { authorization: 'Bearer turn', 'x-verity-mcp-binding': 'tools' },
+        headers: {
+          authorization: 'Bearer turn',
+          'x-verity-mcp-binding': 'tools',
+          accept: 'application/json; token=secret, text/event-stream',
+          'content-type': 'application/json; charset=utf-8; token=secret',
+          'mcp-protocol-version': 'secret',
+          'mcp-session-id': 'private',
+        },
       });
       expect(response.statusCode).toBe(timeout ? 504 : 502);
       expect(response.json()).toEqual({
-        error: timeout ? 'MCP upstream timed out during connect' : 'MCP upstream connection failed',
+        error: timeout
+          ? `MCP upstream timed out during ${connected ? 'headers' : 'connect'}`
+          : 'MCP upstream connection failed',
       });
       expect(logs.map((line) => JSON.parse(line) as Record<string, unknown>)).toContainEqual(
         expect.objectContaining({
           level: 40,
-          stage: 'connect',
+          stage: connected ? 'headers' : 'connect',
+          ...(connected
+            ? {
+                connectedMs: expect.any(Number),
+                requestWrittenMs: expect.any(Number),
+                transportStage: 'request-written',
+              }
+            : {}),
           reason: timeout ? 'timeout' : 'transport',
           connectionId: 'tools',
+          acceptsJson: true,
+          acceptsEventStream: true,
+          requestContentType: 'application/json',
+          protocolVersion: 'other',
+          hasProtocolSession: true,
         }),
       );
       expect(logs.join('')).not.toMatch(/private|secret|pin=/u);
@@ -296,6 +355,118 @@ it.each(['authorization', 'protocol', 'timeout'] as const)(
       );
       expect(logs.join('')).not.toMatch(/private|secret|pin=/u);
     } finally {
+      await app.close();
+    }
+  },
+);
+
+it('retires the interceptor tools/list stream before the main tool request can be sent', async () => {
+  const app = Fastify();
+  let source: PassThrough | undefined;
+  let providerSignal: AbortSignal | undefined;
+  transport.request.mockClear();
+  transport.request.mockImplementation(
+    (options: RequestOptions, callback: (response: IncomingMessage) => void) => {
+      providerSignal = options.signal;
+      const outgoing = Object.assign(new EventEmitter(), {
+        setTimeout: vi.fn(),
+        end: () => {
+          source = Object.assign(new PassThrough(), {
+            statusCode: 200,
+            headers: { 'content-type': 'application/json' },
+            setTimeout: vi.fn(),
+          });
+          callback(source as unknown as IncomingMessage);
+        },
+      });
+      return outgoing;
+    },
+  );
+  registerHttpMcpProxyRoute(app, {
+    resolveCaller: async () => ({ sessionId: 'session', turnId: 'turn' }),
+    resolveConnection: async () => ({ id: 'tools', url: 'https://mcp.example.test/rpc' }),
+    intercept: createMcpAppsInterceptor({ emit: async () => {} }),
+  });
+  try {
+    const pending = app
+      .inject({
+        method: 'POST',
+        url: '/internal/mcp-proxy',
+        payload: { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'echo' } },
+        headers: { authorization: 'Bearer turn', 'x-verity-mcp-binding': 'tools' },
+      })
+      .then((response) => response);
+    await vi.waitFor(() => expect(source).toBeDefined());
+    transport.generation.abort();
+    await vi.waitFor(() => expect(source!.destroyed).toBe(true));
+    expect(providerSignal?.aborted).toBe(true);
+    expect((await pending).statusCode).toBe(502);
+    expect(transport.request).toHaveBeenCalledOnce();
+  } finally {
+    source?.destroy();
+    await app.close();
+  }
+});
+
+it.each(['headers', 'json'] as const)(
+  'revokes main MCP requests while waiting for %s',
+  async (phase) => {
+    const app = Fastify();
+    let allowed = true;
+    let started = false;
+    let providerSignal: AbortSignal | undefined;
+    let source: PassThrough | undefined;
+    transport.request.mockClear();
+    transport.request.mockImplementation(
+      (options: RequestOptions, callback: (response: IncomingMessage) => void) => {
+        providerSignal = options.signal;
+        const outgoing = Object.assign(new EventEmitter(), {
+          setTimeout: vi.fn(),
+          end: () => {
+            started = true;
+            if (phase === 'json') {
+              source = Object.assign(new PassThrough(), {
+                statusCode: 200,
+                headers: { 'content-type': 'application/json' },
+                setTimeout: vi.fn(),
+              });
+              callback(source as unknown as IncomingMessage);
+            }
+          },
+        });
+        options.signal?.addEventListener(
+          'abort',
+          () => outgoing.emit('error', new Error('revoked')),
+          { once: true },
+        );
+        return outgoing;
+      },
+    );
+    registerHttpMcpProxyRoute(app, {
+      resolveCaller: async () => (allowed ? { sessionId: 'session', turnId: 'turn' } : undefined),
+      resolveConnection: async () => ({ id: 'tools', url: 'https://mcp.example.test/rpc' }),
+    });
+    try {
+      const pending = app
+        .inject({
+          method: 'POST',
+          url: '/internal/mcp-proxy',
+          payload: { jsonrpc: '2.0', id: 1, method: 'ping' },
+          headers: { authorization: 'Bearer turn', 'x-verity-mcp-binding': 'tools' },
+        })
+        .then(
+          (response) => response,
+          () => undefined,
+        );
+      await vi.waitFor(() => expect(started).toBe(true));
+      allowed = false;
+      await vi.waitFor(() => expect(providerSignal?.aborted).toBe(true));
+      if (phase === 'json') expect(source?.destroyed).toBe(true);
+      await pending;
+      expect(transport.request).toHaveBeenCalledOnce();
+    } finally {
+      source?.destroy();
+      transport.generation.abort();
       await app.close();
     }
   },

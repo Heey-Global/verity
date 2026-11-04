@@ -1,3 +1,4 @@
+import { projectTransportFetch } from './project-transport-authority.js';
 import { matrixRequestSchema } from './matrix-tool.js';
 import type { EventStore } from '@verity/store';
 import { connectorToolAvailable } from './agent-tool-availability.js';
@@ -1354,4 +1355,52 @@ it('advertises and approves account-only Drive URL reads without linked folders'
       request: expect.objectContaining({ action: 'read_document_url' }),
     }),
   );
+});
+
+it('binds provider requests to the listener generation and blocks work after retirement', async () => {
+  const generation = new AbortController();
+  const provider = vi.fn(async () => 'ok');
+  const { gateway } = harness({
+    invokeTool: async () => {
+      await projectTransportFetch(provider, 'https://example.test/first', {});
+      generation.abort();
+      return projectTransportFetch(provider, 'https://example.test/second', {});
+    },
+  });
+  const response = await gateway.handle({
+    projectId: 'p1',
+    token: 'session-token',
+    body: call(),
+    transport: {
+      identity: { projectId: 'p1', containerGeneration: 'g1' },
+      signal: generation.signal,
+    },
+  });
+  expect(provider).toHaveBeenCalledTimes(1);
+  expect(resultOf(response.body).isError).toBe(true);
+});
+
+it('revalidates the initiating user after asynchronous tool credential work', async () => {
+  let revoked = false;
+  const provider = vi.fn(async () => 'ok');
+  const { gateway } = harness({
+    authorizeExecution: async () => {
+      if (revoked) throw new Error('user revoked');
+    },
+    invokeTool: async () => {
+      revoked = true;
+      return projectTransportFetch(provider, 'https://example.test', {});
+    },
+  });
+  const response = await gateway.handle({
+    projectId: 'p1',
+    token: 'session-token',
+    body: call(),
+    transport: {
+      identity: { projectId: 'p1', containerGeneration: 'g1' },
+      signal: new AbortController().signal,
+    },
+  });
+  expect(provider).not.toHaveBeenCalled();
+  expect(resultOf(response.body).isError).toBe(true);
 });

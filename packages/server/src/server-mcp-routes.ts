@@ -500,7 +500,18 @@ export function registerServerMcpRoutes({
     const emitMcpApp = (sessionId: string, event: Extract<AgentEvent, { t: 'mcp_app' }>) =>
       emitSessionEvent(deps.eventStore, deps.bus, sessionId, event);
     registerHttpMcpProxyRoute(app, {
-      resolveCaller: deps.mcpProxyResolveCaller,
+      resolveCaller: async (input) => {
+        const caller = await deps.mcpProxyResolveCaller!(input);
+        if (!caller) return undefined;
+        const session = await deps.eventStore.getSession(caller.sessionId);
+        if (session?.projectId !== input.projectId) return undefined;
+        if (deps.authRegistry?.isEnabled() === true) {
+          const principal = await runningTurnInitiator(caller.sessionId, caller.turnId);
+          if (!principal || !(await canExecuteAs(principal.userId, input.projectId)))
+            return undefined;
+        }
+        return caller;
+      },
       resolveConnection: resolveMcpAppConnection,
       intercept: createMcpAppsInterceptor({
         emit: emitMcpApp,

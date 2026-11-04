@@ -9,6 +9,7 @@ import {
   sessionSummarySchema,
   branchListSchema,
   sessionDetailSchema,
+  sessionDirectorySchema,
   type TurnRequest,
 } from './api.js';
 
@@ -149,6 +150,40 @@ it.each([undefined, 'dev-servers-excluded-v1', 'agent-text-v2'])(
     expect(parsed.backgroundWorking).toBe(true);
   },
 );
+
+it('carries inbox facts and tolerates their absence or a malformed copy', () => {
+  const base = {
+    sessionId: 's1',
+    worktree: '/wt/s1',
+    model: 'm',
+    name: null,
+    status: 'awaiting_input',
+    usage: ZERO_USAGE,
+  };
+  // An older server sends neither; Home must simply show nothing for them.
+  const legacy = sessionSummarySchema.parse(base);
+  expect(legacy.openChoices).toBeUndefined();
+  expect(legacy.pendingPermissionRequests).toBeUndefined();
+  const current = sessionSummarySchema.parse({
+    ...base,
+    pendingPermissions: ['toolu_1'],
+    pendingPermissionRequests: [
+      { toolUseId: 'toolu_1', tool: 'verity_http_request', riskClass: 'ask', input: { url: 'x' } },
+    ],
+    openChoices: { question: 'Which?', options: [{ label: 'Zod', recommended: true }] },
+  });
+  expect(current.pendingPermissionRequests?.[0]).toMatchObject({ toolUseId: 'toolu_1' });
+  expect(current.openChoices?.options[0]?.label).toBe('Zod');
+  // One bad field must not take the whole session list down with it.
+  const malformed = sessionSummarySchema.parse({
+    ...base,
+    pendingPermissionRequests: [{ tool: 'x' }],
+    openChoices: { options: [] },
+  });
+  expect(malformed.pendingPermissionRequests).toBeUndefined();
+  expect(malformed.openChoices).toBeUndefined();
+  expect(malformed.status).toBe('awaiting_input');
+});
 
 interface Call {
   url: string;
@@ -298,6 +333,8 @@ describe('VerityClient live meetings', () => {
         },
       ],
       notes: [note],
+      // A server without discarding reports no deletions rather than an invalid feed.
+      deletedMeetingIds: [],
     });
     await client.putLiveMeeting(meeting);
     await client.putLiveMeetingNote(meeting.sessionId, note);
@@ -1230,6 +1267,39 @@ describe('VerityClient.listProjects (#174)', () => {
     expect(calls[0]?.init?.body).toBe(JSON.stringify({ collapsed: true }));
   });
 
+  it('dismisses Home items of projects and sessions, and keeps the dismissed keys', async () => {
+    const { fetch, calls } = fakeFetchSequence(
+      json({ id: 'p1', inboxDismissed: ['health:p1:t'] }),
+      json({ id: 's1', inboxDismissed: [] }),
+    );
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+
+    expect(await client.setProjectInboxDismissed('p1', 'health:p1:t', true)).toEqual([
+      'health:p1:t',
+    ]);
+    expect(calls[0]?.url).toBe('http://host/projects/p1/inbox-dismissed');
+    expect(calls[0]?.init?.method).toBe('PATCH');
+    expect(calls[0]?.init?.body).toBe(JSON.stringify({ key: 'health:p1:t', dismissed: true }));
+    expect(await client.setSessionInboxDismissed('s1', 'question:s1', false)).toEqual([]);
+    expect(calls[1]?.url).toBe('http://host/sessions/s1/inbox-dismissed');
+    expect(calls[1]?.init?.body).toBe(JSON.stringify({ key: 'question:s1', dismissed: false }));
+    // A schema without the field would strip it, and Home would never hide anything.
+    expect(
+      projectRecordSchema.parse({ ...project, inboxDismissed: ['health:p1:t'] }).inboxDismissed,
+    ).toEqual(['health:p1:t']);
+    expect(
+      sessionSummarySchema.parse({
+        sessionId: 's1',
+        worktree: '/wt/s1',
+        model: 'm',
+        name: null,
+        status: 'idle',
+        usage: ZERO_USAGE,
+        inboxDismissed: ['question:s1'],
+      }).inboxDismissed,
+    ).toEqual(['question:s1']);
+  });
+
   it('surfaces a 503 without pretending the project list is empty', async () => {
     const { fetch } = fakeFetch(json({ error: 'temporarily unavailable' }, 503));
     const client = new VerityClient({ baseUrl: 'http://host', fetch });
@@ -1488,6 +1558,17 @@ describe('VerityClient.settings', () => {
     expect(await client.getVeritySettings()).toEqual(settings);
     expect(calls[0]?.url).toBe('http://host/settings');
     expect(calls[0]?.init?.method).toBe('GET');
+  });
+
+  it('accepts structured network protection reasons and older servers without diagnostics', async () => {
+    const projectEgressStatus = { available: false, reason: 'runtime_unsupported' };
+    const { fetch } = fakeFetchSequence(
+      json({ settings: { ...settings, projectEgressStatus } }),
+      json({ settings }),
+    );
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    expect((await client.getVeritySettings())?.projectEgressStatus).toEqual(projectEgressStatus);
+    expect((await client.getVeritySettings())?.projectEgressStatus).toBeUndefined();
   });
 
   it('parses safe Claude resolution status while accepting servers without it', async () => {
@@ -4444,6 +4525,7 @@ describe('VerityClient calendar meetings', () => {
     'live-meeting-intake.ts',
     'calendar-meeting-routes.ts',
     'calendar-watch-routes.ts',
+    'live-meeting-routes.ts',
   ]
     .map((file) => readFileSync(new URL(`../../server/src/${file}`, import.meta.url), 'utf8'))
     .join('\n');
@@ -4540,6 +4622,19 @@ describe('VerityClient calendar meetings', () => {
     registered('POST', '/live-meetings/calendar/:eventKey/skip');
     registered('POST', '/live-meetings/unassigned/:meetingId/assign');
     registered('DELETE', '/live-meetings/unassigned/:meetingId');
+  });
+
+  it('discards a finished session meeting and reads discards from the feed', async () => {
+    const { fetch, calls } = fakeFetchSequence(
+      new Response(JSON.stringify({ discarded: true }), { status: 200 }),
+      json({ cursor: 4, meetings: [], notes: [], deletedMeetingIds: ['m/1'] }),
+    );
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    await client.discardSessionMeeting('s/1', 'm/1');
+    expect((await client.getLiveMeetingChanges('s/1', 3)).deletedMeetingIds).toEqual(['m/1']);
+    expect(calls[0]?.init?.method).toBe('DELETE');
+    expect(calls[0]?.url).toBe('http://host/sessions/s%2F1/live-meetings/m%2F1');
+    registered('DELETE', '/sessions/:id/live-meetings/:meetingId');
   });
 
   it('reads and changes which calendars are watched', async () => {
@@ -4645,4 +4740,26 @@ it('browses Shared without a session and sends the revision for edits', async ()
     expectedVersion: file.version,
   });
   await expect(client.listSharedKnowledgeFiles()).rejects.toThrow('Update the Verity server');
+});
+
+it('preserves Wiki exclusion reasons and unknown save status while accepting older servers', () => {
+  const directory = { path: '', entries: [], truncated: false };
+  const status = {
+    pending: true,
+    running: false,
+    inspectionError: true,
+    excludedEntries: [
+      { path: '__pycache__', reason: 'generated' },
+      { path: 'link', reason: 'unsupported' },
+    ],
+  };
+  expect(
+    sessionDirectorySchema.parse({ ...directory, documentStatus: status }).documentStatus,
+  ).toEqual(status);
+  expect(
+    sessionDirectorySchema.parse({
+      ...directory,
+      documentStatus: { pending: false, running: false },
+    }).documentStatus,
+  ).toEqual({ pending: false, running: false });
 });

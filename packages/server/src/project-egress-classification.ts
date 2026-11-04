@@ -133,9 +133,9 @@ function establishedPublic(error: unknown): readonly string[] | undefined {
 export function createProtectedAddressInventory(options: {
   resolve(host: string): Promise<ProjectEgressResolution>;
   hosts?: readonly string[];
-  /** Deployment-configured names: a failed, empty or private answer adds nothing. */
+  /** Deployment-configured names require fresh complete answers, like built-ins. */
   configuredHosts?: readonly string[];
-  /** Persistent configured-host failures leave that host without address protection. */
+  /** Report transient failures without weakening direct-address protection. */
   reportConfiguredFailure?(host: string, error: unknown): void;
   now?: () => number;
   maxAgeMs?: number;
@@ -145,8 +145,8 @@ export function createProtectedAddressInventory(options: {
   const maxAgeMs = options.maxAgeMs ?? 10 * 60_000;
   // Per built-in host: last confirmed public addresses and when they were confirmed.
   const entries = new Map<string, { addresses: readonly string[]; at: number }>();
-  // Per configured host: last public addresses; transient failures keep them.
-  const configured = new Map<string, readonly string[]>();
+  // Configured hosts share the built-in freshness requirement.
+  const configured = new Map<string, { addresses: readonly string[]; at: number }>();
   let pending: Promise<void> | undefined;
   // IPv4-mapped IPv6 must compare equal to the IPv4 front end it names.
   const normalize = (address: string): string => ipaddr.process(address).toString();
@@ -168,17 +168,23 @@ export function createProtectedAddressInventory(options: {
         }
       }),
     );
-    // Configured suffixes and private services may have no public address; they
-    // never invalidate the built-in inventory, and a transient failure keeps the
-    // previously confirmed addresses (over-blocking is the safe direction).
+    // A definitive private/empty answer is complete. A transient failure cannot
+    // establish that a configured broker has no public address.
     await Promise.all(
       (options.configuredHosts ?? []).map(async (host) => {
         try {
-          configured.set(host, (await options.resolve(host)).addresses.map(normalize));
+          configured.set(host, {
+            addresses: (await options.resolve(host)).addresses.map(normalize),
+            at: startedAt,
+          });
         } catch (error) {
           const established = establishedPublic(error);
-          if (established) configured.set(host, established.map(normalize));
-          else options.reportConfiguredFailure?.(host, error);
+          if (established)
+            configured.set(host, { addresses: established.map(normalize), at: startedAt });
+          else {
+            failures.push(error);
+            options.reportConfiguredFailure?.(host, error);
+          }
         }
       }),
     );
@@ -199,9 +205,13 @@ export function createProtectedAddressInventory(options: {
         const entry = entries.get(host);
         if (entry === undefined || at - entry.at > maxAgeMs) return false;
       }
+      for (const host of options.configuredHosts ?? []) {
+        const entry = configured.get(host);
+        if (entry === undefined || at - entry.at > maxAgeMs) return false;
+      }
       const candidate = normalize(address);
       return (
-        [...configured.values()].every((addresses) => !addresses.includes(candidate)) &&
+        [...configured.values()].every((entry) => !entry.addresses.includes(candidate)) &&
         hosts.every((host) => !entries.get(host)!.addresses.includes(candidate))
       );
     },

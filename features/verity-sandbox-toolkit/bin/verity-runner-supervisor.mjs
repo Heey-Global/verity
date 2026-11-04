@@ -2668,6 +2668,8 @@ export async function handleSupervisorRequest(
   const skillsManifestHash =
     request.kind === 'status' ? await installedSkillsManifestHash() : undefined;
   switch (request.kind) {
+    case 'stack-health':
+      return await brokerStorageRequest({ protocolVersion: 1, kind: 'stack-health' });
     case 'status':
       return {
         ok: true,

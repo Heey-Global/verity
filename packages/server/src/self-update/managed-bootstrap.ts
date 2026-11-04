@@ -9,6 +9,7 @@ import {
   initializeManagedDeployment,
   migrateManagedDevcontainerBuilder,
   migrateManagedHostDiagnostics,
+  migrateManagedProjectEgress,
   migrateManagedBackupMounts,
   readManagedDeployment,
 } from './managed-deployment.js';
@@ -210,6 +211,8 @@ export async function runManagedBootstrap(
             'VERITY_BACKUP_DIR',
             'VERITY_BACKUP_IDENTITY_DIR',
             'VERITY_BOOTSTRAP_ADVANCE_IMAGE_FROM',
+            'VERITY_PROJECT_EGRESS_SOCKET',
+            'VERITY_PROJECT_EGRESS_KEY_PATH',
           ].includes(name)),
     )
     .sort()
@@ -334,6 +337,17 @@ export async function runManagedBootstrap(
   if (!state.managed) throw new Error(state.reason);
   if (state.spec.image !== image)
     throw new Error('VERITY_SERVER_IMAGE does not match the sealed managed deployment image');
+  if (env.PROJECT_EGRESS_CONTROL_GID !== undefined && env.PROJECT_EGRESS_CONTROL_GID !== '') {
+    const controlGid = Number(env.PROJECT_EGRESS_CONTROL_GID);
+    if (!Number.isSafeInteger(controlGid) || controlGid <= 0 || controlGid > MAX_LINUX_ID)
+      throw new Error('invalid project egress control group');
+    await migrateManagedProjectEgress({
+      root,
+      deploymentId: state.spec.deploymentId,
+      image,
+      controlGid,
+    });
+  }
   await migrateManagedHostDiagnostics({
     root,
     deploymentId: state.spec.deploymentId,

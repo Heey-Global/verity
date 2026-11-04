@@ -166,6 +166,12 @@ const resourceRules: ReadonlyMap<string, ResourceRule> = new Map([
     { kind: 'session', parameter: 'id', permission: 'execute' },
   ],
   [
+    // Discarding deletes what everyone in the session heard; like other destructive
+    // replacements it needs management rights, not only the right to record.
+    routeScopeKey('DELETE', '/sessions/:id/live-meetings/:meetingId'),
+    { kind: 'session', parameter: 'id', permission: 'manage' },
+  ],
+  [
     routeScopeKey('POST', '/sessions/:id/live-meetings/:meetingId/addressed'),
     { kind: 'session', parameter: 'id', permission: 'execute' },
   ],

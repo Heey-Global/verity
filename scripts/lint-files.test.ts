@@ -282,3 +282,53 @@ it('bypasses both caches with --no-cache and still checks every typed input in C
   expect(changed.stdout).toContain('@typescript-eslint/no-unsafe-assignment');
   expect(changed.stdout).not.toContain('Reused clean lint results');
 });
+
+it('retains unimported library and type references that change global lint types', async () => {
+  const { root, write, config } = fixture();
+  write(
+    'tsconfig.json',
+    JSON.stringify({
+      compilerOptions: {
+        strict: true,
+        allowJs: true,
+        checkJs: true,
+        noEmit: true,
+        target: 'ES2023',
+        lib: ['ES2023'],
+        module: 'NodeNext',
+        types: [],
+      },
+      include: ['src/**/*'],
+    }),
+  );
+  const target = write(
+    'src/target.mjs',
+    '/** @param {Response} response\n * @returns {Promise<unknown>} */\nexport async function read(response) { return await response.json(); }',
+  );
+  const library = write('src/library.ts', '/// <reference lib="dom" />\nexport {};');
+  const types = write('src/types.ts', '/// <reference types="../extra/global.d.ts" />\nexport {};');
+  write('extra/global.d.ts', 'declare const extraGlobal: number;');
+  const pathReference = write(
+    'src/path.ts',
+    '/// <reference path="../extra/path.d.ts" />\nexport {};',
+  );
+  write('extra/path.d.ts', 'declare const pathGlobal: number;');
+  const program = createLintProgram(config, [target]);
+  expect(program.getSourceFile(library)).toBeDefined();
+  expect(program.getSourceFile(types)).toBeDefined();
+  expect(program.getSourceFile(pathReference)).toBeDefined();
+  expect(program.getSourceFile(resolve(root, 'extra/global.d.ts'))).toBeDefined();
+  expect(program.getSourceFile(resolve(root, 'extra/path.d.ts'))).toBeDefined();
+  expect(program.getSourceFiles().some((source) => source.fileName.endsWith('/lib.dom.d.ts'))).toBe(
+    true,
+  );
+  const { ESLint } = await import('eslint');
+  const canonical = await new ESLint({ cwd: root }).lintFiles([target]);
+  const { results } = await lintFiles([target], root, { ambientCache: false });
+  expect(results.flatMap((result) => result.messages)).toEqual(
+    canonical.flatMap((result) => result.messages),
+  );
+  expect(results.flatMap((result) => result.messages.map((message) => message.ruleId))).toContain(
+    '@typescript-eslint/no-unsafe-return',
+  );
+});

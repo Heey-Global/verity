@@ -770,6 +770,8 @@ export interface ProvisionerOptions {
   docker: DockerClient;
   /** Runs after a project container has started, before provisioning succeeds. */
   onContainerStarted?: ((project: ProjectRecord) => Promise<void>) | undefined;
+  /** Runs with lifecycle admission fenced, after the Runner stack is ready. */
+  beforeRunnerAdmission?: ((project: ProjectRecord) => Promise<void>) | undefined;
   /** Data-minimised lifecycle observer. It must never affect a transition. */
   onSandboxLifecycle?: ((event: ProjectSandboxLifecycleEvent) => void) | undefined;
   /** Reports why a sleeping Sandbox could not use the retained-container fast path. */
@@ -958,6 +960,8 @@ export interface ProvisionerOptions {
    *  how a gVisor runtime without `--host-uds=create` left projects "active" whose every
    *  turn failed with "the project supervisor socket is missing". Tests inject this. */
   supervisorReachable?: ((runtimePath: string) => Promise<void>) | undefined;
+  /** Read-only stack probe; undefined means a retained older Runner lacks this operation. */
+  supervisorStackHealth?: ((runtimePath: string) => Promise<boolean | undefined>) | undefined;
   /** Resolvers written into a gVisor Sandbox's resolv.conf instead of its relay, which
    *  otherwise answers for it: Docker's embedded resolver is unreachable from gVisor's
    *  netstack (`gvisor-project-network.ts`). */
@@ -1764,6 +1768,22 @@ function devcontainerFailureHint(output: string): string | undefined {
     );
   }
   return undefined;
+}
+
+async function readSupervisorStackHealth(runtimePath: string): Promise<boolean | undefined> {
+  const socketPath = join(runtimePath, 'supervisor.sock');
+  try {
+    const response = await requestRunnerSupervisor(socketPath, { kind: 'stack-health' }, 2_000);
+    return response.stackHealthVersion === 1 ? response.healthy === true : undefined;
+  } catch (error) {
+    // Old images keep their existing recovery path at a bounded cadence. Transport
+    // errors must still cause repair rather than being mistaken for compatibility.
+    if (error instanceof Error && /unknown supervisor request/u.test(error.message)) {
+      await requestRunnerSupervisor(socketPath, { kind: 'status' }, 2_000);
+      return undefined;
+    }
+    return false;
+  }
 }
 
 const SUPERVISOR_REACHABLE_TIMEOUT_MS = 10_000;
@@ -2578,6 +2598,10 @@ export class ProvisionerImpl implements Provisioner {
       promise: Promise<unknown>;
     }
   >();
+  private readonly supervisorHealthy = new Map<
+    string,
+    { containerName: string; generation: number | undefined; at: number }
+  >();
   private readonly supervisorRetry = new Map<
     string,
     {
@@ -2658,16 +2682,19 @@ export class ProvisionerImpl implements Provisioner {
    * it (or registered it with other arguments) keeps what it has rather than losing it to a
    * create that cannot succeed, and never lands on runc instead.
    */
-  private async ensureSandboxRuntime(project: ProjectRecord): Promise<void> {
-    if (this.opts.sandboxRuntime === undefined) return;
+  private async ensureSandboxRuntime(
+    project: ProjectRecord,
+    runtime = this.opts.sandboxRuntime,
+  ): Promise<void> {
+    if (runtime === undefined) return;
     try {
       if (this.opts.verifySandboxRuntime === undefined) {
         throw new Error('no runtime verifier is configured');
       }
-      await this.opts.verifySandboxRuntime(this.opts.sandboxRuntime);
+      await this.opts.verifySandboxRuntime(runtime);
     } catch (cause) {
       const message =
-        `Sandbox runtime ${this.opts.sandboxRuntime} is not usable: ${failureMessage(cause)}. ` +
+        `Sandbox runtime ${runtime} is not usable: ${failureMessage(cause)}. ` +
         'Re-run the Verity installer on the host to register it (the running Sandbox was kept).';
       await this.opts.store.updateProjectState(project.id, 'failed', message);
       throw new ProvisioningError(message, cause);
@@ -2783,6 +2810,7 @@ export class ProvisionerImpl implements Provisioner {
   constructor(private readonly opts: ProvisionerOptions) {
     if (
       opts.projectEgress !== undefined &&
+      opts.projectEgressEnabled === undefined &&
       (opts.sandboxRuntime !== PROJECT_RUNSC_RUNTIME ||
         opts.sandboxCapAdd?.length ||
         opts.sandboxAllowPrivilegeEscalation === true)
@@ -2856,6 +2884,9 @@ export class ProvisionerImpl implements Provisioner {
     for (const id of this.supervisorRetry.keys()) {
       if (!activeIds.has(id)) this.supervisorRetry.delete(id);
     }
+    for (const id of this.supervisorHealthy.keys()) {
+      if (!activeIds.has(id)) this.supervisorHealthy.delete(id);
+    }
     const outcomes = await Promise.all(
       projects
         .filter((project) => project.state === 'active' && project.kind !== 'control_plane')
@@ -2891,6 +2922,26 @@ export class ProvisionerImpl implements Provisioner {
             promise: Promise.resolve()
               .then(async () => {
                 try {
+                  const last = this.supervisorHealthy.get(project.id);
+                  const retained =
+                    last?.containerName === project.containerName &&
+                    last.generation === replacementGeneration;
+                  const runtime = hasRunnerRuntime
+                    ? join(runtimeRoot, 'runners', project.id)
+                    : undefined;
+                  const health =
+                    runtime === undefined
+                      ? undefined
+                      : await (this.opts.supervisorStackHealth ?? readSupervisorStackHealth)(
+                          runtime,
+                        );
+                  if (
+                    health === true ||
+                    (health === undefined && retained && Date.now() - last.at < 60_000)
+                  ) {
+                    this.supervisorRetry.delete(project.id);
+                    return undefined;
+                  }
                   await this.containerCommand({
                     containerName: project.containerName,
                     dockerHost,
@@ -2903,8 +2954,21 @@ export class ProvisionerImpl implements Provisioner {
                       : 'verity-egress-connector-start --standalone',
                     timeoutMs: 12_000,
                   });
+                  if (
+                    runtime !== undefined &&
+                    health !== undefined &&
+                    (await (this.opts.supervisorStackHealth ?? readSupervisorStackHealth)(
+                      runtime,
+                    )) === false
+                  )
+                    throw new Error('Runner stack remains unhealthy after repair');
                   if (this.supervisorReconciliations.get(project.id) === entry) {
                     this.supervisorRetry.delete(project.id);
+                    this.supervisorHealthy.set(project.id, {
+                      containerName: project.containerName,
+                      generation: replacementGeneration,
+                      at: Date.now(),
+                    });
                   }
                   return undefined;
                 } catch (error) {
@@ -3754,6 +3818,7 @@ export class ProvisionerImpl implements Provisioner {
             } else await this.opts.docker.startContainer(inspect.id);
             const running = await this.opts.docker.inspectContainer(project.containerName);
             if (!running.running) throw new Error('Docker did not report the Sandbox as running');
+            this.supervisorHealthy.delete(project.id);
             await this.opts.onContainerStarted?.(project);
 
             const runnerRuntimePath =
@@ -3782,6 +3847,7 @@ export class ProvisionerImpl implements Provisioner {
                     : 'verity-egress-connector-start --standalone',
               });
             }
+            await this.opts.beforeRunnerAdmission?.(project);
             return (await this.opts.store.updateProjectSleepState(project.id, 'active', {
               sleepCompatibilityFingerprint: null,
               sleepingSince: null,
@@ -3954,7 +4020,7 @@ export class ProvisionerImpl implements Provisioner {
     const input = {
       inspect,
       projectId: project.id,
-      projectNetwork: await this.expectedProjectNetwork(project.id),
+      projectNetwork: await this.expectedProjectNetwork(project.id, inspect),
       relayHealthy: await this.isRelayHealthy(project, containerGenerationOf(inspect)),
       considerEnvDrift: this.opts.recreateEnvDriftedSandboxes !== false,
     };
@@ -4086,6 +4152,10 @@ export class ProvisionerImpl implements Provisioner {
     if (!(await this.projectEgressEnabled())) return undefined;
     if (this.opts.projectEgress === undefined)
       throw new ProvisioningError('Network protection is on, but this host has no egress service');
+    if (this.opts.sandboxCapAdd?.length || this.opts.sandboxAllowPrivilegeEscalation === true)
+      throw new ProvisioningError(
+        'Network protection requires the isolated runtime without added privileges',
+      );
     return this.opts.projectEgress;
   }
 
@@ -4109,12 +4179,29 @@ export class ProvisionerImpl implements Provisioner {
 
   /** The network a running Sandbox belongs on: its host-registered generation network, or
    * the open project network. Switching protection takes effect at the next start. */
-  private async expectedProjectNetwork(projectId: string): Promise<string> {
+  private async expectedProjectNetwork(
+    projectId: string,
+    inspect: ContainerInspect | null,
+  ): Promise<string> {
     const egress = this.opts.projectEgress;
     if (egress === undefined) return projectNetworkName(projectId);
     // An unreachable host cannot establish network drift. Let reconciliation defer
     // instead of replacing a running protected generation with an open one.
-    return (await egress.current(projectId))?.networkName ?? projectNetworkName(projectId);
+    try {
+      return (await egress.current(projectId))?.networkName ?? projectNetworkName(projectId);
+    } catch (error) {
+      // A staged installation has no controller yet. Only an inspected generation
+      // attached exclusively to its ordinary project network is demonstrably open.
+      const networks = Object.keys(inspect?.networks ?? {});
+      if (
+        !(await this.projectEgressEnabled()) &&
+        networks.length === 1 &&
+        networks[0] === projectNetworkName(projectId)
+      ) {
+        return projectNetworkName(projectId);
+      }
+      throw error;
+    }
   }
 
   private async retireEgressGeneration(projectId: string): Promise<void> {
@@ -4727,7 +4814,11 @@ export class ProvisionerImpl implements Provisioner {
 
     const replace = async (): Promise<ProjectRecord> => {
       this.resolveRelayClaudeGateway(project);
-      await this.ensureSandboxRuntime(project);
+      const egress = await this.egressFor();
+      await this.ensureSandboxRuntime(
+        project,
+        this.opts.sandboxRuntime ?? (egress === undefined ? undefined : PROJECT_RUNSC_RUNTIME),
+      );
       await this.retireEgressGeneration(project.id);
       replacementStarted = true;
       this.retiringSandboxes.add(project.id);
@@ -5731,9 +5822,11 @@ export class ProvisionerImpl implements Provisioner {
     );
     const canonicalClaudeGatewayUrl = claudeGateway.href;
     const canonicalCodexGatewayUrl = codexGateway.href;
-    await this.ensureSandboxRuntime(project);
     const generation = randomUUID();
     const egress = await this.egressFor();
+    const sandboxRuntime =
+      this.opts.sandboxRuntime ?? (egress === undefined ? undefined : PROJECT_RUNSC_RUNTIME);
+    await this.ensureSandboxRuntime(project, sandboxRuntime);
     let sandboxNetwork: string;
     // A fenced predecessor is retired either way; a switched-off server starts open.
     await this.retireEgressGeneration(project.id);
@@ -5775,13 +5868,18 @@ export class ProvisionerImpl implements Provisioner {
     // gVisor cannot use Docker's embedded resolver; see gvisor-project-network.ts.
     let gvisorExtraHosts: string[] = [];
     let gvisorResolvBinds: string[] = [];
-    if (this.opts.sandboxRuntime !== undefined) {
+    if (sandboxRuntime !== undefined) {
       try {
         gvisorExtraHosts = await relayHostEntries(this.opts.docker, sandboxNetwork, [
           effectiveBrokerUrl,
           effectiveClaudeGatewayUrl,
           effectiveCodexGatewayUrl,
         ]);
+        if (egress !== undefined) {
+          gvisorExtraHosts.push(
+            `verity-package-broker:${relayResolverAddress(effectiveBrokerUrl, gvisorExtraHosts)}`,
+          );
+        }
         const servers =
           egress === undefined &&
           this.opts.sandboxDnsServers !== undefined &&
@@ -5978,6 +6076,11 @@ export class ProvisionerImpl implements Provisioner {
             // per-container capability as the gh-token broker; `verity-memory` redeems
             // the capability to append to this project's memory (POST /internal/project/memory).
             `VERITY_PROJECT_MEMORY_URL=${effectiveBrokerUrl.replace(/\/+$/, '')}/internal/project/memory`,
+            ...(egress === undefined
+              ? []
+              : [
+                  'VERITY_PACKAGE_ARTIFACT_URL=http://verity-package-broker:8080/internal/package-artifacts',
+                ]),
             // `verity-repo`: pull requests and issues through the project's code host,
             // executed server-side with the same capability (POST /internal/project/repo).
             `VERITY_PROJECT_REPO_URL=${effectiveBrokerUrl.replace(/\/+$/, '')}/internal/project/repo`,
@@ -6414,7 +6517,7 @@ export class ProvisionerImpl implements Provisioner {
       // exposing a runc workload to arbitrary internet input. The root filesystem
       // stays writable because devcontainers install tools and build artifacts at
       // runtime; the preview eligibility check accounts for that profile.
-      ...(this.opts.sandboxRuntime !== undefined ? { runtime: this.opts.sandboxRuntime } : {}),
+      ...(sandboxRuntime !== undefined ? { runtime: sandboxRuntime } : {}),
       ...(gvisorExtraHosts.length > 0 ? { extraHosts: gvisorExtraHosts } : {}),
       // Runtime hardening (security review C1): contain a malicious dependency by
       // default rather than launching with Docker's permissive defaults. Drop all
@@ -6534,6 +6637,7 @@ export class ProvisionerImpl implements Provisioner {
       throw new ProvisioningError(message, cause);
     }
     try {
+      this.supervisorHealthy.delete(project.id);
       await this.opts.onContainerStarted?.(project);
     } catch (cause) {
       const message = `post-start projection failed: ${failureMessage(cause)}`;
@@ -6617,8 +6721,10 @@ export class ProvisionerImpl implements Provisioner {
         throw new ProvisioningError(message, cause);
       }
     }
-    let lifecycleFailureLabel = 'postCreateCommand';
+    let lifecycleFailureLabel = 'pending session cleanup';
     try {
+      await this.opts.beforeRunnerAdmission?.(project);
+      lifecycleFailureLabel = 'postCreateCommand';
       if (image.usesDevcontainerImage && this.opts.dockerHostForBuild !== undefined) {
         if (devcontainerRuntime.remoteUser !== undefined) {
           lifecycleFailureLabel = 'remoteUser secret access check';

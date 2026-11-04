@@ -71,10 +71,13 @@ export function CardHead({
   title,
   subtitle,
   trailing,
+  onDismiss,
 }: {
   title: string;
   subtitle?: string | undefined;
   trailing?: ReactNode;
+  /** Draws an X after the trailing status that dismisses the card. */
+  onDismiss?: (() => void) | undefined;
 }) {
   return (
     <View style={styles.head}>
@@ -88,7 +91,14 @@ export function CardHead({
           </Text>
         ) : null}
       </View>
-      {trailing !== undefined ? <View style={styles.trailing}>{trailing}</View> : null}
+      {trailing !== undefined || onDismiss !== undefined ? (
+        <View style={styles.trailing}>
+          {trailing}
+          {onDismiss !== undefined ? (
+            <IconButton icon="x" accessibilityLabel="Dismiss" onPress={onDismiss} />
+          ) : null}
+        </View>
+      ) : null}
     </View>
   );
 }

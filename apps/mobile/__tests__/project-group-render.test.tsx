@@ -1,9 +1,19 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import React from 'react';
-import { Pressable, Text, View } from 'react-native';
-import { fireEvent, render } from '@testing-library/react-native';
+import { AppState, Pressable, Text, View } from 'react-native';
+import { fireEvent, render, waitFor } from '@testing-library/react-native';
 import ts from 'typescript';
+import type { VerityClient } from '@verity/mobile';
+import { useProjects } from '../hooks/useProjects';
+
+jest.mock('../lib/liveConnection', () => ({
+  subscribeLiveRefresh: () => () => undefined,
+}));
+jest.mock('../lib/sessionSwitchTiming', () => ({ beginClientActivity: () => () => undefined }));
+jest.mock('expo-router', () => ({
+  useFocusEffect: (callback: () => void) => require('react').useEffect(callback, [callback]),
+}));
 import { projectGroupSessionId } from '../lib/projectGroups';
 import { ProjectSessionsCollapse } from '../components/ProjectSessionsCollapse';
 
@@ -124,4 +134,52 @@ it('keeps unrelated selections and rename changes out of mounted drag subtrees',
   expect(groupRender).toHaveBeenCalledTimes(4);
   expect(source).toContain('selectedId={wide ? projectGroupSessionId(item, selectedId) : null}');
   expect(source).toContain('renamingId={projectGroupSessionId(item, renaming?.sessionId)}');
+});
+
+it('keeps the production project toggle stable from the real project hook through parent updates', async () => {
+  // Execute the actual callback definition so its transitive hook dependencies
+  // cannot silently invalidate every memoized group during selection changes.
+  const toggleSource = source.slice(
+    source.indexOf('  const toggleProjectGroup ='),
+    source.indexOf('  const renderGroup ='),
+  );
+  const toggleCompiled = ts.transpileModule(toggleSource, {
+    compilerOptions: { target: ts.ScriptTarget.ES2022 },
+  }).outputText;
+  const useProductionToggle = new Function(
+    'useCallback',
+    'draggingAnything',
+    'enqueueProjectCollapse',
+    'refreshProjects',
+    `${toggleCompiled}; return toggleProjectGroup;`,
+  ) as (...args: unknown[]) => (group: unknown, collapsed: boolean) => void;
+  const previousState = AppState.currentState;
+  Object.defineProperty(AppState, 'currentState', { configurable: true, value: 'active' });
+  const client = { listProjects: jest.fn().mockResolvedValue([]) } as unknown as VerityClient;
+  const collapse = jest.fn();
+  function Harness({ selected }: { selected: string }) {
+    const projects = useProjects(client);
+    const onToggle = useProductionToggle(React.useCallback, false, collapse, projects.refresh);
+    return (
+      <ProjectGroup
+        {...props}
+        onToggle={onToggle}
+        previewUrls={projects.previewUrls}
+        publicPreviews={projects.publicPreviews}
+        selectedId={projectGroupSessionId(props.group, selected)}
+      />
+    );
+  }
+  const view = render(<Harness selected="other-a" />);
+  try {
+    await waitFor(() => expect(client.listProjects).toHaveBeenCalledTimes(1));
+    groupRender.mockClear();
+    slotRender.mockClear();
+    view.rerender(<Harness selected="other-b" />);
+    expect(groupRender).not.toHaveBeenCalled();
+    expect(slotRender).not.toHaveBeenCalled();
+  } finally {
+    view.unmount();
+    Object.defineProperty(AppState, 'currentState', { configurable: true, value: previousState });
+  }
 });

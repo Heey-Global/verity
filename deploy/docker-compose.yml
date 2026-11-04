@@ -62,6 +62,8 @@ services:
     environment: &verity-server-environment
       # Unknown builds: 24 GiB for context, snapshots, export and import.
       # Known project images use measured admission; keep the separate 10 GiB reserve.
+      VERITY_PROJECT_EGRESS_SOCKET: /run/verity-egress/control.sock
+      VERITY_PROJECT_EGRESS_KEY_PATH: /run/verity-egress-key/control.key
       VERITY_BUILD_ESTIMATE_GIB: ${VERITY_BUILD_ESTIMATE_GIB:-24}
       VERITY_UPDATE_CHANNEL: ${VERITY_UPDATE_CHANNEL:-stable}
       VERITY_RUNNER_RUNTIME_GID: ${VERITY_RUNNER_RUNTIME_GID:-1101}
@@ -332,6 +334,8 @@ services:
       # on first use. `verity-data` is declared under the top-level `volumes:` key.
       - verity-data:/srv/verity
       - verity-agent-gateway-control:/run/verity-agent-gateway
+      - /run/verity-egress:/run/verity-egress:ro
+      - /etc/verity-egress-server:/run/verity-egress-key:ro
       - ${VERITY_PAIRING_STATE_HOST_PATH:-/etc/verity}:/run/verity-pairing:ro
       # Only classified host evidence is shared; raw journals stay on the host.
       - ${VERITY_HOST_DIAGNOSTIC_DIR:-/var/lib/verity/host-diagnostics}:/run/verity-host-diagnostics:ro
@@ -345,6 +349,7 @@ services:
     group_add:
       - '${VERITY_DOCKER_SOCKET_GID:-999}'
       - '${VERITY_PROJECT_RELAY_GID:-65532}'
+      - '65531'
       # The Claude egress client key is handed to the Runner group so the connector
       # can read it, and every Claude project turn goes through the gateway, so this
       # membership is NOT Runner-supervisor scoped. Changing a file group to a group
@@ -571,6 +576,7 @@ services:
       # Set by verity-install only after it verified the gVisor builder. Empty
       # leaves the sealed spec without the builder socket. Not a VERITY_* name
       # inside the container: older images forward those into the sealed spec.
+      PROJECT_EGRESS_CONTROL_GID: ${VERITY_PROJECT_EGRESS_CONTROL_GID:-}
       DEVCONTAINER_BUILDER_GID: ${VERITY_DEVCONTAINER_BUILDER_GID:-}
       VERITY_BOOTSTRAP_ADVANCE_IMAGE_FROM: ${VERITY_BOOTSTRAP_ADVANCE_IMAGE_FROM:-}
     volumes:
