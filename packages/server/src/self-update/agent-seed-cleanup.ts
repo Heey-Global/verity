@@ -1,6 +1,6 @@
 import { lstat, readdir, readlink, rm } from 'node:fs/promises';
 import { isAbsolute, join, relative, resolve } from 'node:path';
-import type { DockerClient } from '../docker.js';
+import { DockerError, type DockerClient } from '../docker.js';
 import { readAgentSeedStamp } from './agent-seed-stamp.js';
 import { agentSeedPublicationKey } from './managed-companion-reconcile.js';
 import { withAgentSeedLease } from './agent-seed-lease.js';
@@ -48,9 +48,17 @@ export async function cleanupAgentSeedVersions(options: {
         throw new Error('seed selection is missing');
       const list = options.docker.listContainers;
       if (list === undefined) throw new Error('container inventory is unavailable');
-      const containers = await list();
-      for (const container of containers) {
-        const state = await options.docker.inspectContainer(container.id);
+      // A container that exits and is removed between listing and inspection can
+      // reference nothing any more; skipping it is exact, not a guess.
+      const inspectExisting = async (id: string) =>
+        options.docker.inspectContainer(id).catch((error: unknown) => {
+          if (error instanceof DockerError && error.kind === 'container_not_found')
+            return undefined;
+          throw error;
+        });
+      const collect = async (id: string): Promise<void> => {
+        const state = await inspectExisting(id);
+        if (state === undefined) return;
         if (state.mounts === undefined || state.mountCount !== state.mounts.length)
           throw new Error('container mount inventory is incomplete');
         const lifecycleOwner =
@@ -107,22 +115,19 @@ export async function cleanupAgentSeedVersions(options: {
           const subpath = relative(resolve(options.hostRoot), resolve(configured));
           if (subpath.startsWith('.versions/')) protectedKeys.add(subpath.split('/')[1]!);
         }
+      };
+      const containers = await list();
+      for (const container of containers) await collect(container.id);
+      // Creation during discovery makes the first snapshot insufficient, so every
+      // container that appeared meanwhile is held to the same rules. Removal cannot
+      // add a reference, and short-lived query containers come and go constantly on
+      // a busy host; aborting on any change meant the cleanup never ran there. New
+      // managed creates select .current, which is protected under the same lease as
+      // publication.
+      const known = new Set(containers.map((item) => item.id));
+      for (const container of await list()) {
+        if (!known.has(container.id)) await collect(container.id);
       }
-      // Creation/removal during discovery makes the snapshot insufficient. New
-      // managed creates select .current, which is protected under the same lease
-      // as publication; old explicit references were collected above.
-      const again = await list();
-      if (
-        containers
-          .map((item) => item.id)
-          .sort()
-          .join('\0') !==
-        again
-          .map((item) => item.id)
-          .sort()
-          .join('\0')
-      )
-        throw new Error('container inventory changed during seed cleanup');
       for (const key of candidates) {
         if (protectedKeys.has(key)) continue;
         await rm(join(versions, key), { recursive: true });

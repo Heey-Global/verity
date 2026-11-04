@@ -2,7 +2,7 @@ import { mkdtemp, mkdir, readdir, rm, symlink, writeFile } from 'node:fs/promise
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { ContainerInspect, DockerClient } from '../docker.js';
+import { DockerError, type ContainerInspect, type DockerClient } from '../docker.js';
 import { cleanupAgentSeedVersions } from './agent-seed-cleanup.js';
 import { withAgentSeedLease } from './agent-seed-lease.js';
 import {
@@ -136,12 +136,59 @@ describe('agent seed cleanup', () => {
     expect(await f.remaining()).toHaveLength(5);
   });
 
-  it('rejects an inventory that changes during inspection', async () => {
+  it('is not stopped by short-lived containers that exit during the inventory', async () => {
     const f = await fixture();
+    const listed = f.states.map(({ id }) => ({ id, imageId: 'image' }));
+    // A query container is listed, then gone before inspection and the second list.
     f.docker.listContainers
-      .mockResolvedValueOnce(f.states.map(({ id }) => ({ id, imageId: 'image' })))
-      .mockResolvedValueOnce([]);
-    expect((await f.run()).skipped).toMatch(/inventory changed/);
+      .mockResolvedValueOnce([...listed, { id: 'query', imageId: 'image' }])
+      .mockResolvedValueOnce(listed);
+    f.docker.inspectContainer.mockImplementation(async (id: string) => {
+      const state = f.states.find((item) => item.id === id);
+      if (state === undefined) throw new DockerError({ kind: 'container_not_found', id });
+      return state;
+    });
+    const result = await f.run();
+    expect(result.skipped).toBeUndefined();
+    expect(result.deleted).toEqual([f.keys[4]]);
+  });
+
+  it('protects a release that a container created during the inventory references', async () => {
+    const f = await fixture();
+    const listed = f.states.map(({ id }) => ({ id, imageId: 'image' }));
+    f.states.push({
+      id: 'late',
+      running: true,
+      mountCount: 1,
+      mounts: [
+        {
+          type: 'bind',
+          source: `${f.hostRoot}/.versions/${f.keys[4]!}`,
+          destination: '/opt/agent-seed',
+        },
+      ],
+    });
+    f.docker.listContainers
+      .mockResolvedValueOnce(listed)
+      .mockResolvedValueOnce([...listed, { id: 'late', imageId: 'image' }]);
+    const result = await f.run();
+    expect(result).toEqual({ deleted: [] });
+    expect(await f.remaining()).toHaveLength(5);
+  });
+
+  it('still aborts when a container created during the inventory is ambiguous', async () => {
+    const f = await fixture();
+    const listed = f.states.map(({ id }) => ({ id, imageId: 'image' }));
+    f.states.push({
+      id: 'late',
+      running: true,
+      mountCount: 1,
+      mounts: [{ type: 'bind', source: f.hostRoot, destination: '/opt/agent-seed' }],
+    });
+    f.docker.listContainers
+      .mockResolvedValueOnce(listed)
+      .mockResolvedValueOnce([...listed, { id: 'late', imageId: 'image' }]);
+    expect((await f.run()).skipped).toMatch(/ambiguous legacy seed mount/);
     expect(await f.remaining()).toHaveLength(5);
   });
 
