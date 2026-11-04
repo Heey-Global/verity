@@ -83,7 +83,11 @@ native_retire() (
     local seen=" " consumers=0
     for id in $ids; do
         if ! metadata=$(timeout 5 docker inspect --format '{"mounts":{{json .Mounts}},"identity":{{json .Config.Hostname}},"running":{{json .State.Running}}}' "$id" 2>/dev/null); then
-            container_gone "$id" || blocker consumer-inspection-failed
+            if ! container_gone "$id"; then
+                printf 'Could not inspect builder consumer %s: %s\n' "$id" \
+                    "$(timeout 5 docker inspect --format '{{.Id}}' "$id" 2>&1 >/dev/null | head -c 512 || true)" >&2
+                blocker consumer-inspection-failed
+            fi
             continue
         fi
         jq -e '.mounts | type == "array"' <<< "$metadata" >/dev/null || { blocker consumer-inspection-invalid; continue; }

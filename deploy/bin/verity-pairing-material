@@ -175,7 +175,8 @@ for leftover in "$tls_cert".*.tmp*; do
   owner="${owner%%.*}"
   [[ "$owner" =~ ^[0-9]+$ ]] || continue
   [ "$owner" != "$$" ] && ! kill -0 "$owner" 2>/dev/null || continue
-  rm -f -- "$leftover"
+  # Housekeeping only: a leftover that cannot be removed must not stop issuance.
+  rm -f -- "$leftover" 2>/dev/null || true
 done
 
 # Reissue the leaf certificate so a newly selected IP or DNS name is always in

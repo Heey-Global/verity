@@ -27,6 +27,7 @@ function fixture(
     failProbe?: boolean;
     stopped?: boolean;
     vanished?: boolean;
+    failInspect?: boolean;
   } = {},
 ) {
   const dir = mkdtempSync(join(tmpdir(), 'native-retirement-'));
@@ -69,9 +70,11 @@ function fixture(
   tool('date', `cat '${dir}/observed-at'\n`);
   tool(
     'docker',
-    `if [[ $1 == ps && " $* " == *' --filter '* ]]; then true
-elif [[ $1 == ps ]]; then echo server; ${options.vanished ? 'echo gone' : 'true'}
+    `if [[ $1 == ps && " $* " == *' --filter '* ]]; then
+  ${options.failInspect ? 'echo stuck' : 'true'}
+elif [[ $1 == ps ]]; then echo server; ${options.vanished ? 'echo gone' : 'true'}; ${options.failInspect ? 'echo stuck' : 'true'}
 elif [[ \${!#} == gone ]]; then echo 'Error response from daemon: No such object: gone' >&2; exit 1
+elif [[ \${!#} == stuck ]]; then echo 'Error response from daemon: context deadline exceeded' >&2; exit 1
 else echo '{"mounts":[{"Source":"${run}"}],"identity":"server","running":${!options.stopped}}'; fi\n`,
   );
   tool(
@@ -148,6 +151,14 @@ else echo '{"mounts":[{"Source":"${run}"}],"identity":"server","running":${!opti
     const f = fixture({ vanished: true });
     expect(f.invoke().status).toBe(0);
     expect(f.report()).toMatchObject({ state: 'completed', blockers: [] });
+  });
+  it('keeps blocking on a consumer that is still listed but cannot be inspected', () => {
+    const f = fixture({ failInspect: true });
+    const result = f.invoke();
+    expect(result.status).toBe(0);
+    expect(f.report().blockers).toContain('consumer-inspection-failed');
+    expect(result.stderr).toContain('context deadline exceeded');
+    expect(existsSync(join(f.root, 'runc-native', 'old'))).toBe(true);
   });
   it('rejects native symlinks and retained runtime leases', () => {
     const f = fixture();
