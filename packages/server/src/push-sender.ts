@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type { DevicePushTokenRecord, PushReceiptRecord } from '@verity/store';
 import Expo, {
   type ExpoPushMessage,
@@ -5,6 +6,31 @@ import Expo, {
   type ExpoPushReceiptId,
   type ExpoPushTicket,
 } from 'expo-server-sdk';
+
+const SEND_RETRY_MS = 60_000;
+const CREDENTIAL_RETRY_MS = 15 * 60_000;
+const MAX_SEND_RETRY_MS = 60 * 60_000;
+const MAX_FAILURE_STATES = 10_000;
+const FAILURE_RETENTION_MS = 24 * 60 * 60_000;
+
+// Never log a provider's free-form message or unrecognized error string.
+function safePushError(error: unknown): string {
+  return typeof error === 'string' &&
+    [
+      'DeveloperError',
+      'DeviceNotRegistered',
+      'ExpoError',
+      'InvalidCredentials',
+      'MessageRateExceeded',
+      'MessageTooBig',
+      'ProviderError',
+      'MismatchSenderId',
+      'MissingTicket',
+      'TransportError',
+    ].includes(error)
+    ? error
+    : 'UnknownError';
+}
 
 const DEFAULT_RECEIPT_DELAY_MS = 15 * 60_000;
 const DEFAULT_RECEIPT_RETRY_MS = 15 * 60_000;
@@ -25,7 +51,10 @@ export interface PushNotification {
 }
 
 export interface PushSendResult {
+  /** Unique selected devices, including those deferred by a failure cooldown. */
   targets: number;
+  /** Selected devices awaiting a failure cooldown; omitted by legacy senders. */
+  deferred?: number;
   ticketsAccepted: number;
   ticketErrors: number;
   receiptsQueued: number;
@@ -104,6 +133,12 @@ class DefaultPushSender implements PushSender {
   private readonly receiptRetryMs: number;
   private readonly receiptPollMs: number;
   private readonly maxReceiptAttempts: number;
+  // Process-local cooldowns: pending producers retry after expiry; one-shot
+  // notifications are not queued. Restarting the server clears the cooldowns.
+  private readonly failures = new Map<string, { attempts: number; retryAt: number }>();
+  private readonly activeSends = new Set<Promise<PushSendResult>>();
+  private readonly sends = new Map<string, Promise<PushSendResult>>();
+  private sendTail: Promise<unknown> = Promise.resolve();
   private timer: NodeJS.Timeout | undefined;
   private receiptCycle: Promise<PushReceiptResult> | undefined;
 
@@ -115,20 +150,88 @@ class DefaultPushSender implements PushSender {
     this.maxReceiptAttempts = options.maxReceiptAttempts ?? DEFAULT_MAX_RECEIPT_ATTEMPTS;
   }
 
-  async send(
+  send(
     notification: PushNotification,
     targets?: readonly DevicePushTokenRecord[],
   ): Promise<PushSendResult> {
-    const tokens = targets ?? (await this.options.store.listDevicePushTokens());
+    // Track before token lookup yields, so shutdown also drains broadcasts that
+    // have not reached the serialized transport queue yet.
+    const active = this.enqueueSend(notification, targets);
+    this.activeSends.add(active);
+    void active.then(
+      () => this.activeSends.delete(active),
+      () => this.activeSends.delete(active),
+    );
+    return active;
+  }
+
+  private async enqueueSend(
+    notification: PushNotification,
+    targets?: readonly DevicePushTokenRecord[],
+  ): Promise<PushSendResult> {
+    const tokens = [
+      ...new Map(
+        (targets ?? (await this.options.store.listDevicePushTokens())).map((token) => [
+          token.expoToken,
+          token,
+        ]),
+      ).values(),
+    ];
+    const key = createHash('sha256')
+      .update(
+        JSON.stringify([
+          notification,
+          tokens
+            .map(({ expoToken, authTokenId }) => [expoToken, authTokenId])
+            .sort(([a], [b]) => (a ?? '').localeCompare(b ?? '')),
+        ]),
+      )
+      .digest('hex');
+    const existing = this.sends.get(key);
+    if (existing !== undefined) return existing;
+    // Serialize the eligibility check with transport completion: another producer
+    // must observe a rejected device's backoff before attempting its next finding.
+    const send = this.sendTail.then(() => this.sendOnce(notification, tokens));
+    this.sendTail = send.catch(() => undefined);
+    this.sends.set(key, send);
+    try {
+      return await send;
+    } finally {
+      this.sends.delete(key);
+    }
+  }
+
+  private async sendOnce(
+    notification: PushNotification,
+    tokens: readonly DevicePushTokenRecord[],
+  ): Promise<PushSendResult> {
+    for (const [token, failure] of this.failures) {
+      if (failure.retryAt + FAILURE_RETENTION_MS < this.now()) this.failures.delete(token);
+    }
+    const payloadKey = (token: string) =>
+      createHash('sha256')
+        .update(JSON.stringify([token, notification]))
+        .digest('hex');
+    const eligible = tokens.filter(
+      (token) =>
+        (this.failures.get(token.expoToken)?.retryAt ?? 0) <= this.now() &&
+        (this.failures.get(payloadKey(token.expoToken))?.retryAt ?? 0) <= this.now(),
+    );
     const result: PushSendResult = {
       targets: tokens.length,
+      deferred: tokens.length - eligible.length,
       ticketsAccepted: 0,
       ticketErrors: 0,
       receiptsQueued: 0,
       pruned: 0,
       transportErrors: 0,
     };
-    const messages: ExpoPushMessage[] = tokens.map((token) => ({
+    const ticketErrorCodes: Record<string, number> = {};
+    const countError = (code: unknown, count = 1) => {
+      const safe = safePushError(code);
+      ticketErrorCodes[safe] = (ticketErrorCodes[safe] ?? 0) + count;
+    };
+    const messages: ExpoPushMessage[] = eligible.map((token) => ({
       to: token.expoToken,
       title: notification.title,
       body: notification.body,
@@ -148,8 +251,12 @@ class DefaultPushSender implements PushSender {
         tickets = await this.options.transport.sendPushNotificationsAsync(chunk);
       } catch {
         result.transportErrors += chunk.length;
+        countError('TransportError', chunk.length);
+        for (const message of chunk) {
+          if (typeof message.to === 'string') this.defer(message.to, 'TransportError');
+        }
         this.options.logger?.warn(
-          { component: 'push', messages: chunk.length },
+          { component: 'push', messages: chunk.length, errorCode: 'TransportError' },
           'verity: Expo push-ticket request failed',
         );
         continue;
@@ -161,10 +268,17 @@ class DefaultPushSender implements PushSender {
         const expoToken = typeof message?.to === 'string' ? message.to : undefined;
         if (ticket === undefined || expoToken === undefined) {
           result.ticketErrors += 1;
+          countError('MissingTicket');
+          if (expoToken !== undefined) this.defer(expoToken, 'MissingTicket');
           continue;
         }
         if (ticket.status === 'error') {
           result.ticketErrors += 1;
+          countError(ticket.details?.error);
+          this.defer(
+            ticket.details?.error === 'MessageTooBig' ? payloadKey(expoToken) : expoToken,
+            ticket.details?.error,
+          );
           if (
             ticket.details?.error === 'DeviceNotRegistered' &&
             (await this.options.store.deleteDevicePushToken(expoToken))
@@ -173,6 +287,7 @@ class DefaultPushSender implements PushSender {
           }
           continue;
         }
+        this.failures.delete(expoToken);
         result.ticketsAccepted += 1;
         if (
           await this.options.store.enqueuePushReceipt({
@@ -186,7 +301,19 @@ class DefaultPushSender implements PushSender {
       }
     }
 
-    this.options.logger?.info({ component: 'push', ...result }, 'verity: Expo push send completed');
+    // Cooldown-only passes are deliberately silent; pending monitors can run
+    // frequently even though no Expo request was made.
+    if (eligible.length > 0) {
+      this.options.logger?.info(
+        {
+          component: 'push',
+          ...result,
+          ticketErrorCodes,
+          deferred: tokens.length - eligible.length,
+        },
+        'verity: Expo push send completed',
+      );
+    }
     return result;
   }
 
@@ -236,6 +363,10 @@ class DefaultPushSender implements PushSender {
           continue;
         }
         result.receiptErrors += 1;
+        // Receipts do not retain the payload; a payload rejection does not
+        // establish that the device is unavailable.
+        if (receipt.details?.error !== 'MessageTooBig')
+          this.defer(record.expoToken, receipt.details?.error);
         if (
           receipt.details?.error === 'DeviceNotRegistered' &&
           (await this.options.store.deleteDevicePushToken(record.expoToken))
@@ -290,7 +421,31 @@ class DefaultPushSender implements PushSender {
   async close(): Promise<void> {
     if (this.timer !== undefined) clearInterval(this.timer);
     this.timer = undefined;
+    await Promise.allSettled(this.activeSends);
     await this.receiptCycle;
+  }
+
+  private defer(expoToken: string, error: unknown): void {
+    const errorCode = safePushError(error);
+    const attempts = Math.min((this.failures.get(expoToken)?.attempts ?? 0) + 1, 16);
+    const base =
+      errorCode === 'InvalidCredentials' || errorCode === 'MismatchSenderId'
+        ? CREDENTIAL_RETRY_MS
+        : SEND_RETRY_MS;
+    const retryAfterMs =
+      errorCode === 'DeviceNotRegistered'
+        ? MAX_SEND_RETRY_MS
+        : Math.min(base * 2 ** (attempts - 1), MAX_SEND_RETRY_MS);
+    this.failures.delete(expoToken);
+    this.failures.set(expoToken, { attempts, retryAt: this.now() + retryAfterMs });
+    if (this.failures.size > MAX_FAILURE_STATES) {
+      const oldest = this.failures.keys().next().value;
+      if (oldest !== undefined) this.failures.delete(oldest);
+    }
+    this.options.logger?.warn(
+      { component: 'push', errorCode, attempts, retryAfterMs },
+      'verity: Expo push target deferred',
+    );
   }
 
   private async retryReceipt(record: PushReceiptRecord, result: PushReceiptResult): Promise<void> {

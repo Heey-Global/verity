@@ -1,3 +1,4 @@
+import { hostRuntimePreparationReady } from './self-update/host-runtimes.js';
 import { lstat, readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { AGENT_SEED_MOUNT_PATH } from './self-update/agent-seed-stamp.js';
@@ -123,6 +124,7 @@ export async function startManagedUpdaterMain(): Promise<void> {
     token,
     managedRoot: MANAGED_DEPLOYMENT_ROOT,
     standby,
+    hostRuntimeReady: (targetDigest) => hostRuntimePreparationReady(docker, targetDigest),
     // What the reconcile above concluded. An Updater that tolerated a running
     // Server on a drifted environment has to be able to say so, or the
     // tolerance is indistinguishable from not having looked.

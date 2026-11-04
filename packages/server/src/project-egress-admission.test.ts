@@ -28,11 +28,10 @@ function fixture() {
   };
   const events: string[] = [];
   const store = {
-    readForAdmission: vi.fn(async (projectId: string, sponsor: string, revision?: number) => {
+    readForAdmission: vi.fn(async (projectId: string, revision?: number) => {
       events.push('read');
       if (
         projectId !== binding.projectId ||
-        sponsor !== 'sponsor' ||
         (revision !== undefined && revision !== policy.revision)
       )
         throw new Error('stale authority');
@@ -69,7 +68,6 @@ function fixture() {
     events,
     admission: createProjectEgressAdmission({
       binding,
-      sponsorUserId: 'sponsor',
       store,
       dependencies,
     }),
@@ -79,24 +77,24 @@ function fixture() {
   };
 }
 
-it('loads durable policy after denial and rechecks sponsor and revision before admission', async () => {
+it('loads durable policy after denial and rechecks the revision before admission', async () => {
   const f = fixture();
   await f.admission.prepare();
   f.events.length = 0;
   await f.admission.refresh();
   expect(f.events.slice(0, 3)).toEqual(['revoke', 'deny', 'read']);
   expect(f.store.readForAdmission.mock.calls).toEqual([
-    ['project', 'sponsor'],
-    ['project', 'sponsor', 1],
-    ['project', 'sponsor', 1],
-    ['project', 'sponsor', 1],
-    ['project', 'sponsor', 1],
+    ['project'],
+    ['project', 1],
+    ['project', 1],
+    ['project', 1],
+    ['project', 1],
   ]);
   expect(f.events).toContain('allow');
   expect(f.dependencies.deadline.arm).toHaveBeenCalledOnce();
 });
 
-it('closes existing access before a sponsor loses authority or the store fails', async () => {
+it('closes existing access when the store fails', async () => {
   const f = fixture();
   await f.admission.prepare();
   await f.admission.refresh();
@@ -120,7 +118,7 @@ it.each([1, 2, 3, 4, 5])(
   async (pauseAt) => {
     const f = fixture();
     await f.admission.prepare();
-    const policy = await f.store.readForAdmission('project', 'sponsor');
+    const policy = await f.store.readForAdmission('project');
     let release!: () => void;
     const paused = new Promise<void>((resolve) => {
       release = resolve;
@@ -227,4 +225,72 @@ it('rejects same-revision grant tampering and does not reactivate a retired gene
   expect(f.dependencies.deadline.arm).not.toHaveBeenCalled();
   await f.admission.retire();
   await expect(f.admission.refresh()).rejects.toThrow('Inactive');
+});
+
+it('admits host-owned system targets beside project grants without breaking currency checks', async () => {
+  const f = fixture();
+  const admission = createProjectEgressAdmission({
+    binding: f.binding,
+    store: f.store,
+    systemTargets: [{ host: 'mcp.exa.ai', protocol: 'tcp', port: 443 }],
+    dependencies: f.dependencies,
+  });
+  // The project inventory refuses exa.ai; only the host-owned grant id is exempt.
+  f.dependencies.directTargetAllowed.mockImplementation(
+    async (...args: unknown[]) => args[0] !== 'mcp.exa.ai',
+  );
+  await admission.prepare();
+  await admission.refresh();
+  expect(f.dependencies.resolve.mock.calls.map((call) => (call as unknown[])[0])).toEqual([
+    'downloads.example.com',
+    'mcp.exa.ai',
+  ]);
+  expect(f.dependencies.deadline.arm).toHaveBeenCalledOnce();
+  expect(admission.admitted('mcp.exa.ai')?.addresses).toEqual(['8.8.8.8']);
+  // A persisted grant claiming a system id is dropped, not exempted.
+  f.setPolicy({
+    revision: 2,
+    requests: {},
+    grants: [
+      {
+        id: 'system:tcp:evil.example.com:443',
+        target: { host: 'evil.example.com', protocol: 'tcp', port: 443 },
+        approvedBy: 'manager',
+        approvedAt: 0,
+        expiresAt: null,
+      },
+    ],
+  });
+  await admission.refresh();
+  expect(admission.admitted('mcp.exa.ai')?.addresses).toEqual(['8.8.8.8']);
+  expect(admission.admitted('downloads.example.com')).toBeUndefined();
+  expect(admission.admitted('evil.example.com')).toBeUndefined();
+  expect(f.dependencies.resolve).not.toHaveBeenCalledWith('evil.example.com');
+});
+
+it('drops only an unreachable system target, never the project grants', async () => {
+  const f = fixture();
+  const reportSystemFailure = vi.fn();
+  const admission = createProjectEgressAdmission({
+    binding: f.binding,
+    store: f.store,
+    systemTargets: [{ host: 'mcp.exa.ai', protocol: 'tcp', port: 443 }],
+    dependencies: { ...f.dependencies, reportSystemFailure },
+  });
+  f.dependencies.resolve.mockImplementation(async (...args: unknown[]) => {
+    if (args[0] === 'mcp.exa.ai') throw new Error('Exa DNS outage');
+    return { addresses: ['8.8.8.8'], expiresAt: 30000 };
+  });
+  await admission.prepare();
+  await admission.refresh();
+  expect(admission.admitted('downloads.example.com')?.addresses).toEqual(['8.8.8.8']);
+  expect(admission.admitted('mcp.exa.ai')).toBeUndefined();
+  expect(reportSystemFailure).toHaveBeenCalledWith(
+    { host: 'mcp.exa.ai', protocol: 'tcp', port: 443 },
+    new Error('Exa DNS outage'),
+  );
+  // A failing project grant still fails the whole refresh closed.
+  f.dependencies.resolve.mockRejectedValue(new Error('project DNS outage'));
+  await expect(admission.refresh()).rejects.toThrow('project DNS outage');
+  expect(f.dependencies.apply.mock.calls.at(-1)![0]).not.toContain('elements =');
 });

@@ -985,25 +985,6 @@ describe('EventStore — sessions', () => {
     });
   });
 
-  it('setSessionSeen advances the unread mark monotonically; 404s an unknown id', async () => {
-    await ctx.store.createSession(session);
-    expect((await ctx.store.getSession('s1'))?.lastSeenEventCount).toBeNull();
-
-    expect(await ctx.store.setSessionSeen('s1', 8)).toBe(true);
-    expect((await ctx.store.getSession('s1'))?.lastSeenEventCount).toBe(8);
-
-    // A stale mark must not move it backward (would resurrect a cleared dot).
-    expect(await ctx.store.setSessionSeen('s1', 3)).toBe(true);
-    expect((await ctx.store.getSession('s1'))?.lastSeenEventCount).toBe(8);
-
-    // A fresher mark advances it.
-    expect(await ctx.store.setSessionSeen('s1', 20)).toBe(true);
-    expect((await ctx.store.getSession('s1'))?.lastSeenEventCount).toBe(20);
-
-    // Unknown session id → false (the server maps this to a 404).
-    expect(await ctx.store.setSessionSeen('missing', 1)).toBe(false);
-  });
-
   it('setSessionPlanning moves planning mode only from the states it is told to expect', async () => {
     await ctx.store.createSession(session);
     // Never planned: the record carries no planning state at all.
@@ -2304,6 +2285,50 @@ describe('EventStore — session projection facts', () => {
       's1',
     );
     expect(bounded?.map((event) => event.event.t)).toEqual(['prompt']);
+  });
+
+  it('preserves a different snapshot boundary for each batched projection fallback', async () => {
+    await ctx.store.appendEvent('s1', { t: 'prompt', text: 'first' });
+    const first = (await ctx.store.listSessionProjectionFacts(['s1'], 1)).get('s1')!;
+    await ctx.store.appendEvent('s1', { t: 'status', state: 'completed' });
+    await ctx.store.appendEvent('s2', { t: 'prompt', text: 'second' });
+    const second = (await ctx.store.listSessionProjectionFacts(['s2'], 1)).get('s2')!;
+    await ctx.store.appendEvent('s2', { t: 'status', state: 'completed' });
+    const slices = new Map([
+      ['s1', first.events],
+      ['s2', second.events],
+    ]);
+    const visited = new Map();
+    await ctx.store.visitSessionProjectionEvents(
+      new Map([
+        ['s1', first.lastEventSeq],
+        ['s2', second.lastEventSeq],
+      ]),
+      async (id, events) => {
+        visited.set(id, events);
+      },
+    );
+    expect(visited).toEqual(slices);
+  });
+
+  it('visits paged fallback histories once per session without losing page boundaries', async () => {
+    await sql`insert into events(session_id, type, payload)
+      select 's1', 'status', '{"t":"status","state":"running"}'::jsonb from generate_series(1, 501)`.execute(
+      ctx.db,
+    );
+    await ctx.store.appendEvent('s2', { t: 'prompt', text: 'second' });
+    const facts = await ctx.store.listSessionProjectionFacts(['s1', 's2'], 1);
+    const seen: [string, number][] = [];
+    await ctx.store.visitSessionProjectionEvents(
+      new Map([...facts].map(([id, entry]) => [id, entry.lastEventSeq])),
+      async (id, events) => {
+        seen.push([id, events.length]);
+      },
+    );
+    expect(seen).toEqual([
+      ['s1', 501],
+      ['s2', 1],
+    ]);
   });
 
   it('answers for more sessions than one statement can bind', async () => {

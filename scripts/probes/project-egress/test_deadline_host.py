@@ -1,6 +1,7 @@
 """Host admission contract tests; these do not substitute for native BPF proof."""
 import importlib.util
 import ctypes
+import http.client
 import json
 import io
 import os
@@ -15,6 +16,8 @@ spec = importlib.util.spec_from_file_location('deadline_host', source)
 host = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(host)
 
+
+real_endpoint = host.endpoint
 
 class DeadlineHostTests(unittest.TestCase):
     def setUp(self):
@@ -357,6 +360,22 @@ class DeadlineHostTests(unittest.TestCase):
                               'lease': self.lease, 'previousBootDeadlineNs': '1000000000'})
         renew.assert_not_called()
 
+    def test_preparation_loads_renewal_only_after_closing_access(self):
+        def prepare(root):
+            self.assertEqual(self.write.call_args.args[-1], 0)
+            self.assertTrue(json.loads(self.path.read_text())['uncertainExpiry'])
+        with patch.object(host, 'prepare_renewal', side_effect=prepare) as load:
+            self.assertEqual(host.execute({'operation': 'prepare', 'binding': self.binding}), {'state': 'denied'})
+            load.assert_called_once()
+
+    def test_failed_preload_remains_denied_and_uncertain(self):
+        with patch.object(host, 'prepare_renewal', side_effect=ValueError('load failed')):
+            with self.assertRaisesRegex(ValueError, 'load failed'):
+                host.execute({'operation': 'prepare', 'binding': self.binding})
+        self.assertEqual(self.write.call_args.args[-1], 0)
+        self.assertTrue(json.loads(self.path.read_text())['uncertainExpiry'])
+
+
 class RelayIdentityTests(unittest.TestCase):
     def setUp(self):
         self.binding = dict(zip(host.BINDING_FIELDS, ['project', 'generation', 'a' * 64,
@@ -393,6 +412,48 @@ class RelayIdentityTests(unittest.TestCase):
                          'endpointId': self.registration['endpointId'], 'ipv4': '172.30.106.3', 'ipv6': 'fd42:feed::3'})
         self.registration['codex'] = True
         self.assertEqual(struct.unpack('<II', self.policy()[:8]), (1, 1))
+
+    def test_shared_daemon_snapshot_still_checks_both_actual_namespace_peers(self):
+        self.network.update({'Id': self.binding['networkId'], 'Driver': 'bridge',
+                             'Options': {'com.docker.network.bridge.name': self.binding['bridge']}})
+        containers = {}
+        for identity, net, endpoint, device in [
+                (self.binding['containerId'], self.sandbox, self.binding['endpointId'], 'sandbox'),
+                (self.registration['containerId'], self.relay, self.registration['endpointId'], 'relay')]:
+            net.update({'NetworkID': self.binding['networkId'], 'EndpointID': endpoint})
+            containers[identity] = {'Id': identity, 'State': {'Running': True},
+                'NetworkSettings': {'Networks': {'project': net},
+                                    'SandboxKey': '/var/run/docker/netns/' + device}}
+        calls = []
+        def daemon(*args):
+            calls.append(args)
+            if args[0] == '/usr/bin/docker':
+                return json.dumps([self.network] if args[1] == 'network' else [containers[identity] for identity in args[3:]])
+            if args[0] == '/usr/bin/nsenter':
+                sandbox = args[1].endswith('/sandbox')
+                return json.dumps([{'ifname': 'eth0', 'address': (self.sandbox if sandbox else self.relay)['MacAddress'],
+                                    'ifindex': 2, 'link_index': 5 if sandbox else 6}])
+            return json.dumps([{'ifindex': index, 'ifname': name, 'linkinfo': {'info_kind': 'veth'}}
+                               for index, name in [(5, 'vtest'), (6, 'vrelay')]])
+        original_read, original_resolve = Path.read_text, Path.resolve
+        def read(path, *args, **kwargs):
+            return '2' if str(path).startswith('/sys/class/net/') else original_read(path, *args, **kwargs)
+        def resolve(path, *args, **kwargs):
+            return Path('/sys/class/net/' + self.binding['bridge']) if path.name == 'master' else original_resolve(path, *args, **kwargs)
+        with patch.object(host, 'endpoint', wraps=real_endpoint), patch.object(host, 'run', side_effect=daemon), \
+                patch.object(Path, 'read_text', read), patch.object(Path, 'resolve', resolve):
+            self.policy()
+            self.assertEqual(sum(args[0] == '/usr/bin/docker' for args in calls), 2)
+            for container, field, value in [(containers[self.binding['containerId']], 'Id', 'f' * 64),
+                                            (self.relay, 'EndpointID', 'f' * 64)]:
+                previous = container[field]
+                container[field] = value
+                with self.assertRaisesRegex(ValueError, 'identity mismatch|attachment changed'):
+                    self.policy()
+                container[field] = previous
+            with patch.object(Path, 'read_text', lambda path: '99'):
+                with self.assertRaisesRegex(ValueError, 'bridge peer changed'):
+                    self.policy()
 
     def test_caller_cannot_supply_destinations_or_non_boolean_codex(self):
         for changed in ({**self.registration, 'ipv4': '1.1.1.1'},
@@ -608,5 +669,86 @@ class RelayMapWriterTests(unittest.TestCase):
 
 
 
+class DockerInspectionTests(unittest.TestCase):
+    def test_rejects_untrusted_identity_before_connecting(self):
+        with patch.object(host, 'DockerInspectionSocket') as connect:
+            for kind, identity in [('container', '../info'), ('exec', 'a' * 64)]:
+                with self.assertRaises(ValueError):
+                    host.docker_read(kind, identity)
+            connect.assert_not_called()
+
+    def test_trickling_cannot_restart_budget(self):
+        with host.DockerInspectionSocket() as connection:
+            with patch.object(host.time, 'monotonic', return_value=connection.deadline + 1), patch.object(host.socket.socket, 'recv_into', return_value=1) as read:
+                with self.assertRaises(TimeoutError):
+                    connection.recv_into(bytearray(1))
+                read.assert_not_called()
+
+    def test_read_keeps_fixed_endpoint_and_cli_shape(self):
+        from unittest.mock import MagicMock
+        connection = MagicMock()
+        response = connection.getresponse.return_value
+        response.status = 200
+        response.read.return_value = b'{"Id":"current"}'
+        with patch.object(http.client, 'HTTPConnection', return_value=connection), patch.object(host, 'DockerInspectionSocket') as sock:
+            self.assertEqual(json.loads(host.docker_read('container', 'a' * 64)), [{'Id': 'current'}])
+            sock.return_value.connect.assert_called_once_with('/var/run/docker.sock')
+            connection.request.assert_called_once_with('GET', '/v1.52/containers/' + 'a' * 64 + '/json')
+            connection.close.assert_called_once()
+
+    def test_bad_daemon_response_fails_closed(self):
+        from unittest.mock import MagicMock
+        for status, body in [(404, b'{}'), (200, b'invalid'), (200, b'x' * (2 * 1024 * 1024 + 1))]:
+            connection = MagicMock()
+            connection.getresponse.return_value.status = status
+            connection.getresponse.return_value.read.return_value = body
+            with patch.object(http.client, 'HTTPConnection', return_value=connection), patch.object(host, 'DockerInspectionSocket'):
+                with self.assertRaises(ValueError):
+                    host.docker_read('network', 'b' * 64)
+                connection.close.assert_called_once()
+
+
+class ProgramIdentityTests(unittest.TestCase):
+    def setUp(self):
+        self.enterContext(patch.object(Path, 'read_text', return_value='prog_type: 3\nprog_id: 42\n'))
+
+    def inspect(self, kind=3, identity=42, fail=False):
+        def syscall(command, attr):
+            if command == 7:
+                self.assertTrue(ctypes.string_at(attr.pathname).endswith(b'/guard'))
+                return 17
+            self.assertEqual(command, 15)
+            self.assertEqual(attr.fd, 17)
+            self.assertEqual(attr.info_len, 8)
+            if fail:
+                raise OSError('inspection failed')
+            info = host.ProgramInfo.from_address(attr.info)
+            info.type, info.id = kind, identity
+            return 0
+        return syscall
+
+    def test_reads_current_pinned_identity_without_external_process(self):
+        with patch.object(host, 'bpf', side_effect=self.inspect()), patch.object(host.os, 'close') as close, patch.object(host, 'run') as external:
+            self.assertEqual(host.program_identity(Path('/pins')), {'id': 42, 'type': 'sched_cls'})
+            external.assert_not_called()
+            close.assert_called_once_with(17)
+
+    def test_wrong_type_missing_identity_and_failed_inspection_fail_closed(self):
+        for kind, identity, fail in [(6, 42, False), (3, 0, False), (3, 42, True)]:
+            with self.subTest(kind=kind, identity=identity, fail=fail), patch.object(host, 'bpf', side_effect=self.inspect(kind, identity, fail)), patch.object(Path, 'read_text', return_value=f'prog_type: {kind}\nprog_id: {identity}\n'), patch.object(host.os, 'close') as close:
+                with self.assertRaises((ValueError, OSError)):
+                    host.program_identity(Path('/pins'))
+                close.assert_called_once_with(17)
+
+    def test_map_descriptor_with_colliding_prefix_is_rejected(self):
+        with patch.object(host, 'bpf', side_effect=self.inspect()), patch.object(Path, 'read_text', return_value='map_type: 3\nmap_id: 42\n'), patch.object(host.os, 'close') as close:
+            with self.assertRaisesRegex(ValueError, 'not the inspected program'):
+                host.program_identity(Path('/pins'))
+            close.assert_called_once_with(17)
+
+    def test_attestation_rejects_replaced_pinned_program(self):
+        with patch.object(host, 'run', return_value='{"nftables":[]}'), patch.object(host, 'kernel_program', return_value={'id': 99, 'type': 'sched_cls'}):
+            with self.assertRaisesRegex(ValueError, 'identity changed'):
+                host.attest(Path('/pins'), {'device': 'vtest'}, 42)
 if __name__ == '__main__':
     unittest.main()

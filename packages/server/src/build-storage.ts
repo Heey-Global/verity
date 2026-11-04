@@ -368,6 +368,88 @@ export class BuildStorage {
     private readonly admissionDirectory?: string,
   ) {}
 
+  /** Markers carry recovery evidence independently of the artifact directory. */
+  private createAdmissionMarker(admissionDirectory: string): string {
+    const marker = mkdtempSync(join(admissionDirectory, 'leases', 'attempt-'));
+    try {
+      writeFileSync(
+        join(marker, 'owner.json'),
+        JSON.stringify({
+          version: 1,
+          pid: process.pid,
+          namespace: readlinkSync('/proc/self/ns/pid'),
+          start: processStart(process.pid),
+          hostBootId: readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim(),
+        }),
+        { mode: 0o600, flush: true },
+      );
+      return marker;
+    } catch (error) {
+      rmSync(marker, { recursive: true, force: true });
+      throw error;
+    }
+  }
+
+  private sweepAdmissionMarkers(namespace: string, idleBefore?: number): void {
+    if (this.admissionDirectory === undefined) return;
+    const leases = join(this.admissionDirectory, 'leases');
+    if (!existsSync(leases)) return;
+    // Use the kernel boot identity, rather than a possibly stale host report.
+    const boot = readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim();
+    const bootTime = Date.now() - Number(readFileSync('/proc/uptime', 'utf8').split(' ')[0]) * 1000;
+    const referenced = new Set<string>();
+    let unknownReference = false;
+    if (existsSync(this.root)) {
+      for (const entry of readdirSync(this.root, { withFileTypes: true })) {
+        if (!entry.isDirectory() || !entry.name.startsWith('attempt-')) continue;
+        try {
+          const owner = ownerSchema.parse(
+            JSON.parse(readFileSync(join(this.root, entry.name, 'owner.json'), 'utf8')),
+          );
+          if (owner.admissionMarker !== undefined) referenced.add(owner.admissionMarker);
+        } catch {
+          // An unreadable attempt could reference any legacy marker.
+          unknownReference = true;
+        }
+      }
+    }
+    for (const entry of readdirSync(leases, { withFileTypes: true })) {
+      if (!/^attempt-[\w-]+$/.test(entry.name) || !entry.isDirectory() || entry.isSymbolicLink())
+        continue;
+      const marker = join(leases, entry.name);
+      try {
+        let owner: z.infer<typeof ownerSchema>;
+        try {
+          owner = ownerSchema.parse(JSON.parse(readFileSync(join(marker, 'owner.json'), 'utf8')));
+        } catch {
+          // Age alone cannot prove a legacy build ended. Only a marker predating
+          // this boot is safe; same-boot ownerless markers require manual diagnosis.
+          if (!unknownReference && !referenced.has(marker) && lstatSync(marker).mtimeMs < bootTime)
+            rmSync(marker, { recursive: true });
+          continue;
+        }
+        const rebooted = owner.hostBootId !== undefined && owner.hostBootId !== boot;
+        if (!rebooted) {
+          if (owner.namespace !== namespace) continue;
+          if (existsProcess(owner.pid) && processStart(owner.pid) === owner.start) continue;
+          if (this.liveChild(marker)) continue;
+          const remote = this.readRemoteRecord(marker);
+          if (remote !== undefined) {
+            if (remote === 'invalid') continue;
+            if (
+              remote.operation === 'build-export' &&
+              (idleBefore === undefined || Date.parse(remote.startedAt) >= idleBefore)
+            )
+              continue;
+          }
+        }
+        rmSync(marker, { recursive: true });
+      } catch {
+        // Missing or unreadable evidence must never establish that a build ended.
+      }
+    }
+  }
+
   private check(bytes: number, host: boolean): void {
     const unresolvedBytes = this.unresolved.reduce((sum, entry) => sum + entry.reservedBytes, 0);
     bytes += unresolvedBytes;
@@ -527,6 +609,8 @@ export class BuildStorage {
   private unmanagedLease(admissionDirectory: string): BuildStorageLease {
     let admissionFd: number | undefined;
     let admissionMarker: string | undefined;
+    let running = false;
+    let disposed = false;
     const enterProvisionedHost = () => {
       const admission = this.admissionState(admissionDirectory);
       if (admission.state === 'not-provisioned') return;
@@ -546,7 +630,7 @@ export class BuildStorage {
           throw new Error(
             'Builder admission unavailable: builder migration recovery is pending; retry the build',
           );
-        admissionMarker = mkdtempSync(join(admissionDirectory, 'leases', 'attempt-'));
+        admissionMarker = this.createAdmissionMarker(admissionDirectory);
       } catch (cause) {
         closeSync(fd);
         throw cause;
@@ -555,23 +639,99 @@ export class BuildStorage {
     };
     return {
       directory: tmpdir(),
-      retainArtifacts: false,
+      get retainArtifacts() {
+        return (
+          admissionMarker !== undefined &&
+          existsSync(join(admissionMarker, 'remote-operation.json'))
+        );
+      },
       reserveBuild: () => {},
       run: async (command, args, options) => {
+        if (disposed || running) throw new Error('Build storage command lease is not available');
         if (options.remoteOperation !== undefined && admissionFd === undefined)
           enterProvisionedHost();
-        return execFileAsync(command, args, {
-          env: options.env,
-          ...(options.signal === undefined ? {} : { signal: options.signal }),
-          timeout: options.timeout,
-          maxBuffer: options.maxBuffer,
-          encoding: 'utf8',
-        });
+        const remote =
+          admissionMarker === undefined
+            ? undefined
+            : join(admissionMarker, 'remote-operation.json');
+        if (remote !== undefined && existsSync(remote))
+          throw new Error(
+            'Remote operation termination is unconfirmed; retry after reconciliation',
+          );
+        if (remote !== undefined && options.remoteOperation !== undefined) {
+          const identity = this.hostIdentity();
+          writeFileSync(
+            remote,
+            JSON.stringify(
+              identity === undefined
+                ? {}
+                : {
+                    version: 1,
+                    ...identity,
+                    operation: options.remoteOperation,
+                    startedAt: new Date().toISOString(),
+                  },
+            ),
+            { mode: 0o600, flag: 'wx', flush: true },
+          );
+        }
+        running = true;
+        try {
+          const result = await execFileAsync(
+            'setsid',
+            [
+              'bash',
+              '-c',
+              'set -e; if [ -n "$1" ]; then printf "%s\\n" "$$" > "$1"; fi; shift; exec "$@"',
+              'verity-build-command',
+              admissionMarker === undefined ? '' : join(admissionMarker, 'child-0'),
+              command,
+              ...args,
+            ],
+            {
+              env: options.env,
+              ...(options.signal === undefined ? {} : { signal: options.signal }),
+              timeout: options.timeout,
+              maxBuffer: options.maxBuffer,
+              encoding: 'utf8',
+            },
+          );
+          if (remote !== undefined) rmSync(remote, { force: true });
+          return result;
+        } catch (error) {
+          const failure = error as {
+            code?: unknown;
+            killed?: boolean;
+            stdout?: string;
+            stderr?: string;
+          };
+          if (
+            remote !== undefined &&
+            options.remoteOperation !== undefined &&
+            typeof failure.code === 'number' &&
+            !failure.killed &&
+            remoteOperationEnded(
+              options.remoteOperation,
+              `${failure.stdout ?? ''}\n${failure.stderr ?? ''}`,
+            )
+          )
+            rmSync(remote, { force: true });
+          throw error;
+        } finally {
+          running = false;
+        }
       },
       dispose: () => {
-        if (admissionMarker !== undefined) rmSync(admissionMarker, { recursive: true });
+        if (disposed) return;
+        if (running) throw new Error('Cannot release storage while a build command is running');
+        disposed = true;
+        if (
+          admissionMarker !== undefined &&
+          !existsSync(join(admissionMarker, 'remote-operation.json')) &&
+          !this.liveChild(admissionMarker)
+        )
+          rmSync(admissionMarker, { recursive: true });
         if (admissionFd !== undefined) closeSync(admissionFd);
-        admissionMarker = undefined;
         admissionFd = undefined;
       },
     };
@@ -605,7 +765,7 @@ export class BuildStorage {
           throw new Error('builder migration recovery is pending');
         // The shared descriptor fences the check/create race with the host's exclusive lock.
         // The marker survives a Server crash or ambiguous remote cancellation.
-        admissionMarker = mkdtempSync(join(this.admissionDirectory, 'leases', 'attempt-'));
+        admissionMarker = this.createAdmissionMarker(this.admissionDirectory);
       } catch (cause) {
         if (admissionFd !== undefined) closeSync(admissionFd);
         throw new Error(
@@ -649,6 +809,7 @@ export class BuildStorage {
    */
   private survey(namespace: string): UnresolvedBuildAttempt[] {
     const unresolved: UnresolvedBuildAttempt[] = [];
+    this.sweepAdmissionMarkers(namespace);
     if (!existsSync(this.root)) return unresolved;
     for (const entry of readdirSync(this.root, { withFileTypes: true })) {
       if (!entry.name.startsWith('attempt-')) continue;
@@ -731,7 +892,8 @@ export class BuildStorage {
     for (const file of readdirSync(directory)) {
       if (!/^child-\d+$/.test(file)) continue;
       const pid = Number(readFileSync(join(directory, file), 'utf8').trim());
-      if (!Number.isSafeInteger(pid) || pid <= 1 || existsProcess(-pid)) return true;
+      if (!Number.isSafeInteger(pid) || pid <= 1 || existsProcess(pid) || existsProcess(-pid))
+        return true;
     }
     return false;
   }
@@ -804,10 +966,6 @@ export class BuildStorage {
     probe: { buildkitIdle?: BuildkitIdleProbe } = {},
     now: number = Date.now(),
   ): Promise<UnresolvedBuildAttempt[]> {
-    if (!existsSync(this.root)) {
-      this.unresolved = [];
-      return [];
-    }
     const namespace = readlinkSync('/proc/self/ns/pid');
     const identity = this.hostIdentity();
     let idle: boolean | undefined;
@@ -822,6 +980,24 @@ export class BuildStorage {
       }
       return idle;
     };
+    this.sweepAdmissionMarkers(namespace);
+    // Orphan markers have no artifact record through which the ordinary pass can
+    // ask the worker. Reuse the same probe and retain unknown remote outcomes.
+    if (
+      this.admissionDirectory !== undefined &&
+      existsSync(join(this.admissionDirectory, 'leases'))
+    ) {
+      const leases = join(this.admissionDirectory, 'leases');
+      if (
+        readdirSync(leases).some((name) => existsSync(join(leases, name, 'remote-operation.json')))
+      ) {
+        if ((await buildkitIdle()) === true) this.sweepAdmissionMarkers(namespace, askedAt);
+      }
+    }
+    if (!existsSync(this.root)) {
+      this.unresolved = [];
+      return [];
+    }
     for (const entry of readdirSync(this.root, { withFileTypes: true })) {
       if (!entry.name.startsWith('attempt-') || !entry.isDirectory() || entry.isSymbolicLink())
         continue;
@@ -953,6 +1129,9 @@ export class BuildStorage {
     let reserved = false;
     let estimateBytes: number | undefined;
     const remoteRecord = join(directory, 'remote-operation.json');
+    const remotePending = () =>
+      existsSync(remoteRecord) ||
+      (admissionMarker !== undefined && existsSync(join(admissionMarker, 'remote-operation.json')));
     const syncDirectory = () => {
       const fd = openSync(directory, 'r');
       try {
@@ -970,7 +1149,7 @@ export class BuildStorage {
     return {
       directory,
       get retainArtifacts() {
-        return existsSync(remoteRecord);
+        return remotePending();
       },
       reserveBuild,
       reserveBuildWithReclamation: async (imageBytes) => {
@@ -998,10 +1177,15 @@ export class BuildStorage {
           // record that keeps uncertain work reserved.
           const report = this.hostIdentity();
           if (report === undefined) {
+            if (admissionMarker !== undefined) {
+              // Even without host evidence, uncertainty must survive disposal.
+              writeFileSync(remoteRecord, '{}', { mode: 0o600, flag: 'wx', flush: true });
+              syncDirectory();
+            }
             if (!this.warnedRemoteRecord) {
               this.warnedRemoteRecord = true;
               console.warn(
-                'Build storage has no host identity in the storage report; remote build work runs without a durable recovery record.',
+                'Build storage has no host identity in the storage report; automatic remote recovery is unavailable.',
               );
             }
           } else {
@@ -1028,6 +1212,16 @@ export class BuildStorage {
             }
           }
         }
+        if (options.remoteOperation !== undefined && admissionMarker !== undefined) {
+          const markerRecord = join(admissionMarker, 'remote-operation.json');
+          if (existsSync(remoteRecord))
+            writeFileSync(markerRecord, readFileSync(remoteRecord), {
+              mode: 0o600,
+              flag: 'wx',
+              flush: true,
+            });
+          else writeFileSync(markerRecord, '{}', { mode: 0o600, flag: 'wx', flush: true });
+        }
         running = true;
         try {
           const result = await new Promise<{ stdout: string; stderr: string }>(
@@ -1039,9 +1233,12 @@ export class BuildStorage {
                 'bash',
                 [
                   '-c',
-                  'set -e; printf "%s\\n" "$$" > "$1"; shift; exec "$@"',
+                  'set -e; printf "%s\\n" "$$" > "$1"; if [ -n "$2" ]; then printf "%s\\n" "$$" > "$2"; fi; shift 2; exec "$@"',
                   'verity-build-command',
-                  join(directory, `child-${commandIndex++}`),
+                  join(directory, `child-${commandIndex}`),
+                  admissionMarker === undefined
+                    ? ''
+                    : join(admissionMarker, `child-${commandIndex}`),
                   command,
                   ...args,
                 ],
@@ -1052,6 +1249,7 @@ export class BuildStorage {
                   stdio: ['ignore', 'pipe', 'pipe'],
                 },
               );
+              commandIndex++;
               let failure: unknown;
               const stdout: Buffer[] = [];
               const stderr: Buffer[] = [];
@@ -1128,6 +1326,8 @@ export class BuildStorage {
             unlinkSync(remoteRecord);
             syncDirectory();
           }
+          if (options.remoteOperation !== undefined && admissionMarker !== undefined)
+            rmSync(join(admissionMarker, 'remote-operation.json'), { force: true });
           return result;
         } catch (error) {
           // A definitive failure is the remote side's own final answer: nothing of
@@ -1136,14 +1336,16 @@ export class BuildStorage {
           if (
             options.remoteOperation !== undefined &&
             output[EXITED] === true &&
-            existsSync(remoteRecord) &&
+            remotePending() &&
             remoteOperationEnded(
               options.remoteOperation,
               `${output.stdout ?? ''}\n${output.stderr ?? ''}`,
             )
           ) {
-            unlinkSync(remoteRecord);
+            rmSync(remoteRecord, { force: true });
             syncDirectory();
+            if (admissionMarker !== undefined)
+              rmSync(join(admissionMarker, 'remote-operation.json'), { force: true });
           }
           throw error;
         } finally {
@@ -1153,8 +1355,8 @@ export class BuildStorage {
       dispose: () => {
         if (disposed) return;
         if (running) throw new Error('Cannot release storage while a build command is running');
-        if (!existsSync(remoteRecord)) rmSync(directory, { recursive: true, force: true });
-        if (existsSync(remoteRecord)) retainAdmission();
+        if (!remotePending()) rmSync(directory, { recursive: true, force: true });
+        if (remotePending()) retainAdmission();
         else releaseAdmission();
         disposed = true;
         this.held = false;

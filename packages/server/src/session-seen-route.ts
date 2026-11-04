@@ -3,6 +3,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 
 import { sessionParams } from './session-route-schemas.js';
+import { viewerId } from './view-state-routes.js';
 
 const sessionSeenBody = z.object({
   eventCount: z.number().int().nonnegative(),
@@ -10,10 +11,10 @@ const sessionSeenBody = z.object({
 });
 
 export interface SessionSeenRouteDeps {
-  store: Pick<EventStore, 'setSessionSeen' | 'getSession' | 'getSessionEventStats'>;
+  store: Pick<EventStore, 'viewState' | 'getSession' | 'getSessionEventStats'>;
 }
 
-/** Registers the monotonic per-session read marker used by overview unread state. */
+/** Registers the monotonic per-person, per-session read marker used by overview unread state. */
 export function registerSessionSeenRoute(app: FastifyInstance, deps: SessionSeenRouteDeps): void {
   app.patch('/sessions/:id/seen', async (request, reply): Promise<unknown> => {
     const { id } = sessionParams.parse(request.params);
@@ -31,13 +32,16 @@ export function registerSessionSeenRoute(app: FastifyInstance, deps: SessionSeen
           'session event counter incompatible; update the client and refresh before marking seen',
       };
     }
-    const marked = await deps.store.setSessionSeen(id, eventCount);
-    if (!marked) {
+    const lastSeenEventCount = await deps.store.viewState.setSessionSeen(
+      viewerId(request),
+      id,
+      eventCount,
+    );
+    if (lastSeenEventCount === undefined) {
       reply.code(404);
       return { error: `session ${id} not found` };
     }
     // Echo the resolved monotonic mark without loading the event log.
-    const session = await deps.store.getSession(id);
-    return { sessionId: id, lastSeenEventCount: session?.lastSeenEventCount ?? eventCount };
+    return { sessionId: id, lastSeenEventCount };
   });
 }

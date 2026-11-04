@@ -311,3 +311,19 @@ it('rechecks sponsor rights at queued turn admission', async () => {
   });
   expect((await executor.run(automation)).outcome).toBe('skipped');
 });
+
+it('does not dispatch a script into a project replaced during sponsor authorization', async () => {
+  let current = { ...project, containerName: 'old', cloneDir: '/work/old' };
+  const { executor, runScript } = harness({
+    getProject: async () => current,
+    isAuthorized: async () => {
+      current = { ...current, containerName: 'replacement' };
+      return true;
+    },
+  });
+  await expect(executor.run({ ...automation, script: 'true' })).resolves.toEqual({
+    outcome: 'skipped',
+    detail: 'The project workspace changed.',
+  });
+  expect(runScript).not.toHaveBeenCalled();
+});

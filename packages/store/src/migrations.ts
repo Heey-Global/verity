@@ -5068,3 +5068,190 @@ migrations['0180_mcp_oauth_token_auth_method'] = {
     await sql`alter table http_mcp_connections drop column oauth_token_auth_method`.execute(db);
   },
 };
+
+migrations['0181_qa_assignments'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`create table qa_assignments (
+ id text primary key, project_id text not null references projects(id) on delete cascade,
+ source_session_id text not null, user_id text not null, target_session_id text,
+ state text not null, title text not null, instruction text not null, criteria text not null,
+ qa_revision integer not null, mandate_revision integer not null,
+ consent_key text unique, attempt integer not null default 0, dispatch_id text,
+ feedback text not null default '', evidence text not null default '', reason text,
+ version integer not null default 1, created_at timestamptz not null default now(),
+ expires_at timestamptz not null default now() + interval '1 hour'
+ )`.execute(db);
+    await sql`create unique index qa_assignment_project_owner on qa_assignments(project_id) where state in ('queued','running','waiting','verifying','stopping')`.execute(
+      db,
+    );
+    await sql`create table qa_assignment_notifications (
+ id text primary key, assignment_id text not null references qa_assignments(id) on delete cascade,
+ dispatch_id text not null unique, payload text not null,
+ attempt integer not null default 0, acknowledged boolean not null default false
+ )`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table qa_assignment_notifications`.execute(db);
+    await sql`drop table qa_assignments`.execute(db);
+  },
+};
+
+migrations['0182_session_pr_repair_origins'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table repair_attempts add column automation_marker text`.execute(db);
+    await sql`create table repair_session_origins (
+      project_id text not null references projects(id) on delete cascade,
+      resource text not null, session_id text not null references sessions(session_id) on delete cascade,
+      primary key (project_id, resource)
+    )`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table repair_session_origins`.execute(db);
+    await sql`alter table repair_attempts drop column automation_marker`.execute(db);
+  },
+};
+
+migrations['0183_unassigned_meeting_retention'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    // Null keeps the default in code, so changing the default needs no migration.
+    await sql`alter table verity_settings add column unassigned_meeting_retention_days integer
+      check (unassigned_meeting_retention_days between 1 and 365)`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table verity_settings drop column unassigned_meeting_retention_days`.execute(
+      db,
+    );
+  },
+};
+
+migrations['0184_calendar_watch_calendars'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    // Calendars Verity watches for online meetings. A calendar carries no project: meetings
+    // joined from it start unassigned. Disconnecting the account drops its choices.
+    await sql`create table calendar_watch_calendars (
+      account_id text not null references google_accounts(id) on delete cascade,
+      calendar_id text not null,
+      summary text not null,
+      auto_join boolean not null default false,
+      updated_at timestamptz not null default now(),
+      primary key (account_id, calendar_id)
+    )`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table calendar_watch_calendars`.execute(db);
+  },
+};
+
+migrations['0185_calendar_watch_events'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    // Joinable events of watched calendars and what Verity already did about them, so a
+    // restart neither repeats a notification nor joins a meeting twice. Title and link are
+    // encrypted: links often carry the meeting passcode.
+    await sql`create table calendar_watch_events (
+      event_key text primary key,
+      account_id text not null,
+      calendar_id text not null,
+      event_id text not null,
+      title text,
+      meeting_url text not null,
+      starts_at timestamptz not null,
+      ends_at timestamptz not null,
+      accepted boolean not null default true,
+      notified_at timestamptz,
+      decision text check (decision in ('joined', 'skipped', 'failed')),
+      meeting_id text,
+      started_notified_at timestamptz,
+      updated_at timestamptz not null default now(),
+      foreign key (account_id, calendar_id)
+        references calendar_watch_calendars(account_id, calendar_id) on delete cascade
+    )`.execute(db);
+    await sql`create index calendar_watch_events_calendar
+      on calendar_watch_events(account_id, calendar_id, starts_at)`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table calendar_watch_events`.execute(db);
+  },
+};
+
+migrations['0186_pr_ready_delivery'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`create table pr_ready_delivery (
+      session_id text not null references sessions(session_id) on delete cascade,
+      marker text not null,
+      attempts integer not null default 0 check (attempts between 0 and 3),
+      next_attempt_at bigint not null default 0,
+      claim_id text,
+      lease_until bigint not null default 0,
+      completed boolean not null default false,
+      primary key (session_id, marker)
+    )`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table pr_ready_delivery`.execute(db);
+  },
+};
+
+migrations['0187_project_egress_switch'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    // Default off: network protection only applies once an administrator enables it.
+    await db.schema
+      .alterTable('verity_settings')
+      .addColumn('project_egress_enabled', 'boolean', (c) => c.notNull().defaultTo(false))
+      .execute();
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await db.schema.alterTable('verity_settings').dropColumn('project_egress_enabled').execute();
+  },
+};
+
+migrations['0188_user_context'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await db.schema
+      .alterTable('session_backend_state')
+      .addColumn('context_fingerprint', 'text')
+      .execute();
+    await sql`create table user_context (
+      user_id text primary key references users(id) on delete cascade,
+      instructions text not null default '' check (char_length(instructions) <= 12000),
+      memory text not null default '' check (char_length(memory) <= 8000),
+      revision integer not null default 1 check (revision > 0)
+    )`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table user_context`.execute(db);
+    await db.schema.alterTable('session_backend_state').dropColumn('context_fingerprint').execute();
+  },
+};
+
+migrations['0189_user_view_state'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    // How a person sees the overview, kept per person instead of on the project or
+    // session row: one member folding a project or reading a session must not
+    // change what another member sees. Exactly one subject column is set, so each
+    // row disappears with its project, session or person.
+    await sql`create table user_view_state (
+      user_id text not null references users(id) on delete cascade,
+      project_id text references projects(id) on delete cascade,
+      session_id text references sessions(session_id) on delete cascade,
+      collapsed boolean not null default false,
+      last_seen_event_count integer check (last_seen_event_count >= 0),
+      inbox_dismissed jsonb not null default '[]'::jsonb
+        check (jsonb_typeof(inbox_dismissed) = 'array' and jsonb_array_length(inbox_dismissed) <= 16),
+      check ((project_id is null) <> (session_id is null))
+    )`.execute(db);
+    await sql`create unique index user_view_state_project_idx
+      on user_view_state (user_id, project_id) where project_id is not null`.execute(db);
+    await sql`create unique index user_view_state_session_idx
+      on user_view_state (user_id, session_id) where session_id is not null`.execute(db);
+    // The shared state so far becomes everyone's starting point, so nobody finds
+    // their folded projects open or read sessions unread after the upgrade.
+    await sql`insert into user_view_state (user_id, project_id, collapsed)
+      select u.id, p.id, true from users u cross join projects p where p.collapsed`.execute(db);
+    await sql`insert into user_view_state (user_id, session_id, last_seen_event_count)
+      select u.id, s.session_id, s.last_seen_event_count
+      from users u cross join sessions s where s.last_seen_event_count is not null`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table user_view_state`.execute(db);
+  },
+};

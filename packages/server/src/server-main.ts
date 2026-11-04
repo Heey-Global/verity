@@ -1,3 +1,4 @@
+import { runnerCacheTargetFromEnv } from './runner-cache-storage.js';
 import { parseOomScoreAdj } from './sandbox-memory-policy.js';
 import {
   configureManagedUpdateChannel,
@@ -910,6 +911,7 @@ async function main(): Promise<void> {
       // Host-disk GC owns Verity's append-only Docker caches and is mandatory.
       dockerGc: true,
       dockerGcPolicy: dockerGcPolicyFromEnv(),
+      runnerCacheMaxBytes: runnerCacheTargetFromEnv(process.env.VERITY_RUNNER_NPM_CACHE_MAX_BYTES),
       agentSeedHostPath: sandboxAgentSeedHostPath(process.env),
       // Anti-CSWSH Origin allowlist for the live WebSocket (audit C1). Comma-list,
       // e.g. `https://verity.example.com`. Unset → no Origin check (native mobile
@@ -924,6 +926,10 @@ async function main(): Promise<void> {
         process.env.VERITY_AGENT_GATEWAY_CONTROL_SOCKET?.trim() ||
         DEFAULT_AGENT_GATEWAY_CONTROL_SOCKET,
       agentGatewayUnsealKey: resolveAgentGatewayUnsealKey(verityRoot),
+      // Network protection: the host egress service's control socket and key, mounted
+      // only on hosts where it is installed. Absent → the switch reports unavailable.
+      projectEgressSocketPath: process.env.VERITY_PROJECT_EGRESS_SOCKET?.trim() || undefined,
+      projectEgressKeyPath: process.env.VERITY_PROJECT_EGRESS_KEY_PATH?.trim() || undefined,
       agentGatewayUrl: process.env.VERITY_AGENT_GATEWAY_URL?.trim() || undefined,
       agentGatewayClaudePort: parsePort(process.env.VERITY_AGENT_GATEWAY_CLAUDE_PORT, 9443),
       // Every project relay has a fixed Claude upstream, and every Claude project

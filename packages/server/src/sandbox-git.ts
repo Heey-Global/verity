@@ -1,3 +1,4 @@
+import { measureDockerExec } from './docker-exec-diagnostics.js';
 import { normalizeSecurityOptions } from './docker-security-options.js';
 import { randomUUID } from 'node:crypto';
 import { relative, isAbsolute } from 'node:path';
@@ -85,7 +86,9 @@ export interface SandboxGitOptions {
 }
 
 const defaultExec: SandboxExec = async (command, args, options) => {
-  const { stdout, stderr } = await execFileAsync(command, [...args], options);
+  const { stdout, stderr } = await measureDockerExec('git', () =>
+    execFileAsync(command, [...args], options),
+  );
   return { stdout, stderr };
 };
 

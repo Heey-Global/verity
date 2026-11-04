@@ -66,23 +66,34 @@ describe('settings index — destinations', () => {
 
     const groups = UNSAFE_getAllByType(SettingsGroup);
     expect(groups.map((group) => group.props.title)).toEqual([
+      'Personal context',
+      'Knowledge',
       'Features',
       'App & Server',
       'This app',
     ]);
     const expectedRows = [
+      ['Instructions', 'Memory'],
+      ['Shared knowledge'],
       [
         'Assistant',
         'QA · CI supervision',
-        'Connections',
+        'Connectors',
         'Tasks',
         'Meeting transcription',
         'Vulnerability scan',
         'Verity Premium',
         'Verity Control',
       ],
-      ['Updates', 'Backup', 'Server address', 'Devices & Web Browsers', 'Logs'],
-      ['Show welcome tour again', 'Diagnostics', 'Try demo'],
+      [
+        'Updates',
+        'Network protection',
+        'Backup',
+        'Server address',
+        'Devices & Web Browsers',
+        'Logs',
+      ],
+      ['New Home (preview)', 'Show welcome tour again', 'Diagnostics', 'Try demo'],
     ];
     groups.forEach((group, index) => {
       const rows = group.findAll(
@@ -146,12 +157,14 @@ describe('settings index — destinations', () => {
 
   // Each destination must still reach its settings or recovery screen.
   it.each([
+    ['Shared knowledge', '/settings/shared-knowledge'],
     ['Vulnerability scan', '/settings/vulnerability-scan'],
     ['Verity Premium', '/settings/premium'],
     ['Diagnostics', '/settings/diagnostics'],
     ['Meeting transcription', '/settings/transcription'],
-    ['Connections', '/settings/services'],
+    ['Connectors', '/settings/services'],
     ['Updates', '/settings/server-update'],
+    ['Network protection', '/settings/network-protection'],
     ['Change server address', '/onboarding/server-url?reconfigure=1'],
     ['Manage devices and web browsers', '/devices'],
   ])('routes %s to %s', async (label, href) => {
@@ -254,7 +267,7 @@ describe('settings index — destinations', () => {
     mockCreateVerityClient.mockReturnValue(makeClient('unlocked'));
     render(<SettingsIndexScreen />);
 
-    await screen.findByLabelText(/^Connections(,|$)/);
+    await screen.findByLabelText(/^Connectors(,|$)/);
     expect(screen.queryByLabelText(/^Commit name(,|$)/)).toBeNull();
     expect(screen.queryByPlaceholderText('Paste the Doppler token…')).toBeNull();
     expect(screen.queryByLabelText(/^Apply saved settings to running containers(,|$)/)).toBeNull();
@@ -269,7 +282,7 @@ describe('settings index — destinations', () => {
     );
     render(<SettingsIndexScreen />);
 
-    await screen.findByLabelText(/^Connections(,|$)/);
+    await screen.findByLabelText(/^Connectors(,|$)/);
     expect(screen.queryByText('Needs setup')).toBeNull();
     // Technical App/installation identifiers never appear in a summary row.
     expect(screen.queryByText('78901234')).toBeNull();
@@ -281,7 +294,7 @@ describe('settings index — destinations', () => {
       mockCreateVerityClient.mockReturnValue(makeClient(status));
       render(<SettingsIndexScreen />);
 
-      await screen.findByLabelText(/^Connections(,|$)/);
+      await screen.findByLabelText(/^Connectors(,|$)/);
       expect(screen.queryByLabelText(/^Secret store(,|$)/)).toBeNull();
     },
   );
@@ -351,7 +364,7 @@ describe('settings index — setup checklist', () => {
 
   it('sends every outstanding step to a screen that can fix it', async () => {
     renderWithOutstandingSteps();
-    await screen.findByLabelText(/^Connections(,|$)/);
+    await screen.findByLabelText(/^Connectors(,|$)/);
 
     const items = CHECKLIST.kind === 'ready' ? CHECKLIST.items : [];
     expect(items.length).toBeGreaterThan(0);
@@ -380,7 +393,7 @@ describe('settings index — setup checklist', () => {
     mockCreateVerityClient.mockReturnValue(makeClient('unlocked'));
     render(<SettingsIndexScreen />);
 
-    await screen.findByLabelText(/^Connections(,|$)/);
+    await screen.findByLabelText(/^Connectors(,|$)/);
     // "All set" is a headline with nothing to act on; the screen shows the rows
     // instead of a panel of ticks.
     expect(screen.queryByText('All set')).toBeNull();
@@ -454,7 +467,7 @@ describe('settings index — legacy deep links', () => {
     setSearchParams({ agentLogin: provider });
     mockCreateVerityClient.mockReturnValue(makeClient('unlocked'));
     render(<SettingsIndexScreen />);
-    await screen.findByLabelText(/^Connections(,|$)/);
+    await screen.findByLabelText(/^Connectors(,|$)/);
     expect(mockReplace).not.toHaveBeenCalled();
   });
 
@@ -463,7 +476,7 @@ describe('settings index — legacy deep links', () => {
     mockCreateVerityClient.mockReturnValue(makeClient('unlocked'));
     render(<SettingsIndexScreen />);
 
-    await screen.findByLabelText(/^Connections(,|$)/);
+    await screen.findByLabelText(/^Connectors(,|$)/);
     expect(mockReplace).not.toHaveBeenCalled();
   });
 
@@ -473,7 +486,7 @@ describe('settings index — legacy deep links', () => {
     mockCreateVerityClient.mockReturnValue(makeClient('unlocked'));
     render(<SettingsIndexScreen />);
 
-    await screen.findByLabelText(/^Connections(,|$)/);
+    await screen.findByLabelText(/^Connectors(,|$)/);
     expect(mockReplace).not.toHaveBeenCalled();
   });
 });

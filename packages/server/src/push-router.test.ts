@@ -256,6 +256,30 @@ describe('push router', () => {
     router.close();
   });
 
+  it.each([
+    [{ targets: 1, ticketErrors: 1, transportErrors: 0 }, 'failed'],
+    [{ targets: 1, ticketErrors: 0, transportErrors: 1 }, 'failed'],
+    [{ targets: 1, ticketErrors: 0, transportErrors: 0, deferred: 1 }, 'deferred'],
+  ] as const)(
+    'distinguishes attempted failures from cooldown-only delivery',
+    async (result, expected) => {
+      const sender = fakeSender();
+      sender.send.mockResolvedValue({
+        ticketsAccepted: 0,
+        receiptsQueued: 0,
+        pruned: 0,
+        ...result,
+      });
+      const router = createPushRouter({
+        sender: senderOf(sender),
+        presence: fakePresence({}),
+        store: fakeStore(),
+      });
+      expect(await router.notify(permission())).toBe(expected);
+      router.close();
+    },
+  );
+
   it('reports undelivered when the user has no registered device', async () => {
     const sender = fakeSender();
     const router = createPushRouter({

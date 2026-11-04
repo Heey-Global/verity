@@ -1,3 +1,8 @@
+import {
+  projectEgressPolicySchema,
+  projectEgressRequestSchema,
+  type ProjectEgressPolicy,
+} from './projectEgress.js';
 import { storageReclamationActionSchema, type StorageReclamationAction } from '@verity/events';
 import { buildDiagnosticResponseSchema, systemLogResponseSchema } from './logs.js';
 import {
@@ -195,6 +200,29 @@ export const attentionSignalSchema = z.object({
 });
 export type AttentionSignal = z.infer<typeof attentionSignalSchema>;
 
+/**
+ * The current turn's unanswered `verity:choices` block, as the session list
+ * carries it. Options keep the agent's labels verbatim: a label is what is sent
+ * as the answer. A block that no longer parses (a newer server, a malformed
+ * option) reads as "no open question" rather than failing the whole list.
+ */
+const openChoicesSchema = z.object({
+  question: z.string().optional(),
+  options: z
+    .array(z.object({ label: z.string().min(1), recommended: z.boolean().optional() }))
+    .min(1),
+  multiSelect: z.boolean().optional(),
+});
+
+/** One parked permission prompt with what it asks. `input` is absent when the
+ * server judged it too large to carry; the app then opens the session instead. */
+const pendingPermissionRequestSchema = z.object({
+  toolUseId: z.string().min(1),
+  tool: z.string().min(1),
+  riskClass: z.string().min(1),
+  input: z.unknown().optional(),
+});
+
 export const sessionSummarySchema = z
   .object({
     sessionId: z.string().min(1),
@@ -213,6 +241,12 @@ export const sessionSummarySchema = z
     pendingPermissions: z.array(z.string().min(1)).optional(),
     /** True only when awaiting_input is caused by those permissions. */
     permissionAwaitingInput: z.literal(true).optional(),
+    /** What each parked permission asks, so Home can decide it in place. Absent on
+     * older servers and when nothing is pending; a malformed list reads as absent. */
+    pendingPermissionRequests: z.array(pendingPermissionRequestSchema).optional().catch(undefined),
+    /** The unanswered question of the current turn. Absent on older servers, while
+     * the session works and after an answer. */
+    openChoices: openChoicesSchema.optional().catch(undefined),
     usage: usageTotalsSchema,
     /** Latest rate-limit state for this session. Optional for rollout with
      * older servers and absent until a runtime emits one. */
@@ -243,14 +277,21 @@ export const sessionSummarySchema = z
     eventCount: z.number().int().nonnegative().optional(),
     /** Active subagents can keep working while the main agent awaits input. */
     backgroundWorking: z.boolean().optional(),
+    /** Epoch ms of the newest event, for ordering Home's items. Absent on older
+     * servers and null for an empty log; both sort as oldest. */
+    lastActivityAt: z.number().nullable().optional().catch(undefined),
     /** Version associated with this count; forward it unchanged when marking seen. */
     eventCountVersion: z.string().optional(),
     agentTextCounterVersion: z.literal('agent-text-v2').optional(),
     /** Operator's "last seen" mark for the unread dot (#387): the `eventCount` at the
      * last open, persisted server-side so the dot syncs across devices. A session is
      * unread when `eventCount > lastSeenEventCount`. `null` = never opened (→ not
-     * unread); ABSENT = older server with no synced mark (→ not unread either). */
+     * unread); ABSENT = older server with no synced mark (→ not unread either).
+     * Kept per person: another member opening the session leaves this one unread. */
     lastSeenEventCount: z.number().int().nonnegative().nullable().optional(),
+    /** Keys of this session's Home items the requesting person dismissed, synced
+     * across their devices. ABSENT = older server that cannot dismiss. */
+    inboxDismissed: z.array(z.string()).optional(),
     /** Conditions about THIS session, e.g. a sandbox that lost its connection to
      * the server (`sandbox_disconnected`). Absent from a healthy session and from
      * any older server, both of which read as "nothing to report". */
@@ -526,10 +567,13 @@ export const projectRecordSchema = z.object({
   latestReleaseName: z.string().nullable().optional(),
   latestReleaseUrl: z.string().nullable().optional(),
   latestReleasePublishedAt: z.string().nullable().optional(),
-  // Operator's overview fold state, persisted server-side so it syncs across
-  // devices. Optional to tolerate a server that predates the field (then the
-  // client treats a missing value as expanded).
+  // The requesting person's overview fold state, persisted server-side so it
+  // syncs across their devices. Optional to tolerate a server that predates the
+  // field (then the client treats a missing value as expanded).
   collapsed: z.boolean().optional(),
+  // Keys of this project's Home items the requesting person dismissed. Only the
+  // overview list carries it; ABSENT = older server that cannot dismiss.
+  inboxDismissed: z.array(z.string()).optional(),
   // True once the repo was explicitly added as a Verity project. Paused projects
   // stay in the overview; unadded GitHub cache rows are picker-only.
   overviewVisible: z.boolean().optional(),
@@ -857,6 +901,10 @@ export const veritySettingsSchema = z.object({
   uplinkSubscriptionKeyConfigured: z.boolean(),
   premiumSharingEnabled: z.boolean().optional(),
   premiumRemoteAccessEnabled: z.boolean().optional(),
+  /** System-wide network protection, and whether this host's egress service answers. */
+  projectEgressEnabled: z.boolean().optional(),
+  projectEgressAvailable: z.boolean().optional(),
+  projectEgressStatus: z.object({ available: z.boolean(), reason: z.string().max(64) }).optional(),
   uplinkInstallationId: z.string().nullable(),
   transcribeBaseUrl: z.string().nullable(),
   transcribeModel: z.string().nullable(),
@@ -903,10 +951,80 @@ export const veritySettingsSchema = z.object({
   googleDriveAccountEmail: z.string().nullable(),
   googleDriveConnected: z.boolean(),
   advancedModeEnabled: z.boolean().default(false),
+  unassignedMeetingRetentionDays: z.number().int().nullable().optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
 export type VeritySettings = z.infer<typeof veritySettingsSchema>;
+
+const activeLiveMeetingsSchema = z.object({
+  running: z.array(
+    z.object({
+      sessionId: z.string(),
+      id: z.string(),
+      title: z.string().nullable(),
+      engine: z.string(),
+      startedAt: z.number(),
+      state: z.enum(['active', 'interrupted']),
+      captureStatus: z.string(),
+      recorderLastSeenAt: z.number().nullable().optional(),
+      sessionName: z.string().nullable(),
+      projectId: z.string().nullable(),
+    }),
+  ),
+  unassigned: z.array(
+    z.object({
+      id: z.string(),
+      title: z.string().nullable(),
+      startedAt: z.number(),
+      endedAt: z.number().nullable(),
+      state: z.enum(['active', 'interrupted', 'ended']),
+      captureStatus: z.string(),
+      people: z.number(),
+    }),
+  ),
+  retentionDays: z.number(),
+});
+export type ActiveLiveMeetings = z.infer<typeof activeLiveMeetingsSchema>;
+
+const calendarWatchSchema = z.object({
+  accounts: z.array(
+    z.object({
+      id: z.string(),
+      email: z.string(),
+      displayName: z.string().nullable(),
+      // `.catch` keeps a newer server's additional state readable as "unavailable".
+      access: z.enum(['ok', 'missing_scope', 'unavailable']).catch('unavailable'),
+      calendars: z.array(
+        z.object({
+          id: z.string(),
+          summary: z.string(),
+          primary: z.boolean(),
+          watched: z.boolean(),
+          autoJoin: z.boolean(),
+        }),
+      ),
+    }),
+  ),
+  retentionDays: z.number(),
+});
+export type CalendarWatch = z.infer<typeof calendarWatchSchema>;
+
+const upcomingMeetingsSchema = z.object({
+  upcoming: z.array(
+    z.object({
+      eventKey: z.string(),
+      title: z.string().nullable(),
+      startsAt: z.number(),
+      endsAt: z.number(),
+      calendar: z.string(),
+      provider: z.enum(['meet', 'teams', 'zoom']).nullable().catch('meet'),
+      decision: z.enum(['joined', 'skipped', 'failed']).nullable().catch(null),
+      meetingId: z.string().nullable(),
+    }),
+  ),
+});
+export type UpcomingMeeting = z.infer<typeof upcomingMeetingsSchema>['upcoming'][number];
 
 const httpMcpConnectionSchema = z.object({
   id: z.string(),
@@ -1121,6 +1239,7 @@ export type GoogleDriveImportResult = z.infer<typeof googleDriveImportResultSche
 
 type VeritySettingsKey =
   | 'advancedModeEnabled'
+  | 'unassignedMeetingRetentionDays'
   | 'gitUserName'
   | 'gitUserEmail'
   | 'gitSshPrivateKeyPath'
@@ -1145,6 +1264,7 @@ export type VeritySettingsPatch = {
   uplinkSubscriptionKey?: string | null | undefined;
   premiumSharingEnabled?: boolean | undefined;
   premiumRemoteAccessEnabled?: boolean | undefined;
+  projectEgressEnabled?: boolean | undefined;
   transcribeApiKey?: string | null | undefined;
   codexAuthJson?: string | null | undefined;
   opencodeBaseUrl?: string | null | undefined;
@@ -1862,7 +1982,18 @@ export type SessionFileRoot =
   'worktree' | 'knowledge' | 'shared' | 'sources' | 'documents' | 'drafts';
 
 export const sessionDirectorySchema = z.object({
-  documentStatus: z.object({ pending: z.boolean(), running: z.boolean() }).optional(),
+  documentStatus: z
+    .object({
+      pending: z.boolean(),
+      running: z.boolean(),
+      warning: z.string().optional(),
+      inspectionError: z.boolean().optional(),
+      excludedEntries: z
+        .array(z.object({ path: z.string(), reason: z.enum(['generated', 'unsupported']) }))
+        .optional(),
+    })
+    .optional(),
+  codeAvailable: z.boolean().optional(),
   workspaceKind: z.enum(['documents', 'code']).optional(),
   root: z.enum(['worktree', 'knowledge', 'shared', 'sources', 'documents', 'drafts']).optional(),
   path: z.string(),
@@ -1940,6 +2071,12 @@ const sessionSeenSchema = z.object({
   lastSeenEventCount: z.number().int().nonnegative().nullable(),
 });
 export type SessionSeen = z.infer<typeof sessionSeenSchema>;
+
+/** Ack for `PATCH /sessions|projects/:id/inbox-dismissed`. */
+const inboxDismissedSchema = z.object({
+  id: z.string().min(1),
+  inboxDismissed: z.array(z.string()),
+});
 
 const sessionDeletedSchema = z.object({ sessionId: z.string().min(1) });
 export type SessionDeleted = z.infer<typeof sessionDeletedSchema>;
@@ -2540,6 +2677,78 @@ export class VerityClient {
       `/sessions/${encodeURIComponent(sessionId)}/live-meetings/${encodeURIComponent(meetingId)}/online/stop`,
       { method: 'POST' },
     );
+  }
+  /** Running meetings of readable sessions and, for administrators, unassigned ones. */
+  async getActiveLiveMeetings(): Promise<ActiveLiveMeetings> {
+    return activeLiveMeetingsSchema.parse(
+      await (await this.request('/live-meetings/active', { method: 'GET' })).json(),
+    );
+  }
+  /** Meetings of the next hours from watched calendars. */
+  async getUpcomingMeetings(includeInPerson = false): Promise<UpcomingMeeting[]> {
+    return upcomingMeetingsSchema.parse(
+      await (
+        await this.request(
+          `/live-meetings/upcoming${includeInPerson ? '?includeInPerson=true' : ''}`,
+          { method: 'GET' },
+        )
+      ).json(),
+    ).upcoming;
+  }
+  /** Joins a calendar meeting: into `sessionId` when given, otherwise unassigned. */
+  async joinCalendarMeeting(eventKey: string, sessionId?: string): Promise<{ meetingId: string }> {
+    return z.object({ meetingId: z.string() }).parse(
+      await (
+        await this.request(`/live-meetings/calendar/${encodeURIComponent(eventKey)}/join`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(sessionId ? { sessionId } : {}),
+        })
+      ).json(),
+    );
+  }
+  async skipCalendarMeeting(eventKey: string): Promise<void> {
+    await this.request(`/live-meetings/calendar/${encodeURIComponent(eventKey)}/skip`, {
+      method: 'POST',
+    });
+  }
+  /** The Google calendars Verity may watch for online meetings, with the current choices. */
+  async getCalendarWatch(): Promise<CalendarWatch> {
+    return calendarWatchSchema.parse(
+      await (await this.request('/settings/calendar-watch', { method: 'GET' })).json(),
+    );
+  }
+  async setCalendarWatch(choice: {
+    accountId: string;
+    calendarId: string;
+    watched: boolean;
+    autoJoin: boolean;
+  }): Promise<void> {
+    await this.request('/settings/calendar-watch', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(choice),
+    });
+  }
+  /** Assigns an unassigned meeting to a project (new session) or an existing session. */
+  async assignLiveMeeting(
+    meetingId: string,
+    target: { projectId: string } | { sessionId: string },
+  ): Promise<{ sessionId: string; meetingId: string }> {
+    return z.object({ sessionId: z.string(), meetingId: z.string() }).parse(
+      await (
+        await this.request(`/live-meetings/unassigned/${encodeURIComponent(meetingId)}/assign`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(target),
+        })
+      ).json(),
+    );
+  }
+  async discardLiveMeeting(meetingId: string): Promise<void> {
+    await this.request(`/live-meetings/unassigned/${encodeURIComponent(meetingId)}`, {
+      method: 'DELETE',
+    });
   }
   async editOnlineMeetingSpeakers(
     sessionId: string,
@@ -3267,6 +3476,17 @@ export class VerityClient {
       body: JSON.stringify({ collapsed }),
     });
     return projectRecordSchema.parse(await res.json());
+  }
+
+  /** Dismiss a project's Home item for the signed-in person, or restore it. The
+   * resulting keys come back here and on every device's next `GET /projects`. */
+  async setProjectInboxDismissed(id: string, key: string, dismissed: boolean): Promise<string[]> {
+    const res = await this.request(`/projects/${encodeURIComponent(id)}/inbox-dismissed`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ key, dismissed }),
+    });
+    return inboxDismissedSchema.parse(await res.json()).inboxDismissed;
   }
 
   async setProjectSetupStatus(
@@ -4507,6 +4727,94 @@ export class VerityClient {
     return signingKeySchema.parse(await res.json());
   }
 
+  async getUserContext(): Promise<{ instructions: string; memory: string; revision: number }> {
+    const res = await this.request('/me/context', { method: 'GET' });
+    return z
+      .object({ instructions: z.string(), memory: z.string(), revision: z.number().int() })
+      .parse(await res.json());
+  }
+
+  async replaceUserContext(input: { instructions: string; memory: string; revision: number }) {
+    const res = await this.request('/me/context', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+    return z
+      .object({ instructions: z.string(), memory: z.string(), revision: z.number().int() })
+      .parse(await res.json());
+  }
+
+  async getProjectMemory(id: string) {
+    const res = await this.request(`/projects/${encodeURIComponent(id)}/memory`, { method: 'GET' });
+    return z.object({ memory: z.string(), revision: z.string() }).parse(await res.json());
+  }
+
+  async replaceProjectMemory(id: string, input: { memory: string; revision: string }) {
+    const res = await this.request(`/projects/${encodeURIComponent(id)}/memory`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+    return z.object({ memory: z.string(), revision: z.string() }).parse(await res.json());
+  }
+
+  async getProjectInstructions(id: string) {
+    const res = await this.request(`/projects/${encodeURIComponent(id)}/instructions`, {
+      method: 'GET',
+    });
+    return z.object({ instructions: z.string(), revision: z.string() }).parse(await res.json());
+  }
+
+  async replaceProjectInstructions(id: string, input: { instructions: string; revision: string }) {
+    const res = await this.request(`/projects/${encodeURIComponent(id)}/instructions`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+    return z.object({ instructions: z.string(), revision: z.string() }).parse(await res.json());
+  }
+
+  async getProjectEgress(id: string): Promise<ProjectEgressPolicy> {
+    const res = await this.request(`/projects/${encodeURIComponent(id)}/egress`, { method: 'GET' });
+    return z.object({ policy: projectEgressPolicySchema }).parse(await res.json()).policy;
+  }
+
+  async decideProjectEgress(
+    id: string,
+    input: { requestId: string; revision: number; allow: boolean },
+  ): Promise<void> {
+    const res = await this.request(`/projects/${encodeURIComponent(id)}/egress/decisions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+    z.object({ request: projectEgressRequestSchema }).parse(await res.json());
+  }
+
+  async reopenProjectEgress(
+    id: string,
+    input: { target: { host: string; protocol: 'tcp' | 'udp'; port: number }; revision: number },
+  ): Promise<void> {
+    const res = await this.request(`/projects/${encodeURIComponent(id)}/egress/reopen`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+    z.object({ request: projectEgressRequestSchema }).parse(await res.json());
+  }
+
+  async revokeProjectEgress(
+    id: string,
+    input: { grantId: string; revision: number },
+  ): Promise<void> {
+    await this.request(`/projects/${encodeURIComponent(id)}/egress/revoke`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+  }
+
   async getProject(id: string): Promise<ProjectDetail> {
     const res = await this.request(`/projects/${encodeURIComponent(id)}`, { method: 'GET' });
     return projectDetailSchema.parse(await res.json());
@@ -4660,6 +4968,13 @@ export class VerityClient {
    * branch plus a pull request the operator still has to merge — so callers must
    * surface {@link LinkedProject.pullRequest}. The sandbox is recreated as part of
    * this, so callers should warn that running sessions restart. */
+  async disconnectProjectFromGitHub(id: string): Promise<LinkedProject> {
+    const res = await this.request(`/projects/${encodeURIComponent(id)}/disconnect-github`, {
+      method: 'POST',
+    });
+    return linkedProjectSchema.parse(await res.json());
+  }
+
   async linkProjectToGitHub(id: string, repo: string): Promise<LinkedProject> {
     const res = await this.request(`/projects/${encodeURIComponent(id)}/link-github`, {
       method: 'POST',
@@ -5603,9 +5918,21 @@ export class VerityClient {
     return sessionModelSwitchedSchema.parse(await res.json());
   }
 
+  /** Dismiss a session's Home item for the signed-in person, or restore it. The
+   * resulting keys come back here and on every device's next `GET /sessions`. */
+  async setSessionInboxDismissed(id: string, key: string, dismissed: boolean): Promise<string[]> {
+    const res = await this.request(`/sessions/${encodeURIComponent(id)}/inbox-dismissed`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ key, dismissed }),
+    });
+    return inboxDismissedSchema.parse(await res.json()).inboxDismissed;
+  }
+
   /** Advance a session's "last seen" mark for the overview unread dot (#387) to the
    * `eventCount` observed when the operator opened it. Persisted server-side and
-   * monotonic, so clearing the dot on one device clears it on every device. Returns a
+   * monotonic, so clearing the dot on one device clears it on all of this person's
+   * devices (other members keep theirs). Returns a
    * lightweight ack with the resolved mark; the synced value itself arrives on the
    * next `GET /sessions`. 404 (unknown session) and 409 (incompatible or stale count)
    * throw a {@link VerityApiError}. */
@@ -5653,6 +5980,89 @@ export class VerityClient {
       ...(signal ? { signal } : {}),
     });
     return branchListSchema.parse(await res.json());
+  }
+
+  async listProjectKnowledgeFiles(projectId: string, path = ''): Promise<SessionDirectory> {
+    const res = await this.request(
+      `/projects/${encodeURIComponent(projectId)}/knowledge/files?path=${encodeURIComponent(path)}`,
+      {
+        method: 'GET',
+      },
+    );
+    const directory = sessionDirectorySchema.parse(await res.json());
+    if (directory.root !== 'knowledge')
+      throw new Error('Update the Verity server to browse project knowledge');
+    return directory;
+  }
+
+  async getProjectKnowledgeFile(projectId: string, path: string): Promise<SessionFileContent> {
+    const res = await this.request(
+      `/projects/${encodeURIComponent(projectId)}/knowledge/files/content?path=${encodeURIComponent(path)}`,
+      { method: 'GET' },
+    );
+    return sessionFileContentSchema.parse(await res.json());
+  }
+
+  async downloadProjectKnowledgeFile(projectId: string, path: string): Promise<Blob> {
+    const res = await this.request(
+      `/projects/${encodeURIComponent(projectId)}/knowledge/files/download?path=${encodeURIComponent(path)}`,
+      { method: 'GET' },
+    );
+    return res.blob();
+  }
+
+  async writeProjectKnowledgeFile(
+    projectId: string,
+    path: string,
+    content: string,
+    expectedVersion: string,
+  ): Promise<SessionFileContent> {
+    const res = await this.request(
+      `/projects/${encodeURIComponent(projectId)}/knowledge/files/content`,
+      {
+        method: 'PUT',
+        body: JSON.stringify({ root: 'knowledge', path, content, expectedVersion }),
+      },
+    );
+    return sessionFileContentSchema.parse(await res.json());
+  }
+
+  async listSharedKnowledgeFiles(path = ''): Promise<SessionDirectory> {
+    const res = await this.request(`/knowledge/shared/files?path=${encodeURIComponent(path)}`, {
+      method: 'GET',
+    });
+    const directory = sessionDirectorySchema.parse(await res.json());
+    if (directory.root !== 'shared')
+      throw new Error('Update the Verity server to browse Shared knowledge');
+    return directory;
+  }
+
+  async getSharedKnowledgeFile(path: string): Promise<SessionFileContent> {
+    const res = await this.request(
+      `/knowledge/shared/files/content?path=${encodeURIComponent(path)}`,
+      { method: 'GET' },
+    );
+    return sessionFileContentSchema.parse(await res.json());
+  }
+
+  async downloadSharedKnowledgeFile(path: string): Promise<Blob> {
+    const res = await this.request(
+      `/knowledge/shared/files/download?path=${encodeURIComponent(path)}`,
+      { method: 'GET' },
+    );
+    return res.blob();
+  }
+
+  async writeSharedKnowledgeFile(
+    path: string,
+    content: string,
+    expectedVersion: string,
+  ): Promise<SessionFileContent> {
+    const res = await this.request('/knowledge/shared/files/content', {
+      method: 'PUT',
+      body: JSON.stringify({ root: 'shared', path, content, expectedVersion }),
+    });
+    return sessionFileContentSchema.parse(await res.json());
   }
 
   /** Browse a session's local worktree. Includes uncommitted and generated files,
@@ -6032,6 +6442,7 @@ export class VerityClient {
               resource: z.string(),
               revision: z.string(),
               state: z.string(),
+              originating_session_id: z.string().nullable().optional(),
               owner_session_id: z.string().nullable(),
               last_session_id: z.string().nullable(),
               attempts: z.number(),

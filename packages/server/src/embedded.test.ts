@@ -37,6 +37,7 @@ import type { StreamingRedactorProfile } from '@verity/secret-contracts';
 // tests assert is that the fallback PATH is taken, not which version it lands on.
 // A restated tag kept passing while the ref it copied went dead.
 import { DEFAULT_TOOLKIT_FEATURE_FALLBACK } from './sandbox-artifacts.js';
+import { pendingSessionCleanups, queueSessionCleanup } from './pending-session-cleanup.js';
 
 import {
   branchRenameAppliesToSession,
@@ -2467,17 +2468,18 @@ describe('buildEmbeddedServer', () => {
     }
   }, 60_000); // A full embedded DB migration can exceed the shared CI timeout.
 
-  it.each(['project', 'control-missing', 'control-unreachable'])(
+  it.each(['project', 'control-missing', 'control-unreachable', 'timeout'])(
     'deletes backend transcripts with runner layout: %s',
     async (layout) => {
-      const controlPlaneRunner = layout !== 'project';
-      // The glue between the DELETE route and `purgeSessionArtifacts`: which runner runtime
+      const controlPlaneRunner = layout.startsWith('control-');
+      // The glue between the DELETE route and durable cleanup: which runner runtime
       // to look in (the session's project), and which sandbox path claude encoded into its
       // directory name (the worktree, mapped through `hostCloneRoot`). Both are derived in
       // `embedded.ts` from the session row, so neither the route tests nor the resolver
       // tests can catch a wrong derivation — only a delete against a real layout can.
       const root = mkdtempSync(join(tmpdir(), 'verity-purge-wiring-'));
       let supervisor: Server | undefined;
+      let fixtureDb: ReturnType<typeof createEmbeddedDb> | undefined;
       const deletionRequests: unknown[] = [];
       try {
         const dataDir = join(root, 'db');
@@ -2486,7 +2488,7 @@ describe('buildEmbeddedServer', () => {
         const worktree = join(hostCloneRoot, 'heey-global-verity', '.verity-sessions', 'agent-p1');
         mkdirSync(worktree, { recursive: true });
 
-        const db = createEmbeddedDb(dataDir);
+        const db = (fixtureDb = createEmbeddedDb());
         await migrateToLatest(db);
         const store = new EventStore(db);
         await store.upsertProject({
@@ -2509,7 +2511,6 @@ describe('buildEmbeddedServer', () => {
           backendSessionId: 'thread-purge',
           contextSeq: 0,
         });
-        await db.destroy();
 
         const runtime = join(
           dataVolumeRoot,
@@ -2539,6 +2540,7 @@ describe('buildEmbeddedServer', () => {
         supervisor = createServer((peer) => {
           peer.once('data', (data) => {
             deletionRequests.push(JSON.parse(data.toString('utf8').trim()));
+            if (layout === 'timeout' && deletionRequests.length === 1) return;
             peer.end(`${JSON.stringify({ ok: true })}\n`);
           });
         });
@@ -2546,14 +2548,62 @@ describe('buildEmbeddedServer', () => {
           supervisor!.listen(join(runtime, 'supervisor.sock'), resolve),
         );
         server = await buildTestEmbeddedServer({
+          openDatabase: () => db,
           dataDir,
           dataVolumeRoot,
           hostCloneRoot,
           controlPlaneRunner,
         });
+        const deleteStarted = Date.now();
         const res = await server.app.inject({ method: 'DELETE', url: '/sessions/s-purge' });
         expect(res.statusCode).toBe(200);
 
+        expect(
+          (await server.app.inject({ method: 'GET', url: '/sessions/s-purge' })).statusCode,
+        ).toBe(404);
+        if (layout === 'timeout') {
+          expect(Date.now() - deleteStarted).toBeLessThan(5_000);
+          // The request must finish while the supervisor is still withholding its reply.
+          expect(existsSync(rollout)).toBe(true);
+          const cleanupRoot = join(dataVolumeRoot, 'pending-session-cleanup');
+          await vi.waitFor(
+            async () => {
+              const pending = await pendingSessionCleanups(cleanupRoot);
+              expect(
+                pending.find((entry) => entry.sessionId === 's-purge')?.progress?.['p-purge'],
+              ).toMatchObject({ failures: 1, retryAt: expect.any(Number) });
+            },
+            { timeout: 15_000 },
+          );
+          // Make the durable retry due instead of waiting a full backoff plus
+          // worker tick; another deletion exercises the normal rescan trigger.
+          const pending = (await pendingSessionCleanups(cleanupRoot)).find(
+            (entry) => entry.sessionId === 's-purge',
+          )!;
+          pending.progress!['p-purge']!.retryAt = 0;
+          await queueSessionCleanup(cleanupRoot, pending);
+          await store.createSession({
+            sessionId: 's-purge-retry',
+            worktree,
+            model: 'codex/default',
+            projectId: 'p-purge',
+          });
+          await server.app.inject({ method: 'DELETE', url: '/sessions/s-purge-retry' });
+        }
+        await vi.waitFor(
+          () => {
+            expect(existsSync(rollout)).toBe(false);
+            expect(existsSync(transcript)).toBe(false);
+            expect(existsSync(subagent)).toBe(false);
+          },
+          { timeout: 5_000 },
+        );
+        if (layout === 'timeout') {
+          expect(deletionRequests.length).toBeGreaterThanOrEqual(2);
+          expect(
+            (await server.app.inject({ method: 'GET', url: '/sessions/s-purge' })).statusCode,
+          ).toBe(404);
+        }
         expect(deletionRequests).toContainEqual(
           expect.objectContaining({ kind: 'delete-session-home', sessionId: 's-purge' }),
         );
@@ -2567,6 +2617,7 @@ describe('buildEmbeddedServer', () => {
         expect(existsSync(strangerRollout)).toBe(true);
       } finally {
         await server?.close();
+        if (!server) await fixtureDb?.destroy();
         server = undefined;
         if (supervisor)
           await new Promise<void>((resolve, reject) =>
@@ -2736,6 +2787,26 @@ describe('buildEmbeddedServer', () => {
     expect(
       (await server.app.inject({ method: 'GET', url: '/preview-capabilities' })).json(),
     ).toEqual({ publicSharing: 'premium-required' });
+  });
+
+  it('does not launch runner stack reconciliation when listing projects', async () => {
+    const reconcile = vi
+      .spyOn(ProvisionerImpl.prototype, 'reconcileRunnerSupervisors')
+      .mockResolvedValue();
+    try {
+      server = await buildTestEmbeddedServer({
+        ...testProjectRelayConfig,
+        dockerBaseUrl: 'http://127.0.0.1:1',
+        hostCloneRoot: '/tmp/verity-projects',
+      });
+      reconcile.mockClear();
+      const response = await server.app.inject({ method: 'GET', url: '/projects' });
+      expect(response.statusCode).toBe(200);
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(reconcile).not.toHaveBeenCalled();
+    } finally {
+      reconcile.mockRestore();
+    }
   });
 
   it('wires /projects without a static GitHub token so DB-backed Apps can list repos', async () => {

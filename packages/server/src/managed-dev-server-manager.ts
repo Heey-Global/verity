@@ -1,3 +1,4 @@
+import { PreviewNetworkProtectionError } from './preview-network-policy.js';
 import {
   ManagedDevServerConflictError,
   managedDevServerBindingsEqual,
@@ -47,7 +48,10 @@ export interface ManagedDevServerRuntime {
     instanceId: string,
   ): Promise<{ alive: boolean; exitCode: number | null }>;
   managedServerLogs(project: ProjectRecord, instanceId: string, lines?: number): Promise<string>;
-  listListeningProcesses(project: ProjectRecord): Promise<ListeningProcess[]>;
+  listListeningProcesses(
+    project: ProjectRecord,
+    options?: { fresh?: boolean },
+  ): Promise<ListeningProcess[]>;
 }
 
 /** The subset of the local preview manager a managed instance publishes through. */
@@ -767,7 +771,9 @@ export class ManagedDevServerManager {
     }
     if (project.state !== 'active' || !project.containerName)
       throw new ManagedDevServerError('the project sandbox is not running', 409);
-    const processes = await this.options.runtime.listListeningProcesses(project).catch(() => []);
+    const processes = await this.options.runtime
+      .listListeningProcesses(project, { fresh: true })
+      .catch(() => []);
     const busy = new Set(processes.map((process) => process.port));
     let instance = await this.servers.ensureInstance({
       serverId: entry.id,
@@ -1020,7 +1026,10 @@ export class ManagedDevServerManager {
       await this.refreshReserved();
       this.publishRetryAt.set(instance.id, this.now() + 30_000);
       await this.servers.updateInstance(instance.id, {
-        detail: 'Could not open it on your network yet. Retrying shortly.',
+        detail:
+          error instanceof PreviewNetworkProtectionError
+            ? error.message
+            : 'Could not open it on your network yet. Retrying shortly.',
       });
       this.options.log?.('verity: managed dev server could not publish locally', {
         projectId: project.id,

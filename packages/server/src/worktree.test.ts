@@ -1721,3 +1721,41 @@ it('workspace relinking never rewrites links through a symlinked dependency pare
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+it('does not execute repository hooks when allocating a server-managed Code worktree', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'verity-code-hooks-'));
+  try {
+    execFileSync('git', ['init', '-q', '-b', 'main', root]);
+    execFileSync('git', [
+      '-C',
+      root,
+      '-c',
+      'user.name=Test',
+      '-c',
+      'user.email=test@example.com',
+      '-c',
+      'commit.gpgsign=false',
+      '-c',
+      'core.hooksPath=/dev/null',
+      'commit',
+      '--allow-empty',
+      '-qm',
+      'initial',
+    ]);
+    writeFileSync(
+      join(root, '.git', 'hooks', 'post-checkout'),
+      '#!/bin/sh\nprintf executed > hook-ran\n',
+      { mode: 0o755 },
+    );
+    const worktree = await createGitWorktreeProvisioner({
+      repoDir: root,
+      worktreeRoot: join(root, '.verity-sessions'),
+    }).add('code');
+    expect(existsSync(join(worktree, 'hook-ran'))).toBe(false);
+    expect(readFileSync(join(root, '.git', 'info', 'exclude'), 'utf8')).toContain(
+      '/.verity-document-sessions/',
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

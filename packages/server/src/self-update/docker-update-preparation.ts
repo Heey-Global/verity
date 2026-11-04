@@ -1,9 +1,15 @@
+import {
+  provisionProjectEgressHost,
+  projectEgressProvisionSupported,
+  PROJECT_EGRESS_CONTROL_GID,
+} from './project-egress-provisioning.js';
 import { readFile } from 'node:fs/promises';
 import {
   HostRuntimeRenewalError,
   HOST_RUNTIME_SERVICE_LABEL,
   parseRuntimeServiceRequirements,
   renewHostRuntimeService,
+  runtimeRenewalMayHaveStarted,
 } from './host-runtime-renewal.js';
 import { writeHostPreparation } from './host-preparation.js';
 import { backupProvisionPlan, provisionBackupHost } from './backup-provisioning.js';
@@ -15,6 +21,7 @@ import {
 } from './devcontainer-builder.js';
 import {
   migrateManagedControlPlaneRunner,
+  migrateManagedProjectEgress,
   migrateManagedDevcontainerBuilder,
   migrateManagedHostDiagnostics,
   migrateManagedBackupMounts,
@@ -418,45 +425,53 @@ export async function dockerUpdatePreparation(
             : {
                 serviceRequirements,
                 renewHostRuntimeService: async () => {
-                  if (state.spec.image !== journal.previousDigest)
-                    throw new Error('Runtime renewal previous image differs from sealed authority');
-                  const updaters = (await docker.listContainers!()).filter(
-                    (item) =>
-                      item.labels?.[MANAGED_DEPLOYMENT_LABEL] === journal.deploymentId &&
-                      item.labels?.[MANAGED_ROLE_LABEL] === 'updater',
-                  );
-                  // Compose installations retain their service label and deployment identity in env.
-                  const candidates =
-                    updaters.length > 0
-                      ? updaters
-                      : (await docker.listContainers!()).filter(
-                          (item) =>
-                            item.labels?.['com.docker.compose.service'] === 'verity-updater',
-                        );
-                  const owned = [];
-                  for (const item of candidates) {
-                    const inspect = await docker.inspectContainer(item.id);
-                    if (
-                      item.labels?.[MANAGED_DEPLOYMENT_LABEL] === journal.deploymentId ||
-                      inspect.env?.includes(`VERITY_MANAGED_DEPLOYMENT_ID=${journal.deploymentId}`)
-                    )
-                      owned.push(inspect);
-                  }
-                  if (owned.length !== 1 || owned[0]?.image !== journal.previousDigest)
-                    throw new Error('Runtime renewal requires one trusted installed updater');
-                  const runtimeMount = owned[0].mounts?.find(
-                    (mount) =>
-                      mount.type === 'bind' && mount.destination === '/run/verity-host-runtime',
-                  );
-                  const installerMount = state.spec.mounts.find(
-                    (mount) =>
-                      mount.target === '/run/verity-pairing' && mount.source.kind === 'bind',
-                  );
-                  if (!runtimeMount?.source || installerMount?.source.kind !== 'bind')
-                    throw new Error(
-                      'Runtime renewal requires the installed host runtime and installer state mounts',
-                    );
+                  let fallbackRecovery: 'unchanged' | 'recovery-required' = 'recovery-required';
                   try {
+                    fallbackRecovery = (await runtimeRenewalMayHaveStarted(docker, journal))
+                      ? 'recovery-required'
+                      : 'unchanged';
+                    if (state.spec.image !== journal.previousDigest)
+                      throw new Error(
+                        'Runtime renewal previous image differs from sealed authority',
+                      );
+                    const updaters = (await docker.listContainers!()).filter(
+                      (item) =>
+                        item.labels?.[MANAGED_DEPLOYMENT_LABEL] === journal.deploymentId &&
+                        item.labels?.[MANAGED_ROLE_LABEL] === 'updater',
+                    );
+                    // Compose installations retain their service label and deployment identity in env.
+                    const candidates =
+                      updaters.length > 0
+                        ? updaters
+                        : (await docker.listContainers!()).filter(
+                            (item) =>
+                              item.labels?.['com.docker.compose.service'] === 'verity-updater',
+                          );
+                    const owned = [];
+                    for (const item of candidates) {
+                      const inspect = await docker.inspectContainer(item.id);
+                      if (
+                        item.labels?.[MANAGED_DEPLOYMENT_LABEL] === journal.deploymentId ||
+                        inspect.env?.includes(
+                          `VERITY_MANAGED_DEPLOYMENT_ID=${journal.deploymentId}`,
+                        )
+                      )
+                        owned.push(inspect);
+                    }
+                    if (owned.length !== 1 || owned[0]?.image !== journal.previousDigest)
+                      throw new Error('Runtime renewal requires one trusted installed updater');
+                    const runtimeMount = owned[0].mounts?.find(
+                      (mount) =>
+                        mount.type === 'bind' && mount.destination === '/run/verity-host-runtime',
+                    );
+                    const installerMount = state.spec.mounts.find(
+                      (mount) =>
+                        mount.target === '/run/verity-pairing' && mount.source.kind === 'bind',
+                    );
+                    if (!runtimeMount?.source || installerMount?.source.kind !== 'bind')
+                      throw new Error(
+                        'Runtime renewal requires the installed host runtime and installer state mounts',
+                      );
                     await renewHostRuntimeService({
                       docker,
                       journal,
@@ -494,9 +509,7 @@ export async function dockerUpdatePreparation(
                     await writeHostPreparation(
                       options.managedRoot,
                       journal,
-                      error instanceof HostRuntimeRenewalError
-                        ? error.recovery
-                        : 'recovery-required',
+                      error instanceof HostRuntimeRenewalError ? error.recovery : fallbackRecovery,
                     );
                     throw error;
                   }
@@ -522,6 +535,19 @@ export async function dockerUpdatePreparation(
           },
         });
       }
+      await writeHostPreparation(options.managedRoot, journal, 'renewing');
+      try {
+        await provisionProjectEgressHost({
+          docker,
+          journal,
+          spec: state.spec,
+          environment: options.environment ?? process.env,
+          ...(options.readFile === undefined ? {} : { readFile: options.readFile }),
+        });
+      } catch (error) {
+        await writeHostPreparation(options.managedRoot, journal, 'recovery-required');
+        throw error;
+      }
       await writeHostPreparation(options.managedRoot, journal, 'ready');
       // After the runtimes: the builder runs its steps on the runsc they register.
       // Nothing about the builder may fail the update, an unexpected error included.
@@ -543,6 +569,15 @@ export async function dockerUpdatePreparation(
       );
       if (!migrated.managed)
         throw new Error(`managed Server authority unavailable: ${migrated.reason}`);
+      if (await projectEgressProvisionSupported(docker, journal, migrated.spec)) {
+        migrated = await migrateManagedProjectEgress({
+          root: options.managedRoot,
+          deploymentId: migrated.spec.deploymentId,
+          image: migrated.spec.image,
+          controlGid: PROJECT_EGRESS_CONTROL_GID,
+        });
+        if (!migrated.managed) throw new Error(migrated.reason);
+      }
       const backup = await backupProvisionPlan(docker, migrated.spec, journal.targetDigest);
       if (backup) {
         await provisionBackupHost(docker, migrated.spec, journal.targetDigest, backup);

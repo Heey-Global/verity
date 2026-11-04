@@ -36,6 +36,7 @@ export function StorageReclamation({ client }: { client: VerityClient }) {
     return () => clearInterval(timer);
   }, [running, pending, refresh]);
   const result = status?.result;
+  const runnerCaches = result?.runnerCaches;
   return (
     <>
       <Card stacked>
@@ -45,8 +46,8 @@ export function StorageReclamation({ client }: { client: VerityClient }) {
         />
         <Text>
           Removes eligible old containers and images, unchanged private dependencies in idle
-          sessions, and verified unused native builder state. Local changes and active work remain
-          protected.
+          sessions, regenerable package caches, and verified unused native builder state. Local
+          changes and active work remain protected.
         </Text>
         {error ? <Text>{error}</Text> : null}
         {running ? <Text>Reclamation is running…</Text> : null}
@@ -59,6 +60,21 @@ export function StorageReclamation({ client }: { client: VerityClient }) {
                 ? 'Filesystem change unavailable.'
                 : `Filesystem free-space change: ${(result.filesystemFreeBytesChange / 1024 ** 3).toFixed(1)} GiB. Other host activity can affect this measurement.`}
             </Text>
+            {runnerCaches ? (
+              <>
+                <Text>{`Package caches: ${runnerCaches.legacyCachesRemoved} private caches removed, ${runnerCaches.sharedCachesPruned} shared caches pruned.`}</Text>
+                <Text>{`Removed cache allocation: ${(runnerCaches.removedBytes / 1024 ** 3).toFixed(1)} GiB. This is separate from filesystem free-space change.`}</Text>
+                <Text>
+                  {`Remaining cache allocation: shared ${runnerCaches.sharedBytes === null ? 'unknown' : `${(runnerCaches.sharedBytes / 1024 ** 3).toFixed(1)} GiB`}, private ${runnerCaches.legacyBytes === null ? 'unknown' : `${(runnerCaches.legacyBytes / 1024 ** 3).toFixed(1)} GiB`}.`}
+                </Text>
+                {!runnerCaches.usageComplete ? (
+                  <Text>Package-cache measurement is incomplete; unknown usage is not zero.</Text>
+                ) : null}
+                {runnerCaches.blockers.slice(0, 20).map((reason, index) => (
+                  <Text key={`cache-${index}`}>{reason}</Text>
+                ))}
+              </>
+            ) : null}
             <Text>{`${result.retainedPins.length} images retained. ${result.blockers.length} cleanup blockers.`}</Text>
             {result.retainedPins.slice(0, 20).map((pin) => (
               <Text key={pin.imageId}>{`${pin.imageId.slice(0, 19)}: ${pin.reason}`}</Text>

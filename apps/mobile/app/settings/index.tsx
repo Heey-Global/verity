@@ -1,5 +1,7 @@
+import { networkProtectionStatus } from '../../lib/networkProtection';
 import { resetFeatureHints } from '../../lib/featureHints';
 import { useTaskPreferences } from '../../lib/taskPreferences';
+import { setHomeInboxEnabled, useHomePreferences } from '../../lib/homePreferences';
 // Settings, top level: what is left to set up, where everything lives, and the
 // two app-wide switches. Everything with a form of its own is one tap deeper.
 //
@@ -68,6 +70,7 @@ export default function SettingsIndexScreen() {
 
 function SettingsIndexView({ client }: { client: VerityClient }) {
   const taskPreferences = useTaskPreferences();
+  const homePreferences = useHomePreferences();
   const reload = useLoadVeritySettings(client);
   const { settings, secretStatus, loading, failed } = useVeritySettings();
   const githubConnected = githubRepositoryAccessReady(settings);
@@ -175,6 +178,36 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
         </View>
       ) : null}
 
+      <SettingsGroup title="Personal context">
+        <SettingsListPanel>
+          <SettingsNavRow
+            icon="file-text"
+            title="Instructions"
+            subtitle="Your rules across projects"
+            onPress={() =>
+              router.push({ pathname: '/settings/context', params: { kind: 'instructions' } })
+            }
+          />
+          <SettingsNavRow
+            icon="book-open"
+            title="Memory"
+            subtitle="Review and edit learned facts"
+            onPress={() =>
+              router.push({ pathname: '/settings/context', params: { kind: 'memory' } })
+            }
+          />
+        </SettingsListPanel>
+      </SettingsGroup>
+      <SettingsGroup title="Knowledge">
+        <SettingsListPanel>
+          <SettingsNavRow
+            icon="book-open"
+            title="Shared knowledge"
+            subtitle="Reference material available to agents across projects"
+            onPress={() => router.push('/settings/shared-knowledge')}
+          />
+        </SettingsListPanel>
+      </SettingsGroup>
       <SettingsGroup title="Features">
         <SettingsListPanel>
           <SettingsNavRow
@@ -191,7 +224,7 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
           />
           <SettingsNavRow
             icon="link"
-            title="Connections"
+            title="Connectors"
             subtitle="AI, code, documents and other services"
             status={
               githubActionPending ? { intent: 'needsSetup', label: 'Action needed' } : undefined
@@ -272,6 +305,12 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
             }
             onPress={() => router.push('/settings/server-update')}
           />
+          <SettingsNavRow
+            icon="shield"
+            title="Network protection"
+            subtitle={networkProtectionStatus(settings)}
+            onPress={() => router.push('/settings/network-protection' as Href)}
+          />
           {backup !== null ? (
             <SettingsNavRow
               icon="hard-drive"
@@ -318,6 +357,12 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
 
       <SettingsGroup title="This app">
         <SettingsListPanel>
+          <SettingsToggleRow
+            label="New Home (preview)"
+            subtitle="Everything that needs you across projects, beside the project list"
+            value={homePreferences.inbox}
+            onValueChange={setHomeInboxEnabled}
+          />
           {!isDemoMode() ? (
             <SettingsNavRow
               icon="help-circle"

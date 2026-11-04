@@ -130,3 +130,78 @@ it('requires session read access for app documents and execute access for app ac
     }),
   ).toBe('not_found');
 });
+
+it('requires project management permission to disconnect GitHub', async () => {
+  const store: PairedRoutePolicyStore = {
+    isActiveLocalUser: async () => true,
+    isActiveAdministrator: async () => false,
+    hasProjectPermission: async (user, project, permission) =>
+      user === 'manager' && project === 'project' && permission === 'manage',
+    getSession: async () => undefined,
+  };
+  for (const user of ['reader', 'executor']) {
+    expect(
+      await authorizePairedRoute(store, user, 'POST', '/projects/:id/disconnect-github', {
+        id: 'project',
+      }),
+    ).toBe('forbidden');
+  }
+  expect(
+    await authorizePairedRoute(store, 'manager', 'POST', '/projects/:id/disconnect-github', {
+      id: 'project',
+    }),
+  ).toBe('allow');
+});
+
+it('allows active users to read Shared centrally but reserves changes for administrators', async () => {
+  const store: PairedRoutePolicyStore = {
+    isActiveLocalUser: async (id) => id !== 'disabled',
+    isActiveAdministrator: async (id) => id === 'admin',
+    hasProjectPermission: async () => false,
+    getSession: async () => undefined,
+  };
+  for (const route of [
+    '/knowledge/shared/files',
+    '/knowledge/shared/files/content',
+    '/knowledge/shared/files/download',
+  ]) {
+    expect(await authorizePairedRoute(store, 'member', 'GET', route, {})).toBe('allow');
+    expect(await authorizePairedRoute(store, 'disabled', 'GET', route, {})).toBe('forbidden');
+  }
+  expect(
+    await authorizePairedRoute(store, 'member', 'PUT', '/knowledge/shared/files/content', {}),
+  ).toBe('forbidden');
+  expect(
+    await authorizePairedRoute(store, 'admin', 'PUT', '/knowledge/shared/files/content', {}),
+  ).toBe('allow');
+});
+
+it('scopes direct project knowledge reads and edits to project permissions', async () => {
+  const store: PairedRoutePolicyStore = {
+    isActiveLocalUser: async () => true,
+    isActiveAdministrator: async () => false,
+    hasProjectPermission: async (user, project, permission) =>
+      project === 'p' && (permission === 'read' || user === 'manager'),
+    getSession: async () => undefined,
+  };
+  for (const route of [
+    '/projects/:id/knowledge/files',
+    '/projects/:id/knowledge/files/content',
+    '/projects/:id/knowledge/files/download',
+  ]) {
+    expect(await authorizePairedRoute(store, 'reader', 'GET', route, { id: 'p' })).toBe('allow');
+    expect(await authorizePairedRoute(store, 'reader', 'GET', route, { id: 'other' })).toBe(
+      'forbidden',
+    );
+  }
+  expect(
+    await authorizePairedRoute(store, 'reader', 'PUT', '/projects/:id/knowledge/files/content', {
+      id: 'p',
+    }),
+  ).toBe('forbidden');
+  expect(
+    await authorizePairedRoute(store, 'manager', 'PUT', '/projects/:id/knowledge/files/content', {
+      id: 'p',
+    }),
+  ).toBe('allow');
+});

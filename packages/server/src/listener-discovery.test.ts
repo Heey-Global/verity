@@ -2,7 +2,7 @@ import { PassThrough } from 'node:stream';
 import { EventEmitter } from 'node:events';
 import { spawn } from 'node:child_process';
 import { describe, expect, it, vi } from 'vitest';
-import type { EventStore } from '@verity/store';
+import type { EventStore, ProjectRecord } from '@verity/store';
 import { InMemoryEventBus } from '@verity/session';
 import type { ListeningProcess } from './listening-ports.js';
 import { ListenerDiscovery } from './listener-discovery.js';
@@ -19,6 +19,222 @@ vi.mock('node:child_process', async (importOriginal) => ({
 }));
 
 describe('independent listener discovery', () => {
+  it('reuses watched snapshots across polls and tool results, but refreshes on changes, actions and maximum age', async () => {
+    const project = {
+      id: 'p',
+      owner: 'org',
+      repo: 'repo',
+      containerName: 'sandbox',
+      state: 'active' as const,
+    } as ProjectRecord;
+    const store = {
+      getProject: vi.fn(async () => project),
+      getSession: vi.fn(async () => ({ projectId: project.id })),
+      listSessions: vi.fn(async () => []),
+    } as unknown as EventStore;
+    const bus = new InMemoryEventBus();
+    const scan = vi.fn(async () => [] as ListeningProcess[]);
+    const onScan = vi.fn();
+    const discovery = new ListenerDiscovery({
+      eventStore: store,
+      bus,
+      hostCloneRoot: '/data',
+      scan,
+      onScan,
+    });
+    let now = 0;
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    try {
+      await discovery.listListeningProcesses(project);
+      const child = vi.mocked(spawn).mock.results.at(-1)!.value;
+      (child.stdout as PassThrough).emit('data', Buffer.from('changed\n'));
+      await new Promise((done) => setImmediate(done));
+      expect(scan).toHaveBeenCalledTimes(2);
+      for (now = 3_000; now < 30_000; now += 3_000) {
+        await discovery.listListeningProcesses(project);
+        bus.publish('s', {
+          seq: 1,
+          ts: now,
+          event: { t: 'tool_result', id: 'tool', output: '', isError: false },
+        });
+        await new Promise((done) => setImmediate(done));
+      }
+      expect(scan).toHaveBeenCalledTimes(2);
+      expect(onScan).toHaveBeenCalledTimes(2);
+      await discovery.listListeningProcesses(project);
+      expect(scan).toHaveBeenCalledTimes(3);
+      await discovery.listListeningProcesses(project, { fresh: true });
+      expect(scan).toHaveBeenCalledTimes(4);
+      // Docker stdout chunks need not align with the watcher's lines.
+      (child.stdout as PassThrough).emit('data', Buffer.from('chan'));
+      await new Promise((done) => setImmediate(done));
+      expect(scan).toHaveBeenCalledTimes(4);
+      (child.stdout as PassThrough).emit('data', Buffer.from('ged\nchanged\n'));
+      await new Promise((done) => setImmediate(done));
+      expect(scan).toHaveBeenCalledTimes(5);
+    } finally {
+      clock.mockRestore();
+      discovery.close();
+    }
+  });
+
+  it('falls back after a watcher error and ignores output from a retired watcher', async () => {
+    const project = {
+      id: 'p',
+      owner: 'org',
+      repo: 'repo',
+      containerName: 'sandbox',
+      state: 'active' as const,
+    } as ProjectRecord;
+    const store = {
+      getProject: vi.fn(async () => project),
+      listSessions: vi.fn(async () => []),
+    } as unknown as EventStore;
+    const scan = vi.fn(async () => [] as ListeningProcess[]);
+    const discovery = new ListenerDiscovery({
+      eventStore: store,
+      bus: new InMemoryEventBus(),
+      hostCloneRoot: '/data',
+      scan,
+    });
+    let now = 0;
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    try {
+      await discovery.listListeningProcesses(project);
+      const old = vi.mocked(spawn).mock.results.at(-1)!.value;
+      (old.stdout as PassThrough).emit('data', Buffer.from('changed\n'));
+      await new Promise((done) => setImmediate(done));
+      (old as EventEmitter).emit('error', new Error('watcher failed'));
+      await discovery.listListeningProcesses(project);
+      expect(scan).toHaveBeenCalledTimes(3);
+      (old.stdout as PassThrough).emit('data', Buffer.from('changed\n'));
+      await new Promise((done) => setImmediate(done));
+      expect(scan).toHaveBeenCalledTimes(3);
+      now = 2_001;
+      await discovery.listListeningProcesses(project);
+      expect(scan).toHaveBeenCalledTimes(4);
+      discovery.invalidateProject(project.id);
+      await discovery.listListeningProcesses(project);
+      expect(scan).toHaveBeenCalledTimes(5);
+    } finally {
+      clock.mockRestore();
+      discovery.close();
+    }
+  });
+
+  it('waits for a post-change scan before returning a fresh action read', async () => {
+    const project = {
+      id: 'p',
+      owner: 'org',
+      repo: 'repo',
+      containerName: 'sandbox',
+      state: 'active' as const,
+    } as ProjectRecord;
+    const store = {
+      getProject: vi.fn(async () => project),
+      listSessions: vi.fn(async () => []),
+    } as unknown as EventStore;
+    let release!: (processes: ListeningProcess[]) => void;
+    const scan = vi
+      .fn(async () => [] as ListeningProcess[])
+      .mockImplementationOnce(
+        () =>
+          new Promise((done) => {
+            release = done;
+          }),
+      );
+    const onScan = vi.fn();
+    const discovery = new ListenerDiscovery({
+      eventStore: store,
+      bus: new InMemoryEventBus(),
+      hostCloneRoot: '/data',
+      scan,
+      onScan,
+    });
+    try {
+      const read = discovery.listListeningProcesses(project, { fresh: true });
+      await new Promise((done) => setImmediate(done));
+      const child = vi.mocked(spawn).mock.results.at(-1)!.value;
+      (child.stdout as PassThrough).emit('data', Buffer.from('changed\n'));
+      const fresh = discovery.listListeningProcesses(project, { fresh: true });
+      release([{ port: 3000, pid: 1, cwd: '/work/a', command: 'old', bind: 'any' }]);
+      await expect(read).resolves.toEqual([]);
+      await expect(fresh).resolves.toEqual([]);
+      expect(scan).toHaveBeenCalledTimes(2);
+      expect(onScan).toHaveBeenCalledExactlyOnceWith(project, []);
+    } finally {
+      discovery.close();
+    }
+  });
+
+  it('shares raw consumer reads and rejects snapshots from a restarted container with the same name', async () => {
+    const project = {
+      id: 'p',
+      owner: 'org',
+      repo: 'repo',
+      containerName: 'sandbox',
+      state: 'active' as const,
+    };
+    const session = { sessionId: 'a', projectId: 'p', worktree: '/data/org-repo/a' };
+    const store = {
+      getSession: vi.fn(async () => session),
+      getProject: vi.fn(async () => project),
+      listSessions: vi.fn(async () => [session]),
+      getLatestDevServersEvent: vi.fn(async () => undefined),
+      appendEvent: vi.fn(async () => ({ seq: 1, ts: 0 })),
+    } as unknown as EventStore;
+    const old: ListeningProcess[] = [
+      { port: 3000, pid: 1, cwd: '/work/a', command: 'old', bind: 'any' },
+    ];
+    let release!: (processes: ListeningProcess[]) => void;
+    const scan = vi
+      .fn(async () => [] as ListeningProcess[])
+      .mockImplementationOnce(
+        () =>
+          new Promise((done) => {
+            release = done;
+          }),
+      );
+    const discovery = new ListenerDiscovery({
+      eventStore: store,
+      bus: new InMemoryEventBus(),
+      hostCloneRoot: '/data',
+      scan,
+    });
+    const sandbox = project as Parameters<typeof discovery.listListeningProcesses>[0];
+    try {
+      const raw = discovery.listListeningProcesses(sandbox);
+      const sessionRead = discovery.listSessionDevServers('a');
+      await new Promise((done) => setImmediate(done));
+      expect(scan).toHaveBeenCalledOnce();
+      release(old);
+      expect(await raw).toEqual(old);
+      await sessionRead;
+      expect(await discovery.listListeningProcesses(sandbox)).toEqual(old);
+      expect(scan).toHaveBeenCalledOnce();
+      expect(await discovery.listListeningProcesses(sandbox, { fresh: true })).toEqual([]);
+      expect(scan).toHaveBeenCalledTimes(2);
+      scan.mockImplementationOnce(
+        () =>
+          new Promise((done) => {
+            release = done;
+          }),
+      );
+      const stale = discovery.listListeningProcesses(sandbox, { fresh: true });
+      // Attach before invalidation so rejecting an obsolete scan is never unhandled.
+      const rejected = expect(stale).rejects.toThrow('superseded');
+      await new Promise((done) => setImmediate(done));
+      discovery.invalidateProject('p');
+      expect(await discovery.listListeningProcesses(sandbox)).toEqual([]);
+      release(old);
+      await rejected;
+      expect(await discovery.listListeningProcesses(sandbox)).toEqual([]);
+      expect(scan).toHaveBeenCalledTimes(4);
+    } finally {
+      discovery.close();
+    }
+  });
+
   it('shares in-flight scans with background refresh and reuses only fresh snapshots', async () => {
     const project = {
       id: 'p',

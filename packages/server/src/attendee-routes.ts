@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { OnlineMeetingStartError, type AttendeeMeetings } from './attendee-meetings.js';
+import { isSupportedMeetingUrl } from './calendar-meeting-links.js';
 
 const params = z.object({ id: z.string(), meetingId: z.string().uuid() });
 const edits = z.object({
@@ -49,20 +50,22 @@ export function registerAttendeeRoutes(
     const body = z
       .object({
         title: z.string().max(200).optional(),
-        meetingUrl: z.url().max(2048),
+        meetingUrl: z
+          .string()
+          .trim()
+          .transform((value) =>
+            /^(?:meet\.google\.com|teams\.microsoft\.com|teams\.live\.com|(?:[a-z0-9-]+\.)?zoom\.us)\//i.test(
+              value,
+            )
+              ? `https://${value}`
+              : value,
+          )
+          .pipe(z.url().max(2048)),
         listenForVerity: z.boolean().default(false),
       })
       .parse(request.body);
     const url = new URL(body.meetingUrl);
-    if (
-      url.protocol !== 'https:' ||
-      url.username ||
-      url.password ||
-      !['meet.google.com', 'teams.microsoft.com', 'teams.live.com', 'zoom.us', 'www.zoom.us'].some(
-        (host) =>
-          url.hostname === host || (host === 'zoom.us' && url.hostname.endsWith('.zoom.us')),
-      )
-    )
+    if (!isSupportedMeetingUrl(url))
       throw new Error('Enter a Google Meet, Teams or Zoom HTTPS meeting link.');
     try {
       return await service.start(id, body.meetingUrl, body.listenForVerity, body.title, {

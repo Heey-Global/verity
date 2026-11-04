@@ -13,7 +13,11 @@ afterEach(async () => {
   vi.useRealTimers();
 });
 
-async function setup(initial: Partial<VeritySettingsRecord> = {}) {
+async function setup(
+  initial: Partial<VeritySettingsRecord> = {},
+  projectEgressAvailable?: () => Promise<boolean>,
+  projectEgressStatus?: SettingsRouteDeps['projectEgressStatus'],
+) {
   let settings = { ...initial } as VeritySettingsRecord;
   const store = {
     getVeritySettingsRaw: async () => settings,
@@ -40,6 +44,8 @@ async function setup(initial: Partial<VeritySettingsRecord> = {}) {
     onOpenCodeSettingsChanged: changed,
     onUplinkCredentialsChanged: uplinkChanged,
     onPremiumFeatureSwitchesChanged: switchesChanged,
+    projectEgressAvailable,
+    projectEgressStatus,
   });
   await app.ready();
   return { app, store, changed, switchesChanged, uplinkChanged, refreshOpenCodeModels };
@@ -342,4 +348,45 @@ it('retries public-link revocation after a failed settings PATCH already stored 
   ).toBe(false);
   expect((await app.inject(request)).statusCode).toBe(200);
   expect(shares.disableAll).toHaveBeenCalledTimes(2);
+});
+
+describe('PATCH /settings network protection', () => {
+  const enable = (app: FastifyInstance, projectEgressEnabled: boolean) =>
+    app.inject({ method: 'PATCH', url: '/settings', payload: { projectEgressEnabled } });
+
+  it('refuses to enable protection while the host egress service does not answer', async () => {
+    for (const available of [undefined, async () => false]) {
+      const { app, store } = await setup({}, available);
+      const response = await enable(app, true);
+      expect(response.statusCode).toBe(409);
+      expect(response.json().message).toMatch(/unavailable on this host/);
+      expect((await store.getVeritySettings()).projectEgressEnabled).toBeUndefined();
+    }
+  });
+
+  it('requires fresh structured readiness instead of a stale compatibility boolean', async () => {
+    const status = vi.fn(async () => ({ available: false, reason: 'controller_failed' as const }));
+    const available = vi.fn(async () => true);
+    const { app, store } = await setup({}, available, status);
+    expect((await enable(app, true)).statusCode).toBe(409);
+    expect(status).toHaveBeenCalledExactlyOnceWith(true);
+    expect(available).not.toHaveBeenCalled();
+    expect((await store.getVeritySettings()).projectEgressEnabled).toBeUndefined();
+    status.mockClear();
+    expect((await enable(app, false)).statusCode).toBe(200);
+    expect(status).not.toHaveBeenCalled();
+  });
+
+  it('enables it with an answering host and always allows switching it off', async () => {
+    const available = vi.fn(async () => true);
+    const { app, store } = await setup({}, available);
+    expect((await enable(app, true)).statusCode).toBe(200);
+    expect((await store.getVeritySettings()).projectEgressEnabled).toBe(true);
+    expect(available).toHaveBeenCalledWith(true);
+    available.mockResolvedValue(false);
+    available.mockClear();
+    expect((await enable(app, false)).statusCode).toBe(200);
+    expect((await store.getVeritySettings()).projectEgressEnabled).toBe(false);
+    expect(available).not.toHaveBeenCalled();
+  });
 });

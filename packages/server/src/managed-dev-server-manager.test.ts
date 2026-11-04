@@ -1,3 +1,4 @@
+import { PreviewNetworkProtectionError } from './preview-network-policy.js';
 import { createTestDb, truncateAll, type TestDb } from '@verity/store/testing';
 import type { ProjectRecord } from '@verity/store';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -153,8 +154,12 @@ const instanceOf = async (sessionId = 's1') => (await manager.view(sessionId))[0
 
 describe('managed dev servers', () => {
   it('defers supervision until preview ownership is ready', async () => {
+    const readListeners = vi.spyOn(sandbox.runtime, 'listListeningProcesses');
     await manager.add('s1', { name: 'Demo', command: 'node server.mjs' });
     await manager.start('s1', 'Demo', 'agent');
+    expect(readListeners).toHaveBeenCalledWith(expect.objectContaining({ id: 'p1' }), {
+      fresh: true,
+    });
     const instance = await instanceOf();
     sandbox.listen(instance.id, instance.sandboxPort);
     supervisionReady = false;
@@ -208,6 +213,21 @@ describe('managed dev servers', () => {
     expect(await instanceOf()).toMatchObject({
       url: 'http://verity.local:8100',
       awaitingApproval: false,
+    });
+  });
+
+  it('explains protected preview unavailability without claiming the server failed to run', async () => {
+    await manager.add('s1', { name: 'Demo', command: 'node server.mjs' });
+    await manager.start('s1', 'Demo', 'agent');
+    const run = sandbox.started[0]!;
+    sandbox.listen(run.instanceId, Number(run.env.PORT));
+    await manager.tick();
+    shares.create.mockRejectedValue(new PreviewNetworkProtectionError());
+    await manager.approve('s1', 'Demo', { command: 'node server.mjs', workdir: '.' });
+    expect(await instanceOf()).toMatchObject({
+      state: 'running',
+      url: null,
+      detail: new PreviewNetworkProtectionError().message,
     });
   });
 

@@ -195,20 +195,24 @@ export function parseRecordingResponse(
 ): LegacyResponse | z.infer<typeof v2Response> | z.infer<typeof v3Response>;
 export function parseRecordingResponse(value: unknown, runId: string, version: 1 | 2 | 3 = 1) {
   if (Buffer.byteLength(JSON.stringify(value)) > DIAGNOSTICS_FRAME_BYTES)
-    throw new Error('invalid_diagnostics_response');
-  if (version === 1 && typeof value === 'object' && value !== null && 'version' in value)
-    throw new Error('invalid_diagnostics_response');
+    throw new Error('invalid_diagnostics_response_size');
+  // Inspect only the declared version; never expose peer values or schema issue text.
+  const hasVersion = typeof value === 'object' && value !== null && 'version' in value;
+  const declaredVersion = hasVersion ? value.version : undefined;
+  if (version === 1 && hasVersion) throw new Error('invalid_diagnostics_response_version');
   const error = response.safeParse(value);
   if (error.success && error.data.type === 'diagnostics.error')
     throw new Error(`diagnostics_${error.data.code}`);
+  if (version !== 1 && declaredVersion !== version)
+    throw new Error('invalid_diagnostics_response_version');
   const parsed =
     version === 3
       ? v3Response.safeParse(value)
       : version === 2
         ? v2Response.safeParse(value)
         : response.safeParse(value);
-  if (!parsed.success || parsed.data.runId !== runId)
-    throw new Error('invalid_diagnostics_response');
+  if (!parsed.success) throw new Error('invalid_diagnostics_response_schema');
+  if (parsed.data.runId !== runId) throw new Error('invalid_diagnostics_response_run_id');
   if (parsed.data.type === 'diagnostics.error') throw new Error(`diagnostics_${parsed.data.code}`);
   if (version !== 1 && 'exportHash' in parsed.data) {
     const recording = parsed.data.state === 'recording' || parsed.data.state === 'preparing';
@@ -217,7 +221,7 @@ export function parseRecordingResponse(value: unknown, runId: string, version: 1
       recording !== (parsed.data.endedAt === null) ||
       recording !== (parsed.data.stopReason === null)
     )
-      throw new Error('invalid_diagnostics_response');
+      throw new Error('invalid_diagnostics_response_lifecycle');
   }
   return parsed.data;
 }

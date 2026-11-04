@@ -906,7 +906,9 @@ describe('CI aggregate cancellation', () => {
     const workflow = parse(readFileSync('.github/workflows/ci.yml', 'utf8')) as {
       jobs: { 'ci-checks': { if?: string } };
     };
-    expect(workflow.jobs['ci-checks'].if).toBe('${{ always() && !cancelled() }}');
+    expect(workflow.jobs['ci-checks'].if).toBe(
+      "${{ always() && !cancelled() && !inputs['lint-comparison-only'] }}",
+    );
   });
 });
 
@@ -1310,7 +1312,7 @@ describe('mobile OTA promotion', () => {
     };
     const stageCommands = stage.jobs.update.steps.map((step) => step.run ?? '').join('\n');
     const promoteCommands = promotion.jobs.promote.steps.map((step) => step.run ?? '').join('\n');
-    expect(stageCommands).toContain('scripts/mobile-ota-release.ts stage');
+    expect(stageCommands).toContain('node "$OTA_RELEASE_TOOLS/mobile-ota-release.ts" stage');
     expect(stageCommands).toContain('scripts/mobile-native-compatibility.mjs');
     expect(promoteCommands).toContain('scripts/mobile-ota-release.ts promote');
     expect(promotion.concurrency).toMatchObject({
@@ -1600,7 +1602,7 @@ describe('self-update release gate', () => {
       options: ['full', 'release'],
       type: 'choice',
     });
-    expect(workflow.on.schedule).toEqual([{ cron: '17 3 * * 1' }]);
+    expect(workflow.on.schedule).toEqual([{ cron: '17 3 * * *' }]);
   });
 
   it('checks out and serializes by the exact release candidate', () => {
@@ -2243,6 +2245,41 @@ describe('GitHub-hosted runner boundary', () => {
       expect(gate?.steps).toHaveLength(1);
       expect(gate?.steps?.[0]?.run).toContain('ARCHITECTURE_SMOKE_RESULT');
     }
+  });
+
+  it('reserves disk before installing dependencies and building the nested egress images', () => {
+    const workflow = parse(readFileSync('.github/workflows/project-egress.yml', 'utf8')) as {
+      jobs: Record<string, Job>;
+    };
+    const steps = workflow.jobs['project-boundary']!.steps!;
+    const reclaim = steps.findIndex(
+      (step) => step.uses === './.github/actions/reclaim-runner-disk',
+    );
+    const install = steps.findIndex((step) => step.run?.includes('npm ci'));
+    const probe = steps.findIndex((step) =>
+      step.run?.includes('scripts/probes/project-egress/ci.sh'),
+    );
+    expect(reclaim).toBeGreaterThan(
+      steps.findIndex((step) => step.uses?.startsWith('actions/checkout@')),
+    );
+    expect(reclaim).toBeLessThan(install);
+    expect(install).toBeLessThan(probe);
+    expect(Number(steps[reclaim]?.with?.['minimum-free-gib'])).toBeGreaterThanOrEqual(40);
+  });
+
+  it('reserves disk immediately before the native host builder probe', () => {
+    const workflow = parse(
+      readFileSync('.github/workflows/devcontainer-host-builder.yml', 'utf8'),
+    ) as {
+      jobs: Record<string, Job>;
+    };
+    const steps = workflow.jobs['build-isolation']!.steps!;
+    const probe = steps.findIndex((step) =>
+      step.run?.includes('scripts/probes/devcontainer-gvisor/host-service.sh'),
+    );
+    expect(probe).toBeGreaterThan(0);
+    expect(steps[probe - 1]?.uses).toBe('./.github/actions/reclaim-runner-disk');
+    expect(Number(steps[probe - 1]?.with?.['minimum-free-gib'])).toBeGreaterThanOrEqual(25);
   });
 
   it('prepares free disk before both boot VMs and rechecks after asset builds', () => {
@@ -3447,7 +3484,7 @@ describe('CI runner footprint', () => {
     expect(cached).toBe(true);
   });
 
-  it('keeps CI lint uncached and never enables ESLint single-file result caching', () => {
+  it('allows CI metadata reuse while disabling lint result caching', () => {
     // Prettier's cache above is safe; ESLint's is not, and the difference is not
     // visible from the shape of the two steps — which is why this is asserted and
     // not left to the comment in ci.yml. An ESLint cache entry is invalidated by
@@ -3489,7 +3526,19 @@ describe('CI runner footprint', () => {
     expect(source).toMatch(/^\s*node scripts\/lint-runner\.mjs\s/m);
     expect(source).toContain('git ls-files');
     const eslintStep = (ci.jobs.lint?.steps ?? []).find((step) => step.name === 'ESLint');
-    expect(eslintStep?.run).toBe('npm run lint');
+    expect(eslintStep?.run).toContain('npm run lint 2>&1');
+    expect(eslintStep?.run).not.toContain('--no-cache');
+    expect(eslintStep?.env?.CI).toBe('true');
+    expect(eslintStep?.run).toContain('set -euo pipefail');
+    expect(eslintStep?.run).toContain('/usr/bin/time --verbose');
+    expect(eslintStep?.run).toContain('resources.txt');
+    expect(eslintStep?.run).toContain('tee "$LINT_MEASUREMENT_DIR/lint.log"');
+    const measurement = ci.jobs.lint?.steps?.find(
+      (step) => step.name === 'Upload lint measurement',
+    );
+    expect(measurement?.if).toBe('always()');
+    expect(measurement?.uses).toContain('actions/upload-artifact@');
+    expect(measurement?.with?.path).toBe('${{ runner.temp }}/lint-measurement');
     // Inspect executable flags, without confusing git's --cached file listing
     // with ESLint's --cache flag.
     const flags = [scripts?.lint ?? '', eslintStep?.run ?? '', source]
@@ -4233,6 +4282,34 @@ describe('managed installer CI acceptance', () => {
     expect(new Set(paths).size).toBe(3);
     // Linux sockaddr_un reserves one of its 108 bytes for the terminating NUL.
     for (const path of paths) expect(Buffer.byteLength(path)).toBeLessThanOrEqual(107);
+  });
+
+  it('reclaims the completed installer daemon and its image volume before recovery', () => {
+    const run = step?.run ?? '';
+    const installer = run.indexOf('deploy/bin/verity-managed-install-smoke ');
+    const recovery = run.indexOf('deploy/bin/verity-backup-restore-smoke ');
+    expect(installer).toBeGreaterThanOrEqual(0);
+    expect(recovery).toBeGreaterThan(installer);
+    // Stopping leaves a second full image store on disk during recovery builds.
+    const between = run.slice(run.indexOf('\n', installer), recovery);
+    const commands = execFileSync(
+      'bash',
+      ['-euo', 'pipefail', '-c', 'exec 3>&1; docker() { printf "%s\\n" "$*" >&3; }; ' + between],
+      {
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          VERITY_CI_MANAGED_DIND: 'completed-fixture',
+          VERITY_CI_MANAGED_DIND_VOLUME: 'completed-fixture-data',
+        },
+      },
+    )
+      .trim()
+      .split('\n');
+    expect(commands).toEqual([
+      '--host unix:///var/run/docker.sock rm --force completed-fixture',
+      '--host unix:///var/run/docker.sock volume rm completed-fixture-data',
+    ]);
   });
 
   it('runs the candidate through the installer in a separate disposable daemon', () => {

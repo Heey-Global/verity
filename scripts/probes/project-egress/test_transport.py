@@ -76,3 +76,31 @@ class TransportReceiverTests(unittest.TestCase):
         channel.sendall.side_effect = BrokenPipeError('peer closed')
         self.assertEqual(receiver.receive_tcp(channel), b'external-delivered')
         channel.close.assert_called_once()
+
+
+class RetainedStreamTests(unittest.TestCase):
+    def test_reset_keeps_attempting_original_sockets_and_publishes_heartbeat(self):
+        import runpy
+        from unittest.mock import Mock, mock_open, patch
+
+        class StopLoop(Exception):
+            pass
+
+        broker, claude, codex = Mock(), Mock(), Mock()
+        broker.recv.side_effect = [ConnectionResetError('revoked'), b'']
+        claude.sendall.side_effect = BrokenPipeError('revoked')
+        files = mock_open()
+        with (patch.object(sys, 'argv', [str(CLIENT), '127.0.0.2', 'stream', 'reset']),
+              patch('socket.create_connection', side_effect=[broker, claude, codex]) as connect,
+              patch('select.select', return_value=([broker], [], [])),
+              patch('builtins.open', files),
+              patch('os.replace') as replace,
+              patch('time.sleep', side_effect=[None, StopLoop])):
+            with self.assertRaises(StopLoop):
+                runpy.run_path(str(CLIENT), run_name='__main__')
+        # Revocation must not kill the witness or turn it into a fresh connection.
+        self.assertEqual(connect.call_count, 3)
+        self.assertEqual(claude.sendall.call_count, 2)
+        self.assertEqual(codex.sendall.call_count, 2)
+        self.assertEqual(replace.call_count, 2)
+        replace.assert_called_with('/work/stream-alive-reset.tmp', '/work/stream-alive-reset')

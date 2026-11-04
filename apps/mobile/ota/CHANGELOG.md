@@ -1,5 +1,78 @@
 # Changelog
 
+## [1.84.2](https://github.com/Heey-Global/verity/compare/mobile-v1.84.1...mobile-v1.84.2) (2026-11-04)
+
+
+### Features
+
+* **egress:** provision managed control paths and explain readiness ([#2239](https://github.com/Heey-Global/verity/issues/2239)) ([6d23c17](https://github.com/Heey-Global/verity/commit/6d23c1700311f532943f9dad58b9bcaabda8d5d2))
+* per-person overview state and dismissible Home items ([#2238](https://github.com/Heey-Global/verity/issues/2238)) ([4dd3914](https://github.com/Heey-Global/verity/commit/4dd391455ed50e86d8454b9db174917a01525999))
+
+
+### Bug Fixes
+
+* **knowledge:** simplify Wiki navigation and sync notices ([#2242](https://github.com/Heey-Global/verity/issues/2242)) ([c7efb3f](https://github.com/Heey-Global/verity/commit/c7efb3fc2c8f5069f9cfc4639a75e7209af714b1))
+* **server:** reduce redundant runner and preview work ([#2243](https://github.com/Heey-Global/verity/issues/2243)) ([bfe65a9](https://github.com/Heey-Global/verity/commit/bfe65a92d80e52dd2596f55b36fabca559323a0c))
+
+## [1.84.1](https://github.com/Heey-Global/verity/compare/mobile-v1.84.0...mobile-v1.84.1) (2026-11-04)
+
+
+### Features
+
+* **egress:** add destination controls and constrained package paths ([#2227](https://github.com/Heey-Global/verity/issues/2227)) ([96e6bee](https://github.com/Heey-Global/verity/commit/96e6bee6b2baaefd5b38208f4df1c529fbebc524))
+* **mobile:** add Home as an inbox behind a preview switch ([#2222](https://github.com/Heey-Global/verity/issues/2222)) ([eacc872](https://github.com/Heey-Global/verity/commit/eacc872449fa1604ee754e32d77f3997e253b0af))
+
+
+### Bug Fixes
+
+* **deps:** update dependency @fastify/websocket to v11.3.6 ([#2233](https://github.com/Heey-Global/verity/issues/2233)) ([0572f13](https://github.com/Heey-Global/verity/commit/0572f1332ac36601d805da7ff9bf38e8478691a7))
+* **deps:** update dependency ws to v8.22.1 ([#2234](https://github.com/Heey-Global/verity/issues/2234)) ([9155441](https://github.com/Heey-Global/verity/commit/9155441041ea49f93552c331ddda59ec7346c4a5))
+* **storage:** share project npm caches and reclaim idle cache data ([#2226](https://github.com/Heey-Global/verity/issues/2226)) ([e8d978a](https://github.com/Heey-Global/verity/commit/e8d978ad9bb317d19fb64faf41681f12db49daed))
+
+## [1.83.4](https://github.com/Heey-Global/verity/compare/mobile-v1.83.3...mobile-v1.83.4) (2026-11-03)
+
+
+### Features
+
+* **egress:** wire global network protection into server starts ([#2192](https://github.com/Heey-Global/verity/issues/2192)) ([6e7c5e2](https://github.com/Heey-Global/verity/commit/6e7c5e222dcb9d12774fd8375cf33977c2510cd9))
+
+
+### Bug Fixes
+
+* **deps:** update dependency @agentclientprotocol/sdk to v2.2.0 ([#2200](https://github.com/Heey-Global/verity/issues/2200)) ([2747c6e](https://github.com/Heey-Global/verity/commit/2747c6eddd3c984a235159c9059474a73cc3db42))
+* **deps:** update dependency @napi-rs/canvas to v1.1.0 ([#2201](https://github.com/Heey-Global/verity/issues/2201)) ([c057d29](https://github.com/Heey-Global/verity/commit/c057d29216aaf3a3de0600630d0df15780a204f1))
+* **diagnostics:** classify invalid recording responses safely ([#2194](https://github.com/Heey-Global/verity/issues/2194)) ([988286e](https://github.com/Heey-Global/verity/commit/988286ed0080ae91fbd5a05137eb848e66b1de2e))
+* **self-update:** preserve runtime renewal and reboot recovery ([#2195](https://github.com/Heey-Global/verity/issues/2195)) ([73f240c](https://github.com/Heey-Global/verity/commit/73f240c2969fb13866d0beed81a9677ce76a0c8e))
+
+## [1.83.3](https://github.com/Heey-Global/verity/compare/mobile-v1.83.2...mobile-v1.83.3) (2026-11-02)
+
+
+### Bug Fixes
+
+* **meetings:** show ongoing recordings on other devices ([#2185](https://github.com/Heey-Global/verity/issues/2185)) ([2b7eb75](https://github.com/Heey-Global/verity/commit/2b7eb754d031bc1f0bbe3b4ff50636a0c33e1dd1))
+
+## [1.83.2](https://github.com/Heey-Global/verity/compare/mobile-v1.83.1...mobile-v1.83.2) (2026-11-02)
+
+
+### Features
+
+* **knowledge:** remember confirmed project decisions across chats ([#2165](https://github.com/Heey-Global/verity/issues/2165)) ([6b8cc1d](https://github.com/Heey-Global/verity/commit/6b8cc1d16877949f4d957d147e4025f0e5227764))
+* **mcp:** discover OAuth and complete native/web sign-ins ([#2160](https://github.com/Heey-Global/verity/issues/2160)) ([d23b893](https://github.com/Heey-Global/verity/commit/d23b893d390210052c61477f08efb84c982c65b2))
+* **meetings:** join online meetings from watched Google calendars ([#2167](https://github.com/Heey-Global/verity/issues/2167)) ([b0cd9fe](https://github.com/Heey-Global/verity/commit/b0cd9fec970bb1df48cc405a92e79d188b09af1b))
+* **qa:** delegate and supervise project assignments ([#2171](https://github.com/Heey-Global/verity/issues/2171)) ([cb7d6d8](https://github.com/Heey-Global/verity/commit/cb7d6d8f310a2b6a89763968ce40d69b51ef89d2))
+* **self-update:** renew host runtime services independently of builder admission ([#2159](https://github.com/Heey-Global/verity/issues/2159)) ([6ff2410](https://github.com/Heey-Global/verity/commit/6ff2410d2b159a4134fb115202c2c9e7583ffa27))
+
+
+### Bug Fixes
+
+* **ci:** restore session repairs and analyze recurring failures ([#2168](https://github.com/Heey-Global/verity/issues/2168)) ([0a167fa](https://github.com/Heey-Global/verity/commit/0a167fab989fd33724799c7fd279740ff4ae3385))
+* **deps:** update agent clis ([#2172](https://github.com/Heey-Global/verity/issues/2172)) ([55d5886](https://github.com/Heey-Global/verity/commit/55d5886f21a777bb8ef36b4eb7008e9d33b31010))
+
+
+### Performance Improvements
+
+* **mobile:** isolate project group selection updates ([#2169](https://github.com/Heey-Global/verity/issues/2169)) ([3afb866](https://github.com/Heey-Global/verity/commit/3afb866bbc31142885c74c5623e1619acc87c717))
+
 ## [1.83.1](https://github.com/Heey-Global/verity/compare/mobile-v1.83.0...mobile-v1.83.1) (2026-11-01)
 
 

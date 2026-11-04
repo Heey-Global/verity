@@ -65,6 +65,20 @@ not transfer that ownership. Allow one active meeting on the device initially; c
 Live Meeting again opens the existing meeting. Coordinate microphone ownership with normal
 dictation rather than allowing two capture sessions to compete.
 
+The existing meeting overlay discovers ongoing meetings on other devices connected to the
+same server. Tapping it opens that exact meeting with its synchronized transcript, notes and
+research; microphone ownership stays with the originating iPhone or iPad. Browser viewers
+use their authenticated origin to scope local meeting storage and run the same note-upload
+retry worker as native viewers, without starting microphone capture.
+
+Screen lock or a missing recorder heartbeat does not end a meeting or remove it from
+discovery. The overlay reports recorder unreachability and the last known contact, and the
+full meeting view warns that transcript updates may be delayed while notes and research
+remain usable. Confirmed end or interrupted recovery removes a device recording from the
+running list. A crashed recorder may therefore leave an unreachable meeting visible until
+its next launch reports recovery. This visibility guarantee does not assert that native
+background recording or transcription continues; both require device acceptance.
+
 ## 3. Visual direction and interaction
 
 The approved direction uses a quiet dark interface with subtle violet accents. The latest

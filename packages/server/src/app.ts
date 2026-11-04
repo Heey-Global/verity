@@ -64,6 +64,9 @@ export interface ControlPlaneDeps {
   unlockClientIdentity?: ServerDeps['unlockClientIdentity'];
   /** Installer-issued authority that gates first initialization. */
   devicePairing?: ServerDeps['devicePairing'];
+  /** Persist cleanup ownership before session deletion, then wake the retry worker. */
+  queueSessionArtifacts?: ServerDeps['queueSessionArtifacts'];
+  scheduleSessionCleanup?: ServerDeps['scheduleSessionCleanup'];
   /** Remove a session's backend transcript files from the runner runtime as part of
    *  deleting it. Forwarded verbatim to {@link buildServer}; see the same field on
    *  `ServerDeps`. Omit on deployments without the runner supervisor. */
@@ -107,6 +110,9 @@ export interface ControlPlaneDeps {
   listenerDiscovery?: ServerDeps['listenerDiscovery'];
   localPreviewManager?: ServerDeps['localPreviewManager'];
   managedDevServerManager?: ServerDeps['managedDevServerManager'];
+  projectEgressResolve?: ServerDeps['projectEgressResolve'];
+  projectEgressAvailable?: ServerDeps['projectEgressAvailable'];
+  projectEgressStatus?: ServerDeps['projectEgressStatus'];
   previewSharingCapability?: ServerDeps['previewSharingCapability'];
   returnPathActivation?: ServerDeps['returnPathActivation'];
   coordinatedRecording?: ServerDeps['coordinatedRecording'];
@@ -359,6 +365,12 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
       : {}),
     ...(deps.devicePairing !== undefined ? { devicePairing: deps.devicePairing } : {}),
     bus: deps.bus,
+    ...(deps.queueSessionArtifacts !== undefined
+      ? { queueSessionArtifacts: deps.queueSessionArtifacts }
+      : {}),
+    ...(deps.scheduleSessionCleanup !== undefined
+      ? { scheduleSessionCleanup: deps.scheduleSessionCleanup }
+      : {}),
     ...(deps.purgeSessionArtifacts !== undefined
       ? { purgeSessionArtifacts: deps.purgeSessionArtifacts }
       : {}),
@@ -395,6 +407,15 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
     ...(deps.pushEnabled !== undefined ? { pushEnabled: deps.pushEnabled } : {}),
     ...(deps.managedDevServerManager !== undefined
       ? { managedDevServerManager: deps.managedDevServerManager }
+      : {}),
+    ...(deps.projectEgressResolve !== undefined
+      ? { projectEgressResolve: deps.projectEgressResolve }
+      : {}),
+    ...(deps.projectEgressStatus !== undefined
+      ? { projectEgressStatus: deps.projectEgressStatus }
+      : {}),
+    ...(deps.projectEgressAvailable !== undefined
+      ? { projectEgressAvailable: deps.projectEgressAvailable }
       : {}),
     ...(deps.listenerDiscovery !== undefined ? { listenerDiscovery: deps.listenerDiscovery } : {}),
     ...(deps.localPreviewManager !== undefined
@@ -551,17 +572,20 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
         prepareWorkspace: async (session) => {
           await deps.conductor?.prepareWorkspace?.(session);
           const view = documentViewForSession(session);
-          if (deps.dataRoot && session.projectId && view)
-            await documentWorkspace(deps.dataRoot, session.projectId, view).prepare();
+          if (deps.dataRoot && session.projectId && view) {
+            const workspace = documentWorkspace(deps.dataRoot, session.projectId, view);
+            await workspace.prepare();
+            if (workspace.warning)
+              await deps.eventStore.appendPendingNote(session.sessionId, workspace.warning);
+          }
         },
         settleWorkspace: async (session) => {
           const view = documentViewForSession(session);
           if (deps.dataRoot && session.projectId && view) {
-            const result = await documentWorkspace(
-              deps.dataRoot,
-              session.projectId,
-              view,
-            ).publish();
+            const workspace = documentWorkspace(deps.dataRoot, session.projectId, view);
+            const result = await workspace.publish();
+            if (workspace.warning)
+              await deps.eventStore.appendPendingNote(session.sessionId, workspace.warning);
             if (result.conflicts.length)
               await deps.eventStore.appendPendingNote(
                 session.sessionId,

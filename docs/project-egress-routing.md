@@ -1,5 +1,26 @@
 # Project egress routing and consent
 
+## Implementation evidence boundary
+
+The project Unix listener supplies a generation cancellation signal. MCP tool
+execution propagates that signal and its existing session authorizer through
+the Google and restricted HTTP adapters; Forge streams also revalidate their
+capability after asynchronous setup. Failed, stalled or retired authority aborts
+the scoped request. These checks complement the external project fence and do
+not establish native runtime acceptance by themselves.
+
+Automation startup now rechecks its prepared project snapshot after sponsor
+authorization. Full automation cancellation remains open: the current buffered
+Docker exec interface cannot confirm termination of in-container children when
+its client is aborted. A trusted supervisor automation launch/cancel capability
+with immutable generation binding and termination evidence is required. The
+existing live-turn supervisor capability cannot be reused before a turn exists.
+
+Package artifact and preview limitations are recorded in
+[the artifact adapter contract](project-egress-package-artifacts.md) and
+[the host installation contract](project-egress-host.md). No unsupported path
+gains a broad network exception.
+
 Status: target contract with draft policy persistence and authenticated management
 APIs implemented. No firewall, connector or UI activation is enabled. The APIs
 report `enforcement: unavailable`; stored grants do not admit network traffic. Network destination permissions are shared
@@ -82,11 +103,11 @@ DNS, or activate production enforcement.
 
 ### Experimental policy admission composition
 
-`createProjectEgressAdmission` binds one trusted registrar identity and execution
-sponsor to a fence. Refresh accepts no caller-supplied grants: it first revokes
-the current fence, then reads the durable policy through `readForAdmission`.
-That store operation requires current project execution rights, an active sponsor
-and, for revalidation, the exact policy revision. The complete grant set is
+`createProjectEgressAdmission` binds one trusted registrar identity to a fence.
+Refresh accepts no caller-supplied grants: it first revokes the current fence,
+then reads the project's stored grants through `readForAdmission`, which checks
+the exact policy revision on revalidation. Grants are project settings whose
+rights were checked when a project manager decided them. The complete grant set is
 compared again before admission, including after asynchronous DNS work. Failed
 reads and changed authority leave the fence denied; reading never renews a grant.
 Lifecycle operations serialize across policy reads and kernel work. A revoke,
@@ -291,6 +312,57 @@ An approved target enables a fresh connection attempt, not automatic replay of
 an application mutation. Do not buffer or forward unapproved request payloads.
 For uncertain external outcomes, preserve the adapter's idempotency and recovery
 rules. Offline approvers, timeouts and broker failure leave access blocked.
+
+## System-wide network protection switch
+
+Network protection is one administrator setting, `projectEgressEnabled`, default
+off, exposed through `GET /settings` and administrator-only `PATCH /settings`.
+The app control is Settings → App & Server → Network protection. It saves the
+confirmed setting without requesting container recreation; an unavailable host
+blocks enabling, while disabling remains available. Older servers show an update
+requirement. Managed installation and updates configure the host control socket
+and key automatically; no environment variables or Compose overlay need to be
+configured by the user. Enabling requires a fresh authenticated host readiness
+check; otherwise it returns a sanitized unavailable reason (409). Native profile
+acceptance remains required before protection is usable. See
+[managed provisioning](project-egress-managed-install.md).
+
+- Each new container generation reads the switch. On: the generation is fenced
+  through the host; a missing or unreachable host service fails the start closed.
+  Off: the generation starts on the open project network; a fenced predecessor is
+  retired best-effort, and an unreachable host never blocks the open start.
+- An existing generation keeps the mode it started with until it is replaced.
+  Cold wake replaces a generation whose mode differs from the switch.
+- Destination approvals stay per project through the project egress API. The
+  planned app interface is Project → Settings → Sandbox.
+
+## Web search under the fence
+
+Web search works without a card:
+
+- Claude and Codex search is provider-hosted. It travels inside the model request
+  through the model gateway (`/v1/messages`, `/codex/responses`,
+  `/codex/alpha/search`), which passes tool definitions unchanged.
+- OpenCode's built-in Exa search calls the fixed endpoint `https://mcp.exa.ai/mcp`
+  from the Sandbox. Interim decision: the host admits `mcp.exa.ai` TCP 443 as a
+  system target (`SYSTEM_DIRECT_TARGETS`) for every fenced project with direct
+  authority, beside its grants, and controlled DNS answers it. Projects still
+  cannot grant `exa.ai` names; its addresses are no longer address-protected.
+
+Page fetches (Claude `WebFetch`, OpenCode `webfetch`) leave from the Sandbox to
+arbitrary destinations; they are ordinary direct targets and need a destination
+grant. A Sandbox DNS lookup of an ungranted, non-broker name records one pending
+TCP 443 destination request of the project, attributed to the Sandbox: at most
+once a minute per name and 20 new requests per project and minute.
+
+Residual risk, accepted for now and to be tightened later:
+
+- Provider-hosted search and fetches leave from Anthropic/OpenAI infrastructure;
+  the fence neither sees nor bounds them, and query text can carry data.
+- Admission is by address. Names sharing `mcp.exa.ai`'s front-end addresses are
+  reachable too, and the Exa MCP endpoint offers more than search, including
+  page retrieval, to any process in the Sandbox. A server-side Verity search tool
+  over the MCP gateway would remove the direct path.
 
 ## Bounded implementation sequence and gates
 

@@ -352,6 +352,13 @@ function deploymentSpec(
     ],
     mounts: [
       { source: { kind: 'volume', name: 'verity-data' }, target: '/srv/verity', readOnly: false },
+      // Bootstrap always seals this installer mount. Include it before creating
+      // the Server so re-adoption cannot introduce a pending mount migration.
+      {
+        source: { kind: 'bind', path: '/var/lib/verity/host-diagnostics' },
+        target: '/run/verity-host-diagnostics',
+        readOnly: true,
+      },
       {
         source: { kind: 'volume', name: 'verity-agent-gateway-control' },
         target: '/run/verity-agent-gateway',
@@ -392,6 +399,7 @@ function preparationOptions(managedRoot: string, databaseUrl: string, deployment
   return {
     managedRoot,
     docker: docker(),
+    hostRuntimeDir: required('VERITY_SMOKE_HOST_RUNTIME_DIR'),
     environment: serverEnvironment(databaseUrl, deploymentId),
     readFile: readSecret,
     // The signed-channel verifier (slice 1a) is exercised by its own unit suite

@@ -1,3 +1,7 @@
+import {
+  PreviewNetworkProtectionError,
+  assertPreviewNetworkSupported,
+} from './preview-network-policy.js';
 import { randomBytes } from 'node:crypto';
 import { PreviewEdge, hashPreviewSecret } from '@verity/preview-tunnel';
 import type { EventStore, LocalPreviewShareRecord } from '@verity/store';
@@ -540,6 +544,15 @@ export class LocalPreviewManager {
         this.stopped.has(saved.id)
       )
         continue;
+      try {
+        assertPreviewNetworkSupported(
+          await this.options.docker.inspectContainer(project.containerName),
+        );
+      } catch (error) {
+        if (error instanceof PreviewNetworkProtectionError) await this.stop(saved.id);
+        // An unavailable inspection cannot authorize a connector restore either.
+        continue;
+      }
       if (saved.managedInstanceId) {
         const instance = await this.options.store.managedDevServers.getInstance(
           saved.managedInstanceId,
@@ -585,7 +598,11 @@ export class LocalPreviewManager {
         );
         this.restoring.set(saved.id, pending);
         await pending;
-      } catch {
+      } catch (error) {
+        if (error instanceof PreviewNetworkProtectionError) {
+          await this.stop(saved.id);
+          continue;
+        }
         if (!this.stopping.has(saved.id)) this.reserved.add(saved.networkPort);
       } finally {
         this.restoring.delete(saved.id);
@@ -649,6 +666,7 @@ export class LocalPreviewManager {
       }
       try {
         const sandbox = await this.options.docker.inspectContainer(project.containerName);
+        assertPreviewNetworkSupported(sandbox);
         if (
           !sandbox.running ||
           containerGenerationOf(sandbox) !== state.generation ||
@@ -674,7 +692,11 @@ export class LocalPreviewManager {
           }
         }
         delete state.missingSince;
-      } catch {
+      } catch (error) {
+        if (error instanceof PreviewNetworkProtectionError) {
+          await this.stop(state.share.id);
+          continue;
+        }
         if (state.share.targetPort !== null) {
           const processes = await this.options
             .listListeningProcesses?.(project)

@@ -29,6 +29,47 @@ OBJECT = Path('/opt/verity-egress/project-egress-deadline.bpf.o')
 BINDING_FIELDS = ('projectId', 'generation', 'containerId', 'networkId', 'endpointId', 'bridge', 'ipv4', 'ipv6')
 
 
+class DockerInspectionSocket(socket.socket):
+    """Keep header/body trickling inside the same inspection budget."""
+    def __init__(self):
+        super().__init__(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.deadline = time.monotonic() + 1
+        self.settimeout(1)
+
+    def remaining(self):
+        remaining = self.deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError('Docker inspection timed out')
+        self.settimeout(remaining)
+
+    def recv_into(self, *args, **kwargs):
+        self.remaining()
+        return super().recv_into(*args, **kwargs)
+
+    def sendall(self, *args, **kwargs):
+        self.remaining()
+        return super().sendall(*args, **kwargs)
+
+
+def docker_read(kind, identity):
+    import http.client
+    if kind not in ('container', 'network') or not re.fullmatch(r'[a-f0-9]{64}', identity):
+        raise ValueError('Invalid Docker inspection identity')
+    connection = http.client.HTTPConnection('localhost', timeout=1)
+    try:
+        connection.sock = DockerInspectionSocket()
+        connection.sock.connect('/var/run/docker.sock')
+        path = '/v1.52/' + ('containers/' + identity + '/json' if kind == 'container' else 'networks/' + identity)
+        connection.request('GET', path)
+        response = connection.getresponse()
+        body = response.read(2 * 1024 * 1024 + 1)
+        if response.status != 200 or len(body) > 2 * 1024 * 1024:
+            raise ValueError('Invalid or oversized Docker inspection response')
+        return json.dumps([json.loads(body)])
+    finally:
+        connection.close()
+
+
 DOCKER_SOCKET = '/var/run/docker.sock'
 
 
@@ -324,7 +365,13 @@ def kernel_program(root):
         if attr.info_len < 8:
             raise ValueError('Truncated deadline program identity')
         kind, identity = struct.unpack_from('<II', info.raw)
-        return {'id': identity, 'type': 'sched_cls' if kind == 3 else 'unsupported'}
+        # Map info has a colliding numeric prefix; require a program descriptor too.
+        fields = dict(line.split(':', 1) for line in Path('/proc/self/fdinfo/' + str(fd)).read_text().splitlines() if ':' in line)
+        if fields.get('prog_type', '').strip() != str(kind) or fields.get('prog_id', '').strip() != str(identity):
+            raise ValueError('Deadline pin is not the inspected program')
+        if kind != 3 or identity == 0:
+            raise ValueError('Deadline program type changed')
+        return {'id': identity, 'type': 'sched_cls'}
     finally:
         os.close(fd)
 
@@ -445,6 +492,34 @@ def bpf(command, attr):
     return result
 
 
+
+class ProgramInfo(ctypes.Structure):
+    # Stable prefix of Linux bpf_prog_info; no BTF/disassembly is needed here.
+    _fields_ = [('type', ctypes.c_uint32), ('id', ctypes.c_uint32)]
+
+
+class InfoAttr(ctypes.Structure):
+    _fields_ = [('fd', ctypes.c_uint32), ('info_len', ctypes.c_uint32),
+                ('info', ctypes.c_uint64)]
+
+
+def program_identity(root):
+    pathname = ctypes.create_string_buffer(str(root / 'guard').encode())
+    fd = bpf(7, ObjectAttr(ctypes.addressof(pathname), 0, 0))
+    info = ProgramInfo()
+    try:
+        bpf(15, InfoAttr(fd, ctypes.sizeof(info), ctypes.addressof(info)))
+        # Map info has a colliding numeric prefix; require a program descriptor too.
+        fields = dict(line.split(':', 1) for line in Path('/proc/self/fdinfo/' + str(fd)).read_text().splitlines() if ':' in line)
+        if fields.get('prog_type', '').strip() != str(info.type) or fields.get('prog_id', '').strip() != str(info.id):
+            raise ValueError('Deadline pin is not the inspected program')
+        if info.type != 3 or info.id == 0:  # BPF_PROG_TYPE_SCHED_CLS
+            raise ValueError('Deadline program type changed')
+        return {'id': info.id, 'type': 'sched_cls'}
+    finally:
+        os.close(fd)
+
+
 def write_deadline(root, index, deadline):
     pathname = ctypes.create_string_buffer(str(root / 'maps/deadline').encode())
     fd = bpf(7, ObjectAttr(ctypes.addressof(pathname), 0, 0))
@@ -501,9 +576,13 @@ def renew_deadline(root, index, previous, deadline):
     attr = TestRunAttr(prog_fd=fd, data_size_in=len(packet), data_size_out=len(packet),
                        data_in=ctypes.addressof(data), data_out=ctypes.addressof(output), repeat=1)
     try:
+        before = time.clock_gettime_ns(time.CLOCK_BOOTTIME)
         bpf(10, attr)
+        after = time.clock_gettime_ns(time.CLOCK_BOOTTIME)
         if attr.retval != 1:
-            raise ValueError('Kernel deadline continuity expired or changed')
+            raise ValueError('Kernel deadline continuity expired or changed: ' + json.dumps({
+                'previous': str(previous), 'next': str(deadline),
+                'testBeforeNs': str(before), 'testAfterNs': str(after), 'result': attr.retval}))
     finally:
         os.close(fd)
 
@@ -891,12 +970,11 @@ def execute(request):
             raise
         return {'state': 'relay-configured'}
     if op in ('revoke', 'prepare'):
-        if op == 'prepare':
-            write_deadline(root, state['peer']['index'], 0)
-            prepare_renewal(root)
         state['uncertainExpiry'] = True
         save(path, state)
         write_deadline(root, state['peer']['index'], 0)
+        if op == 'prepare':
+            prepare_renewal(root)
         remember_expiry(binding, state)
         candidate = request.get('lease') if op == 'revoke' else None
         if candidate is not None:
@@ -957,6 +1035,50 @@ def execute(request):
     return {'state': 'armed', 'bootDeadlineNs': str(deadline)}
 
 
+def serve(source, sink, held):
+    """Serial framed operations; only execute() owns admission and renewal."""
+    previous = 0
+    while True:
+        data = source.readline(65537)
+        if not data:
+            return
+        if len(data) > 65536 or not data.endswith(b'\n'):
+            raise ValueError('Oversized or incomplete deadline request')
+        frame = json.loads(data)
+        if (not isinstance(frame, dict) or set(frame) != {'id', 'input'} or
+                type(frame['id']) is not int or frame['id'] <= previous or
+                frame['id'] > 9007199254740991):
+            raise ValueError('Invalid deadline request frame')
+        previous = frame['id']
+        started = time.clock_gettime_ns(time.CLOCK_BOOTTIME)
+        fcntl.flock(held, fcntl.LOCK_EX)
+        try:
+            try:
+                reply = {'id': previous, 'result': execute(frame['input'])}
+            except Exception as error:
+                reply = {'id': previous, 'error': str(error)[:8192]}
+        finally:
+            fcntl.flock(held, fcntl.LOCK_UN)
+        reply['startedBootNs'] = str(started)
+        reply['finishedBootNs'] = str(time.clock_gettime_ns(time.CLOCK_BOOTTIME))
+        encoded = (json.dumps(reply) + '\n').encode()
+        if len(encoded) > 16384:
+            raise ValueError('Oversized deadline response')
+        sink.write(encoded)
+        sink.flush()
+
+
+def bind_parent(expected):
+    # EOF cannot interrupt an operation blocked in a syscall. Parent death must.
+    import signal
+    if expected <= 1 or os.getppid() != expected:
+        raise ValueError('Missing deadline helper parent')
+    if ctypes.CDLL(None, use_errno=True).prctl(1, signal.SIGKILL, 0, 0, 0) != 0:
+        raise OSError(ctypes.get_errno(), 'Cannot bind deadline helper lifetime')
+    if os.getppid() != expected:
+        raise ValueError('Deadline helper parent changed')
+
+
 def locked_execute(request):
     private_directory(STATE)
     lock = os.open(STATE / 'lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
@@ -1010,7 +1132,17 @@ def bind_controller():
 if __name__ == '__main__':
     if os.geteuid() != 0 or platform.machine() != 'x86_64':
         raise RuntimeError('Deadline helper requires the supported rootful x86_64 host')
-    if sys.argv[1:] == ['--worker']:
+    if len(sys.argv) == 3 and sys.argv[1] == '--serve':
+        bind_parent(int(sys.argv[2]))
+        private_directory(STATE)
+        lock = os.open(STATE / 'lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        value = os.fstat(lock)
+        if not stat.S_ISREG(value.st_mode) or value.st_uid != 0 or stat.S_IMODE(value.st_mode) != 0o600:
+            os.close(lock)
+            raise ValueError('Untrusted deadline lock')
+        with os.fdopen(lock, 'w') as held:
+            serve(sys.stdin.buffer, sys.stdout.buffer, held)
+    elif sys.argv[1:] == ['--worker']:
         bind_controller()
         serve_worker(sys.stdin.buffer, sys.stdout.buffer)
     elif not sys.argv[1:]:

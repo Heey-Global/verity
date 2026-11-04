@@ -1,4 +1,7 @@
+import { AGENT_SKILL_MANIFEST_HASH } from '@verity/events';
+import { resolveAgentContext } from './agent-context.js';
 import { createGitHubQAAnalysis } from './github-qa-analysis.js';
+import { projectDecisionDirectory } from './knowledge-decisions.js';
 import {
   StorageReclamation,
   requestNativeReclamation,
@@ -8,6 +11,7 @@ import { registerStorageReclamationRoutes } from './storage-reclamation-routes.j
 import { startNativeRetirementEvidence } from './native-buildkit.js';
 import type { GitOutput } from './branches.js';
 import { SessionStorage } from './session-storage.js';
+import { RunnerCacheStorage } from './runner-cache-storage.js';
 import {
   retireStoppedContainers,
   retireCompletedUpdateContainers,
@@ -46,6 +50,7 @@ import { LocalPreviewManager } from './local-preview-manager.js';
 import { localPreviewPorts } from './local-preview-ports.js';
 import { ManagedDevServerManager } from './managed-dev-server-manager.js';
 import { ListenerDiscovery } from './listener-discovery.js';
+import { getDockerExecDiagnostics } from './docker-exec-diagnostics.js';
 export { parsePort } from './deployment-port.js';
 import { sandboxNotReadyError } from '@verity/events';
 import {
@@ -97,7 +102,7 @@ import { existsSync, readFileSync, mkdirSync, readdirSync } from 'node:fs';
 import { chmod, chown, lstat, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import { hostname, tmpdir } from 'node:os';
-import { join, relative, sep } from 'node:path';
+import { dirname, join, relative, sep } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fetchCodexBundledModels, startCodexModelCatalog } from './codex-model-catalog.js';
 
@@ -216,8 +221,8 @@ import {
 } from './runtime-readiness-gate.js';
 import {
   queueSessionCleanup,
-  finishSessionCleanup,
-  pendingSessionCleanups,
+  createSessionCleanupProcessor,
+  createSessionCleanupWorker,
 } from './pending-session-cleanup.js';
 import { supervisorSocketReachable } from './runner-supervisor-socket.js';
 import { codexRolloutFiles, ServerCodexTranscript, ServerTranscript } from './runner-transcript.js';
@@ -305,7 +310,9 @@ import { ensureProjectSandboxReadyForTurn } from './project-auto-wake.js';
 import { projectRelayContainerName } from './project-relay-docker.js';
 import { createProjectRelayRuntime } from './project-relay-runtime.js';
 import type { ProjectRelayLifecycle } from './project-relay-lifecycle.js';
-import type { ProjectEgressLifecycle } from './project-egress-lifecycle.js';
+import { ProjectEgressLifecycle } from './project-egress-lifecycle.js';
+import { projectEgressAvailability } from './project-egress-health.js';
+import { createProjectEgressHostClient } from './project-egress-host-client.js';
 import {
   readCodexAccessToken,
   type AgentGatewayConfiguration,
@@ -754,8 +761,12 @@ export interface EmbeddedServerConfig {
    *  `POST /projects/:id/deprovision` become operational. Omit → those routes
    *  return 503 (multi-repo fleet registry not configured). */
   dockerBaseUrl?: string | undefined;
-  /** Experimental composition seam; production configuration never enables project egress. */
+  /** Injected host egress lifecycle (tests and probes); otherwise built from the socket and key. */
   projectEgress?: ProjectEgressLifecycle | undefined;
+  /** Host egress service control socket and key file. Both present → network protection
+   *  becomes available; whether it applies is the system-wide `projectEgressEnabled` setting. */
+  projectEgressSocketPath?: string | undefined;
+  projectEgressKeyPath?: string | undefined;
   diagnosticServerContainerId?: string | undefined;
   hostDiagnosticSnapshotPath?: string | undefined;
   /** Enable fail-closed Docker/runsc readiness for the production Secret Job Executor path. */
@@ -921,6 +932,8 @@ export interface EmbeddedServerConfig {
   dockerGc?: boolean | undefined;
   /** Overrides for {@link DEFAULT_DOCKER_GC_POLICY}. */
   dockerGcPolicy?: Partial<DockerGcPolicy> | undefined;
+  /** Shared npm download-cache maintenance target, in allocated bytes (default 4 GiB). */
+  runnerCacheMaxBytes?: number | undefined;
   /** Host-visible agent-seed directory mounted into project containers. */
   agentSeedHostPath?: string | undefined;
   /** Explicitly enable the unauthenticated dev-server runtime endpoint. */
@@ -2068,6 +2081,7 @@ export async function buildEmbeddedServer(
             'verity_google_slides',
             'verity_google_docs',
             'verity_knowledge',
+            'verity_memory_append',
             'verity_google_sheets',
             'verity_gmail',
             'verity_matrix',
@@ -2092,6 +2106,7 @@ export async function buildEmbeddedServer(
             'verity_google_slides',
             'verity_google_docs',
             'verity_knowledge',
+            'verity_memory_append',
             'verity_google_sheets',
             'verity_gmail',
             'verity_matrix',
@@ -2788,6 +2803,13 @@ export async function buildEmbeddedServer(
   };
   // Filled once the managed dev server manager exists, further down.
   const managedLinkEnded: { current?: (instanceId: string, shareId: string) => void } = {};
+  const listenerRuntime = new DockerProjectRuntime({
+    resolveUser: resolvePreviewUser,
+    dockerBaseUrl: config.dockerBaseUrl,
+  });
+  const listListeningProcesses = (project: ProjectRecord, options?: { fresh?: boolean }) =>
+    listenerDiscovery?.listListeningProcesses(project, options) ??
+    listenerRuntime.listListeningProcesses(project);
   let previewShareManager: PreviewShareManager | undefined;
   const withPreviewProjectMutation = async <T>(
     projectId: string,
@@ -2933,14 +2955,11 @@ export async function buildEmbeddedServer(
         new DockerProjectRuntime({
           resolveUser: resolvePreviewUser,
           dockerBaseUrl: config.dockerBaseUrl,
+          listListeningProcesses,
         }).ensurePreviewTarget(project, port),
       listSessionServers: (sessionId) =>
         listenerDiscovery?.listSessionDevServers(sessionId) ?? Promise.resolve([]),
-      listListeningProcesses: async (project) =>
-        await new DockerProjectRuntime({
-          resolveUser: resolvePreviewUser,
-          dockerBaseUrl: config.dockerBaseUrl,
-        }).listListeningProcesses(project),
+      listListeningProcesses,
       edge: uplinkControl,
       // The same deferred logger as the client's: this manager is built just as
       // far ahead of `app`, and its timing lines belong next to the Uplink's.
@@ -3046,6 +3065,16 @@ export async function buildEmbeddedServer(
     };
   }
   let docker: DockerClient | undefined;
+  let projectEgress: ProjectEgressLifecycle | undefined = config.projectEgress;
+  const projectEgressHealth = projectEgressAvailability(
+    () => projectEgress,
+    () => {
+      if (!config.projectEgressSocketPath) return undefined;
+      return JSON.parse(
+        readFileSync(join(dirname(config.projectEgressSocketPath), 'status.json'), 'utf8'),
+      ) as unknown;
+    },
+  );
   let provisioner: ProvisionerImpl | undefined;
   let stopNativeEvidence: (() => void) | undefined;
   let buildStorage: BuildStorage | undefined;
@@ -3389,9 +3418,9 @@ export async function buildEmbeddedServer(
   let projectRelayLifecycle: ProjectRelayLifecycle | undefined;
   const projectRelayEnabled = (config.projectRelayImage ?? '').trim().length > 0;
   const forgeIdentity = projectRelayEnabled ? await loadForgeProxyIdentity(secretRoot) : undefined;
-  // The protected relay profile has no Forge route; never add it implicitly.
-  const forgeProxyEnabled = (): boolean =>
-    projectRelayEnabled && config.projectEgress === undefined;
+  // Under the project fence, Git and gh reach forges only through this brokered route;
+  // direct grants for forge hosts are refused as broker-only destinations.
+  const forgeProxyEnabled = (): boolean => projectRelayEnabled;
   const forgeCertificates = new Map<
     string,
     { expires: number; certificate: ReturnType<typeof issueGatewayServerCertificate> }
@@ -3696,6 +3725,24 @@ export async function buildEmbeddedServer(
     }
     const dockerBaseUrl = config.dockerBaseUrl;
     docker = projectDocker;
+    if (
+      projectEgress === undefined &&
+      config.projectEgressSocketPath !== undefined &&
+      config.projectEgressKeyPath !== undefined
+    ) {
+      try {
+        projectEgress = new ProjectEgressLifecycle(
+          createProjectEgressHostClient({
+            socketPath: config.projectEgressSocketPath,
+            token: () => readFileSync(config.projectEgressKeyPath!, 'utf8').trim(),
+          }),
+          projectDocker,
+        );
+      } catch {
+        // Unavailable protection is reported, never a reason to refuse the Server start.
+        console.warn('verity: host egress service configuration is invalid');
+      }
+    }
     // Turn preparation calls this before every message. Reuse the same ~50-minute
     // token as the sandbox broker so a chat does not mint once per turn; authority
     // changes still invalidate the cache immediately.
@@ -3952,7 +3999,12 @@ export async function buildEmbeddedServer(
     // Registered after app construction below.
     stopNativeEvidence = () => nativeEvidence.stop();
     provisioner = new ProvisionerImpl({
-      ...(config.projectEgress === undefined ? {} : { projectEgress: config.projectEgress }),
+      beforeRunnerAdmission: async (project) => {
+        await runPendingCleanup?.(project.id);
+      },
+      ...(projectEgress === undefined ? {} : { projectEgress }),
+      projectEgressEnabled: async () =>
+        (await eventStore.getVeritySettingsRaw())?.projectEgressEnabled === true,
       buildStorage,
       buildFailureLogDirectory: join(
         config.dataVolumeRoot ?? config.dataDir ?? config.workspacesDir ?? join(tmpdir(), 'verity'),
@@ -4029,7 +4081,8 @@ export async function buildEmbeddedServer(
           }
         : {}),
       recreateEnvDriftedSandboxes: config.recreateEnvDriftedSandboxes ?? true,
-      onContainerStarted: async () => {
+      onContainerStarted: async (project) => {
+        listenerDiscovery?.invalidateProject(project.id);
         await projectAgentGatewayIdentity(true);
       },
       onSandboxLifecycle: (event) => projectSandboxLifecycleTelemetry.record(event),
@@ -4077,7 +4130,7 @@ export async function buildEmbeddedServer(
         ? { sandboxCpuShares: config.sandboxCpuShares }
         : {}),
       ...(config.sandboxCapAdd !== undefined ? { sandboxCapAdd: config.sandboxCapAdd } : {}),
-      ...(config.projectEgress !== undefined ||
+      ...(projectEgress !== undefined ||
       config.publicPreviews !== undefined ||
       config.resolvePreviewConnectorImage !== undefined
         ? (() => {
@@ -4088,7 +4141,10 @@ export async function buildEmbeddedServer(
               expectedArgs: PINNED_PROJECT_RUNSC_ARGS,
             });
             return {
-              sandboxRuntime: PROJECT_RUNSC_RUNTIME,
+              ...(config.publicPreviews !== undefined ||
+              config.resolvePreviewConnectorImage !== undefined
+                ? { sandboxRuntime: PROJECT_RUNSC_RUNTIME }
+                : {}),
               verifySandboxRuntime: (runtime: string) => verifier.verify(runtime),
               ...(config.sandboxDnsServers !== undefined
                 ? { sandboxDnsServers: config.sandboxDnsServers }
@@ -4165,11 +4221,7 @@ export async function buildEmbeddedServer(
           onScan: (project, processes) => {
             void managedDevServerManager?.sweepOrphans(project, processes);
           },
-          scan: (project) =>
-            new DockerProjectRuntime({
-              resolveUser: resolvePreviewUser,
-              dockerBaseUrl: config.dockerBaseUrl,
-            }).listListeningProcesses(project),
+          scan: (project) => listenerRuntime.listListeningProcesses(project),
         })
       : undefined;
 
@@ -4190,17 +4242,14 @@ export async function buildEmbeddedServer(
           ...(config.dataVolumeRoot ? { dataVolumeRoot: config.dataVolumeRoot } : {}),
           ...(config.agentSeedHostPath ? { agentSeedHostPath: config.agentSeedHostPath } : {}),
           isDevServerRunning: () => Promise.resolve(false),
-          listListeningProcesses: (project) =>
-            new DockerProjectRuntime({
-              resolveUser: resolvePreviewUser,
-              dockerBaseUrl: config.dockerBaseUrl,
-            }).listListeningProcesses(project),
+          listListeningProcesses,
           listSessionServers: (sessionId) =>
             listenerDiscovery?.listSessionDevServers(sessionId) ?? Promise.resolve([]),
           prepareTargetPort: (project, port) =>
             new DockerProjectRuntime({
               resolveUser: resolvePreviewUser,
               dockerBaseUrl: config.dockerBaseUrl,
+              listListeningProcesses,
             }).ensurePreviewTarget(project, port),
           publicHost: process.env.VERITY_LOCAL_PREVIEW_HOST ?? 'localhost',
           connectorHost: hostname(),
@@ -4237,6 +4286,7 @@ export async function buildEmbeddedServer(
         resolveSecret: resolveBrokerDopplerSecret,
       }),
       runtime: new DockerProjectRuntime({
+        listListeningProcesses,
         isSecretManagedServer: async (id) =>
           ((await eventStore.managedDevServers.getInstance(id))?.lastRunSecretBindings.length ??
             0) > 0,
@@ -4529,13 +4579,15 @@ export async function buildEmbeddedServer(
 
             const sandboxCwd = sessionSandboxCwd(session.worktree);
             const cleanupRoot = join(dataVolumeRoot, 'pending-session-cleanup');
-            if (scope === 'session-delete')
+            if (scope === 'session-delete') {
               await queueSessionCleanup(cleanupRoot, {
                 sessionId,
                 sandboxCwd,
                 runnerProjectIds: [...runnerProjectIds],
                 bindings: [...bindings],
               });
+              return;
+            }
 
             const removed: string[] = [];
             const absent: string[] = [];
@@ -4550,14 +4602,6 @@ export async function buildEmbeddedServer(
               // Control sessions may name a historical project with no runner runtime.
               if (!existsSync(runtimeDir)) continue;
               try {
-                if (scope === 'session-delete') {
-                  const deleted = await requestRunnerSupervisor(
-                    join(runtimeDir, 'supervisor.sock'),
-                    { kind: 'delete-session-home', sessionId },
-                    30_000,
-                  );
-                  if (deleted.ok !== true) throw new Error('Session home deletion failed');
-                }
                 const purge = await purgeSessionArtifactFiles({
                   runtimeDir,
                   sandboxCwd,
@@ -4581,14 +4625,6 @@ export async function buildEmbeddedServer(
                 );
               }
             }
-            if (
-              scope === 'session-delete' &&
-              failed.length === 0 &&
-              outsideRuntime.length === 0 &&
-              unresolved.length === 0 &&
-              unknownBackends.size === 0
-            )
-              await finishSessionCleanup(cleanupRoot, sessionId);
             // A path that resolved OUT of the runtime means something planted a symlink in
             // a directory the Sandbox can write. Nothing was deleted — but this is not a
             // cleanup problem, so it gets its own message rather than being read as one.
@@ -4654,16 +4690,13 @@ export async function buildEmbeddedServer(
               );
             }
           } catch (error) {
-            // Both call sites — the session delete in `server.ts` and the backend switch
-            // on the Conductor — swallow a rejection here on the grounds that it is
-            // "logged by the implementation". This is what makes that true. The store
-            // reads above happen BEFORE the per-file loop that reports its own outcome,
-            // so a failure there would otherwise leave a leaked transcript with no record
-            // anywhere — and an invisible leak is the thing this module exists to end.
+            // Backend switches remain best effort. Deletion must retain the session
+            // if its durable cleanup ownership could not be recorded.
             app.log.error(
               { err: error, sessionId, scope },
               'verity: could not purge the backend transcripts of a session',
             );
+            if (scope === 'session-delete') throw error;
           }
         };
 
@@ -4698,12 +4731,6 @@ export async function buildEmbeddedServer(
                   )
                 : projects;
             const result = await reconciled;
-            // Nudge Runner-supervisor reconciliation OFF the hot path: reconcile
-            // fans out a `docker exec` into every active sandbox, so awaiting it
-            // here would add per-container Docker latency to project listing. The
-            // periodic reconciler (below) is the primary driver and surfaces its
-            // own failures; this list-triggered call is best-effort.
-            void provisioner?.reconcileRunnerSupervisors(result).catch(() => undefined);
             return result;
           },
           { ttlMs: 3_000 },
@@ -4844,6 +4871,98 @@ export async function buildEmbeddedServer(
           pr: (project, branch) => readProjectStatus(project, branch),
         })
       : undefined;
+  const runnerCacheStorage =
+    dataVolumeRoot === undefined
+      ? undefined
+      : new RunnerCacheStorage({
+          ...(config.runnerCacheMaxBytes !== undefined
+            ? { maxBytes: config.runnerCacheMaxBytes }
+            : {}),
+          listRuntimes: async () => {
+            const projects = await eventStore.listProjects();
+            const sessions = await eventStore.listSessions();
+            const runtimes = new Map<string, Set<string>>();
+            for (const project of projects) runtimes.set(project.id, new Set());
+            if (config.controlPlaneRunner) runtimes.set(CONTROL_PLANE_RUNNER_PROJECT_ID, new Set());
+            for (const session of sessions) {
+              for (const id of candidateRunnerProjectIds({
+                projectId: session.projectId,
+                isControlPlaneProject: projects.some(
+                  (p) => p.id === session.projectId && p.kind === 'control_plane',
+                ),
+                controlPlaneRunner: config.controlPlaneRunner === true,
+              }))
+                runtimes.get(id)?.add(session.sessionId);
+            }
+            // Do not wake sleeping sandboxes or infer deleted sessions from directory names.
+            return [...runtimes]
+              .filter(([id]) => existsSync(join(dataVolumeRoot, 'runners', id)))
+              .map(([projectId, ids]) => ({ projectId, sessionIds: [...ids] }));
+          },
+          request: (projectId, sessionIds, maxBytes) =>
+            requestRunnerSupervisor(
+              join(dataVolumeRoot, 'runners', projectId, 'supervisor.sock'),
+              { kind: 'reclaim-package-caches', sessionIds, maxBytes },
+              30_000,
+            ),
+        });
+  const cleanupAbort = new AbortController();
+  const cleanupProcessor =
+    dataVolumeRoot === undefined
+      ? undefined
+      : createSessionCleanupProcessor({
+          root: join(dataVolumeRoot, 'pending-session-cleanup'),
+          sessionExists: async (sessionId) =>
+            (await eventStore.getSession(sessionId)) !== undefined,
+          runtimeState: async (projectId) => {
+            if (!existsSync(join(dataVolumeRoot, 'runners', projectId))) return 'absent';
+            if (projectId === CONTROL_PLANE_RUNNER_PROJECT_ID && config.controlPlaneRunner)
+              return 'ready';
+            const project = await eventStore.getProject(projectId);
+            if (project?.state === 'active') return 'ready';
+            if (project?.state === 'sleeping') return 'sleeping';
+            return 'unavailable';
+          },
+          deleteHome: async (projectId, pending) => {
+            const response = await requestRunnerSupervisor(
+              join(dataVolumeRoot, 'runners', projectId, 'supervisor.sock'),
+              { kind: 'delete-session-home', sessionId: pending.sessionId },
+              10_000,
+            );
+            if (response.ok !== true) throw new Error('Pending session home cleanup failed');
+          },
+          purgeArtifacts: async (projectId, pending) => {
+            const result = await purgeSessionArtifactFiles({
+              runtimeDir: join(dataVolumeRoot, 'runners', projectId),
+              sandboxCwd: pending.sandboxCwd,
+              sessionId: pending.sessionId,
+              bindings: pending.bindings,
+              scope: 'session-delete',
+            });
+            if (result.outsideRuntime.length > 0 || result.unknownBackends.length > 0)
+              return 'unsafe';
+            return result.failed.length === 0 && !result.unresolved ? 'clean' : 'retry';
+          },
+          report: (projectId, pending, reason, error) =>
+            app.log.warn(
+              { err: error, sessionId: pending.sessionId, projectId, reason },
+              reason === 'unsafe'
+                ? 'verity: session artifact cleanup requires attention'
+                : 'verity: runner session cleanup deferred with backoff',
+            ),
+          stopped: () => cleanupAbort.signal.aborted,
+        });
+  const runPendingCleanup =
+    cleanupProcessor === undefined
+      ? undefined
+      : (projectId: string) => cleanupProcessor.run(projectId);
+  const sessionCleanupWorker =
+    cleanupProcessor === undefined
+      ? undefined
+      : createSessionCleanupWorker(
+          () => cleanupProcessor.run(),
+          (error) => app.log.warn({ err: error }, 'verity: pending cleanup scan failed'),
+        );
   const app = buildControlPlane({
     ...(sessionStorage ? { sessionStorage } : {}),
     eventStore,
@@ -4874,7 +4993,8 @@ export async function buildEmbeddedServer(
     ...(purgeRunnerArtifacts === undefined
       ? {}
       : {
-          purgeSessionArtifacts: async (sessionId: string): Promise<void> => {
+          scheduleSessionCleanup: () => sessionCleanupWorker?.run(),
+          queueSessionArtifacts: async (sessionId: string): Promise<void> => {
             // Read the bindings HERE rather than in the helper: this is the delete path,
             // and the rows are about to go with the FK cascade.
             await purgeRunnerArtifacts(
@@ -4896,6 +5016,16 @@ export async function buildEmbeddedServer(
     ...(listenerDiscovery ? { listenerDiscovery } : {}),
     ...(localPreviewManager ? { localPreviewManager } : {}),
     ...(managedDevServerManager ? { managedDevServerManager } : {}),
+    ...(projectEgress
+      ? {
+          projectEgressResolve: (
+            identity: import('./internal-listener.js').InternalConnectionIdentity,
+            name: string,
+          ) => projectEgress.resolveDirect(identity, name),
+        }
+      : {}),
+    projectEgressAvailable: async (fresh) => (await projectEgressHealth(fresh)).available,
+    projectEgressStatus: projectEgressHealth,
     previewSharingCapability: async () => {
       const settings = await eventStore.getVeritySettings();
       return previewSharingCapability(
@@ -5088,6 +5218,7 @@ export async function buildEmbeddedServer(
                   .map((b) => ({ path: b.path, reason: b.reason.slice(0, 500) })),
               }
             : null,
+          runnerCaches: runnerCacheStorage?.lastReport ?? null,
           databaseBytes,
           nativeBuildkit,
           activeBuildkitBytes:
@@ -5459,6 +5590,32 @@ export async function buildEmbeddedServer(
       transcript: transcriptStore,
       ...(config.dataVolumeRoot !== undefined
         ? {
+            agentContext: async (session, initiatedBy) => {
+              const status =
+                session.projectId && config.runnerSupervisor === true
+                  ? await requestRunnerSupervisor(
+                      join(config.dataVolumeRoot!, 'runners', session.projectId, 'supervisor.sock'),
+                      { kind: 'status' },
+                    ).catch(() => undefined)
+                  : undefined;
+              return resolveAgentContext(
+                eventStore,
+                config.dataVolumeRoot!,
+                session,
+                (projectId) =>
+                  readOrMigrateProjectOverview(config.dataVolumeRoot!, projectId, async () => {
+                    const approved = await eventStore.knowledge.getProjectOverview(projectId);
+                    return (
+                      approved?.bodyMarkdown ??
+                      (await eventStore.getProjectSettingsRaw(projectId))?.memory ??
+                      undefined
+                    );
+                  }),
+                status?.['builtInSkillsVersion'] === 1 &&
+                  status['builtInSkillsManifestHash'] === AGENT_SKILL_MANIFEST_HASH,
+                initiatedBy,
+              );
+            },
             projectOverview: async (projectId: string) => {
               return readOrMigrateProjectOverview(config.dataVolumeRoot!, projectId, async () => {
                 const approved = await eventStore.knowledge.getProjectOverview(projectId);
@@ -5466,6 +5623,8 @@ export async function buildEmbeddedServer(
                 return (await eventStore.getProjectSettingsRaw(projectId))?.memory ?? undefined;
               });
             },
+            projectDecisionDirectory: (projectId: string) =>
+              projectDecisionDirectory(config.dataVolumeRoot!, projectId),
           }
         : {}),
       // ADR 0011 D3: expose the project's secret alias names to every turn whose
@@ -5899,49 +6058,6 @@ export async function buildEmbeddedServer(
       } finally {
         storeReadsDone();
       }
-      const cleanupRoot = join(dataVolumeRoot, 'pending-session-cleanup');
-      for (const pending of await pendingSessionCleanups(cleanupRoot)) {
-        if (sweepAbort.signal.aborted) break;
-        try {
-          let clean = true;
-          for (const projectId of pending.runnerProjectIds) {
-            const runtimeDir = join(dataVolumeRoot, 'runners', projectId);
-            if (!existsSync(runtimeDir)) continue;
-            try {
-              const response = await requestRunnerSupervisor(
-                join(runtimeDir, 'supervisor.sock'),
-                { kind: 'delete-session-home', sessionId: pending.sessionId },
-                10_000,
-              );
-              if (response.ok !== true) throw new Error('Pending session home cleanup failed');
-              const result = await purgeSessionArtifactFiles({
-                runtimeDir,
-                sandboxCwd: pending.sandboxCwd,
-                sessionId: pending.sessionId,
-                bindings: pending.bindings,
-                scope: 'session-delete',
-              });
-              clean &&=
-                result.failed.length === 0 &&
-                result.outsideRuntime.length === 0 &&
-                result.unknownBackends.length === 0 &&
-                !result.unresolved;
-            } catch (error) {
-              clean = false;
-              app.log.warn(
-                { err: error, sessionId: pending.sessionId, projectId },
-                'verity: runner session cleanup remains pending',
-              );
-            }
-          }
-          if (clean) await finishSessionCleanup(cleanupRoot, pending.sessionId);
-        } catch (error) {
-          app.log.warn(
-            { err: error, sessionId: pending.sessionId },
-            'verity: session cleanup remains pending',
-          );
-        }
-      }
       const result = await sweepOrphanArtifacts({
         runnersRoot,
         liveIds: new Set(liveIds),
@@ -6154,8 +6270,22 @@ export async function buildEmbeddedServer(
     buildStorageTimer.unref();
     app.addHook('onClose', () => clearInterval(buildStorageTimer));
   }
+  // Fixed-purpose counters exclude command arguments, environment values and identities.
+  let previousDockerExecCounts = getDockerExecDiagnostics();
+  const dockerExecDiagnosticTimer = setInterval(() => {
+    const current = getDockerExecDiagnostics();
+    if (
+      current.started === previousDockerExecCounts.started &&
+      current.active === previousDockerExecCounts.active
+    )
+      return;
+    previousDockerExecCounts = current;
+    app.log.info({ dockerExec: current }, 'verity: docker exec activity diagnostic');
+  }, 60_000);
+  dockerExecDiagnosticTimer.unref();
+  app.addHook('onClose', () => clearInterval(dockerExecDiagnosticTimer));
   app.addHook('onClose', () => listenerDiscovery?.close());
-  app.addHook('onClose', () => config.projectEgress?.close());
+  app.addHook('onClose', () => projectEgress?.close());
   if (!localPreviewManager) previewRecoveryReady = true;
   managedDevServerLog.current = (message, detail) => app.log.info(detail ?? {}, message);
   app.addHook('onClose', () => managedDevServerManager?.close());
@@ -6263,6 +6393,7 @@ export async function buildEmbeddedServer(
             nativeMaintenanceRequested = requestedAt;
           })
           .catch(() => undefined);
+        await runnerCacheStorage?.runOnce();
         await sessionStorage?.runOnce();
       },
       onReport: (report) => {
@@ -6304,6 +6435,7 @@ export async function buildEmbeddedServer(
     storageReclamation = new StorageReclamation({
       collect: () => dockerGc.runOnce(),
       worktrees: () => sessionStorage?.lastReport,
+      runnerCaches: () => runnerCacheStorage?.lastReport,
       dataRoot: config.dataVolumeRoot,
     });
     buildStorage?.setReclaimer(async () => {
@@ -6389,6 +6521,7 @@ export async function buildEmbeddedServer(
   // the `return` below: everything that could still have thrown has run, so the caller is
   // guaranteed to receive the handle that can stop this walk.
   startTranscriptSweep();
+  sessionCleanupWorker?.start();
 
   // Latch so a double SIGINT/SIGTERM (or any repeat call) coalesces onto one
   // teardown instead of double-closing the app/db.
@@ -6432,8 +6565,10 @@ export async function buildEmbeddedServer(
         // exiting anyway. `ref: false` so the losing timer cannot itself hold the process
         // open for the rest of the window.
         sweepAbort.abort();
+        cleanupAbort.abort();
+        sessionCleanupWorker?.stop();
         await Promise.race([
-          Promise.all([transcriptSweep, transcriptSweepWalk]),
+          Promise.all([transcriptSweep, transcriptSweepWalk, sessionCleanupWorker?.settled()]),
           delay(SWEEP_SHUTDOWN_WAIT_MS, undefined, { ref: false }),
         ]);
         await db.destroy();

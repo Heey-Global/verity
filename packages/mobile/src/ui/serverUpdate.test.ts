@@ -526,3 +526,38 @@ it('withholds retry when host restoration could not be verified', () => {
   expect(view.action).toBeNull();
   expect(view.detail).toContain('Restoration could not be verified');
 });
+
+it.each(['unchanged', 'restored', 'ready'] as const)(
+  'offers a fresh install after host preparation is %s',
+  (stage) => {
+    const failed = operation({
+      state: 'failed',
+      phase: 'failed',
+      failureCode: 'host-runtime-failed',
+    });
+    const view = describeServerUpdate(
+      status({
+        operation: failed,
+        hostPreparation: {
+          updateId: failed.updateId,
+          targetDigest: failed.targetDigest,
+          stage,
+        },
+      }),
+    );
+    expect(view.action).toBe('Try again');
+    expect(view.targetDigest).toBe(failed.targetDigest);
+    expect(view.idempotencyKey).not.toBeNull();
+  },
+);
+
+it('does not promise a retry when no release is available and no preparation sidecar exists', () => {
+  const failed = operation({
+    state: 'failed',
+    phase: 'failed',
+    failureCode: 'host-runtime-failed',
+  });
+  const view = describeServerUpdate(status({ state: 'current', operation: failed }));
+  expect(view.action).toBeNull();
+  expect(view.detail).not.toContain('Retry the update');
+});

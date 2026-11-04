@@ -1,3 +1,4 @@
+import { projectEgressFailure, type ProjectEgressHealth } from './project-egress-health.js';
 import { createHash } from 'node:crypto';
 import type { DockerClient } from './docker.js';
 import type { InternalConnectionIdentity } from './internal-listener.js';
@@ -52,6 +53,22 @@ export class ProjectEgressLifecycle {
       state.timer.unref();
     };
     await tick();
+  }
+  /** Authenticated read-only readiness; never registers a project or renews authority. */
+  async available(): Promise<boolean> {
+    return (await this.health()).available;
+  }
+  async health(): Promise<ProjectEgressHealth> {
+    if (this.closed) return { available: false, reason: 'host_not_ready' };
+    try {
+      const response = await this.command({ operation: 'health' });
+      if (response.state !== 'health') return { available: false, reason: 'protocol_mismatch' };
+      return response.packetEnforcement
+        ? { available: true, reason: 'ready' }
+        : { available: false, reason: 'packet_enforcement_unavailable' };
+    } catch (error) {
+      return projectEgressFailure(error);
+    }
   }
   async requiresFreshWakeGeneration(projectId: string): Promise<boolean> {
     const reply = await this.command({ operation: 'current', projectId });
@@ -170,6 +187,23 @@ export class ProjectEgressLifecycle {
     const reply = await this.command({ operation: 'revoke-direct', ...this.reference(identity) });
     if (reply.state !== 'direct-revoked' || reply.generation !== identity.containerGeneration)
       throw new Error('Direct revocation was not acknowledged');
+  }
+  /** Addresses the host admitted for a granted name of exactly this generation. */
+  async resolveDirect(
+    identity: InternalConnectionIdentity,
+    name: string,
+  ): Promise<{ addresses: readonly string[]; ttlSeconds: number } | undefined> {
+    if (this.closed) return undefined;
+    const reply = await this.command({
+      operation: 'resolve-direct',
+      ...this.reference(identity),
+      name,
+    });
+    if (reply.state === 'unresolved' && reply.generation === identity.containerGeneration)
+      return undefined;
+    if (reply.state !== 'resolved' || reply.generation !== identity.containerGeneration)
+      throw new Error('Direct name answer was not acknowledged');
+    return { addresses: reply.addresses, ttlSeconds: reply.ttlSeconds };
   }
   async retire(identity: InternalConnectionIdentity): Promise<void> {
     this.stopRenewal(identity);

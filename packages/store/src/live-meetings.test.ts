@@ -29,6 +29,70 @@ beforeEach(async () => {
   await ctx.store.createSession({ sessionId: 'session-2', worktree: '/two', model: 'm' });
 });
 
+describe('running meetings', () => {
+  it('keeps device recordings discoverable without a heartbeat until a terminal state arrives', async () => {
+    const put = (record: Partial<LiveMeetingSyncRecord>) =>
+      ctx.store.liveMeetings.putMeeting({ ...meeting, ...record });
+    await put({ id: 'device-live', title: 'Standup', startedAt: 300 });
+    await put({ id: 'device-unreachable', startedAt: 200 });
+    await put({ id: 'online', sessionId: 'session-2', engine: 'attendee', startedAt: 400 });
+    await put({
+      id: 'online-recovering',
+      engine: 'attendee',
+      state: 'interrupted',
+      startedAt: 150,
+    });
+    await put({ id: 'online-ended', engine: 'attendee', state: 'ended', endedAt: 500 });
+    await put({ id: 'device-ended', state: 'ended', endedAt: 500 });
+    // Screen lock and process termination both stop heartbeats; neither proves a recording ended.
+    await ctx.db
+      .updateTable('live_meetings')
+      .set({ recorder_last_seen_at: Date.now() - 120_000 })
+      .where('id', 'in', ['device-unreachable', 'online'])
+      .execute();
+
+    const running = await ctx.store.liveMeetings.running();
+    expect(running.map((item) => item.id)).toEqual([
+      'online',
+      'device-live',
+      'device-unreachable',
+      'online-recovering',
+    ]);
+    expect(running[0]).toEqual({
+      sessionId: 'session-2',
+      id: 'online',
+      title: null,
+      engine: 'attendee',
+      startedAt: 400,
+      state: 'active',
+      captureStatus: 'listening',
+      recorderLastSeenAt: null,
+    });
+    expect(running[1]).toMatchObject({ title: 'Standup', sessionId: 'session-1' });
+    expect(running[2]!.recorderLastSeenAt).toBeLessThan(Date.now() - 60_000);
+    expect(await ctx.store.liveMeetings.recorderOnline('session-1', 'device-unreachable')).toBe(
+      false,
+    );
+    expect(running[3]).toMatchObject({ state: 'interrupted' });
+    await ctx.store.liveMeetings.ownerCommands(
+      'session-1',
+      'device-unreachable',
+      meeting.ownerTokenHash,
+    );
+    expect(await ctx.store.liveMeetings.recorderOnline('session-1', 'device-unreachable')).toBe(
+      true,
+    );
+    await put({ id: 'device-unreachable', state: 'ended', endedAt: 600, revision: 2 });
+    expect(
+      (await ctx.store.liveMeetings.running()).some((item) => item.id === 'device-unreachable'),
+    ).toBe(false);
+    await put({ id: 'device-live', state: 'interrupted', endedAt: 600, revision: 2 });
+    expect((await ctx.store.liveMeetings.running()).some((item) => item.id === 'device-live')).toBe(
+      false,
+    );
+  });
+});
+
 describe('live meeting sync', () => {
   it.skipIf(!process.env.VERITY_TEST_SHARED_POSTGRES_URL)(
     'does not advance the cursor past an uncommitted earlier update',

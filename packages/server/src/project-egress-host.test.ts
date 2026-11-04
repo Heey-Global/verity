@@ -273,6 +273,10 @@ it('requires authentication on the real Unix listener and never exposes raw exec
       call.on('error', reject);
       call.end(JSON.stringify(body));
     });
+  expect(await send('wrong', { operation: 'health' })).toBe(401);
+  expect(await send('a'.repeat(64), { operation: 'health' })).toBe(200);
+  expect(deps.save).not.toHaveBeenCalled();
+  expect(deps.inspectNetwork).not.toHaveBeenCalled();
   expect(await send('wrong', { operation: 'register', binding })).toBe(401);
   expect(deps.apply).not.toHaveBeenCalled();
   expect(await send('a'.repeat(64), { operation: 'register', binding })).toBe(200);
@@ -403,9 +407,13 @@ it('admits only the inspected pair after both role checks and confirms endpoints
   expect(f.deps.inspectContainer).toHaveBeenCalledWith(binding, 'c'.repeat(64), 'relay');
   const rules = f.deps.apply.mock.calls.at(-1)![0];
   expect(rules).toContain('meta iif 10 meta oif 11');
-  expect(rules).toContain('tcp dport { 8080, 8443 }');
+  expect(rules).toContain('tcp dport { 53, 8080, 8443 }');
   expect(rules).not.toContain('8444');
-  expect(rules).not.toContain('udp dport');
+  // UDP appears only for the relay's DNS answerer on the exact pair.
+  for (const rule of rules.split('\n').filter((line) => line.includes('udp ')))
+    expect(rule).toMatch(
+      /ip saddr 172\.20\.0\.(?:2 ip daddr 172\.20\.0\.3 udp dport|3 ip daddr 172\.20\.0\.2 udp sport) 53 /u,
+    );
   expect(rules).toContain('meta obrname "vep*" counter drop');
   expect(rules).toContain('arp saddr ip 172.20.0.2 arp daddr ip 172.20.0.3');
 });
@@ -529,4 +537,75 @@ it('attempts registered-container containment if shutdown fencing fails', async 
   await expect(
     f.host.execute({ operation: 'connect', projectId: binding.projectId, generation: 'gen1' }),
   ).rejects.toThrow();
+});
+
+it('answers names read-only from enforcement, never for unknown or retired generations', async () => {
+  const admitted = vi.fn((_binding: unknown, name: string) =>
+    name === 'downloads.example.com' ? { addresses: ['8.8.8.8'], ttlSeconds: 3 } : undefined,
+  );
+  const invalidate = vi.fn();
+  const enforcement = {
+    directAuthority: () => true,
+    invalidate,
+    connect: vi.fn(),
+    deny: vi.fn(async () => undefined),
+    refresh: vi.fn(async () => undefined),
+    revoke: vi.fn(async () => undefined),
+    admitted,
+    requestDirect: vi.fn(),
+  };
+  const { deps } = fixture();
+  const host = new ProjectEgressHost(
+    { version: 1, records: [] },
+    { ...deps, enforcement, bootId: '00000000-0000-4000-8000-000000000000' },
+  );
+  await host.execute({ operation: 'register', binding });
+  invalidate.mockClear();
+  const ask = (name: string, generation = binding.generation) =>
+    host.execute({ operation: 'resolve-direct', projectId: binding.projectId, generation, name });
+  expect(await ask('downloads.example.com')).toEqual({
+    state: 'resolved',
+    generation: 'gen1',
+    addresses: ['8.8.8.8'],
+    ttlSeconds: 3,
+  });
+  expect(await ask('other.example.com')).toEqual({ state: 'unresolved', generation: 'gen1' });
+  expect(await ask('downloads.example.com', 'gen2')).toEqual({
+    state: 'unresolved',
+    generation: 'gen2',
+  });
+  // Only an ungranted name of the current generation becomes a destination request.
+  expect(enforcement.requestDirect).toHaveBeenCalledTimes(1);
+  expect(enforcement.requestDirect).toHaveBeenCalledWith(
+    expect.objectContaining({ projectId: binding.projectId, generation: 'gen1' }),
+    'other.example.com',
+  );
+  // Reading never invalidates pending admission or alters rules.
+  expect(invalidate).not.toHaveBeenCalled();
+  expect(enforcement.refresh).not.toHaveBeenCalled();
+  for (const name of ['Downloads.Example.com', 'https://downloads.example.com', '8.8.8.8', 'a'])
+    expect(() =>
+      projectEgressHostRequest.parse({
+        operation: 'resolve-direct',
+        projectId: binding.projectId,
+        generation: binding.generation,
+        name,
+      }),
+    ).toThrow();
+  await host.execute({ operation: 'retire', projectId: binding.projectId, generation: 'gen1' });
+  expect(await ask('downloads.example.com')).toEqual({ state: 'unresolved', generation: 'gen1' });
+  expect(enforcement.requestDirect).toHaveBeenCalledTimes(1);
+});
+
+it('does not advertise health when read-only host compatibility checks fail', async () => {
+  const { deps } = fixture();
+  const verifyHealth = vi.fn(async () => {
+    throw new Error('unsupported Docker host');
+  });
+  const host = new ProjectEgressHost({ version: 1, records: [] }, { ...deps, verifyHealth });
+  await expect(host.execute({ operation: 'health' })).rejects.toThrow('unsupported Docker host');
+  expect(verifyHealth).toHaveBeenCalledExactlyOnceWith();
+  expect(deps.save).not.toHaveBeenCalled();
+  expect(deps.apply).not.toHaveBeenCalled();
+  expect(deps.inspectNetwork).not.toHaveBeenCalled();
 });

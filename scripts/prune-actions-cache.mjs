@@ -159,7 +159,9 @@ async function api(path, { method = 'GET', token, apiUrl }) {
     // to delete it", so the status has to survive the throw.
     return Promise.reject(Object.assign(error, { status: response.status }));
   }
-  return response.status === 204 ? undefined : await response.json();
+  /** @type {unknown} */
+  const body = response.status === 204 ? undefined : await response.json();
+  return body;
 }
 
 /**

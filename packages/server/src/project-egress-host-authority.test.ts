@@ -2,7 +2,9 @@ import { beforeEach, expect, it, vi } from 'vitest';
 import {
   egressHostAuthority,
   egressHostDestinationAllowed,
+  egressHostDirectChecks,
   readEgressHostConfiguration,
+  verifyEgressHostAuthorityReady,
 } from './project-egress-host-authority.js';
 const fs = vi.hoisted(() => ({ open: vi.fn(), lstat: vi.fn(), realpath: vi.fn() }));
 vi.mock('node:fs/promises', async (importOriginal) => ({
@@ -10,18 +12,23 @@ vi.mock('node:fs/promises', async (importOriginal) => ({
   ...fs,
 }));
 beforeEach(() => vi.resetAllMocks());
-it('requires explicit DNS, canonical direct route inventory and a root-selected sponsor mapping', () => {
+it('requires explicit DNS and a database, with no host inventory or sponsor list', () => {
   const config = {
     databaseUrl: 'postgres://fixture@localhost/verity',
     dnsServers: ['1.1.1.1'],
-    directHosts: ['Downloads.Example.com'],
-    projectSponsors: { project: 'sponsor' },
   };
-  expect(egressHostAuthority.parse(config).directHosts).toEqual(['downloads.example.com']);
+  expect(egressHostAuthority.parse(config).mandatoryHosts).toEqual([]);
+  expect(() => egressHostAuthority.parse({ ...config, mandatoryHosts: ['198.51.100.20'] })).toThrow(
+    /names, not addresses/,
+  );
+  expect(
+    egressHostAuthority.parse({ ...config, mandatoryHosts: ['Matrix.Example.net'] }).mandatoryHosts,
+  ).toEqual(['matrix.example.net']);
   for (const patch of [
     { dnsServers: [] },
     { databaseUrl: 'file:///secret' },
-    { directHosts: ['https://example.com/path'] },
+    { directHosts: ['downloads.example.com'] },
+    { projectSponsors: { project: 'sponsor' } },
     { unexpected: true },
   ])
     expect(() => egressHostAuthority.parse({ ...config, ...patch })).toThrow();
@@ -88,4 +95,45 @@ it('excludes public host addresses and every public project subnet, refreshing i
     expect(await egressHostDestinationAllowed(address, io)).toBe(false);
   io.docker.mockResolvedValueOnce('');
   await expect(egressHostDestinationAllowed('1.1.1.1', io)).rejects.toThrow('inventory');
+});
+
+it('admits any non-broker host at unprotected, allowed addresses', async () => {
+  const authority = {
+    databaseUrl: 'postgres://fixture@localhost/verity',
+    dnsServers: ['1.1.1.1'],
+    mandatoryHosts: ['chat.example.net'],
+  };
+  const allowed = vi.fn(async (address: string) => address !== '10.0.0.1');
+  const checks = egressHostDirectChecks(
+    authority,
+    { allows: (address) => address !== '140.82.112.6' },
+    allowed,
+  );
+  expect(await checks.directTargetAllowed('downloads.example.com')).toBe(true);
+  expect(await checks.directTargetAllowed('chat.example.net')).toBe(false);
+  expect(await checks.directTargetAllowed('api.github.com')).toBe(false);
+  expect(await checks.directTargetAllowed('other.example.com')).toBe(true);
+  // Project grants never reach exa.ai; only the host-owned system grant does.
+  expect(await checks.directTargetAllowed('mcp.exa.ai')).toBe(false);
+  expect(await checks.destinationAllowed('198.51.100.7')).toBe(true);
+  expect(await checks.destinationAllowed('140.82.112.6')).toBe(false);
+  expect(await checks.destinationAllowed('10.0.0.1')).toBe(false);
+  const absent = egressHostDirectChecks(undefined, { allows: () => true }, allowed);
+  expect(await absent.directTargetAllowed('downloads.example.com')).toBe(false);
+});
+
+it('denies all direct grants and readiness until the managed mandatory inventory is complete', async () => {
+  const config = egressHostAuthority.parse({
+    databaseUrl: 'postgres://fixture@localhost/verity',
+    dnsServers: ['1.1.1.1'],
+    managedInventoryComplete: false,
+  });
+  const checks = egressHostDirectChecks(config, { allows: () => true }, async () => true);
+  expect(await checks.directTargetAllowed('unclassified-private-broker.example.net')).toBe(false);
+  expect(() => verifyEgressHostAuthorityReady(config)).toThrow();
+  expect(() => verifyEgressHostAuthorityReady(undefined)).toThrow();
+  // Explicit fixture configurations remain compatible; the managed producer sets false.
+  expect(() =>
+    verifyEgressHostAuthorityReady({ ...config, managedInventoryComplete: undefined }),
+  ).not.toThrow();
 });

@@ -1,0 +1,59 @@
+import { execFile } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { mkdtemp, mkdir, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
+import { promisify } from 'node:util';
+import { expect, it } from 'vitest';
+
+const run = promisify(execFile);
+const builder = resolve('scripts/build-project-egress-release.mjs');
+const installer = resolve('scripts/project-egress-install.py');
+
+it('assembles every host asset with verified contents and an executable pinned Node', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'verity-egress-release-'));
+  try {
+    // The installer's fixed manifest is the consumer contract, not a second list
+    // of expectations that could drift with the release builder unnoticed.
+    const names = JSON.parse(
+      (
+        await run('python3', [
+          '-B',
+          '-c',
+          'import importlib.util,json,sys;s=importlib.util.spec_from_file_location("installer",sys.argv[1]);m=importlib.util.module_from_spec(s);s.loader.exec_module(m);print(json.dumps(m.ASSETS))',
+          installer,
+        ])
+      ).stdout,
+    ) as string[];
+    for (const name of names) {
+      const path = name.endsWith('.mjs')
+        ? join(root, 'packages/server/dist', name)
+        : name.endsWith('.o')
+          ? join(root, 'objects', name)
+          : join(root, 'deploy/egress', name);
+      await mkdir(dirname(path), { recursive: true });
+      await writeFile(path, `fixture:${name}`);
+    }
+    await writeFile(join(root, 'node'), 'release-pinned-node');
+    await run(process.execPath, [builder, 'release', 'objects', join(root, 'node')], { cwd: root });
+    const manifest = JSON.parse(
+      await readFile(join(root, 'release/manifest.json'), 'utf8'),
+    ) as Record<string, string>;
+    expect(Object.keys(manifest).sort()).toEqual([...names, 'node'].sort());
+    for (const [name, digest] of Object.entries(manifest)) {
+      const bytes = await readFile(join(root, 'release', name));
+      expect(createHash('sha256').update(bytes).digest('hex')).toBe(digest);
+    }
+    expect((await stat(join(root, 'release/node'))).mode & 0o777).toBe(0o555);
+    await rm(join(root, 'packages/server/dist/project-egress-host-main.mjs'));
+    await symlink(
+      join(root, 'node'),
+      join(root, 'packages/server/dist/project-egress-host-main.mjs'),
+    );
+    await expect(
+      run(process.execPath, [builder, 'bad-release', 'objects', join(root, 'node')], { cwd: root }),
+    ).rejects.toThrow();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

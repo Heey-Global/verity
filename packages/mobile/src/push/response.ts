@@ -23,7 +23,11 @@ export type PushReplyAction =
     }
   | { type: 'send-turn'; sessionId: string; prompt: string }
   | { type: 'merge-pull-request'; sessionId: string; pullRequestNumber: number }
-  | { type: 'open-session'; sessionId: string };
+  | { type: 'open-session'; sessionId: string }
+  // Calendar meetings (`meeting.ts`): a join from a notification is always unassigned.
+  | { type: 'join-calendar-meeting'; eventKey: string }
+  | { type: 'skip-calendar-meeting'; eventKey: string }
+  | { type: 'discard-live-meeting'; meetingId: string };
 
 /** Whether a delivery attempt succeeded, is permanently un-deliverable, or should
  * be retried on the next flush. */
@@ -113,7 +117,15 @@ export function resolvePushResponse(input: PushResponseInput): PushReplyAction |
 const RETRYABLE_CLIENT_STATUS: ReadonlySet<number> = new Set([401, 403, 408, 425, 429]);
 
 export function createPushReplyPerformer(
-  client: Pick<VerityClient, 'decidePermission' | 'sendTurn' | 'mergePullRequest'>,
+  client: Pick<
+    VerityClient,
+    | 'decidePermission'
+    | 'sendTurn'
+    | 'mergePullRequest'
+    | 'joinCalendarMeeting'
+    | 'skipCalendarMeeting'
+    | 'discardLiveMeeting'
+  >,
 ): (action: PushReplyAction, clientReplyId: string) => Promise<PushReplyOutcome> {
   return async (action, clientReplyId) => {
     try {
@@ -134,6 +146,20 @@ export function createPushReplyPerformer(
           sessionId: action.sessionId,
           pr: { phase: 'merged', pipeline: 'success', mergeable: false },
         });
+        return 'done';
+      }
+      // The server refuses a second join, a skip after joining and a discard after
+      // assigning with 404/409, so a retried or doubled reply ends as `stale`.
+      if (action.type === 'join-calendar-meeting') {
+        await client.joinCalendarMeeting(action.eventKey);
+        return 'done';
+      }
+      if (action.type === 'skip-calendar-meeting') {
+        await client.skipCalendarMeeting(action.eventKey);
+        return 'done';
+      }
+      if (action.type === 'discard-live-meeting') {
+        await client.discardLiveMeeting(action.meetingId);
         return 'done';
       }
       return 'done';

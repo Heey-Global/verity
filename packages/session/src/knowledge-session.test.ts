@@ -106,3 +106,143 @@ describe('knowledge discovery context', () => {
     },
   );
 });
+
+it('refreshes the decision directory on fresh and resumed turns and reports unavailable storage', async () => {
+  const seen: string[] = [];
+  let directory = 'Decision record: retention-30 /knowledge/insights/decisions/retention.md';
+  const load = vi.fn(async () => directory);
+  const backend: Backend = {
+    run: async (opts) => {
+      seen.push(opts.appendSystemPrompt ?? '');
+      await opts.onSession?.('decision-thread');
+      return { sessionId: opts.storeSessionId, exitCode: 0, stderr: '', aborted: false };
+    },
+  };
+  const conductor = new Conductor({
+    store: ctx.store,
+    backend,
+    worktreeExists: async () => true,
+    projectDecisionDirectory: load,
+  });
+  await conductor.sendTurn('s', 'How long do we keep exports?');
+  directory = 'Decision record: retention-60 supersedes retention-30';
+  await conductor.sendTurn('s', 'What applies now?');
+  expect(seen[0]).toContain('retention-30 /knowledge');
+  expect(seen[1]).toContain(directory);
+  expect(seen[1]).not.toContain('retention-30 /knowledge');
+  load.mockRejectedValueOnce(new Error('Storage unavailable'));
+  await conductor.sendTurn('s', 'Check again');
+  expect(seen[2]).toContain('directory unavailable');
+  expect(load).toHaveBeenCalledTimes(3);
+});
+
+describe('scoped context revision handling', () => {
+  it.each(RUNNER_SUPERVISOR_BACKENDS)(
+    'rebuilds stale %s contexts on edits, clears and directing-user changes',
+    async (runnerSupervisorBackend) => {
+      let context = {
+        fingerprint: 'v2:user1:rev1',
+        prompt: '\n\n## User Memory\nFirst fact',
+        compact: true,
+      };
+      const seen: { resume?: string; prompt: string }[] = [];
+      let thread = 0;
+      const backend: Backend = {
+        runnerSupervisorBackend,
+        run: async (opts) => {
+          seen.push({
+            ...(opts.resumeSessionId ? { resume: opts.resumeSessionId } : {}),
+            prompt: opts.appendSystemPrompt ?? '',
+          });
+          await opts.onSession?.(`thread-context-${++thread}`);
+          return { sessionId: opts.storeSessionId, exitCode: 0, stderr: '', aborted: false };
+        },
+      };
+      const deps = {
+        store: ctx.store,
+        backend,
+        worktreeExists: async () => true,
+        agentContext: async () => context,
+      };
+      const conductor = new Conductor(deps);
+      await conductor.sendTurn('s', 'First');
+      expect(seen[0]!.resume).toBeUndefined();
+      expect(seen[0]!.prompt).toContain('First fact');
+      await conductor.sendTurn('s', 'Same context');
+      expect(seen[1]!.resume).toBeDefined();
+      context = {
+        ...context,
+        fingerprint: 'v2:user1:rev2',
+        prompt: '\n\n## User Memory\nRevised fact',
+      };
+      await conductor.sendTurn('s', 'Edited');
+      expect(seen[2]!.resume).toBeUndefined();
+      expect(seen[2]!.prompt).toContain('Revised fact');
+      expect(seen[2]!.prompt).not.toContain('First fact');
+      context = { ...context, fingerprint: 'v2:user2:empty', prompt: '' };
+      await conductor.sendTurn('s', 'New directing user');
+      expect(seen[3]!.resume).toBeUndefined();
+      expect(seen[3]!.prompt).not.toContain('Revised fact');
+      await new Conductor(deps).sendTurn('s', 'After restart');
+      expect(seen[4]!.resume).toBeDefined();
+      context = { fingerprint: 'v2:legacy:user2', prompt: '', compact: false };
+      await conductor.sendTurn('s', 'Older toolkit');
+      expect(seen[5]!.resume).toBeUndefined();
+      expect(seen[5]!.prompt).toContain('verity-dev-server');
+      expect(conductor.agentCapabilityVersion('s')).toBe(1);
+    },
+  );
+});
+
+it('resolves personal context before a fresh session emits its first prompt', async () => {
+  const resolve = vi.fn(async (_session: unknown, user?: { userId: string }) => ({
+    fingerprint: `v2:canonical:${user?.userId}`,
+    compact: true,
+    prompt: `\nPersonal instructions for ${user?.userId}`,
+  }));
+  const run = vi.fn<Backend['run']>(async (opts) => {
+    expect(opts.appendSystemPrompt).toContain('Personal instructions for first-user');
+    expect(conductor.agentCapabilityVersion('s')).toBe(2);
+    await opts.onSession?.('first-thread');
+    return { sessionId: 's', exitCode: 0, stderr: '', aborted: false };
+  });
+  const conductor = new Conductor({ store: ctx.store, backend: { run }, agentContext: resolve });
+  await conductor.startSession({
+    sessionId: 's',
+    worktree: '/test',
+    prompt: 'Start',
+    initiatedBy: { userId: 'first-user' },
+  });
+  await expect.poll(() => conductor.isBusy('s')).toBe(false);
+  expect(resolve).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 's' }), {
+    userId: 'first-user',
+  });
+  const prompts = (await ctx.store.getEventsAfter('s', 0, 50)).filter(
+    (row) => row.event.t === 'prompt',
+  );
+  expect(prompts[0]?.event).toMatchObject({ initiatedBy: { userId: 'first-user' } });
+});
+
+it('names advertised focused planning tools in compact contexts', async () => {
+  await ctx.store.startSessionPlanning('s');
+  let prompt = '';
+  const conductor = new Conductor({
+    store: ctx.store,
+    backend: {
+      run: async (opts) => {
+        prompt = opts.appendSystemPrompt ?? '';
+        await opts.onSession?.('planning-thread');
+        return { sessionId: 's', exitCode: 0, stderr: '', aborted: false };
+      },
+    },
+    worktreeExists: async () => true,
+    agentContext: async () => ({ fingerprint: 'v2:canonical:planning', prompt: '', compact: true }),
+  });
+  await conductor.sendTurn('s', 'Plan');
+  expect(prompt).toContain('verity_planning_present');
+  expect(prompt).toContain('verity_planning_implement');
+  expect(prompt).toContain('verity_planning_discard');
+  expect(prompt).not.toContain('verity_present_plan');
+  expect(prompt).not.toContain('verity_end_planning');
+  expect(prompt).not.toContain('verity_knowledge record_decision');
+});

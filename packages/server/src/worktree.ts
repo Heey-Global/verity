@@ -41,7 +41,7 @@ export interface WorktreeProvisioner {
 export type GitRunner = (args: readonly string[]) => Promise<void>;
 
 const defaultGitRunner: GitRunner = async (args) => {
-  await execFileAsync('git', [...args]);
+  await execFileAsync('git', ['-c', 'core.hooksPath=/dev/null', ...args]);
 };
 
 export interface GitWorktreeOptions {
@@ -387,9 +387,12 @@ function excludeWorktreeSidecar(repoDir: string): void {
   try {
     const existing = existsSync(file) ? readFileSync(file, 'utf8') : '';
     const lines = new Set(existing.split(/\r?\n/u));
-    const missing = [`/${WORKTREE_SIDECAR}`, `/${WORKTREE_SIDECAR}.tmp`].filter(
-      (pattern) => !lines.has(pattern),
-    );
+    const missing = [
+      `/${WORKTREE_SIDECAR}`,
+      `/${WORKTREE_SIDECAR}.tmp`,
+      '/.verity-sessions/',
+      '/.verity-document-sessions/',
+    ].filter((pattern) => !lines.has(pattern));
     if (missing.length === 0) return;
     mkdirSync(infoDir, { recursive: true });
     writeFileSync(

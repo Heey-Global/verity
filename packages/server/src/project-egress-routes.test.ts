@@ -61,6 +61,61 @@ it('rejects missing identity, private targets and client-supplied authority', as
         .statusCode,
     ).toBe(400);
 });
+it('never turns broker or system hostnames into direct rules or cards', async () => {
+  userId = admin;
+  const before = (await app.inject({ method: 'GET', url: '/projects/a/egress' })).json<{
+    policy: { requests: Record<string, unknown> };
+  }>();
+  for (const [path, payload] of [
+    ['requests', { host: 'API.GitHub.com', protocol: 'tcp', port: 443 }],
+    ['reopen', { target: { host: 'www.googleapis.com', protocol: 'tcp', port: 443 }, revision: 0 }],
+    [
+      'permanent',
+      { target: { host: 'registry.npmjs.org', protocol: 'tcp', port: 443 }, revision: 0 },
+    ],
+  ] as const) {
+    const response = await app.inject({
+      method: 'POST',
+      url: `/projects/a/egress/${path}`,
+      payload,
+    });
+    expect(response.statusCode).toBe(403);
+    expect(response.json()).toMatchObject({ error: 'broker_required' });
+  }
+  const after = (await app.inject({ method: 'GET', url: '/projects/a/egress' })).json<{
+    policy: { requests: Record<string, unknown> };
+  }>();
+  expect(after.policy.requests).toEqual(before.policy.requests);
+});
+it('refuses to approve a stored request for a broker destination', async () => {
+  userId = admin;
+  // Simulate a request recorded before classification existed.
+  const created = await new EventStore(ctx.db).projectEgress.request('a', admin, {
+    host: 'uploads.github.com',
+    protocol: 'tcp',
+    port: 443,
+  });
+  if (!('id' in created)) throw new Error('Expected a stored request');
+  const approve = await app.inject({
+    method: 'POST',
+    url: '/projects/a/egress/decisions',
+    payload: { requestId: created.id, revision: created.revision, allow: true },
+  });
+  expect(approve.statusCode).toBe(403);
+  expect(approve.json()).toMatchObject({ error: 'broker_required', route: 'forge' });
+  const deny = await app.inject({
+    method: 'POST',
+    url: '/projects/a/egress/decisions',
+    payload: { requestId: created.id, revision: created.revision, allow: false },
+  });
+  expect(deny.statusCode).toBe(200);
+  const unknown = await app.inject({
+    method: 'POST',
+    url: '/projects/a/egress/decisions',
+    payload: { requestId: '00000000-0000-4000-8000-0000000000ff', revision: 0, allow: true },
+  });
+  expect(unknown.statusCode).toBe(404);
+});
 it('creates and approves a draft rule without advertising enforcement or replay', async () => {
   const created = await app.inject({
     method: 'POST',

@@ -28,7 +28,7 @@ import {
 } from '../lib/liveMeetingStore';
 
 jest.mock('expo-router', () => ({
-  router: { back: jest.fn(), push: jest.fn() },
+  router: { back: jest.fn(), push: jest.fn(), replace: jest.fn(), canGoBack: jest.fn(() => true) },
   Stack: { Screen: () => null },
   useLocalSearchParams: jest.fn(() => ({ sessionId: 'session-1' })),
 }));
@@ -2316,4 +2316,154 @@ it('edits the ended title and a personal note, then searches the transcript', as
   expect(screen.getByText(/Budget in London/)).toBeOnTheScreen();
   expect(screen.queryByText(/Release in Paris/)).toBeNull();
   prompt.mockRestore();
+});
+
+it('lets a second device save notes and ask research without starting its microphone', async () => {
+  const remote: MeetingRecord = {
+    id: 'collaborative-phone',
+    sessionId: 'session-1',
+    serverId: 'server-1',
+    engine: 'fluid-nemotron',
+    startedAt: Date.now() - 120000,
+    endedAt: null,
+    state: 'active',
+    captureStatus: 'listening',
+    transcript: 'Discuss the launch.',
+    error: null,
+  };
+  jest.mocked(getActiveMeetingServerId).mockReturnValue('server-1');
+  jest.mocked(listMeetings).mockResolvedValue([remote]);
+  const sendTurn = jest.fn().mockResolvedValue({ turnId: 'research-from-ipad' });
+  jest.mocked(createVerityClient).mockReturnValue({
+    sendTurn,
+    getLiveMeetingCommands: jest.fn().mockResolvedValue({ commands: [], recorderOnline: false }),
+  } as never);
+  render(<MeetingScreen />);
+  await screen.findByText(/Recording device unreachable.*transcript may be out of date/);
+  fireEvent.changeText(await noteInput(), 'Check launch date');
+  fireEvent.press(screen.getByLabelText('Add note'));
+  await waitFor(() =>
+    expect(finalizeNote).toHaveBeenCalledWith(expect.any(String), 'Check launch date'),
+  );
+  fireEvent.press(screen.getByLabelText('Switch to Ask Verity'));
+  fireEvent.changeText(
+    screen.getByLabelText('Ask Verity about this meeting'),
+    'Research the launch requirements',
+  );
+  fireEvent.press(screen.getByLabelText('Ask Verity in meeting'));
+  await waitFor(() =>
+    expect(sendTurn).toHaveBeenCalledWith(
+      'session-1',
+      expect.objectContaining({
+        prompt: expect.stringContaining(remote.id),
+      }),
+    ),
+  );
+  expect(saveNote).toHaveBeenCalledWith(
+    expect.objectContaining({ meetingId: remote.id, text: 'Check launch date' }),
+  );
+  expect(startMeeting).not.toHaveBeenCalled();
+  expect(endMeeting).not.toHaveBeenCalled();
+});
+
+it('leaves a directly opened meeting screen when Cancel has no history', async () => {
+  jest.mocked(router.canGoBack).mockReturnValueOnce(false);
+  render(<MeetingScreen />);
+  fireEvent.press(await screen.findByText('Cancel'));
+  expect(router.replace).toHaveBeenCalledWith({
+    pathname: '/session/[id]',
+    params: { id: 'session-1' },
+  });
+});
+
+it('shows calendar entries for in-person meetings and uses the selected title', async () => {
+  jest.mocked(createVerityClient).mockReturnValue({
+    getUpcomingMeetings: jest.fn().mockResolvedValue([
+      {
+        eventKey: 'office',
+        title: 'Office review',
+        startsAt: Date.now(),
+        endsAt: Date.now() + 3600000,
+        calendar: 'Work',
+        provider: null,
+        decision: null,
+        meetingId: null,
+      },
+    ]),
+  } as never);
+  render(<MeetingScreen />);
+  await screen.findByText('Office review');
+  await waitFor(() =>
+    expect(screen.getByLabelText('Meeting title').props.value).toBe('Office review'),
+  );
+  fireEvent.press(await screen.findByRole('radio', { name: /^Up to 4 people/ }));
+  fireEvent.press(screen.getByLabelText('Start meeting'));
+  await waitFor(() =>
+    expect(startMeeting).toHaveBeenCalledWith('session-1', 'fluid-nemotron', 4, 'Office review'),
+  );
+});
+
+it('does not join a later in-person selection after switching to online', async () => {
+  const joinCalendarMeeting = jest.fn();
+  const startOnlineMeeting = jest.fn();
+  jest.mocked(createVerityClient).mockReturnValue({
+    getAttendeeSettings: jest.fn().mockResolvedValue({ configured: true }),
+    getUpcomingMeetings: jest.fn().mockResolvedValue([
+      {
+        eventKey: 'later',
+        title: 'Later review',
+        startsAt: Date.now() + 3_600_000,
+        endsAt: Date.now() + 7_200_000,
+        calendar: 'Work',
+        provider: 'meet',
+        decision: null,
+        meetingId: null,
+      },
+    ]),
+    joinCalendarMeeting,
+    startOnlineMeeting,
+  } as never);
+  render(<MeetingScreen />);
+  fireEvent.press(await screen.findByText('Later review'));
+  await waitFor(() =>
+    expect(screen.getByLabelText('Meeting title').props.value).toBe('Later review'),
+  );
+  fireEvent.press(screen.getByText('Online meeting'));
+  await waitFor(() => expect(screen.queryByText('Configure online meetings')).toBeNull());
+  await waitFor(() => expect(screen.getByLabelText('Start meeting')).toBeDisabled());
+  fireEvent.press(screen.getByLabelText('Start meeting'));
+  expect(joinCalendarMeeting).not.toHaveBeenCalled();
+  expect(startOnlineMeeting).not.toHaveBeenCalled();
+});
+
+it('preserves a typed title when calendar loading finishes and uses a deliberately selected title', async () => {
+  let resolveEvents!: (events: unknown[]) => void;
+  const pending = new Promise<unknown[]>((resolve) => {
+    resolveEvents = resolve;
+  });
+  jest
+    .mocked(createVerityClient)
+    .mockReturnValue({ getUpcomingMeetings: jest.fn().mockReturnValue(pending) } as never);
+  render(<MeetingScreen />);
+  fireEvent.changeText(await screen.findByLabelText('Meeting title'), 'My notes');
+  await act(async () => {
+    resolveEvents([
+      {
+        eventKey: 'office',
+        title: 'Office review',
+        startsAt: Date.now(),
+        endsAt: Date.now() + 3_600_000,
+        calendar: 'Work',
+        provider: null,
+        decision: null,
+        meetingId: null,
+      },
+    ]);
+  });
+  await screen.findByText('Office review');
+  expect(screen.getByLabelText('Meeting title').props.value).toBe('My notes');
+  fireEvent.press(screen.getByText('Office review'));
+  await waitFor(() =>
+    expect(screen.getByLabelText('Meeting title').props.value).toBe('Office review'),
+  );
 });

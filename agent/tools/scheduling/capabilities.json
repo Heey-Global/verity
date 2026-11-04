@@ -1,0 +1,62 @@
+[
+  {
+    "name": "verity_scheduling_prepare",
+    "title": "Verity · Scheduling · Prepare",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": "calendar",
+    "skill": null,
+    "compatibility": {
+      "name": "verity_scheduling",
+      "action": "prepare"
+    }
+  },
+  {
+    "name": "verity_scheduling_send",
+    "title": "Verity · Scheduling · Send",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": "calendar",
+    "skill": null,
+    "compatibility": {
+      "name": "verity_scheduling",
+      "action": "send"
+    }
+  },
+  {
+    "name": "verity_scheduling_status",
+    "title": "Verity · Scheduling · Status",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": "calendar",
+    "skill": null,
+    "compatibility": {
+      "name": "verity_scheduling",
+      "action": "status"
+    }
+  },
+  {
+    "name": "verity_scheduling_list",
+    "title": "Verity · Scheduling · List",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": "calendar",
+    "skill": null,
+    "compatibility": {
+      "name": "verity_scheduling",
+      "action": "list"
+    }
+  },
+  {
+    "name": "verity_scheduling_revoke",
+    "title": "Verity · Scheduling · Revoke",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": "calendar",
+    "skill": null,
+    "compatibility": {
+      "name": "verity_scheduling",
+      "action": "revoke"
+    }
+  }
+]

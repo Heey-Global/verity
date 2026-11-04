@@ -1,9 +1,13 @@
+import { UserContextStore } from './user-context.js';
+import { ViewStateStore } from './view-state.js';
 import { AssistantStore } from './assistant.js';
 import { SchedulingStore } from './scheduling.js';
+import { QAAssignmentStore } from './qa-assignments.js';
 import { RepairSupervisionStore } from './repair-supervision.js';
 import { ProjectEgressStore } from './project-egress.js';
 import { VulnerabilityScanStore } from './vulnerability-scan.js';
 import { ForgeConnectionStore } from './forge-connections.js';
+import { CalendarWatchStore } from './calendar-watch.js';
 import { GoogleAccountStore } from './google-accounts.js';
 import {
   HISTORY_MAX_BYTES,
@@ -66,9 +70,10 @@ export interface SessionRecord {
   /** Project the session runs in (concept §19); `null` for project-less
    *  (or pre-projects-slice) sessions. */
   projectId: string | null;
-  /** Operator's "last seen" mark for the overview unread dot (#387): the session's
-   *  `eventCount` at the last open. `null` = never opened → not unread. Global, so
-   *  it syncs across devices; advanced monotonically by {@link EventStore.setSessionSeen}. */
+  /** "Last seen" mark for the overview unread dot (#387): the session's `eventCount`
+   *  at the last open. `null` = never opened → not unread. The store fills in the
+   *  legacy shared column; the server replaces it with the requesting person's mark
+   *  from {@link ViewStateStore} before it reaches a client. */
   lastSeenEventCount: number | null;
   /** Planning mode. Optional so records built outside the store need not state it;
    *  absent and `null` both mean the session never planned. */
@@ -278,8 +283,9 @@ export interface ProjectRecord {
   hiddenAt: Date | null;
   /** Operator-defined overview order; `null` for projects never manually sorted. */
   sortOrder?: number | null;
-  /** Operator's overview fold state; `true` when the project group is collapsed.
-   *  Persisted so the expand/collapse choice syncs across devices. */
+  /** Overview fold state; `true` when the project group is collapsed. The store
+   *  fills in the legacy shared column; the server replaces it with the requesting
+   *  person's state from {@link ViewStateStore}. */
   collapsed?: boolean;
   /** True once the repo was explicitly added as a Verity project. Paused
    *  (`state='absent'`) projects with this flag stay visible in the overview. */
@@ -363,6 +369,7 @@ export interface ProjectUpsertInput {
 }
 
 export interface SessionBackendStateRecord {
+  contextFingerprint?: string;
   sessionId: string;
   backend: string;
   backendSessionId: string;
@@ -748,13 +755,19 @@ export interface VeritySettingsRecord {
    * the switch decides whether this server uses it. Both default to on. */
   premiumSharingEnabled?: boolean;
   premiumRemoteAccessEnabled?: boolean;
+  /** System-wide network protection. When on, every project container starts behind
+   * the host egress fence from its next start. Defaults to off. */
+  projectEgressEnabled?: boolean;
   advancedModeEnabled?: boolean;
+  /** Days an unassigned live meeting is kept after it ends; null means the default. */
+  unassignedMeetingRetentionDays?: number | null;
   createdAt: Date;
   updatedAt: Date;
 }
 
 type VeritySettingsKey =
   | 'advancedModeEnabled'
+  | 'unassignedMeetingRetentionDays'
   | 'gitUserName'
   | 'gitUserEmail'
   | 'gitSshPrivateKeyPath'
@@ -789,7 +802,8 @@ type VeritySettingsKey =
   | 'uplinkSubscriptionKey'
   | 'uplinkInstallationId'
   | 'premiumSharingEnabled'
-  | 'premiumRemoteAccessEnabled';
+  | 'premiumRemoteAccessEnabled'
+  | 'projectEgressEnabled';
 
 export type VeritySettingsPatch = {
   [K in VeritySettingsKey]?: VeritySettingsRecord[K] | undefined;
@@ -1416,6 +1430,8 @@ export class EventStore implements EventSink {
     private readonly db: Kysely<Database>,
     private readonly cipher: SecretCipher = createPassthroughCipher(),
   ) {
+    this.userContext = new UserContextStore(db);
+    this.viewState = new ViewStateStore(db);
     this.projectEgress = new ProjectEgressStore(db);
     this.knowledge = new KnowledgeStore(db);
     this.integrations = new IntegrationStore(db, cipher);
@@ -1424,16 +1440,21 @@ export class EventStore implements EventSink {
     this.vulnerabilityScans = new VulnerabilityScanStore(db);
     this.tasks = new TaskStore(db, cipher);
     this.repairs = new RepairSupervisionStore(db);
+    this.qaAssignments = new QAAssignmentStore(db);
     this.assistant = new AssistantStore(db);
     this.scheduling = new SchedulingStore(db, cipher);
   }
 
+  readonly userContext: UserContextStore;
+  /** Per-person overview state: folded projects, read sessions, dismissed Home items. */
+  readonly viewState: ViewStateStore;
   readonly projectEgress: ProjectEgressStore;
   readonly knowledge: KnowledgeStore;
   readonly integrations: IntegrationStore;
   readonly liveMeetings: LiveMeetingStore;
   readonly tasks: TaskStore;
   readonly repairs: RepairSupervisionStore;
+  readonly qaAssignments: QAAssignmentStore;
   readonly assistant: AssistantStore;
   readonly scheduling: SchedulingStore;
   readonly managedDevServers: ManagedDevServerStore;
@@ -2061,6 +2082,10 @@ export class EventStore implements EventSink {
 
   get googleAccounts(): GoogleAccountStore {
     return new GoogleAccountStore(this.db, this.cipher);
+  }
+
+  get calendarWatch(): CalendarWatchStore {
+    return new CalendarWatchStore(this.db, this.cipher);
   }
 
   async getGoogleServiceCredentials(sessionId: string, service: 'gmail' | 'calendar' | 'contacts') {
@@ -3096,27 +3121,6 @@ export class EventStore implements EventSink {
     return result.numUpdatedRows > 0n;
   }
 
-  /**
-   * Advance a session's "last seen" mark for the overview unread dot (#387) to
-   * `eventCount`. Global (no per-device scoping), so clearing an unread dot on one
-   * device clears it everywhere. MONOTONIC: `greatest(coalesce(current, 0), …)`
-   * never moves the mark backward, so a stale poll writing an older count can't
-   * resurrect a cleared dot. The row is always touched when the session exists
-   * (even when the value is unchanged), so `numUpdatedRows` cleanly distinguishes
-   * an unknown session id — the caller (server) maps `false` to a 404. Pure
-   * metadata: never touches the durable event log.
-   */
-  async setSessionSeen(sessionId: string, eventCount: number): Promise<boolean> {
-    const result = await this.db
-      .updateTable('sessions')
-      .set({
-        last_seen_event_count: sql<number>`greatest(coalesce(last_seen_event_count, 0), ${eventCount})`,
-      })
-      .where('session_id', '=', sessionId)
-      .executeTakeFirst();
-    return result.numUpdatedRows > 0n;
-  }
-
   /** Move a session into or out of planning mode. `from` makes the write
    *  conditional, so two racing decisions (a tap on "Implement plan" and the
    *  approval of an agent's request) cannot both win. Answers whether it changed. */
@@ -3180,7 +3184,14 @@ export class EventStore implements EventSink {
   ): Promise<SessionBackendStateRecord | undefined> {
     const row = await this.db
       .selectFrom('session_backend_state')
-      .select(['session_id', 'backend', 'backend_session_id', 'context_seq', 'updated_at'])
+      .select([
+        'session_id',
+        'backend',
+        'backend_session_id',
+        'context_seq',
+        'updated_at',
+        'context_fingerprint',
+      ])
       .where('session_id', '=', sessionId)
       .where('backend', '=', backend)
       .executeTakeFirst();
@@ -3190,6 +3201,7 @@ export class EventStore implements EventSink {
       backend: row.backend,
       backendSessionId: row.backend_session_id,
       contextSeq: Number(row.context_seq),
+      ...(row.context_fingerprint ? { contextFingerprint: row.context_fingerprint } : {}),
       updatedAt: row.updated_at,
     };
   }
@@ -3210,6 +3222,7 @@ export class EventStore implements EventSink {
     backend: string;
     backendSessionId: string;
     contextSeq: number;
+    contextFingerprint?: string;
   }): Promise<SessionBackendStateRecord[]> {
     return await this.db.transaction().execute(async (tx) => {
       // Read before delete rather than `DELETE … RETURNING`: this runs on every bind,
@@ -3217,7 +3230,14 @@ export class EventStore implements EventSink {
       // the transaction is cheaper than a dialect-specific surprise here.
       const displaced = await tx
         .selectFrom('session_backend_state')
-        .select(['session_id', 'backend', 'backend_session_id', 'context_seq', 'updated_at'])
+        .select([
+          'session_id',
+          'backend',
+          'backend_session_id',
+          'context_seq',
+          'updated_at',
+          'context_fingerprint',
+        ])
         .where('session_id', '=', input.sessionId)
         .where('backend', '!=', input.backend)
         .execute();
@@ -3233,11 +3253,13 @@ export class EventStore implements EventSink {
           backend: input.backend,
           backend_session_id: input.backendSessionId,
           context_seq: input.contextSeq,
+          context_fingerprint: input.contextFingerprint ?? null,
         })
         .onConflict((oc) =>
           oc.columns(['session_id', 'backend']).doUpdateSet({
             backend_session_id: input.backendSessionId,
             context_seq: input.contextSeq,
+            context_fingerprint: input.contextFingerprint ?? null,
             updated_at: sql`now()`,
           }),
         )
@@ -3247,6 +3269,7 @@ export class EventStore implements EventSink {
         backend: row.backend,
         backendSessionId: row.backend_session_id,
         contextSeq: Number(row.context_seq),
+        ...(row.context_fingerprint ? { contextFingerprint: row.context_fingerprint } : {}),
         updatedAt: row.updated_at,
       }));
     });
@@ -3264,7 +3287,14 @@ export class EventStore implements EventSink {
   async getSessionBackendStates(sessionId: string): Promise<SessionBackendStateRecord[]> {
     const rows = await this.db
       .selectFrom('session_backend_state')
-      .select(['session_id', 'backend', 'backend_session_id', 'context_seq', 'updated_at'])
+      .select([
+        'session_id',
+        'backend',
+        'backend_session_id',
+        'context_seq',
+        'updated_at',
+        'context_fingerprint',
+      ])
       .where('session_id', '=', sessionId)
       .execute();
     return rows.map((row) => ({
@@ -3272,6 +3302,7 @@ export class EventStore implements EventSink {
       backend: row.backend,
       backendSessionId: row.backend_session_id,
       contextSeq: Number(row.context_seq),
+      ...(row.context_fingerprint ? { contextFingerprint: row.context_fingerprint } : {}),
       updatedAt: row.updated_at,
     }));
   }
@@ -3502,6 +3533,43 @@ export class EventStore implements EventSink {
       .onConflict((oc) => oc.columns(['session_id', 'marker']).doNothing())
       .executeTakeFirst();
     return (result.numInsertedOrUpdatedRows ?? 0n) > 0n;
+  }
+
+  /** Reserve before transport: a crash spends a bounded attempt instead of resetting it. */
+  async claimPrReadyDelivery(
+    sessionId: string,
+    marker: string,
+    now: number,
+  ): Promise<string | undefined> {
+    const claim = randomUUID();
+    const result = await sql<{ claim_id: string }>`
+      insert into pr_ready_delivery(session_id, marker, attempts, next_attempt_at, claim_id, lease_until)
+      values (${sessionId}, ${marker}, 1, ${now + 60_000}, ${claim}, ${now + 300_000})
+      on conflict (session_id, marker) do update set
+        attempts = pr_ready_delivery.attempts + 1,
+        next_attempt_at = case when pr_ready_delivery.attempts = 0 then ${now + 60_000}::bigint else ${now + 300_000}::bigint end, claim_id = ${claim}, lease_until = ${now + 300_000}
+      where not pr_ready_delivery.completed and pr_ready_delivery.attempts < 3
+        and pr_ready_delivery.next_attempt_at <= ${now} and pr_ready_delivery.lease_until <= ${now}
+      returning claim_id
+    `.execute(this.db);
+    return result.rows[0]?.claim_id;
+  }
+
+  async finishPrReadyDelivery(
+    sessionId: string,
+    marker: string,
+    claim: string,
+    outcome: 'done' | 'failed' | 'unattempted',
+    now: number,
+  ): Promise<void> {
+    // Claim identity fences a slow former sender after its lease expired.
+    await sql`update pr_ready_delivery set
+      attempts = attempts - ${outcome === 'unattempted' ? 1 : 0},
+      next_attempt_at = case when ${outcome === 'unattempted'} then ${now + 30_000} else next_attempt_at end,
+      completed = ${outcome === 'done'}, claim_id = null, lease_until = 0
+      where session_id = ${sessionId} and marker = ${marker} and claim_id = ${claim}`.execute(
+      this.db,
+    );
   }
 
   async hasSessionAutomationMarker(sessionId: string, marker: string): Promise<boolean> {
@@ -5059,6 +5127,50 @@ export class EventStore implements EventSink {
     return slices;
   }
 
+  /** Batched fallback with one connection and at most one hydrated history plus a page.
+   * Keyset pages bound decoding bursts without a connection checkout per session. */
+  async visitSessionProjectionEvents(
+    boundaries: ReadonlyMap<string, number>,
+    visit: (sessionId: string, events: SequencedEvent[]) => Promise<void>,
+  ): Promise<void> {
+    if (boundaries.size === 0) return;
+    const input = JSON.stringify([...boundaries].map(([session_id, seq]) => ({ session_id, seq })));
+    await this.db.connection().execute(async (db) => {
+      let afterSession = '';
+      let afterSeq = 0;
+      let currentId: string | undefined;
+      let current: SequencedEvent[] = [];
+      for (;;) {
+        const page = await sql<{
+          session_id: string;
+          id: string | number;
+          payload: unknown;
+          created_at: Date;
+        }>`
+          select e.session_id, e.id, e.payload, e.created_at
+          from jsonb_to_recordset(${input}::jsonb) as boundary(session_id text, seq bigint)
+          join events e on e.session_id = boundary.session_id and e.id <= boundary.seq
+          where e.type = any(${[...SESSION_PROJECTION_EVENT_TYPES]}::text[])
+            and (e.session_id, e.id) > (${afterSession}, ${afterSeq}::bigint)
+          order by e.session_id, e.id limit 500
+        `.execute(db);
+        for (const row of page.rows) {
+          if (currentId !== undefined && currentId !== row.session_id) {
+            await visit(currentId, current);
+            current = [];
+          }
+          currentId = row.session_id;
+          current.push(sequencedEvent(row.session_id, row.id, row.payload, row.created_at));
+          afterSession = row.session_id;
+          afterSeq = Number(row.id);
+        }
+        if (page.rows.length < 500) break;
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+      if (currentId !== undefined) await visit(currentId, current);
+    });
+  }
+
   /**
    * The TAIL of one session's projection slice — its newest `limit` events, still
    * ascending by `seq`.
@@ -6111,6 +6223,60 @@ export class EventStore implements EventSink {
     return row ? this.projectRowToRecord(row) : undefined;
   }
 
+  /** Disconnect by stable ID; pin the existing clone and preserve all dependent records. */
+  async disconnectProjectFromGitHub(id: string): Promise<ProjectRecord | undefined> {
+    const row = await this.db.transaction().execute(async (tx) => {
+      // Match project creation and lifecycle lock order before allocating a local identity.
+      await sql`select pg_advisory_xact_lock(1447383636, 18)`.execute(tx);
+      const existing = await tx
+        .selectFrom('projects')
+        .select(this.projectColumns)
+        .where('id', '=', id)
+        .forUpdate()
+        .executeTakeFirst();
+      if (!existing || existing.hidden_at !== null || !['github', 'local'].includes(existing.kind))
+        return undefined;
+      if (existing.kind === 'local') return existing;
+      let localRepo = existing.repo;
+      for (let attempt = 1; ; attempt++) {
+        const collision = await tx
+          .selectFrom('projects')
+          .select('id')
+          .where('owner', '=', LOCAL_PROJECT_OWNER)
+          .where('repo', '=', localRepo)
+          .executeTakeFirst();
+        const claim = await tx
+          .selectFrom('project_identity_claims')
+          .select('project_id')
+          .where('owner', '=', LOCAL_PROJECT_OWNER)
+          .where('repo', '=', localRepo)
+          .executeTakeFirst();
+        if (!collision && (!claim || claim.project_id === id)) break;
+        localRepo = `${existing.repo}-${id}${attempt === 1 ? '' : `-${attempt}`}`;
+      }
+      const updated = await tx
+        .updateTable('projects')
+        .set({
+          kind: 'local',
+          owner: LOCAL_PROJECT_OWNER,
+          repo: localRepo,
+          forge_connection_id: null,
+          clone_dir: existing.clone_dir ?? `${existing.owner}-${existing.repo}`,
+          latest_release_tag: null,
+          latest_release_name: null,
+          latest_release_url: null,
+          latest_release_published_at: null,
+          updated_at: sql`now()`,
+        })
+        .where('id', '=', id)
+        .returningAll()
+        .executeTakeFirst();
+      await tx.deleteFrom('project_identity_claims').where('project_id', '=', id).execute();
+      return updated;
+    });
+    return row ? this.projectRowToRecord(row) : undefined;
+  }
+
   /**
    * Drop the installation sync's placeholder row for `(owner, repo)` so a link
    * can take the identity over, and report whether it did.
@@ -6410,21 +6576,6 @@ export class EventStore implements EventSink {
         .execute();
     });
     return this.listProjects();
-  }
-
-  /**
-   * Persist the operator's overview fold state for a single project. Global (no
-   * per-device/per-operator scoping), so every device reading `listProjects`
-   * sees the same value — this is what makes the sidebar collapse sync across
-   * devices. Idempotent; returns whether a row matched.
-   */
-  async setProjectCollapsed(id: string, collapsed: boolean): Promise<boolean> {
-    const result = await this.db
-      .updateTable('projects')
-      .set({ collapsed, updated_at: sql`now()` })
-      .where('id', '=', id)
-      .executeTakeFirst();
-    return result.numUpdatedRows > 0n;
   }
 
   /**
@@ -6993,7 +7144,9 @@ export class EventStore implements EventSink {
       uplink_installation_id: string | null;
       premium_sharing_enabled: boolean;
       premium_remote_access_enabled: boolean;
+      project_egress_enabled: boolean;
       advanced_mode_enabled: boolean;
+      unassigned_meeting_retention_days: number | null;
       created_at: Date;
       updated_at: Date;
       // When false, secret columns are returned in their STORED (possibly
@@ -7004,6 +7157,7 @@ export class EventStore implements EventSink {
   ): VeritySettingsRecord {
     return {
       advancedModeEnabled: row.advanced_mode_enabled,
+      unassignedMeetingRetentionDays: row.unassigned_meeting_retention_days,
       gitUserName: row.git_user_name,
       gitUserEmail: row.git_user_email,
       gitSshPrivateKeyPath: row.git_ssh_private_key_path,
@@ -7056,6 +7210,7 @@ export class EventStore implements EventSink {
       uplinkInstallationId: row.uplink_installation_id,
       premiumSharingEnabled: row.premium_sharing_enabled,
       premiumRemoteAccessEnabled: row.premium_remote_access_enabled,
+      projectEgressEnabled: row.project_egress_enabled,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     };
@@ -7098,7 +7253,9 @@ export class EventStore implements EventSink {
     'uplink_installation_id',
     'premium_sharing_enabled',
     'premium_remote_access_enabled',
+    'project_egress_enabled',
     'advanced_mode_enabled',
+    'unassigned_meeting_retention_days',
     'created_at',
     'updated_at',
   ] as const;
@@ -7132,6 +7289,7 @@ export class EventStore implements EventSink {
     const values = {
       id: 'global',
       advanced_mode_enabled: patch.advancedModeEnabled ?? false,
+      unassigned_meeting_retention_days: patch.unassignedMeetingRetentionDays ?? null,
       git_user_name: normalizeSetting(patch.gitUserName),
       git_user_email: normalizeSetting(patch.gitUserEmail),
       git_ssh_private_key_path: normalizeSetting(patch.gitSshPrivateKeyPath),
@@ -7171,6 +7329,7 @@ export class EventStore implements EventSink {
       uplink_installation_id: normalizeSetting(patch.uplinkInstallationId),
       premium_sharing_enabled: patch.premiumSharingEnabled ?? true,
       premium_remote_access_enabled: patch.premiumRemoteAccessEnabled ?? true,
+      project_egress_enabled: patch.projectEgressEnabled ?? false,
     };
     const row = await this.db
       .insertInto('verity_settings')
@@ -7307,8 +7466,14 @@ export class EventStore implements EventSink {
           ...(patch.premiumRemoteAccessEnabled !== undefined
             ? { premium_remote_access_enabled: patch.premiumRemoteAccessEnabled }
             : {}),
+          ...(patch.projectEgressEnabled !== undefined
+            ? { project_egress_enabled: patch.projectEgressEnabled }
+            : {}),
           ...(patch.advancedModeEnabled !== undefined
             ? { advanced_mode_enabled: patch.advancedModeEnabled }
+            : {}),
+          ...(patch.unassignedMeetingRetentionDays !== undefined
+            ? { unassigned_meeting_retention_days: patch.unassignedMeetingRetentionDays }
             : {}),
           updated_at: sql`now()`,
         }),

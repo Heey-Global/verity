@@ -93,8 +93,8 @@ it.each(['claude-agent-acp', 'codex-acp', 'opencode-acp'])(
       runtimeDir,
       worktreeRoot: runtimeDir,
       enforceRoot: false,
-      agentUid: 1000,
-      agentGid: 1000,
+      agentUid: process.getuid!(),
+      agentGid: process.getgid!(),
       spawnChild,
       scriptIsolation: { available: false, reason: 'unsupported kernel' },
     });
@@ -250,8 +250,8 @@ describe('agent spawn broker', () => {
       worktreeRoot: runtimeDir,
       secretDir: join(runtimeDir, 'secrets'),
       enforceRoot: false,
-      agentUid: 1000,
-      agentGid: 1000,
+      agentUid: process.getuid!(),
+      agentGid: process.getgid!(),
       spawnChild: (_command, _args, options) => {
         const child = spawn(
           process.execPath,
@@ -389,8 +389,8 @@ describe('agent spawn broker', () => {
       worktreeRoot: runtimeDir,
       secretDir: join(runtimeDir, 'secrets'),
       enforceRoot: false,
-      agentUid: 1000,
-      agentGid: 1000,
+      agentUid: process.getuid!(),
+      agentGid: process.getgid!(),
       spawnChild: (_command, _args, options) => {
         launches += 1;
         return spawn(process.execPath, ['-e', 'process.exit(1)'], options);
@@ -413,8 +413,8 @@ describe('agent spawn broker', () => {
       runtimeDir,
       worktreeRoot: runtimeDir,
       enforceRoot: false,
-      agentUid: 1000,
-      agentGid: 1000,
+      agentUid: process.getuid!(),
+      agentGid: process.getgid!(),
       spawnChild: (command, args, options) => {
         launches.push({ command, args });
         return spawn(
@@ -446,8 +446,8 @@ describe('agent spawn broker', () => {
       expect(launches[0]).toMatchObject({
         command: '/usr/bin/setpriv',
         args: expect.arrayContaining([
-          '--reuid=1000',
-          '--regid=1000',
+          `--reuid=${process.getuid!()}`,
+          `--regid=${process.getgid!()}`,
           '--clear-groups',
           '--no-new-privs',
           '--inh-caps=-all',
@@ -473,8 +473,8 @@ describe('agent spawn broker', () => {
       runtimeDir,
       worktreeRoot: runtimeDir,
       enforceRoot: false,
-      agentUid: 1000,
-      agentGid: 1000,
+      agentUid: process.getuid!(),
+      agentGid: process.getgid!(),
       env: { CLAUDE_CONFIG_DIR: '/run/verity/claude', CODEX_HOME: '/run/verity/codex' },
       spawnChild: (_command, _args, options) => {
         environments.push(options.env as NodeJS.ProcessEnv);
@@ -500,8 +500,8 @@ describe('agent spawn broker', () => {
       runtimeDir,
       worktreeRoot: runtimeDir,
       enforceRoot: false,
-      agentUid: 1000,
-      agentGid: 1000,
+      agentUid: process.getuid!(),
+      agentGid: process.getgid!(),
       env: { VERITY_SESSION_BACKEND: 'codex' },
       spawnChild: (_command, _args, options) => {
         environments.push(options.env as NodeJS.ProcessEnv);
@@ -537,8 +537,8 @@ describe('agent spawn broker', () => {
       runtimeDir,
       worktreeRoot: runtimeDir,
       enforceRoot: false,
-      agentUid: 1000,
-      agentGid: 1000,
+      agentUid: process.getuid!(),
+      agentGid: process.getgid!(),
       spawnChild,
     });
     const rejected = [
@@ -730,8 +730,8 @@ describe('agent spawn broker', () => {
       runtimeDir,
       worktreeRoot: runtimeDir,
       enforceRoot: false,
-      agentUid: 1000,
-      agentGid: 1000,
+      agentUid: process.getuid!(),
+      agentGid: process.getgid!(),
       spawnChild,
     });
     try {
@@ -1003,8 +1003,8 @@ describe('agent spawn broker', () => {
       runtimeDir,
       worktreeRoot: runtimeDir,
       enforceRoot: false,
-      agentUid: 1000,
-      agentGid: 1000,
+      agentUid: process.getuid!(),
+      agentGid: process.getgid!(),
       spawnChild,
     });
     try {
@@ -1033,8 +1033,8 @@ describe('agent spawn broker', () => {
       runtimeDir,
       worktreeRoot: runtimeDir,
       enforceRoot: false,
-      agentUid: 1000,
-      agentGid: 1000,
+      agentUid: process.getuid!(),
+      agentGid: process.getgid!(),
       spawnChild,
     });
     try {
@@ -1083,8 +1083,8 @@ describe('agent spawn broker', () => {
         runtimeDir,
         worktreeRoot: workRoot,
         enforceRoot: false,
-        agentUid: 1000,
-        agentGid: 1000,
+        agentUid: process.getuid!(),
+        agentGid: process.getgid!(),
         ...options,
         spawnChild: (_command, _args, spawnOptions) => {
           cwds.push(spawnOptions.cwd);
@@ -1147,8 +1147,8 @@ describe('agent spawn broker', () => {
           worktreeRoot: workRoot,
           sharedSessionRoot: join(sessionRoot, 'never-mounted'),
           enforceRoot: false,
-          agentUid: 1000,
-          agentGid: 1000,
+          agentUid: process.getuid!(),
+          agentGid: process.getgid!(),
           spawnChild: () => {
             throw new Error('unreachable');
           },
@@ -1170,8 +1170,8 @@ describe('agent spawn broker', () => {
         runtimeDir,
         worktreeRoot: workRoot,
         enforceRoot: false,
-        agentUid: 1000,
-        agentGid: 1000,
+        agentUid: process.getuid!(),
+        agentGid: process.getgid!(),
         // The default `/usr/local/bin` is user-owned on a developer machine and
         // would fail the immutability rule before the cwd guard is reached.
         env: { PATH: '/usr/bin' },
@@ -1281,8 +1281,8 @@ describe('agent spawn broker', () => {
       runtimeDir,
       worktreeRoot: runtimeDir,
       enforceRoot: false,
-      agentUid: 1000,
-      agentGid: 1000,
+      agentUid: process.getuid!(),
+      agentGid: process.getgid!(),
       spawnChild: () => {
         notifySpawnCalled();
         return child as unknown as ChildProcess;
@@ -1318,8 +1318,8 @@ describe('agent spawn broker', () => {
       runtimeDir,
       worktreeRoot: runtimeDir,
       enforceRoot: false,
-      agentUid: 1000,
-      agentGid: 1000,
+      agentUid: process.getuid!(),
+      agentGid: process.getgid!(),
       maxFrameBytes: 64,
       spawnChild,
     });
@@ -1345,8 +1345,8 @@ describe('agent spawn broker', () => {
       runtimeDir,
       worktreeRoot: runtimeDir,
       enforceRoot: false,
-      agentUid: 1000,
-      agentGid: 1000,
+      agentUid: process.getuid!(),
+      agentGid: process.getgid!(),
       spawnChild: (_command, _args, options) => {
         child = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], options);
         return child;
@@ -1780,8 +1780,8 @@ describe('trusted CLI entry-path failure classification', () => {
       runtimeDir,
       worktreeRoot: worktree,
       enforceRoot: false,
-      agentUid: 1000,
-      agentGid: 1000,
+      agentUid: process.getuid!(),
+      agentGid: process.getgid!(),
       env: { PATH: '/usr/bin' },
       spawnChild,
     });

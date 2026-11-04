@@ -1105,6 +1105,25 @@ describe('explicit forge proxy relay', () => {
       expect(forwarded).toBe(target);
     },
   );
+  it('closes the Forge route entirely for an empty authority list', async () => {
+    const socketPath = join(temporaryDirectory(), 'broker.sock');
+    const upstream = createHttpServer();
+    let calls = 0;
+    upstream.on('connect', (_req, socket) => {
+      calls += 1;
+      socket.end('HTTP/1.1 200 Connection Established\r\n\r\n');
+    });
+    servers.push(upstream);
+    await listenUnix(upstream, socketPath);
+    const port = await listenTcp(
+      createBrokerRelayServer({ socketPath, forgeProxy: true, forgeAuthorities: [] }),
+    );
+    for (const target of ['github.com:443', 'api.github.com:443'])
+      expect(
+        await rawCall(port, `CONNECT ${target} HTTP/1.1\r\nHost: ${target}\r\n\r\n`),
+      ).not.toContain('200 Connection Established');
+    expect(calls).toBe(0);
+  });
   it.each(['github.com:443', 'forge.test:8443'])(
     'tunnels only configured provider %s to the fixed project socket with binary streaming',
     async (target) => {
@@ -1177,4 +1196,69 @@ describe('explicit forge proxy relay', () => {
       expect(calls).toBe(1);
     },
   );
+});
+
+it('forwards native registry reads and only the fixed advisory write shape', async () => {
+  const received: IncomingHttpHeaders[] = [];
+  const socketPath = await fakeBroker(async (incoming) => {
+    received.push(incoming.headers);
+    await readBody(incoming);
+    return { status: 200, body: '{}' };
+  });
+  const port = await listenTcp(createBrokerRelayServer({ socketPath }));
+  const headers = {
+    authorization: 'Bearer project-cap',
+    'npm-command': 'install',
+    'pacote-version': '21',
+  };
+  expect(
+    (
+      await httpCall(port, {
+        method: 'GET',
+        path: '/internal/package-artifacts/npm/@scope%2fpackage',
+        headers,
+      })
+    ).status,
+  ).toBe(200);
+  expect(received[0]?.authorization).toBe('Bearer project-cap');
+  expect(received[0]?.['npm-command']).toBeUndefined();
+  expect(
+    (
+      await httpCall(port, {
+        method: 'POST',
+        path: '/internal/package-artifacts/npm/-/npm/v1/security/advisories/bulk',
+        headers: { ...headers, 'content-type': 'application/json', 'content-encoding': 'gzip' },
+        body: 'fixture-compressed',
+      })
+    ).status,
+  ).toBe(200);
+  expect(received[1]?.['content-encoding']).toBe('gzip');
+  expect(
+    (
+      await httpCall(port, {
+        method: 'POST',
+        path: '/internal/package-artifacts/npm/package',
+        headers,
+      })
+    ).status,
+  ).toBe(404);
+  expect(
+    (
+      await httpCall(port, {
+        method: 'GET',
+        path: '/internal/package-artifacts/npm/package?url=https://example.com',
+        headers,
+      })
+    ).status,
+  ).toBe(404);
+  expect(
+    (
+      await httpCall(port, {
+        method: 'POST',
+        path: '/internal/project/memory',
+        headers,
+        body: '{}',
+      })
+    ).status,
+  ).toBe(400);
 });

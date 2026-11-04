@@ -10,6 +10,7 @@ import { createConnection, createServer as createNetServer, type Server, Socket 
 import type { Duplex } from 'node:stream';
 
 import { DOCKER_EMBEDDED_DNS, DNS_PORT, startDnsForwarder, type DnsForwarder } from './dns.js';
+import { answerDnsQuery, brokerNameLookup } from './dns-answer.js';
 
 export const BROKER_SOCKET_PATH = '/run/verity-relay/broker/broker.sock';
 export const CLAUDE_SOCKET_PATH = '/run/verity-relay/claude/claude.sock';
@@ -30,6 +31,10 @@ export const BROKER_RELAY_ROUTES: ReadonlySet<string> = new Set([
   'POST /internal/project/memory',
   'POST /internal/project/repo',
   'POST /internal/package-install',
+  'GET /internal/package-artifacts/*',
+  'HEAD /internal/package-artifacts/*',
+  'HEAD /internal/package-artifacts/authority',
+  'POST /internal/package-artifacts/npm/-/npm/v1/security/advisories/bulk',
   'POST /internal/dev-servers',
   // The loopback MCP gateway (ADR 0014 D1) — an ACP agent's only path to the brokered
   // secret tools, authenticated with the per-turn bearer in `authorization`.
@@ -62,6 +67,19 @@ export const BROKER_RELAY_ROUTES: ReadonlySet<string> = new Set([
 export const BROKER_DECISION_ROUTES: ReadonlySet<string> = new Set([
   'POST /internal/mcp',
   'POST /internal/package-install',
+]);
+// Native package-client telemetry is tolerated only in the registry adapter and
+// dropped before dispatch. It supplies no destination or authorization context.
+const PACKAGE_CLIENT_HEADERS = new Set([
+  'npm-command',
+  'npm-in-ci',
+  'npm-scope',
+  'npm-session',
+  'pacote-version',
+  'pacote-req-type',
+  'pacote-pkg-id',
+  'cache-control',
+  'pragma',
 ]);
 const HOP_BY_HOP_HEADERS = new Set([
   'connection',
@@ -186,16 +204,24 @@ export function createBrokerRelayServer(options: BrokerRelayOptions = {}): HttpS
   const connections = new Set<Socket>();
   let inFlightRequests = 0;
   let inFlightDecisions = 0;
+  let artifactTransfers = 0;
   const server = createHttpServer(
     { maxHeaderSize: 16 * 1024, requireHostHeader: true },
     (request, response) => {
       response.shouldKeepAlive = false;
       // Classified before the allowlist check, so the request is accounted against the
       // budget it is actually going to spend.
+      const artifact = request.url?.startsWith('/internal/package-artifacts/') === true;
+      if (artifact && artifactTransfers >= 2) {
+        drainAndReject(request, response, 429, 'package artifact capacity reached');
+        return;
+      }
+      if (artifact) artifactTransfers++;
       const parked = BROKER_DECISION_ROUTES.has(`${request.method ?? ''} ${request.url ?? ''}`);
       const inFlight = parked ? inFlightDecisions : inFlightRequests;
       const budget = parked ? limits.maxDecisionRequests : limits.maxConnections;
       if (inFlight >= budget) {
+        if (artifact) artifactTransfers--;
         drainAndReject(request, response, 503, 'relay busy');
         return;
       }
@@ -205,6 +231,7 @@ export function createBrokerRelayServer(options: BrokerRelayOptions = {}): HttpS
       const release = (): void => {
         if (released) return;
         released = true;
+        if (artifact) artifactTransfers--;
         if (parked) {
           inFlightDecisions -= 1;
           request.socket.setTimeout(limits.idleTimeoutMs);
@@ -326,6 +353,8 @@ export async function startRelay(
     codexSocketPath?: string;
     dnsPort?: number;
     dnsUpstream?: { host: string; port: number };
+    /** Under the project fence: answer names only from host-admitted direct grants. */
+    controlledDns?: boolean;
   } = {},
 ): Promise<StartedRelay> {
   const host = options.host ?? '0.0.0.0';
@@ -347,10 +376,15 @@ export async function startRelay(
     await listen(codex, options.codexPort ?? CODEX_PORT, host);
     // The gVisor Sandbox's only resolver (see dns.ts). The capability-less relay binds port 53
     // under the `net.ipv4.ip_unprivileged_port_start` sysctl its container is created with.
+    const lookup =
+      (options.controlledDns ?? process.env.VERITY_DNS_CONTROLLED === '1')
+        ? brokerNameLookup(options.brokerSocketPath ?? BROKER_SOCKET_PATH)
+        : undefined;
     dns = await startDnsForwarder({
       host,
       port: options.dnsPort ?? DNS_PORT,
       upstream: options.dnsUpstream ?? DOCKER_EMBEDDED_DNS,
+      ...(lookup ? { answer: (query: Buffer) => answerDnsQuery(query, lookup) } : {}),
     });
   } catch (error) {
     await Promise.allSettled([closeServer(broker), closeServer(claude), closeServer(codex)]);
@@ -385,12 +419,16 @@ async function relayBrokerRequest(
     if (
       !path.startsWith('/') ||
       path.includes('?') ||
-      !BROKER_RELAY_ROUTES.has(`${method} ${path}`)
+      (!BROKER_RELAY_ROUTES.has(`${method} ${path}`) &&
+        !(
+          (method === 'GET' || method === 'HEAD') &&
+          /^\/internal\/package-artifacts\/(?:npm|pypi\/simple|file)\/[^?#]+$/u.test(path)
+        ))
     ) {
       drainAndReject(request, response, 404, 'not found');
       return;
     }
-    if (hasUnsafeHeaders(request)) {
+    if (hasUnsafeHeaders(request, path.startsWith('/internal/package-artifacts/'))) {
       drainAndReject(request, response, 400, 'invalid headers');
       return;
     }
@@ -418,9 +456,13 @@ async function relayBrokerRequest(
       path,
       request.headers,
       body,
-      mcpProxy ? { ...limits, maxResponseBytes: MCP_PROXY_MAX_RESPONSE_BYTES } : limits,
+      mcpProxy
+        ? { ...limits, maxResponseBytes: MCP_PROXY_MAX_RESPONSE_BYTES }
+        : path.startsWith('/internal/package-artifacts/')
+          ? { ...limits, maxResponseBytes: 32 * 1024 * 1024 }
+          : limits,
       parked ? limits.decisionTimeoutMs : mcpProxy ? MCP_PROXY_TIMEOUT_MS : limits.requestTimeoutMs,
-      mcpProxy,
+      mcpProxy || path.startsWith('/internal/package-artifacts/'),
     );
   } catch (error) {
     // `destroyed` covers the caller that hung up first: the failure it would be told about
@@ -528,6 +570,49 @@ function forwardBrokerRequest(
     upstream.once('timeout', () => upstream.destroy(new Error('broker idle timeout')));
     upstream.once('error', (error) => settle(error));
     response.once('close', onClientGone);
+    if (path.startsWith('/internal/package-artifacts/')) {
+      let probe: ReturnType<typeof httpRequest> | undefined;
+      let stopped = false;
+      const stop = (): void => {
+        stopped = true;
+        clearInterval(poll);
+        probe?.destroy();
+      };
+      const revoke = (): void => {
+        if (stopped) return;
+        stop();
+        response.destroy();
+        upstream.destroy(new Error('package authority retired'));
+      };
+      // The data socket may be paused by client backpressure. A separate bounded
+      // check must observe revocation even while that socket cannot read EOF.
+      const poll = setInterval(() => {
+        if (probe || stopped) return;
+        const current = httpRequest(
+          {
+            socketPath,
+            method: 'HEAD',
+            path: '/internal/package-artifacts/authority',
+            agent: false,
+            headers: { ...(headers.authorization ? { authorization: headers.authorization } : {}) },
+          },
+          (answer) => {
+            if (answer.statusCode !== 204) revoke();
+            answer.resume();
+          },
+        );
+        probe = current;
+        const timeout = setTimeout(revoke, 1000).unref();
+        current.once('close', () => {
+          clearTimeout(timeout);
+          if (probe === current) probe = undefined;
+        });
+        current.once('error', revoke);
+        current.end();
+      }, 200).unref();
+      response.once('finish', stop);
+      response.once('close', stop);
+    }
     upstream.end(body);
   });
 }
@@ -542,6 +627,7 @@ function forwardedRequestHeaders(
       value === undefined ||
       HOP_BY_HOP_HEADERS.has(name) ||
       CLIENT_ONLY_REQUEST_HEADERS.has(name) ||
+      PACKAGE_CLIENT_HEADERS.has(name) ||
       name === 'host' ||
       name === 'content-length'
     )
@@ -559,10 +645,14 @@ function responseHeaders(headers: IncomingHttpHeaders): IncomingHttpHeaders {
   return forwarded;
 }
 
-function hasUnsafeHeaders(request: IncomingMessage): boolean {
+function hasUnsafeHeaders(request: IncomingMessage, packageRequest = false): boolean {
   if (request.headers.upgrade !== undefined || request.headers.expect !== undefined) return true;
   for (const [name, values] of Object.entries(request.headersDistinct)) {
-    if (!ACCEPTED_REQUEST_HEADERS.has(name)) return true;
+    if (
+      !ACCEPTED_REQUEST_HEADERS.has(name) &&
+      !(packageRequest && (PACKAGE_CLIENT_HEADERS.has(name) || name === 'content-encoding'))
+    )
+      return true;
     if (values !== undefined && values.length !== 1) return true;
     if (
       name === 'connection' &&

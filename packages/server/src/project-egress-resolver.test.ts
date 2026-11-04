@@ -1,7 +1,12 @@
 import { expect, it, vi } from 'vitest';
 import { Resolver } from 'node:dns/promises';
 import { createSocket } from 'node:dgram';
-import { createProjectEgressResolver } from './project-egress-resolver.js';
+import {
+  createProjectEgressResolver,
+  createProjectEgressResolvers,
+  EGRESS_DNS_MIXED,
+  EGRESS_DNS_NOT_PUBLIC,
+} from './project-egress-resolver.js';
 
 function fixture() {
   let now = 1000;
@@ -141,4 +146,83 @@ it('reads TTL and both families through the actual Node DNS resolver', async () 
   } finally {
     await new Promise<void>((resolve) => socket.close(resolve));
   }
+});
+
+it('marks only complete non-public answers as definitive for protected inventories', async () => {
+  const code = (pending: Promise<unknown>) =>
+    pending.then(
+      () => 'resolved',
+      (error: NodeJS.ErrnoException) => error.code,
+    );
+  const f = fixture();
+  f.resolver.resolve6.mockResolvedValue([]);
+  f.resolver.resolve4.mockResolvedValue([{ address: '0.0.0.0', ttl: 30 }]);
+  expect(await code(f.resolve('downloads.example.com'))).toBe(EGRESS_DNS_NOT_PUBLIC);
+  f.resolver.resolve4.mockResolvedValue([{ address: '10.0.0.8', ttl: 30 }]);
+  expect(await code(f.resolve('downloads.example.com'))).toBe(EGRESS_DNS_NOT_PUBLIC);
+  f.resolver.resolve4.mockResolvedValue([{ address: '8.8.8.8', ttl: 30 }]);
+  f.destinationAllowed.mockResolvedValueOnce(false);
+  expect(await code(f.resolve('downloads.example.com'))).toBe(EGRESS_DNS_NOT_PUBLIC);
+  const empty = Object.assign(new Error(), { code: 'ENODATA' });
+  f.resolver.resolve4.mockRejectedValue(empty);
+  f.resolver.resolve6.mockRejectedValue(empty);
+  expect(await code(f.resolve('downloads.example.com'))).toBe(EGRESS_DNS_NOT_PUBLIC);
+  // Oversized, malformed and failed lookups stay transient.
+  f.resolver.resolve6.mockResolvedValue([]);
+  f.resolver.resolve4.mockResolvedValue(
+    Array.from({ length: 33 }, (_, i) => ({ address: `8.8.${i}.8`, ttl: 30 })),
+  );
+  expect(await code(f.resolve('downloads.example.com'))).toBeUndefined();
+  f.resolver.resolve4.mockResolvedValue([{ address: '8.8.8.8', ttl: 0 }]);
+  expect(await code(f.resolve('downloads.example.com'))).toBeUndefined();
+  f.resolver.resolve4.mockRejectedValue(Object.assign(new Error(), { code: 'ETIMEOUT' }));
+  expect(await code(f.resolve('downloads.example.com'))).toBe('ETIMEOUT');
+});
+
+it('reports the public subset of a mixed answer and classifies independent of record order', async () => {
+  const f = fixture();
+  f.resolver.resolve6.mockResolvedValue([]);
+  f.resolver.resolve4.mockResolvedValue([
+    { address: '10.0.0.8', ttl: 30 },
+    { address: '8.8.8.8', ttl: 30 },
+  ]);
+  const mixed = await f.resolve('downloads.example.com').then(
+    () => undefined,
+    (error: NodeJS.ErrnoException & { publicAddresses?: string[] }) => error,
+  );
+  expect(mixed?.code).toBe(EGRESS_DNS_MIXED);
+  expect(mixed?.publicAddresses).toEqual(['8.8.8.8']);
+  // A malformed record makes the answer transient wherever it appears.
+  f.resolver.resolve4.mockResolvedValue([
+    { address: '10.0.0.8', ttl: 30 },
+    { address: '8.8.4.4', ttl: 0 },
+  ]);
+  await expect(f.resolve('downloads.example.com')).rejects.not.toHaveProperty('code');
+});
+
+it('refreshes protected DNS addresses without host inventory commands while admission keeps live exclusions', async () => {
+  const destinationAllowed = vi.fn(async () => false);
+  const dns = {
+    resolve4: vi.fn(async () => [{ address: '8.8.8.8', ttl: 30 }]),
+    resolve6: vi.fn(async () => [{ address: '2606:4700:4700::1111', ttl: 30 }]),
+    cancel: vi.fn(),
+  };
+  const { resolve, resolveProtected } = createProjectEgressResolvers({
+    servers: ['1.1.1.1'],
+    destinationAllowed,
+    createResolver: () => dns,
+  });
+  for (const host of ['api.github.com', 'registry.npmjs.org', 'pypi.org'])
+    expect((await resolveProtected(host)).addresses).toHaveLength(2);
+  expect(destinationAllowed).not.toHaveBeenCalled();
+  await expect(resolve('downloads.example.com')).rejects.toMatchObject({
+    code: EGRESS_DNS_NOT_PUBLIC,
+  });
+  expect(destinationAllowed).toHaveBeenCalledTimes(2);
+  dns.resolve4.mockResolvedValue([{ address: '127.0.0.1', ttl: 30 }]);
+  await expect(resolveProtected('api.github.com')).rejects.toMatchObject({
+    code: EGRESS_DNS_MIXED,
+    publicAddresses: ['2606:4700:4700::1111'],
+  });
+  expect(destinationAllowed).toHaveBeenCalledTimes(2);
 });

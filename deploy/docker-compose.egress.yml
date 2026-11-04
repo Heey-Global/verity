@@ -1,0 +1,4 @@
+# Compatibility no-op: managed installation owns the read-only control mounts
+# and control-group membership in docker-compose.yml. No overlay or environment
+# configuration is required to use the Network protection setting.
+services: {}

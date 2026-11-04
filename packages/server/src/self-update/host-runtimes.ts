@@ -3,7 +3,11 @@ import { mkdir, open, readFile, rename, stat, writeFile } from 'node:fs/promises
 import { join } from 'node:path';
 
 import type { DockerClient } from '../docker.js';
-import type { RuntimeServiceRequirements } from './host-runtime-renewal.js';
+import {
+  HOST_RUNTIME_SERVICE_LABEL,
+  parseRuntimeServiceRequirements,
+  type RuntimeServiceRequirements,
+} from './host-runtime-renewal.js';
 
 /**
  * Docker runtime registrations a Server release needs on its host (ADR 0008 Amendment 2).
@@ -436,4 +440,50 @@ export async function reconcileHostRuntimes(options: ReconcileHostRuntimesOption
         `${still.join(' and ')} as ${requirements.release} declares. ${REPAIR}`,
     );
   }
+}
+
+/** Read-only revalidation after an external installer Repair; never runs a renewal job. */
+export async function hostRuntimePreparationReady(
+  docker: Pick<DockerClient, 'inspectImageLabels' | 'inspectRuntime'>,
+  targetDigest: string,
+  requestDir = HOST_RUNTIME_REQUEST_DIR,
+): Promise<boolean> {
+  const labels = await docker.inspectImageLabels?.(targetDigest);
+  // Runtime registrations cannot prove that a disconnected host firewall
+  // transaction finished. Only its operation-bound provisioning retry can.
+  if (labels?.['org.verity.project-egress-provisioning'] !== undefined) return false;
+  const raw = labels?.[HOST_RUNTIME_SERVICE_LABEL];
+  if (raw === undefined) return false;
+  const wanted = parseRuntimeServiceRequirements(JSON.parse(raw));
+  const requirements = await readTargetHostRuntimes(docker, targetDigest);
+  if (wanted === null || requirements === undefined) return false;
+  const agent = await readJson(join(requestDir, 'agent.json'));
+  if (
+    !isRecord(agent) ||
+    agent.version !== 1 ||
+    !['none', 'systemd-path'].includes(String(agent.trigger))
+  )
+    return false;
+  const service = agent.runtimeService;
+  if (
+    !isRecord(service) ||
+    typeof service.revision !== 'number' ||
+    service.revision < wanted.revision ||
+    service.renewalProtocol !== wanted.renewalProtocol ||
+    !Array.isArray(service.features) ||
+    !wanted.features.every((feature) => (service.features as unknown[]).includes(feature)) ||
+    (requirements.archiveSha512 !== undefined && !installsArchives(agent))
+  )
+    return false;
+  for (const marker of ['service-install.pending', 'daemon-install.pending']) {
+    const present = await stat(join(requestDir, marker)).then(
+      () => true,
+      (error: unknown) => {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+        throw error;
+      },
+    );
+    if (present) return false;
+  }
+  return (await unsatisfiedHostRuntimes(docker, requirements)).length === 0;
 }

@@ -2,9 +2,10 @@ import { measureLatencyPhase, type EventStore, type SessionRecord } from '@verit
 import type { FastifyInstance } from 'fastify';
 import type { AttentionSignal } from './attention.js';
 import type { SessionSummary, SessionListEnvelope } from './server.js';
+import { viewerId } from './view-state-routes.js';
 
 export interface SessionListRouteDeps {
-  store: Pick<EventStore, 'listSessions' | 'sessionSortOrders' | 'linkedSessionIds'>;
+  store: Pick<EventStore, 'listSessions' | 'sessionSortOrders' | 'linkedSessionIds' | 'viewState'>;
   prunePrSummaryCache: (liveWorktrees: ReadonlySet<string>) => void;
   pruneBranchCache: (liveWorktrees: ReadonlySet<string>) => void;
   summarizeSessions: (sessions: SessionRecord[]) => Promise<SessionSummary[]>;
@@ -24,7 +25,10 @@ export function registerSessionListRoute(app: FastifyInstance, deps: SessionList
    * to deliver a health banner. `?envelope=1` lets a new app opt in while an old
    * one keeps getting the array it understands, and costs one query parameter.
    */
-  app.get('/sessions', async (request): Promise<SessionSummary[] | SessionListEnvelope> => {
+  // Only concurrent computations share work; a completed read is never cached.
+  // Authentication hooks still run independently before every handler invocation.
+  let inFlight: Promise<SessionSummary[]> | undefined;
+  const load = async (): Promise<SessionSummary[]> => {
     const sessions = await measureLatencyPhase('session_list', () => deps.store.listSessions());
     const liveWorktrees = new Set(sessions.map((s) => s.worktree));
     deps.prunePrSummaryCache(liveWorktrees);
@@ -38,6 +42,35 @@ export function registerSessionListRoute(app: FastifyInstance, deps: SessionList
     }
     const orders = await deps.store.sessionSortOrders(sessions);
     for (const summary of summaries) summary.sortOrder = orders.get(summary.sessionId) ?? null;
+    return summaries;
+  };
+  const sharedLoad = (): Promise<SessionSummary[]> => {
+    if (inFlight !== undefined) return inFlight;
+    const read = load();
+    inFlight = read;
+    void read
+      .finally(() => {
+        if (inFlight === read) inFlight = undefined;
+      })
+      .catch(() => undefined);
+    return read;
+  };
+  app.get('/sessions', async (request): Promise<SessionSummary[] | SessionListEnvelope> => {
+    const [shared, views] = await Promise.all([
+      sharedLoad(),
+      deps.store.viewState.sessionViews(viewerId(request)),
+    ]);
+    // The shared load may serve several people at once, so each answer gets its
+    // own copies carrying the requester's read mark and dismissed Home items.
+    // A session this person never touched is unread-neutral and hides nothing.
+    const summaries = shared.map((summary) => {
+      const view = views.get(summary.sessionId);
+      return {
+        ...summary,
+        lastSeenEventCount: view?.lastSeenEventCount ?? null,
+        inboxDismissed: view?.inboxDismissed ?? [],
+      };
+    });
     if ((request.query as { envelope?: unknown } | undefined)?.envelope !== '1') return summaries;
     const attention = await measureLatencyPhase('session_attention', deps.collectAttention);
     // Absent when healthy, so the envelope stays quiet in the steady state.

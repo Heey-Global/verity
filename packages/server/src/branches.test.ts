@@ -1,3 +1,4 @@
+import { matchesQAAssignmentContinuation } from './qa-assignment-tool.js';
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -223,7 +224,7 @@ describe('createGitBranchService', () => {
         'for-each-ref --points-at HEAD --format=%(refname:short) refs/remotes/origin': () =>
           'origin/feature\n',
         'reflog show --format=%gs HEAD': () => 'checkout: moving from earlier to feature\n',
-        'show-ref --verify --quiet refs/heads/earlier': () => '',
+        'for-each-ref --format=%(refname) refs/heads': () => 'refs/heads/earlier\n',
       });
       const scoped = vi.fn();
       const svc = createGitBranchService({
@@ -255,9 +256,8 @@ describe('createGitBranchService', () => {
             'checkout: moving from main to security/audit-phase2',
             'commit (initial): scaffold',
           ].join('\n') + '\n',
-        // Every audit branch is a real local branch; the base is excluded before this
-        // is ever consulted.
-        'show-ref --verify --quiet refs/heads/security/audit-phase': () => '',
+        'for-each-ref --format=%(refname) refs/heads': () =>
+          'refs/heads/security/audit-phase5\nrefs/heads/security/audit-phase4\nrefs/heads/security/audit-phase2\nrefs/heads/main\n',
       });
       const svc = createGitBranchService({ repoDir: '/repo', git });
       expect(await svc.sessionBranches('/wt')).toEqual([
@@ -266,8 +266,8 @@ describe('createGitBranchService', () => {
         'security/audit-phase4',
         'security/audit-phase2',
       ]);
-      // The base branch is never probed for existence — it's dropped up front.
-      expect(calls.some((c) => c.join(' ').includes('refs/heads/main'))).toBe(false);
+      expect(calls).toHaveLength(3);
+      expect(calls.some((c) => c.includes('show-ref'))).toBe(false);
     });
 
     it('drops reflog tokens that are not real local branches (e.g. detached SHAs)', async () => {
@@ -278,11 +278,31 @@ describe('createGitBranchService', () => {
             'checkout: moving from feat/real to agent/x',
             'checkout: moving from 1a2b3c4 to feat/real', // a bare SHA (detached preview)
           ].join('\n') + '\n',
-        'show-ref --verify --quiet refs/heads/feat/real': () => '',
-        'show-ref --verify --quiet refs/heads/1a2b3c4': fails(), // not a local branch
+        'for-each-ref --format=%(refname) refs/heads': () => 'refs/heads/feat/real\n',
       });
       const svc = createGitBranchService({ repoDir: '/repo', git });
       expect(await svc.sessionBranches('/wt')).toEqual(['agent/x', 'feat/real']);
+    });
+
+    it('bounds Git reads independently of the number of reflog branches', async () => {
+      const names = Array.from({ length: 100 }, (_, index) => `feature/${index}`);
+      const { git, calls } = fakeGit({
+        'rev-parse --abbrev-ref HEAD': () => 'current\n',
+        'reflog show --format=%gs HEAD': () =>
+          names.map((name) => `checkout: moving from ${name} to current`).join('\n'),
+        'for-each-ref --format=%(refname) refs/heads': () =>
+          names.map((name) => `refs/heads/${name}`).join('\n'),
+      });
+      const svc = createGitBranchService({ repoDir: '/repo', git });
+      await expect(svc.sessionBranches('/wt')).resolves.toEqual(['current', ...names]);
+      expect(calls).toHaveLength(3);
+      expect(calls.at(-1)).toEqual([
+        '-C',
+        '/repo',
+        'for-each-ref',
+        '--format=%(refname)',
+        'refs/heads',
+      ]);
     });
 
     it('falls back to just the current branch when the reflog is unavailable', async () => {
@@ -1854,3 +1874,40 @@ it('reads the exact attached repair revision through the scoped git runner', asy
     rmSync(repo, { recursive: true, force: true });
   }
 });
+
+it('binds QA dirty-worktree continuations to tracked, staged and untracked contents', async () => {
+  const repo = mkdtempSync(join(tmpdir(), 'verity-qa-fingerprint-'));
+  const git = (...args: string[]) =>
+    execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8' });
+  try {
+    git('init', '-q', '-b', 'main');
+    git('config', 'user.email', 'test@example.com');
+    git('config', 'user.name', 'Test');
+    git('config', 'commit.gpgsign', 'false');
+    writeFileSync(join(repo, 'tracked'), 'before');
+    git('add', 'tracked');
+    git('commit', '-qm', 'initial');
+    const svc = createGitBranchService({
+      git: async (args) => execFileSync('git', [...args], { encoding: 'utf8' }),
+    });
+    writeFileSync(join(repo, 'tracked'), 'assignment changes');
+    writeFileSync(join(repo, 'new'), 'new file');
+    const fingerprint = await svc.worktreeFingerprint!(repo);
+    expect(fingerprint).toEqual(expect.any(String));
+    const evidence = JSON.stringify({ worktreeFingerprint: fingerprint, lastPromptSeq: 12 });
+    expect(
+      matchesQAAssignmentContinuation(evidence, await svc.worktreeFingerprint!(repo), 12),
+    ).toBe(true);
+    expect(matchesQAAssignmentContinuation(evidence, fingerprint, 13)).toBe(false);
+    writeFileSync(join(repo, 'new'), 'different contents');
+    expect(await svc.worktreeFingerprint!(repo)).not.toBe(fingerprint);
+    writeFileSync(join(repo, 'new'), 'new file');
+    git('add', 'tracked');
+    expect(await svc.worktreeFingerprint!(repo)).not.toBe(fingerprint);
+    git('reset', '--quiet', 'HEAD', '--', 'tracked');
+    writeFileSync(join(repo, 'tracked'), 'unrelated changes');
+    expect(await svc.worktreeFingerprint!(repo)).not.toBe(fingerprint);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+}, 120000);

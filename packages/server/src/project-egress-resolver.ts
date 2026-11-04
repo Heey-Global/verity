@@ -3,6 +3,13 @@ import { isIP } from 'node:net';
 import ipaddr from 'ipaddr.js';
 import { canonicalEgressTarget } from '@verity/store';
 
+/** A complete answer established that the name has no public unicast address. */
+export const EGRESS_DNS_NOT_PUBLIC = 'EGRESS_DNS_NOT_PUBLIC';
+/** A complete answer mixed public and non-public addresses; `publicAddresses` lists the former. */
+export const EGRESS_DNS_MIXED = 'EGRESS_DNS_MIXED';
+const forbidden = (code: string, publicAddresses: readonly string[] = []): Error =>
+  Object.assign(new Error('Forbidden project DNS answer'), { code, publicAddresses });
+
 export interface ProjectEgressResolution {
   addresses: readonly string[];
   expiresAt: number;
@@ -65,18 +72,32 @@ export function createProjectEgressResolver(options: {
         }),
       ]);
       const records = results.flat();
-      if (!records.length || records.length > 32)
-        throw new Error('Invalid project DNS answer count');
+      if (!records.length)
+        throw Object.assign(new Error('Invalid project DNS answer count'), {
+          code: EGRESS_DNS_NOT_PUBLIC,
+        });
+      if (records.length > 32) throw new Error('Invalid project DNS answer count');
+      // Structure first, for every record, so the outcome never depends on record order.
       for (const [family, answers] of results.entries())
         for (const record of answers)
           if (
             isIP(record.address) !== (family === 0 ? 4 : 6) ||
-            ipaddr.parse(record.address).range() !== 'unicast' ||
             !Number.isSafeInteger(record.ttl) ||
-            record.ttl <= 0 ||
-            !(await options.destinationAllowed(record.address))
+            record.ttl <= 0
           )
             throw new Error('Forbidden project DNS answer');
+      // Sinkholed, private and host/project addresses are definitive, not outages.
+      const publicAddresses: string[] = [];
+      for (const record of records)
+        if (
+          ipaddr.parse(record.address).range() === 'unicast' &&
+          (await options.destinationAllowed(record.address))
+        )
+          publicAddresses.push(ipaddr.parse(record.address).toString());
+      if (publicAddresses.length !== records.length)
+        throw forbidden(publicAddresses.length ? EGRESS_DNS_MIXED : EGRESS_DNS_NOT_PUBLIC, [
+          ...new Set(publicAddresses),
+        ]);
       const expiresAt = startedAt + Math.min(...records.map((record) => record.ttl), 86400) * 1000;
       if (now() >= expiresAt) throw new Error('Project DNS answer expired');
       return {
@@ -87,5 +108,24 @@ export function createProjectEgressResolver(options: {
       if (timer !== undefined) clearTimeout(timer);
       resolver.cancel();
     }
+  };
+}
+
+/** Keep protected inventory DNS independent from per-admission host/Docker checks. */
+export function createProjectEgressResolvers(
+  options: Parameters<typeof createProjectEgressResolver>[0],
+): {
+  resolve: ReturnType<typeof createProjectEgressResolver>;
+  resolveProtected: ReturnType<typeof createProjectEgressResolver>;
+} {
+  const resolve = createProjectEgressResolver(options);
+  return {
+    resolve,
+    // Inventory protects every public broker/system front end, including public
+    // host-owned addresses. Admission separately excludes host/project networks.
+    resolveProtected: createProjectEgressResolver({
+      ...options,
+      destinationAllowed: () => Promise.resolve(true),
+    }),
   };
 }

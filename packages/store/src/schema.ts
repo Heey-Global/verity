@@ -42,10 +42,8 @@ export interface SessionsTable {
    */
   project_id: ColumnType<string | null, string | null | undefined, string | null>;
   /**
-   * Operator's "last seen" mark for the overview unread dot (#387): the session's
-   * `eventCount` at the last open. NULL = never opened → not unread. Global (no
-   * per-device scoping), so the mark syncs across every device hitting this server.
-   * Advanced monotonically by {@link EventStore.setSessionSeen}.
+   * Legacy shared "last seen" mark (#387), copied into `user_view_state` for every
+   * person by migration 0189 and no longer written. Read state is per person now.
    */
   last_seen_event_count: ColumnType<number | null, number | null | undefined, number | null>;
   /**
@@ -122,6 +120,33 @@ export interface GoogleAccountsTable {
   scopes: ColumnType<string[], string, string>;
   credential_version: ColumnType<number, number | undefined, number>;
   created_at: ColumnType<Date, string | undefined, never>;
+}
+
+/** A watched calendar; a row exists only while watching is on. */
+export interface CalendarWatchCalendarsTable {
+  account_id: string;
+  calendar_id: string;
+  summary: string;
+  auto_join: ColumnType<boolean, boolean | undefined, boolean>;
+  updated_at: ColumnType<Date, string | undefined, string>;
+}
+
+/** A joinable event of a watched calendar; `title` and `meeting_url` are encrypted. */
+export interface CalendarWatchEventsTable {
+  event_key: string;
+  account_id: string;
+  calendar_id: string;
+  event_id: string;
+  title: string | null;
+  meeting_url: string;
+  starts_at: ColumnType<Date, string, string>;
+  ends_at: ColumnType<Date, string, string>;
+  accepted: ColumnType<boolean, boolean | undefined, boolean>;
+  notified_at: ColumnType<Date | null, string | null | undefined, string | null>;
+  decision: 'joined' | 'skipped' | 'failed' | null;
+  meeting_id: string | null;
+  started_notified_at: ColumnType<Date | null, string | null | undefined, string | null>;
+  updated_at: ColumnType<Date, string | undefined, string>;
 }
 
 export interface GoogleServiceOverridesTable {
@@ -396,9 +421,8 @@ export interface ProjectsTable {
   /** Operator-defined overview order. NULL = never manually ordered; those rows
    *  sort after ordered projects by their stable creation order. */
   sort_order: ColumnType<number | null, number | null | undefined, number | null>;
-  /** Operator's overview fold state for this project group. `false` = expanded
-   *  (default for a freshly registered project). Persisted so the choice syncs
-   *  across every device; there is no per-device/per-operator scoping. */
+  /** Legacy shared fold state, copied into `user_view_state` for every person by
+   *  migration 0189 and no longer written. Folding is per person now. */
   collapsed: ColumnType<boolean, boolean | undefined, boolean>;
   /** True once a repo was explicitly added as a Verity project. Installation-sync
    *  cache rows stay false while still `absent`, so the overview can show paused
@@ -531,6 +555,12 @@ export interface VeritySettingsTable {
   id: string;
   /** Shows internal Verity Control project/workspace surfaces when enabled. */
   advanced_mode_enabled: ColumnType<boolean, boolean | undefined, boolean>;
+  /** Days an unassigned live meeting is kept after it ends; null means the default. */
+  unassigned_meeting_retention_days: ColumnType<
+    number | null,
+    number | null | undefined,
+    number | null
+  >;
   git_user_name: ColumnType<string | null, string | null | undefined, string | null>;
   git_user_email: ColumnType<string | null, string | null | undefined, string | null>;
   git_ssh_private_key_path: ColumnType<string | null, string | null | undefined, string | null>;
@@ -598,6 +628,8 @@ export interface VeritySettingsTable {
   /** Operator switches for the paid Uplink features (see VeritySettingsRecord). */
   premium_sharing_enabled: ColumnType<boolean, boolean | undefined, boolean>;
   premium_remote_access_enabled: ColumnType<boolean, boolean | undefined, boolean>;
+  /** System-wide network protection: fence every project container (see VeritySettingsRecord). */
+  project_egress_enabled: ColumnType<boolean, boolean | undefined, boolean>;
   /** VESTIGIAL — no longer read or written. These were the nightly sandbox
    *  auto-update policy, removed once the relay reconciler started rebuilding
    *  every sandbox onto the current image after each Server restart: on a released
@@ -835,6 +867,11 @@ interface RunningTurnsTable {
 }
 
 export interface SessionBackendStateTable {
+  context_fingerprint: ColumnType<
+    string | null,
+    string | null | undefined,
+    string | null | undefined
+  >;
   session_id: string;
   backend: string;
   backend_session_id: string;
@@ -915,6 +952,17 @@ interface SessionAutomationMarkerTable {
   session_id: string;
   marker: string;
   created_at: ColumnType<Date, string | undefined, never>;
+}
+
+/** Durable attempt budget and fenced transport claims for PR-ready notifications. */
+interface PrReadyDeliveryTable {
+  session_id: string;
+  marker: string;
+  attempts: number;
+  next_attempt_at: ColumnType<string, number, number>;
+  claim_id: string | null;
+  lease_until: ColumnType<string, number, number>;
+  completed: boolean;
 }
 
 /** GitHub-token-broker capabilities (security review #662). One row per project:
@@ -1594,15 +1642,38 @@ export interface VulnDigestsTable {
   user_id: string;
   day: string;
 }
+export interface UserContextTable {
+  user_id: string;
+  instructions: string;
+  memory: string;
+  revision: number;
+}
+
+/** A person's view of one project or session (exactly one of the two is set). */
+export interface UserViewStateTable {
+  user_id: string;
+  project_id: string | null;
+  session_id: string | null;
+  collapsed: ColumnType<boolean, boolean | undefined, boolean>;
+  last_seen_event_count: number | null;
+  /** Keys of the Home items this person dismissed, oldest first. */
+  inbox_dismissed: ColumnType<string[], string | undefined, string>;
+}
+
 export interface Database {
+  user_context: UserContextTable;
+  user_view_state: UserViewStateTable;
   qa_dispatches: QADispatchesTable;
   qa_manual_repairs: QAManualRepairsTable;
+  qa_assignments: QAAssignmentsTable;
+  qa_assignment_notifications: QAAssignmentNotificationsTable;
   repair_resource_budgets: RepairResourceBudgetsTable;
   repair_mandates: RepairMandatesTable;
   repair_incidents: RepairIncidentsTable;
   repair_workflow_heads: RepairWorkflowHeadsTable;
   repair_attempts: RepairAttemptsTable;
   repair_session_history: RepairSessionHistoryTable;
+  repair_session_origins: RepairSessionOriginsTable;
   qa_coordinator: QACoordinatorTable;
   qa_inbox: QAInboxTable;
   qa_proposals: QAProposalsTable;
@@ -1649,6 +1720,8 @@ export interface Database {
   session_slide_decks: SessionSlideDecksTable;
   google_workspace_recents: GoogleWorkspaceRecentsTable;
   google_accounts: GoogleAccountsTable;
+  calendar_watch_calendars: CalendarWatchCalendarsTable;
+  calendar_watch_events: CalendarWatchEventsTable;
   google_service_overrides: GoogleServiceOverridesTable;
   project_google_drive_folders: ProjectGoogleDriveFoldersTable;
   project_google_connections: ProjectGoogleConnectionsTable;
@@ -1685,6 +1758,7 @@ export interface Database {
   session_backend_state: SessionBackendStateTable;
   session_pending_note: SessionPendingNoteTable;
   session_automation_marker: SessionAutomationMarkerTable;
+  pr_ready_delivery: PrReadyDeliveryTable;
   forge_connections: ForgeConnectionsTable;
   gh_token_capabilities: GhTokenCapabilitiesTable;
   signing_capabilities: SigningCapabilitiesTable;
@@ -1830,6 +1904,7 @@ interface RepairWorkflowHeadsTable {
   run_id: ColumnType<string, string | number, string | number>;
 }
 interface RepairAttemptsTable {
+  automation_marker: string | null;
   dispatch_id: string;
   incident_id: string;
   session_id: string;
@@ -1837,6 +1912,11 @@ interface RepairAttemptsTable {
   ended_at: Date | null;
   outcome: string | null;
   start_seq: ColumnType<string | null, string | number | null, string | number | null>;
+}
+interface RepairSessionOriginsTable {
+  project_id: string;
+  resource: string;
+  session_id: string;
 }
 interface RepairSessionHistoryTable {
   project_id: string;
@@ -1980,4 +2060,35 @@ interface RepairResourceBudgetsTable {
   resource: string;
   used: Generated<number>;
   cycle: Generated<number>;
+}
+
+interface QAAssignmentsTable {
+  id: string;
+  project_id: string;
+  source_session_id: string;
+  user_id: string;
+  target_session_id: string | null;
+  state: string;
+  title: string;
+  instruction: string;
+  criteria: string;
+  qa_revision: number;
+  mandate_revision: number;
+  consent_key: string | null;
+  attempt: Generated<number>;
+  dispatch_id: string | null;
+  feedback: Generated<string>;
+  evidence: Generated<string>;
+  reason: string | null;
+  version: Generated<number>;
+  created_at: Generated<Date>;
+  expires_at: Generated<Date>;
+}
+interface QAAssignmentNotificationsTable {
+  attempt: Generated<number>;
+  acknowledged: Generated<boolean>;
+  id: string;
+  assignment_id: string;
+  dispatch_id: string;
+  payload: string;
 }

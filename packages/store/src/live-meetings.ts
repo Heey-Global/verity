@@ -690,6 +690,52 @@ export class LiveMeetingStore {
     });
   }
 
+  /** Keep open device recordings discoverable when screen lock suspends their heartbeat.
+   * Reachability describes freshness; only a terminal recorder state ends discovery. */
+  async running(): Promise<
+    Array<{
+      sessionId: string;
+      id: string;
+      title: string | null;
+      engine: string;
+      startedAt: number;
+      state: 'active' | 'interrupted';
+      captureStatus: string;
+      recorderLastSeenAt: number | null;
+    }>
+  > {
+    const rows = await this.db
+      .selectFrom('live_meetings')
+      .select([
+        'session_id',
+        'id',
+        'title',
+        'engine',
+        'started_at',
+        'state',
+        'capture_status',
+        'recorder_last_seen_at',
+      ])
+      .where((eb) =>
+        eb.or([
+          eb.and([eb('engine', '=', 'attendee'), eb('state', '<>', 'ended')]),
+          eb('state', '=', 'active'),
+        ]),
+      )
+      .orderBy('started_at', 'desc')
+      .execute();
+    return rows.map((row) => ({
+      sessionId: row.session_id,
+      id: row.id,
+      title: row.title,
+      engine: row.engine,
+      startedAt: Number(row.started_at),
+      state: row.state === 'interrupted' ? 'interrupted' : 'active',
+      captureStatus: row.capture_status,
+      recorderLastSeenAt: row.engine === 'attendee' ? null : Number(row.recorder_last_seen_at),
+    }));
+  }
+
   async recorderOnline(sessionId: string, meetingId: string): Promise<boolean> {
     const row = await this.db
       .selectFrom('live_meetings')

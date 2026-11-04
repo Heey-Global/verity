@@ -1,0 +1,46 @@
+#!/usr/bin/env node
+// Canonical sandbox CLI. Legacy executables remain compatibility entry points.
+import { readFileSync, readdirSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+const commands = Object.freeze({
+  'dev-server': 'verity-dev-server',
+  dependencies: 'verity-dependencies',
+  review: 'verity-code-review',
+  checks: 'verity-local-checks',
+  repo: 'verity-repo',
+});
+const [domain, ...args] = process.argv.slice(2);
+if (domain === 'skill') {
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..', 'skills');
+  if (args[0] === 'list' && args.length === 1) {
+    process.stdout.write(readdirSync(root).sort().join('\n') + '\n');
+    process.exit(0);
+  }
+  if (args[0] === 'read' && args.length === 2 && /^[a-z]+(?:-[a-z]+)*$/.test(args[1])) {
+    try {
+      process.stdout.write(readFileSync(join(root, args[1], 'SKILL.md'), 'utf8'));
+      process.exit(0);
+    } catch {
+      process.stderr.write('Unknown built-in Skill\n');
+      process.exit(2);
+    }
+  }
+}
+if (!domain || !Object.hasOwn(commands, domain)) {
+  process.stderr.write(
+    'Usage: verity <dev-server|dependencies|review|checks|repo|skill> <command>\n',
+  );
+  process.exit(2);
+}
+const child = spawnSync(join(dirname(fileURLToPath(import.meta.url)), commands[domain]), args, {
+  stdio: 'inherit',
+  env: process.env,
+});
+if (child.error) {
+  process.stderr.write(`Verity CLI could not start: ${child.error.message}\n`);
+  process.exit(1);
+}
+if (child.signal) process.kill(process.pid, child.signal);
+else process.exit(child.status ?? 1);

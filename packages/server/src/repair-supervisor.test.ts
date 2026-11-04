@@ -113,6 +113,15 @@ describe('repair supervision', () => {
     expect((await ctx.store.repairs.incidents('a'))[0]?.state).toBe('open');
     h.observation.statuses[0]!.status = {
       ...h.observation.statuses[0]!.status,
+      pipeline: 'success',
+      mergeState: 'dirty',
+      checks: { completed: 1, total: 1, successful: 1, failed: 0, pending: 0 },
+    };
+    await h.supervisor.sweep();
+    expect((await ctx.store.repairs.incidents('a'))[0]?.state).toBe('open');
+    h.observation.statuses[0]!.status = {
+      ...h.observation.statuses[0]!.status,
+      mergeState: 'clean',
       headSha: 'sha2',
       pipeline: 'success',
       checks: { completed: 1, total: 1, successful: 1, failed: 0, pending: 0 },

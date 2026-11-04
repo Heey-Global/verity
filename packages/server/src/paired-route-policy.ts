@@ -14,6 +14,42 @@ type PairedRoutePolicy =
  * including collections and cross-project actions. */
 const resourceRules: ReadonlyMap<string, ResourceRule> = new Map([
   [
+    routeScopeKey('GET', '/projects/:id/knowledge/files'),
+    { kind: 'project', parameter: 'id', permission: 'read' },
+  ],
+  [
+    routeScopeKey('GET', '/projects/:id/knowledge/files/content'),
+    { kind: 'project', parameter: 'id', permission: 'read' },
+  ],
+  [
+    routeScopeKey('GET', '/projects/:id/knowledge/files/download'),
+    { kind: 'project', parameter: 'id', permission: 'read' },
+  ],
+  [
+    routeScopeKey('PUT', '/projects/:id/knowledge/files/content'),
+    { kind: 'project', parameter: 'id', permission: 'manage' },
+  ],
+  [
+    routeScopeKey('GET', '/projects/:id/instructions'),
+    { kind: 'project', parameter: 'id', permission: 'read' },
+  ],
+  [
+    routeScopeKey('PUT', '/projects/:id/instructions'),
+    { kind: 'project', parameter: 'id', permission: 'manage' },
+  ],
+  [
+    routeScopeKey('GET', '/projects/:id/memory'),
+    { kind: 'project', parameter: 'id', permission: 'read' },
+  ],
+  [
+    routeScopeKey('PUT', '/projects/:id/memory'),
+    { kind: 'project', parameter: 'id', permission: 'manage' },
+  ],
+  [
+    routeScopeKey('POST', '/projects/:id/disconnect-github'),
+    { kind: 'project', parameter: 'id', permission: 'manage' },
+  ],
+  [
     routeScopeKey('GET', '/sessions/:id/mcp-apps/:appId'),
     { kind: 'session', parameter: 'id', permission: 'read' },
   ],
@@ -156,6 +192,12 @@ const resourceRules: ReadonlyMap<string, ResourceRule> = new Map([
 ]);
 
 const activeUserRoutes = new Set([
+  routeScopeKey('GET', '/knowledge/shared/files'),
+  routeScopeKey('GET', '/knowledge/shared/files/content'),
+  routeScopeKey('GET', '/knowledge/shared/files/download'),
+  // Personal context is bound to the authenticated identity inside the handlers.
+  routeScopeKey('GET', '/me/context'),
+  routeScopeKey('PUT', '/me/context'),
   // Any active user may open the live connection; every session it subscribes
   // to is authorized individually, like `GET /sessions/:id`. The WebSocket
   // handshake consumes the ticket, not a paired-device bearer.
@@ -168,6 +210,9 @@ const activeUserRoutes = new Set([
   // Scheduling requests are filtered and checked per project inside the handler.
   routeScopeKey('GET', '/scheduling-requests'),
   routeScopeKey('POST', '/scheduling-requests/:requestId/revoke'),
+  // Running meetings are filtered per session inside the handler; unassigned ones are
+  // listed for administrators only. Assigning and discarding stay administrator routes.
+  routeScopeKey('GET', '/live-meetings/active'),
   routeScopeKey('GET', '/tasks/:id/attachments/:hash'),
   routeScopeKey('PUT', '/tasks/:id'),
   routeScopeKey('PATCH', '/tasks/:id'),

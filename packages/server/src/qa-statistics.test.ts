@@ -86,3 +86,49 @@ it('excludes skipped jobs from wall-time calculation without excluding completed
   expect(result.wallTime.meanSeconds).toBe(30);
   expect(result.wallTime.n).toBe(1);
 });
+
+it('groups recurring failures across PRs without double counting observations or claiming a root cause', () => {
+  const one = run({ event: 'pull_request', conclusion: 'failure', pull_requests: [{ number: 1 }] });
+  const two = run({
+    id: 2,
+    event: 'pull_request',
+    head_sha: 'def',
+    conclusion: 'failure',
+    pull_requests: [{ number: 2 }],
+  });
+  const result = computeQAStatistics(
+    [one, one, two],
+    new Map(),
+    new Map([
+      [1, [{ ...job(11, 0, 10), conclusion: 'failure' }]],
+      [2, [{ ...job(22, 0, 10), conclusion: 'failure' }]],
+    ]),
+    'main',
+    [],
+  )[0]!;
+  expect(result.runs).toBe(2);
+  expect(result.recurringFailures[0]).toMatchObject({
+    job: 'build',
+    runs: 2,
+    revisions: ['abc', 'def'],
+    pullRequests: [1, 2],
+    sources: [
+      { runId: 1, jobId: 11 },
+      { runId: 2, jobId: 22 },
+    ],
+  });
+  expect(result.recurringFailures[0]?.interpretation).toContain('not proof');
+});
+it('reports missing job coverage and recovery candidates without asserting flakiness', () => {
+  const result = computeQAStatistics(
+    [run({ run_attempt: 2 })],
+    new Map([[1, run({ conclusion: 'failure' })]]),
+    new Map(),
+    'main',
+    [],
+  )[0]!;
+  expect(result.missingJobRuns).toEqual([1]);
+  expect(result.recurringFailures).toEqual([]);
+  expect(result.recoveryCandidates[0]).toMatchObject({ runId: 1, sha: 'abc' });
+  expect(result.recoveryCandidates[0]?.interpretation).toContain('before classifying');
+});

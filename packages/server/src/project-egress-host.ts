@@ -17,7 +17,13 @@ const networkBinding = z.strictObject({
   bridge: z.string().regex(/^vep[a-f0-9]{12}$/u),
 });
 const reference = { projectId: identity, generation: identity };
+/** A canonical DNS name as the relay's answerer sends it; never a URL or address. */
+const hostname = z
+  .string()
+  .max(253)
+  .regex(/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/u);
 export const projectEgressHostRequest = z.discriminatedUnion('operation', [
+  z.strictObject({ operation: z.literal('health') }),
   z.strictObject({ operation: z.literal('current'), projectId: identity }),
   z.strictObject({ operation: z.literal('register'), binding: networkBinding }),
   z.strictObject({ operation: z.literal('prepare'), ...reference }),
@@ -31,8 +37,14 @@ export const projectEgressHostRequest = z.discriminatedUnion('operation', [
     containerId: objectId,
   }),
   z.strictObject({ operation: z.literal('retire'), ...reference }),
+  z.strictObject({ operation: z.literal('resolve-direct'), ...reference, name: hostname }),
 ]);
 export const projectEgressHostResponse = z.discriminatedUnion('state', [
+  z.strictObject({
+    state: z.literal('health'),
+    protocolVersion: z.literal(1),
+    packetEnforcement: z.boolean(),
+  }),
   z.strictObject({
     state: z.literal('current'),
     projectId: identity,
@@ -43,6 +55,16 @@ export const projectEgressHostResponse = z.discriminatedUnion('state', [
     state: z.enum(['denied', 'started-denied', 'retired', 'direct-refreshed', 'direct-revoked']),
     generation: identity,
   }),
+  z.strictObject({
+    state: z.literal('resolved'),
+    generation: identity,
+    addresses: z
+      .array(z.union([z.ipv4(), z.ipv6()]))
+      .min(1)
+      .max(32),
+    ttlSeconds: z.number().int().min(1).max(5),
+  }),
+  z.strictObject({ state: z.literal('unresolved'), generation: identity }),
   z.strictObject({
     state: z.enum(['connected', 'started-connected']),
     generation: identity,
@@ -78,8 +100,18 @@ export interface ProjectEgressHostEnforcement {
   deny(binding: ProjectEgressNetworkBinding): Promise<void>;
   refresh(binding: ProjectEgressNetworkBinding): Promise<void>;
   revoke(binding: ProjectEgressNetworkBinding): Promise<void>;
+  /** Read-only: addresses admitted right now for a granted name of this generation. */
+  admitted(
+    binding: ProjectEgressNetworkBinding,
+    name: string,
+  ): { addresses: readonly string[]; ttlSeconds: number } | undefined;
+  /** A name the Sandbox asked for without a grant becomes a pending destination request.
+   * Never awaited: the DNS answer stays a refusal and does not wait on the policy store. */
+  requestDirect?(binding: ProjectEgressNetworkBinding, name: string): void;
 }
 interface Dependencies {
+  /** Read-only checks; must not renew admission or mutate rules. */
+  verifyHealth?(): Promise<void>;
   bootId?: string;
   enforcement?: ProjectEgressHostEnforcement;
   save(state: ProjectEgressHostState): Promise<void>;
@@ -326,11 +358,42 @@ export class ProjectEgressHost {
   }
   execute(input: unknown): Promise<ProjectEgressHostResponse> {
     const request = projectEgressHostRequest.parse(input);
-    if (request.operation !== 'current' && request.operation !== 'refresh-direct')
+    if (request.operation === 'resolve-direct') {
+      // DNS answers read the current admission only. They neither queue behind
+      // lifecycle work nor alter, renew or invalidate any authority.
+      const record = this.state.records.find(
+        (record) => !record.retired && key(record.binding) === key(request),
+      );
+      const answer = record && this.deps.enforcement?.admitted(record.binding, request.name);
+      if (record && !answer) this.deps.enforcement?.requestDirect?.(record.binding, request.name);
+      return Promise.resolve(
+        answer
+          ? {
+              state: 'resolved',
+              generation: request.generation,
+              addresses: [...answer.addresses],
+              ttlSeconds: answer.ttlSeconds,
+            }
+          : { state: 'unresolved', generation: request.generation },
+      );
+    }
+    if (
+      request.operation !== 'current' &&
+      request.operation !== 'health' &&
+      request.operation !== 'refresh-direct'
+    )
       this.deps.enforcement?.invalidate(
         request.operation === 'register' ? request.binding : request,
       );
     return this.serialize(async () => {
+      if (request.operation === 'health') {
+        await this.deps.verifyHealth?.();
+        return {
+          state: 'health',
+          protocolVersion: 1,
+          packetEnforcement: this.deps.enforcement !== undefined,
+        };
+      }
       if (request.operation === 'current') {
         const record = this.state.records.find(
           (record) => !record.retired && record.binding.projectId === request.projectId,

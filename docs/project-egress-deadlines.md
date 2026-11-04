@@ -41,6 +41,17 @@ capture high-water mark before arming, rejects replay and invalidates captures
 made before revocation. Errors while preserving expiry evidence leave the
 generation unusable; recovery requires a fresh generation, not a weaker guard.
 
+The host controller keeps one helper interpreter on private inherited pipes. Requests
+are serialized and bounded, and replies must match the current request identity.
+The helper takes the existing state lock separately for each operation and reloads
+its endpoint, namespace and kernel evidence; it never renews autonomously or
+retains inspection snapshots between operations. EOF, malformed replies, process
+death or an operation timeout permanently close that controller's channel without
+replaying requests. Linux parent-death signaling kills even a blocked helper when
+the controller dies; existing kernel leases expire independently. Recovery uses
+the normal denied-state host startup, not automatic helper replacement. The
+one-shot helper entry remains available for offline containment and native probes.
+
 Each refresh captures its immutable lease before DNS or executor work. Both
 directions also require exact nftables target tuples and the current admission's
 fresh 128-bit conntrack label. Only an unlabelled initial TCP SYN or unlabelled
@@ -182,19 +193,18 @@ target tuples. A direct revoke does not clear the relay class; prepare, retireme
 and shutdown close both paths.
 
 Optional `/etc/verity-egress/authority.json` supplies `databaseUrl`, explicit
-`dnsServers`, a reviewed `directHosts` route inventory and `projectSponsors`
-(project ID to sponsor user ID). Both configuration files must be root-owned,
-private regular files with trusted ancestors and no symlink traversal. The
-route inventory must contain only destinations classified as direct: broker,
-model/control and other mandatory mediated routes are not direct destinations.
-Unclassified hosts remain unavailable. This bounded inventory does not replace
-the remaining transport-adapter integration work.
+`dnsServers` and optional `mandatoryHosts`. Both configuration files must be
+root-owned, private regular files with trusted ancestors and no symlink
+traversal. There is no host-side route inventory and no per-project user list:
+any public name that is not a broker, model/control or other mandatory mediated
+route may be granted by the project.
 
-The host reads the authoritative PostgreSQL egress policy and rechecks sponsor
-execute permission and policy revision around admission. Control requests accept
-only project and generation references, never grants, addresses, revisions or
-sponsor overrides. Missing authority configuration or sponsorship cannot open
-direct access. Destination inspection excludes host interface addresses and all
+The host reads the project's stored grants from the authoritative PostgreSQL
+egress policy and rechecks the policy revision around admission. Grants are
+project settings: their rights were checked when a project manager decided
+them, so the host borrows no user's authority. Control requests accept only
+project and generation references, never grants, addresses or revisions.
+Missing authority configuration cannot open direct access. Destination inspection excludes host interface addresses and all
 Docker network subnets, including publicly addressed project networks.
 
 After a connected acknowledgement with direct authority, the Server lifecycle

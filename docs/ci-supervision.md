@@ -29,12 +29,26 @@ standalone workflow monitoring is reported as unsupported, not healthy.
 
 An incident records its project, resource, revision, evidence, assigned session
 and attempts. Database claims allow one active repair per project and two across
-the installation. Repeated observations do not launch repeated agents. Existing
-session-based automatic repair defers to this coordinator for enrolled projects,
-including paused projects, rather than starting a competing repair.
+the installation. Repeated observations do not launch repeated agents.
 
-Compatible, clean and idle PR sessions can be reused. Otherwise the coordinator
-creates a visible ordinary project session. The brief identifies the observed
+PRs associated with an originating session are repaired automatically in that session,
+independently of the global QA switch and project QA mode (Off, Monitor or Automatic).
+A busy session waits until idle; planning and current project execution permissions
+are checked before admission. QA observes these failures for analysis but neither
+requests repair consent nor starts another worker for them. A blocked or exhausted
+session repair requires attention in that session, not automatic QA takeover.
+
+Durable PR responsibility is separate from historical session associations and
+active repair ownership. Session repairs and QA repairs use the same atomic claim,
+admission receipt and bounded retry budget. Registering an origin does not revoke
+an already active QA worker: it must terminate before the session can repair.
+Uncertain execution after a restart retains ownership; a timeout is not proof of
+termination. An unadmitted reservation can be cancelled and retried without losing
+the session's once-per-revision marker or consuming its repair budget.
+
+QA delegates only resources without an originating session. Existing PR branches
+in session worktrees are reserved for those sessions even when busy or dirty.
+For unassigned resources the coordinator creates a visible ordinary project session. The brief identifies the observed
 revision and requires checking it before editing, respecting active worktrees,
 running verification and preserving review/approval gates. Standalone workflow
 repairs prepare a separate PR rather than writing directly to the default branch.
@@ -51,8 +65,8 @@ admission. External titles, logs and worker output are diagnostic data, not gran
 An accepted dispatch remains owned until the worker's terminal status is known;
 an expired timer alone does not authorize takeover. Work older than 30 minutes
 is flagged for attention without releasing its owner. Attempts are bounded to
-two across unresolved revisions of a resource. Same-revision failures can retry
-after confirmed termination; ambiguous failures need inspection.
+two across unresolved revisions of a resource. QA-managed same-revision failures can retry after confirmed termination; session
+repairs retain their once-per-head (or head/base pair for conflicts) markers; ambiguous failures need inspection.
 
 A worker saying it is finished is not CI proof. Fresh successful checks identify
 the verified revision; older revisions are superseded rather than credited as
@@ -71,8 +85,8 @@ not emit additional notifications.
 
 ## Coordinator lifecycle and authority
 
-The global switch stops background discovery, new AI reviews and new repair
-assignments. It also requests cancellation of an active automatic QA review;
+The global switch stops QA background discovery, new QA reviews and new QA repair
+assignments. It does not stop session PR discovery or session-based repair. It also requests cancellation of an active automatic QA review;
 ordinary project repair sessions continue and can be stopped from their chats.
 Their ownership is not released on a timeout. PR-bar status reads remain independent.
 Re-enabling reconciles current forge state before reviewing pending events, and
@@ -265,3 +279,82 @@ The bounded resolver searches at most ten discovery pages. Missing coverage is a
 blocked resolution, not permission to guess a target. General session tools remain
 unavailable to QA. Merge, release, deployment and QA activation remain separate
 operations. Install the server update before live acceptance of this path.
+
+
+## Recurring CI failures and prevention
+
+The originating session fixes the immediate PR failure. QA answers cross-PR
+questions such as why CI fails repeatedly and how to prevent recurrence. Interactive
+analysis reuses the authorized historical evidence gateway; it does not grant QA
+shell access or general project execution tools.
+
+For a baseline, collect a bounded period (30 days by default) with `statistics`
+and `comparePrevious: true`, following continuations to completion. The comparison
+uses the immediately preceding equal-length period; the combined window may not
+exceed 366 days. Both periods share the existing run, job, byte and request limits.
+Partial coverage, unsupported providers and missing jobs are reported explicitly.
+Statistics deduplicate run observations, separate first-attempt results from reruns,
+and group recurring failed jobs with PR numbers, revisions and source links.
+Job patterns cover the latest observed attempt; recovered reruns require inspecting
+first-attempt jobs separately. Failure followed by success is a recovery candidate,
+not proof of flakiness or a shared root cause.
+
+QA reads bounded, redacted log excerpts for representative failures and separates
+observations, causal hypotheses and proven causes. Its answer prioritizes at most
+two prevention measures with evidence and measurable success criteria, comparing
+the first-attempt baseline and patterns across the two periods. Automatic reviews
+bundle recurring observations and show session responsibility rather than creating
+competing repairs. Deeper historical analysis is available on request. Systemic
+changes and durable follow-up tasks require user agreement. The `create_followup`
+action requires an explicit approval card and current project execution permission;
+it saves an unassigned project task with evidence, baseline and success criterion.
+Task creation does not authorize execution: implementation is handed to an ordinary
+project session after a separate instruction. Analysis does not enable automatic QA repairs.
+
+Deleting an originating session removes its responsibility record, allowing a new
+session to register responsibility or an explicitly authorized QA repair. An active
+repair claim is retained until termination is confirmed; deletion alone is not proof
+that execution stopped. Session reconciliation never consumes QA worker completion: the
+supervisor retains its workflow repair PR and awaiting-merge handoff.
+
+## Explicit project assignments
+
+The QA chat can delegate an explicitly requested project change without an existing
+PR. `propose_assignment` stores the project, instruction, acceptance criteria and
+optional existing session; omitting the session creates a project session through
+the same provisioner as Control handoffs. `request_assignment` admits that exact
+proposal. A one-time card shows the stored scope; an exact, project-naming current
+user instruction can replace the card only when it also contains the acceptance
+criteria and any selected session. Agent messages and repository content cannot
+supply consent. Approval does not enable future automatic work.
+
+Assignments share project exclusivity and the two concurrent-work limit with CI
+repairs. A busy target waits instead of being steered. Follow-ups may continue unfinished
+changes only when tracked, staged and untracked contents and the last prompt still
+match the captured attempt boundary; unrelated edits require a new approval.
+Submodule worktrees are not eligible for this continuation shortcut. Receipts deduplicate
+admission across retries and restarts. Each assignment uses one target and allows
+at most two follow-up attempts. Existing tool permissions and review gates still
+apply; the assignment does not authorize merging, deployment or broader access.
+
+Canonical session events and pending tool approvals wake reconciliation; a periodic pass recovers missed
+wakes. Completion is correlated to the admitted prompt and ends at a successor
+prompt. Durable notifications wait until QA is idle, and superseded notifications
+are discarded. Admission alone does not acknowledge delivery: an interrupted or
+failed QA notification turn can be retried twice after its durable running marker
+is cleared. Repeated delivery failure leaves verification explicitly blocked. `assignments` rediscovers the requesting user's project assignments after a restart;
+`assignment_status` exposes confirmed state and bounded evidence;
+`review_assignment` requires the current version. A successful process exit is
+only `verifying`, not `completed`. Completion requires current matching local HEAD
+and successful PR checks plus QA's assessment of the requested acceptance
+criteria. Domain-specific outcomes such as measured release duration still need
+explicit evidence; green checks alone do not establish them. Missing or truncated
+evidence must remain unverified or result in a bounded follow-up. Report clipping
+is explicitly flagged and prevents completion until a subsequent attempt supplies
+complete evidence.
+
+`stop_assignment` fences future dispatch and cancels only the handle corresponding
+to its exact receipt. An unconfirmed stop retains ownership. Revoked permissions
+or changed QA configuration fence queued work and stop active work. The mobile
+chat renders confirmed assignment results with a link to the target session;
+historical cards describe the state at that update.

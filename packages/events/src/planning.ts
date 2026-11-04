@@ -16,6 +16,14 @@ const PLANNING_TOOLS: readonly PlanningToolName[] = [
 /** The planning tool a reported tool name refers to: bare (Codex), Claude's
  *  `mcp__verity__…`, or OpenCode's `verity_…`. `undefined` for anything else. */
 export function planningToolName(name: string): PlanningToolName | undefined {
+  const canonical = name.replace(/^mcp__verity__/u, '').replace(/^verity_verity_/u, 'verity_');
+  const aliases: Record<string, PlanningToolName> = {
+    verity_planning_start: START_PLANNING_TOOL,
+    verity_planning_present: PRESENT_PLAN_TOOL,
+    verity_planning_implement: END_PLANNING_TOOL,
+    verity_planning_discard: END_PLANNING_TOOL,
+  };
+  if (Object.hasOwn(aliases, canonical)) return aliases[canonical];
   return PLANNING_TOOLS.find(
     (tool) => name === tool || name === `mcp__verity__${tool}` || name === `verity_${tool}`,
   );

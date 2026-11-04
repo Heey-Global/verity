@@ -89,3 +89,5 @@ export function createMemoryGuard(options: MemoryGuardOptions): { tick(): Memory
 export function probeMemoryGuard(controlDir: string, readFile?: ReadFile): boolean;
 
 export function notifyMemoryKill(pid: number): void;
+
+export function runsUnderGvisor(readFile?: ReadFile): boolean;

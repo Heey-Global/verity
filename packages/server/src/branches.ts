@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { statSync } from 'node:fs';
 import { join } from 'node:path';
@@ -214,6 +215,8 @@ interface SwitchOptions {
 }
 
 export interface GitBranchService {
+  /** Bounded content identity for continuing an assignment-owned dirty worktree. */
+  worktreeFingerprint?(worktreePath: string): Promise<string | undefined>;
   /** Exact attached HEAD for revision-bound repair admission; detached or unreadable is unavailable. */
   headRevision?(worktreePath: string): Promise<string | undefined>;
   metadata?(worktreePath: string): Promise<{
@@ -563,14 +566,20 @@ export function createGitBranchService(opts: GitBranchServiceOptions): GitBranch
           }
         }
       }
-      // Keep only real local branches — a reflog token can be a bare SHA (detached
-      // checkout, e.g. a #122 preview) which `branchExists` filters out. Drop the base
-      // and the current branch (added first, below). The existence probes are
-      // independent, so run them in parallel — this is on the ~2s `/sessions` poll
-      // path and a long session can accumulate several distinct branches.
+      // A long session can leave hundreds of reflog candidates. One refs listing
+      // filters detached SHAs without spawning one Docker exec per candidate.
       const named = candidates.filter((name) => name !== here && name !== baseBranch);
-      const exists = await Promise.all(named.map((name) => branchExists(worktreePath, name)));
-      extra = named.filter((_, i) => exists[i]);
+      if (named.length > 0) {
+        const refs = await git([
+          '-C',
+          opts.repoDir ?? worktreePath,
+          'for-each-ref',
+          '--format=%(refname)',
+          'refs/heads',
+        ]);
+        const local = new Set(refs.trim().split('\n'));
+        extra = named.filter((name) => local.has(`refs/heads/${name}`));
+      }
     } catch {
       // No reflog / git error → just the current branch (single-branch behavior).
     }
@@ -1202,6 +1211,45 @@ export function createGitBranchService(opts: GitBranchServiceOptions): GitBranch
   }
 
   return {
+    async worktreeFingerprint(worktreePath) {
+      if (opts.withGit) {
+        const { withGit, ...scopedOptions } = opts;
+        return withGit(worktreePath, (scopedGit) =>
+          createGitBranchService({ ...scopedOptions, git: scopedGit }).worktreeFingerprint!(
+            worktreePath,
+          ),
+        );
+      }
+      try {
+        const run = (args: string[]) => git(['-C', worktreePath, ...args]);
+        const files = (await run(['ls-files', '--others', '--exclude-standard', '-z']))
+          .split('\0')
+          .filter(Boolean);
+        if (files.length > 1000) return undefined;
+        // Submodule dirtiness does not identify its nested file contents.
+        if (/(?:^|\0)160000 /.test(await run(['ls-files', '--stage', '-z']))) return undefined;
+        const branch = await run(['symbolic-ref', '--quiet', 'HEAD']);
+        const head = await run(['rev-parse', '--verify', 'HEAD^{commit}']);
+        const status = await run(['status', '--porcelain=v1', '-z']);
+        const staged = await run([
+          'diff',
+          '--cached',
+          '--binary',
+          '--no-ext-diff',
+          '--no-textconv',
+          '--',
+        ]);
+        const unstaged = await run(['diff', '--binary', '--no-ext-diff', '--no-textconv', '--']);
+        const untracked = files.length
+          ? await run(['hash-object', '--no-filters', '--', ...files])
+          : '';
+        return createHash('sha256')
+          .update(JSON.stringify({ branch, head, status, staged, unstaged, files, untracked }))
+          .digest('hex');
+      } catch {
+        return undefined;
+      }
+    },
     async headRevision(worktreePath) {
       if (opts.withGit) {
         const { withGit, ...scopedOptions } = opts;
