@@ -72,6 +72,24 @@ host-disk saving in the presence of shared allocation or concurrent host activit
 Collection is bounded and sequential; unavailable runtime sockets and inventories
 that exceed request limits remain explicit blockers.
 
+Maintenance failures use allowlisted codes in `storageReclamation.runnerCaches.blockers`:
+`supervisor-access-denied`, `supervisor-unavailable` (missing socket or no listener),
+`supervisor-timeout`, `unsupported`, `supervisor-rejected`, `invalid-response`,
+`turn-inventory-unavailable`, `turn-ownership-unknown`, and the corresponding
+`broker-access-denied`, `broker-unavailable`, `broker-timeout`,
+`broker-invalid-response`, or `broker-rejected` codes. Unrecognized failures are
+reported as `unclassified-failure`; arbitrary peer blocker text is withheld as
+`unclassified-cache-blocker`. Exception messages, state contents and private paths
+are not copied into these diagnostics. Older peers without structured evidence
+can still produce an unclassified refusal.
+
+`turn-ownership-unknown` includes bounded `missingState`, `invalidState`, and
+`unsettledWithoutSession` counts. A valid unsettled state without a session
+identifier is protected just as a missing or invalid state is. Settled states
+need no session identifier. These counts explain a refusal; they do not prove
+that a turn is abandoned or authorize deletion. A sleeping project's unavailable
+supervisor does not cause the collector to wake it or bypass the broker.
+
 Deleting a session already queues durable cleanup outside session foreign-key
 cascades. The existing worker retries broker cleanup, which fences the deleted
 session, waits for its children and acquires its home lease before removing the
