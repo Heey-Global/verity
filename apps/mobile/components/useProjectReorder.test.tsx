@@ -13,7 +13,13 @@ jest.mock('react-native-reanimated', () => {
     withSpring: jest.fn((value: number) => value),
     measure: jest.fn(),
     scrollTo: jest.fn(),
-    useAnimatedRef: () => useRef({ current: null }).current,
+    useAnimatedRef: () =>
+      useRef(
+        Object.assign(
+          jest.fn(() => ({})),
+          { current: null },
+        ),
+      ).current,
     useSharedValue: <T,>(value: T) => useRef({ value }).current,
     useDerivedValue: <T,>(processor: () => T) => {
       const latest = useRef(processor);
@@ -72,9 +78,9 @@ function setup(id = 'c', top = 280, initialOrder = order, visibleIds = initialOr
   );
   const refs = visibleIds.map((key) => ({
     id: key,
-    row: {} as AnimatedRef<View>,
-    handle: {} as AnimatedRef<View>,
-    slot: {} as AnimatedRef<View>,
+    row: (() => ({})) as AnimatedRef<View>,
+    handle: (() => ({})) as AnimatedRef<View>,
+    slot: (() => ({})) as AnimatedRef<View>,
   }));
   let unregister = () => {};
   let scrollY = 0;
@@ -352,9 +358,9 @@ function setupSessions() {
   ].map(({ scope, ...entry }) => ({
     ...entry,
     ...(scope ? { scope } : {}),
-    row: {} as AnimatedRef<View>,
-    handle: {} as AnimatedRef<View>,
-    slot: {} as AnimatedRef<View>,
+    row: (() => ({})) as AnimatedRef<View>,
+    handle: (() => ({})) as AnimatedRef<View>,
+    slot: (() => ({})) as AnimatedRef<View>,
   }));
   act(() => {
     entries.forEach((entry) => {
@@ -575,9 +581,9 @@ it('preserves the controller identity on unrelated renders, but publishes drag c
 it('rejects link touches at pickup and start while allowing free row space', () => {
   const test = setup('a', 160);
   const excluded = (() => ({})) as AnimatedRef<View>;
-  const row = {} as AnimatedRef<View>;
-  const handle = {} as AnimatedRef<View>;
-  const slot = {} as AnimatedRef<View>;
+  const row = (() => ({})) as AnimatedRef<View>;
+  const handle = (() => ({})) as AnimatedRef<View>;
+  const slot = (() => ({})) as AnimatedRef<View>;
   act(() => {
     test.hook.result.current.register({ id: 'b', row, handle, slot, excluded: [excluded] });
   });
@@ -612,9 +618,9 @@ it('rejects link touches at pickup and start while allowing free row space', () 
 it('allows pickup when the optional issue link has never mounted', () => {
   const test = setup('a', 160);
   const excluded = (() => null) as unknown as AnimatedRef<View>;
-  const row = {} as AnimatedRef<View>;
-  const handle = {} as AnimatedRef<View>;
-  const slot = {} as AnimatedRef<View>;
+  const row = (() => ({})) as AnimatedRef<View>;
+  const handle = (() => ({})) as AnimatedRef<View>;
+  const slot = (() => ({})) as AnimatedRef<View>;
   act(() => {
     test.hook.result.current.register({ id: 'b', row, handle, slot, excluded: [excluded] });
   });
@@ -639,4 +645,72 @@ it('allows pickup when the optional issue link has never mounted', () => {
   expect(fail).not.toHaveBeenCalled();
   expect(measure).not.toHaveBeenCalledWith(excluded);
   expect(test.hook.result.current.draggingId).toBe('b');
+});
+
+// Native refs detach before passive registration cleanup runs.
+it.each(['handle', 'row'] as const)('skips a registered row with a detached %s', (detached) => {
+  const test = setup('a', 160);
+  let mounted = false;
+  const row = (() => (detached === 'row' && !mounted ? null : {})) as unknown as AnimatedRef<View>;
+  const handle = (() =>
+    detached === 'handle' && !mounted ? null : {}) as unknown as AnimatedRef<View>;
+  const slot = (() => ({})) as AnimatedRef<View>;
+  act(() => {
+    test.hook.result.current.register({ id: 'b', row, handle, slot });
+  });
+  const previous = jest.mocked(measure).getMockImplementation()!;
+  jest.mocked(measure).mockImplementation((ref) => {
+    if (ref() === null) throw new TypeError('Value is null, expected an Object');
+    if ([row, handle, slot].some((candidate) => Object.is(ref, candidate))) return rect(280);
+    return previous(ref);
+  });
+  const touch = () =>
+    act(() => {
+      test.hook.result.current.gesture.handlers.onTouchesDown?.(
+        { allTouches: [{ absoluteX: 100, absoluteY: 290 }] } as never,
+        { fail: jest.fn() } as never,
+      );
+      test.hook.result.current.gesture.handlers.onStart?.({
+        absoluteX: 100,
+        absoluteY: 290,
+      } as never);
+    });
+  touch();
+  expect(measure).not.toHaveBeenCalledWith(detached === 'row' ? row : handle);
+  expect(test.hook.result.current.draggingId).toBeNull();
+  mounted = true;
+  touch();
+  expect(test.hook.result.current.draggingId).toBe('b');
+});
+
+it('skips detached drop slots while continuing a drag', () => {
+  const test = setup('a', 160);
+  const slot = (() => null) as unknown as AnimatedRef<View>;
+  act(() => {
+    test.hook.result.current.register({
+      id: 'b',
+      row: (() => ({})) as AnimatedRef<View>,
+      handle: (() => ({})) as AnimatedRef<View>,
+      slot,
+    });
+  });
+  const previous = jest.mocked(measure).getMockImplementation()!;
+  jest.mocked(measure).mockImplementation((ref) => {
+    if (ref() === null) throw new TypeError('Value is null, expected an Object');
+    return previous(ref);
+  });
+  test.start();
+  test.move(300);
+  expect(measure).not.toHaveBeenCalledWith(slot);
+  expect(test.hook.result.current.draggingId).toBe('a');
+  test.end(false);
+  expect(test.hook.result.current.draggingId).toBeNull();
+});
+
+it('ignores pickup after the viewport detaches', () => {
+  const test = setup();
+  jest.mocked(test.hook.result.current.hostRef).mockReturnValue(null as never);
+  test.start();
+  expect(measure).not.toHaveBeenCalledWith(test.hook.result.current.hostRef);
+  expect(test.hook.result.current.draggingId).toBeNull();
 });
