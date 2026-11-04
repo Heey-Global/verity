@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
-import { chmod, cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, cp, lstat, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
@@ -59,8 +59,6 @@ try {
   if (claudePrefix)
     await cp(claudePrefix, join(project, 'claude-cli'), { recursive: true, dereference: true });
   await mkdir(join(project, '.codex'), { recursive: true });
-  await mkdir(join(root, 'codex-sessions'));
-  await mkdir(join(root, 'codex-state', 'thread-writer-locks'), { recursive: true });
   await writeFile(join(project, 'AGENTS.md'), 'Harmless repository guidance.\n');
   await writeFile(
     join(project, '.claude', 'agents', 'injected.md'),
@@ -102,11 +100,16 @@ try {
 
   for (const planning of [false, true]) {
     for (const command of commands) {
+      // Each launch owns its runtime fixture; a previous native process must not
+      // determine whether the next scenario's required mount roots exist.
+      const runtimeDir = join(root, `${command}-${planning ? 'planning' : 'normal'}`);
+      await mkdir(join(runtimeDir, 'codex-sessions'), { recursive: true });
+      await mkdir(join(runtimeDir, 'codex-state', 'thread-writer-locks'), { recursive: true });
       const options = {
         enforceRoot: false,
         agentUid: process.getuid(),
         agentGid: process.getgid(),
-        runtimeDir: root,
+        runtimeDir,
         env: {
           PATH: process.env.PATH,
           HOME: formerHome,
@@ -143,6 +146,13 @@ try {
         command === 'codex-acp' ? process.execPath : '/usr/local/bin/claude-agent-acp';
       const executableArgs = command === 'codex-acp' ? [entry] : [];
       const confinedArgs = spec.args.slice(7, -1);
+      for (let i = 0; i < confinedArgs.length - 1; i++) {
+        if (confinedArgs[i] === '--runtime-root')
+          assert.ok(
+            (await lstat(confinedArgs[i + 1])).isDirectory(),
+            `Missing runtime fixture: ${confinedArgs[i + 1]}`,
+          );
+      }
       const child = spawn(
         planning ? confinedArgs[0] : executable,
         planning ? [...confinedArgs.slice(1), executable, ...executableArgs] : executableArgs,
