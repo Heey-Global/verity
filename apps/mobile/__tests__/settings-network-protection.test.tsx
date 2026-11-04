@@ -15,10 +15,11 @@ import {
 
 afterEach(() => resetSettingsHarness());
 
-function setup(enabled: boolean | undefined, available: boolean | undefined) {
+function setup(enabled: boolean | undefined, available: boolean | undefined, reason?: string) {
   const settings = makeSettings({
     projectEgressEnabled: enabled,
     projectEgressAvailable: available,
+    ...(reason ? { projectEgressStatus: { available: available === true, reason } } : {}),
   });
   const update = jest.fn().mockImplementation(async (patch) => ({ ...settings, ...patch }));
   mockCreateVerityClient.mockReturnValue(
@@ -73,3 +74,28 @@ it('can disable protection while the host service is unavailable', async () => {
   await waitFor(() => expect(toggle().props.value).toBe(false));
   expect(update).toHaveBeenCalledWith({ projectEgressEnabled: false });
 });
+
+it.each([
+  [
+    'runtime_unsupported',
+    'This host does not have a validated runtime profile for network protection.',
+  ],
+  ['key_unreadable', 'The server cannot read the host service control key.'],
+  ['socket_missing', 'The host service control socket is missing. The service may be stopped.'],
+  ['authentication_failed', 'The server and host service control keys do not match.'],
+  [
+    'mandatory_inventory_incomplete',
+    'The host has not yet verified all configured broker destinations.',
+  ],
+  ['timeout', 'The host service did not respond before the readiness deadline.'],
+  ['protocol_mismatch', 'The server and host service versions are incompatible.'],
+  ['packet_enforcement_unavailable', 'The host service is running without packet enforcement.'],
+  ['future_reason', 'The host service is not installed or cannot be reached.'],
+])(
+  'explains unavailable protection for %s without exposing raw host errors',
+  async (reason, message) => {
+    const { toggle } = setup(false, false, reason);
+    await screen.findByText(new RegExp(message));
+    expect(toggle().props.disabled).toBe(true);
+  },
+);

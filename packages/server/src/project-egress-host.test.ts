@@ -273,6 +273,10 @@ it('requires authentication on the real Unix listener and never exposes raw exec
       call.on('error', reject);
       call.end(JSON.stringify(body));
     });
+  expect(await send('wrong', { operation: 'health' })).toBe(401);
+  expect(await send('a'.repeat(64), { operation: 'health' })).toBe(200);
+  expect(deps.save).not.toHaveBeenCalled();
+  expect(deps.inspectNetwork).not.toHaveBeenCalled();
   expect(await send('wrong', { operation: 'register', binding })).toBe(401);
   expect(deps.apply).not.toHaveBeenCalled();
   expect(await send('a'.repeat(64), { operation: 'register', binding })).toBe(200);
@@ -591,4 +595,17 @@ it('answers names read-only from enforcement, never for unknown or retired gener
   await host.execute({ operation: 'retire', projectId: binding.projectId, generation: 'gen1' });
   expect(await ask('downloads.example.com')).toEqual({ state: 'unresolved', generation: 'gen1' });
   expect(enforcement.requestDirect).toHaveBeenCalledTimes(1);
+});
+
+it('does not advertise health when read-only host compatibility checks fail', async () => {
+  const { deps } = fixture();
+  const verifyHealth = vi.fn(async () => {
+    throw new Error('unsupported Docker host');
+  });
+  const host = new ProjectEgressHost({ version: 1, records: [] }, { ...deps, verifyHealth });
+  await expect(host.execute({ operation: 'health' })).rejects.toThrow('unsupported Docker host');
+  expect(verifyHealth).toHaveBeenCalledExactlyOnceWith();
+  expect(deps.save).not.toHaveBeenCalled();
+  expect(deps.apply).not.toHaveBeenCalled();
+  expect(deps.inspectNetwork).not.toHaveBeenCalled();
 });

@@ -764,8 +764,7 @@ describe('ProvisionerImpl (#174)', () => {
       git,
       projectEgress: egress,
       projectEgressEnabled: async () => false,
-      sandboxRuntime: 'runsc-project',
-      verifySandboxRuntime: async () => {},
+      sandboxCapAdd: ['NET_ADMIN'],
       projectTokenMint: async () => 'tok',
       defaultImageRef: 'image:test',
       hostCloneRoot: root,
@@ -780,6 +779,7 @@ describe('ProvisionerImpl (#174)', () => {
         network: projectNetworkName(id),
         restartPolicy: 'unless-stopped',
       });
+      expect(spec.runtime).toBeUndefined();
       expect(calls.some((call) => call.method === 'startContainer')).toBe(true);
     } finally {
       rmSync(root, { recursive: true, force: true });

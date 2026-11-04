@@ -4272,6 +4272,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     agentLogin,
     parseSettingsPatch: (body) => veritySettingsBody.parse(body),
     projectEgressAvailable: deps.projectEgressAvailable,
+    projectEgressStatus: deps.projectEgressStatus,
     storeAgentCredentials,
     publicSettings: async (settings, request) => ({
       ...publicVeritySettings(
@@ -4281,6 +4282,9 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       ),
       ...(await googleAccountSettingsStatus(deps.eventStore)),
       projectEgressAvailable: (await deps.projectEgressAvailable?.()) === true,
+      ...(deps.projectEgressStatus
+        ? { projectEgressStatus: await deps.projectEgressStatus() }
+        : {}),
       claudeCredentialStatus: (
         deps.claudeOAuthTokenProvider ?? dbClaudeOAuthTokenProvider
       ).statusForCredentials?.(settings.claudeCodeOauthCredentialsJson) ?? {

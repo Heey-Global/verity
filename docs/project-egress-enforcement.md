@@ -1,7 +1,10 @@
 # Host-owned project egress adapter
 
-Status: adapter implementation and disposable CI validation; not wired into
-production provisioning, no protected-mode activation or boot-time guarantee.
+Status: adapter implementation and disposable CI validation. Managed installation
+now stages host assets and server control wiring, but production activation,
+native profile acceptance and complete configured-host inventory remain gated.
+See [managed provisioning](project-egress-managed-install.md); staging is not a
+protected-mode or boot-time acceptance guarantee.
 
 `packages/server/src/project-egress-fence.ts` owns generation-specific nftables
 tables in the host namespace. It is not a sandbox-facing HTTP/Unix API. Callers

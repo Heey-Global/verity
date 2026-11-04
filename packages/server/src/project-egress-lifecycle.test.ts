@@ -219,3 +219,24 @@ it('counts refresh work toward renewal cadence without overlapping requests', as
     vi.useRealTimers();
   }
 });
+
+it('probes health without creating networks, registering projects or renewing leases', async () => {
+  const h = fixture();
+  await expect(h.lifecycle.health()).resolves.toEqual({
+    available: false,
+    reason: 'packet_enforcement_unavailable',
+  });
+  expect(h.apply).not.toHaveBeenCalled();
+  expect(h.starts).not.toHaveBeenCalled();
+  expect(h.createEgressNetwork).not.toHaveBeenCalled();
+  const command = vi.fn(async () => ({
+    state: 'health' as const,
+    protocolVersion: 1 as const,
+    packetEnforcement: true,
+  }));
+  const lifecycle = new ProjectEgressLifecycle(command, {});
+  expect(await lifecycle.available()).toBe(true);
+  expect(command).toHaveBeenCalledExactlyOnceWith({ operation: 'health' });
+  await lifecycle.close();
+  expect(await lifecycle.health()).toEqual({ available: false, reason: 'host_not_ready' });
+});

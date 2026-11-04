@@ -23,6 +23,7 @@ const hostname = z
   .max(253)
   .regex(/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/u);
 export const projectEgressHostRequest = z.discriminatedUnion('operation', [
+  z.strictObject({ operation: z.literal('health') }),
   z.strictObject({ operation: z.literal('current'), projectId: identity }),
   z.strictObject({ operation: z.literal('register'), binding: networkBinding }),
   z.strictObject({ operation: z.literal('prepare'), ...reference }),
@@ -39,6 +40,11 @@ export const projectEgressHostRequest = z.discriminatedUnion('operation', [
   z.strictObject({ operation: z.literal('resolve-direct'), ...reference, name: hostname }),
 ]);
 export const projectEgressHostResponse = z.discriminatedUnion('state', [
+  z.strictObject({
+    state: z.literal('health'),
+    protocolVersion: z.literal(1),
+    packetEnforcement: z.boolean(),
+  }),
   z.strictObject({
     state: z.literal('current'),
     projectId: identity,
@@ -104,6 +110,8 @@ export interface ProjectEgressHostEnforcement {
   requestDirect?(binding: ProjectEgressNetworkBinding, name: string): void;
 }
 interface Dependencies {
+  /** Read-only checks; must not renew admission or mutate rules. */
+  verifyHealth?(): Promise<void>;
   bootId?: string;
   enforcement?: ProjectEgressHostEnforcement;
   save(state: ProjectEgressHostState): Promise<void>;
@@ -369,11 +377,23 @@ export class ProjectEgressHost {
           : { state: 'unresolved', generation: request.generation },
       );
     }
-    if (request.operation !== 'current' && request.operation !== 'refresh-direct')
+    if (
+      request.operation !== 'current' &&
+      request.operation !== 'health' &&
+      request.operation !== 'refresh-direct'
+    )
       this.deps.enforcement?.invalidate(
         request.operation === 'register' ? request.binding : request,
       );
     return this.serialize(async () => {
+      if (request.operation === 'health') {
+        await this.deps.verifyHealth?.();
+        return {
+          state: 'health',
+          protocolVersion: 1,
+          packetEnforcement: this.deps.enforcement !== undefined,
+        };
+      }
       if (request.operation === 'current') {
         const record = this.state.records.find(
           (record) => !record.retired && record.binding.projectId === request.projectId,

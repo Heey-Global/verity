@@ -320,10 +320,12 @@ off, exposed through `GET /settings` and administrator-only `PATCH /settings`.
 The app control is Settings → App & Server → Network protection. It saves the
 confirmed setting without requesting container recreation; an unavailable host
 blocks enabling, while disabling remains available. Older servers show an update
-requirement. The Server reaches
-the host egress service only when `VERITY_PROJECT_EGRESS_SOCKET` and
-`VERITY_PROJECT_EGRESS_KEY_PATH` are set (`deploy/docker-compose.egress.yml`);
-otherwise the setting reports unavailable and refuses to be enabled (409).
+requirement. Managed installation and updates configure the host control socket
+and key automatically; no environment variables or Compose overlay need to be
+configured by the user. Enabling requires a fresh authenticated host readiness
+check; otherwise it returns a sanitized unavailable reason (409). Native profile
+acceptance remains required before protection is usable. See
+[managed provisioning](project-egress-managed-install.md).
 
 - Each new container generation reads the switch. On: the generation is fenced
   through the host; a missing or unreachable host service fails the start closed.

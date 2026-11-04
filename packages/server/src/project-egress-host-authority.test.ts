@@ -4,6 +4,7 @@ import {
   egressHostDestinationAllowed,
   egressHostDirectChecks,
   readEgressHostConfiguration,
+  verifyEgressHostAuthorityReady,
 } from './project-egress-host-authority.js';
 const fs = vi.hoisted(() => ({ open: vi.fn(), lstat: vi.fn(), realpath: vi.fn() }));
 vi.mock('node:fs/promises', async (importOriginal) => ({
@@ -119,4 +120,20 @@ it('admits any non-broker host at unprotected, allowed addresses', async () => {
   expect(await checks.destinationAllowed('10.0.0.1')).toBe(false);
   const absent = egressHostDirectChecks(undefined, { allows: () => true }, allowed);
   expect(await absent.directTargetAllowed('downloads.example.com')).toBe(false);
+});
+
+it('denies all direct grants and readiness until the managed mandatory inventory is complete', async () => {
+  const config = egressHostAuthority.parse({
+    databaseUrl: 'postgres://fixture@localhost/verity',
+    dnsServers: ['1.1.1.1'],
+    managedInventoryComplete: false,
+  });
+  const checks = egressHostDirectChecks(config, { allows: () => true }, async () => true);
+  expect(await checks.directTargetAllowed('unclassified-private-broker.example.net')).toBe(false);
+  expect(() => verifyEgressHostAuthorityReady(config)).toThrow();
+  expect(() => verifyEgressHostAuthorityReady(undefined)).toThrow();
+  // Explicit fixture configurations remain compatible; the managed producer sets false.
+  expect(() =>
+    verifyEgressHostAuthorityReady({ ...config, managedInventoryComplete: undefined }),
+  ).not.toThrow();
 });

@@ -897,6 +897,7 @@ export const veritySettingsSchema = z.object({
   /** System-wide network protection, and whether this host's egress service answers. */
   projectEgressEnabled: z.boolean().optional(),
   projectEgressAvailable: z.boolean().optional(),
+  projectEgressStatus: z.object({ available: z.boolean(), reason: z.string().max(64) }).optional(),
   uplinkInstallationId: z.string().nullable(),
   transcribeBaseUrl: z.string().nullable(),
   transcribeModel: z.string().nullable(),

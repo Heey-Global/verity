@@ -1524,6 +1524,17 @@ describe('VerityClient.settings', () => {
     expect(calls[0]?.init?.method).toBe('GET');
   });
 
+  it('accepts structured network protection reasons and older servers without diagnostics', async () => {
+    const projectEgressStatus = { available: false, reason: 'runtime_unsupported' };
+    const { fetch } = fakeFetchSequence(
+      json({ settings: { ...settings, projectEgressStatus } }),
+      json({ settings }),
+    );
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    expect((await client.getVeritySettings())?.projectEgressStatus).toEqual(projectEgressStatus);
+    expect((await client.getVeritySettings())?.projectEgressStatus).toBeUndefined();
+  });
+
   it('parses safe Claude resolution status while accepting servers without it', async () => {
     const claudeCredentialStatus = { state: 'relogin_required', code: 'refresh_rejected' };
     const { fetch } = fakeFetchSequence(

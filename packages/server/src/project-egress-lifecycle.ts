@@ -1,3 +1,4 @@
+import { projectEgressFailure, type ProjectEgressHealth } from './project-egress-health.js';
 import { createHash } from 'node:crypto';
 import type { DockerClient } from './docker.js';
 import type { InternalConnectionIdentity } from './internal-listener.js';
@@ -53,14 +54,20 @@ export class ProjectEgressLifecycle {
     };
     await tick();
   }
-  /** Whether the host egress service answers with packet enforcement. A read-only probe:
-   * `current` for a reserved project id alters no rules and renews nothing. */
+  /** Authenticated read-only readiness; never registers a project or renews authority. */
   async available(): Promise<boolean> {
-    if (this.closed) return false;
+    return (await this.health()).available;
+  }
+  async health(): Promise<ProjectEgressHealth> {
+    if (this.closed) return { available: false, reason: 'host_not_ready' };
     try {
-      return await this.requiresFreshWakeGeneration('verity-availability-probe');
-    } catch {
-      return false;
+      const response = await this.command({ operation: 'health' });
+      if (response.state !== 'health') return { available: false, reason: 'protocol_mismatch' };
+      return response.packetEnforcement
+        ? { available: true, reason: 'ready' }
+        : { available: false, reason: 'packet_enforcement_unavailable' };
+    } catch (error) {
+      return projectEgressFailure(error);
     }
   }
   async requiresFreshWakeGeneration(projectId: string): Promise<boolean> {

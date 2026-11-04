@@ -449,6 +449,9 @@ export async function hostRuntimePreparationReady(
   requestDir = HOST_RUNTIME_REQUEST_DIR,
 ): Promise<boolean> {
   const labels = await docker.inspectImageLabels?.(targetDigest);
+  // Runtime registrations cannot prove that a disconnected host firewall
+  // transaction finished. Only its operation-bound provisioning retry can.
+  if (labels?.['org.verity.project-egress-provisioning'] !== undefined) return false;
   const raw = labels?.[HOST_RUNTIME_SERVICE_LABEL];
   if (raw === undefined) return false;
   const wanted = parseRuntimeServiceRequirements(JSON.parse(raw));

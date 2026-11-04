@@ -10,7 +10,10 @@ import {
 } from '../../components/settings/SettingsChrome';
 import { Text } from '../../components/ui';
 import { createVerityClient } from '../../lib/client';
-import { networkProtectionStatus } from '../../lib/networkProtection';
+import {
+  networkProtectionStatus,
+  networkProtectionUnavailableReason,
+} from '../../lib/networkProtection';
 import {
   retryFailedVeritySettings,
   saveVeritySettings,
@@ -70,8 +73,8 @@ function NetworkProtectionView({ client }: { client: VerityClient }) {
         </Text>
         {supported && settings?.projectEgressAvailable === false ? (
           <Text tone="muted">
-            The host service is not installed or cannot be reached. You can turn protection off, but
-            cannot turn it on until the service is available.
+            {networkProtectionUnavailableReason(settings)} You can turn protection off, but cannot
+            turn it on until the service is available.
           </Text>
         ) : null}
         {settings !== null && !supported ? (

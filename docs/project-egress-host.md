@@ -1,8 +1,11 @@
 # Project egress host controller
 
-Status: experimental, deny-only host foundation. This is not a production
-protected-mode implementation. The installer and Server do not enable or invoke
-it. The existing policy APIs and account/action permissions are unchanged.
+Status: experimental host enforcement. Managed releases now stage host assets,
+configuration and server control wiring automatically; native installation
+acceptance remains required before production protection is available. See
+[managed provisioning](project-egress-managed-install.md) for the installation,
+update and readiness contract. Earlier fixture-only milestones below describe
+their own evidence boundaries; they do not certify production activation.
 
 ## Authority and protocol
 
