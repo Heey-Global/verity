@@ -1758,7 +1758,7 @@ export default function MeetingScreen() {
             const tone =
               item.speaker === null ? colors.textFaint : speakerTone(colors, item.speaker);
             return (
-              <View style={startsTurn && index > 0 ? styles.turnGap : null}>
+              <View style={startsTurn && index > 0 ? styles.turnGap : undefined}>
                 {startsTurn ? (
                   <View style={styles.turnHead}>
                     <SpeakerAvatar
