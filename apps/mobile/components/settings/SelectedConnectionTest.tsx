@@ -539,7 +539,7 @@ export function SelectedConnectionTest({
       operation.current = null;
       setBusy(false);
       setPhase('Preparing');
-      setMessage('Finish the long test first.');
+      setMessage('Finish or wait for the long test first.');
       return;
     }
     let stage: 'stop' | 'storage' = 'stop';

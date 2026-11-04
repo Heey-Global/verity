@@ -162,8 +162,9 @@ export function useHold(persistKey: string | null) {
         const value = raw === null ? 0 : Number(raw);
         // A deadline beyond the longest possible wait is corrupt; ignore it.
         if (live && Number.isFinite(value) && value <= Date.now() + MAXIMUM_HOLD_MS) {
-          until.current = value;
-          setLeft(Math.max(0, Math.ceil((value - Date.now()) / 1000)));
+          // A hold set while this read was pending is newer; never shorten it.
+          until.current = Math.max(until.current, value);
+          setLeft(Math.max(0, Math.ceil((until.current - Date.now()) / 1000)));
         }
       } catch {
         /* An unreadable deadline must not block testing forever. */

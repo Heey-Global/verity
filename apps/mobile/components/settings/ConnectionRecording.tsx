@@ -952,7 +952,7 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
                 onPress={() => void collect()}
               />
             ) : null}
-            {archivedRun && problemReport ? (
+            {(archivedRun || awaitingCollection) && problemReport ? (
               <Button
                 label="Share report"
                 variant={problemStopConfirmed ? 'secondary' : 'primary'}

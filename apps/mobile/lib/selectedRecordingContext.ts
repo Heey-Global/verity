@@ -10,10 +10,13 @@ import { getServerProfile } from './serverProfile';
  * direct connection, so an unfinished test can still be discarded without one.
  */
 export async function assertNativeTunnelInactive() {
-  const native = requireNativeModule<{
-    isActive(): Promise<boolean>;
-    isSupported(): Promise<boolean>;
-  }>('VerityRemoteControlTunnel');
+  let native: { isActive(): Promise<boolean>; isSupported(): Promise<boolean> };
+  try {
+    native = requireNativeModule('VerityRemoteControlTunnel');
+  } catch {
+    // Web, Expo Go or an older build: no native tunnel exists to be active.
+    throw new Error('Native connection test unsupported.');
+  }
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     await Promise.race([

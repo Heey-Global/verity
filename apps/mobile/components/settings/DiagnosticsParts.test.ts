@@ -1,4 +1,6 @@
-import { completeness, formatReportTime, testName } from './DiagnosticsParts';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { act, renderHook, waitFor } from '@testing-library/react-native';
+import { completeness, formatReportTime, testName, useHold } from './DiagnosticsParts';
 
 const now = new Date(2026, 10, 4, 21, 30);
 const at = (...parts: [number, number, number, number, number]) => new Date(...parts).toISOString();
@@ -27,4 +29,33 @@ it('names report types from older versions instead of rendering undefined', () =
   expect(testName('quick_test')).toBe('Quick test');
   expect(testName('problem_recording')).toBe('Long test');
   expect(testName('something_older')).toBe('Connection test');
+});
+it('keeps a hold set while the stored deadline is still being read', async () => {
+  const getItem = jest.mocked(AsyncStorage.getItem).getMockImplementation()!;
+  let release!: () => void;
+  const pending = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  jest
+    .mocked(AsyncStorage.getItem)
+    .mockImplementation(async (name: string) => pending.then(() => getItem(name)));
+  try {
+    const { result } = renderHook(() => useHold('verity.test.hold'));
+    // Unread storage holds conservatively.
+    expect(result.current[2]()).toBe(true);
+    await act(async () => {
+      await result.current[1](Date.now() + 40_000);
+    });
+    // The older stored value (absent here) arrives last and must not shorten it.
+    await AsyncStorage.removeItem('verity.test.hold');
+    await act(async () => {
+      release();
+      await pending;
+    });
+    await waitFor(() => expect(result.current[3]).toBe(true));
+    expect(result.current[2]()).toBe(true);
+    expect(result.current[0]).toBeGreaterThan(30);
+  } finally {
+    jest.mocked(AsyncStorage.getItem).mockImplementation(getItem);
+  }
 });

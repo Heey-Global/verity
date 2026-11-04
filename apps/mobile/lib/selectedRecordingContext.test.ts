@@ -1,6 +1,10 @@
 const mockActive = jest.fn();
+let mockModuleMissing = false;
 jest.mock('expo-modules-core', () => ({
-  requireNativeModule: () => ({ isSupported: async () => true, isActive: () => mockActive() }),
+  requireNativeModule: () => {
+    if (mockModuleMissing) throw new Error("Cannot find native module 'VerityRemoteControlTunnel'");
+    return { isSupported: async () => true, isActive: () => mockActive() };
+  },
 }));
 const mockFetch = jest.fn();
 const mockToken = jest.fn();
@@ -15,7 +19,7 @@ jest.mock('expo-crypto', () => ({
   CryptoDigestAlgorithm: { SHA256: 'SHA-256' },
   digestStringAsync: async () => 'a'.repeat(64),
 }));
-import { selectedRecordingContext } from './selectedRecordingContext';
+import { assertNativeTunnelInactive, selectedRecordingContext } from './selectedRecordingContext';
 const remote = {
   installationId: 'installation',
   installationHandle: 'h'.repeat(22),
@@ -92,5 +96,16 @@ it('bounds an unresponsive native status query', async () => {
     await pending;
   } finally {
     jest.useRealTimers();
+  }
+});
+
+it('reports a missing native module as unsupported so a stale test can still be discarded', async () => {
+  mockModuleMissing = true;
+  try {
+    await expect(assertNativeTunnelInactive()).rejects.toThrow(
+      'Native connection test unsupported.',
+    );
+  } finally {
+    mockModuleMissing = false;
   }
 });
