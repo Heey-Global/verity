@@ -2909,6 +2909,21 @@ describe('managed public links', () => {
     };
   }
 
+  it.each([false, true])(
+    'takes managed forwarding offline when sandbox inspection fails (running: %s)',
+    async (running) => {
+      const f = managedFixture();
+      if (running) f.run();
+      f.docker.inspectContainer.mockRejectedValueOnce(new Error('inspection unavailable'));
+      await f.manager.reconcile();
+      expect(f.docker.removeContainer).toHaveBeenCalledWith('connector-id');
+      expect(f.docker.createContainer).toHaveBeenLastCalledWith(
+        expect.objectContaining({ env: expect.arrayContaining(['VERITY_PREVIEW_OFFLINE=1']) }),
+      );
+      expect(f.share().state).toBe('active');
+    },
+  );
+
   it('revokes managed links on protected generations even while the managed instance is stopped', async () => {
     const f = managedFixture();
     const original = f.docker.inspectContainer.getMockImplementation()!;

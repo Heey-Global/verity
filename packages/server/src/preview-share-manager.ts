@@ -1246,7 +1246,7 @@ export class PreviewShareManager {
     }
     const sandbox =
       project.state === 'active'
-        ? await this.options.docker.inspectContainer(project.containerName)
+        ? await this.options.docker.inspectContainer(project.containerName).catch(() => undefined)
         : undefined;
     try {
       if (sandbox) assertPreviewNetworkSupported(sandbox);
