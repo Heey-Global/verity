@@ -3982,7 +3982,7 @@ export class EventStore implements EventSink {
   }
 
   async finishSessionDeletionCleanup(sessionId: string): Promise<void> {
-    await this.withSessionDeletionCleanup(sessionId, async () => true);
+    await this.withSessionDeletionCleanup(sessionId, () => Promise.resolve(true));
   }
 
   /** Hold cross-Server cleanup ownership without a transaction around host I/O.
