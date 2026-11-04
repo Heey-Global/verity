@@ -19,6 +19,10 @@ function fixture(
     failProbe?: boolean;
     crash?: boolean;
     failMount?: boolean;
+    /** `ps` lists a short-lived container that is gone by the time it is inspected. */
+    vanished?: boolean;
+    /** Inspecting a listed, still-present container fails for another reason. */
+    failInspect?: boolean;
   } = {},
 ) {
   const root = mkdtempSync(join(tmpdir(), 'snapshotter-'));
@@ -42,7 +46,15 @@ function fixture(
     writeFileSync(join(bin, name), '#!/usr/bin/env bash\nset -e\n' + body, { mode: 0o755 });
   tool(
     'docker',
-    `if [[ $1 == ps ]]; then echo client; else printf '%s' '{"admission":"${options.legacy ? '0' : '1'}","mounts":[{"Source":"${run}","Destination":"/run/verity-buildkit","RW":true}]}'; fi\n`,
+    `if [[ $1 == ps && " $* " == *' --filter '* ]]; then
+  ${options.failInspect ? 'echo stuck' : 'true'}
+elif [[ $1 == ps ]]; then
+  echo client; ${options.vanished ? 'echo gone' : 'true'}; ${options.failInspect ? 'echo stuck' : 'true'}
+elif [[ \${!#} == gone ]]; then
+  echo 'Error response from daemon: No such object: gone' >&2; exit 1
+elif [[ \${!#} == stuck ]]; then
+  echo 'Error response from daemon: context deadline exceeded' >&2; exit 1
+else printf '%s' '{"admission":"${options.legacy ? '0' : '1'}","mounts":[{"Source":"${run}","Destination":"/run/verity-buildkit","RW":true}]}'; fi\n`,
   );
   tool('df', 'printf "Avail\\n32212254720\\n"\n');
   tool('unshare', options.failMount ? 'exit 1\n' : 'exit 0\n');
@@ -95,6 +107,21 @@ esac\n`,
       expect(readFileSync(join(f.config, 'buildkitd.toml'), 'utf8')).toBe(f.previous);
     },
   );
+  it('ignores a client that exits between listing and inspection', () => {
+    const f = fixture({ vanished: true });
+    expect(f.invoke('init').status).toBe(0);
+    const drained = f.invoke('drained');
+    expect(drained.status, drained.stderr).toBe(0);
+    expect(f.invoke().status).toBe(0);
+    expect(f.status().state).toBe('converged');
+  });
+  it('still blocks on a client that is present but cannot be inspected', () => {
+    const f = fixture({ failInspect: true });
+    expect(f.invoke('init').status).toBe(0);
+    const drained = f.invoke('drained');
+    expect(drained.status).not.toBe(0);
+    expect(drained.stderr).toContain('incompatible or unverifiable builder client');
+  });
   it('accepts null usage from an empty real BuildKit worker', () => {
     const f = fixture({ usage: 'null' });
     expect(f.invoke('init').status).toBe(0);

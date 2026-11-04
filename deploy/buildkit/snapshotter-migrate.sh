@@ -122,7 +122,11 @@ clients_compatible() {
     local ids id metadata
     ids=$(timeout 10 docker ps -q) || return 1
     for id in $ids; do
-        metadata=$(timeout 5 docker inspect --format '{"mounts":{{json .Mounts}},"admission":{{json (index .Config.Labels "org.verity.build-admission")}}}' "$id") || return 1
+        if ! metadata=$(timeout 5 docker inspect --format '{"mounts":{{json .Mounts}},"admission":{{json (index .Config.Labels "org.verity.build-admission")}}}' "$id" 2>/dev/null); then
+            # container_gone comes from native-retire.sh, sourced before any dispatch.
+            container_gone "$id" && continue
+            return 1
+        fi
         [[ ${#metadata} -le 262144 ]] || return 1
         jq -e 'type == "object" and (.mounts | type == "array")' <<< "$metadata" >/dev/null || return 1
         # A parent bind also exposes the socket. Unknown consumers defer migration.
