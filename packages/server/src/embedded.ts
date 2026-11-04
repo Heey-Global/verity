@@ -766,6 +766,7 @@ export interface EmbeddedServerConfig {
   /** Host egress service control socket and key file. Both present → network protection
    *  becomes available; whether it applies is the system-wide `projectEgressEnabled` setting. */
   projectEgressSocketPath?: string | undefined;
+  projectEgressProvisioningPending?: boolean | undefined;
   projectEgressKeyPath?: string | undefined;
   diagnosticServerContainerId?: string | undefined;
   hostDiagnosticSnapshotPath?: string | undefined;
@@ -3074,6 +3075,7 @@ export async function buildEmbeddedServer(
         readFileSync(join(dirname(config.projectEgressSocketPath), 'status.json'), 'utf8'),
       ) as unknown;
     },
+    () => config.projectEgressProvisioningPending === true,
   );
   let provisioner: ProvisionerImpl | undefined;
   let stopNativeEvidence: (() => void) | undefined;

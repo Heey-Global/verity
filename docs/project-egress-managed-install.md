@@ -97,3 +97,31 @@ Related contracts: [host controller](project-egress-host.md),
 [packet deadlines](project-egress-deadlines.md),
 [enforcement](project-egress-enforcement.md), and
 [managed update authority](adr/0008-verity-server-self-update.md).
+
+## Retrofitting installations that crossed the compatibility release
+
+An update from an image without `org.verity.project-egress-deployment=1` cannot
+admit the privileged provisioning step. It first installs the compatibility
+contract. The next targeted repair update uses that now-installed image to
+verify the signed target and admit the bounded helper. Missing admission is not
+permission to run the target helper directly. No manual host command is part of
+this recovery path.
+
+The updater logs whether provisioning was skipped because the installed image
+cannot admit it or because the target does not implement it. Managed servers
+without socket wiring report `provisioning_pending`; self-managed servers keep
+`not_configured`. This is an outage explanation, never evidence of readiness.
+Root-owned installation diagnostics may also explain an in-progress operation,
+unsupported runtime, incomplete inventory or controller failure. A successful
+provisioning job still requires a fresh authenticated health check before the
+switch can be enabled.
+
+On the repair update, provisioning precedes standby creation and sealed socket
+and key mount migration. The update does not enable the switch or recreate
+project containers. Accepted native profiles and complete destination inventory
+remain release prerequisites: this repair does not certify either by itself.
+After release and an authorized live update, verify the running release digest,
+active host unit, authenticated health, socket, key permissions and read-only
+server mounts, then use an isolated project to verify allowed and denied traffic
+while observing existing workloads. Preserve independent dual-stack packet
+evidence. A passed image smoke test is not this production acceptance.

@@ -215,26 +215,102 @@ def refresh_authority(root=Path('/'), run=base.command):
     base.atomic_file(authority_path, (json.dumps(authority) + '\n').encode(), 0o600)
 
 
+TRANSACTION_FILES = frozenset((*base.UNITS.values(),
+    'usr/local/libexec/verity/project-egress-managed.py',
+    'usr/local/libexec/verity/project-egress-install.py',
+    'etc/verity-egress/relay.json', 'etc/verity-egress/authority.json',
+    'etc/verity-egress/database.json'))
+JOURNAL = 'var/lib/verity-egress/install-transaction.json'
+
+
+def verified_release(root, target):
+    release = Path(target)
+    if release.parent != root / 'opt/verity-egress-releases' or not re.fullmatch('[a-f0-9]{64}', release.name):
+        raise ValueError('Managed release link is untrusted')
+    files = {}
+    for name in ASSETS:
+        path = release / name
+        info = path.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o222:
+            raise ValueError('Managed release asset is untrusted')
+        files[name] = path.read_bytes()
+    prepare_release(release, files)
+    if base.digest(b''.join(name.encode() + files[name] for name in ASSETS)) != release.name:
+        raise ValueError('Managed release identity no longer matches its content')
+    return release
+
+
+def clear_transaction(root):
+    (root / JOURNAL).unlink()
+    base.sync_directory((root / JOURNAL).parent)
+
+
+def recover_transaction(root, run):
+    """Under install.lock, retain denial before restoring an interrupted replacement."""
+    journal = root / JOURNAL
+    if not journal.exists() and not journal.is_symlink():
+        return False
+    raw = private_file(journal)
+    if len(raw) > 4 * 1024 * 1024:
+        raise ValueError('Managed transaction journal is too large')
+    value = json.loads(raw)
+    if (not isinstance(value, dict) or set(value) != {'version', 'previous', 'target', 'snapshots'}
+            or value['version'] != 1 or not isinstance(value['snapshots'], dict)
+            or not set(value['snapshots']) <= TRANSACTION_FILES
+            or not (TRANSACTION_FILES - {'etc/verity-egress/database.json'}) <= set(value['snapshots'])):
+        raise ValueError('Invalid managed transaction journal')
+    release = verified_release(root, value['target'])
+    previous = value['previous']
+    if previous is not None:
+        verified_release(root, previous)
+    snapshots = {}
+    for relative, data in value['snapshots'].items():
+        if data is not None and (not isinstance(data, str) or not re.fullmatch('[a-f0-9]*', data)
+                                 or len(data) % 2):
+            raise ValueError('Invalid managed transaction snapshot')
+        path = root / relative
+        base.trusted_parent(path, root)
+        if path.exists() or path.is_symlink():
+            info = path.lstat()
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o022:
+                raise ValueError('Untrusted managed recovery destination')
+        snapshots[relative] = None if data is None else bytes.fromhex(data)
+    current = root / 'opt/verity-egress'
+    base.trusted_parent(current, root)
+    if ((current.exists() or current.is_symlink()) and
+            (not current.is_symlink() or os.readlink(current) not in (previous, str(release)))):
+        raise ValueError('Managed recovery release identity changed')
+    base.stop_controller(run)
+    # A failed deny leaves the durable journal intact and prohibits restoration.
+    run('/usr/bin/flock', '--exclusive', '--timeout', '15',
+        '/var/lib/verity-egress/service.lock', str(release / 'node'),
+        str(release / 'project-egress-host-main.mjs'), 'deny')
+    for relative, data in snapshots.items():
+        path = root / relative
+        if data is None:
+            path.unlink(missing_ok=True)
+            if path.parent.exists():
+                base.sync_directory(path.parent)
+        else:
+            base.atomic_file(path, data, 0o600 if relative.startswith('etc/verity-egress/') else 0o644)
+    if previous is None:
+        current.unlink(missing_ok=True)
+        base.sync_directory(current.parent)
+    else:
+        base.switch_link(current, previous)
+    run('/usr/bin/systemctl', 'daemon-reload')
+    # Leave the compatible controller stopped until fresh admission on a retry.
+    clear_transaction(root)
+    return True
+
+
 def activate(root, run, release, files, configs, gid):
     current = root / 'opt/verity-egress'
     if current.exists() and not current.is_symlink():
         raise ValueError('Unmanaged egress installation requires migration')
     old_target = os.readlink(current) if current.is_symlink() else None
     if old_target is not None:
-        previous = Path(old_target)
-        if previous.parent != release.parent or not re.fullmatch('[a-f0-9]{64}', previous.name):
-            raise ValueError('Current managed release link is untrusted')
-        previous_files = {}
-        for name in ASSETS:
-            path = previous / name
-            info = path.lstat()
-            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
-                    or info.st_mode & 0o222):
-                raise ValueError('Previous managed release asset is untrusted')
-            previous_files[name] = path.read_bytes()
-        prepare_release(previous, previous_files)
-        if base.digest(b''.join(name.encode() + previous_files[name] for name in ASSETS)) != previous.name:
-            raise ValueError('Previous managed release identity no longer matches its content')
+        verified_release(root, old_target)
     helpers = {'usr/local/libexec/verity/project-egress-managed.py': Path(__file__).read_bytes(),
                'usr/local/libexec/verity/project-egress-install.py': Path(base.__file__).read_bytes()}
     changes = {**unit_files(files, gid), **helpers, **configs}
@@ -253,6 +329,17 @@ def activate(root, run, release, files, configs, gid):
     deny = ('/usr/bin/flock', '--exclusive', '--timeout', '15',
             '/var/lib/verity-egress/service.lock', str(release / 'node'),
             str(release / 'project-egress-host-main.mjs'), 'deny')
+    journal = root / JOURNAL
+    if journal.exists() or journal.is_symlink():
+        raise ValueError('Managed transaction requires recovery')
+    transaction = {'version': 1, 'previous': old_target, 'target': str(release),
+                   'snapshots': {name: None if data is None else data.hex()
+                                 for name, data in snapshots.items()}}
+    data = (json.dumps(transaction, sort_keys=True) + '\n').encode()
+    if len(data) > 4 * 1024 * 1024:
+        raise ValueError('Managed transaction journal is too large')
+    # The old authority is durable before any service, link, unit or config mutation.
+    base.atomic_file(journal, data, 0o600)
     try:
         base.stop_controller(run)
         run(*deny)
@@ -265,27 +352,9 @@ def activate(root, run, release, files, configs, gid):
         run('/usr/bin/systemctl', 'start', SERVICE)
         run('/usr/bin/systemctl', 'is-active', '--quiet', SERVICE)
     except Exception:
-        try:
-            base.stop_controller(run)
-        finally:
-            # If denial cannot be established, stop here without a false safe rollback.
-            run(*deny)
-        for relative, data in snapshots.items():
-            path = root / relative
-            if data is None:
-                path.unlink(missing_ok=True)
-                base.sync_directory(path.parent)
-            else:
-                base.atomic_file(path, data, 0o600 if relative in configs else 0o644)
-        if old_target is None:
-            current.unlink(missing_ok=True)
-            base.sync_directory(current.parent)
-        else:
-            base.switch_link(current, old_target)
-        run('/usr/bin/systemctl', 'daemon-reload')
-        # The managed drop-in never Upholds the controller: leave it stopped
-        # with denial intact until a verified retry.
+        recover_transaction(root, run)
         raise
+    clear_transaction(root)
 
 
 def provision(source, relay=None, authority=None, gid=65531, root=Path('/'), run=base.command,
@@ -331,6 +400,13 @@ def provision(source, relay=None, authority=None, gid=65531, root=Path('/'), run
         release = root / 'opt/verity-egress-releases' / identity
         base.trusted_parent(release / 'entry', root)
         prepare_release(release, files)
+        # Recovery precedes preflight, including retries on a now-unsupported host.
+        write_status(root, gid, 'provisioning_in_progress')
+        try:
+            recover_transaction(root, run)
+        except Exception:
+            write_status(root, gid, 'controller_failed')
+            raise
         # tmpfiles recreates the bind-mounted runtime path at boot, even while the
         # native profile remains unsupported and the controller stays disabled.
         tmpfiles = root / 'etc/tmpfiles.d/verity-egress.conf'

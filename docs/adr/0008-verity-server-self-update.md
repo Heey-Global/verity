@@ -1550,3 +1550,22 @@ profile gate is retained. Compatibility delivery to older updater versions and
 rollback over protected generations require explicit transition tests before
 production rollout. See [managed provisioning](../project-egress-managed-install.md)
 for the complete delivery, safety and acceptance boundary.
+
+
+### Compatibility-release retrofit diagnostics and recovery
+
+An installed image without the project-egress deployment contract may only
+receive the compatibility release first. The next targeted repair update uses
+that installed image's independent signature verification and fixed provisioning
+admission; missing admission never authorizes running the target helper directly.
+Managed servers missing socket wiring expose pending provisioning and the updater
+logs a fixed skip reason. Root-owned installation diagnostics explain failures
+but cannot establish readiness.
+
+Managed controller renewal persists its rollback snapshots and immutable release
+identities before changing the controller, link or configuration. A subsequent
+provisioner invocation recovers an interrupted transaction under the installation
+lock, establishing denial before restoring prior files and leaving the controller
+stopped. This is invocation recovery, not proof of unattended boot recovery.
+Native managed-host lifecycle acceptance and the complete destination inventory
+remain required before production activation.

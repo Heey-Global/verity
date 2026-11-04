@@ -201,6 +201,99 @@ class ManagedTests(unittest.TestCase):
         self.assertFalse(any('docker.service' in cmd or 'docker.socket' in cmd for cmd in self.calls))
         self.assertTrue(any(cmd[-1] == 'deny' for cmd in self.calls[failure + 1:]))
 
+    def crash_upgrade(self):
+        self.provision()
+        previous = (self.root / 'opt/verity-egress').resolve()
+        config = (self.root / 'etc/verity-egress/authority.json').read_bytes()
+        key = (self.root / 'etc/verity-egress/control.key').read_bytes()
+        (self.source / 'node').write_bytes(b'updated node')
+        self.manifest['node'] = managed.base.digest(b'updated node')
+        self.save_manifest()
+        self.authority.write_text('{"databaseUrl":"postgres://changed@postgres/verity"}')
+
+        def crash(*args):
+            self.execute(*args)
+            if 'is-active' in args:
+                raise KeyboardInterrupt('simulated process death')
+            return 'loaded' if 'show' in args else ''
+
+        with self.assertRaises(KeyboardInterrupt):
+            self.provision(run=crash)
+        journal = self.root / managed.JOURNAL
+        self.assertTrue(journal.exists())
+        self.assertEqual(journal.stat().st_mode & 0o777, 0o600)
+        value = json.loads(journal.read_text())
+        self.assertEqual(value['previous'], str(previous))
+        self.assertEqual((self.root / 'opt/verity-egress').resolve(), Path(value['target']))
+        self.assertNotEqual((self.root / 'etc/verity-egress/authority.json').read_bytes(), config)
+        return previous, config, key
+
+    def test_interrupted_upgrade_recovers_before_unsupported_preflight(self):
+        previous, config, key = self.crash_upgrade()
+        self.calls.clear()
+        # No in-memory activation stack survives; the next invocation reads the journal.
+        self.provision(self.unsupported)
+        self.assertEqual((self.root / 'opt/verity-egress').resolve(), previous)
+        self.assertEqual((self.root / 'etc/verity-egress/authority.json').read_bytes(), config)
+        self.assertEqual((self.root / 'etc/verity-egress/control.key').read_bytes(), key)
+        self.assertFalse((self.root / managed.JOURNAL).exists())
+        self.assertTrue(any(cmd[-1] == 'deny' for cmd in self.calls))
+        self.assertFalse(any('start' in cmd or 'docker.service' in cmd for cmd in self.calls))
+        before = list(self.calls)
+        self.provision(self.unsupported)
+        self.assertEqual(self.calls, before)
+
+    def test_recovery_denial_failure_preserves_journal_and_changed_authority(self):
+        self.crash_upgrade()
+        current = (self.root / 'opt/verity-egress').resolve()
+        config = (self.root / 'etc/verity-egress/authority.json').read_bytes()
+
+        def fail(*args):
+            self.execute(*args)
+            if args[-1] == 'deny':
+                raise RuntimeError('denial unavailable')
+            return 'loaded' if 'show' in args else ''
+
+        with self.assertRaisesRegex(RuntimeError, 'denial unavailable'):
+            self.provision(self.unsupported, run=fail)
+        self.assertTrue((self.root / managed.JOURNAL).exists())
+        self.assertEqual((self.root / 'opt/verity-egress').resolve(), current)
+        self.assertEqual((self.root / 'etc/verity-egress/authority.json').read_bytes(), config)
+        self.assertEqual(json.loads((self.root / 'run/verity-egress/status.json').read_text())['reason'],
+                         'controller_failed')
+        self.provision(self.unsupported)
+        self.assertFalse((self.root / managed.JOURNAL).exists())
+
+    def test_recovery_rejects_journal_paths_outside_fixed_destinations(self):
+        self.crash_upgrade()
+        journal = self.root / managed.JOURNAL
+        value = json.loads(journal.read_text())
+        value['snapshots']['etc/unrelated'] = b'mutated'.hex()
+        managed.base.atomic_file(journal, json.dumps(value).encode(), 0o600)
+        self.calls.clear()
+        with self.assertRaisesRegex(ValueError, 'Invalid managed transaction'):
+            self.provision(self.unsupported)
+        self.assertEqual(self.calls, [])
+        self.assertFalse((self.root / 'etc/unrelated').exists())
+        self.assertTrue(journal.exists())
+
+    def test_interrupted_first_install_removes_partial_units_after_denial(self):
+        def crash(*args):
+            self.execute(*args)
+            if 'daemon-reload' in args:
+                raise KeyboardInterrupt('simulated process death')
+            return 'loaded' if self.loaded else 'not-found'
+
+        with self.assertRaises(KeyboardInterrupt):
+            self.provision(run=crash)
+        self.calls.clear()
+        self.provision(self.unsupported)
+        self.assertFalse((self.root / 'opt/verity-egress').is_symlink())
+        self.assertFalse((self.root / managed.base.UNITS['verity-egress-host.service']).exists())
+        self.assertFalse((self.root / managed.JOURNAL).exists())
+        self.assertTrue(any(cmd[-1] == 'deny' for cmd in self.calls))
+        self.assertFalse(any('start' in cmd for cmd in self.calls))
+
     def test_unsupported_upgrade_preserves_running_bundle_units_and_config(self):
         self.provision()
         previous = (self.root / 'opt/verity-egress').resolve()

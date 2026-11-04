@@ -929,6 +929,8 @@ async function main(): Promise<void> {
       // Network protection: the host egress service's control socket and key, mounted
       // only on hosts where it is installed. Absent → the switch reports unavailable.
       projectEgressSocketPath: process.env.VERITY_PROJECT_EGRESS_SOCKET?.trim() || undefined,
+      projectEgressProvisioningPending:
+        managedDeployment && !process.env.VERITY_PROJECT_EGRESS_SOCKET?.trim(),
       projectEgressKeyPath: process.env.VERITY_PROJECT_EGRESS_KEY_PATH?.trim() || undefined,
       agentGatewayUrl: process.env.VERITY_AGENT_GATEWAY_URL?.trim() || undefined,
       agentGatewayClaudePort: parsePort(process.env.VERITY_AGENT_GATEWAY_CLAUDE_PORT, 9443),
