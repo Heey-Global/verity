@@ -527,15 +527,41 @@ describe('session explorer knowledge roots', () => {
   });
 
   it('has no knowledge folder for a session without a project', async () => {
-    const res = await app.inject({ method: 'GET', url: '/sessions/s-loose/files?root=knowledge' });
-
-    expect(res.statusCode).toBe(404);
-    // The worktree root of the same session still works, so the message must not
-    // send the operator looking for a missing session.
-    expect(res.json()).toEqual({ error: 'this session has no knowledge folder' });
+    for (const root of ['knowledge', 'documents', 'sources', 'drafts']) {
+      const res = await app.inject({ method: 'GET', url: `/sessions/s-loose/files?root=${root}` });
+      expect(res.statusCode).toBe(404);
+      expect(res.json()).toMatchObject({
+        error: 'This session is not linked to a project. Open the Wiki from a project.',
+      });
+    }
     const worktreeRoot = await app.inject({ method: 'GET', url: '/sessions/s-loose/files' });
     expect(worktreeRoot.statusCode).toBe(200);
   });
+  it('reports unavailable knowledge storage without claiming the Wiki is empty', async () => {
+    const unconfigured = buildServer({
+      eventStore: ctx.store,
+      bus: new InMemoryEventBus(),
+      conductor: {} as Conductor,
+    });
+    try {
+      const res = await unconfigured.inject('/sessions/s-knowledge/files?root=documents');
+      expect(res.statusCode).toBe(503);
+      expect(res.json()).toEqual({
+        error: 'Knowledge storage is not configured. Ask your administrator to configure it.',
+      });
+    } finally {
+      await unconfigured.close();
+    }
+  });
+
+  it('distinguishes a missing session from unavailable project knowledge', async () => {
+    const res = await app.inject({ method: 'GET', url: '/sessions/missing/files?root=documents' });
+    expect(res.statusCode).toBe(404);
+    expect(res.json()).toMatchObject({
+      error: 'Session not found. Reopen the session and try again.',
+    });
+  });
+
   it('creates and edits text in every root without overwriting create collisions', async () => {
     for (const root of ['worktree', 'knowledge', 'shared'] as const) {
       const url = '/sessions/s-knowledge/files/content';

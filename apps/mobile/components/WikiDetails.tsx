@@ -27,6 +27,12 @@ export function WikiDetails({
     return null;
   const unsupported = status?.excludedEntries?.some((entry) => entry.reason === 'unsupported');
   const legacyWarning = status?.warning && status.excludedEntries === undefined;
+  const unavailable =
+    error &&
+    (error.includes('not linked to a project') ||
+      error.includes('Knowledge storage is not configured') ||
+      error.includes('Session not found') ||
+      error.includes('this session has no knowledge folder'));
   return (
     <>
       {root !== 'documents' ? (
@@ -44,7 +50,11 @@ export function WikiDetails({
       ) : null}
       {error ? (
         <Text variant="bodySmall" tone="attention" accessibilityLiveRegion="polite">
-          The Wiki request could not be completed. Open Details for the error and try again.
+          {unavailable
+            ? error.includes('this session has no knowledge folder')
+              ? 'The Wiki is unavailable for this session. Open the Wiki from the project page; if it still fails, ask your administrator to check knowledge storage.'
+              : error
+            : 'The Wiki request could not be completed. Open Details for the error and try again.'}
         </Text>
       ) : null}
       {hasConflicts ? (
@@ -66,7 +76,7 @@ export function WikiDetails({
             disabled={disabled}
           />
         ) : null}
-        {root !== 'drafts' ? (
+        {root !== 'drafts' && !unavailable ? (
           <Row
             title="Files from other sessions"
             subtitle="Browse saved session copies, including files kept for recovery."
