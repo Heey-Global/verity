@@ -130,6 +130,7 @@ beforeEach(() => {
   mockGetAuthToken.mockReset();
   mockGetAuthToken.mockReturnValue('device-token');
   mockSetAuthToken.mockClear();
+  mockClearStoredAuthState.mockReset().mockResolvedValue();
   mockCanUseBiometricUnlock.mockReset();
   mockCanUseBiometricUnlock.mockResolvedValue(false);
   mockEnableBiometricUnlock.mockClear();
@@ -490,6 +491,30 @@ describe('onboarding master-password step', () => {
       buttons.find((button) => button.text === 'Pair again')!.onPress!();
       await waitFor(() => expect(mockReplace).toHaveBeenCalledWith('/onboarding/server-url'));
       expect(mockClearStoredAuthState).toHaveBeenCalledWith('https://verity.test:8082');
+    } finally {
+      alert.mockRestore();
+    }
+  });
+
+  it('keeps pairing recovery retryable when stored credentials cannot be removed', async () => {
+    mockLocalSearchParams = { returnTo: '/' };
+    mockClearStoredAuthState.mockRejectedValueOnce(new Error('SecureStore unavailable'));
+    mockCreateVerityClient.mockReturnValue(
+      fakeClient({
+        getSecretStatus: jest.fn<Promise<'sealed'>, []>().mockResolvedValue('sealed'),
+      }),
+    );
+    const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+    try {
+      render(<OnboardingMasterPassword />);
+      await screen.findByLabelText('Master password');
+      fireEvent.press(screen.getByLabelText('Pair this device again with a new pairing code'));
+      alert.mock.calls[0]![2]!.find((button) => button.text === 'Pair again')!.onPress!();
+      expect(await screen.findByText(/Could not remove this device/)).toBeOnTheScreen();
+      expect(mockReplace).not.toHaveBeenCalled();
+      fireEvent.press(screen.getByLabelText('Pair this device again with a new pairing code'));
+      alert.mock.calls[1]![2]!.find((button) => button.text === 'Pair again')!.onPress!();
+      await waitFor(() => expect(mockReplace).toHaveBeenCalledWith('/onboarding/server-url'));
     } finally {
       alert.mockRestore();
     }

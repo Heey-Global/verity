@@ -301,13 +301,21 @@ function MasterPasswordStep({
           style: 'destructive',
           onPress: () => {
             const baseUrl = getVerityBaseUrl();
+            setBusy(true);
+            setFieldError(undefined);
             void Promise.allSettled([
               baseUrl === null ? Promise.resolve() : clearStoredAuthState(baseUrl),
               clearPairingSession(),
-            ]).then(() => {
-              reset();
-              router.replace('/onboarding/server-url' as Href);
-            });
+            ])
+              .then((results) => {
+                if (results.some((result) => result.status === 'rejected')) {
+                  setFieldError('Could not remove this device’s saved sign-in. Try pairing again.');
+                  return;
+                }
+                reset();
+                router.replace('/onboarding/server-url' as Href);
+              })
+              .finally(() => setBusy(false));
           },
         },
       ],
