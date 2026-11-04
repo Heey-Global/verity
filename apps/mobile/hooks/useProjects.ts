@@ -44,12 +44,27 @@ export function useProjects(client: VerityClient) {
   const retryTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const loadGeneration = useRef(0);
   const focused = useRef(false);
+  const projectsDirty = useRef(true);
+  const [previewsActive, setPreviewsActive] = useState(false);
   const publishPreviews = useCallback(() => {
     const now = Date.now();
-    setPreviewUrls(
-      mergeSessionPreviewUrls(publicPreviewLinksRef.current, localPreviewLinksRef.current, now),
+    const urls = mergeSessionPreviewUrls(
+      publicPreviewLinksRef.current,
+      localPreviewLinksRef.current,
+      now,
     );
-    setPublicPreviews(publicPreviewSessionIds(publicPreviewLinksRef.current, now));
+    const publicIds = publicPreviewSessionIds(publicPreviewLinksRef.current, now);
+    setPreviewUrls((previous) =>
+      previous.size === urls.size &&
+      [...urls].every(([id, url]) => previous.has(id) && previous.get(id) === url)
+        ? previous
+        : urls,
+    );
+    setPublicPreviews((previous) =>
+      previous.size === publicIds.size && [...publicIds].every((id) => previous.has(id))
+        ? previous
+        : publicIds,
+    );
   }, []);
   const previewReads = useMemo(
     () => new PreviewReadScheduler(publishPreviews),
@@ -60,8 +75,10 @@ export function useProjects(client: VerityClient) {
       typeof client.observeReads === 'function'
         ? liveConnectionFor(client.liveBaseUrl())
         : undefined;
+    const active = focused.current && AppState.currentState === 'active';
+    setPreviewsActive(active);
     previewReads.setActive(
-      focused.current && AppState.currentState === 'active',
+      active,
       connection?.connectionState === 'connected' && connection.resourceWatching,
     );
   }, [client, previewReads]);
@@ -104,6 +121,9 @@ export function useProjects(client: VerityClient) {
   // place (no flicker); the initial load + pull-to-refresh flip it as before.
   const load = useCallback(
     async (opts?: { silent?: boolean }) => {
+      projectsDirty.current = true;
+      if (!focused.current || AppState.currentState !== 'active') return;
+      projectsDirty.current = false;
       const generation = ++loadGeneration.current;
       clearTimeout(retryTimer.current);
       if (!opts?.silent) setLoading(true);
@@ -124,15 +144,7 @@ export function useProjects(client: VerityClient) {
         );
         const finishPublish = beginClientActivity('project-list-publish');
         try {
-          const now = Date.now();
-          setPreviewUrls(
-            mergeSessionPreviewUrls(
-              publicPreviewLinksRef.current,
-              localPreviewLinksRef.current,
-              now,
-            ),
-          );
-          setPublicPreviews(publicPreviewSessionIds(publicPreviewLinksRef.current, now));
+          publishPreviews();
           const pending = new Map(
             [...pendingProjectMutations.current].filter(
               ([, entry]) => entry.generation >= generation,
@@ -154,6 +166,7 @@ export function useProjects(client: VerityClient) {
         setError(undefined); // recovered — clear any stale banner
       } catch (caught) {
         if (generation !== loadGeneration.current) return;
+        projectsDirty.current = true;
         // Keep the last-good list, but expose a failed read even when live
         // observation triggered it: unchanged resources may never notify again.
         setError(caught instanceof VerityApiError ? caught.message : 'Could not load projects');
@@ -164,8 +177,26 @@ export function useProjects(client: VerityClient) {
         if (generation === loadGeneration.current) setLoading(false);
       }
     },
-    [client],
+    [client, publishPreviews],
   );
+
+  // Retain invalidations while hidden, and reject responses admitted before blur.
+  // Foreground catch-up also covers servers that cannot watch resources reliably.
+  useEffect(() => {
+    let previousState = AppState.currentState;
+    const listener = AppState.addEventListener('change', (state) => {
+      if (state === previousState) return;
+      previousState = state;
+      if (state !== 'active') {
+        projectsDirty.current = true;
+        loadGeneration.current += 1;
+        clearTimeout(retryTimer.current);
+      } else if (focused.current && projectsDirty.current) {
+        void load({ silent: true });
+      }
+    });
+    return () => listener.remove();
+  }, [load]);
 
   useEffect(() => {
     if (failures === 0) return;
@@ -177,27 +208,25 @@ export function useProjects(client: VerityClient) {
         retry,
         Math.min(1_000 * 2 ** Math.min(failures - 1, 4), 15_000),
       );
-    const listener = AppState.addEventListener('change', (state) => {
-      clearTimeout(retryTimer.current);
-      if (state === 'active') retry();
-    });
     return () => {
       clearTimeout(retryTimer.current);
-      listener.remove();
     };
   }, [failures, load]);
 
-  // Refetch project membership on return, while retained resource watches track
-  // dirty preview sources. Refocusing must not rebuild every share subscription.
+  // Refresh on return: hidden overview watches must not keep server polling alive.
   const loadedOnce = useRef(false);
   useFocusEffect(
     useCallback(() => {
-      void load(loadedOnce.current ? { silent: true } : undefined);
       focused.current = true;
+      void load(loadedOnce.current ? { silent: true } : undefined);
       activatePreviews();
       loadedOnce.current = true;
       return () => {
         focused.current = false;
+        projectsDirty.current = true;
+        loadGeneration.current += 1;
+        clearTimeout(retryTimer.current);
+        setPreviewsActive(false);
         previewReads.setActive(false);
       };
     }, [load, activatePreviews, previewReads]),
@@ -228,7 +257,7 @@ export function useProjects(client: VerityClient) {
     };
   }, [client, previewReads]);
   useEffect(() => {
-    const projectIds = JSON.parse(activeProjectIds) as string[];
+    const projectIds = previewsActive ? (JSON.parse(activeProjectIds) as string[]) : [];
     const wanted = new Set(projectIds);
     for (const [path, entry] of shareSubscriptions.current) {
       if (!wanted.has(entry.projectId)) {
@@ -266,7 +295,12 @@ export function useProjects(client: VerityClient) {
         });
       }
     }
-  }, [client, activeProjectIds, previewReads]);
+  }, [client, activeProjectIds, previewReads, previewsActive]);
+
+  const refresh = useCallback(() => {
+    previewReads.invalidate();
+    return load();
+  }, [load, previewReads]);
 
   return {
     projects,
@@ -277,9 +311,6 @@ export function useProjects(client: VerityClient) {
     loading,
     error,
     listState: error ? ('error' as const) : hasLoaded ? ('ready' as const) : ('loading' as const),
-    refresh: () => {
-      previewReads.invalidate();
-      return load();
-    },
+    refresh,
   };
 }

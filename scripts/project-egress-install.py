@@ -90,7 +90,8 @@ def private_config(root, name):
     return path
 
 
-def preflight(root, run=command):
+def runtime_preflight(root, run=command, node_path='/usr/bin/node'):
+    """Read-only native runtime checks shared by both installation paths."""
     if os.geteuid() != 0 or sys.platform != 'linux':
         raise ValueError('Installation requires root on the Linux host')
     if platform.machine() != 'x86_64' or sys.byteorder != 'little':
@@ -101,7 +102,7 @@ def preflight(root, run=command):
     match = re.match(r'systemd (\d+)\b', version)
     if not match or int(match[1]) < 249:
         raise ValueError('Requires systemd >=249')
-    node = run('/usr/bin/node', '--version').strip()
+    node = run(node_path, '--version').strip()
     if not re.fullmatch(r'v26\.(\d+)\.(\d+)', node) or tuple(map(int, node[4:].split('.'))) < (12, 1):
         raise ValueError('Requires Node 26.12.1 or newer in the 26.x release line')
     info = json.loads(run('/usr/bin/docker', '--host=unix:///var/run/docker.sock',
@@ -118,7 +119,6 @@ def preflight(root, run=command):
                  'usr/bin/flock', 'usr/bin/nsenter', 'usr/bin/python3'):
         if not os.access(root / path, os.X_OK):
             raise ValueError('Missing executable: /' + path)
-    grp.getgrnam('verity-egress-control')
     if not hasattr(os, 'setns') or not hasattr(ctypes.CDLL('libnftables.so.1'), 'nft_ctx_buffer_output'):
         raise ValueError('Requires Python setns and libnftables buffer API')
     mounts = (root / 'proc/mounts').read_text().splitlines()
@@ -127,6 +127,11 @@ def preflight(root, run=command):
     pin = root / 'sys/fs/bpf/verity_egress_deadline'
     if not pin.is_dir() or pin.is_symlink() or pin.stat().st_uid != 0 or pin.stat().st_mode & 0o077:
         raise ValueError('Requires root-owned private persistent BPF pin directory')
+
+
+def preflight(root, run=command):
+    runtime_preflight(root, run)
+    grp.getgrnam('verity-egress-control')
     private_config(root, 'control.key')
     authority = private_config(root, 'authority.json')
     relay = private_config(root, 'relay.json')

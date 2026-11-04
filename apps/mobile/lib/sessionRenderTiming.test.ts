@@ -1,3 +1,4 @@
+import { setGestureDiagnosticsEnabled } from './gestureDiagnostics';
 import {
   beginSessionSwitch,
   exportSessionSwitchTimings,
@@ -14,10 +15,14 @@ import {
 
 let clock = 0;
 beforeEach(() => {
+  setGestureDiagnosticsEnabled(true);
   clock = 0;
   jest.spyOn(performance, 'now').mockImplementation(() => clock);
 });
-afterEach(() => jest.restoreAllMocks());
+afterEach(() => {
+  setGestureDiagnosticsEnabled(false);
+  jest.restoreAllMocks();
+});
 
 it('aggregates durations and counts without spending a phase for each row', () => {
   rowPress('private-session');
@@ -163,4 +168,32 @@ it('does not collect client activity after list completion or beyond the phase b
   for (let i = 0; i < 61; i++) markSessionSwitch(full, 'render-existing');
   beginClientActivity('socket-message')();
   expect(full.phases).toHaveLength(62);
+});
+
+it('skips optional render and activity metrics while recording is off', () => {
+  setGestureDiagnosticsEnabled(false);
+  rowPress('off');
+  const trace = sessionSwitchTiming('off')!;
+  const before = JSON.stringify(trace.phases);
+  const render = beginRenderWork('chat-body');
+  const activity = beginClientActivity('socket-message');
+  clock += 50;
+  render();
+  activity();
+  expect(JSON.stringify(trace.phases)).toBe(before);
+});
+
+it('rejects render and activity completions from an earlier recording generation', () => {
+  rowPress('generation');
+  const trace = sessionSwitchTiming('generation')!;
+  const render = beginRenderWork('chat-body');
+  const activity = beginClientActivity('anchor-read');
+  setGestureDiagnosticsEnabled(false);
+  setGestureDiagnosticsEnabled(true);
+  clock += 50;
+  render();
+  activity();
+  expect(trace.phases.map((p) => p.phase)).toEqual(['js-press-handler']);
+  beginRenderWork('chat-body')();
+  expect(trace.phases.some((p) => p.phase === 'render-chat-body-count')).toBe(true);
 });

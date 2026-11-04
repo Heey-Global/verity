@@ -17,9 +17,26 @@ it does not resolve itself, or when the host was set up by hand.
 - [Migrate to managed Server updates](#migrate-to-managed-server-updates)
 - [After an update: companion handoff](#after-an-update-companion-handoff)
 - [Automatic backup preparation](#automatic-backup-preparation)
+- [Network protection preparation](#network-protection-preparation)
 - [When an update fails](#when-an-update-fails)
 - [When the Updater is crash-looping](#when-the-updater-is-crash-looping)
 - [The control-plane generation](#the-control-plane-generation)
+
+## Network protection preparation
+
+The installer and compatible managed updater prepare the host controller and
+read-only server socket/key mounts automatically. The app switch remains the
+only user configuration; preparation does not enable it or recreate projects.
+Unavailable status includes a sanitized reason, and enabling requires fresh
+authenticated host readiness. Native runtime acceptance is still required:
+the currently empty accepted-profile set deliberately leaves protection
+unavailable rather than claiming isolation from installed files alone.
+
+See [managed Network protection provisioning](../project-egress-managed-install.md)
+for the compatibility-release sequence, safety requirements and recovery limits.
+Do not remove firewall rules, registry/BPF state or systemd dependencies to
+recover an update. Controller recovery must preserve denial for protected
+generations while unrelated workloads remain running.
 
 ## Migrate to managed Server updates
 

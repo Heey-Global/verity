@@ -162,7 +162,9 @@ Disabled is always 40 % opacity; pressed is always a slight darkening.
 - **Sectioned card:** a stacked card about one thing whose head (`CardHead`: title,
   subtitle, status) is followed by blocks that belong to it — a server and its pending
   update. `divided` separates the sections with the same 1 px divider as a grouped list,
-  so a block can never be mistaken for a separate item.
+  so a block can never be mistaken for a separate item. A card the operator may set
+  aside passes `onDismiss`: the head then ends in an X `IconButton` (label "Dismiss")
+  after the status, the only icon there, so dismissing never looks like an answer.
 - **Row anatomy** (minimum height 52):
   - **Leading (optional):** icon tile 32 (radius 10, icon 16) or a status dot. In a row that can be
     tapped the tile is a 14 % `action` fill with the icon in `action`; otherwise a 6 % neutral

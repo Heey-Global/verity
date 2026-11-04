@@ -112,6 +112,7 @@ export interface ControlPlaneDeps {
   managedDevServerManager?: ServerDeps['managedDevServerManager'];
   projectEgressResolve?: ServerDeps['projectEgressResolve'];
   projectEgressAvailable?: ServerDeps['projectEgressAvailable'];
+  projectEgressStatus?: ServerDeps['projectEgressStatus'];
   previewSharingCapability?: ServerDeps['previewSharingCapability'];
   returnPathActivation?: ServerDeps['returnPathActivation'];
   coordinatedRecording?: ServerDeps['coordinatedRecording'];
@@ -409,6 +410,9 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
       : {}),
     ...(deps.projectEgressResolve !== undefined
       ? { projectEgressResolve: deps.projectEgressResolve }
+      : {}),
+    ...(deps.projectEgressStatus !== undefined
+      ? { projectEgressStatus: deps.projectEgressStatus }
       : {}),
     ...(deps.projectEgressAvailable !== undefined
       ? { projectEgressAvailable: deps.projectEgressAvailable }

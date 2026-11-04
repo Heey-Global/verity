@@ -333,6 +333,8 @@ describe('VerityClient live meetings', () => {
         },
       ],
       notes: [note],
+      // A server without discarding reports no deletions rather than an invalid feed.
+      deletedMeetingIds: [],
     });
     await client.putLiveMeeting(meeting);
     await client.putLiveMeetingNote(meeting.sessionId, note);
@@ -1265,6 +1267,39 @@ describe('VerityClient.listProjects (#174)', () => {
     expect(calls[0]?.init?.body).toBe(JSON.stringify({ collapsed: true }));
   });
 
+  it('dismisses Home items of projects and sessions, and keeps the dismissed keys', async () => {
+    const { fetch, calls } = fakeFetchSequence(
+      json({ id: 'p1', inboxDismissed: ['health:p1:t'] }),
+      json({ id: 's1', inboxDismissed: [] }),
+    );
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+
+    expect(await client.setProjectInboxDismissed('p1', 'health:p1:t', true)).toEqual([
+      'health:p1:t',
+    ]);
+    expect(calls[0]?.url).toBe('http://host/projects/p1/inbox-dismissed');
+    expect(calls[0]?.init?.method).toBe('PATCH');
+    expect(calls[0]?.init?.body).toBe(JSON.stringify({ key: 'health:p1:t', dismissed: true }));
+    expect(await client.setSessionInboxDismissed('s1', 'question:s1', false)).toEqual([]);
+    expect(calls[1]?.url).toBe('http://host/sessions/s1/inbox-dismissed');
+    expect(calls[1]?.init?.body).toBe(JSON.stringify({ key: 'question:s1', dismissed: false }));
+    // A schema without the field would strip it, and Home would never hide anything.
+    expect(
+      projectRecordSchema.parse({ ...project, inboxDismissed: ['health:p1:t'] }).inboxDismissed,
+    ).toEqual(['health:p1:t']);
+    expect(
+      sessionSummarySchema.parse({
+        sessionId: 's1',
+        worktree: '/wt/s1',
+        model: 'm',
+        name: null,
+        status: 'idle',
+        usage: ZERO_USAGE,
+        inboxDismissed: ['question:s1'],
+      }).inboxDismissed,
+    ).toEqual(['question:s1']);
+  });
+
   it('surfaces a 503 without pretending the project list is empty', async () => {
     const { fetch } = fakeFetch(json({ error: 'temporarily unavailable' }, 503));
     const client = new VerityClient({ baseUrl: 'http://host', fetch });
@@ -1523,6 +1558,17 @@ describe('VerityClient.settings', () => {
     expect(await client.getVeritySettings()).toEqual(settings);
     expect(calls[0]?.url).toBe('http://host/settings');
     expect(calls[0]?.init?.method).toBe('GET');
+  });
+
+  it('accepts structured network protection reasons and older servers without diagnostics', async () => {
+    const projectEgressStatus = { available: false, reason: 'runtime_unsupported' };
+    const { fetch } = fakeFetchSequence(
+      json({ settings: { ...settings, projectEgressStatus } }),
+      json({ settings }),
+    );
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    expect((await client.getVeritySettings())?.projectEgressStatus).toEqual(projectEgressStatus);
+    expect((await client.getVeritySettings())?.projectEgressStatus).toBeUndefined();
   });
 
   it('parses safe Claude resolution status while accepting servers without it', async () => {
@@ -4479,6 +4525,7 @@ describe('VerityClient calendar meetings', () => {
     'live-meeting-intake.ts',
     'calendar-meeting-routes.ts',
     'calendar-watch-routes.ts',
+    'live-meeting-routes.ts',
   ]
     .map((file) => readFileSync(new URL(`../../server/src/${file}`, import.meta.url), 'utf8'))
     .join('\n');
@@ -4575,6 +4622,19 @@ describe('VerityClient calendar meetings', () => {
     registered('POST', '/live-meetings/calendar/:eventKey/skip');
     registered('POST', '/live-meetings/unassigned/:meetingId/assign');
     registered('DELETE', '/live-meetings/unassigned/:meetingId');
+  });
+
+  it('discards a finished session meeting and reads discards from the feed', async () => {
+    const { fetch, calls } = fakeFetchSequence(
+      new Response(JSON.stringify({ discarded: true }), { status: 200 }),
+      json({ cursor: 4, meetings: [], notes: [], deletedMeetingIds: ['m/1'] }),
+    );
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    await client.discardSessionMeeting('s/1', 'm/1');
+    expect((await client.getLiveMeetingChanges('s/1', 3)).deletedMeetingIds).toEqual(['m/1']);
+    expect(calls[0]?.init?.method).toBe('DELETE');
+    expect(calls[0]?.url).toBe('http://host/sessions/s%2F1/live-meetings/m%2F1');
+    registered('DELETE', '/sessions/:id/live-meetings/:meetingId');
   });
 
   it('reads and changes which calendars are watched', async () => {

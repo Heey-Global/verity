@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { VerityClient, ManagedDevServer, SessionDevServer } from '@verity/mobile';
 import { subscribeLiveRefresh } from '../lib/liveConnection';
+import { useFocusEffect } from 'expo-router';
+import { AppState } from 'react-native';
 
 interface SessionPreviewReadsOptions {
   client: VerityClient;
@@ -73,6 +75,21 @@ export function useSessionPreviewReads({
   completedServerTools,
   devServers,
 }: SessionPreviewReadsOptions) {
+  const [focused, setFocused] = useState(false);
+  const [appActive, setAppActive] = useState(AppState.currentState === 'active');
+  useFocusEffect(
+    useCallback(() => {
+      setFocused(true);
+      return () => setFocused(false);
+    }, []),
+  );
+  useEffect(() => {
+    const listener = AppState.addEventListener('change', (state) =>
+      setAppActive(state === 'active'),
+    );
+    return () => listener.remove();
+  }, []);
+  const visible = admitted && focused && appActive;
   const [managedByInstance, setManagedByInstance] = useState<Map<string, ManagedDevServer>>(
     () => new Map(),
   );
@@ -108,7 +125,7 @@ export function useSessionPreviewReads({
   const refreshManaged = usePreviewSource(
     client,
     `/sessions/${encodeURIComponent(sessionId)}/managed-dev-servers`,
-    admitted && typeof client.listManagedDevServers === 'function',
+    visible && typeof client.listManagedDevServers === 'function',
     readManaged,
   );
   const previousManagedInputs = useRef({ client, sessionId, completedServerTools, devServers });
@@ -163,7 +180,7 @@ export function useSessionPreviewReads({
     },
     [client, sessionId],
   );
-  const enabled = admitted && loaded && Boolean(projectId);
+  const enabled = visible && loaded && Boolean(projectId);
   const refreshDevServers = usePreviewSource(
     client,
     `/sessions/${encodeURIComponent(sessionId)}/dev-servers`,

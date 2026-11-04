@@ -491,9 +491,109 @@ export class LiveMeetingStore {
     return Number(row.sequence);
   }
 
+  /** Whether this meeting was discarded. A tombstone outlives the meeting so neither a
+   * late upload nor another device's sync can bring it back. */
+  async isDeleted(sessionId: string, meetingId: string): Promise<boolean> {
+    const row = await this.db
+      .selectFrom('live_meeting_deletions')
+      .select('meeting_id')
+      .where('meeting_id', '=', meetingId)
+      .where('session_id', '=', sessionId)
+      .executeTakeFirst();
+    return row !== undefined;
+  }
+
+  /**
+   * Permanently deletes a finished meeting: transcript, timed words, speaker turns and
+   * edits, notes, insights, commands and the derived result all go with the meeting row.
+   * Tasks already created from the result and session messages are kept. A recording
+   * that may still change (an active one, or an online meeting still recovering) is
+   * refused. The tombstone takes the next sync sequence so the change feed reports it.
+   */
+  async deleteMeeting(
+    sessionId: string,
+    meetingId: string,
+  ): Promise<'deleted' | 'not_found' | 'running'> {
+    return this.db.transaction().execute(async (trx) => {
+      // The clock first, as every writer takes it: locking the meeting row before it
+      // would invert the order `putMeeting` uses and could deadlock with an upload.
+      const sequence = await this.nextUpdateSequence(trx);
+      const meeting = await trx
+        .selectFrom('live_meetings')
+        .select(['session_id', 'state', 'engine', 'started_at'])
+        .where('id', '=', meetingId)
+        .forUpdate()
+        .executeTakeFirst();
+      if (meeting?.session_id !== sessionId) return 'not_found';
+      // Same predicate as `running()`: an interrupted online meeting is still recovering.
+      if (
+        meeting.state === 'active' ||
+        (meeting.engine === 'attendee' && meeting.state !== 'ended')
+      )
+        return 'running';
+      await trx.deleteFrom('live_meetings').where('id', '=', meetingId).execute();
+      await trx
+        .insertInto('live_meeting_deletions')
+        .values({
+          meeting_id: meetingId,
+          session_id: sessionId,
+          deleted_seq: sequence,
+          deleted_at: Date.now(),
+          engine: meeting.engine,
+          started_at: Number(meeting.started_at),
+        })
+        .onConflict((conflict) => conflict.column('meeting_id').doNothing())
+        .execute();
+      return 'deleted';
+    });
+  }
+
+  /** The identity of one meeting, without its transcript. */
+  async meetingHead(
+    sessionId: string,
+    meetingId: string,
+  ): Promise<{ id: string; engine: string; startedAt: number; state: string } | null> {
+    const row = await this.db
+      .selectFrom('live_meetings')
+      .select(['id', 'engine', 'started_at', 'state'])
+      .where('session_id', '=', sessionId)
+      .where('id', '=', meetingId)
+      .executeTakeFirst();
+    return row
+      ? { id: row.id, engine: row.engine, startedAt: Number(row.started_at), state: row.state }
+      : null;
+  }
+
+  /** A discarded meeting's identity, for repeating cleanup that failed the first time. */
+  async deletion(
+    sessionId: string,
+    meetingId: string,
+  ): Promise<{ id: string; engine: string; startedAt: number } | null> {
+    const row = await this.db
+      .selectFrom('live_meeting_deletions')
+      .select(['meeting_id', 'engine', 'started_at'])
+      .where('meeting_id', '=', meetingId)
+      .where('session_id', '=', sessionId)
+      .executeTakeFirst();
+    return row
+      ? { id: row.meeting_id, engine: row.engine, startedAt: Number(row.started_at) }
+      : null;
+  }
+
+  private async tombstoned(db: Kysely<Database>, meetingId: string): Promise<boolean> {
+    const row = await db
+      .selectFrom('live_meeting_deletions')
+      .select('meeting_id')
+      .where('meeting_id', '=', meetingId)
+      .executeTakeFirst();
+    return row !== undefined;
+  }
+
   async putMeeting(meeting: LiveMeetingSyncRecord): Promise<boolean> {
     return this.db.transaction().execute(async (trx) => {
+      // The clock row lock serializes this upload against a concurrent deletion.
       const sequence = await this.nextUpdateSequence(trx);
+      if (await this.tombstoned(trx, meeting.id)) return false;
       await trx
         .insertInto('live_meetings')
         .values({
@@ -815,6 +915,9 @@ export class LiveMeetingStore {
     if (meeting?.session_id !== sessionId) return false;
     return this.db.transaction().execute(async (trx) => {
       const sequence = await this.nextUpdateSequence(trx);
+      // Checked after the clock lock: a deletion that committed meanwhile removed the
+      // meeting, and the foreign key would otherwise be the only thing to notice.
+      if (await this.tombstoned(trx, note.meetingId)) return false;
       await trx
         .insertInto('live_meeting_notes')
         .values({
@@ -854,14 +957,18 @@ export class LiveMeetingStore {
     cursor: number;
     meetings: Omit<LiveMeetingSyncRecord, 'ownerTokenHash'>[];
     notes: LiveMeetingNoteSyncRecord[];
+    /** Meetings discarded after `after`; devices delete them with their notes. */
+    deletedMeetingIds: string[];
   }> {
     const snapshot = await sql<{ cursor: number | string }>`select greatest(
       coalesce((select max(updated_seq) from live_meetings where session_id = ${sessionId}), 0),
       coalesce((select max(n.updated_seq) from live_meeting_notes n
-        join live_meetings m on m.id = n.meeting_id where m.session_id = ${sessionId}), 0)
+        join live_meetings m on m.id = n.meeting_id where m.session_id = ${sessionId}), 0),
+      coalesce((select max(deleted_seq) from live_meeting_deletions
+        where session_id = ${sessionId}), 0)
     ) as cursor`.execute(this.db);
     const cursor = Number(snapshot.rows[0]?.cursor ?? 0);
-    const [meetings, notes] = await Promise.all([
+    const [meetings, notes, deletions] = await Promise.all([
       this.db
         .selectFrom('live_meetings')
         .selectAll()
@@ -878,6 +985,14 @@ export class LiveMeetingStore {
         .where('n.updated_seq', '>', after)
         .where('n.updated_seq', '<=', cursor)
         .orderBy('n.updated_seq')
+        .execute(),
+      this.db
+        .selectFrom('live_meeting_deletions')
+        .select('meeting_id')
+        .where('session_id', '=', sessionId)
+        .where('deleted_seq', '>', after)
+        .where('deleted_seq', '<=', cursor)
+        .orderBy('deleted_seq')
         .execute(),
     ]);
     return {
@@ -919,6 +1034,7 @@ export class LiveMeetingStore {
         text: row.text,
         revision: Number(row.revision),
       })),
+      deletedMeetingIds: deletions.map((row) => row.meeting_id),
     };
   }
 }

@@ -197,3 +197,89 @@ describe('runner cache environment target', () => {
     },
   );
 });
+
+describe('bounded runner cache failure diagnostics', () => {
+  it.each([
+    ['EACCES', 'supervisor-access-denied'],
+    ['EPERM', 'supervisor-access-denied'],
+    ['ENOENT', 'supervisor-unavailable'],
+    ['ECONNREFUSED', 'supervisor-unavailable'],
+    ['ETIMEDOUT', 'supervisor-timeout'],
+    ['UNKNOWN', 'unclassified-failure'],
+  ])('classifies transport %s without leaking its message', async (code, expected) => {
+    const storage = new RunnerCacheStorage({
+      listRuntimes: async () => [{ projectId: 'one', sessionIds: [] }],
+      request: async () => {
+        throw Object.assign(new Error('/private/token'), { code });
+      },
+    });
+    await storage.runOnce();
+    expect(storage.lastReport?.blockers.join(' ')).toContain(`[${expected}]`);
+    expect(JSON.stringify(storage.lastReport)).not.toContain('/private/token');
+    expect(storage.lastReport).toMatchObject({
+      usageComplete: false,
+      removedBytes: 0,
+      sharedBytes: null,
+    });
+  });
+  it.each([
+    {
+      code: 'turn-ownership-unknown',
+      counts: { missingState: 1, invalidState: 2, unsettledWithoutSession: 3 },
+    },
+    { code: 'unsupported' },
+    { code: 'broker-unavailable' },
+  ])('preserves allowlisted structured diagnostics %j across mixed projects', async (failure) => {
+    const storage = new RunnerCacheStorage({
+      listRuntimes: async () => [
+        { projectId: 'one', sessionIds: [] },
+        { projectId: 'two', sessionIds: [] },
+      ],
+      request: async (id) => {
+        if (id === 'one')
+          throw Object.assign(new Error('secret'), {
+            runnerCacheFailure: { ...failure, private: 'secret' },
+          });
+        return response();
+      },
+    });
+    await storage.runOnce();
+    expect(storage.lastReport?.blockers.join(' ')).toContain(`[${failure.code}]`);
+    if (failure.counts)
+      expect(storage.lastReport?.blockers.join(' ')).toContain(
+        'missingState=1, invalidState=2, unsettledWithoutSession=3',
+      );
+    expect(JSON.stringify(storage.lastReport)).not.toContain('secret');
+    expect(storage.lastReport).toMatchObject({ removedBytes: 20, usageComplete: false });
+  });
+  it.each([
+    { code: 'private secret' },
+    {
+      code: 'turn-ownership-unknown',
+      counts: { missingState: 1e9, invalidState: 0, unsettledWithoutSession: 0 },
+    },
+    {
+      code: 'turn-ownership-unknown',
+      counts: { missingState: -1, invalidState: 0, unsettledWithoutSession: 0 },
+    },
+  ])('rejects unsafe diagnostic metadata %j', async (failure) => {
+    const storage = new RunnerCacheStorage({
+      listRuntimes: async () => [{ projectId: 'one', sessionIds: [] }],
+      request: async () => {
+        throw Object.assign(new Error('secret'), { runnerCacheFailure: failure });
+      },
+    });
+    await storage.runOnce();
+    expect(storage.lastReport?.blockers[0]).toContain('[unclassified-failure]');
+    expect(JSON.stringify(storage.lastReport)).not.toContain('secret');
+  });
+  it('withholds arbitrary broker report blockers', async () => {
+    const storage = new RunnerCacheStorage({
+      listRuntimes: async () => [{ projectId: 'one', sessionIds: [] }],
+      request: async () => response({ blockers: ['EPERM /private/token'], usageComplete: false }),
+    });
+    await storage.runOnce();
+    expect(storage.lastReport?.blockers[0]).toContain('[unclassified-cache-blocker]');
+    expect(JSON.stringify(storage.lastReport)).not.toContain('/private/token');
+  });
+});

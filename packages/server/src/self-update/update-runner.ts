@@ -449,6 +449,7 @@ export async function recoverManagedUpdater(
     (result.drift === undefined || result.drift.length === 0) &&
     result.backupMountPending !== true &&
     result.diagnosticMountPending !== true &&
+    result.projectEgressMountPending !== true &&
     result.devcontainerBuilderPending !== true
       ? { status: 'ok' }
       : {
@@ -456,6 +457,7 @@ export async function recoverManagedUpdater(
           environment: result.drift ?? [],
           ...(result.backupMountPending ? { backupMountPending: true } : {}),
           ...(result.diagnosticMountPending ? { diagnosticMountPending: true } : {}),
+          ...(result.projectEgressMountPending ? { projectEgressMountPending: true } : {}),
           ...(result.devcontainerBuilderPending ? { devcontainerBuilderPending: true } : {}),
         };
   // `'unknown'` until a reconcile actually returns one. The catch below swallows

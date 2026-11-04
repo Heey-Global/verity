@@ -1,4 +1,9 @@
 const mockStart = jest.fn();
+const mockCapture = jest.fn();
+const mockRemaining = jest.fn();
+const mockDisable = jest.fn();
+const mockDiagnosticExport = jest.fn();
+let mockCaptureSupported = false;
 const mockStop = jest.fn();
 const mockActive = jest.fn();
 const mockRequest = jest.fn();
@@ -11,8 +16,20 @@ const mockAdmissionCancel = jest.fn();
 jest.mock('expo-modules-core', () => ({
   requireNativeModule: (name: string) =>
     name === 'VerityRemoteControlTunnel'
-      ? { start: mockStart, stop: mockStop, isActive: mockActive }
+      ? {
+          start: mockStart,
+          stop: mockStop,
+          isActive: mockActive,
+          ...(mockCaptureSupported
+            ? {
+                captureDataDiagnostics: mockCapture,
+                dataDiagnosticsRemainingMs: mockRemaining,
+                disableDataDiagnostics: mockDisable,
+              }
+            : {}),
+        }
       : { request: mockRequest, cancelRequest: mockCancel },
+  requireOptionalNativeModule: () => ({ exportDataDiagnostics: mockDiagnosticExport }),
 }));
 jest.mock('expo-crypto', () => ({
   CryptoDigestAlgorithm: { SHA256: 'SHA-256' },
@@ -86,6 +103,16 @@ let order: string[];
 beforeEach(() => {
   jest.clearAllMocks();
   order = [];
+  mockCaptureSupported = false;
+  mockRemaining.mockResolvedValue(0);
+  mockCapture.mockImplementation(async () => {
+    order.push('capture');
+    return true;
+  });
+  mockDisable.mockImplementation(async () => {
+    order.push('disable');
+  });
+  mockDiagnosticExport.mockImplementation(async () => [JSON.stringify(nativeSnapshot())]);
   mockActive.mockResolvedValue(false);
   mockStart.mockImplementation(async () => {
     order.push('data');
@@ -371,7 +398,7 @@ it.each([
   expect(mockRequest).toHaveBeenCalledTimes(1);
 });
 it('rejects cleanup if the native tunnel remains active after stop', async () => {
-  mockActive.mockResolvedValueOnce(false).mockResolvedValue(true);
+  mockActive.mockResolvedValueOnce(false).mockResolvedValueOnce(false).mockResolvedValue(true);
   await expect(selectedRecordingAttempt(options)).rejects.toThrow('cleanup failed');
   expect(mockRequest).toHaveBeenCalledTimes(1);
 });
@@ -384,4 +411,192 @@ it('accepts an expired terminal receipt with both sources stopped', async () => 
         : status(mockFetch.mock.calls.filter((call) => call[1].method === 'GET').length),
   }));
   await expect(selectedRecordingAttempt(options)).resolves.toEqual({ status: 200 });
+});
+
+function nativeSnapshot() {
+  return {
+    version: 1,
+    channel: 'DATA',
+    generation: '01234567-0123-4123-8123-0123456789ab',
+    sessionHash: status().selection.sessionHash,
+    clockOffsetKnown: false,
+    startedLate: false,
+    delegateAvailable: false,
+    captureLimitMs: 30000,
+    expired: false,
+    dropped: 0,
+    events: [
+      { sequence: 1, utc: new Date().toISOString(), elapsedMs: 0, event: 'capture_started' },
+    ],
+  };
+}
+it('captures before its DATA start and reports validated same-session native evidence after stop', async () => {
+  mockCaptureSupported = true;
+  const local = jest.fn();
+  const phase = jest.fn();
+  await selectedRecordingAttempt({ ...options, onLocalRecording: local, onPhase: phase });
+  expect(order.indexOf('capture')).toBeLessThan(order.indexOf('data'));
+  expect(order.indexOf('stop')).toBeLessThan(order.indexOf('disable'));
+  expect(local).toHaveBeenCalledWith(
+    expect.objectContaining({
+      status: 'ready',
+      sessionHash: status().selection.sessionHash,
+      stopped: true,
+    }),
+  );
+  expect(JSON.parse(local.mock.calls[0][0].recording)).toHaveLength(1);
+  expect(phase.mock.calls.flat()).toEqual(['preparing', 'running', 'stopping']);
+});
+it.each(['unmatched', 'ambiguous', 'invalid'])(
+  'does not attach %s native data to the run',
+  async (fault) => {
+    mockCaptureSupported = true;
+    mockDiagnosticExport.mockImplementation(async () => {
+      const snapshot = nativeSnapshot();
+      if (fault === 'unmatched') snapshot.sessionHash = 'f'.repeat(16);
+      if (fault === 'invalid') Object.assign(snapshot, { ticket: 'private' });
+      return fault === 'ambiguous'
+        ? [
+            JSON.stringify(snapshot),
+            JSON.stringify({ ...snapshot, generation: '11234567-0123-4123-8123-0123456789ab' }),
+          ]
+        : [JSON.stringify(snapshot)];
+    });
+    const local = jest.fn();
+    await selectedRecordingAttempt({ ...options, onLocalRecording: local });
+    expect(local).toHaveBeenCalledWith(expect.objectContaining({ status: fault, recording: null }));
+  },
+);
+it('keeps delegate completion observed after local stop before freezing the native capture', async () => {
+  mockCaptureSupported = true;
+  let reads = 0;
+  mockDiagnosticExport.mockImplementation(async () => {
+    const snapshot = { ...nativeSnapshot(), delegateAvailable: true };
+    if (++reads > 1)
+      snapshot.events.push({
+        sequence: 2,
+        utc: new Date().toISOString(),
+        elapsedMs: 1,
+        event: 'task_completed',
+      });
+    return [JSON.stringify(snapshot)];
+  });
+  const local = jest.fn();
+  await selectedRecordingAttempt({ ...options, onLocalRecording: local });
+  expect(reads).toBe(2);
+  expect(JSON.parse(local.mock.calls[0][0].recording)[0].events.at(-1).event).toBe(
+    'task_completed',
+  );
+  expect(mockDisable).toHaveBeenCalledTimes(1);
+});
+it('reports missing native capture support without inventing a native recording', async () => {
+  const local = jest.fn();
+  await selectedRecordingAttempt({ ...options, onLocalRecording: local });
+  expect(local).toHaveBeenCalledWith(
+    expect.objectContaining({ status: 'unsupported', recording: null }),
+  );
+  expect(mockDiagnosticExport).not.toHaveBeenCalled();
+});
+it('preserves a capture already owned by another operation', async () => {
+  mockCaptureSupported = true;
+  mockRemaining.mockResolvedValue(12000);
+  const local = jest.fn();
+  await expect(selectedRecordingAttempt({ ...options, onLocalRecording: local })).rejects.toThrow(
+    'Existing DATA recording',
+  );
+  expect(mockCapture).not.toHaveBeenCalled();
+  expect(mockDisable).not.toHaveBeenCalled();
+  expect(mockStart).not.toHaveBeenCalled();
+});
+it('clears a late capture arm after abort and holds ownership until that cleanup completes', async () => {
+  mockCaptureSupported = true;
+  const controller = new AbortController();
+  let release!: (enabled: boolean) => void;
+  mockCapture.mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        release = resolve;
+      }),
+  );
+  const attempt = selectedRecordingAttempt({ ...options, signal: controller.signal });
+  for (let i = 0; i < 60 && !release; i++) await Promise.resolve();
+  expect(release).toBeDefined();
+  controller.abort();
+  await expect(attempt).rejects.toThrow();
+  await expect(selectedRecordingAttempt(options)).rejects.toThrow('already active');
+  release(true);
+  for (let i = 0; i < 15; i++) await Promise.resolve();
+  expect(mockDisable).toHaveBeenCalledTimes(1);
+  expect(mockStart).not.toHaveBeenCalled();
+});
+
+it('reports native disable rejection as cleanup failure', async () => {
+  mockCaptureSupported = true;
+  mockDisable.mockRejectedValue(new Error('disable failed'));
+  const local = jest.fn();
+  await expect(selectedRecordingAttempt({ ...options, onLocalRecording: local })).rejects.toThrow(
+    'capture cleanup failed',
+  );
+  expect(local).toHaveBeenCalledWith(expect.objectContaining({ recording: expect.any(String) }));
+  expect(mockDisable).toHaveBeenCalledTimes(1);
+});
+it('holds ownership through a timed-out native disable until it settles', async () => {
+  jest.useFakeTimers();
+  mockCaptureSupported = true;
+  let settle!: () => void;
+  mockDisable.mockImplementation(
+    () =>
+      new Promise<void>((resolve) => {
+        settle = resolve;
+      }),
+  );
+  const attempt = selectedRecordingAttempt(options);
+  const rejected = expect(attempt).rejects.toThrow('capture cleanup failed');
+  for (let i = 0; i < 300 && !settle; i++) await Promise.resolve();
+  expect(settle).toBeDefined();
+  await jest.advanceTimersByTimeAsync(6001);
+  await rejected;
+  await expect(selectedRecordingAttempt(options)).rejects.toThrow('already active');
+  expect(mockDisable).toHaveBeenCalledTimes(1);
+  settle();
+  for (let i = 0; i < 20; i++) await Promise.resolve();
+  mockDisable.mockResolvedValue(undefined);
+  await expect(selectedRecordingAttempt(options)).resolves.toEqual({ status: 200 });
+});
+
+it('exports retained native evidence after the capture timer has disabled recording', async () => {
+  jest.useFakeTimers();
+  mockCaptureSupported = true;
+  mockArm.mockImplementation(async () => ({
+    ...status(),
+    expiresAt: new Date(Date.now() + 45000).toISOString(),
+    selection: {
+      ...status().selection,
+      preparationExpiresAt: new Date(Date.now() + 45000).toISOString(),
+    },
+  }));
+  const snapshot = nativeSnapshot();
+  mockDiagnosticExport.mockResolvedValue([JSON.stringify(snapshot)]);
+  let attach!: (port: number) => void;
+  mockStart.mockImplementation(
+    () =>
+      new Promise<number>((resolve) => {
+        attach = resolve;
+      }),
+  );
+  const local = jest.fn();
+  const attempt = selectedRecordingAttempt({ ...options, onLocalRecording: local });
+  for (let i = 0; i < 200 && !attach; i++) await Promise.resolve();
+  expect(attach).toBeDefined();
+  await jest.advanceTimersByTimeAsync(30001);
+  expect(mockDisable).toHaveBeenCalledTimes(1);
+  attach(1234);
+  await attempt;
+  expect(local).toHaveBeenCalledWith(
+    expect.objectContaining({
+      status: 'ready',
+      recording: JSON.stringify([snapshot]),
+    }),
+  );
+  expect(mockDisable).toHaveBeenCalledTimes(1);
 });

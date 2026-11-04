@@ -1,3 +1,4 @@
+import { measureBranchReadStage, type BranchReadStage } from './branch-read-diagnostics.js';
 import { registerProjectContextRoutes } from './project-context-routes.js';
 import { registerUserContextRoutes } from './user-context-routes.js';
 import { PreviewConnector } from '@verity/preview-tunnel';
@@ -161,6 +162,7 @@ import {
 import {
   configuredMeetingTranscriber,
   fileLiveMeeting,
+  removeFiledLiveMeeting,
   meetingTranscriptionSettingsWhileSealed,
 } from './meeting-transcription.js';
 import { registerMessageSearchRoute } from './message-search-route.js';
@@ -273,6 +275,7 @@ import { registerSessionRecoveryRoute } from './session-recovery-route.js';
 import { turnCore } from './session-request-core.js';
 import { sessionParams } from './session-route-schemas.js';
 import { registerSessionSeenRoute } from './session-seen-route.js';
+import { registerViewStateRoutes } from './view-state-routes.js';
 import { registerSessionTurnRoute } from './session-turn-route.js';
 import { registerSettingsRoutes, SELECTABLE_TRANSCRIBE_BACKEND_MODES } from './settings-routes.js';
 import { registerSigningKeyRoutes } from './signing-key-routes.js';
@@ -1854,7 +1857,11 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         request.url.startsWith('/github/app/manifest/callback') ||
         request.url.startsWith('/github/app/manifest/installed'))
     )
-      resources.invalidate(request.url);
+      resources.invalidate(
+        request.method === 'PATCH' && request.routeOptions.url === '/sessions/:id'
+          ? `${request.url.split('?')[0]}/activity`
+          : request.url,
+      );
     done();
   });
   const liveHub = new LiveHub({
@@ -4272,6 +4279,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     agentLogin,
     parseSettingsPatch: (body) => veritySettingsBody.parse(body),
     projectEgressAvailable: deps.projectEgressAvailable,
+    projectEgressStatus: deps.projectEgressStatus,
     storeAgentCredentials,
     publicSettings: async (settings, request) => ({
       ...publicVeritySettings(
@@ -4281,6 +4289,9 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       ),
       ...(await googleAccountSettingsStatus(deps.eventStore)),
       projectEgressAvailable: (await deps.projectEgressAvailable?.()) === true,
+      ...(deps.projectEgressStatus
+        ? { projectEgressStatus: await deps.projectEgressStatus() }
+        : {}),
       claudeCredentialStatus: (
         deps.claudeOAuthTokenProvider ?? dbClaudeOAuthTokenProvider
       ).statusForCredentials?.(settings.claudeCodeOauthCredentialsJson) ?? {
@@ -4708,6 +4719,38 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     turnBlocked: deps.provisioner?.turnBlockedSandboxes?.() ?? NO_UNREPAIRED_SANDBOXES,
   });
 
+  // Read marks and dismissed Home items of the person asking; a session they
+  // never touched is unread-neutral and hides nothing.
+  const sessionsAsSeenBy = async (
+    viewer: string,
+    summaries: SessionSummary[],
+  ): Promise<SessionSummary[]> => {
+    const views = await deps.eventStore.viewState.sessionViews(viewer);
+    return summaries.map((summary) => {
+      const view = views.get(summary.sessionId);
+      return {
+        ...summary,
+        lastSeenEventCount: view?.lastSeenEventCount ?? null,
+        inboxDismissed: view?.inboxDismissed ?? [],
+      };
+    });
+  };
+  // Fold state and dismissed Home items belong to the person asking, never to the
+  // project row, so one member folding a group leaves everyone else's open.
+  const projectsAsSeenBy = async (
+    viewer: string,
+    projects: PublicProjectRecord[],
+  ): Promise<PublicProjectRecord[]> => {
+    const views = await deps.eventStore.viewState.projectViews(viewer);
+    return projects.map((project) => {
+      const view = views.get(project.id);
+      return {
+        ...project,
+        collapsed: view?.collapsed ?? false,
+        inboxDismissed: view?.inboxDismissed ?? [],
+      };
+    });
+  };
   const publicProjects = async (projects: ProjectRecord[]): Promise<PublicProjectRecord[]> => {
     const toolkit = await measureLatencyPhase('project_toolkit', serverToolkitIdentity);
     const resolved = await measureLatencyPhase('project_releases', () =>
@@ -4768,7 +4811,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   });
   registerProjectCollectionRoutes(app, {
     store: deps.eventStore,
-    listOverview: async (userId) => {
+    listOverview: async (userId, viewer) => {
       const projects = await measureLatencyPhase('project_list', () =>
         deps.listProjects ? deps.listProjects() : deps.eventStore.listProjects(),
       );
@@ -4781,21 +4824,27 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
               ),
             );
       return measureLatencyPhase('project_overview', async () =>
-        publicProjects(
-          await projectsForOverview(
-            projects.filter(
-              (project) =>
-                appearsInProjectOverview(project) &&
-                (readableIds === null || readableIds.has(project.id)),
+        projectsAsSeenBy(
+          viewer,
+          await publicProjects(
+            await projectsForOverview(
+              projects.filter(
+                (project) =>
+                  appearsInProjectOverview(project) &&
+                  (readableIds === null || readableIds.has(project.id)),
+              ),
             ),
           ),
         ),
       );
     },
-    reorder: async (ids) => {
+    reorder: async (ids, viewer) => {
       const reordered = await deps.eventStore.reorderProjects(ids);
       deps.invalidateProjectList?.();
-      return publicProjects(await projectsForOverview(reordered.filter(appearsInProjectOverview)));
+      return projectsAsSeenBy(
+        viewer,
+        await publicProjects(await projectsForOverview(reordered.filter(appearsInProjectOverview))),
+      );
     },
     forgejoEnabled: deps.forgejoEnabled === true,
     listAvailableRepositories: async () =>
@@ -4865,7 +4914,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   });
   registerProjectEgressRoutes(app, deps.eventStore.projectEgress);
   registerProjectDetailRoutes(app, {
-    getDetail: async (id) => {
+    getDetail: async (id, viewer) => {
       const cached = await deps.eventStore.getProject(id);
       if (cached === undefined) return undefined;
       const project = deps.reconcileProjectState
@@ -4890,7 +4939,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           projectToolkitDrift(resolved.project, await serverToolkitIdentity()),
         ),
         settings: publicProjectSettings(settings),
-        sessions: await summarizeSessions(sessions),
+        sessions: await sessionsAsSeenBy(viewer, await summarizeSessions(sessions)),
       };
     },
     projectExists: async (id) => (await deps.eventStore.getProject(id)) !== undefined,
@@ -4915,12 +4964,12 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         projectToolkitDrift(resolved.project, await serverToolkitIdentity()),
       );
     },
-    setCollapsed: async (id, collapsed) => {
-      if (!(await deps.eventStore.setProjectCollapsed(id, collapsed))) return undefined;
-      // Answer from the row just written, never from the memoised fleet list:
+    setCollapsed: async (id, collapsed, viewer) => {
+      if (!(await deps.eventStore.viewState.setProjectCollapsed(viewer, id, collapsed)))
+        return undefined;
+      // Answer from the state just written, never from the memoised fleet list:
       // that list can predate the write by a whole cache window, and a client
       // trusting the response would fold the group straight back.
-      deps.invalidateProjectList?.();
       const row = await deps.eventStore.getProject(id);
       if (row === undefined) return undefined;
       // The list path reconciles lifecycle state against the container; keep
@@ -4930,7 +4979,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       const project = deps.reconcileProjectState
         ? await deps.reconcileProjectState(row).catch(() => row)
         : row;
-      return (await publicProjects([project]))[0];
+      return (await projectsAsSeenBy(viewer, await publicProjects([project])))[0];
     },
     isSealed: () => deps.secretCipher?.isSealed() === true,
     updateSettings: async (id, patch) => {
@@ -5799,7 +5848,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       const settings = await projectSettingsStore(deps.eventStore).getProjectSettings(projectId);
       return filterModelListForProject(available, settings, isProjectSessionModel);
     },
-    getSession: async (id): Promise<SessionDetail | undefined> => {
+    getSession: async (id, viewer): Promise<SessionDetail | undefined> => {
       const session = await deps.eventStore.getSession(id);
       if (!session) return undefined;
       // Opening a session hits this route first, and the transcript arrives over a
@@ -5836,6 +5885,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             : projectedStatus;
       return {
         ...session,
+        ...(await deps.eventStore.viewState.sessionView(viewer, id)),
         googleStatus: await sessionGoogleStatus(deps.eventStore, id),
         status,
         pendingPermissions,
@@ -5914,6 +5964,24 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         sessionId,
         meetingId,
       }),
+    onDiscarded: async (sessionId, meeting) => {
+      // Independent steps, all attempted: a provider failure must not skip removing the
+      // filed transcript. Any failure is reported so the discard is retried.
+      const steps = await Promise.allSettled([
+        // The attendee owner is created below; a request can only arrive once it exists.
+        meeting.engine === 'attendee'
+          ? attendeeMeetings.discardFinished(sessionId, meeting.id)
+          : Promise.resolve(true),
+        removeFiledLiveMeeting({
+          eventStore: deps.eventStore,
+          dataRoot: deps.dataRoot,
+          sessionId,
+          meeting,
+        }),
+      ]);
+      const failed = steps.find((step) => step.status === 'rejected');
+      if (failed) throw failed.reason;
+    },
     knowledge: async (sessionId, transcript) => {
       if (!deps.dataRoot) return [];
       const session = await deps.eventStore.getSession(sessionId);
@@ -6174,13 +6242,15 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   });
   // Advance a session's "last seen" mark for the overview unread dot (#387). The
   // client sends the `eventCount` it just observed when the operator opened the
-  // session; the store advances the mark monotonically (a stale post can't move it
-  // backward) and the value rides back onto every device via the `lastSeenEventCount`
-  // on `GET /sessions`, so the dot clears everywhere — not just where it was opened.
+  // session; the store advances that person's mark monotonically (a stale post can't
+  // move it backward) and the value rides back onto every device of theirs via the
+  // `lastSeenEventCount` on `GET /sessions`, so the dot clears on all their devices
+  // and stays for everyone else.
   // Returns a lightweight ack (the resolved mark) rather than the full summary: the
   // caller discards the body, and building a summary would reload the whole event log
   // just to compute a status/usage nobody here reads. 404 for an unknown session id.
   registerSessionSeenRoute(app, { store: deps.eventStore });
+  registerViewStateRoutes(app, { store: deps.eventStore });
 
   // Permanently delete a session: drop its durable log (events + transcript
   // lines + the session row, transactionally) and remove its isolated worktree
@@ -6740,8 +6810,12 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           pullRequest: null,
         };
       }
-      const branchState = await readBranchMetadata(branches, session.worktree).catch(
-        (error: unknown) => {
+      const readStage = <T>(stage: BranchReadStage, read: () => Promise<T>): Promise<T> =>
+        measureBranchReadStage(stage, read, (timing) =>
+          request.log.info(timing, 'verity: slow branch read stage'),
+        );
+      const branchState = await readStage('metadata', () =>
+        readBranchMetadata(branches, session.worktree).catch((error: unknown) => {
           request.log.warn(
             {
               sessionId: id,
@@ -6752,7 +6826,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             'verity: branch list degraded because git metadata is unavailable',
           );
           return null;
-        },
+        }),
       );
       if (branchState === null) {
         return {
@@ -6777,16 +6851,20 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       // degrade to null, never failing the list.
       const pullRequest =
         deps.branchPrStatusForBranches !== undefined || deps.branchPrStatus !== undefined
-          ? await sessionPrCache.get(session, {
-              priority: true,
-              load: () => sessionPrStatus(session, current),
-            })
+          ? await readStage('pr', () =>
+              sessionPrCache.get(session, {
+                priority: true,
+                load: () => sessionPrStatus(session, current),
+              }),
+            )
           : undefined;
       const currentPr =
         pullRequest !== undefined
           ? (pullRequest?.number ?? null)
           : deps.branchPr
-            ? await deps.branchPr(current, session.worktree).catch(() => null)
+            ? await readStage('pr', () =>
+                deps.branchPr!(current, session.worktree).catch(() => null),
+              )
             : undefined;
       await maybeDispatchPrRepairTurns(session, pullRequest);
       // Best-effort GitHub identity (#161): owner/repo for the mobile header to build
@@ -6794,7 +6872,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       // GitHub remote (resolves to null), and a rejection degrades to omitted — the
       // chips then stay non-tappable rather than failing the branch list.
       const remoteIdentity = deps.repoIdentity
-        ? await deps.repoIdentity(session.worktree).catch(() => null)
+        ? await readStage('identity', () => deps.repoIdentity!(session.worktree).catch(() => null))
         : null;
       // A Forgejo project's chips link to its own instance; its origin remote is
       // the sandbox broker, so the identity comes from the project record.
@@ -6822,23 +6900,26 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           'verity: local project save status unavailable',
         );
       };
-      const localBase = await localMergeTarget(session)
-        .then(async (target) =>
-          target === undefined ? null : await branches.current(target.basePath, session.worktree),
-        )
-        .catch((error: unknown) => {
-          warnLocalSaveRead('base branch', error);
-          return null;
-        });
-      const hasChanges =
-        localBase !== null
-          ? await branches
-              .hasProjectChanges(session.worktree, localBase)
-              .catch((error: unknown) => {
-                warnLocalSaveRead('file changes', error);
-                return false;
-              })
-          : false;
+      const { localBase, hasChanges } = await readStage('localChanges', async () => {
+        const localBase = await localMergeTarget(session)
+          .then(async (target) =>
+            target === undefined ? null : await branches.current(target.basePath, session.worktree),
+          )
+          .catch((error: unknown) => {
+            warnLocalSaveRead('base branch', error);
+            return null;
+          });
+        const hasChanges =
+          localBase !== null
+            ? await branches
+                .hasProjectChanges(session.worktree, localBase)
+                .catch((error: unknown) => {
+                  warnLocalSaveRead('file changes', error);
+                  return false;
+                })
+            : false;
+        return { localBase, hasChanges };
+      });
       return {
         current,
         switchable,

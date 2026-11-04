@@ -519,9 +519,19 @@ export class AttendeeMeetings {
   /** Stops the bot of an unassigned meeting and forgets what it heard. False when the
    * meeting is unknown or was assigned meanwhile: published meetings stay. */
   async discard(id: string): Promise<boolean> {
+    return this.discardOwned(id, null);
+  }
+
+  /** Forgets the provider state of a finished meeting discarded from `sessionId`; the
+   * published meeting itself is deleted by the caller. False when it is not ours. */
+  async discardFinished(sessionId: string, id: string): Promise<boolean> {
+    return this.discardOwned(id, sessionId);
+  }
+
+  private async discardOwned(id: string, sessionId: string | null): Promise<boolean> {
     return this.serial(async () => {
       const state = await this.options.store.getAttendeeState<OnlineMeeting>(`meeting:${id}`);
-      if (!state || state.meeting.sessionId !== null) return false;
+      if (!state || state.meeting.sessionId !== sessionId) return false;
       state.discarded = true;
       this.forget(state);
       await this.save(state);

@@ -220,12 +220,15 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
   // focused then), replacing a plain mount effect.
   const [focused, setFocused] = useState(false);
   const [appActive, setAppActive] = useState(AppState.currentState === 'active');
+  const visible = useRef(false);
   useFocusEffect(
     useCallback(() => {
       setFocused(true);
+      visible.current = appActive;
       if (appActive && enabled) void load({ silent: true });
       return () => {
         setFocused(false);
+        visible.current = false;
         reqId.current += 1;
         if (pending.current) {
           pending.current.followup = false;
@@ -241,6 +244,7 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
       const active = nextState === 'active';
       setAppActive(active);
       if (!active) {
+        visible.current = false;
         reqId.current += 1; // stale in-flight response must not write in background
         if (pending.current) {
           pending.current.followup = false;
@@ -268,7 +272,8 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
   }, [client, sessionId, load, focused, appActive, workspaceMissing, enabled]);
 
   const refresh = useCallback(() => {
-    if (enabled) void load();
+    // Focus always revalidates, so hidden refresh requests need no network work.
+    if (enabled && visible.current) void load();
   }, [load, enabled]);
 
   const switchTo = useCallback<UseBranches['switchTo']>(

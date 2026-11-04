@@ -37,6 +37,7 @@ import type { StreamingRedactorProfile } from '@verity/secret-contracts';
 // tests assert is that the fallback PATH is taken, not which version it lands on.
 // A restated tag kept passing while the ref it copied went dead.
 import { DEFAULT_TOOLKIT_FEATURE_FALLBACK } from './sandbox-artifacts.js';
+import { pendingSessionCleanups, queueSessionCleanup } from './pending-session-cleanup.js';
 
 import {
   branchRenameAppliesToSession,
@@ -1158,7 +1159,10 @@ describe('Uplink control client logging (#582 follow-up)', () => {
       new RegExp(`\\b${identifier}\\.bind\\(\\s*app\\.log\\s*\\)`, 'u'),
       `a bind of ${identifier} to app.log`,
     );
-    const dial = positionOf(/\buplinkControl\??\.start\(\s*\)/u, 'the uplink dial');
+    const dial = positionOf(
+      /if \(!secretCipher\.isSealed\(\)\) uplinkControl\?\.start\(\);/u,
+      'the unlocked boot dial',
+    );
 
     expect(dial).toBeGreaterThan(bind);
   });
@@ -1185,7 +1189,10 @@ describe('Uplink control client logging (#582 follow-up)', () => {
       /* setParentNodes */ true,
     );
     const construction = positionOf(CONSTRUCTION, 'the construction');
-    const dial = positionOf(/\buplinkControl\??\.start\(\s*\)/u, 'the uplink dial');
+    const dial = positionOf(
+      /if \(!secretCipher\.isSealed\(\)\) uplinkControl\?\.start\(\);/u,
+      'the unlocked boot dial',
+    );
 
     const enclosing = (position: number): ts.SignatureDeclaration | undefined => {
       let innermost: ts.SignatureDeclaration | undefined;
@@ -1214,12 +1221,10 @@ describe('Uplink control client logging (#582 follow-up)', () => {
     // Both belong to the boot's own statement list rather than to something
     // nested inside it.
     expect(statementAt(construction)).toBeDefined();
-    // And the dial is that statement, not merely inside it: wrapped in an `if`
-    // or a `try` it would be reached conditionally, which no count of returns
-    // would show. The construction gets no such check - it is the `? :` that
-    // decides whether there is a client at all.
+    // Boot must reach the unlock guard; a sealed store deliberately defers the
+    // dial to the interactive unlock callback instead of revoking saved shares.
     const dialStatement = statementAt(dial);
-    expect(dialStatement && ts.isExpressionStatement(dialStatement)).toBe(true);
+    expect(dialStatement && ts.isIfStatement(dialStatement)).toBe(true);
 
     // Returns belonging to the boot itself - the walk stops at every nested
     // function, so a callback's `return` is not mistaken for the boot's.
@@ -2564,6 +2569,30 @@ describe('buildEmbeddedServer', () => {
           expect(Date.now() - deleteStarted).toBeLessThan(5_000);
           // The request must finish while the supervisor is still withholding its reply.
           expect(existsSync(rollout)).toBe(true);
+          const cleanupRoot = join(dataVolumeRoot, 'pending-session-cleanup');
+          await vi.waitFor(
+            async () => {
+              const pending = await pendingSessionCleanups(cleanupRoot);
+              expect(
+                pending.find((entry) => entry.sessionId === 's-purge')?.progress?.['p-purge'],
+              ).toMatchObject({ failures: 1, retryAt: expect.any(Number) });
+            },
+            { timeout: 15_000 },
+          );
+          // Make the durable retry due instead of waiting a full backoff plus
+          // worker tick; another deletion exercises the normal rescan trigger.
+          const pending = (await pendingSessionCleanups(cleanupRoot)).find(
+            (entry) => entry.sessionId === 's-purge',
+          )!;
+          pending.progress!['p-purge']!.retryAt = 0;
+          await queueSessionCleanup(cleanupRoot, pending);
+          await store.createSession({
+            sessionId: 's-purge-retry',
+            worktree,
+            model: 'codex/default',
+            projectId: 'p-purge',
+          });
+          await server.app.inject({ method: 'DELETE', url: '/sessions/s-purge-retry' });
         }
         await vi.waitFor(
           () => {
@@ -2571,7 +2600,7 @@ describe('buildEmbeddedServer', () => {
             expect(existsSync(transcript)).toBe(false);
             expect(existsSync(subagent)).toBe(false);
           },
-          { timeout: layout === 'timeout' ? 45_000 : 5_000 },
+          { timeout: 5_000 },
         );
         if (layout === 'timeout') {
           expect(deletionRequests.length).toBeGreaterThanOrEqual(2);

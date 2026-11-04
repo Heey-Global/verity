@@ -3095,7 +3095,9 @@ describe('SupervisorRunnerClient start-turn resilience', () => {
     expect(received.filter((request) => request.kind === 'start-turn')).toHaveLength(1);
     expect(telemetry.at(-1)).toMatchObject({ outcome: 'created', activeStarts: 0 });
     expect(telemetry.at(-1)?.acceptMs).toBeTypeOf('number');
-    expect(telemetry.at(-1)?.startMs).toBeGreaterThanOrEqual(700);
+    // Timers and wall-clock telemetry can differ by a clock tick; retain a wide
+    // margin over the 200 ms control budget without requiring an exact 700 ms.
+    expect(telemetry.at(-1)?.startMs).toBeGreaterThanOrEqual(650);
   });
 
   // The opposite end of the same judgement. Nothing was written, so nothing was
@@ -3600,3 +3602,72 @@ describe('SupervisorRunnerRecovery marker preconditions', () => {
     expect(getSession).not.toHaveBeenCalled();
   });
 });
+
+describe('cache maintenance error evidence', () => {
+  it.each([
+    [{ ok: false, error: 'unknown supervisor request' }, { code: 'unsupported' }],
+    [{ ok: false, error: 'private detail' }, { code: 'supervisor-rejected' }],
+    [
+      {
+        ok: false,
+        error: 'private detail',
+        runnerCacheFailure: {
+          code: 'turn-ownership-unknown',
+          counts: { missingState: 1, invalidState: 0, unsettledWithoutSession: 2 },
+        },
+      },
+      {
+        code: 'turn-ownership-unknown',
+        counts: { missingState: 1, invalidState: 0, unsettledWithoutSession: 2 },
+      },
+    ],
+  ])('preserves structured cache evidence %j', async (reply, failure) => {
+    const path = join(dir, 'cache.sock');
+    await serve(path, reply);
+    await expect(
+      requestRunnerSupervisor(path, {
+        kind: 'reclaim-package-caches',
+        sessionIds: [],
+        maxBytes: 4096,
+      }),
+    ).rejects.toMatchObject({ runnerCacheFailure: failure });
+  });
+});
+
+it('classifies malformed cache response frames as invalid rather than leaking JSON content', async () => {
+  const path = join(dir, 'invalid-cache.sock');
+  const server = createServer((socket) => {
+    sockets.add(socket);
+    socket.once('close', () => sockets.delete(socket));
+    socket.once('data', () => socket.end('{private-invalid-json\n'));
+  });
+  servers.push(server);
+  await new Promise<void>((resolve) => server.listen(path, resolve));
+  await expect(
+    requestRunnerSupervisor(path, { kind: 'reclaim-package-caches' }),
+  ).rejects.toMatchObject({ runnerCacheFailure: { code: 'invalid-response' } });
+});
+it('marks a silent cache supervisor timeout with a safe transport code', async () => {
+  const path = join(dir, 'silent-cache.sock');
+  const server = createServer((socket) => {
+    sockets.add(socket);
+    socket.once('close', () => sockets.delete(socket));
+    socket.resume();
+  });
+  servers.push(server);
+  await new Promise<void>((resolve) => server.listen(path, resolve));
+  await expect(
+    requestRunnerSupervisor(path, { kind: 'reclaim-package-caches' }, 10),
+  ).rejects.toMatchObject({ code: 'ETIMEDOUT' });
+});
+
+it.each([null, { ok: 'invalid' }, { ok: true, padding: 'x'.repeat(64 * 1024) }])(
+  'classifies invalid or oversized cache response shape',
+  async (reply) => {
+    const path = join(dir, 'cache-shape.sock');
+    await serve(path, reply);
+    await expect(
+      requestRunnerSupervisor(path, { kind: 'reclaim-package-caches' }),
+    ).rejects.toMatchObject({ runnerCacheFailure: { code: 'invalid-response' } });
+  },
+);

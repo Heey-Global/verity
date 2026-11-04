@@ -9,6 +9,7 @@ import {
   advanceManagedDeploymentImage,
   readManagedDeployment,
   migrateManagedHostDiagnostics,
+  migrateManagedProjectEgress,
 } from './managed-deployment.js';
 import { MANAGED_SERVER_NAME, reconcileManagedServer } from './managed-server-owner.js';
 import { createUpdateJournalCutoverStore } from './update-cutover.js';
@@ -456,6 +457,24 @@ describe('update runner', () => {
     await update.idle();
     expect(attempts).toBe(5);
     expect(await readUpdateJournal(root)).toMatchObject({ phase: 'completed' });
+  });
+
+  it('reports pending egress wiring as drift without replacing the running Server', async () => {
+    const { root, daemon, oldContainerId } = await adoptedDeployment('egress-migration');
+    await migrateManagedProjectEgress({
+      root,
+      deploymentId: DEPLOYMENT_ID,
+      image: oldImage,
+      controlGid: 65531,
+    });
+    const recovery = await recoverManagedUpdater(options(root, daemon));
+    expect(recovery.reconcile).toEqual({
+      status: 'drift',
+      environment: [],
+      projectEgressMountPending: true,
+    });
+    expect(daemon.status(MANAGED_SERVER_NAME)).toBe('running');
+    expect(daemon.find(MANAGED_SERVER_NAME)).toBe(oldContainerId);
   });
 
   it('keeps the migrated Server recoverable and applies its mount through guarded cutover', async () => {

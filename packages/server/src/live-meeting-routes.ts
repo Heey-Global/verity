@@ -62,6 +62,8 @@ const meetingBody = z.object({
   ownerToken: z.string().min(32).max(256),
   revision: z.number().int().positive(),
 });
+/** Uploads of a discarded meeting are refused for good; the recorder drops its copy. */
+const deletedMeeting = { error: 'This meeting was discarded.', code: 'meeting_deleted' };
 const ownerHash = (token: string) => createHash('sha256').update(token).digest('hex');
 const noteBody = z.object({
   atSeconds: z.number().finite().nonnegative(),
@@ -225,6 +227,13 @@ export function registerLiveMeetingRoutes(
     /** Files a finished meeting. Called again after later notes or speaker edits, so
      * it must be idempotent. Uploads are acknowledged only after filing succeeds. */
     onFinished?: (sessionId: string, meetingId: string) => Promise<void>;
+    /** Cleans up outside the meeting tables after a finished meeting was discarded: the
+     * filed transcript, and for online meetings the provider state. Failures are logged;
+     * the deletion itself has already committed. */
+    onDiscarded?: (
+      sessionId: string,
+      meeting: { id: string; engine: string; startedAt: number },
+    ) => Promise<void>;
   } = {},
 ): {
   ingest: (meeting: import('@verity/store').LiveMeetingSyncRecord) => Promise<void>;
@@ -469,6 +478,15 @@ export function registerLiveMeetingRoutes(
     const timer = setTimeout(runQueued, opts.delayMs ?? 15_000);
     queued.set(meetingId, { timer, sessionId, revision, transcript, terminal });
   };
+  const forgetAnalysis = (meetingId: string) => {
+    const pending = queued.get(meetingId);
+    if (pending) clearTimeout(pending.timer);
+    queued.delete(meetingId);
+    inFlight.get(meetingId)?.abort();
+    lastAnalyzed.delete(meetingId);
+    lastAttemptAt.delete(meetingId);
+    retries.delete(meetingId);
+  };
   app.addHook('onClose', () => {
     resultWorker.close();
     questionChecks.close();
@@ -559,6 +577,62 @@ export function registerLiveMeetingRoutes(
     reply.code(202);
     return { accepted: true };
   });
+  // Discards a finished meeting with everything heard and derived from it. Tasks already
+  // created from its result and the session's messages stay.
+  app.delete('/sessions/:id/live-meetings/:meetingId', async (request, reply) => {
+    const { id: sessionId, meetingId } = meetingParams.parse(request.params);
+    if (!(await store.getSession(sessionId))) {
+      reply.code(404);
+      return { error: 'session not found' };
+    }
+    const meeting =
+      (await store.liveMeetings.meetingHead(sessionId, meetingId)) ??
+      // Repeating a discard repeats its cleanup from what the tombstone kept.
+      (await store.liveMeetings.deletion(sessionId, meetingId));
+    if (!meeting) {
+      reply.code(404);
+      return { error: 'meeting not found', code: 'meeting_not_found' };
+    }
+    const running = (m: { engine: string; state?: string }) =>
+      m.state === 'active' ||
+      (m.engine === 'attendee' && m.state !== undefined && m.state !== 'ended');
+    if (running(meeting)) {
+      reply.code(409);
+      return { error: 'Only a finished meeting can be discarded.', code: 'meeting_running' };
+    }
+    forgetAnalysis(meetingId);
+    resultWorker.cancel(meetingId);
+    // Cleanup outside the meeting tables comes first. If a step fails the meeting itself is
+    // kept on every device (earlier steps may already be done), and discarding again
+    // repeats the cleanup before deleting it.
+    try {
+      await opts.onDiscarded?.(sessionId, meeting);
+    } catch (error) {
+      app.log.warn({ err: error, sessionId, meetingId }, 'discarded meeting cleanup failed');
+      reply.code(502);
+      return {
+        error: 'The meeting could not be discarded completely. Try again.',
+        code: 'meeting_cleanup_failed',
+      };
+    }
+    const outcome = await store.liveMeetings.deleteMeeting(sessionId, meetingId);
+    if (outcome === 'running') {
+      reply.code(409);
+      return { error: 'Only a finished meeting can be discarded.', code: 'meeting_running' };
+    }
+    if (outcome === 'deleted') {
+      // An upload accepted between cleanup and deletion may have filed the meeting again;
+      // the meeting is gone now, so a second pass leaves nothing behind.
+      forgetAnalysis(meetingId);
+      resultWorker.cancel(meetingId);
+      await opts.onDiscarded?.(sessionId, meeting).catch((error: unknown) => {
+        app.log.warn({ err: error, sessionId, meetingId }, 'discarded meeting recheck failed');
+      });
+      opts.onResultChanged?.(sessionId, meetingId);
+    }
+    return { discarded: true };
+  });
+
   app.put('/sessions/:id/live-meetings/:meetingId', async (request, reply) => {
     const { id: sessionId, meetingId } = meetingParams.parse(request.params);
     if (!(await store.getSession(sessionId))) {
@@ -580,7 +654,9 @@ export function registerLiveMeetingRoutes(
     });
     if (!accepted) {
       reply.code(409);
-      return { error: 'meeting owner or session mismatch' };
+      return (await store.liveMeetings.isDeleted(sessionId, meetingId))
+        ? deletedMeeting
+        : { error: 'meeting owner or session mismatch' };
     }
     if ((await store.liveMeetings.currentRevision(sessionId, meetingId)) === body.revision) {
       questionChecks.ingest({
@@ -763,6 +839,10 @@ export function registerLiveMeetingRoutes(
       ...body,
     });
     if (!accepted) {
+      if (await store.liveMeetings.isDeleted(sessionId, meetingId)) {
+        reply.code(409);
+        return deletedMeeting;
+      }
       reply.code(404);
       return { error: 'meeting not found in session' };
     }

@@ -245,6 +245,7 @@ export default function DesignSystemCatalog() {
           pending={false}
           disabled={false}
           onAction={() => undefined}
+          onDismiss={() => undefined}
         />
       </View>
 
