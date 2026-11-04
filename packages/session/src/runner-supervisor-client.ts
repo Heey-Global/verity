@@ -2385,6 +2385,14 @@ export class SupervisorRunnerRecovery implements RunnerRecovery {
       if (state.startCommandId !== marker.startCommandId || state.status === 'claimed') {
         return { status: 'uncertain' };
       }
+      // New supervisors distinguish their actual/adopted workers from stale durable
+      // state. Older supervisors omit this field and retain the compatibility checks.
+      if (
+        state.status === 'running' &&
+        response.workerStatus !== undefined &&
+        response.workerStatus !== 'live'
+      )
+        return { status: 'uncertain' };
       const turnDir = join(runtime, 'turns', marker.turnId);
       const eventFilePath = join(turnDir, 'events.jsonl');
       const controlSocketPath = join(turnDir, 'control.sock');

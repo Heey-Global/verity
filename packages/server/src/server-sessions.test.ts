@@ -573,7 +573,7 @@ describe('DELETE /sessions/:id', () => {
 
     const res = await app.inject({ method: 'DELETE', url: '/sessions/s1' });
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({ sessionId: 's1' });
+    expect(res.json()).toEqual({ sessionId: 's1', cleanup: 'pending' });
     // Gone from the store, so gone from the list the overview renders.
     expect(await ctx.store.getSession('s1')).toBeUndefined();
     const list = await app.inject({ method: 'GET', url: '/sessions' });
@@ -638,6 +638,43 @@ describe('DELETE /sessions/:id', () => {
     }
   });
 
+  it('deletes a sleeping project session without waking its runner and retains cleanup ownership', async () => {
+    await ctx.store.upsertProject({
+      id: 'sleep-delete',
+      owner: 'local',
+      repo: 'sleep',
+      containerName: 'sleep',
+      state: 'sleeping',
+    });
+    await ctx.store.createSession({
+      sessionId: 'sleep-session',
+      projectId: 'sleep-delete',
+      worktree: '/wt/sleep-session',
+      model: 'm',
+    });
+    const remove = vi.fn(async () => undefined);
+    const runtimeCleanup = vi.fn(async () => 'deferred' as const);
+    const a = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      queueSessionArtifacts: async () => {},
+      cleanupDeletedSessionRuntime: runtimeCleanup,
+      worktrees: { add: async () => '/unused', remove },
+    });
+    try {
+      const res = await a.inject({ method: 'DELETE', url: '/sessions/sleep-session?force=true' });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toMatchObject({ sessionId: 'sleep-session', cleanup: 'pending' });
+      expect(await ctx.store.getSession('sleep-session')).toBeUndefined();
+      expect((await ctx.store.getProject('sleep-delete'))?.state).toBe('sleeping');
+      expect(await ctx.store.listPendingSessionDeletions()).toHaveLength(1);
+      expect(remove).not.toHaveBeenCalled();
+    } finally {
+      await a.close();
+    }
+  });
+
   it('returns 404 for an unknown session', async () => {
     const res = await app.inject({ method: 'DELETE', url: '/sessions/missing' });
     expect(res.statusCode).toBe(404);
@@ -674,7 +711,7 @@ describe('DELETE /sessions/:id', () => {
     try {
       const res = await a.inject({ method: 'DELETE', url: '/sessions/s1?force=true' });
       expect(res.statusCode).toBe(200);
-      expect(res.json()).toEqual({ sessionId: 's1' });
+      expect(res.json()).toEqual({ sessionId: 's1', cleanup: 'pending' });
       expect(runBackendHandoff).toHaveBeenCalledWith('s1', expect.any(Function));
       // The agent is reaped, not merely detached — and reaping happens BEFORE the
       // worktree is removed, so the process is never orphaned against a deleted cwd.
@@ -759,7 +796,7 @@ describe('DELETE /sessions/:id', () => {
     }
   });
 
-  it('keeps a busy session and its worktree when reaping fails', async () => {
+  it('logically deletes a busy session but retains its worktree when reaping fails', async () => {
     const provisioner = {
       add: vi.fn(async (branch: string) => `/wt/${branch.replace(/\//g, '-')}`),
       remove: vi.fn(async () => undefined),
@@ -776,8 +813,9 @@ describe('DELETE /sessions/:id', () => {
     });
     try {
       const res = await a.inject({ method: 'DELETE', url: '/sessions/s1?force=true' });
-      expect(res.statusCode).toBe(500);
-      expect(await ctx.store.getSession('s1')).toBeDefined();
+      expect(res.statusCode).toBe(200);
+      expect(await ctx.store.getSession('s1')).toBeUndefined();
+      expect(await ctx.store.isSessionDeleting('s1')).toBe(true);
       expect(closeSession).not.toHaveBeenCalled();
       expect(provisioner.remove).not.toHaveBeenCalled();
     } finally {
@@ -864,7 +902,7 @@ describe('DELETE /sessions/:id', () => {
     await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
     isBusy.mockReturnValue(false);
     try {
-      expect((await a.inject({ method: 'DELETE', url: '/sessions/s1' })).statusCode).toBe(500);
+      expect((await a.inject({ method: 'DELETE', url: '/sessions/s1' })).statusCode).toBe(503);
       expect(await ctx.store.getSession('s1')).toBeDefined();
       expect(schedule).not.toHaveBeenCalled();
     } finally {

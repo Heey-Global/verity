@@ -3373,6 +3373,90 @@ describe('Conductor recover(): reattach-before-settle (ADR 0006 Stage 4c / D7)',
     return seq;
   }
 
+  it.each(['dead', 'live', 'uncertain'] as const)(
+    'reconciles only the changed project immediately when discovery is %s',
+    async (verdict) => {
+      await seedMarker('turn-container-restart');
+      await ctx.store.upsertProject({
+        id: 'p-restarted',
+        owner: 'owner',
+        repo: 'repo',
+        containerName: 'runner',
+        state: 'active',
+      });
+      await ctx.store.setSessionProject('s1', 'p-restarted');
+      let outcome: RunnerRecoveryOutcome = {
+        status: 'live',
+        target: {
+          sessionId: 's1',
+          turnId: 'turn-container-restart',
+          eventFilePath: '/rt/events.jsonl',
+          controlSocketPath: '/rt/control.sock',
+        },
+      };
+      const discover = vi.fn(async () => outcome);
+      const runner = fakeAttachRunner(new Promise<RunResult>(() => undefined), true);
+      const conductor = new Conductor({
+        store: ctx.store,
+        backend: inertBackend,
+        worktreeExists: async () => true,
+        runner: runner.factory,
+        runnerRecovery: { discover },
+      });
+      try {
+        await conductor.recover();
+        const queueRead = vi.spyOn(ctx.store, 'listQueuedTurns');
+        outcome = verdict === 'live' ? outcome : { status: verdict };
+        await conductor.reconcileProjectTurns('another-project');
+        expect(discover).toHaveBeenCalledTimes(1);
+        // No idle window/timer advance: a lifecycle change must probe right away.
+        await conductor.reconcileProjectTurns('p-restarted');
+        expect(discover).toHaveBeenCalledTimes(2);
+        expect(conductor.isBusy('s1')).toBe(verdict !== 'dead');
+        expect(await ctx.store.listRunningTurns()).toHaveLength(verdict === 'dead' ? 0 : 1);
+        expect((await ctx.store.getEvents('s1')).some((event) => event.t === 'interrupted')).toBe(
+          verdict === 'dead',
+        );
+        expect(queueRead).not.toHaveBeenCalled();
+        expect(runner.attachTargets).toHaveLength(1);
+        queueRead.mockRestore();
+      } finally {
+        await conductor.drainOnShutdown();
+      }
+    },
+  );
+
+  it('rechecks uncertain startup recovery on a project lifecycle change without replaying queues', async () => {
+    await seedMarker('turn-uncertain-restart');
+    await ctx.store.upsertProject({
+      id: 'p-restarted',
+      owner: 'owner',
+      repo: 'repo',
+      containerName: 'runner',
+      state: 'active',
+    });
+    await ctx.store.setSessionProject('s1', 'p-restarted');
+    let outcome: RunnerRecoveryOutcome = { status: 'uncertain' };
+    const discover = vi.fn(async () => outcome);
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: inertBackend,
+      worktreeExists: async () => true,
+      runnerRecovery: { discover },
+    });
+    try {
+      await conductor.recover();
+      outcome = { status: 'dead' };
+      await conductor.reconcileProjectTurns('p-restarted');
+      expect(discover).toHaveBeenCalledTimes(2);
+      expect(conductor.isBusy('s1')).toBe(false);
+      expect(await ctx.store.listRunningTurns()).toHaveLength(0);
+      expect((await ctx.store.getEvents('s1')).at(-1)).toMatchObject({ t: 'interrupted' });
+    } finally {
+      await conductor.drainOnShutdown();
+    }
+  });
+
   it.each(['result', 'forced-cancel'] as const)(
     'cleans staged images after recovered %s termination',
     async (termination) => {
@@ -11139,4 +11223,200 @@ it('cancels only the live turn matching an assignment receipt', async () => {
   expect(await conductor.cancelAssignmentTurn('assignment-target', 'current')).toBe(true);
   await vi.waitFor(() => expect(conductor.isBusy('assignment-target')).toBe(false));
   receipt.mockRestore();
+});
+
+describe('Conductor session deletion admission', () => {
+  it('bounds deletion behind stalled maintenance and refuses queued handoffs permanently', async () => {
+    await ctx.store.createSession({ sessionId: 's-delete', worktree: '/wt/delete', model: 'm' });
+    const conductor = new Conductor({ store: ctx.store, worktreeExists: async () => true });
+    let release!: () => void;
+    let entered = false;
+    const first = conductor.runBackendHandoff('s-delete', async () => {
+      entered = true;
+      await new Promise<void>((resolve) => {
+        release = resolve;
+      });
+    });
+    await waitFor(() => entered);
+    const replacement = vi.fn(async () => undefined);
+    const queued = conductor.runBackendHandoff('s-delete', replacement);
+    const refused = expect(queued).rejects.toBeInstanceOf(SessionBusyError);
+
+    expect(await conductor.stopForDeletion('s-delete', 20)).toBe(false);
+    expect(conductor.isBusy('s-delete')).toBe(true);
+    expect(conductor.isDeletionWorktreeBusy('s-delete')).toBe(true);
+    await expect(conductor.dispatchTurn('s-delete', 'late prompt')).rejects.toBeInstanceOf(
+      SessionBusyError,
+    );
+    release();
+    await first;
+    await refused;
+    expect(conductor.isDeletionWorktreeBusy('s-delete')).toBe(false);
+    expect(replacement).not.toHaveBeenCalled();
+    expect(await conductor.stopForDeletion('s-delete', 20)).toBe(true);
+    expect(conductor.isSessionDeleting('s-delete')).toBe(true);
+    await expect(conductor.dispatchTurn('s-delete', 'after cleanup')).rejects.toBeInstanceOf(
+      SessionBusyError,
+    );
+  });
+
+  it('does not treat an abandoned durable marker or failed inspection as proof of termination', async () => {
+    await ctx.store.createSession({ sessionId: 's-delete', worktree: '/wt/delete', model: 'm' });
+    const { seq } = await ctx.store.appendEvent('s-delete', {
+      t: 'prompt',
+      text: 'running elsewhere',
+    });
+    await ctx.store.markTurnRunning({ sessionId: 's-delete', promptSeq: seq });
+    const conductor = new Conductor({ store: ctx.store, worktreeExists: async () => true });
+    expect(await conductor.stopForDeletion('s-delete', 20)).toBe(false);
+    expect(await ctx.store.listRunningTurns()).toHaveLength(1);
+    const inspect = vi
+      .spyOn(ctx.store, 'listRunningTurns')
+      .mockRejectedValueOnce(new Error('unavailable'));
+    expect(await conductor.stopForDeletion('s-delete', 20)).toBe(false);
+    inspect.mockRestore();
+  });
+
+  it('rejects a turn whose workspace preparation finishes after deletion begins', async () => {
+    await ctx.store.createSession({ sessionId: 's-delete', worktree: '/wt/delete', model: 'm' });
+    let release!: () => void;
+    let entered = false;
+    const backend = { run: vi.fn(() => Promise.reject(new Error('must not run'))) };
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend,
+      worktreeExists: async () => true,
+      ensureWorkspace: async () => {
+        entered = true;
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+      },
+    });
+    const dispatch = conductor.dispatchTurn('s-delete', 'old prompt');
+    const refused = expect(dispatch).rejects.toBeInstanceOf(SessionBusyError);
+    await waitFor(() => entered);
+    conductor.beginSessionDeletion('s-delete');
+    expect(conductor.isDeletionWorktreeBusy('s-delete')).toBe(true);
+    release();
+    await refused;
+    expect(conductor.isDeletionWorktreeBusy('s-delete')).toBe(false);
+    expect(backend.run).not.toHaveBeenCalled();
+    expect(conductor.isBusy('s-delete')).toBe(false);
+  });
+
+  it('bounds an unacknowledged worker stop and suppresses a late backend binding', async () => {
+    vi.useFakeTimers();
+    try {
+      await ctx.store.createSession({ sessionId: 's-delete', worktree: '/wt/delete', model: 'm' });
+      let settle!: (result: RunResult) => void;
+      let bind: ((id: string) => void | Promise<void>) | undefined;
+      const runner: RunnerClient = {
+        startTurn: (_opts, hooks) => {
+          bind = hooks.onSession;
+          return {
+            result: new Promise<RunResult>((resolve) => {
+              settle = resolve;
+            }),
+            steer: () => Promise.resolve(false),
+            answerPermission: () => Promise.resolve(false),
+            cancel: () => new Promise<boolean>(() => undefined),
+            forceCancel: () => new Promise<boolean>(() => undefined),
+          };
+        },
+      };
+      const conductor = new Conductor({
+        store: ctx.store,
+        backend: { run: () => Promise.reject(new Error('unexpected loopback')) },
+        worktreeExists: async () => true,
+        runner: () => runner,
+      });
+      await conductor.dispatchTurn('s-delete', 'go');
+      await vi.waitFor(() => expect(bind).toBeDefined());
+      const persist = vi.spyOn(ctx.store, 'upsertSessionBackendState');
+      const stopping = conductor.stopForDeletion('s-delete', 50);
+      await vi.advanceTimersByTimeAsync(50);
+      expect(await stopping).toBe(false);
+      expect(conductor.isBusy('s-delete')).toBe(true);
+      await bind!('late-backend-id');
+      expect(persist).not.toHaveBeenCalled();
+      settle({ sessionId: 's-delete', exitCode: 143, stderr: '', aborted: true });
+      await vi.waitFor(() => expect(conductor.isBusy('s-delete')).toBe(false));
+      await vi.advanceTimersByTimeAsync(2_000);
+      persist.mockRestore();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+it('Conductor session deletion admission refuses a fresh start after asynchronous preparation', async () => {
+  await ctx.store.createSession({ sessionId: 's-delete', worktree: '/wt/delete', model: 'm' });
+  let release!: () => void;
+  let entered = false;
+  const startTurn = vi.fn(() => {
+    throw new Error('must not start');
+  });
+  const conductor = new Conductor({
+    store: ctx.store,
+    backend: { run: () => Promise.reject(new Error('unexpected loopback')) },
+    worktreeExists: async () => true,
+    runner: () => ({ startTurn }),
+    prepareWorkspace: async () => {
+      entered = true;
+      await new Promise<void>((resolve) => {
+        release = resolve;
+      });
+    },
+  });
+  const starting = conductor.startSession({
+    sessionId: 's-delete',
+    worktree: '/wt/delete',
+    prompt: 'go',
+    model: 'm',
+  });
+  const refused = expect(starting).rejects.toBeInstanceOf(SessionBusyError);
+  await waitFor(() => entered);
+  conductor.beginSessionDeletion('s-delete');
+  release();
+  await refused;
+  expect(startTurn).not.toHaveBeenCalled();
+});
+
+it('Conductor session deletion admission reserves a deleted worktree before another session prepares it', async () => {
+  const worktree = '/wt/reserved';
+  await ctx.store.createSession({ sessionId: 's-old', worktree, model: 'm' });
+  await ctx.store.createSession({ sessionId: 's-new', worktree: '/wt/other', model: 'm' });
+  await ctx.store.queueSessionDeletion('s-old', JSON.stringify({ session: { worktree } }));
+  await ctx.store.deleteSession('s-old');
+  // Historical/imported state may bypass current createSession admission. A
+  // distinct row must still honor the pending owner's path before host work.
+  await ctx.db
+    .updateTable('sessions')
+    .set({ worktree })
+    .where('session_id', '=', 's-new')
+    .execute();
+  const ensureWorkspace = vi.fn(async () => undefined);
+  const prepareSession = vi.fn(async () => undefined);
+  const sessionBackend = vi.fn(async () => undefined);
+  const run = vi.fn(() => Promise.reject(new Error('must not run')));
+  const conductor = new Conductor({
+    store: ctx.store,
+    backend: { run },
+    worktreeExists: async () => true,
+    ensureWorkspace,
+    prepareSession,
+    sessionBackend,
+  });
+  await expect(conductor.dispatchTurn('s-new', 'overlapping resume')).rejects.toBeInstanceOf(
+    SessionBusyError,
+  );
+  await expect(
+    conductor.startSession({ sessionId: 's-fresh', worktree, prompt: 'overlapping fresh' }),
+  ).rejects.toBeInstanceOf(SessionBusyError);
+  expect(prepareSession).not.toHaveBeenCalled();
+  expect(ensureWorkspace).not.toHaveBeenCalled();
+  expect(sessionBackend).not.toHaveBeenCalled();
+  expect(run).not.toHaveBeenCalled();
+  expect(conductor.isDeletionWorktreeBusy('s-new')).toBe(false);
 });

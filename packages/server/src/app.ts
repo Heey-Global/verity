@@ -67,6 +67,8 @@ export interface ControlPlaneDeps {
   /** Persist cleanup ownership before session deletion, then wake the retry worker. */
   queueSessionArtifacts?: ServerDeps['queueSessionArtifacts'];
   scheduleSessionCleanup?: ServerDeps['scheduleSessionCleanup'];
+  cleanupDeletedSessionRuntime?: ServerDeps['cleanupDeletedSessionRuntime'];
+  onConductorReady?: ServerDeps['onConductorReady'];
   /** Remove a session's backend transcript files from the runner runtime as part of
    *  deleting it. Forwarded verbatim to {@link buildServer}; see the same field on
    *  `ServerDeps`. Omit on deployments without the runner supervisor. */
@@ -365,6 +367,10 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
       : {}),
     ...(deps.devicePairing !== undefined ? { devicePairing: deps.devicePairing } : {}),
     bus: deps.bus,
+    ...(deps.onConductorReady ? { onConductorReady: deps.onConductorReady } : {}),
+    ...(deps.cleanupDeletedSessionRuntime
+      ? { cleanupDeletedSessionRuntime: deps.cleanupDeletedSessionRuntime }
+      : {}),
     ...(deps.queueSessionArtifacts !== undefined
       ? { queueSessionArtifacts: deps.queueSessionArtifacts }
       : {}),

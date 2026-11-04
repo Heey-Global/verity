@@ -85,6 +85,13 @@ export interface ServerDeps {
   queueSessionArtifacts?: ((sessionId: string) => Promise<void>) | undefined;
   /** Wake the durable cleanup worker after the session row has been removed. */
   scheduleSessionCleanup?: (() => void) | undefined;
+  /** True only after privileged home fencing and artifact cleanup have completed. */
+  cleanupDeletedSessionRuntime?:
+    | ((
+        sessionId: string,
+        projectId: string | null,
+      ) => Promise<'clean' | 'absent' | 'deferred' | 'not-applicable'>)
+    | undefined;
   /**
    * Delete the backend transcript files a session left on the runner runtime, so a
    * deleted session takes its conversation with it and not just its row (see
@@ -228,6 +235,7 @@ export interface ServerDeps {
    * logger — the factory form lets the conductor's background-failure sink
    * (`onTurnError`) log through the same logger (see `buildControlPlane`).
    */
+  onConductorReady?: ((conductor: Conductor) => void) | undefined;
   conductor: Conductor | ((logger: FastifyBaseLogger) => Conductor);
   /**
    * Root directory under which `POST /sessions` provisions a fresh worktree per

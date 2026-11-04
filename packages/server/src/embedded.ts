@@ -221,6 +221,7 @@ import {
 } from './runtime-readiness-gate.js';
 import {
   queueSessionCleanup,
+  pendingSessionCleanups,
   createSessionCleanupProcessor,
   createSessionCleanupWorker,
 } from './pending-session-cleanup.js';
@@ -3632,6 +3633,7 @@ export async function buildEmbeddedServer(
   let claudeEgressServerName: string | undefined;
   let stopRunnerSupervisorReconciler = (): Promise<void> => Promise.resolve();
   let refreshProjectToken: ((project: ProjectRecord) => Promise<void>) | undefined;
+  let projectTurnReconciler: ((projectId: string) => Promise<void>) | undefined;
   let projectWorktrees: ReturnType<typeof createProjectWorktreeFactory> | undefined;
   // `main.ts` always passes a resolver, so this is what an embedder that omits
   // one gets. Shared with the last-resort fallback there rather than repeated:
@@ -4083,6 +4085,9 @@ export async function buildEmbeddedServer(
           }
         : {}),
       recreateEnvDriftedSandboxes: config.recreateEnvDriftedSandboxes ?? true,
+      onRunnerReady: async (project) => {
+        await projectTurnReconciler?.(project.id);
+      },
       onContainerStarted: async (project) => {
         listenerDiscovery?.invalidateProject(project.id);
         await projectAgentGatewayIdentity(true);
@@ -4917,10 +4922,16 @@ export async function buildEmbeddedServer(
           sessionExists: async (sessionId) =>
             (await eventStore.getSession(sessionId)) !== undefined,
           runtimeState: async (projectId) => {
-            if (!existsSync(join(dataVolumeRoot, 'runners', projectId))) return 'absent';
+            const runtimeExists = existsSync(join(dataVolumeRoot, 'runners', projectId));
             if (projectId === CONTROL_PLANE_RUNNER_PROJECT_ID && config.controlPlaneRunner)
-              return 'ready';
+              return runtimeExists ? 'ready' : 'unavailable';
             const project = await eventStore.getProject(projectId);
+            if (!runtimeExists)
+              return project === undefined
+                ? 'absent'
+                : project.state === 'sleeping'
+                  ? 'sleeping'
+                  : 'unavailable';
             if (project?.state === 'active') return 'ready';
             if (project?.state === 'sleeping') return 'sleeping';
             return 'unavailable';
@@ -4966,6 +4977,9 @@ export async function buildEmbeddedServer(
           (error) => app.log.warn({ err: error }, 'verity: pending cleanup scan failed'),
         );
   const app = buildControlPlane({
+    onConductorReady: (conductor) => {
+      projectTurnReconciler = (projectId) => conductor.reconcileProjectTurns(projectId);
+    },
     ...(sessionStorage ? { sessionStorage } : {}),
     eventStore,
     ...(backup ? { backup } : {}),
@@ -4996,6 +5010,30 @@ export async function buildEmbeddedServer(
       ? {}
       : {
           scheduleSessionCleanup: () => sessionCleanupWorker?.run(),
+          cleanupDeletedSessionRuntime: async (sessionId: string, projectId: string | null) => {
+            if (
+              config.runnerSupervisor !== true ||
+              (projectId === null && !config.controlPlaneRunner)
+            )
+              return 'not-applicable' as const;
+            const cleanupRoot = join(dataVolumeRoot!, 'pending-session-cleanup');
+            const before = (await pendingSessionCleanups(cleanupRoot)).find(
+              (record) => record.sessionId === sessionId,
+            );
+            await cleanupProcessor?.run();
+            const pending = await pendingSessionCleanups(cleanupRoot);
+            if (pending.some((record) => record.sessionId === sessionId))
+              return 'deferred' as const;
+            if (
+              projectId !== null &&
+              (await eventStore.getProject(projectId)) === undefined &&
+              !(before?.runnerProjectIds ?? [projectId]).some((id) =>
+                existsSync(join(dataVolumeRoot!, 'runners', id)),
+              )
+            )
+              return 'absent' as const;
+            return 'clean' as const;
+          },
           queueSessionArtifacts: async (sessionId: string): Promise<void> => {
             // Read the bindings HERE rather than in the helper: this is the delete path,
             // and the rows are about to go with the FK cascade.

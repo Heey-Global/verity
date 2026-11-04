@@ -173,6 +173,15 @@ export const tryRunExclusive = vi.fn<
 >(async (id, fn) => (isBusy(id) ? { ran: false } : { ran: true, value: await fn() }));
 
 export const conductor = {
+  beginSessionDeletion: vi.fn(),
+  stopForDeletion: async (id: string) => {
+    try {
+      await runBackendHandoff(id, async () => undefined);
+      return true;
+    } catch {
+      return false;
+    }
+  },
   sendTurn,
   dispatchTurn,
   dispatchTurnWhenIdle,

@@ -66,6 +66,10 @@ export class LocalPreviewManager {
   private readonly ports: number[];
   private readonly blockedProjects = new Set<string>();
   private readonly creating = new Set<Promise<unknown>>();
+  private readonly scopedCreating = new Map<
+    Promise<unknown>,
+    { sessionId: string; projectId: string | null | undefined }
+  >();
   private closing = false;
   private recovering?: Promise<void>;
   private readonly blockedSessions = new Set<string>();
@@ -157,16 +161,19 @@ export class LocalPreviewManager {
     },
   ): Promise<LocalPreviewShare> {
     await this.hydrate();
+    const projectId = (await this.options.store.getSession(sessionId))?.projectId;
     const key = JSON.stringify([sessionId, input.targetPort ?? null, input.staticPath ?? null]);
     const pending = this.pendingTargets.get(key);
     if (pending) return pending;
-    const promise = this.createInner(sessionId, input);
+    const promise = this.createInner(sessionId, input, undefined, projectId);
     this.pendingTargets.set(key, promise);
     this.creating.add(promise);
+    this.scopedCreating.set(promise, { sessionId, projectId });
     try {
       return await promise;
     } finally {
       this.creating.delete(promise);
+      this.scopedCreating.delete(promise);
       this.pendingTargets.delete(key);
     }
   }
@@ -180,8 +187,15 @@ export class LocalPreviewManager {
       managedInstanceId?: string | undefined;
     },
     saved?: LocalPreviewShareRecord,
+    projectId: string | null | undefined = saved?.projectId,
   ): Promise<LocalPreviewShare> {
-    if (this.closing || this.blockedSessions.has(sessionId))
+    if (projectId && this.blockedProjects.has(projectId))
+      throw new PreviewShareConflictError('project is changing');
+    if (
+      this.closing ||
+      this.blockedSessions.has(sessionId) ||
+      (await this.options.store.isSessionDeleting(sessionId))
+    )
       throw new PreviewShareConflictError('local previews are stopping');
     const ttl = input.ttlSeconds ?? 86400;
     if (!Number.isInteger(ttl) || ttl < 60 || ttl > 30 * 86400)
@@ -190,7 +204,8 @@ export class LocalPreviewManager {
     if (
       this.closing ||
       this.blockedSessions.has(sessionId) ||
-      this.blockedProjects.has(target.project.id)
+      this.blockedProjects.has(target.project.id) ||
+      (await this.options.store.isSessionDeleting(sessionId))
     )
       throw new PreviewShareConflictError('project is changing');
     const existing = this.visibleShares().find(
@@ -367,7 +382,8 @@ export class LocalPreviewManager {
         current.generation !== state.generation ||
         this.blockedProjects.has(target.project.id) ||
         this.closing ||
-        this.blockedSessions.has(sessionId)
+        this.blockedSessions.has(sessionId) ||
+        (await this.options.store.isSessionDeleting(sessionId))
       )
         throw new PreviewShareConflictError('project changed during preview creation');
       state.provisioning = false;
@@ -386,8 +402,9 @@ export class LocalPreviewManager {
     try {
       await this.options.store.revokeLocalPreviewShare(id);
       await this.restoring.get(id)?.catch(() => {});
-      if (this.active.get(id)?.provisioning)
-        await Promise.allSettled([...this.pendingTargets.values()]);
+      const state = this.active.get(id);
+      if (state?.provisioning)
+        await Promise.allSettled(this.pendingCreations({ sessionId: state.share.sessionId }));
       return await this.stopInner(id);
     } finally {
       this.stopping.delete(id);
@@ -436,11 +453,27 @@ export class LocalPreviewManager {
     for (const share of await this.options.store.listLocalPreviewShares())
       if (share.projectId === projectId) await this.stop(share.id);
   }
+  private pendingCreations(scope: { sessionId?: string; projectId?: string }): Promise<unknown>[] {
+    return [...this.scopedCreating]
+      .filter(([, pending]) =>
+        scope.sessionId !== undefined
+          ? pending.sessionId === scope.sessionId
+          : pending.projectId === scope.projectId,
+      )
+      .map(([promise]) => promise);
+  }
   async stopSession(sessionId: string): Promise<void> {
     this.blockedSessions.add(sessionId);
     try {
-      await Promise.allSettled([...this.creating]);
-      for (const share of await this.options.store.listLocalPreviewShares())
+      await Promise.allSettled(this.pendingCreations({ sessionId }));
+      const shares = new Map(
+        [
+          ...this.durable.values(),
+          ...[...this.active.values()].map((state) => state.share),
+          ...(await this.options.store.listLocalPreviewShares()),
+        ].map((share) => [share.id, share]),
+      );
+      for (const share of shares.values())
         if (share.sessionId === sessionId) await this.stop(share.id);
     } finally {
       this.blockedSessions.delete(sessionId);
@@ -476,7 +509,7 @@ export class LocalPreviewManager {
       throw new PreviewShareConflictError('project is already changing');
     this.blockedProjects.add(projectId);
     try {
-      await Promise.allSettled([...this.creating]);
+      await Promise.allSettled(this.pendingCreations({ projectId }));
     } catch (error) {
       this.blockedProjects.delete(projectId);
       throw error;
@@ -597,7 +630,15 @@ export class LocalPreviewManager {
           saved,
         );
         this.restoring.set(saved.id, pending);
-        await pending;
+        this.scopedCreating.set(pending, {
+          sessionId: saved.sessionId,
+          projectId: saved.projectId,
+        });
+        try {
+          await pending;
+        } finally {
+          this.scopedCreating.delete(pending);
+        }
       } catch (error) {
         if (error instanceof PreviewNetworkProtectionError) {
           await this.stop(saved.id);

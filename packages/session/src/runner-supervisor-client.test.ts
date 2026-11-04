@@ -1869,13 +1869,14 @@ describe('SupervisorRunnerRecovery', () => {
     eventContents: string | null = '{}\n',
     projectId = 'project-1',
     sessionProjectId: string | null = projectId,
+    workerStatus?: string,
   ) {
     const runtime = join(dir, 'runners', projectId);
     const turn = join(runtime, 'turns', 'turn-1');
     await mkdir(turn, { recursive: true });
     if (eventContents !== null) await writeFile(join(turn, 'events.jsonl'), eventContents);
     const supervisor = join(runtime, 'supervisor.sock');
-    await serve(supervisor, { ok: true, state: state(status) });
+    await serve(supervisor, { ok: true, state: state(status), workerStatus });
     if (status === 'running') {
       const control = createServer();
       servers.push(control);
@@ -1906,6 +1907,31 @@ describe('SupervisorRunnerRecovery', () => {
         controlSocketPath: join(dir, 'runners/project-1/turns/turn-1/control.sock'),
       },
     });
+  });
+
+  it.each(['uncertain', 'invalid'])(
+    'does not mistake stale state/socket for a live worker (%s)',
+    async (workerStatus) => {
+      const recovery = await fixture('running', '{}\n', 'project-1', 'project-1', workerStatus);
+      await expect(
+        recovery.discover({
+          sessionId: 'session-1',
+          turnId: 'turn-1',
+          startCommandId: 'start-1',
+        }),
+      ).resolves.toEqual({ status: 'uncertain' });
+    },
+  );
+
+  it('accepts running state backed by the supervisor worker observation', async () => {
+    const recovery = await fixture('running', '{}\n', 'project-1', 'project-1', 'live');
+    await expect(
+      recovery.discover({
+        sessionId: 'session-1',
+        turnId: 'turn-1',
+        startCommandId: 'start-1',
+      }),
+    ).resolves.toMatchObject({ status: 'live' });
   });
 
   it('recovers a project-less session from the dedicated control-plane runtime', async () => {
