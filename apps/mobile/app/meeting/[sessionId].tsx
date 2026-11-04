@@ -2075,6 +2075,9 @@ export default function MeetingScreen() {
                   // A note write still in flight would otherwise land after the delete.
                   await pendingNoteWrites.get(meeting.id)?.catch(() => undefined);
                   await discardFinishedMeeting(sessionId, meeting);
+                  // Nothing cached for it may be written back afterwards.
+                  pendingDrafts.delete(meeting.id);
+                  pendingNoteErrors.delete(meeting.id);
                 } catch (reason) {
                   Alert.alert(
                     'Could not discard',

@@ -1263,8 +1263,6 @@ it('refuses to discard a running or unknown meeting', async () => {
   expect(still.meetings).toHaveLength(1);
 });
 
-// The deletion has committed before cleanup runs; reporting a failure here would make the
-// client retry into a 404 and believe nothing happened.
 it('deletes nothing when cleanup fails, so discarding again can complete it', async () => {
   const onDiscarded = vi
     .fn(async () => undefined)

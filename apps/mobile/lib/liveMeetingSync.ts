@@ -100,7 +100,11 @@ function flushMeetingOutbox(serverId: string): Promise<void> {
         await acknowledgeMeeting(serverId, meeting.id, meeting.revision);
       } catch (error) {
         // Discarded elsewhere: retrying would fail forever, so this copy goes too.
-        if (isDiscardedError(error)) await deleteMeeting(meeting.id, serverId);
+        // A failed local delete must not stop the rest of the outbox.
+        if (isDiscardedError(error))
+          await deleteMeeting(meeting.id, serverId).catch((reason: unknown) => {
+            firstError ??= reason;
+          });
         else firstError ??= error;
       }
     }
@@ -109,7 +113,10 @@ function flushMeetingOutbox(serverId: string): Promise<void> {
         await client.putLiveMeetingNote(sessionId, note);
         await acknowledgeNote(serverId, note.id, note.revision);
       } catch (error) {
-        if (isDiscardedError(error)) await deleteMeeting(note.meetingId, serverId);
+        if (isDiscardedError(error))
+          await deleteMeeting(note.meetingId, serverId).catch((reason: unknown) => {
+            firstError ??= reason;
+          });
         else firstError ??= error;
       }
     }
