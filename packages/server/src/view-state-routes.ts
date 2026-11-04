@@ -27,7 +27,7 @@ const subjectKinds: Record<ViewSubject['kind'], ReadonlySet<string>> = {
  * row from collecting keys for items it can never show, which would otherwise
  * push out the ones it can within the bounded list.
  */
-export function inboxKeyBelongsTo(subject: ViewSubject, key: string): boolean {
+function inboxKeyBelongsTo(subject: ViewSubject, key: string): boolean {
   const [kind, id] = key.split(':');
   return kind !== undefined && subjectKinds[subject.kind].has(kind) && id === subject.id;
 }
