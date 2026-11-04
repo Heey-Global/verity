@@ -349,7 +349,7 @@ export function SelectedConnectionTest({
         recordFailure(stage, error);
       }
       if (controller.signal.aborted || !focused.current) return;
-      const bundle = createConnectionDiagnosticReport({
+      let bundle = createConnectionDiagnosticReport({
         runId: value.runId,
         startedAt: value.startedAt,
         testType: 'quick_test',
@@ -363,9 +363,14 @@ export function SelectedConnectionTest({
       let stored = true;
       try {
         await saveConnectionDiagnosticReport(serverId, bundle);
+        const retainedReport = (await loadConnectionDiagnosticReports(serverId)).find(
+          (entry) => entry.runId === value.runId,
+        );
+        if (!retainedReport) throw new Error('Saved report unavailable');
+        bundle = retainedReport;
         if (scope.current === storageKey) {
           setArchived(true);
-          setCanStartAnother(stopped || absentOnVerifiedCore);
+          setCanStartAnother(bundle.remote.stopped || absentOnVerifiedCore);
           onReport?.();
         }
       } catch {

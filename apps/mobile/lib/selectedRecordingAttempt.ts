@@ -415,6 +415,7 @@ export async function selectedRecordingAttempt(
       const failed = results.find((result) => result.status === 'rejected');
       if (failed?.status === 'rejected') throw new Error('Selected cleanup failed');
     } finally {
+      let recording: string | null = null;
       // A late native start still owns the singleton until its stop handler runs.
       try {
         if (ownsCaptureEvidence && !startPending) {
@@ -422,7 +423,6 @@ export async function selectedRecordingAttempt(
           // original capture deadline instead of freezing the first cancellation.
           const grace =
             performance.now() + Math.min(250, Math.max(0, captureExpiresAt - Date.now()));
-          let recording: string | null = null;
           do {
             let exportTimer: ReturnType<typeof setTimeout> | undefined;
             const result = await Promise.race([
@@ -490,8 +490,8 @@ export async function selectedRecordingAttempt(
         // Persistence/export failures must not mask the attempt or its cleanup error.
         try {
           await options.onLocalRecording?.({
-            status: 'failed',
-            recording: null,
+            status: recording ? captureStatus : 'failed',
+            recording,
             sessionHash: selectedSessionHash ?? null,
             stopped: nativeStopped,
           });

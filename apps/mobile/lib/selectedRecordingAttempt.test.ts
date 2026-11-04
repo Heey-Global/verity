@@ -533,7 +533,11 @@ it('clears a late capture arm after abort and holds ownership until that cleanup
 it('reports native disable rejection as cleanup failure', async () => {
   mockCaptureSupported = true;
   mockDisable.mockRejectedValue(new Error('disable failed'));
-  await expect(selectedRecordingAttempt(options)).rejects.toThrow('capture cleanup failed');
+  const local = jest.fn();
+  await expect(selectedRecordingAttempt({ ...options, onLocalRecording: local })).rejects.toThrow(
+    'capture cleanup failed',
+  );
+  expect(local).toHaveBeenCalledWith(expect.objectContaining({ recording: expect.any(String) }));
   expect(mockDisable).toHaveBeenCalledTimes(1);
 });
 it('holds ownership through a timed-out native disable until it settles', async () => {

@@ -265,8 +265,8 @@ it('retains local evidence and the run when remote recollection fails', async ()
   const next = await copyReport();
   expect(next).toMatchObject({
     runId,
-    complete: false,
-    sources: { app: true, core: false, uplink: false },
+    complete: true,
+    sources: { app: true, core: true, uplink: true },
   });
   expect(JSON.stringify(next)).not.toContain('private');
   expect(await AsyncStorage.getItem(key)).not.toBeNull();

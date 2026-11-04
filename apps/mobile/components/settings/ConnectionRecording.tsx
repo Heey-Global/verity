@@ -575,7 +575,7 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
         /* Local evidence remains available while the tunnel is unavailable. */
       }
       if (!current()) return;
-      const bundle = createConnectionDiagnosticReport({
+      let bundle = createConnectionDiagnosticReport({
         runId: saved.runId,
         startedAt: new Date(saved.startedAt).toISOString(),
         testType: 'problem_recording',
@@ -591,10 +591,15 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
       if (serverId) {
         try {
           await saveConnectionDiagnosticReport(serverId, bundle);
+          const retainedReport = (await loadConnectionDiagnosticReports(serverId)).find(
+            (entry) => entry.runId === saved.runId,
+          );
+          if (!retainedReport) throw new Error('Saved report unavailable');
+          bundle = retainedReport;
           reportStored = true;
           if (!current()) return;
           setProblemArchived(true);
-          setProblemStopConfirmed(localStopped && (remoteStopped || absentOnVerifiedCore));
+          setProblemStopConfirmed(localStopped && (bundle.remote.stopped || absentOnVerifiedCore));
           refreshReports();
         } catch {
           persisted = false;

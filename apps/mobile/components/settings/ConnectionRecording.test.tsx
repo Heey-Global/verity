@@ -770,3 +770,19 @@ it('does not release quick capture after a partial problem report with unconfirm
   fireEvent.press(screen.getByText('Quick connection test'));
   expect(screen.getByText('Mock selected start')).toBeDisabled();
 });
+
+it('copies the retained merged problem report when later remote collection fails', async () => {
+  const api = client();
+  render(<ConnectionRecording client={api as never} />);
+  await pressStart();
+  await screen.findByText(/Ready — turn off VPN/);
+  pressCollect();
+  await waitFor(() => expect(mockCopy).toHaveBeenCalledTimes(1));
+  const previous = JSON.parse(mockCopy.mock.calls[0]![0] as string);
+  api.stopConnectionRecording.mockRejectedValue(new Error('unavailable'));
+  api.exportConnectionRecording.mockRejectedValue(new Error('unavailable'));
+  pressCollect();
+  await waitFor(() => expect(mockCopy).toHaveBeenCalledTimes(2));
+  const report = JSON.parse(mockCopy.mock.calls[1]![0] as string);
+  expect(report.remote).toEqual(previous.remote);
+});
