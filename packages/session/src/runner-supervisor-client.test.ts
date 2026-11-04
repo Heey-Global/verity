@@ -3660,3 +3660,14 @@ it('marks a silent cache supervisor timeout with a safe transport code', async (
     requestRunnerSupervisor(path, { kind: 'reclaim-package-caches' }, 10),
   ).rejects.toMatchObject({ code: 'ETIMEDOUT' });
 });
+
+it.each([null, { ok: 'invalid' }, { ok: true, padding: 'x'.repeat(64 * 1024) }])(
+  'classifies invalid or oversized cache response shape',
+  async (reply) => {
+    const path = join(dir, 'cache-shape.sock');
+    await serve(path, reply);
+    await expect(
+      requestRunnerSupervisor(path, { kind: 'reclaim-package-caches' }),
+    ).rejects.toMatchObject({ runnerCacheFailure: { code: 'invalid-response' } });
+  },
+);

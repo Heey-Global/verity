@@ -2133,7 +2133,9 @@ export async function requestRunnerSupervisor(
                       code:
                         isObject(parsed) && parsed.error === 'unknown supervisor request'
                           ? 'unsupported'
-                          : 'supervisor-rejected',
+                          : isObject(parsed) && parsed.ok === false
+                            ? 'supervisor-rejected'
+                            : 'invalid-response',
                     },
             });
           }
@@ -2160,7 +2162,14 @@ export async function requestRunnerSupervisor(
     });
     socket.on('data', (chunk: Buffer) => {
       if (buffer.length + chunk.length > MAX_RESPONSE_BYTES) {
-        finish(new Error('runner supervisor response too large'));
+        finish(
+          Object.assign(
+            new Error('runner supervisor response too large'),
+            request.kind === 'reclaim-package-caches'
+              ? { runnerCacheFailure: { code: 'invalid-response' } }
+              : {},
+          ),
+        );
         return;
       }
       buffer = Buffer.concat([buffer, chunk]);
