@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import { viewerId } from './view-state-routes.js';
 import {
   PROJECT_AGENTS,
   PROJECT_MEMORY_MAX_CHARS,
@@ -56,7 +57,8 @@ export interface ProjectDetailRouteDeps {
     projectId: string,
     status: 'pending' | 'secrets_skipped' | 'complete',
   ) => Promise<unknown>;
-  setCollapsed: (projectId: string, collapsed: boolean) => Promise<unknown>;
+  /** Folds the project for `viewer` only. */
+  setCollapsed: (projectId: string, collapsed: boolean, viewer: string) => Promise<unknown>;
   isSealed: () => boolean;
   updateSettings: (projectId: string, patch: ProjectSettingsPatch) => Promise<unknown>;
 }
@@ -117,7 +119,7 @@ export function registerProjectDetailRoutes(
   app.patch('/projects/:id/collapsed', async (request, reply): Promise<unknown> => {
     const { id } = projectParams.parse(request.params);
     const { collapsed } = collapsedBody.parse(request.body);
-    const project = await deps.setCollapsed(id, collapsed);
+    const project = await deps.setCollapsed(id, collapsed, viewerId(request));
     if (project === undefined) {
       reply.code(404);
       return { error: 'project not found' };

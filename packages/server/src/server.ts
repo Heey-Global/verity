@@ -273,6 +273,7 @@ import { registerSessionRecoveryRoute } from './session-recovery-route.js';
 import { turnCore } from './session-request-core.js';
 import { sessionParams } from './session-route-schemas.js';
 import { registerSessionSeenRoute } from './session-seen-route.js';
+import { registerViewStateRoutes } from './view-state-routes.js';
 import { registerSessionTurnRoute } from './session-turn-route.js';
 import { registerSettingsRoutes, SELECTABLE_TRANSCRIBE_BACKEND_MODES } from './settings-routes.js';
 import { registerSigningKeyRoutes } from './signing-key-routes.js';
@@ -4708,6 +4709,22 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     turnBlocked: deps.provisioner?.turnBlockedSandboxes?.() ?? NO_UNREPAIRED_SANDBOXES,
   });
 
+  // Fold state and dismissed Home items belong to the person asking, never to the
+  // project row, so one member folding a group leaves everyone else's open.
+  const projectsAsSeenBy = async (
+    viewer: string,
+    projects: PublicProjectRecord[],
+  ): Promise<PublicProjectRecord[]> => {
+    const views = await deps.eventStore.viewState.projectViews(viewer);
+    return projects.map((project) => {
+      const view = views.get(project.id);
+      return {
+        ...project,
+        collapsed: view?.collapsed ?? false,
+        inboxDismissed: view?.inboxDismissed ?? [],
+      };
+    });
+  };
   const publicProjects = async (projects: ProjectRecord[]): Promise<PublicProjectRecord[]> => {
     const toolkit = await measureLatencyPhase('project_toolkit', serverToolkitIdentity);
     const resolved = await measureLatencyPhase('project_releases', () =>
@@ -4768,7 +4785,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   });
   registerProjectCollectionRoutes(app, {
     store: deps.eventStore,
-    listOverview: async (userId) => {
+    listOverview: async (userId, viewer) => {
       const projects = await measureLatencyPhase('project_list', () =>
         deps.listProjects ? deps.listProjects() : deps.eventStore.listProjects(),
       );
@@ -4781,21 +4798,27 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
               ),
             );
       return measureLatencyPhase('project_overview', async () =>
-        publicProjects(
-          await projectsForOverview(
-            projects.filter(
-              (project) =>
-                appearsInProjectOverview(project) &&
-                (readableIds === null || readableIds.has(project.id)),
+        projectsAsSeenBy(
+          viewer,
+          await publicProjects(
+            await projectsForOverview(
+              projects.filter(
+                (project) =>
+                  appearsInProjectOverview(project) &&
+                  (readableIds === null || readableIds.has(project.id)),
+              ),
             ),
           ),
         ),
       );
     },
-    reorder: async (ids) => {
+    reorder: async (ids, viewer) => {
       const reordered = await deps.eventStore.reorderProjects(ids);
       deps.invalidateProjectList?.();
-      return publicProjects(await projectsForOverview(reordered.filter(appearsInProjectOverview)));
+      return projectsAsSeenBy(
+        viewer,
+        await publicProjects(await projectsForOverview(reordered.filter(appearsInProjectOverview))),
+      );
     },
     forgejoEnabled: deps.forgejoEnabled === true,
     listAvailableRepositories: async () =>
@@ -4915,12 +4938,12 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         projectToolkitDrift(resolved.project, await serverToolkitIdentity()),
       );
     },
-    setCollapsed: async (id, collapsed) => {
-      if (!(await deps.eventStore.setProjectCollapsed(id, collapsed))) return undefined;
-      // Answer from the row just written, never from the memoised fleet list:
+    setCollapsed: async (id, collapsed, viewer) => {
+      if (!(await deps.eventStore.viewState.setProjectCollapsed(viewer, id, collapsed)))
+        return undefined;
+      // Answer from the state just written, never from the memoised fleet list:
       // that list can predate the write by a whole cache window, and a client
       // trusting the response would fold the group straight back.
-      deps.invalidateProjectList?.();
       const row = await deps.eventStore.getProject(id);
       if (row === undefined) return undefined;
       // The list path reconciles lifecycle state against the container; keep
@@ -4930,7 +4953,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       const project = deps.reconcileProjectState
         ? await deps.reconcileProjectState(row).catch(() => row)
         : row;
-      return (await publicProjects([project]))[0];
+      return (await projectsAsSeenBy(viewer, await publicProjects([project])))[0];
     },
     isSealed: () => deps.secretCipher?.isSealed() === true,
     updateSettings: async (id, patch) => {
@@ -5799,7 +5822,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       const settings = await projectSettingsStore(deps.eventStore).getProjectSettings(projectId);
       return filterModelListForProject(available, settings, isProjectSessionModel);
     },
-    getSession: async (id): Promise<SessionDetail | undefined> => {
+    getSession: async (id, viewer): Promise<SessionDetail | undefined> => {
       const session = await deps.eventStore.getSession(id);
       if (!session) return undefined;
       // Opening a session hits this route first, and the transcript arrives over a
@@ -5836,6 +5859,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             : projectedStatus;
       return {
         ...session,
+        ...(await deps.eventStore.viewState.sessionView(viewer, id)),
         googleStatus: await sessionGoogleStatus(deps.eventStore, id),
         status,
         pendingPermissions,
@@ -6174,13 +6198,15 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   });
   // Advance a session's "last seen" mark for the overview unread dot (#387). The
   // client sends the `eventCount` it just observed when the operator opened the
-  // session; the store advances the mark monotonically (a stale post can't move it
-  // backward) and the value rides back onto every device via the `lastSeenEventCount`
-  // on `GET /sessions`, so the dot clears everywhere — not just where it was opened.
+  // session; the store advances that person's mark monotonically (a stale post can't
+  // move it backward) and the value rides back onto every device of theirs via the
+  // `lastSeenEventCount` on `GET /sessions`, so the dot clears on all their devices
+  // and stays for everyone else.
   // Returns a lightweight ack (the resolved mark) rather than the full summary: the
   // caller discards the body, and building a summary would reload the whole event log
   // just to compute a status/usage nobody here reads. 404 for an unknown session id.
   registerSessionSeenRoute(app, { store: deps.eventStore });
+  registerViewStateRoutes(app, { store: deps.eventStore });
 
   // Permanently delete a session: drop its durable log (events + transcript
   // lines + the session row, transactionally) and remove its isolated worktree

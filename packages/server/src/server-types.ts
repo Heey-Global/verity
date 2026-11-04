@@ -143,6 +143,9 @@ export interface PublicProjectRecord extends Omit<
   state: Exclude<ProjectRecord['state'], 'sleeping_starting' | 'sleeping' | 'waking'>;
   /** Detailed lifecycle state for clients that understand sandbox sleep/wake. */
   lifecycleState?: ProjectRecord['state'];
+  /** Keys of this project's Home items the requesting person dismissed. Present
+   *  on the overview list, which fills it (and `collapsed`) in per person. */
+  inboxDismissed?: string[];
   /** Latest published release for the overview version badge (#release-badge).
    *  All null when GitHub isn't configured, the repo has no releases, or the
    *  lookup hasn't resolved yet — the overview then simply shows no version. */
@@ -273,6 +276,9 @@ export interface SessionPrSummary {
 
 export interface SessionSummary extends SessionRecord {
   linked?: boolean;
+  /** Keys of this session's Home items the requesting person dismissed. Like
+   *  `lastSeenEventCount`, filled in per person when the summary is delivered. */
+  inboxDismissed?: string[];
   /** Position within a manually ordered overview group; null means automatic. */
   sortOrder?: number | null;
   status: SessionStatus;
