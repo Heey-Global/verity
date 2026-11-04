@@ -278,3 +278,13 @@ export {
   validateContext,
   type UserContext,
 } from './user-context.js';
+
+export {
+  ViewStateStore,
+  INBOX_DISMISSED_MAX,
+  INBOX_KEY_MAX_CHARS,
+  nextInboxDismissed,
+  type ProjectViewState,
+  type SessionViewState,
+  type ViewSubject,
+} from './view-state.js';

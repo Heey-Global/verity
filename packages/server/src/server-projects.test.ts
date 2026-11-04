@@ -29,6 +29,9 @@ import {
 } from './server-fixture.test-helper.js';
 import { buildServer } from './server.js';
 
+/** Without the auth gate every request acts as the seeded administrator. */
+const IMPLICIT_ADMIN = '00000000-0000-4000-8000-000000000001';
+
 describe('GET /projects (#174)', () => {
   it('lists all available repository-cache rows for pickers', async () => {
     await ctx.store.upsertProject({
@@ -837,7 +840,7 @@ describe('GET /projects (#174)', () => {
     expect(listedProjects.find((project) => project.id === 'p-collapse')?.collapsed).toBe(true);
   });
 
-  it('answers a collapse write from the written row while the fleet list is stale', async () => {
+  it('shows a fold at once even while the memoised fleet list is stale', async () => {
     await ctx.store.upsertProject({
       id: 'p-collapse-stale',
       owner: 'heey-global',
@@ -865,10 +868,94 @@ describe('GET /projects (#174)', () => {
       expect(res.statusCode).toBe(200);
       // Echoing the stale list here is what folded overview groups back open.
       expect(res.json()).toMatchObject({ id: 'p-collapse-stale', collapsed: true });
-      expect(invalidateProjectList).toHaveBeenCalledTimes(1);
+      // Fold state no longer lives on the cached rows, so the cache can stay warm.
+      expect(invalidateProjectList).not.toHaveBeenCalled();
+      const listed: Array<{ id: string; collapsed?: boolean }> = (
+        await withStaleList.inject({ method: 'GET', url: '/projects' })
+      ).json();
+      expect(listed.find((project) => project.id === 'p-collapse-stale')?.collapsed).toBe(true);
     } finally {
       await withStaleList.close();
     }
+  });
+
+  it('dismisses and restores Home items per session and project', async () => {
+    await ctx.store.upsertProject({
+      id: 'p-dismiss',
+      owner: 'heey-global',
+      repo: 'epsilon',
+      containerName: 'dev-heey-global--epsilon',
+      state: 'active',
+    });
+    await ctx.store.createSession({
+      sessionId: 's-dismiss',
+      worktree: '/wt/dismiss',
+      model: 'm',
+      projectId: 'p-dismiss',
+    });
+    const patch = (url: string, payload: unknown) =>
+      app.inject({ method: 'PATCH', url, payload: payload as Record<string, unknown> });
+
+    const dismissed = await patch('/sessions/s-dismiss/inbox-dismissed', {
+      key: 'question:s-dismiss:abc',
+      dismissed: true,
+    });
+    expect(dismissed.statusCode).toBe(200);
+    expect(dismissed.json()).toEqual({
+      id: 's-dismiss',
+      inboxDismissed: ['question:s-dismiss:abc'],
+    });
+    const listed = (await app.inject({ method: 'GET', url: '/sessions' }))
+      .json<Array<{ sessionId: string; inboxDismissed?: string[] }>>()
+      .find((session) => session.sessionId === 's-dismiss');
+    expect(listed?.inboxDismissed).toEqual(['question:s-dismiss:abc']);
+    const detail = await app.inject({ method: 'GET', url: '/sessions/s-dismiss' });
+    expect(detail.json()).toMatchObject({ inboxDismissed: ['question:s-dismiss:abc'] });
+    // The project page lists its sessions too; a shared read mark there would
+    // bring back unread dots another member cleared.
+    const page = await app.inject({ method: 'GET', url: '/projects/p-dismiss' });
+    expect(
+      page
+        .json<{ sessions: Array<{ sessionId: string; inboxDismissed?: string[] }> }>()
+        .sessions.find((session) => session.sessionId === 's-dismiss')?.inboxDismissed,
+    ).toEqual(['question:s-dismiss:abc']);
+    await patch('/sessions/s-dismiss/inbox-dismissed', {
+      key: 'question:s-dismiss:abc',
+      dismissed: false,
+    });
+    expect((await app.inject({ method: 'GET', url: '/sessions/s-dismiss' })).json()).toMatchObject({
+      inboxDismissed: [],
+    });
+
+    await patch('/projects/p-dismiss/inbox-dismissed', {
+      key: 'health:p-dismiss:t',
+      dismissed: true,
+    });
+    const projects: Array<{ id: string; inboxDismissed?: string[] }> = (
+      await app.inject({ method: 'GET', url: '/projects' })
+    ).json();
+    expect(projects.find((project) => project.id === 'p-dismiss')?.inboxDismissed).toEqual([
+      'health:p-dismiss:t',
+    ]);
+  });
+
+  it('refuses Home item keys of another subject and unknown ids', async () => {
+    await ctx.store.createSession({ sessionId: 's-dismiss-2', worktree: '/wt/d2', model: 'm' });
+    const patch = (url: string, key: string) =>
+      app.inject({ method: 'PATCH', url, payload: { key, dismissed: true } });
+    // Another session's key, and a project kind on a session.
+    expect(
+      (await patch('/sessions/s-dismiss-2/inbox-dismissed', 'question:other')).statusCode,
+    ).toBe(400);
+    expect(
+      (await patch('/sessions/s-dismiss-2/inbox-dismissed', 'health:s-dismiss-2')).statusCode,
+    ).toBe(400);
+    expect((await patch('/sessions/missing/inbox-dismissed', 'question:missing')).statusCode).toBe(
+      404,
+    );
+    expect((await patch('/projects/missing/inbox-dismissed', 'health:missing')).statusCode).toBe(
+      404,
+    );
   });
 
   it('returns 404 when collapsing an unknown project', async () => {
@@ -942,7 +1029,7 @@ describe('GET /projects (#174)', () => {
     const sessionId = 's-stale-read-count';
     await ctx.store.createSession({ sessionId, worktree: '/wt/stale', model: 'm' });
     await ctx.store.appendEvent(sessionId, { t: 'text', delta: 'read' });
-    await ctx.store.setSessionSeen(sessionId, 1);
+    await ctx.store.viewState.setSessionSeen(IMPLICIT_ADMIN, sessionId, 1);
     await ctx.store.appendEvent(sessionId, { t: 'dev_servers_changed', devServers: [] });
     await ctx.store.appendEvent(sessionId, { t: 'text', delta: 'unread' });
     const stale = await app.inject({
@@ -951,7 +1038,9 @@ describe('GET /projects (#174)', () => {
       payload: { eventCount: 3, counterVersion: 'agent-text-v2' },
     });
     expect(stale.statusCode).toBe(409);
-    expect((await ctx.store.getSession(sessionId))!.lastSeenEventCount).toBe(1);
+    expect(
+      (await ctx.store.viewState.sessionView(IMPLICIT_ADMIN, sessionId)).lastSeenEventCount,
+    ).toBe(1);
     // The legacy count can also overlap the new count; an upper bound cannot detect it.
     const overlapping = await app.inject({
       method: 'PATCH',
@@ -959,14 +1048,18 @@ describe('GET /projects (#174)', () => {
       payload: { eventCount: 2 },
     });
     expect(overlapping.statusCode).toBe(409);
-    expect((await ctx.store.getSession(sessionId))!.lastSeenEventCount).toBe(1);
+    expect(
+      (await ctx.store.viewState.sessionView(IMPLICIT_ADMIN, sessionId)).lastSeenEventCount,
+    ).toBe(1);
     const oldVersion = await app.inject({
       method: 'PATCH',
       url: `/sessions/${sessionId}/seen`,
       payload: { eventCount: 2, counterVersion: 'dev-servers-excluded-v1' },
     });
     expect(oldVersion.statusCode).toBe(409);
-    expect((await ctx.store.getSession(sessionId))!.lastSeenEventCount).toBe(1);
+    expect(
+      (await ctx.store.viewState.sessionView(IMPLICIT_ADMIN, sessionId)).lastSeenEventCount,
+    ).toBe(1);
     const valid = await app.inject({
       method: 'PATCH',
       url: `/sessions/${sessionId}/seen`,

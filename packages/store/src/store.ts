@@ -1,4 +1,5 @@
 import { UserContextStore } from './user-context.js';
+import { ViewStateStore } from './view-state.js';
 import { AssistantStore } from './assistant.js';
 import { SchedulingStore } from './scheduling.js';
 import { QAAssignmentStore } from './qa-assignments.js';
@@ -69,9 +70,10 @@ export interface SessionRecord {
   /** Project the session runs in (concept §19); `null` for project-less
    *  (or pre-projects-slice) sessions. */
   projectId: string | null;
-  /** Operator's "last seen" mark for the overview unread dot (#387): the session's
-   *  `eventCount` at the last open. `null` = never opened → not unread. Global, so
-   *  it syncs across devices; advanced monotonically by {@link EventStore.setSessionSeen}. */
+  /** "Last seen" mark for the overview unread dot (#387): the session's `eventCount`
+   *  at the last open. `null` = never opened → not unread. The store fills in the
+   *  legacy shared column; the server replaces it with the requesting person's mark
+   *  from {@link ViewStateStore} before it reaches a client. */
   lastSeenEventCount: number | null;
   /** Planning mode. Optional so records built outside the store need not state it;
    *  absent and `null` both mean the session never planned. */
@@ -281,8 +283,9 @@ export interface ProjectRecord {
   hiddenAt: Date | null;
   /** Operator-defined overview order; `null` for projects never manually sorted. */
   sortOrder?: number | null;
-  /** Operator's overview fold state; `true` when the project group is collapsed.
-   *  Persisted so the expand/collapse choice syncs across devices. */
+  /** Overview fold state; `true` when the project group is collapsed. The store
+   *  fills in the legacy shared column; the server replaces it with the requesting
+   *  person's state from {@link ViewStateStore}. */
   collapsed?: boolean;
   /** True once the repo was explicitly added as a Verity project. Paused
    *  (`state='absent'`) projects with this flag stay visible in the overview. */
@@ -1428,6 +1431,7 @@ export class EventStore implements EventSink {
     private readonly cipher: SecretCipher = createPassthroughCipher(),
   ) {
     this.userContext = new UserContextStore(db);
+    this.viewState = new ViewStateStore(db);
     this.projectEgress = new ProjectEgressStore(db);
     this.knowledge = new KnowledgeStore(db);
     this.integrations = new IntegrationStore(db, cipher);
@@ -1442,6 +1446,8 @@ export class EventStore implements EventSink {
   }
 
   readonly userContext: UserContextStore;
+  /** Per-person overview state: folded projects, read sessions, dismissed Home items. */
+  readonly viewState: ViewStateStore;
   readonly projectEgress: ProjectEgressStore;
   readonly knowledge: KnowledgeStore;
   readonly integrations: IntegrationStore;
@@ -3110,27 +3116,6 @@ export class EventStore implements EventSink {
     const result = await this.db
       .updateTable('sessions')
       .set({ model })
-      .where('session_id', '=', sessionId)
-      .executeTakeFirst();
-    return result.numUpdatedRows > 0n;
-  }
-
-  /**
-   * Advance a session's "last seen" mark for the overview unread dot (#387) to
-   * `eventCount`. Global (no per-device scoping), so clearing an unread dot on one
-   * device clears it everywhere. MONOTONIC: `greatest(coalesce(current, 0), …)`
-   * never moves the mark backward, so a stale poll writing an older count can't
-   * resurrect a cleared dot. The row is always touched when the session exists
-   * (even when the value is unchanged), so `numUpdatedRows` cleanly distinguishes
-   * an unknown session id — the caller (server) maps `false` to a 404. Pure
-   * metadata: never touches the durable event log.
-   */
-  async setSessionSeen(sessionId: string, eventCount: number): Promise<boolean> {
-    const result = await this.db
-      .updateTable('sessions')
-      .set({
-        last_seen_event_count: sql<number>`greatest(coalesce(last_seen_event_count, 0), ${eventCount})`,
-      })
       .where('session_id', '=', sessionId)
       .executeTakeFirst();
     return result.numUpdatedRows > 0n;
@@ -6591,21 +6576,6 @@ export class EventStore implements EventSink {
         .execute();
     });
     return this.listProjects();
-  }
-
-  /**
-   * Persist the operator's overview fold state for a single project. Global (no
-   * per-device/per-operator scoping), so every device reading `listProjects`
-   * sees the same value — this is what makes the sidebar collapse sync across
-   * devices. Idempotent; returns whether a row matched.
-   */
-  async setProjectCollapsed(id: string, collapsed: boolean): Promise<boolean> {
-    const result = await this.db
-      .updateTable('projects')
-      .set({ collapsed, updated_at: sql`now()` })
-      .where('id', '=', id)
-      .executeTakeFirst();
-    return result.numUpdatedRows > 0n;
   }
 
   /**

@@ -1,6 +1,7 @@
 import {
   createPushReplyPerformer,
   formatChoiceAnswer,
+  inboxDismissedKeys,
   inboxItems,
   inboxSummary,
   type InboxAction,
@@ -47,6 +48,10 @@ const TAG_INTENT = { attention: 'needsSetup', success: 'ready', neutral: 'option
  * idempotent routes and the same optimistic status updates a notification
  * action uses. A tapped item hides at once and stays hidden until its source
  * stops reporting it, so a slow poll cannot bring it back for a second tap.
+ *
+ * The X dismisses an item for the operator on all their devices (a meeting's X
+ * is its Skip). It hides at once and is saved after; if saving fails the card
+ * returns with a message. Dismissed items wait folded at the bottom to restore.
  */
 export function HomeInbox({
   client,
@@ -87,6 +92,24 @@ export function HomeInbox({
     () => inboxItems({ sessions, projects, meetings, now }),
     [sessions, projects, meetings, now],
   );
+  const serverHidden = useMemo(
+    () => inboxDismissedKeys({ sessions, projects }),
+    [sessions, projects],
+  );
+  // A dismissal or restore shows before it is saved: `true` hides, `false` shows,
+  // until the synced lists agree or the item is gone.
+  const [overrides, setOverrides] = useState<ReadonlyMap<string, boolean>>(() => new Map());
+  const [showHidden, setShowHidden] = useState(false);
+  useEffect(() => {
+    setOverrides((current) => {
+      if (current.size === 0) return current;
+      const live = new Set(all.map((item) => item.key));
+      const next = new Map(
+        [...current].filter(([key, hidden]) => live.has(key) && serverHidden.has(key) !== hidden),
+      );
+      return next.size === current.size ? current : next;
+    });
+  }, [all, serverHidden]);
   // Forget a settled key once its source no longer reports it, so the same kind
   // of item can come back later (a new permission reuses nothing).
   useEffect(() => {
@@ -97,8 +120,46 @@ export function HomeInbox({
       return next.size === current.size ? current : next;
     });
   }, [all]);
-  const items = useMemo(() => all.filter((item) => !settled.has(item.key)), [all, settled]);
+  const isHidden = useCallback(
+    (item: InboxItem) => overrides.get(item.key) ?? serverHidden.has(item.key),
+    [overrides, serverHidden],
+  );
+  // Both lists keep the inbox order, so a restored item returns to its place.
+  const ordered = useMemo(() => all.filter((item) => !settled.has(item.key)), [all, settled]);
+  const items = useMemo(() => ordered.filter((item) => !isHidden(item)), [ordered, isHidden]);
+  const hidden = useMemo(() => ordered.filter(isHidden), [ordered, isHidden]);
+  // Fold the list again once it empties, so the next dismissal starts folded.
+  useEffect(() => {
+    if (hidden.length === 0) setShowHidden(false);
+  }, [hidden.length]);
   useEffect(() => onCountChange?.(items.length), [items.length, onCountChange]);
+
+  const setDismissed = useCallback(
+    (item: InboxItem, dismissed: boolean) => {
+      const save =
+        item.dismiss === 'session' && item.sessionId !== undefined
+          ? () => client.setSessionInboxDismissed(item.sessionId!, item.key, dismissed)
+          : item.dismiss === 'project' && item.projectId !== undefined
+            ? () => client.setProjectInboxDismissed(item.projectId!, item.key, dismissed)
+            : undefined;
+      if (save === undefined) return;
+      setOverrides((current) => new Map(current).set(item.key, dismissed));
+      void Promise.resolve()
+        .then(save)
+        .catch(() => {
+          setOverrides((current) => {
+            const next = new Map(current);
+            next.delete(item.key);
+            return next;
+          });
+          Alert.alert(
+            dismissed ? 'Not hidden' : 'Not restored',
+            'Verity could not save this. Try again in a moment.',
+          );
+        });
+    },
+    [client],
+  );
 
   const run = useCallback(
     async (item: InboxItem, action: InboxAction) => {
@@ -132,6 +193,21 @@ export function HomeInbox({
     },
     [onOpenSession, onRepairProject, perform],
   );
+  const dismiss = useCallback(
+    (item: InboxItem) => {
+      if (item.dismiss === 'meeting') {
+        const skip = item.actions.find((action) => action.kind === 'skip_meeting');
+        if (skip)
+          run(item, skip).catch(() => {
+            setPending(null);
+            Alert.alert('Not sent', 'Something went wrong. Try again in a moment.');
+          });
+        return;
+      }
+      setDismissed(item, true);
+    },
+    [run, setDismissed],
+  );
 
   return (
     <ScrollView
@@ -152,6 +228,7 @@ export function HomeInbox({
           selected={item.sessionId !== undefined && item.sessionId === selectedSessionId}
           pending={pending === item.key}
           disabled={pending !== null}
+          onDismiss={item.dismiss !== undefined ? () => dismiss(item) : undefined}
           onAction={(action) => {
             // `perform` reports failures as outcomes; anything it throws is
             // unexpected, but the operator still has to learn the answer was not sent.
@@ -162,6 +239,29 @@ export function HomeInbox({
           }}
         />
       ))}
+      {hidden.length > 0 ? (
+        <View style={styles.hiddenToggle}>
+          <Button
+            label={`${String(hidden.length)} hidden`}
+            variant="text"
+            size="compact"
+            onPress={() => setShowHidden((shown) => !shown)}
+          />
+        </View>
+      ) : null}
+      {showHidden
+        ? hidden.map((item) => (
+            <InboxCard
+              key={item.key}
+              item={item}
+              selected={false}
+              pending={false}
+              disabled={false}
+              onRestore={() => setDismissed(item, false)}
+              onAction={() => undefined}
+            />
+          ))
+        : null}
     </ScrollView>
   );
 }
@@ -218,20 +318,28 @@ export function InboxCard({
   pending,
   disabled,
   onAction,
+  onDismiss,
+  onRestore,
 }: {
   item: InboxItem;
   selected: boolean;
   pending: boolean;
   disabled: boolean;
   onAction: (action: InboxAction) => void;
+  /** Shows the X that sets the item aside. */
+  onDismiss?: (() => void) | undefined;
+  /** Draws a dismissed item: muted, with Restore as its only answer. */
+  onRestore?: (() => void) | undefined;
 }) {
+  const restoring = onRestore !== undefined;
   return (
-    <View testID={`inbox-item-${item.kind}`}>
-      <Card stacked selected={selected}>
+    <View testID={restoring ? `inbox-hidden-${item.kind}` : `inbox-item-${item.kind}`}>
+      <Card stacked selected={selected} muted={restoring}>
         <CardHead
           title={item.title}
           subtitle={item.context}
           trailing={<StatusTag intent={TAG_INTENT[item.tone]} label={item.tag} />}
+          onDismiss={restoring || disabled ? undefined : onDismiss}
         />
         {item.message ? (
           <Text variant="bodySmall" tone="muted" numberOfLines={3}>
@@ -246,7 +354,10 @@ export function InboxCard({
           </Text>
         ) : null}
         <View style={styles.actions}>
-          {item.actions.map((action, index) => (
+          {restoring ? (
+            <Button label="Restore" size="compact" variant="secondary" onPress={onRestore} />
+          ) : null}
+          {(restoring ? [] : item.actions).map((action, index) => (
             <Button
               key={`${String(index)}:${action.kind}:${action.label}`}
               label={action.label}
@@ -393,6 +504,7 @@ const styles = StyleSheet.create((theme) => {
       borderColor: tint(colors.action, 'border'),
     },
     section: { marginTop: theme.spacing.sm, marginBottom: theme.spacing.xs },
+    hiddenToggle: { alignItems: 'center', marginTop: theme.spacing.sm },
     actions: { flexDirection: 'row', flexWrap: 'wrap', gap: theme.spacing.sm },
   };
 });
