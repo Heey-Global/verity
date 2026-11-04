@@ -2603,6 +2603,9 @@ function responseForError(error) {
   return {
     ok: false,
     error: error instanceof Error ? error.message : String(error),
+    ...(isObject(error?.runnerCacheFailure)
+      ? { runnerCacheFailure: error.runnerCacheFailure }
+      : {}),
     ...(isObject(error?.trustedCliFailure) ? { trustedCliFailure: error.trustedCliFailure } : {}),
   };
 }
@@ -2638,10 +2641,19 @@ async function brokerStorageRequest(request) {
     socket.once('connect', () => socket.write(JSON.stringify(request) + '\n'));
     socket.on('data', (chunk) => {
       buffered += chunk.toString();
-      if (buffered.length > 65536) return finish(new Error('runner storage response too large'));
+      if (Buffer.byteLength(buffered, 'utf8') > 65536)
+        return finish(
+          Object.assign(new Error('runner storage response too large'), {
+            code: 'ERR_INVALID_RUNNER_STORAGE_RESPONSE',
+          }),
+        );
       if (!buffered.includes('\n')) return;
       try {
         const response = JSON.parse(buffered.split('\n')[0]);
+        if (!isObject(response) || typeof response.ok !== 'boolean')
+          throw Object.assign(new Error('invalid runner storage response'), {
+            code: 'ERR_INVALID_RUNNER_STORAGE_RESPONSE',
+          });
         finish(
           response.ok === true
             ? undefined
@@ -2709,19 +2721,62 @@ export async function handleSupervisorRequest(
         request.maxBytes <= 0
       )
         throw new Error('invalid package cache request');
-      const turns = await listTurns(runtimeDir);
-      // A missing/corrupt state cannot establish which home is safe to collect.
-      if (turns.some((turn) => turn.status !== 'settled' && typeof turn.sessionId !== 'string'))
-        throw new Error('Runner turn ownership is unknown; package caches retained');
+      const fail = (code, counts) =>
+        Object.assign(
+          new Error(
+            code === 'turn-ownership-unknown'
+              ? 'Runner turn ownership is unknown; package caches retained'
+              : 'Runner cache maintenance blocked; caches retained',
+          ),
+          {
+            runnerCacheFailure: { code, ...(counts ? { counts } : {}) },
+          },
+        );
+      let turns;
+      try {
+        turns = await listTurns(runtimeDir);
+      } catch {
+        throw fail('turn-inventory-unavailable');
+      }
+      // A missing/corrupt state or an unassigned claim cannot establish which
+      // home is idle. Counts explain the refusal without exposing turn content.
+      const counts = { missingState: 0, invalidState: 0, unsettledWithoutSession: 0 };
+      for (const turn of turns) {
+        if (turn.status === 'settled' || typeof turn.sessionId === 'string') continue;
+        const key =
+          turn.reason === 'missing-state'
+            ? 'missingState'
+            : turn.reason === 'invalid-state'
+              ? 'invalidState'
+              : 'unsettledWithoutSession';
+        counts[key] = Math.min(1_000_000, counts[key] + 1);
+      }
+      if (Object.values(counts).some((count) => count > 0))
+        throw fail('turn-ownership-unknown', counts);
       const busy = new Set(
         turns.filter((turn) => turn.status !== 'settled').map((turn) => turn.sessionId),
       );
-      const response = await brokerStorageRequest({
-        protocolVersion: 1,
-        kind: 'reclaim-package-caches',
-        sessionIds: request.sessionIds.filter((id) => !busy.has(id)),
-        maxBytes: request.maxBytes,
-      });
+      let response;
+      try {
+        response = await brokerStorageRequest({
+          protocolVersion: 1,
+          kind: 'reclaim-package-caches',
+          sessionIds: request.sessionIds.filter((id) => !busy.has(id)),
+          maxBytes: request.maxBytes,
+        });
+      } catch (error) {
+        const code = ['EACCES', 'EPERM'].includes(error?.code)
+          ? 'broker-access-denied'
+          : ['ENOENT', 'ECONNREFUSED'].includes(error?.code)
+            ? 'broker-unavailable'
+            : error?.message === 'runner storage request timed out'
+              ? 'broker-timeout'
+              : error instanceof SyntaxError ||
+                  error?.code === 'ERR_INVALID_RUNNER_STORAGE_RESPONSE'
+                ? 'broker-invalid-response'
+                : 'broker-rejected';
+        throw fail(code);
+      }
       if (busy.size > 0 && response.report) {
         response.report.usageComplete = false;
         response.report.legacyBytes = null;
