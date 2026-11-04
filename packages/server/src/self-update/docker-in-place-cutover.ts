@@ -22,6 +22,7 @@ import {
   type UpdateCutoverDeps,
 } from './update-cutover.js';
 import { readUpdateJournal } from './update-journal.js';
+import { archiveRetiredServerLogs } from './retired-server-logs.js';
 import { openActivationGate } from './activation-gate.js';
 import { generationOperationId } from './docker-update-preparation.js';
 import {
@@ -676,7 +677,50 @@ export async function dockerStandbyPromotion(
       await probe(state, 'observe', observeTimeoutMs, candidateHost, journal.targetDigest);
     },
     retireOld: async (state) => {
+      const keepLogs = (containerId: string, containerName: string) =>
+        archiveRetiredServerLogs({
+          managedRoot: options.managedRoot,
+          docker,
+          containerId,
+          containerName,
+          log,
+        });
+      await keepLogs(state.oldContainerId, oldHost);
       await ignoreMissing(() => docker.removeContainer(state.oldContainerId));
+      // An earlier cutover whose retirement never completed, or an installer repair
+      // that recreated the bootstrap Server, can leave a stopped Server of this
+      // deployment behind. Nothing retries that removal once its journal is gone,
+      // and the installer refuses to run while two Server containers exist. Only
+      // stopped ones are retired: the candidate now serves, and a running Server
+      // under another name is not this cutover's to stop.
+      try {
+        for (const container of (await docker.listContainers?.()) ?? []) {
+          if (container.id === state.oldContainerId || container.id === state.candidateContainerId)
+            continue;
+          if (
+            container.labels?.[MANAGED_DEPLOYMENT_LABEL] !== journal.deploymentId ||
+            container.labels[MANAGED_ROLE_LABEL] !== 'server'
+          )
+            continue;
+          const name = container.names?.find((entry) =>
+            /^verity-managed-server(?:-g[1-9][0-9]{0,9})?$/u.test(entry),
+          );
+          if (name === undefined || name === candidateHost) continue;
+          const inspect = await docker.inspectContainer(container.id).catch((error: unknown) => {
+            if (missing(error)) return undefined;
+            throw error;
+          });
+          if (inspect === undefined || inspect.running) continue;
+          await keepLogs(container.id, name);
+          await ignoreMissing(() => docker.removeContainer(container.id));
+          log(`Removed leftover stopped Server ${name}`);
+        }
+      } catch (error) {
+        // The next committed cutover sweeps again; a leak must not undo a success.
+        log(
+          `Could not remove leftover Server containers: ${error instanceof Error ? error.message : 'unknown error'}`,
+        );
+      }
     },
 
     /**
