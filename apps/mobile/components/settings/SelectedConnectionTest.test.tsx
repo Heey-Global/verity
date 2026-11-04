@@ -655,3 +655,27 @@ it('names a storage failure during discard instead of blaming Stop', async () =>
   );
   expect(await AsyncStorage.getItem(key)).not.toBeNull();
 });
+
+it('waits from discard when slow preparation outlasted the local start deadline', async () => {
+  await AsyncStorage.setItem(
+    key,
+    JSON.stringify({
+      runId,
+      startedAt: new Date(Date.now() - 120_000).toISOString(),
+      local: null,
+      localStatus: 'failed',
+      localStopped: true,
+      outcome: 'failed',
+    }),
+  );
+  render(<SelectedConnectionTest disabled={false} onBusy={jest.fn()} />);
+  await screen.findByText(/Collect its report to finish it, or discard it/);
+  const discardedAt = Date.now();
+  await confirmDiscard();
+  await waitFor(() => expect(AsyncStorage.getItem(key)).resolves.toBeNull());
+  const deadline = Number(
+    await AsyncStorage.getItem('verity.selectedConnectionTest.hold.v1.paired'),
+  );
+  expect(deadline).toBeGreaterThanOrEqual(discardedAt + 60_000);
+  expect(screen.getByRole('button', { name: 'Start quick test' })).toBeDisabled();
+});

@@ -167,7 +167,12 @@ export function useHold(persistKey: string | null) {
           setLeft(Math.max(0, Math.ceil((until.current - Date.now()) / 1000)));
         }
       } catch {
-        /* An unreadable deadline must not block testing forever. */
+        // A failed read cannot prove a discarded remote run has expired. Wait
+        // the maximum supported hold before releasing either test.
+        if (live) {
+          until.current = Math.max(until.current, Date.now() + MAXIMUM_HOLD_MS);
+          setLeft(Math.ceil((until.current - Date.now()) / 1000));
+        }
       } finally {
         if (live) {
           restored.current = true;

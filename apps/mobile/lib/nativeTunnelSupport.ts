@@ -1,5 +1,5 @@
 // Discarding an unfinished diagnostic test may skip its Stop check only on a
-// device that has no native tunnel at all. That decision rests on this code,
+// device whose native module explicitly reports no tunnel support. That decision rests on this code,
 // not on the wording of the user-facing message.
 const UNSUPPORTED = 'NATIVE_TUNNEL_UNSUPPORTED';
 

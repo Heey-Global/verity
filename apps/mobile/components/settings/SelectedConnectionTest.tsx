@@ -58,7 +58,8 @@ const prerequisiteHelp: Record<string, string> = {
     'Another connection test is still running on this device. Wait a moment and try again.',
 };
 type Result = { tone: StatusTone; title: string; detail: string };
-// The quick test's server-side recording ends within 45 s of its start.
+// Wait from discard, after preparation has ended: server arming can occur
+// later than the locally saved start time (45 s recording plus 15 s margin).
 const QUICK_SERVER_EXPIRY_MS = 60_000;
 const QUICK_STEPS = ['Testing the connection', 'Result'] as const;
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/iu;
@@ -560,7 +561,7 @@ export function SelectedConnectionTest({
       // run without a start time predates this app version and has long expired.
       const startedAt = expected.startedAt === null ? Number.NaN : Date.parse(expected.startedAt);
       if (!(archived && canStartAnother) && Number.isFinite(startedAt))
-        await holdUntil(startedAt + QUICK_SERVER_EXPIRY_MS);
+        await holdUntil(Date.now() + QUICK_SERVER_EXPIRY_MS);
       await AsyncStorage.removeItem(storageKey);
       if (scope.current !== storageKey) return;
       retained.current = null;

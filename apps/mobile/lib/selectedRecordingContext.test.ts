@@ -1,10 +1,10 @@
 const mockActive = jest.fn();
-let mockModule: 'present' | 'missing' | 'broken' = 'present';
+let mockModule: 'present' | 'missing' | 'broken' | 'unsupported' = 'present';
 jest.mock('expo-modules-core', () => ({
   requireOptionalNativeModule: () => {
     if (mockModule === 'missing') return null;
     if (mockModule === 'broken') throw new Error('Native module failed to initialize');
-    return { isSupported: async () => true, isActive: () => mockActive() };
+    return { isSupported: async () => mockModule !== 'unsupported', isActive: () => mockActive() };
   },
 }));
 const mockFetch = jest.fn();
@@ -101,11 +101,15 @@ it('bounds an unresponsive native status query', async () => {
   }
 });
 
-it('reports only a missing native module as unsupported', async () => {
+it('does not treat an unavailable module as proof that no tunnel can capture', async () => {
   try {
+    mockModule = 'unsupported';
+    const unsupported = await assertNativeTunnelInactive().catch((error: unknown) => error);
+    expect(isNativeTunnelUnsupported(unsupported)).toBe(true);
     mockModule = 'missing';
     const missing = await assertNativeTunnelInactive().catch((error: unknown) => error);
-    expect(isNativeTunnelUnsupported(missing)).toBe(true);
+    expect(missing).toBeInstanceOf(Error);
+    expect(isNativeTunnelUnsupported(missing)).toBe(false);
     // A present module that fails to load must not count as "nothing can capture".
     mockModule = 'broken';
     const broken = await assertNativeTunnelInactive().catch((error: unknown) => error);

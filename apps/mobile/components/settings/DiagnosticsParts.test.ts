@@ -59,3 +59,11 @@ it('keeps a hold set while the stored deadline is still being read', async () =>
     jest.mocked(AsyncStorage.getItem).mockImplementation(getItem);
   }
 });
+
+it('keeps both tests held when the persisted deadline cannot be read', async () => {
+  jest.mocked(AsyncStorage.getItem).mockRejectedValueOnce(new Error('storage unavailable'));
+  const { result } = renderHook(() => useHold('verity.test.unreadable.hold'));
+  await waitFor(() => expect(result.current[3]).toBe(true));
+  expect(result.current[2]()).toBe(true);
+  expect(result.current[0]).toBeGreaterThan(590);
+});
