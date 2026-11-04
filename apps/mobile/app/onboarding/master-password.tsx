@@ -306,7 +306,7 @@ function MasterPasswordStep({
               clearPairingSession(),
             ]).then(() => {
               reset();
-              router.replace('/onboarding/server-url?reconfigure=1' as Href);
+              router.replace('/onboarding/server-url' as Href);
             });
           },
         },

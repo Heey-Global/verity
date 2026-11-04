@@ -488,9 +488,7 @@ describe('onboarding master-password step', () => {
       expect(mockReplace).not.toHaveBeenCalled();
 
       buttons.find((button) => button.text === 'Pair again')!.onPress!();
-      await waitFor(() =>
-        expect(mockReplace).toHaveBeenCalledWith('/onboarding/server-url?reconfigure=1'),
-      );
+      await waitFor(() => expect(mockReplace).toHaveBeenCalledWith('/onboarding/server-url'));
       expect(mockClearStoredAuthState).toHaveBeenCalledWith('https://verity.test:8082');
     } finally {
       alert.mockRestore();
