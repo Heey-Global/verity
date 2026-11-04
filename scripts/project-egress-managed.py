@@ -350,6 +350,9 @@ def install_boot_recovery(root, run):
             if temporary.exists():
                 temporary.chmod(0o700)
                 shutil.rmtree(temporary)
+    # Systemd resolves every ReadWritePaths entry before executing recovery.
+    # A fresh host must have the mutable helper destination before unit startup.
+    directory(root / 'usr/local/libexec/verity', root, 0o755)
     # These persist outside rollback snapshots: a failed first installation
     # must retain its recovery dependency for the next boot.
     unit = f'''[Unit]

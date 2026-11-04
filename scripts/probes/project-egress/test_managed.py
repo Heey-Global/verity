@@ -338,6 +338,10 @@ class ManagedTests(unittest.TestCase):
             if args[-1] == 'verity-egress-recovery.service':
                 self.assertFalse((self.root / managed.JOURNAL).exists())
                 unit = (self.root / managed.RECOVERY_UNIT).read_text()
+                writable = next(line.partition('=')[2].split() for line in unit.splitlines()
+                                if line.startswith('ReadWritePaths='))
+                for absolute in writable:
+                    self.assertTrue((self.root / absolute.lstrip('/')).is_dir(), absolute)
                 entry = next(line.split(' ', 2)[2].rsplit(' ', 1)[0]
                              for line in unit.splitlines() if line.startswith('ExecStart='))
                 helper = Path(entry)
