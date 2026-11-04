@@ -7,6 +7,8 @@ on:
       - 'scripts/probes/project-egress/boot-vm.py'
       - 'scripts/probes/project-egress/vm-pins.env'
       - 'scripts/probes/project-egress/test_boot_vm.py'
+      - 'scripts/probes/project-egress/test_boot_database.py'
+      - 'deploy/docker-compose.yml'
       - 'scripts/probes/project-egress/boot-*'
       - 'scripts/probes/project-egress/build-boot-assets.mjs'
       - 'scripts/probes/project-egress/BootRunner.Dockerfile'
@@ -57,6 +59,7 @@ jobs:
         run: |
           python3 -m unittest discover -s scripts/probes/project-egress -p test_boot_vm.py -v
           python3 -m unittest discover -s scripts/probes/project-egress -p test_native_candidate.py -v
+          python3 -m unittest discover -s scripts/probes/project-egress -p test_boot_database.py -v
       - name: Verify pinned guest and execute an actual kernel reboot
         env:
           PROBE_EVIDENCE: ${{ runner.temp }}/project-egress-boot-evidence

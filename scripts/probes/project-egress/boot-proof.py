@@ -137,7 +137,8 @@ def verify_managed_staging(value):
     assert value['version'] == 1 and value['scope'] == 'native-managed-staging-only'
     assert value['productionAccepted'] is False and value['directAuthorityConfigured'] is False
     for key in ('keyPreserved', 'dockerProcessPreserved', 'firewallTablesPreserved',
-                'activeUnitsPreserved', 'repeatedPreparationStable'):
+                'activeUnitsPreserved', 'repeatedPreparationStable', 'unacceptedActivationRejected',
+                'repeatedActivationRejectionStable', 'controllerNeverStarted'):
         assert value[key] is True, 'Managed staging safety proof missing: ' + key
     assert isinstance(value['releaseManifest'], dict) and value['releaseManifest']
     candidate = value['nativeCandidate']

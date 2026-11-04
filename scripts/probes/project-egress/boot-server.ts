@@ -1,11 +1,10 @@
 /** Disposable boot fixture: the real EmbeddedServer with persistent test PostgreSQL. */
 import assert from 'node:assert/strict';
 import { EventStore } from '../../../packages/store/src/store.js';
-import { migrateToLatest } from '../../../packages/store/src/db.js';
+import { createPostgresDb, migrateToLatest } from '../../../packages/store/src/db.js';
 import { migrationProvider } from '../../../packages/store/src/migrations.js';
-import { createEmbeddedDb } from '../../../packages/store/src/pglite.js';
 import { readFile, appendFile } from 'node:fs/promises';
-import { buildTestEmbeddedServer } from '../../../packages/server/src/testing.js';
+import { buildEmbeddedServer } from '../../../packages/server/src/embedded.js';
 import { createDockerClient } from '../../../packages/server/src/docker.js';
 import { createProjectEgressHostClient } from '../../../packages/server/src/project-egress-host-client.js';
 import { ProjectEgressLifecycle } from '../../../packages/server/src/project-egress-lifecycle.js';
@@ -19,6 +18,7 @@ const config = JSON.parse(await readFile(`${root}/config.json`, 'utf8')) as {
   dataRoot: string;
   gatewayKey: string;
   controlToken: string;
+  databaseUrl: string;
 };
 const gatewaySocket = `${root}/gateway.sock`;
 if (process.argv[2] === 'gateway') {
@@ -76,10 +76,10 @@ if (process.argv[2] === 'gateway') {
   });
   // This fixture proves protected boot recovery. Enable it before the Server
   // provisions its first project; production deliberately defaults to off.
-  const db = createEmbeddedDb(`${root}/database`);
+  const db = createPostgresDb(config.databaseUrl);
   await migrateToLatest(db, migrationProvider);
   await new EventStore(db).updateVeritySettings({ projectEgressEnabled: true });
-  const server = await buildTestEmbeddedServer({
+  const server = await buildEmbeddedServer({
     openDatabase: () => db,
     logger: true,
     dataDir: `${root}/database`,

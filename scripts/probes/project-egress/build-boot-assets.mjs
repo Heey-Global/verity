@@ -52,7 +52,7 @@ async function include(name, from, optional = false) {
   for (const dependency of Object.keys(manifest.optionalDependencies ?? {}))
     await include(dependency, found.real, true);
 }
-for (const name of ['@verity/server', '@electric-sql/pglite']) await include(name, root);
+for (const name of ['@verity/server']) await include(name, root);
 await writeFile(join(output, 'package.json'), '{"type":"module"}\n');
 await build({
   entryPoints: ['scripts/probes/project-egress/boot-server.ts'],

@@ -70,6 +70,24 @@ class ManagedTests(unittest.TestCase):
     def unsupported(self, *_):
         raise ValueError('Kernel has no accepted native installation profile')
 
+    def test_default_activation_rejects_unaccepted_profile_on_every_retry(self):
+        # A synthetic unsupported callback would miss skipped production preflight.
+        self.assertEqual(managed.base.ACCEPTED_NATIVE_PROFILES, ())
+        (self.root / 'proc/1').mkdir(parents=True)
+        (self.root / 'proc/1/comm').write_text('systemd\n')
+        with patch.object(managed.base, 'accepted_native_profile',
+                          wraps=managed.base.accepted_native_profile) as gate:
+            results = [managed.provision(self.source, self.relay, self.authority,
+                       CONTROL_GID, self.root, self.execute,
+                       group_setup=lambda *_: None) for _ in range(2)]
+        self.assertEqual(gate.call_count, 2)
+        self.assertEqual(results, [{'available': False, 'reason': 'runtime_unsupported',
+                                   'controlGid': CONTROL_GID}] * 2)
+        self.assertFalse((self.root / managed.INVENTORY_CONTRACT).exists())
+        self.assertFalse((self.root / managed.JOURNAL).exists())
+        self.assertFalse((self.root / 'opt/verity-egress').exists())
+        self.assertEqual(self.calls, [])
+
     def test_unsupported_prepares_usable_mounts_without_firewall_or_units(self):
         result = self.provision(self.unsupported)
         self.assertEqual(result, {'available': False, 'reason': 'runtime_unsupported', 'controlGid': CONTROL_GID})

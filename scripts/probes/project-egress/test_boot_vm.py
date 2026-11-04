@@ -602,8 +602,15 @@ class ReplacementRecoveryTests(unittest.TestCase):
             (root / 'config.json').write_text(json.dumps({'dataRoot': directory}))
             (root / 'boot-retained-marker').write_text('retained actual project data')
             api = Mock(return_value={'token': 'disposable-token'})
-            with patch.object(guest, 'ROOT', root), patch.object(guest, 'api', api), patch.object(guest, 'wait'), patch.object(guest, 'run') as run, patch.object(guest, 'descriptor', return_value={'projectId': 'p'}):
+            operations = Mock()
+            with patch.object(guest, 'recover_database') as database, patch.object(guest, 'ROOT', root), patch.object(guest, 'api', api), patch.object(guest, 'wait'), patch.object(guest, 'run') as run, patch.object(guest, 'descriptor', return_value={'projectId': 'p'}):
+                operations.attach_mock(database, 'database')
+                operations.attach_mock(run, 'run')
                 guest.recover(replace=True)
+            database.assert_called_once_with()
+            observed = operations.mock_calls
+            self.assertLess(observed.index(unittest.mock.call.database()),
+                            observed.index(unittest.mock.call.run('systemctl', 'start', 'verity-boot-gateway.service', 'verity-boot-server.service')))
             api.assert_any_call('/verity-control/projects/p/recreate-container', {'confirmWarnings': True}, token='disposable-token', timeout=180)
             run.assert_any_call('docker', 'start', 'verity-boot-registry')
             self.assertFalse(any('readmit' in call.args for call in run.call_args_list))
@@ -633,7 +640,9 @@ class ManagedStagingEvidenceTests(unittest.TestCase):
                     'productionAccepted': False, 'directAuthorityConfigured': False,
                     'keyPreserved': True, 'dockerProcessPreserved': True,
                     'firewallTablesPreserved': True, 'activeUnitsPreserved': True,
-                    'repeatedPreparationStable': True, 'releaseManifest': {
+                    'repeatedPreparationStable': True, 'unacceptedActivationRejected': True,
+                    'repeatedActivationRejectionStable': True, 'controllerNeverStarted': True,
+                    'releaseManifest': {
                         name: 'a' * 64 for name in ('node', 'project-egress-host-main.mjs',
                             'project-egress-deadline.bpf.o', 'project-egress-renew.bpf.o')},
                     'nativeCandidate': {'version': 1, 'scope': 'native-profile-candidate',
@@ -648,6 +657,10 @@ class ManagedStagingEvidenceTests(unittest.TestCase):
             del changed[key]
             with self.subTest(missing=key), self.assertRaises((AssertionError, KeyError)):
                 boot_proof.verify_managed_staging(changed)
+        for key in ('unacceptedActivationRejected', 'repeatedActivationRejectionStable',
+                    'controllerNeverStarted'):
+            with self.subTest(rejection=key), self.assertRaises(AssertionError):
+                boot_proof.verify_managed_staging({**evidence, key: False})
         for key in ('productionAccepted', 'directAuthorityConfigured'):
             with self.subTest(claim=key), self.assertRaises(AssertionError):
                 boot_proof.verify_managed_staging({**evidence, key: True})
@@ -659,7 +672,9 @@ class ManagedStagingEvidenceTests(unittest.TestCase):
                     'productionAccepted': False, 'directAuthorityConfigured': False,
                     'keyPreserved': True, 'dockerProcessPreserved': True,
                     'firewallTablesPreserved': True, 'activeUnitsPreserved': True,
-                    'repeatedPreparationStable': True, 'releaseManifest': artifacts,
+                    'repeatedPreparationStable': True, 'unacceptedActivationRejected': True,
+                    'repeatedActivationRejectionStable': True, 'controllerNeverStarted': True,
+                    'releaseManifest': artifacts,
                     'nativeCandidate': {'version': 1, 'scope': 'native-profile-candidate',
                         'accepted': False, 'blockers': [], 'evidenceMissing': ['signed-managed-updater'],
                         'artifacts': dict(artifacts)}}

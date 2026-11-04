@@ -20,7 +20,13 @@ docker build -f deploy/project-relay.Dockerfile -t verity-boot-relay:local . > "
 registry='registry:3.0.0@sha256:6c5666b861f3505b116bb9aa9b25175e71210414bd010d92035ff64018f9457e'
 docker pull "$registry" > "$PROBE_EVIDENCE/registry-pull.txt"
 docker tag "$registry" verity-boot-registry:local
-docker save -o "$assets/images.tar" verity-boot-observed-runner:local verity-boot-relay:local verity-boot-registry:local
+# Reuse the deployment's immutable PostgreSQL image, never a floating probe tag.
+mapfile -t postgres_pins < <(sed -nE 's/^[[:space:]]*image:[[:space:]]*(postgres:[^[:space:]]+@sha256:[0-9a-f]{64})[[:space:]]*$/\1/p' deploy/docker-compose.yml)
+[[ ${#postgres_pins[@]} == 1 ]]
+postgres_image=${postgres_pins[0]}
+printf '%s\n' "$postgres_image" > "$assets/postgres-image.txt"
+docker pull "$postgres_image" > "$PROBE_EVIDENCE/postgres-pull.txt"
+docker save -o "$assets/images.tar" verity-boot-observed-runner:local verity-boot-relay:local verity-boot-registry:local "$postgres_image"
 # Guest setup verifies actual binaries too; this records the bytes transported.
 (cd "$assets" && sha256sum node runtime/bin/docker runtime/bin/dockerd > runtime-sha256.txt)
 tar -C "$assets" -cf "$RUNNER_TEMP/verity-boot-assets.tar" .
@@ -30,7 +36,7 @@ tar -C "$assets" -cf "$RUNNER_TEMP/verity-boot-assets.tar" .
 du -sh "$assets" "$RUNNER_TEMP/verity-boot-assets.tar" > "$PROBE_EVIDENCE/asset-disk-usage.txt"
 docker rm -f "$runtime" >/dev/null
 trap - EXIT
-docker image rm verity-boot-observed-runner:local verity-boot-runner:local verity-boot-relay:local verity-boot-runtime:local verity-boot-registry:local "$registry"
+docker image rm verity-boot-observed-runner:local verity-boot-runner:local verity-boot-relay:local verity-boot-runtime:local verity-boot-registry:local "$registry" "$postgres_image"
 docker builder prune --all --force
 rm -rf -- "$assets"
 df -B1 "$RUNNER_TEMP" >> "$PROBE_EVIDENCE/asset-disk-usage.txt"
