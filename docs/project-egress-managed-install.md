@@ -78,7 +78,13 @@ orchestration and error handling, not kernel isolation or uninterrupted host
 connectivity. Supported dependency provisioning and protected application routes
 must be verified on that same profile before declaring the switch ready.
 
-Managed direct authority starts closed. The installer cannot infer configured
+Managed direct authority starts closed. After native preflight, the installer
+persists a root-owned inventory contract before controller activation. Servers
+serialize endpoint mutations with synchronization, but require host fencing only
+once that contract exists. Unsupported staging and legacy manual authorities
+therefore retain configuration access. The contract survives rollback; a missing
+or unreadable contract after it was observed cannot disable synchronization in
+that Server process. The installer cannot infer configured
 broker/model/MCP destinations from deployment environment variables. The Server
 must synchronize bounded endpoint metadata through the authenticated control
 protocol before the host can report readiness. Configuration changes must fence

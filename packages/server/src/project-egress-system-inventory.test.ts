@@ -154,3 +154,61 @@ it('leaves the host fenced when the source transaction fails', async () => {
   );
   expect(command.mock.calls.map(([request]) => request.operation)).toEqual(['inventory-begin']);
 });
+
+it('serializes preactivation writes with opt-in and skips controller and DB work while disabled', async () => {
+  let enabled = false;
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const command = vi.fn(
+    async (request: ProjectEgressHostRequest): Promise<ProjectEgressHostResponse> => ({
+      state: request.operation === 'inventory-begin' ? 'inventory-denied' : 'inventory-ready',
+      token: 'token' in request ? request.token : '',
+    }),
+  );
+  const transaction = vi.fn(async <T>(action: () => Promise<T>) => action());
+  const synchronize = createProjectEgressInventorySynchronizer({
+    enabled: () => enabled,
+    command,
+    transaction: async (action) => {
+      await transaction(async () => undefined);
+      return action();
+    },
+    readUrls: async () => [],
+  });
+  await synchronize.refresh();
+  const write = synchronize.mutate(async () => {
+    await gate;
+    enabled = true;
+  });
+  const refresh = synchronize.refresh();
+  await Promise.resolve();
+  expect(command).not.toHaveBeenCalled();
+  expect(transaction).not.toHaveBeenCalled();
+  release();
+  await write;
+  await refresh;
+  expect(command).toHaveBeenCalledWith(expect.objectContaining({ operation: 'inventory-renew' }));
+  expect(transaction).toHaveBeenCalledTimes(1);
+});
+
+it('does not persist or renew when the inventory contract cannot be read', async () => {
+  const action = vi.fn(async () => undefined);
+  const transaction = vi.fn(async <T>(run: () => Promise<T>) => run());
+  const synchronize = createProjectEgressInventorySynchronizer({
+    enabled: () => {
+      throw new Error('invalid contract');
+    },
+    command: vi.fn(),
+    transaction: async (action) => {
+      await transaction(async () => undefined);
+      return action();
+    },
+    readUrls: async () => [],
+  });
+  await expect(synchronize.mutate(action)).rejects.toThrow('invalid contract');
+  await expect(synchronize.refresh()).rejects.toThrow('invalid contract');
+  expect(action).not.toHaveBeenCalled();
+  expect(transaction).not.toHaveBeenCalled();
+});

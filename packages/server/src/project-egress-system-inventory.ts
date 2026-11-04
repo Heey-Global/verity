@@ -115,6 +115,7 @@ export function createManagedSystemInventory(options: {
  */
 export function createProjectEgressInventorySynchronizer(options: {
   command(input: ProjectEgressHostRequest): Promise<ProjectEgressHostResponse>;
+  enabled?(): boolean;
   readUrls(): Promise<readonly string[]>;
   transaction<T>(action: () => Promise<T>): Promise<T>;
 }) {
@@ -157,10 +158,12 @@ export function createProjectEgressInventorySynchronizer(options: {
       return result;
     });
   return {
-    mutate: <T>(action: () => Promise<T>) => serialize(() => sync(action)),
+    mutate: <T>(action: () => Promise<T>) =>
+      serialize(() => (options.enabled?.() === false ? action() : sync(action))),
     refresh: () =>
-      serialize(() =>
-        options.transaction(async () => {
+      serialize(() => {
+        if (options.enabled?.() === false) return Promise.resolve();
+        return options.transaction(async () => {
           const token = randomUUID();
           if (sourceRepairRequiresRestart)
             throw new ProjectEgressHealthError('mandatory_inventory_incomplete');
@@ -175,7 +178,7 @@ export function createProjectEgressInventorySynchronizer(options: {
             // heartbeat must never tear down long-lived direct connections.
             await sync(() => Promise.resolve());
           }
-        }),
-      ),
+        });
+      }),
   };
 }

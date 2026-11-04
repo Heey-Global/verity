@@ -23,6 +23,7 @@ base = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(base)
 ASSETS = (*base.ASSETS, 'node')
 SERVICE = 'verity-egress-host.service'
+INVENTORY_CONTRACT = 'etc/verity-egress-server/inventory-contract.json'
 
 
 def ensure_control_group(gid, run):
@@ -553,6 +554,9 @@ def provision(source, relay=None, authority=None, gid=65531, root=Path('/'), run
             return write_status(root, gid, 'runtime_unsupported')
         try:
             reject_bridge_collisions(root, run)
+            # Persist before the first controller can synchronize/open admission.
+            # Never roll this contract back: protected generations may survive.
+            shared_file(root / INVENTORY_CONTRACT, b'{"version":1,"required":true}\n', gid)
             activate(root, run, release, files, configs, gid)
         except Exception:
             write_status(root, gid, 'controller_failed')

@@ -1576,6 +1576,11 @@ Preparation adds the reviewed relay runtime through Docker reload and installs
 persistent private bpffs without restarting Docker. Old updater caller deadlines
 must be tested independently from the longer new host oneshot deadline.
 
+A root-owned inventory contract is persisted after native preflight and before
+controller activation, outside rollback snapshots. Servers require fencing only
+when that contract is present and latch the requirement; unsupported staging and
+manual static authorities do not acquire a dependency on an absent controller.
+
 Authoritative destination mutations fence direct corridors before persistence,
 then acknowledge the conservative old/new inventory under the database mutation
 lock. A leased heartbeat closes readiness when synchronization expires. Retained

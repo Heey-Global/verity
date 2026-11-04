@@ -769,6 +769,7 @@ export interface EmbeddedServerConfig {
   projectEgressSocketPath?: string | undefined;
   projectEgressProvisioningPending?: boolean | undefined;
   projectEgressKeyPath?: string | undefined;
+  projectEgressInventoryRequired?: (() => boolean) | undefined;
   diagnosticServerContainerId?: string | undefined;
   hostDiagnosticSnapshotPath?: string | undefined;
   /** Enable fail-closed Docker/runsc readiness for the production Secret Job Executor path. */
@@ -1980,6 +1981,7 @@ export async function buildEmbeddedServer(
   const systemInventorySync =
     config.projectEgressSocketPath && config.projectEgressKeyPath
       ? createProjectEgressInventorySynchronizer({
+          enabled: config.projectEgressInventoryRequired ?? (() => false),
           command: createProjectEgressHostClient({
             socketPath: config.projectEgressSocketPath,
             token: () => readFileSync(config.projectEgressKeyPath!, 'utf8').trim(),

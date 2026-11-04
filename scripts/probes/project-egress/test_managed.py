@@ -75,6 +75,7 @@ class ManagedTests(unittest.TestCase):
         self.assertEqual(result, {'available': False, 'reason': 'runtime_unsupported', 'controlGid': CONTROL_GID})
         self.assertEqual(self.calls, [])
         self.assertFalse((self.root / 'opt/verity-egress').exists())
+        self.assertFalse((self.root / managed.INVENTORY_CONTRACT).exists())
         self.assertFalse((self.root / 'etc/systemd').exists())
         for relative in ['etc/verity-egress/control.key', 'etc/verity-egress/authority.json']:
             self.assertEqual((self.root / relative).stat().st_mode & 0o777, 0o600)
@@ -87,6 +88,24 @@ class ManagedTests(unittest.TestCase):
         tmpfiles = (self.root / 'etc/tmpfiles.d/verity-egress.conf').read_text()
         self.assertIn(f'd /run/verity-egress 0750 0 {CONTROL_GID}', tmpfiles)
         self.assertIn('/etc/verity-egress-server/status.json', tmpfiles)
+
+    def test_inventory_contract_precedes_controller_and_survives_failed_upgrade(self):
+        observed = []
+
+        def run(*args):
+            if 'start' in args and args[-1] == managed.SERVICE:
+                contract = self.root / managed.INVENTORY_CONTRACT
+                self.assertEqual(json.loads(contract.read_text()), {'version': 1, 'required': True})
+                self.assertEqual(contract.stat().st_mode & 0o777, 0o640)
+                self.assertEqual(contract.stat().st_gid, CONTROL_GID)
+                observed.append(True)
+            return self.execute(*args)
+
+        self.provision(run=run)
+        self.assertTrue(observed)
+        self.crash_upgrade()
+        self.assertTrue((self.root / managed.INVENTORY_CONTRACT).is_file())
+        self.assertNotIn(managed.INVENTORY_CONTRACT, managed.TRANSACTION_FILES)
 
     def test_prepare_requires_no_database_or_configuration_and_never_checks_runtime(self):
         result = managed.provision(self.source, gid=CONTROL_GID, root=self.root, run=self.execute,
