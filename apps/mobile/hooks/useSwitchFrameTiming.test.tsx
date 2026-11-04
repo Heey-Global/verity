@@ -155,3 +155,21 @@ it('stops frame polling immediately on background and removes its listener on un
     jest.useRealTimers();
   }
 });
+
+it('does not flush a previous recording gap when a completed switch is recorded again', () => {
+  jest.useFakeTimers();
+  const trace = beginSessionSwitch('completed-generation');
+  const hook = renderHook<void, { completed: boolean }>(
+    ({ completed }) => useSwitchFrameTiming(trace, completed),
+    { initialProps: { completed: false } },
+  );
+  act(() => mockCallback({ timeSincePreviousFrame: 300 }));
+  act(() => setGestureDiagnosticsEnabled(false));
+  markInitialListLoad(trace);
+  hook.rerender({ completed: true });
+  act(() => setGestureDiagnosticsEnabled(true));
+  expect(trace.phases.find((p) => p.phase === 'ui-frame-gap-max-ms')).toBeUndefined();
+  expect(jest.getTimerCount()).toBe(0);
+  hook.unmount();
+  jest.useRealTimers();
+});

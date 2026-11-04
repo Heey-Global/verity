@@ -20,6 +20,7 @@ export function useSwitchFrameTiming(trace: SwitchTiming | undefined, completed 
   const activeGeneration = useSharedValue(generation);
   const elapsed = useSharedValue(0);
   const maximum = useSharedValue(0);
+  const sampleGeneration = useSharedValue(generation);
   const report = useCallback(
     (gap: number) => {
       if (
@@ -70,7 +71,8 @@ export function useSwitchFrameTiming(trace: SwitchTiming | undefined, completed 
       frame.setActive(false);
       runOnUI(() => {
         'worklet';
-        if (maximum.value > 0) runOnJS(report)(maximum.value);
+        if (sampleGeneration.value === generation && maximum.value > 0)
+          runOnJS(report)(maximum.value);
       })();
     };
     if (completed) {
@@ -81,6 +83,7 @@ export function useSwitchFrameTiming(trace: SwitchTiming | undefined, completed 
       frame.setActive(false);
       return unsubscribe;
     }
+    sampleGeneration.value = generation;
     elapsed.value = 0;
     maximum.value = 0;
     frame.setActive(switchMeasurementOpen(trace) && AppState.currentState === 'active');
@@ -101,5 +104,16 @@ export function useSwitchFrameTiming(trace: SwitchTiming | undefined, completed 
       subscription?.remove();
       frame.setActive(false);
     };
-  }, [trace, frame, elapsed, maximum, completed, report, enabled, generation, activeGeneration]);
+  }, [
+    trace,
+    frame,
+    elapsed,
+    maximum,
+    completed,
+    report,
+    enabled,
+    generation,
+    activeGeneration,
+    sampleGeneration,
+  ]);
 }
