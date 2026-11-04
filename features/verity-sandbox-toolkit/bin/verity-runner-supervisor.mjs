@@ -2634,10 +2634,19 @@ async function brokerStorageRequest(request) {
     socket.once('connect', () => socket.write(JSON.stringify(request) + '\n'));
     socket.on('data', (chunk) => {
       buffered += chunk.toString();
-      if (buffered.length > 65536) return finish(new Error('runner storage response too large'));
+      if (Buffer.byteLength(buffered, 'utf8') > 65536)
+        return finish(
+          Object.assign(new Error('runner storage response too large'), {
+            code: 'ERR_INVALID_RUNNER_STORAGE_RESPONSE',
+          }),
+        );
       if (!buffered.includes('\n')) return;
       try {
         const response = JSON.parse(buffered.split('\n')[0]);
+        if (!isObject(response) || typeof response.ok !== 'boolean')
+          throw Object.assign(new Error('invalid runner storage response'), {
+            code: 'ERR_INVALID_RUNNER_STORAGE_RESPONSE',
+          });
         finish(
           response.ok === true
             ? undefined
@@ -2755,7 +2764,8 @@ export async function handleSupervisorRequest(
             ? 'broker-unavailable'
             : error?.message === 'runner storage request timed out'
               ? 'broker-timeout'
-              : error instanceof SyntaxError
+              : error instanceof SyntaxError ||
+                  error?.code === 'ERR_INVALID_RUNNER_STORAGE_RESPONSE'
                 ? 'broker-invalid-response'
                 : 'broker-rejected';
         throw fail(code);

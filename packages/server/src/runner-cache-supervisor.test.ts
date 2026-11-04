@@ -16,7 +16,7 @@ afterEach(async () => {
   );
   await Promise.all(roots.splice(0).map((root) => rm(root, { force: true, recursive: true })));
 });
-async function fixture() {
+async function fixture(reply?: unknown) {
   const root = await mkdtemp(join(tmpdir(), 'runner-cache-supervisor-'));
   roots.push(root);
   const requests: Record<string, unknown>[] = [];
@@ -27,10 +27,14 @@ async function fixture() {
       if (!buffer.includes('\n')) return;
       requests.push(JSON.parse(buffer.split('\n')[0]!) as Record<string, unknown>);
       socket.end(
-        JSON.stringify({
-          ok: true,
-          report: { sharedBytes: 123, legacyBytes: 0, blockers: [], usageComplete: true },
-        }) + '\n',
+        JSON.stringify(
+          reply === undefined
+            ? {
+                ok: true,
+                report: { sharedBytes: 123, legacyBytes: 0, blockers: [], usageComplete: true },
+              }
+            : reply,
+        ) + '\n',
       );
     });
   });
@@ -199,3 +203,29 @@ it.skipIf(process.getuid!() === 0)(
     }
   },
 );
+
+it.each([null, {}, { ok: 'wrong' }, { ok: true, padding: 'x'.repeat(65536) }])(
+  'distinguishes invalid broker frames from explicit rejection',
+  async (reply) => {
+    const { root } = await fixture(reply);
+    await expect(
+      handleSupervisorRequest(root, 'runner', {
+        protocolVersion: 1,
+        kind: 'reclaim-package-caches',
+        sessionIds: [],
+        maxBytes: 4096,
+      }),
+    ).rejects.toMatchObject({ runnerCacheFailure: { code: 'broker-invalid-response' } });
+  },
+);
+it('distinguishes explicit broker rejection and withholds its private reason', async () => {
+  const { root } = await fixture({ ok: false, error: '/private/token' });
+  const error = await handleSupervisorRequest(root, 'runner', {
+    protocolVersion: 1,
+    kind: 'reclaim-package-caches',
+    sessionIds: [],
+    maxBytes: 4096,
+  }).catch((error: unknown) => error);
+  expect(error).toMatchObject({ runnerCacheFailure: { code: 'broker-rejected' } });
+  expect(String(error)).not.toContain('/private/token');
+});
