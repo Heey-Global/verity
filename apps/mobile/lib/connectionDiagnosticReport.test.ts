@@ -352,3 +352,50 @@ it('rejects multiple native snapshots even when their session hashes match', () 
   expect(report.complete).toBe(false);
   expect(report.gaps).toContain('app_unavailable');
 });
+
+it('retains terminal confirmation alongside older Uplink evidence', async () => {
+  const active = serverReport();
+  active.status.phase = 'recording';
+  active.status.core.state = 'recording';
+  active.status.uplink.state = 'recording';
+  await saveConnectionDiagnosticReport(
+    'paired',
+    createConnectionDiagnosticReport({
+      ...input(),
+      remote: active,
+      remoteStopped: false,
+    }),
+  );
+  const terminal = serverReport();
+  terminal.uplink = { available: false, data: null, error: 'uplink_export_failed' };
+  await saveConnectionDiagnosticReport(
+    'paired',
+    createConnectionDiagnosticReport({
+      ...input(),
+      remote: terminal,
+    }),
+  );
+  const [report] = await loadConnectionDiagnosticReports('paired');
+  expect(report!.remote.recording).toEqual(active);
+  expect(report!.remote.terminalRecording).toEqual(terminal);
+  expect(report!.remote.stopped).toBe(true);
+  expect(report!.gaps).not.toContain('remote_stop_unconfirmed');
+  expect(parseStoredConnectionDiagnosticReport(JSON.stringify(report))).toEqual(report);
+});
+
+it.each(['installationFingerprint', 'startedAt'] as const)(
+  'rejects terminal receipts from a different %s',
+  (field) => {
+    const active = serverReport();
+    active.status.phase = 'recording';
+    const receipt = serverReport();
+    receipt.status[field] = field === 'startedAt' ? '2026-01-02T00:00:00.000Z' : 'fedcba9876543210';
+    const report = createConnectionDiagnosticReport({
+      ...input(),
+      remote: active,
+      terminalRecording: receipt,
+    });
+    expect(report.remote.stopped).toBe(false);
+    expect(report.remote.terminalRecording).toBeUndefined();
+  },
+);

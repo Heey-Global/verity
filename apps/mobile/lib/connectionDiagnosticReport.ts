@@ -38,6 +38,7 @@ export interface ConnectionDiagnosticReportInput {
   localStopped: boolean;
   remote: ConnectionRecordingExport | null;
   remoteStopped: boolean;
+  terminalRecording?: ConnectionRecordingExport;
   localUnavailableReason?: string;
   preparation?: DiagnosticPreparation | null;
 }
@@ -128,12 +129,23 @@ export function createConnectionDiagnosticReport(input: ConnectionDiagnosticRepo
     core: remote !== null,
     uplink: remote?.uplink.available === true,
   };
-  const remoteStopped =
-    input.remoteStopped &&
-    remote !== null &&
-    ['stopped', 'expired'].includes(remote.status.phase) &&
-    remote.status.core.state === 'stopped' &&
-    remote.status.uplink.state === 'stopped';
+  const receipt = input.terminalRecording
+    ? acceptedRemote(input.terminalRecording, input.runId)
+    : null;
+  const terminal = (value: ConnectionRecordingExport | null) =>
+    value !== null &&
+    ['stopped', 'expired'].includes(value.status.phase) &&
+    value.status.core.state === 'stopped' &&
+    value.status.uplink.state === 'stopped';
+  const terminalRecording =
+    receipt &&
+    terminal(receipt) &&
+    remote &&
+    receipt.status.installationFingerprint === remote.status.installationFingerprint &&
+    receipt.status.startedAt === remote.status.startedAt
+      ? receipt
+      : null;
+  const remoteStopped = input.remoteStopped && (terminal(remote) || terminalRecording !== null);
   const uplink = remote?.uplink.data;
   const gaps: string[] = [];
   if (!sources.app) gaps.push('app_unavailable');
@@ -143,7 +155,14 @@ export function createConnectionDiagnosticReport(input: ConnectionDiagnosticRepo
   if (!input.localStopped) gaps.push('local_stop_unconfirmed');
   if (!remoteStopped) gaps.push('remote_stop_unconfirmed');
   if (preparation?.failed) gaps.push('preparation_failed');
-  if (remote?.status.error || remote?.failures?.stop || remote?.failures?.export)
+  if (
+    remote?.status.error ||
+    remote?.failures?.stop ||
+    remote?.failures?.export ||
+    terminalRecording?.status.error ||
+    terminalRecording?.failures?.stop ||
+    terminalRecording?.failures?.export
+  )
     gaps.push('remote_failure');
   if (
     (remote && remote.status.core.records !== remote.core.records.length) ||
@@ -184,7 +203,12 @@ export function createConnectionDiagnosticReport(input: ConnectionDiagnosticRepo
       recording: local ? (JSON.parse(local) as unknown[]) : null,
       unavailableReason: local ? null : reason,
     },
-    remote: { available: sources.core, stopped: remoteStopped, recording: remote },
+    remote: {
+      available: sources.core,
+      stopped: remoteStopped,
+      recording: remote,
+      ...(terminalRecording ? { terminalRecording } : {}),
+    },
   };
 }
 export type ConnectionDiagnosticReport = ReturnType<typeof createConnectionDiagnosticReport>;
@@ -211,6 +235,7 @@ export function parseStoredConnectionDiagnosticReport(
       localStopped: value.app.stopped,
       remote: value.remote.recording,
       remoteStopped: value.remote.stopped,
+      terminalRecording: value.remote.terminalRecording,
       localUnavailableReason: value.app.unavailableReason ?? undefined,
       preparation: value.preparation,
     });
@@ -282,6 +307,12 @@ export async function saveConnectionDiagnosticReport(
             ? candidate
             : previous.remote.recording;
         const local = safe.app.recording ?? previous.app.recording;
+        const terminalRecording =
+          safe.remote.terminalRecording ??
+          previous.remote.terminalRecording ??
+          (safe.remote.stopped && !previous.remote.stopped && candidate !== remote
+            ? candidate
+            : null);
         reports[existing] = createConnectionDiagnosticReport({
           runId: safe.runId,
           startedAt: safe.startedAt ?? previous.startedAt,
@@ -291,6 +322,7 @@ export async function saveConnectionDiagnosticReport(
           localStopped: safe.app.stopped || previous.app.stopped,
           remote,
           remoteStopped: safe.remote.stopped || previous.remote.stopped,
+          terminalRecording: terminalRecording ?? undefined,
           localUnavailableReason: safe.app.unavailableReason ?? undefined,
           preparation: safe.preparation ?? previous.preparation,
         });

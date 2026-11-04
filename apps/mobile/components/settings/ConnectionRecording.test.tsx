@@ -513,7 +513,7 @@ it('preserves the failed preparation stage across reopening without exporting ra
   expect(JSON.stringify(report)).not.toContain('private token');
 });
 
-it('retrieves retained remote evidence even when stop acknowledgement fails', async () => {
+it('confirms Stop from retained terminal evidence when stop acknowledgement fails', async () => {
   const api = client();
   render(<ConnectionRecording client={api as never} />);
   await pressStart();
@@ -524,7 +524,10 @@ it('retrieves retained remote evidence even when stop acknowledgement fails', as
   const report = JSON.parse(mockCopy.mock.calls[0]![0] as string);
   expect(api.exportConnectionRecording).toHaveBeenCalledWith(runId, 3);
   expect(report.remote.available).toBe(true);
-  expect(report.remote.stopped).toBe(false);
+  expect(report.remote.stopped).toBe(true);
+  mockRemaining.mockResolvedValue(0);
+  fireEvent.press(screen.getByText('Start another problem recording'));
+  await screen.findByText('Start problem recording');
 });
 
 it('exports only the HTTP status from a failed preparation response', async () => {

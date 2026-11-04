@@ -534,8 +534,13 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
         if (
           result.status.runId === saved.runId &&
           result.status.installationFingerprint === fingerprint
-        )
+        ) {
           remote = result;
+          remoteStopped ||=
+            ['stopped', 'expired'].includes(result.status.phase) &&
+            result.status.core.state === 'stopped' &&
+            result.status.uplink.state === 'stopped';
+        }
       } catch (error) {
         if (
           administration &&
