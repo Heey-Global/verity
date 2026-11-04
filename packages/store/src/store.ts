@@ -1944,7 +1944,7 @@ export class EventStore implements EventSink {
       project_id: session.projectId ?? null,
     };
     const projectId = session.projectId;
-    await this.db.transaction().execute(async (tx) => {
+    const insert = async (tx: Kysely<Database>): Promise<void> => {
       // Never occupy the serving pool waiting behind long physical cleanup.
       const admission = await sql<{
         locked: boolean;
@@ -1981,7 +1981,9 @@ export class EventStore implements EventSink {
         if (project?.hidden_at != null) throw new DeletedProjectError(projectId);
       }
       await tx.insertInto('sessions').values(values).execute();
-    });
+    };
+    if (this.db.isTransaction) await insert(this.db);
+    else await this.db.transaction().execute(insert);
   }
 
   /** The immutable model choice of the newest ordinary session in a scope.

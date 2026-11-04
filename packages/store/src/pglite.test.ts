@@ -62,6 +62,34 @@ describe('createEmbeddedDb — in-memory', () => {
     }
   });
 
+  it('retains deletion and worktree admission checks inside an outer transaction', async () => {
+    const db = createEmbeddedDb();
+    try {
+      await migrateToLatest(db);
+      const store = new EventStore(db);
+      await store.queueSessionDeletion(
+        'deleted',
+        JSON.stringify({ session: { sessionId: 'deleted', worktree: '/wt/reserved' } }),
+      );
+      await db.transaction().execute(async (trx) => {
+        const transactional = new EventStore(trx);
+        await expect(
+          transactional.createSession({ ...session, sessionId: 'deleted' }),
+        ).rejects.toThrow('being deleted');
+        await expect(
+          transactional.createSession({
+            ...session,
+            sessionId: 'replacement',
+            worktree: '/wt/reserved',
+          }),
+        ).rejects.toThrow('worktree is being deleted');
+      });
+      expect(await store.listSessions()).toEqual([]);
+    } finally {
+      await db.destroy();
+    }
+  });
+
   it('serializes a transaction against concurrent work on the shared PGlite session', async () => {
     const db = createEmbeddedDb();
     try {

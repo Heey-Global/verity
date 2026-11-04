@@ -1,3 +1,4 @@
+import type { AgentEvent } from '@verity/events';
 import { sql } from 'kysely';
 import { Migrator } from 'kysely/migration';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -17,6 +18,14 @@ beforeEach(async () => {
   await ctx.store.createSession({ sessionId: 'a', worktree: '/wt/a', model: 'm' });
   await ctx.store.createSession({ sessionId: 'b', worktree: '/wt/b', model: 'm' });
 });
+
+async function appendHistoricalEvent(sessionId: string, event: AgentEvent): Promise<void> {
+  // These fixtures intentionally predate deletion fencing and current projections.
+  await ctx.db
+    .insertInto('events')
+    .values({ session_id: sessionId, type: event.t, payload: JSON.stringify(event) })
+    .execute();
+}
 
 /** Writes the legacy shared read mark. These suites exercise the historical
  *  migrations that translated that column, some on schemas older than the
@@ -91,12 +100,12 @@ describe('durable session event statistics', () => {
     const migrator = new Migrator({ db: ctx.db, provider: migrationProvider });
     try {
       expect((await migrator.migrateTo('0143_drop_orphaned_agent_steps')).error).toBeUndefined();
-      await ctx.store.appendEvent('a', { t: 'prompt', text: 'go' });
-      await ctx.store.appendEvent('a', { t: 'text', delta: 'read' });
-      await ctx.store.appendEvent('a', { t: 'notice', text: 'Merge complete' });
+      await appendHistoricalEvent('a', { t: 'prompt', text: 'go' });
+      await appendHistoricalEvent('a', { t: 'text', delta: 'read' });
+      await appendHistoricalEvent('a', { t: 'notice', text: 'Merge complete' });
       await markLegacySeen('a', 3);
-      await ctx.store.appendEvent('a', { t: 'thinking', blockId: 't', delta: 'thinking' });
-      await ctx.store.appendEvent('a', { t: 'text', delta: 'unread' });
+      await appendHistoricalEvent('a', { t: 'thinking', blockId: 't', delta: 'thinking' });
+      await appendHistoricalEvent('a', { t: 'text', delta: 'unread' });
       expect((await migrator.migrateToLatest()).error).toBeUndefined();
       expect((await ctx.store.getSession('a'))!.lastSeenEventCount).toBe(1);
       expect((await ctx.store.getSession('b'))!.lastSeenEventCount).toBeNull();
@@ -181,18 +190,21 @@ describe('durable session event statistics', () => {
         (await migrator.migrateTo('0132_unique_brokered_prompt_v2_grants')).error,
       ).toBeUndefined();
       for (const id of ['a', 'b']) {
-        await ctx.store.appendEvent(id, { t: 'dev_servers_changed', devServers: [] });
-        await ctx.store.appendEvent(id, { t: 'text', delta: 'read' });
+        await appendHistoricalEvent(id, { t: 'dev_servers_changed', devServers: [] });
+        await appendHistoricalEvent(id, { t: 'text', delta: 'read' });
         if (id === 'a') await markLegacySeen(id, 2);
-        await ctx.store.appendEvent(id, { t: 'dev_servers_changed', devServers: [] });
-        await ctx.store.appendEvent(id, { t: 'text', delta: 'unread' });
-        await ctx.store.appendEvent(id, { t: 'dev_servers_changed', devServers: [] });
+        await appendHistoricalEvent(id, { t: 'dev_servers_changed', devServers: [] });
+        await appendHistoricalEvent(id, { t: 'text', delta: 'unread' });
+        await appendHistoricalEvent(id, { t: 'dev_servers_changed', devServers: [] });
       }
-      await ctx.store.createSession({ sessionId: 'c', worktree: '/wt/c', model: 'm' });
-      await ctx.store.appendEvent('c', { t: 'text', delta: 'already read' });
-      await ctx.store.appendEvent('c', { t: 'dev_servers_changed', devServers: [] });
+      await ctx.db
+        .insertInto('sessions')
+        .values({ session_id: 'c', worktree: '/wt/c', model: 'm' })
+        .execute();
+      await appendHistoricalEvent('c', { t: 'text', delta: 'already read' });
+      await appendHistoricalEvent('c', { t: 'dev_servers_changed', devServers: [] });
       await markLegacySeen('c', 2);
-      await ctx.store.appendEvent('c', { t: 'dev_servers_changed', devServers: [] });
+      await appendHistoricalEvent('c', { t: 'dev_servers_changed', devServers: [] });
       expect((await migrator.migrateToLatest()).error).toBeUndefined();
       expect((await ctx.store.getSession('c'))!.lastSeenEventCount).toBe(1);
       expect((await ctx.store.getSessionEventStats('c'))!.eventCount).toBe(1);
