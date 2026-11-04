@@ -3958,7 +3958,7 @@ export class ProvisionerImpl implements Provisioner {
     const input = {
       inspect,
       projectId: project.id,
-      projectNetwork: await this.expectedProjectNetwork(project.id),
+      projectNetwork: await this.expectedProjectNetwork(project.id, inspect),
       relayHealthy: await this.isRelayHealthy(project, containerGenerationOf(inspect)),
       considerEnvDrift: this.opts.recreateEnvDriftedSandboxes !== false,
     };
@@ -4117,12 +4117,29 @@ export class ProvisionerImpl implements Provisioner {
 
   /** The network a running Sandbox belongs on: its host-registered generation network, or
    * the open project network. Switching protection takes effect at the next start. */
-  private async expectedProjectNetwork(projectId: string): Promise<string> {
+  private async expectedProjectNetwork(
+    projectId: string,
+    inspect: ContainerInspect | null,
+  ): Promise<string> {
     const egress = this.opts.projectEgress;
     if (egress === undefined) return projectNetworkName(projectId);
     // An unreachable host cannot establish network drift. Let reconciliation defer
     // instead of replacing a running protected generation with an open one.
-    return (await egress.current(projectId))?.networkName ?? projectNetworkName(projectId);
+    try {
+      return (await egress.current(projectId))?.networkName ?? projectNetworkName(projectId);
+    } catch (error) {
+      // A staged installation has no controller yet. Only an inspected generation
+      // attached exclusively to its ordinary project network is demonstrably open.
+      const networks = Object.keys(inspect?.networks ?? {});
+      if (
+        !(await this.projectEgressEnabled()) &&
+        networks.length === 1 &&
+        networks[0] === projectNetworkName(projectId)
+      ) {
+        return projectNetworkName(projectId);
+      }
+      throw error;
+    }
   }
 
   private async retireEgressGeneration(projectId: string): Promise<void> {
