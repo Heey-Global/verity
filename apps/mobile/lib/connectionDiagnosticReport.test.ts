@@ -431,3 +431,54 @@ it.each(['records', 'dropped'] as const)(
     expect(report!.gaps).toContain('retained_active_snapshot');
   },
 );
+
+it('rejects an oversized merge without corrupting the retained history', async () => {
+  const active = serverReport();
+  const event = {
+    eventOrder: 1,
+    elapsedMs: 0,
+    stage: 'send' as const,
+    outcome: 'observed' as const,
+    direction: 'out' as const,
+    type: 'stream.data' as const,
+    encodedBytes: 1,
+    decodedBytes: 1,
+  };
+  const record = {
+    event: 'remote.return_path' as const,
+    schemaVersion: 1 as const,
+    session: '0000000000000000',
+    generation: '1111111111111111',
+    party: 'installation' as const,
+    eventOrder: 1,
+    elapsedMs: 0,
+    outcome: 'observed' as const,
+    stage: 'summary' as const,
+    summaryOrder: 1,
+    droppedEvents: 0,
+    emittedMessages: 0,
+    emittedBytes: 0,
+    lastError: null,
+    lastClose: null,
+    droppedStreamObservations: 0,
+    streams: [],
+    events: Array.from({ length: 16 }, () => event),
+  };
+  active.core.records = Array.from({ length: 256 }, () => record);
+  active.status.core.records = 256;
+  active.status.phase = 'recording';
+  const previous = createConnectionDiagnosticReport({
+    ...input(),
+    remote: active,
+    remoteStopped: false,
+  });
+  expect(parseStoredConnectionDiagnosticReport(JSON.stringify(previous))).not.toBeNull();
+  await saveConnectionDiagnosticReport('paired', previous);
+  const terminal = JSON.parse(JSON.stringify(active)) as ConnectionRecordingExport;
+  terminal.status.phase = 'stopped';
+  terminal.uplink = { available: false, data: null, error: 'uplink_export_failed' };
+  const next = createConnectionDiagnosticReport({ ...input(), remote: terminal });
+  expect(parseStoredConnectionDiagnosticReport(JSON.stringify(next))).not.toBeNull();
+  await expect(saveConnectionDiagnosticReport('paired', next)).rejects.toThrow('storage bounds');
+  expect(await loadConnectionDiagnosticReports('paired')).toEqual([previous]);
+});

@@ -74,13 +74,31 @@ export async function selectedRecordingAttempt(
   let cleanupDone = false;
   let capturePending = false;
   let ownsCapture = false;
+  let disablePending = false;
+  let disableOperation: Promise<void> | null = null;
+  let captureCleanupFailed = false;
   let captureStartedAt = 0;
   let captureExpiresAt = 0;
   let captureTimer: ReturnType<typeof setTimeout> | undefined;
   let captureStatus: SelectedLocalRecording['status'] = 'unsupported';
   let nativeStopped = false;
   const release = () => {
-    if (cleanupDone && !startPending && !capturePending) occupied = false;
+    if (cleanupDone && !startPending && !capturePending && !disablePending) occupied = false;
+  };
+  const disableCapture = () => {
+    if (!disableOperation) {
+      disablePending = true;
+      disableOperation = Promise.resolve()
+        .then(() => tunnel.disableDataDiagnostics!())
+        .then(() => {
+          ownsCapture = false;
+        })
+        .finally(() => {
+          disablePending = false;
+          release();
+        });
+    }
+    return disableOperation;
   };
   let liveDeadline = performance.now() + 60000;
   let utcDeadline = Infinity;
@@ -219,7 +237,7 @@ export async function selectedRecordingAttempt(
         .then(async (enabled) => {
           ownsCapture = enabled;
           if (enabled && controller.signal.aborted) {
-            await tunnel.disableDataDiagnostics!();
+            await disableCapture();
             ownsCapture = false;
           }
           return enabled;
@@ -233,7 +251,7 @@ export async function selectedRecordingAttempt(
       captureTimer = setTimeout(
         () => {
           // Preserve the original absolute budget; reading/exporting never renews it.
-          if (ownsCapture) void tunnel.disableDataDiagnostics!().catch(() => {});
+          if (ownsCapture) void disableCapture().catch(() => {});
         },
         Math.max(0, captureExpiresAt - Date.now()),
       );
@@ -446,8 +464,12 @@ export async function selectedRecordingAttempt(
             if (remaining <= 0) break;
             await new Promise((resolve) => setTimeout(resolve, Math.min(25, remaining)));
           } while (true);
-          await cleanup(tunnel.disableDataDiagnostics!());
-          ownsCapture = false;
+          try {
+            await cleanup(disableCapture());
+          } catch (error) {
+            captureCleanupFailed = true;
+            throw error;
+          }
           await options.onLocalRecording?.({
             status: captureStatus,
             recording,
@@ -476,9 +498,16 @@ export async function selectedRecordingAttempt(
         }
       } finally {
         clearTimeout(captureTimer);
-        if (ownsCapture) void tunnel.disableDataDiagnostics!().catch(() => {});
+        if (ownsCapture && !captureCleanupFailed) {
+          try {
+            await cleanup(disableCapture());
+          } catch {
+            captureCleanupFailed = true;
+          }
+        }
         cleanupDone = true;
         release();
+        if (captureCleanupFailed) throw new Error('Selected native capture cleanup failed');
       }
     }
   }

@@ -329,6 +329,10 @@ export async function saveConnectionDiagnosticReport(
           preparation: safe.preparation ?? previous.preparation,
         });
       }
+      // Merging two valid exports can exceed the per-report bound. Keep the
+      // previous history intact rather than writing a report we cannot reopen.
+      if (reports.some((entry) => !parseStoredConnectionDiagnosticReport(JSON.stringify(entry))))
+        throw new Error('Merged diagnostic report exceeds storage bounds');
       await AsyncStorage.setItem(historyKey(serverId), JSON.stringify(reports));
     });
   historyWrite = write;

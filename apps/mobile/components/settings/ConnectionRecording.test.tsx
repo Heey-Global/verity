@@ -66,6 +66,11 @@ jest.mock('../../lib/remoteDataDiagnostics', () => ({
   selectRemoteRecording: (value: string) => value,
 }));
 import { ConnectionRecording } from './ConnectionRecording';
+import { Alert } from 'react-native';
+import {
+  createConnectionDiagnosticReport,
+  saveConnectionDiagnosticReport,
+} from '../../lib/connectionDiagnosticReport';
 function render(element: React.ReactElement) {
   const result = testingRender(element);
   fireEvent.press(screen.getByText('Record a connection problem'));
@@ -699,4 +704,53 @@ it('does not block future problem recordings forever when the verified Core has 
   fireEvent.press(screen.getByText('Start another problem recording'));
   await screen.findByText('Start problem recording');
   expect(await AsyncStorage.getItem('verity.connectionRecording.v1.paired-core')).toBeNull();
+});
+
+it('blocks quick capture until an ended problem recording is collected', async () => {
+  render(<ConnectionRecording client={client() as never} />);
+  await pressStart();
+  await screen.findByText(/Ready — turn off VPN/);
+  mockRemaining.mockResolvedValue(0);
+  await waitFor(() => expect(screen.getByText('Quick connection test')).toBeEnabled(), {
+    timeout: 3000,
+  });
+  fireEvent.press(screen.getByText('Quick connection test'));
+  expect(screen.getByText('Mock selected start')).toBeDisabled();
+  fireEvent.press(screen.getByText('Record a connection problem'));
+  pressCollect();
+  await screen.findByText('Start another problem recording');
+  fireEvent.press(screen.getByText('Quick connection test'));
+  expect(screen.getByText('Mock selected start')).toBeEnabled();
+});
+it('keeps an archived problem restart available after deleting an unrelated report', async () => {
+  const otherId = '22222222-2222-4222-8222-222222222222';
+  await saveConnectionDiagnosticReport(
+    'paired-core',
+    createConnectionDiagnosticReport({
+      runId: otherId,
+      startedAt: null,
+      testType: 'quick_test',
+      outcome: 'unknown',
+      local: null,
+      localStopped: true,
+      remote: null,
+      remoteStopped: false,
+    }),
+  );
+  render(<ConnectionRecording client={client() as never} />);
+  await pressStart();
+  await screen.findByText(/Ready — turn off VPN/);
+  pressCollect();
+  await screen.findByText('Start another problem recording');
+  const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => {});
+  try {
+    fireEvent.press(screen.getByText('Delete saved report · 22222222'));
+    await act(async () =>
+      alert.mock.calls[0]![2]!.find((button) => button.text === 'Delete')!.onPress!(),
+    );
+    await waitFor(() => expect(screen.queryByText('Delete saved report · 22222222')).toBeNull());
+    expect(screen.getByText('Start another problem recording')).toBeTruthy();
+  } finally {
+    alert.mockRestore();
+  }
 });

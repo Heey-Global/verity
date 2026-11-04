@@ -136,6 +136,8 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
   const [reportMessage, setReportMessage] = useState('');
   const [problemArchived, setProblemArchived] = useState(false);
   const [problemStopConfirmed, setProblemStopConfirmed] = useState(false);
+  const problemArchivedRef = useRef(problemArchived);
+  problemArchivedRef.current = problemArchived;
   const refreshReports = useCallback(() => {
     if (!serverId) return;
     void loadConnectionDiagnosticReports(serverId).then(
@@ -163,7 +165,13 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
   const collectingRef = useRef<number | null>(null);
   const preparingRef = useRef<number | null>(null);
   const ownSelected = useCallback((busy: boolean) => {
-    if (busy && (preparingRef.current !== null || collectingRef.current !== null)) return false;
+    if (
+      busy &&
+      (preparingRef.current !== null ||
+        collectingRef.current !== null ||
+        (runRef.current !== null && !problemArchivedRef.current))
+    )
+      return false;
     selectedBusyRef.current = busy;
     setSelectedBusy(busy);
     return true;
@@ -667,7 +675,14 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
         <RowCard>
           <SelectedConnectionTest
             visible={mode === 'quick'}
-            disabled={!loaded || preparing || collecting || remaining > 0 || !client}
+            disabled={
+              !loaded ||
+              preparing ||
+              collecting ||
+              remaining > 0 ||
+              !client ||
+              (runRef.current !== null && !problemArchived)
+            }
             onBusy={ownSelected}
             onReport={refreshReports}
           />
@@ -770,7 +785,8 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
                             if (serverId)
                               void removeConnectionDiagnosticReport(serverId, report.runId).then(
                                 () => {
-                                  setProblemArchived(false);
+                                  if (runRef.current?.runId === report.runId)
+                                    setProblemArchived(false);
                                   refreshReports();
                                 },
                                 () => setReportMessage('Could not delete the saved report.'),

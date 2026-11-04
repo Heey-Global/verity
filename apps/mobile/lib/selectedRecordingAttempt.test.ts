@@ -529,3 +529,33 @@ it('clears a late capture arm after abort and holds ownership until that cleanup
   expect(mockDisable).toHaveBeenCalledTimes(1);
   expect(mockStart).not.toHaveBeenCalled();
 });
+
+it('reports native disable rejection as cleanup failure', async () => {
+  mockCaptureSupported = true;
+  mockDisable.mockRejectedValue(new Error('disable failed'));
+  await expect(selectedRecordingAttempt(options)).rejects.toThrow('capture cleanup failed');
+  expect(mockDisable).toHaveBeenCalledTimes(1);
+});
+it('holds ownership through a timed-out native disable until it settles', async () => {
+  jest.useFakeTimers();
+  mockCaptureSupported = true;
+  let settle!: () => void;
+  mockDisable.mockImplementation(
+    () =>
+      new Promise<void>((resolve) => {
+        settle = resolve;
+      }),
+  );
+  const attempt = selectedRecordingAttempt(options);
+  const rejected = expect(attempt).rejects.toThrow('capture cleanup failed');
+  for (let i = 0; i < 300 && !settle; i++) await Promise.resolve();
+  expect(settle).toBeDefined();
+  await jest.advanceTimersByTimeAsync(6001);
+  await rejected;
+  await expect(selectedRecordingAttempt(options)).rejects.toThrow('already active');
+  expect(mockDisable).toHaveBeenCalledTimes(1);
+  settle();
+  for (let i = 0; i < 20; i++) await Promise.resolve();
+  mockDisable.mockResolvedValue(undefined);
+  await expect(selectedRecordingAttempt(options)).resolves.toEqual({ status: 200 });
+});
