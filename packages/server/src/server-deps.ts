@@ -81,6 +81,10 @@ export interface ServerDeps {
    * knowledge roots reporting "not found" and changes nothing else.
    */
   dataRoot?: string | undefined;
+  /** Persist artifact ownership before the session's foreign-key cascade. Failures abort deletion. */
+  queueSessionArtifacts?: ((sessionId: string) => Promise<void>) | undefined;
+  /** Wake the durable cleanup worker after the session row has been removed. */
+  scheduleSessionCleanup?: (() => void) | undefined;
   /**
    * Delete the backend transcript files a session left on the runner runtime, so a
    * deleted session takes its conversation with it and not just its row (see
@@ -116,7 +120,10 @@ export interface ServerDeps {
       ) => Promise<{ addresses: readonly string[]; ttlSeconds: number } | undefined>)
     | undefined;
   /** Whether the host egress service answers; network protection can only be enabled then. */
-  projectEgressAvailable?: (() => Promise<boolean>) | undefined;
+  projectEgressAvailable?: ((fresh?: boolean) => Promise<boolean>) | undefined;
+  projectEgressStatus?:
+    | ((fresh?: boolean) => Promise<import('./project-egress-health.js').ProjectEgressHealth>)
+    | undefined;
   previewSharingCapability?:
     (() => Promise<PreviewSharingCapability> | PreviewSharingCapability) | undefined;
   previewShareManager?: PreviewShareManager | undefined;

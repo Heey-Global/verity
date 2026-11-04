@@ -70,6 +70,7 @@ export type ProjectClientOverrides = {
   listModels?: jest.Mock;
   listAvailableRepositories?: jest.Mock;
   linkProjectToGitHub?: jest.Mock;
+  disconnectProjectFromGitHub?: jest.Mock;
   linkProject?: jest.Mock;
   listConnections?: jest.Mock;
   listConnectionRepositories?: jest.Mock;
@@ -136,6 +137,8 @@ export function makeClient(opts: ProjectClientOverrides = {}): VerityClient {
       }),
     listAvailableRepositories:
       opts.listAvailableRepositories ?? jest.fn(notImplemented('listAvailableRepositories')),
+    disconnectProjectFromGitHub:
+      opts.disconnectProjectFromGitHub ?? jest.fn(notImplemented('disconnectProjectFromGitHub')),
     linkProjectToGitHub: opts.linkProjectToGitHub ?? jest.fn(notImplemented('linkProjectToGitHub')),
     linkProject: opts.linkProject ?? jest.fn(notImplemented('linkProject')),
     // A server that predates code-host connections: GitHub only.

@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# Fixed-purpose payload admitted from an independently verified release image.
+set -euo pipefail
+umask 077
+die() { echo "verity-egress-provision: $*" >&2; exit 1; }
+[[ $(id -u) = 0 ]] || die 'requires root'
+lock=${VERITY_INSTALL_LOCK:?}
+[[ -f $lock && ! -L $lock && $(stat -c %u "$lock") = 0 ]] || die 'unsafe installer lock'
+[[ $(( 8#$(stat -c %a "$lock") & 8#22 )) = 0 ]] || die 'installer lock is writable by other users'
+exec 8<>"$lock"
+flock -n 8 || die 'another installer is running'
+identifier=${VERITY_EGRESS_PROVISION_ID:?}
+[[ $identifier =~ ^[a-f0-9]{24}$ ]] || die 'invalid provisioning identity'
+stage=/var/lib/verity-egress/provision/$identifier
+unit=verity-egress-provision-$identifier.service
+# A host oneshot outlives a disconnected Docker job. Never rewrite its input.
+state=$(systemctl show --property=ActiveState --value "$unit" 2>/dev/null || true)
+if [[ $state = active || $state = activating ]]; then
+  systemctl start --wait "$unit"
+  exit
+fi
+[[ ! -L /var/lib/verity-egress/provision && ! -L $stage ]] || die 'unsafe staging directory'
+install -d -m 0700 /var/lib/verity-egress/provision
+if [[ -f $stage/result.json ]] && jq -e '.version == 1 and .exitCode == 0' "$stage/result.json" >/dev/null; then
+  exit 0
+fi
+if [[ ! -f $stage/ready ]]; then
+  [[ ! -e $stage ]] || rm -rf -- "$stage"
+  install -d -m 0700 "$stage"
+  cp -a /opt/verity-install/egress-release "$stage/release"
+  install -m 0600 /opt/verity-install/scripts/project-egress-install.py "$stage/project-egress-install.py"
+  install -m 0600 /opt/verity-install/scripts/project-egress-managed.py "$stage/project-egress-managed.py"
+  export VERITY_EGRESS_EXISTING_AUTHORITY=/etc/verity-egress/authority.json
+  node /app/packages/server/dist/project-egress-managed-config-main.js "$stage/config"
+  # The fixed host wrapper persists completion even if the Docker caller disconnects.
+  cat >"$stage/apply.sh" <<APPLY
+#!/usr/bin/env bash
+set -u
+finish() {
+  result=\$?
+  printf '{"version":1,"exitCode":%s}\\n' "\$result" >'$stage/result.json.tmp'
+  sync -f '$stage/result.json.tmp'
+  mv -f '$stage/result.json.tmp' '$stage/result.json'
+  sync -f '$stage'
+  exit "\$result"
+}
+trap finish EXIT
+if [[ ! -x /usr/bin/python3 ]]; then
+  /usr/bin/apt-get update && /usr/bin/apt-get install -y --no-install-recommends python3 || exit 1
+fi
+/usr/bin/python3 '$stage/project-egress-managed.py' provision '$stage/release' \\
+  --control-gid '${VERITY_EGRESS_CONTROL_GID:-65531}' \\
+  --relay-config '$stage/config/relay.json' --authority-config '$stage/config/authority.json' \\
+  --database-config '$stage/config/database.json'
+APPLY
+  chmod 0700 "$stage/apply.sh"
+  touch "$stage/ready"
+  sync -f "$stage"
+fi
+# The host systemd manager executes the verified staged payload in the real host
+# mount and network namespaces. No firewall capability enters this Docker job.
+# The host oneshot has its own timeout and persists after a caller disconnects.
+systemd-run --quiet --wait --collect --unit="$unit" --service-type=exec \
+  --property=TimeoutStartSec=100s --property=RuntimeMaxSec=100s \
+  --property=NoNewPrivileges=yes --property=PrivateTmp=yes \
+  /bin/bash "$stage/apply.sh"

@@ -94,10 +94,10 @@ export const APP_HELP_TOPICS: readonly AppHelpTopic[] = [
   },
   {
     id: 'connections',
-    title: 'Connections overview',
+    title: 'Connectors overview',
     summary: 'Where external services are connected and how projects use them.',
     details:
-      'Account credentials are connected once in Settings, Connections, and stored encrypted on the server. Each project then chooses which connections it may use in its project settings, for example a GitHub repository, a Doppler config or a Google Drive folder. Nothing is shared with a project until you select it there.',
+      'Account credentials are connected once in Settings, Connectors, and stored encrypted on the server. Each project then chooses which connections it may use in its project settings, for example a GitHub repository, a Doppler config or a Google Drive folder. Nothing is shared with a project until you select it there.',
     appLink: 'verity://settings/services',
     docsPath: 'docs/connections.md',
     keywords: ['connect', 'integration', 'service', 'account', 'scope'],
@@ -107,7 +107,7 @@ export const APP_HELP_TOPICS: readonly AppHelpTopic[] = [
     title: 'Project connections',
     summary: 'Choose which connected services a project may use.',
     details:
-      'Project settings, Connections lists the services this project uses and offers Add connection for the rest. There you pick the GitHub repository, the Doppler project and config, Google Drive folders, Google mail, calendar and contacts access, Matrix rooms and MCP servers. Project defaults apply to every inheriting session; each chat can choose a different account or disable a service.',
+      'Project settings, Connectors lists the services this project uses and offers Add connection for the rest. There you pick the GitHub repository, the Doppler project and config, Google Drive folders, Google mail, calendar and contacts access, Matrix rooms and MCP servers. Project defaults apply to every inheriting session; each chat can choose a different account or disable a service.',
     appLink: 'verity://project/settings/services',
     docsPath: 'docs/connections.md',
     keywords: ['project settings', 'scope', 'enable', 'grant'],
@@ -187,7 +187,7 @@ export const APP_HELP_TOPICS: readonly AppHelpTopic[] = [
     title: 'Google Drive folders',
     summary: 'Give a project a Drive folder as a workspace.',
     details:
-      'In project settings, Connections, Google Drive, select folders and their accounts. New folder connections are read-only; enable changes explicitly if agents should write. Agents only see linked folders and their contents, and deletions go to the Drive trash.',
+      'In project settings, Connectors, Google Drive, select folders and their accounts. New folder connections are read-only; enable changes explicitly if agents should write. Agents only see linked folders and their contents, and deletions go to the Drive trash.',
     appLink: 'verity://project/settings/services',
     docsPath: 'docs/file-connections.md',
     keywords: ['drive', 'folder', 'files', 'upload', 'read-only'],
@@ -218,7 +218,7 @@ export const APP_HELP_TOPICS: readonly AppHelpTopic[] = [
     title: 'MCP servers',
     summary: 'Connect additional agent tools via MCP.',
     details:
-      'Add Model Context Protocol servers to give agents extra tools. Configure the server once in Settings, then enable it for the projects that need it in project settings, Connections.',
+      'Add Model Context Protocol servers to give agents extra tools. Configure the server once in Settings, then enable it for the projects that need it in project settings, Connectors.',
     appLink: 'verity://settings/services/mcp',
     docsPath: 'docs/connections.md',
     keywords: ['tool', 'model context protocol', 'plugin', 'extension'],
@@ -252,7 +252,7 @@ export const APP_HELP_TOPICS: readonly AppHelpTopic[] = [
     title: 'Knowledge',
     summary: 'Durable project files agents read in every session.',
     details:
-      "Each project has a Knowledge folder on the server that survives sandbox replacements. Sources holds documents and meeting transcripts, insights holds what agents distil from them, and overview.md is the short context every fresh session receives. Open it from a session's file browser; Shared knowledge is readable by every project.",
+      "Each project has a Knowledge folder on the server that survives sandbox replacements. Raw Sources holds documents and meeting transcripts, Wiki holds sourced conclusions, and Memory is the short factual context supplied to sessions. Instructions are separate authored rules. Open it from a session's file browser; Shared knowledge is readable by every project.",
     appLink: 'verity://project/knowledge',
     docsPath: 'docs/knowledge.md',
     keywords: ['files', 'documents', 'memory', 'notes', 'sources', 'insights', 'shared'],
@@ -524,7 +524,7 @@ export const APP_HELP_SYSTEM_PROMPT = `# App help (Verity)
 
 When the user asks how Verity itself works, where a setting is, or how to connect a service, call \`${APP_HELP_TOOL}\` instead of answering from memory. Pass on its \`appLink\` as a Markdown link, for example [Open GitHub settings](verity://settings/github); the app opens it directly. Use only \`verity://\` links the tool returned and never invent one. Add \`docsUrl\` only when the user wants more detail. If the catalog does not cover the question, say so.`;
 
-/** Connections the welcome message reports on; everything else stays reachable by asking. */
+/** Connectors the welcome message reports on; everything else stays reachable by asking. */
 export interface WelcomeSetupStatus {
   aiProvider: boolean;
   github: boolean;
@@ -587,7 +587,7 @@ export function renderWelcomeOpener(status: WelcomeSetupStatus): string {
 **Your setup**
 ${checklist}
 
-Matrix, MCP servers and online meetings are under [Connections](${topicLink('connections')}).`;
+Matrix, MCP servers and online meetings are under [Connectors](${topicLink('connections')}).`;
 }
 
 /** The Quick Actions under the welcome message. Each label is sent as the user's reply. */

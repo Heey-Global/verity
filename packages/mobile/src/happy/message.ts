@@ -35,6 +35,8 @@ export interface ToolCallPermission {
 }
 
 export interface ToolCall {
+  title?: string;
+  source?: string;
   name: string;
   state: 'running' | 'completed' | 'error';
   input: unknown;

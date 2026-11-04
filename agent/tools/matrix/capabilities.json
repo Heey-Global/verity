@@ -1,0 +1,50 @@
+[
+  {
+    "name": "verity_matrix_list_rooms",
+    "title": "Verity · Matrix · List Rooms",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": "matrix",
+    "skill": null,
+    "compatibility": {
+      "name": "verity_matrix",
+      "action": "list_rooms"
+    }
+  },
+  {
+    "name": "verity_matrix_prepare_send",
+    "title": "Verity · Matrix · Prepare Send",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": "matrix",
+    "skill": null,
+    "compatibility": {
+      "name": "verity_matrix",
+      "action": "prepare_send"
+    }
+  },
+  {
+    "name": "verity_matrix_send",
+    "title": "Verity · Matrix · Send",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": "matrix",
+    "skill": null,
+    "compatibility": {
+      "name": "verity_matrix",
+      "action": "send"
+    }
+  },
+  {
+    "name": "verity_matrix_status",
+    "title": "Verity · Matrix · Status",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": "matrix",
+    "skill": null,
+    "compatibility": {
+      "name": "verity_matrix",
+      "action": "status"
+    }
+  }
+]

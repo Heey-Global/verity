@@ -30,9 +30,10 @@ const allow = (action: string): ExternalPermissionAnswer => ({
 function fixture(initial: 'undecided' | 'protected' | 'skipped' = 'undecided', internal = true) {
   const app = Fastify();
   apps.push(app);
+  const generation = new AbortController();
   if (internal) {
     const connections = new EventEmitter();
-    markInternalConnections(connections as unknown as Server, binding);
+    markInternalConnections(connections as unknown as Server, binding, generation.signal);
     app.addHook('onRequest', async (request) => {
       connections.emit('connection', request.raw.socket);
     });
@@ -46,10 +47,9 @@ function fixture(initial: 'undecided' | 'protected' | 'skipped' = 'undecided', i
     .fn<Conductor['requestExternalPermission']>()
     .mockResolvedValue(allow('configure'));
   const notice = vi.fn<(sessionId: string, text: string) => Promise<void>>().mockResolvedValue();
+  const resolve = vi.fn(async (token: string) => (token === 'good' ? binding : undefined));
   registerPackageInstallRoute(app, {
-    capabilities: {
-      resolve: async (token: string) => (token === 'good' ? binding : undefined),
-    } as unknown as GhTokenCapabilityRegistry,
+    capabilities: { resolve } as unknown as GhTokenCapabilityRegistry,
     store: {
       getSession: async (id: string) =>
         id === 's1' ? { projectId: 'p1' } : id === 'foreign' ? { projectId: 'p2' } : undefined,
@@ -66,7 +66,7 @@ function fixture(initial: 'undecided' | 'protected' | 'skipped' = 'undecided', i
       headers: { authorization: `Bearer ${token}` },
       payload: body,
     });
-  return { app, post, prompt, notice, save, saved: () => saved };
+  return { app, post, prompt, notice, save, resolve, generation, saved: () => saved };
 }
 
 describe('package install broker', () => {
@@ -179,6 +179,45 @@ describe('package install broker', () => {
     ).toEqual({ action: 'continue' });
     expect(f.saved()).toBe('protected');
     expect(f.notice).toHaveBeenCalledWith('s1', '3-day delay set up · .npmrc');
+  });
+
+  it('does not revive a revoked generation when a delayed permission card allows installation', async () => {
+    const f = fixture();
+    f.prompt.mockImplementation(async () => {
+      f.resolve.mockResolvedValue(undefined);
+      return allow('skip');
+    });
+    expect((await f.post()).json()).toEqual({ action: 'cancel' });
+    expect(f.save).not.toHaveBeenCalled();
+    expect(f.notice).not.toHaveBeenCalled();
+  });
+
+  it('cancels pending setup when its listener generation is retired', async () => {
+    const f = fixture();
+    f.prompt.mockImplementation(async ({ signal }) => {
+      f.generation.abort();
+      expect(signal?.aborted).toBe(true);
+      return allow('configure');
+    });
+    expect((await f.post()).json()).toEqual({ action: 'cancel' });
+    expect(f.save).not.toHaveBeenCalled();
+  });
+
+  it('rejects revoked authority before accepting a previously approved setup token', async () => {
+    const f = fixture();
+    const approved = (await f.post()).json<{ setupToken: string }>();
+    f.resolve.mockResolvedValue(undefined);
+    expect(
+      (
+        await f.post({
+          ...input,
+          action: 'configured',
+          protected: true,
+          setupToken: approved.setupToken,
+        })
+      ).statusCode,
+    ).toBe(401);
+    expect(f.save).not.toHaveBeenCalled();
   });
 
   it('saves Skip once across later installs and preserves existing configs', async () => {

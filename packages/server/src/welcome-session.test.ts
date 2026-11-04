@@ -15,7 +15,6 @@ import { createTestDb, truncateAll, type TestDb } from '@verity/store/testing';
 import type { FastifyInstance } from 'fastify';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildServer } from './server.js';
-import { isDocumentWorkspace } from './document-workspace.js';
 import { localProjectInput } from './project-collection-routes.js';
 import {
   STARTER_PROJECT_SLUG,
@@ -158,6 +157,10 @@ describe('POST /onboarding/welcome', () => {
       dataRoot: join(root, 'data'),
       projectCloneRoot: join(root, 'projects'),
       projectBackend: (_project, selected) => selected,
+      projectWorktrees: (_project, clone) => ({
+        add: async (branch) => join(clone, '.verity-sessions', branch.replaceAll('/', '-')),
+        remove: async () => undefined,
+      }),
     });
     const init = await app.inject({
       method: 'POST',
@@ -389,7 +392,7 @@ describe('POST /onboarding/welcome', () => {
       });
       expect(await store.hasSessionAutomationMarker(sessionId, WELCOME_SESSION_MARKER)).toBe(true);
 
-      expect(isDocumentWorkspace((await store.getSession(sessionId))!.worktree)).toBe(true);
+      expect((await store.getSession(sessionId))!.worktree).toContain('/.verity-sessions/');
 
       const events = await store.getEvents(sessionId);
       expect(events.map((event) => event.t)).toEqual(['notice', 'choices', 'status']);

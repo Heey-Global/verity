@@ -253,6 +253,18 @@ it('checks actual socket ownership, contents and non-symlinked ancestors', async
   await expect(
     inspectEgressRelay(binding, f.reply[0]!.Id, policy, docker),
   ).resolves.toBeUndefined();
+  // A subsequent refresh must inspect shared ancestors again.
+  await chmod(root, 0o777);
+  await expect(inspectEgressRelay(binding, f.reply[0]!.Id, policy, docker)).rejects.toThrow(
+    'ancestor',
+  );
+  await chmod(root, 0o700);
+  const secondSocket = join(root, expected[1]!.subpath, expected[1]!.socket);
+  await chmod(secondSocket, 0o640);
+  await expect(inspectEgressRelay(binding, f.reply[0]!.Id, policy, docker)).rejects.toThrow(
+    'inode',
+  );
+  await chmod(secondSocket, 0o660);
   const dir = join(root, expected[0]!.subpath);
   await writeFile(join(dir, 'extra'), 'unexpected');
   await expect(inspectEgressRelay(binding, f.reply[0]!.Id, policy, docker)).rejects.toThrow();

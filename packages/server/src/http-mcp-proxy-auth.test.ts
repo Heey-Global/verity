@@ -3,6 +3,7 @@ import { expect, it, vi } from 'vitest';
 import { McpOAuthAuthorizationRequired } from './http-mcp-oauth-errors.js';
 import { registerHttpMcpProxyRoute } from './http-mcp-proxy.js';
 vi.mock('./internal-listener.js', () => ({
+  internalConnectionGenerationSignal: () => new AbortController().signal,
   internalConnectionIdentity: () => ({ projectId: 'project', containerGeneration: 'generation' }),
 }));
 

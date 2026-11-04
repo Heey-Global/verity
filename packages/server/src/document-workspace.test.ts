@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { afterEach, expect, it, vi } from 'vitest';
 import {
   mkdtemp,
@@ -95,12 +96,15 @@ it('reconciles publication completed before a journal was cleared', async () => 
   await a.prepare();
   expect((await a.publish()).changed).toEqual([]);
 });
-it('rejects agent symlinks without touching their targets', async () => {
+it('skips agent symlinks without touching their targets', async () => {
   const { root, documents, a } = await fixture();
   await a.prepare();
   await writeFile(join(root, 'outside'), 'safe');
   await symlink(join(root, 'outside'), join(a.view, 'escape'));
-  await expect(a.publish()).rejects.toThrow('symlinks');
+  await a.prepare();
+  expect((await a.publish()).changed).toEqual([]);
+  expect(a.warning).toContain('escape');
+  expect(a.warning).toContain('code working directory');
   expect(await readFile(join(root, 'outside'), 'utf8')).toBe('safe');
   expect(await readdir(documents)).toEqual([]);
 });
@@ -201,7 +205,8 @@ it('bounds a snapshot read even when the file grows after stat', async () => {
     return originalRead.apply(this, args);
   });
   try {
-    await expect(a.prepare()).rejects.toThrow('still being written');
+    await a.prepare();
+    expect(a.warning).toContain('growing.md');
     expect(reads).toEqual([5]);
   } finally {
     spy.mockRestore();
@@ -303,3 +308,81 @@ it.each(['file-to-directory', 'directory-to-file'] as const)(
     }
   },
 );
+
+it('keeps canonical files when a tracked view directory becomes a symlink', async () => {
+  const { root, documents, a } = await fixture();
+  await mkdir(join(documents, 'folder'));
+  await writeFile(join(documents, 'folder', 'note.md'), 'keep');
+  await a.prepare();
+  await rm(join(a.view, 'folder'), { recursive: true });
+  await symlink(root, join(a.view, 'folder'));
+  await writeFile(join(a.view, 'other.md'), 'publish');
+  await a.prepare();
+  expect((await a.publish()).changed).toEqual(['other.md']);
+  expect(await readFile(join(documents, 'folder', 'note.md'), 'utf8')).toBe('keep');
+  expect(await a.hasPendingChanges()).toBe(false);
+});
+it('ignores dependency and build directories without deleting previously synced files', async () => {
+  const { root, documents, a } = await fixture();
+  await a.prepare();
+  await mkdir(join(a.view, 'feasibility', 'node_modules', '.bin'), { recursive: true });
+  await symlink(root, join(a.view, 'feasibility', 'node_modules', '.bin', 'esbuild'));
+  await writeFile(join(a.view, 'note.md'), 'safe');
+  await a.prepare();
+  expect((await a.publish()).changed).toEqual(['note.md']);
+  expect(a.warning).toContain('node_modules');
+  expect(await readdir(documents)).toEqual(['note.md']);
+});
+it('skips a canonical symlink without blocking other document refreshes', async () => {
+  const { root, documents, a } = await fixture();
+  await a.prepare();
+  await symlink(root, join(documents, 'folder'));
+  await writeFile(join(documents, 'note.md'), 'refresh');
+  await a.prepare();
+  expect(await readFile(join(a.view, 'note.md'), 'utf8')).toBe('refresh');
+  expect(a.warning).toContain('folder');
+});
+it('does not replace a new canonical descendant beneath a skipped local symlink', async () => {
+  const { root, documents, a } = await fixture();
+  await a.prepare();
+  await symlink(root, join(a.view, 'folder'));
+  await mkdir(join(documents, 'folder'));
+  await writeFile(join(documents, 'folder', 'new.md'), 'keep');
+  await a.prepare();
+  await a.publish();
+  expect(await readFile(join(documents, 'folder', 'new.md'), 'utf8')).toBe('keep');
+});
+
+it('does not publish deletion for a dependency path from an earlier sync state', async () => {
+  const { documents, a } = await fixture();
+  await a.prepare();
+  await mkdir(join(documents, 'node_modules'), { recursive: true });
+  await writeFile(join(documents, 'node_modules', 'previous.md'), 'keep');
+  const statePath = join(a.stateRoot, 'state.json');
+  const state = JSON.parse(await readFile(statePath, 'utf8'));
+  state.files['node_modules/previous.md'] = createHash('sha256').update('keep').digest('hex');
+  await writeFile(statePath, JSON.stringify(state));
+  await a.prepare();
+  expect((await a.publish()).changed).toEqual([]);
+  expect(await readFile(join(documents, 'node_modules', 'previous.md'), 'utf8')).toBe('keep');
+});
+
+it('distinguishes generated caches from unsafe entries while publishing regular documents', async () => {
+  const { root, documents, a } = await fixture();
+  await a.prepare();
+  await mkdir(join(a.view, '__pycache__'));
+  await writeFile(join(a.view, '__pycache__', 'module.pyc'), 'generated');
+  await symlink(root, join(a.view, 'unsafe-link'));
+  await writeFile(join(a.view, 'note.md'), 'publish');
+  await a.prepare();
+  expect(a.excludedEntries).toEqual(
+    expect.arrayContaining([
+      { path: '__pycache__', reason: 'generated' },
+      { path: 'unsafe-link', reason: 'unsupported' },
+    ]),
+  );
+  expect(a.warning).toContain('__pycache__');
+  expect((await a.publish()).changed).toEqual(['note.md']);
+  expect(await readdir(documents)).toEqual(['note.md']);
+  expect(await readFile(join(a.view, '__pycache__', 'module.pyc'), 'utf8')).toBe('generated');
+});

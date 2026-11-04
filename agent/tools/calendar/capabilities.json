@@ -1,0 +1,74 @@
+[
+  {
+    "name": "verity_calendar_list_calendars",
+    "title": "Verity · Calendar · List Calendars",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": "calendar",
+    "skill": null,
+    "compatibility": {
+      "name": "verity_google_calendar",
+      "action": "list_calendars"
+    }
+  },
+  {
+    "name": "verity_calendar_list_events",
+    "title": "Verity · Calendar · List Events",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": "calendar",
+    "skill": null,
+    "compatibility": {
+      "name": "verity_google_calendar",
+      "action": "list_events"
+    }
+  },
+  {
+    "name": "verity_calendar_read_event",
+    "title": "Verity · Calendar · Read Event",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": "calendar",
+    "skill": null,
+    "compatibility": {
+      "name": "verity_google_calendar",
+      "action": "read_event"
+    }
+  },
+  {
+    "name": "verity_calendar_create_event",
+    "title": "Verity · Calendar · Create Event",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": "calendar",
+    "skill": null,
+    "compatibility": {
+      "name": "verity_google_calendar",
+      "action": "create_event"
+    }
+  },
+  {
+    "name": "verity_calendar_update_event",
+    "title": "Verity · Calendar · Update Event",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": "calendar",
+    "skill": null,
+    "compatibility": {
+      "name": "verity_google_calendar",
+      "action": "update_event"
+    }
+  },
+  {
+    "name": "verity_calendar_delete_event",
+    "title": "Verity · Calendar · Delete Event",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": "calendar",
+    "skill": null,
+    "compatibility": {
+      "name": "verity_google_calendar",
+      "action": "delete_event"
+    }
+  }
+]

@@ -5,6 +5,23 @@ export const DEFAULT_RUNTIME_DIR: string;
 export const DEFAULT_CONTROL_DIR: string;
 export const DEFAULT_WORKTREE_ROOT: string;
 export const DEFAULT_SCRIPT_SANDBOX_PATH: string;
+export function acquirePackageCacheLease(
+  options: AgentSpawnBrokerOptions,
+  exclusive?: boolean,
+): Promise<import('node:fs/promises').FileHandle>;
+export function reclaimPackageCaches(
+  request: { sessionIds: string[]; maxBytes: number },
+  options: AgentSpawnBrokerOptions,
+): Promise<{
+  observedAt: string;
+  sharedBytes: number | null;
+  legacyBytes: number | null;
+  removedBytes: number;
+  legacyCachesRemoved: number;
+  sharedCachePruned: boolean;
+  usageComplete: boolean;
+  blockers: string[];
+}>;
 export const SCRIPT_ISOLATION_UNAVAILABLE_ERROR: string;
 export type ScriptSandboxProbe = { available: true } | { available: false; reason: string };
 /** Run `verity-script-sandbox --probe`: whether this kernel enforces its filesystem policy. */
@@ -248,3 +265,16 @@ export function prepareSessionHome(
   sessionId: string,
   options: AgentSpawnBrokerOptions,
 ): Promise<string>;
+
+export function runnerStackHealth(options?: {
+  env?: NodeJS.ProcessEnv;
+  controlDir?: string;
+  readFile?: (path: string) => string;
+  fetch?: typeof fetch;
+}): Promise<{
+  ok: true;
+  stackHealthVersion: number;
+  healthy: boolean;
+  memoryGuard: boolean;
+  connector: boolean;
+}>;

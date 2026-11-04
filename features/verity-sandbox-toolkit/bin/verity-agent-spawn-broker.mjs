@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { spawn } from 'node:child_process';
+import { probeMemoryGuard, readMemoryCeiling, runsUnderGvisor } from './verity-memory-guard.mjs';
 import {
   createManagedSecretServers,
   stopTaggedManagedPids,
@@ -14,6 +15,7 @@ import {
   mkdir,
   mkdtemp,
   open,
+  opendir,
   readdir,
   rename,
   readFile,
@@ -25,8 +27,78 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { constants, lstatSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath, URL } from 'node:url';
+
+/** Read-only health, using only root-selected paths; requests cannot select files or commands. */
+export async function runnerStackHealth(options = {}) {
+  const env = options.env ?? process.env;
+  const controlDir = options.controlDir ?? DEFAULT_CONTROL_DIR;
+  const read = options.readFile ?? ((path) => readFileSync(path, 'utf8'));
+  let memoryGuard = true;
+  try {
+    if (env.VERITY_MEMORY_GUARD !== '0' && runsUnderGvisor(read) && readMemoryCeiling(read))
+      memoryGuard = probeMemoryGuard(controlDir, read);
+  } catch {
+    memoryGuard = false;
+  }
+  let connector = true;
+  if (env.VERITY_CLAUDE_CONNECTOR_PORT) {
+    try {
+      const port = Number(env.VERITY_CLAUDE_CONNECTOR_PORT);
+      if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('invalid port');
+      const record = read(join(controlDir, 'egress-connector.pid')).trim().split(/\s+/u);
+      const [pid, startTime, fingerprint] = record;
+      if (!/^[1-9][0-9]*$/u.test(pid ?? '') || !startTime) throw new Error('missing identity');
+      const stat = read(`/proc/${pid}/stat`);
+      if (
+        stat
+          .slice(stat.lastIndexOf(')') + 1)
+          .trim()
+          .split(/\s+/u)[19] !== startTime ||
+        !read(`/proc/${pid}/cmdline`).includes('/usr/local/bin/verity-egress-connector')
+      )
+        throw new Error('stale identity');
+      // Match the launcher's fingerprint without spawning sha256sum or reading secrets into a response.
+      const hash = createHash('sha256');
+      for (const name of [
+        'VERITY_CLAUDE_EGRESS_URL',
+        'VERITY_CLAUDE_EGRESS_AUTHORITY',
+        'VERITY_CLAUDE_EGRESS_SERVERNAME',
+        'VERITY_CODEX_EGRESS_URL',
+        'VERITY_CODEX_EGRESS_AUTHORITY',
+      ])
+        hash.update(`${env[name] ?? ''}\0`);
+      for (const name of [
+        'VERITY_CLAUDE_EGRESS_CA',
+        'VERITY_CLAUDE_EGRESS_CERT',
+        'VERITY_AGENT_GATEWAY_CLIENT_KEY_FILE',
+      ]) {
+        const path = env[name];
+        if (!path || !isAbsolute(path)) throw new Error('missing configuration');
+        hash.update(`${createHash('sha256').update(read(path)).digest('hex')}  ${path}\n`);
+      }
+      if (fingerprint !== hash.digest('hex')) throw new Error('configuration changed');
+      const response = await (options.fetch ?? globalThis.fetch)(
+        `http://127.0.0.1:${port}/__verity/ready`,
+        {
+          signal: globalThis.AbortSignal.timeout(1_000),
+          redirect: 'error',
+        },
+      );
+      connector = response.ok && (await response.text()).includes('"ready":true');
+    } catch {
+      connector = false;
+    }
+  }
+  return {
+    ok: true,
+    stackHealthVersion: 1,
+    healthy: memoryGuard && connector,
+    memoryGuard,
+    connector,
+  };
+}
 
 export const AGENT_SPAWN_PROTOCOL_VERSION = 1;
 /**
@@ -986,7 +1058,7 @@ async function managedDirectory(path, owner, group) {
   await chmod(path, 0o755);
 }
 
-async function lockSessionHome(home, options) {
+async function lockSessionHome(home, options, nonblocking = false) {
   await managedDirectory(
     join(options.runtimeDir, 'session-homes'),
     process.getuid(),
@@ -999,9 +1071,13 @@ async function lockSessionHome(home, options) {
   );
   try {
     await new Promise((resolveLock, rejectLock) => {
-      const child = spawn('/usr/bin/flock', ['--wait', String(SESSION_HOME_WAIT_MS / 1000), '3'], {
-        stdio: ['ignore', 'ignore', 'ignore', handle.fd],
-      });
+      const child = spawn(
+        '/usr/bin/flock',
+        [...(nonblocking ? ['--nonblock'] : ['--wait', String(SESSION_HOME_WAIT_MS / 1000)]), '3'],
+        {
+          stdio: ['ignore', 'ignore', 'ignore', handle.fd],
+        },
+      );
       child.once('error', rejectLock);
       child.once('exit', (code) =>
         code === 0 ? resolveLock() : rejectLock(new Error(SESSION_HOME_BUSY)),
@@ -1012,6 +1088,365 @@ async function lockSessionHome(home, options) {
     await handle.close();
     throw error;
   }
+}
+
+/** A project-wide content cache; credentials and npm logs remain in the private home. */
+function npmCachePath(options) {
+  return join(options.runtimeDir ?? DEFAULT_RUNTIME_DIR, 'package-cache', 'npm');
+}
+
+async function packageCacheDirectory(options) {
+  const { uid, gid } = validateIdentity(options);
+  const root = join(options.runtimeDir ?? DEFAULT_RUNTIME_DIR, 'package-cache');
+  try {
+    await mkdir(root, { mode: 0o755 });
+  } catch (error) {
+    if (error.code !== 'EEXIST') throw error;
+  }
+  const rootMetadata = await lstat(root);
+  if (
+    !rootMetadata.isDirectory() ||
+    rootMetadata.isSymbolicLink() ||
+    rootMetadata.uid !== process.getuid() ||
+    (rootMetadata.mode & 0o022) !== 0 ||
+    (await realpath(root)) !== root
+  )
+    throw new Error('invalid package cache root');
+  // The broker may inherit umask 077. The agent must traverse this broker-owned
+  // parent, while npm contents and the broker lease remain private.
+  await chmod(root, 0o755);
+  const cache = npmCachePath(options);
+  try {
+    await mkdir(cache, { mode: 0o700 });
+  } catch (error) {
+    if (error.code !== 'EEXIST') throw error;
+  }
+  const metadata = await lstat(cache);
+  if (
+    !metadata.isDirectory() ||
+    metadata.isSymbolicLink() ||
+    (metadata.uid !== uid && metadata.uid !== process.getuid()) ||
+    (metadata.mode & 0o777) !== 0o700
+  )
+    throw new Error('invalid package cache');
+  // mkdir establishes the private mode before ownership is handed to the agent.
+  // The production broker has CAP_CHOWN but no CAP_FOWNER: chmod after that
+  // handoff fails, including on subsequent or concurrent cache acquisitions.
+  if (metadata.uid !== uid || metadata.gid !== gid) await chown(cache, uid, gid);
+  return cache;
+}
+
+/** flock's open-file-description lease survives broker death in the spawned child. */
+export async function acquirePackageCacheLease(options, exclusive = false) {
+  await packageCacheDirectory(options);
+  const handle = await open(
+    join(options.runtimeDir ?? DEFAULT_RUNTIME_DIR, 'package-cache', 'npm.lock'),
+    constants.O_CREAT | constants.O_RDWR | constants.O_NOFOLLOW,
+    0o600,
+  );
+  try {
+    const metadata = await handle.stat();
+    if (!metadata.isFile() || metadata.uid !== process.getuid() || metadata.nlink !== 1)
+      throw new Error('invalid package cache lease');
+    await new Promise((resolveLock, rejectLock) => {
+      const child = spawn(
+        '/usr/bin/flock',
+        [...(exclusive ? ['--exclusive', '--nonblock'] : ['--shared', '--wait', '30']), '3'],
+        { stdio: ['ignore', 'ignore', 'ignore', handle.fd] },
+      );
+      child.once('error', rejectLock);
+      child.once('exit', (code) =>
+        code === 0 ? resolveLock() : rejectLock(new Error('package cache is in use')),
+      );
+    });
+    return handle;
+  } catch (error) {
+    await handle.close();
+    throw error;
+  }
+}
+
+async function cacheTreeBytes(path, budget, owner) {
+  if (++budget.entries > 100_000 || Date.now() > budget.deadline)
+    throw new Error('package cache inventory limit');
+  const metadata = await lstat(path);
+  if (
+    metadata.isSymbolicLink() ||
+    (!metadata.isDirectory() && !metadata.isFile()) ||
+    metadata.uid !== owner ||
+    (metadata.isFile() && metadata.nlink !== 1)
+  )
+    throw new Error('unsafe package cache entry');
+  let bytes = metadata.blocks * 512;
+  if (metadata.isDirectory()) {
+    const directory = await opendir(path);
+    for await (const entry of directory)
+      bytes += await cacheTreeBytes(join(path, entry.name), budget, owner);
+  }
+  return bytes;
+}
+
+async function validatedCacache(parent, options, budget) {
+  const { uid } = validateIdentity(options);
+  // No ancestor of the removable leaf may redirect outside its owned home.
+  const parentMetadata = await lstat(parent).catch((error) => {
+    if (error.code === 'ENOENT') return undefined;
+    throw error;
+  });
+  if (!parentMetadata) return { path: join(parent, '_cacache'), bytes: 0 };
+  if (
+    !parentMetadata.isDirectory() ||
+    parentMetadata.isSymbolicLink() ||
+    parentMetadata.uid !== uid ||
+    (await realpath(parent)) !== parent
+  )
+    throw new Error('unsafe package cache root');
+  const path = join(parent, '_cacache');
+  const metadata = await lstat(path).catch((error) => {
+    if (error.code === 'ENOENT') return undefined;
+    throw error;
+  });
+  if (!metadata) return { path, bytes: 0 };
+  if (!metadata.isDirectory() || metadata.isSymbolicLink())
+    throw new Error('unsafe package cache root');
+  return { path, bytes: await cacheTreeBytes(path, budget, uid) };
+}
+
+/** Run data operations as the owner: the broker intentionally lacks DAC_OVERRIDE. */
+async function maintainPackageCache(parent, options, budget, maxBytes, shared = false) {
+  const { uid, gid } = validateIdentity(options);
+  if (uid === process.getuid() && gid === process.getgid())
+    return await collectPackageCacheLeaf(parent, options, budget, maxBytes, shared);
+  const result = await new Promise((resolveResult, rejectResult) => {
+    const child = spawn(
+      options.setprivPath ?? '/usr/bin/setpriv',
+      [
+        `--reuid=${uid}`,
+        `--regid=${gid}`,
+        '--clear-groups',
+        process.execPath,
+        fileURLToPath(import.meta.url),
+        '--package-cache-leaf',
+      ],
+      { stdio: ['pipe', 'pipe', 'ignore'], env: { PATH: '/usr/local/bin:/usr/bin:/bin' } },
+    );
+    let output = '';
+    const timer = setTimeout(
+      () => child.kill('SIGKILL'),
+      Math.max(1, budget.deadline - Date.now()),
+    );
+    child.stdout.on('data', (chunk) => {
+      output += chunk.toString();
+      if (output.length > 4096) child.kill('SIGKILL');
+    });
+    child.once('error', (error) => {
+      clearTimeout(timer);
+      rejectResult(error);
+    });
+    child.once('close', (code) => {
+      clearTimeout(timer);
+      if (code !== 0 || output.length > 4096)
+        return rejectResult(new Error('package cache owner operation could not be verified'));
+      try {
+        resolveResult(JSON.parse(output));
+      } catch {
+        rejectResult(new Error('invalid package cache owner result'));
+      }
+    });
+    child.stdin.on('error', () => {});
+    child.stdin.end(
+      JSON.stringify({
+        parent,
+        maxBytes,
+        shared,
+        remainingEntries: 100_000 - budget.entries,
+        durationMs: Math.max(1, budget.deadline - Date.now()),
+      }),
+    );
+  });
+  if (
+    !result ||
+    !Number.isSafeInteger(result.entries) ||
+    result.entries < 0 ||
+    !Number.isSafeInteger(result.removedBytes) ||
+    result.removedBytes < 0 ||
+    !Number.isSafeInteger(result.remainingBytes) ||
+    result.remainingBytes < 0 ||
+    typeof result.pruned !== 'boolean' ||
+    typeof result.otherEntries !== 'boolean'
+  )
+    throw new Error('invalid package cache owner result');
+  budget.entries += result.entries;
+  return result;
+}
+
+async function collectPackageCacheLeaf(parent, options, budget, maxBytes, shared) {
+  const before = budget.entries;
+  const cache = await validatedCacache(parent, options, budget);
+  const pruned = cache.bytes > maxBytes;
+  let otherEntries = false;
+  if (shared) {
+    const directory = await opendir(parent);
+    for await (const entry of directory) {
+      if (++budget.entries > 100_000 || Date.now() > budget.deadline)
+        throw new Error('package cache inventory limit');
+      if (entry.name !== '_cacache') otherEntries = true;
+    }
+  }
+  if (pruned) await rm(cache.path, { recursive: true });
+  return {
+    remainingBytes: pruned ? 0 : cache.bytes,
+    removedBytes: pruned ? cache.bytes : 0,
+    pruned,
+    otherEntries,
+    entries: budget.entries - before,
+  };
+}
+
+async function packageCacheLeafMain() {
+  let input = '';
+  for await (const chunk of process.stdin) {
+    input += chunk.toString();
+    if (input.length > 4096) throw new Error('invalid package cache owner request');
+  }
+  const value = JSON.parse(input);
+  if (
+    typeof value.parent !== 'string' ||
+    !isAbsolute(value.parent) ||
+    !Number.isSafeInteger(value.maxBytes) ||
+    value.maxBytes < 0 ||
+    typeof value.shared !== 'boolean' ||
+    !Number.isSafeInteger(value.remainingEntries) ||
+    value.remainingEntries < 0 ||
+    value.remainingEntries > 100_000 ||
+    !Number.isSafeInteger(value.durationMs) ||
+    value.durationMs < 1 ||
+    value.durationMs > 15_000
+  )
+    throw new Error('invalid package cache owner request');
+  const result = await collectPackageCacheLeaf(
+    value.parent,
+    { enforceRoot: false, agentUid: process.getuid(), agentGid: process.getgid() },
+    { entries: 100_000 - value.remainingEntries, deadline: Date.now() + value.durationMs },
+    value.maxBytes,
+    value.shared,
+  );
+  process.stdout.write(JSON.stringify(result));
+  return true;
+}
+
+/** Only the broker can exclude actual child starts; a server activity snapshot cannot. */
+export async function reclaimPackageCaches(request, options) {
+  if (
+    !Array.isArray(request.sessionIds) ||
+    request.sessionIds.length > 1000 ||
+    new Set(request.sessionIds).size !== request.sessionIds.length ||
+    !Number.isSafeInteger(request.maxBytes) ||
+    request.maxBytes <= 0
+  )
+    throw new Error('invalid package cache reclamation request');
+  const homes = request.sessionIds.map((id) =>
+    sessionHomePath(options.runtimeDir ?? DEFAULT_RUNTIME_DIR, id),
+  );
+  const report = {
+    observedAt: new Date().toISOString(),
+    sharedBytes: null,
+    legacyBytes: 0,
+    removedBytes: 0,
+    legacyCachesRemoved: 0,
+    sharedCachePruned: false,
+    usageComplete: true,
+    blockers: [],
+  };
+  const block = (reason) => {
+    report.usageComplete = false;
+    if (report.blockers.length < 100) report.blockers.push(String(reason).slice(0, 500));
+  };
+  const budget = { entries: 0, deadline: Date.now() + 15_000 };
+  let safeHomes = true;
+  try {
+    const directory = join(options.runtimeDir ?? DEFAULT_RUNTIME_DIR, 'session-homes');
+    const metadata = await lstat(directory).catch((error) => {
+      if (error.code === 'ENOENT') return undefined;
+      throw error;
+    });
+    if (metadata) {
+      if (
+        !metadata.isDirectory() ||
+        metadata.isSymbolicLink() ||
+        metadata.uid !== process.getuid() ||
+        (metadata.mode & 0o022) !== 0 ||
+        (await realpath(directory)) !== directory
+      )
+        throw new Error('unsafe session homes root');
+      const owned = new Set(homes);
+      const entries = await opendir(directory);
+      for await (const entry of entries) {
+        if (++budget.entries > 100_000 || Date.now() > budget.deadline)
+          throw new Error('package cache inventory limit');
+        if (/^[a-f0-9]{64}$/u.test(entry.name) && !owned.has(join(directory, entry.name))) {
+          report.legacyBytes = null;
+          block('session home ownership is unknown');
+        }
+      }
+    }
+  } catch (error) {
+    safeHomes = false;
+    report.legacyBytes = null;
+    block(error.message);
+  }
+  for (const home of safeHomes ? homes : []) {
+    let lease;
+    try {
+      if (Date.now() > budget.deadline) throw new Error('package cache inventory limit');
+      if (activeSessionHomes.has(home)) throw new Error('session home is in use');
+      const metadata = await lstat(home).catch((error) => {
+        if (error.code === 'ENOENT') return undefined;
+        throw error;
+      });
+      if (!metadata) continue;
+      if (
+        !metadata.isDirectory() ||
+        metadata.isSymbolicLink() ||
+        (metadata.uid !== process.getuid() && metadata.uid !== validateIdentity(options).uid) ||
+        (await realpath(home)) !== home
+      )
+        throw new Error('unsafe session home');
+      lease = await lockSessionHome(home, options, true);
+      if (activeSessionHomes.has(home)) throw new Error('session home is in use');
+      const cache = await maintainPackageCache(join(home, 'cache'), options, budget, 0);
+      report.removedBytes += cache.removedBytes;
+      if (cache.pruned) report.legacyCachesRemoved++;
+    } catch (error) {
+      report.legacyBytes = null;
+      block(error.message);
+    } finally {
+      await lease?.close();
+    }
+  }
+  let lease;
+  try {
+    lease = await acquirePackageCacheLease(options, true);
+    const cache = await maintainPackageCache(
+      npmCachePath(options),
+      options,
+      budget,
+      request.maxBytes,
+      true,
+    );
+    report.removedBytes += cache.removedBytes;
+    report.sharedCachePruned = cache.pruned;
+    report.sharedBytes = cache.remainingBytes;
+    if (cache.otherEntries) {
+      report.sharedBytes = null;
+      block('Retained non-cacache npm cache entries have unknown allocation');
+    }
+  } catch (error) {
+    block(error.message);
+  } finally {
+    await lease?.close();
+  }
+  return report;
 }
 
 async function claimSessionHome(request, options) {
@@ -1706,6 +2141,8 @@ export function agentLaunchSpec(request, options) {
             normalConfinement ? request.managedHome : request.knowledgeHome,
             request.planning ? '--read-only-root' : '--write-isolated',
             ...(request.command === 'opencode-acp' ? ['--self-proc-maps'] : []),
+            request.planning ? '--runtime-root' : '--write-root',
+            npmCachePath(options),
             ...planningRuntimeRoots(request, options).flatMap((path) => ['--runtime-root', path]),
             ...(normalConfinement ? normalSessionRoots(options, agentPath) : []),
             '--',
@@ -1772,7 +2209,7 @@ export function agentLaunchSpec(request, options) {
               XDG_DATA_HOME: join(request.managedHome, 'data'),
               XDG_STATE_HOME: join(request.managedHome, 'state'),
               XDG_CACHE_HOME: join(request.managedHome, 'cache'),
-              npm_config_cache: join(request.managedHome, 'cache'),
+              npm_config_logs_dir: join(request.managedHome, 'cache', '_logs'),
               TMPDIR: join(request.managedHome, 'tmp'),
             }
           : {}),
@@ -1798,16 +2235,18 @@ export function agentLaunchSpec(request, options) {
                     XDG_STATE_HOME: join(request.knowledgeHome, 'state'),
                     XDG_CACHE_HOME: join(request.knowledgeHome, 'cache'),
                   }),
-              npm_config_cache: join(request.knowledgeHome, 'cache'),
+              npm_config_logs_dir: join(request.knowledgeHome, 'cache', '_logs'),
               TMPDIR: join(request.knowledgeHome, 'tmp'),
             }
           : {}),
+        npm_config_cache: npmCachePath(options),
       },
       stdio: [
         'pipe',
         'pipe',
         'pipe',
         ...(request.sessionLockFd === undefined ? [] : [request.sessionLockFd]),
+        ...(request.packageCacheLockFd === undefined ? [] : [request.packageCacheLockFd]),
       ],
       // Give every agent invocation its own process group. Codex can leave tool
       // and sub-agent descendants running after its direct process receives a
@@ -3241,7 +3680,26 @@ export async function runAgentSpawnBroker(options = {}) {
           socket.end();
           return;
         }
+        if (
+          isObject(raw) &&
+          raw.protocolVersion === AGENT_SPAWN_PROTOCOL_VERSION &&
+          raw.kind === 'stack-health'
+        ) {
+          protocolFailed = true;
+          send(socket, await runnerStackHealth({ ...options, controlDir }));
+          socket.end();
+          return;
+        }
         if (closing) throw new Error('agent spawn broker is shutting down');
+        if (
+          isObject(raw) &&
+          raw.protocolVersion === AGENT_SPAWN_PROTOCOL_VERSION &&
+          raw.kind === 'reclaim-package-caches'
+        ) {
+          send(socket, { ok: true, report: await reclaimPackageCaches(raw, options) });
+          socket.end();
+          return;
+        }
         if (
           isObject(raw) &&
           raw.protocolVersion === AGENT_SPAWN_PROTOCOL_VERSION &&
@@ -3400,6 +3858,18 @@ export async function runAgentSpawnBroker(options = {}) {
             };
           }
           if (request.kind === 'trusted-cli') trustedCliFailurePhase = 'launch-spec';
+          if (request.kind === 'agent') {
+            const lease = await acquirePackageCacheLease(options);
+            request.packageCacheLockFd = lease.fd;
+            const cleanup = materialized.cleanup;
+            materialized.cleanup = async () => {
+              try {
+                return await cleanup();
+              } finally {
+                await lease.close();
+              }
+            };
+          }
           if (request.kind === 'agent' && request.command === 'codex-acp') {
             releaseCodexStartup = await acquireCodexStartup();
           }
@@ -3659,35 +4129,37 @@ if (invokedPath === fileURLToPath(import.meta.url)) {
       ? SHARED_SESSION_ROOT
       : undefined;
   const launch =
-    process.argv[2] === '--probe'
-      ? probeAgentSpawnBroker(controlDir)
-      : runAgentSpawnBroker({
-          runtimeDir,
-          controlDir,
-          ...(sharedSessionRoot === undefined ? {} : { sharedSessionRoot }),
-          agentUid: Number(process.env.VERITY_AGENT_UID ?? 1000),
-          agentGid: Number(process.env.VERITY_AGENT_GID ?? 1000),
-          runnerUid: Number(process.env.VERITY_RUNNER_RUNTIME_UID ?? 1101),
-          runnerGid: Number(process.env.VERITY_RUNNER_RUNTIME_GID ?? 1101),
-          // ADR 0006 Amendment 1. Set by `verity-control-plane-runner-start` and
-          // by nothing else — but a project image CAN declare the same name, so
-          // the value is re-checked against the mounted inode here rather than
-          // trusted. See {@link resolveDockerGid}: no socket owned by the claimed
-          // group, no grant, which is every project Sandbox.
-          ...(() => {
-            const dockerGid = resolveDockerGid(process.env, (path) => statSync(path).gid);
-            return dockerGid === undefined ? {} : { dockerGid };
-          })(),
-          // Thread the broker's own (container-provided) environment into the
-          // Claude child through the `childEnvironment` allowlist. The container
-          // sets CLAUDE_CONFIG_DIR=/run/verity-runner/claude on the
-          // runner-supervisor path; without this the allowlisted copy() has no
-          // source and Claude never sees the config dir, so its transcript would
-          // land off the shared mount. The allowlist bounds exposure to the
-          // vetted keys only — inherited OAuth/API/egress secrets never cross
-          // (see the "passes only the local Claude connector coordinates" test).
-          env: process.env,
-        });
+    process.argv[2] === '--package-cache-leaf'
+      ? packageCacheLeafMain()
+      : process.argv[2] === '--probe'
+        ? probeAgentSpawnBroker(controlDir)
+        : runAgentSpawnBroker({
+            runtimeDir,
+            controlDir,
+            ...(sharedSessionRoot === undefined ? {} : { sharedSessionRoot }),
+            agentUid: Number(process.env.VERITY_AGENT_UID ?? 1000),
+            agentGid: Number(process.env.VERITY_AGENT_GID ?? 1000),
+            runnerUid: Number(process.env.VERITY_RUNNER_RUNTIME_UID ?? 1101),
+            runnerGid: Number(process.env.VERITY_RUNNER_RUNTIME_GID ?? 1101),
+            // ADR 0006 Amendment 1. Set by `verity-control-plane-runner-start` and
+            // by nothing else — but a project image CAN declare the same name, so
+            // the value is re-checked against the mounted inode here rather than
+            // trusted. See {@link resolveDockerGid}: no socket owned by the claimed
+            // group, no grant, which is every project Sandbox.
+            ...(() => {
+              const dockerGid = resolveDockerGid(process.env, (path) => statSync(path).gid);
+              return dockerGid === undefined ? {} : { dockerGid };
+            })(),
+            // Thread the broker's own (container-provided) environment into the
+            // Claude child through the `childEnvironment` allowlist. The container
+            // sets CLAUDE_CONFIG_DIR=/run/verity-runner/claude on the
+            // runner-supervisor path; without this the allowlisted copy() has no
+            // source and Claude never sees the config dir, so its transcript would
+            // land off the shared mount. The allowlist bounds exposure to the
+            // vetted keys only — inherited OAuth/API/egress secrets never cross
+            // (see the "passes only the local Claude connector coordinates" test).
+            env: process.env,
+          });
   launch
     .then((broker) => {
       if (typeof broker === 'boolean') {

@@ -2,6 +2,10 @@ import { CoordinatedRecordingManager } from './coordinated-recording.js';
 import { ReturnPathActivation } from './remote-return-path-activation.js';
 import type { Conductor } from '@verity/session';
 import { generateKeyPairSync, randomUUID } from 'node:crypto';
+import { EventEmitter } from 'node:events';
+import type { Server } from 'node:http';
+import { markInternalConnections } from './internal-listener.js';
+import type { GhTokenCapabilityRegistry } from './github-token-broker.js';
 import { sql } from 'kysely';
 import { InMemoryEventBus } from '@verity/session';
 import { EventStore, createSealableSecretCipher } from '@verity/store';
@@ -274,6 +278,61 @@ describe('paired device management', () => {
         (await app.inject({ method: 'POST', url, headers, payload: { expiresAt: expiry } }))
           .statusCode,
       ).toBe(401);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('routes package capabilities past device auth only on the project listener', async () => {
+    const store = new EventStore(ctx.db);
+    const registry = await createAuthTokenRegistry(store, { enabled: true });
+    const connections = new EventEmitter();
+    const generation = new AbortController();
+    const identity = { projectId: 'artifact-project', containerGeneration: 'generation-1' };
+    markInternalConnections(connections as unknown as Server, identity, generation.signal);
+    let internal = true;
+    const app = buildServer({
+      eventStore: store,
+      bus: new InMemoryEventBus(),
+      conductor,
+      authRegistry: registry,
+      internalPathGuard: (request) => {
+        if (internal) connections.emit('connection', request.raw.socket);
+        return internal;
+      },
+      ghTokenCapabilities: {
+        resolve: async (token) => (token === 'package-capability' ? identity : undefined),
+      } as GhTokenCapabilityRegistry,
+    });
+    try {
+      const url = '/internal/package-artifacts/npm/INVALID';
+      for (const method of ['GET', 'HEAD'] as const) {
+        // Invalid provider coordinates stop inside the broker, without a network
+        // request. A 401 here means the paired-device gate stranded the adapter.
+        expect(
+          (
+            await app.inject({
+              method,
+              url,
+              headers: { authorization: 'Bearer package-capability' },
+            })
+          ).statusCode,
+        ).toBe(400);
+      }
+      expect(
+        (await app.inject({ method: 'GET', url, headers: { authorization: 'Bearer wrong' } }))
+          .statusCode,
+      ).toBe(401);
+      internal = false;
+      expect(
+        (
+          await app.inject({
+            method: 'GET',
+            url,
+            headers: { authorization: 'Bearer package-capability' },
+          })
+        ).statusCode,
+      ).toBe(404);
     } finally {
       await app.close();
     }

@@ -50,6 +50,18 @@ async function fixture() {
     state: 'active',
   });
   await store.createSession({ sessionId: 's', projectId: 'p', worktree: '/work/s', model: 'test' });
+  await sql`insert into users (id, role, status) values ('caller', 'member', 'active')`.execute(
+    ctx.db,
+  );
+  await sql`insert into project_memberships (project_id, user_id, can_read, can_execute, can_manage)
+    values ('p', 'caller', true, true, false)`.execute(ctx.db);
+  const prompt = await store.appendEvent('s', {
+    t: 'prompt',
+    text: 'Use the connection',
+    initiatedBy: { userId: 'caller' },
+  });
+  await store.markTurnRunning({ sessionId: 's', promptSeq: prompt.seq });
+  await store.bindTurnIdentity('s', { turnId: 't', startCommandId: 'start' });
   const connection = {
     id: 'connection',
     name: 'provider',
@@ -103,6 +115,7 @@ async function fixture() {
     relayGid: process.getgid?.() ?? 1000,
   });
   let client: IncomingMessage | undefined;
+  let retired = false;
   const open = async (presentedToken = token) => {
     client = await new Promise<IncomingMessage>((resolve, reject) => {
       const req = request(
@@ -134,11 +147,15 @@ async function fixture() {
     upstream,
     open,
     resolveCaller,
+    retire: async () => {
+      retired = true;
+      await listener.close();
+    },
     close: async () => {
       upstream.destroy();
       client?.destroy();
       vi.useRealTimers();
-      await listener.close();
+      if (!retired) await listener.close();
       await app.close();
       await rm(dir, { recursive: true, force: true });
     },
@@ -161,7 +178,7 @@ it('admits an enabled binding and keeps a valid stream alive across an authoriza
   }
 });
 
-it('does not overlap slow connection rechecks and closes when the lookup denies access', async () => {
+it('does not overlap slow connection rechecks and closes when the lookup stalls', async () => {
   const h = await fixture();
   type Connections = Awaited<ReturnType<EventStore['listHttpMcpConnections']>>;
   let resolveLookup!: (connections: Connections) => void;
@@ -169,7 +186,7 @@ it('does not overlap slow connection rechecks and closes when the lookup denies 
     resolveLookup = resolve;
   });
   try {
-    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'setTimeout', 'clearTimeout'] });
     expect((await h.open()).statusCode).toBe(200);
     const lookup = vi
       .spyOn(h.store, 'listHttpMcpConnections')
@@ -178,7 +195,7 @@ it('does not overlap slow connection rechecks and closes when the lookup denies 
     expect(lookup).toHaveBeenCalledOnce();
     await vi.advanceTimersByTimeAsync(3000);
     expect(lookup).toHaveBeenCalledOnce();
-    expect(h.upstream.destroyed).toBe(false);
+    expect(h.upstream.destroyed).toBe(true);
     resolveLookup([]);
     await vi.advanceTimersByTimeAsync(0);
     expect(h.upstream.destroyed).toBe(true);
@@ -246,6 +263,7 @@ for (const kind of [
   'account',
   'endpoint',
   'lookup-error',
+  'sponsor',
 ] as const) {
   it(`closes an admitted stream after ${kind} authority changes`, async () => {
     const h = await fixture();
@@ -254,6 +272,10 @@ for (const kind of [
       const client = await h.open();
       expect(client.statusCode).toBe(200);
       if (kind === 'bearer') h.tokens.release({ projectId: 'p', token: h.token });
+      if (kind === 'sponsor')
+        await sql`update project_memberships set can_execute = false where project_id = 'p' and user_id = 'caller'`.execute(
+          ctx.db,
+        );
       if (kind === 'binding') await h.store.deleteProjectMcpBinding('p', h.connection.id);
       if (kind === 'connection')
         await h.store.upsertHttpMcpConnection({ ...h.connection, enabled: false });
@@ -280,3 +302,46 @@ for (const kind of [
     }
   });
 }
+
+it('generation retirement destroys an upstream stream without waiting for authorization polling', async () => {
+  const h = await fixture();
+  try {
+    await h.open();
+    expect(h.upstream.destroyed).toBe(false);
+    // No timer advance: retirement itself must cancel the provider-side stream.
+    await h.retire();
+    expect(h.upstream.destroyed).toBe(true);
+  } finally {
+    await h.close();
+  }
+});
+
+it('does not forward work whose caller lookup finishes after generation retirement', async () => {
+  const h = await fixture();
+  let complete!: () => void;
+  let entered!: () => void;
+  const pending = new Promise<void>((resolve) => {
+    complete = resolve;
+  });
+  const started = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  h.resolveCaller.mockImplementationOnce(async () => {
+    entered();
+    await pending;
+    return { sessionId: 's', turnId: 't' };
+  });
+  try {
+    const opened = h.open().catch(() => undefined);
+    await started;
+    await h.retire();
+    complete();
+    await opened;
+    // Let the resumed route's microtasks run before checking the transport.
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(transport.request).not.toHaveBeenCalled();
+  } finally {
+    complete();
+    await h.close();
+  }
+});

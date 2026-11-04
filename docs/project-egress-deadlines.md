@@ -41,6 +41,17 @@ capture high-water mark before arming, rejects replay and invalidates captures
 made before revocation. Errors while preserving expiry evidence leave the
 generation unusable; recovery requires a fresh generation, not a weaker guard.
 
+The host controller keeps one helper interpreter on private inherited pipes. Requests
+are serialized and bounded, and replies must match the current request identity.
+The helper takes the existing state lock separately for each operation and reloads
+its endpoint, namespace and kernel evidence; it never renews autonomously or
+retains inspection snapshots between operations. EOF, malformed replies, process
+death or an operation timeout permanently close that controller's channel without
+replaying requests. Linux parent-death signaling kills even a blocked helper when
+the controller dies; existing kernel leases expire independently. Recovery uses
+the normal denied-state host startup, not automatic helper replacement. The
+one-shot helper entry remains available for offline containment and native probes.
+
 Each refresh captures its immutable lease before DNS or executor work. Both
 directions also require exact nftables target tuples and the current admission's
 fresh 128-bit conntrack label. Only an unlabelled initial TCP SYN or unlabelled

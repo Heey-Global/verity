@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 
+import { InboxCard, VerityHeader } from '../../components/home/HomeInbox';
 import { SettingsScaffold } from '../../components/settings/SettingsChrome';
 import {
   Button,
@@ -200,6 +201,52 @@ export default function DesignSystemCatalog() {
           disabled
         />
         <HintBox title="Key not recognized" message="Check it in your account." />
+      </View>
+
+      <View style={styles.section}>
+        <SectionHeader title="Verity on Home" />
+        <VerityHeader summary="1 permission · 1 question · 1 pull request ready" />
+        <InboxCard
+          item={{
+            key: 'catalog-question',
+            kind: 'question',
+            tag: 'Question',
+            tone: 'attention',
+            title: 'Which validation library?',
+            context: 'acme/website · Contact form',
+            actions: [
+              { kind: 'answer', label: 'Zod', sessionId: 's', answer: 'Zod' },
+              { kind: 'answer', label: 'Valibot', sessionId: 's', answer: 'Valibot' },
+              { kind: 'open_session', label: 'Own answer', sessionId: 's' },
+            ],
+            at: 0,
+          }}
+          selected={false}
+          pending={false}
+          disabled={false}
+          onAction={() => undefined}
+        />
+        <InboxCard
+          item={{
+            key: 'catalog-merge',
+            kind: 'merge_ready',
+            tag: 'Merge ready',
+            tone: 'success',
+            title: 'Update uuid to v14',
+            context: 'acme/website · PR #2031',
+            message: 'Checks passed, no conflicts.',
+            actions: [
+              { kind: 'merge', label: 'Squash & merge', sessionId: 's', number: 2031 },
+              { kind: 'open_session', label: 'Open', sessionId: 's' },
+            ],
+            at: 0,
+          }}
+          selected
+          pending={false}
+          disabled={false}
+          onAction={() => undefined}
+          onDismiss={() => undefined}
+        />
       </View>
 
       <View style={styles.section}>

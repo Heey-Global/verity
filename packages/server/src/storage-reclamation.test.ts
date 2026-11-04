@@ -190,3 +190,29 @@ it('reports absent, invalid and stale native receipts explicitly without measure
   );
   expect((await readNativeReclamation(directory)).blockers[0]).toContain('stale');
 });
+
+it('includes the shared scheduled runner cache report in Reclaim now without converting allocation to disk freed', async () => {
+  const caches = {
+    observedAt: new Date().toISOString(),
+    sharedBytes: 4096,
+    legacyBytes: null,
+    removedBytes: 8192,
+    legacyCachesRemoved: 1,
+    sharedCachesPruned: 0,
+    usageComplete: false,
+    blockers: ['Runner sessions have unsettled turns'],
+  };
+  const collect = vi.fn(async () => report);
+  const service = new StorageReclamation({
+    collect,
+    worktrees: () => undefined,
+    runnerCaches: () => caches,
+  });
+  await service.start();
+  await vi.waitFor(async () => expect((await service.status()).state).toBe('completed'));
+  const status = await service.status();
+  expect(collect).toHaveBeenCalledOnce();
+  expect(status.result?.runnerCaches).toEqual(caches);
+  expect(status.result?.blockers).toContain(caches.blockers[0]);
+  expect(status.result?.filesystemFreeBytesChange).toBeNull();
+});

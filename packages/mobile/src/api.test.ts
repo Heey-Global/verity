@@ -9,6 +9,7 @@ import {
   sessionSummarySchema,
   branchListSchema,
   sessionDetailSchema,
+  sessionDirectorySchema,
   type TurnRequest,
 } from './api.js';
 
@@ -19,6 +20,50 @@ const ZERO_USAGE = {
   cacheCreationTokens: 0,
   turns: 0,
 };
+
+it('round-trips revisioned personal and project context through their scoped endpoints', async () => {
+  const personal = { instructions: 'Rules', memory: 'Fact', revision: 3 };
+  const memory = { memory: 'Project fact', revision: 'memory-revision' };
+  const instructions = { instructions: 'Project rules', revision: 'rules-revision' };
+  const { fetch, calls } = fakeFetchSequence(
+    json(personal),
+    json(personal),
+    json(memory),
+    json(memory),
+    json(instructions),
+    json(instructions),
+  );
+  const client = new VerityClient({ baseUrl: 'http://host', fetch });
+  expect(await client.getUserContext()).toEqual(personal);
+  expect(await client.replaceUserContext(personal)).toEqual(personal);
+  expect(await client.getProjectMemory('project/id')).toEqual(memory);
+  expect(await client.replaceProjectMemory('project/id', memory)).toEqual(memory);
+  expect(await client.getProjectInstructions('project/id')).toEqual(instructions);
+  expect(await client.replaceProjectInstructions('project/id', instructions)).toEqual(instructions);
+  expect(calls.map(({ url, init }) => [url, init?.method])).toEqual([
+    ['http://host/me/context', 'GET'],
+    ['http://host/me/context', 'PUT'],
+    ['http://host/projects/project%2Fid/memory', 'GET'],
+    ['http://host/projects/project%2Fid/memory', 'PUT'],
+    ['http://host/projects/project%2Fid/instructions', 'GET'],
+    ['http://host/projects/project%2Fid/instructions', 'PUT'],
+  ]);
+  expect(calls.filter(({ init }) => init?.method === 'PUT').map(({ init }) => init?.body)).toEqual(
+    [personal, memory, instructions].map((snapshot) => JSON.stringify(snapshot)),
+  );
+});
+
+it('rejects context responses whose revisions cannot support conflict checks', async () => {
+  const { fetch } = fakeFetchSequence(
+    json({ instructions: '', memory: '', revision: 'wrong' }),
+    json({ memory: '', revision: 1 }),
+    json({ instructions: '', revision: null }),
+  );
+  const client = new VerityClient({ baseUrl: 'http://host', fetch });
+  await expect(client.getUserContext()).rejects.toThrow();
+  await expect(client.getProjectMemory('p')).rejects.toThrow();
+  await expect(client.getProjectInstructions('p')).rejects.toThrow();
+});
 
 // An absent codeHost means GitHub, so an unknown one must not keep owner/repo:
 // the chips would otherwise open an unrelated github.com repository.
@@ -105,6 +150,40 @@ it.each([undefined, 'dev-servers-excluded-v1', 'agent-text-v2'])(
     expect(parsed.backgroundWorking).toBe(true);
   },
 );
+
+it('carries inbox facts and tolerates their absence or a malformed copy', () => {
+  const base = {
+    sessionId: 's1',
+    worktree: '/wt/s1',
+    model: 'm',
+    name: null,
+    status: 'awaiting_input',
+    usage: ZERO_USAGE,
+  };
+  // An older server sends neither; Home must simply show nothing for them.
+  const legacy = sessionSummarySchema.parse(base);
+  expect(legacy.openChoices).toBeUndefined();
+  expect(legacy.pendingPermissionRequests).toBeUndefined();
+  const current = sessionSummarySchema.parse({
+    ...base,
+    pendingPermissions: ['toolu_1'],
+    pendingPermissionRequests: [
+      { toolUseId: 'toolu_1', tool: 'verity_http_request', riskClass: 'ask', input: { url: 'x' } },
+    ],
+    openChoices: { question: 'Which?', options: [{ label: 'Zod', recommended: true }] },
+  });
+  expect(current.pendingPermissionRequests?.[0]).toMatchObject({ toolUseId: 'toolu_1' });
+  expect(current.openChoices?.options[0]?.label).toBe('Zod');
+  // One bad field must not take the whole session list down with it.
+  const malformed = sessionSummarySchema.parse({
+    ...base,
+    pendingPermissionRequests: [{ tool: 'x' }],
+    openChoices: { options: [] },
+  });
+  expect(malformed.pendingPermissionRequests).toBeUndefined();
+  expect(malformed.openChoices).toBeUndefined();
+  expect(malformed.status).toBe('awaiting_input');
+});
 
 interface Call {
   url: string;
@@ -1186,6 +1265,39 @@ describe('VerityClient.listProjects (#174)', () => {
     expect(calls[0]?.init?.body).toBe(JSON.stringify({ collapsed: true }));
   });
 
+  it('dismisses Home items of projects and sessions, and keeps the dismissed keys', async () => {
+    const { fetch, calls } = fakeFetchSequence(
+      json({ id: 'p1', inboxDismissed: ['health:p1:t'] }),
+      json({ id: 's1', inboxDismissed: [] }),
+    );
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+
+    expect(await client.setProjectInboxDismissed('p1', 'health:p1:t', true)).toEqual([
+      'health:p1:t',
+    ]);
+    expect(calls[0]?.url).toBe('http://host/projects/p1/inbox-dismissed');
+    expect(calls[0]?.init?.method).toBe('PATCH');
+    expect(calls[0]?.init?.body).toBe(JSON.stringify({ key: 'health:p1:t', dismissed: true }));
+    expect(await client.setSessionInboxDismissed('s1', 'question:s1', false)).toEqual([]);
+    expect(calls[1]?.url).toBe('http://host/sessions/s1/inbox-dismissed');
+    expect(calls[1]?.init?.body).toBe(JSON.stringify({ key: 'question:s1', dismissed: false }));
+    // A schema without the field would strip it, and Home would never hide anything.
+    expect(
+      projectRecordSchema.parse({ ...project, inboxDismissed: ['health:p1:t'] }).inboxDismissed,
+    ).toEqual(['health:p1:t']);
+    expect(
+      sessionSummarySchema.parse({
+        sessionId: 's1',
+        worktree: '/wt/s1',
+        model: 'm',
+        name: null,
+        status: 'idle',
+        usage: ZERO_USAGE,
+        inboxDismissed: ['question:s1'],
+      }).inboxDismissed,
+    ).toEqual(['question:s1']);
+  });
+
   it('surfaces a 503 without pretending the project list is empty', async () => {
     const { fetch } = fakeFetch(json({ error: 'temporarily unavailable' }, 503));
     const client = new VerityClient({ baseUrl: 'http://host', fetch });
@@ -1265,6 +1377,17 @@ describe('VerityClient.listProjects (#174)', () => {
         defaultBranch: 'main',
       }),
     );
+  });
+
+  it('disconnects GitHub using the stable project ID and parses the local result', async () => {
+    const local = { ...project, kind: 'local', owner: '__local__' };
+    const { fetch, calls } = fakeFetch(json({ project: local }));
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    expect(await client.disconnectProjectFromGitHub('p/1')).toMatchObject({
+      project: { id: project.id, kind: 'local' },
+    });
+    expect(calls[0]?.url).toBe('http://host/projects/p%2F1/disconnect-github');
+    expect(calls[0]?.init?.method).toBe('POST');
   });
 
   it('creates a project', async () => {
@@ -1433,6 +1556,17 @@ describe('VerityClient.settings', () => {
     expect(await client.getVeritySettings()).toEqual(settings);
     expect(calls[0]?.url).toBe('http://host/settings');
     expect(calls[0]?.init?.method).toBe('GET');
+  });
+
+  it('accepts structured network protection reasons and older servers without diagnostics', async () => {
+    const projectEgressStatus = { available: false, reason: 'runtime_unsupported' };
+    const { fetch } = fakeFetchSequence(
+      json({ settings: { ...settings, projectEgressStatus } }),
+      json({ settings }),
+    );
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    expect((await client.getVeritySettings())?.projectEgressStatus).toEqual(projectEgressStatus);
+    expect((await client.getVeritySettings())?.projectEgressStatus).toBeUndefined();
   });
 
   it('parses safe Claude resolution status while accepting servers without it', async () => {
@@ -4515,4 +4649,101 @@ describe('VerityClient calendar meetings', () => {
     registered('GET', '/settings/calendar-watch');
     registered('PUT', '/settings/calendar-watch');
   });
+});
+
+it('downloads Shared originals through the authenticated client transport', async () => {
+  const { fetch, calls } = fakeFetch(new Response('original bytes'));
+  const client = new VerityClient({ baseUrl: 'http://host', fetch });
+  expect(await (await client.downloadSharedKnowledgeFile('sources/a b.pdf')).text()).toBe(
+    'original bytes',
+  );
+  expect(calls[0]?.url).toBe(
+    'http://host/knowledge/shared/files/download?path=sources%2Fa%20b.pdf',
+  );
+});
+
+it('browses project knowledge without a session and sends the revision for edits', async () => {
+  const directory = { root: 'knowledge', path: 'insights', entries: [], truncated: false };
+  const file = {
+    path: 'insights/a b.md',
+    content: 'Before',
+    version: 'a'.repeat(64),
+    size: 6,
+    editable: true,
+  };
+  const { fetch, calls } = fakeFetchSequence(
+    json(directory),
+    json(file),
+    json({ ...file, content: 'After' }),
+    json({ ...directory, root: 'worktree' }),
+  );
+  const client = new VerityClient({ baseUrl: 'http://host', fetch });
+  expect(await client.listProjectKnowledgeFiles('p/1', 'insights')).toEqual(directory);
+  expect(await client.getProjectKnowledgeFile('p/1', file.path)).toEqual(file);
+  expect(
+    (await client.writeProjectKnowledgeFile('p/1', file.path, 'After', file.version)).content,
+  ).toBe('After');
+  expect(calls[1]?.url).toBe(
+    'http://host/projects/p%2F1/knowledge/files/content?path=insights%2Fa%20b.md',
+  );
+  expect(jsonBody(calls[2])).toEqual({
+    root: 'knowledge',
+    path: file.path,
+    content: 'After',
+    expectedVersion: file.version,
+  });
+  await expect(client.listProjectKnowledgeFiles('p/1')).rejects.toThrow('Update the Verity server');
+});
+
+it('browses Shared without a session and sends the revision for edits', async () => {
+  const directory = { root: 'shared', path: 'insights', entries: [], truncated: false };
+  const file = {
+    path: 'insights/a b.md',
+    content: 'Before',
+    version: 'a'.repeat(64),
+    size: 6,
+    editable: true,
+  };
+  const { fetch, calls } = fakeFetchSequence(
+    json(directory),
+    json(file),
+    json({ ...file, content: 'After' }),
+    json({ ...directory, root: 'worktree' }),
+  );
+  const client = new VerityClient({ baseUrl: 'http://host', fetch });
+  expect(await client.listSharedKnowledgeFiles('insights')).toEqual(directory);
+  expect(await client.getSharedKnowledgeFile(file.path)).toEqual(file);
+  expect((await client.writeSharedKnowledgeFile(file.path, 'After', file.version)).content).toBe(
+    'After',
+  );
+  expect(calls[1]?.url).toBe('http://host/knowledge/shared/files/content?path=insights%2Fa%20b.md');
+  expect(jsonBody(calls[2])).toEqual({
+    root: 'shared',
+    path: file.path,
+    content: 'After',
+    expectedVersion: file.version,
+  });
+  await expect(client.listSharedKnowledgeFiles()).rejects.toThrow('Update the Verity server');
+});
+
+it('preserves Wiki exclusion reasons and unknown save status while accepting older servers', () => {
+  const directory = { path: '', entries: [], truncated: false };
+  const status = {
+    pending: true,
+    running: false,
+    inspectionError: true,
+    excludedEntries: [
+      { path: '__pycache__', reason: 'generated' },
+      { path: 'link', reason: 'unsupported' },
+    ],
+  };
+  expect(
+    sessionDirectorySchema.parse({ ...directory, documentStatus: status }).documentStatus,
+  ).toEqual(status);
+  expect(
+    sessionDirectorySchema.parse({
+      ...directory,
+      documentStatus: { pending: false, running: false },
+    }).documentStatus,
+  ).toEqual({ pending: false, running: false });
 });

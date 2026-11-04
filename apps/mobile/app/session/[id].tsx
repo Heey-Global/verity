@@ -1,3 +1,4 @@
+import { WikiDetails } from '../../components/WikiDetails';
 import { qaAssignmentView } from '@verity/mobile';
 import { Card, CardHead } from '../../components/ui/Card';
 import { StatusTag } from '../../components/ui/Status';
@@ -645,7 +646,7 @@ const FILE_ROOT_ICON: Record<SessionFileRoot, IconName> = {
   worktree: 'folder',
   knowledge: KNOWLEDGE_ICON,
   shared: KNOWLEDGE_ICON,
-  documents: 'folder',
+  documents: KNOWLEDGE_ICON,
   sources: KNOWLEDGE_ICON,
   drafts: 'folder',
 };
@@ -1170,8 +1171,7 @@ export const SessionChat = memo(function SessionChat({
     dismissedPullRequests.store.add(pullRequestKey);
     dismissedPullRequests.persist();
     bumpPullRequestBarVersion((version) => version + 1);
-    branchesRefresh();
-  }, [branchesRefresh, pullRequestKey]);
+  }, [pullRequestKey]);
   // When the live branch diverges from the load-once branch list (an external/agent
   // checkout the switcher didn't initiate), refresh the list so its rows AND the PR
   // chip track the new branch too. Converges in one step (refresh makes them match),
@@ -2421,6 +2421,10 @@ export const SessionChat = memo(function SessionChat({
   const [filesInitialPath, setFilesInitialPath] = useState<string | null>(null);
   const [filesInitialRoot, setFilesInitialRoot] = useState<SessionFileRoot>('worktree');
   const openSessionFile = useCallback((path: string, root: SessionFileRoot = 'worktree') => {
+    if (root === 'shared') {
+      router.push({ pathname: '/settings/shared-knowledge', params: { path } });
+      return;
+    }
     setFilesInitialPath(path);
     setFilesInitialRoot(root);
     setFilesOpen(true);
@@ -5130,7 +5134,14 @@ function SessionFilesSheet({
   const { theme } = useUnistyles();
   const sheet = useResizableSheet();
   const [documentSession, setDocumentSession] = useState(false);
-  const [documentStatus, setDocumentStatus] = useState<{ pending: boolean; running: boolean }>();
+  const [codeAvailable, setCodeAvailable] = useState(true);
+  const [documentStatus, setDocumentStatus] = useState<{
+    pending: boolean;
+    running: boolean;
+    warning?: string;
+    inspectionError?: boolean;
+    excludedEntries?: { path: string; reason: 'generated' | 'unsupported' }[];
+  }>();
   const workspaceClassified = useRef(false);
   const [path, setPath] = useState(initialFilePath ? parentPath(initialFilePath) : '');
   const [root, setRoot] = useState<SessionFileRoot>(initialRoot);
@@ -5192,6 +5203,26 @@ function SessionFilesSheet({
   const openWithRef = useRef<((filePath: string) => void) | null>(null);
 
   useEffect(() => {
+    if (codeAvailable || driveActive) return;
+    let active = true;
+    const timer = setInterval(() => {
+      void client
+        .listSessionFiles(sessionId, '', 'worktree')
+        .then((dir) => {
+          if (active && dir.codeAvailable) {
+            setCodeAvailable(true);
+            if (dir.workspaceKind) setDocumentSession(dir.workspaceKind === 'documents');
+          }
+        })
+        .catch(() => undefined);
+    }, 5000);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
+  }, [client, sessionId, codeAvailable, documentSession, driveActive]);
+
+  useEffect(() => {
     if (!initialFilePath) return;
     // Shares openFile's request token so a tap during this initial fetch wins even
     // if the deep-linked file resolves afterwards.
@@ -5233,6 +5264,11 @@ function SessionFilesSheet({
       .then((dir) => {
         if (!active) return;
         setDocumentStatus(dir.documentStatus);
+        setCodeAvailable(dir.codeAvailable ?? true);
+        if (dir.codeAvailable === false && root === 'worktree' && !initialFilePath) {
+          setRoot('documents');
+          setPath('');
+        }
         if (dir.workspaceKind) {
           setDocumentSession(dir.workspaceKind === 'documents');
           if (
@@ -6132,12 +6168,13 @@ function SessionFilesSheet({
             {(
               [
                 ['worktree', documentSession ? 'My edits' : 'Code'],
-                ['sources', 'Sources'],
-                ['documents', 'Documents'],
-                ['shared', 'Global'],
+                ['sources', 'Raw Sources'],
+                ['documents', 'Wiki'],
               ] as const
             )
-              .filter(([candidate]) => !(documentSession && candidate === 'worktree'))
+              .filter(
+                ([candidate]) => !((documentSession || !codeAvailable) && candidate === 'worktree'),
+              )
               .map(([candidate, label]) => (
                 <Pressable
                   key={candidate}
@@ -6246,9 +6283,9 @@ function SessionFilesSheet({
                   ? 'My edits'
                   : 'Code'
                 : root === 'sources'
-                  ? 'Sources'
+                  ? 'Raw Sources'
                   : root === 'documents'
-                    ? 'Documents'
+                    ? 'Wiki'
                     : root === 'drafts'
                       ? 'Session edits'
                       : root === 'knowledge'
@@ -6263,30 +6300,17 @@ function SessionFilesSheet({
             onNavigate={(index) => setPath(index < 0 ? '' : breadcrumbSegments(path)[index]!.path)}
           />
         ) : null}
-        {!driveActive && documentSession && (root === 'documents' || root === 'worktree') ? (
-          <HeaderTextButton
-            label={
-              root === 'worktree'
-                ? 'Back to Documents'
-                : documentStatus?.running
-                  ? 'My working copy (session running)'
-                  : documentStatus?.pending
-                    ? 'My edits (not yet published)'
-                    : 'My working copy (published)'
+        {!driveActive ? (
+          <WikiDetails
+            root={root}
+            documentSession={documentSession}
+            status={documentStatus}
+            error={error}
+            hasConflicts={
+              root === 'documents' && !path && entries.some((entry) => entry.name === 'Conflicts')
             }
             disabled={mutating}
-            onPress={() => navigateRoot(root === 'worktree' ? 'documents' : 'worktree')}
-          />
-        ) : null}
-        {!driveActive && (root === 'documents' || root === 'drafts') ? (
-          <HeaderTextButton
-            label={
-              root === 'drafts'
-                ? 'Back to Documents'
-                : 'Session edits (including retained sessions)'
-            }
-            disabled={mutating}
-            onPress={() => navigateRoot(root === 'drafts' ? 'documents' : 'drafts')}
+            navigate={navigateRoot}
           />
         ) : null}
         {driveActive ? (
@@ -6428,7 +6452,12 @@ function SessionFilesSheet({
           </View>
         ) : (
           <>
-            {error ? <Text style={styles.sheetError}>{error}</Text> : null}
+            {error &&
+            root !== 'documents' &&
+            root !== 'drafts' &&
+            !(documentSession && root === 'worktree') ? (
+              <Text style={styles.sheetError}>{error}</Text>
+            ) : null}
             {truncated ? <Text style={styles.sheetLimited}>Showing first 1000 entries</Text> : null}
             {loading ? (
               <View style={styles.sheetLoading}>

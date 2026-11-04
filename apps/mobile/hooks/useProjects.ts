@@ -44,6 +44,7 @@ export function useProjects(client: VerityClient) {
   const retryTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const loadGeneration = useRef(0);
   const focused = useRef(false);
+  const [previewsActive, setPreviewsActive] = useState(false);
   const publishPreviews = useCallback(() => {
     const now = Date.now();
     setPreviewUrls(
@@ -60,8 +61,10 @@ export function useProjects(client: VerityClient) {
       typeof client.observeReads === 'function'
         ? liveConnectionFor(client.liveBaseUrl())
         : undefined;
+    const active = focused.current && AppState.currentState === 'active';
+    setPreviewsActive(active);
     previewReads.setActive(
-      focused.current && AppState.currentState === 'active',
+      active,
       connection?.connectionState === 'connected' && connection.resourceWatching,
     );
   }, [client, previewReads]);
@@ -187,8 +190,7 @@ export function useProjects(client: VerityClient) {
     };
   }, [failures, load]);
 
-  // Refetch project membership on return, while retained resource watches track
-  // dirty preview sources. Refocusing must not rebuild every share subscription.
+  // Refresh on return: hidden overview watches must not keep server polling alive.
   const loadedOnce = useRef(false);
   useFocusEffect(
     useCallback(() => {
@@ -198,6 +200,7 @@ export function useProjects(client: VerityClient) {
       loadedOnce.current = true;
       return () => {
         focused.current = false;
+        setPreviewsActive(false);
         previewReads.setActive(false);
       };
     }, [load, activatePreviews, previewReads]),
@@ -228,7 +231,7 @@ export function useProjects(client: VerityClient) {
     };
   }, [client, previewReads]);
   useEffect(() => {
-    const projectIds = JSON.parse(activeProjectIds) as string[];
+    const projectIds = previewsActive ? (JSON.parse(activeProjectIds) as string[]) : [];
     const wanted = new Set(projectIds);
     for (const [path, entry] of shareSubscriptions.current) {
       if (!wanted.has(entry.projectId)) {
@@ -266,7 +269,7 @@ export function useProjects(client: VerityClient) {
         });
       }
     }
-  }, [client, activeProjectIds, previewReads]);
+  }, [client, activeProjectIds, previewReads, previewsActive]);
 
   return {
     projects,

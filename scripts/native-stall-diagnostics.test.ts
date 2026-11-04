@@ -51,3 +51,52 @@ it('observes each warmup request and emits its snapshot before legacy cleanup ou
   expect(observer.indexOf('task.delegate = self')).toBeGreaterThan(-1);
   expect(observer.indexOf('task.delegate = self')).toBeLessThan(observer.indexOf('task.resume()'));
 });
+
+it('records the pre-DATA wait boundaries around the real awaited operations', () => {
+  const source = read('apps/mobile/native/RemoteAppTunnel.swift');
+  const accept = source.slice(
+    source.indexOf('private func accept('),
+    source.indexOf('private func readConnectHead('),
+  );
+  expect(accept.indexOf('try await writer.send(')).toBeLessThan(
+    accept.indexOf('logStream(id, stream, event: "opened")'),
+  );
+  expect(accept.indexOf('logStream(id, stream, event: "opened")')).toBeLessThan(
+    accept.indexOf('self.pumpLocal('),
+  );
+  const pump = source.slice(
+    source.indexOf('private func pumpLocal('),
+    source.indexOf('private func read('),
+  );
+  const ordered = [
+    '.streamLocalReadStarted',
+    'try await receive(',
+    '.streamLocalReadCompleted',
+    'if bytes.isEmpty',
+    '.streamSendRequested',
+    'try await writer.send(["type": "stream.data"',
+    'stream.sentBytes += bytes.count',
+  ];
+  let previous = -1;
+  for (const boundary of ordered) {
+    const index = pump.indexOf(boundary);
+    expect(index).toBeGreaterThan(previous);
+    previous = index;
+  }
+  expect(pump).toContain('var firstRead = true');
+  expect(pump).toContain('firstRead = false');
+});
+
+it('requires teardown receipts unless the bounded native recorder reports overflow', () => {
+  const source = read('scripts/remote-control-tunnel/Smoke.swift');
+  expect(source).toContain('precondition(cancelRequests <= 1 && socketCancels <= 1)');
+  expect(source).toMatch(
+    /if dropped == 0 \{\s*precondition\(cancelRequests == 1 && socketCancels == 1\)/u,
+  );
+  expect(source).toContain('precondition(events.count == RemoteDataDiagnostics.capacity)');
+  expect(source).toContain('production-diagnostics-gap dropped=');
+  const recorder = read('apps/mobile/native/RemoteDataDiagnostics.swift');
+  expect(recorder).toContain(
+    'if entries.count < Self.capacity { entries.append(entry) } else { dropped += 1 }',
+  );
+});

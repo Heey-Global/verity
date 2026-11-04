@@ -21,6 +21,45 @@ import { fileURLToPath, URL } from 'node:url';
 import { TextDecoder } from 'node:util';
 import { setImmediate } from 'node:timers';
 
+/** Partial or stale toolkit installations must retain the legacy runtime prompt. */
+export async function installedSkillsManifestHash(seedRoot = '/opt/agent-seed') {
+  try {
+    if (!(await lstat(join(seedRoot, 'bin/verity'))).isFile()) return undefined;
+    const bytes = await readFile(join(seedRoot, 'skills-manifest.json'));
+    const manifest = JSON.parse(bytes.toString('utf8'));
+    if (
+      createHash('sha256')
+        .update(await readFile(join(seedRoot, 'bin/verity')))
+        .digest('hex') !== manifest.dispatcher
+    )
+      return undefined;
+    if (manifest.version !== 1 || !manifest.files || typeof manifest.files !== 'object')
+      return undefined;
+    const files = Object.entries(manifest.files);
+    if (!files.length) return undefined;
+    for (const [path, digest] of files) {
+      if (!/^[a-z]+(?:-[a-z]+)*\/SKILL\.md$/.test(path) || typeof digest !== 'string')
+        return undefined;
+      const target = join(seedRoot, 'skills', path);
+      if (!(await lstat(dirname(target))).isDirectory() || !(await lstat(target)).isFile())
+        return undefined;
+      if (
+        createHash('sha256')
+          .update(await readFile(target))
+          .digest('hex') !== digest
+      )
+        return undefined;
+    }
+    return createHash('sha256').update(bytes).digest('hex');
+  } catch {
+    return undefined;
+  }
+}
+
+export async function installedSkillsVersion(seedRoot = '/opt/agent-seed') {
+  return (await installedSkillsManifestHash(seedRoot)) ? 1 : 0;
+}
+
 export const SUPERVISOR_PROTOCOL_VERSION = 1;
 /**
  * The oldest Server dialect this supervisor still answers — ADR 0006 D9.
@@ -2563,6 +2602,16 @@ function responseForError(error) {
 
 async function sessionHomeRequest(kind, sessionId, migration = {}) {
   if (!SAFE_ID.test(sessionId ?? '')) throw new Error('invalid sessionId');
+  return await brokerStorageRequest({
+    protocolVersion: 1,
+    kind,
+    sessionId,
+    legacyBackend: migration.legacyBackend,
+    legacySessionId: migration.legacySessionId,
+  });
+}
+
+async function brokerStorageRequest(request) {
   return await new Promise((resolve, reject) => {
     const socket = createConnection(
       process.env.VERITY_AGENT_SPAWN_BROKER_SOCKET ??
@@ -2570,29 +2619,19 @@ async function sessionHomeRequest(kind, sessionId, migration = {}) {
     );
     let buffered = '';
     let settled = false;
-    const finish = (error) => {
+    const finish = (error, response) => {
       if (settled) return;
       settled = true;
       socket.destroy();
       if (error) reject(error);
-      else resolve({ ok: true });
+      else resolve(response ?? { ok: true });
     };
-    socket.setTimeout(30000, () => finish(new Error('session home request timed out')));
+    socket.setTimeout(30000, () => finish(new Error('runner storage request timed out')));
     socket.once('error', finish);
-    socket.once('connect', () =>
-      socket.write(
-        JSON.stringify({
-          protocolVersion: 1,
-          kind,
-          sessionId,
-          legacyBackend: migration.legacyBackend,
-          legacySessionId: migration.legacySessionId,
-        }) + '\n',
-      ),
-    );
+    socket.once('connect', () => socket.write(JSON.stringify(request) + '\n'));
     socket.on('data', (chunk) => {
       buffered += chunk.toString();
-      if (buffered.length > 4096) return finish(new Error('session home response too large'));
+      if (buffered.length > 65536) return finish(new Error('runner storage response too large'));
       if (!buffered.includes('\n')) return;
       try {
         const response = JSON.parse(buffered.split('\n')[0]);
@@ -2600,6 +2639,7 @@ async function sessionHomeRequest(kind, sessionId, migration = {}) {
           response.ok === true
             ? undefined
             : new Error(response.error ?? 'session home request failed'),
+          response,
         );
       } catch (error) {
         finish(error);
@@ -2622,7 +2662,11 @@ export async function handleSupervisorRequest(
   if (!isObject(request) || !supportedRequestVersion(request.protocolVersion)) {
     throw new Error('unsupported supervisor protocol');
   }
+  const skillsManifestHash =
+    request.kind === 'status' ? await installedSkillsManifestHash() : undefined;
   switch (request.kind) {
+    case 'stack-health':
+      return await brokerStorageRequest({ protocolVersion: 1, kind: 'stack-health' });
     case 'status':
       return {
         ok: true,
@@ -2631,6 +2675,8 @@ export async function handleSupervisorRequest(
         // Both ride on the same helper. The Server reads `scriptIsolation` before it
         // raises an approval card for an entry script this Sandbox could not confine.
         managedAgentConfig: true,
+        builtInSkillsVersion: skillsManifestHash ? 1 : 0,
+        ...(skillsManifestHash ? { builtInSkillsManifestHash: skillsManifestHash } : {}),
         persistentSessionHomes: true,
         planningIsolation: capabilities.scriptIsolation,
         knowledgeIsolation: capabilities.scriptIsolation,
@@ -2646,6 +2692,38 @@ export async function handleSupervisorRequest(
           await turnStarter.cancel(turn.turnId);
       }
       return await sessionHomeRequest('delete-session-home', request.sessionId);
+    }
+    case 'reclaim-package-caches': {
+      if (
+        !Array.isArray(request.sessionIds) ||
+        request.sessionIds.length > 512 ||
+        request.sessionIds.some((id) => typeof id !== 'string' || !SAFE_ID.test(id)) ||
+        !Number.isSafeInteger(request.maxBytes) ||
+        request.maxBytes <= 0
+      )
+        throw new Error('invalid package cache request');
+      const turns = await listTurns(runtimeDir);
+      // A missing/corrupt state cannot establish which home is safe to collect.
+      if (turns.some((turn) => turn.status !== 'settled' && typeof turn.sessionId !== 'string'))
+        throw new Error('Runner turn ownership is unknown; package caches retained');
+      const busy = new Set(
+        turns.filter((turn) => turn.status !== 'settled').map((turn) => turn.sessionId),
+      );
+      const response = await brokerStorageRequest({
+        protocolVersion: 1,
+        kind: 'reclaim-package-caches',
+        sessionIds: request.sessionIds.filter((id) => !busy.has(id)),
+        maxBytes: request.maxBytes,
+      });
+      if (busy.size > 0 && response.report) {
+        response.report.usageComplete = false;
+        response.report.legacyBytes = null;
+        response.report.blockers = [
+          ...(response.report.blockers ?? []).slice(0, 99),
+          'Runner sessions have unsettled turns; their legacy package caches were retained',
+        ];
+      }
+      return response;
     }
     case 'list-turns':
       return { ok: true, turns: await listTurns(runtimeDir) };

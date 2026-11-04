@@ -1,4 +1,8 @@
-import { nativeRetirementSchema, type StorageReclamationAction } from '@verity/events';
+import {
+  nativeRetirementSchema,
+  type RunnerCacheReclamationReport,
+  type StorageReclamationAction,
+} from '@verity/events';
 import { readFile, realpath, rename, statfs, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
@@ -22,6 +26,7 @@ export class StorageReclamation {
     private readonly deps: {
       collect: () => Promise<DockerGcReport>;
       worktrees: () => SessionStorageReport | undefined;
+      runnerCaches?: (() => RunnerCacheReclamationReport | undefined) | undefined;
       directory?: string | undefined;
       dataRoot?: string | undefined;
     },
@@ -74,9 +79,11 @@ export class StorageReclamation {
     // The scheduler owns the shared single-flight for manual, admission and scheduled passes.
     const report = await this.deps.collect();
     const worktrees = this.deps.worktrees();
+    const runnerCaches = this.deps.runnerCaches?.();
     const after = await this.available();
     const blockers = report.errors.map((e) => `${e.resource}: ${e.message}`);
     blockers.push(...(worktrees?.blockers.map((e) => e.reason) ?? []));
+    blockers.push(...(runnerCaches?.blockers ?? []));
     let nativePending = false;
     try {
       // A manual request may join an older scheduled pass. Correlate against
@@ -102,6 +109,7 @@ export class StorageReclamation {
         containersRemoved: report.containersRemoved.length,
         dependenciesRemoved: worktrees?.dependenciesRemoved.length ?? 0,
         worktreesRetired: worktrees?.worktreesRetired.length ?? 0,
+        runnerCaches: runnerCaches ?? null,
         filesystemFreeBytesChange: before === null || after === null ? null : after - before,
         retainedPins: report.keptImageReasons.map((pin) => ({
           ...pin,

@@ -1,4 +1,7 @@
+import { projectTransportFetch } from './project-transport-authority.js';
 import { matrixRequestSchema } from './matrix-tool.js';
+import type { EventStore } from '@verity/store';
+import { connectorToolAvailable } from './agent-tool-availability.js';
 import { gatewayToolNameSchema, secretAuditEventInputSchema } from '@verity/secret-contracts';
 import { TrustedCliDispatchError, type ExternalPermissionAnswer } from '@verity/session';
 import { describe, expect, it, vi } from 'vitest';
@@ -1252,4 +1255,152 @@ it('checks execution authority after approval and fails closed on lookup errors'
   await gateway.handle({ projectId: 'p1', token: 'session-token', body: call() });
   expect(authorizeExecution).toHaveBeenCalledOnce();
   expect(invokeTool).not.toHaveBeenCalled();
+});
+
+it('advertises focused canonical schemas and dispatches through the existing validator', async () => {
+  const { gateway, invokeTool } = harness({ capabilityVersion: 2, servedTools: ['verity_tasks'] });
+  const listed = await gateway.handle({
+    projectId: 'p1',
+    token: 'session-token',
+    body: { jsonrpc: '2.0', id: 1, method: 'tools/list' },
+  });
+  const tools = (listed.body as { result: { tools: { name: string; title: string }[] } }).result
+    .tools;
+  expect(
+    tools.some(
+      (tool) => tool.name === 'verity_tasks_complete' && tool.title === 'Verity · Tasks · Complete',
+    ),
+  ).toBe(true);
+  expect(tools.some((tool) => tool.name === 'verity_tasks')).toBe(false);
+  await gateway.handle({
+    projectId: 'p1',
+    token: 'session-token',
+    body: {
+      jsonrpc: '2.0',
+      id: 2,
+      method: 'tools/call',
+      params: { name: 'verity_tasks_list', arguments: {} },
+    },
+  });
+  expect(invokeTool).toHaveBeenCalledWith(
+    expect.objectContaining({ toolName: 'verity_tasks', request: { action: 'list' } }),
+  );
+});
+
+it('uses availability for listing, calls and revocation during approval', async () => {
+  let available = true;
+  const { gateway, invokeTool, requestApproval } = harness({
+    servedTools: ['verity_http_request'],
+    toolAvailable: async () => available,
+  });
+  requestApproval.mockImplementation(async () => {
+    available = false;
+    return ALLOW;
+  });
+  await gateway.handle({
+    projectId: 'p1',
+    token: 'session-token',
+    body: {
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'tools/call',
+      params: { name: 'verity_http_request', arguments: HTTP_ARGUMENTS },
+    },
+  });
+  expect(invokeTool).not.toHaveBeenCalled();
+  const listed = await gateway.handle({
+    projectId: 'p1',
+    token: 'session-token',
+    body: { jsonrpc: '2.0', id: 2, method: 'tools/list' },
+  });
+  expect((listed.body as { result: { tools: unknown[] } }).result.tools).toEqual([]);
+});
+
+it('advertises and approves account-only Drive URL reads without linked folders', async () => {
+  const store = {
+    googleAccounts: {
+      list: async () => [{ id: 'a', scopes: ['https://www.googleapis.com/auth/drive'] }],
+      folders: async () => [],
+    },
+  } as unknown as EventStore;
+  const { gateway, invokeTool, requestApproval } = harness({
+    servedTools: ['verity_google_drive'],
+    toolAvailable: (input) => connectorToolAvailable(store, input),
+  });
+  const listed = await gateway.handle({
+    projectId: 'p1',
+    token: 'session-token',
+    body: { jsonrpc: '2.0', id: 1, method: 'tools/list' },
+  });
+  expect((listed.body as { result: { tools: { name: string }[] } }).result.tools).toEqual(
+    expect.arrayContaining([expect.objectContaining({ name: 'verity_google_drive' })]),
+  );
+  const response = await gateway.handle({
+    projectId: 'p1',
+    token: 'session-token',
+    body: call(
+      {
+        action: 'read_document_url',
+        accountId: 'a',
+        url: 'https://docs.google.com/document/d/shared/edit',
+      },
+      'verity_google_drive',
+    ),
+  });
+  expect(resultOf(response.body).isError).not.toBe(true);
+  expect(requestApproval).toHaveBeenCalledOnce();
+  expect(invokeTool).toHaveBeenCalledWith(
+    expect.objectContaining({
+      toolName: 'verity_google_drive',
+      request: expect.objectContaining({ action: 'read_document_url' }),
+    }),
+  );
+});
+
+it('binds provider requests to the listener generation and blocks work after retirement', async () => {
+  const generation = new AbortController();
+  const provider = vi.fn(async () => 'ok');
+  const { gateway } = harness({
+    invokeTool: async () => {
+      await projectTransportFetch(provider, 'https://example.test/first', {});
+      generation.abort();
+      return projectTransportFetch(provider, 'https://example.test/second', {});
+    },
+  });
+  const response = await gateway.handle({
+    projectId: 'p1',
+    token: 'session-token',
+    body: call(),
+    transport: {
+      identity: { projectId: 'p1', containerGeneration: 'g1' },
+      signal: generation.signal,
+    },
+  });
+  expect(provider).toHaveBeenCalledTimes(1);
+  expect(resultOf(response.body).isError).toBe(true);
+});
+
+it('revalidates the initiating user after asynchronous tool credential work', async () => {
+  let revoked = false;
+  const provider = vi.fn(async () => 'ok');
+  const { gateway } = harness({
+    authorizeExecution: async () => {
+      if (revoked) throw new Error('user revoked');
+    },
+    invokeTool: async () => {
+      revoked = true;
+      return projectTransportFetch(provider, 'https://example.test', {});
+    },
+  });
+  const response = await gateway.handle({
+    projectId: 'p1',
+    token: 'session-token',
+    body: call(),
+    transport: {
+      identity: { projectId: 'p1', containerGeneration: 'g1' },
+      signal: new AbortController().signal,
+    },
+  });
+  expect(provider).not.toHaveBeenCalled();
+  expect(resultOf(response.body).isError).toBe(true);
 });

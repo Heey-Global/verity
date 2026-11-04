@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import { viewerId } from './view-state-routes.js';
 import {
   PROJECT_AGENTS,
   PROJECT_MEMORY_MAX_CHARS,
@@ -48,7 +49,8 @@ const settingsBody = z
   .strict();
 
 export interface ProjectDetailRouteDeps {
-  getDetail: (projectId: string) => Promise<unknown>;
+  /** The project with its sessions as `viewer` sees them (read marks, dismissals). */
+  getDetail: (projectId: string, viewer: string) => Promise<unknown>;
   projectExists: (projectId: string) => Promise<boolean>;
   listGrants?: ((projectId: string) => Promise<BrokeredGrantRecord[]>) | undefined;
   revokeGrant?: ((projectId: string, grantId: string) => Promise<boolean>) | undefined;
@@ -56,7 +58,8 @@ export interface ProjectDetailRouteDeps {
     projectId: string,
     status: 'pending' | 'secrets_skipped' | 'complete',
   ) => Promise<unknown>;
-  setCollapsed: (projectId: string, collapsed: boolean) => Promise<unknown>;
+  /** Folds the project for `viewer` only. */
+  setCollapsed: (projectId: string, collapsed: boolean, viewer: string) => Promise<unknown>;
   isSealed: () => boolean;
   updateSettings: (projectId: string, patch: ProjectSettingsPatch) => Promise<unknown>;
 }
@@ -68,7 +71,7 @@ export function registerProjectDetailRoutes(
 ): void {
   app.get('/projects/:id', async (request, reply): Promise<unknown> => {
     const { id } = projectParams.parse(request.params);
-    const detail = await deps.getDetail(id);
+    const detail = await deps.getDetail(id, viewerId(request));
     if (detail === undefined) {
       reply.code(404);
       return { error: `project ${id} not found` };
@@ -117,7 +120,7 @@ export function registerProjectDetailRoutes(
   app.patch('/projects/:id/collapsed', async (request, reply): Promise<unknown> => {
     const { id } = projectParams.parse(request.params);
     const { collapsed } = collapsedBody.parse(request.body);
-    const project = await deps.setCollapsed(id, collapsed);
+    const project = await deps.setCollapsed(id, collapsed, viewerId(request));
     if (project === undefined) {
       reply.code(404);
       return { error: 'project not found' };

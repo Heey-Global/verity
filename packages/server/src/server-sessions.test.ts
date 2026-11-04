@@ -826,6 +826,52 @@ describe('DELETE /sessions/:id', () => {
     }
   });
 
+  it('persists cleanup ownership before deletion and wakes cleanup after the cascade', async () => {
+    const queue = vi.fn(async (id: string) => {
+      expect(await ctx.store.getSession(id)).toBeDefined();
+    });
+    const schedule = vi.fn();
+    const a = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      queueSessionArtifacts: queue,
+      scheduleSessionCleanup: schedule,
+    });
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    isBusy.mockReturnValue(false);
+    try {
+      expect((await a.inject({ method: 'DELETE', url: '/sessions/s1' })).statusCode).toBe(200);
+      expect(queue).toHaveBeenCalledWith('s1');
+      expect(schedule).toHaveBeenCalledOnce();
+      expect(await ctx.store.getSession('s1')).toBeUndefined();
+    } finally {
+      await a.close();
+    }
+  });
+
+  it('retains the session if durable cleanup ownership cannot be saved', async () => {
+    const schedule = vi.fn();
+    const a = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      queueSessionArtifacts: async () => {
+        throw new Error('disk full');
+      },
+      scheduleSessionCleanup: schedule,
+    });
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    isBusy.mockReturnValue(false);
+    try {
+      expect((await a.inject({ method: 'DELETE', url: '/sessions/s1' })).statusCode).toBe(500);
+      expect(await ctx.store.getSession('s1')).toBeDefined();
+      expect(schedule).not.toHaveBeenCalled();
+    } finally {
+      await a.close();
+    }
+  });
+
   it('still deletes the session when purging its transcripts fails', async () => {
     // A file that cannot be removed is a leak to log, not a reason to strand the
     // session in the UI — the operator asked for it to be gone.
@@ -3199,12 +3245,12 @@ describe('POST /sessions with project field (#174)', () => {
       });
 
       expect(res.statusCode).toBe(201);
-      expect(projectWorktrees.add).not.toHaveBeenCalled();
+      expect(projectWorktrees.add).toHaveBeenCalledOnce();
       const { sessionId }: { sessionId: string } = res.json();
       expect(await ctx.store.getSession(sessionId)).toMatchObject({
         sessionId,
         projectId: 'p-local-active',
-        worktree: expect.stringContaining('/__local__-my-project/.verity-document-sessions/'),
+        worktree: '/data/dev/__local__-my-project/.verity-sessions/agent-local',
       });
     } finally {
       await a.close();

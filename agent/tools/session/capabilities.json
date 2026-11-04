@@ -1,0 +1,79 @@
+[
+  {
+    "name": "verity_session_list",
+    "title": "Verity · Session · List",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": null,
+    "skill": null,
+    "compatibility": {
+      "name": "verity_list_sessions"
+    }
+  },
+  {
+    "name": "verity_session_handoff",
+    "title": "Verity · Session · Handoff",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": null,
+    "skill": null,
+    "compatibility": {
+      "name": "verity_session_handoff"
+    }
+  },
+  {
+    "name": "verity_session_send_message",
+    "title": "Verity · Session · Send Message",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": null,
+    "skill": null,
+    "compatibility": {
+      "name": "verity_send_session_message"
+    }
+  },
+  {
+    "name": "verity_session_list_links",
+    "title": "Verity · Session · List Links",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": null,
+    "skill": null,
+    "compatibility": {
+      "name": "verity_list_linked_sessions"
+    }
+  },
+  {
+    "name": "verity_session_read_progress",
+    "title": "Verity · Session · Read Progress",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": null,
+    "skill": null,
+    "compatibility": {
+      "name": "verity_session_progress"
+    }
+  },
+  {
+    "name": "verity_session_read_recent_messages",
+    "title": "Verity · Session · Read Recent Messages",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": null,
+    "skill": null,
+    "compatibility": {
+      "name": "verity_recent_session_messages"
+    }
+  },
+  {
+    "name": "verity_session_publish_progress",
+    "title": "Verity · Session · Publish Progress",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": null,
+    "skill": null,
+    "compatibility": {
+      "name": "verity_publish_session_progress"
+    }
+  }
+]

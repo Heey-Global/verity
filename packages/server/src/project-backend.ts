@@ -1,3 +1,4 @@
+import { beginDockerExecDiagnostic } from './docker-exec-diagnostics.js';
 import { stripTrailingSlashes } from './path-text.js';
 import {
   AcpClaudeBackend,
@@ -131,7 +132,18 @@ export class DockerExecBackend implements Backend {
         // agent cwd is carried by `docker exec -w` above.
         cwd: process.cwd(),
       };
-      return baseSpawner(opts.dockerCommand ?? 'docker', dockerArgs, wrapped);
+      const finish = beginDockerExecDiagnostic('agent');
+      try {
+        const child = baseSpawner(opts.dockerCommand ?? 'docker', dockerArgs, wrapped);
+        void child.exited.then(
+          (code) => finish(code === 0 ? undefined : { code: 'PROCESS_EXIT' }),
+          finish,
+        );
+        return child;
+      } catch (error) {
+        finish(error);
+        throw error;
+      }
     };
   }
 

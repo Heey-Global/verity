@@ -9,6 +9,7 @@ import {
   advanceManagedDeploymentImage,
   readManagedDeployment,
   migrateManagedHostDiagnostics,
+  migrateManagedProjectEgress,
 } from './managed-deployment.js';
 import { MANAGED_SERVER_NAME, reconcileManagedServer } from './managed-server-owner.js';
 import { createUpdateJournalCutoverStore } from './update-cutover.js';
@@ -458,6 +459,24 @@ describe('update runner', () => {
     expect(await readUpdateJournal(root)).toMatchObject({ phase: 'completed' });
   });
 
+  it('reports pending egress wiring as drift without replacing the running Server', async () => {
+    const { root, daemon, oldContainerId } = await adoptedDeployment('egress-migration');
+    await migrateManagedProjectEgress({
+      root,
+      deploymentId: DEPLOYMENT_ID,
+      image: oldImage,
+      controlGid: 65531,
+    });
+    const recovery = await recoverManagedUpdater(options(root, daemon));
+    expect(recovery.reconcile).toEqual({
+      status: 'drift',
+      environment: [],
+      projectEgressMountPending: true,
+    });
+    expect(daemon.status(MANAGED_SERVER_NAME)).toBe('running');
+    expect(daemon.find(MANAGED_SERVER_NAME)).toBe(oldContainerId);
+  });
+
   it('keeps the migrated Server recoverable and applies its mount through guarded cutover', async () => {
     const { root, daemon, oldContainerId } = await adoptedDeployment('diagnostics-migration');
     await migrateManagedHostDiagnostics({
@@ -667,6 +686,18 @@ describe('update runner', () => {
  * the one state where reconciling first would be fatal.
  */
 describe('updater startup recovery', () => {
+  it('starts the stopped promoted generation without replacing it', async () => {
+    const { root, daemon } = await adoptedDeployment('stopped-promoted-recovery');
+    await journalled(root);
+    const configured = options(root, daemon);
+    await createUpdateRunner(configured).run();
+    const retained = daemon.find('verity-managed-server-g1')!;
+    await daemon.docker.stopContainer(retained);
+    await recoverManagedUpdater(configured);
+    expect(daemon.find('verity-managed-server-g1')).toBe(retained);
+    expect(daemon.status('verity-managed-server-g1')).toBe('running');
+  });
+
   it('recreates the Gateway-selected promoted generation after Docker loses it', async () => {
     const { root, daemon } = await adoptedDeployment('update-runner-recovery');
     await journalled(root);
