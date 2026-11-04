@@ -193,7 +193,7 @@ ca_config_temporary="$tls_cert.$$.ca.tmp"
 ca_index_temporary="$tls_cert.$$.index.tmp"
 ca_serial_temporary="$tls_cert.$$.serial.tmp"
 ca_newcerts_temporary="$tls_cert.$$.newcerts.tmp"
-ca_side_files=("$ca_index_temporary.attr" "$ca_index_temporary.old" "$ca_index_temporary.attr.old" "$ca_serial_temporary.old")
+ca_side_files=("$ca_index_temporary.attr" "$ca_index_temporary.old" "$ca_index_temporary.attr.old" "$ca_index_temporary.new" "$ca_index_temporary.attr.new" "$ca_serial_temporary.old" "$ca_serial_temporary.new")
 trap 'rm -rf "$temporary" "$csr_temporary" "$extensions_temporary" "$ca_config_temporary" "$ca_index_temporary" "$ca_serial_temporary" "$ca_newcerts_temporary" "${ca_side_files[@]}"' EXIT
 openssl req -new -sha256 -key "$tls_key" -out "$csr_temporary" \
   -subj '/CN=Verity local control plane'
