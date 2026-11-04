@@ -103,6 +103,9 @@ try {
       // Each launch owns its runtime fixture; a previous native process must not
       // determine whether the next scenario's required mount roots exist.
       const runtimeDir = join(root, `${command}-${planning ? 'planning' : 'normal'}`);
+      // The broker also mounts its project-wide npm cache in planning mode.
+      // Production prepares it before launching; this standalone probe must too.
+      await mkdir(join(runtimeDir, 'package-cache', 'npm'), { recursive: true, mode: 0o700 });
       await mkdir(join(runtimeDir, 'codex-sessions'), { recursive: true });
       await mkdir(join(runtimeDir, 'codex-state', 'thread-writer-locks'), { recursive: true });
       const options = {
