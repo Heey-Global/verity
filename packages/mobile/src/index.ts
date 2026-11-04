@@ -153,13 +153,16 @@ export {
 } from './ui/attentionNotice.js';
 export { sessionLabel } from './ui/sessionLabel.js';
 export {
+  inboxDismissedKeys,
   inboxItems,
   inboxSummary,
+  inboxView,
   MEETING_LEAD_MS,
   type InboxAction,
   type InboxInput,
   type InboxItem,
   type InboxItemKind,
+  type InboxView,
 } from './ui/inbox.js';
 export { parseBranchIssue, forgeRefUrl, type RefHost, type RepoIdentity } from './ui/branchRef.js';
 export {

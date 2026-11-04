@@ -19,6 +19,7 @@ jest.mock('../../lib/tasksStore', () => ({ taskAccountScope: () => mockCapture.s
 
 import type { ProjectRecord, SessionSummary, UpcomingMeeting, VerityClient } from '@verity/mobile';
 import { act, fireEvent, render, screen } from '@testing-library/react-native';
+import { Alert } from 'react-native';
 import { router } from 'expo-router';
 
 import { dispatchTaskVoiceShortcut } from '../../lib/voiceShortcut';
@@ -68,6 +69,10 @@ function fakeClient(meetings: Promise<UpcomingMeeting[]> = Promise.resolve([])) 
     joinCalendarMeeting: jest.fn(async () => ({ meetingId: 'm1' })),
     skipCalendarMeeting: jest.fn(async () => undefined),
     discardLiveMeeting: jest.fn(async () => undefined),
+    setSessionInboxDismissed: jest.fn(async (_id: string, key: string, dismissed: boolean) =>
+      dismissed ? [key] : [],
+    ),
+    setProjectInboxDismissed: jest.fn(async () => [] as string[]),
   };
 }
 
@@ -281,4 +286,98 @@ it('shows a permission’s whole input next to Allow, not just its summary', asy
   expect(request.props.numberOfLines).toBeUndefined();
   expect(request.props.children).toContain('step 7');
   expect(request.props.children).toContain('hidden-detail');
+});
+
+describe('dismissing', () => {
+  const dismissible = { ...question, inboxDismissed: [] as string[] };
+
+  it('hides an item at once, saves it for the operator and keeps it out of the count', async () => {
+    const { client, onCountChange } = await renderInbox([dismissible]);
+    await screen.findByText('Which validation library?');
+    await act(async () => {
+      fireEvent.press(screen.getByRole('button', { name: 'Dismiss' }));
+    });
+    expect(client.setSessionInboxDismissed).toHaveBeenCalledWith(
+      'form',
+      expect.stringMatching(/^question:form/),
+      true,
+    );
+    expect(screen.queryByText('Which validation library?')).toBeNull();
+    expect(screen.getByTestId('home-summary').props.children).toBe('Nothing needs you right now.');
+    expect(onCountChange).toHaveBeenLastCalledWith(0);
+    expect(screen.getByRole('button', { name: '1 hidden' })).toBeTruthy();
+  });
+
+  it('brings the card back with a message when saving fails', async () => {
+    const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+    const client = fakeClient();
+    client.setSessionInboxDismissed.mockRejectedValueOnce(new Error('offline'));
+    await renderInbox([dismissible], client);
+    await screen.findByText('Which validation library?');
+    await act(async () => {
+      fireEvent.press(screen.getByRole('button', { name: 'Dismiss' }));
+    });
+    expect(screen.getByText('Which validation library?')).toBeTruthy();
+    expect(alert).toHaveBeenCalledWith('Not hidden', expect.any(String));
+    expect(screen.queryByRole('button', { name: '1 hidden' })).toBeNull();
+  });
+
+  it('shows what was dismissed elsewhere, muted, and restores it', async () => {
+    const key = 'question:form:';
+    // The key is derived from the question; read the live one off a first render.
+    const first = await renderInbox([dismissible]);
+    await screen.findByText('Which validation library?');
+    await act(async () => {
+      fireEvent.press(screen.getByRole('button', { name: 'Dismiss' }));
+    });
+    const [, savedKey] = first.client.setSessionInboxDismissed.mock.calls[0] as unknown as [
+      string,
+      string,
+    ];
+    expect(savedKey.startsWith(key)).toBe(true);
+    first.unmount();
+
+    // Another device: the synced list already carries the dismissal.
+    const { client, onCountChange } = await renderInbox([
+      { ...question, inboxDismissed: [savedKey] },
+    ]);
+    expect(screen.queryByText('Which validation library?')).toBeNull();
+    expect(onCountChange).toHaveBeenLastCalledWith(0);
+    fireEvent.press(screen.getByRole('button', { name: '1 hidden' }));
+    expect(screen.getByTestId('inbox-hidden-question')).toBeTruthy();
+    // A dismissed item offers only Restore, never its answers.
+    expect(screen.queryByRole('button', { name: 'Zod' })).toBeNull();
+    await act(async () => {
+      fireEvent.press(screen.getByRole('button', { name: 'Restore' }));
+    });
+    expect(client.setSessionInboxDismissed).toHaveBeenCalledWith('form', savedKey, false);
+    expect(screen.getByTestId('inbox-item-question')).toBeTruthy();
+    expect(onCountChange).toHaveBeenLastCalledWith(1);
+  });
+
+  it('offers no X when the server cannot keep a dismissal', async () => {
+    await renderInbox([question]);
+    await screen.findByText('Which validation library?');
+    expect(screen.queryByRole('button', { name: 'Dismiss' })).toBeNull();
+  });
+
+  it('skips a meeting when its X is tapped', async () => {
+    const soon: UpcomingMeeting = {
+      eventKey: 'cal:weekly',
+      title: 'Weekly sync',
+      startsAt: Date.now() + 10 * 60_000,
+      endsAt: Date.now() + 70 * 60_000,
+      calendar: 'Work',
+      provider: 'meet',
+      decision: null,
+      meetingId: null,
+    };
+    const { client } = await renderInbox([], fakeClient(Promise.resolve([soon])));
+    await screen.findByText('Weekly sync');
+    await act(async () => {
+      fireEvent.press(screen.getByRole('button', { name: 'Dismiss' }));
+    });
+    expect(client.skipCalendarMeeting).toHaveBeenCalledWith('cal:weekly');
+    expect(client.setSessionInboxDismissed).not.toHaveBeenCalled();
+  });
 });

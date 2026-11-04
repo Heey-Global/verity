@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import { viewerId } from './view-state-routes.js';
 import {
   LOCAL_PROJECT_OWNER,
   type EventStore,
@@ -40,8 +41,9 @@ export interface ProjectCollectionRouteDeps {
     | 'isActiveAdministrator'
   >;
   forgejoEnabled?: boolean;
-  listOverview: (userId: string | null) => Promise<unknown[]>;
-  reorder: (ids: string[]) => Promise<unknown[]>;
+  /** `viewer` owns the fold state and dismissed Home items in the answer. */
+  listOverview: (userId: string | null, viewer: string) => Promise<unknown[]>;
+  reorder: (ids: string[], viewer: string) => Promise<unknown[]>;
   listAvailableRepositories: () => Promise<ProjectRecord[]>;
   presentRepositories: (projects: ProjectRecord[]) => Promise<unknown[]>;
   localIdentityReservations: { has(key: string): boolean };
@@ -76,7 +78,7 @@ export function registerProjectCollectionRoutes(
   deps: ProjectCollectionRouteDeps,
 ): void {
   app.get('/projects', async (request): Promise<unknown[]> =>
-    deps.listOverview(request.localUserId),
+    deps.listOverview(request.localUserId, viewerId(request)),
   );
 
   app.patch('/projects/order', async (request, reply): Promise<unknown> => {
@@ -86,7 +88,7 @@ export function registerProjectCollectionRoutes(
       return { error: 'duplicate project id' };
     }
     try {
-      return await deps.reorder(body.ids);
+      return await deps.reorder(body.ids, viewerId(request));
     } catch (error) {
       if (error instanceof Error && /project order/i.test(error.message)) {
         reply.code(400);

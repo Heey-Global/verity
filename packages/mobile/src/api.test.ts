@@ -1264,6 +1264,39 @@ describe('VerityClient.listProjects (#174)', () => {
     expect(calls[0]?.init?.body).toBe(JSON.stringify({ collapsed: true }));
   });
 
+  it('dismisses Home items of projects and sessions, and keeps the dismissed keys', async () => {
+    const { fetch, calls } = fakeFetchSequence(
+      json({ id: 'p1', inboxDismissed: ['health:p1:t'] }),
+      json({ id: 's1', inboxDismissed: [] }),
+    );
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+
+    expect(await client.setProjectInboxDismissed('p1', 'health:p1:t', true)).toEqual([
+      'health:p1:t',
+    ]);
+    expect(calls[0]?.url).toBe('http://host/projects/p1/inbox-dismissed');
+    expect(calls[0]?.init?.method).toBe('PATCH');
+    expect(calls[0]?.init?.body).toBe(JSON.stringify({ key: 'health:p1:t', dismissed: true }));
+    expect(await client.setSessionInboxDismissed('s1', 'question:s1', false)).toEqual([]);
+    expect(calls[1]?.url).toBe('http://host/sessions/s1/inbox-dismissed');
+    expect(calls[1]?.init?.body).toBe(JSON.stringify({ key: 'question:s1', dismissed: false }));
+    // A schema without the field would strip it, and Home would never hide anything.
+    expect(
+      projectRecordSchema.parse({ ...project, inboxDismissed: ['health:p1:t'] }).inboxDismissed,
+    ).toEqual(['health:p1:t']);
+    expect(
+      sessionSummarySchema.parse({
+        sessionId: 's1',
+        worktree: '/wt/s1',
+        model: 'm',
+        name: null,
+        status: 'idle',
+        usage: ZERO_USAGE,
+        inboxDismissed: ['question:s1'],
+      }).inboxDismissed,
+    ).toEqual(['question:s1']);
+  });
+
   it('surfaces a 503 without pretending the project list is empty', async () => {
     const { fetch } = fakeFetch(json({ error: 'temporarily unavailable' }, 503));
     const client = new VerityClient({ baseUrl: 'http://host', fetch });
