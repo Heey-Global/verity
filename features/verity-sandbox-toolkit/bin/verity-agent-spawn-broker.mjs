@@ -1579,6 +1579,14 @@ export function validateAgentSignalTraceLease(text, request, now = Date.now()) {
   }
 }
 
+function nodeRuntimeRoots() {
+  // Node loads this public configuration before the ACP adapter can initialize.
+  // Grant only the file, keeping the sibling TLS private-key directory excluded.
+  return lstatSync('/etc/ssl/openssl.cnf', { throwIfNoEntry: false })
+    ? ['--secret', '/etc/ssl/openssl.cnf']
+    : [];
+}
+
 function normalSessionRoots(options, agentPath) {
   const roots = [];
   for (const [flag, path] of [
@@ -1617,8 +1625,7 @@ function normalSessionRoots(options, agentPath) {
   for (const path of moduleRoots) roots.push('--read-root', path);
   // Node reads this configuration before starting the ACP adapter.
   // Keep the sibling TLS private-key directory outside the policy.
-  if (lstatSync('/etc/ssl/openssl.cnf', { throwIfNoEntry: false }))
-    roots.push('--secret', '/etc/ssl/openssl.cnf');
+  roots.push(...nodeRuntimeRoots());
   // These files are selected by trusted container configuration, never turn input.
   for (const key of [
     'VERITY_FORGE_PROXY_CA_FILE',
@@ -1708,6 +1715,7 @@ export function agentLaunchSpec(request, options) {
             ...(request.command === 'opencode-acp' ? ['--self-proc-maps'] : []),
             ...planningRuntimeRoots(request, options).flatMap((path) => ['--runtime-root', path]),
             ...(normalConfinement ? normalSessionRoots(options, agentPath) : []),
+            ...(request.planning || request.knowledgeIsolation ? nodeRuntimeRoots() : []),
             '--',
           ]
         : []),

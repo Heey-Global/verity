@@ -256,29 +256,44 @@ if touch '${packageRoot}/unexpected-write' 2>/dev/null; then exit 42; fi
   expect(run([], script, true).status).not.toBe(0);
 });
 
-it('starts Node with the system OpenSSL configuration under the normal policy', (context) => {
-  if (!existsSync('/etc/ssl/openssl.cnf')) {
-    context.skip('System OpenSSL configuration unavailable');
-    return;
-  }
-  const spec = agentLaunchSpec(
-    { command: 'codex-acp', args: [], cwd: join(root, 'work'), managedHome: join(root, 'home') },
-    { agentUid: process.getuid!(), agentGid: process.getgid!(), worktreeRoot: root, env: {} },
-  );
-  const index = spec.args.indexOf('/etc/ssl/openssl.cnf');
-  expect(index).toBeGreaterThan(0);
-  const extra = spec.args.slice(index - 1, index + 1);
-  expect(extra[0]).toBe('--secret');
-  const probe = run([], 'exit 0', true);
-  if (probe.status !== 0) {
-    context.skip(`Mount isolation unavailable: ${probe.stderr.trim()}`);
-    return;
-  }
-  const script = `set -e
+for (const mode of ['normal', 'planning', 'knowledge']) {
+  it(`starts Node with the system OpenSSL configuration under the ${mode} policy`, (context) => {
+    if (!existsSync('/etc/ssl/openssl.cnf')) {
+      context.skip('System OpenSSL configuration unavailable');
+      return;
+    }
+    const spec = agentLaunchSpec(
+      {
+        command: 'codex-acp',
+        args: [],
+        cwd: join(root, 'work'),
+        ...(mode === 'normal'
+          ? { managedHome: join(root, 'home') }
+          : {
+              knowledgeHome: join(root, 'home'),
+              planning: mode === 'planning',
+              knowledgeIsolation: mode === 'knowledge',
+            }),
+      },
+      { agentUid: process.getuid!(), agentGid: process.getgid!(), worktreeRoot: root, env: {} },
+    );
+    const index = spec.args.indexOf('/etc/ssl/openssl.cnf');
+    expect(index).toBeGreaterThan(0);
+    const extra = spec.args.slice(index - 1, index + 1);
+    expect(extra[0]).toBe('--secret');
+    expect(spec.args).not.toContain('/etc/ssl');
+    expect(spec.args).not.toContain('/etc/ssl/private');
+    const probe = run([], 'exit 0', true);
+    if (probe.status !== 0) {
+      context.skip(`Mount isolation unavailable: ${probe.stderr.trim()}`);
+      return;
+    }
+    const script = `set -e
 cat /etc/ssl/openssl.cnf >/dev/null
 OPENSSL_CONF=/etc/ssl/openssl.cnf ${process.execPath} -e 'console.log("node-started")'`;
-  const result = run(extra, script, true);
-  expect(result.status, result.stderr).toBe(0);
-  expect(result.stdout).toContain('node-started');
-  expect(run([], script, true).status).not.toBe(0);
-});
+    const result = run(extra, script, true);
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain('node-started');
+    expect(run([], script, true).status).not.toBe(0);
+  });
+}
