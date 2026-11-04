@@ -165,7 +165,8 @@ it('merges late cleanup snapshots monotonically across store wrappers', async ()
   ]);
   const row = await ctx.store.getSessionDeletion('s');
   const payload = JSON.parse(row!.payload);
-  expect(payload.previewIds.sort()).toEqual(['captured-share', 'late-share']);
+  expect(payload.previewIds).toEqual(expect.arrayContaining(['captured-share', 'late-share']));
+  expect(payload.previewIds).toHaveLength(2);
   expect(payload.managed).toEqual({
     sessionId: 's',
     projectId: 'p',
