@@ -5815,26 +5815,42 @@ describe('Conductor.startSession', () => {
     );
   });
 
-  it('routes a failure AFTER the session binds to onTurnError', async () => {
-    const errors: Array<{ id: string; message: string }> = [];
-    const conductor = new Conductor({
-      store: ctx.store,
-      backend: scriptedBackend({
-        sessionId: 's-fail',
-        during: () => {
-          throw new Error('mid-stream boom');
-        },
-      }).backend,
-      onTurnError: (id, err) => errors.push({ id, message: err.message }),
-    });
+  it.each([false, true])(
+    'settles a bound fresh failure even when uncertainty persistence fails (%s)',
+    async (persistenceFails) => {
+      const fence = vi.spyOn(ctx.store, 'fenceAbandonedTurn');
+      if (persistenceFails) fence.mockRejectedValueOnce(new Error('fence storage unavailable'));
+      const errors: Array<{ id: string; message: string }> = [];
+      const conductor = new Conductor({
+        store: ctx.store,
+        worktreeExists: async () => true,
+        backend: scriptedBackend({
+          sessionId: 's-fail',
+          during: () => {
+            throw new Error('mid-stream boom');
+          },
+        }).backend,
+        onTurnError: (id, err) => errors.push({ id, message: err.message }),
+      });
 
-    const { sessionId } = await conductor.startSession({ worktree: '/wt/fail', prompt: 'x' });
-    expect(sessionId).toBe('s-fail'); // bound + resolved before the failure
+      const { sessionId } = await conductor.startSession({ worktree: '/wt/fail', prompt: 'x' });
+      expect(sessionId).toBe('s-fail'); // bound + resolved before the failure
 
-    await waitFor(() => errors.length > 0);
-    expect(errors[0]).toMatchObject({ id: 's-fail' });
-    expect(conductor.isBusy('s-fail')).toBe(false); // lock released on failure too
-  });
+      await waitFor(() => errors.length > 0 && !conductor.isBusy('s-fail'));
+      expect(errors[0]).toMatchObject({ id: 's-fail' });
+      expect(conductor.isBusy('s-fail')).toBe(false);
+      if (persistenceFails) {
+        expect(errors.some((error) => error.message === 'fence storage unavailable')).toBe(true);
+        expect(await ctx.store.listRunningTurns()).toHaveLength(1);
+        const restarted = new Conductor({ store: ctx.store, worktreeExists: async () => true });
+        expect(await restarted.stopForDeletion('s-fail', 20)).toBe(false);
+        // A later admission must persist the retained uncertainty before replacing its marker.
+        await expect(conductor.sendTurn('s-fail', 'retry')).rejects.toThrow('mid-stream boom');
+        expect(await ctx.store.hasAbandonedRunnerTurns('s-fail')).toBe(true);
+      }
+      fence.mockRestore();
+    },
+  );
 
   it('routes a failed prompt INSERT to onTurnError without killing the live run', async () => {
     const errors: Array<{ id: string; message: string }> = [];

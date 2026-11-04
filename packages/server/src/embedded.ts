@@ -4921,6 +4921,16 @@ export async function buildEmbeddedServer(
           root: join(dataVolumeRoot, 'pending-session-cleanup'),
           sessionExists: async (sessionId) =>
             (await eventStore.getSession(sessionId)) !== undefined,
+          refreshBindings: async (sessionId) => {
+            const deletion = await eventStore.getSessionDeletion(sessionId);
+            return deletion
+              ? ((
+                  JSON.parse(deletion.payload) as {
+                    artifactBindings?: { backend: string; backendSessionId: string }[];
+                  }
+                ).artifactBindings ?? [])
+              : [];
+          },
           runtimeState: async (projectId) => {
             const runtimeExists = existsSync(join(dataVolumeRoot, 'runners', projectId));
             if (projectId === CONTROL_PLANE_RUNNER_PROJECT_ID && config.controlPlaneRunner)
@@ -5020,7 +5030,31 @@ export async function buildEmbeddedServer(
             const before = (await pendingSessionCleanups(cleanupRoot)).find(
               (record) => record.sessionId === sessionId,
             );
-            await cleanupProcessor?.runSession(sessionId);
+            const deletion = await eventStore.getSessionDeletion(sessionId);
+            const retained = deletion
+              ? (JSON.parse(deletion.payload) as {
+                  session?: { worktree?: string };
+                  artifactBindings?: { backend: string; backendSessionId: string }[];
+                })
+              : undefined;
+            const captured =
+              retained?.session?.worktree === undefined
+                ? undefined
+                : {
+                    sessionId,
+                    sandboxCwd: sessionSandboxCwd(retained.session.worktree),
+                    runnerProjectIds:
+                      before?.runnerProjectIds ??
+                      candidateRunnerProjectIds({
+                        projectId,
+                        isControlPlaneProject:
+                          projectId !== null &&
+                          (await eventStore.getProject(projectId))?.kind === 'control_plane',
+                        controlPlaneRunner: config.controlPlaneRunner === true,
+                      }),
+                    bindings: retained.artifactBindings ?? [],
+                  };
+            await cleanupProcessor?.runSession(sessionId, captured);
             const pending = await pendingSessionCleanups(cleanupRoot);
             if (pending.some((record) => record.sessionId === sessionId))
               return 'deferred' as const;

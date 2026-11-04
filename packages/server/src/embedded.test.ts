@@ -2472,7 +2472,7 @@ describe('buildEmbeddedServer', () => {
     }
   }, 60_000); // A full embedded DB migration can exceed the shared CI timeout.
 
-  it.each(['project', 'control-missing', 'control-unreachable', 'timeout'])(
+  it.each(['project', 'control-missing', 'control-unreachable', 'timeout', 'late-binding'])(
     'deletes backend transcripts with runner layout: %s',
     async (layout) => {
       const controlPlaneRunner = layout.startsWith('control-');
@@ -2558,6 +2558,23 @@ describe('buildEmbeddedServer', () => {
           hostCloneRoot,
           controlPlaneRunner,
         });
+        const lateRollout = join(day, 'rollout-2026-08-18T10-00-00-thread-late.jsonl');
+        if (layout === 'late-binding') {
+          await writeFile(lateRollout, '{"payload":{"id":"thread-late"}}\n', 'utf8');
+          const originalDelete = EventStore.prototype.deleteSession;
+          vi.spyOn(EventStore.prototype, 'deleteSession').mockImplementationOnce(async function (
+            this: EventStore,
+            id: string,
+          ) {
+            // Simulate an already-admitted backend binding committing after the first outbox snapshot.
+            await db
+              .updateTable('session_backend_state')
+              .set({ backend_session_id: 'thread-late' })
+              .where('session_id', '=', id)
+              .execute();
+            return originalDelete.call(this, id);
+          });
+        }
         const deleteStarted = Date.now();
         const res = await server.app.inject({ method: 'DELETE', url: '/sessions/s-purge' });
         expect(res.statusCode).toBe(200);
@@ -2597,6 +2614,7 @@ describe('buildEmbeddedServer', () => {
         await vi.waitFor(
           () => {
             expect(existsSync(rollout)).toBe(false);
+            if (layout === 'late-binding') expect(existsSync(lateRollout)).toBe(false);
             expect(existsSync(transcript)).toBe(false);
             expect(existsSync(subagent)).toBe(false);
           },

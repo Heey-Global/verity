@@ -119,11 +119,12 @@ export function createSessionCleanupProcessor(options: {
     reason: 'retry' | 'unsafe',
     error?: unknown,
   ) => void;
+  refreshBindings?: (sessionId: string) => Promise<PendingSessionCleanup['bindings']>;
   now?: () => number;
   stopped?: () => boolean;
 }): {
   run: (readyProjectId?: string) => Promise<void>;
-  runSession: (sessionId: string) => Promise<void>;
+  runSession: (sessionId: string, captured?: PendingSessionCleanup) => Promise<void>;
 } {
   const tails = new Map<string, Promise<void>>();
   const now = options.now ?? Date.now;
@@ -132,6 +133,27 @@ export function createSessionCleanupProcessor(options: {
     readyProjectId?: string,
   ): Promise<void> => {
     if (options.stopped?.() || (await options.sessionExists(record.sessionId))) return;
+    // The session's absence proves the cascade-time snapshot committed. Read it
+    // here, not before the existence check, so a concurrent delete cannot race it.
+    const retained = await options.refreshBindings?.(record.sessionId);
+    if (retained) {
+      const bindings = [
+        ...new Map(
+          [...record.bindings, ...retained].map((binding) => [
+            JSON.stringify([binding.backend, binding.backendSessionId]),
+            binding,
+          ]),
+        ).values(),
+      ];
+      if (bindings.length > record.bindings.length) {
+        record.bindings = bindings;
+        for (const step of Object.values(record.progress ?? {})) {
+          step.artifactsDeleted = false;
+          step.retryAt = 0;
+        }
+        await queueSessionCleanup(options.root, record);
+      }
+    }
     const previous = JSON.stringify(record);
     const progress = (record.progress ??= {});
     let admissionFailure: Error | undefined;
@@ -199,8 +221,15 @@ export function createSessionCleanupProcessor(options: {
     else if (JSON.stringify(record) !== previous) await queueSessionCleanup(options.root, record);
     if (admissionFailure !== undefined) throw admissionFailure;
   };
-  const scan = async (readyProjectId?: string, sessionId?: string): Promise<void> => {
-    for (const pending of await pendingSessionCleanups(options.root)) {
+  const scan = async (
+    readyProjectId?: string,
+    sessionId?: string,
+    captured?: PendingSessionCleanup,
+  ): Promise<void> => {
+    const records = await pendingSessionCleanups(options.root);
+    if (captured && !records.some((record) => record.sessionId === captured.sessionId))
+      records.push(captured);
+    for (const pending of records) {
       if (sessionId !== undefined && pending.sessionId !== sessionId) continue;
       if (readyProjectId !== undefined && !pending.runnerProjectIds.includes(readyProjectId))
         continue;
@@ -209,10 +238,34 @@ export function createSessionCleanupProcessor(options: {
         .catch(() => undefined)
         .then(async () => {
           // Re-read under this session's ownership; another scan may have completed it.
-          const current = (await pendingSessionCleanups(options.root)).find(
+          const saved = (await pendingSessionCleanups(options.root)).find(
             (record) => record.sessionId === pending.sessionId,
           );
-          if (current) await processRecord(current, readyProjectId);
+          const current = saved ?? captured;
+          if (!current) return;
+          if (captured) {
+            const bindings = [
+              ...new Map(
+                [...current.bindings, ...captured.bindings].map((binding) => [
+                  JSON.stringify([binding.backend, binding.backendSessionId]),
+                  binding,
+                ]),
+              ).values(),
+            ];
+            const added = bindings.length > current.bindings.length;
+            current.bindings = bindings;
+            current.runnerProjectIds = [
+              ...new Set([...current.runnerProjectIds, ...captured.runnerProjectIds]),
+            ];
+            if (added)
+              for (const step of Object.values(current.progress ?? {})) {
+                step.artifactsDeleted = false;
+                step.retryAt = 0;
+              }
+            // Recreate an earlier job that already finished before final capture.
+            if (!saved || added) await queueSessionCleanup(options.root, current);
+          }
+          await processRecord(current, readyProjectId);
         });
       tails.set(pending.sessionId, operation);
       try {
@@ -222,7 +275,10 @@ export function createSessionCleanupProcessor(options: {
       }
     }
   };
-  return { run: (projectId) => scan(projectId), runSession: (id) => scan(undefined, id) };
+  return {
+    run: (projectId) => scan(projectId),
+    runSession: (id, captured) => scan(undefined, id, captured),
+  };
 }
 
 /** One serial worker: retries survive failed requests and do not overlap slow supervisor calls. */

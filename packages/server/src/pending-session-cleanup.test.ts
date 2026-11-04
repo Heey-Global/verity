@@ -275,3 +275,29 @@ it('lets another session finish while an artifact purge remains stalled', async 
     await f.close();
   }
 });
+
+it.each([false, true])(
+  'merges final bindings even after an earlier cleanup completed (%s)',
+  async (completed) => {
+    const f = await cleanupFixture();
+    try {
+      f.state('ready');
+      const processor = createSessionCleanupProcessor(f.options);
+      if (completed) await processor.runSession(f.record.sessionId);
+      else
+        await queueSessionCleanup(f.root, {
+          ...f.record,
+          progress: { project: { homeDeleted: true, artifactsDeleted: true } },
+        });
+      const late = { backend: 'codex', backendSessionId: 'late-thread' };
+      await processor.runSession(f.record.sessionId, { ...f.record, bindings: [late] });
+      expect(f.purgeArtifacts).toHaveBeenLastCalledWith(
+        'project',
+        expect.objectContaining({ bindings: [late] }),
+      );
+      expect(await pendingSessionCleanups(f.root)).toEqual([]);
+    } finally {
+      await f.close();
+    }
+  },
+);

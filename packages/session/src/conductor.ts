@@ -1007,6 +1007,7 @@ export class Conductor {
   private readonly deletingSessions = new Set<string>();
   private readonly confirmedDeletionTerminations = new Set<string>();
   private readonly unprovenTerminations = new Map<string, Set<string>>();
+  private readonly unpersistedTerminations = new Map<string, Set<string>>();
   private readonly workspaceOperations = new Map<string, number>();
 
   isDeletionTerminationConfirmed(sessionId: string): boolean {
@@ -1021,7 +1022,7 @@ export class Conductor {
     sessionId: string,
     confirmed: boolean,
     handle: SessionTurnHandle,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const unknown = this.unprovenTerminations.get(sessionId) ?? new Set<string>();
     if (confirmed || !handle.workerMayExist) {
       unknown.delete(handle.terminationIdentity);
@@ -1029,10 +1030,27 @@ export class Conductor {
     } else unknown.add(handle.terminationIdentity);
     if (unknown.size === 0) this.unprovenTerminations.delete(sessionId);
     else this.unprovenTerminations.set(sessionId, unknown);
-    // A transport failure may clear its running marker before a later restart.
-    // Preserve uncertainty independently of that marker and the in-memory handle.
-    if (!confirmed && handle.workerMayExist)
-      await this.deps.store.fenceAbandonedTurn(sessionId, handle.terminationIdentity);
+    if (!confirmed && handle.workerMayExist) {
+      const pending = this.unpersistedTerminations.get(sessionId) ?? new Set<string>();
+      pending.add(handle.terminationIdentity);
+      this.unpersistedTerminations.set(sessionId, pending);
+    }
+    try {
+      await this.flushTerminationFences(sessionId);
+      return true;
+    } catch (error) {
+      this.reportTurnError(sessionId, error);
+      return false;
+    }
+  }
+
+  private async flushTerminationFences(sessionId: string): Promise<void> {
+    const pending = this.unpersistedTerminations.get(sessionId);
+    for (const identity of pending ?? []) {
+      await this.deps.store.fenceAbandonedTurn(sessionId, identity);
+      pending!.delete(identity);
+    }
+    if (pending?.size === 0) this.unpersistedTerminations.delete(sessionId);
   }
 
   isSessionDeleting(sessionId: string): boolean {
@@ -2962,13 +2980,17 @@ export class Conductor {
       // never keep the session fenced. `clearRunningTurn` catches + reports its
       // own store errors.
       this.releaseInFlight(sessionId);
-      await this.recordDeletionTermination(sessionId, terminationConfirmed, handle);
+      const evidenceSaved = await this.recordDeletionTermination(
+        sessionId,
+        terminationConfirmed,
+        handle,
+      );
       // Scoped to the wedged turn's own prompt_seq: even a delayed delete can then
       // never erase a successor turn's marker (crash-recovery anchor). An
       // undefined markerSeq means the wedge happened before this turn ever wrote
       // its marker — there is nothing of its own to clear, and an unscoped delete
       // could only ever hit a successor's row, so skip entirely.
-      if (handle.markerSeq !== undefined)
+      if (evidenceSaved && handle.markerSeq !== undefined)
         void this.clearRunningTurn(sessionId, handle.markerSeq, handle.markerId);
       const hadQueued = (this.queues.get(sessionId)?.length ?? 0) > 0;
       this.drainNext(sessionId);
@@ -3477,12 +3499,12 @@ export class Conductor {
       // Clear THIS turn's marker, scoped by its prompt_seq so a concurrent turn's
       // markTurnRunning can't be wiped by this late DELETE. The settling terminal event
       // was already awaited above, so the ordering holds without holding the lock.
-      await this.recordDeletionTermination(
+      const evidenceSaved = await this.recordDeletionTermination(
         sessionId,
         sendHandle.terminalResultReceived,
         sendHandle,
       );
-      await this.clearRunningTurn(sessionId, markerSeq, sendHandle.markerId);
+      if (evidenceSaved) await this.clearRunningTurn(sessionId, markerSeq, sendHandle.markerId);
       this.maybeAutoTitle(sessionId);
     }
   }
@@ -3913,13 +3935,17 @@ export class Conductor {
         // stand-down signal, and setting it any earlier would let the watchdog
         // stand down while the session is still fenced.
         handle.settled = true;
-        await this.recordDeletionTermination(sessionId, handle.terminalResultReceived, handle);
+        const evidenceSaved = await this.recordDeletionTermination(
+          sessionId,
+          handle.terminalResultReceived,
+          handle,
+        );
         // Clear THIS turn's marker, scoped to its prompt_seq so a late DELETE can't wipe
         // the next turn's marker (the drainNext below, or a concurrent dispatch, may
         // already have written one). Fire-and-forget: the settling terminal event was
         // awaited above, so the marker+terminal ordering holds without blocking the lock
         // release — releasing inFlight synchronously keeps `isBusy` accurate on settle.
-        void this.clearRunningTurn(sessionId, markerSeq, handle.markerId);
+        if (evidenceSaved) void this.clearRunningTurn(sessionId, markerSeq, handle.markerId);
         // Snapshot the queue BEFORE draining: drainNext is async and won't have re-set
         // `inFlight` yet, so a deferred-action flush must gate on this, not `inFlight`.
         const hadQueued = (this.queues.get(sessionId)?.length ?? 0) > 0;
@@ -5021,8 +5047,13 @@ export class Conductor {
         // failing store delete can neither keep the session fenced nor stand the
         // watchdog down early.
         handle.settled = true;
-        await this.recordDeletionTermination(marker.sessionId, result !== undefined, handle);
-        void this.clearRunningTurn(marker.sessionId, marker.promptSeq, marker.markerId);
+        const evidenceSaved = await this.recordDeletionTermination(
+          marker.sessionId,
+          result !== undefined,
+          handle,
+        );
+        if (evidenceSaved)
+          void this.clearRunningTurn(marker.sessionId, marker.promptSeq, marker.markerId);
         this.drainNext(marker.sessionId);
       }
     }
@@ -5472,14 +5503,20 @@ export class Conductor {
               }
             }
             await this.confirmTurnSettled(id, handle);
-            await this.clearRunningTurn(id, markerSeq, handle.markerId).catch(
-              (clearError: unknown) => {
-                this.reportTurnError(id, clearError);
-              },
+            const evidenceSaved = await this.recordDeletionTermination(
+              id,
+              handle.terminalResultReceived,
+              handle,
             );
+            if (evidenceSaved)
+              await this.clearRunningTurn(id, markerSeq, handle.markerId).catch(
+                (clearError: unknown) => {
+                  this.reportTurnError(id, clearError);
+                },
+              );
             this.turns.delete(id);
             this.clearPermissions(id);
-            await this.recordDeletionTermination(id, handle.terminalResultReceived, handle);
+
             this.releaseInFlight(id);
             const hadQueued = (this.queues.get(id)?.length ?? 0) > 0;
             this.drainNext(id);
@@ -5502,14 +5539,20 @@ export class Conductor {
             await this.reportBackgroundTurnFailure(id, err).catch((reportError: unknown) => {
               this.reportTurnError(id, reportError);
             });
-            await this.clearRunningTurn(id, markerSeq, handle.markerId).catch(
-              (clearError: unknown) => {
-                this.reportTurnError(id, clearError);
-              },
+            const evidenceSaved = await this.recordDeletionTermination(
+              id,
+              handle.terminalResultReceived,
+              handle,
             );
+            if (evidenceSaved)
+              await this.clearRunningTurn(id, markerSeq, handle.markerId).catch(
+                (clearError: unknown) => {
+                  this.reportTurnError(id, clearError);
+                },
+              );
             this.turns.delete(id);
             this.clearPermissions(id);
-            await this.recordDeletionTermination(id, handle.terminalResultReceived, handle);
+
             this.releaseInFlight(id);
             const hadQueued = (this.queues.get(id)?.length ?? 0) > 0;
             this.drainNext(id); // same: don't strand turns queued during the run
@@ -5539,6 +5582,7 @@ export class Conductor {
     // would spawn a process and burn tokens for nothing (§13a). A bare screenshot
     // (attachment, empty prompt) is valid content and passes.
     if (!turnHasContent(prompt, opts)) throw new Error('turn must have a prompt or an attachment');
+    await this.flushTerminationFences(sessionId);
     if (this.deletingSessions.has(sessionId) || this.inFlight.has(sessionId))
       throw new SessionBusyError(sessionId);
     if (this.deps.prepareSession) {
