@@ -23,7 +23,7 @@ import {
 } from '@verity/mobile';
 import { router, type Href, useLocalSearchParams } from 'expo-router';
 import { type ReactNode, useCallback, useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Alert, Text, TextInput, View } from 'react-native';
 import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
@@ -32,6 +32,7 @@ import { BiometricConsent } from '../../components/BiometricConsent';
 import { OnboardingStepScaffold } from '../../components/OnboardingStepScaffold';
 import {
   canUseBiometricUnlock,
+  clearStoredAuthState,
   disableBiometricUnlock,
   enableBiometricUnlock,
   getAuthToken,
@@ -42,7 +43,11 @@ import {
 } from '../../lib/authToken';
 import { createVerityClient, getVerityBaseUrl } from '../../lib/client';
 import { KEYBOARD_BOTTOM_OFFSET } from '../../lib/keyboardOffsets';
-import { clearPairingBootstrap, getPairingBootstrap } from '../../lib/pairingSession';
+import {
+  clearPairingBootstrap,
+  clearPairingSession,
+  getPairingBootstrap,
+} from '../../lib/pairingSession';
 import { deviceLabel } from '../../lib/deviceLabel';
 import { getServerProfile } from '../../lib/serverProfile';
 import { safeReturnTo } from '../../lib/safeReturnTo';
@@ -120,6 +125,9 @@ function MasterPasswordStep({
   const [fetchFailed, setFetchFailed] = useState(false);
   const [showBiometricConsent, setShowBiometricConsent] = useState(false);
   const [pendingBiometricPassword, setPendingBiometricPassword] = useState<string | null>(null);
+  // The server refused this device before comparing the password; only a new
+  // pairing code helps, so that way out is offered prominently.
+  const [pairingRequired, setPairingRequired] = useState(false);
 
   const refreshStatus = useCallback(() => {
     setFetchFailed(false);
@@ -266,9 +274,11 @@ function MasterPasswordStep({
           // so the two 401s mean different things to the operator: one is a typo,
           // the other no amount of retyping can fix. Reporting both as a wrong
           // password is what makes a correct password look permanently wrong.
+          const pairing = isDevicePairingRequiredError(caught);
+          setPairingRequired(pairing);
           setFieldError(
-            isDevicePairingRequiredError(caught)
-              ? 'This device is not authorized for this server. Scan a new pairing code, then unlock.'
+            pairing
+              ? 'This device is not authorized for this server. Pair it again with a new pairing code, then unlock.'
               : 'Incorrect password.',
           );
           return;
@@ -276,6 +286,33 @@ function MasterPasswordStep({
         setFieldError(caught instanceof VerityApiError ? caught.message : 'Could not unlock.');
       })
       .finally(() => setBusy(false));
+  };
+
+  // A device whose credential the server no longer knows cannot be unlocked with
+  // any password. Without this, the only way back was reinstalling the app.
+  const pairAgain = () => {
+    Alert.alert(
+      'Pair this device again?',
+      'This removes the sign-in and Face ID setup stored on this device for this server. Then scan a new pairing code from Settings → Devices on a device that still has access, or from the installer.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Pair again',
+          style: 'destructive',
+          onPress: () => {
+            const baseUrl = getVerityBaseUrl();
+            void Promise.allSettled([
+              baseUrl === null ? Promise.resolve() : clearStoredAuthState(baseUrl),
+              clearPairingSession(),
+            ]).then(() => {
+              reset();
+              router.replace('/onboarding/server-url?reconfigure=1' as Href);
+            });
+          },
+        },
+      ],
+      { cancelable: true },
+    );
   };
 
   const enableBiometrics = () => {
@@ -445,6 +482,17 @@ function MasterPasswordStep({
           variant="secondary"
           disabled={busy}
           onPress={onBiometricUnlock}
+          fullWidth
+        />
+      ) : null}
+
+      {mode === 'unlock' && returnTo !== null ? (
+        <Button
+          label="Pair this device again"
+          accessibilityLabel="Pair this device again with a new pairing code"
+          variant={pairingRequired ? 'secondary' : 'text'}
+          disabled={busy}
+          onPress={pairAgain}
           fullWidth
         />
       ) : null}
