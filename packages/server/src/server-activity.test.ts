@@ -975,6 +975,7 @@ describe('GET /sessions', () => {
         agentTextCounterVersion: 'agent-text-v2',
         lastActivityAt: expect.any(Number),
         lastSeenEventCount: null,
+        inboxDismissed: [],
       },
       {
         sessionId: 's2',
@@ -993,6 +994,7 @@ describe('GET /sessions', () => {
         agentTextCounterVersion: 'agent-text-v2',
         lastActivityAt: null,
         lastSeenEventCount: null,
+        inboxDismissed: [],
       },
     ]);
   });
@@ -1166,6 +1168,7 @@ describe('GET /sessions', () => {
         agentTextCounterVersion: 'agent-text-v2',
         lastActivityAt: expect.any(Number),
         lastSeenEventCount: null,
+        inboxDismissed: [],
       },
     ]);
   });
@@ -2890,6 +2893,7 @@ describe('GET /sessions/:id', () => {
       agentTextCounterVersion: 'agent-text-v2',
       lastActivityAt: expect.any(Number),
       lastSeenEventCount: null,
+      inboxDismissed: [],
       busy: false,
       queued: [],
     });
