@@ -1049,9 +1049,17 @@ export async function reconcileManagedServer(
     ) {
       const previous = await pendingMountAuthority(spec, inspect, options.managedRoot);
       if (previous !== undefined) {
+        // Migrations may add environment sources as well as mounts. Judge the
+        // retained generation against its own authority, without new defaults.
+        const previousResolution = await resolveEnvironment(
+          previous.spec,
+          options.environment ?? process.env,
+          options.readFile ?? ((path) => readFile(path, 'utf8')),
+          'lenient',
+        );
         const previousVerdict = judgeManagedContainer(
           inspect,
-          withIdentity(containerSpecFrom(previous.spec, resolution.env)),
+          withIdentity(containerSpecFrom(previous.spec, previousResolution.env)),
           imageEnv,
           identity === undefined,
           sealedHostLimitsMode(spec),
