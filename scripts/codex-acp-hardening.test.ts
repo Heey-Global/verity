@@ -49,30 +49,33 @@ it.each(['', fixture + ',' + fixture, fixture.replace('trust_level', 'renamed_tr
   },
 );
 
-it('requires the pinned adapter to match the audited security version', () => {
-  const manifest = JSON.parse(
-    readFileSync(
-      new URL('../features/verity-sandbox-toolkit/npm/codex-acp/package.json', import.meta.url),
-      'utf8',
-    ),
-  ) as { dependencies: Record<string, string> };
-  const pin = manifest.dependencies['@agentclientprotocol/codex-acp'];
-  expect(readFileSync(new URL(installer), 'utf8')).toContain(`version !== '${pin}'`);
-  const refused = spawnSync(
-    process.execPath,
-    [
-      '--input-type=module',
-      '-e',
-      `
+it.each(['2.3.0', '2.5.1', '99.0.0'])(
+  'requires the pinned adapter to match the audited security version (rejects %s)',
+  (version) => {
+    const manifest = JSON.parse(
+      readFileSync(
+        new URL('../features/verity-sandbox-toolkit/npm/codex-acp/package.json', import.meta.url),
+        'utf8',
+      ),
+    ) as { dependencies: Record<string, string> };
+    const pin = manifest.dependencies['@agentclientprotocol/codex-acp'];
+    expect(readFileSync(new URL(installer), 'utf8')).toContain(`version !== '${pin}'`);
+    const refused = spawnSync(
+      process.execPath,
+      [
+        '--input-type=module',
+        '-e',
+        `
     import { installCli } from ${JSON.stringify(installer)};
-    installCli('codex-acp', '99.0.0');
+    installCli('codex-acp', ${JSON.stringify(version)});
   `,
-    ],
-    { encoding: 'utf8' },
-  );
-  expect(refused.status).not.toBe(0);
-  expect(refused.stderr).toContain('requires audited adapter version');
-});
+      ],
+      { encoding: 'utf8' },
+    );
+    expect(refused.status).not.toBe(0);
+    expect(refused.stderr).toContain('requires audited adapter version');
+  },
+);
 
 it('hardens the installed pinned adapter rather than only a source fixture', () => {
   const require = createRequire(import.meta.url);

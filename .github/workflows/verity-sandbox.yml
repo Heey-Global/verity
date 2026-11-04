@@ -57,6 +57,7 @@ on:
       - 'packages/server/src/runner-claude-live-server.ts'
       - 'packages/server/src/runner-claude-recreate-server.ts'
       - 'scripts/probes/opencode-*.mjs'
+      - 'scripts/probes/agent-config-isolation.mjs'
       - 'scripts/fixtures/opencode-v1/**'
       - 'scripts/test-runner-claude-live-container.sh'
       - 'scripts/test-runner-claude-live-recreate.sh'
@@ -705,6 +706,14 @@ jobs:
               npm ci --prefix "$fixture" --workspaces=false --ignore-scripts=false --no-audit --no-fund
               node /verity-source/scripts/probes/opencode-v2-session.mjs /usr/local/bin/opencode "$fixture/node_modules/.bin/opencode"
             '
+
+      - name: Codex ACP configuration isolation for new and loaded sessions
+        shell: bash
+        run: |
+          docker run --rm --user dev --workdir /verity-source --entrypoint sh \
+            --mount "type=bind,src=$PWD,dst=/verity-source,readonly" \
+            --env VERITY_PROBE_BACKEND=codex \
+            "$SMOKE_IMAGE" -ec 'node scripts/probes/agent-config-isolation.mjs'
 
       - name: Claude ACP Runner survives a hard Server restart
         shell: bash

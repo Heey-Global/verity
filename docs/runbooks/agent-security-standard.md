@@ -65,7 +65,7 @@ Codex ACP currently marks session roots trusted when creating a thread. The
 installer changes exactly that audited expression to untrusted before exposing
 the executable. If the expression changes or appears more than once, installation
 fails. The installer also rejects Codex ACP versions outside the audited version
-2.2.2. Review and reverify this transformation when upgrading the pinned adapter;
+2.5.0. Review and reverify this transformation when upgrading the pinned adapter;
 do not disable the guard to accept an unknown version.
 
 ## Rollout and verification
@@ -86,6 +86,12 @@ session package before running:
 node scripts/probes/agent-config-isolation.mjs
 node scripts/probes/opencode-config-isolation.mjs
 ```
+
+For a candidate Codex ACP installation, set `VERITY_PROBE_BACKEND=codex` and
+`VERITY_PROBE_CODEX_ACP_PREFIX` to the prefix containing its `node_modules`.
+The probe checks the adapter version against the manifest, keeps the image's
+Codex executable, and exercises both new and loaded sessions in normal and
+planning modes without replacing global packages.
 
 The probes use the pinned installed CLIs, harmless local canaries and a loopback
 placeholder endpoint. They initialize real sessions without requesting inference
