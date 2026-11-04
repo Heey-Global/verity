@@ -150,8 +150,11 @@ Host policy accepts the new immutable relay image and at most one retained
 immutable image for existing protected generations. Configuration generation
 inspects the private host registry and the referenced Docker containers; only
 images already admitted by the installed policy may be retained. Socket mounts,
-volume, UID/GID and execution restrictions remain exact. Unused prior images are
-dropped on a later configuration pass. An update requiring more than one retained
+volume, UID/GID and execution restrictions remain exact. After stopping the old
+controller and establishing denial, activation re-inspects the registry and
+containers before replacing the policy. A relay started after the earlier
+configuration snapshot must still retain its admitted image. Unused prior images
+are pruned only from this stopped-controller snapshot. An update requiring more than one retained
 image, an unknown image or a changed execution contract fails before replacing
 controller authority; it must not silently orphan or weaken protected generations.
 

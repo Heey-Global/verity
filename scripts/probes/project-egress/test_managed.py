@@ -125,6 +125,54 @@ class ManagedTests(unittest.TestCase):
         self.assertEqual(before, [(path.stat().st_ino, path.read_bytes() if path.is_file() else None)
                                   for path in paths])
 
+    def test_relay_created_after_config_snapshot_is_retained_before_replacement_starts(self):
+        old_image, new_image = 'sha256:' + 'a' * 64, 'sha256:' + 'b' * 64
+        relay_id = 'c' * 64
+        self.relay.write_text(json.dumps({'image': old_image, 'packetEnforcement': True}))
+        self.provision()
+        self.relay.write_text(json.dumps({'image': new_image, 'packetEnforcement': True}))
+        observed = []
+
+        def run(*args):
+            if 'stop' in args and args[-1] == managed.SERVICE:
+                registry = self.root / 'var/lib/verity-egress/registry.json'
+                managed.base.atomic_file(registry, json.dumps({'version': 1, 'records': [
+                    {'retired': False, 'containers': {'relay': relay_id}}]}).encode(), 0o600)
+            if 'container' in args and 'inspect' in args:
+                self.calls.append(args)
+                return json.dumps([{'Id': relay_id, 'Config': {'Image': old_image}}])
+            if 'start' in args and args[-1] == managed.SERVICE:
+                policy = json.loads((self.root / 'etc/verity-egress/relay.json').read_text())
+                self.assertEqual(policy['previousImage'], old_image)
+                observed.append(policy)
+            return self.execute(*args)
+
+        self.provision(run=run)
+        self.assertEqual(len(observed), 1)
+        self.assertEqual(observed[0]['image'], new_image)
+        stop = max(i for i, args in enumerate(self.calls) if 'stop' in args and args[-1] == managed.SERVICE)
+        inspect = max(i for i, args in enumerate(self.calls) if 'container' in args and 'inspect' in args)
+        self.assertLess(stop, inspect)
+
+    def test_stopped_relay_reconciliation_rejects_unknown_third_or_changed_contract(self):
+        old, older, target, foreign = ['sha256:' + c * 64 for c in 'abcd']
+        self.relay.write_text(json.dumps({'image': old, 'packetEnforcement': True}))
+        self.provision()
+        managed.base.atomic_file(self.root / 'etc/verity-egress/relay.json',
+            json.dumps({'image': old, 'previousImage': older, 'packetEnforcement': True}).encode(), 0o600)
+        for images, extra, reason in [([foreign], {}, 'outside installed'),
+                                     ([old, older], {}, 'more than one'),
+                                     ([old], {'relayGid': 42}, 'contract cannot change')]:
+            records = [{'containers': {'relay': str(i + 1) * 64}} for i in range(len(images))]
+            managed.base.atomic_file(self.root / 'var/lib/verity-egress/registry.json',
+                json.dumps({'version': 1, 'records': records}).encode(), 0o600)
+            def run(*args):
+                index = int(args[-1][0]) - 1
+                return json.dumps([{'Id': args[-1], 'Config': {'Image': images[index]}}])
+            with self.subTest(reason=reason), self.assertRaisesRegex(ValueError, reason):
+                managed.reconcile_stopped_relay_policy(self.root, run,
+                    json.dumps({'image': target, 'packetEnforcement': True, **extra}).encode())
+
     def test_corrupt_assets_never_touch_host(self):
         (self.source / 'node').write_text('tampered')
         with self.assertRaisesRegex(ValueError, 'checksum'):

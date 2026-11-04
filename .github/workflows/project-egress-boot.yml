@@ -17,6 +17,8 @@ on:
       - 'scripts/build-project-egress-release.mjs'
       - 'deploy/host/verity-egress-provision'
       - 'scripts/probes/project-egress/test_native_profile.py'
+      - 'scripts/probes/project-egress/collect-native-candidate.py'
+      - 'scripts/probes/project-egress/test_native_candidate.py'
       - 'packages/server/src/project-egress-host-*.ts'
   workflow_dispatch: {}
 
@@ -52,7 +54,9 @@ jobs:
           sudo apt-get install -y --no-install-recommends qemu-system-x86 qemu-utils cloud-image-utils acl
           sudo setfacl -m "u:$(id -u):rw" /dev/kvm
       - name: Reject incomplete boot evidence
-        run: python3 -m unittest discover -s scripts/probes/project-egress -p test_boot_vm.py -v
+        run: |
+          python3 -m unittest discover -s scripts/probes/project-egress -p test_boot_vm.py -v
+          python3 -m unittest discover -s scripts/probes/project-egress -p test_native_candidate.py -v
       - name: Verify pinned guest and execute an actual kernel reboot
         env:
           PROBE_EVIDENCE: ${{ runner.temp }}/project-egress-boot-evidence

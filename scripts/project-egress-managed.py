@@ -427,6 +427,59 @@ def recover_boot(root=Path('/'), run=base.command):
         return result
 
 
+def reconcile_stopped_relay_policy(root, run, target):
+    """The stopped controller can no longer append an old-image relay after this read."""
+    registry = root / 'var/lib/verity-egress/registry.json'
+    state = json.loads(private_file(registry)) if registry.exists() else {'version': 1, 'records': []}
+    if (not isinstance(state, dict) or state.get('version') != 1
+            or not isinstance(state.get('records'), list) or len(state['records']) > 10000):
+        raise ValueError('Invalid stopped relay registry')
+    active = set()
+    for record in state['records']:
+        if not isinstance(record, dict):
+            raise ValueError('Invalid stopped relay record')
+        if record.get('retired') is True:
+            continue
+        containers = record.get('containers')
+        if not isinstance(containers, dict):
+            raise ValueError('Invalid stopped relay containers')
+        relay = containers.get('relay')
+        if relay is None:
+            continue
+        if not isinstance(relay, str) or not re.fullmatch('[a-f0-9]{64}', relay):
+            raise ValueError('Invalid stopped relay identity')
+        inspected = json.loads(run('/usr/bin/docker', '--host=unix:///var/run/docker.sock',
+                                   'container', 'inspect', relay))
+        if (not isinstance(inspected, list) or len(inspected) != 1
+                or inspected[0].get('Id') != relay):
+            raise ValueError('Stopped relay inspection mismatch')
+        image = inspected[0].get('Config', {}).get('Image')
+        if not isinstance(image, str):
+            raise ValueError('Stopped relay image missing')
+        active.add(image)
+    new = json.loads(target)
+    old_path = root / 'etc/verity-egress/relay.json'
+    old = json.loads(private_file(old_path)) if old_path.exists() else None
+    # Empty generations may safely prune stale retention only while starts are stopped.
+    new.pop('previousImage', None)
+    if active:
+        if not isinstance(old, dict):
+            raise ValueError('Protected relay has no installed release authority')
+        allowed = {old.get('image'), old.get('previousImage'), new.get('image')}
+        if any(image not in allowed for image in active):
+            raise ValueError('Protected relay is outside installed release authority')
+        old_contract = {k: v for k, v in old.items() if k not in ('image', 'previousImage')}
+        new_contract = {k: v for k, v in new.items() if k not in ('image', 'previousImage')}
+        if old_contract != new_contract:
+            raise ValueError('Protected relay execution contract cannot change during cutover')
+        retained = active - {new.get('image')}
+        if len(retained) > 1:
+            raise ValueError('Update requires more than one retained protected relay image')
+        if retained:
+            new['previousImage'] = retained.pop()
+    return (json.dumps(new, sort_keys=True) + '\n').encode()
+
+
 def activate(root, run, release, files, configs, gid):
     current = root / 'opt/verity-egress'
     if current.exists() and not current.is_symlink():
@@ -467,6 +520,9 @@ def activate(root, run, release, files, configs, gid):
     try:
         base.stop_controller(run)
         run(*deny)
+        relay_path = 'etc/verity-egress/relay.json'
+        if relay_path in configs:
+            changes[relay_path] = reconcile_stopped_relay_policy(root, run, configs[relay_path])
         base.switch_link(current, str(release))
         for relative, data in changes.items():
             base.atomic_file(root / relative, data, 0o600 if relative in configs else 0o644)
