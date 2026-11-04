@@ -5153,6 +5153,7 @@ export async function buildEmbeddedServer(
       // directory mount, so replacing it here reaches containers already running.
       await materializeOpenCodeConfig('secret unlock');
       await codexModelCatalog?.refresh();
+      uplinkControl?.start();
     },
     authRegistry,
     ...(config.https !== undefined ? { https: config.https } : {}),
@@ -5998,13 +5999,8 @@ export async function buildEmbeddedServer(
     matrixActivationTimer.unref?.();
     app.addHook('onClose', () => clearInterval(matrixActivationTimer));
   }
-  // First statement after `app` exists, and the dial is the second. In that
-  // order the handshake, the close code and the refusal reason - the lines this
-  // wiring exists for - are pino records rather than console lines, and the
-  // fallback is left covering only what a component logs before it is asked to
-  // do anything.
+  // Bind before any unlock or startup can dial, so handshake diagnostics use pino.
   uplinkLog.bind(app.log);
-  uplinkControl?.start();
   // One-time reconciliation of backend transcripts left by sessions that no longer
   // exist (see `session-artifact-sweep.ts`). Deleting a session now takes its
   // transcripts with it, but everything deleted BEFORE that fix left its files behind
@@ -6197,6 +6193,9 @@ export async function buildEmbeddedServer(
       },
     });
   }
+  // A sealed credentials read triggers feature revocation. Wait for key handover;
+  // interactive boots start the client through onSecretUnlocked instead.
+  if (!secretCipher.isSealed()) uplinkControl?.start();
   if (localPreviewManager && projectDocker) {
     const sweepLocalConnectors = () =>
       sweepOrphanedLocalPreviews(projectDocker, hostname(), (id, shareId) =>

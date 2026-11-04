@@ -37,6 +37,21 @@ describe('preview recovery lifecycle wiring', () => {
     expect(main).toMatch(/createStandbyLifecycle\([^]*?start: startServingStack/);
   });
 
+  // Reading credentials before key adoption revokes durable public shares.
+  it('starts Uplink only after key adoption or interactive unlock', async () => {
+    const embedded = await source('./embedded.ts');
+    const bootStart = 'if (!secretCipher.isSealed()) uplinkControl?.start();';
+    expect(embedded.indexOf(bootStart)).toBeGreaterThan(
+      embedded.indexOf('await adoptHandedOffSecretKey('),
+    );
+    const unlock = embedded.slice(
+      embedded.indexOf('onSecretUnlocked: async () => {'),
+      embedded.indexOf('    authRegistry,', embedded.indexOf('onSecretUnlocked: async () => {')),
+    );
+    expect(unlock).toContain('uplinkControl?.start();');
+    expect(embedded.match(/uplinkControl\?\.start\(\);/g)).toHaveLength(2);
+  });
+
   // Closing edges or stopping Uplink while a watchdog still restores resources
   // can resurrect a connector after the serving generation has closed.
   it('gates online recovery on unlock and drains both watchdogs before teardown', async () => {
