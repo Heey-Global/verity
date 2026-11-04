@@ -11,8 +11,23 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Clipboard from 'expo-clipboard';
 import { randomUUID, digestStringAsync, CryptoDigestAlgorithm } from 'expo-crypto';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Alert, View } from 'react-native';
+import { Alert, Share, View } from 'react-native';
+import { StyleSheet } from 'react-native-unistyles';
 import { CardRow, Eyebrow, RowCard } from '../premium/PremiumChrome';
+import {
+  Actions,
+  Button,
+  SourceTags,
+  StatusLine,
+  StepIndicator,
+  TestCard,
+  Toast,
+  completeness,
+  formatReportTime,
+  testNames,
+  useTransientMessage,
+} from './DiagnosticsParts';
+import { Text } from '../ui';
 import { selectedRecordingContext } from '../../lib/selectedRecordingContext';
 import { getServerProfile } from '../../lib/serverProfile';
 import {
@@ -48,6 +63,14 @@ function httpFailureStatus(value: unknown): number | undefined {
     ? value.status
     : undefined;
 }
+const LONG_STEPS = [
+  'Prepare with VPN on',
+  'Turn VPN off and reproduce the problem',
+  'Turn VPN on and collect',
+  'Result',
+] as const;
+const IDLE_MESSAGE =
+  'Keep VPN on and start. When asked, turn VPN off and use the app until the problem happens.';
 const preparationLabels: Record<Preparation['stage'], string> = {
   storage: 'saving the run',
   'local-and-admission': 'preparing the device connection',
@@ -131,9 +154,10 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
   const key = serverId ? `verity.connectionRecording.v1.${serverId}` : null;
   const currentServer = useRef(serverId);
   currentServer.current = serverId;
-  const [mode, setMode] = useState<'quick' | 'problem' | null>(null);
   const [reports, setReports] = useState<ConnectionDiagnosticReport[]>([]);
-  const [reportMessage, setReportMessage] = useState('');
+  const [reportMessage, setReportMessage] = useTransientMessage();
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const [problemReport, setProblemReport] = useState<ConnectionDiagnosticReport | null>(null);
   const [problemArchived, setProblemArchived] = useState(false);
   const [problemStopConfirmed, setProblemStopConfirmed] = useState(false);
   const problemReleasedRef = useRef(false);
@@ -152,13 +176,12 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
       },
       () => {
         if (currentServer.current === serverId)
-          setReportMessage('Saved reports unavailable. Existing evidence has not been replaced.');
+          setReportMessage('Saved reports could not be loaded. Nothing was deleted.');
       },
     );
   }, [serverId]);
   useEffect(() => {
     setReports([]);
-    setReportMessage('');
     refreshReports();
   }, [refreshReports]);
   const captureDeadline = useRef<number | null>(null);
@@ -184,9 +207,7 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
   }, []);
   const [ready, setReady] = useState(false);
   const [remaining, setRemaining] = useState(0);
-  const [message, setMessage] = useState(
-    'Connect through VPN to prepare App, Core and Uplink together for a 30-second test.',
-  );
+  const [message, setMessage] = useState(IDLE_MESSAGE);
   const revision = useRef(0);
   const mounted = useRef(true);
   const saving = useRef<Promise<void>>(Promise.resolve());
@@ -215,21 +236,17 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
     collectingRef.current = null;
     runRef.current = null;
     captureDeadline.current = null;
-    setMessage(
-      'Connect through VPN to prepare App, Core and Uplink together for a 30-second test.',
-    );
+    setMessage(IDLE_MESSAGE);
+    setProblemReport(null);
     void (async () => {
       try {
         const saved = key ? parseSaved(await AsyncStorage.getItem(key)) : null;
         if (current) {
           runRef.current = saved;
-          if (saved)
-            setMessage(
-              `Saved problem recording · ${new Date(saved.startedAt).toISOString()} · ${saved.runId.slice(0, 8)}. ${saved.preparation?.failed ? 'Preparation failed. ' : ''}Collect this run’s report with VPN; it is separate from the quick test.`,
-            );
+          if (saved) setMessage('Turn VPN on and collect its report, or discard it.');
         }
       } catch {
-        if (current) setMessage('Could not read the saved run. Recording is unavailable.');
+        if (current) setMessage('Could not read the last long test. Close and reopen Diagnostics.');
       } finally {
         if (current) setLoaded(true);
       }
@@ -244,7 +261,7 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
     let current = true;
     let polling = false;
     const poll = async () => {
-      if (polling || mode !== 'problem' || selectedBusyRef.current) return;
+      if (polling || selectedBusyRef.current) return;
       polling = true;
       const token = revision.current;
       const valid = () => current && token === revision.current;
@@ -269,7 +286,7 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
           if (left && saved && saved.diagnosticsVersion === 3) await stopRemoteDataRecording();
           setMessage((previous) =>
             previous.startsWith('Ready')
-              ? 'Local recording ended. Stop and collect the saved evidence.'
+              ? 'Recording time is up. Turn VPN back on, then collect the report.'
               : previous,
           );
           return;
@@ -290,7 +307,7 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
         setRemaining(freshRemaining);
         if (freshRemaining <= 0) {
           setReady(false);
-          setMessage('Local recording ended. Stop and collect the saved evidence.');
+          setMessage('Recording time is up. Turn VPN back on, then collect the report.');
           if (freshLeft) await stopRemoteDataRecording();
           return;
         }
@@ -310,14 +327,14 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
         setReady(confirmed);
         setMessage(
           confirmed
-            ? 'Ready — turn off VPN and use the app normally. Stop and collect when finished.'
-            : 'Recording readiness is unconfirmed. Local evidence remains available; stop and collect.',
+            ? 'Ready — turn off VPN now and use the app until the problem happens. Then tap Stop.'
+            : 'Core and Uplink have not confirmed the recording. This device keeps recording; stop when you are done.',
         );
       } catch {
         if (valid()) {
           setReady(false);
           setMessage(
-            'Recording readiness is unconfirmed. Local evidence remains available; reconnect VPN to collect.',
+            'Core and Uplink cannot be reached right now. This device keeps recording; turn VPN on to collect.',
           );
         }
       } finally {
@@ -330,7 +347,7 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
       current = false;
       clearInterval(timer);
     };
-  }, [client, mode]);
+  }, [client]);
 
   const start = async () => {
     if (
@@ -344,12 +361,11 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
     )
       return;
     if (runRef.current) {
-      setMessage(
-        'A saved problem recording is selected. Collect its report before starting another.',
-      );
+      setMessage('Finish or discard the previous long test first.');
       return;
     }
     setProblemArchived(false);
+    setProblemReport(null);
     const token = ++revision.current;
     const current = () => mounted.current && token === revision.current;
     preparingRef.current = token;
@@ -357,7 +373,7 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
     setRemaining(0);
     setPreparing(true);
     setReady(false);
-    setMessage('Preparing local recording, Core and Uplink…');
+    setMessage('Preparing this device, Core and Uplink…');
     const saved: SavedRun = {
       runId: randomUUID(),
       startedAt: Date.now(),
@@ -436,7 +452,9 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
         throw new Error('Recording expired');
       setRemaining(Math.min(left, saved.expiresAt - Date.now()));
       setReady(true);
-      setMessage('Ready — turn off VPN and use the app normally. Stop and collect when finished.');
+      setMessage(
+        'Ready — turn off VPN now and use the app until the problem happens. Then tap Stop.',
+      );
     } catch (error) {
       if (!current()) return;
       saved.preparation = {
@@ -458,7 +476,7 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
       await save(saved).catch(() => undefined);
       if (mounted.current && token === revision.current)
         setMessage(
-          `${error instanceof Error && error.message === 'diagnostics_version_unavailable' ? 'Uplink does not support this recording version. Update Uplink before retrying.' : `Preparation failed while ${preparationLabels[saved.preparation.stage]}.${saved.preparation.httpStatus ? ` HTTP ${String(saved.preparation.httpStatus)}.` : ''}`} ${localStopped ? 'Local recording stopped.' : 'Local stop could not be confirmed.'} ${remoteStopped ? 'Keep VPN on and retry.' : 'Core/Uplink stop unconfirmed; they expire automatically. Retry collection with VPN.'}`,
+          `${error instanceof Error && error.message === 'diagnostics_version_unavailable' ? 'Your Uplink does not support this test yet. Update Uplink and try again.' : `It failed while ${preparationLabels[saved.preparation.stage]}.${saved.preparation.httpStatus ? ` HTTP ${String(saved.preparation.httpStatus)}.` : ''}`} ${localStopped ? '' : 'This device could not confirm that it stopped recording. '}${remoteStopped ? 'Keep VPN on and collect the report.' : 'Core and Uplink stop by themselves within a minute. Keep VPN on and collect the report.'}`,
         );
     } finally {
       // A prior DELETE may have completed before the pending start created the run.
@@ -491,14 +509,14 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
       setRemaining(0);
       setMessage(
         localStopped
-          ? 'Local recording stopped. Collecting Core and Uplink…'
-          : 'Local stop unconfirmed. Collecting available evidence…',
+          ? 'Stopped. Collecting Core and Uplink data…'
+          : 'Collecting the available data…',
       );
       if (!saved) {
         setMessage(
           localStopped
-            ? 'Local recording stopped. No coordinated run saved.'
-            : 'Local stop could not be confirmed.',
+            ? 'Recording stopped.'
+            : 'This device could not confirm that it stopped recording. Try again.',
         );
         return;
       }
@@ -598,6 +616,7 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
           bundle = retainedReport;
           reportStored = true;
           if (!current()) return;
+          setProblemReport(bundle);
           setProblemArchived(true);
           setProblemStopConfirmed(localStopped && (bundle.remote.stopped || absentOnVerifiedCore));
           refreshReports();
@@ -608,11 +627,25 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
       if (!current()) return;
       await Clipboard.setStringAsync(JSON.stringify(bundle));
       if (!current()) return;
+      if (!reportStored) setProblemReport(bundle);
+      setReportMessage('Report copied to the clipboard.');
       setMessage(
-        `${bundle.complete ? 'Complete report copied.' : 'Partial report copied. Missing evidence and Stop status are listed in the report.'} ${reportStored ? 'Retained in Saved reports.' : 'Saving failed or Saved reports is full; keep this screen open.'} ${absentOnVerifiedCore ? 'Core has no retained report for this run. Saved local evidence remains available.' : !remote ? 'Turn VPN on and collect this same run again.' : ''} ${!persisted ? 'Local saving could not be confirmed.' : ''}`,
+        [
+          reportStored
+            ? ''
+            : 'The report could not be saved on this device – paste it somewhere before leaving.',
+          absentOnVerifiedCore
+            ? 'Your Core no longer has data for this test.'
+            : !remote
+              ? 'Core and Uplink data is missing. Turn VPN on and collect again.'
+              : '',
+          persisted ? '' : 'This device could not save its own part of the test.',
+        ]
+          .filter(Boolean)
+          .join(' '),
       );
     } catch {
-      if (current()) setMessage('Could not copy the recording. Retry Stop and collect.');
+      if (current()) setMessage('Could not copy the report. The test is kept – try again.');
     } finally {
       if (collectingRef.current === token) {
         collectingRef.current = null;
@@ -634,7 +667,9 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
     )
       return;
     if (!problemStopConfirmed) {
-      setMessage('Stop remains unconfirmed. Collect this run again before starting another.');
+      setMessage(
+        'Core and Uplink have not confirmed that they stopped. Collect again or discard this test.',
+      );
       return;
     }
     const token = ++revision.current;
@@ -661,10 +696,13 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
       runRef.current = null;
       setProblemArchived(false);
       setProblemStopConfirmed(false);
-      setMessage('Ready for a new problem recording. Previous report retained in Saved reports.');
+      setProblemReport(null);
+      setMessage(IDLE_MESSAGE);
     } catch {
       if (current())
-        setMessage('Stop or saving could not be confirmed. Keep collecting the selected run.');
+        setMessage(
+          'The app could not confirm that the last test stopped. Collect again or discard it.',
+        );
     } finally {
       if (collectingRef.current === token) {
         collectingRef.current = null;
@@ -672,157 +710,303 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
       }
     }
   };
+  const discardProblem = async () => {
+    const expected = runRef.current;
+    if (
+      !expected ||
+      preparingRef.current !== null ||
+      collectingRef.current !== null ||
+      selectedBusyRef.current ||
+      !key
+    )
+      return;
+    const token = ++revision.current;
+    const current = () =>
+      mounted.current &&
+      token === revision.current &&
+      currentServer.current === serverId &&
+      runRef.current?.runId === expected.runId;
+    collectingRef.current = token;
+    setCollecting(true);
+    try {
+      // Only a confirmed local Stop lets the unfinished run go; saved reports stay.
+      if (!(await stopRemoteDataRecording())) throw new Error('Stop unconfirmed');
+      if (!current()) return;
+      void client?.stopConnectionRecording(expected.runId).catch(() => undefined);
+      await AsyncStorage.removeItem(key);
+      if (!current()) return;
+      runRef.current = null;
+      setProblemArchived(false);
+      setProblemStopConfirmed(false);
+      setProblemReport(null);
+      setReady(false);
+      setRemaining(0);
+      setMessage(IDLE_MESSAGE);
+      setReportMessage('Unfinished long test discarded.');
+    } catch {
+      if (current())
+        setMessage(
+          'The app could not confirm that this device stopped recording. Wait a moment and try again.',
+        );
+    } finally {
+      if (collectingRef.current === token) {
+        collectingRef.current = null;
+        setCollecting(false);
+      }
+    }
+  };
+  const confirmDiscardProblem = () =>
+    Alert.alert(
+      'Discard this long test?',
+      'The unfinished test is removed from this device. Saved reports are kept.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Discard', style: 'destructive', onPress: () => void discardProblem() },
+      ],
+    );
   const switchDisabled = selectedBusy || preparing || collecting || remaining > 0;
+  const run = runRef.current;
+  const recording = !preparing && !collecting && remaining > 0;
+  const awaitingCollection =
+    run !== null && !problemArchived && !preparing && !collecting && !recording;
+  const archivedRun = run !== null && problemArchived && !preparing && !collecting && !recording;
+  const step = preparing ? 0 : recording ? 1 : collecting || awaitingCollection ? 2 : 3;
+  const longBlockedReason = !loaded
+    ? 'Loading…'
+    : !client
+      ? 'Connect to your Core first.'
+      : selectedBusy || quickCaptureBlocked
+        ? 'Finish the quick test first.'
+        : undefined;
+  const quickBlockedReason =
+    preparing ||
+    collecting ||
+    remaining > 0 ||
+    (run !== null && !(problemArchived && problemStopConfirmed))
+      ? 'Finish the long test first.'
+      : !client
+        ? 'Connect to your Core first.'
+        : undefined;
+  const failedPreparation = run?.preparation?.failed === true;
   return (
     <View>
-      <Eyebrow>Connection diagnostics</Eyebrow>
-      <RowCard>
-        <CardRow
-          title="Quick connection test"
-          subtitle="One health request, then automatic Stop. Collects App, Core and Uplink evidence."
-          disabled={switchDisabled}
-          onPress={() => setMode('quick')}
+      <Eyebrow>Connection tests</Eyebrow>
+      <View style={styles.stack}>
+        <SelectedConnectionTest
+          disabled={
+            !loaded ||
+            preparing ||
+            collecting ||
+            remaining > 0 ||
+            !client ||
+            (runRef.current !== null && !(problemArchived && problemStopConfirmed))
+          }
+          blockedReason={quickBlockedReason}
+          onBusy={ownSelected}
+          onCaptureBlocked={ownQuickCapture}
+          onReport={refreshReports}
         />
-        <CardRow
-          title="Record a connection problem"
-          subtitle="Prepare with VPN, then reproduce the problem. Up to 30 seconds; Stop remains available on this device."
-          disabled={switchDisabled}
-          onPress={() => setMode('problem')}
-        />
-      </RowCard>
-      {mode ? (
-        <RowCard>
-          <SelectedConnectionTest
-            visible={mode === 'quick'}
-            disabled={
-              !loaded ||
-              preparing ||
-              collecting ||
-              remaining > 0 ||
-              !client ||
-              (runRef.current !== null && !(problemArchived && problemStopConfirmed))
-            }
-            onBusy={ownSelected}
-            onCaptureBlocked={ownQuickCapture}
-            onReport={refreshReports}
-          />
-          {mode === 'problem' ? (
+        <TestCard
+          title="Long test with VPN switch-off"
+          description="For problems that only appear sometimes · up to 30 seconds"
+          attention={failedPreparation || (archivedRun && !problemStopConfirmed)}
+        >
+          {run || preparing ? <StepIndicator steps={LONG_STEPS} current={step} /> : null}
+          {preparing ? <StatusLine title="Preparing…" detail={message} /> : null}
+          {recording ? (
+            <StatusLine
+              title={`${ready ? 'Recording' : 'Recording, not confirmed'} · ${String(Math.ceil(remaining / 1000))} s left`}
+              detail={message}
+              tone={ready ? 'ok' : 'problem'}
+            />
+          ) : null}
+          {collecting ? <StatusLine title="Collecting the report…" detail={message} /> : null}
+          {awaitingCollection ? (
+            <StatusLine
+              title={
+                failedPreparation
+                  ? 'Preparation failed'
+                  : `Recording finished · ${formatReportTime(new Date(run.startedAt).toISOString())}`
+              }
+              detail={message}
+              tone={failedPreparation ? 'problem' : 'neutral'}
+            />
+          ) : null}
+          {archivedRun ? (
             <>
-              <CardRow title="Problem recording" subtitle={message} chevron={false} />
-              {runRef.current ? (
-                <CardRow
-                  title={`Problem recording · ${runRef.current.runId.slice(0, 8)}`}
-                  subtitle={`${new Date(runRef.current.startedAt).toISOString()} · ${preparing ? 'Preparing' : collecting ? 'Collecting' : ready ? 'Recording' : 'Saved / ended'}`}
-                  chevron={false}
+              <StatusLine
+                title="Report saved"
+                detail={problemReport ? completeness(problemReport) : undefined}
+                tone={problemReport && !problemReport.complete ? 'problem' : 'ok'}
+              />
+              {problemReport ? <SourceTags sources={problemReport.sources} /> : null}
+              {!problemStopConfirmed ? (
+                <StatusLine
+                  tone="problem"
+                  title="Not confirmed as stopped"
+                  detail="Turn VPN on and collect again, or discard this test to start over."
                 />
               ) : null}
-              {!runRef.current ? (
-                <CardRow
-                  title="Start problem recording"
-                  disabled={
-                    selectedBusy ||
-                    quickCaptureBlocked ||
-                    !loaded ||
-                    preparing ||
-                    collecting ||
-                    !key ||
-                    !client ||
-                    remaining > 0
-                  }
-                  onPress={() => void start()}
-                />
-              ) : null}
-              {runRef.current || preparing ? (
-                <CardRow
-                  title={
-                    collecting
-                      ? 'Collecting report…'
-                      : preparing || remaining > 0
-                        ? 'Stop and collect'
-                        : 'Collect problem report'
-                  }
-                  disabled={selectedBusy || collecting}
-                  subtitle={
-                    preparing || remaining > 0
-                      ? 'Stops this device immediately. Core and Uplink collection may need VPN.'
-                      : 'This saved problem recording only; does not start another capture.'
-                  }
-                  onPress={() => void collect()}
-                />
-              ) : null}
-              {problemArchived && !preparing && !collecting && remaining <= 0 ? (
-                <CardRow
-                  title="Start another problem recording"
-                  subtitle="Previous report remains in Saved reports."
-                  onPress={() => void newProblem()}
-                />
-              ) : null}
-              {ready ? (
-                <CardRow
-                  title={`${String(Math.ceil(remaining / 1000))} seconds of local recording remaining`}
-                  chevron={false}
-                />
-              ) : null}
+              {message ? <StatusLine title={message} tone="problem" /> : null}
             </>
           ) : null}
-        </RowCard>
-      ) : null}
-      {reports.length > 0 || reportMessage ? (
+          {!run && !preparing ? <StatusLine title={longBlockedReason ?? message} /> : null}
+          <Actions>
+            {!run && !preparing ? (
+              <Button
+                label="Start long test"
+                fullWidth
+                disabled={
+                  selectedBusy ||
+                  quickCaptureBlocked ||
+                  !loaded ||
+                  collecting ||
+                  !key ||
+                  !client ||
+                  remaining > 0
+                }
+                onPress={() => void start()}
+              />
+            ) : null}
+            {preparing || recording ? (
+              <Button
+                label={preparing ? 'Cancel' : 'Stop recording'}
+                variant={preparing ? 'secondary' : 'primary'}
+                fullWidth
+                disabled={selectedBusy}
+                onPress={() => void collect()}
+              />
+            ) : null}
+            {awaitingCollection || archivedRun ? (
+              <Button
+                label={archivedRun ? 'Collect again' : 'Collect report'}
+                variant={archivedRun && problemStopConfirmed ? 'text' : 'primary'}
+                fullWidth
+                disabled={selectedBusy}
+                onPress={() => void collect()}
+              />
+            ) : null}
+            {archivedRun && problemReport ? (
+              <Button
+                label="Share report"
+                variant={problemStopConfirmed ? 'secondary' : 'primary'}
+                fullWidth
+                onPress={() => void Share.share({ message: JSON.stringify(problemReport) })}
+              />
+            ) : null}
+            {archivedRun && problemStopConfirmed ? (
+              <Button label="Start new long test" fullWidth onPress={() => void newProblem()} />
+            ) : null}
+            {awaitingCollection || (archivedRun && !problemStopConfirmed) ? (
+              <Button
+                label="Discard and start over"
+                variant="text"
+                fullWidth
+                disabled={selectedBusy}
+                onPress={confirmDiscardProblem}
+              />
+            ) : null}
+          </Actions>
+        </TestCard>
+      </View>
+      <Toast message={reportMessage} />
+      {reports.length > 0 ? (
         <>
           <Eyebrow>Saved reports</Eyebrow>
           <RowCard>
-            {reportMessage ? (
-              <CardRow title="Report status" subtitle={reportMessage} chevron={false} />
-            ) : null}
-            {reports.map((report) => (
-              <View key={report.runId}>
-                <CardRow
-                  title={`${report.testType === 'quick_test' ? 'Quick test' : 'Problem recording'} · ${report.runId.slice(0, 8)}`}
-                  subtitle={`${report.startedAt ?? 'Older run — start time unavailable'} · ${report.complete ? 'Complete' : 'Partial'} · App ${report.sources.app ? 'available' : 'missing'}, Core ${report.sources.core ? 'available' : 'missing'}, Uplink ${report.sources.uplink ? 'available' : 'missing'} · Copy saved report`}
-                  disabled={switchDisabled}
-                  onPress={() => {
-                    void Clipboard.setStringAsync(JSON.stringify(report)).then(
-                      () =>
-                        setReportMessage(
-                          'Saved report copied. No new capture or collection started.',
-                        ),
-                      () => setReportMessage('Clipboard unavailable. Saved report retained.'),
-                    );
-                  }}
-                />
-                <CardRow
-                  title={`Delete saved report · ${report.runId.slice(0, 8)}`}
-                  disabled={switchDisabled}
-                  onPress={() => {
-                    Alert.alert(
-                      'Delete saved report?',
-                      'This removes this saved copy from this device. Copy the report first if you need to keep it.',
-                      [
-                        { text: 'Cancel', style: 'cancel' },
-                        {
-                          text: 'Delete',
-                          style: 'destructive',
-                          onPress: () => {
-                            if (serverId)
-                              void removeConnectionDiagnosticReport(serverId, report.runId).then(
-                                () => {
-                                  if (runRef.current?.runId === report.runId)
-                                    setProblemArchived(false);
-                                  refreshReports();
+            {reports.map((report) => {
+              const open = expanded === report.runId;
+              return (
+                <View key={report.runId}>
+                  <CardRow
+                    title={`${testNames[report.testType]} · ${formatReportTime(report.startedAt)}`}
+                    subtitle={completeness(report)}
+                    chevron={false}
+                    accessibilityLabel={`${testNames[report.testType]}, ${formatReportTime(report.startedAt)}, ${completeness(report)}. ${open ? 'Hide' : 'Show'} actions`}
+                    onPress={() => setExpanded(open ? null : report.runId)}
+                  />
+                  {open ? (
+                    <View style={styles.reportDetail}>
+                      <SourceTags sources={report.sources} />
+                      <Actions>
+                        <Button
+                          label="Share"
+                          size="compact"
+                          onPress={() => void Share.share({ message: JSON.stringify(report) })}
+                        />
+                        <Button
+                          label="Copy"
+                          size="compact"
+                          variant="secondary"
+                          onPress={() => {
+                            void Clipboard.setStringAsync(JSON.stringify(report)).then(
+                              () => setReportMessage('Report copied to the clipboard.'),
+                              () => setReportMessage('Clipboard unavailable.'),
+                            );
+                          }}
+                        />
+                        <Button
+                          label="Delete"
+                          size="compact"
+                          variant="destructive"
+                          disabled={switchDisabled}
+                          onPress={() => {
+                            Alert.alert(
+                              'Delete this report?',
+                              'It is removed from this device. Share or copy it first if you still need it.',
+                              [
+                                { text: 'Cancel', style: 'cancel' },
+                                {
+                                  text: 'Delete',
+                                  style: 'destructive',
+                                  onPress: () => {
+                                    if (serverId)
+                                      void removeConnectionDiagnosticReport(
+                                        serverId,
+                                        report.runId,
+                                      ).then(
+                                        () => {
+                                          if (runRef.current?.runId === report.runId)
+                                            setProblemArchived(false);
+                                          setExpanded(null);
+                                          refreshReports();
+                                        },
+                                        () => setReportMessage('Could not delete the report.'),
+                                      );
+                                  },
                                 },
-                                () => setReportMessage('Could not delete the saved report.'),
-                              );
-                          },
-                        },
-                      ],
-                    );
-                  }}
-                />
-              </View>
-            ))}
+                              ],
+                            );
+                          }}
+                        />
+                      </Actions>
+                      <Text variant="footnote">
+                        {[
+                          `Run ${report.runId}`,
+                          `This device stopped: ${report.app.stopped ? 'yes' : 'not confirmed'}`,
+                          `Core and Uplink stopped: ${report.remote.stopped ? 'yes' : 'not confirmed'}`,
+                          report.gaps.length > 0 ? `Notes: ${report.gaps.join(', ')}` : '',
+                        ]
+                          .filter(Boolean)
+                          .join('\n')}
+                      </Text>
+                    </View>
+                  ) : null}
+                </View>
+              );
+            })}
           </RowCard>
         </>
       ) : null}
     </View>
   );
 }
+
+const styles = StyleSheet.create((theme) => ({
+  stack: { gap: theme.spacing.md },
+  reportDetail: {
+    gap: theme.spacing.md,
+    paddingHorizontal: theme.spacing.lg,
+    paddingBottom: theme.spacing.lg,
+  },
+}));

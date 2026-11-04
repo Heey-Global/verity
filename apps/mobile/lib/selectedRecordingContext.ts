@@ -5,6 +5,32 @@ import { getAuthToken } from './authToken';
 import { createPinnedFetch } from './pinnedTransport';
 import { getServerProfile } from './serverProfile';
 
+/**
+ * Confirms no native DATA tunnel is running on this device. It needs no paired
+ * direct connection, so an unfinished test can still be discarded without one.
+ */
+export async function assertNativeTunnelInactive() {
+  const native = requireNativeModule<{
+    isActive(): Promise<boolean>;
+    isSupported(): Promise<boolean>;
+  }>('VerityRemoteControlTunnel');
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      (async () => {
+        if (!(await native.isSupported())) throw new Error('Native connection test unsupported.');
+        if (await native.isActive())
+          throw new Error('An existing DATA tunnel must be stopped before testing.');
+      })(),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error('Native status unavailable.')), 3000);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /** Never use the normal client's remote fallback for diagnostic administration. */
 export function selectedRecordingContext() {
   const profile = getServerProfile();
@@ -46,28 +72,7 @@ export function selectedRecordingContext() {
       uplinkOrigin: remote.uplinkOrigin,
       installationHandle: remote.installationHandle,
     },
-    async assertInactive() {
-      const native = requireNativeModule<{
-        isActive(): Promise<boolean>;
-        isSupported(): Promise<boolean>;
-      }>('VerityRemoteControlTunnel');
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      try {
-        await Promise.race([
-          (async () => {
-            if (!(await native.isSupported()))
-              throw new Error('Native connection test unsupported.');
-            if (await native.isActive())
-              throw new Error('An existing DATA tunnel must be stopped before testing.');
-          })(),
-          new Promise<never>((_, reject) => {
-            timer = setTimeout(() => reject(new Error('Native status unavailable.')), 3000);
-          }),
-        ]);
-      } finally {
-        clearTimeout(timer);
-      }
-    },
+    assertInactive: assertNativeTunnelInactive,
     async verify() {
       const descriptor = await client.getRemoteControlDescriptor();
       if (

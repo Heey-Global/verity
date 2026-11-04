@@ -1,4 +1,4 @@
-import { AppState } from 'react-native';
+import { Alert, AppState } from 'react-native';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 const mockAttempt = jest.fn();
@@ -48,6 +48,7 @@ jest.mock('../../lib/selectedRecordingAttempt', () => ({
 }));
 jest.mock('../../lib/selectedRecordingContext', () => ({
   selectedRecordingContext: () => mockContext(),
+  assertNativeTunnelInactive: () => mockInactive(),
 }));
 jest.mock('../../lib/remoteControlTransport', () => ({
   remoteDataRecordingRemainingMs: async () => 0,
@@ -125,11 +126,11 @@ async function ready() {
 async function completed() {
   await ready();
   fireEvent.press(screen.getByText('Start quick test'));
-  await screen.findByText(/Test ended automatically after the response/);
+  await screen.findByText(/Connection works/);
 }
 async function copyReport() {
   const previous = mockCopy.mock.calls.length;
-  fireEvent.press(screen.getByText('Copy report'));
+  fireEvent.press(screen.queryByText('Collect again') ?? screen.getByText('Collect report'));
   await waitFor(() => expect(mockCopy).toHaveBeenCalledTimes(previous + 1));
   return JSON.parse(mockCopy.mock.calls.at(-1)![0]);
 }
@@ -180,7 +181,7 @@ afterEach(() => jest.restoreAllMocks());
 it('does not start on mount and explains the quick test automatic end', async () => {
   await ready();
   expect(mockAttempt).not.toHaveBeenCalled();
-  expect(screen.getByText(/One health request. Ends automatically/)).toBeTruthy();
+  expect(screen.getByText(/Checks once whether the connection works/)).toBeTruthy();
   expect(screen.queryByText('Stop test')).toBeNull();
 });
 it('retains the completed run and copies a combined version2 report only on request', async () => {
@@ -215,7 +216,7 @@ it('blocks attachment when paired direct prerequisites fail', async () => {
   });
   await ready();
   fireEvent.press(screen.getByText('Start quick test'));
-  await screen.findByText('Unlock the paired direct connection before testing.');
+  await screen.findByText('Unlock the direct connection to your Core, then try again.');
   expect(mockAttempt).not.toHaveBeenCalled();
   expect(await AsyncStorage.getItem(key)).toBeNull();
 });
@@ -243,7 +244,7 @@ it.each(['stop', 'blur', 'background'])('aborts without double starting on %s', 
 it('restores an older UUID run as unknown and never restarts it during collection', async () => {
   await AsyncStorage.setItem(key, runId);
   render(<SelectedConnectionTest disabled={false} onBusy={jest.fn()} />);
-  await screen.findByText(/Older saved run — start time unavailable/);
+  await screen.findByText(/Earlier test\. Collect its report/);
   expect(screen.queryByText('Start quick test')).toBeNull();
   const report = await copyReport();
   expect(report).toMatchObject({
@@ -260,7 +261,7 @@ it('restores an older UUID run as unknown and never restarts it during collectio
 it('retains local evidence and the run when remote recollection fails', async () => {
   await completed();
   const first = await copyReport();
-  await screen.findByText(/Complete report copied/);
+  await screen.findByText('Report copied to the clipboard.');
   mockExport.mockRejectedValue(new Error('private token payload'));
   const next = await copyReport();
   expect(next).toMatchObject({
@@ -284,9 +285,9 @@ it('excludes a server response from another installation', async () => {
 it('does not announce copying when the clipboard rejects and keeps evidence available', async () => {
   await completed();
   mockCopy.mockRejectedValue(new Error('clipboard unavailable'));
-  fireEvent.press(screen.getByText('Copy report'));
-  await screen.findByText('Could not copy the report. This run is retained; retry collection.');
-  expect(screen.queryByText(/Complete report copied/)).toBeNull();
+  fireEvent.press(screen.getByText('Collect report'));
+  await screen.findByText('Could not copy the report. The test is kept – try again.');
+  expect(screen.queryByText('Report copied to the clipboard.')).toBeNull();
   expect(await AsyncStorage.getItem(key)).not.toBeNull();
   expect(await loadConnectionDiagnosticReports('paired')).toHaveLength(1);
 });
@@ -294,9 +295,9 @@ it('does not start the test when saving its initial identity fails', async () =>
   await ready();
   jest.spyOn(AsyncStorage, 'setItem').mockRejectedValueOnce(new Error('storage full'));
   fireEvent.press(screen.getByText('Start quick test'));
-  await screen.findByText(/Test failed during preparation or request/);
+  await screen.findByText('Connection failed');
   expect(mockAttempt).not.toHaveBeenCalled();
-  expect(screen.queryByText(/Test ended automatically/)).toBeNull();
+  expect(screen.queryByText(/Connection works/)).toBeNull();
 });
 it('reports history storage failure separately from clipboard success', async () => {
   await completed();
@@ -309,9 +310,9 @@ it('reports history storage failure separately from clipboard success', async ()
         : setItem(name, value),
     );
   const report = await copyReport();
-  await screen.findByText(/Saving failed or Saved reports is full/);
+  await screen.findByText(/could not be saved on this device/);
   expect(report.runId).toBe(runId);
-  expect(screen.queryByText('Start another quick test')).toBeNull();
+  expect(screen.queryByText('Start new quick test')).toBeNull();
 });
 it('persists native evidence arriving after navigation without updating the unfocused UI', async () => {
   let finish!: () => void;
@@ -344,15 +345,17 @@ it('persists native evidence arriving after navigation without updating the unfo
     }),
   );
   expect(mockAttempt.mock.calls[0][0].signal.aborted).toBe(true);
-  expect(screen.queryByText(/Test ended automatically/)).toBeNull();
+  expect(screen.queryByText(/Connection works/)).toBeNull();
 });
 it('does not start another run while native Stop remains unknown', async () => {
   await completed();
   await copyReport();
-  await screen.findByText('Start another quick test');
+  await screen.findByText('Start new quick test');
   mockInactive.mockRejectedValue(new Error('native Stop unknown'));
-  fireEvent.press(screen.getByText('Start another quick test'));
-  await screen.findByText('Cannot start another test while native Stop is unconfirmed.');
+  fireEvent.press(screen.getByText('Start new quick test'));
+  await screen.findByText(
+    'The app could not confirm that the last test stopped on this device. Try again.',
+  );
   expect(await AsyncStorage.getItem(key)).not.toBeNull();
   expect(screen.queryByText('Start quick test')).toBeNull();
   expect(mockAttempt).toHaveBeenCalledTimes(1);
@@ -361,9 +364,10 @@ it('does not authorize a fresh run merely because a partial report was saved', a
   await completed();
   mockExport.mockRejectedValue(new Error('remote unavailable'));
   await copyReport();
-  await screen.findByText('Start another quick test');
-  fireEvent.press(screen.getByText('Start another quick test'));
-  await screen.findByText('Cannot start another test while Stop is unconfirmed.');
+  // A partial report alone never offers a fresh run; the user must finish or discard.
+  await screen.findByText('Not confirmed as stopped');
+  expect(screen.queryByText('Start new quick test')).toBeNull();
+  expect(screen.getByText('Discard and start over')).toBeTruthy();
   expect(await AsyncStorage.getItem(key)).not.toBeNull();
   expect(screen.queryByText('Start quick test')).toBeNull();
   expect(mockAttempt).toHaveBeenCalledTimes(1);
@@ -372,7 +376,7 @@ it('does not authorize a fresh run merely because a partial report was saved', a
 it('serializes repeated new-test taps so a delayed removal cannot erase the next run', async () => {
   await completed();
   await copyReport();
-  const button = await screen.findByRole('button', { name: 'Start another quick test' });
+  const button = await screen.findByRole('button', { name: 'Start new quick test' });
   let release!: () => void;
   jest.mocked(AsyncStorage.removeItem).mockImplementationOnce(
     (name) =>
@@ -440,7 +444,7 @@ it('retains old-profile completion only under its original storage key', async (
   );
   expect(await AsyncStorage.getItem('verity.selectedConnectionTest.v1.other-profile')).toBeNull();
   expect(screen.queryByText(/Quick test · 11111111/)).toBeNull();
-  expect(screen.queryByText(/Test ended automatically/)).toBeNull();
+  expect(screen.queryByText(/Connection works/)).toBeNull();
 });
 
 it('keeps a partial report for a missing server run and allows a new test only after verified inactivity', async () => {
@@ -448,8 +452,8 @@ it('keeps a partial report for a missing server run and allows a new test only a
   mockExport.mockRejectedValue(Object.assign(new Error('not retained'), { status: 404 }));
   const report = await copyReport();
   expect(report.remote).toMatchObject({ available: false, stopped: false, recording: null });
-  expect(screen.getByText(/Core has no retained report for this run/)).toBeTruthy();
-  fireEvent.press(screen.getByText('Start another quick test'));
+  expect(screen.getByText(/Your Core no longer has data for this test/)).toBeTruthy();
+  fireEvent.press(screen.getByText('Start new quick test'));
   await screen.findByText('Start quick test');
   expect(await AsyncStorage.getItem(key)).toBeNull();
   expect(await loadConnectionDiagnosticReports('paired')).toHaveLength(1);
@@ -461,18 +465,18 @@ it('resets the previous profile report and failure status when selecting another
     expect(screen.getByRole('button', { name: 'Start quick test' })).toBeEnabled(),
   );
   fireEvent.press(screen.getByText('Start quick test'));
-  await screen.findByText(/Test ended automatically/);
+  await screen.findByText(/Connection works/);
   mockExport.mockRejectedValue(new Error('offline'));
   await copyReport();
-  expect(screen.getByText('Copy local test failure')).toBeTruthy();
+  expect(screen.getByText('Copy technical failure details')).toBeTruthy();
   mockProfile = { serverId: 'other-profile' };
   view.rerender(<SelectedConnectionTest disabled={false} onBusy={jest.fn()} />);
   await waitFor(() =>
     expect(screen.getByRole('button', { name: 'Start quick test' })).toBeEnabled(),
   );
-  expect(screen.queryByText('Copy local test failure')).toBeNull();
-  expect(screen.queryByText(/Partial report copied/)).toBeNull();
-  expect(screen.getByText(/One health request. Ends automatically/)).toBeTruthy();
+  expect(screen.queryByText('Copy technical failure details')).toBeNull();
+  expect(screen.queryByText(/Incomplete –/)).toBeNull();
+  expect(screen.getByText(/Checks once whether the connection works/)).toBeTruthy();
 });
 
 it('preserves native evidence in memory when persistence fails after capture', async () => {
@@ -498,7 +502,7 @@ it('preserves native evidence in memory when persistence fails after capture', a
   });
   await ready();
   fireEvent.press(screen.getByText('Start quick test'));
-  await screen.findByText('Copy report');
+  await screen.findByText('Collect report');
   const report = await copyReport();
   expect(report.app.available).toBe(true);
   expect(report.app.recording[0].sessionHash).toBe(sessionHash);
@@ -511,7 +515,7 @@ it('keeps cross-mode capture blocked after a failed attempt until confirmed coll
   render(<SelectedConnectionTest disabled={false} onBusy={() => {}} onCaptureBlocked={blocked} />);
   await waitFor(() => expect(blocked).toHaveBeenLastCalledWith(false));
   fireEvent.press(screen.getByText('Start quick test'));
-  await screen.findByText(/Test failed during preparation or request/);
+  await screen.findByText('Connection failed');
   expect(blocked).toHaveBeenLastCalledWith(true);
 });
 
@@ -519,21 +523,15 @@ it('integrates the quick collection/Stop gate with problem-start admission', asy
   const client = { startConnectionRecording: jest.fn() } as never;
   mockAttempt.mockRejectedValue(new Error('Selected native capture cleanup failed'));
   render(<ConnectionRecording client={client} />);
-  fireEvent.press(screen.getByText('Quick connection test'));
   await waitFor(() => expect(screen.getByText('Start quick test')).toBeEnabled());
   fireEvent.press(screen.getByText('Start quick test'));
-  await screen.findByText(/Test failed during preparation or request/);
-  fireEvent.press(screen.getByText('Record a connection problem'));
-  expect(screen.getByText('Start problem recording')).toBeDisabled();
-  fireEvent.press(screen.getByText('Quick connection test'));
+  await screen.findByText('Connection failed');
+  expect(screen.getByText('Start long test')).toBeDisabled();
   mockExport.mockRejectedValueOnce(new Error('unavailable'));
   await copyReport();
-  fireEvent.press(screen.getByText('Record a connection problem'));
-  expect(screen.getByText('Start problem recording')).toBeDisabled();
-  fireEvent.press(screen.getByText('Quick connection test'));
+  expect(screen.getByText('Start long test')).toBeDisabled();
   await copyReport();
-  fireEvent.press(screen.getByText('Record a connection problem'));
-  await waitFor(() => expect(screen.getByText('Start problem recording')).toBeEnabled());
+  await waitFor(() => expect(screen.getByText('Start long test')).toBeEnabled());
 });
 
 it('does not release cross-mode capture from retained Stop when current inactivity fails', async () => {
@@ -541,10 +539,58 @@ it('does not release cross-mode capture from retained Stop when current inactivi
   render(<SelectedConnectionTest disabled={false} onBusy={() => {}} onCaptureBlocked={blocked} />);
   await waitFor(() => expect(screen.getByText('Start quick test')).toBeEnabled());
   fireEvent.press(screen.getByText('Start quick test'));
-  await screen.findByText(/Test ended automatically after the response/);
+  await screen.findByText(/Connection works/);
   await copyReport();
   expect(blocked).toHaveBeenLastCalledWith(false);
   mockInactive.mockRejectedValue(new Error('active tunnel'));
   await copyReport();
   expect(blocked).toHaveBeenLastCalledWith(true);
+});
+
+async function confirmDiscard() {
+  const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => {});
+  try {
+    fireEvent.press(screen.getByText('Discard and start over'));
+    await act(async () =>
+      alert.mock.calls[0]![2]!.find((button) => button.text === 'Discard')!.onPress!(),
+    );
+  } finally {
+    alert.mockRestore();
+  }
+}
+it('discards an unfinished quick test only after this device confirms it is inactive', async () => {
+  await AsyncStorage.setItem(key, runId);
+  render(<SelectedConnectionTest disabled={false} onBusy={jest.fn()} />);
+  await screen.findByText(/Earlier test\. Collect its report/);
+  // A still-running native tunnel must keep the unfinished test and its data.
+  mockInactive.mockRejectedValueOnce(new Error('active tunnel'));
+  await confirmDiscard();
+  await screen.findByText(/could not confirm that the test stopped on this device/);
+  expect(await AsyncStorage.getItem(key)).toBe(runId);
+  await confirmDiscard();
+  await waitFor(() => expect(screen.getByText('Start quick test')).toBeEnabled());
+  expect(await AsyncStorage.getItem(key)).toBeNull();
+  expect(mockAttempt).not.toHaveBeenCalled();
+});
+it('keeps saved reports when discarding an unfinished quick test', async () => {
+  await completed();
+  mockExport.mockRejectedValue(new Error('remote unavailable'));
+  await copyReport();
+  await screen.findByText('Not confirmed as stopped');
+  await confirmDiscard();
+  await screen.findByText('Start quick test');
+  expect((await loadConnectionDiagnosticReports('paired')).map((entry) => entry.runId)).toEqual([
+    runId,
+  ]);
+});
+it('explains why the quick test is unavailable instead of only greying it out', async () => {
+  render(
+    <SelectedConnectionTest
+      disabled
+      blockedReason="Finish the long test first."
+      onBusy={jest.fn()}
+    />,
+  );
+  await screen.findByText('Finish the long test first.');
+  expect(screen.getByRole('button', { name: 'Start quick test' })).toBeDisabled();
 });
