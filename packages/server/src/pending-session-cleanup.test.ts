@@ -165,6 +165,8 @@ it('blocks admission on failed home cleanup and retries it immediately despite b
     await processor.run();
     await expect(processor.run('project')).rejects.toThrow('supervisor unavailable');
     expect(f.deleteHome).toHaveBeenCalledTimes(2);
+    f.deleteHome.mockRejectedValue(undefined);
+    await expect(processor.run('project')).rejects.toThrow('Pending session home cleanup failed');
     f.deleteHome.mockResolvedValue(undefined);
     await processor.run('project');
     expect(await pendingSessionCleanups(f.root)).toEqual([]);

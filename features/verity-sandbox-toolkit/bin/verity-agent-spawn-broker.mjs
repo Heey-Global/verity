@@ -79,10 +79,13 @@ export async function runnerStackHealth(options = {}) {
         hash.update(`${createHash('sha256').update(read(path)).digest('hex')}  ${path}\n`);
       }
       if (fingerprint !== hash.digest('hex')) throw new Error('configuration changed');
-      const response = await (options.fetch ?? fetch)(`http://127.0.0.1:${port}/__verity/ready`, {
-        signal: AbortSignal.timeout(1_000),
-        redirect: 'error',
-      });
+      const response = await (options.fetch ?? globalThis.fetch)(
+        `http://127.0.0.1:${port}/__verity/ready`,
+        {
+          signal: globalThis.AbortSignal.timeout(1_000),
+          redirect: 'error',
+        },
+      );
       connector = response.ok && (await response.text()).includes('"ready":true');
     } catch {
       connector = false;

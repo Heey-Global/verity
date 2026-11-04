@@ -128,11 +128,17 @@ describe('ResourceObserver', () => {
     expect(branches).toHaveBeenCalledTimes(2);
     expect(listeners).toHaveBeenCalledOnce();
     expect(activity).toHaveBeenCalledOnce();
+    // Metadata changes still update the focused activity without a Git or listener read.
+    observer.invalidate('/sessions/s/activity');
+    await vi.advanceTimersByTimeAsync(1);
+    expect(branches).toHaveBeenCalledTimes(2);
+    expect(listeners).toHaveBeenCalledOnce();
+    expect(activity).toHaveBeenCalledTimes(2);
     observer.invalidate('/sessions/s/new-storage-mutation');
     await vi.advanceTimersByTimeAsync(1);
     expect(branches).toHaveBeenCalledTimes(3);
     expect(listeners).toHaveBeenCalledTimes(2);
-    expect(activity).toHaveBeenCalledTimes(2);
+    expect(activity).toHaveBeenCalledTimes(3);
   });
 
   it('preserves focused link and permission refreshes', async () => {

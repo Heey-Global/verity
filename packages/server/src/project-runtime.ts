@@ -179,7 +179,12 @@ const defaultRunner: RuntimeRunner = async (command, args, opts) => {
             encoding: 'utf8',
           },
           (error, stdout, stderr) => {
-            if (error) reject(error);
+            if (error)
+              reject(
+                error instanceof Error
+                  ? error
+                  : new Error('Managed secret server transport failed.', { cause: error }),
+              );
             else resolve({ stdout, stderr });
           },
         );

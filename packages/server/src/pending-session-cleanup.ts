@@ -132,7 +132,7 @@ export function createSessionCleanupProcessor(options: {
         continue;
       const previous = JSON.stringify(record);
       const progress = (record.progress ??= {});
-      let admissionFailure: unknown;
+      let admissionFailure: Error | undefined;
       for (const projectId of record.runnerProjectIds) {
         if (readyProjectId !== undefined && readyProjectId !== projectId) continue;
         const step = Object.hasOwn(progress, projectId)
@@ -157,7 +157,11 @@ export function createSessionCleanupProcessor(options: {
           } catch (cause) {
             retry = true;
             error = cause;
-            if (admission) admissionFailure = cause;
+            if (admission)
+              admissionFailure =
+                cause instanceof Error
+                  ? cause
+                  : new Error('Pending session home cleanup failed', { cause });
           }
         }
         // The broker must fence late writers before any independent artifact purge.

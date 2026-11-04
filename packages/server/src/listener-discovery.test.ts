@@ -2,7 +2,7 @@ import { PassThrough } from 'node:stream';
 import { EventEmitter } from 'node:events';
 import { spawn } from 'node:child_process';
 import { describe, expect, it, vi } from 'vitest';
-import type { EventStore } from '@verity/store';
+import type { EventStore, ProjectRecord } from '@verity/store';
 import { InMemoryEventBus } from '@verity/session';
 import type { ListeningProcess } from './listening-ports.js';
 import { ListenerDiscovery } from './listener-discovery.js';
@@ -26,7 +26,7 @@ describe('independent listener discovery', () => {
       repo: 'repo',
       containerName: 'sandbox',
       state: 'active' as const,
-    };
+    } as ProjectRecord;
     const store = {
       getProject: vi.fn(async () => project),
       getSession: vi.fn(async () => ({ projectId: project.id })),
@@ -85,7 +85,7 @@ describe('independent listener discovery', () => {
       repo: 'repo',
       containerName: 'sandbox',
       state: 'active' as const,
-    };
+    } as ProjectRecord;
     const store = {
       getProject: vi.fn(async () => project),
       listSessions: vi.fn(async () => []),
@@ -124,19 +124,32 @@ describe('independent listener discovery', () => {
 
   it('waits for a post-change scan before returning a fresh action read', async () => {
     const project = {
-      id: 'p', owner: 'org', repo: 'repo', containerName: 'sandbox', state: 'active' as const,
-    };
+      id: 'p',
+      owner: 'org',
+      repo: 'repo',
+      containerName: 'sandbox',
+      state: 'active' as const,
+    } as ProjectRecord;
     const store = {
       getProject: vi.fn(async () => project),
       listSessions: vi.fn(async () => []),
     } as unknown as EventStore;
     let release!: (processes: ListeningProcess[]) => void;
-    const scan = vi.fn(async () => [] as ListeningProcess[]).mockImplementationOnce(
-      () => new Promise((done) => { release = done; }),
-    );
+    const scan = vi
+      .fn(async () => [] as ListeningProcess[])
+      .mockImplementationOnce(
+        () =>
+          new Promise((done) => {
+            release = done;
+          }),
+      );
     const onScan = vi.fn();
     const discovery = new ListenerDiscovery({
-      eventStore: store, bus: new InMemoryEventBus(), hostCloneRoot: '/data', scan, onScan,
+      eventStore: store,
+      bus: new InMemoryEventBus(),
+      hostCloneRoot: '/data',
+      scan,
+      onScan,
     });
     try {
       const read = discovery.listListeningProcesses(project, { fresh: true });

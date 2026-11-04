@@ -285,6 +285,7 @@ RUN install -m 0755 /opt/verity-features/verity-sandbox-toolkit/bin/verity-runne
     && install -m 0755 /opt/verity-features/verity-sandbox-toolkit/bin/verity-node-modules-install /usr/local/bin/verity-node-modules-install \
     && install -m 0755 /opt/verity-features/verity-sandbox-toolkit/bin/verity-runner-worker.mjs /usr/local/bin/verity-runner-worker \
     && install -m 0755 /opt/verity-features/verity-sandbox-toolkit/bin/verity-agent-spawn-broker.mjs /usr/local/bin/verity-agent-spawn-broker \
+    && install -m 0644 /opt/verity-features/verity-sandbox-toolkit/bin/verity-memory-guard.mjs /usr/local/bin/verity-memory-guard.mjs \
     && install -m 0644 /opt/verity-features/verity-sandbox-toolkit/bin/verity-managed-secret-servers.mjs /usr/local/bin/verity-managed-secret-servers.mjs \
     && install -m 0755 /opt/verity-features/verity-sandbox-toolkit/bin/verity-egress-connector.mjs /usr/local/bin/verity-egress-connector \
     && install -m 0755 /opt/verity-features/verity-sandbox-toolkit/bin/verity-egress-connector-start /usr/local/bin/verity-egress-connector-start \

@@ -297,7 +297,11 @@ describe('createGitBranchService', () => {
       await expect(svc.sessionBranches('/wt')).resolves.toEqual(['current', ...names]);
       expect(calls).toHaveLength(3);
       expect(calls.at(-1)).toEqual([
-        '-C', '/repo', 'for-each-ref', '--format=%(refname)', 'refs/heads',
+        '-C',
+        '/repo',
+        'for-each-ref',
+        '--format=%(refname)',
+        'refs/heads',
       ]);
     });
 

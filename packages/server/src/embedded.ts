@@ -3066,7 +3066,6 @@ export async function buildEmbeddedServer(
   let docker: DockerClient | undefined;
   let projectEgress: ProjectEgressLifecycle | undefined = config.projectEgress;
   let provisioner: ProvisionerImpl | undefined;
-  let runPendingCleanup: ((projectId: string) => Promise<void>) | undefined;
   let stopNativeEvidence: (() => void) | undefined;
   let buildStorage: BuildStorage | undefined;
   const projectSandboxLifecycleTelemetry = new ProjectSandboxLifecycleTelemetry();
@@ -4940,8 +4939,10 @@ export async function buildEmbeddedServer(
             ),
           stopped: () => cleanupAbort.signal.aborted,
         });
-  runPendingCleanup =
-    cleanupProcessor === undefined ? undefined : (projectId) => cleanupProcessor.run(projectId);
+  const runPendingCleanup =
+    cleanupProcessor === undefined
+      ? undefined
+      : (projectId: string) => cleanupProcessor.run(projectId);
   const sessionCleanupWorker =
     cleanupProcessor === undefined
       ? undefined

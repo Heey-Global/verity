@@ -173,8 +173,8 @@ it('matches the real launcher configuration fingerprint', async () => {
       },
     );
     f.files.set(`${controlDir}/egress-connector.pid`, `42 123 ${stdout.trim()}`);
-    const readFile = (path: string) => contents.get(path) ?? f.read(path);
-    expect(await runnerStackHealth({ ...f.options, readFile })).toMatchObject({
+    const readHealthFile = (path: string) => contents.get(path) ?? f.read(path);
+    expect(await runnerStackHealth({ ...f.options, readFile: readHealthFile })).toMatchObject({
       healthy: true,
       connector: true,
     });
@@ -197,14 +197,18 @@ function request(socketPath: string, body: object): Promise<Record<string, unkno
       try {
         resolveRequest(JSON.parse(response.trim()) as Record<string, unknown>);
       } catch (error) {
-        reject(error);
+        reject(
+          error instanceof Error
+            ? error
+            : new Error('Supervisor socket request failed', { cause: error }),
+        );
       }
     });
   });
 }
 
 it('exposes health through existing broker and supervisor sockets, ignoring caller-selected paths', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'verity-stack-socket-'));
+  const directory = await mkdtemp('/tmp/verity-stack-socket-');
   await chmod(directory, 0o770);
   const uid = process.getuid?.() ?? 0;
   const gid = process.getgid?.() ?? 0;

@@ -363,7 +363,7 @@ describe('POST /sessions/:id/debug/scroll', () => {
     // Telemetry must not trigger Git metadata reads or sandbox listener scans.
     expect(invalidate).not.toHaveBeenCalled();
     await app.inject({ method: 'PATCH', url: '/sessions/s1', payload: { name: 'Renamed' } });
-    expect(invalidate).toHaveBeenCalledWith('/sessions');
+    expect(invalidate).toHaveBeenCalledWith('/sessions/s1/activity');
     invalidate.mockRestore();
   });
 

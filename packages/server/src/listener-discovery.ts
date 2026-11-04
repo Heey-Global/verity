@@ -100,7 +100,11 @@ export class ListenerDiscovery {
     this.clearScans(projectId);
   }
 
-  private scan(project: ProjectRecord, fresh = false, remainingRefreshes = 2): Promise<ListeningProcess[]> {
+  private scan(
+    project: ProjectRecord,
+    fresh = false,
+    remainingRefreshes = 2,
+  ): Promise<ListeningProcess[]> {
     const freshResult = (entry: { promise: Promise<ListeningProcess[]>; invalidated: boolean }) =>
       entry.promise.then((processes) => {
         if (!entry.invalidated) return processes;
@@ -122,7 +126,11 @@ export class ListenerDiscovery {
       watcher?.containerName === project.containerName && watcher.observed
         ? WATCHED_SCAN_MAX_AGE_MS
         : FALLBACK_SCAN_MAX_AGE_MS;
-    if (!fresh && cached?.containerName === project.containerName && Date.now() - cached.at < maxAge)
+    if (
+      !fresh &&
+      cached?.containerName === project.containerName &&
+      Date.now() - cached.at < maxAge
+    )
       return Promise.resolve(cached.processes);
     const entry = {
       containerName: project.containerName,

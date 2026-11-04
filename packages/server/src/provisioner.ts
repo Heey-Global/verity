@@ -2923,7 +2923,7 @@ export class ProvisionerImpl implements Provisioner {
                     last?.containerName === project.containerName &&
                     last.generation === replacementGeneration;
                   const runtime = hasRunnerRuntime
-                    ? join(runtimeRoot!, 'runners', project.id)
+                    ? join(runtimeRoot, 'runners', project.id)
                     : undefined;
                   const health =
                     runtime === undefined

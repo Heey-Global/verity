@@ -37,6 +37,7 @@ import type { StreamingRedactorProfile } from '@verity/secret-contracts';
 // tests assert is that the fallback PATH is taken, not which version it lands on.
 // A restated tag kept passing while the ref it copied went dead.
 import { DEFAULT_TOOLKIT_FEATURE_FALLBACK } from './sandbox-artifacts.js';
+import { pendingSessionCleanups, queueSessionCleanup } from './pending-session-cleanup.js';
 
 import {
   branchRenameAppliesToSession,
@@ -2564,6 +2565,30 @@ describe('buildEmbeddedServer', () => {
           expect(Date.now() - deleteStarted).toBeLessThan(5_000);
           // The request must finish while the supervisor is still withholding its reply.
           expect(existsSync(rollout)).toBe(true);
+          const cleanupRoot = join(dataVolumeRoot, 'pending-session-cleanup');
+          await vi.waitFor(
+            async () => {
+              const pending = await pendingSessionCleanups(cleanupRoot);
+              expect(
+                pending.find((entry) => entry.sessionId === 's-purge')?.progress?.['p-purge'],
+              ).toMatchObject({ failures: 1, retryAt: expect.any(Number) });
+            },
+            { timeout: 15_000 },
+          );
+          // Make the durable retry due instead of waiting a full backoff plus
+          // worker tick; another deletion exercises the normal rescan trigger.
+          const pending = (await pendingSessionCleanups(cleanupRoot)).find(
+            (entry) => entry.sessionId === 's-purge',
+          )!;
+          pending.progress!['p-purge']!.retryAt = 0;
+          await queueSessionCleanup(cleanupRoot, pending);
+          await store.createSession({
+            sessionId: 's-purge-retry',
+            worktree,
+            model: 'codex/default',
+            projectId: 'p-purge',
+          });
+          await server.app.inject({ method: 'DELETE', url: '/sessions/s-purge-retry' });
         }
         await vi.waitFor(
           () => {
@@ -2571,7 +2596,7 @@ describe('buildEmbeddedServer', () => {
             expect(existsSync(transcript)).toBe(false);
             expect(existsSync(subagent)).toBe(false);
           },
-          { timeout: layout === 'timeout' ? 45_000 : 5_000 },
+          { timeout: 5_000 },
         );
         if (layout === 'timeout') {
           expect(deletionRequests.length).toBeGreaterThanOrEqual(2);

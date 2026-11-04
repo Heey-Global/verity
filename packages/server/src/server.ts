@@ -1858,7 +1858,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     )
       resources.invalidate(
         request.method === 'PATCH' && request.routeOptions.url === '/sessions/:id'
-          ? '/sessions'
+          ? `${request.url.split('?')[0]}/activity`
           : request.url,
       );
     done();
