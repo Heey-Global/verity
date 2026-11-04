@@ -3564,10 +3564,13 @@ describe('Conductor recover(): reattach-before-settle (ADR 0006 Stage 4c / D7)',
       await conductor.recover();
       conductor.beginSessionDeletion('s1');
       await ctx.store.deleteSession('s1');
+      const stopping = conductor.stopForDeletion('s1', 1000);
       if (terminal) resolve({ sessionId: 's1', exitCode: 143, stderr: '', aborted: true });
       else reject(new Error('attachment transport lost; worker status unknown'));
       await vi.waitFor(() => expect(conductor.isBusy('s1')).toBe(false));
       expect(conductor.isDeletionTerminationConfirmed('s1')).toBe(terminal);
+      expect(await stopping).toBe(terminal);
+      expect(await conductor.stopForDeletion('s1', 20)).toBe(terminal);
     },
   );
 
@@ -5007,6 +5010,31 @@ async function waitFor(cond: () => boolean): Promise<void> {
 }
 
 describe('Conductor.startSession', () => {
+  it('records a fresh turn terminal result arriving after the deletion stop deadline', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: gatedBackend(gate, { sessionId: 'fresh-delete', omitResult: true }).backend,
+      worktreeExists: async () => true,
+    });
+    const { sessionId } = await conductor.startSession({
+      worktree: '/wt/fresh-delete',
+      prompt: 'go',
+    });
+    try {
+      expect(await conductor.stopForDeletion(sessionId, 20)).toBe(false);
+      expect(conductor.isDeletionTerminationConfirmed(sessionId)).toBe(false);
+      await ctx.store.deleteSession(sessionId);
+    } finally {
+      release();
+    }
+    await vi.waitFor(() => expect(conductor.isBusy(sessionId)).toBe(false));
+    expect(conductor.isDeletionTerminationConfirmed(sessionId)).toBe(true);
+  });
+
   it('admits QA after initial-session marker cleanup fails', async () => {
     const cleanup = vi
       .spyOn(ctx.store, 'clearRunningTurn')
