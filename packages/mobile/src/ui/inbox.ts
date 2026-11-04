@@ -18,6 +18,11 @@ import { toolCallView } from './toolCall.js';
  * {@link projectNeedsRepair}, {@link sandboxUpdateNeedsAttention}). An item
  * disappears by itself once its source no longer reports it, which is what makes
  * an answered item leave Home.
+ *
+ * The operator can also dismiss an item that does not concern them right now
+ * ({@link inboxView}). A dismissal is stored per person on the server against
+ * the item's key, so it holds on all their devices; keys change with the facts
+ * behind them, so a new question, a new commit or a new problem comes back.
  */
 
 export type InboxItemKind =
@@ -58,6 +63,16 @@ export interface InboxItem {
   actions: InboxAction[];
   /** Sort time in epoch ms (meetings: start; sessions: last activity). */
   at: number;
+  /** Where dismissing it is stored: on its session or project, or — for a
+   *  meeting — as the existing Skip decision. Absent when the server predates
+   *  dismissing, so Home offers no X that could not be kept. */
+  dismiss?: 'session' | 'project' | 'meeting';
+}
+
+/** Home's items split into what it shows and what the operator dismissed. */
+export interface InboxView {
+  visible: InboxItem[];
+  hidden: InboxItem[];
 }
 
 export interface InboxInput {
@@ -88,14 +103,18 @@ const OPEN_TO_DECIDE: ReadonlySet<string> = new Set(['verity_package_install']);
 export function inboxItems(input: InboxInput): InboxItem[] {
   const projects = new Map(input.projects.map((project) => [project.id, project]));
   const items: InboxItem[] = [];
-  for (const session of input.sessions) items.push(...sessionItems(session, projects));
+  for (const session of input.sessions) {
+    const dismiss = session.inboxDismissed !== undefined ? ('session' as const) : undefined;
+    for (const item of sessionItems(session, projects)) items.push(withDismiss(item, dismiss));
+  }
   for (const meeting of input.meetings ?? []) {
     const item = meetingItem(meeting, input.now);
-    if (item) items.push(item);
+    if (item) items.push({ ...item, dismiss: 'meeting' });
   }
   for (const project of input.projects) {
     const item = projectHealthItem(project);
-    if (item) items.push(item);
+    const dismiss = project.inboxDismissed !== undefined ? ('project' as const) : undefined;
+    if (item) items.push(withDismiss(item, dismiss));
   }
   return items.sort((a, b) => {
     const rank = RANK[b.kind] - RANK[a.kind];
@@ -103,6 +122,32 @@ export function inboxItems(input: InboxInput): InboxItem[] {
     // Meetings soonest first; everything else newest first.
     return a.kind === 'meeting' ? a.at - b.at : b.at - a.at;
   });
+}
+
+function withDismiss(item: InboxItem, dismiss: InboxItem['dismiss']): InboxItem {
+  return dismiss === undefined ? item : { ...item, dismiss };
+}
+
+/**
+ * {@link inboxItems}, split by the operator's dismissals. Keys carry their
+ * session or project id, so one set over every source cannot mix two items up.
+ * Meetings never appear as hidden: skipping one is a decision, and decided
+ * meetings leave the inbox altogether.
+ */
+export function inboxView(input: InboxInput): InboxView {
+  const dismissed = inboxDismissedKeys(input);
+  const view: InboxView = { visible: [], hidden: [] };
+  for (const item of inboxItems(input))
+    (dismissed.has(item.key) ? view.hidden : view.visible).push(item);
+  return view;
+}
+
+/** Every Home item key the operator dismissed, across sessions and projects. */
+export function inboxDismissedKeys(input: Pick<InboxInput, 'sessions' | 'projects'>): Set<string> {
+  const dismissed = new Set<string>();
+  for (const source of [...input.sessions, ...input.projects])
+    for (const key of source.inboxDismissed ?? []) dismissed.add(key);
+  return dismissed;
 }
 
 /** The words for Verity's line above the inbox, counted from the items. */
@@ -279,7 +324,8 @@ function sessionItems(
     const button = pullRequestMergeButton(pr, { merging: false, mergeRejected: false });
     items.push({
       ...base,
-      key: `merge:${session.sessionId}:${pr.number}`,
+      // The head commit is part of the key: a dismissed PR returns once it changes.
+      key: `merge:${session.sessionId}:${pr.number}:${pr.headSha ?? ''}`,
       kind: 'merge_ready',
       tag: 'Merge ready',
       tone: 'success',
@@ -334,8 +380,11 @@ function meetingItem(meeting: UpcomingMeeting, now: number): InboxItem | undefin
 function projectHealthItem(project: ProjectRecord): InboxItem | undefined {
   if (project.archived === true) return undefined;
   const name = projectDisplayName(project);
+  // Each reason and each state change makes a new key, so a dismissed problem
+  // returns when the project breaks again or something else goes wrong.
+  const stamp = project.stateChangedAt ?? '';
+  const key = (reason: string) => `health:${project.id}:${reason}:${stamp}`;
   const base = {
-    key: `health:${project.id}`,
     kind: 'project_health' as const,
     tone: 'attention' as const,
     title: name,
@@ -347,6 +396,7 @@ function projectHealthItem(project: ProjectRecord): InboxItem | undefined {
   if (projectNeedsRepair(project)) {
     return {
       ...base,
+      key: key('repair'),
       tag: 'Repair',
       context: 'Sandbox',
       message: project.provisionError ?? 'The project sandbox needs a repair.',
@@ -357,6 +407,7 @@ function projectHealthItem(project: ProjectRecord): InboxItem | undefined {
     const update = project.sandboxUpdate;
     return {
       ...base,
+      key: key('update'),
       tag: isSecuritySandboxUpdate(update) ? 'Security update' : 'Update',
       context: 'Sandbox',
       message: update.turnBlocked
@@ -370,6 +421,7 @@ function projectHealthItem(project: ProjectRecord): InboxItem | undefined {
   if (vulnerabilities && severe > 0) {
     return {
       ...base,
+      key: key(`vulnerabilities-${String(severe)}`),
       tag: 'Vulnerabilities',
       context: 'Security',
       message:

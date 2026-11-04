@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { ProjectRecord, SessionSummary, UpcomingMeeting } from '../api.js';
-import { inboxItems, inboxSummary, MEETING_LEAD_MS, type InboxItem } from './inbox.js';
+import { inboxItems, inboxSummary, inboxView, MEETING_LEAD_MS, type InboxItem } from './inbox.js';
 
 const ZERO_USAGE = {
   inputTokens: 0,
@@ -325,5 +325,76 @@ describe('inboxItems', () => {
       now: NOW,
     });
     expect(items).toEqual([]);
+  });
+});
+
+describe('inboxView', () => {
+  const asking = (over: Partial<SessionSummary> = {}) =>
+    session('s1', {
+      status: 'awaiting_input',
+      openChoices: { question: 'Ship it?', options: [{ label: 'Yes' }] },
+      ...over,
+    });
+
+  it('hides dismissed items and keeps them apart for restoring', () => {
+    const open = inboxView({ sessions: [asking({ inboxDismissed: [] })], projects: [], now: NOW });
+    expect(open.visible).toHaveLength(1);
+    expect(open.visible[0]?.dismiss).toBe('session');
+    const key = open.visible[0]!.key;
+    const view = inboxView({
+      sessions: [asking({ inboxDismissed: [key] })],
+      projects: [],
+      now: NOW,
+    });
+    expect(view.visible).toEqual([]);
+    expect(view.hidden.map((item) => item.key)).toEqual([key]);
+    // The line above Home counts only what it shows.
+    expect(inboxSummary(view.visible)).toBe('Nothing needs you right now.');
+  });
+
+  it('offers no X against a server that cannot keep the dismissal', () => {
+    const [item] = inboxView({ sessions: [asking()], projects: [], now: NOW }).visible;
+    expect(item?.dismiss).toBeUndefined();
+    // A meeting's X is its Skip, which every server already stores.
+    const [call] = inboxView({
+      sessions: [],
+      projects: [],
+      meetings: [meeting()],
+      now: NOW,
+    }).visible;
+    expect(call?.dismiss).toBe('meeting');
+  });
+
+  it('brings a dismissed pull request back with a new commit', () => {
+    const pr = (headSha: string) =>
+      session('pr', {
+        pr: { phase: 'open', pipeline: 'success', mergeable: true },
+        pullRequest: { ...readyPr, headSha },
+      });
+    const [first] = inboxItems({ sessions: [pr('aaa')], projects: [project()], now: NOW });
+    const view = inboxView({
+      sessions: [{ ...pr('bbb'), inboxDismissed: [first!.key] }],
+      projects: [project()],
+      now: NOW,
+    });
+    expect(view.visible).toHaveLength(1);
+    expect(view.hidden).toEqual([]);
+  });
+
+  it('brings a dismissed project problem back when the project breaks again', () => {
+    const broken = (stateChangedAt: string) =>
+      project({ state: 'failed', provisionError: 'Image pull failed', stateChangedAt });
+    const [first] = inboxItems({
+      sessions: [],
+      projects: [broken('2026-11-03T08:00:00Z')],
+      now: NOW,
+    });
+    expect(first?.key.startsWith('health:p1:')).toBe(true);
+    const again = inboxView({
+      sessions: [],
+      projects: [{ ...broken('2026-11-03T09:30:00Z'), inboxDismissed: [first!.key] }],
+      now: NOW,
+    });
+    expect(again.visible.map((item) => item.dismiss)).toEqual(['project']);
   });
 });
