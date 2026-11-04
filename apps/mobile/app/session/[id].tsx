@@ -1,3 +1,4 @@
+import { WikiDetails } from '../../components/WikiDetails';
 import { qaAssignmentView } from '@verity/mobile';
 import { Card, CardHead } from '../../components/ui/Card';
 import { StatusTag } from '../../components/ui/Status';
@@ -645,7 +646,7 @@ const FILE_ROOT_ICON: Record<SessionFileRoot, IconName> = {
   worktree: 'folder',
   knowledge: KNOWLEDGE_ICON,
   shared: KNOWLEDGE_ICON,
-  documents: 'folder',
+  documents: KNOWLEDGE_ICON,
   sources: KNOWLEDGE_ICON,
   drafts: 'folder',
 };
@@ -5138,6 +5139,8 @@ function SessionFilesSheet({
     pending: boolean;
     running: boolean;
     warning?: string;
+    inspectionError?: boolean;
+    excludedEntries?: { path: string; reason: 'generated' | 'unsupported' }[];
   }>();
   const workspaceClassified = useRef(false);
   const [path, setPath] = useState(initialFilePath ? parentPath(initialFilePath) : '');
@@ -6297,31 +6300,17 @@ function SessionFilesSheet({
             onNavigate={(index) => setPath(index < 0 ? '' : breadcrumbSegments(path)[index]!.path)}
           />
         ) : null}
-        {!driveActive && documentStatus?.warning ? (
-          <Text style={styles.sheetError}>{documentStatus.warning}</Text>
-        ) : null}
-        {!driveActive && documentSession && (root === 'documents' || root === 'worktree') ? (
-          <HeaderTextButton
-            label={
-              root === 'worktree'
-                ? 'Back to Wiki'
-                : documentStatus?.running
-                  ? 'My working copy (session running)'
-                  : documentStatus?.pending
-                    ? 'My edits (not yet published)'
-                    : 'My working copy (published)'
+        {!driveActive ? (
+          <WikiDetails
+            root={root}
+            documentSession={documentSession}
+            status={documentStatus}
+            error={error}
+            hasConflicts={
+              root === 'documents' && !path && entries.some((entry) => entry.name === 'Conflicts')
             }
             disabled={mutating}
-            onPress={() => navigateRoot(root === 'worktree' ? 'documents' : 'worktree')}
-          />
-        ) : null}
-        {!driveActive && (root === 'documents' || root === 'drafts') ? (
-          <HeaderTextButton
-            label={
-              root === 'drafts' ? 'Back to Wiki' : 'Session edits (including retained sessions)'
-            }
-            disabled={mutating}
-            onPress={() => navigateRoot(root === 'drafts' ? 'documents' : 'drafts')}
+            navigate={navigateRoot}
           />
         ) : null}
         {driveActive ? (
@@ -6463,7 +6452,12 @@ function SessionFilesSheet({
           </View>
         ) : (
           <>
-            {error ? <Text style={styles.sheetError}>{error}</Text> : null}
+            {error &&
+            root !== 'documents' &&
+            root !== 'drafts' &&
+            !(documentSession && root === 'worktree') ? (
+              <Text style={styles.sheetError}>{error}</Text>
+            ) : null}
             {truncated ? <Text style={styles.sheetLimited}>Showing first 1000 entries</Text> : null}
             {loading ? (
               <View style={styles.sheetLoading}>

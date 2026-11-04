@@ -1983,7 +1983,15 @@ export type SessionFileRoot =
 
 export const sessionDirectorySchema = z.object({
   documentStatus: z
-    .object({ pending: z.boolean(), running: z.boolean(), warning: z.string().optional() })
+    .object({
+      pending: z.boolean(),
+      running: z.boolean(),
+      warning: z.string().optional(),
+      inspectionError: z.boolean().optional(),
+      excludedEntries: z
+        .array(z.object({ path: z.string(), reason: z.enum(['generated', 'unsupported']) }))
+        .optional(),
+    })
     .optional(),
   codeAvailable: z.boolean().optional(),
   workspaceKind: z.enum(['documents', 'code']).optional(),
