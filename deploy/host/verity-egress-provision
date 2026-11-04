@@ -47,7 +47,8 @@ finish() {
 }
 trap finish EXIT
 if [[ ! -x /usr/bin/python3 ]]; then
-  /usr/bin/apt-get update && /usr/bin/apt-get install -y --no-install-recommends python3 || exit 1
+  echo 'Native profile requires an existing host Python bootstrap interpreter' >&2
+  exit 1
 fi
 /usr/bin/python3 '$stage/project-egress-managed.py' provision '$stage/release' \\
   --control-gid '${VERITY_EGRESS_CONTROL_GID:-65531}' \\

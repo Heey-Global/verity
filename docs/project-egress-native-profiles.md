@@ -10,6 +10,11 @@ project runtime arguments, exact distro package versions and the digest of its
 retained native acceptance evidence. Kernel identity alone cannot admit a profile.
 The accepted profile list remains empty until that evidence exists.
 
+The host must already supply the Python interpreter used to verify the native
+profile. The fixed wrapper refuses a missing interpreter instead of installing
+an unpinned bootstrap package; supporting such hosts requires separately tested
+release-owned bootstrap delivery before they can enter the accepted set.
+
 For an accepted profile, the fixed preparer installs only its pinned Python,
 network/BPF utilities and runtime library packages, preserves existing conffiles and uses `SYSTEMD_OFFLINE=1` to prevent package systemctl calls from contacting the live manager,
 registers the exact reviewed `runsc-relay` runtime beside `runsc-project`, validates
