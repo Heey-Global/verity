@@ -13,9 +13,9 @@ const unavailableReasons = [
   'unavailable',
   'legacy',
 ] as const;
-export type LocalRecordingUnavailableReason = (typeof unavailableReasons)[number];
-export type ConnectionDiagnosticTestType = 'quick_test' | 'problem_recording';
-export type ConnectionDiagnosticOutcome = 'completed' | 'cancelled' | 'failed' | 'unknown';
+type LocalRecordingUnavailableReason = (typeof unavailableReasons)[number];
+type ConnectionDiagnosticTestType = 'quick_test' | 'problem_recording';
+type ConnectionDiagnosticOutcome = 'completed' | 'cancelled' | 'failed' | 'unknown';
 const preparationStages = [
   'storage',
   'local-and-admission',
