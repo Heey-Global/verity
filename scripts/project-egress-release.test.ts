@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdtemp, mkdir, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, relative, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { expect, it } from 'vitest';
 
@@ -13,6 +13,9 @@ const installer = resolve('scripts/project-egress-managed.py');
 it('assembles every host asset with verified contents and an executable pinned Node', async () => {
   const root = await mkdtemp(join(tmpdir(), 'verity-egress-release-'));
   try {
+    const dockerfile = await readFile('deploy/Dockerfile', 'utf8');
+    const stage = dockerfile.split(' AS egress-assets\n')[1]!.split('\nFROM ')[0]!;
+    const copiedSources = [...stage.matchAll(/^COPY ([^-]\S*) \S+$/gmu)].map((match) => match[1]!);
     // The installer's fixed manifest is the consumer contract, not a second list
     // of expectations that could drift with the release builder unnoticed.
     const names = JSON.parse(
@@ -36,6 +39,13 @@ it('assembles every host asset with verified contents and an executable pinned N
               : name.endsWith('.o')
                 ? join(root, 'objects', name)
                 : join(root, 'deploy/egress', name);
+      if (path.startsWith(join(root, 'deploy') + '/')) {
+        const source = relative(root, path);
+        expect(
+          copiedSources.some((copy) => source === copy || source.startsWith(copy + '/')),
+          `egress-assets must copy release input ${source}`,
+        ).toBe(true);
+      }
       await mkdir(dirname(path), { recursive: true });
       await writeFile(path, `fixture:${name}`);
     }
