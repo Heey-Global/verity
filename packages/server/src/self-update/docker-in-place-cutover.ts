@@ -689,8 +689,8 @@ export async function dockerStandbyPromotion(
       // that recreated the bootstrap Server, can leave a stopped Server of this
       // deployment behind. Nothing retries that removal once its journal is gone,
       // and the installer refuses to run while two Server containers exist. Only
-      // stopped ones are retired: the candidate now serves, and a running Server
-      // under another name is not this cutover's to stop.
+      // exited ones are retired: the candidate now serves, and a running or just
+      // created Server under another name is not this cutover's to touch.
       try {
         // Without a deployment identity no container can be proven to be ours.
         const inventory = journal.deploymentId ? ((await docker.listContainers?.()) ?? []) : [];
@@ -710,7 +710,9 @@ export async function dockerStandbyPromotion(
             if (missing(error)) return undefined;
             throw error;
           });
-          if (inspect === undefined || inspect.running) continue;
+          // Only a Server that ran and ended is stale; a created, not yet started one
+          // may be a concurrent repair's.
+          if (inspect === undefined || !['exited', 'dead'].includes(inspect.status ?? '')) continue;
           await keepLogs(container.id, name);
           await ignoreMissing(() => docker.removeContainer(container.id));
           log(`Removed leftover stopped Server ${name}`);

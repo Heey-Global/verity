@@ -582,8 +582,10 @@ async function seedCleanupReason(
 ): Promise<string> {
   const output = await docker.containerLogs?.(helperId, 20).catch(() => undefined);
   for (const line of (output ?? '').split('\n').reverse()) {
+    const start = line.indexOf('{');
+    if (start < 0) continue;
     try {
-      const result = JSON.parse(line.slice(line.indexOf('{'))) as { skipped?: unknown };
+      const result = JSON.parse(line.slice(start)) as { skipped?: unknown };
       if (typeof result.skipped === 'string') return `: ${result.skipped.slice(0, 300)}`;
     } catch {
       // Not the result line; keep looking.

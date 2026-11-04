@@ -200,7 +200,13 @@ describe('standby promotion cutover', () => {
     const { root, daemon } = await prepared();
     const serverSpec = daemon.spec(MANAGED_SERVER_NAME)!;
     // A bootstrap-era Server an earlier retirement never removed, stopped.
-    await daemon.docker.createContainer({ ...serverSpec, name: 'verity-managed-server-g7' });
+    const leftover = await daemon.docker.createContainer({
+      ...serverSpec,
+      name: 'verity-managed-server-g7',
+    });
+    await daemon.docker.stopContainer(leftover.id);
+    // Created but never started: possibly a concurrent repair's, so it stays.
+    await daemon.docker.createContainer({ ...serverSpec, name: 'verity-managed-server-g6' });
     // A running Server under another name is not this cutover's to stop.
     const running = await daemon.docker.createContainer({
       ...serverSpec,
@@ -222,6 +228,7 @@ describe('standby promotion cutover', () => {
 
     expect(daemon.names()).toEqual([
       'verity-managed-server-g1',
+      'verity-managed-server-g6',
       'verity-managed-server-g8',
       'verity-managed-server-g9',
     ]);
@@ -246,7 +253,9 @@ describe('standby promotion cutover', () => {
       'verity-managed-server-g6',
       'verity-managed-server-g7',
     ])
-      await daemon.docker.createContainer({ ...serverSpec, name });
+      await daemon.docker.stopContainer(
+        (await daemon.docker.createContainer({ ...serverSpec, name })).id,
+      );
     daemon.logs.set(MANAGED_SERVER_NAME, 'the retired generation\n');
     daemon.logs.set('verity-managed-server-g5', 'leftover five\n');
     daemon.logs.set('verity-managed-server-g6', 'leftover six\n');
