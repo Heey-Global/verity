@@ -594,8 +594,9 @@ it('presents an unfinished old long test with its date and a way to finish or di
     'verity.connectionRecording.v1.paired-core',
     JSON.stringify({
       runId: oldId,
-      startedAt: Date.parse('2025-10-01T12:00:00.000Z'),
-      expiresAt: Date.parse('2025-10-01T12:00:45.000Z'),
+      // Local noon, so the rendered local date is 1 Oct in every timezone.
+      startedAt: new Date(2025, 9, 1, 12).getTime(),
+      expiresAt: new Date(2025, 9, 1, 12, 0, 45).getTime(),
       local: null,
     }),
   );
@@ -785,7 +786,7 @@ async function confirmDiscard() {
 it('discards a stuck long test only after a confirmed local Stop and keeps saved reports', async () => {
   const storageKey = 'verity.connectionRecording.v1.paired-core';
   const api = client();
-  render(<ConnectionRecording client={api as never} />);
+  const view = render(<ConnectionRecording client={api as never} />);
   await pressStart();
   await screen.findByText(/Ready — turn off VPN/);
   api.stopConnectionRecording.mockRejectedValue(new Error('offline'));
@@ -806,6 +807,11 @@ it('discards a stuck long test only after a confirmed local Stop and keeps saved
     screen.getAllByText(/still finishing the previous test · ready in \d+ s/),
   ).not.toHaveLength(0);
   expect(screen.getByText('Mock selected start')).toBeDisabled();
+  expect(screen.getByText('Start long test')).toBeDisabled();
+  // Reopening Diagnostics must not skip the wait.
+  view.unmount();
+  render(<ConnectionRecording client={api as never} />);
+  await screen.findByText(/still finishing the previous test · ready in \d+ s/);
   expect(screen.getByText('Start long test')).toBeDisabled();
 });
 it('releases both tests at once when Core and Uplink confirm Stop while discarding', async () => {

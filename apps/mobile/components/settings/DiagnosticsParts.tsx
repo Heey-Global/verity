@@ -2,6 +2,7 @@
 // capture, Stop or storage logic; ConnectionRecording and
 // SelectedConnectionTest keep owning those and only describe their state here.
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 
@@ -135,11 +136,39 @@ const pad = (value: number) => String(value).padStart(2, '0');
 /**
  * A short wait after discarding a run whose Core/Uplink Stop is unconfirmed:
  * the server side may still record that run until it expires, so a new test
- * must not start on top of it. `held()` reads the deadline without a render.
+ * must not start on top of it. The deadline is persisted before the run is
+ * removed, so reopening Diagnostics or restarting the app keeps waiting.
+ * `held()` reads it without a render and holds until the stored value is read.
  */
-export function useHold() {
+const MAXIMUM_HOLD_MS = 10 * 60_000;
+export function useHold(persistKey: string | null) {
   const until = useRef(0);
+  const restored = useRef(false);
   const [left, setLeft] = useState(0);
+  useEffect(() => {
+    let live = true;
+    until.current = 0;
+    restored.current = false;
+    setLeft(0);
+    void (async () => {
+      try {
+        const raw = persistKey ? await AsyncStorage.getItem(persistKey) : null;
+        const value = raw === null ? 0 : Number(raw);
+        // A deadline beyond the longest possible wait is corrupt; ignore it.
+        if (live && Number.isFinite(value) && value <= Date.now() + MAXIMUM_HOLD_MS) {
+          until.current = value;
+          setLeft(Math.max(0, Math.ceil((value - Date.now()) / 1000)));
+        }
+      } catch {
+        /* An unreadable deadline must not block testing forever. */
+      } finally {
+        if (live) restored.current = true;
+      }
+    })();
+    return () => {
+      live = false;
+    };
+  }, [persistKey]);
   useEffect(() => {
     if (left <= 0) return;
     const timer = setTimeout(
@@ -148,11 +177,16 @@ export function useHold() {
     );
     return () => clearTimeout(timer);
   }, [left]);
-  const hold = useCallback((untilMs: number) => {
-    until.current = untilMs;
-    setLeft(Math.max(0, Math.ceil((untilMs - Date.now()) / 1000)));
-  }, []);
-  const held = useCallback(() => until.current > Date.now(), []);
+  const hold = useCallback(
+    async (untilMs: number) => {
+      if (untilMs <= Date.now()) return;
+      if (persistKey) await AsyncStorage.setItem(persistKey, String(untilMs));
+      until.current = untilMs;
+      setLeft(Math.max(0, Math.ceil((untilMs - Date.now()) / 1000)));
+    },
+    [persistKey],
+  );
+  const held = useCallback(() => !restored.current || until.current > Date.now(), []);
   return [left, hold, held] as const;
 }
 

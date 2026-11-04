@@ -134,7 +134,9 @@ export function SelectedConnectionTest({
   const [message, setMessage] = useState('');
   const [result, setResult] = useState<Result | null>(null);
   const [toast, showToast] = useTransientMessage();
-  const [holdLeft, holdUntil, held] = useHold();
+  const [holdLeft, holdUntil, held] = useHold(
+    serverId ? `verity.selectedConnectionTest.hold.v1.${serverId}` : null,
+  );
   const [report, setReport] = useState<ConnectionDiagnosticReport | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [saved, setSaved] = useState<SavedTest | null>(null);
@@ -538,9 +540,14 @@ export function SelectedConnectionTest({
       // Discarding never runs while this device might still be capturing.
       await assertNativeTunnelInactive();
       if (scope.current !== storageKey || retained.current?.runId !== expected.runId) return;
+      // Without a confirmed Core/Uplink Stop the server may still record this run
+      // until it expires; persist that wait before the run disappears. A legacy
+      // run without a start time predates this app version and has long expired.
+      const startedAt = expected.startedAt === null ? Number.NaN : Date.parse(expected.startedAt);
+      if (!(archived && canStartAnother) && Number.isFinite(startedAt))
+        await holdUntil(startedAt + QUICK_SERVER_EXPIRY_MS);
       await AsyncStorage.removeItem(storageKey);
       if (scope.current !== storageKey) return;
-      const confirmedStopped = archived && canStartAnother;
       retained.current = null;
       setSaved(null);
       setArchived(false);
@@ -549,11 +556,6 @@ export function SelectedConnectionTest({
       setResult(null);
       setReport(null);
       setMessage('');
-      // Without a confirmed Core/Uplink Stop the server may still record this run
-      // until it expires; no new test starts on top of it.
-      const startedAt = expected.startedAt === null ? Number.NaN : Date.parse(expected.startedAt);
-      if (!confirmedStopped && Number.isFinite(startedAt))
-        holdUntil(startedAt + QUICK_SERVER_EXPIRY_MS);
     } catch {
       if (focused.current && scope.current === storageKey)
         setMessage(

@@ -164,7 +164,9 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
   const [problemReport, setProblemReport] = useState<ConnectionDiagnosticReport | null>(null);
   const [problemArchived, setProblemArchived] = useState(false);
   const [problemStopConfirmed, setProblemStopConfirmed] = useState(false);
-  const [holdLeft, holdUntil, held] = useHold();
+  const [holdLeft, holdUntil, held] = useHold(
+    serverId ? `verity.connectionRecording.hold.v1.${serverId}` : null,
+  );
   const problemReleasedRef = useRef(false);
   problemReleasedRef.current = problemArchived && problemStopConfirmed;
   const [quickCaptureBlocked, setQuickCaptureBlocked] = useState(true);
@@ -761,6 +763,8 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
           ]).finally(() => clearTimeout(timer))
         : false;
       if (!current()) return;
+      // Persist the wait before the run disappears, so no reopening skips it.
+      if (!remoteStopped) await holdUntil(expected.expiresAt + SERVER_EXPIRY_MARGIN_MS);
       await AsyncStorage.removeItem(key);
       if (!current()) return;
       runRef.current = null;
@@ -770,7 +774,6 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
       setReady(false);
       setRemaining(0);
       setMessage(IDLE_MESSAGE);
-      if (!remoteStopped) holdUntil(expected.expiresAt + SERVER_EXPIRY_MARGIN_MS);
       setReportMessage('Unfinished long test discarded.');
     } catch {
       if (current())
@@ -971,11 +974,17 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
                     <View style={styles.reportDetail}>
                       <SourceTags sources={report.sources} />
                       <Actions>
-                        <Button label="Share" size="compact" onPress={() => shareReport(report)} />
+                        <Button
+                          label="Share"
+                          size="compact"
+                          disabled={switchDisabled}
+                          onPress={() => shareReport(report)}
+                        />
                         <Button
                           label="Copy"
                           size="compact"
                           variant="secondary"
+                          disabled={switchDisabled}
                           onPress={() => {
                             void Clipboard.setStringAsync(JSON.stringify(report)).then(
                               () => setReportMessage('Report copied to the clipboard.'),
