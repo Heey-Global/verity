@@ -177,7 +177,8 @@ for leftover in "$tls_cert".*.tmp*; do
   [ "$owner" != "$$" ] || continue
   # Issuance takes seconds. An hour-old file belongs to no live run, whatever user or
   # PID namespace started it, which a PID probe alone cannot tell.
-  [ $(($(date +%s) - $(stat -c %Y -- "$leftover"))) -gt 3600 ] || continue
+  modified=$(stat -c %Y -- "$leftover" 2>/dev/null) || continue
+  [[ "$modified" =~ ^[0-9]+$ ]] && [ $(($(date +%s) - modified)) -gt 3600 ] || continue
   # Housekeeping only: a leftover that cannot be removed must not stop issuance.
   rm -f -- "$leftover" 2>/dev/null || true
 done
