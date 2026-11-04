@@ -45,15 +45,18 @@ The Gateway already restores its persisted backend before opening its listener.
 
 The managed Network protection retrofit prepares a host controller, persistent
 recovery, exact native prerequisites and authenticated destination inventory.
-The app switch remains unavailable until an accepted native profile and fresh
-host health both pass. The accepted profile list is currently empty; the repair
-must not be advertised as production activation based on unit tests or staging
-asset preparation alone.
+Production requires an accepted native profile and fresh host health. The
+accepted profile list is currently empty. The regular signed Staging update can
+separately authorize an explicitly unaccepted assessment on supported native
+hosts, with exact identity checks and startup revalidation. This does not supply
+production acceptance. Assessment attempts conservatively block changing to
+Stable; automated deactivation and marker clearance are not yet implemented.
 
 Installed updater admission still controls target provisioning. Older releases
 need the automatic compatibility sequence; already-installed caller timeouts
-must be included in native repair/retry acceptance. Updating does not enable the
-switch or recreate existing projects. Once certified and healthy, enabling the
+must be included in native repair/retry acceptance. Updating preserves the default-off
+switch and existing projects. Once the host is healthy and admitted for its
+production profile or explicit Staging assessment, enabling the
 switch affects the next project container start. See
 [managed installation and recovery](project-egress-managed-install.md) and
 [native profile evidence](project-egress-native-profiles.md).

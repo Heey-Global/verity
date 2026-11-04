@@ -24,6 +24,16 @@ def container():
 
 
 class NativeDatabaseTests(unittest.TestCase):
+    def test_controller_cannot_autostart_before_negative_activation_probe(self):
+        units = Path(__file__).with_name('boot-native-install.sh').read_text()
+        self.assertIn('ConditionPathExists=/var/lib/verity-egress-fixture/controller-enabled', units)
+        source = Path(__file__).with_name('boot-guest.py').read_text()
+        setup = source[source.index('def setup():'):source.index('def recover(')]
+        self.assertLess(setup.index("Path('/etc/verity-egress/relay.json').write_text"),
+                        setup.index("(ROOT / 'controller-enabled').touch()"))
+        self.assertLess(setup.index("(ROOT / 'controller-enabled').touch()"),
+                        setup.index("run('systemctl', 'restart', 'verity-egress-host.service')"))
+
     def test_readiness_requires_final_tcp_listener_not_initdb_socket(self):
         with patch.object(guest, 'run', side_effect=['/var/run/postgresql:5432 - accepting connections',
                                                   '127.0.0.1:5432 - accepting connections']) as run:

@@ -68,7 +68,7 @@ No raw command output, database URL or control token is returned to the app.
 Disabling remains possible during a host-service outage.
 
 **Native production acceptance remains pending.** The accepted native-profile set
-is intentionally empty. Consequently staging and wiring alone do not make the
+is intentionally empty. Consequently asset preparation and wiring alone do not make the
 switch available on a production host. Do not populate that set merely to pass
 preflight. Accept an exact kernel, Docker, gVisor and BPF artifact combination only
 after real host install/update/reboot/crash/daemon-restart/rollback tests, with
@@ -104,6 +104,10 @@ clients.
 
 Automatic host package/runtime/bpffs preparation is restricted to exact
 release-owned native profiles. See [native profile delivery](project-egress-native-profiles.md).
+The regular Staging updater may separately authorize an explicitly unaccepted
+assessment, with startup identity checks and a durable fence against switching
+back to Stable. See the Staging assessment section in that document for supported
+hosts and the pending deactivation limitation.
 An empty accepted profile set is a production blocker, not a request for manual
 host setup. Package names alone or a matching kernel release cannot establish
 acceptance.

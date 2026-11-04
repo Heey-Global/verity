@@ -80,41 +80,47 @@ project-egress signature admission contract.
 
 The Staging updater test requires a genuinely released predecessor and a signed
 candidate with the official release-workflow identity. No local retag, verifier
-substitution or placeholder evidence hash may replace that test. The current
-empty accepted list also means a preacceptance native activation procedure needs
-to be defined and reviewed before this full test can run; the collector does not
-introduce a production bypass. Until the fixture, procedure and retained native
-evidence exist, automatic production activation remains incomplete.
+substitution or placeholder evidence hash may replace that test. Production activation still requires a reviewed exact native profile and retained
+acceptance evidence. Staging assessment provides the separate test route below.
 
-## Proposed candidate assessment boundary
+## Staging assessment through the regular updater
 
-Positive preacceptance testing requires a separate reviewed test composition;
-root privileges and a disposable cloud instance marker alone do not authorize
-relaxing production admission. Candidate metadata must never be inserted into
-`ACCEPTED_NATIVE_PROFILES` as if it represented completed acceptance.
+A signed update can activate an explicitly unaccepted Staging assessment on an
+existing managed installation. Stable and Staging use the same image digest;
+image labels, version strings and environment variables cannot grant assessment
+authority. The Updater reads its durable `update-channel.json` under the operation
+lease, verifies the installed sealed deployment and target signature, and exposes
+only its inspected deployment-state volume read-only to the fixed provisioner.
+The wrapper independently requires the root-owned channel file to say `staging`.
 
-The proposed assessment artifact belongs only to the native probe directory and
-must be excluded from release assembly and managed updater delivery. It would
-reuse production platform, artifact, package and runtime validators, with explicit
-test entry points for provisioning and fixture startup. Production selection must
-continue to use only release-owned profiles, with no host-file or environment
-override. Any differences from shipped entry points must be retained with source
-and composition hashes in the evidence.
+After cutover, the new Updater reconciles the actual installed sealed state. This
+lets an installed compatibility release (4.80+) deliver assessment support even
+when its old caller could not supply the grant. Installations without the required
+canonical egress mounts remain explicitly pending. No fabricated update journal,
+manual target-helper invocation or signature substitution authorizes this path.
 
-Assessment output must use a distinct `native-candidate-assessment` scope,
-`accepted: false` and `productionActivationVerified: false`. It must retain real
-PostgreSQL/application controls, independent packet observations and lifecycle
-fault results. It cannot supply a placeholder production acceptance digest.
-Release-exclusion, exact-identity and isolation guards must have negative
-controls; unchanged normal provision and `verify-runtime` must still reject the
-same host while the production profile list is empty. Candidate evidence must
-not satisfy the production evidence verifier.
+The first assessment supports native systemd on little-endian x86_64 Ubuntu 24.04
+or 26.04 with rootful Docker 29.9.2 and live restore disabled. It verifies the
+release-owned Node/controller/BPF artifacts and runtime pins, the complete gVisor
+runtime tree, exact runtime arguments and package identities. Missing allowlisted
+prerequisites are installed at exact versions selected from authenticated distro
+metadata. The host must already provide the verifier's Python interpreter.
+Unsupported combinations fail with bounded diagnostics.
 
-Only after review of the retained assessment evidence may a release-owned exact
-profile reference its real digest. Official release delivery must then be tested
-on a fresh representative host with unchanged production entry points and an
-authentic signed predecessor-to-target update. That second phase must cover
-first install, old-caller timeout/retry, repeated update, reboot, faults and
-packet controls, without assessment wrappers. This proposal does not implement
-or grant candidate activation; its executable boundary needs review before
-implementation, and shipping activation remains unverified until phase two.
+The private descriptor has `scope: staging-assessment` and
+`productionAccepted: false`. It binds the measured host, artifacts, runtime and
+packages to the deployment, image digests, operation and durable Staging channel.
+Controller startup revalidates these identities and channel authority. It does
+not add an entry to `ACCEPTED_NATIVE_PROFILES` or fabricate acceptance evidence.
+Before granting host authority, the Updater records a conservative assessment
+attempt marker; both stable-channel writers refuse a transition while that marker
+exists. Automated assessment deactivation and marker clearance are not yet
+implemented, so returning such an installation to Stable requires a separately
+reviewed deactivation path.
+
+The intended test sequence is the normal signed release update on Staging,
+followed by live readiness, allowed/blocked connection, inventory-change,
+update/reboot and failure-recovery checks with independent packet observations.
+Local tests and experimental boot lifecycle evidence do not prove this complete
+signed Staging route. Production acceptance additionally requires reviewed retained
+evidence and a release-owned exact profile exercised through production admission.

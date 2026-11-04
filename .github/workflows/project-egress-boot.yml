@@ -19,6 +19,8 @@ on:
       - 'scripts/build-project-egress-release.mjs'
       - 'deploy/host/verity-egress-provision'
       - 'scripts/probes/project-egress/test_native_profile.py'
+      - 'scripts/probes/project-egress/test_staging_assessment.py'
+      - 'scripts/probes/project-egress/test_staging_wrapper.py'
       - 'scripts/probes/project-egress/collect-native-candidate.py'
       - 'scripts/probes/project-egress/test_native_candidate.py'
       - 'packages/server/src/project-egress-host-*.ts'
@@ -60,6 +62,8 @@ jobs:
           python3 -m unittest discover -s scripts/probes/project-egress -p test_boot_vm.py -v
           python3 -m unittest discover -s scripts/probes/project-egress -p test_native_candidate.py -v
           python3 -m unittest discover -s scripts/probes/project-egress -p test_boot_database.py -v
+          python3 -m unittest discover -s scripts/probes/project-egress -p test_staging_assessment.py -v
+          python3 -m unittest discover -s scripts/probes/project-egress -p test_staging_wrapper.py -v
       - name: Verify pinned guest and execute an actual kernel reboot
         env:
           PROBE_EVIDENCE: ${{ runner.temp }}/project-egress-boot-evidence

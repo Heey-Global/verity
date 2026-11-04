@@ -192,6 +192,8 @@ def setup():
     os.chmod('/etc/verity-egress/relay.json', 0o600)
     with open('/etc/hosts', 'a') as hosts:
         hosts.write('\n127.0.0.1 verity-agent-gateway\n')
+    # Permit automatic controller startup only after fixture configuration exists.
+    (ROOT / 'controller-enabled').touch()
     run('systemctl', 'restart', 'verity-egress-host.service')
     run('systemctl', 'start', 'verity-boot-gateway.service', 'verity-boot-server.service')
     wait(lambda: api('/healthz'))

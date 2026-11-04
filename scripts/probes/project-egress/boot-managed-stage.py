@@ -20,7 +20,9 @@ release.mkdir(mode=0o700)
 manifest = {}
 for name in managed.ASSETS:
     source = (assets / 'node') if name == 'node' else (assets / 'units' / name)
-    if name == 'project-egress-host-main.mjs':
+    if name == 'native-runtime-pins.env':
+        source = assets / name
+    elif name == 'project-egress-host-main.mjs':
         source = assets / name
     elif name.endswith('.bpf.o'):
         source = Path('/opt/verity-egress') / name

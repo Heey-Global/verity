@@ -126,6 +126,169 @@ def accepted_native_profile(root, run, node_path):
     return profile
 
 
+
+def staging_authorization(root, authorization):
+    """A fixed updater contract, not a project preference or process environment."""
+    fields = {'scope', 'productionAccepted', 'deploymentId', 'targetDigest',
+              'installedDigest', 'operationId', 'channelPath', 'channelOwnerUid'}
+    official = r'ghcr\.io/heey-global/verity/verity-server@sha256:[a-f0-9]{64}'
+    if (not isinstance(authorization, dict) or set(authorization) != fields
+            or authorization['scope'] != 'staging-assessment'
+            or authorization['productionAccepted'] is not False
+            or not isinstance(authorization['deploymentId'], str)
+            or not re.fullmatch(r'[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}', authorization['deploymentId'])
+            or any(not isinstance(authorization[name], str) or not re.fullmatch(official, authorization[name])
+                   for name in ('installedDigest', 'targetDigest'))
+            or not isinstance(authorization['operationId'], str)
+            or not re.fullmatch('[a-f0-9]{24,64}', authorization['operationId'])
+            or type(authorization['channelOwnerUid']) is not int
+            or not 0 <= authorization['channelOwnerUid'] <= 2147483647):
+        raise ValueError('Invalid staging assessment authorization')
+    value = authorization['channelPath']
+    if (not isinstance(value, str) or not value.startswith('/')
+            or '..' in value.split('/') or str(Path(value)) != value
+            or Path(value).name != 'update-channel.json'):
+        raise ValueError('Invalid staging assessment channel path')
+    channel = root / value.lstrip('/')
+    allowed = {os.geteuid(), authorization['channelOwnerUid']}
+    for path in (channel, *channel.parents):
+        metadata = path.lstat()
+        if (path.is_symlink() or metadata.st_uid not in allowed or metadata.st_mode & 0o022
+                or (path != channel and not stat.S_ISDIR(metadata.st_mode))):
+            raise ValueError('Untrusted staging assessment channel')
+        if path == root:
+            break
+    descriptor = os.open(channel, os.O_RDONLY | os.O_NOFOLLOW)
+    with os.fdopen(descriptor) as source:
+        metadata = os.fstat(source.fileno())
+        if (not stat.S_ISREG(metadata.st_mode) or metadata.st_size > 1024
+                or metadata.st_uid not in allowed or metadata.st_mode & 0o022
+                or json.load(source) != 'staging'):
+            raise ValueError('Staging assessment requires the durable staging channel')
+    return dict(authorization)
+
+
+def staging_identity(root, run, node_path):
+    """Bind a first assessment to real host identities, without claiming evidence."""
+    if (platform.machine() != 'x86_64' or sys.byteorder != 'little'
+            or (root / 'proc/1/comm').read_text().strip() != 'systemd'
+            or os_identity(root) not in ({'id': 'ubuntu', 'version': '24.04'},
+                                        {'id': 'ubuntu', 'version': '26.04'})):
+        raise ValueError('Staging assessment requires supported native Ubuntu x86_64')
+    info = json.loads(run('/usr/bin/docker', '--host=unix:///var/run/docker.sock',
+                          'info', '--format', '{{json .}}'))
+    if (info.get('OSType') != 'linux' or info.get('ServerVersion') != '29.9.2'
+            or info.get('LiveRestoreEnabled') is not False
+            or any('rootless' in item for item in info.get('SecurityOptions', []))):
+        raise ValueError('Staging assessment requires rootful pinned Docker')
+    node = Path(node_path).resolve(strict=True)
+    artifacts = {}
+    for name in ('node', 'project-egress-host-main.mjs', 'project-egress-deadline.bpf.o',
+                 'project-egress-renew.bpf.o', 'native-runtime-pins.env'):
+        path = node.parent / name
+        trusted_parent(path, root)
+        metadata = path.lstat()
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.geteuid() or metadata.st_mode & 0o222:
+            raise ValueError('Untrusted staging assessment artifact')
+        artifacts[name] = digest(path.read_bytes())
+    pins = {}
+    for line in (node.parent / 'native-runtime-pins.env').read_text().splitlines():
+        if '=' in line and not line.startswith('#'):
+            key, value = line.split('=', 1)
+            if key in pins:
+                raise ValueError('Duplicate native runtime pin')
+            pins[key] = value.strip("'\"")
+    release, checksum, archive_checksum = [pins.get(name, '') for name in
+        ('RUNSC_RELEASE', 'RUNSC_SHA512_X86_64', 'RUNSC_ARCHIVE_SHA512_X86_64')]
+    if (not re.fullmatch(r'release-[0-9]{8}\.[0-9]+', release)
+            or not all(re.fullmatch('[a-f0-9]{128}', value) for value in (checksum, archive_checksum))):
+        raise ValueError('Invalid release-owned assessment runtime pins')
+    runtime_path = '/opt/verity/runsc/' + release + '/runsc'
+    runtime = root / runtime_path.lstrip('/')
+    trusted_parent(runtime, root)
+    tree_digest = runtime_tree_digest(runtime.parent)
+    if (not os.access(runtime, os.X_OK)
+            or hashlib.sha512(runtime.read_bytes()).hexdigest() != checksum
+            or (runtime.parent / '.verity-archive-sha512').read_text().strip() != archive_checksum):
+        raise ValueError('Staging runtime differs from release-owned pins')
+    recorded = set()
+    for line in (runtime.parent / '.verity-files.sha512').read_text().splitlines():
+        match = re.fullmatch(r'([a-f0-9]{128})  (runsc|gvisor-bin/[A-Za-z0-9_][A-Za-z0-9_.-]*)', line)
+        if not match or match[2] in recorded:
+            raise ValueError('Invalid native runtime file manifest')
+        recorded.add(match[2])
+        if hashlib.sha512((runtime.parent / match[2]).read_bytes()).hexdigest() != match[1]:
+            raise ValueError('Staging native runtime file changed')
+    actual_files = {str(path.relative_to(runtime.parent)) for path in runtime.parent.rglob('*')
+                    if path.is_file() and path.name not in ('.verity-files.sha512', '.verity-archive-sha512')}
+    if recorded != actual_files or not {'runsc', 'gvisor-bin/gvisor_sentry'} <= recorded:
+        raise ValueError('Incomplete native runtime file manifest')
+    project = info.get('Runtimes', {}).get('runsc-project', {})
+    if {'path': project.get('path'), 'runtimeArgs': project.get('runtimeArgs', [])} != {
+            'path': runtime_path, 'runtimeArgs': PROJECT_RUNTIME_ARGS}:
+        raise ValueError('Staging project runtime registration changed')
+    return {'platform': {'kernel': platform.release(), 'architecture': platform.machine(),
+                         'os': os_identity(root), 'docker': info['ServerVersion']},
+            'artifacts': artifacts, 'runtime': {'path': runtime_path, 'sha512': checksum,
+                                              'treeSha256': tree_digest}}
+
+
+def installed_assessment_packages(run):
+    try:
+        output = run('/usr/bin/dpkg-query', '--show', '--showformat=${Package}=${Version}\n',
+                     *sorted(NATIVE_PACKAGES))
+    except subprocess.CalledProcessError as error:
+        # dpkg-query reports installed packages even when one requested package is absent.
+        output = error.stdout or ''
+    values = {}
+    for line in output.splitlines():
+        name, separator, value = line.partition('=')
+        if (not separator or name not in NATIVE_PACKAGES or name in values
+                or not re.fullmatch(r'[A-Za-z0-9.+:~_-]{1,128}', value)):
+            raise ValueError('Invalid installed native package identity')
+        values[name] = value
+    return values
+
+
+def prepare_staging_assessment(root, run, node_path, authorization):
+    authorization = staging_authorization(root, authorization)
+    profile = staging_identity(root, run, node_path)
+    versions = installed_assessment_packages(run)
+    missing = NATIVE_PACKAGES - versions.keys()
+    if missing:
+        # apt authenticates its configured signed distro metadata. Snapshot versions
+        # before installation, then install only explicit allowlisted name=version.
+        run('/usr/bin/apt-get', 'update')
+        for name in sorted(missing):
+            policy = run('/usr/bin/apt-cache', 'policy', name)
+            candidates = re.findall(r'^\s*Candidate:\s*([A-Za-z0-9.+:~_-]{1,128})\s*$', policy, re.MULTILINE)
+            if len(candidates) != 1 or candidates[0] == '(none)':
+                raise ValueError('No pinned native assessment package candidate')
+            versions[name] = candidates[0]
+    profile['packages'] = versions
+    prepare_native_profile(root, run, profile)
+    descriptor = {'scope': 'staging-assessment', 'productionAccepted': False,
+                  'authorization': authorization, 'profile': profile}
+    validate_staging_assessment(root, run, node_path, descriptor)
+    return descriptor
+
+
+def validate_staging_assessment(root, run, node_path, descriptor):
+    if (not isinstance(descriptor, dict) or set(descriptor) != {
+            'scope', 'productionAccepted', 'authorization', 'profile'}
+            or descriptor['scope'] != 'staging-assessment' or descriptor['productionAccepted'] is not False):
+        raise ValueError('Invalid staging assessment descriptor')
+    staging_authorization(root, descriptor['authorization'])
+    actual = staging_identity(root, run, node_path)
+    profile = descriptor['profile']
+    if (not isinstance(profile, dict) or set(profile) != {*actual, 'packages'}
+            or any(actual[key] != profile[key] for key in actual)
+            or set(profile['packages']) != NATIVE_PACKAGES
+            or installed_assessment_packages(run) != profile['packages']):
+        raise ValueError('Staging assessment native identities changed')
+    return profile
+
+
 def trusted_native_file(path, root):
     trusted_parent(path, root)
     if path.exists() or path.is_symlink():
@@ -139,6 +302,11 @@ def prepare_managed_prerequisites(root, run, node_path='/opt/verity-egress/node'
     if (root / 'proc/1/comm').read_text().strip() != 'systemd':
         raise ValueError('Managed prerequisites require native systemd')
     profile = accepted_native_profile(root, run, node_path)
+    return prepare_native_profile(root, run, profile)
+
+
+def prepare_native_profile(root, run, profile):
+    """Shared exact preparation; admission is performed by the caller first."""
     packages = profile['packages']
     try:
         versions = run('/usr/bin/dpkg-query', '--show', '--showformat=${Package}=${Version}\n',
@@ -267,7 +435,7 @@ def private_config(root, name):
     return path
 
 
-def runtime_preflight(root, run=command, node_path='/usr/bin/node'):
+def runtime_preflight(root, run=command, node_path='/usr/bin/node', *, assessment=None):
     """Read-only native runtime checks shared by both installation paths."""
     if os.geteuid() != 0 or sys.platform != 'linux':
         raise ValueError('Installation requires root on the Linux host')
@@ -290,7 +458,8 @@ def runtime_preflight(root, run=command, node_path='/usr/bin/node'):
         raise ValueError('Requires validated rootful Docker 29.9.2 with live restore off')
     if not {'runsc-project', 'runsc-relay'} <= set(info.get('Runtimes', {})):
         raise ValueError('Requires reviewed runsc-project and runsc-relay runtimes')
-    profile = accepted_native_profile(root, run, node_path)
+    profile = (accepted_native_profile(root, run, node_path) if assessment is None else
+               validate_staging_assessment(root, run, node_path, assessment))
     relay = {'path': profile['runtime']['path'], 'runtimeArgs': RELAY_RUNTIME_ARGS}
     actual = info.get('Runtimes', {}).get('runsc-relay', {})
     if {'path': actual.get('path'), 'runtimeArgs': actual.get('runtimeArgs', [])} != relay:

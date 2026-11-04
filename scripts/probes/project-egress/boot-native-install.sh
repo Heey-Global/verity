@@ -48,6 +48,7 @@ printf '%s\n' 'd /sys/fs/bpf/verity_egress_deadline 0700 root root -' > /etc/tmp
 mkdir -p /etc/systemd/system/verity-egress-host.service.d
 cat > /etc/systemd/system/verity-egress-host.service.d/packet-fixture.conf <<'UNIT'
 [Unit]
+ConditionPathExists=/var/lib/verity-egress-fixture/controller-enabled
 RequiresMountsFor=/sys/fs/bpf
 After=systemd-tmpfiles-setup.service
 UNIT

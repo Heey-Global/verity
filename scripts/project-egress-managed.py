@@ -21,9 +21,11 @@ spec = importlib.util.spec_from_file_location(
     'egress_install', Path(__file__).with_name('project-egress-install.py'))
 base = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(base)
-ASSETS = (*base.ASSETS, 'node')
+ASSETS = (*base.ASSETS, 'node', 'native-runtime-pins.env')
 SERVICE = 'verity-egress-host.service'
 INVENTORY_CONTRACT = 'etc/verity-egress-server/inventory-contract.json'
+ASSESSMENT_CONFIG = 'etc/verity-egress/assessment.json'
+ASSESSMENT_NOTICE = 'etc/verity-egress-server/assessment.json'
 
 
 def ensure_control_group(gid, run):
@@ -226,7 +228,7 @@ TRANSACTION_FILES = frozenset((*base.UNITS.values(),
     'usr/local/libexec/verity/project-egress-managed.py',
     'usr/local/libexec/verity/project-egress-install.py',
     'etc/verity-egress/relay.json', 'etc/verity-egress/authority.json',
-    'etc/verity-egress/database.json'))
+    'etc/verity-egress/database.json', ASSESSMENT_CONFIG))
 JOURNAL = 'var/lib/verity-egress/install-transaction.json'
 
 
@@ -264,7 +266,7 @@ def recover_transaction(root, run):
     if (not isinstance(value, dict) or set(value) != {'version', 'previous', 'target', 'snapshots'}
             or value['version'] != 1 or not isinstance(value['snapshots'], dict)
             or not set(value['snapshots']) <= TRANSACTION_FILES
-            or not (TRANSACTION_FILES - {'etc/verity-egress/database.json'}) <= set(value['snapshots'])):
+            or not (TRANSACTION_FILES - {'etc/verity-egress/database.json', ASSESSMENT_CONFIG}) <= set(value['snapshots'])):
         raise ValueError('Invalid managed transaction journal')
     release = verified_release(root, value['target'])
     previous = value['previous']
@@ -539,7 +541,7 @@ def activate(root, run, release, files, configs, gid):
 
 def provision(source, relay=None, authority=None, gid=65531, root=Path('/'), run=base.command,
               check=base.runtime_preflight, database=None, prepare_only=False,
-              group_setup=None):
+              group_setup=None, assessment_authorization=None):
     if (root == Path('/') and os.geteuid() != 0) or not 1 <= gid <= 2147483647:
         raise ValueError('Managed provisioning requires root and a positive control gid')
     files = release_files(source)
@@ -598,10 +600,17 @@ def provision(source, relay=None, authority=None, gid=65531, root=Path('/'), run
                 for relative, data in configs.items():
                     base.atomic_file(root / relative, data, 0o600)
             return write_status(root, gid, 'runtime_unsupported')
+        assessment = None
         try:
-            if check is base.runtime_preflight:
+            if assessment_authorization is not None:
+                authorization = json.loads(private_file(assessment_authorization))
+                assessment = base.prepare_staging_assessment(root, run, str(release / 'node'), authorization)
+                base.runtime_preflight(root, run, str(release / 'node'), assessment=assessment)
+                configs[ASSESSMENT_CONFIG] = (json.dumps(assessment, sort_keys=True) + '\n').encode()
+            elif check is base.runtime_preflight:
                 base.prepare_managed_prerequisites(root, run, str(release / 'node'))
-            check(root, run, str(release / 'node'))
+            if assessment is None:
+                check(root, run, str(release / 'node'))
         except (ValueError, OSError, subprocess.SubprocessError):
             # Preserve running release/config/units on incompatible upgrades.
             if not (root / 'opt/verity-egress').is_symlink():
@@ -613,11 +622,34 @@ def provision(source, relay=None, authority=None, gid=65531, root=Path('/'), run
             # Persist before the first controller can synchronize/open admission.
             # Never roll this contract back: protected generations may survive.
             shared_file(root / INVENTORY_CONTRACT, b'{"version":1,"required":true}\n', gid)
+            if assessment is not None:
+                shared_file(root / ASSESSMENT_NOTICE,
+                            b'{"scope":"staging-assessment","productionAccepted":false}\n', gid)
             activate(root, run, release, files, configs, gid)
         except Exception:
             write_status(root, gid, 'controller_failed')
             raise
+        if assessment is None:
+            for relative in (ASSESSMENT_CONFIG, ASSESSMENT_NOTICE):
+                path = root / relative
+                if path.exists() or path.is_symlink():
+                    private_file(path) if relative == ASSESSMENT_CONFIG else None
+                    path.unlink()
+                    base.sync_directory(path.parent)
         return write_status(root, gid, 'ready', True)
+
+
+def verify_runtime(root=Path('/'), run=base.command):
+    # Production evidence always wins; a candidate never upgrades that evidence.
+    try:
+        base.runtime_preflight(root, run, str(root / 'opt/verity-egress/node'))
+        return
+    except ValueError:
+        path = root / ASSESSMENT_CONFIG
+        if not path.exists() and not path.is_symlink():
+            raise
+    descriptor = json.loads(private_file(path))
+    base.runtime_preflight(root, run, str(root / 'opt/verity-egress/node'), assessment=descriptor)
 
 
 def main():
@@ -630,13 +662,14 @@ def main():
     managed.add_argument('--control-gid', type=int, default=65531)
     managed.add_argument('--database-config', type=Path)
     managed.add_argument('--prepare-only', action='store_true')
+    managed.add_argument('--assessment-authorization', type=Path)
     actions.add_parser('refresh-authority')
     actions.add_parser('recover')
     actions.add_parser('verify-runtime')
     args = parser.parse_args()
     try:
         if args.action == 'verify-runtime':
-            base.runtime_preflight(Path('/'), base.command, '/opt/verity-egress/node')
+            verify_runtime()
             return
         if args.action == 'recover':
             recover_boot()
@@ -646,7 +679,8 @@ def main():
             return
         result = provision(args.release.resolve(), args.relay_config, args.authority_config,
                            args.control_gid, database=args.database_config,
-                           prepare_only=args.prepare_only)
+                           prepare_only=args.prepare_only,
+                           assessment_authorization=args.assessment_authorization)
     except Exception:
         # Command output is consumed by diagnostics; do not print config paths,
         # database URLs, raw subprocess errors or secret material.

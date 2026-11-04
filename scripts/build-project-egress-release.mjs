@@ -9,6 +9,7 @@ if (!destination || !objects)
     'Usage: build-project-egress-release.mjs DESTINATION BPF_OBJECT_DIRECTORY [NODE]',
   );
 const files = new Map([
+  ['native-runtime-pins.env', 'deploy/gvisor/versions.env'],
   ['project-egress-host-main.mjs', 'packages/server/dist/project-egress-host-main.mjs'],
   ['project-egress-deadline.py', 'deploy/egress/project-egress-deadline.py'],
   ['project-egress-deadline.bpf.o', join(objects, 'project-egress-deadline.bpf.o')],

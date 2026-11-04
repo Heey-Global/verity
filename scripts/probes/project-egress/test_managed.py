@@ -70,6 +70,41 @@ class ManagedTests(unittest.TestCase):
     def unsupported(self, *_):
         raise ValueError('Kernel has no accepted native installation profile')
 
+    def test_staging_descriptor_is_private_transactional_and_never_production_evidence(self):
+        authorization = self.source.parent / 'assessment-authorization.json'
+        authorization.write_text('{"operation":"fixed-updater-test"}')
+        authorization.chmod(0o600)
+        descriptor = {'scope': 'staging-assessment', 'productionAccepted': False,
+                      'authorization': {'operation': 'fixed-updater-test'}, 'profile': {}}
+        with patch.object(managed.base, 'prepare_staging_assessment', return_value=descriptor) as prepare, patch.object(managed.base, 'runtime_preflight') as verify:
+            result = self.provision(assessment_authorization=authorization)
+        self.assertTrue(result['available'])
+        prepare.assert_called_once()
+        self.assertEqual(prepare.call_args.args[-1], {'operation': 'fixed-updater-test'})
+        self.assertEqual(verify.call_args.kwargs, {'assessment': descriptor})
+        stored = self.root / managed.ASSESSMENT_CONFIG
+        self.assertEqual(json.loads(stored.read_text()), descriptor)
+        self.assertEqual(stored.stat().st_mode & 0o777, 0o600)
+        self.assertIs(json.loads((self.root / managed.ASSESSMENT_NOTICE).read_text())['productionAccepted'], False)
+        self.assertEqual(managed.base.ACCEPTED_NATIVE_PROFILES, ())
+
+    def test_runtime_verifier_uses_private_assessment_only_after_production_rejection(self):
+        self.provision()
+        path = self.root / managed.ASSESSMENT_CONFIG
+        managed.base.atomic_file(path, b'{"scope":"staging-assessment"}', 0o600)
+        with patch.object(managed.base, 'runtime_preflight', side_effect=[ValueError('not accepted'), None]) as verify:
+            managed.verify_runtime(self.root, self.execute)
+        self.assertEqual(verify.call_count, 2)
+        self.assertEqual(verify.call_args.kwargs, {'assessment': {'scope': 'staging-assessment'}})
+        path.chmod(0o644)
+        with patch.object(managed.base, 'runtime_preflight', side_effect=ValueError('not accepted')):
+            with self.assertRaises(ValueError):
+                managed.verify_runtime(self.root, self.execute)
+        with patch.object(managed.base, 'runtime_preflight') as verify:
+            managed.verify_runtime(self.root, self.execute)
+        verify.assert_called_once()
+        self.assertEqual(verify.call_args.kwargs, {})
+
     def test_default_activation_rejects_unaccepted_profile_on_every_retry(self):
         # A synthetic unsupported callback would miss skipped production preflight.
         self.assertEqual(managed.base.ACCEPTED_NATIVE_PROFILES, ())

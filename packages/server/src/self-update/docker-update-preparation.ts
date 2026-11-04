@@ -539,6 +539,7 @@ export async function dockerUpdatePreparation(
       try {
         (options.log ?? console.warn)('Network protection: checking automatic host provisioning.');
         const provisioned = await provisionProjectEgressHost({
+          managedRoot: options.managedRoot,
           docker,
           journal,
           spec: state.spec,

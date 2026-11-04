@@ -1595,3 +1595,18 @@ Native managed-host lifecycle acceptance, signed compatibility-update acceptance
 and application positive controls remain required before production activation.
 Staging preparation and unit tests do not supply that evidence. See
 [native profiles](../project-egress-native-profiles.md) for the evidence boundary.
+
+
+### Staging assessment admission
+
+The regular signed updater can authorize a separate unaccepted Staging assessment
+using its durable channel state and inspected deployment-state volume. Image tags,
+labels and environment defaults grant no such authority. Installed-state
+reconciliation after cutover supports compatibility callers without inventing an
+update journal. The private host descriptor binds measured host/runtime/artifact
+and package identities; startup revalidates it and the durable Staging channel.
+A conservative attempt marker fences both Stable-channel writers before host
+authority is granted. Automated deactivation and marker clearance remain pending.
+This does not populate the production profile list or establish native acceptance.
+See [native profiles](../project-egress-native-profiles.md) for supported candidate
+hosts, the regular Staging test sequence and evidence requirements.

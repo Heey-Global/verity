@@ -106,6 +106,7 @@ await cp('scripts/probes/project-egress', join(output, 'probe'), {
   recursive: true,
   filter: (path) => !path.endsWith('__pycache__'),
 });
+await cp('deploy/gvisor/versions.env', join(output, 'native-runtime-pins.env'));
 await cp('deploy/egress', join(output, 'units'), { recursive: true });
 await cp(
   'packages/server/dist/project-egress-host-main.mjs',

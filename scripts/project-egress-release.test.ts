@@ -8,7 +8,7 @@ import { expect, it } from 'vitest';
 
 const run = promisify(execFile);
 const builder = resolve('scripts/build-project-egress-release.mjs');
-const installer = resolve('scripts/project-egress-install.py');
+const installer = resolve('scripts/project-egress-managed.py');
 
 it('assembles every host asset with verified contents and an executable pinned Node', async () => {
   const root = await mkdtemp(join(tmpdir(), 'verity-egress-release-'));
@@ -26,11 +26,16 @@ it('assembles every host asset with verified contents and an executable pinned N
       ).stdout,
     ) as string[];
     for (const name of names) {
-      const path = name.endsWith('.mjs')
-        ? join(root, 'packages/server/dist', name)
-        : name.endsWith('.o')
-          ? join(root, 'objects', name)
-          : join(root, 'deploy/egress', name);
+      const path =
+        name === 'node'
+          ? join(root, 'node')
+          : name === 'native-runtime-pins.env'
+            ? join(root, 'deploy/gvisor/versions.env')
+            : name.endsWith('.mjs')
+              ? join(root, 'packages/server/dist', name)
+              : name.endsWith('.o')
+                ? join(root, 'objects', name)
+                : join(root, 'deploy/egress', name);
       await mkdir(dirname(path), { recursive: true });
       await writeFile(path, `fixture:${name}`);
     }
@@ -39,7 +44,7 @@ it('assembles every host asset with verified contents and an executable pinned N
     const manifest = JSON.parse(
       await readFile(join(root, 'release/manifest.json'), 'utf8'),
     ) as Record<string, string>;
-    expect(Object.keys(manifest).sort()).toEqual([...names, 'node'].sort());
+    expect(Object.keys(manifest).sort()).toEqual(names.sort());
     for (const [name, digest] of Object.entries(manifest)) {
       const bytes = await readFile(join(root, 'release', name));
       expect(createHash('sha256').update(bytes).digest('hex')).toBe(digest);
