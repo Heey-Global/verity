@@ -48,7 +48,7 @@ export async function archiveRetiredServerLogs(options: {
     temporary = `${target}.${String(process.pid)}.tmp`;
     await writeFile(temporary, sanitizeDiagnostic(raw), { mode: 0o600 });
     await rename(temporary, target);
-    await prune(dir);
+    await prune(dir, target);
   } catch (error) {
     if (temporary !== undefined) await rm(temporary, { force: true }).catch(() => undefined);
     options.log?.(
@@ -57,12 +57,15 @@ export async function archiveRetiredServerLogs(options: {
   }
 }
 
-async function prune(dir: string): Promise<void> {
+/** Keep the copy just written, then the newest others, so equal or stepped
+ * timestamps can never evict the copy this retirement exists to keep. */
+async function prune(dir: string, written: string): Promise<void> {
   const files = [];
   for (const name of await readdir(dir)) {
     if (!name.endsWith('.log') || !NAME.test(name.slice(0, -'.log'.length))) continue;
+    if (join(dir, name) === written) continue;
     files.push({ name, modified: (await stat(join(dir, name))).mtimeMs });
   }
   files.sort((a, b) => b.modified - a.modified);
-  for (const file of files.slice(KEEP)) await rm(join(dir, file.name), { force: true });
+  for (const file of files.slice(KEEP - 1)) await rm(join(dir, file.name), { force: true });
 }
