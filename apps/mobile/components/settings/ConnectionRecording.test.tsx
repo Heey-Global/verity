@@ -844,10 +844,12 @@ it('stays idle without a saved long test even while a native capture is reported
   mockRemaining.mockResolvedValue(25_000);
   const api = client();
   testingRender(<ConnectionRecording client={api as never} />);
-  await waitFor(() => expect(mockRemaining).toHaveBeenCalled());
+  await waitFor(() => expect(screen.getByText('Start long test')).toBeEnabled());
   await act(async () => {
     await new Promise((resolve) => setTimeout(resolve, 1200));
   });
+  // No saved long test: the poll must not even read the native capture.
+  expect(mockRemaining).not.toHaveBeenCalled();
   expect(screen.queryByText(/^Recording/)).toBeNull();
   expect(screen.queryByText('Stop recording')).toBeNull();
   expect(screen.getByText('Mock selected start')).toBeEnabled();

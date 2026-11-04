@@ -276,7 +276,15 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
     let current = true;
     let polling = false;
     const poll = async () => {
-      if (polling || selectedBusyRef.current) return;
+      // Polling only follows a saved long test, and never races its collection or
+      // discard; without the old mode switch the quick test must stay untouched.
+      if (
+        polling ||
+        selectedBusyRef.current ||
+        runRef.current === null ||
+        collectingRef.current !== null
+      )
+        return;
       polling = true;
       const token = revision.current;
       const valid = () => current && token === revision.current;

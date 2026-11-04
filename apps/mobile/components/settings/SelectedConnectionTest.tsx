@@ -538,6 +538,7 @@ export function SelectedConnectionTest({
     if (onBusy(true) === false) {
       operation.current = null;
       setBusy(false);
+      setPhase('Preparing');
       setMessage('Finish the long test first.');
       return;
     }
