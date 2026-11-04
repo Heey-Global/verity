@@ -2267,6 +2267,21 @@ describe('GitHub-hosted runner boundary', () => {
     expect(Number(steps[reclaim]?.with?.['minimum-free-gib'])).toBeGreaterThanOrEqual(40);
   });
 
+  it('reserves disk immediately before the native host builder probe', () => {
+    const workflow = parse(
+      readFileSync('.github/workflows/devcontainer-host-builder.yml', 'utf8'),
+    ) as {
+      jobs: Record<string, Job>;
+    };
+    const steps = workflow.jobs['build-isolation']!.steps!;
+    const probe = steps.findIndex((step) =>
+      step.run?.includes('scripts/probes/devcontainer-gvisor/host-service.sh'),
+    );
+    expect(probe).toBeGreaterThan(0);
+    expect(steps[probe - 1]?.uses).toBe('./.github/actions/reclaim-runner-disk');
+    expect(Number(steps[probe - 1]?.with?.['minimum-free-gib'])).toBeGreaterThanOrEqual(25);
+  });
+
   it('prepares free disk before both boot VMs and rechecks after asset builds', () => {
     const workflow = parse(readFileSync('.github/workflows/project-egress-boot.yml', 'utf8')) as {
       jobs: Record<string, Job>;
