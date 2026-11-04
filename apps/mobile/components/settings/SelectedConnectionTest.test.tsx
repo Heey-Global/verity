@@ -56,6 +56,7 @@ jest.mock('../../lib/remoteControlTransport', () => ({
   stopRemoteDataRecording: async () => true,
 }));
 import { SelectedConnectionTest } from './SelectedConnectionTest';
+import { nativeTunnelUnsupported } from '../../lib/nativeTunnelSupport';
 import { ConnectionRecording } from './ConnectionRecording';
 import { loadConnectionDiagnosticReports } from '../../lib/connectionDiagnosticReport';
 const runId = '11111111-1111-4111-8111-111111111111';
@@ -639,7 +640,7 @@ it('lets a device without the native test discard an old quick test', async () =
   await AsyncStorage.setItem(key, runId);
   render(<SelectedConnectionTest disabled={false} onBusy={jest.fn()} />);
   await screen.findByText(/Earlier test\. Collect its report/);
-  mockInactive.mockRejectedValueOnce(new Error('Native connection test unsupported.'));
+  mockInactive.mockRejectedValueOnce(nativeTunnelUnsupported());
   await confirmDiscard();
   await waitFor(() => expect(AsyncStorage.getItem(key)).resolves.toBeNull());
 });

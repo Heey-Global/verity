@@ -1,4 +1,5 @@
-import { requireNativeModule } from 'expo-modules-core';
+import { requireOptionalNativeModule } from 'expo-modules-core';
+import { nativeTunnelUnsupported } from './nativeTunnelSupport';
 import { VerityClient } from '@verity/mobile';
 import { CryptoDigestAlgorithm, digestStringAsync } from 'expo-crypto';
 import { getAuthToken } from './authToken';
@@ -8,22 +9,23 @@ import { getServerProfile } from './serverProfile';
 /**
  * Confirms no native DATA tunnel is running on this device. It needs no paired
  * direct connection. Starting a test fails closed on every error; discarding
- * an unfinished test additionally accepts 'Native connection test unsupported.',
- * since such a device has no tunnel that could be capturing.
+ * an unfinished test additionally accepts `isNativeTunnelUnsupported`, raised
+ * only when the module is absent or reports itself unsupported: such a device
+ * has no tunnel that could be capturing. Any other failure still fails closed.
  */
 export async function assertNativeTunnelInactive() {
-  let native: { isActive(): Promise<boolean>; isSupported(): Promise<boolean> };
-  try {
-    native = requireNativeModule('VerityRemoteControlTunnel');
-  } catch {
-    // Web, Expo Go or an older build have no native tunnel module at all.
-    throw new Error('Native connection test unsupported.');
-  }
+  // Web, Expo Go or an older build have no native tunnel module at all; load
+  // errors of a present module propagate unchanged.
+  const native = requireOptionalNativeModule<{
+    isActive(): Promise<boolean>;
+    isSupported(): Promise<boolean>;
+  }>('VerityRemoteControlTunnel');
+  if (!native) throw nativeTunnelUnsupported();
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     await Promise.race([
       (async () => {
-        if (!(await native.isSupported())) throw new Error('Native connection test unsupported.');
+        if (!(await native.isSupported())) throw nativeTunnelUnsupported();
         if (await native.isActive())
           throw new Error('An existing DATA tunnel must be stopped before testing.');
       })(),

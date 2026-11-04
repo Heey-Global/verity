@@ -34,6 +34,7 @@ import {
   assertNativeTunnelInactive,
   selectedRecordingContext,
 } from '../../lib/selectedRecordingContext';
+import { isNativeTunnelUnsupported } from '../../lib/nativeTunnelSupport';
 import { getServerProfile } from '../../lib/serverProfile';
 import {
   exportRemoteDataDiagnostics,
@@ -173,6 +174,8 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
   );
   const problemReleasedRef = useRef(false);
   problemReleasedRef.current = problemArchived && problemStopConfirmed;
+  const problemArchivedRef = useRef(false);
+  problemArchivedRef.current = problemArchived;
   const [quickCaptureBlocked, setQuickCaptureBlocked] = useState(true);
   const quickCaptureBlockedRef = useRef(true);
   const ownQuickCapture = useCallback((blocked: boolean) => {
@@ -285,6 +288,7 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
         polling ||
         selectedBusyRef.current ||
         runRef.current === null ||
+        problemArchivedRef.current ||
         collectingRef.current !== null
       )
         return;
@@ -763,8 +767,7 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
       if (!(await stopRemoteDataRecording())) {
         const inactive = await assertNativeTunnelInactive().then(
           () => true,
-          (error: unknown) =>
-            error instanceof Error && error.message === 'Native connection test unsupported.',
+          (error: unknown) => isNativeTunnelUnsupported(error),
         );
         if (!inactive) throw new Error('Stop unconfirmed');
       }

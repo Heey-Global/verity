@@ -8,6 +8,7 @@ import {
   assertNativeTunnelInactive,
   selectedRecordingContext,
 } from '../../lib/selectedRecordingContext';
+import { isNativeTunnelUnsupported } from '../../lib/nativeTunnelSupport';
 import {
   Actions,
   Button,
@@ -547,8 +548,7 @@ export function SelectedConnectionTest({
       // Discarding never runs while this device might still be capturing. A
       // device without the native test cannot be capturing, so it may discard.
       await assertNativeTunnelInactive().catch((error: unknown) => {
-        if (!(error instanceof Error && error.message === 'Native connection test unsupported.'))
-          throw error;
+        if (!isNativeTunnelUnsupported(error)) throw error;
       });
       if (scope.current !== storageKey || retained.current?.runId !== expected.runId) return;
       stage = 'storage';
@@ -580,7 +580,10 @@ export function SelectedConnectionTest({
         );
     } finally {
       operation.current = null;
-      if (focused.current) setBusy(false);
+      if (focused.current) {
+        setBusy(false);
+        setPhase('Preparing');
+      }
       onBusy(false);
     }
   };

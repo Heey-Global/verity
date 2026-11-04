@@ -71,6 +71,7 @@ jest.mock('../../lib/remoteDataDiagnostics', () => ({
   selectRemoteRecording: (value: string) => value,
 }));
 import { ConnectionRecording } from './ConnectionRecording';
+import { nativeTunnelUnsupported } from '../../lib/nativeTunnelSupport';
 import { Alert } from 'react-native';
 import {
   createConnectionDiagnosticReport,
@@ -225,7 +226,7 @@ it('stops locally offline, retains run across reopening and retries collection w
   api.stopConnectionRecording.mockRejectedValue(new Error('offline'));
   api.exportConnectionRecording.mockRejectedValue(new Error('offline'));
   pressCollect();
-  await screen.findByText(/Incomplete –/);
+  await screen.findAllByText(/Incomplete –/);
   expect(mockStop.mock.invocationCallOrder[0]).toBeLessThan(
     api.stopConnectionRecording.mock.invocationCallOrder[0]!,
   );
@@ -235,7 +236,7 @@ it('stops locally offline, retains run across reopening and retries collection w
   render(<ConnectionRecording client={next as never} />);
   await screen.findByText(/Recording finished ·/);
   pressCollect();
-  await screen.findByText(/Incomplete –/);
+  await screen.findAllByText(/Incomplete –/);
   expect(next.stopConnectionRecording).toHaveBeenCalledWith(runId);
   expect(next.exportConnectionRecording).toHaveBeenCalledWith(runId, 3);
   expect(mockStart).toHaveBeenCalledTimes(1);
@@ -252,7 +253,7 @@ it('a late Core start cannot restore ready after Stop', async () => {
   await pressStart();
   await waitFor(() => expect(api.startConnectionRecording).toHaveBeenCalled());
   pressCollect();
-  await screen.findByText(/Incomplete –/);
+  await screen.findAllByText(/Incomplete –/);
   expect(api.stopConnectionRecording).toHaveBeenCalledTimes(1);
   await act(async () => {
     resolve(status());
@@ -876,7 +877,7 @@ it('lets a device without the native tunnel discard a long test whose preparatio
   );
   // Without the native module, local Stop can never be confirmed.
   mockStop.mockResolvedValue(false);
-  mockNativeInactive.mockRejectedValueOnce(new Error('Native connection test unsupported.'));
+  mockNativeInactive.mockRejectedValueOnce(nativeTunnelUnsupported());
   testingRender(<ConnectionRecording client={client() as never} />);
   await screen.findByText('Preparation failed');
   await confirmDiscard();

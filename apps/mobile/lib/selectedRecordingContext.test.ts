@@ -1,8 +1,9 @@
 const mockActive = jest.fn();
-let mockModuleMissing = false;
+let mockModule: 'present' | 'missing' | 'broken' = 'present';
 jest.mock('expo-modules-core', () => ({
-  requireNativeModule: () => {
-    if (mockModuleMissing) throw new Error("Cannot find native module 'VerityRemoteControlTunnel'");
+  requireOptionalNativeModule: () => {
+    if (mockModule === 'missing') return null;
+    if (mockModule === 'broken') throw new Error('Native module failed to initialize');
     return { isSupported: async () => true, isActive: () => mockActive() };
   },
 }));
@@ -20,6 +21,7 @@ jest.mock('expo-crypto', () => ({
   digestStringAsync: async () => 'a'.repeat(64),
 }));
 import { assertNativeTunnelInactive, selectedRecordingContext } from './selectedRecordingContext';
+import { isNativeTunnelUnsupported } from './nativeTunnelSupport';
 const remote = {
   installationId: 'installation',
   installationHandle: 'h'.repeat(22),
@@ -99,13 +101,17 @@ it('bounds an unresponsive native status query', async () => {
   }
 });
 
-it('reports a missing native module as unsupported so a stale test can still be discarded', async () => {
-  mockModuleMissing = true;
+it('reports only a missing native module as unsupported', async () => {
   try {
-    await expect(assertNativeTunnelInactive()).rejects.toThrow(
-      'Native connection test unsupported.',
-    );
+    mockModule = 'missing';
+    const missing = await assertNativeTunnelInactive().catch((error: unknown) => error);
+    expect(isNativeTunnelUnsupported(missing)).toBe(true);
+    // A present module that fails to load must not count as "nothing can capture".
+    mockModule = 'broken';
+    const broken = await assertNativeTunnelInactive().catch((error: unknown) => error);
+    expect(broken).toBeInstanceOf(Error);
+    expect(isNativeTunnelUnsupported(broken)).toBe(false);
   } finally {
-    mockModuleMissing = false;
+    mockModule = 'present';
   }
 });
