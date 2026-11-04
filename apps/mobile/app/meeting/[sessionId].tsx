@@ -2114,6 +2114,7 @@ export default function MeetingScreen() {
             );
           }}
           noteCount={finalizedNotes.length}
+          canRename={editable}
           notesOpen={composerVisible}
           answerCount={completedAnswerCount}
           notes={

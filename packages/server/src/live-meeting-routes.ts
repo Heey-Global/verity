@@ -585,45 +585,49 @@ export function registerLiveMeetingRoutes(
       reply.code(404);
       return { error: 'session not found' };
     }
-    const stopWork = () => {
-      forgetAnalysis(meetingId);
-      resultWorker.cancel(meetingId);
-    };
-    const meeting = await store.liveMeetings.meetingHead(sessionId, meetingId);
-    let discarded: { id: string; engine: string; startedAt: number } | null = null;
-    if (meeting) {
-      // Stop analysis and result work first so nothing derived is written after deletion.
-      if (meeting.state !== 'active') stopWork();
-      const outcome = await store.liveMeetings.deleteMeeting(sessionId, meetingId);
-      if (outcome === 'running') {
-        reply.code(409);
-        return { error: 'Only a finished meeting can be discarded.', code: 'meeting_running' };
-      }
-      if (outcome === 'deleted') {
-        // Work queued between the first stop and the commit would only fail on the
-        // missing meeting; stop it again rather than let it retry.
-        stopWork();
-        opts.onResultChanged?.(sessionId, meetingId);
-        discarded = meeting;
-      }
-    }
-    // Repeating a discard repeats its cleanup, so a step that failed can be completed.
-    discarded ??= await store.liveMeetings.deletion(sessionId, meetingId);
-    if (!discarded) {
+    const meeting =
+      (await store.liveMeetings.meetingHead(sessionId, meetingId)) ??
+      // Repeating a discard repeats its cleanup from what the tombstone kept.
+      (await store.liveMeetings.deletion(sessionId, meetingId));
+    if (!meeting) {
       reply.code(404);
       return { error: 'meeting not found', code: 'meeting_not_found' };
     }
+    const running = (m: { engine: string; state?: string }) =>
+      m.state === 'active' ||
+      (m.engine === 'attendee' && m.state !== undefined && m.state !== 'ended');
+    if (running(meeting)) {
+      reply.code(409);
+      return { error: 'Only a finished meeting can be discarded.', code: 'meeting_running' };
+    }
+    forgetAnalysis(meetingId);
+    resultWorker.cancel(meetingId);
+    // Cleanup outside the meeting tables comes first: if it fails nothing is deleted, every
+    // device keeps the meeting, and discarding again retries it.
     try {
-      await opts.onDiscarded?.(sessionId, discarded);
+      await opts.onDiscarded?.(sessionId, meeting);
     } catch (error) {
       app.log.warn({ err: error, sessionId, meetingId }, 'discarded meeting cleanup failed');
-      // The meeting is gone, but not everything outside it yet: the client keeps its copy
-      // and retries, which runs the cleanup again.
       reply.code(502);
       return {
-        error: 'The meeting was deleted, but cleanup is incomplete. Try again.',
+        error: 'The meeting could not be discarded completely. Try again.',
         code: 'meeting_cleanup_failed',
       };
+    }
+    const outcome = await store.liveMeetings.deleteMeeting(sessionId, meetingId);
+    if (outcome === 'running') {
+      reply.code(409);
+      return { error: 'Only a finished meeting can be discarded.', code: 'meeting_running' };
+    }
+    if (outcome === 'deleted') {
+      // An upload accepted between cleanup and deletion may have filed the meeting again;
+      // the meeting is gone now, so a second pass leaves nothing behind.
+      forgetAnalysis(meetingId);
+      resultWorker.cancel(meetingId);
+      await opts.onDiscarded?.(sessionId, meeting).catch((error: unknown) => {
+        app.log.warn({ err: error, sessionId, meetingId }, 'discarded meeting recheck failed');
+      });
+      opts.onResultChanged?.(sessionId, meetingId);
     }
     return { discarded: true };
   });

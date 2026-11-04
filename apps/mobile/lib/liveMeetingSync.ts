@@ -57,15 +57,19 @@ const isDiscardedError = (error: unknown) =>
  */
 export async function discardFinishedMeeting(
   sessionId: string,
-  meeting: { id: string; serverId?: string | null; state: string },
+  meeting: { id: string; serverId?: string | null; state: string; engine?: string },
   suppliedClient?: VerityClient,
 ): Promise<void> {
-  if (meeting.state === 'active') throw new Error('End the meeting before discarding it.');
+  // Same rule as the server: an online meeting is finished only once it has ended.
+  if (meeting.state === 'active' || (meeting.engine === 'attendee' && meeting.state !== 'ended'))
+    throw new Error('End the meeting before discarding it.');
   if (meeting.serverId != null) {
     if (meeting.serverId !== getActiveMeetingServerId())
       throw new Error('Reconnect to this meeting’s server to discard it.');
     const client = suppliedClient ?? createVerityClient();
     if (!client) throw new Error('Connect to your server to discard this meeting.');
+    // An upload already on its way would otherwise create the meeting after the delete.
+    await flushing.get(meeting.serverId)?.catch(() => undefined);
     try {
       await client.discardSessionMeeting(sessionId, meeting.id);
     } catch (error) {
@@ -79,7 +83,7 @@ export async function discardFinishedMeeting(
         throw error;
     }
   }
-  await deleteMeeting(meeting.id);
+  await deleteMeeting(meeting.id, meeting.serverId ?? null);
 }
 
 function flushMeetingOutbox(serverId: string): Promise<void> {
@@ -96,7 +100,7 @@ function flushMeetingOutbox(serverId: string): Promise<void> {
         await acknowledgeMeeting(serverId, meeting.id, meeting.revision);
       } catch (error) {
         // Discarded elsewhere: retrying would fail forever, so this copy goes too.
-        if (isDiscardedError(error)) await deleteMeeting(meeting.id);
+        if (isDiscardedError(error)) await deleteMeeting(meeting.id, serverId);
         else firstError ??= error;
       }
     }
@@ -105,7 +109,7 @@ function flushMeetingOutbox(serverId: string): Promise<void> {
         await client.putLiveMeetingNote(sessionId, note);
         await acknowledgeNote(serverId, note.id, note.revision);
       } catch (error) {
-        if (isDiscardedError(error)) await deleteMeeting(note.meetingId);
+        if (isDiscardedError(error)) await deleteMeeting(note.meetingId, serverId);
         else firstError ??= error;
       }
     }

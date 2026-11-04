@@ -242,7 +242,7 @@ it('drops a pending meeting the server reports as discarded', async () => {
     new VerityApiError(409, 'This meeting was discarded.', { code: 'meeting_deleted' }),
   );
   expect(await syncMeetingSession('session-1')).toEqual({ pending: false });
-  expect(deleteMeeting).toHaveBeenCalledWith(meeting.id);
+  expect(deleteMeeting).toHaveBeenCalledWith(meeting.id, 'server-1');
   expect(acknowledgeMeeting).not.toHaveBeenCalled();
 });
 
@@ -259,7 +259,7 @@ describe('discardFinishedMeeting', () => {
   it('deletes on the server before deleting the local copy', async () => {
     await discardFinishedMeeting('session-1', ended, client as never);
     expect(client.discardSessionMeeting).toHaveBeenCalledWith('session-1', meeting.id);
-    expect(deleteMeeting).toHaveBeenCalledWith(meeting.id);
+    expect(deleteMeeting).toHaveBeenCalledWith(meeting.id, 'server-1');
     expect(client.discardSessionMeeting.mock.invocationCallOrder[0]).toBeLessThan(
       jest.mocked(deleteMeeting).mock.invocationCallOrder[0]!,
     );
@@ -278,7 +278,7 @@ describe('discardFinishedMeeting', () => {
       new VerityApiError(404, 'meeting not found', { code: 'meeting_not_found' }),
     );
     await discardFinishedMeeting('session-1', ended, client as never);
-    expect(deleteMeeting).toHaveBeenCalledWith(meeting.id);
+    expect(deleteMeeting).toHaveBeenCalledWith(meeting.id, 'server-1');
   });
 
   // An older server answers 404 for the unknown route; deleting locally then would lose
@@ -292,7 +292,7 @@ describe('discardFinishedMeeting', () => {
   it('deletes a meeting saved only on this device without the server', async () => {
     await discardFinishedMeeting('session-1', { ...ended, serverId: null }, client as never);
     expect(client.discardSessionMeeting).not.toHaveBeenCalled();
-    expect(deleteMeeting).toHaveBeenCalledWith(meeting.id);
+    expect(deleteMeeting).toHaveBeenCalledWith(meeting.id, null);
   });
 
   it('refuses a running meeting or one from another server', async () => {
@@ -302,6 +302,14 @@ describe('discardFinishedMeeting', () => {
     await expect(
       discardFinishedMeeting('session-1', { ...ended, serverId: 'server-2' }, client as never),
     ).rejects.toThrow('Reconnect');
+    // An online meeting that is still recovering is not finished yet.
+    await expect(
+      discardFinishedMeeting(
+        'session-1',
+        { ...ended, state: 'interrupted', engine: 'attendee' },
+        client as never,
+      ),
+    ).rejects.toThrow('End the meeting');
     expect(client.discardSessionMeeting).not.toHaveBeenCalled();
     expect(deleteMeeting).not.toHaveBeenCalled();
   });

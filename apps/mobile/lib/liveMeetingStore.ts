@@ -590,9 +590,10 @@ async function removeMeetingRows(
  * Deletes a meeting with its notes and drafts from this device. Nothing is left to sync,
  * so a discarded meeting is not uploaded again.
  */
-export async function deleteMeeting(id: string): Promise<void> {
+export async function deleteMeeting(id: string, serverId: string | null = null): Promise<void> {
   const connection = await db();
-  await connection.withTransactionAsync(() => removeMeetingRows(connection, id, null));
+  // With a server, only that server's copy goes; a same-id meeting elsewhere stays.
+  await connection.withTransactionAsync(() => removeMeetingRows(connection, id, serverId));
 }
 
 export async function importChanges(

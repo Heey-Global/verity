@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { ActivityIndicator, Alert, Image, Pressable, ScrollView, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import type { LiveMeetingResult } from '@verity/mobile';
-import { ActionMenu } from '../ActionMenu';
+import { ActionMenu, type ActionMenuItem } from '../ActionMenu';
 import { Icon } from '../Icon';
 import { Button, Card, IconButton, Row, SectionHeader, Text } from '../ui';
 import { Disclosure } from '../ui/Disclosure';
@@ -28,6 +28,8 @@ export function MeetingResult(props: {
   status: ReactNode;
   bottomInset: number;
   onEditTitle: () => void;
+  /** Whether this device may rename the meeting; hides the menu entry otherwise. */
+  canRename?: boolean;
   onTranscript: () => void;
   onShare: (format: 'markdown' | 'pdf') => void;
   onDiscard: () => void;
@@ -137,8 +139,10 @@ export function MeetingResult(props: {
       let current = result;
       try {
         // One at a time: every change bumps the result revision the next one must name.
-        for (const task of current?.tasks ?? []) {
-          if (!current || task.state !== 'proposed') continue;
+        for (const { id } of current?.tasks ?? []) {
+          // Decide from the latest result: another device may have dismissed it meanwhile.
+          const task = current?.tasks.find((candidate) => candidate.id === id);
+          if (!current || task?.state !== 'proposed') continue;
           current = await client.updateLiveMeetingResultTask(
             meeting.sessionId,
             meeting.id,
@@ -397,15 +401,19 @@ export function MeetingResult(props: {
           label="Meeting actions"
           onClose={() => setMenu(null)}
           items={[
-            {
-              icon: 'edit-2',
-              title: 'Rename meeting',
-              subtitle: 'The title appears in the filed meeting',
-              onPress: () => {
-                setMenu(null);
-                props.onEditTitle();
-              },
-            },
+            ...(props.canRename === false
+              ? []
+              : ([
+                  {
+                    icon: 'edit-2',
+                    title: 'Rename meeting',
+                    subtitle: 'The title appears in the filed meeting',
+                    onPress: () => {
+                      setMenu(null);
+                      props.onEditTitle();
+                    },
+                  },
+                ] satisfies ActionMenuItem[])),
             {
               icon: 'share',
               title: 'Share as Markdown',

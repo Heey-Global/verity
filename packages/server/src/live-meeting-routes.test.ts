@@ -1265,7 +1265,7 @@ it('refuses to discard a running or unknown meeting', async () => {
 
 // The deletion has committed before cleanup runs; reporting a failure here would make the
 // client retry into a 404 and believe nothing happened.
-it('reports failed cleanup and completes it when the discard is repeated', async () => {
+it('deletes nothing when cleanup fails, so discarding again can complete it', async () => {
   const onDiscarded = vi
     .fn(async () => undefined)
     .mockRejectedValueOnce(new Error('provider unavailable'));
@@ -1278,9 +1278,15 @@ it('reports failed cleanup and completes it when the discard is repeated', async
     const first = await discardApp.inject({ method: 'DELETE', url });
     expect(first.statusCode).toBe(502);
     expect(first.json()).toMatchObject({ code: 'meeting_cleanup_failed' });
-    expect(await ctx.store.liveMeetings.isDeleted('session-1', 'meeting-1')).toBe(true);
+    // No tombstone yet: devices keep the meeting instead of syncing it away unfinished.
+    expect(await ctx.store.liveMeetings.isDeleted('session-1', 'meeting-1')).toBe(false);
+    const feed = (
+      await discardApp.inject({ method: 'GET', url: '/sessions/session-1/live-meetings' })
+    ).json<{ meetings: unknown[]; deletedMeetingIds: string[] }>();
+    expect(feed.meetings).toHaveLength(1);
+    expect(feed.deletedMeetingIds).toEqual([]);
     expect((await discardApp.inject({ method: 'DELETE', url })).statusCode).toBe(200);
-    expect(onDiscarded).toHaveBeenCalledTimes(2);
+    expect(await ctx.store.liveMeetings.isDeleted('session-1', 'meeting-1')).toBe(true);
   } finally {
     await discardApp.close();
   }
