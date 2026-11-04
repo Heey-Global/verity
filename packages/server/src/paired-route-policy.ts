@@ -166,6 +166,11 @@ const resourceRules: ReadonlyMap<string, ResourceRule> = new Map([
     { kind: 'session', parameter: 'id', permission: 'execute' },
   ],
   [
+    // Discarding is an edit of the meeting, so it needs the right to upload one.
+    routeScopeKey('DELETE', '/sessions/:id/live-meetings/:meetingId'),
+    { kind: 'session', parameter: 'id', permission: 'execute' },
+  ],
+  [
     routeScopeKey('POST', '/sessions/:id/live-meetings/:meetingId/addressed'),
     { kind: 'session', parameter: 'id', permission: 'execute' },
   ],

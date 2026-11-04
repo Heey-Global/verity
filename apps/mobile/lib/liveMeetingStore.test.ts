@@ -1,13 +1,23 @@
 import { waitFor } from '@testing-library/react-native';
-import { listMeetings, saveNote, saveSpeakerTurns, saveSpeakerEdits } from './liveMeetingStore';
+import {
+  deleteMeeting,
+  importChanges,
+  listMeetings,
+  saveNote,
+  saveSpeakerTurns,
+  saveSpeakerEdits,
+} from './liveMeetingStore';
 jest.mock('./client', () => ({ getActiveMeetingServerId: jest.fn().mockReturnValue(null) }));
 
 const mockRunAsync = jest.fn().mockResolvedValue(undefined);
+const mockGetFirstAsync = jest.fn().mockResolvedValue(null);
 jest.mock('expo-sqlite', () => ({
   openDatabaseAsync: jest.fn().mockResolvedValue({
     execAsync: jest.fn().mockResolvedValue(undefined),
     runAsync: mockRunAsync,
     getAllAsync: jest.fn().mockResolvedValue([]),
+    getFirstAsync: mockGetFirstAsync,
+    withTransactionAsync: (task: () => Promise<void>) => task(),
   }),
 }));
 
@@ -63,4 +73,35 @@ it('stores meeting-only speaker names and segment corrections on the owner devic
     '{"2":0}',
     'meeting-1',
   );
+});
+
+const deletes = () =>
+  mockRunAsync.mock.calls
+    .filter(([statement]) => /^DELETE/.test(String(statement)))
+    .map(([statement, id]) => [String(statement), id]);
+
+it('deletes a discarded meeting with its notes and drafts', async () => {
+  await listMeetings('session-1');
+  mockRunAsync.mockClear();
+  mockGetFirstAsync.mockResolvedValueOnce({ id: 'meeting-1' });
+  await deleteMeeting('meeting-1');
+  // Drafts are unfinalized rows of the same table, so one statement removes both.
+  expect(deletes()).toEqual([
+    ['DELETE FROM meeting_notes WHERE meeting_id = ?', 'meeting-1'],
+    ['DELETE FROM meetings WHERE id = ?', 'meeting-1'],
+  ]);
+});
+
+it('applies a remote discard only to the copy from that server', async () => {
+  await listMeetings('session-1');
+  mockRunAsync.mockClear();
+  mockGetFirstAsync.mockImplementation(async (statement: string, ...args: unknown[]) =>
+    statement.includes('server_id = ?') && args[1] === 'server-1' && args[0] === 'shared'
+      ? { id: 'shared' }
+      : null,
+  );
+  await importChanges('server-1', 'session-1', 5, [], [], ['shared', 'other-server']);
+  mockGetFirstAsync.mockReset();
+  mockGetFirstAsync.mockResolvedValue(null);
+  expect(deletes().map(([, id]) => id)).toEqual(['shared', 'shared']);
 });

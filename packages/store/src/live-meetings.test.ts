@@ -708,3 +708,137 @@ describe('derived meeting results', () => {
     expect(await ctx.db.selectFrom('live_meeting_results').selectAll().execute()).toEqual([]);
   });
 });
+
+describe('discarding finished meetings', () => {
+  const ended = { ...meeting, state: 'ended' as const, endedAt: 200, revision: 2 };
+  const counts = async () =>
+    Object.fromEntries(
+      await Promise.all(
+        (
+          [
+            'live_meetings',
+            'live_meeting_notes',
+            'live_meeting_insights',
+            'live_meeting_commands',
+            'live_meeting_results',
+          ] as const
+        ).map(async (table) => [
+          table,
+          Number(
+            (
+              await ctx.db
+                .selectFrom(table)
+                .select((eb) => eb.fn.countAll().as('count'))
+                .executeTakeFirstOrThrow()
+            ).count,
+          ),
+        ]),
+      ),
+    );
+
+  it('deletes everything derived from the meeting, keeps tasks and reports a tombstone', async () => {
+    await ctx.store.liveMeetings.putMeeting({ ...meeting, revision: 1 });
+    await ctx.store.liveMeetings.requestCommand('session-1', meeting.id, 'command-1', 'pause');
+    await ctx.store.liveMeetings.putMeeting({
+      ...ended,
+      speakerTurns: [{ speaker: 0, start: 0, end: 1 }],
+      timedWords: [{ text: 'First', start: 0, end: 1 }],
+      speakerNames: { '0': 'Anna' },
+    });
+    await ctx.store.liveMeetings.putNote('session-1', {
+      id: 'note-1',
+      meetingId: meeting.id,
+      atSeconds: 1,
+      text: 'Private note',
+      revision: 1,
+    });
+    await ctx.store.liveMeetings.addInsight('session-1', {
+      id: 'insight-1',
+      meetingId: meeting.id,
+      kind: 'research',
+      summary: 'Check',
+      evidenceA: 'First words',
+      evidenceB: null,
+      sourcePath: null,
+      createdAt: 1,
+    });
+    await ctx.store.liveMeetings.putMeeting({ ...meeting, id: 'other', state: 'ended' });
+    await ctx.store.tasks.upsert({
+      id: 'kept-task',
+      ownerUserId: '00000000-0000-4000-8000-000000000001',
+      sessionId: 'session-1',
+      origin: 'user',
+      title: 'Ship',
+      detail: 'From the meeting',
+    });
+    const before = await ctx.store.liveMeetings.changes('session-1', 0);
+
+    expect(await ctx.store.liveMeetings.deleteMeeting('session-2', meeting.id)).toBe('not_found');
+    expect(await ctx.store.liveMeetings.deleteMeeting('session-1', meeting.id)).toBe('deleted');
+    expect(await ctx.store.liveMeetings.deleteMeeting('session-1', meeting.id)).toBe('not_found');
+
+    expect(await counts()).toEqual({
+      live_meetings: 1,
+      live_meeting_notes: 0,
+      live_meeting_insights: 0,
+      live_meeting_commands: 0,
+      live_meeting_results: 1,
+    });
+    expect(await ctx.store.liveMeetings.result('session-1', meeting.id)).toBeNull();
+    expect(
+      await ctx.store.tasks.get('kept-task', '00000000-0000-4000-8000-000000000001'),
+    ).toMatchObject({ title: 'Ship' });
+    const after = await ctx.store.liveMeetings.changes('session-1', before.cursor);
+    expect(after.cursor).toBeGreaterThan(before.cursor);
+    expect(after).toMatchObject({ meetings: [], notes: [], deletedMeetingIds: [meeting.id] });
+    expect(
+      (await ctx.store.liveMeetings.changes('session-1', 0)).meetings.map((m) => m.id),
+    ).toEqual(['other']);
+    expect(
+      (await ctx.store.liveMeetings.changes('session-1', after.cursor)).deletedMeetingIds,
+    ).toEqual([]);
+    expect((await ctx.store.liveMeetings.changes('session-2', 0)).deletedMeetingIds).toEqual([]);
+    expect(await ctx.store.liveMeetings.isDeleted('session-1', meeting.id)).toBe(true);
+  });
+
+  it('refuses a recording that may still change', async () => {
+    await ctx.store.liveMeetings.putMeeting(meeting);
+    await ctx.store.liveMeetings.putMeeting({
+      ...meeting,
+      id: 'online-recovering',
+      engine: 'attendee',
+      state: 'interrupted',
+    });
+    await ctx.store.liveMeetings.putMeeting({
+      ...meeting,
+      id: 'device-interrupted',
+      state: 'interrupted',
+    });
+    expect(await ctx.store.liveMeetings.deleteMeeting('session-1', meeting.id)).toBe('running');
+    expect(await ctx.store.liveMeetings.deleteMeeting('session-1', 'online-recovering')).toBe(
+      'running',
+    );
+    // A device recording that stopped unexpectedly is finished; it cannot resume.
+    expect(await ctx.store.liveMeetings.deleteMeeting('session-1', 'device-interrupted')).toBe(
+      'deleted',
+    );
+    expect(await ctx.store.liveMeetings.currentRevision('session-1', meeting.id)).toBe(1);
+  });
+
+  it('does not let a late upload or note bring a discarded meeting back', async () => {
+    await ctx.store.liveMeetings.putMeeting(ended);
+    expect(await ctx.store.liveMeetings.deleteMeeting('session-1', meeting.id)).toBe('deleted');
+    expect(await ctx.store.liveMeetings.putMeeting({ ...ended, revision: 3 })).toBe(false);
+    expect(
+      await ctx.store.liveMeetings.putNote('session-1', {
+        id: 'late-note',
+        meetingId: meeting.id,
+        atSeconds: 1,
+        text: 'Late',
+        revision: 1,
+      }),
+    ).toBe(false);
+    expect(await ctx.store.liveMeetings.currentRevision('session-1', meeting.id)).toBeNull();
+    expect(await counts()).toMatchObject({ live_meetings: 0, live_meeting_results: 0 });
+  });
+});

@@ -177,6 +177,13 @@ export function meetingResultWorker(opts: {
     start: (sessionId: string, meetingId: string, retry = false) => {
       void start(sessionId, meetingId, retry).catch(opts.onError);
     },
+    /** Stops result work for a discarded meeting; nothing restarts it afterwards. */
+    cancel: (meetingId: string) => {
+      const timer = filingTimers.get(meetingId);
+      if (timer) clearTimeout(timer);
+      filingTimers.delete(meetingId);
+      running.get(meetingId)?.abort();
+    },
     close: () => {
       closed = true;
       for (const timer of filingTimers.values()) clearTimeout(timer);

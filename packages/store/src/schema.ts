@@ -1695,6 +1695,7 @@ export interface Database {
   live_meeting_insights: LiveMeetingInsightsTable;
   live_meeting_commands: LiveMeetingCommandsTable;
   live_meeting_sync_clock: LiveMeetingSyncClockTable;
+  live_meeting_deletions: LiveMeetingDeletionsTable;
   session_links: SessionLinksTable;
   session_link_deliveries: SessionLinkDeliveriesTable;
   session_link_pending_messages: SessionLinkPendingMessagesTable;
@@ -1830,6 +1831,13 @@ interface LiveMeetingCommandsTable {
 interface LiveMeetingSyncClockTable {
   id: boolean;
   sequence: number;
+}
+
+interface LiveMeetingDeletionsTable {
+  meeting_id: string;
+  session_id: string;
+  deleted_seq: number;
+  deleted_at: number;
 }
 
 interface LiveMeetingNotesTable {

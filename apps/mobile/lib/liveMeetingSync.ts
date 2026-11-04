@@ -1,4 +1,4 @@
-import { type VerityClient } from '@verity/mobile';
+import { type VerityClient, VerityApiError } from '@verity/mobile';
 import { subscribeLiveRefresh } from './liveConnection';
 import { AppState } from 'react-native';
 import { createVerityClient, getActiveMeetingServerId, subscribeVerityBaseUrl } from './client';
@@ -12,6 +12,7 @@ import {
 import {
   acknowledgeMeeting,
   acknowledgeNote,
+  deleteMeeting,
   getSyncCursor,
   hasPendingMeetingSync,
   importChanges,
@@ -46,6 +47,35 @@ export function subscribeFollowedRemoteMeeting(
   };
 }
 
+const isDiscardedError = (error: unknown) =>
+  error instanceof VerityApiError && error.status === 409 && error.code === 'meeting_deleted';
+
+/**
+ * Discards a finished meeting: on its server for every device when it was shared, then
+ * on this device. A meeting saved only here is deleted locally. Throws when the meeting
+ * is still recording or its server is not the connected one; nothing is deleted then.
+ */
+export async function discardFinishedMeeting(
+  sessionId: string,
+  meeting: { id: string; serverId?: string | null; state: string },
+  suppliedClient?: VerityClient,
+): Promise<void> {
+  if (meeting.state === 'active') throw new Error('End the meeting before discarding it.');
+  if (meeting.serverId != null) {
+    if (meeting.serverId !== getActiveMeetingServerId())
+      throw new Error('Reconnect to this meeting’s server to discard it.');
+    const client = suppliedClient ?? createVerityClient();
+    if (!client) throw new Error('Connect to your server to discard this meeting.');
+    try {
+      await client.discardSessionMeeting(sessionId, meeting.id);
+    } catch (error) {
+      // Never uploaded, or already discarded from another device: only this copy is left.
+      if (!(error instanceof VerityApiError && error.status === 404)) throw error;
+    }
+  }
+  await deleteMeeting(meeting.id);
+}
+
 function flushMeetingOutbox(serverId: string): Promise<void> {
   const inFlight = flushing.get(serverId);
   if (inFlight) return inFlight;
@@ -59,7 +89,9 @@ function flushMeetingOutbox(serverId: string): Promise<void> {
         await client.putLiveMeeting(meeting);
         await acknowledgeMeeting(serverId, meeting.id, meeting.revision);
       } catch (error) {
-        firstError ??= error;
+        // Discarded elsewhere: retrying would fail forever, so this copy goes too.
+        if (isDiscardedError(error)) await deleteMeeting(meeting.id);
+        else firstError ??= error;
       }
     }
     for (const { sessionId, note } of await pendingNotes(serverId)) {
@@ -67,7 +99,8 @@ function flushMeetingOutbox(serverId: string): Promise<void> {
         await client.putLiveMeetingNote(sessionId, note);
         await acknowledgeNote(serverId, note.id, note.revision);
       } catch (error) {
-        firstError ??= error;
+        if (isDiscardedError(error)) await deleteMeeting(note.meetingId);
+        else firstError ??= error;
       }
     }
     if (firstError) throw firstError;
@@ -98,7 +131,14 @@ export async function syncMeetingSession(
   if (getActiveMeetingServerId() !== serverId) return { pending: true };
   const after = await getSyncCursor(serverId, sessionId);
   const changes = await client.getLiveMeetingChanges(sessionId, after);
-  await importChanges(serverId, sessionId, changes.cursor, changes.meetings, changes.notes);
+  await importChanges(
+    serverId,
+    sessionId,
+    changes.cursor,
+    changes.meetings,
+    changes.notes,
+    changes.deletedMeetingIds,
+  );
   return { pending: pending || (await hasPendingMeetingSync(serverId, sessionId)) };
 }
 

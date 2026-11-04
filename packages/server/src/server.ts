@@ -162,6 +162,7 @@ import {
 import {
   configuredMeetingTranscriber,
   fileLiveMeeting,
+  removeFiledLiveMeeting,
   meetingTranscriptionSettingsWhileSealed,
 } from './meeting-transcription.js';
 import { registerMessageSearchRoute } from './message-search-route.js';
@@ -5963,6 +5964,17 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         sessionId,
         meetingId,
       }),
+    onDiscarded: async (sessionId, meeting) => {
+      // The attendee owner is created below; a request can only arrive once it exists.
+      if (meeting.engine === 'attendee')
+        await attendeeMeetings.discardFinished(sessionId, meeting.id);
+      await removeFiledLiveMeeting({
+        eventStore: deps.eventStore,
+        dataRoot: deps.dataRoot,
+        sessionId,
+        meeting,
+      });
+    },
     knowledge: async (sessionId, transcript) => {
       if (!deps.dataRoot) return [];
       const session = await deps.eventStore.getSession(sessionId);
