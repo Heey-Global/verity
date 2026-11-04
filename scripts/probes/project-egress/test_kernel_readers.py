@@ -162,9 +162,22 @@ class ProgramReaders(unittest.TestCase):
             self.assertEqual(attr.fd, 12)
             ctypes.memmove(attr.info, struct.pack('<II', 3, 42), 8)
             return 0
-        with patch.object(host, 'bpf', side_effect=syscall), patch.object(host.os, 'close') as close:
+        with patch.object(host, 'bpf', side_effect=syscall), patch.object(Path, 'read_text', return_value='prog_type: 3\nprog_id: 42\n') as read, patch.object(host.os, 'close') as close:
             self.assertEqual(host.kernel_program(Path('/pins')), {'id': 42, 'type': 'sched_cls'})
         close.assert_called_once_with(12)
+        read.assert_called_once_with()
+
+    def test_map_descriptor_with_colliding_prefix_is_rejected(self):
+        def syscall(command, attr):
+            if command == 7:
+                return 12
+            ctypes.memmove(attr.info, struct.pack('<II', 3, 42), 8)
+            return 0
+        for descriptor in ['map_type: 3\nmap_id: 42\n', 'prog_type: 3\nprog_id: 99\n']:
+            with self.subTest(descriptor=descriptor), patch.object(host, 'bpf', side_effect=syscall), patch.object(Path, 'read_text', return_value=descriptor), patch.object(host.os, 'close') as close:
+                with self.assertRaisesRegex(ValueError, 'not the inspected program'):
+                    host.kernel_program(Path('/pins'))
+            close.assert_called_once_with(12)
 
     def test_bpf_read_failure_never_leaks_the_pin_fd(self):
         with patch.object(host, 'bpf', side_effect=[12, OSError('refused')]), patch.object(host.os, 'close') as close:

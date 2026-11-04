@@ -1,0 +1,103 @@
+name: Lint metadata comparison
+
+on:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include:
+          - repeat: 1
+            order: disabled cold warm
+          - repeat: 2
+            order: cold warm disabled
+          - repeat: 3
+            order: cold disabled warm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: '26.13.0'
+      - run: npm ci --workspace packages --include-workspace-root --ignore-scripts --omit=optional
+      - name: Measure metadata cache modes
+        shell: bash
+        env:
+          CI: 'true'
+          MEASUREMENT_DIR: ${{ runner.temp }}/lint-comparison
+          COMPARISON_ORDER: ${{ matrix.order }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$MEASUREMENT_DIR"
+          {
+            git rev-parse HEAD
+            node --version
+            npm --version
+            uname -sm
+            lscpu
+            free -k
+            echo "order=$COMPARISON_ORDER"
+            echo "CI=$CI; clean-result reuse disabled in every mode"
+          } > "$MEASUREMENT_DIR/environment.txt"
+          # All modes use the same checkout, dependencies, rules and fresh workers.
+          # Cold starts empty but may reuse metadata populated by earlier groups.
+          # Warm restores the successful cold run's metadata, never lint results.
+          # Only the disabled position rotates; cold must precede warm.
+          rm -rf "$MEASUREMENT_DIR/metadata-seed"
+          failed=0
+          seed_ready=0
+          for variant in $COMPARISON_ORDER; do
+            export LINT_COMPARISON_VARIANT="$variant"
+            rm -rf .cache/lint-ambient
+            if [[ "$variant" == warm ]]; then
+              if [[ "$seed_ready" != 1 ]]; then
+                echo 'Warm measurement unavailable: no successful metadata seed.' \
+                  | tee "$MEASUREMENT_DIR/warm.log"
+                echo 125 > "$MEASUREMENT_DIR/warm-exit.txt"
+                failed=1
+                continue
+              fi
+              mkdir -p .cache
+              cp -R "$MEASUREMENT_DIR/metadata-seed" .cache/lint-ambient
+            fi
+            command=(npm run lint)
+            if [[ "$variant" == disabled ]]; then command+=(-- --no-cache); fi
+            set +e
+            /usr/bin/time --verbose --output="$MEASUREMENT_DIR/$variant-resources.txt" \
+              timeout --signal=TERM --kill-after=30s 45m "${command[@]}" \
+              2>&1 | tee "$MEASUREMENT_DIR/$variant.log"
+            pipeline_status=("${PIPESTATUS[@]}")
+            set -e
+            status=${pipeline_status[0]}
+            echo "$status" > "$MEASUREMENT_DIR/$variant-exit.txt"
+            echo "${pipeline_status[1]}" > "$MEASUREMENT_DIR/$variant-log-exit.txt"
+            if [[ "$status" != 0 || "${pipeline_status[1]}" != 0 ]]; then failed=1; fi
+            if [[ "$variant" == cold && "$status" == 0 && "${pipeline_status[1]}" == 0 ]]; then
+              if [[ -d .cache/lint-ambient ]] && \
+                [[ -n "$(find .cache/lint-ambient -type f -name '*.json' -print -quit)" ]]; then
+                cp -R .cache/lint-ambient "$MEASUREMENT_DIR/metadata-seed"
+                seed_ready=1
+              fi
+            fi
+          done
+          # RSS is peak individual-process memory, not aggregate container memory.
+          # Compare only complete successful runs. OS cache warming is uncontrolled.
+          exit "$failed"
+      - name: Upload comparison evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: lint-metadata-comparison-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.repeat }}
+          path: ${{ runner.temp }}/lint-comparison
+          retention-days: 7
+          if-no-files-found: warn

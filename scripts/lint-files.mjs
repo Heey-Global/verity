@@ -27,6 +27,10 @@ function contributesAmbientTypes(file, text = ts.sys.readFile(file)) {
     jsDocParsingMode: ts.JSDocParsingMode.ParseNone,
   });
   return (
+    // Reference directives affect globals even in an otherwise unrelated module.
+    source.libReferenceDirectives.length > 0 ||
+    source.typeReferenceDirectives.length > 0 ||
+    source.referencedFiles.length > 0 ||
     !ts.isExternalModule(source) ||
     source.statements.some((statement) => ts.isModuleDeclaration(statement))
   );

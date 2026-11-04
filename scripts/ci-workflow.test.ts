@@ -906,7 +906,9 @@ describe('CI aggregate cancellation', () => {
     const workflow = parse(readFileSync('.github/workflows/ci.yml', 'utf8')) as {
       jobs: { 'ci-checks': { if?: string } };
     };
-    expect(workflow.jobs['ci-checks'].if).toBe('${{ always() && !cancelled() }}');
+    expect(workflow.jobs['ci-checks'].if).toBe(
+      "${{ always() && !cancelled() && !inputs['lint-comparison-only'] }}",
+    );
   });
 });
 
@@ -3447,7 +3449,7 @@ describe('CI runner footprint', () => {
     expect(cached).toBe(true);
   });
 
-  it('keeps CI lint uncached and never enables ESLint single-file result caching', () => {
+  it('allows CI metadata reuse while disabling lint result caching', () => {
     // Prettier's cache above is safe; ESLint's is not, and the difference is not
     // visible from the shape of the two steps — which is why this is asserted and
     // not left to the comment in ci.yml. An ESLint cache entry is invalidated by
@@ -3489,7 +3491,19 @@ describe('CI runner footprint', () => {
     expect(source).toMatch(/^\s*node scripts\/lint-runner\.mjs\s/m);
     expect(source).toContain('git ls-files');
     const eslintStep = (ci.jobs.lint?.steps ?? []).find((step) => step.name === 'ESLint');
-    expect(eslintStep?.run).toBe('npm run lint');
+    expect(eslintStep?.run).toContain('npm run lint 2>&1');
+    expect(eslintStep?.run).not.toContain('--no-cache');
+    expect(eslintStep?.env?.CI).toBe('true');
+    expect(eslintStep?.run).toContain('set -euo pipefail');
+    expect(eslintStep?.run).toContain('/usr/bin/time --verbose');
+    expect(eslintStep?.run).toContain('resources.txt');
+    expect(eslintStep?.run).toContain('tee "$LINT_MEASUREMENT_DIR/lint.log"');
+    const measurement = ci.jobs.lint?.steps?.find(
+      (step) => step.name === 'Upload lint measurement',
+    );
+    expect(measurement?.if).toBe('always()');
+    expect(measurement?.uses).toContain('actions/upload-artifact@');
+    expect(measurement?.with?.path).toBe('${{ runner.temp }}/lint-measurement');
     // Inspect executable flags, without confusing git's --cached file listing
     // with ESLint's --cache flag.
     const flags = [scripts?.lint ?? '', eslintStep?.run ?? '', source]
