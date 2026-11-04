@@ -28,7 +28,7 @@ type ProvisionDocker = Pick<
 >;
 
 /** Exact host destinations only; project-controlled paths never cross this boundary. */
-export const PROJECT_EGRESS_PROVISION_BINDS = [
+const PROJECT_EGRESS_PROVISION_BINDS = [
   '/etc/verity-egress:/etc/verity-egress',
   '/etc/verity-egress-server:/etc/verity-egress-server',
   '/var/lib/verity-egress:/var/lib/verity-egress',

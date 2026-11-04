@@ -806,16 +806,25 @@ describe('host maintenance admission', () => {
     mkdirSync(join(gate, 'leases'));
     writeFileSync(join(gate, 'build-admission.lock'), '');
     const lock = join(gate, 'build-admission.lock');
-    // Its own process group: the sleeping child inherits the lock and must end too.
-    const maintenance = spawn('flock', ['-x', lock, 'sleep', '5'], { detached: true });
+    // Replace flock with the holder itself: its exit then proves the descriptor
+    // is closed, rather than racing a killed parent's still-exiting child.
+    const maintenance = spawn('flock', [
+      '--no-fork',
+      '-x',
+      lock,
+      process.execPath,
+      '-e',
+      "process.stdin.resume(); process.stdout.write('locked');",
+    ]);
     try {
-      await setTimeout(200);
+      await once(maintenance.stdout, 'data');
       await expect(
         lease.run('true', [], { ...commandOptions, remoteOperation: 'build-export' }),
       ).rejects.toThrow('maintenance is in progress');
     } finally {
-      process.kill(-(maintenance.pid ?? 0), 'SIGKILL');
-      await once(maintenance, 'exit');
+      const exited = once(maintenance, 'exit');
+      maintenance.stdin.end();
+      await exited;
     }
 
     await lease.run('true', [], { ...commandOptions, remoteOperation: 'build-export' });

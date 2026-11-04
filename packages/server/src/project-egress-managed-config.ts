@@ -7,7 +7,7 @@ import { egressHostAuthority } from './project-egress-host-authority.js';
 
 const networkName = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/u);
 const databaseName = z.string().regex(/^[a-zA-Z_][a-zA-Z0-9_]{0,62}$/u);
-export const managedEgressDatabaseLocator = z.strictObject({
+const managedEgressDatabaseLocator = z.strictObject({
   version: z.literal(1),
   network: networkName,
   service: z.literal('postgres'),

@@ -24,7 +24,7 @@ export const MANAGED_DEPLOYMENT_ROOT = '/var/lib/verity/updater/managed-deployme
 const MANAGED_DEPLOYMENT_MARKER_VERSION = 1 as const;
 export const MANAGED_DEPLOYMENT_SPEC_FILE = 'server-deployment.json';
 export const MANAGED_HOST_DIAGNOSTIC_BACKUP_FILE = 'server-deployment.before-host-diagnostics.json';
-export const MANAGED_PROJECT_EGRESS_BACKUP_FILE = 'server-deployment.before-project-egress.json';
+const MANAGED_PROJECT_EGRESS_BACKUP_FILE = 'server-deployment.before-project-egress.json';
 
 export async function readManagedProjectEgressBackup(
   rootPath: string,
