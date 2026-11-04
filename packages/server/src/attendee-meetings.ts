@@ -37,14 +37,23 @@ const UPLINK_SHARE_REFUSALS: Record<string, string> = {
   invalid_request: 'The Uplink rejected the share request as invalid.',
 };
 
+const REPORTED_UPLINK_CODES = new Set([
+  ...Object.keys(UPLINK_SHARE_REFUSALS),
+  'webhook_not_negotiated',
+  'share_rejected',
+  'internal',
+]);
+
 /**
  * Names the Uplink step that failed before the bot was created. Phases and codes come from
  * the bounded diagnostic vocabulary, so the text never carries raw upstream errors.
  */
 export function uplinkStartFailure(phase: MeetingStartDiagnostic['phase'], code: string) {
   const hint = 'Check Uplink / Online Sharing and retry.';
-  const step = `(Uplink step: ${phase}${code === 'pending' || code === 'ready' ? '' : ` · ${code}`})`;
-  const reason = (() => {
+  // Only codes this server knows reach the message; anything else is reported as `unknown`.
+  const shown = REPORTED_UPLINK_CODES.has(code) ? code : 'unknown';
+  const step = `(Uplink step: ${phase}${code === 'pending' || code === 'ready' ? '' : ` · ${shown}`})`;
+  const reason = ((): string => {
     switch (phase) {
       case 'ensure_sharing':
         return 'Could not enable online sharing on the Uplink.';
@@ -62,6 +71,10 @@ export function uplinkStartFailure(phase: MeetingStartDiagnostic['phase'], code:
       case 'connector_ready':
       case 'provider_setup':
         return 'Online sharing stopped while the meeting was starting.';
+      default: {
+        const unhandled: never = phase;
+        return `Online meeting start failed at ${String(unhandled)}.`;
+      }
     }
   })();
   return `${reason} ${hint} ${step}`;

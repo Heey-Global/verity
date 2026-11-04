@@ -957,7 +957,7 @@ it('keeps the generic Uplink hint for a failure before any Uplink step reported'
   expect(uplinkStartFailure('ensure_sharing', 'pending')).toBe(
     'Could not enable online sharing on the Uplink. Check Uplink / Online Sharing and retry. (Uplink step: ensure_sharing)',
   );
-  expect(uplinkStartFailure('share_create', 'something_new')).toContain(
-    'The Uplink refused the webhook share.',
+  expect(uplinkStartFailure('share_create', 'raw upstream <text>')).toBe(
+    'The Uplink refused the webhook share. Check Uplink / Online Sharing and retry. (Uplink step: share_create · unknown)',
   );
 });
