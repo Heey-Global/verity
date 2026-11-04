@@ -154,3 +154,20 @@ Extra events are dropped, never queued or retried, so server scroll logs are a
 sample rather than a complete event sequence. Turning recording off prevents new
 reports; an already dispatched request may finish. History loading and scroll
 position behavior do not depend on report delivery.
+
+
+## Optional switch measurements
+
+The interaction-recording switch also controls component-body totals, client-activity
+aggregates, the 100 ms JS stall probe, and UI frame-gap sampling. While recording is
+off these probes collect no new measurements, stall timers and frame polling are
+stopped, and queued results from an earlier recording cannot enter a later one.
+Session navigation, request transport and readiness lifecycle milestones retain
+their existing behavior and export shape.
+
+Aggregate entries keep the `elapsedMs` at which the entry was first created;
+`value` is updated as further work is collected. For timer peaks and activity
+peaks, use the deadline/observed or start/end **values** to locate the interval.
+An aggregate's value can therefore describe work after its own `elapsedMs`.
+Component-body totals exclude descendants, commit effects, layout and paint;
+timer lateness does not identify a continuously executing blocking function.

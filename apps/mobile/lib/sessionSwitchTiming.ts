@@ -6,6 +6,12 @@ import {
   type SwitchTiming,
 } from '@verity/mobile';
 
+import {
+  gestureDiagnosticsEnabled,
+  gestureRecordingGeneration,
+  subscribeGestureDiagnostics,
+} from './gestureDiagnostics';
+
 let lastTouchedSessionId: string | undefined;
 
 let rowTouch: { timestamp: number; trace: SwitchTiming } | undefined;
@@ -98,6 +104,8 @@ export function beginRenderWork(
   stage: RenderWorkStage,
   sessionId = lastTouchedSessionId,
 ): () => void {
+  if (!gestureDiagnosticsEnabled()) return noop;
+  const generation = gestureRecordingGeneration();
   const trace = sessionId ? sessionSwitchTiming(sessionId) : undefined;
   if (!trace || listCompleted(trace)) return noop;
   const started = performance.now();
@@ -105,7 +113,13 @@ export function beginRenderWork(
   return () => {
     if (finished) return;
     finished = true;
-    if (sessionSwitchTiming(trace.sessionId) !== trace || listCompleted(trace)) return;
+    if (
+      !gestureDiagnosticsEnabled() ||
+      gestureRecordingGeneration() !== generation ||
+      sessionSwitchTiming(trace.sessionId) !== trace ||
+      listCompleted(trace)
+    )
+      return;
     const duration = performance.now() - started;
     if (!Number.isFinite(duration) || duration < 0) return;
     let totals = renderTotals.get(trace);
@@ -139,10 +153,14 @@ export function beginRenderWork(
 }
 
 let stopSampling: ((flush?: boolean) => void) | undefined;
+// Switching off must cancel the pending probe before another JS timer turn.
+subscribeGestureDiagnostics(() => stopSampling?.());
+
 /** Timer callback lateness is not continuous JS blockage. Completion only records pending age. */
 export function startStallSampling(trace: SwitchTiming): void {
   stopSampling?.();
-  if (AppState.currentState !== 'active') return;
+  if (!gestureDiagnosticsEnabled() || AppState.currentState !== 'active') return;
+  const generation = gestureRecordingGeneration();
   let expected = performance.now() + 100;
   let maximum = 0;
   let samples = 0;
@@ -184,6 +202,8 @@ export function startStallSampling(trace: SwitchTiming): void {
   const stop = (flush = false) => {
     if (
       flush &&
+      gestureDiagnosticsEnabled() &&
+      gestureRecordingGeneration() === generation &&
       AppState.currentState === 'active' &&
       sessionSwitchTiming(trace.sessionId) === trace &&
       performance.now() - trace.started < 10_000
@@ -201,6 +221,8 @@ export function startStallSampling(trace: SwitchTiming): void {
   const tick = () => {
     const now = performance.now();
     if (
+      !gestureDiagnosticsEnabled() ||
+      gestureRecordingGeneration() !== generation ||
       sessionSwitchTiming(trace.sessionId) !== trace ||
       listCompleted(trace) ||
       now - trace.started >= 10_000
@@ -223,6 +245,7 @@ export function startStallSampling(trace: SwitchTiming): void {
 
 export function switchMeasurementOpen(trace: SwitchTiming | undefined): boolean {
   return (
+    gestureDiagnosticsEnabled() &&
     !!trace &&
     sessionSwitchTiming(trace.sessionId) === trace &&
     !listCompleted(trace) &&
@@ -249,12 +272,13 @@ export function beginClientActivity(stage: ClientActivity): () => void {
   const trace = lastTouchedSessionId ? sessionSwitchTiming(lastTouchedSessionId) : undefined;
   if (!switchMeasurementOpen(trace)) return noop;
   const active = trace!;
+  const generation = gestureRecordingGeneration();
   const started = performance.now();
   let finished = false;
   return () => {
     if (finished) return;
     finished = true;
-    if (!switchMeasurementOpen(active)) return;
+    if (gestureRecordingGeneration() !== generation || !switchMeasurementOpen(active)) return;
     const ended = performance.now();
     const duration = ended - started;
     if (!Number.isFinite(duration) || duration < 0) return;
