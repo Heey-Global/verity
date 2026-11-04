@@ -78,6 +78,7 @@ export type StandbyPromotionDocker = Pick<
   | 'listContainers'
   | 'pullImage'
   | 'removeContainer'
+  | 'removeStoppedContainer'
   | 'replaceContainerImage'
   | 'startContainer'
   | 'stopContainer'
@@ -693,7 +694,10 @@ export async function dockerStandbyPromotion(
       // created Server under another name is not this cutover's to touch.
       try {
         // Without a deployment identity no container can be proven to be ours.
-        const inventory = journal.deploymentId ? ((await docker.listContainers?.()) ?? []) : [];
+        const inventory =
+          journal.deploymentId && docker.removeStoppedContainer
+            ? ((await docker.listContainers?.()) ?? [])
+            : [];
         for (const container of inventory) {
           if (container.id === state.oldContainerId || container.id === state.candidateContainerId)
             continue;
@@ -714,7 +718,7 @@ export async function dockerStandbyPromotion(
           // may be a concurrent repair's.
           if (inspect === undefined || !['exited', 'dead'].includes(inspect.status ?? '')) continue;
           await keepLogs(container.id, name);
-          await ignoreMissing(() => docker.removeContainer(container.id));
+          await ignoreMissing(() => docker.removeStoppedContainer!(container.id));
           log(`Removed leftover stopped Server ${name}`);
         }
       } catch (error) {

@@ -245,6 +245,26 @@ describe('standby promotion cutover', () => {
     );
   });
 
+  it('preserves a leftover that restarts while its logs are archived', async () => {
+    const { root, daemon } = await prepared();
+    const leftover = await daemon.docker.createContainer({
+      ...daemon.spec(MANAGED_SERVER_NAME)!,
+      name: 'verity-managed-server-g7',
+    });
+    await daemon.docker.stopContainer(leftover.id);
+    vi.mocked(daemon.docker.containerLogs!).mockImplementation(async (id) => {
+      if (id === leftover.id) await daemon.docker.startContainer(id);
+      return '';
+    });
+
+    await expect(resumeUpdateCutover(await cutover(root, daemon))).resolves.toMatchObject({
+      phase: 'committed',
+    });
+    expect(daemon.status('verity-managed-server-g7')).toBe('running');
+    expect(daemon.docker.removeStoppedContainer).toHaveBeenCalledWith(leftover.id);
+    expect(daemon.docker.removeContainer).not.toHaveBeenCalledWith(leftover.id);
+  });
+
   it('never lets leftover log copies evict the retired generation logs', async () => {
     const { root, daemon } = await prepared();
     const serverSpec = daemon.spec(MANAGED_SERVER_NAME)!;
