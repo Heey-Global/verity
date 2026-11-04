@@ -128,6 +128,21 @@ test('preflight leaves out the curl command when it would drop passthrough optio
   assert.doesNotMatch(result.stderr, /curl -fsSL/);
 });
 
+test('preflight leaves out the curl command for a run with an explicit image', () => {
+  const bin = host();
+  rmSync(join(bin, 'bzip2'));
+
+  const result = run(
+    bin,
+    '--preflight',
+    `--image=ghcr.io/heey-global/verity/verity-server@sha256:${'a'.repeat(64)}`,
+  );
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /re-run with --install-missing to install bzip2 automatically\./);
+  assert.doesNotMatch(result.stderr, /curl -fsSL|unbound variable/);
+});
+
 test('successful preflight exits before pulling an image', () => {
   const result = run(host(), '--preflight');
 
