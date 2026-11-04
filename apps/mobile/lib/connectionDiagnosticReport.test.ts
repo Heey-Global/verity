@@ -379,6 +379,8 @@ it('retains terminal confirmation alongside older Uplink evidence', async () => 
   expect(report!.remote.recording).toEqual(active);
   expect(report!.remote.terminalRecording).toEqual(terminal);
   expect(report!.remote.stopped).toBe(true);
+  expect(report!.complete).toBe(false);
+  expect(report!.gaps).toContain('retained_active_snapshot');
   expect(report!.gaps).not.toContain('remote_stop_unconfirmed');
   expect(parseStoredConnectionDiagnosticReport(JSON.stringify(report))).toEqual(report);
 });
@@ -397,5 +399,35 @@ it.each(['installationFingerprint', 'startedAt'] as const)(
     });
     expect(report.remote.stopped).toBe(false);
     expect(report.remote.terminalRecording).toBeUndefined();
+  },
+);
+
+it.each(['records', 'dropped'] as const)(
+  'never calls a retained active snapshot complete when terminal Core %s increase',
+  async (field) => {
+    const active = serverReport();
+    active.status.phase = 'recording';
+    await saveConnectionDiagnosticReport(
+      'paired',
+      createConnectionDiagnosticReport({
+        ...input(),
+        remote: active,
+        remoteStopped: false,
+      }),
+    );
+    const terminal = serverReport();
+    terminal.status.core[field] = 1;
+    terminal.uplink = { available: false, data: null, error: 'uplink_export_failed' };
+    await saveConnectionDiagnosticReport(
+      'paired',
+      createConnectionDiagnosticReport({
+        ...input(),
+        remote: terminal,
+      }),
+    );
+    const [report] = await loadConnectionDiagnosticReports('paired');
+    expect(report!.remote.stopped).toBe(true);
+    expect(report!.complete).toBe(false);
+    expect(report!.gaps).toContain('retained_active_snapshot');
   },
 );

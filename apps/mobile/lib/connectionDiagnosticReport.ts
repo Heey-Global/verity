@@ -155,6 +155,8 @@ export function createConnectionDiagnosticReport(input: ConnectionDiagnosticRepo
   if (!input.localStopped) gaps.push('local_stop_unconfirmed');
   if (!remoteStopped) gaps.push('remote_stop_unconfirmed');
   if (preparation?.failed) gaps.push('preparation_failed');
+  // A terminal receipt confirms Stop, but cannot make older active Uplink evidence final.
+  if (terminalRecording && remote && !terminal(remote)) gaps.push('retained_active_snapshot');
   if (
     remote?.status.error ||
     remote?.failures?.stop ||
