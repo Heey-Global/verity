@@ -167,14 +167,17 @@ fi
 
 # `openssl ca` writes <database>.attr, <database>.old and <serial>.old beside the
 # files named in its config. Earlier releases left exactly those behind on every run.
-# Sweep them on every run, invitation-only refreshes included, once no other run owns
-# them; the issuing block below then cleans up its own set as a whole.
+# Sweep them on every run, invitation-only refreshes included, once they are clearly
+# stale; the issuing block below then cleans up its own set as a whole.
 for leftover in "$tls_cert".*.tmp*; do
   [ -f "$leftover" ] && [ ! -L "$leftover" ] || continue
   owner="${leftover#"$tls_cert".}"
   owner="${owner%%.*}"
   [[ "$owner" =~ ^[0-9]+$ ]] || continue
-  [ "$owner" != "$$" ] && ! kill -0 "$owner" 2>/dev/null || continue
+  [ "$owner" != "$$" ] || continue
+  # Issuance takes seconds. An hour-old file belongs to no live run, whatever user or
+  # PID namespace started it, which a PID probe alone cannot tell.
+  [ $(($(date +%s) - $(stat -c %Y -- "$leftover"))) -gt 3600 ] || continue
   # Housekeeping only: a leftover that cannot be removed must not stop issuance.
   rm -f -- "$leftover" 2>/dev/null || true
 done

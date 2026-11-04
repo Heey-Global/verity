@@ -8,6 +8,7 @@ import {
   statSync,
   symlinkSync,
   unlinkSync,
+  utimesSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -111,13 +112,17 @@ test('leaves no certificate-issuing side files behind and sweeps earlier leftove
   const exited = spawnSync('true').pid;
   writeFileSync(join(state, `tls-cert.pem.${exited}.index.tmp.attr`), 'unique_subject = no\n');
   writeFileSync(join(state, `tls-cert.pem.${exited}.serial.tmp.old`), '00\n');
+  const hourAgo = new Date(Date.now() - 2 * 3_600_000);
+  for (const name of readdirSync(state)) utimesSync(join(state, name), hourAgo, hourAgo);
+  // A fresh file may belong to a concurrent run in another namespace and stays.
+  writeFileSync(join(state, 'tls-cert.pem.1.csr.tmp'), 'in flight');
   writeFileSync(join(state, 'unrelated.tmp'), 'kept');
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const result = run(state);
     assert.equal(result.status, 0, result.stderr);
     assert.deepEqual(
       readdirSync(state).filter((name) => name.startsWith('tls-cert.pem.')),
-      [],
+      ['tls-cert.pem.1.csr.tmp'],
     );
   }
   assert.equal(readFileSync(join(state, 'unrelated.tmp'), 'utf8'), 'kept');
