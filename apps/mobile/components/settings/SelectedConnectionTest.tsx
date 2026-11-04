@@ -655,7 +655,7 @@ export function SelectedConnectionTest({
         {!saved && !busy ? (
           <Button
             label="Start quick test"
-            disabled={disabled || !loaded || holdLeft > 0}
+            disabled={disabled || !loaded || !holdLoaded || holdLeft > 0}
             fullWidth
             onPress={() => void start()}
           />

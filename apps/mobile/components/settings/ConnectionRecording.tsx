@@ -30,7 +30,10 @@ import {
   useTransientMessage,
 } from './DiagnosticsParts';
 import { Text } from '../ui';
-import { selectedRecordingContext } from '../../lib/selectedRecordingContext';
+import {
+  assertNativeTunnelInactive,
+  selectedRecordingContext,
+} from '../../lib/selectedRecordingContext';
 import { getServerProfile } from '../../lib/serverProfile';
 import {
   exportRemoteDataDiagnostics,
@@ -165,7 +168,7 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
   const [problemReport, setProblemReport] = useState<ConnectionDiagnosticReport | null>(null);
   const [problemArchived, setProblemArchived] = useState(false);
   const [problemStopConfirmed, setProblemStopConfirmed] = useState(false);
-  const [holdLeft, holdUntil, held] = useHold(
+  const [holdLeft, holdUntil, held, holdLoaded] = useHold(
     serverId ? `verity.connectionRecording.hold.v1.${serverId}` : null,
   );
   const problemReleasedRef = useRef(false);
@@ -755,7 +758,16 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
     let stage: 'stop' | 'storage' = 'stop';
     try {
       // Only a confirmed local Stop lets the unfinished run go; saved reports stay.
-      if (!(await stopRemoteDataRecording())) throw new Error('Stop unconfirmed');
+      // A device without the native tunnel can never confirm Stop, but it also
+      // cannot be capturing, so only that case may discard without it.
+      if (!(await stopRemoteDataRecording())) {
+        const unsupported = await assertNativeTunnelInactive().then(
+          () => false,
+          (error: unknown) =>
+            error instanceof Error && error.message === 'Native connection test unsupported.',
+        );
+        if (!unsupported) throw new Error('Stop unconfirmed');
+      }
       if (!current()) return;
       // Core and Uplink may still record this run. Without their confirmed Stop,
       // no new test starts until the run has expired on the server side.
@@ -862,6 +874,7 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
             preparing ||
             collecting ||
             remaining > 0 ||
+            !holdLoaded ||
             holdLeft > 0 ||
             !client ||
             (runRef.current !== null && !(problemArchived && problemStopConfirmed))
@@ -928,6 +941,7 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
                   collecting ||
                   !key ||
                   !client ||
+                  !holdLoaded ||
                   holdLeft > 0 ||
                   remaining > 0
                 }

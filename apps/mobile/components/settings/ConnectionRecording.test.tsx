@@ -38,12 +38,13 @@ const mockDigest = jest.fn(async () => 'abcdef0123456789');
 let mockServerId = 'paired-core';
 let mockAdministration: ReturnType<typeof client>;
 const mockVerifyAdministration = jest.fn();
+const mockNativeInactive = jest.fn(async () => undefined);
 jest.mock('../../lib/selectedRecordingContext', () => ({
   selectedRecordingContext: () => ({
     verify: () => mockVerifyAdministration(),
     client: mockAdministration,
   }),
-  assertNativeTunnelInactive: async () => undefined,
+  assertNativeTunnelInactive: () => mockNativeInactive(),
 }));
 jest.mock('expo-crypto', () => ({
   randomUUID: () => '11111111-1111-4111-8111-111111111111',
@@ -855,4 +856,26 @@ it('stays idle without a saved long test even while a native capture is reported
   expect(screen.getByText('Mock selected start')).toBeEnabled();
   expect(api.getConnectionRecording).not.toHaveBeenCalled();
   expect(mockStop).not.toHaveBeenCalled();
+});
+
+it('lets a device without the native tunnel discard a long test whose preparation failed', async () => {
+  const storageKey = 'verity.connectionRecording.v1.paired-core';
+  await AsyncStorage.setItem(
+    storageKey,
+    JSON.stringify({
+      runId,
+      startedAt: new Date(2025, 9, 1, 12).getTime(),
+      expiresAt: new Date(2025, 9, 1, 12, 0, 45).getTime(),
+      local: null,
+      preparation: { stage: 'local-and-admission', failed: true },
+    }),
+  );
+  // Without the native module, local Stop can never be confirmed.
+  mockStop.mockResolvedValue(false);
+  mockNativeInactive.mockRejectedValueOnce(new Error('Native connection test unsupported.'));
+  testingRender(<ConnectionRecording client={client() as never} />);
+  await screen.findByText('Preparation failed');
+  await confirmDiscard();
+  await waitFor(() => expect(AsyncStorage.getItem(storageKey)).resolves.toBeNull());
+  await waitFor(() => expect(screen.getByText('Start long test')).toBeEnabled());
 });
