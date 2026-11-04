@@ -96,15 +96,20 @@ describe('durable session deletion', () => {
       expect(purge).not.toHaveBeenCalled();
       initial.close();
       await vi.advanceTimersByTimeAsync(31_000);
-      options.terminationConfirmed.mockReturnValue(true);
       options.cleanup.mockResolvedValue(true);
-      const restarted = createSessionDeletionManager({ ...options, beforeDelete: purge });
+      const confirmTermination = vi.fn(async () => true);
+      const restarted = createSessionDeletionManager({
+        ...options,
+        beforeDelete: purge,
+        confirmTermination,
+      });
       await restarted.resume();
       await vi.waitFor(() => expect(records.has('s')).toBe(false));
       expect(purge).toHaveBeenCalledWith(
         's',
         expect.objectContaining({ artifactBindings: bindings }),
       );
+      expect(confirmTermination).toHaveBeenCalledOnce();
       restarted.close();
     } finally {
       initial.close();

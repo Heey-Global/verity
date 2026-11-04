@@ -6337,6 +6337,17 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         return false;
       return true;
     },
+    confirmTermination: async (payload) => {
+      const { session } = payload;
+      if (
+        conductor.isDeletionWorktreeBusy?.(session.sessionId) ||
+        !deps.cleanupDeletedSessionRuntime
+      )
+        return false;
+      const outcome = await deps.cleanupDeletedSessionRuntime(session.sessionId, session.projectId);
+      if (conductor.isDeletionWorktreeBusy?.(session.sessionId)) return false;
+      return outcome === 'absent' || (outcome === 'clean' && payload.runnerIdentity !== undefined);
+    },
     cleanup: async (payload, terminationConfirmed) => {
       const { session } = payload;
       deps.scheduleSessionCleanup?.();

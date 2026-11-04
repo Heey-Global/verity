@@ -4817,6 +4817,13 @@ describe('Conductor recover(): reattach-before-settle (ADR 0006 Stage 4c / D7)',
       const kinds = (await ctx.store.getEvents('s1')).map((e) => e.t);
       expect(kinds.filter((kind) => kind === 'notice')).toHaveLength(1);
       expect(kinds.at(-1)).toBe('interrupted');
+      expect(await conductor.stopForDeletion('s1', 20)).toBe(false);
+      const restarted = new Conductor({
+        store: ctx.store,
+        backend: inertBackend,
+        worktreeExists: async () => true,
+      });
+      expect(await restarted.stopForDeletion('s1', 20)).toBe(false);
     } finally {
       vi.useRealTimers();
     }

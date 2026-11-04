@@ -4702,6 +4702,18 @@ export class EventStore implements EventSink {
    * cannot be killed, so its side effects on the worktree are the residual cost of
    * bounding step 5 — the fence bounds what reaches the LOG, not what reaches the disk.
    */
+  /** An abandoned stream fence closes the log, but never proves worker exit. */
+  async hasAbandonedRunnerTurns(sessionId: string): Promise<boolean> {
+    return (
+      (await this.db
+        .selectFrom('runner_frames')
+        .select('turn_id')
+        .where('session_id', '=', sessionId)
+        .where('payload_hash', '=', ABANDONED_TURN_FENCE_HASH)
+        .executeTakeFirst()) !== undefined
+    );
+  }
+
   async fenceAbandonedTurn(sessionId: string, turnId: string): Promise<void> {
     await this.db.transaction().execute(async (tx) => {
       await sql`select pg_advisory_xact_lock(hashtext(${turnId}))`.execute(tx);

@@ -52,6 +52,7 @@ export function createSessionDeletionManager(options: {
   fence: (id: string) => void;
   stop: (id: string) => Promise<boolean>;
   terminationConfirmed?: (id: string) => boolean;
+  confirmTermination?: (payload: SessionDeletionPayload) => Promise<boolean>;
   capture: (session: SessionRecord) => Promise<SessionDeletionPayload>;
   prepare: (id: string) => Promise<void>;
   beforeDelete?: (id: string, payload: SessionDeletionPayload) => Promise<void>;
@@ -189,6 +190,14 @@ export function createSessionDeletionManager(options: {
               async (retained) => {
                 Object.assign(payload, JSON.parse(retained) as SessionDeletionPayload);
                 if (needsLegacyPurge(payload)) {
+                  if (
+                    !(confirmed.has(id) || payload.terminationConfirmed) &&
+                    (await options.confirmTermination?.(payload))
+                  ) {
+                    payload.terminationConfirmed = true;
+                    confirmed.add(id);
+                    await options.store.updateSessionDeletionPayload(id, JSON.stringify(payload));
+                  }
                   if (!(confirmed.has(id) || payload.terminationConfirmed)) return false;
                   await purgeLegacy(id, payload);
                 }

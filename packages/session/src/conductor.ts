@@ -1090,6 +1090,11 @@ export class Conductor {
     try {
       return await Promise.race([
         (async () => {
+          if (await this.deps.store.hasAbandonedRunnerTurns(sessionId)) {
+            const unknown = this.unprovenTerminations.get(sessionId) ?? new Set<string>();
+            unknown.add('abandoned-stream');
+            this.unprovenTerminations.set(sessionId, unknown);
+          }
           const turn = this.turns.get(sessionId);
           // cancelTurn's no-handle recovery override deliberately settles uncertain
           // ownership. Deletion needs proof before physical cleanup, so avoid it.
