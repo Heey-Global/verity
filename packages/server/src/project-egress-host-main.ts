@@ -7,6 +7,7 @@ import {
   egressHostDestinationAllowed,
   egressHostDirectChecks,
   unavailableEgressAuthority,
+  verifyEgressHostAuthorityReady,
 } from './project-egress-host-authority.js';
 import { createProjectEgressHostEnforcement } from './project-egress-host-enforcement.js';
 import { hostProjectDeadlineEnforcer } from './project-egress-deadline.js';
@@ -36,6 +37,7 @@ import {
   inspectEgressHostNetwork,
   openProjectEgressHostStore,
   projectEgressHostDocker,
+  verifyEgressHostRuntime,
 } from './project-egress-host-runtime.js';
 
 if (process.platform !== 'linux' || process.getuid?.() !== 0)
@@ -118,7 +120,20 @@ const enforcement = createProjectEgressHostEnforcement({
   },
 });
 
+const verifyHost = async () => {
+  const info: unknown = JSON.parse(await projectEgressHostDocker('info', '--format', '{{json .}}'));
+  verifyProjectEgressDockerHost(info);
+};
 const controller = new ProjectEgressHost(await store.load(), {
+  verifyHealth: async () => {
+    verifyEgressHostAuthorityReady(authority);
+    await verifyHost();
+    const runtimes: unknown = JSON.parse(
+      await projectEgressHostDocker('info', '--format', '{{json .Runtimes}}'),
+    );
+    verifyEgressHostRuntime(runtimes, 'sandbox');
+    verifyEgressHostRuntime(runtimes, 'relay');
+  },
   ...(relayPolicy?.packetEnforcement === true
     ? { enforcement, bootId: (await readFile('/proc/sys/kernel/random/boot_id', 'utf8')).trim() }
     : {}),
@@ -159,12 +174,7 @@ if (mode === 'restore') {
   const service = await serveProjectEgressHost({
     restore: () => controller.restore(),
     deny: () => controller.shutdown(),
-    verifyHost: async () => {
-      const info: unknown = JSON.parse(
-        await projectEgressHostDocker('info', '--format', '{{json .}}'),
-      );
-      verifyProjectEgressDockerHost(info);
-    },
+    verifyHost,
     revalidate: () => controller.revalidate(),
     listen: async () => {
       const token = (await readFile('/etc/verity-egress/control.key', 'utf8')).trim();

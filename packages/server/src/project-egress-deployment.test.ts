@@ -9,32 +9,35 @@ describe('network protection deployment', () => {
     expect(unit).toMatch(/^RuntimeDirectoryPreserve=yes$/m);
   });
 
-  it('keeps the base stack free of the host egress service', async () => {
-    const compose = await readFile('deploy/docker-compose.yml', 'utf8');
-    expect(compose).not.toContain('VERITY_PROJECT_EGRESS_SOCKET');
-    expect(compose).not.toContain('/run/verity-egress');
-  });
-
-  it('mounts only the control socket and key in the optional overlay', async () => {
-    const overlay = parse(await readFile('deploy/docker-compose.egress.yml', 'utf8')) as {
+  it('automatically wires read-only host controls only into the trusted server', async () => {
+    const compose = parse(await readFile('deploy/docker-compose.yml', 'utf8')) as {
       services: Record<
         string,
-        { environment: Record<string, string>; volumes: string[]; group_add: string[] }
+        { environment?: Record<string, string>; volumes?: string[]; group_add?: string[] }
       >;
     };
-    expect(Object.keys(overlay.services)).toEqual(['verity']);
-    const verity = overlay.services.verity!;
-    expect(verity.environment).toEqual({
-      VERITY_PROJECT_EGRESS_SOCKET: '/run/verity-egress/control.sock',
-      VERITY_PROJECT_EGRESS_KEY_PATH: '/run/verity-egress-key/control.key',
-    });
-    expect(verity.volumes).toEqual([
-      '/run/verity-egress:/run/verity-egress',
-      '/etc/verity-egress/control.key:/run/verity-egress-key/control.key:ro',
-    ]);
-    // The group must be explicit: an unset id would silently drop the Server's access.
-    expect(verity.group_add).toEqual([
-      '${VERITY_EGRESS_CONTROL_GID:?set to the verity-egress-control group id}',
-    ]);
+    const server = compose.services.verity!;
+    expect(server.environment?.VERITY_PROJECT_EGRESS_SOCKET).toBe(
+      '/run/verity-egress/control.sock',
+    );
+    expect(server.environment?.VERITY_PROJECT_EGRESS_KEY_PATH).toBe(
+      '/run/verity-egress-key/control.key',
+    );
+    expect(server.volumes).toEqual(
+      expect.arrayContaining([
+        '/run/verity-egress:/run/verity-egress:ro',
+        '/etc/verity-egress-server:/run/verity-egress-key:ro',
+      ]),
+    );
+    expect(server.group_add).toContain('65531');
+    for (const [name, service] of Object.entries(compose.services)) {
+      if (name === 'verity') continue;
+      expect(service.volumes?.some((volume) => /verity-egress/u.test(volume))).not.toBe(true);
+    }
+  });
+
+  it('keeps the legacy overlay usable without manual variables or duplicate mounts', async () => {
+    const overlay = parse(await readFile('deploy/docker-compose.egress.yml', 'utf8')) as unknown;
+    expect(overlay).toEqual({ services: {} });
   });
 });

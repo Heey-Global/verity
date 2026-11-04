@@ -1,3 +1,8 @@
+import {
+  provisionProjectEgressHost,
+  projectEgressProvisionSupported,
+  PROJECT_EGRESS_CONTROL_GID,
+} from './project-egress-provisioning.js';
 import { readFile } from 'node:fs/promises';
 import {
   HostRuntimeRenewalError,
@@ -16,6 +21,7 @@ import {
 } from './devcontainer-builder.js';
 import {
   migrateManagedControlPlaneRunner,
+  migrateManagedProjectEgress,
   migrateManagedDevcontainerBuilder,
   migrateManagedHostDiagnostics,
   migrateManagedBackupMounts,
@@ -529,6 +535,19 @@ export async function dockerUpdatePreparation(
           },
         });
       }
+      await writeHostPreparation(options.managedRoot, journal, 'renewing');
+      try {
+        await provisionProjectEgressHost({
+          docker,
+          journal,
+          spec: state.spec,
+          environment: options.environment ?? process.env,
+          ...(options.readFile === undefined ? {} : { readFile: options.readFile }),
+        });
+      } catch (error) {
+        await writeHostPreparation(options.managedRoot, journal, 'recovery-required');
+        throw error;
+      }
       await writeHostPreparation(options.managedRoot, journal, 'ready');
       // After the runtimes: the builder runs its steps on the runsc they register.
       // Nothing about the builder may fail the update, an unexpected error included.
@@ -550,6 +569,15 @@ export async function dockerUpdatePreparation(
       );
       if (!migrated.managed)
         throw new Error(`managed Server authority unavailable: ${migrated.reason}`);
+      if (await projectEgressProvisionSupported(docker, journal, migrated.spec)) {
+        migrated = await migrateManagedProjectEgress({
+          root: options.managedRoot,
+          deploymentId: migrated.spec.deploymentId,
+          image: migrated.spec.image,
+          controlGid: PROJECT_EGRESS_CONTROL_GID,
+        });
+        if (!migrated.managed) throw new Error(migrated.reason);
+      }
       const backup = await backupProvisionPlan(docker, migrated.spec, journal.targetDigest);
       if (backup) {
         await provisionBackupHost(docker, migrated.spec, journal.targetDigest, backup);

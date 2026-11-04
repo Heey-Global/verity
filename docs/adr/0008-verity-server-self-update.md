@@ -1526,3 +1526,27 @@ engines, with existing `runc` and old `runsc` containers alive throughout renewa
 registration and rollback fault injection. Fake-host tests establish transaction and
 message behavior, not running-container continuity on a real engine. Neither a live
 host mutation nor release publication is part of implementing this amendment.
+
+## Amendment: managed project egress preparation
+
+Network protection host components follow the signed, fixed-purpose host renewal
+boundary rather than requiring manual environment configuration. An independently
+verified release supplies a bounded provisioning payload; actual firewall
+operations run in the host service context. Initial installation prepares stable
+key/runtime paths before managed startup and derives private authority after
+database migration. Updates checkpoint sealed server mount/environment authority
+before introducing the matching active/standby control bindings.
+
+Installation does not change the default-off global switch, recreate project
+containers or restart Docker. Controller renewal preserves reserved-bridge denial,
+registry state and kernel deadlines; unrelated bridges are outside its rules.
+Availability requires authenticated live packet-enforcement readiness, never just
+a successful asset copy. Safe reason codes distinguish unsupported profiles and
+controller/configuration failures without exposing credentials or raw journals.
+
+Native host profiles remain unaccepted until install/update/reboot/recovery and
+independent traffic evidence establish the exact runtime combination. The empty
+profile gate is retained. Compatibility delivery to older updater versions and
+rollback over protected generations require explicit transition tests before
+production rollout. See [managed provisioning](../project-egress-managed-install.md)
+for the complete delivery, safety and acceptance boundary.

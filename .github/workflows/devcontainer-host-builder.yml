@@ -51,6 +51,9 @@ jobs:
           npx vitest run packages/server/src/provisioner.test.ts --maxWorkers=1 -t 'retains the production snapshot'
       - name: Check runtime adapter and evidence rejection paths
         run: node --test scripts/probes/devcontainer-gvisor/*.test.mjs
+      - uses: ./.github/actions/reclaim-runner-disk
+        with:
+          minimum-free-gib: '25'
       - name: Exercise Dockerfile and Feature builds with a runsc worker
         env:
           DEVCONTAINER_CLI: ${{ github.workspace }}/features/verity-sandbox-toolkit/npm/devcontainers/node_modules/.bin/devcontainer

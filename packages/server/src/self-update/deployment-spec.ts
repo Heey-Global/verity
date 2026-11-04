@@ -22,6 +22,8 @@ export const DEVCONTAINER_BUILDER_SOCKET_DIRECTORY = '/run/verity-buildkit';
 
 /** Targets whose bind is read-only by construction. Every other mount is writable. */
 const READ_ONLY_TARGETS = [
+  '/run/verity-egress',
+  '/run/verity-egress-key',
   '/run/verity-pairing',
   '/run/verity-host-diagnostics',
   DEVCONTAINER_BUILDER_SOCKET_DIRECTORY,
@@ -301,6 +303,12 @@ export function parseServerDeploymentSpec(value: unknown): ServerDeploymentSpec 
         mount.target === '/var/run/docker.sock' &&
         !mount.readOnly) ||
         (mount.target === '/run/verity-pairing' && mount.readOnly) ||
+        (source.path === '/run/verity-egress' &&
+          mount.target === '/run/verity-egress' &&
+          mount.readOnly) ||
+        (source.path === '/etc/verity-egress-server' &&
+          mount.target === '/run/verity-egress-key' &&
+          mount.readOnly) ||
         ((mount.target === '/run/verity-backups' ||
           mount.target === '/run/verity-backup-identity') &&
           source.path !== '/' &&
@@ -343,7 +351,7 @@ export function parseServerDeploymentSpec(value: unknown): ServerDeploymentSpec 
   // builds its update controller only when the socket is actually there.
   if (
     mounts.length < 3 ||
-    mounts.length > 11 ||
+    mounts.length > 13 ||
     mounts.some(
       (mount) =>
         mount.target !== DEVCONTAINER_BUILDER_SOCKET_DIRECTORY &&
@@ -356,6 +364,8 @@ export function parseServerDeploymentSpec(value: unknown): ServerDeploymentSpec 
     // vetted.
     new Set(mounts.map((mount) => mount.target)).size !== mounts.length ||
     !requiredVolumeKeys.every((key) => mountKeys.includes(key)) ||
+    mounts.some((mount) => mount.target === '/run/verity-egress') !==
+      mounts.some((mount) => mount.target === '/run/verity-egress-key') ||
     mounts.some((mount) => mount.target === '/run/verity-backups') !==
       mounts.some((mount) => mount.target === '/run/verity-backup-identity') ||
     // The two control-plane volumes form one boundary: the Server must rotate the

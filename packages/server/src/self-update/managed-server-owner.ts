@@ -10,6 +10,8 @@ import {
 } from './deployment-spec.js';
 import {
   readManagedDeployment,
+  readManagedProjectEgressBackup,
+  PROJECT_EGRESS_ENVIRONMENT,
   readManagedDevcontainerBuilderBackup,
   readManagedBuilderAdmissionBackup,
   readManagedHostDiagnosticBackup,
@@ -64,6 +66,7 @@ export interface ManagedServerReconcileResult {
   /** The running Server keeps serving until its next guarded replacement. */
   readonly backupMountPending?: true;
   readonly diagnosticMountPending?: true;
+  readonly projectEgressMountPending?: true;
   /** As {@link diagnosticMountPending}, for the devcontainer builder socket. */
   readonly devcontainerBuilderPending?: true;
 }
@@ -87,6 +90,7 @@ export type ManagedServerReconcileVerdict =
       readonly environment: readonly string[];
       readonly backupMountPending?: true;
       readonly diagnosticMountPending?: true;
+      readonly projectEgressMountPending?: true;
       readonly devcontainerBuilderPending?: true;
     }
   | { readonly status: 'unknown' };
@@ -612,6 +616,12 @@ async function resolveEnvironment(
     let value: string | undefined;
     if (entry.source.kind === 'env') {
       value = environment[entry.source.name];
+      if (entry.source.name === entry.name) {
+        if (entry.name === 'VERITY_PROJECT_EGRESS_SOCKET')
+          value ??= '/run/verity-egress/control.sock';
+        if (entry.name === 'VERITY_PROJECT_EGRESS_KEY_PATH')
+          value ??= '/run/verity-egress-key/control.key';
+      }
       if (value === undefined) {
         unresolvable(
           new ManagedServerEnvironmentSourceError(
@@ -730,7 +740,7 @@ function containerSpecFrom(spec: ServerDeploymentSpec, env: string[]): Container
   };
 }
 
-type PendingMount = 'diagnostic' | 'builder' | 'builder-admission' | 'backup';
+type PendingMount = 'egress' | 'diagnostic' | 'builder' | 'builder-admission' | 'backup';
 
 /**
  * Install migrations that add a bind to an adopted spec, newest first. Each one
@@ -745,6 +755,13 @@ const PENDING_MOUNT_MIGRATIONS: readonly {
   /** Groups the migration may have added alongside its bind. */
   readonly addsGroups: boolean;
 }[] = [
+  {
+    key: 'egress',
+    target: '/run/verity-egress',
+    additionalTarget: '/run/verity-egress-key',
+    readBackup: (root) => readManagedProjectEgressBackup(root),
+    addsGroups: true,
+  },
   {
     key: 'backup',
     target: '/run/verity-backups',
@@ -829,7 +846,12 @@ async function previousAuthority(
     schemaVersion: candidate.schemaVersion,
     deploymentId: candidate.deploymentId,
     image: candidate.image,
-    environment: candidate.environment,
+    environment:
+      migration.key === 'egress'
+        ? candidate.environment.filter(
+            (entry) => !PROJECT_EGRESS_ENVIRONMENT.some((name) => name === entry.name),
+          )
+        : candidate.environment,
     mounts:
       migration.key === 'builder-admission'
         ? candidate.mounts.map((mount) =>
@@ -1019,6 +1041,7 @@ export async function reconcileManagedServer(
     );
     let backupMountPending = false;
     let diagnosticMountPending = false;
+    let projectEgressMountPending = false;
     let devcontainerBuilderPending = false;
     if (
       verdict.kind === 'structural' &&
@@ -1026,9 +1049,17 @@ export async function reconcileManagedServer(
     ) {
       const previous = await pendingMountAuthority(spec, inspect, options.managedRoot);
       if (previous !== undefined) {
+        // Migrations may add environment sources as well as mounts. Judge the
+        // retained generation against its own authority, without new defaults.
+        const previousResolution = await resolveEnvironment(
+          previous.spec,
+          options.environment ?? process.env,
+          options.readFile ?? ((path) => readFile(path, 'utf8')),
+          'lenient',
+        );
         const previousVerdict = judgeManagedContainer(
           inspect,
-          withIdentity(containerSpecFrom(previous.spec, resolution.env)),
+          withIdentity(containerSpecFrom(previous.spec, previousResolution.env)),
           imageEnv,
           identity === undefined,
           sealedHostLimitsMode(spec),
@@ -1038,6 +1069,7 @@ export async function reconcileManagedServer(
           verdict = previousVerdict;
           backupMountPending = previous.pending.has('backup');
           diagnosticMountPending = previous.pending.has('diagnostic');
+          projectEgressMountPending = previous.pending.has('egress');
           devcontainerBuilderPending =
             previous.pending.has('builder') || previous.pending.has('builder-admission');
         }
@@ -1063,12 +1095,18 @@ export async function reconcileManagedServer(
       // that name, and the environment built without it therefore differs on
       // exactly that name. Adding the unresolved names separately would be a
       // second path to the same list that no test could tell apart from this one.
-      if (backupMountPending || diagnosticMountPending || devcontainerBuilderPending)
+      if (
+        backupMountPending ||
+        diagnosticMountPending ||
+        devcontainerBuilderPending ||
+        projectEgressMountPending
+      )
         return {
           containerId: inspect.id,
           action: 'unchanged',
           ...(backupMountPending ? { backupMountPending: true } : {}),
           ...(diagnosticMountPending ? { diagnosticMountPending: true } : {}),
+          ...(projectEgressMountPending ? { projectEgressMountPending: true } : {}),
           ...(devcontainerBuilderPending ? { devcontainerBuilderPending: true } : {}),
           ...(verdict.environment.length === 0 ? {} : { drift: verdict.environment }),
         };
@@ -1082,6 +1120,7 @@ export async function reconcileManagedServer(
     requireBuildable();
     if (
       verdict.kind === 'environment' ||
+      projectEgressMountPending ||
       backupMountPending ||
       diagnosticMountPending ||
       devcontainerBuilderPending

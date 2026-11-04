@@ -101,7 +101,7 @@ import { existsSync, readFileSync, mkdirSync, readdirSync } from 'node:fs';
 import { chmod, chown, lstat, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import { hostname, tmpdir } from 'node:os';
-import { join, relative, sep } from 'node:path';
+import { dirname, join, relative, sep } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fetchCodexBundledModels, startCodexModelCatalog } from './codex-model-catalog.js';
 
@@ -311,6 +311,7 @@ import { projectRelayContainerName } from './project-relay-docker.js';
 import { createProjectRelayRuntime } from './project-relay-runtime.js';
 import type { ProjectRelayLifecycle } from './project-relay-lifecycle.js';
 import { ProjectEgressLifecycle } from './project-egress-lifecycle.js';
+import { projectEgressAvailability } from './project-egress-health.js';
 import { createProjectEgressHostClient } from './project-egress-host-client.js';
 import {
   readCodexAccessToken,
@@ -3065,6 +3066,15 @@ export async function buildEmbeddedServer(
   }
   let docker: DockerClient | undefined;
   let projectEgress: ProjectEgressLifecycle | undefined = config.projectEgress;
+  const projectEgressHealth = projectEgressAvailability(
+    () => projectEgress,
+    () => {
+      if (!config.projectEgressSocketPath) return undefined;
+      return JSON.parse(
+        readFileSync(join(dirname(config.projectEgressSocketPath), 'status.json'), 'utf8'),
+      ) as unknown;
+    },
+  );
   let provisioner: ProvisionerImpl | undefined;
   let stopNativeEvidence: (() => void) | undefined;
   let buildStorage: BuildStorage | undefined;
@@ -3724,13 +3734,13 @@ export async function buildEmbeddedServer(
         projectEgress = new ProjectEgressLifecycle(
           createProjectEgressHostClient({
             socketPath: config.projectEgressSocketPath,
-            token: readFileSync(config.projectEgressKeyPath, 'utf8').trim(),
+            token: () => readFileSync(config.projectEgressKeyPath!, 'utf8').trim(),
           }),
           projectDocker,
         );
-      } catch (error) {
+      } catch {
         // Unavailable protection is reported, never a reason to refuse the Server start.
-        console.warn('verity: host egress service is configured but unusable', error);
+        console.warn('verity: host egress service configuration is invalid');
       }
     }
     // Turn preparation calls this before every message. Reuse the same ~50-minute
@@ -4128,7 +4138,10 @@ export async function buildEmbeddedServer(
               expectedArgs: PINNED_PROJECT_RUNSC_ARGS,
             });
             return {
-              sandboxRuntime: PROJECT_RUNSC_RUNTIME,
+              ...(config.publicPreviews !== undefined ||
+              config.resolvePreviewConnectorImage !== undefined
+                ? { sandboxRuntime: PROJECT_RUNSC_RUNTIME }
+                : {}),
               verifySandboxRuntime: (runtime: string) => verifier.verify(runtime),
               ...(config.sandboxDnsServers !== undefined
                 ? { sandboxDnsServers: config.sandboxDnsServers }
@@ -5006,7 +5019,8 @@ export async function buildEmbeddedServer(
           ) => projectEgress.resolveDirect(identity, name),
         }
       : {}),
-    projectEgressAvailable: projectEgressAvailability(() => projectEgress),
+    projectEgressAvailable: async (fresh) => (await projectEgressHealth(fresh)).available,
+    projectEgressStatus: projectEgressHealth,
     previewSharingCapability: async () => {
       const settings = await eventStore.getVeritySettings();
       return previewSharingCapability(
@@ -6781,18 +6795,4 @@ export function createProjectWorktreeFactory(
         return token ? gitAuthHeader(token) : undefined;
       },
     });
-}
-
-/** Host egress availability for Settings, cached for ten seconds so a hung host service
- * cannot stall every settings read. Enabling re-checks within that window at most. */
-function projectEgressAvailability(
-  lifecycle: () => ProjectEgressLifecycle | undefined,
-): () => Promise<boolean> {
-  let cached: { value: boolean; at: number } | undefined;
-  return async () => {
-    if (cached && Date.now() - cached.at < 10_000) return cached.value;
-    const value = (await lifecycle()?.available()) === true;
-    cached = { value, at: Date.now() };
-    return value;
-  };
 }

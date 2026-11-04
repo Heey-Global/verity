@@ -2,6 +2,7 @@ import { createServer, type Server } from 'node:http';
 import { lstat, chmod } from 'node:fs/promises';
 import { timingSafeEqual } from 'node:crypto';
 import { join } from 'node:path';
+import { ProjectEgressHealthError } from './project-egress-health.js';
 import type { ProjectEgressHost } from './project-egress-host.js';
 
 /** Bind only below a pre-created, root-owned runtime directory. There is no TCP
@@ -64,10 +65,15 @@ export async function listenProjectEgressHost(options: {
         );
         response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(result));
       })()
-        .catch(() => {
+        .catch((error: unknown) => {
           // Do not disclose commands, paths or daemon inspection data to the client.
           if (!response.headersSent) response.writeHead(409);
-          response.end('{"error":"host operation refused"}');
+          response.end(
+            JSON.stringify({
+              error: 'host operation refused',
+              ...(error instanceof ProjectEgressHealthError ? { reason: error.reason } : {}),
+            }),
+          );
         })
         .finally(() => {
           pending--;
