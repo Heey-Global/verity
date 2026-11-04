@@ -237,8 +237,15 @@ export {
 export type { BoundedHistoryPage, BoundedHistoryResult } from './history.js';
 
 export * from './vulnerability.js';
-export { nativeRetirementSchema, storageReclamationActionSchema } from './storage-reclamation.js';
-export type { StorageReclamationAction } from './storage-reclamation.js';
+export {
+  nativeRetirementSchema,
+  runnerCacheReclamationSchema,
+  storageReclamationActionSchema,
+} from './storage-reclamation.js';
+export type {
+  StorageReclamationAction,
+  RunnerCacheReclamationReport,
+} from './storage-reclamation.js';
 export {
   qaAnalysisRequestSchema,
   QA_ANALYSIS_DESCRIPTION,

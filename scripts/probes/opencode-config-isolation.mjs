@@ -10,6 +10,7 @@ import { createInterface } from 'node:readline';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import {
+  acquirePackageCacheLease,
   agentLaunchSpec,
   materializeManagedAgentHome,
 } from '../../features/verity-sandbox-toolkit/bin/verity-agent-spawn-broker.mjs';
@@ -25,6 +26,7 @@ const executableLookup = spawnSync('which', [executableName], { encoding: 'utf8'
 assert.equal(executableLookup.status, 0, 'OpenCode executable must resolve');
 const executable = executableLookup.stdout.trim();
 const root = await mkdtemp(join(tmpdir(), 'verity-opencode-config-'));
+let cacheLease;
 try {
   const project = join(root, 'project');
   const home = join(root, 'home');
@@ -293,6 +295,7 @@ try {
     runtimeDir: root,
     env: { ...isolatedEnv },
   };
+  cacheLease = await acquirePackageCacheLease(options);
   const managed = await materializeManagedAgentHome(
     { command: 'opencode-acp' },
     options,
@@ -380,5 +383,6 @@ try {
     await planHome.cleanup();
   }
 } finally {
+  await cacheLease?.close();
   await rm(root, { recursive: true, force: true });
 }

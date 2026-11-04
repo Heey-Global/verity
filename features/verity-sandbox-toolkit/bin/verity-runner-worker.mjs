@@ -25338,6 +25338,16 @@ var nativeRetirementSchema = import_zod13.z.object({
   lastCompletedAt: import_zod13.z.iso.datetime({ offset: true }).optional(),
   blockers: import_zod13.z.array(import_zod13.z.string().max(200)).max(100)
 });
+var runnerCacheReclamationSchema = import_zod13.z.object({
+  observedAt: import_zod13.z.iso.datetime({ offset: true }),
+  sharedBytes: bytes.nullable(),
+  legacyBytes: bytes.nullable(),
+  removedBytes: bytes,
+  legacyCachesRemoved: import_zod13.z.number().int().nonnegative(),
+  sharedCachesPruned: import_zod13.z.number().int().nonnegative(),
+  usageComplete: import_zod13.z.boolean(),
+  blockers: import_zod13.z.array(import_zod13.z.string().max(500)).max(100)
+});
 var storageReclamationActionSchema = import_zod13.z.object({
   supported: import_zod13.z.boolean(),
   state: import_zod13.z.enum(["idle", "running", "completed", "failed"]),
@@ -25349,6 +25359,7 @@ var storageReclamationActionSchema = import_zod13.z.object({
     containersRemoved: bytes,
     dependenciesRemoved: bytes,
     worktreesRetired: bytes,
+    runnerCaches: runnerCacheReclamationSchema.nullable().optional(),
     filesystemFreeBytesChange: import_zod13.z.number().finite().nullable(),
     retainedPins: import_zod13.z.array(import_zod13.z.object({ imageId: import_zod13.z.string(), containers: import_zod13.z.array(import_zod13.z.string()), reason: import_zod13.z.string() })),
     blockers: import_zod13.z.array(import_zod13.z.string())

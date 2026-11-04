@@ -11,6 +11,7 @@ import { registerStorageReclamationRoutes } from './storage-reclamation-routes.j
 import { startNativeRetirementEvidence } from './native-buildkit.js';
 import type { GitOutput } from './branches.js';
 import { SessionStorage } from './session-storage.js';
+import { RunnerCacheStorage } from './runner-cache-storage.js';
 import {
   retireStoppedContainers,
   retireCompletedUpdateContainers,
@@ -930,6 +931,8 @@ export interface EmbeddedServerConfig {
   dockerGc?: boolean | undefined;
   /** Overrides for {@link DEFAULT_DOCKER_GC_POLICY}. */
   dockerGcPolicy?: Partial<DockerGcPolicy> | undefined;
+  /** Shared npm download-cache maintenance target, in allocated bytes (default 4 GiB). */
+  runnerCacheMaxBytes?: number | undefined;
   /** Host-visible agent-seed directory mounted into project containers. */
   agentSeedHostPath?: string | undefined;
   /** Explicitly enable the unauthenticated dev-server runtime endpoint. */
@@ -4852,6 +4855,41 @@ export async function buildEmbeddedServer(
           pr: (project, branch) => readProjectStatus(project, branch),
         })
       : undefined;
+  const runnerCacheStorage =
+    dataVolumeRoot === undefined
+      ? undefined
+      : new RunnerCacheStorage({
+          ...(config.runnerCacheMaxBytes !== undefined
+            ? { maxBytes: config.runnerCacheMaxBytes }
+            : {}),
+          listRuntimes: async () => {
+            const projects = await eventStore.listProjects();
+            const sessions = await eventStore.listSessions();
+            const runtimes = new Map<string, Set<string>>();
+            for (const project of projects) runtimes.set(project.id, new Set());
+            if (config.controlPlaneRunner) runtimes.set(CONTROL_PLANE_RUNNER_PROJECT_ID, new Set());
+            for (const session of sessions) {
+              for (const id of candidateRunnerProjectIds({
+                projectId: session.projectId,
+                isControlPlaneProject: projects.some(
+                  (p) => p.id === session.projectId && p.kind === 'control_plane',
+                ),
+                controlPlaneRunner: config.controlPlaneRunner === true,
+              }))
+                runtimes.get(id)?.add(session.sessionId);
+            }
+            // Do not wake sleeping sandboxes or infer deleted sessions from directory names.
+            return [...runtimes]
+              .filter(([id]) => existsSync(join(dataVolumeRoot, 'runners', id)))
+              .map(([projectId, ids]) => ({ projectId, sessionIds: [...ids] }));
+          },
+          request: (projectId, sessionIds, maxBytes) =>
+            requestRunnerSupervisor(
+              join(dataVolumeRoot, 'runners', projectId, 'supervisor.sock'),
+              { kind: 'reclaim-package-caches', sessionIds, maxBytes },
+              30_000,
+            ),
+        });
   const cleanupAbort = new AbortController();
   const sessionCleanupWorker =
     dataVolumeRoot === undefined
@@ -5161,6 +5199,7 @@ export async function buildEmbeddedServer(
                   .map((b) => ({ path: b.path, reason: b.reason.slice(0, 500) })),
               }
             : null,
+          runnerCaches: runnerCacheStorage?.lastReport ?? null,
           databaseBytes,
           nativeBuildkit,
           activeBuildkitBytes:
@@ -6321,6 +6360,7 @@ export async function buildEmbeddedServer(
             nativeMaintenanceRequested = requestedAt;
           })
           .catch(() => undefined);
+        await runnerCacheStorage?.runOnce();
         await sessionStorage?.runOnce();
       },
       onReport: (report) => {
@@ -6362,6 +6402,7 @@ export async function buildEmbeddedServer(
     storageReclamation = new StorageReclamation({
       collect: () => dockerGc.runOnce(),
       worktrees: () => sessionStorage?.lastReport,
+      runnerCaches: () => runnerCacheStorage?.lastReport,
       dataRoot: config.dataVolumeRoot,
     });
     buildStorage?.setReclaimer(async () => {

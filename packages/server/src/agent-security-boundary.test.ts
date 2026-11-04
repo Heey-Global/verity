@@ -20,6 +20,7 @@ import { fileURLToPath } from 'node:url';
 import { join, resolve } from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, expect, it, vi } from 'vitest';
 import {
+  acquirePackageCacheLease,
   agentLaunchSpec,
   materializeManagedAgentHome,
   sessionHomePath,
@@ -271,6 +272,8 @@ it('retains Codex rollout and SQLite storage across normal and planning homes', 
     agentGid: process.getgid!(),
     runtimeDir: root,
   };
+  const packageCache = await acquirePackageCacheLease(options);
+  await packageCache.close();
   for (const planning of [false, true, false]) {
     const isolated = await materializeManagedAgentHome(
       { command: 'codex-acp', planning },
@@ -316,6 +319,70 @@ it('retains Codex rollout and SQLite storage across normal and planning homes', 
   }
   expect(await readFile(join(root, 'codex-sessions/rollout.jsonl'), 'utf8')).toBe('planning\n');
 });
+
+it.each(['normal', 'planning', 'knowledge'] as const)(
+  'permits npm cache writes through %s confinement without exposing private siblings',
+  async (mode) => {
+    const project = join(root, 'project');
+    await mkdir(project);
+    const privateFile = join(root, 'other-session-private');
+    await writeFile(privateFile, 'private');
+    const options = {
+      runtimeDir: root,
+      worktreeRoot: project,
+      enforceRoot: false,
+      agentUid: process.getuid!(),
+      agentGid: process.getgid!(),
+    };
+    const lease = await acquirePackageCacheLease(options);
+    const isolated = await materializeManagedAgentHome(
+      { command: 'claude-agent-acp', planning: mode === 'planning' },
+      options,
+      'http://127.0.0.1:1',
+    );
+    try {
+      const helper = resolve(
+        `features/verity-sandbox-toolkit/prebuilt/linux-${process.arch === 'arm64' ? 'arm64' : 'amd64'}/verity-script-sandbox`,
+      );
+      const spec = agentLaunchSpec(
+        {
+          command: 'claude-agent-acp',
+          args: [],
+          cwd: project,
+          ...(mode === 'normal'
+            ? { managedHome: isolated.home }
+            : {
+                knowledgeHome: isolated.home,
+                planning: mode === 'planning',
+                knowledgeIsolation: mode === 'knowledge',
+              }),
+        },
+        { ...options, scriptSandboxPath: helper },
+      );
+      const args = spec.args.slice(spec.args.indexOf(helper) + 1, -1);
+      const result = spawnSync(
+        helper,
+        [
+          ...args,
+          '/bin/sh',
+          '-c',
+          'mkdir -p "$1/_cacache" && printf package > "$1/_cacache/test" || exit 8; if cat "$2" >/dev/null 2>&1; then exit 9; fi; printf isolated',
+          'sh',
+          spec.spawnOptions.env!.npm_config_cache!,
+          privateFile,
+        ],
+        { encoding: 'utf8', timeout: 10_000 },
+      );
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toBe('isolated');
+      expect(await readFile(join(root, 'package-cache/npm/_cacache/test'), 'utf8')).toBe('package');
+      expect(await readFile(privateFile, 'utf8')).toBe('private');
+    } finally {
+      await isolated.cleanup();
+      await lease.close();
+    }
+  },
+);
 
 it('keeps recorded Codex rollout paths valid across normal and planning home rebuilds', async () => {
   const options = {
