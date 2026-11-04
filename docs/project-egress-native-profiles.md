@@ -19,7 +19,10 @@ For an accepted profile, the fixed preparer installs only its pinned Python,
 network/BPF utilities and runtime library packages, preserves existing conffiles and uses `SYSTEMD_OFFLINE=1` to prevent package systemctl calls from contacting the live manager,
 registers the exact reviewed `runsc-relay` runtime beside `runsc-project`, validates
 Docker configuration and reloads Docker without restarting containers. A failed
-reload restores the previous configuration. Unrelated relay registrations and
+reload restores the previous configuration. A private ownership record binds the
+managed relay registration to its runtime binary and complete tree. A subsequent
+runtime upgrade may migrate only that exact verified registration; a foreign or
+changed registration remains a collision. Unrelated relay registrations and
 bpffs unit/filesystem collisions are refused. Persistent bpffs uses a fixed mount
 unit and a private root-owned pin directory recreated through tmpfiles. Controller
 startup rechecks the exact profile and package versions; a changed kernel/runtime
@@ -114,7 +117,9 @@ Controller startup revalidates these identities and channel authority. It does
 not add an entry to `ACCEPTED_NATIVE_PROFILES` or fabricate acceptance evidence.
 Before granting host authority, the Updater records a conservative assessment
 attempt marker; both stable-channel writers refuse a transition while that marker
-exists. Automated assessment deactivation and marker clearance are not yet
+exists. An incomplete attempt remains resumable under the same owned job identity;
+only successful provisioning records completion for installed reconciliation.
+Automated assessment deactivation and marker clearance are not yet
 implemented, so returning such an installation to Stable requires a separately
 reviewed deactivation path.
 

@@ -796,6 +796,7 @@ export async function markManagedStagingAssessment(
   rootPath: string,
   image: string,
   operationId: string,
+  completed = false,
 ): Promise<void> {
   const root = await openUpdaterOwnedRoot(rootPath);
   try {
@@ -803,7 +804,12 @@ export async function markManagedStagingAssessment(
     const state = await readManagedDeploymentFiles(pinned);
     if (!state.managed || state.spec.image !== image)
       throw new Error('assessment deployment changed');
-    await writeAtomic(pinned, MANAGED_STAGING_ASSESSMENT_FILE, { version: 1, image, operationId });
+    await writeAtomic(pinned, MANAGED_STAGING_ASSESSMENT_FILE, {
+      version: 1,
+      image,
+      operationId,
+      completed,
+    });
   } finally {
     await root.close();
   }

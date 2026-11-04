@@ -280,6 +280,8 @@ async function runProjectEgressProvision(options: ProvisionOptions): Promise<boo
       'VERITY_INSTALL_LOCK=/run/verity-install.lock',
     ],
   });
+  if (assessment !== undefined)
+    await markManagedStagingAssessment(options.managedRoot!, spec.image, key, true);
   await docker.removeContainer(installation);
   await docker.removeContainer(verification);
   return true;
@@ -326,7 +328,9 @@ export async function reconcileInstalledProjectEgressHost(options: {
         typeof marker === 'object' &&
         marker !== null &&
         'image' in marker &&
-        marker.image === installed
+        marker.image === installed &&
+        'completed' in marker &&
+        marker.completed === true
       )
         return 'already-attempted';
     } catch (error) {

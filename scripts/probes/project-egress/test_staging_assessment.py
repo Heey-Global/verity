@@ -158,6 +158,19 @@ class StagingAssessmentTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'runtime file changed'):
             self.validate(descriptor)
 
+    def test_foreign_relay_collision_precedes_package_metadata_mutations(self):
+        daemon = self.root / 'etc/docker/daemon.json'
+        value = json.loads(daemon.read_bytes())
+        value['runtimes']['runsc-relay'] = {'path': '/opt/foreign/runsc', 'runtimeArgs': installer.RELAY_RUNTIME_ARGS}
+        daemon.write_text(json.dumps(value))
+        before = daemon.read_bytes()
+        del self.packages['bpftool']
+        with self.assertRaisesRegex(ValueError, 'Unmanaged relay runtime'):
+            self.prepare()
+        self.assertEqual(daemon.read_bytes(), before)
+        self.assertFalse((self.root / installer.RELAY_RUNTIME_AUTHORITY).exists())
+        self.assertFalse(any('/usr/bin/apt-get' in call or '/usr/bin/apt-cache' in call or 'reload' in call for call in self.calls))
+
     def test_missing_packages_are_snapshotted_and_installed_by_exact_version(self):
         del self.packages['bpftool']
         descriptor = self.prepare()

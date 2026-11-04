@@ -142,6 +142,107 @@ class NativeProfileTests(unittest.TestCase):
         self.prepare()
         self.assertFalse(any('/usr/bin/apt-get' in call or 'reload' in call for call in self.calls))
 
+    def renew_project_runtime(self):
+        renewed = '/opt/verity/runsc/release-20261104.0/runsc'
+        binary = self.root / renewed.lstrip('/')
+        binary.parent.mkdir(parents=True)
+        binary.write_bytes(b'reviewed-new-runtime')
+        binary.chmod(0o555)
+        self.profile['runtime'] = {'path': renewed,
+            'sha512': hashlib.sha512(binary.read_bytes()).hexdigest(),
+            'treeSha256': installer.runtime_tree_digest(binary.parent)}
+        self.project = {'path': renewed, 'runtimeArgs': installer.PROJECT_RUNTIME_ARGS}
+        self.relay = {'path': renewed, 'runtimeArgs': installer.RELAY_RUNTIME_ARGS}
+        daemon = self.root / 'etc/docker/daemon.json'
+        value = json.loads(daemon.read_bytes())
+        value['runtimes']['runsc-project'] = self.project
+        daemon.write_text(json.dumps(value))
+        self.calls.clear()
+
+    def test_migrates_admitted_relay_after_project_runtime_renewal(self):
+        self.prepare()
+        authority = self.root / installer.RELAY_RUNTIME_AUTHORITY
+        previous = authority.read_bytes()
+        self.renew_project_runtime()
+        self.prepare()
+        self.assertEqual(json.loads((self.root / 'etc/docker/daemon.json').read_bytes())['runtimes']['runsc-relay'], self.relay)
+        self.assertEqual(json.loads(authority.read_bytes())['runtime'], self.profile['runtime'])
+        self.assertNotEqual(authority.read_bytes(), previous)
+        self.assertEqual(authority.stat().st_mode & 0o777, 0o600)
+        self.assertTrue(any('reload' in call and 'docker.service' in call for call in self.calls))
+        self.assertFalse(any('restart' in call or 'stop' in call or '/usr/bin/apt-get' in call for call in self.calls))
+
+    def test_foreign_relay_cannot_migrate_without_private_prior_authority(self):
+        self.prepare()
+        authority = self.root / installer.RELAY_RUNTIME_AUTHORITY
+        authority.unlink()
+        self.renew_project_runtime()
+        before = (self.root / 'etc/docker/daemon.json').read_bytes()
+        self.packages_installed = False
+        with self.assertRaisesRegex(ValueError, 'Unmanaged relay runtime'):
+            self.prepare()
+        self.assertEqual((self.root / 'etc/docker/daemon.json').read_bytes(), before)
+        self.assertFalse(authority.exists())
+        self.assertFalse(any('/usr/bin/apt-get' in call or 'reload' in call for call in self.calls))
+
+    def test_rejects_changed_prior_registration_and_runtime_before_mutations(self):
+        self.prepare()
+        authority = self.root / installer.RELAY_RUNTIME_AUTHORITY
+        old_runtime = self.root / self.runtime_path.lstrip('/')
+        self.renew_project_runtime()
+        self.packages_installed = False
+        daemon = self.root / 'etc/docker/daemon.json'
+        before = daemon.read_bytes()
+        value = json.loads(before)
+        value['runtimes']['runsc-relay']['runtimeArgs'] = ['--network=host']
+        daemon.write_text(json.dumps(value))
+        with self.assertRaisesRegex(ValueError, 'Unmanaged relay runtime'):
+            self.prepare()
+        daemon.write_bytes(before)
+        old_runtime.chmod(0o755)
+        old_runtime.write_bytes(b'changed-old-runtime')
+        old_runtime.chmod(0o555)
+        with self.assertRaisesRegex(ValueError, 'runtime identity changed'):
+            self.prepare()
+        authority.chmod(0o644)
+        with self.assertRaisesRegex(ValueError, 'Untrusted managed relay'):
+            self.prepare()
+        self.assertFalse(any('/usr/bin/apt-get' in call or 'reload' in call for call in self.calls))
+        self.assertEqual(daemon.read_bytes(), before)
+
+    def test_prior_relay_sidecar_drift_cannot_authorize_migration(self):
+        self.prepare()
+        self.renew_project_runtime()
+        sidecar = (self.root / self.runtime_path.lstrip('/')).parent / 'unexpected-sidecar'
+        sidecar.write_bytes(b'changed-tree')
+        sidecar.chmod(0o555)
+        self.packages_installed = False
+        with self.assertRaisesRegex(ValueError, 'runtime identity changed'):
+            self.prepare()
+        self.assertFalse(any('/usr/bin/apt-get' in call or 'reload' in call for call in self.calls))
+
+    def test_failed_relay_reload_preserves_previous_config_and_authority(self):
+        import subprocess
+        self.prepare()
+        authority = self.root / installer.RELAY_RUNTIME_AUTHORITY
+        previous = authority.read_bytes()
+        self.renew_project_runtime()
+        daemon = self.root / 'etc/docker/daemon.json'
+        before = daemon.read_bytes()
+        reloads = 0
+        def fail_first_reload(*args):
+            nonlocal reloads
+            if args == ('/usr/bin/systemctl', 'reload', 'docker.service'):
+                reloads += 1
+                if reloads == 1:
+                    raise subprocess.CalledProcessError(1, args)
+            return self.execute(*args)
+        with self.assertRaises(subprocess.CalledProcessError):
+            installer.prepare_managed_prerequisites(self.root, fail_first_reload, str(self.release / 'node'))
+        self.assertEqual(daemon.read_bytes(), before)
+        self.assertEqual(authority.read_bytes(), previous)
+        self.assertEqual(reloads, 2)
+
     def test_bpffs_pin_creation_never_uses_disk_directory_fsync(self):
         original = installer.sync_directory
 

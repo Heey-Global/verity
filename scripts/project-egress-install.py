@@ -34,6 +34,7 @@ UNITS = {
 # install/update/reboot/rollback and independent packet evidence.
 ACCEPTED_NATIVE_PROFILES = ()
 RELAY_RUNTIME_ARGS = ['--platform=systrap', '--network=sandbox', '--host-uds=open']
+RELAY_RUNTIME_AUTHORITY = 'etc/verity-egress/relay-runtime.json'
 PROJECT_RUNTIME_ARGS = ['--platform=systrap', '--network=sandbox', '--host-uds=create']
 NATIVE_PACKAGES = frozenset(('python3', 'iproute2', 'nftables', 'bpftool', 'libnftables1',
                              'util-linux', 'libatomic1', 'libstdc++6'))
@@ -253,6 +254,7 @@ def installed_assessment_packages(run):
 def prepare_staging_assessment(root, run, node_path, authorization):
     authorization = staging_authorization(root, authorization)
     profile = staging_identity(root, run, node_path)
+    native_relay_configuration(root, profile)
     versions = installed_assessment_packages(run)
     missing = NATIVE_PACKAGES - versions.keys()
     if missing:
@@ -305,8 +307,56 @@ def prepare_managed_prerequisites(root, run, node_path='/opt/verity-egress/node'
     return prepare_native_profile(root, run, profile)
 
 
+def managed_relay_registration(root, registration):
+    """Only an earlier admitted preparation can authorize replacing a runtime."""
+    authority = root / RELAY_RUNTIME_AUTHORITY
+    trusted_native_file(authority, root)
+    if not authority.exists():
+        return False
+    metadata = authority.lstat()
+    if metadata.st_mode & 0o077 or metadata.st_size > 4096:
+        raise ValueError('Untrusted managed relay runtime authority')
+    value = json.loads(authority.read_bytes())
+    identity = value.get('runtime') if isinstance(value, dict) else None
+    if (not isinstance(value, dict) or set(value) != {'version', 'runtime'}
+            or type(value['version']) is not int or value['version'] != 1 or not isinstance(identity, dict)
+            or set(identity) != {'path', 'sha512', 'treeSha256'}
+            or not isinstance(identity['path'], str)
+            or not re.fullmatch(r'/opt/verity/runsc/release-[0-9]{8}\.[0-9]+/runsc', identity['path'])
+            or not isinstance(identity['sha512'], str) or not re.fullmatch('[a-f0-9]{128}', identity['sha512'])
+            or not isinstance(identity['treeSha256'], str) or not re.fullmatch('[a-f0-9]{64}', identity['treeSha256'])):
+        raise ValueError('Invalid managed relay runtime authority')
+    if registration != {'path': identity['path'], 'runtimeArgs': RELAY_RUNTIME_ARGS}:
+        return False
+    previous = root / identity['path'].lstrip('/')
+    trusted_parent(previous, root)
+    metadata = previous.lstat()
+    if (not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.geteuid()
+            or metadata.st_mode & 0o022
+            or hashlib.sha512(previous.read_bytes()).hexdigest() != identity['sha512']
+            or runtime_tree_digest(previous.parent) != identity['treeSha256']):
+        raise ValueError('Managed relay runtime identity changed')
+    return True
+
+
+def native_relay_configuration(root, profile):
+    """Validate runtime ownership before any prerequisite or daemon writes."""
+    daemon = root / 'etc/docker/daemon.json'
+    trusted_native_file(daemon, root)
+    original = daemon.read_bytes()
+    config = json.loads(original)
+    runtime = {'path': profile['runtime']['path'], 'runtimeArgs': RELAY_RUNTIME_ARGS}
+    runtimes = config.setdefault('runtimes', {})
+    if ('runsc-relay' in runtimes and runtimes['runsc-relay'] != runtime
+            and not managed_relay_registration(root, runtimes['runsc-relay'])):
+        raise ValueError('Unmanaged relay runtime registration collision')
+    trusted_native_file(root / RELAY_RUNTIME_AUTHORITY, root)
+    return daemon, original, config, runtime, runtimes
+
+
 def prepare_native_profile(root, run, profile):
     """Shared exact preparation; admission is performed by the caller first."""
+    daemon, original, config, runtime, runtimes = native_relay_configuration(root, profile)
     packages = profile['packages']
     try:
         versions = run('/usr/bin/dpkg-query', '--show', '--showformat=${Package}=${Version}\n',
@@ -323,14 +373,6 @@ def prepare_native_profile(root, run, profile):
         if sorted(run('/usr/bin/dpkg-query', '--show', '--showformat=${Package}=${Version}\n',
                       *sorted(packages)).splitlines()) != expected:
             raise ValueError('Native package versions did not converge')
-    daemon = root / 'etc/docker/daemon.json'
-    trusted_native_file(daemon, root)
-    original = daemon.read_bytes()
-    config = json.loads(original)
-    runtime = {'path': profile['runtime']['path'], 'runtimeArgs': RELAY_RUNTIME_ARGS}
-    runtimes = config.setdefault('runtimes', {})
-    if 'runsc-relay' in runtimes and runtimes['runsc-relay'] != runtime:
-        raise ValueError('Unmanaged relay runtime registration collision')
     if runtimes.get('runsc-relay') != runtime:
         runtimes['runsc-relay'] = runtime
         candidate = daemon.with_name('.verity-egress-daemon.json')
@@ -351,6 +393,12 @@ def prepare_native_profile(root, run, profile):
                 raise
         finally:
             candidate.unlink(missing_ok=True)
+    # Record ownership only after successful admission and Docker convergence.
+    # An unrelated registration never becomes managed merely by using this name.
+    authority = root / RELAY_RUNTIME_AUTHORITY
+    trusted_native_file(authority, root)
+    atomic_file(authority, (json.dumps({'version': 1, 'runtime': profile['runtime']},
+                                     sort_keys=True) + '\n').encode(), 0o600)
     unit = root / 'etc/systemd/system/sys-fs-bpf.mount'
     trusted_native_file(unit, root)
     if unit.exists() and unit.read_bytes() != BPFFS_UNIT:

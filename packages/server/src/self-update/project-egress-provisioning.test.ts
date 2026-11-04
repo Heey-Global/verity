@@ -402,3 +402,33 @@ it('never grants assessment authority when independent signature verification fa
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+it('resumes installed staging after an installation wait disconnect instead of treating its grant as completion', async () => {
+  const { directory, daemon } = await stagingFixture(true);
+  daemon.inspectImageLabels.mockResolvedValue({
+    [PROJECT_EGRESS_PROVISION_LABEL]: '1',
+    'org.verity.project-egress-deployment': '1',
+  });
+  const options = {
+    docker: daemon as unknown as DockerClient,
+    managedRoot: directory,
+    environment: { DATABASE_URL: 'postgres://verity:private@postgres/verity' },
+  };
+  try {
+    vi.mocked(runHostRenewalJob)
+      .mockResolvedValueOnce('verified')
+      .mockRejectedValueOnce(new Error('wait disconnected'));
+    await expect(reconcileInstalledProjectEgressHost(options)).rejects.toThrow('wait disconnected');
+    const marker = JSON.parse(
+      await readFile(join(directory, MANAGED_STAGING_ASSESSMENT_FILE), 'utf8'),
+    ) as { completed: boolean };
+    expect(marker.completed).toBe(false);
+    await expect(writeManagedUpdateChannel(directory, 'stable')).rejects.toThrow('deactivation');
+    expect(await reconcileInstalledProjectEgressHost(options)).toBe('attempted');
+    const jobs = vi.mocked(runHostRenewalJob).mock.calls.map((call) => call[1]);
+    expect(jobs[3]?.name).toBe(jobs[1]?.name);
+    expect(await reconcileInstalledProjectEgressHost(options)).toBe('already-attempted');
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});

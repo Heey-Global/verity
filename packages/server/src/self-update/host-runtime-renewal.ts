@@ -164,7 +164,17 @@ export async function runHostRenewalJob(
   } else if (!['running', 'exited'].includes(inspect.status ?? ''))
     throw new Error('Runtime renewal job has an unsupported lifecycle state');
   // Both stages have their own timeout inside Docker. Retain a running job if wait disconnects.
-  const status = await docker.waitContainer(id);
+  // The HTTP wait must outlive the helper's own timeout and forced-kill grace.
+  // A shorter transport budget reports failure while the owned host job continues.
+  const seconds =
+    spec.entrypoint?.[0] === 'timeout' && spec.entrypoint[1] === '--kill-after=5s'
+      ? /^(\d+)s$/u.exec(spec.entrypoint[2] ?? '')
+      : null;
+  const waitTimeoutMs = Math.max(
+    300_000,
+    seconds === null ? 0 : Number(seconds[1]) * 1000 + 30_000,
+  );
+  const status = await docker.waitContainer(id, { timeoutMs: waitTimeoutMs });
   if (status !== 0) {
     let recovery: 'unchanged' | 'restored' | 'recovery-required' =
       spec.labels?.['verity.renewal-stage'] === 'verify' ? 'unchanged' : 'recovery-required';
