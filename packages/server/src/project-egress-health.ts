@@ -2,6 +2,8 @@
 export const projectEgressHealthReasons = [
   'ready',
   'not_configured',
+  'provisioning_pending',
+  'provisioning_in_progress',
   'runtime_unsupported',
   'provisioning_failed',
   'controller_failed',
@@ -40,6 +42,8 @@ export function projectEgressInstallationFailure(input: unknown): ProjectEgressH
   const status = input as Record<string, unknown>;
   if (status.version !== 1 || status.state !== 'unavailable') return undefined;
   if (
+    status.reason !== 'provisioning_in_progress' &&
+    status.reason !== 'mandatory_inventory_incomplete' &&
     status.reason !== 'runtime_unsupported' &&
     status.reason !== 'provisioning_failed' &&
     status.reason !== 'controller_failed'
@@ -53,6 +57,7 @@ export function projectEgressInstallationFailure(input: unknown): ProjectEgressH
 export function projectEgressAvailability(
   lifecycle: () => { health(): Promise<ProjectEgressHealth> } | undefined,
   installationStatus?: () => unknown,
+  provisioningPending: () => boolean = () => false,
 ): (fresh?: boolean) => Promise<ProjectEgressHealth> {
   let cached: { value: ProjectEgressHealth; at: number } | undefined;
   return async (fresh = false) => {
@@ -71,6 +76,8 @@ export function projectEgressAvailability(
         // Missing, corrupt or unreadable diagnostics never hide the live probe result.
       }
     }
+    if (value.reason === 'not_configured' && provisioningPending())
+      value = { available: false, reason: 'provisioning_pending' };
     cached = { value, at: Date.now() };
     return value;
   };

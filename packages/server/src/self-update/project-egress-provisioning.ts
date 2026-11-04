@@ -45,6 +45,7 @@ export async function projectEgressProvisionSupported(
   docker: Pick<ProvisionDocker, 'inspectImageLabels'>,
   journal: UpdateJournal,
   spec: ServerDeploymentSpec,
+  onSkip?: (reason: 'target_contract_missing' | 'installed_contract_missing') => void,
 ): Promise<boolean> {
   const contract = (await docker.inspectImageLabels?.(journal.targetDigest))?.[
     PROJECT_EGRESS_PROVISION_LABEL
@@ -52,6 +53,7 @@ export async function projectEgressProvisionSupported(
   if (contract === undefined) {
     if (spec.mounts.some((mount) => mount.target === '/run/verity-egress'))
       throw new Error('Target image cannot preserve protected project egress authority');
+    onSkip?.('target_contract_missing');
     return false;
   }
   const installed = (await docker.inspectImageLabels?.(journal.previousDigest))?.[
@@ -60,6 +62,7 @@ export async function projectEgressProvisionSupported(
   if (installed !== '1') {
     if (spec.mounts.some((mount) => mount.target === '/run/verity-egress'))
       throw new Error('Previous image cannot recover protected project egress authority');
+    onSkip?.('installed_contract_missing');
     return false;
   }
   if (contract !== '1') throw new Error('Unsupported project egress provisioning contract');
@@ -81,9 +84,10 @@ export async function provisionProjectEgressHost(options: {
   spec: ServerDeploymentSpec;
   environment: NodeJS.ProcessEnv;
   readFile?: (path: string) => Promise<string>;
+  onSkip?: (reason: 'target_contract_missing' | 'installed_contract_missing') => void;
 }): Promise<boolean> {
   const { docker, journal, spec } = options;
-  if (!(await projectEgressProvisionSupported(docker, journal, spec))) return false;
+  if (!(await projectEgressProvisionSupported(docker, journal, spec, options.onSkip))) return false;
   const state = spec.mounts.find((mount) => mount.target === '/run/verity-pairing');
   if (state?.source.kind !== 'bind' || !safeHostPath(state.source.path))
     throw new Error('Project egress provisioning requires installer state authority');

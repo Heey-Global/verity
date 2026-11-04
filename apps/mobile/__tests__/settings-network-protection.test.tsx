@@ -77,6 +77,11 @@ it('can disable protection while the host service is unavailable', async () => {
 
 it.each([
   [
+    'provisioning_pending',
+    'Automatic host service provisioning is pending. Install the next compatible server update.',
+  ],
+  ['provisioning_in_progress', 'Automatic host service provisioning is in progress.'],
+  [
     'runtime_unsupported',
     'This host does not have a validated runtime profile for network protection.',
   ],

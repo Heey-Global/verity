@@ -26,7 +26,7 @@ import {
   verifyProjectEgressDockerHost,
 } from './project-egress-host-service.js';
 import { egressRelayPolicy } from './project-egress-relay-policy.js';
-/** Experimental host entrypoint. Not installed or enabled by production setup. */
+/** Managed host entrypoint. Activation requires a validated runtime profile and complete inventory. */
 import { readFile } from 'node:fs/promises';
 import { ProjectEgressHost, projectEgressBootstrapRules } from './project-egress-host.js';
 import { applyProjectFenceRules, projectFenceTable } from './project-egress-fence.js';

@@ -64,3 +64,34 @@ it('does not let missing or corrupt provisioning diagnostics break settings', as
   });
   expect(projectEgressHealthReasons).not.toContain('private error');
 });
+
+it('explains missing managed wiring without treating pending provisioning as readiness', async () => {
+  const pending = projectEgressAvailability(
+    () => undefined,
+    undefined,
+    () => true,
+  );
+  expect(await pending(true)).toEqual({ available: false, reason: 'provisioning_pending' });
+  const ready = projectEgressAvailability(
+    () => ({ health: async () => ({ available: true, reason: 'ready' }) }),
+    undefined,
+    () => true,
+  );
+  expect(await ready(true)).toEqual({ available: true, reason: 'ready' });
+  const failure = projectEgressAvailability(
+    () => undefined,
+    () => ({ version: 1, state: 'unavailable', reason: 'provisioning_failed' }),
+    () => true,
+  );
+  expect((await failure(true)).reason).toBe('provisioning_failed');
+});
+
+it.each(['provisioning_in_progress', 'mandatory_inventory_incomplete'] as const)(
+  'exposes the fixed installation reason %s without implying readiness',
+  (reason) => {
+    expect(projectEgressInstallationFailure({ version: 1, state: 'unavailable', reason })).toEqual({
+      available: false,
+      reason,
+    });
+  },
+);

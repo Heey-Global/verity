@@ -15,6 +15,9 @@ export function networkProtectionUnavailableReason(settings: VeritySettings | nu
       'This host does not have a validated runtime profile for network protection.',
     provisioning_failed: 'Automatic host service provisioning failed.',
     controller_failed: 'The host service could not start or pass its readiness checks.',
+    provisioning_in_progress: 'Automatic host service provisioning is in progress.',
+    provisioning_pending:
+      'Automatic host service provisioning is pending. Install the next compatible server update.',
     not_configured: 'The host service has not been configured by this installation.',
     key_unreadable: 'The server cannot read the host service control key.',
     invalid_configuration: 'The host service configuration is invalid.',

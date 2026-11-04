@@ -1159,7 +1159,10 @@ describe('Uplink control client logging (#582 follow-up)', () => {
       new RegExp(`\\b${identifier}\\.bind\\(\\s*app\\.log\\s*\\)`, 'u'),
       `a bind of ${identifier} to app.log`,
     );
-    const dial = positionOf(/\buplinkControl\??\.start\(\s*\)/u, 'the uplink dial');
+    const dial = positionOf(
+      /if \(!secretCipher\.isSealed\(\)\) uplinkControl\?\.start\(\);/u,
+      'the unlocked boot dial',
+    );
 
     expect(dial).toBeGreaterThan(bind);
   });
@@ -1186,7 +1189,10 @@ describe('Uplink control client logging (#582 follow-up)', () => {
       /* setParentNodes */ true,
     );
     const construction = positionOf(CONSTRUCTION, 'the construction');
-    const dial = positionOf(/\buplinkControl\??\.start\(\s*\)/u, 'the uplink dial');
+    const dial = positionOf(
+      /if \(!secretCipher\.isSealed\(\)\) uplinkControl\?\.start\(\);/u,
+      'the unlocked boot dial',
+    );
 
     const enclosing = (position: number): ts.SignatureDeclaration | undefined => {
       let innermost: ts.SignatureDeclaration | undefined;
@@ -1215,12 +1221,10 @@ describe('Uplink control client logging (#582 follow-up)', () => {
     // Both belong to the boot's own statement list rather than to something
     // nested inside it.
     expect(statementAt(construction)).toBeDefined();
-    // And the dial is that statement, not merely inside it: wrapped in an `if`
-    // or a `try` it would be reached conditionally, which no count of returns
-    // would show. The construction gets no such check - it is the `? :` that
-    // decides whether there is a client at all.
+    // Boot must reach the unlock guard; a sealed store deliberately defers the
+    // dial to the interactive unlock callback instead of revoking saved shares.
     const dialStatement = statementAt(dial);
-    expect(dialStatement && ts.isExpressionStatement(dialStatement)).toBe(true);
+    expect(dialStatement && ts.isIfStatement(dialStatement)).toBe(true);
 
     // Returns belonging to the boot itself - the walk stops at every nested
     // function, so a callback's `return` is not mistaken for the boot's.
