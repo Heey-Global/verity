@@ -333,6 +333,8 @@ describe('VerityClient live meetings', () => {
         },
       ],
       notes: [note],
+      // A server without discarding reports no deletions rather than an invalid feed.
+      deletedMeetingIds: [],
     });
     await client.putLiveMeeting(meeting);
     await client.putLiveMeetingNote(meeting.sessionId, note);
@@ -4523,6 +4525,7 @@ describe('VerityClient calendar meetings', () => {
     'live-meeting-intake.ts',
     'calendar-meeting-routes.ts',
     'calendar-watch-routes.ts',
+    'live-meeting-routes.ts',
   ]
     .map((file) => readFileSync(new URL(`../../server/src/${file}`, import.meta.url), 'utf8'))
     .join('\n');
@@ -4619,6 +4622,19 @@ describe('VerityClient calendar meetings', () => {
     registered('POST', '/live-meetings/calendar/:eventKey/skip');
     registered('POST', '/live-meetings/unassigned/:meetingId/assign');
     registered('DELETE', '/live-meetings/unassigned/:meetingId');
+  });
+
+  it('discards a finished session meeting and reads discards from the feed', async () => {
+    const { fetch, calls } = fakeFetchSequence(
+      new Response(JSON.stringify({ discarded: true }), { status: 200 }),
+      json({ cursor: 4, meetings: [], notes: [], deletedMeetingIds: ['m/1'] }),
+    );
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    await client.discardSessionMeeting('s/1', 'm/1');
+    expect((await client.getLiveMeetingChanges('s/1', 3)).deletedMeetingIds).toEqual(['m/1']);
+    expect(calls[0]?.init?.method).toBe('DELETE');
+    expect(calls[0]?.url).toBe('http://host/sessions/s%2F1/live-meetings/m%2F1');
+    registered('DELETE', '/sessions/:id/live-meetings/:meetingId');
   });
 
   it('reads and changes which calendars are watched', async () => {

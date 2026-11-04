@@ -390,17 +390,15 @@ export async function fileLiveMeeting(input: {
   };
   const first = await load();
   if (!first) return;
-  const knowledge = input.dataRoot !== undefined && session.projectId !== null;
-  const meetingDir = knowledge
-    ? await ensureMeetingDirectory(input.dataRoot!, session.projectId!)
-    : await ensureLegacyMeetingDirectory(session.worktree);
+  const { knowledge, meetingDir, relPath } = await liveMeetingFile(
+    input.dataRoot,
+    session,
+    first.meeting,
+  );
   const title = liveMeetingTitle({
     ...first.meeting,
     title: first.meeting.title || first.result?.title || null,
   });
-  const hash = createHash('sha256').update(first.meeting.id).digest('hex').slice(0, 8);
-  const date = new Date(first.meeting.startedAt).toISOString().slice(0, 10);
-  const relPath = `${knowledge ? KNOWLEDGE_MEETINGS_DIR : 'docs/meetings'}/${date}-live-meeting-${hash}.md`;
   await withMeetingTranscriptCommitLock(meetingDir, relPath, async () => {
     // Read again under the lock: an overlapping filing that read earlier must not
     // overwrite a later note or speaker name with its older snapshot.
@@ -457,6 +455,70 @@ export async function fileLiveMeeting(input: {
         role: 'agent',
         text,
       });
+    }
+  });
+}
+
+/** Where a live meeting is filed. The name derives from the meeting id and start. */
+async function liveMeetingFile(
+  dataRoot: string | undefined,
+  session: { projectId: string | null; worktree: string },
+  meeting: { id: string; startedAt: number },
+): Promise<{ knowledge: boolean; meetingDir: string; relPath: string }> {
+  const projectId = dataRoot === undefined ? null : session.projectId;
+  const knowledge = projectId !== null;
+  const meetingDir =
+    dataRoot !== undefined && projectId !== null
+      ? await ensureMeetingDirectory(dataRoot, projectId)
+      : await ensureLegacyMeetingDirectory(session.worktree);
+  const hash = createHash('sha256').update(meeting.id).digest('hex').slice(0, 8);
+  const date = new Date(meeting.startedAt).toISOString().slice(0, 10);
+  const relPath = `${knowledge ? KNOWLEDGE_MEETINGS_DIR : 'docs/meetings'}/${date}-live-meeting-${hash}.md`;
+  return { knowledge, meetingDir, relPath };
+}
+
+/**
+ * Removes the filed Markdown of a discarded live meeting and its index entry. Session
+ * messages that announced the file stay. Runs under the filing lock, so a filing that
+ * was already writing finishes first and a later one finds no meeting to file.
+ */
+export async function removeFiledLiveMeeting(input: {
+  eventStore: EventStore;
+  dataRoot: string | undefined;
+  sessionId: string;
+  meeting: { id: string; startedAt: number };
+}): Promise<void> {
+  const session = await input.eventStore.getSession(input.sessionId);
+  if (!session) return;
+  // Nothing was filed into a worktree without a meetings folder; do not create one.
+  if (
+    (input.dataRoot === undefined || session.projectId === null) &&
+    !(await lstat(join(session.worktree, 'docs', 'meetings')).catch(() => undefined))
+  )
+    return;
+  const { meetingDir, relPath } = await liveMeetingFile(input.dataRoot, session, input.meeting);
+  await withMeetingTranscriptCommitLock(meetingDir, relPath, async () => {
+    const file = basename(relPath);
+    const existing = await lstat(join(meetingDir, file)).catch(() => undefined);
+    if (existing?.isFile()) await unlink(join(meetingDir, file));
+    const indexAbs = join(meetingDir, 'index.md');
+    if (!(await lstat(indexAbs).catch(() => undefined))) return;
+    const previous = meetingIndexUpdates.get(indexAbs) ?? Promise.resolve();
+    const update = previous
+      .catch(() => undefined)
+      .then(() =>
+        updateMeetingIndexFile(indexAbs, (content) =>
+          content
+            .split('\n')
+            .filter((line) => !(line.startsWith('- [') && line.endsWith(`](${file})`)))
+            .join('\n'),
+        ),
+      );
+    meetingIndexUpdates.set(indexAbs, update);
+    try {
+      await update;
+    } finally {
+      if (meetingIndexUpdates.get(indexAbs) === update) meetingIndexUpdates.delete(indexAbs);
     }
   });
 }

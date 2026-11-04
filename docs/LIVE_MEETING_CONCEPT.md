@@ -431,9 +431,33 @@ Confirmed or dismissed task proposals retain their state when the same evidence 
 a revision. Tasks are created only after an explicit confirmation, linked to the originating
 session's project and accompanied by their transcript evidence.
 
-The result page shows the summary, decisions, task proposals, unresolved questions and
-existing answers. Notes can be edited, speakers renamed, and the transcript searched by text
-or speaker. iPad uses two columns; phones stack the sections. Share exports the filed Markdown
-or a PDF rendered from that same document. Continue in chat returns to the originating session,
-where the saved meeting card includes the summary. Derived sections also appear in the filed
-meeting source without replacing its transcript.
+The result page leads with the summary and the task proposals under "To review", where each
+proposal can be added, all can be added at once, or a proposal can be dismissed. Decisions,
+unresolved questions, notes, answers and people follow as collapsed sections with counts;
+an unfinished note keeps its section open. On wide layouts decisions stay visible in the main
+column and the reference sections move to a side column. Notes can be edited, speakers
+renamed, and the transcript searched by text or speaker. Share exports the filed Markdown or a
+PDF rendered from that same document. Continue in chat is the page's primary action and
+returns to the originating session, where the saved meeting card includes the summary.
+Derived sections also appear in the filed meeting source without replacing its transcript.
+
+### Discarding a finished meeting
+
+The result page's actions menu offers **Discard meeting…**. A confirmation names what is
+deleted and where. `DELETE /sessions/:id/live-meetings/:meetingId` requires management rights
+for the session, like other destructive changes, and only accepts finished meetings (not
+recording, and for online meetings ended at the provider) (`409` with
+`meeting_running` otherwise). It deletes the meeting with its transcript, timed words,
+speaker data, notes, insights and derived result, removes the filed Markdown and its index
+line, and for online meetings drops the remaining provider state. Tasks already created from
+the result and the session's messages stay. Cleanup outside the meeting tables runs before the
+deletion: when a step fails the server answers `502` with `meeting_cleanup_failed`, nothing is
+deleted, every device keeps the meeting, and discarding again retries. A `404` with
+`meeting_not_found` means the server never had the meeting; only then does a device delete its
+copy without the server.
+
+The server keeps a tombstone per discarded meeting. The incremental sync feed
+(`GET /sessions/:id/live-meetings?after=`) reports it in `deletedMeetingIds`, and devices
+delete their copy from that server with its notes and drafts. Uploads of a discarded meeting
+or its notes are refused with `409` and `meeting_deleted`; the recording device then drops its
+pending copy instead of retrying. A meeting saved only on one device is deleted locally.

@@ -1182,3 +1182,110 @@ it('reads result state, rejects stale task changes and persists a confirmed task
     ).statusCode,
   ).toBe(409);
 });
+
+it('discards a finished meeting for every device and refuses its re-upload', async () => {
+  const onDiscarded = vi.fn(async () => undefined);
+  const discardApp = Fastify();
+  registerLiveMeetingRoutes(discardApp, ctx.store, { onDiscarded });
+  await discardApp.ready();
+  try {
+    const ended = { ...meeting, state: 'ended', endedAt: 200 };
+    expect((await discardApp.inject({ method: 'PUT', url, payload: ended })).statusCode).toBe(200);
+    await discardApp.inject({
+      method: 'PUT',
+      url: `${url}/notes/note-1`,
+      payload: { atSeconds: 2, text: 'Decision', revision: 1 },
+    });
+    const before = (
+      await discardApp.inject({ method: 'GET', url: '/sessions/session-1/live-meetings' })
+    ).json<{ cursor: number }>().cursor;
+
+    const response = await discardApp.inject({ method: 'DELETE', url });
+    expect(response.statusCode).toBe(200);
+    expect(onDiscarded).toHaveBeenCalledWith(
+      'session-1',
+      expect.objectContaining({ id: 'meeting-1', engine: 'fluid-nemotron' }),
+    );
+
+    // Other devices learn about it through the same incremental feed they already poll.
+    const feed = (
+      await discardApp.inject({
+        method: 'GET',
+        url: `/sessions/session-1/live-meetings?after=${before}`,
+      })
+    ).json<{ meetings: unknown[]; notes: unknown[]; deletedMeetingIds: string[] }>();
+    expect(feed.deletedMeetingIds).toEqual(['meeting-1']);
+    const full = (
+      await discardApp.inject({ method: 'GET', url: '/sessions/session-1/live-meetings' })
+    ).json<{ meetings: unknown[]; notes: unknown[] }>();
+    expect(full.meetings).toEqual([]);
+    expect(full.notes).toEqual([]);
+
+    // A recorder still holding an unsent revision must not resurrect the meeting.
+    const upload = await discardApp.inject({
+      method: 'PUT',
+      url,
+      payload: { ...ended, revision: 2 },
+    });
+    expect(upload.statusCode).toBe(409);
+    expect(upload.json()).toMatchObject({ code: 'meeting_deleted' });
+    // Repeating it repeats only the cleanup, from what the tombstone kept.
+    expect((await discardApp.inject({ method: 'DELETE', url })).statusCode).toBe(200);
+    expect(onDiscarded).toHaveBeenLastCalledWith(
+      'session-1',
+      expect.objectContaining({ id: 'meeting-1', engine: 'fluid-nemotron', startedAt: 100 }),
+    );
+  } finally {
+    await discardApp.close();
+  }
+});
+
+it('refuses to discard a running or unknown meeting', async () => {
+  expect((await app.inject({ method: 'PUT', url, payload: meeting })).statusCode).toBe(200);
+  const running = await app.inject({ method: 'DELETE', url });
+  expect(running.statusCode).toBe(409);
+  expect(running.json()).toMatchObject({ code: 'meeting_running' });
+  const unknown = await app.inject({
+    method: 'DELETE',
+    url: '/sessions/session-1/live-meetings/other',
+  });
+  expect(unknown.statusCode).toBe(404);
+  // Only this code tells a device its copy was never on the server.
+  expect(unknown.json()).toMatchObject({ code: 'meeting_not_found' });
+  await ctx.store.createSession({ sessionId: 'session-2', worktree: '/two', model: 'm' });
+  expect(
+    (await app.inject({ method: 'DELETE', url: '/sessions/session-2/live-meetings/meeting-1' }))
+      .statusCode,
+  ).toBe(404);
+  const still = (
+    await app.inject({ method: 'GET', url: '/sessions/session-1/live-meetings' })
+  ).json<{ meetings: unknown[] }>();
+  expect(still.meetings).toHaveLength(1);
+});
+
+it('deletes nothing when cleanup fails, so discarding again can complete it', async () => {
+  const onDiscarded = vi
+    .fn(async () => undefined)
+    .mockRejectedValueOnce(new Error('provider unavailable'));
+  const discardApp = Fastify();
+  registerLiveMeetingRoutes(discardApp, ctx.store, { onDiscarded });
+  await discardApp.ready();
+  try {
+    const ended = { ...meeting, state: 'ended', endedAt: 200 };
+    await discardApp.inject({ method: 'PUT', url, payload: ended });
+    const first = await discardApp.inject({ method: 'DELETE', url });
+    expect(first.statusCode).toBe(502);
+    expect(first.json()).toMatchObject({ code: 'meeting_cleanup_failed' });
+    // No tombstone yet: devices keep the meeting instead of syncing it away unfinished.
+    expect(await ctx.store.liveMeetings.isDeleted('session-1', 'meeting-1')).toBe(false);
+    const feed = (
+      await discardApp.inject({ method: 'GET', url: '/sessions/session-1/live-meetings' })
+    ).json<{ meetings: unknown[]; deletedMeetingIds: string[] }>();
+    expect(feed.meetings).toHaveLength(1);
+    expect(feed.deletedMeetingIds).toEqual([]);
+    expect((await discardApp.inject({ method: 'DELETE', url })).statusCode).toBe(200);
+    expect(await ctx.store.liveMeetings.isDeleted('session-1', 'meeting-1')).toBe(true);
+  } finally {
+    await discardApp.close();
+  }
+});
