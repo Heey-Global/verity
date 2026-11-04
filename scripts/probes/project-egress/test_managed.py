@@ -160,6 +160,9 @@ class ManagedTests(unittest.TestCase):
         self.assertIn(f'Group={CONTROL_GID}', host)
         self.assertIn('/opt/verity-egress/node ', host)
         self.assertIn('project-egress-managed.py refresh-authority', host)
+        writable = ' '.join(line.partition('=')[2] for line in host.splitlines()
+                            if line.startswith('ReadWritePaths='))
+        self.assertIn('/etc/verity-egress', writable.split())
         self.assertEqual((self.root / 'usr/local/libexec/verity/project-egress-managed.py').read_bytes(),
                          SOURCE.read_bytes())
         self.assertLess(next(i for i, cmd in enumerate(self.calls) if cmd[-1] == 'deny'),

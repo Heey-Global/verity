@@ -169,6 +169,10 @@ def unit_files(files, gid):
         # intentional controller-only upgrade while Docker remains running.
         content = content.replace('Upholds=verity-egress-host.service\n', '')
         if name == 'verity-egress-host.service':
+            # Atomic endpoint refresh needs the parent writable under the
+            # controller's ProtectSystem=strict filesystem namespace.
+            content = content.replace('ReadWritePaths=',
+                                      'ReadWritePaths=/etc/verity-egress ', 1)
             content = content.replace('ExecStartPre=',
                                       'ExecStartPre=/usr/bin/python3 /usr/local/libexec/verity/'
                                       'project-egress-managed.py refresh-authority\nExecStartPre=', 1)
