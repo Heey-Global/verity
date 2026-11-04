@@ -280,11 +280,14 @@ def recover_transaction(root, run):
     if ((current.exists() or current.is_symlink()) and
             (not current.is_symlink() or os.readlink(current) not in (previous, str(release)))):
         raise ValueError('Managed recovery release identity changed')
-    base.stop_controller(run)
-    # A failed deny leaves the durable journal intact and prohibits restoration.
-    run('/usr/bin/flock', '--exclusive', '--timeout', '15',
-        '/var/lib/verity-egress/service.lock', str(release / 'node'),
-        str(release / 'project-egress-host-main.mjs'), 'deny')
+    try:
+        base.stop_controller(run)
+    finally:
+        # Even failed teardown must attempt denial. Either failure retains the
+        # journal and prohibits restoration while a controller may still run.
+        run('/usr/bin/flock', '--exclusive', '--timeout', '15',
+            '/var/lib/verity-egress/service.lock', str(release / 'node'),
+            str(release / 'project-egress-host-main.mjs'), 'deny')
     for relative, data in snapshots.items():
         path = root / relative
         if data is None:

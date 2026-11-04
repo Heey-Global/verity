@@ -264,6 +264,36 @@ class ManagedTests(unittest.TestCase):
         self.provision(self.unsupported)
         self.assertFalse((self.root / managed.JOURNAL).exists())
 
+    def test_failed_controller_stop_still_attempts_denial_without_restoration(self):
+        self.crash_upgrade()
+        current = (self.root / 'opt/verity-egress').resolve()
+        config = (self.root / 'etc/verity-egress/authority.json').read_bytes()
+        journal = (self.root / managed.JOURNAL).read_bytes()
+        for deny_fails in (False, True):
+            with self.subTest(deny_fails=deny_fails):
+                self.calls.clear()
+
+                def fail(*args):
+                    self.execute(*args)
+                    if 'stop' in args:
+                        raise RuntimeError('controller stop failed')
+                    if args[-1] == 'deny' and deny_fails:
+                        raise RuntimeError('denial failed')
+                    return 'loaded' if 'show' in args else ''
+
+                with self.assertRaisesRegex(RuntimeError,
+                        'denial failed' if deny_fails else 'controller stop failed'):
+                    self.provision(self.unsupported, run=fail)
+                stop = next(i for i, cmd in enumerate(self.calls) if 'stop' in cmd)
+                deny = next(i for i, cmd in enumerate(self.calls) if cmd[-1] == 'deny')
+                self.assertLess(stop, deny)
+                self.assertFalse(any('daemon-reload' in cmd or 'start' in cmd for cmd in self.calls))
+                self.assertEqual((self.root / managed.JOURNAL).read_bytes(), journal)
+                self.assertEqual((self.root / 'opt/verity-egress').resolve(), current)
+                self.assertEqual((self.root / 'etc/verity-egress/authority.json').read_bytes(), config)
+        self.provision(self.unsupported)
+        self.assertFalse((self.root / managed.JOURNAL).exists())
+
     def test_recovery_rejects_journal_paths_outside_fixed_destinations(self):
         self.crash_upgrade()
         journal = self.root / managed.JOURNAL
