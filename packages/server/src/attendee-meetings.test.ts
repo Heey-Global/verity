@@ -1,6 +1,6 @@
 import { expect, it, vi } from 'vitest';
 import type { EventStore } from '@verity/store';
-import { AttendeeMeetings } from './attendee-meetings.js';
+import { AttendeeMeetings, uplinkStartFailure } from './attendee-meetings.js';
 import { UplinkControlClient } from './uplink-control-client.js';
 import { PreviewShareRemovalQueuedError } from './preview-share-manager.js';
 
@@ -897,4 +897,67 @@ it('retains the webhook share handle when shutdown revocation fails', async () =
   expect(remove).toHaveBeenCalledWith('share');
   expect(state.binding).toEqual({ shareId: 'share' });
   expect(save).not.toHaveBeenCalled();
+});
+
+it.each([
+  [
+    'capability_check',
+    'webhook_not_negotiated',
+    'has not confirmed webhook support',
+    '(Uplink step: capability_check · webhook_not_negotiated)',
+  ],
+  [
+    'share_create',
+    'limit_reached',
+    'share limit is reached',
+    '(Uplink step: share_create · limit_reached)',
+  ],
+  ['share_create', 'pending', 'did not complete', '(Uplink step: share_create)'],
+] as const)(
+  'names the failed Uplink step %s/%s when an online meeting cannot start',
+  async (phase, code, reason, step) => {
+    const rows = new Map<string, unknown>();
+    const store = {
+      getSession: async () => ({ id: 'session' }),
+      getAttendeeState: async (id: string) => rows.get(id),
+      putAttendeeState: async (id: string, state: unknown) => {
+        rows.set(id, structuredClone(state));
+      },
+      listAttendeeState: async () => [],
+    } as unknown as EventStore;
+    const service = new AttendeeMeetings({
+      store,
+      edge: {
+        create: async (_input, observe) => {
+          observe?.({ phase, code, shareCreateSent: phase === 'share_create' });
+          throw new Error('internal detail');
+        },
+        remove: vi.fn().mockResolvedValue(undefined),
+        isAvailable: () => true,
+      },
+      ingest: vi.fn(),
+    });
+    await service.configure({
+      apiKey: 'fixture',
+      webhookSecret: Buffer.alloc(32).toString('base64'),
+    });
+    await service.open();
+    try {
+      const failure = service.start('session', 'https://meet.google.com/abc-defg-hij', false);
+      await expect(failure).rejects.toThrow(reason);
+      await expect(failure).rejects.toThrow(step);
+      await expect(failure).rejects.not.toThrow('internal detail');
+    } finally {
+      await service.close();
+    }
+  },
+);
+
+it('keeps the generic Uplink hint for a failure before any Uplink step reported', () => {
+  expect(uplinkStartFailure('ensure_sharing', 'pending')).toBe(
+    'Could not enable online sharing on the Uplink. Check Uplink / Online Sharing and retry. (Uplink step: ensure_sharing)',
+  );
+  expect(uplinkStartFailure('share_create', 'something_new')).toContain(
+    'The Uplink refused the webhook share.',
+  );
 });

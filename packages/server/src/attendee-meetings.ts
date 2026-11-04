@@ -29,6 +29,44 @@ interface MeetingStartDiagnostic {
   botCreateAttempted: boolean;
   event: 'progress' | 'failed';
 }
+const UPLINK_SHARE_REFUSALS: Record<string, string> = {
+  webhook_unsupported: 'The Uplink refused a webhook share for this server.',
+  limit_reached: 'The Uplink share limit is reached. End another online meeting or preview first.',
+  not_entitled: 'Online sharing is not included in the Uplink plan of this server.',
+  unavailable: 'The Uplink cannot create a share right now.',
+  invalid_request: 'The Uplink rejected the share request as invalid.',
+};
+
+/**
+ * Names the Uplink step that failed before the bot was created. Phases and codes come from
+ * the bounded diagnostic vocabulary, so the text never carries raw upstream errors.
+ */
+export function uplinkStartFailure(phase: MeetingStartDiagnostic['phase'], code: string) {
+  const hint = 'Check Uplink / Online Sharing and retry.';
+  const step = `(Uplink step: ${phase}${code === 'pending' || code === 'ready' ? '' : ` · ${code}`})`;
+  const reason = (() => {
+    switch (phase) {
+      case 'ensure_sharing':
+        return 'Could not enable online sharing on the Uplink.';
+      case 'capability_check':
+        return code === 'webhook_not_negotiated'
+          ? 'The current Uplink connection has not confirmed webhook support. Reconnecting Uplink renegotiates it.'
+          : 'Online sharing is not available on the Uplink connection.';
+      case 'share_create':
+        return code === 'pending'
+          ? 'The Uplink share request did not complete: no answer or an unusable reply.'
+          : (UPLINK_SHARE_REFUSALS[code] ?? 'The Uplink refused the webhook share.');
+      case 'connector_connect':
+        return 'The webhook share was created, but its connector could not connect to the Uplink.';
+      case 'share_ready':
+      case 'connector_ready':
+      case 'provider_setup':
+        return 'Online sharing stopped while the meeting was starting.';
+    }
+  })();
+  return `${reason} ${hint} ${step}`;
+}
+
 /** Safe startup guidance that the API may expose without internal error details. */
 export class OnlineMeetingStartError extends Error {}
 export class UnassignedMeetingNotFoundError extends Error {
@@ -403,6 +441,8 @@ export class AttendeeMeetings {
         await this.publish(state);
         return { meetingId: id };
       } catch (error) {
+        const failedPhase = phase;
+        const failedCode = code;
         if (code === 'pending' || code === 'ready') code = 'failed';
         emit('failed');
         if (error instanceof AttendeeRequestRejected) state.botCreateAttempted = false;
@@ -426,7 +466,7 @@ export class AttendeeMeetings {
           throw new OnlineMeetingStartError(
             error instanceof AttendeeRequestRejected
               ? `Attendee rejected the meeting request (${error.status}). Check Connected services and the meeting link, then retry.`
-              : 'Could not open the Uplink webhook connection. Check Uplink / Online Sharing and retry.',
+              : uplinkStartFailure(failedPhase, failedCode),
             { cause: error },
           );
         }
