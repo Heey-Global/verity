@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.84.1](https://github.com/Heey-Global/verity/compare/mobile-v1.84.0...mobile-v1.84.1) (2026-11-04)
+
+
+### Features
+
+* **egress:** add destination controls and constrained package paths ([#2227](https://github.com/Heey-Global/verity/issues/2227)) ([96e6bee](https://github.com/Heey-Global/verity/commit/96e6bee6b2baaefd5b38208f4df1c529fbebc524))
+* **mobile:** add Home as an inbox behind a preview switch ([#2222](https://github.com/Heey-Global/verity/issues/2222)) ([eacc872](https://github.com/Heey-Global/verity/commit/eacc872449fa1604ee754e32d77f3997e253b0af))
+
+
+### Bug Fixes
+
+* **deps:** update dependency @fastify/websocket to v11.3.6 ([#2233](https://github.com/Heey-Global/verity/issues/2233)) ([0572f13](https://github.com/Heey-Global/verity/commit/0572f1332ac36601d805da7ff9bf38e8478691a7))
+* **deps:** update dependency ws to v8.22.1 ([#2234](https://github.com/Heey-Global/verity/issues/2234)) ([9155441](https://github.com/Heey-Global/verity/commit/9155441041ea49f93552c331ddda59ec7346c4a5))
+* **storage:** share project npm caches and reclaim idle cache data ([#2226](https://github.com/Heey-Global/verity/issues/2226)) ([e8d978a](https://github.com/Heey-Global/verity/commit/e8d978ad9bb317d19fb64faf41681f12db49daed))
+
 ## [1.83.4](https://github.com/Heey-Global/verity/compare/mobile-v1.83.3...mobile-v1.83.4) (2026-11-03)
 
 
