@@ -10,11 +10,15 @@ import {
 } from './remoteControlAdmission';
 import { createPairedSelectedRecordingArming } from './selectedRecordingArming';
 import { createPinnedFetch } from './pinnedTransport';
+import { exportRemoteDataDiagnostics, selectRemoteRecording } from './remoteDataDiagnostics';
 
 interface Tunnel {
   isActive(): Promise<boolean>;
   start(dataUrl: string, ticket: string, sessionId: string, coreUrl: string): Promise<number>;
   stop(): Promise<void>;
+  captureDataDiagnostics?(): Promise<boolean>;
+  dataDiagnosticsRemainingMs?(): Promise<number>;
+  disableDataDiagnostics?(): Promise<void>;
 }
 interface Pinned {
   request(
@@ -28,6 +32,12 @@ interface Pinned {
   ): Promise<{ status: number }>;
   cancelRequest(id: string): Promise<unknown>;
 }
+export interface SelectedLocalRecording {
+  status: 'ready' | 'unsupported' | 'empty' | 'invalid' | 'failed' | 'unmatched' | 'ambiguous';
+  recording: string | null;
+  sessionHash: string | null;
+  stopped: boolean;
+}
 export interface SelectedRecordingAttemptOptions extends Omit<
   RemoteAdmissionOptions,
   'diagnosticArming'
@@ -39,6 +49,9 @@ export interface SelectedRecordingAttemptOptions extends Omit<
   installationFingerprint: string;
   /** Observed response only; successful cleanup is reported by resolution. */
   onResponse?: (status: number) => void;
+  /** Validated native evidence for this session only, including unsuccessful attempts. */
+  onLocalRecording?: (evidence: SelectedLocalRecording) => void | Promise<void>;
+  onPhase?: (phase: 'preparing' | 'running' | 'stopping') => void;
 }
 let occupied = false;
 
@@ -59,12 +72,29 @@ export async function selectedRecordingAttempt(
   let ownsTunnel = false;
   let startPending = false;
   let cleanupDone = false;
+  let capturePending = false;
+  let ownsCapture = false;
+  let captureStartedAt = 0;
+  let captureExpiresAt = 0;
+  let captureTimer: ReturnType<typeof setTimeout> | undefined;
+  let captureStatus: SelectedLocalRecording['status'] = 'unsupported';
+  let nativeStopped = false;
+  const release = () => {
+    if (cleanupDone && !startPending && !capturePending) occupied = false;
+  };
   let liveDeadline = performance.now() + 60000;
   let utcDeadline = Infinity;
   let armAttempted = false;
   let selectedSessionHash: string | undefined;
   let admission: Awaited<ReturnType<typeof requestRemoteControlAdmission>> | undefined;
   const requestId = `selected-${options.runId}`;
+  const phase = (value: 'preparing' | 'running' | 'stopping') => {
+    try {
+      options.onPhase?.(value);
+    } catch {
+      /* A UI observer cannot prevent cleanup. */
+    }
+  };
   const check = () => {
     if (controller.signal.aborted || performance.now() >= liveDeadline || Date.now() >= utcDeadline)
       throw new Error('Selected attempt stopped');
@@ -117,6 +147,7 @@ export async function selectedRecordingAttempt(
     return selectedConnectionRecordingStatusSchema.parse(await response.json());
   };
   try {
+    phase('preparing');
     check();
     const arming = createPairedSelectedRecordingArming({ ...options, durationMs: 30000 });
     adminFetch = createPinnedFetch(options.corePin, false);
@@ -168,6 +199,45 @@ export async function selectedRecordingAttempt(
       admission.expiresAt <= Date.now()
     )
       throw new Error('Invalid selected preparation');
+    // Recheck after admission: never arm capture on a different active tunnel.
+    if (await bounded(tunnel.isActive()))
+      throw new Error('Existing DATA tunnel must be stopped first');
+    if (
+      tunnel.captureDataDiagnostics &&
+      tunnel.dataDiagnosticsRemainingMs &&
+      tunnel.disableDataDiagnostics
+    ) {
+      const remaining = await bounded(tunnel.dataDiagnosticsRemainingMs());
+      if (!Number.isFinite(remaining) || remaining !== 0)
+        throw new Error('Existing DATA recording must be stopped first');
+      captureStartedAt = Date.now();
+      captureExpiresAt = Math.min(captureStartedAt + 30000, utcDeadline);
+      capturePending = true;
+      captureStatus = 'failed';
+      const preparing = tunnel
+        .captureDataDiagnostics()
+        .then(async (enabled) => {
+          ownsCapture = enabled;
+          if (enabled && controller.signal.aborted) {
+            await tunnel.disableDataDiagnostics!();
+            ownsCapture = false;
+          }
+          return enabled;
+        })
+        .finally(() => {
+          capturePending = false;
+          release();
+        });
+      if (!(await bounded(preparing))) throw new Error('Native recording unavailable');
+      check();
+      captureTimer = setTimeout(
+        () => {
+          // Preserve the original absolute budget; reading/exporting never renews it.
+          if (ownsCapture) void tunnel.disableDataDiagnostics!().catch(() => {});
+        },
+        Math.max(0, captureExpiresAt - Date.now()),
+      );
+    }
     const data = new URL(options.uplinkOrigin);
     data.protocol = 'wss:';
     data.pathname = '/data';
@@ -184,7 +254,7 @@ export async function selectedRecordingAttempt(
       })
       .finally(() => {
         startPending = false;
-        if (cleanupDone) occupied = false;
+        release();
       });
     const port = await bounded(starting);
     admission.finish();
@@ -256,6 +326,7 @@ export async function selectedRecordingAttempt(
       );
     }
     check();
+    phase('running');
     const warmup = setTimeout(abort, 5000);
     try {
       const result = await bounded(
@@ -277,6 +348,7 @@ export async function selectedRecordingAttempt(
       clearTimeout(warmup);
     }
   } finally {
+    phase('stopping');
     controller.abort();
     clearTimeout(outer);
     clearTimeout(expiry);
@@ -291,6 +363,7 @@ export async function selectedRecordingAttempt(
             (async () => {
               await tunnel.stop();
               if (await tunnel.isActive()) throw new Error('DATA tunnel remains active');
+              nativeStopped = true;
             })(),
           ),
         );
@@ -323,8 +396,90 @@ export async function selectedRecordingAttempt(
       if (failed?.status === 'rejected') throw new Error('Selected cleanup failed');
     } finally {
       // A late native start still owns the singleton until its stop handler runs.
-      cleanupDone = true;
-      if (!startPending) occupied = false;
+      try {
+        if (ownsCapture && !startPending) {
+          // Delegate callbacks may follow stop(). Keep a bounded grace inside the
+          // original capture deadline instead of freezing the first cancellation.
+          const grace =
+            performance.now() + Math.min(250, Math.max(0, captureExpiresAt - Date.now()));
+          let recording: string | null = null;
+          do {
+            let exportTimer: ReturnType<typeof setTimeout> | undefined;
+            const result = await Promise.race([
+              exportRemoteDataDiagnostics(),
+              new Promise<{ status: 'failed' }>((resolve) => {
+                exportTimer = setTimeout(() => resolve({ status: 'failed' }), 300);
+              }),
+            ]).finally(() => clearTimeout(exportTimer));
+            captureStatus = result.status;
+            if (result.status === 'ready') {
+              const window = selectRemoteRecording(
+                result.recording,
+                captureStartedAt,
+                captureExpiresAt,
+              );
+              const candidates = window
+                ? (
+                    JSON.parse(window) as Array<{
+                      sessionHash?: string;
+                      generation: string;
+                      delegateAvailable: boolean;
+                      events: Array<{ event: string }>;
+                    }>
+                  ).filter((entry) => entry.sessionHash === selectedSessionHash)
+                : [];
+              if (candidates.length === 1) {
+                recording = JSON.stringify(candidates);
+                captureStatus = 'ready';
+                const selected = candidates[0]!;
+                if (
+                  !selected.delegateAvailable ||
+                  selected.events.some((entry) => entry.event === 'task_completed')
+                )
+                  break;
+              } else {
+                recording = null;
+                captureStatus = candidates.length > 1 ? 'ambiguous' : 'unmatched';
+              }
+            }
+            const remaining = grace - performance.now();
+            if (remaining <= 0) break;
+            await new Promise((resolve) => setTimeout(resolve, Math.min(25, remaining)));
+          } while (true);
+          await cleanup(tunnel.disableDataDiagnostics!());
+          ownsCapture = false;
+          await options.onLocalRecording?.({
+            status: captureStatus,
+            recording,
+            sessionHash: selectedSessionHash ?? null,
+            stopped: nativeStopped,
+          });
+        } else {
+          await options.onLocalRecording?.({
+            status: captureStatus,
+            recording: null,
+            sessionHash: selectedSessionHash ?? null,
+            stopped: nativeStopped,
+          });
+        }
+      } catch {
+        // Persistence/export failures must not mask the attempt or its cleanup error.
+        try {
+          await options.onLocalRecording?.({
+            status: 'failed',
+            recording: null,
+            sessionHash: selectedSessionHash ?? null,
+            stopped: nativeStopped,
+          });
+        } catch {
+          /* caller owns persistence */
+        }
+      } finally {
+        clearTimeout(captureTimer);
+        if (ownsCapture) void tunnel.disableDataDiagnostics!().catch(() => {});
+        cleanupDone = true;
+        release();
+      }
     }
   }
 }
