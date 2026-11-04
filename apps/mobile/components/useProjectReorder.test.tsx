@@ -640,3 +640,27 @@ it('allows pickup when the optional issue link has never mounted', () => {
   expect(measure).not.toHaveBeenCalledWith(excluded);
   expect(test.hook.result.current.draggingId).toBe('b');
 });
+
+it('rejects reorder diagnostics delivered from an earlier recording', () => {
+  const test = setup();
+  act(() => setGestureDiagnosticsEnabled(true));
+  const oldDown = test.hook.result.current.gesture.handlers.onTouchesDown;
+  act(() => {
+    setGestureDiagnosticsEnabled(false);
+    setGestureDiagnosticsEnabled(true);
+  });
+  act(() =>
+    oldDown?.(
+      { allTouches: [{ absoluteX: 100, absoluteY: 300 }] } as never,
+      { fail: jest.fn() } as never,
+    ),
+  );
+  expect(exportGestureDiagnostics().events).toEqual([]);
+  act(() =>
+    test.hook.result.current.gesture.handlers.onTouchesDown?.(
+      { allTouches: [{ absoluteX: 100, absoluteY: 300 }] } as never,
+      { fail: jest.fn() } as never,
+    ),
+  );
+  expect(exportGestureDiagnostics().events).toMatchObject([{ event: 'touch-down-hold' }]);
+});
