@@ -559,3 +559,40 @@ it('holds ownership through a timed-out native disable until it settles', async 
   mockDisable.mockResolvedValue(undefined);
   await expect(selectedRecordingAttempt(options)).resolves.toEqual({ status: 200 });
 });
+
+it('exports retained native evidence after the capture timer has disabled recording', async () => {
+  jest.useFakeTimers();
+  mockCaptureSupported = true;
+  mockArm.mockImplementation(async () => ({
+    ...status(),
+    expiresAt: new Date(Date.now() + 45000).toISOString(),
+    selection: {
+      ...status().selection,
+      preparationExpiresAt: new Date(Date.now() + 45000).toISOString(),
+    },
+  }));
+  const snapshot = nativeSnapshot();
+  mockDiagnosticExport.mockResolvedValue([JSON.stringify(snapshot)]);
+  let attach!: (port: number) => void;
+  mockStart.mockImplementation(
+    () =>
+      new Promise<number>((resolve) => {
+        attach = resolve;
+      }),
+  );
+  const local = jest.fn();
+  const attempt = selectedRecordingAttempt({ ...options, onLocalRecording: local });
+  for (let i = 0; i < 200 && !attach; i++) await Promise.resolve();
+  expect(attach).toBeDefined();
+  await jest.advanceTimersByTimeAsync(30001);
+  expect(mockDisable).toHaveBeenCalledTimes(1);
+  attach(1234);
+  await attempt;
+  expect(local).toHaveBeenCalledWith(
+    expect.objectContaining({
+      status: 'ready',
+      recording: JSON.stringify([snapshot]),
+    }),
+  );
+  expect(mockDisable).toHaveBeenCalledTimes(1);
+});

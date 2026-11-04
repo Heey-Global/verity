@@ -74,6 +74,7 @@ export async function selectedRecordingAttempt(
   let cleanupDone = false;
   let capturePending = false;
   let ownsCapture = false;
+  let ownsCaptureEvidence = false;
   let disablePending = false;
   let disableOperation: Promise<void> | null = null;
   let captureCleanupFailed = false;
@@ -236,6 +237,7 @@ export async function selectedRecordingAttempt(
         .captureDataDiagnostics()
         .then(async (enabled) => {
           ownsCapture = enabled;
+          ownsCaptureEvidence = enabled;
           if (enabled && controller.signal.aborted) {
             await disableCapture();
             ownsCapture = false;
@@ -415,7 +417,7 @@ export async function selectedRecordingAttempt(
     } finally {
       // A late native start still owns the singleton until its stop handler runs.
       try {
-        if (ownsCapture && !startPending) {
+        if (ownsCaptureEvidence && !startPending) {
           // Delegate callbacks may follow stop(). Keep a bounded grace inside the
           // original capture deadline instead of freezing the first cancellation.
           const grace =
