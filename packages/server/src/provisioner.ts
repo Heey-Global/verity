@@ -5782,6 +5782,11 @@ export class ProvisionerImpl implements Provisioner {
           effectiveClaudeGatewayUrl,
           effectiveCodexGatewayUrl,
         ]);
+        if (egress !== undefined) {
+          gvisorExtraHosts.push(
+            `verity-package-broker:${relayResolverAddress(effectiveBrokerUrl, gvisorExtraHosts)}`,
+          );
+        }
         const servers =
           egress === undefined &&
           this.opts.sandboxDnsServers !== undefined &&
@@ -5978,6 +5983,11 @@ export class ProvisionerImpl implements Provisioner {
             // per-container capability as the gh-token broker; `verity-memory` redeems
             // the capability to append to this project's memory (POST /internal/project/memory).
             `VERITY_PROJECT_MEMORY_URL=${effectiveBrokerUrl.replace(/\/+$/, '')}/internal/project/memory`,
+            ...(egress === undefined
+              ? []
+              : [
+                  'VERITY_PACKAGE_ARTIFACT_URL=http://verity-package-broker:8080/internal/package-artifacts',
+                ]),
             // `verity-repo`: pull requests and issues through the project's code host,
             // executed server-side with the same capability (POST /internal/project/repo).
             `VERITY_PROJECT_REPO_URL=${effectiveBrokerUrl.replace(/\/+$/, '')}/internal/project/repo`,

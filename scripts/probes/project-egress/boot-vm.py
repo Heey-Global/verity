@@ -49,7 +49,7 @@ class BootVM:
         self.observation_link = observation_link
         self.base = Path(base).resolve()
         self.evidence = Path(evidence).resolve()
-        self.work = Path(tempfile.mkdtemp(prefix='verity-boot-vm-'))
+        self.work = Path(tempfile.mkdtemp(prefix='verity-boot-vm-', dir=os.environ.get('RUNNER_TEMP') or None))
         self.process = None
         self.log = None
         self.port = None

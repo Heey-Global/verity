@@ -1,3 +1,8 @@
+import {
+  projectEgressPolicySchema,
+  projectEgressRequestSchema,
+  type ProjectEgressPolicy,
+} from './projectEgress.js';
 import { storageReclamationActionSchema, type StorageReclamationAction } from '@verity/events';
 import { buildDiagnosticResponseSchema, systemLogResponseSchema } from './logs.js';
 import {
@@ -4735,6 +4740,46 @@ export class VerityClient {
       body: JSON.stringify(input),
     });
     return z.object({ instructions: z.string(), revision: z.string() }).parse(await res.json());
+  }
+
+  async getProjectEgress(id: string): Promise<ProjectEgressPolicy> {
+    const res = await this.request(`/projects/${encodeURIComponent(id)}/egress`, { method: 'GET' });
+    return z.object({ policy: projectEgressPolicySchema }).parse(await res.json()).policy;
+  }
+
+  async decideProjectEgress(
+    id: string,
+    input: { requestId: string; revision: number; allow: boolean },
+  ): Promise<void> {
+    const res = await this.request(`/projects/${encodeURIComponent(id)}/egress/decisions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+    z.object({ request: projectEgressRequestSchema }).parse(await res.json());
+  }
+
+  async reopenProjectEgress(
+    id: string,
+    input: { target: { host: string; protocol: 'tcp' | 'udp'; port: number }; revision: number },
+  ): Promise<void> {
+    const res = await this.request(`/projects/${encodeURIComponent(id)}/egress/reopen`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+    z.object({ request: projectEgressRequestSchema }).parse(await res.json());
+  }
+
+  async revokeProjectEgress(
+    id: string,
+    input: { grantId: string; revision: number },
+  ): Promise<void> {
+    await this.request(`/projects/${encodeURIComponent(id)}/egress/revoke`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(input),
+    });
   }
 
   async getProject(id: string): Promise<ProjectDetail> {

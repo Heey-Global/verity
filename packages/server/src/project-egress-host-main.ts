@@ -11,7 +11,7 @@ import {
 import { createProjectEgressHostEnforcement } from './project-egress-host-enforcement.js';
 import { hostProjectDeadlineEnforcer } from './project-egress-deadline.js';
 import { inspectProjectFenceAttachment } from './project-egress-attachment.js';
-import { createProjectEgressResolver } from './project-egress-resolver.js';
+import { createProjectEgressResolvers } from './project-egress-resolver.js';
 import {
   createProtectedAddressInventory,
   SYSTEM_DIRECT_TARGETS,
@@ -61,16 +61,19 @@ if (authority !== undefined && relayPolicy?.packetEnforcement !== true)
 const database = authority === undefined ? undefined : createPostgresDb(authority.databaseUrl);
 const projectPolicy = database === undefined ? undefined : new ProjectEgressStore(database);
 const policyStore = projectPolicy ?? unavailableEgressAuthority;
-const resolve =
+const { resolve, resolveProtected } =
   authority === undefined
-    ? () => Promise.reject(new Error('Host DNS authority is not configured'))
-    : createProjectEgressResolver({
+    ? {
+        resolve: () => Promise.reject(new Error('Host DNS authority is not configured')),
+        resolveProtected: () => Promise.reject(new Error('Host DNS authority is not configured')),
+      }
+    : createProjectEgressResolvers({
         servers: authority.dnsServers,
         destinationAllowed: egressHostDestinationAllowed,
       });
 // Addresses of broker/system destinations are never direct, whatever name points at them.
 const protectedAddresses = createProtectedAddressInventory({
-  resolve,
+  resolve: resolveProtected,
   configuredHosts: authority?.mandatoryHosts ?? [],
   reportConfiguredFailure: (host, error) => {
     console.error(`Configured broker host ${host} could not be resolved`, error);

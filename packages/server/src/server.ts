@@ -167,6 +167,7 @@ import { registerMessageSearchRoute } from './message-search-route.js';
 import { registerOnboardingRoutes } from './onboarding-routes.js';
 import { selectedOpenCodeModels } from './opencode-model-selection.js';
 import { registerPackageInstallRoute } from './package-install-route.js';
+import { registerPackageArtifactRoutes } from './package-artifact-routes.js';
 import { authorizePairedRoute } from './paired-route-policy.js';
 import { registerPairingRoutes } from './pairing-routes.js';
 import { createSessionPlanning, registerPlanningRoutes } from './planning.js';
@@ -214,7 +215,11 @@ import { createQACoordinator } from './qa-coordinator.js';
 import { registerQASettingsRoutes, registerRepairRoutes } from './repair-routes.js';
 import { createRepairSupervisor, repairTurnTerminated } from './repair-supervisor.js';
 import { registerRequestLatencyDiagnostics } from './request-latency.js';
-import { declaredNonOperatorKeys, missingLockoutKeys, routeScopeKey } from './route-scopes.js';
+import {
+  declaredNonOperatorKeys,
+  missingLockoutKeys,
+  nonOperatorRequestKey,
+} from './route-scopes.js';
 import { cachedTrustedToolkitIdentity } from './runner-boundary-attestation.js';
 import { runtimeServerVersion } from './runtime-version.js';
 import { SandboxUnavailableError } from './sandbox-git.js';
@@ -2958,7 +2963,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       return reply.code(403).send({ error: 'invalid origin' });
     }
     if (registry === undefined || !registry.isEnabled()) return;
-    if (preAuthKeys.has(routeScopeKey(request.method, pathname))) return;
+    if (preAuthKeys.has(nonOperatorRequestKey(request.method, pathname, request.routeOptions.url)))
+      return;
     const websocketStream =
       (request.headers.upgrade ?? '').toLowerCase() === 'websocket' && WS_LIVE_PATH.test(pathname);
     const cookieToken = cookieCredential(request);
@@ -4425,6 +4431,9 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     ...(deps.sshSign !== undefined ? { sshSign: deps.sshSign } : {}),
   });
   registerGitHubTokenRoute(app);
+  if (deps.ghTokenCapabilities !== undefined) {
+    registerPackageArtifactRoutes(app, { capabilities: deps.ghTokenCapabilities });
+  }
   registerPackageInstallRoute(app, {
     store: deps.eventStore,
     conductor,

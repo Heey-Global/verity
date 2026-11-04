@@ -1,3 +1,4 @@
+import { PreviewNetworkProtectionError } from './preview-network-policy.js';
 import {
   ManagedDevServerConflictError,
   managedDevServerBindingsEqual,
@@ -1025,7 +1026,10 @@ export class ManagedDevServerManager {
       await this.refreshReserved();
       this.publishRetryAt.set(instance.id, this.now() + 30_000);
       await this.servers.updateInstance(instance.id, {
-        detail: 'Could not open it on your network yet. Retrying shortly.',
+        detail:
+          error instanceof PreviewNetworkProtectionError
+            ? error.message
+            : 'Could not open it on your network yet. Retrying shortly.',
       });
       this.options.log?.('verity: managed dev server could not publish locally', {
         projectId: project.id,

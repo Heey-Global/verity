@@ -1,3 +1,4 @@
+import { projectTransportFetch } from './project-transport-authority.js';
 // Google Drive connection + API wrapper for reference imports and Slides assets
 // (ADRs 0009/0016).
 //
@@ -108,7 +109,7 @@ async function postToken(
   const { doFetch, timeoutMs } = resolveTransport(opts);
   let res: GoogleHttpResponse;
   try {
-    res = await doFetch(GOOGLE_TOKEN_ENDPOINT, {
+    res = await projectTransportFetch(doFetch, GOOGLE_TOKEN_ENDPOINT, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams(body).toString(),
@@ -194,7 +195,7 @@ async function driveGet(
   const { doFetch, timeoutMs } = resolveTransport(opts);
   let res: GoogleHttpResponse;
   try {
-    res = await doFetch(`${GOOGLE_DRIVE_API}${path}`, {
+    res = await projectTransportFetch(doFetch, `${GOOGLE_DRIVE_API}${path}`, {
       method: 'GET',
       headers: { Authorization: `Bearer ${accessToken}`, Accept: 'application/json' },
       signal: AbortSignal.timeout(timeoutMs),
@@ -480,7 +481,7 @@ async function driveMutation(
   const { doFetch, timeoutMs } = resolveTransport(opts);
   let response: GoogleHttpResponse;
   try {
-    response = await doFetch(url, {
+    response = await projectTransportFetch(doFetch, url, {
       method: init.method,
       headers: {
         Authorization: `Bearer ${accessToken}`,
@@ -606,7 +607,8 @@ async function driveGetBytes(
   const { doFetch, timeoutMs } = resolveTransport(opts);
   let res: GoogleHttpResponse;
   try {
-    res = await doFetch(
+    res = await projectTransportFetch(
+      doFetch,
       `${opts.expectedVersion ? 'https://www.googleapis.com/drive/v2' : GOOGLE_DRIVE_API}${path}`,
       {
         method: 'GET',

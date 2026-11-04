@@ -23,6 +23,7 @@ export interface BrokeredForgeProxy {
     socket: Duplex,
     head: Buffer,
     identity: InternalConnectionIdentity,
+    generationSignal?: AbortSignal,
   ): void;
 }
 const FORWARDED_HEADERS = new Set([
@@ -119,7 +120,7 @@ export function createBrokeredForgeProxy(options: {
   });
   const transport = options.transport ?? brokeredHttpStreamTransport;
   return {
-    connect(request, socket, head, identity) {
+    connect(request, socket, head, identity, generationSignal) {
       void (async () => {
         const target = request.url ?? '';
         const hostname = target.endsWith(':443') ? target.slice(0, -4) : target;
@@ -130,6 +131,7 @@ export function createBrokeredForgeProxy(options: {
           allowed = false;
         }
         if (
+          generationSignal?.aborted ||
           !options.enabled(identity.projectId) ||
           !allowed ||
           head.length ||
@@ -154,6 +156,7 @@ export function createBrokeredForgeProxy(options: {
             return;
           }
         }
+        if (generationSignal?.aborted || socket.destroyed) return;
         socket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
         const tls = new TLSSocket(socket, { isServer: true, secureContext: selectedContext });
         const tunnelDeadline = setTimeout(() => tls.destroy(), 10 * 60_000);
@@ -164,10 +167,16 @@ export function createBrokeredForgeProxy(options: {
         const server = createServer({ maxHeaderSize: 16_384 }, (inner, response) => {
           response.shouldKeepAlive = false;
           const abort = new AbortController();
+          const retire = () => abort.abort();
+          generationSignal?.addEventListener('abort', retire, { once: true });
+          if (generationSignal?.aborted) abort.abort();
+          let authorizationPoll: ReturnType<typeof setInterval> | undefined;
           const timeout = setTimeout(() => abort.abort(), 10 * 60_000);
           timeout.unref();
           response.once('close', () => {
             clearTimeout(timeout);
+            if (authorizationPoll !== undefined) clearInterval(authorizationPoll);
+            generationSignal?.removeEventListener('abort', retire);
             abort.abort();
           });
           void (async () => {
@@ -186,6 +195,7 @@ export function createBrokeredForgeProxy(options: {
             const presented = capability(inner);
             const binding = presented ? await options.capabilities.resolve(presented) : undefined;
             if (
+              abort.signal.aborted ||
               !binding ||
               binding.projectId !== identity.projectId ||
               binding.containerGeneration !== identity.containerGeneration
@@ -237,7 +247,42 @@ export function createBrokeredForgeProxy(options: {
               options.actions?.(binding.projectId) ?? ALL_ACTIONS,
               abort.signal,
             );
-            if (abort.signal.aborted) return;
+            // Credential resolution may wait on a provider. The exact capability
+            // and repository binding must still be live when payload leaves.
+            const still = presented ? await options.capabilities.resolve(presented) : undefined;
+            const matches = (current: typeof still) =>
+              current !== undefined &&
+              current.projectId === binding.projectId &&
+              current.containerGeneration === binding.containerGeneration &&
+              current.owner === binding.owner &&
+              current.repo === binding.repo &&
+              current.forgeConnectionId === binding.forgeConnectionId;
+            if (abort.signal.aborted || !matches(still) || !options.enabled(identity.projectId)) {
+              fail(response, 401);
+              return;
+            }
+            let checking = false;
+            authorizationPoll = setInterval(() => {
+              if (checking || abort.signal.aborted) return;
+              checking = true;
+              // A wedged capability store must close the stream, not suspend
+              // revocation checks indefinitely while credentials keep flowing.
+              const deadline = setTimeout(() => abort.abort(), 1000);
+              deadline.unref();
+              void options.capabilities
+                .resolve(presented!)
+                .then(
+                  (current) => {
+                    if (!matches(current) || !options.enabled(identity.projectId)) abort.abort();
+                  },
+                  () => abort.abort(),
+                )
+                .finally(() => {
+                  clearTimeout(deadline);
+                  checking = false;
+                });
+            }, 500);
+            authorizationPoll.unref();
             if (auth.registryTokenResponse) {
               response.writeHead(200, { 'content-type': 'application/json' });
               response.end(JSON.stringify({ token: FORGE_PLACEHOLDER_PREFIX + presented }));
@@ -301,7 +346,11 @@ export function createBrokeredForgeProxy(options: {
               }
               fail(response, error instanceof ForgePolicyError ? 403 : 502);
             })
-            .finally(() => clearTimeout(timeout));
+            .finally(() => {
+              clearTimeout(timeout);
+              if (authorizationPoll !== undefined) clearInterval(authorizationPoll);
+              generationSignal?.removeEventListener('abort', retire);
+            });
         });
         server.maxRequestsPerSocket = 1;
         server.requestTimeout = 10 * 60_000;

@@ -246,3 +246,135 @@ the pinned experimental Linux/systemd, Docker and gVisor configuration in this
 run. They do not establish hard expiry during host/controller suspension, general
 Internet/package/connector/preview access, the remaining attack matrix, or
 production readiness. The templates remain uninstalled and protection inactive.
+
+## Explicit offline installation candidate
+
+`scripts/project-egress-install.py` is an **experimental installation candidate**,
+not a supported production installer or permission to deploy. It does not install
+packages, download binaries, change Docker runtime configuration, provision
+credentials, change the application toggle, or claim native-host acceptance.
+The existing disposable boot fixture remains the source of native lifecycle
+proof; fake filesystem/command tests establish orchestration only.
+
+Prepare a reviewed offline asset directory containing the bundled
+`project-egress-host-main.mjs` (built with
+`node scripts/build-project-egress-host.mjs`), `project-egress-deadline.py`,
+target-host compiled `project-egress-deadline.bpf.o` and
+`project-egress-renew.bpf.o`, and the three unit/drop-in files from `deploy/egress`.
+Compile the BPF sources using the validated target architecture and kernel
+headers, following the disposable native fixture. Do not substitute unreviewed
+objects or copy binaries from an incompatible host. Then stage a transfer bundle:
+
+```sh
+python3 scripts/project-egress-install.py stage /path/to/reviewed-assets /path/to/new-release
+```
+
+The manifest detects transfer corruption, not a malicious release publisher.
+Verify the release and installer provenance through the same reviewed delivery
+channel. The staging command copies only the fixed asset set and refuses an
+existing destination. The install command verifies every asset digest before
+host mutation. Installed release files and directories are read-only, with
+root ownership and symlink checks; replacement files and directory entries are
+fsynced before proceeding. Previous release content is checked against its
+content-addressed identity before it can become a rollback target. Native crash
+recovery is still a separate acceptance gate.
+
+Before installation, provision the dedicated `verity-egress-control` group and
+review the Server's membership, control-directory bind mount, and matching control
+key configuration. Root-owned mode-0600 regular files
+`/etc/verity-egress/control.key`, `authority.json`, and `relay.json` must already
+exist; the authority and relay schemas are defined by the host implementation.
+Enable packet enforcement in the relay configuration. Do not paste credentials
+into a command line or public deployment document. Establish persistent bpffs
+mounting and creation of the root-owned mode-0700
+`/sys/fs/bpf/verity_egress_deadline` directory at boot. The candidate does not
+modify fstab, service users, Docker daemon settings, or Server mounts.
+
+On the separately authorized target Linux host, use the read-only preflight:
+
+```sh
+sudo python3 project-egress-install.py preflight
+```
+
+Its candidate requirements are x86_64 little-endian Linux, systemd >=249 as PID 1,
+Node >=26.12.1 within 26.x, rootful local
+Docker 29.9.2 with live restore disabled, the reviewed `runsc-project` and
+`runsc-relay` runtimes, required network/BPF utilities, Python `setns`, libnftables,
+the private pin directory, and trusted configuration paths. Runtime names do not
+attest their executable versions or runtime arguments; those remain a release
+and native-host validation obligation. A successful preflight does not prove
+boot persistence, kernel BPF compatibility, socket reachability from the Server,
+or receiver-side isolation. The installer currently rejects every target kernel:
+`ACCEPTED_KERNEL_RELEASES` is empty. Both preflight and apply remain unavailable
+until an exact profile is accepted through a reviewed code change backed by
+native install, upgrade and recovery evidence. Kernel compatibility remains unaccepted until native-host evidence
+identifies and verifies that kernel, compiled BPF objects and gVisor release
+together. The architecture gate does not imply that every x86_64 Linux kernel
+is supported.
+
+Once an accepted profile exists and separate installation approval is given,
+the explicit command will be:
+
+```sh
+sudo python3 project-egress-install.py apply /path/to/new-release --experimental-host-install
+```
+
+Installation stops Docker and the existing controller, restores denial under the
+released controller lock, atomically switches the managed bundle link, installs boot units,
+reloads systemd, and starts the bootstrap, Docker and controller. Stopping Docker
+prevents its `Upholds` dependency from restarting old controller code during the
+update. A missing controller unit is expected on initial installation and is
+not stopped. The controller's `Type=notify` startup owns readiness; the command also requires
+its active state. **This operation restarts Docker and interrupts all Docker
+workloads on the host**, including projects without protection; it requires an
+approved maintenance window. The candidate
+refuses a preexisting unmanaged `/opt/verity-egress` directory; migration from a
+fixture install requires its own reviewed procedure.
+
+A failed startup restores the previous bundle link and unit bytes only after
+stopping the new controller and restoring denial. It leaves Docker and the controller
+stopped and never restores unrestricted traffic. If containment itself fails,
+the command stops without claiming rollback safety. Investigate the failure on
+the host. **Recovery from a stopped Docker daemon remains unavailable in this
+prototype:** `apply` runs the read-only preflight first, and its `docker info`
+requirement rejects a stopped daemon. Reapplying a staged release is therefore
+not a recovery command. A separately implemented and natively verified recovery
+path must establish denial before starting Docker and then revalidate the daemon;
+do not start Docker merely to make preflight pass. The empty kernel allowlist
+keeps installation unavailable until the remaining lifecycle gates are met.
+Retained release files do not authorize garbage collection,
+removal of fence rules, or deletion of registry/BPF state. Uninstalling protection
+requires a separate container migration and deactivation procedure; removing
+units alone is not a safe uninstall.
+
+Before enabling protection for real projects, record successful final-commit
+native boot/restart/outage and revocation evidence, verify the Server reports the
+host available, and separately approve activation. Re-run the application-path
+positive controls after installation, including package download and managed
+HTTP/WebSocket previews. Neither this candidate nor its unit tests closes these
+gates.
+
+## Preview ingress limitation
+
+Protected generations currently have **no supported preview ingress route**.
+The existing local/public connector joins the legacy project network; attaching
+it to a protected network or adding a broad firewall exception would bypass the
+attested boundary. Local HTTP/WebSocket previews and static-folder shares are
+therefore unavailable for protected containers. Creation returns a descriptive
+409 conflict before creating an edge or connector. Managed dev servers may still
+run inside the container; their local-access detail explains this limitation.
+
+When reconciliation observes that an existing target moved to a protected
+network, it revokes the public edge or closes the local edge and removes the
+connector. Dormant local share intent is revoked instead of being restored onto
+the legacy network. This applies to static-folder connectors as well, whose
+read-only filesystem mounts must not become an independent data path around the
+protected generation. Ordinary project/session ownership and generation checks
+continue to apply to supported, unprotected previews.
+
+These unit and lifecycle guards establish fail-closed behavior, not protected
+HTTP/WebSocket connectivity or a measured revocation deadline on a real host.
+Supporting protected previews requires a narrow, attested ingress adapter bound
+to project, generation and the authorized target port, with stream teardown and
+receiver-side tests for cross-project access, generation retirement and restart.
+No direct grant or DNS approval creates that ingress route.

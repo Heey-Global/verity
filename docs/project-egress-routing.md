@@ -1,5 +1,26 @@
 # Project egress routing and consent
 
+## Implementation evidence boundary
+
+The project Unix listener supplies a generation cancellation signal. MCP tool
+execution propagates that signal and its existing session authorizer through
+the Google and restricted HTTP adapters; Forge streams also revalidate their
+capability after asynchronous setup. Failed, stalled or retired authority aborts
+the scoped request. These checks complement the external project fence and do
+not establish native runtime acceptance by themselves.
+
+Automation startup now rechecks its prepared project snapshot after sponsor
+authorization. Full automation cancellation remains open: the current buffered
+Docker exec interface cannot confirm termination of in-container children when
+its client is aborted. A trusted supervisor automation launch/cancel capability
+with immutable generation binding and termination evidence is required. The
+existing live-turn supervisor capability cannot be reused before a turn exists.
+
+Package artifact and preview limitations are recorded in
+[the artifact adapter contract](project-egress-package-artifacts.md) and
+[the host installation contract](project-egress-host.md). No unsupported path
+gains a broad network exception.
+
 Status: target contract with draft policy persistence and authenticated management
 APIs implemented. No firewall, connector or UI activation is enabled. The APIs
 report `enforcement: unavailable`; stored grants do not admit network traffic. Network destination permissions are shared

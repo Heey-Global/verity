@@ -1,3 +1,4 @@
+import { projectTransportFetch } from './project-transport-authority.js';
 import { z } from 'zod';
 import type { GoogleFetch } from './google-drive.js';
 
@@ -23,7 +24,8 @@ export async function invokeGoogleContactsApi(
       pageSize: String(request.maxResults),
       readMask: 'names,emailAddresses',
     });
-    const response = await doFetch(
+    const response = await projectTransportFetch(
+      doFetch,
       `https://people.googleapis.com/v1/people:searchContacts?${params.toString()}`,
       { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(20_000) },
     );

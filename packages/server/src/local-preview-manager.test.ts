@@ -2,7 +2,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { PreviewEdge } from '@verity/preview-tunnel';
 import { LocalPreviewManager, type LocalPreviewManagerOptions } from './local-preview-manager.js';
 import { containerGenerationOf } from './project-relay-migration.js';
-import { PreviewShareManager } from './preview-share-manager.js';
+import { PreviewShareManager, PreviewNetworkProtectionError } from './preview-share-manager.js';
 
 const managers: LocalPreviewManager[] = [];
 afterEach(async () => {
@@ -530,4 +530,55 @@ it('storage maintenance preserves active previews and does not remove their conn
   expect(mutation).not.toHaveBeenCalled();
   expect(manager.listProject('p1').map((item) => item.id)).toContain(share.id);
   expect(docker.removeContainer).not.toHaveBeenCalled();
+});
+
+it('rejects protected local preview creation before opening an edge or connector', async () => {
+  const f = fixture();
+  const listen = vi.spyOn(PreviewEdge.prototype, 'listen').mockResolvedValue(18100);
+  vi.spyOn(PreviewShareManager.prototype, 'prepareLocalTarget').mockRejectedValue(
+    new PreviewNetworkProtectionError(),
+  );
+  await expect(f.manager.create('s1', { targetPort: 3000 })).rejects.toThrow('network-protected');
+  expect(listen).not.toHaveBeenCalled();
+  expect(f.docker.createContainer).not.toHaveBeenCalled();
+});
+
+it('closes the edge and connector on protected generation detection without restoring the stale link', async () => {
+  const f = fixture();
+  vi.spyOn(PreviewEdge.prototype, 'listen').mockResolvedValue(18100);
+  const close = vi.spyOn(PreviewEdge.prototype, 'close').mockResolvedValue();
+  const share = await f.manager.create('s1', { targetPort: 3000 });
+  const sandbox = await f.docker.inspectContainer();
+  f.docker.inspectContainer.mockImplementation(async () => ({
+    ...sandbox,
+    labels: { 'verity.container-generation': 'generation-2' },
+    networks: { [`verity-egress-${'a'.repeat(32)}`]: {} },
+  }));
+  await f.manager.reconcile();
+  expect(close).toHaveBeenCalledOnce();
+  expect(f.docker.removeContainer).toHaveBeenCalledWith('c1');
+  expect(f.manager.list('s1')).toEqual([]);
+  await f.manager.reconcile();
+  expect(f.docker.createContainer).toHaveBeenCalledOnce();
+  expect(f.manager.portOf(share.id)).toBeUndefined();
+});
+
+it('revokes a dormant durable link when restoration discovers a protected target', async () => {
+  const f = fixture();
+  vi.spyOn(PreviewEdge.prototype, 'listen').mockResolvedValue(18100);
+  vi.spyOn(PreviewEdge.prototype, 'close').mockResolvedValue();
+  const share = await f.manager.create('s1', { targetPort: 3000 });
+  const sandbox = await f.docker.inspectContainer();
+  f.docker.inspectContainer.mockImplementation(async () => ({
+    ...sandbox,
+    labels: { 'verity.container-generation': 'generation-2' },
+  }));
+  await f.manager.reconcile();
+  vi.spyOn(PreviewShareManager.prototype, 'prepareLocalTarget').mockRejectedValue(
+    new PreviewNetworkProtectionError(),
+  );
+  await f.manager.reconcile();
+  expect(f.manager.portOf(share.id)).toBeUndefined();
+  expect(f.manager.list('s1')).toEqual([]);
+  expect(f.docker.createContainer).toHaveBeenCalledOnce();
 });

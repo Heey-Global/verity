@@ -3,18 +3,22 @@ import { Agent, createServer, request as httpRequest, type IncomingMessage } fro
 import type { RequestOptions } from 'node:https';
 import { EventEmitter, once } from 'node:events';
 import { PassThrough } from 'node:stream';
-import { expect, it, vi } from 'vitest';
+import { beforeEach, expect, it, vi } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { createMcpAppsInterceptor } from './mcp-apps.js';
 import { registerHttpMcpProxyRoute } from './http-mcp-proxy.js';
 
-const transport = vi.hoisted(() => ({ request: vi.fn() }));
+const transport = vi.hoisted(() => ({ request: vi.fn(), generation: new AbortController() }));
+beforeEach(() => {
+  transport.generation = new AbortController();
+});
 vi.mock('node:https', async (original) => ({
   ...(await original<typeof import('node:https')>()),
   request: transport.request,
 }));
 vi.mock('./internal-listener.js', () => ({
+  internalConnectionGenerationSignal: () => transport.generation.signal,
   internalConnectionIdentity: () => ({ projectId: 'project', containerGeneration: 'generation' }),
 }));
 
@@ -351,6 +355,118 @@ it.each(['authorization', 'protocol', 'timeout'] as const)(
       );
       expect(logs.join('')).not.toMatch(/private|secret|pin=/u);
     } finally {
+      await app.close();
+    }
+  },
+);
+
+it('retires the interceptor tools/list stream before the main tool request can be sent', async () => {
+  const app = Fastify();
+  let source: PassThrough | undefined;
+  let providerSignal: AbortSignal | undefined;
+  transport.request.mockClear();
+  transport.request.mockImplementation(
+    (options: RequestOptions, callback: (response: IncomingMessage) => void) => {
+      providerSignal = options.signal;
+      const outgoing = Object.assign(new EventEmitter(), {
+        setTimeout: vi.fn(),
+        end: () => {
+          source = Object.assign(new PassThrough(), {
+            statusCode: 200,
+            headers: { 'content-type': 'application/json' },
+            setTimeout: vi.fn(),
+          });
+          callback(source as unknown as IncomingMessage);
+        },
+      });
+      return outgoing;
+    },
+  );
+  registerHttpMcpProxyRoute(app, {
+    resolveCaller: async () => ({ sessionId: 'session', turnId: 'turn' }),
+    resolveConnection: async () => ({ id: 'tools', url: 'https://mcp.example.test/rpc' }),
+    intercept: createMcpAppsInterceptor({ emit: async () => {} }),
+  });
+  try {
+    const pending = app
+      .inject({
+        method: 'POST',
+        url: '/internal/mcp-proxy',
+        payload: { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'echo' } },
+        headers: { authorization: 'Bearer turn', 'x-verity-mcp-binding': 'tools' },
+      })
+      .then((response) => response);
+    await vi.waitFor(() => expect(source).toBeDefined());
+    transport.generation.abort();
+    await vi.waitFor(() => expect(source!.destroyed).toBe(true));
+    expect(providerSignal?.aborted).toBe(true);
+    expect((await pending).statusCode).toBe(502);
+    expect(transport.request).toHaveBeenCalledOnce();
+  } finally {
+    source?.destroy();
+    await app.close();
+  }
+});
+
+it.each(['headers', 'json'] as const)(
+  'revokes main MCP requests while waiting for %s',
+  async (phase) => {
+    const app = Fastify();
+    let allowed = true;
+    let started = false;
+    let providerSignal: AbortSignal | undefined;
+    let source: PassThrough | undefined;
+    transport.request.mockClear();
+    transport.request.mockImplementation(
+      (options: RequestOptions, callback: (response: IncomingMessage) => void) => {
+        providerSignal = options.signal;
+        const outgoing = Object.assign(new EventEmitter(), {
+          setTimeout: vi.fn(),
+          end: () => {
+            started = true;
+            if (phase === 'json') {
+              source = Object.assign(new PassThrough(), {
+                statusCode: 200,
+                headers: { 'content-type': 'application/json' },
+                setTimeout: vi.fn(),
+              });
+              callback(source as unknown as IncomingMessage);
+            }
+          },
+        });
+        options.signal?.addEventListener(
+          'abort',
+          () => outgoing.emit('error', new Error('revoked')),
+          { once: true },
+        );
+        return outgoing;
+      },
+    );
+    registerHttpMcpProxyRoute(app, {
+      resolveCaller: async () => (allowed ? { sessionId: 'session', turnId: 'turn' } : undefined),
+      resolveConnection: async () => ({ id: 'tools', url: 'https://mcp.example.test/rpc' }),
+    });
+    try {
+      const pending = app
+        .inject({
+          method: 'POST',
+          url: '/internal/mcp-proxy',
+          payload: { jsonrpc: '2.0', id: 1, method: 'ping' },
+          headers: { authorization: 'Bearer turn', 'x-verity-mcp-binding': 'tools' },
+        })
+        .then(
+          (response) => response,
+          () => undefined,
+        );
+      await vi.waitFor(() => expect(started).toBe(true));
+      allowed = false;
+      await vi.waitFor(() => expect(providerSignal?.aborted).toBe(true));
+      if (phase === 'json') expect(source?.destroyed).toBe(true);
+      await pending;
+      expect(transport.request).toHaveBeenCalledOnce();
+    } finally {
+      source?.destroy();
+      transport.generation.abort();
       await app.close();
     }
   },

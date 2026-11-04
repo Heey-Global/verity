@@ -35,6 +35,7 @@ import type { BrokeredForgeProxy } from './brokered-forge-proxy.js';
 // real socket property — the only way to get it set is to connect to the internal
 // listener, which is not published to the host.
 const INTERNAL_SOCKET = Symbol('verityInternalSocket');
+const INTERNAL_GENERATION_SIGNAL = Symbol('verityInternalGenerationSignal');
 
 export interface InternalConnectionIdentity {
   readonly projectId: string;
@@ -48,9 +49,13 @@ type Taggable = Record<symbol, InternalSocketTag>;
 export function markInternalConnections(
   server: HttpServer,
   identity: InternalConnectionIdentity | undefined = undefined,
+  generationSignal?: AbortSignal,
 ): void {
   server.on('connection', (socket) => {
     (socket as unknown as Taggable)[INTERNAL_SOCKET] = identity ?? true;
+    if (generationSignal !== undefined)
+      (socket as unknown as Record<symbol, AbortSignal>)[INTERNAL_GENERATION_SIGNAL] =
+        generationSignal;
   });
 }
 
@@ -70,6 +75,13 @@ export function internalConnectionIdentity(
 ): InternalConnectionIdentity | undefined {
   const tag = (request.raw.socket as unknown as Taggable)[INTERNAL_SOCKET];
   return tag === true ? undefined : tag;
+}
+
+/** Host-owned lifetime of this exact listener generation; requests cannot supply it. */
+export function internalConnectionGenerationSignal(
+  request: FastifyRequest,
+): AbortSignal | undefined {
+  return (request.raw.socket as unknown as Record<symbol, AbortSignal>)[INTERNAL_GENERATION_SIGNAL];
 }
 
 export interface InternalListener {
@@ -146,6 +158,10 @@ export const PROJECT_UDS_ROUTES: ReadonlySet<string> = new Set([
   // `verity-repo`: pull requests and issues through the project's code host.
   'POST /internal/project/repo',
   'POST /internal/package-install',
+  'GET /internal/package-artifacts/*',
+  'HEAD /internal/package-artifacts/*',
+  'HEAD /internal/package-artifacts/authority',
+  'POST /internal/package-artifacts/npm/-/npm/v1/security/advisories/bulk',
   // `verity-dev-server`: managed dev servers (concept 2.6), same capability as memory.
   'POST /internal/dev-servers',
   // The loopback MCP gateway (ADR 0014 D1). It rides the project-bound socket for the same
@@ -234,10 +250,17 @@ export async function startProjectInternalUnixListener(
     unlinkSync(socketPath);
   }
 
+  const generation = new AbortController();
   const connections = new Set<Socket>();
   const server = createServer((req, res) => {
     const pathname = (req.url ?? '').split('?', 1)[0] ?? '';
-    if (!PROJECT_UDS_ROUTES.has(`${req.method ?? ''} ${pathname}`)) {
+    if (
+      !PROJECT_UDS_ROUTES.has(`${req.method ?? ''} ${pathname}`) &&
+      !(
+        (req.method === 'GET' || req.method === 'HEAD') &&
+        /^\/internal\/package-artifacts\/(?:npm|pypi\/simple|file)\/[^?#]+$/u.test(pathname)
+      )
+    ) {
       res.writeHead(404, { 'content-type': 'application/json' });
       res.end('{"error":"not found"}');
       return;
@@ -246,9 +269,9 @@ export async function startProjectInternalUnixListener(
   });
   server.on('connect', (request, socket, head) => {
     if (options.forgeProxy === undefined) socket.destroy();
-    else options.forgeProxy.connect(request, socket, head, identity);
+    else options.forgeProxy.connect(request, socket, head, identity, generation.signal);
   });
-  markInternalConnections(server, identity);
+  markInternalConnections(server, identity, generation.signal);
   server.on('connection', (socket) => {
     connections.add(socket);
     socket.once('close', () => connections.delete(socket));
@@ -274,6 +297,8 @@ export async function startProjectInternalUnixListener(
     socketPath,
     identity,
     close: async () => {
+      // Revoke upstream work before waiting for sockets or server teardown.
+      generation.abort(new Error('Project listener generation retired'));
       for (const socket of connections) socket.destroy();
       await new Promise<void>((resolve, reject) => {
         server.close((err) => (err ? reject(err) : resolve()));

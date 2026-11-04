@@ -1,3 +1,4 @@
+import { withProjectTransportAuthority } from './project-transport-authority.js';
 import { describe, expect, it } from 'vitest';
 
 import type { GoogleFetch, GoogleHttpResponse } from './google-drive.js';
@@ -109,4 +110,29 @@ describe('Google Docs client', () => {
       reason: 'http_403_PERMISSIONDENIED',
     });
   });
+});
+
+it('keeps the actual Google Docs fetch inside the trusted project generation', async () => {
+  const generation = new AbortController();
+  let providerSignal: AbortSignal | undefined;
+  await expect(
+    withProjectTransportAuthority(
+      {
+        projectId: 'p',
+        containerGeneration: 'old',
+        signal: generation.signal,
+        authorize: async () => {},
+      },
+      () =>
+        getDocsDocument('token', 'doc', {
+          fetch: async (_url, init) => {
+            providerSignal = init?.signal;
+            generation.abort();
+            expect(providerSignal?.aborted).toBe(true);
+            return response({ documentId: 'doc', title: 'Plan', revisionId: 'rev', tabs: [] });
+          },
+        }),
+    ),
+  ).rejects.toThrow();
+  expect(providerSignal?.aborted).toBe(true);
 });

@@ -81,8 +81,9 @@ function NetworkProtectionView({ client }: { client: VerityClient }) {
       <SettingsGroup title="Before enabling">
         <Text tone="muted">
           Network protection restricts outgoing connections from project containers. Package
-          installation and previews have not yet been fully verified with protection on. Destination
-          approvals in the app are still being built.
+          installation is not yet fully verified with protection on. Previews are currently
+          unavailable for protected containers. Manage destination approvals in Project → Settings →
+          Sandbox.
         </Text>
       </SettingsGroup>
     </SettingsScaffold>

@@ -1,3 +1,4 @@
+import { projectTransportFetch } from './project-transport-authority.js';
 import type { GoogleFetch, GoogleTransportOptions } from './google-drive.js';
 
 const GOOGLE_SHEETS_API = 'https://sheets.googleapis.com/v4';
@@ -35,7 +36,7 @@ async function sheetsRequest(
   const doFetch: GoogleFetch = opts.fetch ?? fetch;
   let response;
   try {
-    response = await doFetch(`${GOOGLE_SHEETS_API}${path}`, {
+    response = await projectTransportFetch(doFetch, `${GOOGLE_SHEETS_API}${path}`, {
       method: init.method ?? 'GET',
       headers: {
         Authorization: `Bearer ${accessToken}`,
