@@ -1017,11 +1017,11 @@ export class Conductor {
     );
   }
 
-  private recordDeletionTermination(
+  private async recordDeletionTermination(
     sessionId: string,
     confirmed: boolean,
     handle: SessionTurnHandle,
-  ): void {
+  ): Promise<void> {
     const unknown = this.unprovenTerminations.get(sessionId) ?? new Set<string>();
     if (confirmed || !handle.workerMayExist) {
       unknown.delete(handle.terminationIdentity);
@@ -1029,6 +1029,10 @@ export class Conductor {
     } else unknown.add(handle.terminationIdentity);
     if (unknown.size === 0) this.unprovenTerminations.delete(sessionId);
     else this.unprovenTerminations.set(sessionId, unknown);
+    // A transport failure may clear its running marker before a later restart.
+    // Preserve uncertainty independently of that marker and the in-memory handle.
+    if (!confirmed && handle.workerMayExist)
+      await this.deps.store.fenceAbandonedTurn(sessionId, handle.terminationIdentity);
   }
 
   isSessionDeleting(sessionId: string): boolean {
@@ -1086,28 +1090,40 @@ export class Conductor {
    * A deadline does not release another operation's worktree ownership lock. */
   async stopForDeletion(sessionId: string, timeoutMs = 10_000): Promise<boolean> {
     this.beginSessionDeletion(sessionId);
+    const pendingProof = this.unprovenTerminations.get(sessionId) ?? new Set<string>();
+    pendingProof.add('deletion-proof-check');
+    this.unprovenTerminations.set(sessionId, pendingProof);
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       return await Promise.race([
         (async () => {
-          if (await this.deps.store.hasAbandonedRunnerTurns(sessionId)) {
+          const checkDurableUncertainty = async (): Promise<boolean> => {
+            const abandoned = await this.deps.store.hasAbandonedRunnerTurns(sessionId);
             const unknown = this.unprovenTerminations.get(sessionId) ?? new Set<string>();
-            unknown.add('abandoned-stream');
-            this.unprovenTerminations.set(sessionId, unknown);
-          }
+            unknown.delete('deletion-proof-check');
+            if (abandoned) unknown.add('abandoned-stream');
+            if (unknown.size === 0) this.unprovenTerminations.delete(sessionId);
+            else this.unprovenTerminations.set(sessionId, unknown);
+            return unknown.size === 0;
+          };
           const turn = this.turns.get(sessionId);
-          // cancelTurn's no-handle recovery override deliberately settles uncertain
-          // ownership. Deletion needs proof before physical cleanup, so avoid it.
-          if (turn !== undefined) await this.cancelLiveTurn(sessionId, turn);
-          if (this.inFlight.has(sessionId)) {
-            if (!(await this.awaitFenceRelease(sessionId, timeoutMs))) return false;
-          }
-          if (turn !== undefined) return this.isDeletionTerminationConfirmed(sessionId);
-          if (this.unprovenTerminations.has(sessionId)) return false;
           try {
-            return !(await this.deps.store.listRunningTurns()).some(
+            // A captured handle can settle while cancellation is awaiting its grace.
+            // Resolve pre-existing durable uncertainty before its certificate is used.
+            if (turn !== undefined) {
+              await checkDurableUncertainty();
+              await this.cancelLiveTurn(sessionId, turn);
+              if (this.inFlight.has(sessionId)) await this.awaitFenceRelease(sessionId, timeoutMs);
+              return this.isDeletionTerminationConfirmed(sessionId);
+            }
+            if (this.inFlight.has(sessionId)) await this.awaitFenceRelease(sessionId, timeoutMs);
+            const hasMarker = (await this.deps.store.listRunningTurns()).some(
               (marker) => marker.sessionId === sessionId,
             );
+            // Read uncertainty AFTER markers: an uncertain owner persists its fence
+            // before clearing its marker, so neither gap proves worker exit.
+            const proven = await checkDurableUncertainty();
+            return !this.inFlight.has(sessionId) && !hasMarker && proven;
           } catch (error) {
             this.reportTurnError(sessionId, error);
             return false;
@@ -2946,7 +2962,7 @@ export class Conductor {
       // never keep the session fenced. `clearRunningTurn` catches + reports its
       // own store errors.
       this.releaseInFlight(sessionId);
-      this.recordDeletionTermination(sessionId, terminationConfirmed, handle);
+      await this.recordDeletionTermination(sessionId, terminationConfirmed, handle);
       // Scoped to the wedged turn's own prompt_seq: even a delayed delete can then
       // never erase a successor turn's marker (crash-recovery anchor). An
       // undefined markerSeq means the wedge happened before this turn ever wrote
@@ -3461,7 +3477,11 @@ export class Conductor {
       // Clear THIS turn's marker, scoped by its prompt_seq so a concurrent turn's
       // markTurnRunning can't be wiped by this late DELETE. The settling terminal event
       // was already awaited above, so the ordering holds without holding the lock.
-      this.recordDeletionTermination(sessionId, sendHandle.terminalResultReceived, sendHandle);
+      await this.recordDeletionTermination(
+        sessionId,
+        sendHandle.terminalResultReceived,
+        sendHandle,
+      );
       await this.clearRunningTurn(sessionId, markerSeq, sendHandle.markerId);
       this.maybeAutoTitle(sessionId);
     }
@@ -3871,7 +3891,7 @@ export class Conductor {
         if (autoResumed !== true) await this.confirmTurnSettled(sessionId, handle);
       }
     })()
-      .finally(() => {
+      .finally(async () => {
         // Idempotent re-claim: true when this run loop owns the settle (the body
         // claimed it, or the body threw before claiming and this `finally` claims
         // now so the session still releases). False when the stop watchdog
@@ -3893,7 +3913,7 @@ export class Conductor {
         // stand-down signal, and setting it any earlier would let the watchdog
         // stand down while the session is still fenced.
         handle.settled = true;
-        this.recordDeletionTermination(sessionId, handle.terminalResultReceived, handle);
+        await this.recordDeletionTermination(sessionId, handle.terminalResultReceived, handle);
         // Clear THIS turn's marker, scoped to its prompt_seq so a late DELETE can't wipe
         // the next turn's marker (the drainNext below, or a concurrent dispatch, may
         // already have written one). Fire-and-forget: the settling terminal event was
@@ -5001,7 +5021,7 @@ export class Conductor {
         // failing store delete can neither keep the session fenced nor stand the
         // watchdog down early.
         handle.settled = true;
-        this.recordDeletionTermination(marker.sessionId, result !== undefined, handle);
+        await this.recordDeletionTermination(marker.sessionId, result !== undefined, handle);
         void this.clearRunningTurn(marker.sessionId, marker.promptSeq, marker.markerId);
         this.drainNext(marker.sessionId);
       }
@@ -5459,7 +5479,7 @@ export class Conductor {
             );
             this.turns.delete(id);
             this.clearPermissions(id);
-            this.recordDeletionTermination(id, handle.terminalResultReceived, handle);
+            await this.recordDeletionTermination(id, handle.terminalResultReceived, handle);
             this.releaseInFlight(id);
             const hadQueued = (this.queues.get(id)?.length ?? 0) > 0;
             this.drainNext(id);
@@ -5489,7 +5509,7 @@ export class Conductor {
             );
             this.turns.delete(id);
             this.clearPermissions(id);
-            this.recordDeletionTermination(id, handle.terminalResultReceived, handle);
+            await this.recordDeletionTermination(id, handle.terminalResultReceived, handle);
             this.releaseInFlight(id);
             const hadQueued = (this.queues.get(id)?.length ?? 0) > 0;
             this.drainNext(id); // same: don't strand turns queued during the run

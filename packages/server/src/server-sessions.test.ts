@@ -581,50 +581,62 @@ describe('DELETE /sessions/:id', () => {
     expect(list.json()).toEqual([]);
   });
 
-  it('retains atomic idle admission while deletion preparation awaits I/O', async () => {
-    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
-    let release!: () => void;
-    let entered!: () => void;
-    let held = false;
-    const gate = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    const ready = new Promise<void>((resolve) => {
-      entered = resolve;
-    });
-    tryRunExclusive.mockImplementationOnce(async (_id, fn) => {
-      held = true;
+  it.each([false, true])(
+    'retains idle admission while preparation awaits I/O (deadline=%s)',
+    async (deadline) => {
+      await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+      let release!: () => void;
+      let entered!: () => void;
+      let held = false;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const ready = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      tryRunExclusive.mockImplementationOnce(async (_id, fn) => {
+        held = true;
+        try {
+          return { ran: true, value: await fn() };
+        } finally {
+          held = false;
+        }
+      });
+      const a = buildServer({
+        eventStore: ctx.store,
+        bus,
+        conductor,
+        queueSessionArtifacts: async () => {
+          entered();
+          await gate;
+        },
+      });
+      await a.ready();
+      if (deadline) vi.useFakeTimers();
+      const request = a.inject({ method: 'DELETE', url: '/sessions/s1' });
+      const response = request.then((value) => value);
       try {
-        return { ran: true, value: await fn() };
+        await ready;
+        expect(held).toBe(true);
+        expect(tryRunExclusive).toHaveBeenCalledWith('s1', expect.any(Function));
+        if (deadline) {
+          await vi.advanceTimersByTimeAsync(15_000);
+          expect((await response).statusCode).toBe(503);
+          expect(held).toBe(true);
+          expect(await ctx.store.getSession('s1')).toBeDefined();
+        }
       } finally {
-        held = false;
+        release();
+        vi.useRealTimers();
       }
-    });
-    const a = buildServer({
-      eventStore: ctx.store,
-      bus,
-      conductor,
-      queueSessionArtifacts: async () => {
-        entered();
-        await gate;
-      },
-    });
-    const request = a.inject({ method: 'DELETE', url: '/sessions/s1' });
-    const response = request.then((value) => value);
-    try {
-      await ready;
-      expect(held).toBe(true);
-      expect(tryRunExclusive).toHaveBeenCalledWith('s1', expect.any(Function));
-    } finally {
-      release();
-    }
-    try {
-      expect((await response).statusCode).toBe(200);
-      expect(held).toBe(false);
-    } finally {
-      await a.close();
-    }
-  });
+      try {
+        expect((await response).statusCode).toBe(deadline ? 503 : 200);
+        await vi.waitFor(() => expect(held).toBe(false));
+      } finally {
+        await a.close();
+      }
+    },
+  );
 
   it('queues overlapping deletions in the same project behind the preview fence', async () => {
     await ctx.store.createProject({

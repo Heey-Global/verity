@@ -6324,6 +6324,8 @@ describe('Conductor.cancelTurn (#79)', () => {
         if (next === 'delete') {
           expect(await conductor.stopForDeletion('s1', 20)).toBe(false);
           expect(conductor.isDeletionTerminationConfirmed('s1')).toBe(false);
+          const restarted = new Conductor({ store: ctx.store, worktreeExists: async () => true });
+          expect(await restarted.stopForDeletion('s1', 20)).toBe(false);
         } else {
           // Manual handoff remains available; physical deletion still needs proof.
           await expect(conductor.dispatchTurn('s1', 'next')).resolves.toMatchObject({
@@ -11383,6 +11385,8 @@ describe('Conductor session deletion admission', () => {
     await expect(conductor.sendTurn('retry-proof', 'work')).rejects.toThrow('transport dropped');
     expect(startTurn).toHaveBeenCalledTimes(2);
     expect(await conductor.stopForDeletion('retry-proof', 20)).toBe(false);
+    const restarted = new Conductor({ store: ctx.store, worktreeExists: async () => true });
+    expect(await restarted.stopForDeletion('retry-proof', 20)).toBe(false);
   });
 
   it.each(['send', 'dispatch'] as const)(
@@ -11558,7 +11562,9 @@ describe('Conductor session deletion admission', () => {
       expect(persist).not.toHaveBeenCalled();
       settle({ sessionId: 's-delete', exitCode: 143, stderr: '', aborted: true });
       await vi.waitFor(() => expect(conductor.isBusy('s-delete')).toBe(false));
-      expect(conductor.isDeletionTerminationConfirmed('s-delete')).toBe(true);
+      await vi.waitFor(() =>
+        expect(conductor.isDeletionTerminationConfirmed('s-delete')).toBe(true),
+      );
       await vi.advanceTimersByTimeAsync(2_000);
       persist.mockRestore();
     } finally {
