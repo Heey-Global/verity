@@ -58,7 +58,8 @@ export function uplinkStartFailure(phase: MeetingStartDiagnostic['phase'], code:
       case 'share_create':
         return code === 'pending'
           ? 'The Uplink share request did not complete: no answer or an unusable reply.'
-          : (UPLINK_SHARE_REFUSALS[code] ?? 'The Uplink refused the webhook share.');
+          : (Object.hasOwn(UPLINK_SHARE_REFUSALS, shown) && UPLINK_SHARE_REFUSALS[shown]) ||
+              'The Uplink refused the webhook share.';
       case 'connector_connect':
         return 'The webhook share was created, but its connector could not connect to the Uplink.';
       case 'share_ready':
