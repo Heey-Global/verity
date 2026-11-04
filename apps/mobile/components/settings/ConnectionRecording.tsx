@@ -136,8 +136,14 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
   const [reportMessage, setReportMessage] = useState('');
   const [problemArchived, setProblemArchived] = useState(false);
   const [problemStopConfirmed, setProblemStopConfirmed] = useState(false);
-  const problemArchivedRef = useRef(problemArchived);
-  problemArchivedRef.current = problemArchived;
+  const problemReleasedRef = useRef(false);
+  problemReleasedRef.current = problemArchived && problemStopConfirmed;
+  const [quickCaptureBlocked, setQuickCaptureBlocked] = useState(true);
+  const quickCaptureBlockedRef = useRef(true);
+  const ownQuickCapture = useCallback((blocked: boolean) => {
+    quickCaptureBlockedRef.current = blocked;
+    setQuickCaptureBlocked(blocked);
+  }, []);
   const refreshReports = useCallback(() => {
     if (!serverId) return;
     void loadConnectionDiagnosticReports(serverId).then(
@@ -169,7 +175,7 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
       busy &&
       (preparingRef.current !== null ||
         collectingRef.current !== null ||
-        (runRef.current !== null && !problemArchivedRef.current))
+        (runRef.current !== null && !problemReleasedRef.current))
     )
       return false;
     selectedBusyRef.current = busy;
@@ -327,7 +333,15 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
   }, [client, mode]);
 
   const start = async () => {
-    if (selectedBusyRef.current || !loaded || preparing || collectingRef.current || !key || !client)
+    if (
+      quickCaptureBlockedRef.current ||
+      selectedBusyRef.current ||
+      !loaded ||
+      preparing ||
+      collectingRef.current ||
+      !key ||
+      !client
+    )
       return;
     if (runRef.current) {
       setMessage(
@@ -681,9 +695,10 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
               collecting ||
               remaining > 0 ||
               !client ||
-              (runRef.current !== null && !problemArchived)
+              (runRef.current !== null && !(problemArchived && problemStopConfirmed))
             }
             onBusy={ownSelected}
+            onCaptureBlocked={ownQuickCapture}
             onReport={refreshReports}
           />
           {mode === 'problem' ? (
@@ -701,6 +716,7 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
                   title="Start problem recording"
                   disabled={
                     selectedBusy ||
+                    quickCaptureBlocked ||
                     !loaded ||
                     preparing ||
                     collecting ||

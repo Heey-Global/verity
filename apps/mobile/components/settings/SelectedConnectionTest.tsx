@@ -83,11 +83,13 @@ export function SelectedConnectionTest({
   onBusy,
   visible = true,
   onReport,
+  onCaptureBlocked,
 }: {
   disabled: boolean;
   onBusy: (busy: boolean) => boolean | void;
   visible?: boolean;
   onReport?: () => void;
+  onCaptureBlocked?: (blocked: boolean) => void;
 }) {
   const serverId = getServerProfile()?.serverId;
   const storageKey = serverId ? `verity.selectedConnectionTest.v1.${serverId}` : null;
@@ -100,6 +102,10 @@ export function SelectedConnectionTest({
   const [phase, setPhase] = useState('Preparing');
   const [archived, setArchived] = useState(false);
   const [canStartAnother, setCanStartAnother] = useState(false);
+  useEffect(() => {
+    onCaptureBlocked?.(!loaded || busy || (saved !== null && !(archived && canStartAnother)));
+  }, [loaded, busy, saved, archived, canStartAnother, onCaptureBlocked]);
+
   const [localFailure, setLocalFailure] = useState<{
     kind: string;
     stage: string;

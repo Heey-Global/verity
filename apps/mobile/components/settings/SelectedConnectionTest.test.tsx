@@ -20,6 +20,10 @@ jest.mock('expo-router', () => ({
   },
 }));
 jest.mock('../premium/PremiumChrome', () => ({
+  Eyebrow: ({ children }: any) =>
+    require('react').createElement(require('react-native').Text, null, children),
+  RowCard: ({ children }: any) =>
+    require('react').createElement(require('react-native').View, null, children),
   CardRow: ({ title, subtitle, disabled, onPress }: any) => {
     const { Pressable, Text } = require('react-native');
     return (
@@ -45,7 +49,13 @@ jest.mock('../../lib/selectedRecordingAttempt', () => ({
 jest.mock('../../lib/selectedRecordingContext', () => ({
   selectedRecordingContext: () => mockContext(),
 }));
+jest.mock('../../lib/remoteControlTransport', () => ({
+  remoteDataRecordingRemainingMs: async () => 0,
+  startRemoteDataRecording: jest.fn(),
+  stopRemoteDataRecording: async () => true,
+}));
 import { SelectedConnectionTest } from './SelectedConnectionTest';
+import { ConnectionRecording } from './ConnectionRecording';
 import { loadConnectionDiagnosticReports } from '../../lib/connectionDiagnosticReport';
 const runId = '11111111-1111-4111-8111-111111111111';
 const key = 'verity.selectedConnectionTest.v1.paired';
@@ -493,4 +503,35 @@ it('preserves native evidence in memory when persistence fails after capture', a
   expect(report.app.available).toBe(true);
   expect(report.app.recording[0].sessionHash).toBe(sessionHash);
   expect(report.app.stopped).toBe(true);
+});
+
+it('keeps cross-mode capture blocked after a failed attempt until confirmed collection', async () => {
+  mockAttempt.mockRejectedValue(new Error('Selected native capture cleanup failed'));
+  const blocked = jest.fn();
+  render(<SelectedConnectionTest disabled={false} onBusy={() => {}} onCaptureBlocked={blocked} />);
+  await waitFor(() => expect(blocked).toHaveBeenLastCalledWith(false));
+  fireEvent.press(screen.getByText('Start quick test'));
+  await screen.findByText(/Test failed during preparation or request/);
+  expect(blocked).toHaveBeenLastCalledWith(true);
+});
+
+it('integrates the quick collection/Stop gate with problem-start admission', async () => {
+  const client = { startConnectionRecording: jest.fn() } as never;
+  mockAttempt.mockRejectedValue(new Error('Selected native capture cleanup failed'));
+  render(<ConnectionRecording client={client} />);
+  fireEvent.press(screen.getByText('Quick connection test'));
+  await waitFor(() => expect(screen.getByText('Start quick test')).toBeEnabled());
+  fireEvent.press(screen.getByText('Start quick test'));
+  await screen.findByText(/Test failed during preparation or request/);
+  fireEvent.press(screen.getByText('Record a connection problem'));
+  expect(screen.getByText('Start problem recording')).toBeDisabled();
+  fireEvent.press(screen.getByText('Quick connection test'));
+  mockExport.mockRejectedValueOnce(new Error('unavailable'));
+  await copyReport();
+  fireEvent.press(screen.getByText('Record a connection problem'));
+  expect(screen.getByText('Start problem recording')).toBeDisabled();
+  fireEvent.press(screen.getByText('Quick connection test'));
+  await copyReport();
+  fireEvent.press(screen.getByText('Record a connection problem'));
+  await waitFor(() => expect(screen.getByText('Start problem recording')).toBeEnabled());
 });

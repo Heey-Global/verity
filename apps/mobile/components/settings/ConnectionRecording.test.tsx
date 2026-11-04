@@ -3,11 +3,14 @@ jest.mock('./SelectedConnectionTest', () => ({
     disabled,
     onBusy,
     visible,
+    onCaptureBlocked,
   }: {
     disabled: boolean;
+    onCaptureBlocked?: (blocked: boolean) => void;
     visible?: boolean;
     onBusy: (busy: boolean) => void;
   }) => {
+    require('react').useEffect(() => onCaptureBlocked?.(false), [onCaptureBlocked]);
     const { Pressable, Text } = require('react-native');
     if (!visible) return null;
     return (
@@ -753,4 +756,17 @@ it('keeps an archived problem restart available after deleting an unrelated repo
   } finally {
     alert.mockRestore();
   }
+});
+
+it('does not release quick capture after a partial problem report with unconfirmed Stop', async () => {
+  const api = client();
+  render(<ConnectionRecording client={api as never} />);
+  await pressStart();
+  await screen.findByText(/Ready — turn off VPN/);
+  api.stopConnectionRecording.mockRejectedValue(new Error('offline'));
+  api.exportConnectionRecording.mockRejectedValue(new Error('offline'));
+  pressCollect();
+  await screen.findByText('Start another problem recording');
+  fireEvent.press(screen.getByText('Quick connection test'));
+  expect(screen.getByText('Mock selected start')).toBeDisabled();
 });
