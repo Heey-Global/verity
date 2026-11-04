@@ -1585,7 +1585,9 @@ Authoritative destination mutations fence direct corridors before persistence,
 then acknowledge the conservative old/new inventory under the database mutation
 lock. A leased heartbeat closes readiness when synchronization expires. Retained
 hostname and public-IP history protects cached clients across mutations and host
-controller restarts. Incomplete or unrepresentable inventory cannot grant admission.
+controller restarts. Removed hostnames remain in DNS refresh coverage because
+retained clients may resolve them again; dropping coverage requires proof of
+client retirement. Transient refresh failures keep direct admission closed. Incomplete or unrepresentable inventory cannot grant admission.
 Relay cutover permits at most the target image and one still-active prior image
 under the same execution contract; unknown or additional retained images fail.
 

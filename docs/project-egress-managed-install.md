@@ -94,7 +94,11 @@ synchronization closes readiness. Static installation destinations remain part
 of both hostname classification and protected-address resolution. Explicit IP
 endpoints are included too. Conservative hostname and observed public-IP history
 survives controller restart so cached clients cannot bypass system-destination
-classification after an endpoint changes. Malformed endpoint metadata keeps
+classification after an endpoint changes. Removed hostnames remain in DNS refresh
+coverage until retirement of their credential-bearing clients can be established;
+a changed address must not create a direct bypass through a project-owned alias.
+Transient failures refreshing retained names can therefore close direct admission.
+Malformed endpoint metadata keeps
 admission closed; repairing it can require a Server restart to retire cached
 clients.
 

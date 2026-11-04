@@ -55,7 +55,9 @@ export function createProjectEgressInventoryHistory(
     dnsHosts: (current: readonly string[]) => {
       if (current.some((host) => !value.hosts.includes(host)))
         throw new Error('Active system host is absent from durable history');
-      return [...new Set(current)];
+      // Old credential-bearing clients may resolve an endpoint again after its
+      // removal. Keep following its DNS until client retirement is established.
+      return [...value.hosts];
     },
     protectedAddress: (address: string) =>
       value.addresses.includes(ipaddr.process(address).toString()),

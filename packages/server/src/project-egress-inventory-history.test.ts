@@ -1,4 +1,5 @@
 import { expect, it, vi } from 'vitest';
+import { createProtectedAddressInventory } from './project-egress-classification.js';
 import {
   createProjectEgressInventoryHistory,
   openProjectEgressInventoryHistory,
@@ -7,7 +8,7 @@ import { mkdtemp, chmod, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-it('retains retired names and addresses across snapshots without DNS-refreshing retired hosts', async () => {
+it('retains retired names and addresses and keeps their DNS refresh coverage', async () => {
   const saves: unknown[] = [];
   const history = createProjectEgressInventoryHistory(
     { version: 1, hosts: [], addresses: [] },
@@ -19,7 +20,10 @@ it('retains retired names and addresses across snapshots without DNS-refreshing 
   await history.addAddresses(['198.51.100.3', '::ffff:198.51.100.4']);
   await history.addHosts(['current.example.org']);
   await history.addAddresses(['203.0.113.4']);
-  expect(history.dnsHosts(['current.example.org'])).toEqual(['current.example.org']);
+  expect(history.dnsHosts(['current.example.org'])).toEqual([
+    'current.example.org',
+    'retired.example.org',
+  ]);
   expect(history.hosts()).toContain('retired.example.org');
   expect(history.protectedAddress('198.51.100.3')).toBe(true);
   expect(history.protectedAddress('198.51.100.4')).toBe(true);
@@ -59,4 +63,44 @@ it('persists private history and rejects a substituted symlink on reopening', as
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+it('excludes a removed endpoint new DNS address after snapshot replacement and restart', async () => {
+  let persisted: unknown = { version: 1, hosts: [], addresses: [] };
+  let history = createProjectEgressInventoryHistory(persisted, async (value) => {
+    persisted = value;
+  });
+  await history.addHosts(['old-broker.example.org']);
+  const addresses = new Map([
+    ['old-broker.example.org', '198.51.100.10'],
+    ['current.example.org', '203.0.113.20'],
+  ]);
+  const inventory = (current: string[]) =>
+    createProtectedAddressInventory({
+      hosts: [],
+      configuredHosts: history.dnsHosts(current),
+      resolve: async (host) => {
+        const address = addresses.get(host);
+        if (!address) throw new Error('Missing test DNS');
+        await history.addAddresses([address]);
+        return { addresses: [address], expiresAt: 1e12 };
+      },
+    });
+  await inventory(['old-broker.example.org']).refresh();
+  await history.addHosts(['current.example.org']);
+  addresses.set('old-broker.example.org', '198.51.100.11');
+  let replacement = inventory(['current.example.org']);
+  await replacement.refresh();
+  expect(replacement.allows('198.51.100.11')).toBe(false);
+  expect(history.protectedAddress('198.51.100.10')).toBe(true);
+  expect(history.protectedAddress('198.51.100.11')).toBe(true);
+  expect(replacement.allows('192.0.2.30')).toBe(true);
+  history = createProjectEgressInventoryHistory(persisted, async (value) => {
+    persisted = value;
+  });
+  addresses.set('old-broker.example.org', '198.51.100.12');
+  replacement = inventory(['current.example.org']);
+  await replacement.refresh();
+  expect(replacement.allows('198.51.100.12')).toBe(false);
+  expect(history.protectedAddress('198.51.100.12')).toBe(true);
 });
