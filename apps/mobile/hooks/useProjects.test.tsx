@@ -170,39 +170,28 @@ function previewClient() {
   };
 }
 
-it('keeps preview watchers on blur and refreshes only dirty sources on refocus', async () => {
+it('detaches share watches on blur and reloads both sources on refocus', async () => {
   const client = previewClient();
   const { rerender, unmount } = renderHook(() => useProjects(client as unknown as VerityClient));
   await waitFor(() => expect(client.listProjectLocalPreviewShares).toHaveBeenCalledTimes(1));
-  const subscription = mockSubscriptions.find(({ filter }) =>
-    filter('/projects/p1/public-shares'),
-  )!;
+  const shareWatches = () =>
+    mockSubscriptions.filter(
+      ({ filter }) => filter('/projects/p1/public-shares') || filter('/projects/p1/local-shares'),
+    );
+  expect(shareWatches()).toHaveLength(2);
   await act(async () => {
     mockFocused = false;
     rerender({});
   });
-  await act(async () => {
-    await subscription.refresh();
-    await subscription.refresh();
-  });
+  expect(shareWatches()).toHaveLength(0);
   expect(client.listPublicPreviewShares).toHaveBeenCalledTimes(1);
   await act(async () => {
     mockFocused = true;
     rerender({});
   });
   await waitFor(() => expect(client.listPublicPreviewShares).toHaveBeenCalledTimes(2));
-  expect(client.listProjectLocalPreviewShares).toHaveBeenCalledTimes(1);
-  expect(mockSubscriptions).toContain(subscription);
-  await act(async () => {
-    mockFocused = false;
-    rerender({});
-  });
-  await act(async () => {
-    mockFocused = true;
-    rerender({});
-  });
-  expect(client.listPublicPreviewShares).toHaveBeenCalledTimes(2);
-  expect(client.listProjectLocalPreviewShares).toHaveBeenCalledTimes(1);
+  expect(client.listProjectLocalPreviewShares).toHaveBeenCalledTimes(2);
+  expect(shareWatches()).toHaveLength(2);
   unmount();
 });
 
@@ -267,7 +256,7 @@ it('cancels on background, ignores late results and resumes missing reads', asyn
   listener.mockRestore();
 });
 
-it('retains cached links on blur, aborts an invalidated read and catches up after reconnect', async () => {
+it('retains cached links while hidden and catches up after discarded watches', async () => {
   const client = previewClient();
   client.listPublicPreviewShares.mockResolvedValue([
     {
@@ -302,7 +291,7 @@ it('retains cached links on blur, aborts an invalidated read and catches up afte
   });
   expect(signal.aborted).toBe(true);
   expect(result.current.previewUrls.get('kept')).toBe('https://kept.invalid');
-  // Reconnect invalidates retained resource watchers even while their screen is hidden.
+  // No hidden share watch remains for reconnect to reactivate.
   await act(async () => {
     await Promise.all(
       mockSubscriptions
@@ -315,6 +304,7 @@ it('retains cached links on blur, aborts an invalidated read and catches up afte
     finish([]);
   });
   expect(client.listPublicPreviewShares).toHaveBeenCalledTimes(2);
+  expect(mockSubscriptions.some(({ filter }) => filter('/projects/p1/public-shares'))).toBe(false);
   await act(async () => {
     mockFocused = true;
     rerender({});

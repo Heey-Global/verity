@@ -265,3 +265,16 @@ export function prepareSessionHome(
   sessionId: string,
   options: AgentSpawnBrokerOptions,
 ): Promise<string>;
+
+export function runnerStackHealth(options?: {
+  env?: NodeJS.ProcessEnv;
+  controlDir?: string;
+  readFile?: (path: string) => string;
+  fetch?: typeof fetch;
+}): Promise<{
+  ok: true;
+  stackHealthVersion: number;
+  healthy: boolean;
+  memoryGuard: boolean;
+  connector: boolean;
+}>;

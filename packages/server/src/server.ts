@@ -1,3 +1,4 @@
+import { measureBranchReadStage, type BranchReadStage } from './branch-read-diagnostics.js';
 import { registerProjectContextRoutes } from './project-context-routes.js';
 import { registerUserContextRoutes } from './user-context-routes.js';
 import { PreviewConnector } from '@verity/preview-tunnel';
@@ -1855,7 +1856,11 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         request.url.startsWith('/github/app/manifest/callback') ||
         request.url.startsWith('/github/app/manifest/installed'))
     )
-      resources.invalidate(request.url);
+      resources.invalidate(
+        request.method === 'PATCH' && request.routeOptions.url === '/sessions/:id'
+          ? `${request.url.split('?')[0]}/activity`
+          : request.url,
+      );
     done();
   });
   const liveHub = new LiveHub({
@@ -6786,8 +6791,12 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           pullRequest: null,
         };
       }
-      const branchState = await readBranchMetadata(branches, session.worktree).catch(
-        (error: unknown) => {
+      const readStage = <T>(stage: BranchReadStage, read: () => Promise<T>): Promise<T> =>
+        measureBranchReadStage(stage, read, (timing) =>
+          request.log.info(timing, 'verity: slow branch read stage'),
+        );
+      const branchState = await readStage('metadata', () =>
+        readBranchMetadata(branches, session.worktree).catch((error: unknown) => {
           request.log.warn(
             {
               sessionId: id,
@@ -6798,7 +6807,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             'verity: branch list degraded because git metadata is unavailable',
           );
           return null;
-        },
+        }),
       );
       if (branchState === null) {
         return {
@@ -6823,16 +6832,20 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       // degrade to null, never failing the list.
       const pullRequest =
         deps.branchPrStatusForBranches !== undefined || deps.branchPrStatus !== undefined
-          ? await sessionPrCache.get(session, {
-              priority: true,
-              load: () => sessionPrStatus(session, current),
-            })
+          ? await readStage('pr', () =>
+              sessionPrCache.get(session, {
+                priority: true,
+                load: () => sessionPrStatus(session, current),
+              }),
+            )
           : undefined;
       const currentPr =
         pullRequest !== undefined
           ? (pullRequest?.number ?? null)
           : deps.branchPr
-            ? await deps.branchPr(current, session.worktree).catch(() => null)
+            ? await readStage('pr', () =>
+                deps.branchPr!(current, session.worktree).catch(() => null),
+              )
             : undefined;
       await maybeDispatchPrRepairTurns(session, pullRequest);
       // Best-effort GitHub identity (#161): owner/repo for the mobile header to build
@@ -6840,7 +6853,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       // GitHub remote (resolves to null), and a rejection degrades to omitted — the
       // chips then stay non-tappable rather than failing the branch list.
       const remoteIdentity = deps.repoIdentity
-        ? await deps.repoIdentity(session.worktree).catch(() => null)
+        ? await readStage('identity', () => deps.repoIdentity!(session.worktree).catch(() => null))
         : null;
       // A Forgejo project's chips link to its own instance; its origin remote is
       // the sandbox broker, so the identity comes from the project record.
@@ -6868,23 +6881,26 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           'verity: local project save status unavailable',
         );
       };
-      const localBase = await localMergeTarget(session)
-        .then(async (target) =>
-          target === undefined ? null : await branches.current(target.basePath, session.worktree),
-        )
-        .catch((error: unknown) => {
-          warnLocalSaveRead('base branch', error);
-          return null;
-        });
-      const hasChanges =
-        localBase !== null
-          ? await branches
-              .hasProjectChanges(session.worktree, localBase)
-              .catch((error: unknown) => {
-                warnLocalSaveRead('file changes', error);
-                return false;
-              })
-          : false;
+      const { localBase, hasChanges } = await readStage('localChanges', async () => {
+        const localBase = await localMergeTarget(session)
+          .then(async (target) =>
+            target === undefined ? null : await branches.current(target.basePath, session.worktree),
+          )
+          .catch((error: unknown) => {
+            warnLocalSaveRead('base branch', error);
+            return null;
+          });
+        const hasChanges =
+          localBase !== null
+            ? await branches
+                .hasProjectChanges(session.worktree, localBase)
+                .catch((error: unknown) => {
+                  warnLocalSaveRead('file changes', error);
+                  return false;
+                })
+            : false;
+        return { localBase, hasChanges };
+      });
       return {
         current,
         switchable,

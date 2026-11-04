@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { spawn } from 'node:child_process';
+import { probeMemoryGuard, readMemoryCeiling, runsUnderGvisor } from './verity-memory-guard.mjs';
 import {
   createManagedSecretServers,
   stopTaggedManagedPids,
@@ -28,6 +29,76 @@ import {
 import { constants, lstatSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath, URL } from 'node:url';
+
+/** Read-only health, using only root-selected paths; requests cannot select files or commands. */
+export async function runnerStackHealth(options = {}) {
+  const env = options.env ?? process.env;
+  const controlDir = options.controlDir ?? DEFAULT_CONTROL_DIR;
+  const read = options.readFile ?? ((path) => readFileSync(path, 'utf8'));
+  let memoryGuard = true;
+  try {
+    if (env.VERITY_MEMORY_GUARD !== '0' && runsUnderGvisor(read) && readMemoryCeiling(read))
+      memoryGuard = probeMemoryGuard(controlDir, read);
+  } catch {
+    memoryGuard = false;
+  }
+  let connector = true;
+  if (env.VERITY_CLAUDE_CONNECTOR_PORT) {
+    try {
+      const port = Number(env.VERITY_CLAUDE_CONNECTOR_PORT);
+      if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('invalid port');
+      const record = read(join(controlDir, 'egress-connector.pid')).trim().split(/\s+/u);
+      const [pid, startTime, fingerprint] = record;
+      if (!/^[1-9][0-9]*$/u.test(pid ?? '') || !startTime) throw new Error('missing identity');
+      const stat = read(`/proc/${pid}/stat`);
+      if (
+        stat
+          .slice(stat.lastIndexOf(')') + 1)
+          .trim()
+          .split(/\s+/u)[19] !== startTime ||
+        !read(`/proc/${pid}/cmdline`).includes('/usr/local/bin/verity-egress-connector')
+      )
+        throw new Error('stale identity');
+      // Match the launcher's fingerprint without spawning sha256sum or reading secrets into a response.
+      const hash = createHash('sha256');
+      for (const name of [
+        'VERITY_CLAUDE_EGRESS_URL',
+        'VERITY_CLAUDE_EGRESS_AUTHORITY',
+        'VERITY_CLAUDE_EGRESS_SERVERNAME',
+        'VERITY_CODEX_EGRESS_URL',
+        'VERITY_CODEX_EGRESS_AUTHORITY',
+      ])
+        hash.update(`${env[name] ?? ''}\0`);
+      for (const name of [
+        'VERITY_CLAUDE_EGRESS_CA',
+        'VERITY_CLAUDE_EGRESS_CERT',
+        'VERITY_AGENT_GATEWAY_CLIENT_KEY_FILE',
+      ]) {
+        const path = env[name];
+        if (!path || !isAbsolute(path)) throw new Error('missing configuration');
+        hash.update(`${createHash('sha256').update(read(path)).digest('hex')}  ${path}\n`);
+      }
+      if (fingerprint !== hash.digest('hex')) throw new Error('configuration changed');
+      const response = await (options.fetch ?? globalThis.fetch)(
+        `http://127.0.0.1:${port}/__verity/ready`,
+        {
+          signal: globalThis.AbortSignal.timeout(1_000),
+          redirect: 'error',
+        },
+      );
+      connector = response.ok && (await response.text()).includes('"ready":true');
+    } catch {
+      connector = false;
+    }
+  }
+  return {
+    ok: true,
+    stackHealthVersion: 1,
+    healthy: memoryGuard && connector,
+    memoryGuard,
+    connector,
+  };
+}
 
 export const AGENT_SPAWN_PROTOCOL_VERSION = 1;
 /**
@@ -3606,6 +3677,16 @@ export async function runAgentSpawnBroker(options = {}) {
             knowledgeIsolation: scriptIsolation.available,
             scriptIsolation: scriptIsolation.available,
           });
+          socket.end();
+          return;
+        }
+        if (
+          isObject(raw) &&
+          raw.protocolVersion === AGENT_SPAWN_PROTOCOL_VERSION &&
+          raw.kind === 'stack-health'
+        ) {
+          protocolFailed = true;
+          send(socket, await runnerStackHealth({ ...options, controlDir }));
           socket.end();
           return;
         }
