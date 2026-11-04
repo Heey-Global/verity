@@ -482,3 +482,24 @@ it('rejects an oversized merge without corrupting the retained history', async (
   await expect(saveConnectionDiagnosticReport('paired', next)).rejects.toThrow('storage bounds');
   expect(await loadConnectionDiagnosticReports('paired')).toEqual([previous]);
 });
+
+it('replaces an auxiliary terminal receipt after successful terminal recollection', async () => {
+  const active = serverReport();
+  active.status.phase = 'recording';
+  await saveConnectionDiagnosticReport(
+    'paired',
+    createConnectionDiagnosticReport({ ...input(), remote: active, remoteStopped: false }),
+  );
+  const receipt = serverReport();
+  receipt.uplink = { available: false, data: null, error: 'uplink_export_failed' };
+  receipt.failures = { stop: null, export: 'control_timeout' };
+  await saveConnectionDiagnosticReport(
+    'paired',
+    createConnectionDiagnosticReport({ ...input(), remote: receipt }),
+  );
+  expect((await loadConnectionDiagnosticReports('paired'))[0]!.gaps).toContain('remote_failure');
+  await saveConnectionDiagnosticReport('paired', createConnectionDiagnosticReport(input()));
+  const [recovered] = await loadConnectionDiagnosticReports('paired');
+  expect(recovered!.remote.terminalRecording).toBeUndefined();
+  expect(recovered!.complete).toBe(true);
+});

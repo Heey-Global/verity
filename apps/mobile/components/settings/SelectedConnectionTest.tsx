@@ -313,6 +313,7 @@ export function SelectedConnectionTest({
     }
     let remote: ConnectionRecordingExport | null = null;
     let stopped = false;
+    let nativeInactive = false;
     let absentOnVerifiedCore = false;
     let stage = 'export-direct-context';
     try {
@@ -328,6 +329,7 @@ export function SelectedConnectionTest({
         } catch (error) {
           if (error && typeof error === 'object' && 'status' in error && error.status === 404) {
             await context.assertInactive();
+            nativeInactive = true;
             absentOnVerifiedCore = true;
           }
           throw error;
@@ -340,6 +342,7 @@ export function SelectedConnectionTest({
           throw new Error('Installation changed');
         remote = candidate;
         await context.assertInactive();
+        nativeInactive = true;
         stopped =
           ['stopped', 'expired'].includes(candidate.status.phase) &&
           candidate.status.core.state === 'stopped' &&
@@ -370,7 +373,7 @@ export function SelectedConnectionTest({
         bundle = retainedReport;
         if (scope.current === storageKey) {
           setArchived(true);
-          setCanStartAnother(bundle.remote.stopped || absentOnVerifiedCore);
+          setCanStartAnother(nativeInactive && (bundle.remote.stopped || absentOnVerifiedCore));
           onReport?.();
         }
       } catch {

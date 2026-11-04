@@ -535,3 +535,16 @@ it('integrates the quick collection/Stop gate with problem-start admission', asy
   fireEvent.press(screen.getByText('Record a connection problem'));
   await waitFor(() => expect(screen.getByText('Start problem recording')).toBeEnabled());
 });
+
+it('does not release cross-mode capture from retained Stop when current inactivity fails', async () => {
+  const blocked = jest.fn();
+  render(<SelectedConnectionTest disabled={false} onBusy={() => {}} onCaptureBlocked={blocked} />);
+  await waitFor(() => expect(screen.getByText('Start quick test')).toBeEnabled());
+  fireEvent.press(screen.getByText('Start quick test'));
+  await screen.findByText(/Test ended automatically after the response/);
+  await copyReport();
+  expect(blocked).toHaveBeenLastCalledWith(false);
+  mockInactive.mockRejectedValue(new Error('active tunnel'));
+  await copyReport();
+  expect(blocked).toHaveBeenLastCalledWith(true);
+});

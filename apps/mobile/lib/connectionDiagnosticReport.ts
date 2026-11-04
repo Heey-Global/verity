@@ -309,12 +309,18 @@ export async function saveConnectionDiagnosticReport(
             ? candidate
             : previous.remote.recording;
         const local = safe.app.recording ?? previous.app.recording;
-        const terminalRecording =
-          safe.remote.terminalRecording ??
-          previous.remote.terminalRecording ??
-          (safe.remote.stopped && !previous.remote.stopped && candidate !== remote
-            ? candidate
-            : null);
+        const remoteIsTerminal =
+          remote &&
+          ['stopped', 'expired'].includes(remote.status.phase) &&
+          remote.status.core.state === 'stopped' &&
+          remote.status.uplink.state === 'stopped';
+        const terminalRecording = remoteIsTerminal
+          ? null
+          : (safe.remote.terminalRecording ??
+            previous.remote.terminalRecording ??
+            (safe.remote.stopped && !previous.remote.stopped && candidate !== remote
+              ? candidate
+              : null));
         reports[existing] = createConnectionDiagnosticReport({
           runId: safe.runId,
           startedAt: safe.startedAt ?? previous.startedAt,
