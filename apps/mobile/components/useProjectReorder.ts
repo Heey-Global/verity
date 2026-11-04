@@ -1,5 +1,13 @@
 import * as Haptics from 'expo-haptics';
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from 'react';
 import { AppState, type View } from 'react-native';
 import { Gesture } from 'react-native-gesture-handler';
 import {
@@ -20,7 +28,9 @@ import {
 import {
   gestureRowNumber,
   recordGesture,
-  useGestureDiagnosticsEnabled,
+  gestureDiagnosticsEnabled,
+  gestureRecordingGeneration,
+  subscribeGestureDiagnostics,
 } from '../lib/gestureDiagnostics';
 import { projectHandleRef } from '../lib/projectHandleRef';
 
@@ -238,9 +248,16 @@ export function useProjectReorder({
   });
 
   // Off unless switched on in Settings → Diagnostics; toggling rebuilds the pan.
-  const recording = useGestureDiagnosticsEnabled();
+  const recordingGeneration = useSyncExternalStore(
+    subscribeGestureDiagnostics,
+    gestureRecordingGeneration,
+    gestureRecordingGeneration,
+  );
+  const recording = gestureDiagnosticsEnabled();
   const recordReorder = useCallback(
-    (event: string, headerId: string | null, detail: Record<string, string | number | boolean>) =>
+    (event: string, headerId: string | null, detail: Record<string, string | number | boolean>) => {
+      if (!gestureDiagnosticsEnabled() || gestureRecordingGeneration() !== recordingGeneration)
+        return;
       recordGesture({
         source: 'reorder',
         event,
@@ -251,8 +268,9 @@ export function useProjectReorder({
             ? { target: headerId.startsWith('session:') ? 'session' : 'project' }
             : {}),
         },
-      }),
-    [],
+      });
+    },
+    [recordingGeneration],
   );
   const gesture = useMemo(
     () =>

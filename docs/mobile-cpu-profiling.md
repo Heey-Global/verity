@@ -117,3 +117,33 @@ API/clock references: React Native's installed `HermesInstance.cpp` and
 [`hermes.h`](https://github.com/facebook/hermes/blob/hermes-v250829098.0.17/API/hermes/hermes.h),
 [`SamplingProfiler.cpp`](https://github.com/facebook/hermes/blob/hermes-v250829098.0.17/lib/VM/Profiler/SamplingProfiler.cpp)
 and [`OSCompatPosix.cpp`](https://github.com/facebook/hermes/blob/hermes-v250829098.0.17/lib/Support/OSCompatPosix.cpp).
+
+
+## Responsiveness comparison after a client update
+
+Verify the loaded JavaScript commit/update ID as well as the native build before
+comparing releases. Use the same device, project/session set, sidebar collapse
+state, network route and foreground workflow for both versions.
+
+1. With interaction and CPU recording off, repeat at least ten session opens,
+   overview returns, scroll/swipe interactions and Settings transitions. Include
+   both a fresh launch and prolonged use. Check narrow navigation and the iPad
+   split layout separately; the visible split sidebar must keep updating.
+2. In Settings, allow project changes from another client, then return to the
+   overview. The overview must catch up without displaying an empty-list flash
+   or publishing an obsolete in-flight response. Repeat across background/resume
+   and a connection interruption. Confirm actual preview changes and local
+   collapse/status changes still appear.
+3. Toggle interaction recording repeatedly while a session is visible. Verify
+   scroll position, swipe actions, long press and drag/drop still work, including
+   cancellation and returning from the background. With recording off, no switch
+   stall timer or UI-frame measurement should continue to collect samples.
+4. If delays persist, repeat the same workflow with a short CPU recording whose
+   timestamps overlap the slow interaction. Compare touch delivery, native
+   request/response timing and JavaScript continuation separately. A recording
+   can add overhead; do not compare its latency directly to an unrecorded run.
+
+Record repeat counts, remaining slow cases and timing distributions when
+available. Component render counts and timer cleanup tests establish reduced
+work and lifecycle correctness, not physical touch-to-paint improvement. A local
+passing suite or a review-ready PR does not establish delivery or device success.
