@@ -541,9 +541,18 @@ export function SelectedConnectionTest({
       setMessage('Finish the long test first.');
       return;
     }
+    let stage: 'stop' | 'storage' = 'stop';
     try {
-      // Discarding never runs while this device might still be capturing.
-      await assertNativeTunnelInactive();
+      // Discarding never runs while this device might still be capturing. A
+      // device without the native test cannot be capturing, so it may discard.
+      await assertNativeTunnelInactive().catch((error: unknown) => {
+        if (!(error instanceof Error && error.message === 'Native connection test unsupported.'))
+          throw error;
+      });
+      if (scope.current !== storageKey || retained.current?.runId !== expected.runId) return;
+      stage = 'storage';
+      // Late evidence still being persisted must not write the run back.
+      await writes.current.catch(() => undefined);
       if (scope.current !== storageKey || retained.current?.runId !== expected.runId) return;
       // Without a confirmed Core/Uplink Stop the server may still record this run
       // until it expires; persist that wait before the run disappears. A legacy
@@ -564,7 +573,9 @@ export function SelectedConnectionTest({
     } catch {
       if (focused.current && scope.current === storageKey)
         setMessage(
-          'The app could not confirm that the test stopped on this device. Wait a moment and try again.',
+          stage === 'stop'
+            ? 'The app could not confirm that the test stopped on this device. Wait a moment and try again.'
+            : 'This device could not update its saved test. Nothing was discarded; try again.',
         );
     } finally {
       operation.current = null;

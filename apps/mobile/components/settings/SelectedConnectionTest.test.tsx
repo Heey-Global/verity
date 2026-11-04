@@ -610,7 +610,7 @@ it('keeps the other test blocked after reopening until the stored wait is read',
     releaseHold = resolve;
   });
   const read = jest
-    .spyOn(AsyncStorage, 'getItem')
+    .mocked(AsyncStorage.getItem)
     .mockImplementation(async (name: string) =>
       name.includes('.hold.') ? holdRead.then(() => getItem(name)) : getItem(name),
     );
@@ -627,9 +627,30 @@ it('keeps the other test blocked after reopening until the stored wait is read',
     releaseHold();
     await screen.findByText(/still finishing the previous test · ready in \d+ s/);
   } finally {
-    read.mockRestore();
+    // Restore the storage mock itself; mockRestore would leave it returning undefined.
+    read.mockImplementation(getItem);
   }
   // The run itself is gone, but the long test must never have been released.
   expect(blocked).not.toHaveBeenCalledWith(false);
   expect(screen.getByRole('button', { name: 'Start quick test' })).toBeDisabled();
+});
+
+it('lets a device without the native test discard an old quick test', async () => {
+  await AsyncStorage.setItem(key, runId);
+  render(<SelectedConnectionTest disabled={false} onBusy={jest.fn()} />);
+  await screen.findByText(/Earlier test\. Collect its report/);
+  mockInactive.mockRejectedValueOnce(new Error('Native connection test unsupported.'));
+  await confirmDiscard();
+  await waitFor(() => expect(AsyncStorage.getItem(key)).resolves.toBeNull());
+});
+it('names a storage failure during discard instead of blaming Stop', async () => {
+  await completed();
+  mockExport.mockRejectedValue(new Error('remote unavailable'));
+  await copyReport();
+  jest.mocked(AsyncStorage.setItem).mockRejectedValueOnce(new Error('full'));
+  await confirmDiscard();
+  await screen.findByText(
+    'This device could not update its saved test. Nothing was discarded; try again.',
+  );
+  expect(await AsyncStorage.getItem(key)).not.toBeNull();
 });

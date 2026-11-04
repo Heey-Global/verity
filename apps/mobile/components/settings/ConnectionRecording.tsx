@@ -769,6 +769,10 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
       if (!current()) return;
       // Persist the wait before the run disappears, so no reopening skips it.
       stage = 'storage';
+      // A save still in flight (collect or the expiry poll) must not write the
+      // discarded run back after it has been removed.
+      await saving.current.catch(() => undefined);
+      if (!current()) return;
       if (!remoteStopped) await holdUntil(expected.expiresAt + SERVER_EXPIRY_MARGIN_MS);
       await AsyncStorage.removeItem(key);
       if (!current()) return;
@@ -823,9 +827,11 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
       ? 'Connect to your Core first.'
       : holdLeft > 0
         ? holdReason(holdLeft)
-        : selectedBusy || quickCaptureBlocked
+        : selectedBusy
           ? 'Finish the quick test first.'
-          : undefined;
+          : quickCaptureBlocked
+            ? 'Waiting for the quick test above.'
+            : undefined;
   const quickBlockedReason =
     preparing ||
     collecting ||
