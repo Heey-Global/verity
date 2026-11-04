@@ -20,6 +20,65 @@ const responseSchema = z.object({
   }),
 });
 
+// Never copy exception messages or arbitrary peer strings into host diagnostics.
+const maintenanceFailure = z.object({
+  code: z.enum([
+    'turn-ownership-unknown',
+    'turn-inventory-unavailable',
+    'broker-access-denied',
+    'broker-unavailable',
+    'broker-timeout',
+    'broker-invalid-response',
+    'broker-rejected',
+    'unsupported',
+    'supervisor-rejected',
+    'invalid-response',
+  ]),
+  counts: z
+    .object({
+      missingState: bytes.max(1_000_000),
+      invalidState: bytes.max(1_000_000),
+      unsettledWithoutSession: bytes.max(1_000_000),
+    })
+    .optional(),
+});
+function failureReason(error: unknown): string {
+  const record = typeof error === 'object' && error !== null ? error : {};
+  const parsed = maintenanceFailure.safeParse(
+    'runnerCacheFailure' in record ? record.runnerCacheFailure : undefined,
+  );
+  if (parsed.success) {
+    const { code, counts } = parsed.data;
+    return `[${code}]${counts === undefined ? '' : ` missingState=${counts.missingState}, invalidState=${counts.invalidState}, unsettledWithoutSession=${counts.unsettledWithoutSession}`}`;
+  }
+  const code = 'code' in record ? record.code : undefined;
+  if (code === 'EACCES' || code === 'EPERM') return '[supervisor-access-denied]';
+  if (code === 'ENOENT' || code === 'ECONNREFUSED') return '[supervisor-unavailable]';
+  if (code === 'ETIMEDOUT') return '[supervisor-timeout]';
+  if (error instanceof z.ZodError) return '[invalid-response]';
+  return '[unclassified-failure]';
+}
+const safeBlockers = new Set([
+  'Shared cache is busy',
+  'session home ownership is unknown',
+  'session home is in use',
+  'package cache is in use',
+  'package cache inventory limit',
+  'invalid package cache root',
+  'invalid package cache',
+  'invalid package cache lease',
+  'unsafe package cache entry',
+  'unsafe package cache root',
+  'unsafe session homes root',
+  'unsafe session home',
+  'invalid package cache owner result',
+  'Retained non-cacache npm cache entries have unknown allocation',
+  'Runner sessions have unsettled turns; their legacy package caches were retained',
+]);
+function safeBlocker(blocker: string): string {
+  return safeBlockers.has(blocker) ? blocker : '[unclassified-cache-blocker] Details withheld';
+}
+
 /** An unset environment value leaves the embedded default in force. */
 export function runnerCacheTargetFromEnv(value: string | undefined): number | undefined {
   if (value === undefined || value.trim() === '') return undefined;
@@ -143,11 +202,13 @@ export class RunnerCacheStorage {
               project.usageComplete && project.sharedBytes !== null && project.legacyBytes !== null;
             for (const blocker of project.blockers) {
               if (report.blockers.length < 100)
-                report.blockers.push(`Project ${runtime.projectId}: ${blocker}`.slice(0, 500));
+                report.blockers.push(
+                  `Project ${runtime.projectId}: ${safeBlocker(blocker)}`.slice(0, 500),
+                );
             }
-          } catch {
+          } catch (error) {
             incomplete(
-              `Project ${runtime.projectId}: runner cache maintenance unavailable or invalid; caches retained where unverified.`,
+              `Project ${runtime.projectId}: ${failureReason(error)} runner cache maintenance unavailable or invalid; caches retained where unverified.`,
             );
           }
         }

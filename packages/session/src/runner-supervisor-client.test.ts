@@ -3600,3 +3600,34 @@ describe('SupervisorRunnerRecovery marker preconditions', () => {
     expect(getSession).not.toHaveBeenCalled();
   });
 });
+
+describe('cache maintenance error evidence', () => {
+  it.each([
+    [{ ok: false, error: 'unknown supervisor request' }, { code: 'unsupported' }],
+    [{ ok: false, error: 'private detail' }, { code: 'supervisor-rejected' }],
+    [
+      {
+        ok: false,
+        error: 'private detail',
+        runnerCacheFailure: {
+          code: 'turn-ownership-unknown',
+          counts: { missingState: 1, invalidState: 0, unsettledWithoutSession: 2 },
+        },
+      },
+      {
+        code: 'turn-ownership-unknown',
+        counts: { missingState: 1, invalidState: 0, unsettledWithoutSession: 2 },
+      },
+    ],
+  ])('preserves structured cache evidence %j', async (reply, failure) => {
+    const path = join(dir, 'cache.sock');
+    await serve(path, reply);
+    await expect(
+      requestRunnerSupervisor(path, {
+        kind: 'reclaim-package-caches',
+        sessionIds: [],
+        maxBytes: 4096,
+      }),
+    ).rejects.toMatchObject({ runnerCacheFailure: failure });
+  });
+});

@@ -2103,8 +2103,11 @@ export async function requestRunnerSupervisor(
     const timeout = setTimeout(
       () =>
         finish(
-          new Error(
-            `runner supervisor request timed out: ${typeof request.kind === 'string' ? request.kind : 'unknown'}`,
+          Object.assign(
+            new Error(
+              `runner supervisor request timed out: ${typeof request.kind === 'string' ? request.kind : 'unknown'}`,
+            ),
+            { code: 'ETIMEDOUT' },
           ),
         ),
       timeoutMs,
@@ -2117,10 +2120,31 @@ export async function requestRunnerSupervisor(
           throw new Error('runner supervisor returned an invalid frame count');
         }
         const parsed: unknown = JSON.parse(line);
-        if (!isObject(parsed) || parsed.ok !== true) throw new Error(rejectionMessage(parsed));
+        if (!isObject(parsed) || parsed.ok !== true) {
+          const error = new Error(rejectionMessage(parsed));
+          if (request.kind === 'reclaim-package-caches') {
+            // Carry structured evidence only; the storage collector validates it
+            // against its own allowlist before showing anything in diagnostics.
+            Object.assign(error, {
+              runnerCacheFailure:
+                isObject(parsed) && parsed.runnerCacheFailure !== undefined
+                  ? parsed.runnerCacheFailure
+                  : {
+                      code:
+                        isObject(parsed) && parsed.error === 'unknown supervisor request'
+                          ? 'unsupported'
+                          : 'supervisor-rejected',
+                    },
+            });
+          }
+          throw error;
+        }
         finish(undefined, parsed);
       } catch (error) {
-        finish(error instanceof Error ? error : new Error(String(error)));
+        const failure = error instanceof Error ? error : new Error(String(error));
+        if (request.kind === 'reclaim-package-caches' && !('runnerCacheFailure' in failure))
+          Object.assign(failure, { runnerCacheFailure: { code: 'invalid-response' } });
+        finish(failure);
       }
     };
     // A refusal the supervisor already sent outranks the transport error that

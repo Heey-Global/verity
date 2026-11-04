@@ -108,3 +108,73 @@ it.each([
   ).rejects.toThrow('invalid package cache');
   expect(requests).toEqual([]);
 });
+
+it.each(['missing', 'invalid', 'historical', 'claimed', 'running'])(
+  'diagnoses %s states without bypassing ownership',
+  async (kind) => {
+    const { root, requests } = await fixture();
+    const directory = join(root, 'turns', 'private-turn');
+    await mkdir(directory, { recursive: true });
+    if (kind === 'invalid') await writeFile(join(directory, 'state.json'), '{private content');
+    if (kind === 'historical')
+      await writeFile(
+        join(directory, 'state.json'),
+        JSON.stringify({ status: 'settled', protocolVersion: 0 }),
+      );
+    if (kind === 'claimed' || kind === 'running') {
+      await turn(root, 'private-turn', 'idle', kind);
+      const { readFile } = await import('node:fs/promises');
+      const state = JSON.parse(await readFile(join(directory, 'state.json'), 'utf8'));
+      delete state.sessionId;
+      await writeFile(join(directory, 'state.json'), JSON.stringify(state));
+    }
+    await expect(
+      handleSupervisorRequest(root, 'runner', {
+        protocolVersion: 1,
+        kind: 'reclaim-package-caches',
+        sessionIds: ['idle'],
+        maxBytes: 4096,
+      }),
+    ).rejects.toMatchObject({
+      runnerCacheFailure: {
+        code: 'turn-ownership-unknown',
+        counts: {
+          missingState: Number(kind === 'missing'),
+          invalidState: Number(kind === 'invalid' || kind === 'historical'),
+          unsettledWithoutSession: Number(kind === 'claimed' || kind === 'running'),
+        },
+      },
+    });
+    expect(requests).toEqual([]);
+  },
+);
+it('allows valid settled states without sessionId to reach the broker', async () => {
+  const { root, requests } = await fixture();
+  await turn(root, 'old-turn', 'idle', 'settled');
+  const { readFile } = await import('node:fs/promises');
+  const path = join(root, 'turns', 'old-turn', 'state.json');
+  const state = JSON.parse(await readFile(path, 'utf8'));
+  delete state.sessionId;
+  await writeFile(path, JSON.stringify(state));
+  await expect(
+    handleSupervisorRequest(root, 'runner', {
+      protocolVersion: 1,
+      kind: 'reclaim-package-caches',
+      sessionIds: ['idle'],
+      maxBytes: 4096,
+    }),
+  ).resolves.toMatchObject({ ok: true });
+  expect(requests).toHaveLength(1);
+});
+it('distinguishes an absent broker from unknown turn ownership', async () => {
+  const { root } = await fixture();
+  vi.stubEnv('VERITY_AGENT_SPAWN_BROKER_SOCKET', join(root, 'absent.sock'));
+  await expect(
+    handleSupervisorRequest(root, 'runner', {
+      protocolVersion: 1,
+      kind: 'reclaim-package-caches',
+      sessionIds: [],
+      maxBytes: 4096,
+    }),
+  ).rejects.toMatchObject({ runnerCacheFailure: { code: 'broker-unavailable' } });
+});
