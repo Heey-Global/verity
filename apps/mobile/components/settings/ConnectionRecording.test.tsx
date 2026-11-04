@@ -903,3 +903,28 @@ it('discards a long test when Stop is unconfirmed but no native tunnel is runnin
   await confirmDiscard();
   await waitFor(() => expect(AsyncStorage.getItem(storageKey)).resolves.toBeNull());
 });
+
+it('waits from long-test discard even after the locally saved expiry passed', async () => {
+  const storageKey = 'verity.connectionRecording.v1.paired-core';
+  await AsyncStorage.setItem(
+    storageKey,
+    JSON.stringify({
+      runId,
+      startedAt: Date.now() - 120_000,
+      expiresAt: Date.now() - 75_000,
+      local: null,
+    }),
+  );
+  const api = client();
+  api.stopConnectionRecording.mockRejectedValue(new Error('offline'));
+  render(<ConnectionRecording client={api as never} />);
+  await screen.findByText(/Recording finished ·/);
+  const discardedAt = Date.now();
+  await confirmDiscard();
+  await waitFor(() => expect(AsyncStorage.getItem(storageKey)).resolves.toBeNull());
+  const deadline = Number(
+    await AsyncStorage.getItem('verity.connectionRecording.hold.v1.paired-core'),
+  );
+  expect(deadline).toBeGreaterThanOrEqual(discardedAt + 75_000);
+  expect(screen.getByText('Start long test')).toBeDisabled();
+});

@@ -796,7 +796,9 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
       // discarded run back after it has been removed.
       await saving.current.catch(() => undefined);
       if (!current()) return;
-      if (!remoteStopped) await holdUntil(expected.expiresAt + SERVER_EXPIRY_MARGIN_MS);
+      // Preparation can delay server arming beyond the local deadline. Cover
+      // the full server recording window from discard, plus the existing margin.
+      if (!remoteStopped) await holdUntil(Date.now() + 45_000 + SERVER_EXPIRY_MARGIN_MS);
       await AsyncStorage.removeItem(key);
       if (!current()) return;
       runRef.current = null;
