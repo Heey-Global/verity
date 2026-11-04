@@ -48,33 +48,38 @@ class NativeDatabaseTests(unittest.TestCase):
                 with self.assertRaises(AssertionError):
                     guest.database_url(PASSWORD)
 
-    def test_setup_uses_private_bounded_persistent_database_and_keeps_password_off_argv(self):
-        with tempfile.TemporaryDirectory() as directory, patch.object(guest, 'ROOT', Path(directory)), patch.object(guest.secrets, 'token_hex', return_value=PASSWORD), patch.object(guest, 'database_image', return_value=PIN), patch.object(guest, 'run') as run, patch.object(guest, 'wait_database') as ready, patch.object(guest, 'database_url', return_value='private-url'):
-            self.assertEqual(guest.setup_database(), 'private-url')
+    def test_setup_keeps_bootstrap_secret_in_process_memory_and_stores_only_credential(self):
+        with patch.object(guest.secrets, 'token_hex', return_value=PASSWORD), patch.object(guest, 'database_image', return_value=PIN), patch.object(guest, 'run') as run, patch.object(guest.subprocess, 'check_output') as process, patch.object(guest, 'store_database_credential') as store, patch.object(guest, 'wait_database') as ready, patch.object(guest, 'database_url', return_value='private-url'):
+            guest.setup_database()
             calls = [call.args for call in run.call_args_list]
             self.assertIn(('docker', 'network', 'create', '--internal', guest.DATABASE_NETWORK), calls)
-            launch = next(args for args in calls if args[:2] == ('docker', 'run'))
-            self.assertFalse(any(arg in ('--publish', '-p', '--network=host') for arg in launch))
+            launch = process.call_args.args[0]
+            self.assertFalse(any(arg in ('--publish', '-p', '--network=host', '--env-file') for arg in launch))
             self.assertEqual(launch[launch.index('--memory') + 1], '192m')
             self.assertEqual(launch[launch.index('--memory-swap') + 1], '192m')
             self.assertIn('type=volume,source=verity-boot-postgres-data,target=/var/lib/postgresql', launch)
             self.assertIn(PIN, launch)
             self.assertNotIn(PASSWORD, ' '.join(launch))
-            environment = Path(directory) / 'postgres.env'
-            self.assertEqual(environment.stat().st_mode & 0o777, 0o600)
-            self.assertIn('POSTGRES_PASSWORD=' + PASSWORD, environment.read_text())
+            self.assertEqual(process.call_args.kwargs['env']['POSTGRES_PASSWORD'], PASSWORD)
+            store.assert_called_once_with('private-url')
             ready.assert_called_once()
 
-    def test_restart_reinspects_endpoint_before_rewriting_existing_private_config(self):
-        with tempfile.TemporaryDirectory() as directory, patch.object(guest, 'ROOT', Path(directory)), patch.object(guest, 'run') as run, patch.object(guest, 'wait_database'), patch.object(guest, 'database_url', return_value='new-private-url') as endpoint:
-            config = Path(directory) / 'config.json'
-            config.write_text(json.dumps({'databaseUrl': f'postgres://verity:{PASSWORD}@172.29.0.1:5432/verity', 'retained': True}))
-            config.chmod(0o600)
+    def test_only_encrypted_credential_bytes_reach_disk(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(guest, 'DATABASE_CREDENTIAL', Path(directory) / 'credentials/database-url.cred'), patch.object(guest.subprocess, 'check_output', return_value='encrypted-fixture') as process:
+            guest.store_database_credential('private-url')
+            self.assertEqual(guest.DATABASE_CREDENTIAL.read_text(), 'encrypted-fixture')
+            self.assertEqual(guest.DATABASE_CREDENTIAL.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(guest.DATABASE_CREDENTIAL.parent.stat().st_mode & 0o777, 0o700)
+            self.assertEqual(process.call_args.args[0], ['systemd-creds', 'encrypt', '--with-key=host', '--name=database-url', '-', '-'])
+            self.assertEqual(process.call_args.kwargs['input'], 'private-url')
+
+    def test_restart_reinspects_endpoint_and_reencrypts_without_plaintext_config(self):
+        with patch.object(guest, 'run') as run, patch.object(guest, 'wait_database'), patch.object(guest.subprocess, 'check_output', return_value=f'postgres://verity:{PASSWORD}@172.29.0.1:5432/verity') as decrypt, patch.object(guest, 'store_database_credential') as store, patch.object(guest, 'database_url', return_value='new-private-url') as endpoint:
             guest.recover_database()
             run.assert_called_once_with('docker', 'start', guest.DATABASE)
             endpoint.assert_called_once_with(PASSWORD)
-            self.assertEqual(json.loads(config.read_text()), {'databaseUrl': 'new-private-url', 'retained': True})
-            self.assertEqual(config.stat().st_mode & 0o777, 0o600)
+            store.assert_called_once_with('new-private-url')
+            self.assertEqual(decrypt.call_args.args[0], ['systemd-creds', 'decrypt', '--name=database-url', str(guest.DATABASE_CREDENTIAL), '-'])
 
     def test_build_transports_compose_pin_and_server_uses_real_postgres(self):
         build = (ROOT / 'scripts/probes/project-egress/boot-build.sh').read_text()
@@ -82,7 +87,12 @@ class NativeDatabaseTests(unittest.TestCase):
         self.assertIn('docker pull "$postgres_image"', build)
         self.assertIn('verity-boot-registry:local "$postgres_image"', build)
         server = Path(__file__).with_name('boot-server.ts').read_text()
-        self.assertIn('createPostgresDb(config.databaseUrl)', server)
+        self.assertIn('createPostgresDb(databaseUrl)', server)
+        self.assertIn('process.env.CREDENTIALS_DIRECTORY', server)
+        self.assertIn('`${credentials}/database-url`', server)
+        self.assertNotIn('config.databaseUrl', server)
+        units = Path(__file__).with_name('boot-native-install.sh').read_text()
+        self.assertIn('LoadCredentialEncrypted=database-url:/etc/verity-boot/database-url.cred', units)
         self.assertNotIn('createEmbeddedDb', server)
         self.assertNotIn('buildTestEmbeddedServer', server)
         self.assertLess(server.index('await migrateToLatest'), server.index('await buildEmbeddedServer'))

@@ -91,8 +91,9 @@ RemainAfterExit=yes
 WantedBy=multi-user.target
 UNIT
 for component in gateway server; do
+  credential='LoadCredentialEncrypted=database-url:/etc/verity-boot/database-url.cred'
   dependencies='After=verity-egress-host.service verity-boot-gateway.service'
-  if [[ $component == gateway ]]; then dependencies='After=network.target'; fi
+  if [[ $component == gateway ]]; then dependencies='After=network.target'; credential=''; fi
   cat > "/etc/systemd/system/verity-boot-$component.service" <<UNIT
 [Unit]
 Description=Disposable real Verity $component
@@ -101,6 +102,7 @@ $dependencies
 User=1000
 Group=1000
 Environment=PROJECT_EGRESS_DISPOSABLE=yes
+$credential
 ExecStart=/usr/bin/node /opt/verity-fixture/boot-server.mjs $component
 WorkingDirectory=/opt/verity-fixture
 SupplementaryGroups=verity-runner verity-relay verity-egress-control

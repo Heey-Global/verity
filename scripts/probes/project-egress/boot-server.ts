@@ -18,7 +18,6 @@ const config = JSON.parse(await readFile(`${root}/config.json`, 'utf8')) as {
   dataRoot: string;
   gatewayKey: string;
   controlToken: string;
-  databaseUrl: string;
 };
 const gatewaySocket = `${root}/gateway.sock`;
 if (process.argv[2] === 'gateway') {
@@ -76,7 +75,10 @@ if (process.argv[2] === 'gateway') {
   });
   // This fixture proves protected boot recovery. Enable it before the Server
   // provisions its first project; production deliberately defaults to off.
-  const db = createPostgresDb(config.databaseUrl);
+  const credentials = process.env.CREDENTIALS_DIRECTORY;
+  assert.ok(credentials, 'Missing systemd database credential');
+  const databaseUrl = (await readFile(`${credentials}/database-url`, 'utf8')).trim();
+  const db = createPostgresDb(databaseUrl);
   await migrateToLatest(db, migrationProvider);
   await new EventStore(db).updateVeritySettings({ projectEgressEnabled: true });
   const server = await buildEmbeddedServer({

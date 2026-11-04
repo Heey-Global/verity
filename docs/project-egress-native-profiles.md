@@ -65,6 +65,11 @@ This is preparation for acceptance, not an isolated activation mechanism. The
 native lifecycle fixture now uses the deployment-pinned PostgreSQL image on a
 private internal Docker network, with a persistent volume and no published ports.
 Recovery re-inspects its host-reachable address before restarting the Server.
+The fixture keeps the database URL in a host-key-encrypted systemd credential,
+loaded into the Server runtime credential directory; neither its JSON config nor
+a fixture environment file stores the password. Docker bootstrap receives the
+password through process environment rather than command arguments. See
+[systemd credential encryption](https://www.freedesktop.org/software/systemd/man/latest/systemd-creds.html).
 This replaces PGlite but does not establish managed direct authority. The complete
 managed fixture still needs shipped activation/direct authority, application
 positive controls, destination changes,
