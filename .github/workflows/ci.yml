@@ -1831,8 +1831,10 @@ jobs:
           VERITY_MANAGED_INSTALL_DAEMON_ID="$isolated_id" DOCKER_HOST="$isolated" \
             deploy/bin/verity-managed-install-smoke "$VERITY_CI_IMAGE" "$VERITY_CI_MANAGED_DIND"
 
-          # Keep the memory-heavy daemon fixtures serial. Recovery must never see the source host or its index.
-          docker stop "$VERITY_CI_MANAGED_DIND" >/dev/null
+          # Reclaim the completed fixture's image store before recovery loads
+          # and builds another copy. Stopping alone retains the full data volume.
+          docker --host unix:///var/run/docker.sock rm --force "$VERITY_CI_MANAGED_DIND" >/dev/null
+          docker --host unix:///var/run/docker.sock volume rm "$VERITY_CI_MANAGED_DIND_VOLUME" >/dev/null
           deploy/bin/verity-backup-restore-smoke "$VERITY_CI_IMAGE" "$managed_dind_image" "$RUNNER_TEMP/$VERITY_CI_IMAGE_ARCHIVE"
 
       - name: Clean Docker smoke artifacts

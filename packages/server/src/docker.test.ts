@@ -2531,17 +2531,28 @@ describe('createDockerClient runtime + response validation', () => {
     });
   });
 
-  it('containerLogs applies the requested time window and asks for timestamps', async () => {
-    const fetch = fakeFetch([
-      { match: /\/containers\/abc\/logs/, method: 'GET', resp: textRes('ready') },
-    ]);
-    const window = { since: '2026-10-28T12:00:00Z', until: '2026-10-28T13:00:00Z' };
-    await client(fetch).containerLogs?.('abc', 100, window);
-    const url = new URL(fetch.calls[0]!.url);
-    expect(url.searchParams.get('since')).toBe(window.since);
-    expect(url.searchParams.get('until')).toBe(window.until);
-    expect(url.searchParams.get('timestamps')).toBe('1');
-  });
+  it.each([
+    ['2026-11-03T21:30:00.000Z', '2026-11-03T21:45:00.000Z', '1793741400', '1793742300'],
+    [
+      '2026-11-03T22:30:00.125+01:00',
+      '2026-11-03T22:45:00.750+01:00',
+      '1793741400.125',
+      '1793742300.75',
+    ],
+  ])(
+    'containerLogs sends Unix seconds for the window %s to %s',
+    async (since, until, expectedSince, expectedUntil) => {
+      const fetch = fakeFetch([
+        { match: /\/containers\/abc\/logs/, method: 'GET', resp: textRes('ready') },
+      ]);
+      const window = { since, until };
+      await client(fetch).containerLogs?.('abc', 100, window);
+      const url = new URL(fetch.calls[0]!.url);
+      expect(url.searchParams.get('since')).toBe(expectedSince);
+      expect(url.searchParams.get('until')).toBe(expectedUntil);
+      expect(url.searchParams.get('timestamps')).toBe('1');
+    },
+  );
 
   it('containerLogs maps a 404 to container_not_found', async () => {
     const fetch = fakeFetch([

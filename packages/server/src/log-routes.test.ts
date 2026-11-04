@@ -1,4 +1,5 @@
-import { DockerError } from './docker.js';
+import { createDockerClient, DockerError } from './docker.js';
+import { createServerLogSource } from './server-log-source.js';
 import Fastify from 'fastify';
 import { randomUUID } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
@@ -15,6 +16,42 @@ function deps(): LogRouteDeps {
 }
 
 describe('administrator diagnostic reads', () => {
+  it('reads server logs through the Docker client using Unix time boundaries', async () => {
+    const fetch = vi.fn(async (url: string) => {
+      const query = new URL(url).searchParams;
+      if (query.get('since') !== '1793741400.125' || query.get('until') !== '1793742300.75') {
+        return new Response('{"message":"invalid timestamp"}', { status: 400 });
+      }
+      return new Response('2026-11-03T21:35:00Z {"level":30,"msg":"ready"}\n');
+    });
+    const d = deps();
+    d.serverLogs = createServerLogSource(
+      createDockerClient({ baseUrl: 'http://docker', fetch }),
+      'server',
+    );
+    const app = Fastify();
+    registerLogRoutes(app, d);
+    const now = vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-11-03T22:00:00Z'));
+    try {
+      const query = new URLSearchParams({
+        source: 'server',
+        since: '2026-11-03T21:30:00.125Z',
+        until: '2026-11-03T21:45:00.750Z',
+      });
+      const result = await app.inject(`/diagnostics/logs?${query.toString()}`);
+      expect(result.statusCode).toBe(200);
+      expect(result.json()).toMatchObject({
+        state: 'available',
+        entries: [
+          { at: '2026-11-03T21:35:00Z', level: 'info', text: '{"level":30,"msg":"ready"}' },
+        ],
+      });
+      expect(fetch).toHaveBeenCalledOnce();
+    } finally {
+      now.mockRestore();
+      await app.close();
+    }
+  });
   it('keeps both routes out of the paired-user allowlist', async () => {
     const app = Fastify();
     const routes: string[] = [];

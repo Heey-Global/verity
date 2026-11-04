@@ -4249,6 +4249,34 @@ describe('managed installer CI acceptance', () => {
     for (const path of paths) expect(Buffer.byteLength(path)).toBeLessThanOrEqual(107);
   });
 
+  it('reclaims the completed installer daemon and its image volume before recovery', () => {
+    const run = step?.run ?? '';
+    const installer = run.indexOf('deploy/bin/verity-managed-install-smoke ');
+    const recovery = run.indexOf('deploy/bin/verity-backup-restore-smoke ');
+    expect(installer).toBeGreaterThanOrEqual(0);
+    expect(recovery).toBeGreaterThan(installer);
+    // Stopping leaves a second full image store on disk during recovery builds.
+    const between = run.slice(run.indexOf('\n', installer), recovery);
+    const commands = execFileSync(
+      'bash',
+      ['-euo', 'pipefail', '-c', 'exec 3>&1; docker() { printf "%s\\n" "$*" >&3; }; ' + between],
+      {
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          VERITY_CI_MANAGED_DIND: 'completed-fixture',
+          VERITY_CI_MANAGED_DIND_VOLUME: 'completed-fixture-data',
+        },
+      },
+    )
+      .trim()
+      .split('\n');
+    expect(commands).toEqual([
+      '--host unix:///var/run/docker.sock rm --force completed-fixture',
+      '--host unix:///var/run/docker.sock volume rm completed-fixture-data',
+    ]);
+  });
+
   it('runs the candidate through the installer in a separate disposable daemon', () => {
     // A green legacy Compose smoke does not exercise the managed installer.
     // It gets its own matrix leg of the candidate image job, and no other gate.
