@@ -1,4 +1,4 @@
-import type { Backend } from '@verity/session';
+import type { Backend, Conductor } from '@verity/session';
 import {
   BackendTerminationUnconfirmedError,
   InMemoryEventBus,
@@ -684,47 +684,50 @@ describe('DELETE /sessions/:id', () => {
     }
   });
 
-  it('deletes a sleeping project session without waking its runner and retains cleanup ownership', async () => {
-    await ctx.store.upsertProject({
-      id: 'sleep-delete',
-      owner: 'local',
-      repo: 'sleep',
-      containerName: 'sleep',
-      state: 'sleeping',
-    });
-    await ctx.store.createSession({
-      sessionId: 'sleep-session',
-      projectId: 'sleep-delete',
-      worktree: '/wt/sleep-session',
-      model: 'm',
-    });
-    const remove = vi.fn(async () => undefined);
-    const runtimeCleanup = vi.fn(async () => 'deferred' as const);
-    const localPreviewManager = new LocalPreviewManager({ store: ctx.store } as never);
-    const stopPublications = vi.spyOn(localPreviewManager, 'stopSession');
-    const a = buildServer({
-      eventStore: ctx.store,
-      bus,
-      conductor,
-      queueSessionArtifacts: async () => {},
-      cleanupDeletedSessionRuntime: runtimeCleanup,
-      localPreviewManager,
-      worktrees: { add: async () => '/unused', remove },
-    });
-    try {
-      const res = await a.inject({ method: 'DELETE', url: '/sessions/sleep-session?force=true' });
-      expect(res.statusCode).toBe(200);
-      expect(res.json()).toMatchObject({ sessionId: 'sleep-session', cleanup: 'pending' });
-      expect(await ctx.store.getSession('sleep-session')).toBeUndefined();
-      expect((await ctx.store.getProject('sleep-delete'))?.state).toBe('sleeping');
-      await vi.waitFor(() => expect(stopPublications).toHaveBeenCalledWith('sleep-session'));
-      expect(await ctx.store.listPendingSessionDeletions()).toHaveLength(1);
-      expect(remove).not.toHaveBeenCalled();
-    } finally {
-      await a.close();
-      await localPreviewManager.close();
-    }
-  });
+  it.each([false, true])(
+    'stops publications while sleeping cleanup or workspace ownership is deferred (busy=%s)',
+    async (busy) => {
+      await ctx.store.upsertProject({
+        id: 'sleep-delete',
+        owner: 'local',
+        repo: 'sleep',
+        containerName: 'sleep',
+        state: 'sleeping',
+      });
+      await ctx.store.createSession({
+        sessionId: 'sleep-session',
+        projectId: 'sleep-delete',
+        worktree: '/wt/sleep-session',
+        model: 'm',
+      });
+      const remove = vi.fn(async () => undefined);
+      const runtimeCleanup = vi.fn(async () => 'deferred' as const);
+      const localPreviewManager = new LocalPreviewManager({ store: ctx.store } as never);
+      const stopPublications = vi.spyOn(localPreviewManager, 'stopSession');
+      const a = buildServer({
+        eventStore: ctx.store,
+        bus,
+        conductor: { ...conductor, isDeletionWorktreeBusy: () => busy } as unknown as Conductor,
+        queueSessionArtifacts: async () => {},
+        cleanupDeletedSessionRuntime: runtimeCleanup,
+        localPreviewManager,
+        worktrees: { add: async () => '/unused', remove },
+      });
+      try {
+        const res = await a.inject({ method: 'DELETE', url: '/sessions/sleep-session?force=true' });
+        expect(res.statusCode).toBe(200);
+        expect(res.json()).toMatchObject({ sessionId: 'sleep-session', cleanup: 'pending' });
+        expect(await ctx.store.getSession('sleep-session')).toBeUndefined();
+        expect((await ctx.store.getProject('sleep-delete'))?.state).toBe('sleeping');
+        await vi.waitFor(() => expect(stopPublications).toHaveBeenCalledWith('sleep-session'));
+        expect(await ctx.store.listPendingSessionDeletions()).toHaveLength(1);
+        expect(remove).not.toHaveBeenCalled();
+      } finally {
+        await a.close();
+        await localPreviewManager.close();
+      }
+    },
+  );
 
   it('returns 404 for an unknown session', async () => {
     const res = await app.inject({ method: 'DELETE', url: '/sessions/missing' });

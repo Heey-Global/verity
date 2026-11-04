@@ -64,7 +64,9 @@ describePostgres('session deletion across independent Server pools', () => {
   });
 
   it('keeps cleanup exclusive and reserves the worktree until physical removal completes', async () => {
-    const dbA = createPostgresDb(connectionString!);
+    const boundedUrl = new URL(connectionString!);
+    boundedUrl.searchParams.set('options', '-c lock_timeout=3000');
+    const dbA = createPostgresDb(boundedUrl.toString());
     const dbB = createPostgresDb(connectionString!);
     const a = new EventStore(dbA);
     const b = new EventStore(dbB);
@@ -98,30 +100,43 @@ describePostgres('session deletion across independent Server pools', () => {
         expect(await a.isWorktreeBeingDeleted(worktree)).toBe(true);
         entered();
         await gate;
+        expect(await a.isWorktreeBeingDeleted(worktree)).toBe(true);
         return true;
       });
       await ready;
       const duplicate = vi.fn(async () => true);
       second = b.withSessionDeletionCleanup(id, duplicate);
-      const created = vi.fn();
-      creation = b.createSession({ sessionId: successor, worktree, model: 'test' }).then(() => {
-        created();
-      });
-      // These pools have no shared JS mutex: only the DB locks preserve ownership.
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      let finished = 0;
+      creation = Promise.all(
+        Array.from({ length: 24 }, (_, index) =>
+          a.createSession({ sessionId: `${successor}-${index}`, worktree, model: 'test' }).then(
+            () => {
+              throw new Error('Reserved worktree was reused');
+            },
+            () => {
+              finished += 1;
+            },
+          ),
+        ),
+      ).then(() => undefined);
+      // More creators than pool slots must fail promptly, leaving the callback's
+      // ordinary store queries a free connection instead of waiting on its lock.
+      await vi.waitFor(() => expect(finished).toBe(24));
+      await creation;
       expect(duplicate).not.toHaveBeenCalled();
-      expect(created).not.toHaveBeenCalled();
       release();
       expect(await first).toBe(true);
       expect(await second).toBe(true);
       await creation;
       expect(duplicate).not.toHaveBeenCalled();
+      await b.createSession({ sessionId: successor, worktree, model: 'test' });
       expect(await b.getSession(successor)).toBeDefined();
       expect(await b.isSessionDeleting(id)).toBe(true);
     } finally {
       release();
       await Promise.allSettled([first, second, creation]);
       await b.deleteSession(successor);
+      for (let index = 0; index < 24; index++) await a.deleteSession(`${successor}-${index}`);
       await a.deleteSession(id);
       await dbA.deleteFrom('session_deletions').where('session_id', '=', id).execute();
       await Promise.all([dbA.destroy(), dbB.destroy()]);

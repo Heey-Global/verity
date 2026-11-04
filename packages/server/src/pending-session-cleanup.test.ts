@@ -236,3 +236,42 @@ it('retries retained cleanup after a timeout without overlapping scans, and stop
     vi.useRealTimers();
   }
 });
+
+it('lets another session finish while an artifact purge remains stalled', async () => {
+  const f = await cleanupFixture();
+  f.state('ready');
+  await queueSessionCleanup(f.root, { ...f.record, sessionId: 'other' });
+  let release!: () => void;
+  let entered!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const ready = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const processor = createSessionCleanupProcessor({
+    ...f.options,
+    purgeArtifacts: async (_projectId, record) => {
+      if (record.sessionId === f.record.sessionId) {
+        entered();
+        await gate;
+      }
+      return 'clean';
+    },
+  });
+  const blocked = processor.runSession(f.record.sessionId);
+  try {
+    await ready;
+    const other = processor.runSession('other');
+    await vi.waitFor(async () =>
+      expect((await pendingSessionCleanups(f.root)).some((r) => r.sessionId === 'other')).toBe(
+        false,
+      ),
+    );
+    await other;
+  } finally {
+    release();
+    await blocked;
+    await f.close();
+  }
+});

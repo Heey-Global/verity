@@ -6320,11 +6320,11 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     },
     cleanup: async (payload, terminationConfirmed) => {
       const { session } = payload;
-      if (conductor.isDeletionWorktreeBusy?.(session.sessionId)) return false;
       deps.scheduleSessionCleanup?.();
       // Publications can stop even while the sleeping Runner remains deferred.
       for (const shareId of payload.previewIds) await deps.localPreviewManager?.stop(shareId);
       await deps.localPreviewManager?.stopSession(session.sessionId);
+      if (conductor.isDeletionWorktreeBusy?.(session.sessionId)) return false;
       // Successful privileged home deletion kills/fences exact workers. A missing
       // DB marker after cascade is not evidence that a process has exited.
       if (deps.cleanupDeletedSessionRuntime) {

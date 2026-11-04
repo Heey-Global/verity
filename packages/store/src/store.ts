@@ -1924,8 +1924,13 @@ export class EventStore implements EventSink {
     };
     const projectId = session.projectId;
     await this.db.transaction().execute(async (tx) => {
-      // Match deletion admission's order: session identity, then physical path.
-      await this.sessionEventAppendLock(tx, session.sessionId);
+      // Never occupy the serving pool waiting behind long physical cleanup.
+      const admission = await sql<{
+        locked: boolean;
+      }>`select pg_try_advisory_xact_lock(hashtext(${this.sessionEventAppendLockKey(session.sessionId)})) as locked`.execute(
+        tx,
+      );
+      if (admission.rows[0]?.locked !== true) throw new Error('Session is being deleted');
       await this.sessionWorktreeLock(tx, session.worktree);
       if (
         await tx
@@ -3911,9 +3916,12 @@ export class EventStore implements EventSink {
   }
 
   private async sessionWorktreeLock(tx: Kysely<Database>, path: string): Promise<void> {
-    await sql`select pg_advisory_xact_lock(hashtext(${'session-worktree:' + resolve(path)}))`.execute(
+    const result = await sql<{
+      locked: boolean;
+    }>`select pg_try_advisory_xact_lock(hashtext(${'session-worktree:' + resolve(path)})) as locked`.execute(
       tx,
     );
+    if (result.rows[0]?.locked !== true) throw new Error('Session worktree is being deleted');
   }
 
   async isWorktreeBeingDeleted(path: string): Promise<boolean> {

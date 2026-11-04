@@ -5020,7 +5020,7 @@ export async function buildEmbeddedServer(
             const before = (await pendingSessionCleanups(cleanupRoot)).find(
               (record) => record.sessionId === sessionId,
             );
-            await cleanupProcessor?.run();
+            await cleanupProcessor?.runSession(sessionId);
             const pending = await pendingSessionCleanups(cleanupRoot);
             if (pending.some((record) => record.sessionId === sessionId))
               return 'deferred' as const;
