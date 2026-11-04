@@ -5582,7 +5582,8 @@ export class Conductor {
     // would spawn a process and burn tokens for nothing (§13a). A bare screenshot
     // (attachment, empty prompt) is valid content and passes.
     if (!turnHasContent(prompt, opts)) throw new Error('turn must have a prompt or an attachment');
-    await this.flushTerminationFences(sessionId);
+    if ((this.unpersistedTerminations.get(sessionId)?.size ?? 0) > 0)
+      await this.flushTerminationFences(sessionId);
     if (this.deletingSessions.has(sessionId) || this.inFlight.has(sessionId))
       throw new SessionBusyError(sessionId);
     if (this.deps.prepareSession) {

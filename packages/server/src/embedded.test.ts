@@ -2561,7 +2561,7 @@ describe('buildEmbeddedServer', () => {
         const lateRollout = join(day, 'rollout-2026-08-18T10-00-00-thread-late.jsonl');
         if (layout === 'late-binding') {
           await writeFile(lateRollout, '{"payload":{"id":"thread-late"}}\n', 'utf8');
-          const originalDelete = EventStore.prototype.deleteSession;
+          const originalDelete = EventStore.prototype.deleteSession.bind(store);
           vi.spyOn(EventStore.prototype, 'deleteSession').mockImplementationOnce(async function (
             this: EventStore,
             id: string,
@@ -2572,7 +2572,7 @@ describe('buildEmbeddedServer', () => {
               .set({ backend_session_id: 'thread-late' })
               .where('session_id', '=', id)
               .execute();
-            return originalDelete.call(this, id);
+            return originalDelete(id);
           });
         }
         const deleteStarted = Date.now();
