@@ -1647,6 +1647,7 @@ export class Conductor {
       };
     }
     handle.workerMayExist = true;
+    handle.terminalResultReceived = false;
     const turn = runner.startTurn(dispatchOpts, {
       onSession: (id: string) => {
         backendSessionId = id;
@@ -1676,6 +1677,7 @@ export class Conductor {
     handle.delegate = turn;
     try {
       const result = await turn.result;
+      handle.terminalResultReceived = true;
       await cleanupTurnImageAttachments(runOpts.cwd, turnId).catch((error: unknown) => {
         this.reportTurnError(sessionId, error);
       });

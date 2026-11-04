@@ -11329,6 +11329,70 @@ it('cancels only the live turn matching an assignment receipt', async () => {
 });
 
 describe('Conductor session deletion admission', () => {
+  it('invalidates earlier terminal evidence before a retry launches an uncertain worker', async () => {
+    await ctx.store.createSession({
+      sessionId: 'retry-proof',
+      worktree: '/wt/retry-proof',
+      model: 'm',
+    });
+    await ctx.store.upsertSessionBackendState({
+      sessionId: 'retry-proof',
+      backend: 'claude',
+      backendSessionId: 'old-thread',
+      contextSeq: 0,
+    });
+    let attempts = 0;
+    const startTurn = vi.fn(() => ({
+      result:
+        ++attempts === 1
+          ? Promise.resolve({ sessionId: undefined, exitCode: 1, stderr: '', staleResume: true })
+          : Promise.reject(new Error('transport dropped')),
+      steer: async () => false,
+      answerPermission: async () => false,
+      cancel: async () => false,
+    }));
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: { run: () => Promise.reject(new Error('unexpected loopback')) },
+      runner: () => ({ startTurn }),
+      worktreeExists: async () => true,
+    });
+    await expect(conductor.sendTurn('retry-proof', 'work')).rejects.toThrow('transport dropped');
+    expect(startTurn).toHaveBeenCalledTimes(2);
+    expect(await conductor.stopForDeletion('retry-proof', 20)).toBe(false);
+  });
+
+  it.each(['send', 'dispatch'] as const)(
+    'preserves terminal evidence after %s host publication fails',
+    async (mode) => {
+      await ctx.store.createSession({
+        sessionId: 'postprocess',
+        worktree: '/wt/postprocess',
+        model: 'm',
+      });
+      const fake = scriptedBackend({ sessionId: 'postprocess', text: 'done' });
+      const settleWorkspace = vi.fn(async () => {
+        throw new Error('publication failed');
+      });
+      const conductor = new Conductor({
+        store: ctx.store,
+        backend: fake.backend,
+        worktreeExists: async () => true,
+        settleWorkspace,
+      });
+      if (mode === 'send')
+        await expect(conductor.sendTurn('postprocess', 'work')).rejects.toThrow(
+          'publication failed',
+        );
+      else {
+        await conductor.dispatchTurn('postprocess', 'work');
+        await vi.waitFor(() => expect(conductor.isBusy('postprocess')).toBe(false));
+      }
+      expect(settleWorkspace).toHaveBeenCalledOnce();
+      expect(await conductor.stopForDeletion('postprocess', 20)).toBe(true);
+    },
+  );
+
   it.each([false, true])(
     'does not retain phantom termination uncertainty after prelaunch failure (retry=%s)',
     async (retry) => {
