@@ -108,10 +108,14 @@ function joinNames(names: string[]) {
     : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]!}`;
 }
 
-export const testNames = {
+const testNames: Record<string, string> = {
   quick_test: 'Quick test',
   problem_recording: 'Long test',
-} as const;
+};
+/** Reports from older app versions may carry another type; name them neutrally. */
+export function testName(type: string) {
+  return testNames[type] ?? 'Connection test';
+}
 
 /** Local, relative wording for a report time: "Today, 20:34", "Yesterday, …", "15 Oct, …". */
 export function formatReportTime(iso: string | null, now: Date = new Date()) {
@@ -174,14 +178,17 @@ export function useHold(persistKey: string | null) {
       live = false;
     };
   }, [persistKey]);
+  const counting = left > 0;
   useEffect(() => {
-    if (left <= 0) return;
-    const timer = setTimeout(
+    if (!counting) return;
+    // Re-read the deadline on an interval: an early tick yielding the same value
+    // must not stop the countdown with both tests still locked.
+    const timer = setInterval(
       () => setLeft(Math.max(0, Math.ceil((until.current - Date.now()) / 1000))),
-      1000,
+      500,
     );
-    return () => clearTimeout(timer);
-  }, [left]);
+    return () => clearInterval(timer);
+  }, [counting]);
   const hold = useCallback(
     async (untilMs: number) => {
       if (untilMs <= Date.now()) return;

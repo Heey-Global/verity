@@ -573,8 +573,16 @@ it('prevents legacy recording while the selected test owns the controls', async 
   render(<ConnectionRecording client={client() as never} />);
   await waitFor(() => expect(AsyncStorage.getItem).toHaveBeenCalled());
   await screen.findByText('Mock selected start');
+  await waitFor(() => expect(screen.getByText('Start long test')).toBeEnabled());
   act(() => {
     fireEvent.press(screen.getByText('Mock selected start'));
+  });
+  // While the quick test owns the native capture, the long test cannot start.
+  expect(screen.getByText('Finish the quick test first.')).toBeTruthy();
+  expect(screen.getByText('Start long test')).toBeDisabled();
+  fireEvent.press(screen.getByText('Start long test'));
+  await act(async () => {
+    await Promise.resolve();
   });
   expect(mockStart).not.toHaveBeenCalled();
 });

@@ -1,4 +1,4 @@
-import { completeness, formatReportTime } from './DiagnosticsParts';
+import { completeness, formatReportTime, testName } from './DiagnosticsParts';
 
 const now = new Date(2026, 10, 4, 21, 30);
 const at = (...parts: [number, number, number, number, number]) => new Date(...parts).toISOString();
@@ -22,4 +22,9 @@ it('names exactly the missing sources of an incomplete report', () => {
     'Incomplete – some details could not be confirmed',
   );
   expect(completeness({ complete: true, sources })).toBe('Complete');
+});
+it('names report types from older versions instead of rendering undefined', () => {
+  expect(testName('quick_test')).toBe('Quick test');
+  expect(testName('problem_recording')).toBe('Long test');
+  expect(testName('something_older')).toBe('Connection test');
 });

@@ -24,7 +24,7 @@ import {
   Toast,
   completeness,
   formatReportTime,
-  testNames,
+  testName,
   holdReason,
   useHold,
   useTransientMessage,
@@ -978,10 +978,10 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
               return (
                 <View key={report.runId}>
                   <CardRow
-                    title={`${testNames[report.testType]} · ${formatReportTime(report.startedAt)}`}
+                    title={`${testName(report.testType)} · ${formatReportTime(report.startedAt)}`}
                     subtitle={completeness(report)}
                     chevron={false}
-                    accessibilityLabel={`${testNames[report.testType]}, ${formatReportTime(report.startedAt)}, ${completeness(report)}. ${open ? 'Hide' : 'Show'} actions`}
+                    accessibilityLabel={`${testName(report.testType)}, ${formatReportTime(report.startedAt)}, ${completeness(report)}. ${open ? 'Hide' : 'Show'} actions`}
                     onPress={() => setExpanded(open ? null : report.runId)}
                   />
                   {open ? (
