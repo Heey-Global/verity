@@ -162,6 +162,7 @@ import {
 import {
   configuredMeetingTranscriber,
   fileLiveMeeting,
+  removeFiledLiveMeeting,
   meetingTranscriptionSettingsWhileSealed,
 } from './meeting-transcription.js';
 import { registerMessageSearchRoute } from './message-search-route.js';
@@ -4278,6 +4279,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     agentLogin,
     parseSettingsPatch: (body) => veritySettingsBody.parse(body),
     projectEgressAvailable: deps.projectEgressAvailable,
+    projectEgressStatus: deps.projectEgressStatus,
     storeAgentCredentials,
     publicSettings: async (settings, request) => ({
       ...publicVeritySettings(
@@ -4287,6 +4289,9 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       ),
       ...(await googleAccountSettingsStatus(deps.eventStore)),
       projectEgressAvailable: (await deps.projectEgressAvailable?.()) === true,
+      ...(deps.projectEgressStatus
+        ? { projectEgressStatus: await deps.projectEgressStatus() }
+        : {}),
       claudeCredentialStatus: (
         deps.claudeOAuthTokenProvider ?? dbClaudeOAuthTokenProvider
       ).statusForCredentials?.(settings.claudeCodeOauthCredentialsJson) ?? {
@@ -5959,6 +5964,24 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         sessionId,
         meetingId,
       }),
+    onDiscarded: async (sessionId, meeting) => {
+      // Independent steps, all attempted: a provider failure must not skip removing the
+      // filed transcript. Any failure is reported so the discard is retried.
+      const steps = await Promise.allSettled([
+        // The attendee owner is created below; a request can only arrive once it exists.
+        meeting.engine === 'attendee'
+          ? attendeeMeetings.discardFinished(sessionId, meeting.id)
+          : Promise.resolve(true),
+        removeFiledLiveMeeting({
+          eventStore: deps.eventStore,
+          dataRoot: deps.dataRoot,
+          sessionId,
+          meeting,
+        }),
+      ]);
+      const failed = steps.find((step) => step.status === 'rejected');
+      if (failed) throw failed.reason;
+    },
     knowledge: async (sessionId, transcript) => {
       if (!deps.dataRoot) return [];
       const session = await deps.eventStore.getSession(sessionId);

@@ -76,9 +76,16 @@ export interface SessionFileRouteDeps {
   resolveProjectRoot?: (projectId: string) => Promise<string | undefined>;
   resolveSharedRoot?: () => Promise<string | undefined>;
   documentStatus?:
-    | ((
-        sessionId: string,
-      ) => Promise<{ pending: boolean; running: boolean; warning?: string } | undefined>)
+    | ((sessionId: string) => Promise<
+        | {
+            pending: boolean;
+            running: boolean;
+            warning?: string;
+            inspectionError?: boolean;
+            excludedEntries?: { path: string; reason: 'generated' | 'unsupported' }[];
+          }
+        | undefined
+      >)
     | undefined;
   /** The directory backing `root` for this session, or `undefined` when the
    *  session does not exist — or, for a knowledge root, when the session has no

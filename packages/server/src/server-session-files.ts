@@ -123,10 +123,15 @@ export function registerServerSessionFiles(
       try {
         const workspace = documentWorkspace(deps.dataRoot, session.projectId, view);
         const pending = await workspace.hasPendingChanges();
-        return { running, pending, ...(workspace.warning ? { warning: workspace.warning } : {}) };
+        return {
+          running,
+          pending,
+          excludedEntries: workspace.excludedEntries,
+          ...(workspace.warning ? { warning: workspace.warning } : {}),
+        };
       } catch {
         // A file may still be changing during a live turn; never label it published.
-        return { running, pending: true };
+        return { running, pending: true, inspectionError: true };
       }
     },
     codeAvailable: async (id) => {

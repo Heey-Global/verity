@@ -13,6 +13,9 @@ import {
   migrateManagedControlPlaneRunner,
   migrateManagedDevcontainerBuilder,
   migrateManagedHostDiagnostics,
+  migrateManagedProjectEgress,
+  readManagedProjectEgressBackup,
+  PROJECT_EGRESS_MOUNTS,
   MANAGED_DEVCONTAINER_BUILDER_BACKUP_FILE,
   MANAGED_HOST_DIAGNOSTIC_BACKUP_FILE,
 } from './managed-deployment.js';
@@ -677,5 +680,68 @@ describe('managed devcontainer builder migration', () => {
     expect(initial.spec.mounts.some((mount) => mount.target === '/run/verity-buildkit')).toBe(
       false,
     );
+  });
+});
+
+describe('managed project egress provisioning authority', () => {
+  it('preserves the legacy checkpoint and carries server-only controls through image advancement', async () => {
+    const directory = await root();
+    const initial = await initializeManagedDeployment({
+      root: directory,
+      deploymentId: 'egress-test',
+      spec: adoptionSpec(),
+    });
+    if (!initial.managed) throw new Error(initial.reason);
+    const options = {
+      root: directory,
+      deploymentId: initial.spec.deploymentId,
+      image: initial.spec.image,
+      controlGid: 65531,
+    };
+    const migrated = await migrateManagedProjectEgress(options);
+    if (!migrated.managed) throw new Error(migrated.reason);
+    expect(migrated.spec.mounts.slice(-2)).toEqual(PROJECT_EGRESS_MOUNTS);
+    expect(migrated.spec.user.supplementaryGids).toContain(65531);
+    expect(await readManagedProjectEgressBackup(directory)).toEqual(initial.spec);
+    expect(await migrateManagedProjectEgress(options)).toEqual(migrated);
+    const target = `ghcr.io/heey-global/verity/verity-server@sha256:${'b'.repeat(64)}`;
+    await advanceManagedDeploymentImage({
+      root: directory,
+      deploymentId: initial.spec.deploymentId,
+      fromImage: initial.spec.image,
+      toImage: target,
+    });
+    const advanced = await readManagedDeployment(directory);
+    expect(advanced.managed && advanced.spec.mounts).toEqual(migrated.spec.mounts);
+    expect(await readManagedProjectEgressBackup(directory)).toEqual(initial.spec);
+  });
+  it('rejects a partial authority instead of silently broadening it', async () => {
+    const directory = await root();
+    const spec = adoptionSpec();
+    const partial = {
+      ...spec,
+      environment: [
+        ...spec.environment,
+        {
+          name: 'VERITY_PROJECT_EGRESS_SOCKET',
+          source: { kind: 'env' as const, name: 'VERITY_PROJECT_EGRESS_SOCKET' },
+        },
+      ],
+    };
+    const initial = await initializeManagedDeployment({
+      root: directory,
+      deploymentId: 'egress-test',
+      spec: partial,
+    });
+    if (!initial.managed) throw new Error(initial.reason);
+    await expect(
+      migrateManagedProjectEgress({
+        root: directory,
+        deploymentId: initial.spec.deploymentId,
+        image: initial.spec.image,
+        controlGid: 65531,
+      }),
+    ).rejects.toThrow('partial');
+    expect(await readManagedDeployment(directory)).toEqual(initial);
   });
 });

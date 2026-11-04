@@ -1,4 +1,6 @@
 import { act, fireEvent, render, screen } from '@testing-library/react-native';
+import { useEffect } from 'react';
+import * as Reanimated from 'react-native-reanimated';
 import { Platform, Text } from 'react-native';
 import { GestureDetector } from 'react-native-gesture-handler';
 
@@ -126,6 +128,7 @@ describe('SwipeableSessionRow gesture diagnostics', () => {
 
   type Observer = {
     handlerName: string;
+    config: { enabled?: boolean };
     handlers: Record<string, ((event: unknown, manager?: unknown) => void) | undefined>;
   };
   const observers = () =>
@@ -187,11 +190,67 @@ describe('SwipeableSessionRow gesture diagnostics', () => {
     ]);
   });
 
-  it('adds no observer while recording is off', () => {
-    // An observer outside a recording session would change the gesture tree
-    // every user runs, which is what the switch exists to prevent.
+  it('keeps native content mounted and disables the observer outside recording', () => {
+    const mounted = jest.fn();
+    const unmounted = jest.fn();
+    function Content() {
+      useEffect(() => {
+        mounted();
+        return unmounted;
+      }, []);
+      return <Text>persistent content</Text>;
+    }
+    render(
+      <SwipeableSessionRow
+        favorite={false}
+        label="row"
+        onToggleFavorite={jest.fn()}
+        onDelete={jest.fn()}
+        onEdit={jest.fn()}
+      >
+        <Content />
+      </SwipeableSessionRow>,
+    );
+    expect(observers()[0]!.config.enabled).toBe(false);
+    act(() => setGestureDiagnosticsEnabled(true));
+    expect(observers()[0]!.config.enabled).toBe(true);
+    act(() => setGestureDiagnosticsEnabled(false));
+    expect(observers()[0]!.config.enabled).toBe(false);
+    expect(mounted).toHaveBeenCalledTimes(1);
+    expect(unmounted).not.toHaveBeenCalled();
+  });
+
+  it('crosses to JS only for new movement thresholds and rejects queued old recordings', () => {
+    const queued: (() => void)[] = [];
+    const bridge = jest.spyOn(Reanimated, 'runOnJS').mockImplementation(
+      (callback) =>
+        ((...args: unknown[]) => {
+          queued.push(() => callback(...args));
+        }) as typeof callback,
+    );
     renderRow();
-    expect(observers()).toHaveLength(0);
+    act(() => setGestureDiagnosticsEnabled(true));
+    const [observer] = observers();
+    const touch = (x: number) => ({ allTouches: [{ absoluteX: x, absoluteY: 50 }] });
+    try {
+      act(() => {
+        observer!.handlers.onTouchesDown?.(touch(100));
+        for (let x = 101; x <= 105; x++) observer!.handlers.onTouchesMove?.(touch(x));
+      });
+      expect(bridge).toHaveBeenCalledTimes(1);
+      act(() => observer!.handlers.onTouchesMove?.(touch(114)));
+      expect(bridge).toHaveBeenCalledTimes(3);
+      act(() => observer!.handlers.onTouchesMove?.(touch(115)));
+      expect(bridge).toHaveBeenCalledTimes(3);
+      act(() => {
+        setGestureDiagnosticsEnabled(false);
+        setGestureDiagnosticsEnabled(true);
+        queued.forEach((deliver) => deliver());
+      });
+      expect(exportGestureDiagnostics().events).toEqual([]);
+    } finally {
+      bridge.mockRestore();
+    }
   });
 
   it('records touches the row receives, labelled by project kind but not by session', () => {

@@ -845,8 +845,7 @@ describe('ProvisionerImpl (#174)', () => {
       git,
       projectEgress: egress,
       projectEgressEnabled: async () => false,
-      sandboxRuntime: 'runsc-project',
-      verifySandboxRuntime: async () => {},
+      sandboxCapAdd: ['NET_ADMIN'],
       projectTokenMint: async () => 'tok',
       defaultImageRef: 'image:test',
       hostCloneRoot: root,
@@ -861,6 +860,7 @@ describe('ProvisionerImpl (#174)', () => {
         network: projectNetworkName(id),
         restartPolicy: 'unless-stopped',
       });
+      expect(spec.runtime).toBeUndefined();
       expect(calls.some((call) => call.method === 'startContainer')).toBe(true);
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -885,6 +885,39 @@ describe('ProvisionerImpl (#174)', () => {
     expect(
       calls.some(({ method }) => method === 'stopContainer' || method === 'removeContainer'),
     ).toBe(false);
+    expect(await ctx.store.getProject(id)).toMatchObject({ state: 'active' });
+  });
+
+  it('reconciles an inspected open generation with a staged unavailable controller', async () => {
+    const id = await seedProject('active');
+    const { client: docker, calls } = fakeDocker({
+      inspectContainer: async () => ({
+        id: 'retained',
+        running: true,
+        labels: { [PROJECT_ID_LABEL]: id, [CONTAINER_GENERATION_LABEL]: 'gen-1' },
+        networks: { [projectNetworkName(id)]: {} },
+      }),
+    });
+    const egress = new ProjectEgressLifecycle(async () => {
+      throw new Error('host unavailable');
+    }, {});
+    const provisioner = createProvisioner({
+      store: ctx.store,
+      db: ctx.db,
+      docker,
+      projectEgress: egress,
+      projectEgressEnabled: async () => false,
+      projectTokenMint: async () => undefined,
+      defaultImageRef: 'sandbox:test',
+      hostCloneRoot: '/work',
+    });
+    provisioner.attachProjectBusyProbe(async () => false);
+    const recreate = vi.spyOn(provisioner, 'recreateContainer');
+    await expect(
+      provisioner.reconcileRelays([(await ctx.store.getProject(id))!], {}),
+    ).resolves.toBeUndefined();
+    expect(recreate).not.toHaveBeenCalled();
+    expect(calls.some(({ method }) => method === 'stopContainer')).toBe(false);
     expect(await ctx.store.getProject(id)).toMatchObject({ state: 'active' });
   });
 

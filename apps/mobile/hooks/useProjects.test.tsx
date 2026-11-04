@@ -220,12 +220,15 @@ it('catches up previews when live observation is unavailable and explicit refres
 });
 
 it('cancels on background, ignores late results and resumes missing reads', async () => {
-  let appState!: (state: AppStateStatus) => void;
+  const appStates = new Set<(state: AppStateStatus) => void>();
+  const appState = (state: AppStateStatus) => {
+    for (const callback of [...appStates]) callback(state);
+  };
   const listener = jest
     .spyOn(AppState, 'addEventListener')
     .mockImplementation((_event, callback) => {
-      appState = callback;
-      return { remove: jest.fn() };
+      appStates.add(callback);
+      return { remove: () => appStates.delete(callback) };
     });
   let finish!: (value: unknown[]) => void;
   const client = previewClient();
@@ -481,4 +484,151 @@ describe('project list recovery', () => {
     expect(client.listProjects).toHaveBeenCalledTimes(1);
     unmount();
   });
+});
+
+it('retains refresh and empty preview identities through parent renders and equal publications', async () => {
+  const client = previewClient();
+  const hook = renderHook(() => useProjects(client as unknown as VerityClient));
+  await waitFor(() => expect(client.listProjectLocalPreviewShares).toHaveBeenCalledTimes(1));
+  const refresh = hook.result.current.refresh;
+  const urls = hook.result.current.previewUrls;
+  const publicIds = hook.result.current.publicPreviews;
+  hook.rerender({});
+  expect(hook.result.current.refresh).toBe(refresh);
+  await act(async () => {
+    await hook.result.current.refresh();
+  });
+  expect(hook.result.current.refresh).toBe(refresh);
+  expect(hook.result.current.previewUrls).toBe(urls);
+  expect(hook.result.current.publicPreviews).toBe(publicIds);
+  hook.unmount();
+});
+
+it('defers project invalidations and in-flight results while blurred, then catches up once', async () => {
+  const client = { listProjects: jest.fn().mockResolvedValue([{ id: 'old', state: 'absent' }]) };
+  const hook = renderHook(() => useProjects(client as unknown as VerityClient));
+  await waitFor(() => expect(hook.result.current.loading).toBe(false));
+  const previous = hook.result.current.projects;
+  let resolve!: (value: { id: string; state: string }[]) => void;
+  client.listProjects.mockImplementationOnce(
+    () =>
+      new Promise((done) => {
+        resolve = done;
+      }),
+  );
+  const subscription = mockSubscriptions.find(({ filter }) => filter('/projects'))!;
+  let pending!: Promise<unknown>;
+  act(() => {
+    pending = subscription.refresh();
+  });
+  act(() => {
+    mockFocused = false;
+    hook.rerender({});
+  });
+  await act(async () => {
+    resolve([{ id: 'stale', state: 'absent' }]);
+    await pending;
+    await subscription.refresh();
+    await subscription.refresh();
+  });
+  expect(client.listProjects).toHaveBeenCalledTimes(2);
+  expect(hook.result.current.projects).toBe(previous);
+  client.listProjects.mockResolvedValue([{ id: 'fresh', state: 'absent' }]);
+  await act(async () => {
+    mockFocused = true;
+    hook.rerender({});
+  });
+  expect(client.listProjects).toHaveBeenCalledTimes(3);
+  expect(hook.result.current.projects[0]?.id).toBe('fresh');
+  hook.unmount();
+});
+
+it('defers hidden foreground notifications and refreshes on visible foreground without navigation', async () => {
+  const listeners = new Set<(state: AppStateStatus) => void>();
+  jest.spyOn(AppState, 'addEventListener').mockImplementation((_, listener) => {
+    listeners.add(listener);
+    return { remove: () => listeners.delete(listener) };
+  });
+  const client = { listProjects: jest.fn().mockResolvedValue([]) };
+  const hook = renderHook(() => useProjects(client as unknown as VerityClient));
+  await waitFor(() => expect(hook.result.current.loading).toBe(false));
+  const change = async (state: AppStateStatus) => {
+    await act(async () => {
+      Object.defineProperty(AppState, 'currentState', { configurable: true, value: state });
+      for (const listener of [...listeners]) listener(state);
+    });
+  };
+  await change('background');
+  await act(async () => {
+    await mockSubscriptions.find(({ filter }) => filter('/projects'))!.refresh();
+  });
+  expect(client.listProjects).toHaveBeenCalledTimes(1);
+  await change('active');
+  expect(client.listProjects).toHaveBeenCalledTimes(2);
+  act(() => {
+    mockFocused = false;
+    hook.rerender({});
+  });
+  await change('background');
+  await change('active');
+  expect(client.listProjects).toHaveBeenCalledTimes(2);
+  await act(async () => {
+    mockFocused = true;
+    hook.rerender({});
+  });
+  expect(client.listProjects).toHaveBeenCalledTimes(3);
+  hook.unmount();
+  expect(listeners.size).toBe(0);
+});
+
+it('retains equal populated previews but publishes changed links and expiry', async () => {
+  const realNow = Date.now;
+  const startedAt = realNow();
+  let now = startedAt;
+  jest.spyOn(Date, 'now').mockImplementation(() => realNow() + now - startedAt);
+  const client = previewClient();
+  const share = {
+    sessionId: 'kept',
+    targetKind: 'static-folder',
+    state: 'active',
+    publicOrigin: 'https://first.invalid',
+    expiresAt: new Date(now + 60000).toISOString(),
+  };
+  client.listPublicPreviewShares.mockResolvedValue([share]);
+  const hook = renderHook(() => useProjects(client as unknown as VerityClient));
+  await waitFor(() =>
+    expect(hook.result.current.previewUrls.get('kept')).toBe('https://first.invalid'),
+  );
+  const urls = hook.result.current.previewUrls;
+  const ids = hook.result.current.publicPreviews;
+  const subscription = mockSubscriptions.find(({ filter }) =>
+    filter('/projects/p1/public-shares'),
+  )!;
+  await act(async () => {
+    await subscription.refresh();
+  });
+  await waitFor(() => expect(client.listPublicPreviewShares).toHaveBeenCalledTimes(2));
+  // A project refresh synchronously republishes the installed source snapshots.
+  await act(async () => {
+    await hook.result.current.refresh();
+  });
+  expect(hook.result.current.previewUrls).toBe(urls);
+  expect(hook.result.current.publicPreviews).toBe(ids);
+  client.listPublicPreviewShares.mockResolvedValue([
+    { ...share, publicOrigin: 'https://changed.invalid' },
+  ]);
+  await act(async () => {
+    await subscription.refresh();
+  });
+  await waitFor(() =>
+    expect(hook.result.current.previewUrls.get('kept')).toBe('https://changed.invalid'),
+  );
+  expect(hook.result.current.publicPreviews).toBe(ids);
+  now += 60001;
+  await act(async () => {
+    await mockSubscriptions.find(({ filter }) => filter('/projects'))!.refresh();
+  });
+  expect(hook.result.current.previewUrls.has('kept')).toBe(false);
+  expect(hook.result.current.publicPreviews.has('kept')).toBe(false);
+  hook.unmount();
 });

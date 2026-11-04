@@ -1,5 +1,34 @@
 # Changelog
 
+## [1.84.3](https://github.com/Heey-Global/verity/compare/mobile-v1.84.2...mobile-v1.84.3) (2026-11-04)
+
+
+### Features
+
+* **meetings:** redesign meeting flow and allow discarding finished meetings ([#2247](https://github.com/Heey-Global/verity/issues/2247)) ([2720f51](https://github.com/Heey-Global/verity/commit/2720f512bf1fcc994934c7e18959e62ad6565bc7))
+
+
+### Bug Fixes
+
+* **deps:** update dependency @agentclientprotocol/codex-acp to v2.5.0 ([#2235](https://github.com/Heey-Global/verity/issues/2235)) ([b4f075a](https://github.com/Heey-Global/verity/commit/b4f075a5764325d2d73a5dc1a8e8d08f9cacdb27))
+* **mobile:** reduce background and diagnostic interaction overhead ([#2248](https://github.com/Heey-Global/verity/issues/2248)) ([f2b16d5](https://github.com/Heey-Global/verity/commit/f2b16d53696712883cc473c1e2d60d1c34b3812e))
+* **mobile:** skip detached overview refs during reordering ([#2245](https://github.com/Heey-Global/verity/issues/2245)) ([2f19694](https://github.com/Heey-Global/verity/commit/2f19694316468e3d77a79d45fbdbfe031073402f))
+* **mobile:** unify connection diagnostic runs and reports ([#2244](https://github.com/Heey-Global/verity/issues/2244)) ([297399f](https://github.com/Heey-Global/verity/commit/297399fda7512f2642bb44ed5d7afad87dec04da))
+
+## [1.84.2](https://github.com/Heey-Global/verity/compare/mobile-v1.84.1...mobile-v1.84.2) (2026-11-04)
+
+
+### Features
+
+* **egress:** provision managed control paths and explain readiness ([#2239](https://github.com/Heey-Global/verity/issues/2239)) ([6d23c17](https://github.com/Heey-Global/verity/commit/6d23c1700311f532943f9dad58b9bcaabda8d5d2))
+* per-person overview state and dismissible Home items ([#2238](https://github.com/Heey-Global/verity/issues/2238)) ([4dd3914](https://github.com/Heey-Global/verity/commit/4dd391455ed50e86d8454b9db174917a01525999))
+
+
+### Bug Fixes
+
+* **knowledge:** simplify Wiki navigation and sync notices ([#2242](https://github.com/Heey-Global/verity/issues/2242)) ([c7efb3f](https://github.com/Heey-Global/verity/commit/c7efb3fc2c8f5069f9cfc4639a75e7209af714b1))
+* **server:** reduce redundant runner and preview work ([#2243](https://github.com/Heey-Global/verity/issues/2243)) ([bfe65a9](https://github.com/Heey-Global/verity/commit/bfe65a92d80e52dd2596f55b36fabca559323a0c))
+
 ## [1.84.1](https://github.com/Heey-Global/verity/compare/mobile-v1.84.0...mobile-v1.84.1) (2026-11-04)
 
 

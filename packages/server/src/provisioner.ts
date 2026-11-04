@@ -2682,16 +2682,19 @@ export class ProvisionerImpl implements Provisioner {
    * it (or registered it with other arguments) keeps what it has rather than losing it to a
    * create that cannot succeed, and never lands on runc instead.
    */
-  private async ensureSandboxRuntime(project: ProjectRecord): Promise<void> {
-    if (this.opts.sandboxRuntime === undefined) return;
+  private async ensureSandboxRuntime(
+    project: ProjectRecord,
+    runtime = this.opts.sandboxRuntime,
+  ): Promise<void> {
+    if (runtime === undefined) return;
     try {
       if (this.opts.verifySandboxRuntime === undefined) {
         throw new Error('no runtime verifier is configured');
       }
-      await this.opts.verifySandboxRuntime(this.opts.sandboxRuntime);
+      await this.opts.verifySandboxRuntime(runtime);
     } catch (cause) {
       const message =
-        `Sandbox runtime ${this.opts.sandboxRuntime} is not usable: ${failureMessage(cause)}. ` +
+        `Sandbox runtime ${runtime} is not usable: ${failureMessage(cause)}. ` +
         'Re-run the Verity installer on the host to register it (the running Sandbox was kept).';
       await this.opts.store.updateProjectState(project.id, 'failed', message);
       throw new ProvisioningError(message, cause);
@@ -2807,6 +2810,7 @@ export class ProvisionerImpl implements Provisioner {
   constructor(private readonly opts: ProvisionerOptions) {
     if (
       opts.projectEgress !== undefined &&
+      opts.projectEgressEnabled === undefined &&
       (opts.sandboxRuntime !== PROJECT_RUNSC_RUNTIME ||
         opts.sandboxCapAdd?.length ||
         opts.sandboxAllowPrivilegeEscalation === true)
@@ -4016,7 +4020,7 @@ export class ProvisionerImpl implements Provisioner {
     const input = {
       inspect,
       projectId: project.id,
-      projectNetwork: await this.expectedProjectNetwork(project.id),
+      projectNetwork: await this.expectedProjectNetwork(project.id, inspect),
       relayHealthy: await this.isRelayHealthy(project, containerGenerationOf(inspect)),
       considerEnvDrift: this.opts.recreateEnvDriftedSandboxes !== false,
     };
@@ -4148,6 +4152,10 @@ export class ProvisionerImpl implements Provisioner {
     if (!(await this.projectEgressEnabled())) return undefined;
     if (this.opts.projectEgress === undefined)
       throw new ProvisioningError('Network protection is on, but this host has no egress service');
+    if (this.opts.sandboxCapAdd?.length || this.opts.sandboxAllowPrivilegeEscalation === true)
+      throw new ProvisioningError(
+        'Network protection requires the isolated runtime without added privileges',
+      );
     return this.opts.projectEgress;
   }
 
@@ -4171,12 +4179,29 @@ export class ProvisionerImpl implements Provisioner {
 
   /** The network a running Sandbox belongs on: its host-registered generation network, or
    * the open project network. Switching protection takes effect at the next start. */
-  private async expectedProjectNetwork(projectId: string): Promise<string> {
+  private async expectedProjectNetwork(
+    projectId: string,
+    inspect: ContainerInspect | null,
+  ): Promise<string> {
     const egress = this.opts.projectEgress;
     if (egress === undefined) return projectNetworkName(projectId);
     // An unreachable host cannot establish network drift. Let reconciliation defer
     // instead of replacing a running protected generation with an open one.
-    return (await egress.current(projectId))?.networkName ?? projectNetworkName(projectId);
+    try {
+      return (await egress.current(projectId))?.networkName ?? projectNetworkName(projectId);
+    } catch (error) {
+      // A staged installation has no controller yet. Only an inspected generation
+      // attached exclusively to its ordinary project network is demonstrably open.
+      const networks = Object.keys(inspect?.networks ?? {});
+      if (
+        !(await this.projectEgressEnabled()) &&
+        networks.length === 1 &&
+        networks[0] === projectNetworkName(projectId)
+      ) {
+        return projectNetworkName(projectId);
+      }
+      throw error;
+    }
   }
 
   private async retireEgressGeneration(projectId: string): Promise<void> {
@@ -4789,7 +4814,11 @@ export class ProvisionerImpl implements Provisioner {
 
     const replace = async (): Promise<ProjectRecord> => {
       this.resolveRelayClaudeGateway(project);
-      await this.ensureSandboxRuntime(project);
+      const egress = await this.egressFor();
+      await this.ensureSandboxRuntime(
+        project,
+        this.opts.sandboxRuntime ?? (egress === undefined ? undefined : PROJECT_RUNSC_RUNTIME),
+      );
       await this.retireEgressGeneration(project.id);
       replacementStarted = true;
       this.retiringSandboxes.add(project.id);
@@ -5793,9 +5822,11 @@ export class ProvisionerImpl implements Provisioner {
     );
     const canonicalClaudeGatewayUrl = claudeGateway.href;
     const canonicalCodexGatewayUrl = codexGateway.href;
-    await this.ensureSandboxRuntime(project);
     const generation = randomUUID();
     const egress = await this.egressFor();
+    const sandboxRuntime =
+      this.opts.sandboxRuntime ?? (egress === undefined ? undefined : PROJECT_RUNSC_RUNTIME);
+    await this.ensureSandboxRuntime(project, sandboxRuntime);
     let sandboxNetwork: string;
     // A fenced predecessor is retired either way; a switched-off server starts open.
     await this.retireEgressGeneration(project.id);
@@ -5837,7 +5868,7 @@ export class ProvisionerImpl implements Provisioner {
     // gVisor cannot use Docker's embedded resolver; see gvisor-project-network.ts.
     let gvisorExtraHosts: string[] = [];
     let gvisorResolvBinds: string[] = [];
-    if (this.opts.sandboxRuntime !== undefined) {
+    if (sandboxRuntime !== undefined) {
       try {
         gvisorExtraHosts = await relayHostEntries(this.opts.docker, sandboxNetwork, [
           effectiveBrokerUrl,
@@ -6486,7 +6517,7 @@ export class ProvisionerImpl implements Provisioner {
       // exposing a runc workload to arbitrary internet input. The root filesystem
       // stays writable because devcontainers install tools and build artifacts at
       // runtime; the preview eligibility check accounts for that profile.
-      ...(this.opts.sandboxRuntime !== undefined ? { runtime: this.opts.sandboxRuntime } : {}),
+      ...(sandboxRuntime !== undefined ? { runtime: sandboxRuntime } : {}),
       ...(gvisorExtraHosts.length > 0 ? { extraHosts: gvisorExtraHosts } : {}),
       // Runtime hardening (security review C1): contain a malicious dependency by
       // default rather than launching with Docker's permissive defaults. Drop all

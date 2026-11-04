@@ -1,8 +1,7 @@
-import { useId, useState, type ReactNode } from 'react';
+import { useId, type ReactNode } from 'react';
 import {
   ActivityIndicator,
   Image,
-  type LayoutChangeEvent,
   Pressable,
   ScrollView,
   Text,
@@ -20,6 +19,8 @@ import { tint } from '../ui/tint';
 const MARK = require('../../assets/brand/verity-v-mark.png') as number;
 // The mark's artwork is wider than tall.
 const MARK_RATIO = 240 / 168;
+// Width of the signature-to-action edge around the pane.
+const EDGE = 2;
 
 /**
  * Verity's place in a live meeting (docs/design-system.md § 5.8): the one surface on the
@@ -30,66 +31,55 @@ export function VerityPane({ children, footer }: { children: ReactNode; footer: 
   const { theme } = useUnistyles();
   const colors = theme.colors;
   const gradient = useId();
-  const [size, setSize] = useState<{ width: number; height: number } | null>(null);
   const radius = theme.radius.card + 4;
+  // The edge is a gradient fill behind a content layer inset by its width. Nothing is
+  // measured, so the edge cannot drift from the content when layout settles late (web).
   return (
-    <View
-      testID="verity-pane"
-      style={[styles.pane, { borderRadius: radius }]}
-      onLayout={(event: LayoutChangeEvent) => {
-        const { width, height } = event.nativeEvent.layout;
-        setSize((current) =>
-          current?.width === width && current.height === height ? current : { width, height },
-        );
-      }}
-    >
-      {size ? (
-        <Svg
-          pointerEvents="none"
-          width={size.width}
-          height={size.height}
-          style={styles.edge}
-          accessibilityElementsHidden
-          importantForAccessibility="no-hide-descendants"
-        >
-          <Defs>
-            <LinearGradient id={gradient} x1="0" y1="0" x2="1" y2="1">
-              <Stop offset="0" stopColor={colors.signature} />
-              <Stop offset="1" stopColor={colors.action} />
-            </LinearGradient>
-          </Defs>
-          <Rect
-            x={1}
-            y={1}
-            width={Math.max(0, size.width - 2)}
-            height={Math.max(0, size.height - 2)}
-            rx={radius - 1}
-            fill="none"
-            stroke={`url(#${gradient})`}
-            strokeWidth={2}
-          />
-        </Svg>
-      ) : null}
-      <View style={styles.header}>
-        <View style={styles.markHalo}>
+    <View testID="verity-pane" style={[styles.pane, { borderRadius: radius }]}>
+      <Svg
+        pointerEvents="none"
+        width="100%"
+        height="100%"
+        style={styles.edge}
+        accessibilityElementsHidden
+        importantForAccessibility="no-hide-descendants"
+      >
+        <Defs>
+          <LinearGradient id={gradient} x1="0" y1="0" x2="1" y2="1">
+            <Stop offset="0" stopColor={colors.signature} />
+            <Stop offset="1" stopColor={colors.action} />
+          </LinearGradient>
+        </Defs>
+        <Rect
+          x={0}
+          y={0}
+          width="100%"
+          height="100%"
+          rx={radius}
+          ry={radius}
+          fill={`url(#${gradient})`}
+        />
+      </Svg>
+      <View style={[styles.inner, { borderRadius: radius - EDGE }]}>
+        <View style={styles.header}>
           <Image
             source={MARK}
             accessibilityIgnoresInvertColors
-            style={{ width: 44, height: 44 / MARK_RATIO }}
+            style={{ width: 28, height: 28 / MARK_RATIO }}
           />
+          <Text style={styles.name} accessibilityRole="header">
+            Verity
+          </Text>
         </View>
-        <Text style={styles.name} accessibilityRole="header">
-          Verity
-        </Text>
+        <ScrollView
+          style={styles.fill}
+          contentContainerStyle={styles.cards}
+          keyboardShouldPersistTaps="handled"
+        >
+          {children}
+        </ScrollView>
+        {footer}
       </View>
-      <ScrollView
-        style={styles.fill}
-        contentContainerStyle={styles.cards}
-        keyboardShouldPersistTaps="handled"
-      >
-        {children}
-      </ScrollView>
-      {footer}
     </View>
   );
 }
@@ -215,26 +205,22 @@ const styles = StyleSheet.create((theme) => {
   return {
     pane: {
       flex: 1,
+      padding: EDGE,
+      // Android draws elevation only for a view with a background; the edge covers it.
       backgroundColor: colors.surface,
-      padding: theme.spacing.lg,
-      gap: theme.spacing.md,
       // The pane's glow is Verity's: signature, like every brand moment.
       shadowColor: colors.signature,
       ...theme.elevation.glow,
     },
-    edge: { position: 'absolute', left: 0, top: 0 },
+    edge: { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0 },
+    inner: {
+      flex: 1,
+      backgroundColor: colors.surface,
+      padding: theme.spacing.lg,
+      gap: theme.spacing.md,
+    },
     fill: { flex: 1 },
     header: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.md },
-    markHalo: {
-      width: 56,
-      height: 56,
-      borderRadius: 28,
-      alignItems: 'center',
-      justifyContent: 'center',
-      backgroundColor: tint(colors.signature, 'neutral'),
-      shadowColor: colors.signature,
-      ...theme.elevation.glow,
-    },
     name: { ...theme.typography.title, color: colors.text },
     cards: { gap: theme.spacing.md, paddingBottom: theme.spacing.sm },
     field: {

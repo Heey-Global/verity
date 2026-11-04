@@ -6,6 +6,32 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.80.0](https://github.com/Heey-Global/verity/compare/v4.79.0...v4.80.0) (2026-11-04)
+
+
+### Features
+
+* **meetings:** redesign meeting flow and allow discarding finished meetings ([#2247](https://github.com/Heey-Global/verity/issues/2247)) ([2720f51](https://github.com/Heey-Global/verity/commit/2720f512bf1fcc994934c7e18959e62ad6565bc7))
+
+
+### Bug Fixes
+
+* **deps:** update dependency @agentclientprotocol/codex-acp to v2.5.0 ([#2235](https://github.com/Heey-Global/verity/issues/2235)) ([b4f075a](https://github.com/Heey-Global/verity/commit/b4f075a5764325d2d73a5dc1a8e8d08f9cacdb27))
+
+## [4.79.0](https://github.com/Heey-Global/verity/compare/v4.78.0...v4.79.0) (2026-11-04)
+
+
+### Features
+
+* **egress:** provision managed control paths and explain readiness ([#2239](https://github.com/Heey-Global/verity/issues/2239)) ([6d23c17](https://github.com/Heey-Global/verity/commit/6d23c1700311f532943f9dad58b9bcaabda8d5d2))
+* per-person overview state and dismissible Home items ([#2238](https://github.com/Heey-Global/verity/issues/2238)) ([4dd3914](https://github.com/Heey-Global/verity/commit/4dd391455ed50e86d8454b9db174917a01525999))
+
+
+### Bug Fixes
+
+* **knowledge:** simplify Wiki navigation and sync notices ([#2242](https://github.com/Heey-Global/verity/issues/2242)) ([c7efb3f](https://github.com/Heey-Global/verity/commit/c7efb3fc2c8f5069f9cfc4639a75e7209af714b1))
+* **server:** reduce redundant runner and preview work ([#2243](https://github.com/Heey-Global/verity/issues/2243)) ([bfe65a9](https://github.com/Heey-Global/verity/commit/bfe65a92d80e52dd2596f55b36fabca559323a0c))
+
 ## [4.78.0](https://github.com/Heey-Global/verity/compare/v4.77.1...v4.78.0) (2026-11-04)
 
 

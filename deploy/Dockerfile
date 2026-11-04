@@ -65,10 +65,28 @@ COPY packages/preview-tunnel packages/preview-tunnel
 # `tsc -b` compiles test files. Without this the builder's `npm run build` fails
 # with TS2307 (module not found) even though the image never runs the toolkit.
 COPY features features
+COPY scripts/build-project-egress-host.mjs scripts/build-project-egress-host.mjs
 
 # Force project-reference emission even if a persistent BuildKit cache restores
 # stale incremental metadata from an older source layer.
 RUN npm run build -- --force
+RUN node scripts/build-project-egress-host.mjs
+
+# Compile the fixed kernel programs once in the signed release. Loading them is
+# still gated by the exact native acceptance profile on the destination host.
+FROM builder-deps AS egress-assets
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends clang linux-libc-dev dpkg-dev \
+    && rm -rf /var/lib/apt/lists/*
+COPY deploy/egress deploy/egress
+RUN mkdir -p /egress-objects \
+    && for program in project-egress-deadline project-egress-renew; do \
+      clang -O2 -g -target bpf -I/usr/include/$(dpkg-architecture -qDEB_HOST_MULTIARCH) \
+        -c "deploy/egress/$program.bpf.c" -o "/egress-objects/$program.bpf.o"; \
+    done
+COPY --from=builder /app/packages/server/dist/project-egress-host-main.mjs packages/server/dist/project-egress-host-main.mjs
+COPY scripts/build-project-egress-release.mjs scripts/build-project-egress-release.mjs
+RUN node scripts/build-project-egress-release.mjs /egress-release /egress-objects
 
 # Export only browser assets; Expo dependencies stay out of the runtime image.
 FROM builder-deps AS web-builder
@@ -209,7 +227,7 @@ FROM node:26.13.0-bookworm-slim@sha256:bc0a2afd3b74ce12222fc8bab99271e66257f0210
 # util-linux: provides setpriv for the image's anti-forgery boundary test.
 RUN set -eux; \
     apt-get update; \
-    apt-get install -y --no-install-recommends git ca-certificates tini openssh-client openssl ffmpeg expect util-linux systemd jq; \
+    apt-get install -y --no-install-recommends git ca-certificates tini openssh-client openssl ffmpeg expect util-linux systemd jq python3; \
     rm -rf /var/lib/apt/lists/*
 
 COPY --from=docker-cli /usr/local/bin/cosign /usr/local/bin/docker /usr/local/bin/docker-compose /usr/local/bin/
@@ -220,6 +238,8 @@ COPY deploy/bin/verity-transcribe-meeting /usr/local/bin/verity-transcribe-meeti
 # from the exact digest it is about to install, so Compose, overlays and guarded
 # host scripts can never drift from the Server release.
 COPY deploy /opt/verity-install/deploy
+COPY --from=egress-assets /egress-release /opt/verity-install/egress-release
+COPY scripts/project-egress-install.py scripts/project-egress-managed.py /opt/verity-install/scripts/
 LABEL org.verity.backup-provisioning="1"
 RUN jq --version && systemctl --version && bash -n /opt/verity-install/deploy/host/verity-backup-provision
 RUN chmod 0755 /usr/local/bin/verity-transcribe-meeting
@@ -396,6 +416,8 @@ LABEL org.verity.host-runtimes="{\"release\":\"release-20261026.0\",\"sha512\":{
 # bundle when it differs from the installed builder. devcontainer-builder.test.ts keeps the
 # contract value equal in all three places.
 LABEL org.verity.host-runtime-service="{\"revision\":1,\"renewalProtocol\":1,\"features\":[\"binary\",\"archive\"]}"
+LABEL org.verity.project-egress-provisioning="1"
+LABEL org.verity.project-egress-deployment="1"
 LABEL org.verity.devcontainer-builder="2"
 LABEL org.verity.build-admission="1"
 LABEL org.verity.recovery="1"

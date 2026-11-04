@@ -233,10 +233,12 @@ async function inventory(
   root: string,
   base: Versions = {},
   warnings: Set<string> = new Set(),
+  reasons: Map<string, 'generated' | 'unsupported'> = new Map(),
 ): Promise<Versions> {
   const result: Versions = Object.create(null) as Versions;
-  const skip = (path: string) => {
+  const skip = (path: string, reason: 'generated' | 'unsupported' = 'unsupported') => {
     warnings.add(path);
+    reasons.set(path, reason);
     result[path] = skippedVersion;
     for (const previous of Object.keys(base))
       if (previous.startsWith(`${path}/`)) result[previous] = skippedVersion;
@@ -257,7 +259,12 @@ async function inventory(
           (entry.isDirectory() && generatedDirectories.has(entry.name)) ||
           (!entry.isFile() && !entry.isDirectory())
         ) {
-          skip(rel);
+          skip(
+            rel,
+            entry.isDirectory() && !entry.isSymbolicLink() && generatedDirectories.has(entry.name)
+              ? 'generated'
+              : 'unsupported',
+          );
           continue;
         }
         if (entry.isDirectory()) {
@@ -303,6 +310,13 @@ async function inventory(
  * uses the SAME knowledge-root lock as Explorer saves, uploads, moves and deletes. */
 export class DocumentWorkspace {
   readonly skippedPaths = new Set<string>();
+  readonly skippedReasons = new Map<string, 'generated' | 'unsupported'>();
+  get excludedEntries() {
+    return [...this.skippedPaths].map((path) => ({
+      path,
+      reason: this.skippedReasons.get(path) ?? ('unsupported' as const),
+    }));
+  }
   get warning(): string | undefined {
     if (!this.skippedPaths.size) return undefined;
     return `Documents sync skipped unsupported or generated entries: ${[...this.skippedPaths].slice(0, 10).join(', ')}${this.skippedPaths.size > 10 ? ' (and more)' : ''}. These entries remain on disk and are not published. Move code, builds and package installs to the code working directory; replace document symlinks with regular files.`;
@@ -408,8 +422,8 @@ export class DocumentWorkspace {
 
   async hasPendingChanges(): Promise<boolean> {
     const state = await this.state();
-    const local = await inventory(this.view, state.files, this.skippedPaths);
-    await inventory(this.documents, state.files, this.skippedPaths);
+    const local = await inventory(this.view, state.files, this.skippedPaths, this.skippedReasons);
+    await inventory(this.documents, state.files, this.skippedPaths, this.skippedReasons);
     return [...new Set([...Object.keys(state.files), ...Object.keys(local)])].some(
       (path) =>
         local[path] !== skippedVersion && (state.files[path] ?? null) !== (local[path] ?? null),
@@ -424,8 +438,13 @@ export class DocumentWorkspace {
     try {
       const state = await this.state();
       await this.recover(state);
-      const local = await inventory(this.view, state.files, this.skippedPaths);
-      const current = await inventory(this.documents, state.files, this.skippedPaths);
+      const local = await inventory(this.view, state.files, this.skippedPaths, this.skippedReasons);
+      const current = await inventory(
+        this.documents,
+        state.files,
+        this.skippedPaths,
+        this.skippedReasons,
+      );
       for (const path of new Set([...Object.keys(state.files), ...Object.keys(current)])) {
         if (
           [oversizedVersion, skippedVersion].includes(local[path] ?? '') ||
@@ -467,7 +486,7 @@ export class DocumentWorkspace {
    * their original project. A unique namespace avoids overwriting target files. */
   async transferPending(target: DocumentWorkspace, prefix: string): Promise<string[]> {
     const state = await this.state();
-    const before = await inventory(this.view, state.files, this.skippedPaths);
+    const before = await inventory(this.view, state.files, this.skippedPaths, this.skippedReasons);
     const copied: string[] = [];
     for (const path of new Set([...Object.keys(state.files), ...Object.keys(before)])) {
       if (
@@ -490,7 +509,9 @@ export class DocumentWorkspace {
     }
     if (
       JSON.stringify(before) !==
-      JSON.stringify(await inventory(this.view, state.files, this.skippedPaths))
+      JSON.stringify(
+        await inventory(this.view, state.files, this.skippedPaths, this.skippedReasons),
+      )
     )
       throw new Error('Source documents changed during transfer; retry after writers have stopped');
     return copied;
@@ -502,7 +523,7 @@ export class DocumentWorkspace {
     try {
       const state = await this.state();
       await this.recover(state);
-      const local = await inventory(this.view, state.files, this.skippedPaths);
+      const local = await inventory(this.view, state.files, this.skippedPaths, this.skippedReasons);
       for (const path of new Set([...Object.keys(state.files), ...Object.keys(local)])) {
         if (isSkipped(local, path)) continue;
         const base = state.files[path] ?? null;

@@ -1,4 +1,4 @@
-import { MeetingResult } from '../../components/meeting/MeetingResult';
+import { discardMessage, MeetingResult } from '../../components/meeting/MeetingResult';
 import { shareMeetingResult } from '../../lib/shareMeetingResult';
 import {
   meetingModelChoice,
@@ -15,6 +15,7 @@ import {
   Alert,
   Animated,
   FlatList,
+  Image,
   Modal,
   Pressable,
   ScrollView,
@@ -53,7 +54,11 @@ import {
   type SpeakerCorrection,
 } from '../../lib/liveMeetingStore';
 import { createVerityClient, getActiveMeetingServerId } from '../../lib/client';
-import { followRemoteMeeting, syncMeetingSession } from '../../lib/liveMeetingSync';
+import {
+  discardFinishedMeeting,
+  followRemoteMeeting,
+  syncMeetingSession,
+} from '../../lib/liveMeetingSync';
 import {
   meetingQuestionKey,
   meetingRequestId,
@@ -97,6 +102,7 @@ import {
   Row,
   SectionHeader,
   Text as UiText,
+  SearchField,
   TextField,
   Toggle,
   useConfirm,
@@ -112,6 +118,10 @@ import {
 import { tint } from '../../components/ui/tint';
 
 type TranscriptRow = SpeakerLine | { text: string; pending?: boolean };
+
+const VERITY_MARK = require('../../assets/brand/verity-v-mark.png') as number;
+// The mark's artwork is wider than tall.
+const VERITY_MARK_RATIO = 240 / 168;
 
 const pendingDrafts = new Map<string, MeetingNote>();
 const pendingNoteErrors = new Map<string, string>();
@@ -258,6 +268,13 @@ export default function MeetingScreen() {
   if (meeting && meeting.id !== recoveryMeetingId.current) recoveryMeetingId.current = null;
   const transcriptList = useRef<FlatList<TranscriptRow>>(null);
   const transcriptAtEnd = useRef(true);
+  const [transcriptBehind, setTranscriptBehind] = useState(false);
+  // Reopened, the transcript starts at the newest words and follows them again.
+  useEffect(() => {
+    if (transcriptExpanded) return;
+    transcriptAtEnd.current = true;
+    setTranscriptBehind(false);
+  }, [transcriptExpanded]);
 
   useEffect(
     () =>
@@ -1517,9 +1534,10 @@ export default function MeetingScreen() {
     } else if (!askClearedAfterSend.current) editNote(insightQuestion);
     setComposing(mode);
   };
-  const composerMode = (mode: 'note' | 'ask') => (
-    <View style={styles.block}>
-      {!wide && live ? (
+  // The mode switch and its close button share one row; the field itself says what it does.
+  const composerMode = (mode: 'note' | 'ask', onClose?: () => void) =>
+    !wide && live ? (
+      <View style={styles.composerModeRow}>
         <View style={styles.segmented}>
           {(['note', 'ask'] as const).map((value) => (
             <Pressable
@@ -1544,29 +1562,32 @@ export default function MeetingScreen() {
             </Pressable>
           ))}
         </View>
-      ) : (
-        <SectionLabel>{mode === 'note' ? 'NOTE' : 'ASK VERITY'}</SectionLabel>
-      )}
-      <Text style={styles.hint}>
-        {mode === 'note'
-          ? 'Saved with the meeting · no AI'
-          : 'Answer appears under “Verity noticed”'}
-      </Text>
-    </View>
-  );
+        {onClose ? (
+          <IconButton
+            icon="x"
+            accessibilityLabel={mode === 'note' ? 'Close note' : 'Close question'}
+            onPress={onClose}
+          />
+        ) : null}
+      </View>
+    ) : (
+      <SectionLabel>{mode === 'note' ? 'NOTE' : 'ASK VERITY'}</SectionLabel>
+    );
 
-  const noteComposer = (autoFocus: boolean) => (
+  const noteComposer = (autoFocus: boolean, onClose?: () => void) => (
     <View style={styles.composerPanel}>
-      {composerMode('note')}
+      {composerMode('note', onClose)}
       <View style={styles.composer}>
-        <Text style={styles.composerTime}>
-          {meeting
-            ? noteClockTime(
-                meeting.startedAt,
-                draft?.atSeconds ?? (Date.now() - meeting.startedAt) / 1000,
-              )
-            : ''}
-        </Text>
+        <View style={styles.composerChip}>
+          <Text style={styles.composerTime}>
+            {meeting
+              ? noteClockTime(
+                  meeting.startedAt,
+                  draft?.atSeconds ?? (Date.now() - meeting.startedAt) / 1000,
+                )
+              : ''}
+          </Text>
+        </View>
         <TextInput
           accessibilityLabel="Add a meeting note"
           autoFocus={autoFocus}
@@ -1584,19 +1605,30 @@ export default function MeetingScreen() {
           onPress={submitNote}
           accessibilityRole="button"
           accessibilityLabel={noteUnsaved ? 'Retry saving note' : 'Add note'}
-          style={styles.composerSend}
+          style={[styles.composerSend, noteUnsaved && styles.composerSendRetry]}
         >
-          <Text style={styles.startButtonText}>{noteUnsaved ? 'Retry save' : 'Save note'}</Text>
+          <Icon
+            name={noteUnsaved ? 'rotate-cw' : 'arrow-up'}
+            size={18}
+            color={noteUnsaved ? colors.attention : colors.actionLabel}
+          />
         </Pressable>
       </View>
     </View>
   );
 
-  const askComposer = (autoFocus: boolean) => (
+  const askDisabled = !insightQuestion.trim() || sendingInsight;
+  const askComposer = (autoFocus: boolean, onClose?: () => void) => (
     <View style={styles.composerPanel}>
-      {composerMode('ask')}
+      {composerMode('ask', onClose)}
       <View style={styles.composer}>
-        <Text style={[styles.composerTime, { color: colors.signature }]}>✦</Text>
+        <View style={styles.composerChip}>
+          <Image
+            source={VERITY_MARK}
+            accessibilityIgnoresInvertColors
+            style={styles.composerMark}
+          />
+        </View>
         <TextInput
           accessibilityLabel="Ask Verity about this meeting"
           autoFocus={autoFocus}
@@ -1616,16 +1648,41 @@ export default function MeetingScreen() {
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="Ask Verity in meeting"
-          disabled={!insightQuestion.trim() || sendingInsight}
+          accessibilityState={{ disabled: askDisabled }}
+          disabled={askDisabled}
           onPress={() => void openResearch(insightQuestion, 'request')}
-          style={styles.composerSend}
+          style={[styles.composerSend, styles.composerSendVerity, askDisabled && styles.dimmed]}
         >
-          <Text style={styles.startButtonText}>Ask Verity</Text>
+          {sendingInsight ? (
+            <ActivityIndicator size="small" color={colors.signature} />
+          ) : (
+            <Icon name="arrow-up" size={18} color={colors.signature} />
+          )}
         </Pressable>
       </View>
     </View>
   );
 
+  const transcriptQuery = transcriptSearch.trim().toLocaleLowerCase();
+  const transcriptRows = chunks.filter(
+    (chunk) =>
+      !transcriptQuery ||
+      (chunk.text + ' ' + ('speaker' in chunk ? speakerLabel(chunk.speaker) : ''))
+        .toLocaleLowerCase()
+        .includes(transcriptQuery),
+  );
+  const speakerEditable = Boolean(meeting?.ownerToken || meeting?.engine === 'attendee');
+  const trackTranscriptEnd = (event: {
+    nativeEvent: {
+      contentOffset: { y: number };
+      contentSize: { height: number };
+      layoutMeasurement: { height: number };
+    };
+  }) => {
+    const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
+    transcriptAtEnd.current = contentSize.height - contentOffset.y - layoutMeasurement.height < 80;
+    setTranscriptBehind(!transcriptAtEnd.current);
+  };
   const transcriptSheet = meeting ? (
     <Modal
       visible={transcriptExpanded}
@@ -1636,84 +1693,125 @@ export default function MeetingScreen() {
       <View
         style={[styles.sheet, { paddingTop: insets.top + 12, paddingBottom: insets.bottom + 12 }]}
       >
+        {/* The title owns the row; closing sits at its end, never pushed by a long name. */}
         <View style={styles.sheetHeader}>
-          <Text style={styles.sheetTitle}>
-            {meeting.title ? `${meeting.title} · Transcript` : 'Transcript'}
-          </Text>
-          <Pressable
-            accessibilityRole="button"
+          <View style={styles.fill}>
+            <Text style={styles.sheetTitle} accessibilityRole="header">
+              Transcript
+            </Text>
+            <Text style={styles.hint} numberOfLines={1}>
+              {[
+                meeting.title || null,
+                live ? 'live' : null,
+                speakers.length ? `${speakers.length} voices` : null,
+              ]
+                .filter(Boolean)
+                .join(' · ')}
+            </Text>
+          </View>
+          <IconButton
+            icon="x"
             accessibilityLabel="Collapse transcript"
             onPress={() => setTranscriptExpanded(false)}
-          >
-            <Icon name="x" size={22} color={colors.text} />
-          </Pressable>
+          />
         </View>
-        {(meeting.ownerToken || meeting.engine === 'attendee') && speakers.length ? (
-          <Text style={styles.hint}>Tap a line to correct its speaker.</Text>
-        ) : null}
-        <TextField
-          label="Search transcript"
+        <SearchField
           accessibilityLabel="Search transcript"
           placeholder="Search text or speaker"
           value={transcriptSearch}
           onChangeText={setTranscriptSearch}
         />
+        {speakerEditable && speakers.length ? (
+          <Text style={styles.hint}>Tap a line to correct its speaker.</Text>
+        ) : null}
         <FlatList
           ref={transcriptList}
           testID="meeting-transcript"
-          data={chunks.filter(
-            (chunk) =>
-              !transcriptSearch.trim() ||
-              (chunk.text + ' ' + ('speaker' in chunk ? speakerLabel(chunk.speaker) : ''))
-                .toLocaleLowerCase()
-                .includes(transcriptSearch.trim().toLocaleLowerCase()),
-          )}
+          data={transcriptRows}
           // Rows read speaker names from the meeting; a rename must redraw them.
           extraData={meeting.speakerNames}
           keyExtractor={(_, index) => String(index)}
           contentContainerStyle={styles.transcriptContent}
-          renderItem={({ item }) =>
-            'start' in item && !item.pending ? (
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel={`Correct speaker for ${item.text}`}
-                disabled={!(meeting.ownerToken || meeting.engine === 'attendee')}
-                onPress={() => correctSpeaker(item, speakerChoices)}
-              >
-                <Text style={styles.transcriptText}>
-                  <Text style={styles.hint}>{elapsed(0, item.start * 1000)} </Text>
-                  <Text style={{ color: speakerTone(colors, item.speaker ?? 0) }}>
-                    {speakerLabel(item.speaker)}
-                  </Text>
-                  {`  ${item.text}`}
-                </Text>
-              </Pressable>
-            ) : (
+          renderItem={({ item, index }) => {
+            const attributed = 'start' in item && !item.pending;
+            const previous = transcriptRows[index - 1];
+            // A speaker change starts a turn with its avatar; following lines join it.
+            const startsTurn =
+              attributed &&
+              (!previous ||
+                !('start' in previous) ||
+                previous.pending ||
+                previous.speaker !== item.speaker);
+            if (!attributed)
               // Not yet attributed: shown without a speaker until the diarizer catches up.
-              <Text style={[styles.transcriptText, item.pending && styles.transcriptPending]}>
-                {item.text}
-              </Text>
-            )
-          }
+              return (
+                <Text
+                  style={[
+                    styles.transcriptText,
+                    styles.transcriptIndent,
+                    item.pending && styles.transcriptPending,
+                  ]}
+                >
+                  {item.text}
+                </Text>
+              );
+            const tone =
+              item.speaker === null ? colors.textFaint : speakerTone(colors, item.speaker);
+            return (
+              <View style={startsTurn && index > 0 ? styles.turnGap : undefined}>
+                {startsTurn ? (
+                  <View style={styles.turnHead}>
+                    <SpeakerAvatar
+                      initial={item.speaker === null ? '?' : speakerInitial(item.speaker)}
+                      tone={tone}
+                      dashed={item.speaker === null}
+                      size={28}
+                    />
+                    <Text style={[styles.turnName, { color: tone }]}>
+                      {speakerLabel(item.speaker)}
+                    </Text>
+                    <Text style={styles.turnTime}>
+                      {noteClockTime(meeting.startedAt, item.start)}
+                    </Text>
+                  </View>
+                ) : null}
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={`Correct speaker for ${item.text}`}
+                  disabled={!speakerEditable}
+                  onPress={() => correctSpeaker(item, speakerChoices)}
+                >
+                  <Text style={[styles.transcriptText, styles.transcriptIndent]}>{item.text}</Text>
+                </Pressable>
+              </View>
+            );
+          }}
           ListEmptyComponent={<Text style={styles.hint}>Recognized speech will appear here.</Text>}
           onScrollBeginDrag={() => {
             transcriptAtEnd.current = false;
           }}
-          onScrollEndDrag={({ nativeEvent }) => {
-            const { contentOffset, contentSize, layoutMeasurement } = nativeEvent;
-            transcriptAtEnd.current =
-              contentSize.height - contentOffset.y - layoutMeasurement.height < 80;
-          }}
-          onMomentumScrollEnd={({ nativeEvent }) => {
-            const { contentOffset, contentSize, layoutMeasurement } = nativeEvent;
-            transcriptAtEnd.current =
-              contentSize.height - contentOffset.y - layoutMeasurement.height < 80;
-          }}
+          onScrollEndDrag={trackTranscriptEnd}
+          onMomentumScrollEnd={trackTranscriptEnd}
           scrollEventThrottle={100}
           onContentSizeChange={() => {
             if (transcriptAtEnd.current) transcriptList.current?.scrollToEnd({ animated: true });
           }}
         />
+        {live && transcriptBehind ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Jump to the latest words"
+            onPress={() => {
+              transcriptAtEnd.current = true;
+              setTranscriptBehind(false);
+              transcriptList.current?.scrollToEnd({ animated: true });
+            }}
+            style={styles.jumpToLive}
+          >
+            <Icon name="arrow-down" size={16} color={colors.actionLabel} />
+            <Text style={styles.transcriptPillText}>Jump to live</Text>
+          </Pressable>
+        ) : null}
       </View>
     </Modal>
   ) : null;
@@ -1963,29 +2061,34 @@ export default function MeetingScreen() {
           onResearch={(question) => {
             void openResearch(question);
           }}
-          onShare={() =>
-            Alert.alert('Share meeting', 'Choose a format.', [
-              {
-                text: 'Markdown',
-                onPress: () => {
-                  void shareMeetingResult(
-                    sessionId,
-                    meeting.id,
-                    'markdown',
-                    meeting.serverId,
-                  ).catch(report);
-                },
-              },
-              {
-                text: 'PDF',
-                onPress: () => {
-                  void shareMeetingResult(sessionId, meeting.id, 'pdf', meeting.serverId).catch(
-                    report,
+          onShare={(format) => {
+            void shareMeetingResult(sessionId, meeting.id, format, meeting.serverId).catch(report);
+          }}
+          onDiscard={() =>
+            confirm({
+              title: `Discard “${meeting.title || 'this meeting'}”?`,
+              message: discardMessage(finalizedNotes.length, meeting.serverId != null),
+              confirmLabel: 'Discard',
+              destructive: true,
+              onConfirm: async () => {
+                try {
+                  // A note write still in flight would otherwise land after the delete.
+                  await pendingNoteWrites.get(meeting.id)?.catch(() => undefined);
+                  await discardFinishedMeeting(sessionId, meeting);
+                  // Nothing cached for it may be written back afterwards.
+                  pendingDrafts.delete(meeting.id);
+                  pendingNoteErrors.delete(meeting.id);
+                } catch (reason) {
+                  Alert.alert(
+                    'Could not discard',
+                    reason instanceof Error ? reason.message : 'Please try again.',
                   );
-                },
+                  return;
+                }
+                if (router.canGoBack()) router.back();
+                else router.replace({ pathname: '/session/[id]', params: { id: sessionId } });
               },
-              { text: 'Cancel', style: 'cancel' },
-            ])
+            })
           }
           onEditTitle={() => {
             if (!editable) return;
@@ -2013,10 +2116,13 @@ export default function MeetingScreen() {
               meeting.title || '',
             );
           }}
+          noteCount={finalizedNotes.length}
+          canRename={editable}
+          notesOpen={composerVisible}
+          answerCount={completedAnswerCount}
           notes={
             finalizedNotes.length || composerVisible ? (
               <View style={styles.block}>
-                <SectionLabel>YOUR NOTES</SectionLabel>
                 {finalizedNotes.map((note) => (
                   <View key={note.id}>
                     {noteRows([note])}
@@ -2054,7 +2160,6 @@ export default function MeetingScreen() {
           speakers={
             speakers.length ? (
               <View style={styles.block}>
-                <SectionLabel>PEOPLE</SectionLabel>
                 <View style={styles.avatarRow}>{speakerAvatars(true)}</View>
                 {unnamed !== undefined && editable ? (
                   <Button
@@ -2069,17 +2174,12 @@ export default function MeetingScreen() {
           }
           answers={
             visibleAnswers.length ? (
-              <View style={styles.block}>
-                <UiText
-                  variant="label"
-                  accessibilityLabel={`${completedAnswerCount} answers`}
-                >{`ANSWERS · ${completedAnswerCount}`}</UiText>
-                {noticedCards().slice(0, visibleAnswers.length)}
-              </View>
+              <View style={styles.block}>{noticedCards().slice(0, visibleAnswers.length)}</View>
             ) : null
           }
         />
         {textPrompt.dialog}
+        {confirmSheet}
         {transcriptSheet}
       </KeyboardAvoidingView>
     );
@@ -2088,62 +2188,59 @@ export default function MeetingScreen() {
   const paused = meeting.captureStatus === 'paused';
   const preparing =
     meeting.captureStatus === 'preparing' || meeting.captureStatus === 'downloading';
+  const stateWord = voiceSending
+    ? 'Sending request…'
+    : paused
+      ? 'Paused'
+      : meeting.captureStatus === 'downloading'
+        ? 'Preparing language model…'
+        : preparing
+          ? 'Preparing microphone…'
+          : !active && !recorderOnline && meeting.engine !== 'attendee'
+            ? // Viewed from another device whose recorder stopped reporting.
+              'Meeting'
+            : 'Recording';
+  const statusLine = [
+    stateWord,
+    paused || preparing ? null : elapsed(meeting.startedAt, now),
+    meeting.engine === 'attendee' ? 'Online meeting' : null,
+    meeting.serverId === null ? 'Saved only on this device' : null,
+  ]
+    .filter(Boolean)
+    .join(' · ');
+  // Phone: what is recording and how sits under the title, controls on the right.
   const header = (
     <View style={styles.header}>
-      <Pressable
-        onPress={minimize}
-        accessibilityRole="button"
-        accessibilityLabel="Minimize meeting"
-        style={styles.circleButton}
-      >
-        <Icon name="chevron-down" size={22} color={colors.text} />
-      </Pressable>
-      {wide ? (
-        <View style={styles.fill}>
-          <Text style={styles.rowText}>{meeting.title || 'Live meeting'}</Text>
-          <Text style={styles.hint}>
-            {meeting.engine === 'attendee' ? 'Online meeting' : 'In this room'}
+      <IconButton icon="chevron-down" accessibilityLabel="Minimize meeting" onPress={minimize} />
+      <View style={styles.fill}>
+        <Text style={styles.headerTitle} numberOfLines={1}>
+          {meeting.title || 'Live meeting'}
+        </Text>
+        <View style={styles.wideStatus}>
+          {liveProblem === null ? (
+            <BreathingDot
+              color={
+                voiceSending
+                  ? colors.signature
+                  : paused || preparing
+                    ? colors.textFaint
+                    : colors.success
+              }
+              breathing={!paused && !preparing}
+            />
+          ) : null}
+          <Text
+            testID="meeting-live-status"
+            numberOfLines={2}
+            style={[styles.wideStatusText, styles.fill, liveProblem !== null && styles.statusError]}
+          >
+            {liveProblem ?? statusLine}
           </Text>
         </View>
-      ) : null}
-      <Text
-        testID="meeting-live-status"
-        numberOfLines={2}
-        style={[styles.headerStatus, liveProblem !== null && styles.statusError]}
-      >
-        {liveProblem ??
-          (meeting.captureStatus === 'paused'
-            ? 'Paused'
-            : meeting.captureStatus === 'downloading'
-              ? 'Preparing language model…'
-              : meeting.captureStatus === 'preparing'
-                ? 'Preparing microphone…'
-                : meeting.serverId === null
-                  ? 'Saved only on this device'
-                  : '')}
-      </Text>
-      <View
-        style={[styles.pill, voiceSending && { borderColor: colors.signature }]}
-        accessibilityLabel={
-          paused
-            ? 'Paused'
-            : !active && !recorderOnline && meeting.engine !== 'attendee'
-              ? `Meeting duration ${elapsed(meeting.startedAt, now)}`
-              : `Recording ${elapsed(meeting.startedAt, now)}`
-        }
-      >
-        {voiceSending ? (
-          <Text style={[styles.pillText, { color: colors.signature }]}>✦ Sending request…</Text>
-        ) : (
-          <>
-            <BreathingDot color={colors.attention} breathing={!paused && !preparing} />
-            <Text style={[styles.pillText, paused && { color: colors.attention }]}>
-              {paused ? 'Paused' : preparing ? 'Preparing…' : elapsed(meeting.startedAt, now)}
-            </Text>
-          </>
-        )}
       </View>
-      <Pressable
+      <IconButton
+        icon={paused ? 'play' : 'pause'}
+        accessibilityLabel={paused ? 'Resume meeting' : 'Pause meeting'}
         disabled={
           busy ||
           meeting.engine === 'attendee' ||
@@ -2151,12 +2248,7 @@ export default function MeetingScreen() {
           (!paused && meeting.captureStatus !== 'listening')
         }
         onPress={togglePause}
-        style={styles.circleButton}
-        accessibilityRole="button"
-        accessibilityLabel={paused ? 'Resume meeting' : 'Pause meeting'}
-      >
-        <Icon name={paused ? 'play' : 'pause'} size={18} color={colors.text} />
-      </Pressable>
+      />
       <Pressable
         disabled={busy || pendingCommand === 'stop'}
         onPress={end}
@@ -2180,10 +2272,10 @@ export default function MeetingScreen() {
           accessibilityRole="button"
           accessibilityLabel="Open full transcript"
           onPress={() => setTranscriptExpanded(true)}
+          style={styles.transcriptPill}
         >
-          <Text style={styles.hint}>
-            {speakers.length ? `${speakers.length} voices · ` : ''}Transcript ›
-          </Text>
+          <Icon name="file-text" size={16} color={colors.action} />
+          <Text style={styles.transcriptPillText}>Transcript</Text>
         </Pressable>
       </View>
       {restoreMerged}
@@ -2193,7 +2285,7 @@ export default function MeetingScreen() {
   const noticed = (
     <View style={styles.block}>
       <View style={styles.noticedHeader}>
-        <Text style={[styles.sparkle, { color: colors.signature }]}>✦</Text>
+        <Image source={VERITY_MARK} accessibilityIgnoresInvertColors style={styles.composerMark} />
         <Text style={styles.noticedTitle}>Verity noticed</Text>
         {cards.length ? <Text style={styles.hint}>{cards.length}</Text> : null}
       </View>
@@ -2208,23 +2300,6 @@ export default function MeetingScreen() {
   );
 
   if (wide) {
-    const stateWord = voiceSending
-      ? 'Sending request…'
-      : paused
-        ? 'Paused'
-        : meeting.captureStatus === 'downloading'
-          ? 'Preparing language model…'
-          : preparing
-            ? 'Preparing microphone…'
-            : 'Recording';
-    const statusLine = [
-      stateWord,
-      paused || preparing ? null : elapsed(meeting.startedAt, now),
-      meeting.engine === 'attendee' ? 'Online meeting' : null,
-      meeting.serverId === null ? 'Saved only on this device' : null,
-    ]
-      .filter(Boolean)
-      .join(' · ');
     // Consecutive lines of one speaker read as one turn; words the diarizer has not
     // reached yet trail the latest turn in a muted tone.
     const turns: { speaker: number | null; start: number; parts: TranscriptRow[] }[] = [];
@@ -2285,14 +2360,15 @@ export default function MeetingScreen() {
                 }
                 onPress={togglePause}
               />
-              <Button
-                label="End"
-                accessibilityLabel="End meeting"
-                variant="secondary"
-                size="compact"
+              <Pressable
                 disabled={busy || pendingCommand === 'stop'}
                 onPress={end}
-              />
+                style={styles.endButton}
+                accessibilityRole="button"
+                accessibilityLabel="End meeting"
+              >
+                <Text style={styles.endButtonText}>End</Text>
+              </Pressable>
             </View>
           )}
           <View style={styles.columns}>
@@ -2481,7 +2557,7 @@ export default function MeetingScreen() {
           keyboardShouldPersistTaps="handled"
         >
           <MeetingWave active={!paused && !preparing} addressed={voiceSending} />
-          {speakerRow(false)}
+          {speakerRow(true)}
           {noticed}
           {composing === 'note' && finalizedNotes.length ? (
             <View style={styles.block}>
@@ -2497,37 +2573,20 @@ export default function MeetingScreen() {
         </ScrollView>
         {composing === 'note' || noteUnsaved ? (
           <View style={styles.composerLine}>
-            <View style={styles.fill}>{noteComposer(composing === 'note')}</View>
             {/* A failed save keeps the field open until it is retried; a draft stays autosaved. */}
-            {noteUnsaved ? null : (
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel="Close note"
-                onPress={() => setComposing(null)}
-              >
-                <Icon name="x" size={20} color={colors.textMuted} />
-              </Pressable>
-            )}
+            {noteComposer(composing === 'note', noteUnsaved ? undefined : () => setComposing(null))}
           </View>
         ) : composing === 'ask' ? (
-          <View style={styles.composerLine}>
-            <View style={styles.fill}>{askComposer(true)}</View>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Close question"
-              onPress={() => setComposing(null)}
-            >
-              <Icon name="x" size={20} color={colors.textMuted} />
-            </Pressable>
-          </View>
+          <View style={styles.composerLine}>{askComposer(true, () => setComposing(null))}</View>
         ) : (
           <View style={styles.bottomBar}>
             <Pressable
               accessibilityRole="button"
               accessibilityLabel="Write a note"
               onPress={() => setComposing('note')}
-              style={styles.barButton}
+              style={[styles.barButton, styles.barButtonNote]}
             >
+              <Icon name="edit-2" size={18} color={colors.text} />
               <Text style={styles.barButtonText}>
                 Note
                 {draft?.text
@@ -2543,7 +2602,12 @@ export default function MeetingScreen() {
               onPress={() => setComposing('ask')}
               style={[styles.barButton, styles.barButtonPrimary]}
             >
-              <Text style={styles.barButtonPrimaryText}>✦ Ask Verity</Text>
+              <Image
+                source={VERITY_MARK}
+                accessibilityIgnoresInvertColors
+                style={styles.composerMark}
+              />
+              <Text style={styles.barButtonText}>Ask Verity</Text>
             </Pressable>
           </View>
         )}
@@ -2598,33 +2662,6 @@ const styles = StyleSheet.create((theme) => {
     narrow: { width: '100%', maxWidth: 640, alignSelf: 'center' },
     block: { gap: theme.spacing.md },
     header: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
-    circleButton: {
-      width: 40,
-      height: 40,
-      borderRadius: 20,
-      borderWidth: 1,
-      borderColor: colors.border,
-      backgroundColor: colors.surface,
-      alignItems: 'center',
-      justifyContent: 'center',
-    },
-    pill: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      gap: theme.spacing.sm,
-      minHeight: 40,
-      paddingHorizontal: theme.spacing.lg,
-      borderRadius: theme.radius.pill,
-      borderWidth: 1,
-      borderColor: colors.border,
-      backgroundColor: colors.surface,
-    },
-    pillText: {
-      color: colors.text,
-      fontSize: theme.typography.row.fontSize,
-      fontFamily: theme.fonts.bold,
-      fontVariant: ['tabular-nums'],
-    },
     dotRing: {
       width: 18,
       height: 18,
@@ -2639,16 +2676,14 @@ const styles = StyleSheet.create((theme) => {
       paddingHorizontal: theme.spacing.lg,
       borderRadius: theme.radius.pill,
       borderWidth: 1,
-      borderColor: colors.border,
-      backgroundColor: colors.surface,
+      borderColor: tint(colors.attention, 'border'),
+      backgroundColor: tint(colors.attention, 'fill'),
       justifyContent: 'center',
     },
-    headerStatus: {
-      flex: 1,
-      color: colors.textFaint,
-      fontFamily: theme.fonts.regular,
-      fontSize: theme.typography.footnote.fontSize,
-      textAlign: 'right',
+    headerTitle: {
+      color: colors.text,
+      fontFamily: theme.fonts.bold,
+      fontSize: theme.typography.row.fontSize,
     },
     endButtonText: {
       color: colors.attention,
@@ -2679,11 +2714,26 @@ const styles = StyleSheet.create((theme) => {
     avatarLine: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.md },
     avatarRow: { flexDirection: 'row', flexWrap: 'wrap', gap: theme.spacing.md },
     noticedHeader: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
-    sparkle: { fontFamily: theme.fonts.regular, fontSize: theme.typography.row.fontSize },
+    transcriptPill: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: theme.spacing.xs + 2,
+      minHeight: 36,
+      paddingHorizontal: theme.spacing.md,
+      borderRadius: theme.radius.pill,
+      borderWidth: 1,
+      borderColor: colors.border,
+      backgroundColor: colors.surface,
+    },
+    transcriptPillText: {
+      color: colors.actionLabel,
+      fontFamily: theme.fonts.regular,
+      fontSize: theme.typography.bodySmall.fontSize,
+    },
     noticedTitle: {
       flex: 1,
       color: colors.text,
-      fontSize: theme.typography.title.fontSize,
+      fontSize: theme.typography.row.fontSize,
       fontFamily: theme.fonts.bold,
     },
     note: {
@@ -2702,61 +2752,80 @@ const styles = StyleSheet.create((theme) => {
       padding: theme.spacing.lg,
       gap: theme.spacing.md,
     },
-    composerLine: {
+    composerLine: { paddingTop: theme.spacing.sm, paddingBottom: theme.spacing.lg },
+    composerPanel: { gap: theme.spacing.sm },
+    composerModeRow: {
       flexDirection: 'row',
       alignItems: 'center',
+      justifyContent: 'space-between',
       gap: theme.spacing.sm,
-      paddingVertical: theme.spacing.sm,
     },
-    composerPanel: {
-      gap: 8,
-      borderRadius: 26,
-      padding: 12,
-      borderWidth: 1,
-      borderColor: colors.border,
-      backgroundColor: colors.surfaceAlt,
-    },
+    // One row like a message field: what the entry is on the left, send on the right.
     composer: {
-      flexDirection: 'column',
-      alignItems: 'center',
+      flexDirection: 'row',
+      alignItems: 'flex-end',
       gap: theme.spacing.sm,
       borderWidth: 1,
       borderColor: colors.border,
       backgroundColor: colors.surfaceAlt,
-      borderRadius: theme.radius.lg,
-      paddingLeft: 0,
-      paddingRight: 0,
-      paddingVertical: theme.spacing.xs,
+      borderRadius: 24,
+      padding: 5,
+    },
+    composerChip: {
+      minWidth: 38,
+      height: 38,
+      paddingHorizontal: theme.spacing.sm,
+      borderRadius: 19,
+      alignItems: 'center',
+      justifyContent: 'center',
+      backgroundColor: tint(colors.action, 'fill'),
     },
     composerTime: {
-      color: colors.action,
+      color: colors.actionLabel,
       fontFamily: theme.fonts.bold,
       fontSize: theme.typography.bodySmall.fontSize,
+      fontVariant: ['tabular-nums'],
     },
+    composerMark: { width: 18, height: 18 / VERITY_MARK_RATIO },
     composerInput: {
-      alignSelf: 'stretch',
+      flex: 1,
       color: colors.text,
       fontFamily: theme.fonts.regular,
       fontSize: theme.typography.row.fontSize,
-      minHeight: 40,
+      minHeight: 38,
       maxHeight: 120,
-      paddingVertical: theme.spacing.sm,
+      paddingTop: 9,
+      paddingBottom: 9,
     },
     composerSend: {
-      alignSelf: 'flex-end',
-      minWidth: 96,
-      minHeight: 44,
-      paddingHorizontal: 12,
-      borderRadius: 22,
-      backgroundColor: colors.surface,
-      borderWidth: 1,
-      borderColor: colors.border,
+      width: 38,
+      height: 38,
+      borderRadius: 19,
       alignItems: 'center',
       justifyContent: 'center',
+      backgroundColor: tint(colors.action, 'fill'),
+      borderWidth: 1,
+      borderColor: tint(colors.action, 'border'),
     },
-    bottomBar: { flexDirection: 'row', gap: theme.spacing.md, paddingVertical: theme.spacing.sm },
+    composerSendRetry: {
+      backgroundColor: tint(colors.attention, 'fill'),
+      borderColor: tint(colors.attention, 'border'),
+    },
+    composerSendVerity: {
+      backgroundColor: tint(colors.signature, 'fill'),
+      borderColor: tint(colors.signature, 'border'),
+    },
+    dimmed: { opacity: 0.45 },
+    // Lifted clear of the home indicator so neither pill sits on the screen edge.
+    bottomBar: {
+      flexDirection: 'row',
+      gap: theme.spacing.md,
+      paddingTop: theme.spacing.sm,
+      paddingBottom: theme.spacing.lg,
+    },
     barButton: {
-      flex: 1,
+      flexDirection: 'row',
+      gap: theme.spacing.sm,
       minHeight: 52,
       borderRadius: theme.radius.pill,
       borderWidth: 1,
@@ -2764,17 +2833,18 @@ const styles = StyleSheet.create((theme) => {
       backgroundColor: colors.surfaceAlt,
       alignItems: 'center',
       justifyContent: 'center',
+      paddingHorizontal: theme.spacing.lg,
     },
+    barButtonNote: { flexGrow: 0, flexShrink: 0, minWidth: 128 },
     barButtonText: {
       color: colors.text,
       fontSize: theme.typography.row.fontSize,
       fontFamily: theme.fonts.bold,
     },
-    barButtonPrimary: { borderColor: colors.action, backgroundColor: 'transparent' },
-    barButtonPrimaryText: {
-      color: colors.action,
-      fontSize: theme.typography.row.fontSize,
-      fontFamily: theme.fonts.bold,
+    barButtonPrimary: {
+      flex: 1,
+      borderColor: tint(colors.signature, 'border'),
+      backgroundColor: tint(colors.signature, 'fill'),
     },
     columns: { flex: 1, flexDirection: 'row', gap: theme.spacing.xl, paddingTop: theme.spacing.md },
     wideTitle: { ...theme.typography.title, color: colors.text },
@@ -2846,14 +2916,14 @@ const styles = StyleSheet.create((theme) => {
       borderWidth: 1,
       borderColor: colors.border,
       backgroundColor: colors.surfaceAlt,
-      borderRadius: theme.radius.control,
-      padding: theme.spacing.xs,
+      borderRadius: theme.radius.pill,
+      padding: 2,
     },
     segment: {
-      flex: 1,
       alignItems: 'center',
-      paddingVertical: theme.spacing.sm,
-      borderRadius: theme.radius.tile,
+      paddingVertical: theme.spacing.xs + 2,
+      paddingHorizontal: theme.spacing.lg,
+      borderRadius: theme.radius.pill,
       borderWidth: 1,
       borderColor: 'transparent',
     },
@@ -2864,7 +2934,7 @@ const styles = StyleSheet.create((theme) => {
     segmentText: {
       color: colors.textMuted,
       fontFamily: theme.fonts.regular,
-      fontSize: theme.typography.row.fontSize,
+      fontSize: theme.typography.bodySmall.fontSize,
     },
     row: {
       flexDirection: 'row',
@@ -2911,13 +2981,30 @@ const styles = StyleSheet.create((theme) => {
       padding: theme.spacing.lg,
       gap: theme.spacing.md,
     },
-    sheetHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+    sheetHeader: { flexDirection: 'row', alignItems: 'flex-start', gap: theme.spacing.md },
     sheetTitle: {
       color: colors.text,
-      fontSize: theme.typography.title.fontSize,
+      fontSize: theme.typography.display.fontSize,
       fontFamily: theme.fonts.bold,
     },
-    transcriptContent: { gap: theme.spacing.md, paddingBottom: theme.spacing.xl },
+    transcriptIndent: { paddingLeft: 36 },
+    turnHead: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
+    turnGap: { marginTop: theme.spacing.md },
+    jumpToLive: {
+      position: 'absolute',
+      alignSelf: 'center',
+      bottom: 32,
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: theme.spacing.xs + 2,
+      minHeight: 40,
+      paddingHorizontal: theme.spacing.lg,
+      borderRadius: theme.radius.pill,
+      borderWidth: 1,
+      borderColor: tint(colors.action, 'border'),
+      backgroundColor: colors.surface,
+    },
+    transcriptContent: { gap: theme.spacing.xs, paddingBottom: 96 },
     transcriptText: {
       color: colors.text,
       fontFamily: theme.fonts.regular,

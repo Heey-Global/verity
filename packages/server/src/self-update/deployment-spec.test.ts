@@ -471,3 +471,34 @@ describe('ServerDeploymentSpec', () => {
     expect(parseServerDeploymentSpec(sealed(null))).toBeNull();
   });
 });
+
+it('permits only the paired fixed read-only project egress controls', () => {
+  const pair = [
+    {
+      source: { kind: 'bind' as const, path: '/run/verity-egress' },
+      target: '/run/verity-egress',
+      readOnly: true,
+    },
+    {
+      source: { kind: 'bind' as const, path: '/etc/verity-egress-server' },
+      target: '/run/verity-egress-key',
+      readOnly: true,
+    },
+  ];
+  expect(
+    parseServerDeploymentSpec(
+      sealDeploymentSpec({ ...body(), mounts: [...body().mounts, ...pair] }),
+    ),
+  ).not.toBeNull();
+  for (const invalid of [
+    pair.slice(0, 1),
+    pair.map((mount) => ({ ...mount, readOnly: false })),
+    pair.map((mount) => ({ ...mount, source: { kind: 'bind' as const, path: '/etc' } })),
+  ]) {
+    expect(
+      parseServerDeploymentSpec(
+        sealDeploymentSpec({ ...body(), mounts: [...body().mounts, ...invalid] }),
+      ),
+    ).toBeNull();
+  }
+});

@@ -16,6 +16,7 @@ afterEach(async () => {
 async function setup(
   initial: Partial<VeritySettingsRecord> = {},
   projectEgressAvailable?: () => Promise<boolean>,
+  projectEgressStatus?: SettingsRouteDeps['projectEgressStatus'],
 ) {
   let settings = { ...initial } as VeritySettingsRecord;
   const store = {
@@ -44,6 +45,7 @@ async function setup(
     onUplinkCredentialsChanged: uplinkChanged,
     onPremiumFeatureSwitchesChanged: switchesChanged,
     projectEgressAvailable,
+    projectEgressStatus,
   });
   await app.ready();
   return { app, store, changed, switchesChanged, uplinkChanged, refreshOpenCodeModels };
@@ -357,9 +359,22 @@ describe('PATCH /settings network protection', () => {
       const { app, store } = await setup({}, available);
       const response = await enable(app, true);
       expect(response.statusCode).toBe(409);
-      expect(response.json().message).toMatch(/not installed on this host/);
+      expect(response.json().message).toMatch(/unavailable on this host/);
       expect((await store.getVeritySettings()).projectEgressEnabled).toBeUndefined();
     }
+  });
+
+  it('requires fresh structured readiness instead of a stale compatibility boolean', async () => {
+    const status = vi.fn(async () => ({ available: false, reason: 'controller_failed' as const }));
+    const available = vi.fn(async () => true);
+    const { app, store } = await setup({}, available, status);
+    expect((await enable(app, true)).statusCode).toBe(409);
+    expect(status).toHaveBeenCalledExactlyOnceWith(true);
+    expect(available).not.toHaveBeenCalled();
+    expect((await store.getVeritySettings()).projectEgressEnabled).toBeUndefined();
+    status.mockClear();
+    expect((await enable(app, false)).statusCode).toBe(200);
+    expect(status).not.toHaveBeenCalled();
   });
 
   it('enables it with an answering host and always allows switching it off', async () => {
@@ -367,6 +382,7 @@ describe('PATCH /settings network protection', () => {
     const { app, store } = await setup({}, available);
     expect((await enable(app, true)).statusCode).toBe(200);
     expect((await store.getVeritySettings()).projectEgressEnabled).toBe(true);
+    expect(available).toHaveBeenCalledWith(true);
     available.mockResolvedValue(false);
     available.mockClear();
     expect((await enable(app, false)).statusCode).toBe(200);

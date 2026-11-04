@@ -6,13 +6,19 @@ import { currentMeeting, endMeeting } from './liveMeetingSession';
 import {
   acknowledgeMeeting,
   acknowledgeNote,
+  deleteMeeting,
   getSyncCursor,
   hasPendingMeetingSync,
   importChanges,
   pendingMeetings,
   pendingNotes,
 } from './liveMeetingStore';
-import { startLiveMeetingSync, syncMeetingSession } from './liveMeetingSync';
+import { VerityApiError } from '@verity/mobile';
+import {
+  discardFinishedMeeting,
+  startLiveMeetingSync,
+  syncMeetingSession,
+} from './liveMeetingSync';
 
 jest.mock('./client', () => ({
   createVerityClient: jest.fn(),
@@ -29,6 +35,7 @@ jest.mock('./liveMeetingSession', () => ({
 jest.mock('./liveMeetingStore', () => ({
   acknowledgeMeeting: jest.fn().mockResolvedValue(undefined),
   acknowledgeNote: jest.fn().mockResolvedValue(undefined),
+  deleteMeeting: jest.fn().mockResolvedValue(undefined),
   getSyncCursor: jest.fn().mockResolvedValue(0),
   hasPendingMeetingSync: jest.fn().mockResolvedValue(false),
   importChanges: jest.fn().mockResolvedValue(undefined),
@@ -39,7 +46,10 @@ jest.mock('./liveMeetingStore', () => ({
 const client = {
   putLiveMeeting: jest.fn().mockResolvedValue(undefined),
   putLiveMeetingNote: jest.fn().mockResolvedValue(undefined),
-  getLiveMeetingChanges: jest.fn().mockResolvedValue({ cursor: 3, meetings: [], notes: [] }),
+  getLiveMeetingChanges: jest
+    .fn()
+    .mockResolvedValue({ cursor: 3, meetings: [], notes: [], deletedMeetingIds: [] }),
+  discardSessionMeeting: jest.fn().mockResolvedValue(undefined),
   getLiveMeetingCommands: jest.fn().mockResolvedValue({ commands: [], recorderOnline: true }),
   acknowledgeLiveMeetingCommand: jest.fn().mockResolvedValue(undefined),
 };
@@ -140,7 +150,7 @@ it('uploads the meeting before its notes and acknowledges only the sent revision
   expect(acknowledgeMeeting).toHaveBeenCalledWith('server-1', meeting.id, 4);
   expect(acknowledgeNote).toHaveBeenCalledWith('server-1', note.id, 3);
   expect(getSyncCursor).toHaveBeenCalledWith('server-1', 'session-1');
-  expect(importChanges).toHaveBeenCalledWith('server-1', 'session-1', 3, [], []);
+  expect(importChanges).toHaveBeenCalledWith('server-1', 'session-1', 3, [], [], []);
   expect(hasPendingMeetingSync).toHaveBeenCalledWith('server-1', 'session-1');
 });
 
@@ -149,7 +159,7 @@ it('keeps an unsent revision pending while still receiving remote changes', asyn
   client.putLiveMeeting.mockRejectedValueOnce(new Error('offline'));
   expect(await syncMeetingSession('session-1')).toEqual({ pending: true });
   expect(acknowledgeMeeting).not.toHaveBeenCalled();
-  expect(importChanges).toHaveBeenCalledWith('server-1', 'session-1', 3, [], []);
+  expect(importChanges).toHaveBeenCalledWith('server-1', 'session-1', 3, [], [], []);
   expect(await syncMeetingSession('session-1')).toEqual({ pending: false });
   expect(acknowledgeMeeting).toHaveBeenCalledWith('server-1', meeting.id, 4);
 });
@@ -170,7 +180,7 @@ it('does not upload or apply recorder commands after switching servers', async (
   expect(client.putLiveMeeting).not.toHaveBeenCalled();
   expect(client.putLiveMeetingNote).not.toHaveBeenCalled();
   expect(getSyncCursor).toHaveBeenCalledWith('server-2', 'session-1');
-  expect(importChanges).toHaveBeenCalledWith('server-2', 'session-1', 3, [], []);
+  expect(importChanges).toHaveBeenCalledWith('server-2', 'session-1', 3, [], [], []);
 
   jest.mocked(currentMeeting).mockReturnValue({ ...meeting, error: null });
   Object.defineProperty(AppState, 'currentState', { configurable: true, value: 'active' });
@@ -211,4 +221,96 @@ it('uploads a viewing device note without a local recording or a new transcript 
     stop();
     subscription.mockRestore();
   }
+});
+
+it('passes meetings discarded on another device to the local store', async () => {
+  client.getLiveMeetingChanges.mockResolvedValueOnce({
+    cursor: 9,
+    meetings: [],
+    notes: [],
+    deletedMeetingIds: ['meeting-1'],
+  });
+  await syncMeetingSession('session-1');
+  expect(importChanges).toHaveBeenCalledWith('server-1', 'session-1', 9, [], [], ['meeting-1']);
+});
+
+// Without this, a recorder holding an unsent revision would retry the refused upload on
+// every sync and report the meeting as pending forever.
+it('drops a pending meeting the server reports as discarded', async () => {
+  jest.mocked(pendingMeetings).mockResolvedValue([meeting]);
+  client.putLiveMeeting.mockRejectedValueOnce(
+    new VerityApiError(409, 'This meeting was discarded.', { code: 'meeting_deleted' }),
+  );
+  expect(await syncMeetingSession('session-1')).toEqual({ pending: false });
+  expect(deleteMeeting).toHaveBeenCalledWith(meeting.id, 'server-1');
+  expect(acknowledgeMeeting).not.toHaveBeenCalled();
+});
+
+it('keeps a pending meeting on other upload conflicts', async () => {
+  jest.mocked(pendingMeetings).mockResolvedValue([meeting]);
+  client.putLiveMeeting.mockRejectedValueOnce(new VerityApiError(409, 'owner mismatch'));
+  expect(await syncMeetingSession('session-1')).toEqual({ pending: true });
+  expect(deleteMeeting).not.toHaveBeenCalled();
+});
+
+describe('discardFinishedMeeting', () => {
+  const ended = { ...meeting, state: 'ended' as const };
+
+  it('deletes on the server before deleting the local copy', async () => {
+    await discardFinishedMeeting('session-1', ended, client as never);
+    expect(client.discardSessionMeeting).toHaveBeenCalledWith('session-1', meeting.id);
+    expect(deleteMeeting).toHaveBeenCalledWith(meeting.id, 'server-1');
+    expect(client.discardSessionMeeting.mock.invocationCallOrder[0]).toBeLessThan(
+      jest.mocked(deleteMeeting).mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it('keeps the local copy when the server refuses', async () => {
+    client.discardSessionMeeting.mockRejectedValueOnce(new VerityApiError(503, 'unavailable'));
+    await expect(discardFinishedMeeting('session-1', ended, client as never)).rejects.toThrow(
+      'unavailable',
+    );
+    expect(deleteMeeting).not.toHaveBeenCalled();
+  });
+
+  it('deletes locally when the server no longer has the meeting', async () => {
+    client.discardSessionMeeting.mockRejectedValueOnce(
+      new VerityApiError(404, 'meeting not found', { code: 'meeting_not_found' }),
+    );
+    await discardFinishedMeeting('session-1', ended, client as never);
+    expect(deleteMeeting).toHaveBeenCalledWith(meeting.id, 'server-1');
+  });
+
+  // An older server answers 404 for the unknown route; deleting locally then would lose
+  // the only copy of unsent changes while the server keeps the meeting.
+  it('keeps the local copy for any other 404', async () => {
+    client.discardSessionMeeting.mockRejectedValueOnce(new VerityApiError(404, 'Not Found'));
+    await expect(discardFinishedMeeting('session-1', ended, client as never)).rejects.toThrow();
+    expect(deleteMeeting).not.toHaveBeenCalled();
+  });
+
+  it('deletes a meeting saved only on this device without the server', async () => {
+    await discardFinishedMeeting('session-1', { ...ended, serverId: null }, client as never);
+    expect(client.discardSessionMeeting).not.toHaveBeenCalled();
+    expect(deleteMeeting).toHaveBeenCalledWith(meeting.id, null);
+  });
+
+  it('refuses a running meeting or one from another server', async () => {
+    await expect(discardFinishedMeeting('session-1', meeting, client as never)).rejects.toThrow(
+      'End the meeting',
+    );
+    await expect(
+      discardFinishedMeeting('session-1', { ...ended, serverId: 'server-2' }, client as never),
+    ).rejects.toThrow('Reconnect');
+    // An online meeting that is still recovering is not finished yet.
+    await expect(
+      discardFinishedMeeting(
+        'session-1',
+        { ...ended, state: 'interrupted', engine: 'attendee' },
+        client as never,
+      ),
+    ).rejects.toThrow('End the meeting');
+    expect(client.discardSessionMeeting).not.toHaveBeenCalled();
+    expect(deleteMeeting).not.toHaveBeenCalled();
+  });
 });

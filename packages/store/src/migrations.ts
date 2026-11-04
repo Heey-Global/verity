@@ -5255,3 +5255,24 @@ migrations['0189_user_view_state'] = {
     await sql`drop table user_view_state`.execute(db);
   },
 };
+
+migrations['0190_live_meeting_deletions'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    // A tombstone per discarded meeting: the change feed tells other devices to remove
+    // it, and a recorder still holding an unsent revision cannot upload it again.
+    await sql`create table live_meeting_deletions (
+      meeting_id text primary key,
+      session_id text not null references sessions(session_id) on delete cascade,
+      deleted_seq bigint not null,
+      deleted_at bigint not null,
+      -- What cleanup outside the meeting tables needs, so a failed step can be repeated.
+      engine text not null,
+      started_at bigint not null
+    )`.execute(db);
+    await sql`create index live_meeting_deletions_session_updates
+      on live_meeting_deletions(session_id, deleted_seq)`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table live_meeting_deletions`.execute(db);
+  },
+};

@@ -904,6 +904,7 @@ export const veritySettingsSchema = z.object({
   /** System-wide network protection, and whether this host's egress service answers. */
   projectEgressEnabled: z.boolean().optional(),
   projectEgressAvailable: z.boolean().optional(),
+  projectEgressStatus: z.object({ available: z.boolean(), reason: z.string().max(64) }).optional(),
   uplinkInstallationId: z.string().nullable(),
   transcribeBaseUrl: z.string().nullable(),
   transcribeModel: z.string().nullable(),
@@ -1982,7 +1983,15 @@ export type SessionFileRoot =
 
 export const sessionDirectorySchema = z.object({
   documentStatus: z
-    .object({ pending: z.boolean(), running: z.boolean(), warning: z.string().optional() })
+    .object({
+      pending: z.boolean(),
+      running: z.boolean(),
+      warning: z.string().optional(),
+      inspectionError: z.boolean().optional(),
+      excludedEntries: z
+        .array(z.object({ path: z.string(), reason: z.enum(['generated', 'unsupported']) }))
+        .optional(),
+    })
     .optional(),
   codeAvailable: z.boolean().optional(),
   workspaceKind: z.enum(['documents', 'code']).optional(),
@@ -2832,8 +2841,18 @@ export class VerityClient {
         cursor: z.number(),
         meetings: z.array(liveMeetingSchema),
         notes: z.array(liveMeetingNoteSchema),
+        // Servers without discarding never report deletions.
+        deletedMeetingIds: z.array(z.string()).default([]),
       })
       .parse(await res.json());
+  }
+
+  /** Permanently discards a finished meeting of a session for every device. */
+  async discardSessionMeeting(sessionId: string, meetingId: string): Promise<void> {
+    await this.request(
+      `/sessions/${encodeURIComponent(sessionId)}/live-meetings/${encodeURIComponent(meetingId)}`,
+      { method: 'DELETE' },
+    );
   }
 
   /** Asks the server's model whether "Verity" in this utterance was a request, in any language. */
