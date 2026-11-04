@@ -1741,6 +1741,7 @@ describe('error boundary', () => {
       tasks: { expirePendingTitles: async () => [] },
       liveMeetings: { unfinishedResults: async () => [] },
       listMovePreviewRestarts: async () => [],
+      listPendingSessionDeletions: async () => [],
       listSessions: () => Promise.reject(new Error('driver destroyed SECRET-INTERNAL')),
     } as unknown as Parameters<typeof buildServer>[0]['eventStore'];
     const badApp = buildServer({ eventStore: throwing, bus: new InMemoryEventBus(), conductor });
@@ -2016,6 +2017,7 @@ describe('GET /live (WebSocket)', () => {
       tasks: { expirePendingTitles: async () => [] },
       liveMeetings: { unfinishedResults: async () => [] },
       listMovePreviewRestarts: async () => [],
+      listPendingSessionDeletions: async () => [],
       getSession: async () => ({ sessionId: 's1', projectId: null }),
       getEventsAfter: () => Promise.reject(new Error('db down INTERNAL')),
     } as unknown as Parameters<typeof buildServer>[0]['eventStore'];
