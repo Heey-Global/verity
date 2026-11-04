@@ -64,7 +64,19 @@ it('captures resources committed after the first deletion snapshot in the same t
       expires_at: new Date(Date.now() + 60000).toISOString(),
     })
     .execute();
+  await ctx.db
+    .insertInto('session_backend_state')
+    .values({
+      session_id: 's',
+      backend: 'codex',
+      backend_session_id: 'late-thread',
+      context_seq: 0,
+    })
+    .execute();
   await ctx.store.deleteSession('s');
+  expect(JSON.parse((await ctx.store.getSessionDeletion('s'))!.payload).artifactBindings).toEqual([
+    { backend: 'codex', backendSessionId: 'late-thread' },
+  ]);
   expect(await ctx.store.listLocalPreviewShares()).toEqual([]);
   const record = (await ctx.store.listPendingSessionDeletions())[0]!;
   expect(JSON.parse(record.payload).previewIds).toEqual(['late-share']);
@@ -120,6 +132,9 @@ it('merges late cleanup snapshots monotonically across store wrappers', async ()
       previewIds: ['captured-share'],
       managed: { sessionId: 's', projectId: 'p', instanceIds: ['captured-instance'] },
       terminationConfirmed: true,
+      artifactBindings: [{ backend: 'codex', backendSessionId: 'initial' }],
+      purgedArtifactBindings: [{ backend: 'codex', backendSessionId: 'initial' }],
+      legacyArtifactsPurged: true,
     }),
   );
   const stale = new EventStore(ctx.db);
@@ -132,6 +147,9 @@ it('merges late cleanup snapshots monotonically across store wrappers', async ()
         managed: { sessionId: 's', projectId: 'p', instanceIds: ['late-instance'] },
         terminationConfirmed: false,
         failures: 2,
+        artifactBindings: [{ backend: 'codex', backendSessionId: 'late' }],
+        purgedArtifactBindings: [],
+        legacyArtifactsPurged: false,
       }),
     ),
     stale.updateSessionDeletionPayload(
@@ -154,6 +172,14 @@ it('merges late cleanup snapshots monotonically across store wrappers', async ()
     instanceIds: ['captured-instance', 'late-instance'],
   });
   expect(payload.terminationConfirmed).toBe(true);
+  expect(payload.artifactBindings).toEqual([
+    { backend: 'codex', backendSessionId: 'initial' },
+    { backend: 'codex', backendSessionId: 'late' },
+  ]);
+  expect(payload.purgedArtifactBindings).toEqual([
+    { backend: 'codex', backendSessionId: 'initial' },
+  ]);
+  expect(payload.legacyArtifactsPurged).toBe(true);
   expect(payload.session).toEqual(input);
   await ctx.store.finishSessionDeletionCleanup('s');
   await stale.updateSessionDeletionPayload(

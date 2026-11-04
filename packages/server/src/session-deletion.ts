@@ -5,6 +5,10 @@ export interface SessionDeletionPayload {
   previewIds: string[];
   runnerIdentity?: { turnId: string; startCommandId: string };
   terminationConfirmed?: boolean;
+  artifactBindings?: { backend: string; backendSessionId: string }[];
+  legacyArtifactsRequired?: boolean;
+  legacyArtifactsPurged?: boolean;
+  purgedArtifactBindings?: { backend: string; backendSessionId: string }[];
   retryAt?: number;
   failures?: number;
   managed?: { sessionId: string; projectId: string | null; instanceIds: string[] };
@@ -50,7 +54,7 @@ export function createSessionDeletionManager(options: {
   terminationConfirmed?: (id: string) => boolean;
   capture: (session: SessionRecord) => Promise<SessionDeletionPayload>;
   prepare: (id: string) => Promise<void>;
-  beforeDelete?: (id: string) => Promise<void>;
+  beforeDelete?: (id: string, payload: SessionDeletionPayload) => Promise<void>;
   cleanup: (payload: SessionDeletionPayload, terminationConfirmed: boolean) => Promise<boolean>;
   releasePublications?: (payload: SessionDeletionPayload) => Promise<boolean>;
   report: (id: string, phase: string, outcome: string, elapsedMs: number, error?: unknown) => void;
@@ -60,6 +64,7 @@ export function createSessionDeletionManager(options: {
   const logical = new Map<string, Promise<void>>();
   const cleaning = new Map<string, Promise<void>>();
   const confirmed = new Set<string>();
+  const artifactPurges = new Map<string, Promise<void>>();
   const retryAt = new Map<string, number>();
   const failures = new Map<string, number>();
   let closing = false;
@@ -84,6 +89,52 @@ export function createSessionDeletionManager(options: {
       clearTimeout(watchdog);
     }
   };
+  const needsLegacyPurge = (payload: SessionDeletionPayload): boolean =>
+    (payload.legacyArtifactsRequired === true || options.beforeDelete !== undefined) &&
+    (!payload.legacyArtifactsPurged ||
+      (payload.artifactBindings ?? []).some(
+        (binding) =>
+          !(payload.purgedArtifactBindings ?? []).some(
+            (purged) =>
+              purged.backend === binding.backend &&
+              purged.backendSessionId === binding.backendSessionId,
+          ),
+      ));
+  const purgeLegacy = async (id: string, payload: SessionDeletionPayload): Promise<void> => {
+    if (!options.beforeDelete)
+      throw new Error('Pending artifact purge requires its configured callback');
+    await phase(id, 'legacy-artifacts', () => options.beforeDelete!(id, payload));
+    await options.store.updateSessionDeletionPayload(
+      id,
+      JSON.stringify({
+        ...payload,
+        legacyArtifactsPurged: true,
+        purgedArtifactBindings: payload.artifactBindings ?? [],
+      }),
+    );
+    payload.legacyArtifactsPurged = true;
+    payload.purgedArtifactBindings = payload.artifactBindings ?? [];
+  };
+  const purgeBeforeLogicalDelete = (id: string, payload: SessionDeletionPayload): Promise<void> => {
+    const existing = artifactPurges.get(id);
+    if (existing) return existing;
+    if (physicalCleanups >= maxConcurrentCleanups) return Promise.resolve();
+    physicalCleanups += 1;
+    const work = options.store
+      .withSessionDeletionCleanup(id, async (retained) => {
+        Object.assign(payload, JSON.parse(retained) as SessionDeletionPayload);
+        if (needsLegacyPurge(payload)) await purgeLegacy(id, payload);
+        // The session still exists; only this purge step is finished.
+        return false;
+      })
+      .then(() => undefined)
+      .finally(() => {
+        physicalCleanups -= 1;
+        if (artifactPurges.get(id) === work) artifactPurges.delete(id);
+      });
+    artifactPurges.set(id, work);
+    return work;
+  };
   const finishLogical = async (id: string, payload: SessionDeletionPayload) => {
     options.fence(id);
     const stopped =
@@ -97,8 +148,11 @@ export function createSessionDeletionManager(options: {
       payload.terminationConfirmed = true;
       await options.store.updateSessionDeletionPayload(id, JSON.stringify(payload));
     } else options.report(id, 'stop-turn', 'deferred', 0);
-    if (stopped && options.beforeDelete && (await options.store.getSession(id)))
-      await phase(id, 'legacy-artifacts', () => options.beforeDelete!(id));
+    if (stopped && needsLegacyPurge(payload) && (await options.store.getSession(id)))
+      await deletionDeadline(
+        purgeBeforeLogicalDelete(id, payload),
+        options.stopDeadlineMs ?? 10_000,
+      ).catch((error: unknown) => options.report(id, 'legacy-artifacts', 'deferred', 0, error));
     await phase(id, 'db', () => options.store.deleteSession(id));
     const retained = (await options.store.listPendingSessionDeletions()).find(
       (record) => record.sessionId === id,
@@ -116,6 +170,7 @@ export function createSessionDeletionManager(options: {
           !(await phase(id, 'publication-cleanup', () => options.releasePublications!(payload)))
         )
           return false;
+        await artifactPurges.get(id);
         // Uncancellable filesystem work retains ownership and bounded capacity;
         // publication shutdown must continue even when both physical slots are held.
         if (physicalCleanups >= maxConcurrentCleanups) return false;
@@ -133,6 +188,10 @@ export function createSessionDeletionManager(options: {
               id,
               async (retained) => {
                 Object.assign(payload, JSON.parse(retained) as SessionDeletionPayload);
+                if (needsLegacyPurge(payload)) {
+                  if (!(confirmed.has(id) || payload.terminationConfirmed)) return false;
+                  await purgeLegacy(id, payload);
+                }
                 return options.cleanup(
                   payload,
                   confirmed.has(id) || payload.terminationConfirmed === true,

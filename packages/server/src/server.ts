@@ -259,6 +259,7 @@ import { registerSessionControlRoutes } from './session-control-routes.js';
 import { registerSessionCreateRoute } from './session-create-route.js';
 import {
   createSessionDeletionManager,
+  type SessionDeletionPayload,
   deletionDeadline,
   SessionDeletionDeadlineError,
 } from './session-deletion.js';
@@ -6292,6 +6293,14 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         projectId: session.projectId,
         model: session.model,
       },
+      ...(!deps.queueSessionArtifacts && deps.purgeSessionArtifacts
+        ? {
+            legacyArtifactsRequired: true,
+            artifactBindings: (
+              await deps.eventStore.getSessionBackendStates(session.sessionId)
+            ).map(({ backend, backendSessionId }) => ({ backend, backendSessionId })),
+          }
+        : {}),
       previewIds: (await deps.eventStore.listLocalPreviewShares())
         .filter((share) => share.sessionId === session.sessionId)
         .map((share) => share.id),
@@ -6310,14 +6319,13 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     prepare: async (id) => {
       await deps.queueSessionArtifacts?.(id);
     },
-    beforeDelete: async (id) => {
-      if (!deps.queueSessionArtifacts && deps.purgeSessionArtifacts) {
-        await deletionDeadline(
-          Promise.resolve().then(() => deps.purgeSessionArtifacts!(id)),
-          SESSION_ARTIFACT_PURGE_TIMEOUT_MS,
-        ).catch(() => undefined);
-      }
-    },
+    ...(!deps.queueSessionArtifacts && deps.purgeSessionArtifacts
+      ? {
+          beforeDelete: async (id: string, payload: SessionDeletionPayload) => {
+            await deps.purgeSessionArtifacts!(id, payload.artifactBindings ?? []);
+          },
+        }
+      : {}),
     releasePublications: async (payload) => {
       for (const shareId of payload.previewIds) await deps.localPreviewManager?.stop(shareId);
       await deps.localPreviewManager?.stopSession(payload.session.sessionId);

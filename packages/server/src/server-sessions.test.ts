@@ -909,7 +909,9 @@ describe('DELETE /sessions/:id', () => {
     try {
       const res = await a.inject({ method: 'DELETE', url: '/sessions/s1' });
       expect(res.statusCode).toBe(200);
-      expect(purge).toHaveBeenCalledWith('s1');
+      expect(purge).toHaveBeenCalledWith('s1', [
+        { backend: 'codex', backendSessionId: 'thread-1' },
+      ]);
       // Ran while the binding was still readable — i.e. before the cascade.
       expect(seenBindings).toEqual([['thread-1']]);
       expect(await ctx.store.getSession('s1')).toBeUndefined();
@@ -981,7 +983,7 @@ describe('DELETE /sessions/:id', () => {
     try {
       const res = await a.inject({ method: 'DELETE', url: '/sessions/s1' });
       expect(res.statusCode).toBe(200);
-      expect(purge).toHaveBeenCalledWith('s1');
+      expect(purge).toHaveBeenCalledWith('s1', []);
       expect(await ctx.store.getSession('s1')).toBeUndefined();
     } finally {
       await a.close();
@@ -991,15 +993,17 @@ describe('DELETE /sessions/:id', () => {
   it('gives up on a purge that never settles instead of holding the request open', async () => {
     // A wedged data volume makes `unlink` hang rather than fail, so the purge neither
     // resolves nor rejects. Waiting for it would hold DELETE open and stall the
-    // project-delete loop behind it; the files it left are what the startup sweep
-    // collects on the next boot.
+    // project-delete loop behind it; durable cleanup retains the pending purge.
+    let releasePurge!: () => void;
     let purgeStarted!: () => void;
     const started = new Promise<void>((resolve) => {
       purgeStarted = resolve;
     });
     const purge = vi.fn(() => {
       purgeStarted();
-      return new Promise<void>(() => undefined);
+      return new Promise<void>((resolve) => {
+        releasePurge = resolve;
+      });
     });
     const a = buildServer({
       eventStore: ctx.store,
@@ -1017,10 +1021,11 @@ describe('DELETE /sessions/:id', () => {
       await vi.advanceTimersByTimeAsync(10_000);
       const res = await pending;
       expect(res.statusCode).toBe(200);
-      expect(purge).toHaveBeenCalledWith('s1');
+      expect(purge).toHaveBeenCalledWith('s1', []);
       expect(await ctx.store.getSession('s1')).toBeUndefined();
     } finally {
       vi.useRealTimers();
+      releasePurge();
       await a.close();
     }
   });

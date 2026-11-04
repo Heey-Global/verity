@@ -93,16 +93,18 @@ export interface ServerDeps {
       ) => Promise<'clean' | 'absent' | 'deferred' | 'not-applicable'>)
     | undefined;
   /**
-   * Delete the backend transcript files a session left on the runner runtime, so a
-   * deleted session takes its conversation with it and not just its row (see
-   * `session-artifacts.ts`). Called immediately BEFORE the store delete, because the
-   * `session_backend_state` rows that name those files go with the FK cascade.
-   *
-   * Absent on deployments without the runner supervisor, where no such files exist.
-   * Never rejects: a transcript that could not be removed is logged by the
-   * implementation, and must not fail the delete it belongs to.
+   * Delete backend transcript files. Legacy integrations run before the cascade
+   * when termination is confirmed, or retry durably afterward with saved bindings.
+   * Deferred implementations must use those bindings rather than query deleted rows.
+   * Failures retain the cleanup obligation without preventing logical deletion.
+   * Absent on deployments without backend artifacts.
    */
-  purgeSessionArtifacts?: ((sessionId: string) => Promise<void>) | undefined;
+  purgeSessionArtifacts?:
+    | ((
+        sessionId: string,
+        bindings?: readonly { backend: string; backendSessionId: string }[],
+      ) => Promise<void>)
+    | undefined;
   /** Verified official release-channel resolver. Absent means this deployment is unmanaged. */
   serverUpdateResolver?: ReleaseChannelResolver | undefined;
   /** Privileged Updater control channel. Absent leaves the update action unavailable. */

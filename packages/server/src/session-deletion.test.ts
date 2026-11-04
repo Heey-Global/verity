@@ -73,6 +73,72 @@ function setup() {
   return { options, records, manager: createSessionDeletionManager(options) };
 }
 describe('durable session deletion', () => {
+  it('resumes a legacy purge after logical deletion with its retained bindings', async () => {
+    const { options, records, manager } = setup();
+    manager.close();
+    const bindings = [{ backend: 'codex', backendSessionId: 'thread' }];
+    const purge = vi.fn(async () => {});
+    const initial = createSessionDeletionManager({
+      ...options,
+      beforeDelete: purge,
+      capture: async () => ({
+        session,
+        previewIds: [],
+        artifactBindings: bindings,
+        legacyArtifactsRequired: true,
+      }),
+    });
+    vi.useFakeTimers();
+    try {
+      await initial.remove(session);
+      expect(options.store.getSession).toHaveBeenCalled();
+      expect(await options.store.getSession()).toBeUndefined();
+      expect(purge).not.toHaveBeenCalled();
+      initial.close();
+      await vi.advanceTimersByTimeAsync(31_000);
+      options.terminationConfirmed.mockReturnValue(true);
+      options.cleanup.mockResolvedValue(true);
+      const restarted = createSessionDeletionManager({ ...options, beforeDelete: purge });
+      await restarted.resume();
+      await vi.waitFor(() => expect(records.has('s')).toBe(false));
+      expect(purge).toHaveBeenCalledWith(
+        's',
+        expect.objectContaining({ artifactBindings: bindings }),
+      );
+      restarted.close();
+    } finally {
+      initial.close();
+      vi.useRealTimers();
+    }
+  });
+  it('purges bindings added after an earlier purge snapshot', async () => {
+    const { options, records, manager } = setup();
+    manager.close();
+    const initial = { backend: 'codex', backendSessionId: 'initial' };
+    const late = { backend: 'codex', backendSessionId: 'late' };
+    records.set(
+      's',
+      JSON.stringify({
+        session,
+        legacyArtifactsRequired: true,
+        legacyArtifactsPurged: true,
+        artifactBindings: [initial, late],
+        purgedArtifactBindings: [initial],
+        terminationConfirmed: true,
+      }),
+    );
+    const purge = vi.fn(async () => {});
+    options.cleanup.mockResolvedValue(true);
+    const restarted = createSessionDeletionManager({ ...options, beforeDelete: purge });
+    await restarted.resume();
+    await vi.waitFor(() => expect(records.has('s')).toBe(false));
+    expect(purge).toHaveBeenCalledWith(
+      's',
+      expect.objectContaining({ artifactBindings: [initial, late] }),
+    );
+    restarted.close();
+  });
+
   it('logically deletes with unconfirmed termination and retains physical cleanup ownership', async () => {
     const { options, records, manager } = setup();
     expect(await manager.remove(session)).toEqual({ sessionId: 's', cleanup: 'pending' });

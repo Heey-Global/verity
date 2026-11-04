@@ -1254,6 +1254,9 @@ interface SessionDeletionState {
   previewIds?: string[];
   managed?: { sessionId: string; projectId: string | null; instanceIds: string[] };
   terminationConfirmed?: boolean;
+  legacyArtifactsPurged?: boolean;
+  artifactBindings?: { backend: string; backendSessionId: string }[];
+  purgedArtifactBindings?: { backend: string; backendSessionId: string }[];
 }
 
 /** Ownership is monotonic even when an older Server writes its retry snapshot. */
@@ -1266,6 +1269,21 @@ function mergeSessionDeletionState(
   return {
     ...current,
     ...next,
+    artifactBindings: [
+      ...new Map(
+        [...(current.artifactBindings ?? []), ...(next.artifactBindings ?? [])].map((binding) => [
+          JSON.stringify([binding.backend, binding.backendSessionId]),
+          binding,
+        ]),
+      ).values(),
+    ],
+    purgedArtifactBindings: [
+      ...new Map(
+        [...(current.purgedArtifactBindings ?? []), ...(next.purgedArtifactBindings ?? [])].map(
+          (binding) => [JSON.stringify([binding.backend, binding.backendSessionId]), binding],
+        ),
+      ).values(),
+    ],
     ...(session === undefined ? {} : { session }),
     previewIds: [...new Set([...(current.previewIds ?? []), ...(next.previewIds ?? [])])],
     ...(managed === undefined
@@ -1282,6 +1300,9 @@ function mergeSessionDeletionState(
             ],
           },
         }),
+    ...(current.legacyArtifactsPurged || next.legacyArtifactsPurged
+      ? { legacyArtifactsPurged: true }
+      : {}),
     ...(current.terminationConfirmed || next.terminationConfirmed
       ? { terminationConfirmed: true }
       : {}),
@@ -4081,12 +4102,20 @@ export class EventStore implements EventSink {
         .forUpdate()
         .executeTakeFirst();
       if (deletion) {
-        const payload = JSON.parse(deletion.payload) as {
-          session?: { sessionId?: string; projectId?: string | null };
-          previewIds?: string[];
-          managed?: { sessionId: string; projectId: string | null; instanceIds: string[] };
-        };
+        const payload = JSON.parse(deletion.payload) as SessionDeletionState;
         if (payload.session?.sessionId === sessionId) {
+          const bindings = await tx
+            .selectFrom('session_backend_state')
+            .select(['backend', 'backend_session_id'])
+            .where('session_id', '=', sessionId)
+            .execute();
+          payload.artifactBindings =
+            mergeSessionDeletionState(payload, {
+              artifactBindings: bindings.map((row) => ({
+                backend: row.backend,
+                backendSessionId: row.backend_session_id,
+              })),
+            }).artifactBindings ?? [];
           const previews = await tx
             .selectFrom('local_preview_shares')
             .select('id')

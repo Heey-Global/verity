@@ -11329,6 +11329,30 @@ it('cancels only the live turn matching an assignment receipt', async () => {
 });
 
 describe('Conductor session deletion admission', () => {
+  it.each([false, true])(
+    'does not retain phantom termination uncertainty after prelaunch failure (retry=%s)',
+    async (retry) => {
+      await ctx.store.createSession({
+        sessionId: 'prelaunch',
+        worktree: '/wt/prelaunch',
+        model: 'm',
+      });
+      const fake = scriptedBackend({ sessionId: 'prelaunch', model: 'm', text: 'done' });
+      const sessionBackend = vi
+        .fn(async () => fake.backend)
+        .mockRejectedValueOnce(new Error('preparation failed'));
+      const conductor = new Conductor({
+        store: ctx.store,
+        backend: fake.backend,
+        worktreeExists: async () => true,
+        sessionBackend,
+      });
+      await expect(conductor.sendTurn('prelaunch', 'first')).rejects.toThrow('preparation failed');
+      if (retry) await conductor.sendTurn('prelaunch', 'retry');
+      expect(await conductor.stopForDeletion('prelaunch', 20)).toBe(true);
+    },
+  );
+
   it('bounds deletion behind stalled maintenance and refuses queued handoffs permanently', async () => {
     await ctx.store.createSession({ sessionId: 's-delete', worktree: '/wt/delete', model: 'm' });
     const conductor = new Conductor({ store: ctx.store, worktreeExists: async () => true });
