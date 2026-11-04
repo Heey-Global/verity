@@ -180,7 +180,16 @@ try {
             reject(error);
           };
           child.once('error', fail);
-          child.once('exit', (code) => fail(new Error(`ACP exit ${code}: ${stderr}`)));
+          child.stdin.on('error', () => {
+            // The child exit carries the sandbox diagnostic; EPIPE must not hide it.
+          });
+          child.once('close', (code, signal) =>
+            fail(
+              new Error(
+                `ACP ${command} ${planning ? 'planning' : 'normal'} exit ${code} (${signal}): ${stderr}`,
+              ),
+            ),
+          );
           lines.on('line', (line) => {
             void (async () => {
               let reply;
