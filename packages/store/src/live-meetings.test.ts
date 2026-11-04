@@ -711,8 +711,8 @@ describe('derived meeting results', () => {
 
 describe('discarding finished meetings', () => {
   const ended = { ...meeting, state: 'ended' as const, endedAt: 200, revision: 2 };
-  const counts = async () =>
-    Object.fromEntries(
+  const counts = async (): Promise<Record<string, number>> =>
+    Object.fromEntries<number>(
       await Promise.all(
         (
           [
@@ -722,7 +722,7 @@ describe('discarding finished meetings', () => {
             'live_meeting_commands',
             'live_meeting_results',
           ] as const
-        ).map(async (table) => [
+        ).map(async (table): Promise<[string, number]> => [
           table,
           Number(
             (
