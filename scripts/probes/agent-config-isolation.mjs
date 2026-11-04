@@ -14,7 +14,22 @@ import {
 import { hardenCodexAcpSource } from '../../features/verity-sandbox-toolkit/bin/verity-cli-install.mjs';
 
 const claudePrefix = process.env.VERITY_PROBE_CLAUDE_PREFIX;
+// Audit a candidate adapter without replacing the image's global installation.
+const codexPrefix = process.env.VERITY_PROBE_CODEX_ACP_PREFIX;
+const backend = process.env.VERITY_PROBE_BACKEND;
+assert.ok(!backend || ['codex', 'claude'].includes(backend), 'Unknown probe backend');
+const commands =
+  backend === 'codex'
+    ? ['codex-acp']
+    : backend === 'claude'
+      ? ['claude-agent-acp']
+      : ['claude-agent-acp', 'codex-acp'];
 for (const id of ['claude-acp', 'claude-code', 'codex-acp', 'codex']) {
+  if (
+    (backend === 'codex' && id.startsWith('claude')) ||
+    (backend === 'claude' && id.startsWith('codex'))
+  )
+    continue;
   const manifest = JSON.parse(
     await readFile(
       new URL(`../../features/verity-sandbox-toolkit/npm/${id}/package.json`, import.meta.url),
@@ -26,7 +41,9 @@ for (const id of ['claude-acp', 'claude-code', 'codex-acp', 'codex']) {
     await readFile(
       id === 'claude-code' && claudePrefix
         ? join(claudePrefix, 'node_modules', name, 'package.json')
-        : `/usr/local/lib/node_modules/${name}/package.json`,
+        : id === 'codex-acp' && codexPrefix
+          ? join(codexPrefix, 'node_modules', name, 'package.json')
+          : `/usr/local/lib/node_modules/${name}/package.json`,
       'utf8',
     ),
   );
@@ -69,7 +86,11 @@ try {
   // Clone the installed adapter so this probe never changes the image or its
   // package files. Apply the very transformation used by the image installer.
   const codexAdapter = dirname(
-    require.resolve('/usr/local/lib/node_modules/@agentclientprotocol/codex-acp/package.json'),
+    require.resolve(
+      codexPrefix
+        ? join(codexPrefix, 'node_modules/@agentclientprotocol/codex-acp/package.json')
+        : '/usr/local/lib/node_modules/@agentclientprotocol/codex-acp/package.json',
+    ),
   );
   const copy = join(project, 'probe-adapter');
   await cp(codexAdapter, copy, { recursive: true, dereference: true });
@@ -80,7 +101,7 @@ try {
   await writeFile(entry, hardenCodexAcpSource(unpatched));
 
   for (const planning of [false, true]) {
-    for (const command of ['claude-agent-acp', 'codex-acp']) {
+    for (const command of commands) {
       const options = {
         enforceRoot: false,
         agentUid: process.getuid(),
@@ -177,8 +198,15 @@ try {
                     ? { _meta: await CLAUDE_ACP_PROFILE.sessionMeta({ cwd: project }) }
                     : {}),
                 });
-              if (reply.id === 2) {
+              if (reply.id === 2 && command === 'codex-acp') {
                 assert.ok(reply.result.sessionId);
+                send(3, 'session/load', {
+                  sessionId: reply.result.sessionId,
+                  cwd: project,
+                  mcpServers: [],
+                });
+              }
+              if ((reply.id === 2 && command !== 'codex-acp') || reply.id === 3) {
                 assert.ok(!JSON.stringify(reply.result).includes('injected'));
                 assert.equal(await readFile(canary, 'utf8').catch(() => undefined), undefined);
                 clearTimeout(timer);
