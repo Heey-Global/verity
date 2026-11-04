@@ -412,9 +412,9 @@ export class LocalPreviewManager {
   }
   private async stopInner(id: string): Promise<boolean> {
     this.stopped.add(id);
-    const saved = (await this.options.store.listLocalPreviewShares()).find(
-      (share) => share.id === id,
-    );
+    const saved =
+      (await this.options.store.listLocalPreviewShares()).find((share) => share.id === id) ??
+      this.durable.get(id);
     await this.options.store.revokeLocalPreviewShare(id);
     const removed = await this.release(id);
     if (!removed) {

@@ -4015,7 +4015,7 @@ export class EventStore implements EventSink {
     await previous.catch(() => undefined);
     try {
       return await this.db.connection().execute(async (connection) => {
-        const sessionKey = this.sessionEventAppendLockKey(sessionId);
+        const sessionKey = `session-cleanup:${sessionId}`;
         await sql`select pg_advisory_lock(hashtext(${sessionKey}))`.execute(connection);
         let worktree: string | null = null;
         try {

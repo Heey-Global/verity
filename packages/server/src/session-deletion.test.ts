@@ -60,6 +60,9 @@ function setup() {
     stop: vi.fn(async () => false),
     capture: vi.fn(async (input: SessionRecord) => ({ session: input, previewIds: [] })),
     prepare: vi.fn(async () => {}),
+    releasePublications: vi.fn<(payload: SessionDeletionPayload) => Promise<boolean>>(
+      async () => true,
+    ),
     cleanup: vi.fn<(payload: SessionDeletionPayload, confirmed: boolean) => Promise<boolean>>(
       async () => false,
     ),
@@ -136,6 +139,32 @@ describe('durable session deletion', () => {
       manager.close();
     }
   });
+  it('stops publications for later deletions while both physical cleanup slots remain owned', async () => {
+    const { options, records, manager } = setup();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    options.cleanup.mockImplementation(async () => {
+      await gate;
+      return true;
+    });
+    try {
+      for (const id of ['first', 'second', 'third'])
+        await manager.remove({ ...session, sessionId: id, worktree: `/wt/${id}` });
+      await vi.waitFor(() =>
+        expect(options.releasePublications).toHaveBeenCalledWith(
+          expect.objectContaining({ session: expect.objectContaining({ sessionId: 'third' }) }),
+        ),
+      );
+      expect(options.cleanup).toHaveBeenCalledTimes(2);
+      expect(records.has('third')).toBe(true);
+    } finally {
+      release();
+      manager.close();
+    }
+  });
+
   it('bounds waiting on a wedged prepare without deleting the row', async () => {
     const { options, manager } = setup();
     options.prepare.mockImplementation(() => new Promise(() => {}));

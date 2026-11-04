@@ -249,6 +249,7 @@ class SessionTurnHandle implements RunnerTurn {
    * {@link Conductor.settleReattachedTurn}) once it has finished — the stop
    * watchdog checks it to tell a settled turn from a wedged one. */
   settled = false;
+  terminalResultReceived = false;
   /** The prompt_seq anchoring this turn's durable running-turn marker (set when
    * the marker is written). The force-settle path scopes its marker delete to it
    * so a delayed delete can never erase a SUCCESSOR turn's marker. */
@@ -3408,6 +3409,7 @@ export class Conductor {
       // is the prompt event's seq — the recovery anchor for the terminal-tail check.
       await this.markTurnRunning(sessionId, sinceSeq);
       const result = await this.runBackendTurnWithResumeRecovery(sessionId, prompt, session, opts);
+      sendHandle.terminalResultReceived = true;
       // `result.aborted` (set by the runner at kill time) — NOT the live
       // `signal.aborted`, which a cancel racing a natural finish could flip.
       if (result.aborted) await this.emitInterrupted(sessionId);
@@ -3424,6 +3426,8 @@ export class Conductor {
       // Clear THIS turn's marker, scoped by its prompt_seq so a concurrent turn's
       // markTurnRunning can't be wiped by this late DELETE. The settling terminal event
       // was already awaited above, so the ordering holds without holding the lock.
+      if (sendHandle.terminalResultReceived && this.deletingSessions.has(sessionId))
+        this.confirmedDeletionTerminations.add(sessionId);
       await this.clearRunningTurn(sessionId, markerSeq, sendHandle.markerId);
       this.maybeAutoTitle(sessionId);
     }
@@ -3774,6 +3778,7 @@ export class Conductor {
       // re-inferred from the tail; cleared in the `finally` below.
       if (launchOpts.admittedSeq === undefined) await this.markTurnRunning(sessionId, sinceSeq);
       const result = await this.runBackendTurnWithResumeRecovery(sessionId, prompt, session, opts);
+      handle.terminalResultReceived = true;
       // Operator-cancelled (#79): append the terminal `interrupted` marker (best
       // effort — don't let a failed marker insert block the lock release in the
       // `finally`). Partial output the agent already streamed is preserved. Keyed
@@ -3854,7 +3859,8 @@ export class Conductor {
         // stand-down signal, and setting it any earlier would let the watchdog
         // stand down while the session is still fenced.
         handle.settled = true;
-        if (this.deletingSessions.has(sessionId)) this.confirmedDeletionTerminations.add(sessionId);
+        if (handle.terminalResultReceived && this.deletingSessions.has(sessionId))
+          this.confirmedDeletionTerminations.add(sessionId);
         // Clear THIS turn's marker, scoped to its prompt_seq so a late DELETE can't wipe
         // the next turn's marker (the drainNext below, or a concurrent dispatch, may
         // already have written one). Fire-and-forget: the settling terminal event was
@@ -4961,7 +4967,7 @@ export class Conductor {
         // failing store delete can neither keep the session fenced nor stand the
         // watchdog down early.
         handle.settled = true;
-        if (this.deletingSessions.has(marker.sessionId))
+        if (result !== undefined && this.deletingSessions.has(marker.sessionId))
           this.confirmedDeletionTerminations.add(marker.sessionId);
         void this.clearRunningTurn(marker.sessionId, marker.promptSeq, marker.markerId);
         this.drainNext(marker.sessionId);

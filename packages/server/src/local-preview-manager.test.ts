@@ -775,3 +775,17 @@ it('stops retained local connectors after session deletion removes their durable
   expect(manager.list('s1')).toEqual([]);
   expect(manager.heldPorts().size).toBe(0);
 });
+
+it('releases a dormant share port after its database row has cascaded away', async () => {
+  const { manager, docker, options } = fixture();
+  const share = await manager.create('s1', { targetPort: 3000 });
+  await manager.close();
+  const restored = new LocalPreviewManager(options);
+  managers.push(restored);
+  docker.createContainer.mockRejectedValueOnce(new Error('Docker unavailable'));
+  await restored.reconcile();
+  await options.store.deleteLocalPreviewShare(share.id);
+  await restored.stopSession('s1');
+  const successor = await restored.create('s2', { targetPort: 4000 });
+  expect(new URL(successor.url).port).toBe(new URL(share.url).port);
+});

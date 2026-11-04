@@ -6318,12 +6318,20 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         ).catch(() => undefined);
       }
     },
+    releasePublications: async (payload) => {
+      for (const shareId of payload.previewIds) await deps.localPreviewManager?.stop(shareId);
+      await deps.localPreviewManager?.stopSession(payload.session.sessionId);
+      if (
+        payload.managed &&
+        deps.managedDevServerManager &&
+        (await deps.managedDevServerManager.cleanupDeletedSession(payload.managed)) !== 'clean'
+      )
+        return false;
+      return true;
+    },
     cleanup: async (payload, terminationConfirmed) => {
       const { session } = payload;
       deps.scheduleSessionCleanup?.();
-      // Publications can stop even while the sleeping Runner remains deferred.
-      for (const shareId of payload.previewIds) await deps.localPreviewManager?.stop(shareId);
-      await deps.localPreviewManager?.stopSession(session.sessionId);
       if (conductor.isDeletionWorktreeBusy?.(session.sessionId)) return false;
       // Successful privileged home deletion kills/fences exact workers. A missing
       // DB marker after cascade is not evidence that a process has exited.
@@ -6336,12 +6344,6 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         if (result === 'not-applicable' && !terminationConfirmed) return false;
         if (result === 'clean' && !terminationConfirmed && !payload.runnerIdentity) return false;
       } else if (!terminationConfirmed) return false;
-      if (
-        payload.managed &&
-        deps.managedDevServerManager &&
-        (await deps.managedDevServerManager.cleanupDeletedSession(payload.managed)) !== 'clean'
-      )
-        return false;
       if (conductor.isDeletionWorktreeBusy?.(session.sessionId)) return false;
       conductor.closeSession?.(session.sessionId);
       let cleanupWorktrees = worktrees;

@@ -3534,6 +3534,43 @@ describe('Conductor recover(): reattach-before-settle (ADR 0006 Stage 4c / D7)',
     },
   );
 
+  it.each([false, true])(
+    'requires a terminal recovered result for deletion confirmation (terminal=%s)',
+    async (terminal) => {
+      await seedMarker('turn-delete');
+      let resolve!: (value: RunResult) => void;
+      let reject!: (error: Error) => void;
+      const result = new Promise<RunResult>((yes, no) => {
+        resolve = yes;
+        reject = no;
+      });
+      const runner = fakeAttachRunner(result);
+      const { recovery } = fakeRecovery({
+        status: 'live',
+        target: {
+          turnId: 'turn-delete',
+          sessionId: 's1',
+          eventFilePath: '/rt/events.jsonl',
+          controlSocketPath: '/rt/control.sock',
+        },
+      });
+      const conductor = new Conductor({
+        store: ctx.store,
+        backend: inertBackend,
+        worktreeExists: async () => true,
+        runner: runner.factory,
+        runnerRecovery: recovery,
+      });
+      await conductor.recover();
+      conductor.beginSessionDeletion('s1');
+      await ctx.store.deleteSession('s1');
+      if (terminal) resolve({ sessionId: 's1', exitCode: 143, stderr: '', aborted: true });
+      else reject(new Error('attachment transport lost; worker status unknown'));
+      await vi.waitFor(() => expect(conductor.isBusy('s1')).toBe(false));
+      expect(conductor.isDeletionTerminationConfirmed('s1')).toBe(terminal);
+    },
+  );
+
   it('reattaches a LIVE recovered turn instead of settling it, and settles on the terminal frame', async () => {
     await seedMarker('turn-1');
     let settle!: (r: RunResult) => void;
