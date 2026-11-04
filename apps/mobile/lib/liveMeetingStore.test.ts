@@ -103,5 +103,23 @@ it('applies a remote discard only to the copy from that server', async () => {
   await importChanges('server-1', 'session-1', 5, [], [], ['shared', 'other-server']);
   mockGetFirstAsync.mockReset();
   mockGetFirstAsync.mockResolvedValue(null);
-  expect(deletes().map(([, id]) => id)).toEqual(['shared', 'shared']);
+  // The other server's meeting row and notes stay; only notes without any meeting may go.
+  expect(deletes()).toEqual([
+    ['DELETE FROM meeting_notes WHERE meeting_id = ?', 'shared'],
+    ['DELETE FROM meetings WHERE id = ?', 'shared'],
+    [expect.stringContaining('NOT EXISTS (SELECT 1 FROM meetings WHERE id = ?)'), 'other-server'],
+  ]);
+});
+
+it('removes notes left behind by a meeting that is already gone', async () => {
+  await listMeetings('session-1');
+  mockRunAsync.mockClear();
+  mockGetFirstAsync.mockResolvedValueOnce(null);
+  await deleteMeeting('meeting-gone', 'server-1');
+  expect(deletes()).toEqual([
+    [
+      'DELETE FROM meeting_notes WHERE meeting_id = ? AND NOT EXISTS (SELECT 1 FROM meetings WHERE id = ?)',
+      'meeting-gone',
+    ],
+  ]);
 });

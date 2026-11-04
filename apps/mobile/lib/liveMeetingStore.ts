@@ -581,7 +581,15 @@ async function removeMeetingRows(
       : 'SELECT id FROM meetings WHERE id = ? AND server_id = ?',
     ...(serverId === null ? [id] : [id, serverId]),
   );
-  if (!owned) return;
+  if (!owned) {
+    // A note written after the meeting went is an orphan the server keeps refusing.
+    await connection.runAsync(
+      'DELETE FROM meeting_notes WHERE meeting_id = ? AND NOT EXISTS (SELECT 1 FROM meetings WHERE id = ?)',
+      id,
+      id,
+    );
+    return;
+  }
   await connection.runAsync('DELETE FROM meeting_notes WHERE meeting_id = ?', id);
   await connection.runAsync('DELETE FROM meetings WHERE id = ?', id);
 }

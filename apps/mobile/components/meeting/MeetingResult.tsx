@@ -330,7 +330,9 @@ export function MeetingResult(props: {
             {review.length ? (
               <Card flush>
                 <View style={styles.reviewHead}>
-                  <Text variant="row" style={styles.grow}>{`To review · ${proposed}`}</Text>
+                  <Text variant="row" style={styles.grow}>
+                    {proposed ? `To review · ${proposed}` : 'Tasks'}
+                  </Text>
                   {proposed > 1 ? (
                     <Button
                       label="Add all"
