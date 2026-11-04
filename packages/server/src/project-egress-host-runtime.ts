@@ -179,10 +179,30 @@ export async function inspectEgressHostContainer(
 }
 
 /** The service manager holds an exclusive flock for this directory for its lifetime. */
-export async function openProjectEgressHostStore(directory: string): Promise<{
+export async function openProjectEgressHostStore(
+  directory: string,
+  options: { preparePrivate?: boolean } = {},
+): Promise<{
   load(): Promise<ProjectEgressHostState>;
   save(state: ProjectEgressHostState): Promise<void>;
 }> {
+  if (options.preparePrivate) {
+    const handle = await open(
+      directory,
+      constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+    );
+    try {
+      const info = await handle.stat();
+      if (info.uid !== process.getuid?.() || (info.mode & 0o022) !== 0)
+        throw new Error('Host state directory must be owned and not writable by other users');
+      if ((info.mode & 0o077) !== 0) {
+        await handle.chmod(0o700);
+        await handle.sync();
+      }
+    } finally {
+      await handle.close();
+    }
+  }
   const stat = await lstat(directory);
   if (
     !stat.isDirectory() ||

@@ -59,7 +59,9 @@ try {
   const previousRelay = await readEgressHostConfiguration(
     process.env.VERITY_EGRESS_EXISTING_RELAY ?? '/host/etc/verity-egress/relay.json',
   );
-  const registry = await (await openProjectEgressHostStore('/var/lib/verity-egress')).load();
+  const registry = await (
+    await openProjectEgressHostStore('/var/lib/verity-egress', { preparePrivate: true })
+  ).load();
   const activeRelayImages: string[] = [];
   for (const record of registry.records) {
     if (record.retired || record.containers.relay === undefined) continue;

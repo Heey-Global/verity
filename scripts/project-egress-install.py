@@ -197,7 +197,9 @@ def prepare_managed_prerequisites(root, run, node_path='/opt/verity-egress/node'
     run('/usr/bin/systemctl', 'enable', '--now', 'sys-fs-bpf.mount')
     pin = root / 'sys/fs/bpf/verity_egress_deadline'
     trusted_parent(pin / 'entry', root)
-    durable_mkdir(pin, 0o700)
+    # bpffs is volatile kernel state and rejects directory fsync with EINVAL.
+    # The persistent mount/tmpfiles configuration recreates this path at boot.
+    pin.mkdir(mode=0o700, exist_ok=True)
     metadata = pin.lstat()
     if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.geteuid() or metadata.st_mode & 0o077:
         raise ValueError('Untrusted persistent BPF pin directory')

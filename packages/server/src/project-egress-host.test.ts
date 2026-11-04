@@ -632,3 +632,29 @@ it('pins serving runtime registrations even when a replacement is otherwise supp
   changed['runsc-project'].runtimeArgs.reverse();
   expect(() => verify(changed)).toThrow('registration changed');
 });
+
+it('secures a fresh Docker bind directory before reading the missing host registry', async () => {
+  const root = await mkdtemp('/tmp/egress-initial-bind-');
+  try {
+    await chmod(root, 0o755);
+    await expect(openProjectEgressHostStore(root)).rejects.toThrow('private');
+    const store = await openProjectEgressHostStore(root, { preparePrivate: true });
+    expect(await store.load()).toEqual({ version: 1, records: [] });
+    // The normal serving path now accepts the prepared directory without mutation.
+    await expect(openProjectEgressHostStore(root)).resolves.toBeDefined();
+    await chmod(root, 0o777);
+    await expect(openProjectEgressHostStore(root, { preparePrivate: true })).rejects.toThrow(
+      'writable',
+    );
+    await chmod(root, 0o700);
+    const link = root + '-link';
+    await symlink(root, link);
+    try {
+      await expect(openProjectEgressHostStore(link, { preparePrivate: true })).rejects.toThrow();
+    } finally {
+      await rm(link);
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

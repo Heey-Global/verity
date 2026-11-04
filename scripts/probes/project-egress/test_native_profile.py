@@ -142,6 +142,18 @@ class NativeProfileTests(unittest.TestCase):
         self.prepare()
         self.assertFalse(any('/usr/bin/apt-get' in call or 'reload' in call for call in self.calls))
 
+    def test_bpffs_pin_creation_never_uses_disk_directory_fsync(self):
+        original = installer.sync_directory
+
+        def sync(path):
+            if str(path).startswith(str(self.root / 'sys/fs/bpf')):
+                raise OSError(22, 'bpffs directory fsync is unsupported')
+            return original(path)
+
+        with patch.object(installer, 'sync_directory', side_effect=sync):
+            self.prepare()
+        self.assertTrue((self.root / 'sys/fs/bpf/verity_egress_deadline').is_dir())
+
     def test_relay_collision_preserves_unrelated_runtime(self):
         daemon = self.root / 'etc/docker/daemon.json'
         daemon.write_text(json.dumps({'runtimes': {'runsc-project': self.project, 'runsc-relay': {'path': '/unrelated'}}}))
