@@ -4,6 +4,7 @@ import { PreviewConnector, hashPreviewPin } from '@verity/preview-tunnel';
 import type { EventStore, LiveMeetingSyncRecord } from '@verity/store';
 import { z } from 'zod';
 import {
+  PREVIEW_CREATE_FAILURE_CODES,
   PreviewShareRemovalQueuedError,
   type PreviewEdgeControl,
   type PreviewEdgeBinding,
@@ -37,13 +38,6 @@ const UPLINK_SHARE_REFUSALS: Record<string, string> = {
   invalid_request: 'The Uplink rejected the share request as invalid.',
 };
 
-const REPORTED_UPLINK_CODES = new Set([
-  ...Object.keys(UPLINK_SHARE_REFUSALS),
-  'webhook_not_negotiated',
-  'share_rejected',
-  'internal',
-]);
-
 /**
  * Names the Uplink step that failed before the bot was created. Phases and codes come from
  * the bounded diagnostic vocabulary, so the text never carries raw upstream errors.
@@ -51,7 +45,7 @@ const REPORTED_UPLINK_CODES = new Set([
 export function uplinkStartFailure(phase: MeetingStartDiagnostic['phase'], code: string) {
   const hint = 'Check Uplink / Online Sharing and retry.';
   // Only codes this server knows reach the message; anything else is reported as `unknown`.
-  const shown = REPORTED_UPLINK_CODES.has(code) ? code : 'unknown';
+  const shown = PREVIEW_CREATE_FAILURE_CODES.has(code) ? code : 'unknown';
   const step = `(Uplink step: ${phase}${code === 'pending' || code === 'ready' ? '' : ` · ${shown}`})`;
   const reason = ((): string => {
     switch (phase) {
@@ -68,9 +62,11 @@ export function uplinkStartFailure(phase: MeetingStartDiagnostic['phase'], code:
       case 'connector_connect':
         return 'The webhook share was created, but its connector could not connect to the Uplink.';
       case 'share_ready':
+        return 'Online sharing stopped while the webhook share was being created.';
       case 'connector_ready':
       case 'provider_setup':
-        return 'Online sharing stopped while the meeting was starting.';
+        // The Uplink steps finished; the failure lies in local setup before the bot request.
+        return 'The webhook share is ready, but preparing the meeting failed before Verity contacted the provider.';
       default: {
         const unhandled: never = phase;
         return `Online meeting start failed at ${String(unhandled)}.`;

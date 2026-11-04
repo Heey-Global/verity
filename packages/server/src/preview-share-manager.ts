@@ -68,6 +68,21 @@ export interface PreviewCreateDiagnostic {
   code: string;
   shareCreateSent: boolean;
 }
+/** Uplink `share.error` codes reported as-is; any other refusal becomes `share_rejected`. */
+export const UPLINK_SHARE_ERROR_CODES: ReadonlySet<string> = new Set([
+  'webhook_unsupported',
+  'limit_reached',
+  'not_entitled',
+  'unavailable',
+  'internal',
+  'invalid_request',
+]);
+/** Every non-progress code an edge create reports, apart from `pending` and `ready`. */
+export const PREVIEW_CREATE_FAILURE_CODES: ReadonlySet<string> = new Set([
+  ...UPLINK_SHARE_ERROR_CODES,
+  'share_rejected',
+  'webhook_not_negotiated',
+]);
 export type PreviewCreateObserver = (diagnostic: PreviewCreateDiagnostic) => void;
 
 export interface PreviewEdgeCreate {
