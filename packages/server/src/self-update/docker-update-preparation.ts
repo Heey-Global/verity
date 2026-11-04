@@ -537,14 +537,28 @@ export async function dockerUpdatePreparation(
       }
       await writeHostPreparation(options.managedRoot, journal, 'renewing');
       try {
-        await provisionProjectEgressHost({
+        (options.log ?? console.warn)('Network protection: checking automatic host provisioning.');
+        const provisioned = await provisionProjectEgressHost({
           docker,
           journal,
           spec: state.spec,
+          onSkip: (reason) =>
+            (options.log ?? console.warn)(
+              reason === 'installed_contract_missing'
+                ? 'Network protection provisioning pending: the installed image cannot admit host provisioning; retry on the next compatible update.'
+                : 'Network protection provisioning skipped: the target image has no provisioning contract.',
+            ),
           environment: options.environment ?? process.env,
           ...(options.readFile === undefined ? {} : { readFile: options.readFile }),
         });
+        if (provisioned)
+          (options.log ?? console.warn)(
+            'Network protection: host provisioning completed; authenticated readiness is checked separately.',
+          );
       } catch (error) {
+        (options.log ?? console.warn)(
+          'Network protection: automatic host provisioning failed; recovery is required.',
+        );
         await writeHostPreparation(options.managedRoot, journal, 'recovery-required');
         throw error;
       }

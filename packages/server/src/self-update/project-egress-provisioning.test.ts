@@ -75,14 +75,17 @@ function docker(compatible = true) {
 }
 beforeEach(() => vi.clearAllMocks());
 it('stages the compatibility parser before adding mounts older recovery cannot parse', async () => {
+  const onSkip = vi.fn();
   expect(
     await provisionProjectEgressHost({
       docker: docker(false) as unknown as DockerClient,
+      onSkip,
       journal,
       spec: spec(),
       environment: {},
     }),
   ).toBe(false);
+  expect(onSkip).toHaveBeenCalledWith('installed_contract_missing');
   expect(runHostRenewalJob).not.toHaveBeenCalled();
 });
 it('independently verifies the release before authorizing the bounded host oneshot payload', async () => {

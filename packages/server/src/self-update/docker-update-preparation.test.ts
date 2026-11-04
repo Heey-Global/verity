@@ -360,11 +360,13 @@ describe('Docker update preparation', () => {
     const { root } = await setup();
     const docker = fakeDocker();
     const verifyImage = vi.fn(async () => undefined);
+    const log = vi.fn();
     const actions = await dockerUpdatePreparation({
       managedRoot: root,
       docker,
       environment: { DATABASE_URL: 'postgres://db', DEPLOYMENT_ID: 'deployment-1' },
       verifyImage,
+      log,
     });
     await expect(resumeUpdatePreparation(root, actions)).resolves.toMatchObject({
       phase: 'standby',
@@ -373,6 +375,9 @@ describe('Docker update preparation', () => {
     // The pull narrates its progress through the Updater's own log.
     expect(docker.pullImage).toHaveBeenCalledWith(newImage, { log: expect.any(Function) });
     expect(verifyImage).toHaveBeenCalledOnce();
+    expect(log).toHaveBeenCalledWith(
+      'Network protection provisioning skipped: the target image has no provisioning contract.',
+    );
     expect(docker.createContainer).toHaveBeenCalledTimes(2);
     expect(docker.startContainer).toHaveBeenCalledTimes(2);
   });
