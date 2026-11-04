@@ -366,3 +366,23 @@ it('does not publish deletion for a dependency path from an earlier sync state',
   expect((await a.publish()).changed).toEqual([]);
   expect(await readFile(join(documents, 'node_modules', 'previous.md'), 'utf8')).toBe('keep');
 });
+
+it('distinguishes generated caches from unsafe entries while publishing regular documents', async () => {
+  const { root, documents, a } = await fixture();
+  await a.prepare();
+  await mkdir(join(a.view, '__pycache__'));
+  await writeFile(join(a.view, '__pycache__', 'module.pyc'), 'generated');
+  await symlink(root, join(a.view, 'unsafe-link'));
+  await writeFile(join(a.view, 'note.md'), 'publish');
+  await a.prepare();
+  expect(a.excludedEntries).toEqual(
+    expect.arrayContaining([
+      { path: '__pycache__', reason: 'generated' },
+      { path: 'unsafe-link', reason: 'unsupported' },
+    ]),
+  );
+  expect(a.warning).toContain('__pycache__');
+  expect((await a.publish()).changed).toEqual(['note.md']);
+  expect(await readdir(documents)).toEqual(['note.md']);
+  expect(await readFile(join(a.view, '__pycache__', 'module.pyc'), 'utf8')).toBe('generated');
+});

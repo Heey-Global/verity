@@ -9,6 +9,7 @@ import {
   sessionSummarySchema,
   branchListSchema,
   sessionDetailSchema,
+  sessionDirectorySchema,
   type TurnRequest,
 } from './api.js';
 
@@ -4679,4 +4680,26 @@ it('browses Shared without a session and sends the revision for edits', async ()
     expectedVersion: file.version,
   });
   await expect(client.listSharedKnowledgeFiles()).rejects.toThrow('Update the Verity server');
+});
+
+it('preserves Wiki exclusion reasons and unknown save status while accepting older servers', () => {
+  const directory = { path: '', entries: [], truncated: false };
+  const status = {
+    pending: true,
+    running: false,
+    inspectionError: true,
+    excludedEntries: [
+      { path: '__pycache__', reason: 'generated' },
+      { path: 'link', reason: 'unsupported' },
+    ],
+  };
+  expect(
+    sessionDirectorySchema.parse({ ...directory, documentStatus: status }).documentStatus,
+  ).toEqual(status);
+  expect(
+    sessionDirectorySchema.parse({
+      ...directory,
+      documentStatus: { pending: false, running: false },
+    }).documentStatus,
+  ).toEqual({ pending: false, running: false });
 });
