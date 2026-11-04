@@ -43,6 +43,11 @@ export function MeetingResult(props: {
   const { theme } = useUnistyles();
   const menuAnchor = useRef<View>(null);
   const [menu, setMenu] = useState<AttachAnchor | null>(null);
+  // Opens for an unfinished note, e.g. after a failed save, and stays open once saved.
+  const [notesExpanded, setNotesExpanded] = useState(props.notesOpen ?? false);
+  useEffect(() => {
+    if (props.notesOpen) setNotesExpanded(true);
+  }, [props.notesOpen]);
   useEffect(() => {
     let disposed = false;
     let timer: ReturnType<typeof setTimeout>;
@@ -215,10 +220,9 @@ export function MeetingResult(props: {
       ) : null}
       {props.notes ? (
         <Disclosure
-          // Reopens when a note becomes unfinished again, e.g. after a failed save.
-          key={props.notesOpen ? 'notes-open' : 'notes'}
           title={props.noteCount ? `Your notes · ${props.noteCount}` : 'Your notes'}
-          initiallyExpanded={props.notesOpen}
+          expanded={notesExpanded}
+          onExpandedChange={setNotesExpanded}
         >
           {props.notes}
         </Disclosure>
@@ -423,7 +427,9 @@ export function MeetingResult(props: {
             {
               icon: 'trash-2',
               title: 'Discard meeting…',
-              subtitle: 'Deletes it here and on the server',
+              subtitle: meeting.serverId
+                ? 'Deletes it here and on the server'
+                : 'Deletes it from this device',
               destructive: true,
               onPress: () => {
                 setMenu(null);

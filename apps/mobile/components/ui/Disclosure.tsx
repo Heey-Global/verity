@@ -10,7 +10,6 @@ export function Disclosure({
   subtitle,
   children,
   expanded: controlled,
-  initiallyExpanded = false,
   onExpandedChange,
 }: {
   title: string;
@@ -18,12 +17,10 @@ export function Disclosure({
   children: ReactNode;
   /** Set to control it from outside, e.g. to open it when it is the only way forward. */
   expanded?: boolean;
-  /** Starts open while the user stays free to close it, e.g. around unfinished input. */
-  initiallyExpanded?: boolean;
   onExpandedChange?: (expanded: boolean) => void;
 }) {
   const { theme } = useUnistyles();
-  const [own, setOwn] = useState(initiallyExpanded);
+  const [own, setOwn] = useState(false);
   const expanded = controlled ?? own;
   const setExpanded = (next: boolean) => {
     if (controlled === undefined) setOwn(next);

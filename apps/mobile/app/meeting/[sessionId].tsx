@@ -2072,6 +2072,8 @@ export default function MeetingScreen() {
               destructive: true,
               onConfirm: async () => {
                 try {
+                  // A note write still in flight would otherwise land after the delete.
+                  await pendingNoteWrites.get(meeting.id)?.catch(() => undefined);
                   await discardFinishedMeeting(sessionId, meeting);
                 } catch (reason) {
                   Alert.alert(

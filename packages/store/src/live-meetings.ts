@@ -520,7 +520,7 @@ export class LiveMeetingStore {
       const sequence = await this.nextUpdateSequence(trx);
       const meeting = await trx
         .selectFrom('live_meetings')
-        .select(['session_id', 'state', 'engine'])
+        .select(['session_id', 'state', 'engine', 'started_at'])
         .where('id', '=', meetingId)
         .forUpdate()
         .executeTakeFirst();
@@ -539,11 +539,45 @@ export class LiveMeetingStore {
           session_id: sessionId,
           deleted_seq: sequence,
           deleted_at: Date.now(),
+          engine: meeting.engine,
+          started_at: Number(meeting.started_at),
         })
         .onConflict((conflict) => conflict.column('meeting_id').doNothing())
         .execute();
       return 'deleted';
     });
+  }
+
+  /** The identity of one meeting, without its transcript. */
+  async meetingHead(
+    sessionId: string,
+    meetingId: string,
+  ): Promise<{ id: string; engine: string; startedAt: number; state: string } | null> {
+    const row = await this.db
+      .selectFrom('live_meetings')
+      .select(['id', 'engine', 'started_at', 'state'])
+      .where('session_id', '=', sessionId)
+      .where('id', '=', meetingId)
+      .executeTakeFirst();
+    return row
+      ? { id: row.id, engine: row.engine, startedAt: Number(row.started_at), state: row.state }
+      : null;
+  }
+
+  /** A discarded meeting's identity, for repeating cleanup that failed the first time. */
+  async deletion(
+    sessionId: string,
+    meetingId: string,
+  ): Promise<{ id: string; engine: string; startedAt: number } | null> {
+    const row = await this.db
+      .selectFrom('live_meeting_deletions')
+      .select(['meeting_id', 'engine', 'started_at'])
+      .where('meeting_id', '=', meetingId)
+      .where('session_id', '=', sessionId)
+      .executeTakeFirst();
+    return row
+      ? { id: row.meeting_id, engine: row.engine, startedAt: Number(row.started_at) }
+      : null;
   }
 
   private async tombstoned(db: Kysely<Database>, meetingId: string): Promise<boolean> {

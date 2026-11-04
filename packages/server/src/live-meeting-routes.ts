@@ -585,31 +585,46 @@ export function registerLiveMeetingRoutes(
       reply.code(404);
       return { error: 'session not found' };
     }
-    const meeting = (await store.liveMeetings.changes(sessionId, 0)).meetings.find(
-      (item) => item.id === meetingId,
-    );
-    if (meeting && meeting.state !== 'active') {
-      // Stop analysis and result work first so nothing derived is written after deletion.
+    const stopWork = () => {
       forgetAnalysis(meetingId);
       resultWorker.cancel(meetingId);
+    };
+    const meeting = await store.liveMeetings.meetingHead(sessionId, meetingId);
+    let discarded: { id: string; engine: string; startedAt: number } | null = null;
+    if (meeting) {
+      // Stop analysis and result work first so nothing derived is written after deletion.
+      if (meeting.state !== 'active') stopWork();
+      const outcome = await store.liveMeetings.deleteMeeting(sessionId, meetingId);
+      if (outcome === 'running') {
+        reply.code(409);
+        return { error: 'Only a finished meeting can be discarded.', code: 'meeting_running' };
+      }
+      if (outcome === 'deleted') {
+        // Work queued between the first stop and the commit would only fail on the
+        // missing meeting; stop it again rather than let it retry.
+        stopWork();
+        opts.onResultChanged?.(sessionId, meetingId);
+        discarded = meeting;
+      }
     }
-    const outcome = meeting
-      ? await store.liveMeetings.deleteMeeting(sessionId, meetingId)
-      : 'not_found';
-    if (outcome === 'running') {
-      reply.code(409);
-      return { error: 'Only a finished meeting can be discarded.', code: 'meeting_running' };
-    }
-    if (outcome === 'not_found' || !meeting) {
+    // Repeating a discard repeats its cleanup, so a step that failed can be completed.
+    discarded ??= await store.liveMeetings.deletion(sessionId, meetingId);
+    if (!discarded) {
       reply.code(404);
-      return { error: 'meeting not found' };
+      return { error: 'meeting not found', code: 'meeting_not_found' };
     }
     try {
-      await opts.onDiscarded?.(sessionId, meeting);
+      await opts.onDiscarded?.(sessionId, discarded);
     } catch (error) {
       app.log.warn({ err: error, sessionId, meetingId }, 'discarded meeting cleanup failed');
+      // The meeting is gone, but not everything outside it yet: the client keeps its copy
+      // and retries, which runs the cleanup again.
+      reply.code(502);
+      return {
+        error: 'The meeting was deleted, but cleanup is incomplete. Try again.',
+        code: 'meeting_cleanup_failed',
+      };
     }
-    opts.onResultChanged?.(sessionId, meetingId);
     return { discarded: true };
   });
 

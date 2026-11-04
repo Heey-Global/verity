@@ -1838,6 +1838,8 @@ interface LiveMeetingDeletionsTable {
   session_id: string;
   deleted_seq: number;
   deleted_at: number;
+  engine: string;
+  started_at: number;
 }
 
 interface LiveMeetingNotesTable {

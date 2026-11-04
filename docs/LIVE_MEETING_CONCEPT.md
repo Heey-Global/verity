@@ -449,7 +449,11 @@ for the session, like other destructive changes, and only accepts ended meetings
 `meeting_running` otherwise). It deletes the meeting with its transcript, timed words,
 speaker data, notes, insights and derived result, removes the filed Markdown and its index
 line, and for online meetings drops the remaining provider state. Tasks already created from
-the result and the session's messages stay.
+the result and the session's messages stay. Cleanup outside the meeting tables runs after the
+deletion commits; when a step fails the server answers `502` with `meeting_cleanup_failed`,
+the device keeps its copy, and repeating the request repeats the cleanup. A `404` with
+`meeting_not_found` means the server never had the meeting; only then does a device delete its
+copy without the server.
 
 The server keeps a tombstone per discarded meeting. The incremental sync feed
 (`GET /sessions/:id/live-meetings?after=`) reports it in `deletedMeetingIds`, and devices

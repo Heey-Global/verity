@@ -69,8 +69,14 @@ export async function discardFinishedMeeting(
     try {
       await client.discardSessionMeeting(sessionId, meeting.id);
     } catch (error) {
-      // Never uploaded, or already discarded from another device: only this copy is left.
-      if (!(error instanceof VerityApiError && error.status === 404)) throw error;
+      // Never uploaded: only this copy is left. Any other 404 (an older server without
+      // discarding, an unknown session) keeps the meeting and reports the failure.
+      if (!(
+        error instanceof VerityApiError &&
+        error.status === 404 &&
+        error.code === 'meeting_not_found'
+      ))
+        throw error;
     }
   }
   await deleteMeeting(meeting.id);

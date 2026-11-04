@@ -274,9 +274,19 @@ describe('discardFinishedMeeting', () => {
   });
 
   it('deletes locally when the server no longer has the meeting', async () => {
-    client.discardSessionMeeting.mockRejectedValueOnce(new VerityApiError(404, 'not found'));
+    client.discardSessionMeeting.mockRejectedValueOnce(
+      new VerityApiError(404, 'meeting not found', { code: 'meeting_not_found' }),
+    );
     await discardFinishedMeeting('session-1', ended, client as never);
     expect(deleteMeeting).toHaveBeenCalledWith(meeting.id);
+  });
+
+  // An older server answers 404 for the unknown route; deleting locally then would lose
+  // the only copy of unsent changes while the server keeps the meeting.
+  it('keeps the local copy for any other 404', async () => {
+    client.discardSessionMeeting.mockRejectedValueOnce(new VerityApiError(404, 'Not Found'));
+    await expect(discardFinishedMeeting('session-1', ended, client as never)).rejects.toThrow();
+    expect(deleteMeeting).not.toHaveBeenCalled();
   });
 
   it('deletes a meeting saved only on this device without the server', async () => {
