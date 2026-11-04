@@ -2245,6 +2245,26 @@ describe('GitHub-hosted runner boundary', () => {
     }
   });
 
+  it('reserves disk before installing dependencies and building the nested egress images', () => {
+    const workflow = parse(readFileSync('.github/workflows/project-egress.yml', 'utf8')) as {
+      jobs: Record<string, Job>;
+    };
+    const steps = workflow.jobs['project-boundary']!.steps!;
+    const reclaim = steps.findIndex(
+      (step) => step.uses === './.github/actions/reclaim-runner-disk',
+    );
+    const install = steps.findIndex((step) => step.run?.includes('npm ci'));
+    const probe = steps.findIndex((step) =>
+      step.run?.includes('scripts/probes/project-egress/ci.sh'),
+    );
+    expect(reclaim).toBeGreaterThan(
+      steps.findIndex((step) => step.uses?.startsWith('actions/checkout@')),
+    );
+    expect(reclaim).toBeLessThan(install);
+    expect(install).toBeLessThan(probe);
+    expect(Number(steps[reclaim]?.with?.['minimum-free-gib'])).toBeGreaterThanOrEqual(40);
+  });
+
   it('prepares free disk before both boot VMs and rechecks after asset builds', () => {
     const workflow = parse(readFileSync('.github/workflows/project-egress-boot.yml', 'utf8')) as {
       jobs: Record<string, Job>;
