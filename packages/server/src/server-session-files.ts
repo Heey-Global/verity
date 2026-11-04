@@ -47,7 +47,10 @@ import {
   recoverFileHistory,
   sessionFileHistory,
 } from './session-file-history.js';
-import { registerSessionFileRoutes } from './session-file-routes.js';
+import {
+  registerSessionFileRoutes,
+  SessionFileRootUnavailableError,
+} from './session-file-routes.js';
 import { fileVersion, FileWriteError, writeSessionText } from './session-file-write.js';
 import type { SessionFileRootName } from './session-files.js';
 import {
@@ -179,7 +182,11 @@ export function registerServerSessionFiles(
     // explorer that can show it is the shortest path to one that exists.
     resolveRoot: async (id, root) => {
       const session = await deps.eventStore.getSession(id);
-      if (!session) return undefined;
+      if (!session)
+        throw new SessionFileRootUnavailableError(
+          'Session not found. Reopen the session and try again.',
+          404,
+        );
       if (root === 'worktree') {
         const project = session.projectId
           ? await deps.eventStore.getProject(session.projectId)
@@ -198,9 +205,17 @@ export function registerServerSessionFiles(
         }
         return session.worktree;
       }
-      if (deps.dataRoot === undefined) return undefined;
+      if (deps.dataRoot === undefined)
+        throw new SessionFileRootUnavailableError(
+          'Knowledge storage is not configured. Ask your administrator to configure it.',
+          503,
+        );
       if (root === 'shared') return ensureSharedKnowledge(deps.dataRoot);
-      if (session.projectId === null) return undefined;
+      if (session.projectId === null)
+        throw new SessionFileRootUnavailableError(
+          'This session is not linked to a project. Open the Wiki from a project.',
+          404,
+        );
       const projectRoot = await ensureProjectKnowledge(deps.dataRoot, session.projectId);
       if (root === 'documents') return join(projectRoot, 'insights');
       if (root === 'sources') return join(projectRoot, 'sources');

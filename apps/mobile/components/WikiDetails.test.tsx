@@ -84,3 +84,37 @@ it('keeps request errors and conflicts visible without exposing technical errors
   fireEvent.press(screen.getByText('Details'));
   expect(screen.getByText('EACCES: private path')).toBeOnTheScreen();
 });
+
+it('explains unavailable knowledge and hides recovery routes that require it', () => {
+  render(
+    <WikiDetails
+      root="documents"
+      documentSession={false}
+      disabled={false}
+      navigate={jest.fn()}
+      error="this session has no knowledge folder"
+    />,
+  );
+  expect(screen.getByText(/Open the Wiki from the project page/)).toBeOnTheScreen();
+  fireEvent.press(screen.getByText('Details'));
+  expect(screen.queryByText('Files from other sessions')).toBeNull();
+});
+
+it.each([
+  'This session is not linked to a project. Open the Wiki from a project.',
+  'Knowledge storage is not configured. Ask your administrator to configure it.',
+  'Session not found. Reopen the session and try again.',
+])('shows actionable knowledge availability errors: %s', (error) => {
+  render(
+    <WikiDetails
+      root="documents"
+      documentSession={false}
+      disabled={false}
+      navigate={jest.fn()}
+      error={error}
+    />,
+  );
+  expect(screen.getByText(error)).toBeOnTheScreen();
+  fireEvent.press(screen.getByText('Details'));
+  expect(screen.queryByText('Files from other sessions')).toBeNull();
+});
