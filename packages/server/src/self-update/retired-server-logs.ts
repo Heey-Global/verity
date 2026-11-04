@@ -4,7 +4,7 @@ import { sanitizeDiagnostic } from '../build-diagnostics.js';
 import type { DockerClient } from '../docker.js';
 
 /** Directory under the Updater-owned managed root that keeps retired Servers' logs. */
-export const RETIRED_SERVER_LOG_DIR = 'server-logs';
+const RETIRED_SERVER_LOG_DIR = 'server-logs';
 /** A retired generation's logs leave with its container; keep the last few. */
 const KEEP = 2;
 const WINDOW_MS = 24 * 60 * 60_000;
