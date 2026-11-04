@@ -6,8 +6,11 @@ const mockVerify = jest.fn();
 const mockExport = jest.fn();
 const mockCopy = jest.fn();
 const mockContext = jest.fn();
-const mockProfile = { serverId: 'paired' };
+const mockInactive = jest.fn();
+let mockProfile = { serverId: 'paired' };
+let mockRunId = '11111111-1111-4111-8111-111111111111';
 let mockBlur: (() => void) | undefined;
+let mockAppState: ((state: string) => void) | undefined;
 jest.mock('expo-router', () => ({
   useFocusEffect: (callback: () => () => void) => {
     require('react').useEffect(() => {
@@ -17,6 +20,10 @@ jest.mock('expo-router', () => ({
   },
 }));
 jest.mock('../premium/PremiumChrome', () => ({
+  Eyebrow: ({ children }: any) =>
+    require('react').createElement(require('react-native').Text, null, children),
+  RowCard: ({ children }: any) =>
+    require('react').createElement(require('react-native').View, null, children),
   CardRow: ({ title, subtitle, disabled, onPress }: any) => {
     const { Pressable, Text } = require('react-native');
     return (
@@ -32,8 +39,9 @@ jest.mock('../premium/PremiumChrome', () => ({
     );
   },
 }));
-jest.mock('expo-crypto', () => ({ randomUUID: () => '11111111-1111-4111-8111-111111111111' }));
+jest.mock('expo-crypto', () => ({ randomUUID: () => mockRunId }));
 jest.mock('expo-clipboard', () => ({ setStringAsync: (...args: unknown[]) => mockCopy(...args) }));
+jest.mock('expo-modules-core', () => ({ requireOptionalNativeModule: () => null }));
 jest.mock('../../lib/serverProfile', () => ({ getServerProfile: () => mockProfile }));
 jest.mock('../../lib/selectedRecordingAttempt', () => ({
   selectedRecordingAttempt: (...args: unknown[]) => mockAttempt(...args),
@@ -41,213 +49,502 @@ jest.mock('../../lib/selectedRecordingAttempt', () => ({
 jest.mock('../../lib/selectedRecordingContext', () => ({
   selectedRecordingContext: () => mockContext(),
 }));
+jest.mock('../../lib/remoteControlTransport', () => ({
+  remoteDataRecordingRemainingMs: async () => 0,
+  startRemoteDataRecording: jest.fn(),
+  stopRemoteDataRecording: async () => true,
+}));
 import { SelectedConnectionTest } from './SelectedConnectionTest';
+import { ConnectionRecording } from './ConnectionRecording';
+import { loadConnectionDiagnosticReports } from '../../lib/connectionDiagnosticReport';
 const runId = '11111111-1111-4111-8111-111111111111';
+const key = 'verity.selectedConnectionTest.v1.paired';
+const sessionHash = 'c1448f52fd7bef90';
+const fingerprint = '0123456789abcdef';
+const storageSetItem = jest.mocked(AsyncStorage.setItem).getMockImplementation()!;
+const storageRemoveItem = jest.mocked(AsyncStorage.removeItem).getMockImplementation()!;
+function nativeRecording() {
+  return JSON.stringify([
+    {
+      version: 1,
+      channel: 'DATA',
+      generation: '01234567-0123-4123-8123-0123456789ab',
+      sessionHash,
+      clockOffsetKnown: false,
+      startedLate: false,
+      delegateAvailable: true,
+      captureLimitMs: 30000,
+      expired: false,
+      dropped: 0,
+      events: [
+        { sequence: 1, utc: new Date().toISOString(), elapsedMs: 0, event: 'capture_started' },
+        { sequence: 2, utc: new Date().toISOString(), elapsedMs: 1, event: 'task_completed' },
+      ],
+    },
+  ]);
+}
+function serverReport() {
+  return {
+    version: 1,
+    status: {
+      version: 1,
+      runId,
+      phase: 'stopped',
+      startedAt: '2026-11-04T11:20:00.000Z',
+      expiresAt: '2026-11-04T11:20:45.000Z',
+      installationFingerprint: fingerprint,
+      core: { state: 'stopped', records: 0, dropped: 0 },
+      uplink: { state: 'stopped' },
+      error: null,
+      selection: { sessionHash, confirmed: false, preparationExpiresAt: null, readiness: null },
+    },
+    core: { records: [], dropped: 0 },
+    uplink: {
+      available: true,
+      data: {
+        version: 1,
+        runId,
+        state: 'stopped',
+        expiresAt: '2026-11-04T11:20:45.000Z',
+        retainedUntil: '2026-11-04T12:20:00.000Z',
+        collectorReady: true,
+        recordCount: 0,
+        droppedRecords: 0,
+        records: [],
+      },
+      error: null,
+    },
+  };
+}
 async function ready() {
   render(<SelectedConnectionTest disabled={false} onBusy={jest.fn()} />);
   await waitFor(() =>
-    expect(screen.getByRole('button', { name: 'Run bounded connection test' })).toBeEnabled(),
+    expect(screen.getByRole('button', { name: 'Start quick test' })).toBeEnabled(),
   );
+}
+async function completed() {
+  await ready();
+  fireEvent.press(screen.getByText('Start quick test'));
+  await screen.findByText(/Test ended automatically after the response/);
+}
+async function copyReport() {
+  const previous = mockCopy.mock.calls.length;
+  fireEvent.press(screen.getByText('Copy report'));
+  await waitFor(() => expect(mockCopy).toHaveBeenCalledTimes(previous + 1));
+  return JSON.parse(mockCopy.mock.calls.at(-1)![0]);
 }
 beforeEach(async () => {
   jest.clearAllMocks();
+  mockProfile = { serverId: 'paired' };
+  mockRunId = runId;
+  jest.mocked(AsyncStorage.removeItem).mockReset().mockImplementation(storageRemoveItem);
+  jest.mocked(AsyncStorage.setItem).mockReset().mockImplementation(storageSetItem);
   mockContext.mockReset();
   mockAttempt.mockReset();
   mockVerify.mockReset();
   mockExport.mockReset();
-  jest.spyOn(AppState, 'addEventListener').mockReturnValue({ remove: jest.fn() });
+  mockCopy.mockReset();
+  mockInactive.mockReset();
+  mockBlur = undefined;
+  mockAppState = undefined;
+  jest.spyOn(AppState, 'addEventListener').mockImplementation((_event, listener: any) => {
+    mockAppState = listener;
+    return { remove: jest.fn() };
+  });
   await AsyncStorage.clear();
-  mockVerify.mockResolvedValue('a'.repeat(16));
-  mockAttempt.mockResolvedValue({ status: 200 });
+  mockVerify.mockResolvedValue(fingerprint);
+  mockInactive.mockResolvedValue(undefined);
   mockCopy.mockResolvedValue(undefined);
-  mockExport.mockResolvedValue({
-    status: {
-      runId,
-      installationFingerprint: 'a'.repeat(16),
-      phase: 'stopped',
-      core: { state: 'stopped' },
-      uplink: { state: 'stopped' },
-      error: null,
-    },
+  mockExport.mockImplementation(async () => serverReport());
+  mockAttempt.mockImplementation(async (options) => {
+    options.onPhase?.('running');
+    options.onResponse?.(200);
+    options.onPhase?.('stopping');
+    await options.onLocalRecording?.({
+      status: 'ready',
+      recording: nativeRecording(),
+      sessionHash,
+      stopped: true,
+    });
+    return { status: 200 };
   });
   mockContext.mockReturnValue({
-    assertInactive: async () => undefined,
+    assertInactive: mockInactive,
     profile: mockProfile,
     options: {},
     verify: mockVerify,
     client: { exportConnectionRecording: mockExport },
   });
 });
-it('runs once, confirms cleanup separately from export and copies only on request', async () => {
+afterEach(() => jest.restoreAllMocks());
+it('does not start on mount and explains the quick test automatic end', async () => {
   await ready();
-  fireEvent.press(screen.getByText('Run bounded connection test'));
-  await screen.findByText(
-    'HTTP 200. Connection and recording Stop confirmed. Export remains separate.',
-  );
+  expect(mockAttempt).not.toHaveBeenCalled();
+  expect(screen.getByText(/One health request. Ends automatically/)).toBeTruthy();
+  expect(screen.queryByText('Stop test')).toBeNull();
+});
+it('retains the completed run and copies a combined version2 report only on request', async () => {
+  await completed();
   expect(mockAttempt).toHaveBeenCalledTimes(1);
   expect(mockCopy).not.toHaveBeenCalled();
-  fireEvent.press(screen.getByText('Copy bounded test report'));
-  await waitFor(() => expect(mockCopy).toHaveBeenCalledTimes(1));
+  expect(screen.queryByText('Stop test')).toBeNull();
+  const report = await copyReport();
+  expect(report).toMatchObject({
+    version: 2,
+    runId,
+    testType: 'quick_test',
+    outcome: 'completed',
+    expectedAutomaticStop: true,
+    complete: true,
+    sources: { app: true, core: true, uplink: true },
+  });
+  expect(report.app.recording[0].sessionHash).toBe(sessionHash);
+  expect(report.remote.recording).toEqual(serverReport());
   expect(mockExport).toHaveBeenCalledWith(runId, 3);
+  expect(JSON.parse((await AsyncStorage.getItem(key))!)).toMatchObject({
+    runId,
+    localStatus: 'ready',
+    localStopped: true,
+    outcome: 'completed',
+  });
+  expect(await loadConnectionDiagnosticReports('paired')).toEqual([report]);
 });
-it('blocks double start and aborts promptly on Stop', async () => {
-  mockAttempt.mockImplementation(
-    ({ signal }) =>
-      new Promise((_, reject) =>
-        signal.addEventListener('abort', () => reject(new Error('Stopped'))),
-      ),
-  );
-  await ready();
-  fireEvent.press(screen.getByText('Run bounded connection test'));
-  await waitFor(() => expect(mockAttempt).toHaveBeenCalledTimes(1));
-  fireEvent.press(screen.getByText('Run bounded connection test'));
-  fireEvent.press(screen.getByText('Stop bounded test'));
-  await waitFor(() => expect(mockAttempt.mock.calls[0][0].signal.aborted).toBe(true));
-  expect(mockAttempt).toHaveBeenCalledTimes(1);
-});
-it('aborts on navigation', async () => {
-  mockAttempt.mockImplementation(
-    ({ signal }) =>
-      new Promise((_, reject) =>
-        signal.addEventListener('abort', () => reject(new Error('Stopped'))),
-      ),
-  );
-  await ready();
-  fireEvent.press(screen.getByText('Run bounded connection test'));
-  await waitFor(() => expect(mockAttempt).toHaveBeenCalled());
-  await act(async () => mockBlur?.());
-  expect(mockAttempt.mock.calls[0][0].signal.aborted).toBe(true);
-});
-it('does not attach without direct administrator prerequisites', async () => {
+it('blocks attachment when paired direct prerequisites fail', async () => {
   mockContext.mockImplementation(() => {
     throw new Error('Unlock the paired direct connection before testing.');
   });
   await ready();
-  fireEvent.press(screen.getByText('Run bounded connection test'));
+  fireEvent.press(screen.getByText('Start quick test'));
   await screen.findByText('Unlock the paired direct connection before testing.');
   expect(mockAttempt).not.toHaveBeenCalled();
+  expect(await AsyncStorage.getItem(key)).toBeNull();
 });
-it('keeps failed cleanup distinct and blocks the next start', async () => {
-  mockAttempt.mockRejectedValue(new Error('Selected cleanup failed'));
-  await ready();
-  fireEvent.press(screen.getByText('Run bounded connection test'));
-  await screen.findByText(
-    'No HTTP result confirmed. Stop could not be confirmed. Do not start another test; collect the report after expiry.',
-  );
-  expect(screen.getByRole('button', { name: 'Run bounded connection test' })).toBeDisabled();
-});
-it('restores the saved run and retains it after export failure', async () => {
-  await AsyncStorage.setItem('verity.selectedConnectionTest.v1.paired', runId);
-  mockExport.mockRejectedValue(new Error('secret error'));
-  render(<SelectedConnectionTest disabled={false} onBusy={jest.fn()} />);
-  await screen.findByText(
-    'Saved bounded test available. Copy its report before starting another test.',
-  );
-  fireEvent.press(screen.getByText('Copy bounded test report'));
-  await screen.findByText(
-    'Export unavailable. The run is retained here for another collection attempt.',
-  );
-  expect(mockCopy).not.toHaveBeenCalled();
-  expect(await AsyncStorage.getItem('verity.selectedConnectionTest.v1.paired')).toBe(runId);
-});
-it('rejects an export from another installation', async () => {
-  mockExport.mockResolvedValue({ status: { runId, installationFingerprint: 'b'.repeat(16) } });
-  await ready();
-  fireEvent.press(screen.getByText('Run bounded connection test'));
-  await screen.findByText(
-    'HTTP 200. Connection and recording Stop confirmed. Export remains separate.',
-  );
-  fireEvent.press(screen.getByText('Copy bounded test report'));
-  await screen.findByText(
-    'Export unavailable. The run is retained here for another collection attempt.',
-  );
-  expect(mockCopy).not.toHaveBeenCalled();
-});
-it('clears an orphan reference only after an export 404 and inactive native status', async () => {
-  await AsyncStorage.setItem('verity.selectedConnectionTest.v1.paired', runId);
-  mockExport.mockRejectedValue(Object.assign(new Error('missing'), { status: 404 }));
-  render(<SelectedConnectionTest disabled={false} onBusy={jest.fn()} />);
-  await screen.findByText(
-    'Saved bounded test available. Copy its report before starting another test.',
-  );
-  fireEvent.press(screen.getByText('Copy bounded test report'));
-  await screen.findByText(
-    'Core has no report for this run. Local reference cleared; no report copied.',
-  );
-  expect(await AsyncStorage.getItem('verity.selectedConnectionTest.v1.paired')).toBeNull();
-  expect(mockCopy).not.toHaveBeenCalled();
-});
-it('does not copy or clear when descriptor verification returns 404', async () => {
-  await AsyncStorage.setItem('verity.selectedConnectionTest.v1.paired', runId);
-  mockVerify.mockRejectedValue(Object.assign(new Error('missing'), { status: 404 }));
-  render(<SelectedConnectionTest disabled={false} onBusy={jest.fn()} />);
-  await screen.findByText(
-    'Saved bounded test available. Copy its report before starting another test.',
-  );
-  fireEvent.press(screen.getByText('Copy bounded test report'));
-  await screen.findByText(
-    'Export unavailable. The run is retained here for another collection attempt.',
-  );
-  expect(await AsyncStorage.getItem('verity.selectedConnectionTest.v1.paired')).toBe(runId);
-  expect(mockExport).not.toHaveBeenCalled();
-});
-it('copies an allowlisted local receipt when server export fails, without clearing the run', async () => {
-  await AsyncStorage.setItem('verity.selectedConnectionTest.v1.paired', runId);
-  mockExport.mockRejectedValue(Object.assign(new Error('secret token payload'), { status: 503 }));
-  render(<SelectedConnectionTest disabled={false} onBusy={jest.fn()} />);
-  await screen.findByText(
-    'Saved bounded test available. Copy its report before starting another test.',
-  );
-  fireEvent.press(screen.getByText('Copy bounded test report'));
-  await screen.findByText('Copy local test failure');
-  fireEvent.press(screen.getByText('Copy local test failure'));
-  await screen.findByText('Local failure copied. This does not confirm server recording or Stop.');
-  expect(JSON.parse(mockCopy.mock.calls[0][0])).toEqual({
-    kind: 'selected-test-local-failure',
-    stage: 'server-export',
-    httpStatus: 503,
-    runId,
-  });
-  expect(mockCopy.mock.calls[0][0]).not.toContain('secret');
-  expect(await AsyncStorage.getItem('verity.selectedConnectionTest.v1.paired')).toBe(runId);
-  expect(screen.getByRole('button', { name: 'Run bounded connection test' })).toBeDisabled();
-});
-it('reports direct verification failure locally without trying server export', async () => {
-  await AsyncStorage.setItem('verity.selectedConnectionTest.v1.paired', runId);
-  mockVerify.mockRejectedValue(new Error('private URL and token'));
-  render(<SelectedConnectionTest disabled={false} onBusy={jest.fn()} />);
-  await screen.findByText(
-    'Saved bounded test available. Copy its report before starting another test.',
-  );
-  fireEvent.press(screen.getByText('Copy bounded test report'));
-  await screen.findByText('Copy local test failure');
-  mockCopy.mockRejectedValueOnce(new Error('clipboard failed'));
-  fireEvent.press(screen.getByText('Copy local test failure'));
-  await screen.findByText('Clipboard unavailable. Failed step: export-direct-descriptor.');
-  expect(mockExport).not.toHaveBeenCalled();
-  expect(JSON.parse(mockCopy.mock.calls[0][0])).toEqual({
-    kind: 'selected-test-local-failure',
-    stage: 'export-direct-descriptor',
-    httpStatus: null,
-    runId,
-  });
-});
-it('copies only local evidence after the bounded attempt fails and retains the run', async () => {
-  mockAttempt.mockRejectedValue(
-    Object.assign(new Error('secret admission ticket'), { status: 502 }),
+it.each(['stop', 'blur', 'background'])('aborts without double starting on %s', async (action) => {
+  mockAttempt.mockImplementation(
+    ({ signal }) =>
+      new Promise((_, reject) =>
+        signal.addEventListener('abort', () => reject(new Error('Stopped'))),
+      ),
   );
   await ready();
-  fireEvent.press(screen.getByText('Run bounded connection test'));
-  await screen.findByText('Copy local test failure');
-  fireEvent.press(screen.getByText('Copy local test failure'));
-  await screen.findByText('Local failure copied. This does not confirm server recording or Stop.');
-  expect(JSON.parse(mockCopy.mock.calls[0][0])).toEqual({
-    kind: 'selected-test-local-failure',
-    stage: 'bounded-attempt',
-    httpStatus: 502,
-    runId,
+  fireEvent.press(screen.getByText('Start quick test'));
+  await waitFor(() => expect(mockAttempt).toHaveBeenCalledTimes(1));
+  await act(async () => {
+    if (action === 'stop') fireEvent.press(screen.getByText('Stop test'));
+    if (action === 'blur') mockBlur?.();
+    if (action === 'background') mockAppState?.('background');
   });
-  expect(await AsyncStorage.getItem('verity.selectedConnectionTest.v1.paired')).toBe(runId);
-  expect(mockExport).not.toHaveBeenCalled();
-  expect(screen.getByRole('button', { name: 'Run bounded connection test' })).toBeDisabled();
+  expect(mockAttempt.mock.calls[0][0].signal.aborted).toBe(true);
+  await waitFor(async () =>
+    expect(JSON.parse((await AsyncStorage.getItem(key))!).outcome).toBe('cancelled'),
+  );
+  expect(mockAttempt).toHaveBeenCalledTimes(1);
+});
+it('restores an older UUID run as unknown and never restarts it during collection', async () => {
+  await AsyncStorage.setItem(key, runId);
+  render(<SelectedConnectionTest disabled={false} onBusy={jest.fn()} />);
+  await screen.findByText(/Older saved run — start time unavailable/);
+  expect(screen.queryByText('Start quick test')).toBeNull();
+  const report = await copyReport();
+  expect(report).toMatchObject({
+    version: 2,
+    runId,
+    startedAt: null,
+    outcome: 'unknown',
+    complete: false,
+    app: { available: false, unavailableReason: 'legacy' },
+  });
+  expect(mockAttempt).not.toHaveBeenCalled();
+  expect(await AsyncStorage.getItem(key)).toBe(runId);
+});
+it('retains local evidence and the run when remote recollection fails', async () => {
+  await completed();
+  const first = await copyReport();
+  await screen.findByText(/Complete report copied/);
+  mockExport.mockRejectedValue(new Error('private token payload'));
+  const next = await copyReport();
+  expect(next).toMatchObject({
+    runId,
+    complete: true,
+    sources: { app: true, core: true, uplink: true },
+  });
+  expect(JSON.stringify(next)).not.toContain('private');
+  expect(await AsyncStorage.getItem(key)).not.toBeNull();
+  expect(await loadConnectionDiagnosticReports('paired')).toEqual([first]);
+  expect(mockAttempt).toHaveBeenCalledTimes(1);
+});
+it('excludes a server response from another installation', async () => {
+  await completed();
+  const candidate = serverReport();
+  candidate.status.installationFingerprint = 'ffffffffffffffff';
+  mockExport.mockResolvedValue(candidate);
+  const report = await copyReport();
+  expect(report).toMatchObject({ complete: false, remote: { available: false, recording: null } });
+});
+it('does not announce copying when the clipboard rejects and keeps evidence available', async () => {
+  await completed();
+  mockCopy.mockRejectedValue(new Error('clipboard unavailable'));
+  fireEvent.press(screen.getByText('Copy report'));
+  await screen.findByText('Could not copy the report. This run is retained; retry collection.');
+  expect(screen.queryByText(/Complete report copied/)).toBeNull();
+  expect(await AsyncStorage.getItem(key)).not.toBeNull();
+  expect(await loadConnectionDiagnosticReports('paired')).toHaveLength(1);
+});
+it('does not start the test when saving its initial identity fails', async () => {
+  await ready();
+  jest.spyOn(AsyncStorage, 'setItem').mockRejectedValueOnce(new Error('storage full'));
+  fireEvent.press(screen.getByText('Start quick test'));
+  await screen.findByText(/Test failed during preparation or request/);
+  expect(mockAttempt).not.toHaveBeenCalled();
+  expect(screen.queryByText(/Test ended automatically/)).toBeNull();
+});
+it('reports history storage failure separately from clipboard success', async () => {
+  await completed();
+  const setItem = storageSetItem;
+  jest
+    .spyOn(AsyncStorage, 'setItem')
+    .mockImplementation((name, value) =>
+      name.startsWith('verity.connectionDiagnosticReports.')
+        ? Promise.reject(new Error('storage full'))
+        : setItem(name, value),
+    );
+  const report = await copyReport();
+  await screen.findByText(/Saving failed or Saved reports is full/);
+  expect(report.runId).toBe(runId);
+  expect(screen.queryByText('Start another quick test')).toBeNull();
+});
+it('persists native evidence arriving after navigation without updating the unfocused UI', async () => {
+  let finish!: () => void;
+  mockAttempt.mockImplementation(
+    (options) =>
+      new Promise((resolve) => {
+        finish = () => {
+          void options
+            .onLocalRecording({
+              status: 'ready',
+              recording: nativeRecording(),
+              sessionHash,
+              stopped: true,
+            })
+            .then(() => resolve({ status: 200 }));
+        };
+      }),
+  );
+  await ready();
+  fireEvent.press(screen.getByText('Start quick test'));
+  await waitFor(() => expect(finish).toBeDefined());
+  await act(async () => {
+    mockBlur?.();
+    finish();
+  });
+  await waitFor(async () =>
+    expect(JSON.parse((await AsyncStorage.getItem(key))!)).toMatchObject({
+      localStatus: 'ready',
+      localStopped: true,
+    }),
+  );
+  expect(mockAttempt.mock.calls[0][0].signal.aborted).toBe(true);
+  expect(screen.queryByText(/Test ended automatically/)).toBeNull();
+});
+it('does not start another run while native Stop remains unknown', async () => {
+  await completed();
+  await copyReport();
+  await screen.findByText('Start another quick test');
+  mockInactive.mockRejectedValue(new Error('native Stop unknown'));
+  fireEvent.press(screen.getByText('Start another quick test'));
+  await screen.findByText('Cannot start another test while native Stop is unconfirmed.');
+  expect(await AsyncStorage.getItem(key)).not.toBeNull();
+  expect(screen.queryByText('Start quick test')).toBeNull();
+  expect(mockAttempt).toHaveBeenCalledTimes(1);
+});
+it('does not authorize a fresh run merely because a partial report was saved', async () => {
+  await completed();
+  mockExport.mockRejectedValue(new Error('remote unavailable'));
+  await copyReport();
+  await screen.findByText('Start another quick test');
+  fireEvent.press(screen.getByText('Start another quick test'));
+  await screen.findByText('Cannot start another test while Stop is unconfirmed.');
+  expect(await AsyncStorage.getItem(key)).not.toBeNull();
+  expect(screen.queryByText('Start quick test')).toBeNull();
+  expect(mockAttempt).toHaveBeenCalledTimes(1);
+});
+
+it('serializes repeated new-test taps so a delayed removal cannot erase the next run', async () => {
+  await completed();
+  await copyReport();
+  const button = await screen.findByRole('button', { name: 'Start another quick test' });
+  let release!: () => void;
+  jest.mocked(AsyncStorage.removeItem).mockImplementationOnce(
+    (name) =>
+      new Promise<void>((resolve, reject) => {
+        release = () => {
+          void storageRemoveItem(name).then(resolve, reject);
+        };
+      }),
+  );
+  let control: typeof button | null = button;
+  while (control && typeof control.props.onPress !== 'function') control = control.parent;
+  expect(control).not.toBeNull();
+  const press = control!.props.onPress as () => void;
+  act(() => {
+    press();
+    press();
+  });
+  await waitFor(() => expect(AsyncStorage.removeItem).toHaveBeenCalledTimes(1));
+  expect(screen.queryByText('Start quick test')).toBeNull();
+  await act(async () => release());
+  await screen.findByText('Start quick test');
+  mockRunId = '22222222-2222-4222-8222-222222222222';
+  fireEvent.press(screen.getByText('Start quick test'));
+  await waitFor(async () =>
+    expect(JSON.parse((await AsyncStorage.getItem(key))!)).toMatchObject({
+      runId: mockRunId,
+      outcome: 'completed',
+    }),
+  );
+  expect(mockAttempt).toHaveBeenCalledTimes(2);
+  expect(AsyncStorage.removeItem).toHaveBeenCalledTimes(1);
+});
+it('retains old-profile completion only under its original storage key', async () => {
+  let finish!: () => void;
+  mockAttempt.mockImplementation(
+    (options) =>
+      new Promise((resolve) => {
+        finish = () => {
+          options.onPhase('stopping');
+          void options
+            .onLocalRecording({
+              status: 'ready',
+              recording: nativeRecording(),
+              sessionHash,
+              stopped: true,
+            })
+            .then(() => resolve({ status: 200 }));
+        };
+      }),
+  );
+  const view = render(<SelectedConnectionTest disabled={false} onBusy={jest.fn()} />);
+  await waitFor(() =>
+    expect(screen.getByRole('button', { name: 'Start quick test' })).toBeEnabled(),
+  );
+  fireEvent.press(screen.getByText('Start quick test'));
+  await waitFor(() => expect(finish).toBeDefined());
+  mockProfile = { serverId: 'other-profile' };
+  view.rerender(<SelectedConnectionTest disabled={false} onBusy={jest.fn()} />);
+  await act(async () => finish());
+  await waitFor(async () =>
+    expect(JSON.parse((await AsyncStorage.getItem(key))!)).toMatchObject({
+      runId,
+      localStatus: 'ready',
+    }),
+  );
+  expect(await AsyncStorage.getItem('verity.selectedConnectionTest.v1.other-profile')).toBeNull();
+  expect(screen.queryByText(/Quick test · 11111111/)).toBeNull();
+  expect(screen.queryByText(/Test ended automatically/)).toBeNull();
+});
+
+it('keeps a partial report for a missing server run and allows a new test only after verified inactivity', async () => {
+  await completed();
+  mockExport.mockRejectedValue(Object.assign(new Error('not retained'), { status: 404 }));
+  const report = await copyReport();
+  expect(report.remote).toMatchObject({ available: false, stopped: false, recording: null });
+  expect(screen.getByText(/Core has no retained report for this run/)).toBeTruthy();
+  fireEvent.press(screen.getByText('Start another quick test'));
+  await screen.findByText('Start quick test');
+  expect(await AsyncStorage.getItem(key)).toBeNull();
+  expect(await loadConnectionDiagnosticReports('paired')).toHaveLength(1);
+});
+
+it('resets the previous profile report and failure status when selecting another profile', async () => {
+  const view = render(<SelectedConnectionTest disabled={false} onBusy={jest.fn()} />);
+  await waitFor(() =>
+    expect(screen.getByRole('button', { name: 'Start quick test' })).toBeEnabled(),
+  );
+  fireEvent.press(screen.getByText('Start quick test'));
+  await screen.findByText(/Test ended automatically/);
+  mockExport.mockRejectedValue(new Error('offline'));
+  await copyReport();
+  expect(screen.getByText('Copy local test failure')).toBeTruthy();
+  mockProfile = { serverId: 'other-profile' };
+  view.rerender(<SelectedConnectionTest disabled={false} onBusy={jest.fn()} />);
+  await waitFor(() =>
+    expect(screen.getByRole('button', { name: 'Start quick test' })).toBeEnabled(),
+  );
+  expect(screen.queryByText('Copy local test failure')).toBeNull();
+  expect(screen.queryByText(/Partial report copied/)).toBeNull();
+  expect(screen.getByText(/One health request. Ends automatically/)).toBeTruthy();
+});
+
+it('preserves native evidence in memory when persistence fails after capture', async () => {
+  jest.mocked(AsyncStorage.setItem).mockImplementation(async (storageKey, value) => {
+    if (storageKey === key && JSON.parse(value).local !== null) throw new Error('storage full');
+    return storageSetItem(storageKey, value);
+  });
+  mockAttempt.mockImplementation(async (options) => {
+    options.onResponse?.(200);
+    try {
+      await options.onLocalRecording({
+        status: 'ready',
+        recording: nativeRecording(),
+        sessionHash,
+        stopped: true,
+      });
+    } catch {
+      await options
+        .onLocalRecording({ status: 'failed', recording: null, sessionHash, stopped: true })
+        .catch(() => undefined);
+    }
+    return { status: 200 };
+  });
+  await ready();
+  fireEvent.press(screen.getByText('Start quick test'));
+  await screen.findByText('Copy report');
+  const report = await copyReport();
+  expect(report.app.available).toBe(true);
+  expect(report.app.recording[0].sessionHash).toBe(sessionHash);
+  expect(report.app.stopped).toBe(true);
+});
+
+it('keeps cross-mode capture blocked after a failed attempt until confirmed collection', async () => {
+  mockAttempt.mockRejectedValue(new Error('Selected native capture cleanup failed'));
+  const blocked = jest.fn();
+  render(<SelectedConnectionTest disabled={false} onBusy={() => {}} onCaptureBlocked={blocked} />);
+  await waitFor(() => expect(blocked).toHaveBeenLastCalledWith(false));
+  fireEvent.press(screen.getByText('Start quick test'));
+  await screen.findByText(/Test failed during preparation or request/);
+  expect(blocked).toHaveBeenLastCalledWith(true);
+});
+
+it('integrates the quick collection/Stop gate with problem-start admission', async () => {
+  const client = { startConnectionRecording: jest.fn() } as never;
+  mockAttempt.mockRejectedValue(new Error('Selected native capture cleanup failed'));
+  render(<ConnectionRecording client={client} />);
+  fireEvent.press(screen.getByText('Quick connection test'));
+  await waitFor(() => expect(screen.getByText('Start quick test')).toBeEnabled());
+  fireEvent.press(screen.getByText('Start quick test'));
+  await screen.findByText(/Test failed during preparation or request/);
+  fireEvent.press(screen.getByText('Record a connection problem'));
+  expect(screen.getByText('Start problem recording')).toBeDisabled();
+  fireEvent.press(screen.getByText('Quick connection test'));
+  mockExport.mockRejectedValueOnce(new Error('unavailable'));
+  await copyReport();
+  fireEvent.press(screen.getByText('Record a connection problem'));
+  expect(screen.getByText('Start problem recording')).toBeDisabled();
+  fireEvent.press(screen.getByText('Quick connection test'));
+  await copyReport();
+  fireEvent.press(screen.getByText('Record a connection problem'));
+  await waitFor(() => expect(screen.getByText('Start problem recording')).toBeEnabled());
+});
+
+it('does not release cross-mode capture from retained Stop when current inactivity fails', async () => {
+  const blocked = jest.fn();
+  render(<SelectedConnectionTest disabled={false} onBusy={() => {}} onCaptureBlocked={blocked} />);
+  await waitFor(() => expect(screen.getByText('Start quick test')).toBeEnabled());
+  fireEvent.press(screen.getByText('Start quick test'));
+  await screen.findByText(/Test ended automatically after the response/);
+  await copyReport();
+  expect(blocked).toHaveBeenLastCalledWith(false);
+  mockInactive.mockRejectedValue(new Error('active tunnel'));
+  await copyReport();
+  expect(blocked).toHaveBeenLastCalledWith(true);
 });

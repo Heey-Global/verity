@@ -450,6 +450,14 @@ describe('POST /sessions/:id/meetings/transcripts', () => {
       });
       await vi.waitFor(() => expect(readFileSync(filed, 'utf8')).toContain('Friday release'));
       expect(await notices()).toHaveLength(count);
+
+      // Discarding removes the filed transcript and its index line, not the session card.
+      expect((await meetingApp.inject({ method: 'DELETE', url })).statusCode).toBe(200);
+      expect(existsSync(filed)).toBe(false);
+      expect(readFileSync(join(knowledgeRoot, 'sources/meetings/index.md'), 'utf8')).not.toContain(
+        link!.split('/').at(-1)!,
+      );
+      expect(await notices()).toHaveLength(count);
     } finally {
       await meetingApp.close();
       rmSync(worktree, { recursive: true, force: true });

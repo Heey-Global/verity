@@ -2841,8 +2841,18 @@ export class VerityClient {
         cursor: z.number(),
         meetings: z.array(liveMeetingSchema),
         notes: z.array(liveMeetingNoteSchema),
+        // Servers without discarding never report deletions.
+        deletedMeetingIds: z.array(z.string()).default([]),
       })
       .parse(await res.json());
+  }
+
+  /** Permanently discards a finished meeting of a session for every device. */
+  async discardSessionMeeting(sessionId: string, meetingId: string): Promise<void> {
+    await this.request(
+      `/sessions/${encodeURIComponent(sessionId)}/live-meetings/${encodeURIComponent(meetingId)}`,
+      { method: 'DELETE' },
+    );
   }
 
   /** Asks the server's model whether "Verity" in this utterance was a request, in any language. */
