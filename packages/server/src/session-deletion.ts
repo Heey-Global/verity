@@ -180,7 +180,7 @@ export function createSessionDeletionManager(options: {
     }
   };
   return {
-    async remove(session: SessionRecord) {
+    async remove(session: SessionRecord, onAdmitted?: () => void) {
       let work = logical.get(session.sessionId);
       if (!work) {
         work = (async () => {
@@ -200,6 +200,7 @@ export function createSessionDeletionManager(options: {
             options.store.queueSessionDeletion(session.sessionId, JSON.stringify(payload)),
           );
           options.fence(session.sessionId);
+          onAdmitted?.();
           await finishLogical(session.sessionId, payload);
           void clean(session.sessionId, payload);
         })();
@@ -220,6 +221,9 @@ export function createSessionDeletionManager(options: {
         );
         throw error;
       }
+    },
+    waitForLogical(id: string) {
+      return logical.get(id) ?? Promise.resolve();
     },
     resume,
     close() {

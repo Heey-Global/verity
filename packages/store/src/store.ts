@@ -4248,23 +4248,23 @@ export class EventStore implements EventSink {
     // {@link appendEventForRunningTurn}'s predicate and still take the lower id — exactly
     // the reversal that lock exists to rule out.
     //
-    // Taken from the insert's own source rather than by opening a transaction around it:
-    // a lone statement is its own transaction, so an `xact` lock acquired while producing
-    // the row to insert is held across the insert and released at its commit — the same
-    // window a BEGIN/lock/INSERT/COMMIT would give, at one round trip instead of four.
-    // This is the hot path for a locally-run turn's every streamed delta.
-    const row = await this.withSessionEventAppend(sessionId, async () => {
-      const result = await sql<{ id: number; created_at: Date }>`
-        insert into events (session_id, type, payload)
-        select ${sessionId}, ${type}, ${payload}::jsonb
-        from (select pg_advisory_xact_lock(hashtext(${this.sessionEventAppendLockKey(sessionId)}))) as _lock
-        where not exists (select 1 from session_deletions where session_id = ${sessionId})
-        returning id, created_at
-      `.execute(this.db);
-      const inserted = result.rows[0];
-      if (inserted === undefined) throw new Error(`failed to append event to session ${sessionId}`);
-      return inserted;
-    });
+    // READ COMMITTED takes a new snapshot per statement. Acquire the lock before
+    // the INSERT so a tombstone committed during lock contention is visible.
+    const row = await this.withSessionEventAppend(sessionId, () =>
+      this.db.transaction().execute(async (tx) => {
+        await this.sessionEventAppendLock(tx, sessionId);
+        const result = await sql<{ id: number; created_at: Date }>`
+          insert into events (session_id, type, payload)
+          select ${sessionId}, ${type}, ${payload}::jsonb
+          where not exists (select 1 from session_deletions where session_id = ${sessionId})
+          returning id, created_at
+        `.execute(tx);
+        const inserted = result.rows[0];
+        if (inserted === undefined)
+          throw new Error(`failed to append event to session ${sessionId}`);
+        return inserted;
+      }),
+    );
     this.enqueuePersistedMessageEvent(
       sessionId,
       Number(row.id),

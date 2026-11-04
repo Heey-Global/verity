@@ -46,6 +46,7 @@ import {
   runBackendHandoff,
   startSession,
   stopSession,
+  tryRunExclusive,
   worktreeRoot,
 } from './server-fixture.test-helper.js';
 import {
@@ -580,6 +581,51 @@ describe('DELETE /sessions/:id', () => {
     expect(list.json()).toEqual([]);
   });
 
+  it('retains atomic idle admission while deletion preparation awaits I/O', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    let release!: () => void;
+    let entered!: () => void;
+    let held = false;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const ready = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    tryRunExclusive.mockImplementationOnce(async (_id, fn) => {
+      held = true;
+      try {
+        return { ran: true, value: await fn() };
+      } finally {
+        held = false;
+      }
+    });
+    const a = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      queueSessionArtifacts: async () => {
+        entered();
+        await gate;
+      },
+    });
+    const request = a.inject({ method: 'DELETE', url: '/sessions/s1' });
+    const response = request.then((value) => value);
+    try {
+      await ready;
+      expect(held).toBe(true);
+      expect(tryRunExclusive).toHaveBeenCalledWith('s1', expect.any(Function));
+    } finally {
+      release();
+    }
+    try {
+      expect((await response).statusCode).toBe(200);
+      expect(held).toBe(false);
+    } finally {
+      await a.close();
+    }
+  });
+
   it('queues overlapping deletions in the same project behind the preview fence', async () => {
     await ctx.store.createProject({
       id: 'delete-project',
@@ -654,12 +700,15 @@ describe('DELETE /sessions/:id', () => {
     });
     const remove = vi.fn(async () => undefined);
     const runtimeCleanup = vi.fn(async () => 'deferred' as const);
+    const localPreviewManager = new LocalPreviewManager({ store: ctx.store } as never);
+    const stopPublications = vi.spyOn(localPreviewManager, 'stopSession');
     const a = buildServer({
       eventStore: ctx.store,
       bus,
       conductor,
       queueSessionArtifacts: async () => {},
       cleanupDeletedSessionRuntime: runtimeCleanup,
+      localPreviewManager,
       worktrees: { add: async () => '/unused', remove },
     });
     try {
@@ -668,10 +717,12 @@ describe('DELETE /sessions/:id', () => {
       expect(res.json()).toMatchObject({ sessionId: 'sleep-session', cleanup: 'pending' });
       expect(await ctx.store.getSession('sleep-session')).toBeUndefined();
       expect((await ctx.store.getProject('sleep-delete'))?.state).toBe('sleeping');
+      await vi.waitFor(() => expect(stopPublications).toHaveBeenCalledWith('sleep-session'));
       expect(await ctx.store.listPendingSessionDeletions()).toHaveLength(1);
       expect(remove).not.toHaveBeenCalled();
     } finally {
       await a.close();
+      await localPreviewManager.close();
     }
   });
 

@@ -28,7 +28,6 @@ import {
   type RateLimitState,
 } from '@verity/events';
 import {
-  BackendTerminationUnconfirmedError,
   CODEX_DEFAULT_MODEL,
   isCodexModel,
   QueueFullError,
@@ -6322,6 +6321,9 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       const { session } = payload;
       if (conductor.isDeletionWorktreeBusy?.(session.sessionId)) return false;
       deps.scheduleSessionCleanup?.();
+      // Publications can stop even while the sleeping Runner remains deferred.
+      for (const shareId of payload.previewIds) await deps.localPreviewManager?.stop(shareId);
+      await deps.localPreviewManager?.stopSession(session.sessionId);
       // Successful privileged home deletion kills/fences exact workers. A missing
       // DB marker after cascade is not evidence that a process has exited.
       if (deps.cleanupDeletedSessionRuntime) {
@@ -6339,8 +6341,6 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         (await deps.managedDevServerManager.cleanupDeletedSession(payload.managed)) !== 'clean'
       )
         return false;
-      for (const shareId of payload.previewIds) await deps.localPreviewManager?.stop(shareId);
-      await deps.localPreviewManager?.stopSession(session.sessionId);
       if (conductor.isDeletionWorktreeBusy?.(session.sessionId)) return false;
       conductor.closeSession?.(session.sessionId);
       let cleanupWorktrees = worktrees;
@@ -6450,7 +6450,26 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       }
       deletionRequestIds.set(id, request.id);
       try {
-        return await sessionDeletions.remove(session);
+        if (force) return await sessionDeletions.remove(session);
+        let removal: ReturnType<typeof sessionDeletions.remove> | undefined;
+        const admission = await conductor.tryRunExclusive(id, async () => {
+          let release!: () => void;
+          const admitted = new Promise<void>((resolve) => {
+            release = resolve;
+          });
+          removal = sessionDeletions.remove(session, release);
+          // The HTTP deadline must not release an unfinished admission operation.
+          void removal.catch(() => undefined);
+          await Promise.race([
+            admitted,
+            sessionDeletions.waitForLogical(id).catch(() => undefined),
+          ]);
+        });
+        if (!admission.ran) {
+          reply.code(409);
+          return { error: `session ${id} is busy — finish the turn before deleting it` };
+        }
+        return await removal;
       } catch (error) {
         request.log.warn(
           { errorKind: error instanceof Error ? error.name : 'unknown', sessionId: id },
