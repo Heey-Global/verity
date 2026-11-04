@@ -175,7 +175,19 @@ ca_config_temporary="$tls_cert.$$.ca.tmp"
 ca_index_temporary="$tls_cert.$$.index.tmp"
 ca_serial_temporary="$tls_cert.$$.serial.tmp"
 ca_newcerts_temporary="$tls_cert.$$.newcerts.tmp"
-trap 'rm -rf "$temporary" "$csr_temporary" "$extensions_temporary" "$ca_config_temporary" "$ca_index_temporary" "$ca_serial_temporary" "$ca_newcerts_temporary"' EXIT
+# `openssl ca` writes <database>.attr, <database>.old and <serial>.old beside the
+# files named in its config. Earlier releases left exactly those behind on every run;
+# sweep them while no other run owns them, then clean up this run's set as a whole.
+for leftover in "$tls_cert".*.tmp*; do
+  [ -f "$leftover" ] && [ ! -L "$leftover" ] || continue
+  owner="${leftover#"$tls_cert".}"
+  owner="${owner%%.*}"
+  [[ "$owner" =~ ^[0-9]+$ ]] || continue
+  [ "$owner" != "$$" ] && ! kill -0 "$owner" 2>/dev/null || continue
+  rm -f -- "$leftover"
+done
+ca_side_files=("$ca_index_temporary.attr" "$ca_index_temporary.old" "$ca_index_temporary.attr.old" "$ca_serial_temporary.old")
+trap 'rm -rf "$temporary" "$csr_temporary" "$extensions_temporary" "$ca_config_temporary" "$ca_index_temporary" "$ca_serial_temporary" "$ca_newcerts_temporary" "${ca_side_files[@]}"' EXIT
 openssl req -new -sha256 -key "$tls_key" -out "$csr_temporary" \
   -subj '/CN=Verity local control plane'
 printf '%s\n' \
@@ -216,7 +228,7 @@ chmod 0644 "$temporary"
 if [ "$(id -u)" = 0 ]; then chown root:root "$temporary"; fi
 mv -f "$temporary" "$tls_cert"
 rm -rf "$csr_temporary" "$extensions_temporary" "$ca_config_temporary" \
-  "$ca_index_temporary" "$ca_serial_temporary" "$ca_newcerts_temporary"
+  "$ca_index_temporary" "$ca_serial_temporary" "$ca_newcerts_temporary" "${ca_side_files[@]}"
 trap - EXIT
 fi
 
