@@ -2582,7 +2582,7 @@ export class Conductor {
       this.reapUnconfirmedWorker(sessionId, turn);
       return true;
     }
-    await this.forceSettleWedgedTurn(sessionId, turn);
+    await this.forceSettleWedgedTurn(sessionId, turn, true);
     return true;
   }
 
@@ -2728,7 +2728,7 @@ export class Conductor {
       if (originalHandle !== undefined && this.turns.get(sessionId) === originalHandle) {
         this.closeSession(sessionId);
         originalHandle.controller.abort();
-        await this.forceSettleWedgedTurn(sessionId, originalHandle);
+        await this.forceSettleWedgedTurn(sessionId, originalHandle, false);
         return true;
       }
       if (originalHandle === undefined && this.inFlight.has(sessionId)) {
@@ -2796,7 +2796,7 @@ export class Conductor {
           if ((await this.boundedForceCancel(sessionId, handle)) === 'unconfirmed') continue;
           if (handle.settled || this.turns.get(sessionId) !== handle) return;
           this.closeSession(sessionId);
-          await this.forceSettleWedgedTurn(sessionId, handle);
+          await this.forceSettleWedgedTurn(sessionId, handle, true);
           return;
         }
         // Retries exhausted (or never possible) with the session still fenced. Say so
@@ -2861,7 +2861,7 @@ export class Conductor {
         this.reapUnconfirmedWorker(sessionId, handle);
         return;
       }
-      await this.forceSettleWedgedTurn(sessionId, handle);
+      await this.forceSettleWedgedTurn(sessionId, handle, true);
     } catch (error) {
       this.reportTurnError(sessionId, error);
     }
@@ -2892,7 +2892,11 @@ export class Conductor {
     }
   }
 
-  private async forceSettleWedgedTurn(sessionId: string, handle: SessionTurnHandle): Promise<void> {
+  private async forceSettleWedgedTurn(
+    sessionId: string,
+    handle: SessionTurnHandle,
+    terminationConfirmed: boolean,
+  ): Promise<void> {
     // Already settled, or the run loop owns the settle — nothing to free.
     if (handle.settled || !handle.claimSettle('force')) return;
     if (this.turns.get(sessionId) === handle) this.turns.delete(sessionId);
@@ -2937,7 +2941,7 @@ export class Conductor {
       // never keep the session fenced. `clearRunningTurn` catches + reports its
       // own store errors.
       this.releaseInFlight(sessionId);
-      this.recordDeletionTermination(sessionId, true, handle);
+      this.recordDeletionTermination(sessionId, terminationConfirmed, handle);
       // Scoped to the wedged turn's own prompt_seq: even a delayed delete can then
       // never erase a successor turn's marker (crash-recovery anchor). An
       // undefined markerSeq means the wedge happened before this turn ever wrote
@@ -4448,7 +4452,7 @@ export class Conductor {
       });
       this.deps.store.scheduleMessageProjection();
       this.closeSession(marker.sessionId);
-      await this.forceSettleWedgedTurn(marker.sessionId, live);
+      await this.forceSettleWedgedTurn(marker.sessionId, live, true);
       return;
     }
     // The verdict is about ONE turn as it was ONE probe ago — up to the discovery
@@ -4525,7 +4529,7 @@ export class Conductor {
       // queued successor start, so closing after it could terminate the SUCCESSOR's
       // backend.
       this.closeSession(marker.sessionId);
-      await this.forceSettleWedgedTurn(marker.sessionId, live);
+      await this.forceSettleWedgedTurn(marker.sessionId, live, true);
       return;
     }
     // No handle at all: the fence is held by a turn whose object is already gone, so

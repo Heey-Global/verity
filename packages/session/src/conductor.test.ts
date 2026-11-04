@@ -6259,65 +6259,75 @@ describe('Conductor.cancelTurn (#79)', () => {
     }
   });
 
-  it('lets the operator release a fence no automatic path can lift', async () => {
-    // The state the barrier deliberately creates and neither recovery path can end:
-    // the worker may be alive, its control plane never answers, so the reaper cannot
-    // prove death and the liveness sweep cannot prove absence. Without a manual
-    // release the honest advice would be "delete the session".
-    vi.useFakeTimers();
-    try {
-      await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
-      let started = false;
-      let sawAbort = false;
-      const runner: RunnerClient = {
-        startTurn: (opts) => {
-          started = true;
-          opts.signal?.addEventListener('abort', () => {
-            sawAbort = true;
+  it.each(['resume', 'delete'])(
+    'lets the operator release a fence without inventing termination evidence (%s)',
+    async (next) => {
+      // The state the barrier deliberately creates and neither recovery path can end:
+      // the worker may be alive, its control plane never answers, so the reaper cannot
+      // prove death and the liveness sweep cannot prove absence. Without a manual
+      // release the honest advice would be "delete the session".
+      vi.useFakeTimers();
+      try {
+        await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+        let started = false;
+        let sawAbort = false;
+        const runner: RunnerClient = {
+          startTurn: (opts) => {
+            started = true;
+            opts.signal?.addEventListener('abort', () => {
+              sawAbort = true;
+            });
+            return {
+              result: new Promise<RunResult>(() => undefined), // wedged run loop
+              steer: () => Promise.resolve(false),
+              answerPermission: () => Promise.resolve(false),
+              cancel: () => new Promise<boolean>(() => undefined), // no ack
+              forceCancel: () => new Promise<boolean>(() => undefined), // never answers
+            };
+          },
+        };
+        const conductor = new Conductor({
+          store: ctx.store,
+          backend: { run: () => Promise.reject(new Error('unexpected loopback run')) },
+          worktreeExists: async () => true,
+          runner: () => runner,
+        });
+
+        await conductor.dispatchTurn('s1', 'go');
+        await vi.waitFor(() => expect(started).toBe(true));
+        void conductor.cancelTurn('s1');
+        await vi.advanceTimersByTimeAsync(2_000 + 10 * 2_000 + 200);
+        expect(conductor.hasUnconfirmedTermination('s1')).toBe(true);
+        expect(conductor.isBusy('s1')).toBe(true);
+
+        await conductor.releaseUnconfirmedTermination('s1');
+
+        expect(conductor.hasUnconfirmedTermination('s1')).toBe(false);
+        expect(conductor.isBusy('s1')).toBe(false);
+        expect(sawAbort).toBe(true);
+        // The turn is finalized like any other force-settle, and the durable marker is
+        // gone — a release that left the marker would resurrect the turn on restart.
+        const kinds = (await ctx.store.getEvents('s1')).map((e) => e.t);
+        expect(kinds).toContain('interrupted');
+        expect(await ctx.store.listRunningTurns()).toHaveLength(0);
+        // The transcript must not claim the process exited — nothing established that.
+        const notices = (await ctx.store.getEvents('s1')).filter((e) => e.t === 'notice');
+        expect(JSON.stringify(notices)).toContain('Released by hand');
+        expect(JSON.stringify(notices)).not.toContain('confirmed gone');
+        if (next === 'delete') {
+          expect(await conductor.stopForDeletion('s1', 20)).toBe(false);
+          expect(conductor.isDeletionTerminationConfirmed('s1')).toBe(false);
+        } else {
+          // Manual handoff remains available; physical deletion still needs proof.
+          await expect(conductor.dispatchTurn('s1', 'next')).resolves.toMatchObject({
+            queued: false,
           });
-          return {
-            result: new Promise<RunResult>(() => undefined), // wedged run loop
-            steer: () => Promise.resolve(false),
-            answerPermission: () => Promise.resolve(false),
-            cancel: () => new Promise<boolean>(() => undefined), // no ack
-            forceCancel: () => new Promise<boolean>(() => undefined), // never answers
-          };
-        },
-      };
-      const conductor = new Conductor({
-        store: ctx.store,
-        backend: { run: () => Promise.reject(new Error('unexpected loopback run')) },
-        worktreeExists: async () => true,
-        runner: () => runner,
-      });
-
-      await conductor.dispatchTurn('s1', 'go');
-      await vi.waitFor(() => expect(started).toBe(true));
-      void conductor.cancelTurn('s1');
-      await vi.advanceTimersByTimeAsync(2_000 + 10 * 2_000 + 200);
-      expect(conductor.hasUnconfirmedTermination('s1')).toBe(true);
-      expect(conductor.isBusy('s1')).toBe(true);
-
-      await conductor.releaseUnconfirmedTermination('s1');
-
-      expect(conductor.hasUnconfirmedTermination('s1')).toBe(false);
-      expect(conductor.isBusy('s1')).toBe(false);
-      expect(sawAbort).toBe(true);
-      // The turn is finalized like any other force-settle, and the durable marker is
-      // gone — a release that left the marker would resurrect the turn on restart.
-      const kinds = (await ctx.store.getEvents('s1')).map((e) => e.t);
-      expect(kinds).toContain('interrupted');
-      expect(await ctx.store.listRunningTurns()).toHaveLength(0);
-      // The transcript must not claim the process exited — nothing established that.
-      const notices = (await ctx.store.getEvents('s1')).filter((e) => e.t === 'notice');
-      expect(JSON.stringify(notices)).toContain('Released by hand');
-      expect(JSON.stringify(notices)).not.toContain('confirmed gone');
-      // And the session really is usable again.
-      await expect(conductor.dispatchTurn('s1', 'next')).resolves.toMatchObject({ queued: false });
-    } finally {
-      vi.useRealTimers();
-    }
-  });
+        }
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
 
   it('reports a no-op release on a session that was never fenced', async () => {
     // The button is reachable from a stale banner, and the fence may have lifted by
@@ -11345,7 +11355,13 @@ describe('Conductor session deletion admission', () => {
     const startTurn = vi.fn(() => ({
       result:
         ++attempts === 1
-          ? Promise.resolve({ sessionId: undefined, exitCode: 1, stderr: '', staleResume: true })
+          ? Promise.resolve({
+              sessionId: undefined,
+              exitCode: 1,
+              stderr: '',
+              staleResume: true as const,
+              aborted: false,
+            })
           : Promise.reject(new Error('transport dropped')),
       steer: async () => false,
       answerPermission: async () => false,
