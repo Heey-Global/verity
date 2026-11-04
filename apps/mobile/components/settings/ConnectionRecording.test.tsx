@@ -149,6 +149,7 @@ function client() {
 }
 beforeEach(async () => {
   mockServerId = 'paired-core';
+  mockNativeInactive.mockReset().mockResolvedValue(undefined);
   await AsyncStorage.clear();
   jest.clearAllMocks();
   mockVerifyAdministration.mockReset();
@@ -802,8 +803,11 @@ it('discards a stuck long test only after a confirmed local Stop and keeps saved
   api.exportConnectionRecording.mockRejectedValue(new Error('offline'));
   pressCollect();
   await screen.findByText('Not confirmed as stopped');
-  // Without a confirmed local Stop the run, and its evidence, stays.
+  // Without a confirmed local Stop and with a tunnel still running, the run stays.
   mockStop.mockResolvedValueOnce(false);
+  mockNativeInactive.mockRejectedValueOnce(
+    new Error('An existing DATA tunnel must be stopped before testing.'),
+  );
   await confirmDiscard();
   await screen.findByText(/could not confirm that this device stopped recording/);
   expect(await AsyncStorage.getItem(storageKey)).not.toBeNull();
@@ -878,4 +882,23 @@ it('lets a device without the native tunnel discard a long test whose preparatio
   await confirmDiscard();
   await waitFor(() => expect(AsyncStorage.getItem(storageKey)).resolves.toBeNull());
   await waitFor(() => expect(screen.getByText('Start long test')).toBeEnabled());
+});
+
+it('discards a long test when Stop is unconfirmed but no native tunnel is running', async () => {
+  const storageKey = 'verity.connectionRecording.v1.paired-core';
+  await AsyncStorage.setItem(
+    storageKey,
+    JSON.stringify({
+      runId,
+      startedAt: new Date(2025, 9, 1, 12).getTime(),
+      expiresAt: new Date(2025, 9, 1, 12, 0, 45).getTime(),
+      local: null,
+    }),
+  );
+  mockStop.mockResolvedValue(false);
+  mockNativeInactive.mockResolvedValueOnce(undefined);
+  testingRender(<ConnectionRecording client={client() as never} />);
+  await screen.findByText(/Recording finished · 1 Oct 2025/);
+  await confirmDiscard();
+  await waitFor(() => expect(AsyncStorage.getItem(storageKey)).resolves.toBeNull());
 });

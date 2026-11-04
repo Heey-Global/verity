@@ -7,14 +7,16 @@ import { getServerProfile } from './serverProfile';
 
 /**
  * Confirms no native DATA tunnel is running on this device. It needs no paired
- * direct connection, so an unfinished test can still be discarded without one.
+ * direct connection. Starting a test fails closed on every error; discarding
+ * an unfinished test additionally accepts 'Native connection test unsupported.',
+ * since such a device has no tunnel that could be capturing.
  */
 export async function assertNativeTunnelInactive() {
   let native: { isActive(): Promise<boolean>; isSupported(): Promise<boolean> };
   try {
     native = requireNativeModule('VerityRemoteControlTunnel');
   } catch {
-    // Web, Expo Go or an older build: no native tunnel exists to be active.
+    // Web, Expo Go or an older build have no native tunnel module at all.
     throw new Error('Native connection test unsupported.');
   }
   let timer: ReturnType<typeof setTimeout> | undefined;

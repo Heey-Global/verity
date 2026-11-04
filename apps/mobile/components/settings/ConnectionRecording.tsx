@@ -758,15 +758,15 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
     let stage: 'stop' | 'storage' = 'stop';
     try {
       // Only a confirmed local Stop lets the unfinished run go; saved reports stay.
-      // A device without the native tunnel can never confirm Stop, but it also
-      // cannot be capturing, so only that case may discard without it.
+      // Without a confirmed Stop, discard needs the same proof as the quick test:
+      // no native tunnel is running, or the device has none that could capture.
       if (!(await stopRemoteDataRecording())) {
-        const unsupported = await assertNativeTunnelInactive().then(
-          () => false,
+        const inactive = await assertNativeTunnelInactive().then(
+          () => true,
           (error: unknown) =>
             error instanceof Error && error.message === 'Native connection test unsupported.',
         );
-        if (!unsupported) throw new Error('Stop unconfirmed');
+        if (!inactive) throw new Error('Stop unconfirmed');
       }
       if (!current()) return;
       // Core and Uplink may still record this run. Without their confirmed Stop,
@@ -826,7 +826,7 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
   const confirmDiscardProblem = () =>
     Alert.alert(
       'Discard this long test?',
-      problemArchived
+      problemArchived || reports.some((entry) => entry.runId === runRef.current?.runId)
         ? 'The unfinished test is removed from this device. Its saved report is kept.'
         : 'Its data has not been collected yet and will be lost. Other saved reports are kept.',
       [
@@ -841,17 +841,18 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
     run !== null && !problemArchived && !preparing && !collecting && !recording;
   const archivedRun = run !== null && problemArchived && !preparing && !collecting && !recording;
   const step = preparing ? 0 : recording ? 1 : collecting || awaitingCollection ? 2 : 3;
-  const longBlockedReason = !loaded
-    ? 'Loading…'
-    : !client
-      ? 'Connect to your Core first.'
-      : holdLeft > 0
-        ? holdReason(holdLeft)
-        : selectedBusy
-          ? 'Finish the quick test first.'
-          : quickCaptureBlocked
-            ? 'Waiting for the quick test above.'
-            : undefined;
+  const longBlockedReason =
+    !loaded || !holdLoaded
+      ? 'Loading…'
+      : !client
+        ? 'Connect to your Core first.'
+        : holdLeft > 0
+          ? holdReason(holdLeft)
+          : selectedBusy
+            ? 'Finish the quick test first.'
+            : quickCaptureBlocked
+              ? 'Waiting for the quick test above.'
+              : undefined;
   const quickBlockedReason =
     preparing ||
     collecting ||
@@ -860,9 +861,11 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
       ? 'Finish the long test first.'
       : holdLeft > 0
         ? holdReason(holdLeft)
-        : !client
-          ? 'Connect to your Core first.'
-          : undefined;
+        : !loaded || !holdLoaded
+          ? 'Loading…'
+          : !client
+            ? 'Connect to your Core first.'
+            : undefined;
   const failedPreparation = run?.preparation?.failed === true;
   return (
     <View>
@@ -1055,8 +1058,10 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
                                         report.runId,
                                       ).then(
                                         () => {
-                                          if (runRef.current?.runId === report.runId)
+                                          if (runRef.current?.runId === report.runId) {
                                             setProblemArchived(false);
+                                            setProblemReport(null);
+                                          }
                                           setExpanded(null);
                                           refreshReports();
                                         },
