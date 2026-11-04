@@ -14,6 +14,19 @@ export const nativeRetirementSchema = z.object({
   lastCompletedAt: z.iso.datetime({ offset: true }).optional(),
   blockers: z.array(z.string().max(200)).max(100),
 });
+/** Cache allocation measurements are separate from the host filesystem free-space delta. */
+export const runnerCacheReclamationSchema = z.object({
+  observedAt: z.iso.datetime({ offset: true }),
+  sharedBytes: bytes.nullable(),
+  legacyBytes: bytes.nullable(),
+  removedBytes: bytes,
+  legacyCachesRemoved: z.number().int().nonnegative(),
+  sharedCachesPruned: z.number().int().nonnegative(),
+  usageComplete: z.boolean(),
+  blockers: z.array(z.string().max(500)).max(100),
+});
+export type RunnerCacheReclamationReport = z.infer<typeof runnerCacheReclamationSchema>;
+
 export const storageReclamationActionSchema = z.object({
   supported: z.boolean(),
   state: z.enum(['idle', 'running', 'completed', 'failed']),
@@ -26,6 +39,7 @@ export const storageReclamationActionSchema = z.object({
       containersRemoved: bytes,
       dependenciesRemoved: bytes,
       worktreesRetired: bytes,
+      runnerCaches: runnerCacheReclamationSchema.nullable().optional(),
       filesystemFreeBytesChange: z.number().finite().nullable(),
       retainedPins: z.array(
         z.object({ imageId: z.string(), containers: z.array(z.string()), reason: z.string() }),

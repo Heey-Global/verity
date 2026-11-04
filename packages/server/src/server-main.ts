@@ -1,3 +1,4 @@
+import { runnerCacheTargetFromEnv } from './runner-cache-storage.js';
 import { parseOomScoreAdj } from './sandbox-memory-policy.js';
 import {
   configureManagedUpdateChannel,
@@ -910,6 +911,7 @@ async function main(): Promise<void> {
       // Host-disk GC owns Verity's append-only Docker caches and is mandatory.
       dockerGc: true,
       dockerGcPolicy: dockerGcPolicyFromEnv(),
+      runnerCacheMaxBytes: runnerCacheTargetFromEnv(process.env.VERITY_RUNNER_NPM_CACHE_MAX_BYTES),
       agentSeedHostPath: sandboxAgentSeedHostPath(process.env),
       // Anti-CSWSH Origin allowlist for the live WebSocket (audit C1). Comma-list,
       // e.g. `https://verity.example.com`. Unset → no Origin check (native mobile

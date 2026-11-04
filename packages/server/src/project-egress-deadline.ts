@@ -1,8 +1,8 @@
 import { createHash, randomBytes } from 'node:crypto';
 import {
-  createProjectDeadlineWorker,
-  type DeadlineWorkerTiming,
-} from './project-egress-deadline-worker.js';
+  createDeadlineChannel,
+  type DeadlineChannelTiming,
+} from './project-egress-deadline-channel.js';
 import { z } from 'zod';
 import type { ProjectFenceBinding } from './project-egress-fence.js';
 
@@ -124,7 +124,7 @@ export interface ProjectDeadlineRelayEnforcer extends ProjectDeadlineEnforcer {
 }
 
 /** Fixed root-owned helper; no executable or namespace comes from a project. */
-export interface ProjectDeadlineTiming extends DeadlineWorkerTiming {
+export interface ProjectDeadlineTiming extends DeadlineChannelTiming {
   operation: string;
   capturedBootNs?: string;
   bootDeadlineNs?: string;
@@ -133,10 +133,26 @@ export interface ProjectDeadlineTiming extends DeadlineWorkerTiming {
 export function hostProjectDeadlineEnforcer(
   observe?: (timing: ProjectDeadlineTiming) => void,
 ): ProjectDeadlineRelayEnforcer & { close(): void } {
-  const worker = createProjectDeadlineWorker();
-  const request = (input: { operation: string; [key: string]: unknown }): Promise<unknown> =>
-    worker.request(
+  const channel = createDeadlineChannel();
+  const close = channel.close;
+  const request = (input: { operation: string; [key: string]: unknown }) =>
+    channel.request(
       input,
+      observe
+        ? (timing) => {
+            const lease = input.lease as ProjectDeadlineLease | undefined;
+            observe({
+              ...timing,
+              operation: input.operation,
+              ...(lease
+                ? { capturedBootNs: lease.capturedBootNs, bootDeadlineNs: lease.bootDeadlineNs }
+                : {}),
+              ...(typeof input.previousBootDeadlineNs === 'string'
+                ? { previousBootDeadlineNs: input.previousBootDeadlineNs }
+                : {}),
+            });
+          }
+        : undefined,
       (value) => {
         if (input.operation === 'clock') return clockSchema.parse(value);
         const state =
@@ -157,23 +173,10 @@ export function hostProjectDeadlineEnforcer(
         }
         return z.strictObject({ state: z.literal(state) }).parse(value);
       },
-      (timing) => {
-        const lease = input.lease as ProjectDeadlineLease | undefined;
-        observe?.({
-          ...timing,
-          operation: input.operation,
-          ...(lease
-            ? { capturedBootNs: lease.capturedBootNs, bootDeadlineNs: lease.bootDeadlineNs }
-            : {}),
-          ...(typeof input.previousBootDeadlineNs === 'string'
-            ? { previousBootDeadlineNs: input.previousBootDeadlineNs }
-            : {}),
-        });
-      },
     );
   const denied = z.strictObject({ state: z.literal('denied') });
   return {
-    close: () => worker.close(),
+    close,
     async configureRelay(binding, relay) {
       z.strictObject({ state: z.literal('relay-configured') }).parse(
         await request({ operation: 'configure-relay', binding, relay }),

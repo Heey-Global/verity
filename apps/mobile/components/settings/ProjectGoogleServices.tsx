@@ -107,7 +107,7 @@ export function ProjectGoogleServices({
             key={service}
             icon="link"
             title={`Connect ${labels[service]}`}
-            subtitle="Add account access in Connections first"
+            subtitle="Add account access in Connectors first"
             onPress={() => router.push('/settings/google')}
           />
         );

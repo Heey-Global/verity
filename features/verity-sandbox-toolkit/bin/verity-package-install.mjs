@@ -6,6 +6,7 @@ import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { delimiter, resolve } from 'node:path';
 import { URL } from 'node:url';
+import { configurePackageArtifacts } from './verity-package-artifacts.mjs';
 import {
   classifyInstall,
   configureReleaseDelay,
@@ -204,15 +205,19 @@ async function main() {
     if (supported && manager === 'uv' && detection.protected)
       environment.UV_EXCLUDE_NEWER = configuredValue;
   }
-  const child = spawn(executable, args, { stdio: 'inherit', env: environment });
+  const artifacts = configurePackageArtifacts(manager, args, environment);
+  process.once('exit', artifacts.cleanup);
+  const child = spawn(executable, artifacts.args, { stdio: 'inherit', env: environment });
   const signals = ['SIGINT', 'SIGTERM'];
   const handlers = signals.map((signal) => () => child.kill(signal));
   signals.forEach((signal, index) => process.on(signal, handlers[index]));
   child.on('error', (error) => {
+    artifacts.cleanup();
     reportError(error.message);
     process.exitCode = 1;
   });
   child.on('exit', (code, signal) => {
+    artifacts.cleanup();
     signals.forEach((entry, index) => process.removeListener(entry, handlers[index]));
     if (signal) process.kill(process.pid, signal);
     else process.exitCode = code ?? 1;

@@ -1,4 +1,4 @@
-import { nativeRetirementSchema } from '@verity/events';
+import { nativeRetirementSchema, runnerCacheReclamationSchema } from '@verity/events';
 import {
   builderAdmissionMessage,
   readBuilderAdmissionState,
@@ -182,6 +182,7 @@ const storageReclamationSchema = z.object({
       blockers: z.array(z.object({ path: z.string(), reason: z.string().max(500) })).max(100),
     })
     .nullable(),
+  runnerCaches: runnerCacheReclamationSchema.nullable().optional(),
   databaseBytes: number.nullable(),
   nativeBuildkit: nativeRetirementSchema.nullable(),
   activeBuildkitBytes: number.nullable(),

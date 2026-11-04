@@ -1,0 +1,74 @@
+[
+  {
+    "name": "verity_knowledge_record_decision",
+    "title": "Verity · Knowledge · Record Decision",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": null,
+    "skill": "knowledge-ingest",
+    "compatibility": {
+      "name": "verity_knowledge",
+      "operation": "record_decision"
+    }
+  },
+  {
+    "name": "verity_knowledge_lookup_decisions",
+    "title": "Verity · Knowledge · Lookup Decisions",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": null,
+    "skill": "knowledge-query",
+    "compatibility": {
+      "name": "verity_knowledge",
+      "operation": "lookup_decisions"
+    }
+  },
+  {
+    "name": "verity_knowledge_import_source",
+    "title": "Verity · Knowledge · Import Source",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": null,
+    "skill": "knowledge-ingest",
+    "compatibility": {
+      "name": "verity_knowledge",
+      "operation": "import_source"
+    }
+  },
+  {
+    "name": "verity_knowledge_create_raw_source_folder",
+    "title": "Verity · Knowledge · Create Raw Source Folder",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": null,
+    "skill": "knowledge-ingest",
+    "compatibility": {
+      "name": "verity_knowledge",
+      "operation": "create_source_folder"
+    }
+  },
+  {
+    "name": "verity_knowledge_move_raw_source",
+    "title": "Verity · Knowledge · Move Raw Source",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": null,
+    "skill": "knowledge-ingest",
+    "compatibility": {
+      "name": "verity_knowledge",
+      "operation": "move_source"
+    }
+  },
+  {
+    "name": "verity_knowledge_publish_shared",
+    "title": "Verity · Knowledge · Publish Shared",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": null,
+    "skill": "knowledge-ingest",
+    "compatibility": {
+      "name": "verity_knowledge",
+      "operation": "publish_shared"
+    }
+  }
+]

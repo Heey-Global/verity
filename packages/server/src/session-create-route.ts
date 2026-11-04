@@ -1,5 +1,4 @@
 import { parseSpawnRequestBody, type SpawnBody } from './session-create-schema.js';
-import { createDocumentWorkspaceProvisioner } from './document-workspace.js';
 import { isLocalProject } from '@verity/store';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
@@ -334,14 +333,12 @@ export function registerSessionCreateRoute(
             : {}),
         };
         projectWorktrees =
-          isLocalProject(project) && deps.dataRoot !== undefined
-            ? createDocumentWorkspaceProvisioner(deps.dataRoot, project.id, projectClone)
-            : (deps.projectWorktrees?.(project, projectClone, worktreeOpts) ??
-              createGitWorktreeProvisioner({
-                repoDir: projectClone,
-                worktreeRoot: join(projectClone, '.verity-sessions'),
-                ...worktreeOpts,
-              }));
+          deps.projectWorktrees?.(project, projectClone, worktreeOpts) ??
+          createGitWorktreeProvisioner({
+            repoDir: projectClone,
+            worktreeRoot: join(projectClone, '.verity-sessions'),
+            ...worktreeOpts,
+          });
         await deps.refreshProjectToken?.(project);
         projectWorktree = await projectWorktrees.add(deps.makeBranch(body.name, body.issue));
       }

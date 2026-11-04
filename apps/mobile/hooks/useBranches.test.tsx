@@ -110,6 +110,31 @@ describe('useBranches live updates', () => {
     expect(hook.result.current.current).toBeUndefined();
   });
 
+  it('defers automatic refreshes while blurred or backgrounded until focus returns', async () => {
+    const client = {
+      getBranches: jest.fn().mockResolvedValue(branches()),
+    } as unknown as VerityClient;
+    const hook = renderHook(() => useBranches(client, 's'));
+    await advance(0);
+    mockFocused = false;
+    hook.rerender({});
+    act(() => hook.result.current.refresh());
+    await advance(0);
+    expect(client.getBranches).toHaveBeenCalledTimes(1);
+    mockFocused = true;
+    hook.rerender({});
+    await advance(0);
+    expect(client.getBranches).toHaveBeenCalledTimes(2);
+    act(() => listeners.forEach((listener) => listener('background')));
+    act(() => hook.result.current.refresh());
+    await advance(0);
+    expect(client.getBranches).toHaveBeenCalledTimes(2);
+    act(() => listeners.forEach((listener) => listener('active')));
+    await advance(0);
+    expect(client.getBranches).toHaveBeenCalledTimes(3);
+    hook.unmount();
+  });
+
   it('paints a known PR synchronously and revalidates without hiding it', async () => {
     const slow = deferred<BranchList>();
     const getBranches = jest.fn().mockReturnValue(slow.promise);

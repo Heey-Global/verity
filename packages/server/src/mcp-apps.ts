@@ -1,5 +1,5 @@
 import { randomUUID, createHash } from 'node:crypto';
-import type { AgentEvent } from '@verity/events';
+import { actionTitle, type AgentEvent } from '@verity/events';
 import type { HttpMcpProxyConnection, HttpMcpProxyDeps } from './http-mcp-proxy.js';
 import { forwardHttpMcp } from './http-mcp-proxy.js';
 import { transformMcpResponse } from './mcp-apps-stream.js';
@@ -173,6 +173,12 @@ export function createMcpAppsInterceptor(deps: {
               connectionId: connection.id,
               connectionFingerprint: connectionFingerprint(connection),
               toolName: String(params.name),
+              title: actionTitle(
+                String(params.name),
+                typeof tool.title === 'string' ? tool.title : undefined,
+                'MCP',
+              ),
+              source: 'MCP',
               resourceUri: uri,
               input: object(params.arguments),
               result,

@@ -89,7 +89,7 @@ export async function runtimeRenewalMayHaveStarted(
 }
 
 /** Adopt only our exact, bounded daemon-owned job. A lost connection never kills host work. */
-async function runJob(
+export async function runHostRenewalJob(
   docker: RenewalDocker,
   spec: ContainerSpec,
   onInstallationState: (mayHaveStarted: boolean) => void = () => undefined,
@@ -153,7 +153,7 @@ async function runJob(
       Object.entries(spec.labels ?? {}).every(([key, value]) => inspect.labels?.[key] === value)
     ) {
       await docker.removeContainer(id);
-      return runJob(docker, spec, onInstallationState, false);
+      return runHostRenewalJob(docker, spec, onInstallationState, false);
     }
     throw new Error('Runtime renewal job differs from its authorized configuration');
   }
@@ -234,7 +234,7 @@ async function renewHostRuntimeServiceImpl(
   onInstallationState(true);
   onInstallationState(await runtimeRenewalMayHaveStarted(docker, journal));
   // Trust starts in the already-installed image, never in target code verifying itself.
-  const verificationId = await runJob(docker, {
+  const verificationId = await runHostRenewalJob(docker, {
     ...base('verify', journal.previousDigest),
     network: 'bridge',
     binds: [],
@@ -249,7 +249,7 @@ async function renewHostRuntimeServiceImpl(
     ],
     env: ['HOME=/tmp', 'TUF_ROOT=/tmp/tuf'],
   });
-  const installationId = await runJob(
+  const installationId = await runHostRenewalJob(
     docker,
     {
       ...base('install', journal.targetDigest),

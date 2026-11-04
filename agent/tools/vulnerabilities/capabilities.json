@@ -1,0 +1,26 @@
+[
+  {
+    "name": "verity_vulnerabilities_read",
+    "title": "Verity · Vulnerabilities · Read",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": null,
+    "skill": null,
+    "compatibility": {
+      "name": "verity_vulnerabilities",
+      "action": "read"
+    }
+  },
+  {
+    "name": "verity_vulnerabilities_scan",
+    "title": "Verity · Vulnerabilities · Scan",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": null,
+    "skill": null,
+    "compatibility": {
+      "name": "verity_vulnerabilities",
+      "action": "scan"
+    }
+  }
+]

@@ -269,3 +269,22 @@ export {
 } from './repair-supervision.js';
 
 export { QAAssignmentStore, type QAAssignment, type QAAssignmentState } from './qa-assignments.js';
+
+export {
+  UserContextStore,
+  ContextConflictError,
+  INSTRUCTIONS_MAX_CHARS,
+  USER_MEMORY_MAX_CHARS,
+  validateContext,
+  type UserContext,
+} from './user-context.js';
+
+export {
+  ViewStateStore,
+  INBOX_DISMISSED_MAX,
+  INBOX_KEY_MAX_CHARS,
+  nextInboxDismissed,
+  type ProjectViewState,
+  type SessionViewState,
+  type ViewSubject,
+} from './view-state.js';

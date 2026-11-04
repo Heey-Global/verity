@@ -1786,8 +1786,10 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
       }
       const query = new URLSearchParams({ stdout: '1', stderr: '1', tail: String(tail) });
       if (window !== undefined) {
-        query.set('since', window.since);
-        query.set('until', window.until);
+        // The Engine logs endpoint rejects ISO timestamps; decimal Unix seconds
+        // preserve the requested millisecond boundaries.
+        query.set('since', String(Date.parse(window.since) / 1000));
+        query.set('until', String(Date.parse(window.until) / 1000));
         query.set('timestamps', '1');
       }
       const res = await callDocker(

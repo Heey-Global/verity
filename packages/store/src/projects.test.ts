@@ -616,30 +616,6 @@ describe('EventStore — projects', () => {
     ]);
   });
 
-  it('setProjectCollapsed persists the overview fold state; defaults to false', async () => {
-    await ctx.store.upsertProject({
-      id: 'p-collapse',
-      owner: 'owner-collapse',
-      repo: 'repo',
-      containerName: 'dev-owner-collapse-repo',
-      state: 'active',
-    });
-
-    const [fresh] = await ctx.store.listProjects();
-    expect(fresh?.collapsed).toBe(false);
-
-    const updated = await ctx.store.setProjectCollapsed('p-collapse', true);
-    expect(updated).toBe(true);
-    expect((await ctx.store.listProjects())[0]?.collapsed).toBe(true);
-
-    await ctx.store.setProjectCollapsed('p-collapse', false);
-    expect((await ctx.store.listProjects())[0]?.collapsed).toBe(false);
-  });
-
-  it('setProjectCollapsed returns false for an unknown project', async () => {
-    expect(await ctx.store.setProjectCollapsed('missing', true)).toBe(false);
-  });
-
   it('persists the guided setup status across reads', async () => {
     const created = await ctx.store.upsertProject({
       id: 'p-setup',
@@ -1535,5 +1511,102 @@ describe('EventStore — projects', () => {
       ).resolves.toMatchObject({ owner: 'heey-global', repo: 'immobilien' });
       expect(await ctx.store.getProject(placeholder)).toBeUndefined();
     });
+  });
+});
+
+describe('disconnectProjectFromGitHub', () => {
+  it('preserves the clone, session and history binding and allows retry', async () => {
+    const id = randomUUID();
+    await ctx.store.upsertProject({
+      id,
+      owner: 'acme',
+      repo: 'code',
+      kind: 'github',
+      containerName: 'test-disconnect',
+      state: 'active',
+    });
+    const sessionId = randomUUID();
+    await ctx.store.createSession({
+      sessionId,
+      projectId: id,
+      worktree: '/data/acme-code/.verity-sessions/test',
+      model: 'test',
+      name: 'Existing',
+    });
+    await ctx.store.updateProjectSettings(id, { defaultBranch: 'main' });
+    const local = await ctx.store.disconnectProjectFromGitHub(id);
+    expect(local).toMatchObject({
+      id,
+      kind: 'local',
+      owner: '__local__',
+      repo: 'code',
+      cloneDir: 'acme-code',
+      containerName: 'test-disconnect',
+      forgeConnectionId: null,
+    });
+    expect(await ctx.store.getSession(sessionId)).toMatchObject({
+      projectId: id,
+      worktree: '/data/acme-code/.verity-sessions/test',
+    });
+    expect(await ctx.store.getProjectSettingsRaw(id)).toMatchObject({ defaultBranch: 'main' });
+    expect(await ctx.store.disconnectProjectFromGitHub(id)).toMatchObject({ id, kind: 'local' });
+    expect(await ctx.store.getProjectByOwnerRepo('acme', 'code')).toBeUndefined();
+  });
+  it('refuses other project kinds and missing projects', async () => {
+    const id = randomUUID();
+    await ctx.store.upsertProject({
+      id,
+      owner: 'acme',
+      repo: 'code',
+      kind: 'control_plane',
+      containerName: 'control-test',
+      state: 'absent',
+    });
+    expect(await ctx.store.disconnectProjectFromGitHub(id)).toBeUndefined();
+    expect(await ctx.store.disconnectProjectFromGitHub(randomUUID())).toBeUndefined();
+  });
+});
+
+it('allocates distinct local names for concurrent disconnects and skips occupied fallback names', async () => {
+  const first = randomUUID();
+  const second = randomUUID();
+  for (const repo of ['code', `code-${first}`]) {
+    await ctx.store.createProject({
+      id: randomUUID(),
+      owner: '__local__',
+      repo,
+      kind: 'local',
+      containerName: `local-${randomUUID()}`,
+      state: 'absent',
+    });
+  }
+  for (const [id, owner] of [
+    [first, 'org-a'],
+    [second, 'org-b'],
+  ] as const) {
+    await ctx.store.upsertProject({
+      id,
+      owner,
+      repo: 'code',
+      kind: 'github',
+      containerName: `remote-${id}`,
+      state: 'active',
+    });
+  }
+  const results = await Promise.all([
+    ctx.store.disconnectProjectFromGitHub(first),
+    ctx.store.disconnectProjectFromGitHub(second),
+  ]);
+  expect(results[0]).toMatchObject({
+    id: first,
+    kind: 'local',
+    repo: `code-${first}-2`,
+    cloneDir: 'org-a-code',
+  });
+  expect(results[1]).toMatchObject({
+    id: second,
+    kind: 'local',
+    repo: `code-${second}`,
+    cloneDir: 'org-b-code',
   });
 });

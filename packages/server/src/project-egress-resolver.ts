@@ -110,3 +110,22 @@ export function createProjectEgressResolver(options: {
     }
   };
 }
+
+/** Keep protected inventory DNS independent from per-admission host/Docker checks. */
+export function createProjectEgressResolvers(
+  options: Parameters<typeof createProjectEgressResolver>[0],
+): {
+  resolve: ReturnType<typeof createProjectEgressResolver>;
+  resolveProtected: ReturnType<typeof createProjectEgressResolver>;
+} {
+  const resolve = createProjectEgressResolver(options);
+  return {
+    resolve,
+    // Inventory protects every public broker/system front end, including public
+    // host-owned addresses. Admission separately excludes host/project networks.
+    resolveProtected: createProjectEgressResolver({
+      ...options,
+      destinationAllowed: () => Promise.resolve(true),
+    }),
+  };
+}

@@ -120,7 +120,10 @@ export interface ServerDeps {
       ) => Promise<{ addresses: readonly string[]; ttlSeconds: number } | undefined>)
     | undefined;
   /** Whether the host egress service answers; network protection can only be enabled then. */
-  projectEgressAvailable?: (() => Promise<boolean>) | undefined;
+  projectEgressAvailable?: ((fresh?: boolean) => Promise<boolean>) | undefined;
+  projectEgressStatus?:
+    | ((fresh?: boolean) => Promise<import('./project-egress-health.js').ProjectEgressHealth>)
+    | undefined;
   previewSharingCapability?:
     (() => Promise<PreviewSharingCapability> | PreviewSharingCapability) | undefined;
   previewShareManager?: PreviewShareManager | undefined;

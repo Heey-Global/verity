@@ -3245,12 +3245,12 @@ describe('POST /sessions with project field (#174)', () => {
       });
 
       expect(res.statusCode).toBe(201);
-      expect(projectWorktrees.add).not.toHaveBeenCalled();
+      expect(projectWorktrees.add).toHaveBeenCalledOnce();
       const { sessionId }: { sessionId: string } = res.json();
       expect(await ctx.store.getSession(sessionId)).toMatchObject({
         sessionId,
         projectId: 'p-local-active',
-        worktree: expect.stringContaining('/__local__-my-project/.verity-document-sessions/'),
+        worktree: '/data/dev/__local__-my-project/.verity-sessions/agent-local',
       });
     } finally {
       await a.close();

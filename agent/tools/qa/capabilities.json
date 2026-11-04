@@ -1,0 +1,278 @@
+[
+  {
+    "name": "verity_qa_analysis_projects",
+    "title": "Verity · QA · Analysis Projects",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": null,
+    "skill": null,
+    "compatibility": {
+      "name": "verity_qa_analysis",
+      "action": "projects"
+    }
+  },
+  {
+    "name": "verity_qa_analysis_assignments",
+    "title": "Verity · QA · Analysis Assignments",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": null,
+    "skill": null,
+    "compatibility": {
+      "name": "verity_qa_analysis",
+      "action": "assignments"
+    }
+  },
+  {
+    "name": "verity_qa_analysis_propose_assignment",
+    "title": "Verity · QA · Analysis Propose Assignment",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": null,
+    "skill": null,
+    "compatibility": {
+      "name": "verity_qa_analysis",
+      "action": "propose_assignment"
+    }
+  },
+  {
+    "name": "verity_qa_analysis_request_assignment",
+    "title": "Verity · QA · Analysis Request Assignment",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": null,
+    "skill": null,
+    "compatibility": {
+      "name": "verity_qa_analysis",
+      "action": "request_assignment"
+    }
+  },
+  {
+    "name": "verity_qa_analysis_assignment_status",
+    "title": "Verity · QA · Analysis Assignment Status",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": null,
+    "skill": null,
+    "compatibility": {
+      "name": "verity_qa_analysis",
+      "action": "assignment_status"
+    }
+  },
+  {
+    "name": "verity_qa_analysis_stop_assignment",
+    "title": "Verity · QA · Analysis Stop Assignment",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": null,
+    "skill": null,
+    "compatibility": {
+      "name": "verity_qa_analysis",
+      "action": "stop_assignment"
+    }
+  },
+  {
+    "name": "verity_qa_analysis_review_assignment",
+    "title": "Verity · QA · Analysis Review Assignment",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": null,
+    "skill": null,
+    "compatibility": {
+      "name": "verity_qa_analysis",
+      "action": "review_assignment"
+    }
+  },
+  {
+    "name": "verity_qa_analysis_resolve_repair",
+    "title": "Verity · QA · Analysis Resolve Repair",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": null,
+    "skill": null,
+    "compatibility": {
+      "name": "verity_qa_analysis",
+      "action": "resolve_repair"
+    }
+  },
+  {
+    "name": "verity_qa_analysis_request_repair",
+    "title": "Verity · QA · Analysis Request Repair",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": null,
+    "skill": null,
+    "compatibility": {
+      "name": "verity_qa_analysis",
+      "action": "request_repair"
+    }
+  },
+  {
+    "name": "verity_qa_analysis_repair_status",
+    "title": "Verity · QA · Analysis Repair Status",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": null,
+    "skill": null,
+    "compatibility": {
+      "name": "verity_qa_analysis",
+      "action": "repair_status"
+    }
+  },
+  {
+    "name": "verity_qa_analysis_save_report",
+    "title": "Verity · QA · Analysis Save Report",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": null,
+    "skill": null,
+    "compatibility": {
+      "name": "verity_qa_analysis",
+      "action": "save_report"
+    }
+  },
+  {
+    "name": "verity_qa_analysis_create_followup",
+    "title": "Verity · QA · Analysis Create Followup",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": null,
+    "skill": null,
+    "compatibility": {
+      "name": "verity_qa_analysis",
+      "action": "create_followup"
+    }
+  },
+  {
+    "name": "verity_qa_analysis_pulls",
+    "title": "Verity · QA · Analysis Pulls",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": null,
+    "skill": null,
+    "compatibility": {
+      "name": "verity_qa_analysis",
+      "action": "pulls"
+    }
+  },
+  {
+    "name": "verity_qa_analysis_pull_status",
+    "title": "Verity · QA · Analysis Pull Status",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": null,
+    "skill": null,
+    "compatibility": {
+      "name": "verity_qa_analysis",
+      "action": "pull_status"
+    }
+  },
+  {
+    "name": "verity_qa_analysis_runs",
+    "title": "Verity · QA · Analysis Runs",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": null,
+    "skill": null,
+    "compatibility": {
+      "name": "verity_qa_analysis",
+      "action": "runs"
+    }
+  },
+  {
+    "name": "verity_qa_analysis_run",
+    "title": "Verity · QA · Analysis Run",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": null,
+    "skill": null,
+    "compatibility": {
+      "name": "verity_qa_analysis",
+      "action": "run"
+    }
+  },
+  {
+    "name": "verity_qa_analysis_jobs",
+    "title": "Verity · QA · Analysis Jobs",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": null,
+    "skill": null,
+    "compatibility": {
+      "name": "verity_qa_analysis",
+      "action": "jobs"
+    }
+  },
+  {
+    "name": "verity_qa_analysis_job_log",
+    "title": "Verity · QA · Analysis Job Log",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": null,
+    "skill": null,
+    "compatibility": {
+      "name": "verity_qa_analysis",
+      "action": "job_log"
+    }
+  },
+  {
+    "name": "verity_qa_analysis_workflow",
+    "title": "Verity · QA · Analysis Workflow",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": null,
+    "skill": null,
+    "compatibility": {
+      "name": "verity_qa_analysis",
+      "action": "workflow"
+    }
+  },
+  {
+    "name": "verity_qa_analysis_releases",
+    "title": "Verity · QA · Analysis Releases",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": null,
+    "skill": null,
+    "compatibility": {
+      "name": "verity_qa_analysis",
+      "action": "releases"
+    }
+  },
+  {
+    "name": "verity_qa_analysis_deployments",
+    "title": "Verity · QA · Analysis Deployments",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": null,
+    "skill": null,
+    "compatibility": {
+      "name": "verity_qa_analysis",
+      "action": "deployments"
+    }
+  },
+  {
+    "name": "verity_qa_analysis_deployment_statuses",
+    "title": "Verity · QA · Analysis Deployment Statuses",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": null,
+    "skill": null,
+    "compatibility": {
+      "name": "verity_qa_analysis",
+      "action": "deployment_statuses"
+    }
+  },
+  {
+    "name": "verity_qa_analysis_statistics",
+    "title": "Verity · QA · Analysis Statistics",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": null,
+    "skill": null,
+    "compatibility": {
+      "name": "verity_qa_analysis",
+      "action": "statistics"
+    }
+  }
+]

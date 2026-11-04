@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import { viewerId } from './view-state-routes.js';
 
 const sessionParams = z.object({
   id: z
@@ -13,7 +14,8 @@ const modelsQuery = z.object({ projectId: z.string().min(1).optional() });
 export interface SessionReadRouteDeps {
   /** Every usable model, narrowed to a project's allowed agents when one is named. */
   listModels: (projectId?: string) => Promise<unknown>;
-  getSession: (sessionId: string) => Promise<unknown>;
+  /** The session as `viewer` sees it: read mark and dismissed Home items are theirs. */
+  getSession: (sessionId: string, viewer: string) => Promise<unknown>;
   getGoogleStatus?: (sessionId: string) => Promise<unknown>;
 }
 
@@ -35,7 +37,7 @@ export function registerSessionReadRoutes(app: FastifyInstance, deps: SessionRea
 
   app.get('/sessions/:id', async (request, reply): Promise<unknown> => {
     const { id } = sessionParams.parse(request.params);
-    const session = await deps.getSession(id);
+    const session = await deps.getSession(id, viewerId(request));
     if (session === undefined) {
       reply.code(404);
       return { error: `session ${id} not found` };

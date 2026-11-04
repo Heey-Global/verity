@@ -5,7 +5,7 @@ import { expect, it, vi } from 'vitest';
 import { ProjectEgressLifecycle } from './project-egress-lifecycle.js';
 import { buildTestEmbeddedServer } from './testing.js';
 
-it('composes protected gVisor without preview activation and rejects privilege additions', async () => {
+it('keeps installed protection inert while the switch is off, including legacy privileges', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'verity-embedded-egress-'));
   const command = vi.fn(async (): Promise<never> => {
     throw new Error('No project should be admitted');
@@ -32,11 +32,9 @@ it('composes protected gVisor without preview activation and rejects privilege a
     const server = await buildTestEmbeddedServer(config);
     await server.close();
     expect(command).not.toHaveBeenCalled();
-    await expect(
-      buildTestEmbeddedServer({ ...config, sandboxCapAdd: ['NET_ADMIN'] }),
-    ).rejects.toThrow(
-      'Experimental egress requires the isolated gVisor runtime without added privileges',
-    );
+    const legacy = await buildTestEmbeddedServer({ ...config, sandboxCapAdd: ['NET_ADMIN'] });
+    await legacy.close();
+    expect(command).not.toHaveBeenCalled();
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

@@ -49,7 +49,7 @@ export default function ConnectionsScreen() {
     <SettingsMessage
       title="Not connected"
       subtitle="Connect to your Verity server first."
-      screenTitle="Connections"
+      screenTitle="Connectors"
     />
   );
 }
@@ -301,7 +301,7 @@ function ConnectionsView({ client }: { client: VerityClient }) {
   );
   return (
     <SettingsScaffold
-      title="Connections"
+      title="Connectors"
       detail
       onRetry={() => {
         reload();

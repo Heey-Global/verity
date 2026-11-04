@@ -67,7 +67,7 @@ def verify(directory):
     helper = json.loads((root / 'composed-helper-proof.json').read_text())
     assert helper['afterKillState'] in ('gone', 'Z')
     assert helper['signal'] == 'SIGKILL' and helper['helper']['pid'] > 1
-    assert '/opt/verity-egress/project-egress-deadline.py\0--worker' in helper['helper']['command']
+    assert '/opt/verity-egress/project-egress-deadline.py\0--serve' in helper['helper']['command']
     live, expired, attempted = (helper[k] for k in ('live', 'expired', 'attempted'))
     deadline = int(live['deadline_ns'])
     assert live['accepted'] > 0 and deadline > int(live['clocks']['bootBeforeNs'])

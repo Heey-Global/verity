@@ -71,7 +71,7 @@ export { AUTONOMY_RESUME_SYSTEM_PROMPT, AUTONOMY_SYSTEM_PROMPT } from './autonom
 export { BREVITY_SYSTEM_PROMPT } from './brevity.js';
 export { CODE_REVIEW_SYSTEM_PROMPT } from './code-review.js';
 export { LANGUAGE_SYSTEM_PROMPT } from './language.js';
-export { LOCAL_PROJECT_SYSTEM_PROMPT } from './local-project.js';
+export { LOCAL_PROJECT_SYSTEM_PROMPT, DOCUMENT_PROJECT_SYSTEM_PROMPT } from './local-project.js';
 export { PROJECT_IMAGE_REBUILDING_WARNING } from './project-provision.js';
 export { MEMORY_SYSTEM_PROMPT } from './memory.js';
 export { PULL_REQUEST_SYSTEM_PROMPT, repoToolPullRequestSystemPrompt } from './pull-requests.js';
@@ -237,8 +237,15 @@ export {
 export type { BoundedHistoryPage, BoundedHistoryResult } from './history.js';
 
 export * from './vulnerability.js';
-export { nativeRetirementSchema, storageReclamationActionSchema } from './storage-reclamation.js';
-export type { StorageReclamationAction } from './storage-reclamation.js';
+export {
+  nativeRetirementSchema,
+  runnerCacheReclamationSchema,
+  storageReclamationActionSchema,
+} from './storage-reclamation.js';
+export type {
+  StorageReclamationAction,
+  RunnerCacheReclamationReport,
+} from './storage-reclamation.js';
 export {
   qaAnalysisRequestSchema,
   QA_ANALYSIS_DESCRIPTION,
@@ -247,3 +254,11 @@ export {
 } from './qa-analysis.js';
 
 export { recordingFailureReasonSchema, type RecordingFailureReason } from './recording-failure.js';
+
+export { actionTitle } from './action-title.js';
+
+export {
+  AGENT_CORE_PROMPT,
+  AGENT_SKILL_CATALOG,
+  AGENT_SKILL_MANIFEST_HASH,
+} from './agent-assets.generated.js';

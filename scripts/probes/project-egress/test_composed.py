@@ -36,7 +36,7 @@ class ComposedProof(unittest.TestCase):
                  'heartbeat': {'attempts': 30, 'boot_ns': '200'}, 'heartbeatBefore': {'attempts': 29, 'boot_ns': '100'},
                  'heartbeatWindowStart': {'clocks': {'bootBeforeNs': '4000000001'}},
                  'heartbeatWindowEnd': {'clocks': {'bootBeforeNs': '4300000001'}}}
-        helper = {'afterKillState': 'gone', 'signal': 'SIGKILL', 'helper': {'pid': 123, 'command': '/usr/bin/python3\0/opt/verity-egress/project-egress-deadline.py\0--worker'},
+        helper = {'afterKillState': 'gone', 'signal': 'SIGKILL', 'helper': {'pid': 123, 'command': '/usr/bin/python3\0/opt/verity-egress/project-egress-deadline.py\0--serve'},
                   'beforeKill': {'clocks': {'bootBeforeNs': '1300000000'}},
                   'live': {'state': proof['live']['state'], 'deadline_ns': '2500000000', 'accepted': 10, 'clocks': {'bootBeforeNs': '1400000000'}},
                   'expired': proof['expired'], 'attempted': proof['attempted']}
@@ -126,7 +126,7 @@ class ComposedProof(unittest.TestCase):
             with self.assertRaises(AssertionError): composed.verify(root)
 
     def test_rejects_missing_controls_unauthorized_receipts_and_late_kernel_acceptance(self):
-        for mutation in ['missing-positive', 'unexpected-receipt', 'late-kernel', 'no-attempts', 'late-receipt', 'missing-case', 'frozen-heartbeat', 'early-host-barrier', 'retired-running', 'wrong-retired-id']:
+        for mutation in ['missing-positive', 'unexpected-receipt', 'late-kernel', 'no-attempts', 'late-receipt', 'missing-case', 'frozen-heartbeat', 'stopped-guest-clock', 'short-window', 'early-host-barrier', 'retired-running', 'wrong-retired-id']:
             with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 proof, records = self.fixture(root)
@@ -149,6 +149,10 @@ class ComposedProof(unittest.TestCase):
                     else:
                         retired['sandbox']['id'] = 'other'
                     (root / 'retired-containers.json').write_text(json.dumps(retired))
+                elif mutation == 'stopped-guest-clock':
+                    proof['heartbeat']['boot_ns'] = proof['heartbeatBefore']['boot_ns']
+                elif mutation == 'short-window':
+                    proof['heartbeatWindowEnd']['clocks']['bootBeforeNs'] = proof['heartbeatWindowStart']['clocks']['bootBeforeNs']
                 elif mutation == 'early-host-barrier':
                     proof['heartbeatWindowStart']['clocks']['bootBeforeNs'] = '3999999999'
                 else:

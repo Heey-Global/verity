@@ -1197,3 +1197,68 @@ describe('explicit forge proxy relay', () => {
     },
   );
 });
+
+it('forwards native registry reads and only the fixed advisory write shape', async () => {
+  const received: IncomingHttpHeaders[] = [];
+  const socketPath = await fakeBroker(async (incoming) => {
+    received.push(incoming.headers);
+    await readBody(incoming);
+    return { status: 200, body: '{}' };
+  });
+  const port = await listenTcp(createBrokerRelayServer({ socketPath }));
+  const headers = {
+    authorization: 'Bearer project-cap',
+    'npm-command': 'install',
+    'pacote-version': '21',
+  };
+  expect(
+    (
+      await httpCall(port, {
+        method: 'GET',
+        path: '/internal/package-artifacts/npm/@scope%2fpackage',
+        headers,
+      })
+    ).status,
+  ).toBe(200);
+  expect(received[0]?.authorization).toBe('Bearer project-cap');
+  expect(received[0]?.['npm-command']).toBeUndefined();
+  expect(
+    (
+      await httpCall(port, {
+        method: 'POST',
+        path: '/internal/package-artifacts/npm/-/npm/v1/security/advisories/bulk',
+        headers: { ...headers, 'content-type': 'application/json', 'content-encoding': 'gzip' },
+        body: 'fixture-compressed',
+      })
+    ).status,
+  ).toBe(200);
+  expect(received[1]?.['content-encoding']).toBe('gzip');
+  expect(
+    (
+      await httpCall(port, {
+        method: 'POST',
+        path: '/internal/package-artifacts/npm/package',
+        headers,
+      })
+    ).status,
+  ).toBe(404);
+  expect(
+    (
+      await httpCall(port, {
+        method: 'GET',
+        path: '/internal/package-artifacts/npm/package?url=https://example.com',
+        headers,
+      })
+    ).status,
+  ).toBe(404);
+  expect(
+    (
+      await httpCall(port, {
+        method: 'POST',
+        path: '/internal/project/memory',
+        headers,
+        body: '{}',
+      })
+    ).status,
+  ).toBe(400);
+});

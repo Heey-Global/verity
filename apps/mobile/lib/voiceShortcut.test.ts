@@ -28,3 +28,15 @@ it('keeps task capture separate from chat dictation and removes unmounted listen
     removeChat();
   }
 });
+
+it('carries the request for the assistant to task capture', () => {
+  const task = jest.fn();
+  const remove = subscribeTaskVoiceShortcut(task);
+  try {
+    dispatchTaskVoiceShortcut({ target: 'assistant' });
+    dispatchTaskVoiceShortcut();
+    expect(task.mock.calls).toEqual([[{ target: 'assistant' }], [{}]]);
+  } finally {
+    remove();
+  }
+});

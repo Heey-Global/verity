@@ -29,6 +29,69 @@ Matching relative links to different source trees also protect an installation;
 matching link text alone is insufficient evidence. Nested private installations remain protected because their base-checkout
 copies are outside Node's ancestor lookup. No package-manager migration or writable hardlink sharing is required.
 
+## Runner package caches and retained execution data
+
+The managed spawn broker gives each project runtime one npm download cache at
+`package-cache/npm` below its runner runtime directory. All supported backends
+use that project cache, including planning and knowledge-isolated execution.
+Projects do not share caches with each other. This changes npm's download cache,
+not `node_modules`, dependency resolution, registry credentials or package-manager
+selection. General XDG caches, backend state, authentication and transcripts stay
+inside their existing session/isolation boundaries. The runner does not otherwise
+configure a private pnpm store or Yarn cache; their defaults remain unchanged.
+
+Scheduled collection and **Reclaim now** use the same broker maintenance request.
+For known, inactive sessions, collection removes only the legacy
+`session-homes/<session-hash>/cache/_cacache` tree. It acquires the same cross-process
+session-home lease as turn admission and rechecks live ownership; a busy home is
+retained. Unknown ownership, unsafe paths, symlinks and unsupported broker versions
+produce blockers rather than deletion. Files outside `_cacache`, including private
+backend caches and session history, are not cache-cleanup targets.
+
+The embedded Server's `runnerCacheMaxBytes` setting defaults to 4 GiB per project.
+For the Server entrypoint, set `VERITY_RUNNER_NPM_CACHE_MAX_BYTES` to a positive
+safe-integer byte count to override the target; unset or blank uses the default,
+and invalid values prevent startup.
+When the shared npm `_cacache` allocation exceeds that target, collection clears its regenerable
+`_cacache` under exclusive maintenance access. Cache users hold shared leases;
+maintenance does not interrupt users, and new users cannot enter destructive
+maintenance. An active writer defers cleanup and remains visible as a blocker.
+The target is a maintenance threshold, not an instantaneous disk quota: an active
+project can exceed it until a safe collection pass. `npm cache verify` alone is
+not used as a size cap. Cleanup never forces an install or changes a lockfile.
+Other entries in the shared npm cache, such as `_npx`, are retained. Their presence
+keeps the reported shared allocation unknown/incomplete with an explicit blocker;
+eligible `_cacache` cleanup can still proceed independently. The target does not
+bound these retained entries.
+
+Runner cache reports expose remaining allocated bytes, removed allocated bytes,
+legacy-cache removal counts, shared-cache cleanup counts and blockers. Missing or
+partial measurements remain unknown/incomplete. These file-allocation figures
+are separate from filesystem free-space change and cannot establish an exact
+host-disk saving in the presence of shared allocation or concurrent host activity.
+Collection is bounded and sequential; unavailable runtime sockets and inventories
+that exceed request limits remain explicit blockers.
+
+Deleting a session already queues durable cleanup outside session foreign-key
+cascades. The existing worker retries broker cleanup, which fences the deleted
+session, waits for its children and acquires its home lease before removing the
+home. Cache collection reuses that lifecycle rather than treating an unrecognized
+home as a deleted session. Archiving or long idleness alone does not delete a
+whole session home.
+
+`runners/<project>/turns` contains persisted execution requests, state and events.
+There is currently no scheduled age/size retention for these turn directories.
+This package-cache collector does not remove them or introduce transcript
+retention. Their lifecycle needs a separate policy that preserves recovery and
+execution evidence.
+
+Rollout requires both the Server release and the matching sandbox toolkit/broker.
+An older broker cannot perform cache maintenance; the Server reports that state
+instead of falling back to direct filesystem deletion. After the usual release
+and production promotion, verify the installed sandbox version, cache paths,
+activity blockers, remaining cache allocation and filesystem change. A successful
+code test does not establish live host reclamation or a converged growth trend.
+
 ## Worktree lifecycle and recovery
 
 Collection claims the session turn lock and project mutation barrier, excludes

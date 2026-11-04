@@ -6,7 +6,10 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { bearerToken } from './auth.js';
 import type { GhTokenCapabilityRegistry } from './github-token-broker.js';
-import { internalConnectionIdentity } from './internal-listener.js';
+import {
+  internalConnectionIdentity,
+  internalConnectionGenerationSignal,
+} from './internal-listener.js';
 
 const inputSchema = z.object({
   action: z.enum(['check', 'configured']),
@@ -21,6 +24,7 @@ const inputSchema = z.object({
 
 interface SetupGrant {
   projectId: string;
+  containerGeneration: string;
   sessionId: string;
   manager: string;
   configFile: string;
@@ -56,6 +60,16 @@ export function registerPackageInstallRoute(
       socket.containerGeneration !== binding.containerGeneration
     )
       return reply.code(401).send({ error: 'unauthorized' });
+    const generationSignal = internalConnectionGenerationSignal(request);
+    const authorized = async (): Promise<boolean> => {
+      if (generationSignal?.aborted) return false;
+      const current = await capabilities.resolve(token);
+      return (
+        !generationSignal?.aborted &&
+        current?.projectId === binding.projectId &&
+        current.containerGeneration === binding.containerGeneration
+      );
+    };
     const parsed = inputSchema.safeParse(request.body);
     if (!parsed.success)
       return reply.code(400).send({ error: 'invalid package installation request' });
@@ -63,6 +77,7 @@ export function registerPackageInstallRoute(
     const session = await deps.store.getSession(body.sessionId);
     if (!session || session.projectId !== binding.projectId)
       return reply.code(404).send({ error: 'session not found in this project' });
+    if (!(await authorized())) return reply.code(401).send({ error: 'unauthorized' });
     const projectId = binding.projectId;
     for (const [key, grant] of grants) if (grant.expires <= Date.now()) grants.delete(key);
 
@@ -71,6 +86,7 @@ export function registerPackageInstallRoute(
       if (
         !grant ||
         grant.projectId !== projectId ||
+        grant.containerGeneration !== binding.containerGeneration ||
         grant.sessionId !== body.sessionId ||
         grant.manager !== body.manager ||
         grant.configFile !== body.configFile ||
@@ -82,6 +98,7 @@ export function registerPackageInstallRoute(
       grants.delete(body.setupToken!);
       setupSelections.delete(projectId);
       await deps.appendNotice(body.sessionId, `3-day delay set up · ${basename(body.configFile)}`);
+      if (!(await authorized())) return reply.code(401).send({ error: 'unauthorized' });
       return { action: 'continue' };
     }
 
@@ -92,6 +109,7 @@ export function registerPackageInstallRoute(
     const closed = (): void => {
       if (!reply.raw.writableFinished) abort();
     };
+    generationSignal?.addEventListener('abort', abort, { once: true });
     request.raw.once('aborted', abort);
     reply.raw.once('close', closed);
     const previous = queues.get(projectId) ?? Promise.resolve();
@@ -103,11 +121,12 @@ export function registerPackageInstallRoute(
     queues.set(projectId, queued);
     try {
       await previous;
-      if (controller.signal.aborted) return { action: 'cancel' };
+      if (controller.signal.aborted || !(await authorized())) return { action: 'cancel' };
       const configure = (): { action: 'configure'; setupToken: string } => {
         const setupToken = randomUUID();
         grants.set(setupToken, {
           projectId,
+          containerGeneration: socket.containerGeneration,
           sessionId: body.sessionId,
           manager: body.manager,
           configFile: body.configFile,
@@ -116,11 +135,12 @@ export function registerPackageInstallRoute(
         return { action: 'configure', setupToken };
       };
       const saved = await deps.store.getPackageProtectionDecision(projectId);
+      if (controller.signal.aborted || !(await authorized())) return { action: 'cancel' };
       if (saved === 'skipped') return { action: 'continue' };
       // A stale file on an older CLI is not evidence the setting is effective.
       if (body.protected && body.supported) {
         await deps.store.setPackageProtectionDecision(projectId, 'protected');
-        return { action: 'continue' };
+        return { action: (await authorized()) ? 'continue' : 'cancel' };
       }
       if ((saved === 'protected' || setupSelections.has(projectId)) && body.supported)
         return configure();
@@ -138,7 +158,11 @@ export function registerPackageInstallRoute(
         allowStandingGrant: false,
         signal: controller.signal,
       });
-      if (controller.signal.aborted || answer.decision.behavior !== 'allow')
+      if (
+        controller.signal.aborted ||
+        !(await authorized()) ||
+        answer.decision.behavior !== 'allow'
+      )
         return { action: 'cancel' };
       const action = answer.decision.updatedInput?.action;
       if (body.supported && action === 'configure') {
@@ -153,12 +177,13 @@ export function registerPackageInstallRoute(
           body.sessionId,
           'Dependency release delay skipped · decision saved',
         );
-        return { action: 'continue' };
+        return { action: (await authorized()) ? 'continue' : 'cancel' };
       }
       return { action: 'cancel' };
     } finally {
       release();
       if (queues.get(projectId) === queued) queues.delete(projectId);
+      generationSignal?.removeEventListener('abort', abort);
       request.raw.removeListener('aborted', abort);
       reply.raw.removeListener('close', closed);
     }

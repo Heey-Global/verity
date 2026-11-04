@@ -92,3 +92,52 @@ it('shows native receipt blockers while host maintenance is pending', async () =
   );
   expect(await screen.findByText('Native host receipt is missing')).toBeOnTheScreen();
 });
+
+it('reports cache reclamation separately and keeps unknown usage and blockers visible while pending', async () => {
+  render(
+    <StorageReclamation
+      client={makeClient('unlocked', {
+        getStorageReclamation: jest.fn().mockResolvedValue({
+          ...idle,
+          state: 'completed',
+          nativePending: true,
+          result: {
+            imagesRemoved: 0,
+            containersRemoved: 0,
+            dependenciesRemoved: 0,
+            worktreesRetired: 0,
+            filesystemFreeBytesChange: 0,
+            retainedPins: [],
+            blockers: [],
+            runnerCaches: {
+              observedAt: '2026-11-03T21:20:00.000Z',
+              sharedBytes: 1024 ** 3,
+              legacyBytes: null,
+              removedBytes: 2 * 1024 ** 3,
+              legacyCachesRemoved: 2,
+              sharedCachesPruned: 1,
+              usageComplete: false,
+              blockers: ['Private cache retained: session is active'],
+            },
+          },
+        }),
+      })}
+    />,
+  );
+  expect(
+    await screen.findByText('Package caches: 2 private caches removed, 1 shared caches pruned.'),
+  ).toBeOnTheScreen();
+  expect(
+    screen.getByText(
+      'Removed cache allocation: 2.0 GiB. This is separate from filesystem free-space change.',
+    ),
+  ).toBeOnTheScreen();
+  expect(
+    screen.getByText('Remaining cache allocation: shared 1.0 GiB, private unknown.'),
+  ).toBeOnTheScreen();
+  expect(
+    screen.getByText('Package-cache measurement is incomplete; unknown usage is not zero.'),
+  ).toBeOnTheScreen();
+  expect(screen.getByText('Private cache retained: session is active')).toBeOnTheScreen();
+  expect(screen.getByText(/Filesystem free-space change: 0.0 GiB/)).toBeOnTheScreen();
+});

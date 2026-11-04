@@ -1,3 +1,4 @@
+import { beginDockerExecDiagnostic } from './docker-exec-diagnostics.js';
 import { spawn, type ChildProcess } from 'node:child_process';
 import type { EventBus } from '@verity/session';
 import type { EventStore, ProjectRecord } from '@verity/store';
@@ -10,9 +11,15 @@ import {
 } from './listening-ports.js';
 import { PreviewShareNotFoundError } from './preview-share-manager.js';
 
+const WATCHED_SCAN_MAX_AGE_MS = 30_000;
+const FALLBACK_SCAN_MAX_AGE_MS = 2_000;
+
 /** One sandbox watcher serves every session, independently of public sharing. */
 export class ListenerDiscovery {
-  private readonly watchers = new Map<string, { child: ChildProcess; containerName: string }>();
+  private readonly watchers = new Map<
+    string,
+    { child: ChildProcess; containerName: string; observed: boolean }
+  >();
   private readonly healthy = new Map<
     string,
     { containerName: string; processes: ListeningProcess[] }
@@ -23,7 +30,7 @@ export class ListenerDiscovery {
   >();
   private readonly scans = new Map<
     string,
-    { containerName: string; promise: Promise<ListeningProcess[]> }
+    { containerName: string; promise: Promise<ListeningProcess[]>; invalidated: boolean }
   >();
   private readonly snapshots = new Map<string, string>();
   private readonly dirty = new Map<string, ProjectRecord>();
@@ -93,14 +100,41 @@ export class ListenerDiscovery {
     this.clearScans(projectId);
   }
 
-  private scan(project: ProjectRecord, fresh = false): Promise<ListeningProcess[]> {
+  private scan(
+    project: ProjectRecord,
+    fresh = false,
+    remainingRefreshes = 2,
+  ): Promise<ListeningProcess[]> {
+    const freshResult = (entry: { promise: Promise<ListeningProcess[]>; invalidated: boolean }) =>
+      entry.promise.then((processes) => {
+        if (!entry.invalidated) return processes;
+        if (remainingRefreshes === 0) throw new Error('Listener scan kept changing');
+        return this.scan(project, true, remainingRefreshes - 1);
+      });
     const pending = this.scans.get(project.id);
-    if (pending?.containerName === project.containerName) return pending.promise;
+    if (pending?.containerName === project.containerName) {
+      // Port allocation and publication need a result started after the change,
+      // rather than the obsolete read a watcher has already invalidated.
+      return fresh ? freshResult(pending) : pending.promise;
+    }
     const cached = this.scanResults.get(project.id);
-    if (!fresh && cached?.containerName === project.containerName && Date.now() - cached.at < 2_000)
+    const watcher = this.watchers.get(project.id);
+    // A watcher that has reported its first snapshot invalidates on socket or
+    // announcement changes. Polling consumers can reuse that snapshot between
+    // changes; the maximum age still covers a hung watcher or changed attribution.
+    const maxAge =
+      watcher?.containerName === project.containerName && watcher.observed
+        ? WATCHED_SCAN_MAX_AGE_MS
+        : FALLBACK_SCAN_MAX_AGE_MS;
+    if (
+      !fresh &&
+      cached?.containerName === project.containerName &&
+      Date.now() - cached.at < maxAge
+    )
       return Promise.resolve(cached.processes);
     const entry = {
       containerName: project.containerName,
+      invalidated: false,
       promise: Promise.resolve().then(() => this.options.scan(project)),
     };
     entry.promise = entry.promise
@@ -108,6 +142,9 @@ export class ListenerDiscovery {
         if (this.closed || this.scans.get(project.id) !== entry) {
           throw new Error('Listener scan was superseded');
         }
+        // A watcher change during the read already queued a follow-up. Do not
+        // publish the older result to supervision or make it reusable meanwhile.
+        if (entry.invalidated) return processes;
         this.healthy.set(project.id, { containerName: project.containerName, processes });
         this.scanResults.set(project.id, {
           containerName: project.containerName,
@@ -121,7 +158,7 @@ export class ListenerDiscovery {
         if (this.scans.get(project.id) === entry) this.scans.delete(project.id);
       });
     this.scans.set(project.id, entry);
-    return entry.promise;
+    return fresh ? freshResult(entry) : entry.promise;
   }
 
   private clearScans(projectId: string, clearHealthy = true): void {
@@ -201,14 +238,15 @@ export class ListenerDiscovery {
   }
 
   private refresh(project: ProjectRecord, fresh = true): Promise<void> {
-    if (fresh) this.scanResults.delete(project.id);
+    if (fresh) {
+      this.scanResults.delete(project.id);
+      const scan = this.scans.get(project.id);
+      if (scan) scan.invalidated = true;
+    }
     const existing = this.pending.get(project.id);
     if (existing) {
       if (fresh) this.dirty.set(project.id, project);
       return existing;
-    }
-    if (fresh && this.scans.get(project.id)?.containerName === project.containerName) {
-      this.dirty.set(project.id, project);
     }
     const operation = (async () => {
       const current = await this.options.eventStore.getProject(project.id);
@@ -279,6 +317,7 @@ export class ListenerDiscovery {
     const user = await this.options.resolveUser?.(project);
     if (this.closed || !this.active(project)) return;
     if (this.watchers.get(project.id)?.containerName === project.containerName) return;
+    const diagnostic = beginDockerExecDiagnostic('listener-watch');
     const child = spawn(
       'docker',
       [
@@ -300,10 +339,10 @@ export class ListenerDiscovery {
         },
       },
     );
-    this.watchers.set(project.id, { child, containerName: project.containerName });
-    child.stdout?.on('data', () => {
-      void this.refresh(project);
-    });
+    child.once('error', diagnostic);
+    child.once('close', (code) => diagnostic(code === 0 ? undefined : { code: 'PROCESS_EXIT' }));
+    const watcher = { child, containerName: project.containerName, observed: false };
+    this.watchers.set(project.id, watcher);
     const finish = () => {
       if (this.watchers.get(project.id)?.child === child) {
         this.watchers.delete(project.id);
@@ -312,6 +351,21 @@ export class ListenerDiscovery {
     };
     child.once('exit', finish);
     child.once('error', finish);
+    let buffered = '';
+    child.stdout?.on('data', (chunk: Buffer) => {
+      if (this.watchers.get(project.id) !== watcher) return;
+      buffered += chunk.toString();
+      if (buffered.length > 1024) {
+        finish();
+        child.kill();
+        return;
+      }
+      const lines = buffered.split('\n');
+      buffered = lines.pop()!;
+      if (!lines.includes('changed')) return;
+      watcher.observed = true;
+      void this.refresh(project);
+    });
   }
 
   async reconcile(): Promise<void> {

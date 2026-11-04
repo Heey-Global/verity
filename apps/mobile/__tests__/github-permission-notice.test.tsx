@@ -19,7 +19,7 @@ jest.mock('../lib/automaticUpdates', () =>
 
 import GitHubSettingsScreen from '../app/settings/github';
 import SettingsIndexScreen from '../app/settings/index';
-import ConnectionsScreen from '../app/settings/services/index';
+import ConnectorsScreen from '../app/settings/services/index';
 import {
   makeClient,
   mockCreateVerityClient,
@@ -112,16 +112,16 @@ describe('GitHub settings — action needed', () => {
 });
 
 describe('overview indicators', () => {
-  it('marks the GitHub row in Connections', async () => {
+  it('marks the GitHub row in Connectors', async () => {
     useClient(jest.fn().mockResolvedValue(missing));
-    render(<ConnectionsScreen />);
+    render(<ConnectorsScreen />);
     expect(await screen.findByLabelText(/^GitHub,.*Action needed/)).toBeOnTheScreen();
   });
 
-  it('marks the Connections row in Settings, and only while the grant is missing', async () => {
+  it('marks the Connectors row in Settings, and only while the grant is missing', async () => {
     useClient(jest.fn().mockResolvedValue(missing));
     const first = render(<SettingsIndexScreen />);
-    expect(await screen.findByLabelText(/^Connections,.*Action needed/)).toBeOnTheScreen();
+    expect(await screen.findByLabelText(/^Connectors,.*Action needed/)).toBeOnTheScreen();
     first.unmount();
     resetSettingsHarness();
 
@@ -130,6 +130,6 @@ describe('overview indicators', () => {
     render(<SettingsIndexScreen />);
     await waitFor(() => expect(validateGithubApp).toHaveBeenCalled());
     await act(async () => {});
-    expect(screen.queryByLabelText(/^Connections,.*Action needed/)).toBeNull();
+    expect(screen.queryByLabelText(/^Connectors,.*Action needed/)).toBeNull();
   });
 });

@@ -1,9 +1,9 @@
 # Knowledge folders
 
-Each project has a durable Knowledge folder on the Verity server. Open a
-session's file explorer and choose **Sources** for reference material,
-**Documents** for project outputs, or **Global** for files every project may read. Replacing a Sandbox does not remove these
-files.
+Each project has a durable Knowledge folder on the Verity server. Open the
+project settings and choose **Project knowledge** for Decisions, Wiki and Raw Sources,
+or open a session's file explorer for project files. Shared reference material lives
+under **Settings > Shared knowledge**. Replacing a Sandbox does not remove these files.
 
 Verity creates this layout automatically:
 
@@ -72,9 +72,10 @@ as originals with an extraction note.
 
 ## Managing scope
 
-Upload, delete, and move files from the explorer. Moving a file to Global makes
-it readable by every project; moving it back to Documents limits it to the
-current project. The hidden extracted text follows its source file.
+Upload, delete, and move project files from the session explorer. Shared browsing
+is central under Settings; it is absent from project and session tabs. Publishing
+project material to Shared requires explicit approval. The hidden extracted text
+follows its source file when supported file operations move it.
 
 Agents publish a finished project insight to `shared/insights/` with the
 `verity_knowledge` `publish_shared` operation only when explicitly asked to make it
@@ -86,8 +87,8 @@ Knowledge folders are separate from repositories. Code, tests, build
 instructions, and versioned architecture decisions still belong in the project
 repository. New meeting recordings are not written to `docs/meetings/`.
 
-There is no Wiki, folder grant screen, overview approval, or Knowledge model
-setting. Retrieval indexing and semantic search may be added later on top of the
+Wiki is the user-facing name for project Documents. There is no folder grant
+screen, overview approval, or Knowledge model setting. Retrieval indexing and semantic search may be added later on top of the
 same files; the folder remains the source of truth.
 
 ## Parallel sessions and automatic publication
@@ -107,7 +108,9 @@ files without exporting Documents or archived local Git history.
 
 ## Explorer editing and versions
 
-The explorer can edit UTF-8 text files up to 1 MB in Code, Documents, and Global.
+The session explorer can edit UTF-8 text files up to 1 MB in Code and Wiki.
+The central Shared browser and direct Project knowledge browser support revision-checked
+Wiki text edits and original downloads; project edits require management access.
 Markdown files can also be created from the New menu. Sources and retained session
 working copies are read-only in the text editor.
 Saving checks the version opened by the editor; a conflict offers reload,
@@ -176,3 +179,14 @@ repaired; no valid decision is silently selected from partial evidence. Deleting
 an entire decision removes it from discovery; deleting an ancestor leaves its
 successor unresolved. The directory is derived from the Markdown files, not a
 second database. Structured writes do not migrate existing free-form documents.
+
+
+## Shared knowledge in the app
+
+Project settings > Project knowledge opens Decisions (`insights/decisions/`), Wiki (`insights/`) and Raw Sources (`sources/`) without requiring a session. Project context remains separately editable through Instructions and Memory.
+
+Settings > Shared knowledge is the central browser for cross-project reference material. Personal Instructions and Memory remain separate under Settings > Personal context; project Instructions and Memory remain in project settings. Project and session file browsers show project files only. Existing Shared file links open the central Settings view.
+
+Active users can browse and download Shared files without selecting a project or session. Administrators can edit supported text files under Shared Wiki (`insights/`); writes require the version last read so concurrent changes cannot silently overwrite one another. Original sources and derived files remain protected in this editor. Publishing from a project continues to use the existing explicit publication approval.
+
+This navigation change does not move existing files, convert shared material into private context, or remove agent read access to `/knowledge/shared`.
