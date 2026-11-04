@@ -2588,7 +2588,7 @@ describe('buildEmbeddedServer', () => {
           await queueSessionCleanup(cleanupRoot, pending);
           await store.createSession({
             sessionId: 's-purge-retry',
-            worktree,
+            worktree: `${worktree}-retry`,
             model: 'codex/default',
             projectId: 'p-purge',
           });

@@ -720,9 +720,8 @@ export class ManagedDevServerManager {
     return this.options.runtime.managedServerLogs(project, instance.id, lines);
   }
 
-  /** Fence new starts before capturing durable cleanup ownership. */
+  /** Snapshot IDs; admission is fenced by the durable deletion record. */
   async captureSessionCleanup(sessionId: string): Promise<ManagedSessionCleanupSnapshot> {
-    this.deletingSessions.add(sessionId);
     const [session, instances] = await Promise.all([
       this.options.store.getSession(sessionId),
       this.servers.listInstances({ sessionId }),

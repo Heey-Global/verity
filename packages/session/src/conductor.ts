@@ -6024,7 +6024,9 @@ export class Conductor {
                   const branchName =
                     branchRaw !== undefined ? sanitizeBranchName(branchRaw) : undefined;
                   if (!this.deletingSessions.has(sessionId) && branchName !== undefined)
-                    await autoTitle.onBranchName(session, branchName);
+                    await this.withWorkspaceOperation(sessionId, () =>
+                      autoTitle.onBranchName!(session, branchName),
+                    );
                 }
               } catch {
                 // Swallowed on purpose — the session keeps its auto-title and its

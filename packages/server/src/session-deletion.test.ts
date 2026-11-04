@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createSessionDeletionManager, SessionDeletionDeadlineError } from './session-deletion.js';
+import {
+  createSessionDeletionManager,
+  SessionDeletionDeadlineError,
+  type SessionDeletionPayload,
+} from './session-deletion.js';
 import type { SessionRecord } from '@verity/store';
 
 const session: SessionRecord = {
@@ -53,9 +57,11 @@ function setup() {
     store,
     fence: vi.fn(),
     stop: vi.fn(async () => false),
-    capture: vi.fn(async () => ({ session, previewIds: [] })),
+    capture: vi.fn(async (input: SessionRecord) => ({ session: input, previewIds: [] })),
     prepare: vi.fn(async () => {}),
-    cleanup: vi.fn(async () => false),
+    cleanup: vi.fn<(payload: SessionDeletionPayload, confirmed: boolean) => Promise<boolean>>(
+      async () => false,
+    ),
     report: vi.fn(),
     deadlineMs: 30,
     stopDeadlineMs: 10,
@@ -87,6 +93,27 @@ describe('durable session deletion', () => {
     await expect(manager.remove(session)).resolves.toMatchObject({ sessionId: 's' });
     await manager.resume();
     expect(options.cleanup).toHaveBeenCalledOnce();
+  });
+  it('allows unrelated cleanup to complete while one session cleanup is stalled', async () => {
+    const { options, records, manager } = setup();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    options.cleanup.mockImplementation(async (payload) => {
+      if (payload.session.sessionId === 's') await gate;
+      return true;
+    });
+    options.capture.mockImplementation(async (input) => ({ session: input, previewIds: [] }));
+    try {
+      await manager.remove(session);
+      await manager.remove({ ...session, sessionId: 'other', worktree: '/wt/other' });
+      await vi.waitFor(() => expect(records.has('other')).toBe(false));
+      expect(records.has('s')).toBe(true);
+    } finally {
+      release();
+      manager.close();
+    }
   });
   it('bounds waiting on a wedged prepare without deleting the row', async () => {
     const { options, manager } = setup();

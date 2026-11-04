@@ -2386,6 +2386,15 @@ describe('VerityClient.deleteSession', () => {
     expect(calls[0]?.init?.method).toBe('DELETE');
   });
 
+  it('retains the deferred cleanup status after a successful logical deletion', async () => {
+    const { fetch } = fakeFetch(json({ sessionId: 's1', cleanup: 'pending' }));
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    await expect(client.deleteSession('s1', { force: true })).resolves.toEqual({
+      sessionId: 's1',
+      cleanup: 'pending',
+    });
+  });
+
   it('encodes the session id in the path', async () => {
     const { fetch, calls } = fakeFetch(json({ error: 'x' }, 404));
     const client = new VerityClient({ baseUrl: 'http://host', fetch });

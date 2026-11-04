@@ -1290,7 +1290,7 @@ function mergeSessionDeletionState(
 
 // PGlite has one physical connection, where advisory locks are re-entrant even
 // through different EventStore wrappers. Keep physical cleanup exclusive there too.
-const sessionDeletionCleanupTails = new WeakMap<Kysely<Database>, Promise<void>>();
+const sessionDeletionCleanupTails = new WeakMap<Kysely<Database>, Map<string, Promise<void>>>();
 
 export class EventStore implements EventSink {
   private readonly backupRevocationListeners = new Set<() => Promise<void>>();
@@ -3992,13 +3992,18 @@ export class EventStore implements EventSink {
     sessionId: string,
     work: (payload: string) => Promise<boolean>,
   ): Promise<boolean> {
-    const previous = sessionDeletionCleanupTails.get(this.db) ?? Promise.resolve();
+    let tails = sessionDeletionCleanupTails.get(this.db);
+    if (!tails) {
+      tails = new Map();
+      sessionDeletionCleanupTails.set(this.db, tails);
+    }
+    const previous = tails.get(sessionId) ?? Promise.resolve();
     let release!: () => void;
     const completion = new Promise<void>((resolve) => {
       release = resolve;
     });
     const queued = previous.catch(() => undefined).then(() => completion);
-    sessionDeletionCleanupTails.set(this.db, queued);
+    tails.set(sessionId, queued);
     await previous.catch(() => undefined);
     try {
       return await this.db.connection().execute(async (connection) => {
@@ -4045,8 +4050,7 @@ export class EventStore implements EventSink {
       });
     } finally {
       release();
-      if (sessionDeletionCleanupTails.get(this.db) === queued)
-        sessionDeletionCleanupTails.delete(this.db);
+      if (tails.get(sessionId) === queued) tails.delete(sessionId);
     }
   }
 

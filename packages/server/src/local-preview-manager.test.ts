@@ -594,7 +594,7 @@ it.each([
   const project = { id: 'p2', containerName: 'sandbox', state: 'active' };
   options.store.getProject = async () => project as never;
   options.store.getSession = async () => ({ projectId: project.id }) as never;
-  vi.mocked(PreviewShareManager.prototype.prepareLocalTarget).mockResolvedValue({
+  vi.spyOn(PreviewShareManager.prototype, 'prepareLocalTarget').mockResolvedValue({
     project: project as never,
     session: {} as never,
     generation: 'generation-1',

@@ -2614,7 +2614,24 @@ describe('POST /sessions (injected worktree provisioner)', () => {
     }
   });
 
-  it('removes a provisioned worktree when the session row cannot be created', async () => {
+  it('removes an unowned allocated worktree when persisting the session fails', async () => {
+    const f = fake();
+    const a = buildServer({ eventStore: ctx.store, bus, conductor, worktrees: f.provisioner });
+    const create = vi
+      .spyOn(ctx.store, 'createSession')
+      .mockRejectedValueOnce(new Error('database unavailable'));
+    try {
+      const res = await a.inject({ method: 'POST', url: '/sessions', payload: { prompt: 'go' } });
+      expect(res.statusCode).toBe(500);
+      expect(f.provisioner.remove).toHaveBeenCalledOnce();
+      expect(startSession).not.toHaveBeenCalled();
+    } finally {
+      create.mockRestore();
+      await a.close();
+    }
+  });
+
+  it('preserves an existing session worktree when a colliding session row cannot be created', async () => {
     const f = fake();
     await ctx.store.createSession({ sessionId: 'existing', worktree: '/wt/collision', model: 'm' });
     f.provisioner.add.mockImplementationOnce(async (branch: string) => {
@@ -2626,7 +2643,8 @@ describe('POST /sessions (injected worktree provisioner)', () => {
       const res = await a.inject({ method: 'POST', url: '/sessions', payload: { prompt: 'go' } });
       expect(res.statusCode).toBe(500);
       expect(res.json()).toEqual({ error: 'internal error' });
-      expect(f.removed).toEqual(['/wt/collision']);
+      expect(f.removed).toEqual([]);
+      expect(await ctx.store.getSession('existing')).toBeDefined();
       expect(startSession).not.toHaveBeenCalled();
     } finally {
       await a.close();

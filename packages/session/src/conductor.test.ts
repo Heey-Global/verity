@@ -9740,6 +9740,44 @@ describe('Conductor auto-title', () => {
     expect(prompts).toHaveLength(2);
   });
 
+  it('retains worktree ownership until an admitted branch rename settles', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'sonnet' });
+    let release!: () => void;
+    let entered!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const ready = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const fake = scriptedBackend({ text: 'hi' });
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: {
+        run: fake.backend.run.bind(fake.backend),
+        query: (input) =>
+          Promise.resolve(input.prompt.includes('<type>/<slug>') ? 'fix/rename' : 'Title'),
+      },
+      worktreeExists: async () => true,
+      autoTitle: {
+        afterTurns: 1,
+        onBranchName: async () => {
+          entered();
+          await gate;
+        },
+      },
+    });
+    try {
+      await conductor.sendTurn('s1', 'hello');
+      await ready;
+      conductor.beginSessionDeletion('s1');
+      expect(conductor.isDeletionWorktreeBusy('s1')).toBe(true);
+    } finally {
+      release();
+    }
+    await vi.waitFor(() => expect(conductor.isDeletionWorktreeBusy('s1')).toBe(false));
+  });
+
   it('keeps a throwing branch hook off the turn (the title still lands)', async () => {
     // A control-plane session's worktree is not a git repo, so the real hook's
     // `git rev-parse --abbrev-ref HEAD` fails. That must not reach `onTurnError` —

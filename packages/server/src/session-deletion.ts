@@ -61,7 +61,7 @@ export function createSessionDeletionManager(options: {
   const retryAt = new Map<string, number>();
   const failures = new Map<string, number>();
   let closing = false;
-  let cleanupTail = Promise.resolve();
+  const maxConcurrentCleanups = 2;
   const phase = async <T>(id: string, name: string, work: () => Promise<T>): Promise<T> => {
     const started = Date.now();
     options.report(id, name, 'started', 0);
@@ -105,7 +105,9 @@ export function createSessionDeletionManager(options: {
   const clean = (id: string, payload: SessionDeletionPayload): Promise<void> => {
     const existing = cleaning.get(id);
     if (existing) return existing;
-    const work = cleanupTail
+    // A stuck cleanup retains its own slot, never the only slot for other sessions.
+    if (cleaning.size >= maxConcurrentCleanups) return Promise.resolve();
+    const work = Promise.resolve()
       .then(() => {
         if (closing) return false;
         return phase(id, 'runner-cleanup', async () => {
@@ -134,7 +136,6 @@ export function createSessionDeletionManager(options: {
           return deferred;
         },
       );
-    cleanupTail = work.catch(() => undefined);
     cleaning.set(id, work);
     void work
       .catch((error: unknown) => options.report(id, 'cleanup-schedule', 'failed', 0, error))

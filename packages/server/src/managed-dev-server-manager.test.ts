@@ -1434,6 +1434,13 @@ describe('session deletion cleanup', () => {
     expect(sandbox.stop).toHaveBeenCalledTimes(1);
   });
 
+  it('does not fence a live session when only a deletion snapshot was captured', async () => {
+    await manager.add('s1', { name: 'Demo', command: 'node server.mjs' });
+    await manager.captureSessionCleanup('s1');
+    await manager.start('s1', 'Demo', 'agent');
+    expect(sandbox.started).toHaveLength(1);
+  });
+
   it('refuses starts fenced by durable deletion intent', async () => {
     await manager.add('s1', { name: 'Demo', command: 'node server.mjs' });
     await ctx.store.queueSessionDeletion('s1', '{}');
@@ -1451,8 +1458,9 @@ describe('session deletion cleanup', () => {
     const gate = new Promise<void>((resolve) => {
       resume = resolve;
     });
-    const original = vi.mocked(sandbox.runtime.startManagedServer).getMockImplementation()!;
-    vi.mocked(sandbox.runtime.startManagedServer).mockImplementationOnce(async (project, input) => {
+    const startManagedServer = vi.spyOn(sandbox.runtime, 'startManagedServer');
+    const original = startManagedServer.getMockImplementation()!;
+    startManagedServer.mockImplementationOnce(async (project, input) => {
       entered();
       await gate;
       return original(project, input);

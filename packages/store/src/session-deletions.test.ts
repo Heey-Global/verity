@@ -221,3 +221,35 @@ it('keeps the worktree reserved when physical cleanup defers or fails', async ()
   await expect(ctx.store.withSessionDeletionCleanup('s', async () => true)).resolves.toBe(true);
   expect(await ctx.store.isWorktreeBeingDeleted(input.worktree)).toBe(false);
 });
+
+it('keeps physical cleanup for different sessions independent', async () => {
+  for (const id of ['blocked', 'other'])
+    await ctx.store.queueSessionDeletion(
+      id,
+      JSON.stringify({ session: { worktree: `/wt/${id}` } }),
+    );
+  let release!: () => void;
+  let entered!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const ready = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const blocked = ctx.store.withSessionDeletionCleanup('blocked', async () => {
+    entered();
+    await gate;
+    return true;
+  });
+  try {
+    await ready;
+    const other = vi.fn(async () => true);
+    const cleaning = ctx.store.withSessionDeletionCleanup('other', other);
+    await vi.waitFor(() => expect(other).toHaveBeenCalledOnce());
+    expect(await cleaning).toBe(true);
+    expect((await ctx.store.getSessionDeletion('blocked'))?.cleanupPending).toBe(true);
+  } finally {
+    release();
+    await blocked;
+  }
+});
