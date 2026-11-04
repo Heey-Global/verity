@@ -25,6 +25,8 @@ import {
   completeness,
   formatReportTime,
   testNames,
+  holdReason,
+  useHold,
   useTransientMessage,
 } from './DiagnosticsParts';
 import { Text } from '../ui';
@@ -63,6 +65,8 @@ function httpFailureStatus(value: unknown): number | undefined {
     ? value.status
     : undefined;
 }
+// Core records a long test for 30 s after arming; this covers its expiry and clock skew.
+const SERVER_EXPIRY_MARGIN_MS = 30_000;
 const LONG_STEPS = [
   'Prepare with VPN on',
   'Turn VPN off and reproduce the problem',
@@ -160,6 +164,7 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
   const [problemReport, setProblemReport] = useState<ConnectionDiagnosticReport | null>(null);
   const [problemArchived, setProblemArchived] = useState(false);
   const [problemStopConfirmed, setProblemStopConfirmed] = useState(false);
+  const [holdLeft, holdUntil, held] = useHold();
   const problemReleasedRef = useRef(false);
   problemReleasedRef.current = problemArchived && problemStopConfirmed;
   const [quickCaptureBlocked, setQuickCaptureBlocked] = useState(true);
@@ -182,6 +187,7 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
   }, [serverId]);
   useEffect(() => {
     setReports([]);
+    setReportMessage('');
     refreshReports();
   }, [refreshReports]);
   const captureDeadline = useRef<number | null>(null);
@@ -193,18 +199,22 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
   const [collecting, setCollecting] = useState(false);
   const collectingRef = useRef<number | null>(null);
   const preparingRef = useRef<number | null>(null);
-  const ownSelected = useCallback((busy: boolean) => {
-    if (
-      busy &&
-      (preparingRef.current !== null ||
-        collectingRef.current !== null ||
-        (runRef.current !== null && !problemReleasedRef.current))
-    )
-      return false;
-    selectedBusyRef.current = busy;
-    setSelectedBusy(busy);
-    return true;
-  }, []);
+  const ownSelected = useCallback(
+    (busy: boolean) => {
+      if (
+        busy &&
+        (preparingRef.current !== null ||
+          collectingRef.current !== null ||
+          held() ||
+          (runRef.current !== null && !problemReleasedRef.current))
+      )
+        return false;
+      selectedBusyRef.current = busy;
+      setSelectedBusy(busy);
+      return true;
+    },
+    [held],
+  );
   const [ready, setReady] = useState(false);
   const [remaining, setRemaining] = useState(0);
   const [message, setMessage] = useState(IDLE_MESSAGE);
@@ -352,6 +362,7 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
   const start = async () => {
     if (
       quickCaptureBlockedRef.current ||
+      held() ||
       selectedBusyRef.current ||
       !loaded ||
       preparing ||
@@ -732,7 +743,24 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
       // Only a confirmed local Stop lets the unfinished run go; saved reports stay.
       if (!(await stopRemoteDataRecording())) throw new Error('Stop unconfirmed');
       if (!current()) return;
-      void client?.stopConnectionRecording(expected.runId).catch(() => undefined);
+      // Core and Uplink may still record this run. Without their confirmed Stop,
+      // no new test starts until the run has expired on the server side.
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const remoteStopped = client
+        ? await Promise.race([
+            client.stopConnectionRecording(expected.runId).then(
+              (value) =>
+                value.runId === expected.runId &&
+                value.core.state === 'stopped' &&
+                value.uplink.state === 'stopped',
+              () => false,
+            ),
+            new Promise<false>((resolve) => {
+              timer = setTimeout(() => resolve(false), 5000);
+            }),
+          ]).finally(() => clearTimeout(timer))
+        : false;
+      if (!current()) return;
       await AsyncStorage.removeItem(key);
       if (!current()) return;
       runRef.current = null;
@@ -742,6 +770,7 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
       setReady(false);
       setRemaining(0);
       setMessage(IDLE_MESSAGE);
+      if (!remoteStopped) holdUntil(expected.expiresAt + SERVER_EXPIRY_MARGIN_MS);
       setReportMessage('Unfinished long test discarded.');
     } catch {
       if (current())
@@ -755,10 +784,17 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
       }
     }
   };
+  const shareReport = (value: ConnectionDiagnosticReport) => {
+    Share.share({ message: JSON.stringify(value) }).catch(() =>
+      setReportMessage('Sharing is unavailable. Use Copy instead.'),
+    );
+  };
   const confirmDiscardProblem = () =>
     Alert.alert(
       'Discard this long test?',
-      'The unfinished test is removed from this device. Saved reports are kept.',
+      problemArchived
+        ? 'The unfinished test is removed from this device. Its saved report is kept.'
+        : 'Its data has not been collected yet and will be lost. Other saved reports are kept.',
       [
         { text: 'Cancel', style: 'cancel' },
         { text: 'Discard', style: 'destructive', onPress: () => void discardProblem() },
@@ -775,18 +811,22 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
     ? 'Loading…'
     : !client
       ? 'Connect to your Core first.'
-      : selectedBusy || quickCaptureBlocked
-        ? 'Finish the quick test first.'
-        : undefined;
+      : holdLeft > 0
+        ? holdReason(holdLeft)
+        : selectedBusy || quickCaptureBlocked
+          ? 'Finish the quick test first.'
+          : undefined;
   const quickBlockedReason =
     preparing ||
     collecting ||
     remaining > 0 ||
     (run !== null && !(problemArchived && problemStopConfirmed))
       ? 'Finish the long test first.'
-      : !client
-        ? 'Connect to your Core first.'
-        : undefined;
+      : holdLeft > 0
+        ? holdReason(holdLeft)
+        : !client
+          ? 'Connect to your Core first.'
+          : undefined;
   const failedPreparation = run?.preparation?.failed === true;
   return (
     <View>
@@ -798,6 +838,7 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
             preparing ||
             collecting ||
             remaining > 0 ||
+            holdLeft > 0 ||
             !client ||
             (runRef.current !== null && !(problemArchived && problemStopConfirmed))
           }
@@ -863,6 +904,7 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
                   collecting ||
                   !key ||
                   !client ||
+                  holdLeft > 0 ||
                   remaining > 0
                 }
                 onPress={() => void start()}
@@ -891,7 +933,7 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
                 label="Share report"
                 variant={problemStopConfirmed ? 'secondary' : 'primary'}
                 fullWidth
-                onPress={() => void Share.share({ message: JSON.stringify(problemReport) })}
+                onPress={() => shareReport(problemReport)}
               />
             ) : null}
             {archivedRun && problemStopConfirmed ? (
@@ -929,11 +971,7 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
                     <View style={styles.reportDetail}>
                       <SourceTags sources={report.sources} />
                       <Actions>
-                        <Button
-                          label="Share"
-                          size="compact"
-                          onPress={() => void Share.share({ message: JSON.stringify(report) })}
-                        />
+                        <Button label="Share" size="compact" onPress={() => shareReport(report)} />
                         <Button
                           label="Copy"
                           size="compact"

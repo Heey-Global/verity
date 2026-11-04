@@ -16,6 +16,8 @@ import {
   StepIndicator,
   TestCard,
   Toast,
+  holdReason,
+  useHold,
   useTransientMessage,
   completeness,
   formatReportTime,
@@ -55,6 +57,8 @@ const prerequisiteHelp: Record<string, string> = {
     'Another connection test is still running on this device. Wait a moment and try again.',
 };
 type Result = { tone: StatusTone; title: string; detail: string };
+// The quick test's server-side recording ends within 45 s of its start.
+const QUICK_SERVER_EXPIRY_MS = 60_000;
 const QUICK_STEPS = ['Testing the connection', 'Result'] as const;
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/iu;
 type SavedTest = {
@@ -130,6 +134,7 @@ export function SelectedConnectionTest({
   const [message, setMessage] = useState('');
   const [result, setResult] = useState<Result | null>(null);
   const [toast, showToast] = useTransientMessage();
+  const [holdLeft, holdUntil, held] = useHold();
   const [report, setReport] = useState<ConnectionDiagnosticReport | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [saved, setSaved] = useState<SavedTest | null>(null);
@@ -138,8 +143,10 @@ export function SelectedConnectionTest({
   const [archived, setArchived] = useState(false);
   const [canStartAnother, setCanStartAnother] = useState(false);
   useEffect(() => {
-    onCaptureBlocked?.(!loaded || busy || (saved !== null && !(archived && canStartAnother)));
-  }, [loaded, busy, saved, archived, canStartAnother, onCaptureBlocked]);
+    onCaptureBlocked?.(
+      !loaded || busy || holdLeft > 0 || (saved !== null && !(archived && canStartAnother)),
+    );
+  }, [loaded, busy, holdLeft, saved, archived, canStartAnother, onCaptureBlocked]);
 
   const [localFailure, setLocalFailure] = useState<{
     kind: string;
@@ -226,7 +233,7 @@ export function SelectedConnectionTest({
       });
   };
   const start = async () => {
-    if (disabled || !loaded || retained.current || operation.current) return;
+    if (disabled || !loaded || retained.current || operation.current || held()) return;
     const controller = new AbortController();
     operation.current = controller;
     setBusy(true);
@@ -533,6 +540,7 @@ export function SelectedConnectionTest({
       if (scope.current !== storageKey || retained.current?.runId !== expected.runId) return;
       await AsyncStorage.removeItem(storageKey);
       if (scope.current !== storageKey) return;
+      const confirmedStopped = archived && canStartAnother;
       retained.current = null;
       setSaved(null);
       setArchived(false);
@@ -541,10 +549,16 @@ export function SelectedConnectionTest({
       setResult(null);
       setReport(null);
       setMessage('');
+      // Without a confirmed Core/Uplink Stop the server may still record this run
+      // until it expires; no new test starts on top of it.
+      const startedAt = expected.startedAt === null ? Number.NaN : Date.parse(expected.startedAt);
+      if (!confirmedStopped && Number.isFinite(startedAt))
+        holdUntil(startedAt + QUICK_SERVER_EXPIRY_MS);
     } catch {
-      setMessage(
-        'The app could not confirm that the test stopped on this device. Wait a moment and try again.',
-      );
+      if (focused.current && scope.current === storageKey)
+        setMessage(
+          'The app could not confirm that the test stopped on this device. Wait a moment and try again.',
+        );
     } finally {
       operation.current = null;
       if (focused.current) setBusy(false);
@@ -554,7 +568,9 @@ export function SelectedConnectionTest({
   const confirmDiscard = () =>
     Alert.alert(
       'Discard this quick test?',
-      'The unfinished test is removed from this device. Saved reports are kept.',
+      archived
+        ? 'The unfinished test is removed from this device. Its saved report is kept.'
+        : 'Its data has not been collected yet and will be lost. Other saved reports are kept.',
       [
         { text: 'Cancel', style: 'cancel' },
         { text: 'Discard', style: 'destructive', onPress: () => void discard() },
@@ -611,12 +627,16 @@ export function SelectedConnectionTest({
         />
       ) : null}
       {message ? <StatusLine tone="problem" title={message} /> : null}
-      {!saved && !busy && disabled && blockedReason ? <StatusLine title={blockedReason} /> : null}
+      {!saved && !busy && holdLeft > 0 ? (
+        <StatusLine title={holdReason(holdLeft)} />
+      ) : !saved && !busy && disabled && blockedReason ? (
+        <StatusLine title={blockedReason} />
+      ) : null}
       <Actions>
         {!saved && !busy ? (
           <Button
             label="Start quick test"
-            disabled={disabled || !loaded}
+            disabled={disabled || !loaded || holdLeft > 0}
             fullWidth
             onPress={() => void start()}
           />
@@ -647,7 +667,11 @@ export function SelectedConnectionTest({
             label="Share report"
             variant={canStartAnother ? 'secondary' : 'primary'}
             fullWidth
-            onPress={() => void Share.share({ message: JSON.stringify(report) })}
+            onPress={() => {
+              Share.share({ message: JSON.stringify(report) }).catch(() =>
+                showToast('Sharing is unavailable. Use Collect again to copy it.'),
+              );
+            }}
           />
         ) : null}
         {finished && archived && canStartAnother ? (

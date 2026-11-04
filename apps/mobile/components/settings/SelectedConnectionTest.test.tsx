@@ -582,6 +582,9 @@ it('keeps saved reports when discarding an unfinished quick test', async () => {
   expect((await loadConnectionDiagnosticReports('paired')).map((entry) => entry.runId)).toEqual([
     runId,
   ]);
+  // Stop was never confirmed, so the server may still record this run.
+  await screen.findByText(/still finishing the previous test · ready in \d+ s/);
+  expect(screen.getByRole('button', { name: 'Start quick test' })).toBeDisabled();
 });
 it('explains why the quick test is unavailable instead of only greying it out', async () => {
   render(

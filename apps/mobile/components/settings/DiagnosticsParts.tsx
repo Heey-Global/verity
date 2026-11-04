@@ -132,6 +132,34 @@ export function formatReportTime(iso: string | null, now: Date = new Date()) {
 const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const pad = (value: number) => String(value).padStart(2, '0');
 
+/**
+ * A short wait after discarding a run whose Core/Uplink Stop is unconfirmed:
+ * the server side may still record that run until it expires, so a new test
+ * must not start on top of it. `held()` reads the deadline without a render.
+ */
+export function useHold() {
+  const until = useRef(0);
+  const [left, setLeft] = useState(0);
+  useEffect(() => {
+    if (left <= 0) return;
+    const timer = setTimeout(
+      () => setLeft(Math.max(0, Math.ceil((until.current - Date.now()) / 1000))),
+      1000,
+    );
+    return () => clearTimeout(timer);
+  }, [left]);
+  const hold = useCallback((untilMs: number) => {
+    until.current = untilMs;
+    setLeft(Math.max(0, Math.ceil((untilMs - Date.now()) / 1000)));
+  }, []);
+  const held = useCallback(() => until.current > Date.now(), []);
+  return [left, hold, held] as const;
+}
+
+export function holdReason(seconds: number) {
+  return `Core and Uplink are still finishing the previous test · ready in ${String(seconds)} s`;
+}
+
 /** A confirmation that disappears by itself, so it never reads as current state. */
 export function useTransientMessage(durationMs = 4000) {
   const [message, setMessage] = useState('');

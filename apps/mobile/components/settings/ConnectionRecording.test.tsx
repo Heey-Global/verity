@@ -231,7 +231,7 @@ it('stops locally offline, retains run across reopening and retries collection w
   first.unmount();
   const next = client();
   render(<ConnectionRecording client={next as never} />);
-  await screen.findByText(/Recording finished ·|Preparation failed/);
+  await screen.findByText(/Recording finished ·/);
   pressCollect();
   await screen.findByText(/Incomplete –/);
   expect(next.stopConnectionRecording).toHaveBeenCalledWith(runId);
@@ -381,7 +381,7 @@ it.each([1, 2])('collects saved runs using version %s', async (version) => {
   );
   const api = client();
   render(<ConnectionRecording client={api as never} />);
-  await screen.findByText(/Recording finished ·|Preparation failed/);
+  await screen.findByText(/Recording finished ·/);
   pressCollect();
   await waitFor(() => expect(api.exportConnectionRecording).toHaveBeenCalledWith(runId, version));
 });
@@ -421,9 +421,7 @@ it('withdraws readiness on unreachable polling while preserving local recording'
     await act(async () => {
       jest.advanceTimersByTime(1000);
     });
-    expect(
-      screen.getByText(/have not confirmed the recording|cannot be reached right now/),
-    ).toBeTruthy();
+    expect(screen.getByText(/cannot be reached right now/)).toBeTruthy();
     expect(mockStop).not.toHaveBeenCalled();
   } finally {
     jest.useRealTimers();
@@ -457,9 +455,7 @@ it('bounds unreachable readiness requests without overlapping polls', async () =
     await act(async () => {
       jest.advanceTimersByTime(1000);
     });
-    expect(
-      screen.getByText(/have not confirmed the recording|cannot be reached right now/),
-    ).toBeTruthy();
+    expect(screen.getByText(/cannot be reached right now/)).toBeTruthy();
     expect(mockStop).not.toHaveBeenCalled();
   } finally {
     jest.useRealTimers();
@@ -517,7 +513,7 @@ it('preserves the failed preparation stage across reopening without exporting ra
   await screen.findByText(/Preparation failed/);
   view.unmount();
   render(<ConnectionRecording client={api as never} />);
-  await screen.findByText(/Recording finished ·|Preparation failed/);
+  await screen.findByText('Preparation failed');
   pressCollect();
   await waitFor(() => expect(mockCopy).toHaveBeenCalled());
   const report = JSON.parse(mockCopy.mock.calls[0]![0] as string);
@@ -564,7 +560,7 @@ it('retains completed preparation after reopening', async () => {
   await screen.findByText(/Ready — turn off VPN/);
   view.unmount();
   render(<ConnectionRecording client={api as never} />);
-  await screen.findByText(/Recording finished ·|Preparation failed/);
+  await screen.findByText(/Recording finished ·/);
   pressCollect();
   await waitFor(() => expect(mockCopy).toHaveBeenCalled());
   expect(JSON.parse(mockCopy.mock.calls[0]![0] as string).preparation).toEqual({
@@ -802,8 +798,29 @@ it('discards a stuck long test only after a confirmed local Stop and keeps saved
   await screen.findByText(/could not confirm that this device stopped recording/);
   expect(await AsyncStorage.getItem(storageKey)).not.toBeNull();
   await confirmDiscard();
-  await waitFor(() => expect(screen.getByText('Start long test')).toBeEnabled());
-  expect(await AsyncStorage.getItem(storageKey)).toBeNull();
+  await waitFor(() => expect(AsyncStorage.getItem(storageKey)).resolves.toBeNull());
   expect(screen.getByText(/^Long test · Today/)).toBeTruthy();
+  // Core and Uplink never confirmed Stop: they may still record the discarded run,
+  // so neither test may start on top of it until that run has expired.
+  expect(
+    screen.getAllByText(/still finishing the previous test · ready in \d+ s/),
+  ).not.toHaveLength(0);
+  expect(screen.getByText('Mock selected start')).toBeDisabled();
+  expect(screen.getByText('Start long test')).toBeDisabled();
+});
+it('releases both tests at once when Core and Uplink confirm Stop while discarding', async () => {
+  const api = client();
+  render(<ConnectionRecording client={api as never} />);
+  await pressStart();
+  await screen.findByText(/Ready — turn off VPN/);
+  const stopped = api.stopConnectionRecording.getMockImplementation();
+  api.stopConnectionRecording.mockRejectedValue(new Error('offline'));
+  api.exportConnectionRecording.mockRejectedValue(new Error('offline'));
+  pressCollect();
+  await screen.findByText('Not confirmed as stopped');
+  api.stopConnectionRecording.mockImplementation(stopped!);
+  await confirmDiscard();
+  await waitFor(() => expect(screen.getByText('Start long test')).toBeEnabled());
+  expect(screen.queryByText(/still finishing the previous test/)).toBeNull();
   expect(screen.getByText('Mock selected start')).toBeEnabled();
 });
