@@ -47,6 +47,7 @@ export function createSessionDeletionManager(options: {
   >;
   fence: (id: string) => void;
   stop: (id: string) => Promise<boolean>;
+  terminationConfirmed?: (id: string) => boolean;
   capture: (session: SessionRecord) => Promise<SessionDeletionPayload>;
   prepare: (id: string) => Promise<void>;
   beforeDelete?: (id: string) => Promise<void>;
@@ -111,6 +112,13 @@ export function createSessionDeletionManager(options: {
       .then(() => {
         if (closing) return false;
         return phase(id, 'runner-cleanup', async () => {
+          // A captured turn may finish after the bounded stop and the DB cascade.
+          // Only the conductor's exact-handle settlement can supply this evidence.
+          if (!payload.terminationConfirmed && options.terminationConfirmed?.(id)) {
+            payload.terminationConfirmed = true;
+            confirmed.add(id);
+            await options.store.updateSessionDeletionPayload(id, JSON.stringify(payload));
+          }
           const complete = await options.store.withSessionDeletionCleanup(id, async (retained) => {
             Object.assign(payload, JSON.parse(retained) as SessionDeletionPayload);
             return options.cleanup(

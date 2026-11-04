@@ -11376,10 +11376,13 @@ describe('Conductor session deletion admission', () => {
       await vi.advanceTimersByTimeAsync(50);
       expect(await stopping).toBe(false);
       expect(conductor.isBusy('s-delete')).toBe(true);
+      expect(conductor.isDeletionTerminationConfirmed('s-delete')).toBe(false);
+      await ctx.store.deleteSession('s-delete');
       await bind!('late-backend-id');
       expect(persist).not.toHaveBeenCalled();
       settle({ sessionId: 's-delete', exitCode: 143, stderr: '', aborted: true });
       await vi.waitFor(() => expect(conductor.isBusy('s-delete')).toBe(false));
+      expect(conductor.isDeletionTerminationConfirmed('s-delete')).toBe(true);
       await vi.advanceTimersByTimeAsync(2_000);
       persist.mockRestore();
     } finally {

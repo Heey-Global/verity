@@ -1002,7 +1002,12 @@ export class Conductor {
   // A logical deletion never hands the session to a successor. Persisted deletion
   // records restore this admission fence before requests are accepted after restart.
   private readonly deletingSessions = new Set<string>();
+  private readonly confirmedDeletionTerminations = new Set<string>();
   private readonly workspaceOperations = new Map<string, number>();
+
+  isDeletionTerminationConfirmed(sessionId: string): boolean {
+    return this.confirmedDeletionTerminations.has(sessionId) && !this.inFlight.has(sessionId);
+  }
 
   isSessionDeleting(sessionId: string): boolean {
     return this.deletingSessions.has(sessionId);
@@ -2905,6 +2910,7 @@ export class Conductor {
       // never keep the session fenced. `clearRunningTurn` catches + reports its
       // own store errors.
       this.releaseInFlight(sessionId);
+      if (this.deletingSessions.has(sessionId)) this.confirmedDeletionTerminations.add(sessionId);
       // Scoped to the wedged turn's own prompt_seq: even a delayed delete can then
       // never erase a successor turn's marker (crash-recovery anchor). An
       // undefined markerSeq means the wedge happened before this turn ever wrote
@@ -3848,6 +3854,7 @@ export class Conductor {
         // stand-down signal, and setting it any earlier would let the watchdog
         // stand down while the session is still fenced.
         handle.settled = true;
+        if (this.deletingSessions.has(sessionId)) this.confirmedDeletionTerminations.add(sessionId);
         // Clear THIS turn's marker, scoped to its prompt_seq so a late DELETE can't wipe
         // the next turn's marker (the drainNext below, or a concurrent dispatch, may
         // already have written one). Fire-and-forget: the settling terminal event was
@@ -4954,6 +4961,8 @@ export class Conductor {
         // failing store delete can neither keep the session fenced nor stand the
         // watchdog down early.
         handle.settled = true;
+        if (this.deletingSessions.has(marker.sessionId))
+          this.confirmedDeletionTerminations.add(marker.sessionId);
         void this.clearRunningTurn(marker.sessionId, marker.promptSeq, marker.markerId);
         this.drainNext(marker.sessionId);
       }

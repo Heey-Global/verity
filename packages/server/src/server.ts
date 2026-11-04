@@ -6278,6 +6278,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   const sessionDeletions = createSessionDeletionManager({
     store: deps.eventStore,
     fence: (id) => conductor.beginSessionDeletion?.(id),
+    terminationConfirmed: (id) => conductor.isDeletionTerminationConfirmed?.(id) ?? false,
     stop: async (id) => {
       if (conductor.stopForDeletion) return conductor.stopForDeletion(id);
       // Compatibility with custom conductors: inability to prove termination parks

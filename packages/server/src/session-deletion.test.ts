@@ -56,6 +56,7 @@ function setup() {
   const options = {
     store,
     fence: vi.fn(),
+    terminationConfirmed: vi.fn(() => false),
     stop: vi.fn(async () => false),
     capture: vi.fn(async (input: SessionRecord) => ({ session: input, previewIds: [] })),
     prepare: vi.fn(async () => {}),
@@ -86,6 +87,26 @@ describe('durable session deletion', () => {
     });
     expect(options.store.deleteSession).toHaveBeenCalledOnce();
     expect(options.cleanup).toHaveBeenCalledWith(expect.any(Object), false);
+  });
+  it('persists late confirmed termination and eventually completes deferred cleanup', async () => {
+    const { options, records, manager } = setup();
+    options.cleanup.mockImplementation(async (_payload, stopped) => stopped);
+    vi.useFakeTimers();
+    try {
+      await manager.remove(session);
+      expect(records.has('s')).toBe(true);
+      options.terminationConfirmed.mockReturnValue(true);
+      await vi.advanceTimersByTimeAsync(31_000);
+      await manager.resume();
+      await vi.waitFor(() => expect(records.has('s')).toBe(false));
+      expect(options.store.updateSessionDeletionPayload).toHaveBeenCalledWith(
+        's',
+        expect.stringContaining('"terminationConfirmed":true'),
+      );
+    } finally {
+      manager.close();
+      vi.useRealTimers();
+    }
   });
   it('a wedged cleanup never holds the HTTP request or starts duplicate cleanup', async () => {
     const { options, manager } = setup();
