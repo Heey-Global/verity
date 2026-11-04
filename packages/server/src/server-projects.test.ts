@@ -887,7 +887,12 @@ describe('GET /projects (#174)', () => {
       containerName: 'dev-heey-global--epsilon',
       state: 'active',
     });
-    await ctx.store.createSession({ sessionId: 's-dismiss', worktree: '/wt/dismiss', model: 'm' });
+    await ctx.store.createSession({
+      sessionId: 's-dismiss',
+      worktree: '/wt/dismiss',
+      model: 'm',
+      projectId: 'p-dismiss',
+    });
     const patch = (url: string, payload: unknown) =>
       app.inject({ method: 'PATCH', url, payload: payload as Record<string, unknown> });
 
@@ -906,6 +911,14 @@ describe('GET /projects (#174)', () => {
     expect(listed?.inboxDismissed).toEqual(['question:s-dismiss:abc']);
     const detail = await app.inject({ method: 'GET', url: '/sessions/s-dismiss' });
     expect(detail.json()).toMatchObject({ inboxDismissed: ['question:s-dismiss:abc'] });
+    // The project page lists its sessions too; a shared read mark there would
+    // bring back unread dots another member cleared.
+    const page = await app.inject({ method: 'GET', url: '/projects/p-dismiss' });
+    expect(
+      page
+        .json<{ sessions: Array<{ sessionId: string; inboxDismissed?: string[] }> }>()
+        .sessions.find((session) => session.sessionId === 's-dismiss')?.inboxDismissed,
+    ).toEqual(['question:s-dismiss:abc']);
     await patch('/sessions/s-dismiss/inbox-dismissed', {
       key: 'question:s-dismiss:abc',
       dismissed: false,

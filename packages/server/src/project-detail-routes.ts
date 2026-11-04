@@ -49,7 +49,8 @@ const settingsBody = z
   .strict();
 
 export interface ProjectDetailRouteDeps {
-  getDetail: (projectId: string) => Promise<unknown>;
+  /** The project with its sessions as `viewer` sees them (read marks, dismissals). */
+  getDetail: (projectId: string, viewer: string) => Promise<unknown>;
   projectExists: (projectId: string) => Promise<boolean>;
   listGrants?: ((projectId: string) => Promise<BrokeredGrantRecord[]>) | undefined;
   revokeGrant?: ((projectId: string, grantId: string) => Promise<boolean>) | undefined;
@@ -70,7 +71,7 @@ export function registerProjectDetailRoutes(
 ): void {
   app.get('/projects/:id', async (request, reply): Promise<unknown> => {
     const { id } = projectParams.parse(request.params);
-    const detail = await deps.getDetail(id);
+    const detail = await deps.getDetail(id, viewerId(request));
     if (detail === undefined) {
       reply.code(404);
       return { error: `project ${id} not found` };

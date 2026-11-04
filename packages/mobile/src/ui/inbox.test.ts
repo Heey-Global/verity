@@ -397,4 +397,21 @@ describe('inboxView', () => {
     });
     expect(again.visible.map((item) => item.dismiss)).toEqual(['project']);
   });
+
+  it('keeps a dismissed vulnerability hidden across sleep and wake', () => {
+    const vulnerable = (stateChangedAt: string) =>
+      project({ stateChangedAt, vulnerabilitySummary: { count: 1, critical: 1, high: 0 } });
+    const [first] = inboxItems({
+      sessions: [],
+      projects: [vulnerable('2026-11-03T08:00:00Z')],
+      now: NOW,
+    });
+    expect(first).toBeDefined();
+    const woke = inboxView({
+      sessions: [],
+      projects: [{ ...vulnerable('2026-11-03T09:30:00Z'), inboxDismissed: [first!.key] }],
+      now: NOW,
+    });
+    expect(woke.visible).toEqual([]);
+  });
 });

@@ -128,6 +128,10 @@ export function HomeInbox({
   const ordered = useMemo(() => all.filter((item) => !settled.has(item.key)), [all, settled]);
   const items = useMemo(() => ordered.filter((item) => !isHidden(item)), [ordered, isHidden]);
   const hidden = useMemo(() => ordered.filter(isHidden), [ordered, isHidden]);
+  // Fold the list again once it empties, so the next dismissal starts folded.
+  useEffect(() => {
+    if (hidden.length === 0) setShowHidden(false);
+  }, [hidden.length]);
   useEffect(() => onCountChange?.(items.length), [items.length, onCountChange]);
 
   const setDismissed = useCallback(

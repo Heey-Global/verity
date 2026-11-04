@@ -4709,6 +4709,22 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     turnBlocked: deps.provisioner?.turnBlockedSandboxes?.() ?? NO_UNREPAIRED_SANDBOXES,
   });
 
+  // Read marks and dismissed Home items of the person asking; a session they
+  // never touched is unread-neutral and hides nothing.
+  const sessionsAsSeenBy = async (
+    viewer: string,
+    summaries: SessionSummary[],
+  ): Promise<SessionSummary[]> => {
+    const views = await deps.eventStore.viewState.sessionViews(viewer);
+    return summaries.map((summary) => {
+      const view = views.get(summary.sessionId);
+      return {
+        ...summary,
+        lastSeenEventCount: view?.lastSeenEventCount ?? null,
+        inboxDismissed: view?.inboxDismissed ?? [],
+      };
+    });
+  };
   // Fold state and dismissed Home items belong to the person asking, never to the
   // project row, so one member folding a group leaves everyone else's open.
   const projectsAsSeenBy = async (
@@ -4888,7 +4904,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   });
   registerProjectEgressRoutes(app, deps.eventStore.projectEgress);
   registerProjectDetailRoutes(app, {
-    getDetail: async (id) => {
+    getDetail: async (id, viewer) => {
       const cached = await deps.eventStore.getProject(id);
       if (cached === undefined) return undefined;
       const project = deps.reconcileProjectState
@@ -4913,7 +4929,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           projectToolkitDrift(resolved.project, await serverToolkitIdentity()),
         ),
         settings: publicProjectSettings(settings),
-        sessions: await summarizeSessions(sessions),
+        sessions: await sessionsAsSeenBy(viewer, await summarizeSessions(sessions)),
       };
     },
     projectExists: async (id) => (await deps.eventStore.getProject(id)) !== undefined,

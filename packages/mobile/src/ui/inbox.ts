@@ -380,10 +380,11 @@ function meetingItem(meeting: UpcomingMeeting, now: number): InboxItem | undefin
 function projectHealthItem(project: ProjectRecord): InboxItem | undefined {
   if (project.archived === true) return undefined;
   const name = projectDisplayName(project);
-  // Each reason and each state change makes a new key, so a dismissed problem
-  // returns when the project breaks again or something else goes wrong.
-  const stamp = project.stateChangedAt ?? '';
-  const key = (reason: string) => `health:${project.id}:${reason}:${stamp}`;
+  // Each key names the reason and the fact behind it, so a dismissed problem
+  // returns when the project breaks again, a newer update stalls or the count of
+  // severe findings changes — and not on unrelated lifecycle moves such as a
+  // sandbox sleeping and waking.
+  const key = (reason: string, fact: string) => `health:${project.id}:${reason}:${fact}`;
   const base = {
     kind: 'project_health' as const,
     tone: 'attention' as const,
@@ -396,7 +397,7 @@ function projectHealthItem(project: ProjectRecord): InboxItem | undefined {
   if (projectNeedsRepair(project)) {
     return {
       ...base,
-      key: key('repair'),
+      key: key('repair', project.stateChangedAt ?? ''),
       tag: 'Repair',
       context: 'Sandbox',
       message: project.provisionError ?? 'The project sandbox needs a repair.',
@@ -407,7 +408,7 @@ function projectHealthItem(project: ProjectRecord): InboxItem | undefined {
     const update = project.sandboxUpdate;
     return {
       ...base,
-      key: key('update'),
+      key: key('update', update.targetRevision ?? update.targetVersion ?? update.target ?? ''),
       tag: isSecuritySandboxUpdate(update) ? 'Security update' : 'Update',
       context: 'Sandbox',
       message: update.turnBlocked
@@ -421,7 +422,7 @@ function projectHealthItem(project: ProjectRecord): InboxItem | undefined {
   if (vulnerabilities && severe > 0) {
     return {
       ...base,
-      key: key(`vulnerabilities-${String(severe)}`),
+      key: key('vulnerabilities', String(severe)),
       tag: 'Vulnerabilities',
       context: 'Security',
       message:
