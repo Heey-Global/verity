@@ -140,6 +140,14 @@ def verify_managed_staging(value):
                 'activeUnitsPreserved', 'repeatedPreparationStable'):
         assert value[key] is True, 'Managed staging safety proof missing: ' + key
     assert isinstance(value['releaseManifest'], dict) and value['releaseManifest']
+    candidate = value['nativeCandidate']
+    assert candidate['version'] == 1 and candidate['scope'] == 'native-profile-candidate'
+    assert candidate['accepted'] is False, 'Candidate metadata cannot grant acceptance'
+    assert isinstance(candidate['blockers'], list)
+    assert isinstance(candidate['evidenceMissing'], list) and candidate['evidenceMissing']
+    for name in ('node', 'project-egress-host-main.mjs',
+                 'project-egress-deadline.bpf.o', 'project-egress-renew.bpf.o'):
+        assert candidate['artifacts'][name] == value['releaseManifest'][name], 'Candidate artifact mismatch'
 
 
 def verify_packet(snapshot):

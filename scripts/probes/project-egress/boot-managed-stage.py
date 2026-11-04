@@ -50,12 +50,18 @@ for name, digest in before['units'].items():
     assert hashlib.sha256(Path(name).read_bytes()).hexdigest() == digest
 assert not Path('/etc/verity-egress/authority.json').exists()
 assert Path('/etc/verity-egress-server/control.key').read_bytes() == Path('/etc/verity-egress/control.key').read_bytes()
+candidate_spec = importlib.util.spec_from_file_location(
+    'native_candidate', assets / 'probe/collect-native-candidate.py')
+candidate = importlib.util.module_from_spec(candidate_spec)
+candidate_spec.loader.exec_module(candidate)
+native_candidate = candidate.collect(managed.base, release=release)
 evidence = {
     'version': 1, 'scope': 'native-managed-staging-only',
     'productionAccepted': False, 'directAuthorityConfigured': False,
     'keyPreserved': True, 'dockerProcessPreserved': True,
     'firewallTablesPreserved': True, 'activeUnitsPreserved': True,
     'repeatedPreparationStable': True, 'releaseManifest': manifest,
+    'nativeCandidate': native_candidate,
 }
 Path('/var/lib/verity-egress-fixture/managed-staging.json').write_text(json.dumps(evidence, sort_keys=True))
 print(json.dumps(evidence, sort_keys=True))

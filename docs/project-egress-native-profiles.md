@@ -47,3 +47,28 @@ This is process-scoped and does not replace the host's global `policy-rc.d` file
 An accepted package set must additionally demonstrate that its maintainer scripts
 do not execute firewall operations directly and that host connectivity remains
 unchanged; environment flags and mocked commands do not establish that property.
+
+## Candidate metadata and remaining acceptance work
+
+The native guest records `nativeCandidate` in `managed-staging.json`. The
+read-only collector captures exact host, runtime, release-artifact and package
+identities, fixed blocker codes and missing acceptance evidence. The verifier
+binds its artifact hashes to the staged release manifest. Candidate metadata
+always says `accepted: false`; it supplies no evidence digest and does not add an
+entry to the production profile list.
+
+This is preparation for acceptance, not an isolated activation mechanism. The
+complete managed native fixture still needs the shipped installer, real
+PostgreSQL/direct authority, application positive controls, destination changes,
+relay cutover and the fault/packet-observation matrix. Existing managed image
+smokes use Docker-in-Docker, and their updater smoke substitutes a digest check
+for release signature verification. Those results cannot establish the fixed
+project-egress signature admission contract.
+
+The Staging updater test requires a genuinely released predecessor and a signed
+candidate with the official release-workflow identity. No local retag, verifier
+substitution or placeholder evidence hash may replace that test. The current
+empty accepted list also means a preacceptance native activation procedure needs
+to be defined and reviewed before this full test can run; the collector does not
+introduce a production bypass. Until the fixture, procedure and retained native
+evidence exist, automatic production activation remains incomplete.

@@ -11,6 +11,20 @@ spec.loader.exec_module(boot_vm)
 
 
 class BootEvidenceTests(unittest.TestCase):
+    def test_guest_upload_does_not_inherit_runner_ownership_or_writable_modes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            archive = Path(directory) / 'assets.tar'
+            archive.write_bytes(b'fixture')
+            vm = object.__new__(boot_vm.BootVM)
+            vm.ssh = unittest.mock.Mock()
+            vm.ssh_command = lambda command: ['fixture-ssh', command]
+            with unittest.mock.patch.object(boot_vm.subprocess, 'run') as execute:
+                vm.upload(archive)
+            command = execute.call_args.args[0][-1]
+            self.assertIn('tar --no-same-owner --no-same-permissions -xf -', command)
+            self.assertIn('umask 022; exec tar', command)
+            self.assertTrue(command.endswith("-C /opt/verity-fixture'"))
+
     def test_vm_disk_uses_the_runner_reclaimed_filesystem(self):
         with tempfile.TemporaryDirectory() as directory:
             with unittest.mock.patch.dict(boot_vm.os.environ, {'RUNNER_TEMP': directory}):
@@ -619,7 +633,13 @@ class ManagedStagingEvidenceTests(unittest.TestCase):
                     'productionAccepted': False, 'directAuthorityConfigured': False,
                     'keyPreserved': True, 'dockerProcessPreserved': True,
                     'firewallTablesPreserved': True, 'activeUnitsPreserved': True,
-                    'repeatedPreparationStable': True, 'releaseManifest': {'node': 'a' * 64}}
+                    'repeatedPreparationStable': True, 'releaseManifest': {
+                        name: 'a' * 64 for name in ('node', 'project-egress-host-main.mjs',
+                            'project-egress-deadline.bpf.o', 'project-egress-renew.bpf.o')},
+                    'nativeCandidate': {'version': 1, 'scope': 'native-profile-candidate',
+                        'accepted': False, 'blockers': [], 'evidenceMissing': ['signed-managed-updater'],
+                        'artifacts': {name: 'a' * 64 for name in ('node', 'project-egress-host-main.mjs',
+                            'project-egress-deadline.bpf.o', 'project-egress-renew.bpf.o')}}}
         boot_proof.verify_managed_staging(evidence)
         for key in evidence:
             if key == 'releaseManifest':
@@ -631,3 +651,21 @@ class ManagedStagingEvidenceTests(unittest.TestCase):
         for key in ('productionAccepted', 'directAuthorityConfigured'):
             with self.subTest(claim=key), self.assertRaises(AssertionError):
                 boot_proof.verify_managed_staging({**evidence, key: True})
+
+    def test_candidate_metadata_cannot_replace_acceptance_or_drift_from_release(self):
+        artifacts = {name: 'a' * 64 for name in ('node', 'project-egress-host-main.mjs',
+            'project-egress-deadline.bpf.o', 'project-egress-renew.bpf.o')}
+        evidence = {'version': 1, 'scope': 'native-managed-staging-only',
+                    'productionAccepted': False, 'directAuthorityConfigured': False,
+                    'keyPreserved': True, 'dockerProcessPreserved': True,
+                    'firewallTablesPreserved': True, 'activeUnitsPreserved': True,
+                    'repeatedPreparationStable': True, 'releaseManifest': artifacts,
+                    'nativeCandidate': {'version': 1, 'scope': 'native-profile-candidate',
+                        'accepted': False, 'blockers': [], 'evidenceMissing': ['signed-managed-updater'],
+                        'artifacts': dict(artifacts)}}
+        boot_proof.verify_managed_staging(evidence)
+        for field, replacement in [('accepted', True), ('evidenceMissing', []),
+                                   ('artifacts', {**artifacts, 'node': 'b' * 64})]:
+            changed = {**evidence, 'nativeCandidate': {**evidence['nativeCandidate'], field: replacement}}
+            with self.subTest(field=field), self.assertRaises(AssertionError):
+                boot_proof.verify_managed_staging(changed)
