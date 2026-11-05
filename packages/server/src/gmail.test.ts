@@ -1,6 +1,9 @@
 import { createHash } from 'node:crypto';
+import { mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join, relative } from 'node:path';
 
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   appendGmailSignature,
@@ -25,6 +28,16 @@ function response(value: unknown): Response {
 }
 
 describe('Gmail API', () => {
+  const roots: string[] = [];
+  afterEach(async () => {
+    await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+  });
+  async function workspace() {
+    const root = await mkdtemp(join(tmpdir(), 'gmail-download-'));
+    roots.push(root);
+    return root;
+  }
+
   it('exposes nested attachment identities and downloads exact binary bytes', async () => {
     const bytes = Buffer.from([0, 255, 128, 13, 10]);
     const message = {
@@ -53,15 +66,22 @@ describe('Gmail API', () => {
     expect(thread).toMatchObject({
       messages: [{ attachments: [{ partId: '1.0', attachmentId: 'a/1', filename: 'report.pdf' }] }],
     });
-    await expect(downloadGmailAttachment('token', 'm/1', '1.0', fetch)).resolves.toEqual({
+    const worktree = await workspace();
+    const result = await downloadGmailAttachment('token', 'm/1', '1.0', worktree, fetch);
+    expect(result).toEqual({
       messageId: 'm/1',
       partId: '1.0',
       filename: 'report.pdf',
       mimeType: 'application/pdf',
       size: bytes.length,
-      encoding: 'base64',
-      content: bytes.toString('base64'),
+      path: expect.any(String),
     });
+    expect(
+      createHash('sha256')
+        .update(await readFile(result.path))
+        .digest('hex'),
+    ).toBe(createHash('sha256').update(bytes).digest('hex'));
+    expect(JSON.stringify(result).length).toBeLessThan(1000);
     expect(fetch.mock.calls[2]?.[0]).toBe(
       'https://gmail.googleapis.com/gmail/v1/users/me/messages/m%2F1/attachments/a%2F1',
     );
@@ -79,36 +99,167 @@ describe('Gmail API', () => {
           },
         }),
       );
-      await expect(downloadGmailAttachment('token', 'm1', '', fetch)).resolves.toMatchObject({
-        content: Buffer.from(content).toString('base64'),
-        size: Buffer.byteLength(content),
-      });
+      const result = await downloadGmailAttachment('token', 'm1', '', await workspace(), fetch);
+      expect(result.size).toBe(Buffer.byteLength(content));
+      expect(await readFile(result.path)).toEqual(Buffer.from(content));
+      expect(result).not.toHaveProperty('content');
+      expect(result).not.toHaveProperty('encoding');
       expect(fetch).toHaveBeenCalledTimes(1);
     }
   });
 
-  it('rejects missing parts, missing data, oversized files, and API failures', async () => {
-    for (const body of [{ size: 10 * 1024 * 1024 + 1, attachmentId: 'a1' }, {}]) {
-      const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
-        response({
-          payload: {
-            partId: '0',
-            filename: 'file',
-            body,
-          },
-        }),
-      );
-      await expect(downloadGmailAttachment('token', 'm1', '0', fetch)).rejects.toThrow();
-      expect(fetch).toHaveBeenCalledTimes(1);
-    }
+  it('rejects missing parts, missing data, and API failures and removes partial downloads', async () => {
+    const worktree = await workspace();
     const fetch = vi
       .fn<typeof globalThis.fetch>()
-      .mockResolvedValue(response({ payload: { partId: '0', filename: 'file' } }));
-    await expect(downloadGmailAttachment('token', 'm1', 'missing', fetch)).rejects.toThrow(
-      'not in this message',
+      .mockResolvedValue(response({ payload: { partId: '0', filename: 'file', body: {} } }));
+    await expect(downloadGmailAttachment('token', 'm1', '0', worktree, fetch)).rejects.toThrow(
+      'no data',
     );
+    fetch.mockResolvedValue(response({ payload: { partId: '0', filename: 'file', body: {} } }));
+    await expect(
+      downloadGmailAttachment('token', 'm1', 'missing', worktree, fetch),
+    ).rejects.toThrow('not in this message');
     fetch.mockResolvedValue(new Response('', { status: 403 }));
-    await expect(downloadGmailAttachment('token', 'm1', '0', fetch)).rejects.toThrow('HTTP 403');
+    await expect(downloadGmailAttachment('token', 'm1', '0', worktree, fetch)).rejects.toThrow(
+      'HTTP 403',
+    );
+    fetch.mockResolvedValue(new Response('{"payload":{"body":{"data":"AAAA'));
+    await expect(downloadGmailAttachment('token', 'm1', '0', worktree, fetch)).rejects.toThrow();
+    expect(await readdir(join(worktree, 'downloads'))).toEqual([]);
+  });
+
+  it('streams an attachment larger than 10 MiB into exact bytes with a small response', async () => {
+    const bytes = Buffer.alloc(10 * 1024 * 1024 + 17);
+    for (let index = 0; index < bytes.length; index++) bytes[index] = index % 251;
+    const encoded = JSON.stringify({ data: bytes.toString('base64url'), size: bytes.length });
+    let offset = 0;
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (offset >= encoded.length) return controller.close();
+        const end = Math.min(offset + 8191, encoded.length);
+        controller.enqueue(Buffer.from(encoded.slice(offset, end)));
+        offset = end;
+      },
+    });
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(
+        response({
+          payload: {
+            partId: '1',
+            filename: 'large.bin',
+            body: { attachmentId: 'a1', size: bytes.length },
+          },
+        }),
+      )
+      .mockResolvedValueOnce(new Response(stream));
+    const result = await downloadGmailAttachment('token', 'm1', '1', await workspace(), fetch);
+    expect(result.size).toBe(bytes.length);
+    expect(
+      createHash('sha256')
+        .update(await readFile(result.path))
+        .digest('hex'),
+    ).toBe(createHash('sha256').update(bytes).digest('hex'));
+    expect(JSON.stringify(result).length).toBeLessThan(1000);
+    expect(result).not.toHaveProperty('content');
+    expect(await readdir(join(result.path, '..'))).toEqual(['attachment-large.bin']);
+  });
+
+  it('keeps hostile filenames inside downloads and never overwrites existing downloads', async () => {
+    const worktree = await workspace();
+    await writeFile(join(worktree, 'outside.txt'), 'existing');
+    const filename = '../../outside.txt';
+    const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async () =>
+      response({
+        payload: { partId: '1', filename, body: { data: 'AP8=' } },
+      }),
+    );
+    const first = await downloadGmailAttachment('token', 'm1', '1', worktree, fetch);
+    const second = await downloadGmailAttachment('token', 'm1', '1', worktree, fetch);
+    expect(first.filename).toBe(filename);
+    expect(first.path).not.toBe(second.path);
+    expect(relative(join(worktree, 'downloads'), first.path)).not.toMatch(/^\.\./u);
+    expect(await readFile(first.path)).toEqual(Buffer.from([0, 255]));
+    expect(await readFile(second.path)).toEqual(Buffer.from([0, 255]));
+    expect(await readFile(join(worktree, 'outside.txt'), 'utf8')).toBe('existing');
+  });
+
+  it('refuses a downloads symlink without writing outside the workspace', async () => {
+    const worktree = await workspace();
+    const outside = await workspace();
+    await symlink(outside, join(worktree, 'downloads'));
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    await expect(downloadGmailAttachment('token', 'm1', '1', worktree, fetch)).rejects.toThrow();
+    expect(fetch).not.toHaveBeenCalled();
+    expect(await readdir(outside)).toEqual([]);
+  });
+
+  it('handles JSON escapes and base64 carry across single-byte response chunks', async () => {
+    const encoded =
+      '{"payload":{"partId":"0","filename":"日本語.bin","body":{"da\\u0074a":"AP\\u0038="}}}';
+    const bytes = Buffer.from(encoded);
+    let offset = 0;
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+      new Response(
+        new ReadableStream<Uint8Array>({
+          pull(controller) {
+            if (offset === bytes.length) return controller.close();
+            controller.enqueue(bytes.subarray(offset, ++offset));
+          },
+        }),
+      ),
+    );
+    const result = await downloadGmailAttachment('token', 'm1', '0', await workspace(), fetch);
+    expect(await readFile(result.path)).toEqual(Buffer.from([0, 255]));
+    expect(result.filename).toBe('日本語.bin');
+  });
+
+  it('cleans up partial files when the response stream fails', async () => {
+    const worktree = await workspace();
+    let first = true;
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+      new Response(
+        new ReadableStream<Uint8Array>({
+          pull(controller) {
+            if (first) {
+              first = false;
+              controller.enqueue(Buffer.from('{"payload":{"body":{"data":"AAAA'));
+            } else controller.error(new Error('connection interrupted'));
+          },
+        }),
+      ),
+    );
+    await expect(downloadGmailAttachment('token', 'm1', '0', worktree, fetch)).rejects.toThrow(
+      'connection interrupted',
+    );
+    expect(await readdir(join(worktree, 'downloads'))).toEqual([]);
+  });
+
+  it('rejects a replaced downloads directory and cleans the pinned directory', async () => {
+    const worktree = await workspace();
+    const outside = await workspace();
+    const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async () => {
+      await rename(join(worktree, 'downloads'), join(worktree, 'downloads-old'));
+      await symlink(outside, join(worktree, 'downloads'));
+      return response({ payload: { partId: '0', filename: 'file', body: { data: 'AP8=' } } });
+    });
+    await expect(downloadGmailAttachment('token', 'm1', '0', worktree, fetch)).rejects.toThrow(
+      'directory changed',
+    );
+    expect(await readdir(outside)).toEqual([]);
+    expect(await readdir(join(worktree, 'downloads-old'))).toEqual([]);
+  });
+
+  it('reports unavailable workspaces and unwritable download directories', async () => {
+    const worktree = await workspace();
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    await expect(
+      downloadGmailAttachment('token', 'm1', '0', join(worktree, 'missing'), fetch),
+    ).rejects.toThrow('workspace');
+    await writeFile(join(worktree, 'downloads'), 'file');
+    await expect(downloadGmailAttachment('token', 'm1', '0', worktree, fetch)).rejects.toThrow();
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it('reads the configured send-as signature as safe plain text', async () => {
