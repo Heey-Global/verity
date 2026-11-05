@@ -190,7 +190,8 @@ describe('project page', () => {
   });
 
   it('dismisses and restores a project item through the person’s saved state', async () => {
-    const { client } = await renderPage([question, running]);
+    const onInboxSaved = jest.fn();
+    const { client } = await renderPage([question, running], { onInboxSaved });
     const card = screen.getByTestId('inbox-item-question');
     fireEvent.press(within(card).getByLabelText('Dismiss'));
     await act(async () => undefined);
@@ -199,6 +200,8 @@ describe('project page', () => {
       expect.stringMatching(/^question:form/),
       true,
     );
+    // The wide layout refreshes Home beside the page from this.
+    expect(onInboxSaved).toHaveBeenCalled();
     expect(screen.queryByTestId('inbox-item-question')).toBeNull();
     fireEvent.press(screen.getByText('1 hidden'));
     fireEvent.press(within(screen.getByTestId('inbox-hidden-question')).getByText('Restore'));

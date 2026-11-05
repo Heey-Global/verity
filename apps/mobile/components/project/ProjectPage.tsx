@@ -83,6 +83,7 @@ export function ProjectPage({
   onOpenSession,
   onRepairProject,
   onSessionChanged,
+  onInboxSaved,
   selectedSessionId,
   initialTab = 'overview',
 }: {
@@ -93,6 +94,8 @@ export function ProjectPage({
   onOpenSession: (sessionId: string) => void;
   /** What Repair on a health item does; the sandbox settings, which offer it, when omitted. */
   onRepairProject?: ((projectId: string) => void) | undefined;
+  /** An inbox item on this page was answered, dismissed or restored. */
+  onInboxSaved?: (() => void) | undefined;
   /** A session was renamed, (un)favorited or deleted on this page. */
   onSessionChanged?: ((sessionId: string, deleted: boolean) => void) | undefined;
   selectedSessionId?: string | null | undefined;
@@ -110,6 +113,10 @@ export function ProjectPage({
     refreshConnections();
     void load(true).finally(() => setRefreshing(false));
   }, [refreshConnections, load]);
+  const inboxSaved = useCallback(() => {
+    reload();
+    onInboxSaved?.();
+  }, [reload, onInboxSaved]);
   const sessionChanged = useCallback(
     (sessionId: string, deleted: boolean) => {
       reload();
@@ -172,7 +179,7 @@ export function ProjectPage({
                 selectedSessionId={selectedSessionId}
                 onOpenSession={onOpenSession}
                 onRepairProject={onRepairProject}
-                onSaved={reload}
+                onSaved={inboxSaved}
               />
             ) : (
               <ProjectWork

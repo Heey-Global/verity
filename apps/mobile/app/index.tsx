@@ -1027,6 +1027,8 @@ function SessionList({ client }: { client: VerityClient }) {
         onBack={() => setOpenProjectId(null)}
         onOpenSession={openSessionFromHome}
         onRepairProject={repairFromHome}
+        // Home beside the page shows the same items; it must not offer an answered one again.
+        onInboxSaved={() => void Promise.allSettled([refresh({ silent: true }), refreshProjects()])}
         onSessionChanged={(sessionId, deleted) => {
           // The list and the session pane beside the page show the same sessions.
           if (deleted && selectedId === sessionId) setSelectedId(null);
