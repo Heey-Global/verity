@@ -228,3 +228,12 @@ it('sends words added while a delivery is under way in the same flush', async ()
   ]);
   expect(await saved()).toEqual([]);
 });
+
+it('starts over when another account signs in', async () => {
+  mockClient.assistantConversation.mockResolvedValueOnce({ ...conversation, revision: 5 });
+  await refreshVerity();
+  mockScope = 'account-b';
+  mockClient.assistantConversation.mockResolvedValueOnce({ ...conversation, revision: 2 });
+  await refreshVerity();
+  expect(state().conversation?.revision).toBe(2);
+});

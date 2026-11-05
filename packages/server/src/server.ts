@@ -6579,7 +6579,9 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     if (await deps.eventStore.getSession(id)) return id;
     const project = await ensureVerityControlProject();
     // Sonnet when offered; otherwise the default Claude model, as before.
-    const model = (await availableModels()).models.includes(ASSISTANT_MODEL)
+    const model = (
+      await availableModels().catch(() => ({ models: [] as string[] }))
+    ).models.includes(ASSISTANT_MODEL)
       ? ASSISTANT_MODEL
       : DEFAULT_MODEL;
     const result = await sessionCreate.spawn(

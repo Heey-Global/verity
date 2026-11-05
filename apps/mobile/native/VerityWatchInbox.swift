@@ -483,6 +483,7 @@ final class VerityWatchInbox: NSObject, WCSessionDelegate {
   }
 
   private var forwarding = Set<String>()
+  private var refusedAnswers = Set<String>()
 
   /// Sends a transcribed capture to Verity without waiting for JavaScript. On
   /// success the entry is done; otherwise it stays for JavaScript, which shows a
@@ -547,7 +548,9 @@ final class VerityWatchInbox: NSObject, WCSessionDelegate {
   }
 
   private func forwardAnswer(_ answer: WatchAnswer) {
-    guard !forwarding.contains(answer.id), link.accepts(scope: answer.scope) else { return }
+    guard !forwarding.contains(answer.id), !refusedAnswers.contains(answer.id),
+      link.accepts(scope: answer.scope)
+    else { return }
     forwarding.insert(answer.id)
     let backgroundTime = BackgroundTime("verity-answer") {}
     Task {
@@ -562,9 +565,9 @@ final class VerityWatchInbox: NSObject, WCSessionDelegate {
           self.log("\(answer.id.prefix(8)) answer sent to Verity")
           self.follow(for: 90)
         case .refused(let reason):
-          // Answered elsewhere first or replaced: nothing left to deliver.
-          self.removeAnswer(answer.id)
-          self.log("\(answer.id.prefix(8)) answer refused: \(reason)")
+          // Left for the app, which tells the user why (answered elsewhere, switched off).
+          self.refusedAnswers.insert(answer.id)
+          self.log("\(answer.id.prefix(8)) answer refused, left for the app: \(reason)")
           self.follow(for: 10)
         case .later(let reason):
           self.log("\(answer.id.prefix(8)) answer left for the app: \(reason)")
@@ -597,13 +600,19 @@ final class VerityWatchInbox: NSObject, WCSessionDelegate {
     let backgroundTime = BackgroundTime("verity-follow") {}
     Task {
       var after: Int?
+      var scope = self.link.config?.scope
       var failures = 0
       while self.queue.sync(execute: { Date() < self.followUntil }) {
+        // Another account signed in: its conversation starts from nothing.
+        if self.link.config?.scope != scope {
+          scope = self.link.config?.scope
+          after = nil
+        }
         do {
           let conversation = try await self.link.conversation(after: after, waitMs: 20_000)
           failures = 0
           after = conversation["revision"] as? Int
-          let snapshot = VerityAssistantLink.snapshot(conversation, scope: self.link.config?.scope)
+          let snapshot = VerityAssistantLink.snapshot(conversation, scope: scope)
           self.queue.sync {
             self.publish(snapshot, force: true)
             // Keep following while there is more to come.

@@ -54,8 +54,10 @@ final class VerityAssistantLink: @unchecked Sendable {
   func configure(_ config: Config?) {
     lock.lock()
     defer { lock.unlock() }
+    // Compare only with what is known to be stored: before the first read, a nil
+    // here says nothing about the keychain, and a sign-out must always delete.
+    if loaded, config != nil, stored == config { return }
     loaded = true
-    guard stored != config else { return }
     stored = config
     let query: [String: Any] = [
       kSecClass as String: kSecClassGenericPassword,
@@ -63,16 +65,29 @@ final class VerityAssistantLink: @unchecked Sendable {
       kSecAttrAccount as String: "config",
     ]
     SecItemDelete(query as CFDictionary)
-    guard let config, let data = try? JSONEncoder().encode(config) else { return }
+    guard let config, let data = try? JSONEncoder().encode(config) else {
+      try? FileManager.default.removeItem(at: Self.installMarker)
+      return
+    }
+    // The keychain outlives an uninstall; this file does not. Without it, a
+    // reinstalled app ignores the old item until JavaScript configures it again.
+    FileManager.default.createFile(atPath: Self.installMarker.path, contents: Data())
     var item = query
     item[kSecValueData as String] = data
     item[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
     SecItemAdd(item as CFDictionary, nil)
   }
 
+  private static var installMarker: URL {
+    let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+    try? FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
+    return support.appendingPathComponent("verity-assistant-link")
+  }
+
   var config: Config? {
     lock.lock()
     defer { lock.unlock() }
+    if !loaded, !FileManager.default.fileExists(atPath: Self.installMarker.path) { return nil }
     if !loaded {
       loaded = true
       let query: [String: Any] = [

@@ -54,13 +54,18 @@ function set(next: Partial<VerityState>): void {
   for (const listener of listeners) listener();
 }
 
+/** Loads the saved outbox once. A failed read is tried again next time and
+ *  fails the caller, so no later save can overwrite words it did not load. */
 function restore(): Promise<void> {
   restored ??= AsyncStorage.getItem(KEY)
     .then((data) => {
       const saved = data ? (JSON.parse(data) as Outgoing[]) : [];
       if (Array.isArray(saved)) set({ outbox: [...saved, ...state.outbox] });
     })
-    .catch(() => undefined);
+    .catch((error: unknown) => {
+      restored = null;
+      throw error;
+    });
   return restored;
 }
 
@@ -75,9 +80,22 @@ async function saveOutbox(outbox: Outgoing[]): Promise<void> {
   await write;
 }
 
+/** The account the shown conversation belongs to. */
+let shownScope: string | null = null;
+
+/** Forgets the shown conversation when another account signed in, so its reply,
+ *  question and revision are never shown, sent to the watch or waited from. */
+function forAccount(scope: string | null): void {
+  if (scope === shownScope) return;
+  const switched = shownScope !== null;
+  shownScope = scope;
+  if (switched) set({ conversation: null, access: 'unknown', notice: null });
+}
+
 /** Takes a read unless it is older than the one shown: a quick refresh and a
  *  held read can answer out of order. */
 function showConversation(next: AssistantConversation): void {
+  forAccount(taskAccountScope());
   const current = state.conversation;
   if (current !== null && current.sessionId === next.sessionId && next.revision < current.revision)
     return set({ access: 'ready' });
@@ -261,7 +279,8 @@ export function dismissVerityNotice(): void {
  */
 export function verityPollMs(current: VerityState, open: boolean): number {
   if (!open) return 30_000;
-  return current.conversation?.state === 'working' || current.outbox.length > 0 ? 2_000 : 6_000;
+  const waiting = current.outbox.some((entry) => entry.held !== true);
+  return current.conversation?.state === 'working' || waiting ? 2_000 : 6_000;
 }
 
 /** How long one read waits on the server for Verity to write something. */
@@ -298,7 +317,8 @@ export async function followVerity(
 ): Promise<void> {
   let failures = 0;
   while (!signal.aborted) {
-    await flushVerity();
+    await flushVerity().catch(() => undefined);
+    forAccount(taskAccountScope());
     const client = createVerityClient();
     if (client === null || taskAccountScope() === null) {
       set({ conversation: null, access: 'unknown' });
@@ -396,6 +416,7 @@ export function resetVerityForTests(): void {
   restored = null;
   flushing = null;
   flushAgain = false;
+  shownScope = null;
   persisted = Promise.resolve();
   stopFollowing();
   followers = 0;

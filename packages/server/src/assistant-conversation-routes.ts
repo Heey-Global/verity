@@ -133,7 +133,7 @@ export function registerAssistantConversationRoutes(
       return { availability: found.availability, sessionId: null, ...EMPTY };
     const wait = Math.min(query.waitMs ?? 0, ASSISTANT_WAIT_MAX_MS);
     // Subscribed before the read, so a change between reading and waiting still wakes it.
-    const changed = wait > 0 && query.after !== undefined ? watch(request, found.sessionId) : null;
+    const changed = wait > 0 && query.after !== undefined ? watch(reply, found.sessionId) : null;
     try {
       let current = await conversation(found.sessionId);
       if (changed !== null && current.revision === query.after && (await changed.next(wait)))
@@ -149,7 +149,7 @@ export function registerAssistantConversationRoutes(
   });
 
   /** Resolves `next` with true once an event arrived and settled, false on timeout or disconnect. */
-  const watch = (request: FastifyRequest, sessionId: string) => {
+  const watch = (reply: FastifyReply, sessionId: string) => {
     let seen = false;
     let wake: (() => void) | undefined;
     const unsubscribe = deps.subscribe(sessionId, () => {
@@ -157,8 +157,9 @@ export function registerAssistantConversationRoutes(
       wake?.();
     });
     const timers: NodeJS.Timeout[] = [];
+    // The response closes when the device goes away; the request closes once read.
     const onClose = () => wake?.();
-    request.raw.once('close', onClose);
+    reply.raw.once('close', onClose);
     return {
       next: (timeoutMs: number) =>
         new Promise<boolean>((resolve) => {
@@ -172,7 +173,7 @@ export function registerAssistantConversationRoutes(
         }),
       close: () => {
         unsubscribe();
-        request.raw.off('close', onClose);
+        reply.raw.off('close', onClose);
         for (const timer of timers) clearTimeout(timer);
       },
     };
