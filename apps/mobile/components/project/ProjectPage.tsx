@@ -15,7 +15,7 @@ import { ActivityIndicator, RefreshControl, ScrollView, View } from 'react-nativ
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { CodeHostIcon } from '../CodeHostIcon';
-import { InboxFeedList, useInboxFeed } from '../home/HomeInbox';
+import { InboxFeedList, useInboxFeed, type InboxFeed } from '../home/HomeInbox';
 import { SharedKnowledgeSettings } from '../settings/SharedKnowledgeSettings';
 import { Button, FilterChips, Group, IconButton, Row, SectionHeader, StatusTag, Text } from '../ui';
 import type { StatusIntent } from '../ui/Status';
@@ -139,6 +139,28 @@ export function ProjectPage({
     },
     [reload, onSessionChanged],
   );
+  // Held by the page rather than the Overview tab: switching tabs must not drop
+  // an answer in flight or its reply id, or a second tap could send it twice.
+  const now = useClock();
+  const all = useMemo(
+    () => (detail ? projectInboxItems(detail.project, detail.sessions, now) : []),
+    [detail, now],
+  );
+  const serverHidden = useMemo(
+    () =>
+      detail
+        ? inboxDismissedKeys({ sessions: detail.sessions, projects: [detail.project] })
+        : new Set<string>(),
+    [detail],
+  );
+  const feed = useInboxFeed({
+    client,
+    all,
+    serverHidden,
+    onOpenSession,
+    onRepairProject: onRepairProject ?? openSandbox,
+    onSaved: inboxSaved,
+  });
   const openSettings = useCallback(
     () => router.push({ pathname: '/project/[id]/settings', params: { id: projectId } }),
     [projectId],
@@ -188,13 +210,10 @@ export function ProjectPage({
           >
             {tab === 'overview' ? (
               <ProjectOverview
-                client={client}
+                feed={feed}
                 detail={detail}
                 connections={connections}
                 selectedSessionId={selectedSessionId}
-                onOpenSession={onOpenSession}
-                onRepairProject={onRepairProject}
-                onSaved={inboxSaved}
               />
             ) : (
               <ProjectWork
@@ -259,37 +278,16 @@ function ProjectHero({
 }
 
 function ProjectOverview({
-  client,
+  feed,
   detail,
   connections,
   selectedSessionId,
-  onOpenSession,
-  onRepairProject,
-  onSaved,
 }: {
-  client: VerityClient;
+  feed: InboxFeed;
   detail: ProjectDetail;
   connections: ProjectConnections;
   selectedSessionId?: string | null | undefined;
-  onOpenSession: (sessionId: string) => void;
-  onRepairProject?: ((projectId: string) => void) | undefined;
-  onSaved: () => void;
 }) {
-  const { project, sessions } = detail;
-  const now = useClock();
-  const all = useMemo(() => projectInboxItems(project, sessions, now), [project, sessions, now]);
-  const serverHidden = useMemo(
-    () => inboxDismissedKeys({ sessions, projects: [project] }),
-    [sessions, project],
-  );
-  const feed = useInboxFeed({
-    client,
-    all,
-    serverHidden,
-    onOpenSession,
-    onRepairProject: onRepairProject ?? openSandbox,
-    onSaved,
-  });
   return (
     <>
       <SectionHeader title="For you in this project" variant="eyebrow" flush />

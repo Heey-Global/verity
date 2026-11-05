@@ -213,6 +213,18 @@ describe('project page', () => {
     );
   });
 
+  it('keeps a dismissal across a tab switch until the server reports it', async () => {
+    // The fake server never echoes the dismissal, so only the page's own state
+    // keeps the card away; losing it on a tab switch would bring the card back.
+    await renderPage([question]);
+    fireEvent.press(within(screen.getByTestId('inbox-item-question')).getByLabelText('Dismiss'));
+    await act(async () => undefined);
+    fireEvent.press(screen.getByRole('tab', { name: 'Work' }));
+    fireEvent.press(screen.getByRole('tab', { name: 'Overview' }));
+    expect(screen.queryByTestId('inbox-item-question')).toBeNull();
+    expect(screen.getByText('1 hidden')).toBeTruthy();
+  });
+
   it('lists the services the project uses, each leading to its setting', async () => {
     await renderPage([]);
     fireEvent.press(screen.getByLabelText(/^Doppler/));
