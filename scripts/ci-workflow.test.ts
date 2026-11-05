@@ -1257,7 +1257,9 @@ describe('Matrix connector image gate', () => {
     expect(build.with?.push).toBe(false);
     expect(job['timeout-minutes']).toBeLessThanOrEqual(45);
     expect(aggregate.needs).toContain('matrix-connector-image');
-    expect(aggregate.steps[0]?.run).toContain('require_success matrix-connector-image');
+    expect(
+      aggregate.steps.find((step) => step.name === 'Verify all required jobs succeeded')?.run,
+    ).toContain('require_success matrix-connector-image');
 
     const outputDir = await mkdtemp(join(tmpdir(), 'verity-matrix-ci-'));
     try {
