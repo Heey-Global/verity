@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.8.1](https://github.com/Heey-Global/verity/compare/website-v2.8.0...website-v2.8.1) (2026-11-05)
+
+
+### Bug Fixes
+
+* **installer:** clean pairing leftovers and tolerate vanished containers ([#2260](https://github.com/Heey-Global/verity/issues/2260)) ([d6114aa](https://github.com/Heey-Global/verity/commit/d6114aa2ac51179fd5d4afb7d257ca81ae3dc24d))
+* **server:** back off PR polling without CI and scan local projects ([#2263](https://github.com/Heey-Global/verity/issues/2263)) ([7d6ceed](https://github.com/Heey-Global/verity/commit/7d6ceed1ee1b74a82a795c95770f1cfc4baeb240))
+
 ## [2.8.0](https://github.com/Heey-Global/verity/compare/website-v2.7.0...website-v2.8.0) (2026-11-01)
 
 

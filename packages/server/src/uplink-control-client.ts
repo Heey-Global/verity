@@ -24,6 +24,7 @@ import type {
 import {
   PreviewShareUpstreamError,
   PreviewShareRemovalQueuedError,
+  UPLINK_SHARE_ERROR_CODES,
 } from './preview-share-manager.js';
 
 const PROTOCOL_VERSION = 1;
@@ -891,16 +892,7 @@ export class UplinkControlClient implements PreviewEdgeControl {
     });
     if (response.type === 'share.error') {
       const code = optionalString(response.code, 'internal');
-      const safeCode = new Set([
-        'webhook_unsupported',
-        'limit_reached',
-        'not_entitled',
-        'unavailable',
-        'internal',
-        'invalid_request',
-      ]).has(code)
-        ? code
-        : 'share_rejected';
+      const safeCode = UPLINK_SHARE_ERROR_CODES.has(code) ? code : 'share_rejected';
       report({ phase: 'share_create', code: safeCode, shareCreateSent: true });
       throw new PreviewShareUpstreamError(
         `Uplink refused public preview: ${/^[a-z_]+$/u.test(code) ? code : 'unknown error'}`,

@@ -69,6 +69,7 @@ describe('project settings index — destinations', () => {
   // Each row opens its project-specific destination directly.
   it.each([
     ['Vulnerability scan', '/project/[id]/vulnerability-scan'],
+    ['Project knowledge', '/project/[id]/knowledge'],
     ['Sandbox', '/project/[id]/settings/sandbox'],
     ['Agents', '/project/[id]/settings/model'],
   ])('routes %s to %s', async (label, pathname) => {
@@ -997,6 +998,21 @@ describe('project settings — repository', () => {
     expect(screen.queryByLabelText(/^Connect project to GitHub(,|$)/)).toBeNull();
   });
 
+  it('disconnects GitHub only after confirming that local data is retained', async () => {
+    const disconnectProjectFromGitHub = jest
+      .fn()
+      .mockResolvedValue({ project: { ...makeDetail().project, kind: 'local' } });
+    mockCreateVerityClient.mockReturnValue(makeClient({ disconnectProjectFromGitHub }));
+    render(<ProjectRepositoryScreen />);
+    fireEvent.press(await screen.findByRole('button', { name: 'Disconnect GitHub' }));
+    expect(disconnectProjectFromGitHub).not.toHaveBeenCalled();
+    expect(screen.getByText(/Documents, code, commits and session history stay/)).toBeOnTheScreen();
+    fireEvent.press(screen.getByRole('button', { name: 'Disconnect' }));
+    await waitFor(() =>
+      expect(disconnectProjectFromGitHub).toHaveBeenCalledWith(makeDetail().project.id),
+    );
+  });
+
   it('connects a local project to a repository the installation can see', async () => {
     const linkProjectToGitHub = jest
       .fn()
@@ -1084,13 +1100,13 @@ describe('project settings — repository', () => {
       }),
     );
     render(<ProjectRepositoryScreen />);
-    fireEvent.press(await screen.findByText('Open Connections'));
+    fireEvent.press(await screen.findByText('Open Connectors'));
     connections.mockResolvedValue(forgejoConnections());
     act(() => refocus());
     expect(await screen.findByLabelText(/^Forgejo, git\.example\.org/)).toBeOnTheScreen();
   });
 
-  it('sends a local project without any code host to Connections', async () => {
+  it('sends a local project without any code host to Connectors', async () => {
     mockCreateVerityClient.mockReturnValue(
       makeClient({
         detail: makeDetail({ kind: 'local' }),
@@ -1100,7 +1116,7 @@ describe('project settings — repository', () => {
     );
     render(<ProjectRepositoryScreen />);
 
-    fireEvent.press(await screen.findByText('Open Connections'));
+    fireEvent.press(await screen.findByText('Open Connectors'));
     expect(mockPush).toHaveBeenCalledWith('/settings/services');
   });
 

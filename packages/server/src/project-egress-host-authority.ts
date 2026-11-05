@@ -1,4 +1,5 @@
 import { constants } from 'node:fs';
+import { ProjectEgressHealthError } from './project-egress-health.js';
 import { open, lstat, realpath } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { isIP } from 'node:net';
@@ -56,6 +57,8 @@ const canonicalHosts = (limit: number) =>
       hosts.map((host) => canonicalEgressTarget({ host, protocol: 'tcp', port: 443 }).host),
     );
 export const egressHostAuthority = z.strictObject({
+  /** False until the managed deployment supplies every configured broker/system host. */
+  managedInventoryComplete: z.boolean().optional(),
   databaseUrl: z
     .string()
     .url()
@@ -149,9 +152,18 @@ export function egressHostDirectChecks(
     directTargetAllowed: (host) =>
       Promise.resolve(
         authority !== undefined &&
+          authority.managedInventoryComplete !== false &&
           mandatoryEgressRoute(host, authority.mandatoryHosts) === undefined,
       ),
     destinationAllowed: async (address) =>
       protectedAddresses.allows(address) && (await destinationAllowed(address)),
   };
+}
+
+/** Installed packet filtering alone does not establish usable managed protection. */
+export function verifyEgressHostAuthorityReady(
+  authority: z.infer<typeof egressHostAuthority> | undefined,
+): void {
+  if (authority === undefined || authority.managedInventoryComplete === false)
+    throw new ProjectEgressHealthError('mandatory_inventory_incomplete');
 }

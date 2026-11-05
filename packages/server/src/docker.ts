@@ -97,7 +97,7 @@ export interface DockerClient {
   /** Start an already-created container (Engine `/containers/{id}/start`). */
   startContainer(id: string): Promise<void>;
   /** Wait until a container exits and return its process exit code. */
-  waitContainer?(id: string): Promise<number>;
+  waitContainer?(id: string, options?: { timeoutMs: number }): Promise<number>;
   /** Read a bounded tail of stdout/stderr for diagnostics. */
   containerLogs?(
     id: string,
@@ -1755,12 +1755,12 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
       const res = await callDocker(doFetch, `${base}/containers/${id}/start`, 'POST', timeoutMs);
       if (!res.ok) throw await toDockerError(res, id);
     },
-    waitContainer: async (id) => {
+    waitContainer: async (id, options) => {
       const res = await callDocker(
         doFetch,
         `${base}/containers/${id}/wait?condition=not-running`,
         'POST',
-        CONTAINER_WAIT_TIMEOUT_MS,
+        options?.timeoutMs ?? CONTAINER_WAIT_TIMEOUT_MS,
       );
       if (!res.ok) throw await toDockerError(res, id);
       const json = (await res.json()) as { StatusCode?: unknown; Error?: { Message?: unknown } };
@@ -1786,8 +1786,10 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
       }
       const query = new URLSearchParams({ stdout: '1', stderr: '1', tail: String(tail) });
       if (window !== undefined) {
-        query.set('since', window.since);
-        query.set('until', window.until);
+        // The Engine logs endpoint rejects ISO timestamps; decimal Unix seconds
+        // preserve the requested millisecond boundaries.
+        query.set('since', String(Date.parse(window.since) / 1000));
+        query.set('until', String(Date.parse(window.until) / 1000));
         query.set('timestamps', '1');
       }
       const res = await callDocker(

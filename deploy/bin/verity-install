@@ -1132,6 +1132,21 @@ else
   hint 'It needs systemd and Docker; see deploy/buildkit/README.md, then run this installer again.'
 fi
 
+# Prepare control paths before Docker creates the non-root Server bind mounts.
+# This phase installs no firewall rules and never restarts Docker.
+egress_control_gid=
+if [ -f "$repo_root/egress-release/manifest.json" ]; then
+  if ! command -v python3 >/dev/null; then
+    command -v apt-get >/dev/null || die 'automatic host provisioning requires a Debian-compatible package manager'
+    apt-get update && apt-get install -y --no-install-recommends python3 \
+      || die 'could not provision Python for the host component'
+  fi
+  python3 "$repo_root/scripts/project-egress-managed.py" provision "$repo_root/egress-release" \
+    --prepare-only --control-gid 65531 >/dev/null \
+    || die 'could not prepare Network Protection host control paths'
+  egress_control_gid=65531
+fi
+
 # ── hand over to the guarded migration ─────────────────────────────────────
 heading 'Starting Verity'
 note 'Running the guarded migration'
@@ -1142,6 +1157,7 @@ VERITY_UPDATER_TOKEN_HOST_PATH="$TOKEN_PATH" \
 VERITY_RUNNER_SUPERVISOR=1 \
 VERITY_HOST_ARCHITECTURE="$host_architecture" \
 VERITY_DEVCONTAINER_BUILDER_GID="$builder_gid" \
+VERITY_PROJECT_EGRESS_CONTROL_GID="$egress_control_gid" \
 VERITY_PAIRING_STATE_HOST_PATH="$STATE_DIR" \
 VERITY_POSTGRES_PASSWORD="$postgres_password" \
 VERITY_BACKUP_DIR="$VERITY_BACKUP_DIR" \
@@ -1176,6 +1192,41 @@ docker exec -e "PGPASSWORD=$postgres_password" "$postgres_container" \
 
 configure_backup_database_role "$postgres_container" "$VERITY_BACKUP_POSTGRES_PASSWORD"
 unset VERITY_BACKUP_POSTGRES_PASSWORD
+
+# Finalize from the release's own defaults after database migrations exist.
+if [ -n "$egress_control_gid" ]; then
+  egress_config=$(mktemp -d "$STATE_DIR/.egress-config.XXXXXXXX")
+  egress_relay_image=${VERITY_PROJECT_RELAY_IMAGE:-$(docker image inspect "$server_image" | jq -er '.[0].Config.Env[] | select(startswith("VERITY_BUNDLED_PROJECT_RELAY_IMAGE=")) | sub("^VERITY_BUNDLED_PROJECT_RELAY_IMAGE="; "")')}
+  [ -n "$egress_relay_image" ] || die 'release image has no immutable project relay image'
+  if ! docker run --rm --user 0:0 --network verity-net --read-only \
+    --cap-drop ALL --security-opt no-new-privileges:true \
+    --memory 256m --memory-swap 256m --pids-limit 64 \
+    --tmpfs /tmp:rw,nosuid,nodev,size=16m \
+    -v /var/run/docker.sock:/var/run/docker.sock \
+    -v /etc/verity-egress:/etc/verity-egress:ro \
+    -v /var/lib/verity-egress:/var/lib/verity-egress:ro \
+    -v /etc/resolv.conf:/host/etc/resolv.conf:ro \
+    -v "$egress_config:/egress-config" \
+    -e "DATABASE_URL=postgres://verity:$postgres_password@postgres:5432/verity" \
+    -e VERITY_EGRESS_DEPLOYMENT_NETWORK=verity-net \
+    -e "VERITY_EGRESS_DATABASE_CONTAINER=$postgres_container" \
+    -e VERITY_EGRESS_EXISTING_AUTHORITY=/etc/verity-egress/authority.json \
+    -e VERITY_EGRESS_EXISTING_RELAY=/etc/verity-egress/relay.json \
+    -e VERITY_DATA_VOLUME=verity-data -e VERITY_SERVER_UID=1000 \
+    -e "VERITY_PROJECT_RELAY_IMAGE=$egress_relay_image" \
+    -e "VERITY_PROJECT_RELAY_GID=${VERITY_PROJECT_RELAY_GID:-65532}" \
+    --entrypoint node "$server_image" \
+    /app/packages/server/dist/project-egress-managed-config-main.js /egress-config/generated; then
+    rm -rf -- "$egress_config"
+    die 'could not prepare Network Protection host configuration'
+  fi
+  python3 "$repo_root/scripts/project-egress-managed.py" provision "$repo_root/egress-release" \
+    --control-gid "$egress_control_gid" --relay-config "$egress_config/generated/relay.json" \
+    --authority-config "$egress_config/generated/authority.json" --database-config "$egress_config/generated/database.json" \
+    || { rm -rf -- "$egress_config"; die 'could not provision Network Protection host service'; }
+  rm -rf -- "$egress_config"
+fi
+
 
 if [ "$restore_activation" = 1 ]; then
   heading 'Recovery accepted'

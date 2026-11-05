@@ -612,6 +612,17 @@ describe('runtime readiness after external Repair', () => {
     expect(await hostRuntimePreparationReady(docker, target, dir)).toBe(true);
     expect(docker.inspectImageLabels).toHaveBeenCalledWith(target);
   });
+  it('does not clear an unknown firewall transaction from runtime readiness alone', async () => {
+    const docker = client();
+    const labels = await docker.inspectImageLabels();
+    docker.inspectImageLabels.mockImplementation(async () => ({
+      ...labels,
+      'org.verity.project-egress-provisioning': '1',
+    }));
+    expect(await hostRuntimePreparationReady(docker, target, await requestDir(readyAgent))).toBe(
+      false,
+    );
+  });
   it.each(['service-install.pending', 'daemon-install.pending'])(
     'refuses readiness while %s exists',
     async (marker) => {

@@ -32,6 +32,19 @@ const project: ProjectRecord = {
 };
 
 describe('DockerProjectRuntime', () => {
+  it('uses shared listener discovery and requests a fresh snapshot before preparing a target', async () => {
+    const processes = [
+      { port: 5173, pid: 10, cwd: '/work', command: 'vite', bind: 'any' as const },
+    ];
+    const listListeningProcesses = vi.fn(async () => processes);
+    const runner = vi.fn<RuntimeRunner>();
+    const runtime = new DockerProjectRuntime({ runner, listListeningProcesses });
+    expect(await runtime.listListeningProcesses(project)).toEqual(processes);
+    expect(await runtime.ensurePreviewTarget(project, 5173)).toBe(5173);
+    expect(listListeningProcesses).toHaveBeenLastCalledWith(project, { fresh: true });
+    expect(runner).not.toHaveBeenCalled();
+  });
+
   it('starts loopback helpers using the configured container identity', async () => {
     const runner = vi
       .fn<RuntimeRunner>()

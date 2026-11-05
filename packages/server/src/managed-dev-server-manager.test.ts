@@ -1,3 +1,4 @@
+import { PreviewNetworkProtectionError } from './preview-network-policy.js';
 import { createTestDb, truncateAll, type TestDb } from '@verity/store/testing';
 import type { ProjectRecord } from '@verity/store';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -153,8 +154,12 @@ const instanceOf = async (sessionId = 's1') => (await manager.view(sessionId))[0
 
 describe('managed dev servers', () => {
   it('defers supervision until preview ownership is ready', async () => {
+    const readListeners = vi.spyOn(sandbox.runtime, 'listListeningProcesses');
     await manager.add('s1', { name: 'Demo', command: 'node server.mjs' });
     await manager.start('s1', 'Demo', 'agent');
+    expect(readListeners).toHaveBeenCalledWith(expect.objectContaining({ id: 'p1' }), {
+      fresh: true,
+    });
     const instance = await instanceOf();
     sandbox.listen(instance.id, instance.sandboxPort);
     supervisionReady = false;
@@ -208,6 +213,21 @@ describe('managed dev servers', () => {
     expect(await instanceOf()).toMatchObject({
       url: 'http://verity.local:8100',
       awaitingApproval: false,
+    });
+  });
+
+  it('explains protected preview unavailability without claiming the server failed to run', async () => {
+    await manager.add('s1', { name: 'Demo', command: 'node server.mjs' });
+    await manager.start('s1', 'Demo', 'agent');
+    const run = sandbox.started[0]!;
+    sandbox.listen(run.instanceId, Number(run.env.PORT));
+    await manager.tick();
+    shares.create.mockRejectedValue(new PreviewNetworkProtectionError());
+    await manager.approve('s1', 'Demo', { command: 'node server.mjs', workdir: '.' });
+    expect(await instanceOf()).toMatchObject({
+      state: 'running',
+      url: null,
+      detail: new PreviewNetworkProtectionError().message,
     });
   });
 
@@ -1369,5 +1389,137 @@ describe('managed servers with secret bindings', () => {
     ]);
     expect(sandbox.started[1]!.secrets).toEqual([{ env: 'API_KEY', value: 'synthetic-value' }]);
     await expect(manager.restart('s1', 'api', 'agent')).rejects.toThrow('approve');
+  });
+});
+
+describe('session deletion cleanup', () => {
+  it('finishes cleanup when its project no longer exists', async () => {
+    await expect(
+      manager.cleanupDeletedSession({
+        sessionId: 'gone-session',
+        projectId: 'gone-project',
+        instanceIds: ['gone-instance'],
+      }),
+    ).resolves.toBe('clean');
+    expect(sandbox.stop).not.toHaveBeenCalled();
+  });
+
+  it('retains process IDs across the session FK cascade and propagates stop failures', async () => {
+    await manager.add('s1', { name: 'Demo', command: 'node server.mjs' });
+    await manager.start('s1', 'Demo', 'agent');
+    const instance = await instanceOf();
+    const snapshot = await manager.captureSessionCleanup('s1');
+    expect(snapshot).toEqual({ sessionId: 's1', projectId: 'p1', instanceIds: [instance.id] });
+    await ctx.store.deleteSession('s1');
+    expect(await ctx.store.managedDevServers.listInstances({ sessionId: 's1' })).toEqual([]);
+    sandbox.stop.mockRejectedValueOnce(new Error('stop unavailable'));
+    await expect(manager.cleanupDeletedSession(snapshot)).rejects.toThrow('stop unavailable');
+    await expect(manager.cleanupDeletedSession(snapshot)).resolves.toBe('clean');
+    expect(sandbox.stop).toHaveBeenLastCalledWith(
+      expect.objectContaining({ id: 'p1' }),
+      instance.id,
+    );
+  });
+
+  it('defers sleeping project cleanup without touching its runtime', async () => {
+    await manager.add('s1', { name: 'Demo', command: 'node server.mjs' });
+    await manager.start('s1', 'Demo', 'agent');
+    const snapshot = await manager.captureSessionCleanup('s1');
+    await ctx.store.updateProjectState('p1', 'sleeping');
+    await ctx.store.deleteSession('s1');
+    await expect(manager.cleanupDeletedSession(snapshot)).resolves.toBe('deferred');
+    expect(sandbox.stop).not.toHaveBeenCalled();
+    await ctx.store.updateProjectState('p1', 'active');
+    await expect(manager.cleanupDeletedSession(snapshot)).resolves.toBe('clean');
+    expect(sandbox.stop).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not fence a live session when only a deletion snapshot was captured', async () => {
+    await manager.add('s1', { name: 'Demo', command: 'node server.mjs' });
+    await manager.captureSessionCleanup('s1');
+    await manager.start('s1', 'Demo', 'agent');
+    expect(sandbox.started).toHaveLength(1);
+  });
+
+  it('refuses starts fenced by durable deletion intent', async () => {
+    await manager.add('s1', { name: 'Demo', command: 'node server.mjs' });
+    await ctx.store.queueSessionDeletion('s1', '{}');
+    await expect(manager.start('s1', 'Demo', 'agent')).rejects.toThrow('session is being deleted');
+    expect(sandbox.started).toEqual([]);
+  });
+
+  it('drains an in-flight runtime start before deleted-session cleanup can complete', async () => {
+    await manager.add('s1', { name: 'Demo', command: 'node server.mjs' });
+    let resume!: () => void;
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      resume = resolve;
+    });
+    const startManagedServer = vi.spyOn(sandbox.runtime, 'startManagedServer');
+    const original = startManagedServer.getMockImplementation()!;
+    startManagedServer.mockImplementationOnce(async (project, input) => {
+      entered();
+      await gate;
+      return original(project, input);
+    });
+    const start = manager.start('s1', 'Demo', 'agent');
+    const rejected = expect(start).rejects.toThrow('session is being deleted');
+    await started;
+    const snapshot = await manager.captureSessionCleanup('s1');
+    await ctx.store.deleteSession('s1');
+    let cleaned = false;
+    const cleanup = manager.cleanupDeletedSession(snapshot).then(() => {
+      cleaned = true;
+    });
+    try {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(cleaned).toBe(false);
+    } finally {
+      resume();
+      await rejected;
+      await cleanup;
+    }
+    expect(sandbox.stop).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'p1' }),
+      snapshot.instanceIds[0],
+    );
+    expect(sandbox.stop).toHaveBeenCalledTimes(2);
+    expect(shares.create).not.toHaveBeenCalled();
+    expect(await ctx.store.managedDevServers.listInstances({ sessionId: 's1' })).toEqual([]);
+  });
+
+  it('revokes a local publication that finishes after deletion was requested', async () => {
+    await manager.add('s1', { name: 'Demo', command: 'node server.mjs' });
+    await manager.approve('s1', 'Demo', { command: 'node server.mjs', workdir: '.' });
+    await manager.start('s1', 'Demo', 'agent');
+    const instance = await instanceOf();
+    sandbox.listen(instance.id, instance.sandboxPort);
+    let resume!: () => void;
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      resume = resolve;
+    });
+    const original = shares.create.getMockImplementation()!;
+    shares.create.mockImplementationOnce(async (sessionId, input) => {
+      const share = await original(sessionId, input);
+      entered();
+      await gate;
+      return share;
+    });
+    const tick = manager.tick();
+    await started;
+    try {
+      await ctx.store.queueSessionDeletion('s1', '{}');
+    } finally {
+      resume();
+      await tick;
+    }
+    expect(shares.shares).toEqual([]);
   });
 });

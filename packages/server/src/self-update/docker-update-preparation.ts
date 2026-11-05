@@ -1,3 +1,8 @@
+import {
+  provisionProjectEgressHost,
+  projectEgressProvisionSupported,
+  PROJECT_EGRESS_CONTROL_GID,
+} from './project-egress-provisioning.js';
 import { readFile } from 'node:fs/promises';
 import {
   HostRuntimeRenewalError,
@@ -16,6 +21,7 @@ import {
 } from './devcontainer-builder.js';
 import {
   migrateManagedControlPlaneRunner,
+  migrateManagedProjectEgress,
   migrateManagedDevcontainerBuilder,
   migrateManagedHostDiagnostics,
   migrateManagedBackupMounts,
@@ -529,6 +535,34 @@ export async function dockerUpdatePreparation(
           },
         });
       }
+      await writeHostPreparation(options.managedRoot, journal, 'renewing');
+      try {
+        (options.log ?? console.warn)('Network protection: checking automatic host provisioning.');
+        const provisioned = await provisionProjectEgressHost({
+          managedRoot: options.managedRoot,
+          docker,
+          journal,
+          spec: state.spec,
+          onSkip: (reason) =>
+            (options.log ?? console.warn)(
+              reason === 'installed_contract_missing'
+                ? 'Network protection provisioning pending: the installed image cannot admit host provisioning; retry on the next compatible update.'
+                : 'Network protection provisioning skipped: the target image has no provisioning contract.',
+            ),
+          environment: options.environment ?? process.env,
+          ...(options.readFile === undefined ? {} : { readFile: options.readFile }),
+        });
+        if (provisioned)
+          (options.log ?? console.warn)(
+            'Network protection: host provisioning completed; authenticated readiness is checked separately.',
+          );
+      } catch (error) {
+        (options.log ?? console.warn)(
+          'Network protection: automatic host provisioning failed; recovery is required.',
+        );
+        await writeHostPreparation(options.managedRoot, journal, 'recovery-required');
+        throw error;
+      }
       await writeHostPreparation(options.managedRoot, journal, 'ready');
       // After the runtimes: the builder runs its steps on the runsc they register.
       // Nothing about the builder may fail the update, an unexpected error included.
@@ -550,6 +584,15 @@ export async function dockerUpdatePreparation(
       );
       if (!migrated.managed)
         throw new Error(`managed Server authority unavailable: ${migrated.reason}`);
+      if (await projectEgressProvisionSupported(docker, journal, migrated.spec)) {
+        migrated = await migrateManagedProjectEgress({
+          root: options.managedRoot,
+          deploymentId: migrated.spec.deploymentId,
+          image: migrated.spec.image,
+          controlGid: PROJECT_EGRESS_CONTROL_GID,
+        });
+        if (!migrated.managed) throw new Error(migrated.reason);
+      }
       const backup = await backupProvisionPlan(docker, migrated.spec, journal.targetDigest);
       if (backup) {
         await provisionBackupHost(docker, migrated.spec, journal.targetDigest, backup);

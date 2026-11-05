@@ -6,7 +6,15 @@
 // (the existing session settings). The row owns Long-Press for reordering, or
 // settings on servers without session ordering support.
 import * as Haptics from 'expo-haptics';
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type ReactNode,
+} from 'react';
 import { Modal, Platform, Pressable, Text, View, useWindowDimensions } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import ReanimatedSwipeable, {
@@ -16,15 +24,17 @@ import Reanimated, {
   runOnJS,
   useAnimatedReaction,
   useAnimatedStyle,
+  useSharedValue,
   type SharedValue,
 } from 'react-native-reanimated';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import {
   gestureDiagnosticsEnabled,
+  gestureRecordingGeneration,
   gestureRowNumber,
   recordGesture,
-  useGestureDiagnosticsEnabled,
+  subscribeGestureDiagnostics,
 } from '../lib/gestureDiagnostics';
 import { Icon, type IconName } from './Icon';
 
@@ -117,7 +127,12 @@ export function SwipeableSessionRow({
     }
   }, [disabled]);
 
-  const recording = useGestureDiagnosticsEnabled();
+  const generation = useSyncExternalStore(
+    subscribeGestureDiagnostics,
+    gestureRecordingGeneration,
+    gestureRecordingGeneration,
+  );
+  const recording = gestureDiagnosticsEnabled();
   const widthRef = useRef(width);
   widthRef.current = width;
   const diagnosticsRef = useRef(diagnostics);
@@ -142,10 +157,10 @@ export function SwipeableSessionRow({
     },
     [],
   );
+  const touchState = useSharedValue<{ x: number; y: number; reported: number } | null>(null);
   const observer = useMemo(
-    () =>
-      recording && Platform.OS !== 'web' ? rowTouchObserver(record, () => widthRef.current) : null,
-    [recording, record],
+    () => rowTouchObserver(record, () => widthRef.current, touchState, recording, generation),
+    [recording, record, touchState, generation],
   );
   // A locked row sets pointerEvents to none, so no touch reaches the observer
   // to report it; record the lock changes themselves instead.
@@ -155,20 +170,19 @@ export function SwipeableSessionRow({
     lockedBefore.current = disabled;
     record('row', disabled ? 'locked' : 'unlocked');
   }, [disabled, record]);
-  // Toggling recording remounts the swipeable under a new root, and refs are
-  // detached before cleanup runs: capture the instance this mount registered.
+  // Capture the instance before refs detach during unmount.
   useEffect(() => {
     const mounted = swipeable.current;
     return () => {
       if (openRow === mounted) openRow = null;
     };
-  }, [observer]);
+  }, []);
 
   const row = (
     <View
       ref={container}
       // The observer below needs a native view to attach to.
-      collapsable={observer ? false : undefined}
+      collapsable={Platform.OS !== 'web' ? false : undefined}
       pointerEvents={disabled ? 'none' : 'auto'}
       onLayout={(event) => setWidth(event.nativeEvent.layout.width)}
     >
@@ -251,9 +265,9 @@ export function SwipeableSessionRow({
       ) : null}
     </View>
   );
-  // The observer only exists while recording, so a normal launch keeps the
-  // exact gesture tree it had before diagnostics were added.
-  return observer ? <GestureDetector gesture={observer}>{row}</GestureDetector> : row;
+  // Keep the swipeable's parent stable: toggling diagnostics must not remount
+  // every row's animated state and gesture handlers.
+  return Platform.OS !== 'web' ? <GestureDetector gesture={observer}>{row}</GestureDetector> : row;
 }
 
 /**
@@ -268,63 +282,80 @@ function rowTouchObserver(
     extra?: { dx?: number; dy?: number; detail?: Record<string, string | number | boolean> },
   ) => void,
   width: () => number,
+  state: SharedValue<{ x: number; y: number; reported: number } | null>,
+  enabled: boolean,
+  generation: number,
 ) {
-  let origin: { x: number; y: number } | null = null;
-  let reported = 0;
-  // Distances along either axis worth one entry each; `dx`/`dy` tell a swipe
-  // (active past 12 pt horizontally) from a scroll.
-  const marks = [6, 12, 24, 48];
-  const delta = (touch: { absoluteX: number; absoluteY: number } | undefined) =>
-    touch && origin
-      ? { dx: Math.round(touch.absoluteX - origin.x), dy: Math.round(touch.absoluteY - origin.y) }
-      : {};
-  const down = (
-    event: { allTouches: { absoluteX: number; absoluteY: number }[] },
-    uiReceivedWallMs: number,
+  const deliver = (
+    event: string,
+    dx: number | null,
+    dy: number | null,
+    uiReceivedWallMs: number | null,
   ) => {
-    const touch = event.allTouches[0];
-    origin = touch ? { x: touch.absoluteX, y: touch.absoluteY } : null;
-    reported = 0;
-    record('row', 'touch-down', {
-      detail: { width: Math.round(width()), uiReceivedWallMs, jsReceivedWallMs: Date.now() },
-    });
-  };
-  const move = (event: { allTouches: { absoluteX: number; absoluteY: number }[] }) => {
-    const moved = delta(event.allTouches[0]);
-    const distance = Math.max(Math.abs(moved.dx ?? 0), Math.abs(moved.dy ?? 0));
-    while (reported < marks.length && distance >= marks[reported]!) {
-      record('row', `move-${String(marks[reported])}`, moved);
-      reported++;
-    }
-  };
-  const finish = (
-    name: string,
-    touch: { absoluteX: number; absoluteY: number } | undefined,
-    uiReceivedWallMs: number,
-  ) => {
-    record('row', name, {
-      ...delta(touch),
-      detail: { uiReceivedWallMs, jsReceivedWallMs: Date.now() },
+    if (!gestureDiagnosticsEnabled() || gestureRecordingGeneration() !== generation) return;
+    record('row', event, {
+      ...(dx !== null && dy !== null ? { dx, dy } : {}),
+      ...(uiReceivedWallMs !== null
+        ? {
+            detail: {
+              ...(event === 'touch-down' ? { width: Math.round(width()) } : {}),
+              uiReceivedWallMs,
+              jsReceivedWallMs: Date.now(),
+            },
+          }
+        : {}),
     });
   };
   return Gesture.Manual()
+    .enabled(enabled)
     .onTouchesDown((event) => {
       'worklet';
-      runOnJS(down)(event, Date.now());
+      const touch = event.allTouches[0];
+      state.value = touch ? { x: touch.absoluteX, y: touch.absoluteY, reported: 0 } : null;
+      runOnJS(deliver)('touch-down', null, null, Date.now());
     })
     .onTouchesMove((event) => {
       'worklet';
-      runOnJS(move)(event);
+      const touch = event.allTouches[0];
+      const origin = state.value;
+      if (!touch || !origin) return;
+      const dx = Math.round(touch.absoluteX - origin.x);
+      const dy = Math.round(touch.absoluteY - origin.y);
+      const distance = Math.max(Math.abs(dx), Math.abs(dy));
+      const marks = [6, 12, 24, 48];
+      let reported = origin.reported;
+      while (reported < marks.length && distance >= marks[reported]!) {
+        runOnJS(deliver)(`move-${String(marks[reported])}`, dx, dy, null);
+        reported++;
+      }
+      if (reported !== origin.reported) state.value = { ...origin, reported };
     })
     .onTouchesUp((event, manager) => {
       'worklet';
-      runOnJS(finish)('touch-up', event.changedTouches[0], Date.now());
-      // Native recognizer state must be released on the UI runtime.
-      if (event.numberOfTouches === 0) manager.fail();
+      const touch = event.changedTouches[0];
+      const origin = state.value;
+      runOnJS(deliver)(
+        'touch-up',
+        touch && origin ? Math.round(touch.absoluteX - origin.x) : null,
+        touch && origin ? Math.round(touch.absoluteY - origin.y) : null,
+        Date.now(),
+      );
+      if (event.numberOfTouches === 0) {
+        state.value = null;
+        manager.fail();
+      }
     })
     .onTouchesCancelled((event, manager) => {
       'worklet';
-      runOnJS(finish)('touch-cancelled', event.changedTouches[0], Date.now());
+      const touch = event.changedTouches[0];
+      const origin = state.value;
+      runOnJS(deliver)(
+        'touch-cancelled',
+        touch && origin ? Math.round(touch.absoluteX - origin.x) : null,
+        touch && origin ? Math.round(touch.absoluteY - origin.y) : null,
+        Date.now(),
+      );
+      state.value = null;
       manager.fail();
     });
 }

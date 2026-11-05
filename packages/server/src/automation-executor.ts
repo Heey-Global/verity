@@ -115,6 +115,16 @@ export function createAutomationExecutor(deps: AutomationExecutorDeps): Automati
           outcome: 'skipped',
           detail: 'The automation sponsor no longer has execution permission.',
         };
+      // Preparation and sponsor lookup can wait while the workspace is replaced.
+      // Never dispatch the script with a project record captured before that wait.
+      const currentProject = await deps.getProject(project.id);
+      if (
+        !currentProject ||
+        currentProject.state !== project.state ||
+        currentProject.containerName !== project.containerName ||
+        currentProject.cloneDir !== project.cloneDir
+      )
+        return { outcome: 'skipped', detail: 'The project workspace changed.' };
       const result = await deps.runScript({ script, project, session, automation });
       if (result.timedOut) return { outcome: 'error', detail: 'The check timed out.' };
       if (result.exitCode === 0) return { outcome: 'ok', detail: 'Nothing to do.' };

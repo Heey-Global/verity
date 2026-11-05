@@ -49,7 +49,7 @@ class BootVM:
         self.observation_link = observation_link
         self.base = Path(base).resolve()
         self.evidence = Path(evidence).resolve()
-        self.work = Path(tempfile.mkdtemp(prefix='verity-boot-vm-'))
+        self.work = Path(tempfile.mkdtemp(prefix='verity-boot-vm-', dir=os.environ.get('RUNNER_TEMP') or None))
         self.process = None
         self.log = None
         self.port = None
@@ -110,7 +110,7 @@ class BootVM:
             raise ValueError('Only the disposable asset directory is writable')
         self.ssh(f'sudo mkdir -p {destination}')
         with open(archive, 'rb') as source:
-            subprocess.run(self.ssh_command(f'sudo tar -xf - -C {destination}'), stdin=source, check=True, timeout=300)
+            subprocess.run(self.ssh_command(f"sudo sh -c 'umask 022; exec tar --no-same-owner --no-same-permissions -xf - -C {destination}'"), stdin=source, check=True, timeout=300)
 
 
     def wait_ready(self, previous=None):

@@ -23,6 +23,15 @@ const hostname = z
   .max(253)
   .regex(/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/u);
 export const projectEgressHostRequest = z.discriminatedUnion('operation', [
+  z.strictObject({ operation: z.literal('health') }),
+  z.strictObject({ operation: z.literal('inventory-begin'), token: z.uuid() }),
+  z.strictObject({ operation: z.literal('inventory-renew'), token: z.uuid(), hash: objectId }),
+  z.strictObject({
+    operation: z.literal('inventory-commit'),
+    token: z.uuid(),
+    hosts: z.array(hostname).max(100),
+    addresses: z.array(z.union([z.ipv4(), z.ipv6()])).max(100),
+  }),
   z.strictObject({ operation: z.literal('current'), projectId: identity }),
   z.strictObject({ operation: z.literal('register'), binding: networkBinding }),
   z.strictObject({ operation: z.literal('prepare'), ...reference }),
@@ -39,6 +48,12 @@ export const projectEgressHostRequest = z.discriminatedUnion('operation', [
   z.strictObject({ operation: z.literal('resolve-direct'), ...reference, name: hostname }),
 ]);
 export const projectEgressHostResponse = z.discriminatedUnion('state', [
+  z.strictObject({ state: z.enum(['inventory-denied', 'inventory-ready']), token: z.uuid() }),
+  z.strictObject({
+    state: z.literal('health'),
+    protocolVersion: z.literal(1),
+    packetEnforcement: z.boolean(),
+  }),
   z.strictObject({
     state: z.literal('current'),
     projectId: identity,
@@ -104,6 +119,15 @@ export interface ProjectEgressHostEnforcement {
   requestDirect?(binding: ProjectEgressNetworkBinding, name: string): void;
 }
 interface Dependencies {
+  systemInventory?: {
+    invalidate(): void;
+    begin(token: string): void;
+    commit(token: string, hosts: readonly string[], addresses: readonly string[]): Promise<void>;
+    ready(): boolean;
+    renew(hash: string): void;
+  };
+  /** Read-only checks; must not renew admission or mutate rules. */
+  verifyHealth?(): Promise<void>;
   bootId?: string;
   enforcement?: ProjectEgressHostEnforcement;
   save(state: ProjectEgressHostState): Promise<void>;
@@ -350,13 +374,55 @@ export class ProjectEgressHost {
   }
   execute(input: unknown): Promise<ProjectEgressHostResponse> {
     const request = projectEgressHostRequest.parse(input);
+    if (request.operation === 'inventory-begin') {
+      this.deps.systemInventory?.invalidate();
+      for (const record of this.state.records) this.deps.enforcement?.invalidate(record.binding);
+    }
+    if (
+      request.operation === 'inventory-begin' ||
+      request.operation === 'inventory-commit' ||
+      request.operation === 'inventory-renew'
+    ) {
+      return this.serialize(async () => {
+        if (!this.deps.systemInventory || !this.deps.enforcement)
+          throw new Error('Managed system inventory is not configured');
+        if (request.operation === 'inventory-renew') {
+          this.deps.systemInventory.renew(request.hash);
+          return { state: 'inventory-ready', token: request.token };
+        }
+        if (request.operation === 'inventory-commit') {
+          await this.deps.systemInventory.commit(request.token, request.hosts, request.addresses);
+          return { state: 'inventory-ready', token: request.token };
+        }
+        this.deps.systemInventory.begin(request.token);
+        const outcomes = await Promise.allSettled(
+          [...this.transports.values()].map(async ({ binding }) => {
+            try {
+              await this.deps.enforcement!.revoke(binding);
+            } catch (error) {
+              const record = this.state.records.find(
+                (entry) => key(entry.binding) === key(binding),
+              );
+              if (record) await this.deny(record);
+              throw error;
+            }
+          }),
+        );
+        const failures = outcomes.filter((outcome) => outcome.status === 'rejected');
+        if (failures.length) throw new Error('System inventory fencing failed');
+        return { state: 'inventory-denied', token: request.token };
+      });
+    }
     if (request.operation === 'resolve-direct') {
       // DNS answers read the current admission only. They neither queue behind
       // lifecycle work nor alter, renew or invalidate any authority.
       const record = this.state.records.find(
         (record) => !record.retired && key(record.binding) === key(request),
       );
-      const answer = record && this.deps.enforcement?.admitted(record.binding, request.name);
+      const answer =
+        record &&
+        this.deps.systemInventory?.ready() !== false &&
+        this.deps.enforcement?.admitted(record.binding, request.name);
       if (record && !answer) this.deps.enforcement?.requestDirect?.(record.binding, request.name);
       return Promise.resolve(
         answer
@@ -369,11 +435,23 @@ export class ProjectEgressHost {
           : { state: 'unresolved', generation: request.generation },
       );
     }
-    if (request.operation !== 'current' && request.operation !== 'refresh-direct')
+    if (
+      request.operation !== 'current' &&
+      request.operation !== 'health' &&
+      request.operation !== 'refresh-direct'
+    )
       this.deps.enforcement?.invalidate(
         request.operation === 'register' ? request.binding : request,
       );
     return this.serialize(async () => {
+      if (request.operation === 'health') {
+        await this.deps.verifyHealth?.();
+        return {
+          state: 'health',
+          protocolVersion: 1,
+          packetEnforcement: this.deps.enforcement !== undefined,
+        };
+      }
       if (request.operation === 'current') {
         const record = this.state.records.find(
           (record) => !record.retired && record.binding.projectId === request.projectId,

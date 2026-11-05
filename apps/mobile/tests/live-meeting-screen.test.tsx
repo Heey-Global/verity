@@ -3,6 +3,7 @@ import { Alert, FlatList } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 
 import MeetingScreen from '../app/meeting/[sessionId]';
+import { discardFinishedMeeting } from '../lib/liveMeetingSync';
 import { createVerityClient, getActiveMeetingServerId } from '../lib/client';
 import {
   clearSpeakerNameSuggestion,
@@ -28,7 +29,7 @@ import {
 } from '../lib/liveMeetingStore';
 
 jest.mock('expo-router', () => ({
-  router: { back: jest.fn(), push: jest.fn() },
+  router: { back: jest.fn(), push: jest.fn(), replace: jest.fn(), canGoBack: jest.fn(() => true) },
   Stack: { Screen: () => null },
   useLocalSearchParams: jest.fn(() => ({ sessionId: 'session-1' })),
 }));
@@ -77,6 +78,7 @@ jest.mock('../lib/liveMeetingStore', () => ({
 jest.mock('../lib/liveMeetingSync', () => ({
   syncMeetingSession: jest.fn().mockResolvedValue({ pending: false }),
   followRemoteMeeting: jest.fn(),
+  discardFinishedMeeting: jest.fn().mockResolvedValue(undefined),
 }));
 jest.mock('../lib/client', () => ({
   createVerityClient: jest.fn().mockReturnValue(null),
@@ -106,6 +108,30 @@ beforeEach(() => {
   jest.mocked(createVerityClient).mockReturnValue(null);
   jest.mocked(getActiveMeetingServerId).mockReturnValue(null);
 });
+
+// The transcript groups lines under a speaker heading, so "who said it" is the nearest
+// heading before the words. A plain /Speaker 1.*Hello/ would also match a line that
+// follows Speaker 1's heading through someone else's turn.
+// The ended meeting keeps reference material collapsed under "<name> · <count>".
+async function openSection(name: string) {
+  fireEvent.press(await screen.findByText(new RegExp(`^${name}( · \\d+)?$`)));
+}
+
+function expectTurn(speaker: string, words: RegExp | string) {
+  const parts = screen
+    .getByTestId('meeting-transcript')
+    .findAll((node) => typeof node.props.children === 'string' && String(node.type) === 'Text')
+    .map((node) => String(node.props.children));
+  const heading = /^(Speaker \d+|Unknown speaker|Anna|Ben)$/;
+  let current: string | null = null;
+  const owners: string[] = [];
+  for (const part of parts) {
+    if (heading.test(part)) current = part;
+    else if (typeof words === 'string' ? part.includes(words) : words.test(part))
+      owners.push(current ?? '');
+  }
+  expect(owners).toContain(speaker);
+}
 
 it('passes the selected expected group size when starting a meeting', async () => {
   render(<MeetingScreen />);
@@ -372,8 +398,8 @@ it('shows timed transcript words with their speaker when attribution is unambigu
   jest.mocked(currentMeeting).mockReturnValue(meeting);
   render(<MeetingScreen />);
   fireEvent.press(await screen.findByLabelText('Open full transcript'));
-  expect(screen.getByText(/Speaker 1.*Hello/)).toBeOnTheScreen();
-  expect(screen.getByText(/Unknown speaker.*yes/)).toBeOnTheScreen();
+  expectTurn('Speaker 1', /Hello/);
+  expectTurn('Unknown speaker', /yes/);
 });
 
 it('keeps the unfinished transcript visible after timed words', async () => {
@@ -397,7 +423,7 @@ it('keeps the unfinished transcript visible after timed words', async () => {
   jest.mocked(listMeetings).mockResolvedValue([meeting]);
   render(<MeetingScreen />);
   fireEvent.press(await screen.findByLabelText('Open full transcript'));
-  expect(screen.getByText(/Speaker 1.*Hello,/)).toBeOnTheScreen();
+  expectTurn('Speaker 1', /Hello,/);
   expect(screen.getByText('from the meeting')).toBeOnTheScreen();
 });
 
@@ -432,8 +458,8 @@ it('attributes live words from open diarizer turns and leaves unreached words pe
   jest.mocked(listMeetings).mockResolvedValue([meeting]);
   render(<MeetingScreen />);
   fireEvent.press(await screen.findByLabelText('Open full transcript'));
-  expect(screen.getByText(/Speaker 1.*Hello/)).toBeOnTheScreen();
-  expect(screen.getByText(/Speaker 2.*there\./)).toBeOnTheScreen();
+  expectTurn('Speaker 1', /Hello/);
+  expectTurn('Speaker 2', /there\./);
   expect(screen.getByText('Still talking')).toBeOnTheScreen();
   expect(screen.queryByText(/Unknown speaker/)).toBeNull();
 });
@@ -629,6 +655,7 @@ it('renames a speaker across the current meeting', async () => {
     .mockReturnValue({ sessionId: 'session-1', meetingId: meeting.id });
   jest.mocked(listMeetings).mockResolvedValue([meeting]);
   render(<MeetingScreen />);
+  await openSection('People');
   await screen.findByLabelText('Rename Speaker 1');
   fireEvent.press(screen.getByLabelText('Rename Speaker 1'));
   const reply = prompt.mock.calls.at(-1)?.[2];
@@ -637,7 +664,7 @@ it('renames a speaker across the current meeting', async () => {
     expect(updateSpeakerEdits).toHaveBeenCalledWith(meeting.id, { '0': 'Anna' }, [], {}),
   );
   fireEvent.press(screen.getByLabelText('Open full transcript'));
-  expect(screen.getByText(/Anna.*Hello/)).toBeOnTheScreen();
+  expectTurn('Anna', /Hello/);
   prompt.mockRestore();
 });
 
@@ -667,6 +694,7 @@ it('keeps a rename when a correction is made before its save finishes', async ()
     .mockReturnValue({ sessionId: 'session-1', meetingId: meeting.id });
   jest.mocked(listMeetings).mockResolvedValue([meeting]);
   render(<MeetingScreen />);
+  await openSection('People');
   await screen.findByLabelText('Rename Speaker 1');
   fireEvent.press(screen.getByLabelText('Rename Speaker 1'));
   const reply = prompt.mock.calls.at(-1)?.[2];
@@ -710,6 +738,7 @@ it('rejects a speaker name longer than the sync contract allows', async () => {
     .mockReturnValue({ sessionId: 'session-1', meetingId: meeting.id });
   jest.mocked(listMeetings).mockResolvedValue([meeting]);
   render(<MeetingScreen />);
+  await openSection('People');
   await screen.findByLabelText('Rename Speaker 1');
   fireEvent.press(screen.getByLabelText('Rename Speaker 1'));
   const reply = prompt.mock.calls.at(-1)?.[2];
@@ -775,6 +804,7 @@ it('merges duplicate speaker labels and allows undo', async () => {
     .mockReturnValue({ sessionId: 'session-1', meetingId: meeting.id });
   jest.mocked(listMeetings).mockResolvedValue([meeting]);
   render(<MeetingScreen />);
+  await openSection('People');
   expect(await screen.findByLabelText('Rename Speaker 2')).toBeOnTheScreen();
   fireEvent(screen.getByLabelText('Rename Speaker 2'), 'longPress');
   const buttons = alert.mock.calls.at(-1)?.[2] ?? [];
@@ -1530,6 +1560,7 @@ it('stamps notes with the time of day rather than the meeting timer', async () =
     hour: '2-digit',
     minute: '2-digit',
   });
+  await openSection('Your notes');
   expect(await screen.findByTestId('meeting-note')).toHaveTextContent(`${expected} Budget`);
   expect(expected).not.toBe('01:30');
 });
@@ -2237,10 +2268,11 @@ it('counts the complete ended answer history across pages and keeps the count af
     getLiveMeetingInsights: jest.fn().mockResolvedValue([]),
   } as unknown as NonNullable<ReturnType<typeof createVerityClient>>);
   render(<MeetingScreen />);
-  expect(await screen.findByLabelText('6 answers')).toBeOnTheScreen();
+  await openSection('Verity’s answers');
+  expect(screen.getByText('Verity’s answers · 6')).toBeOnTheScreen();
   expect(screen.getByText('Answer 0.')).toBeOnTheScreen();
   fireEvent.press(screen.getAllByLabelText('Dismiss meeting answer')[0]!);
-  expect(screen.getByLabelText('6 answers')).toBeOnTheScreen();
+  expect(screen.getByText('Verity’s answers · 6')).toBeOnTheScreen();
 });
 
 it('preserves the note draft when returning after sending an Ask', async () => {
@@ -2304,6 +2336,7 @@ it('edits the ended title and a personal note, then searches the transcript', as
   const titleReply = prompt.mock.calls.at(-1)?.[2];
   if (typeof titleReply === 'function') act(() => titleReply('Trip planning'));
   await waitFor(() => expect(updateMeetingTitle).toHaveBeenCalledWith(ended.id, 'Trip planning'));
+  await openSection('Your notes');
   fireEvent.press(screen.getByLabelText('Edit note: Check tickets'));
   const noteReply = prompt.mock.calls.at(-1)?.[2];
   if (typeof noteReply === 'function') act(() => noteReply('Book tickets'));
@@ -2364,4 +2397,152 @@ it('lets a second device save notes and ask research without starting its microp
   );
   expect(startMeeting).not.toHaveBeenCalled();
   expect(endMeeting).not.toHaveBeenCalled();
+});
+
+it('leaves a directly opened meeting screen when Cancel has no history', async () => {
+  jest.mocked(router.canGoBack).mockReturnValueOnce(false);
+  render(<MeetingScreen />);
+  fireEvent.press(await screen.findByText('Cancel'));
+  expect(router.replace).toHaveBeenCalledWith({
+    pathname: '/session/[id]',
+    params: { id: 'session-1' },
+  });
+});
+
+it('shows calendar entries for in-person meetings and uses the selected title', async () => {
+  jest.mocked(createVerityClient).mockReturnValue({
+    getUpcomingMeetings: jest.fn().mockResolvedValue([
+      {
+        eventKey: 'office',
+        title: 'Office review',
+        startsAt: Date.now(),
+        endsAt: Date.now() + 3600000,
+        calendar: 'Work',
+        provider: null,
+        decision: null,
+        meetingId: null,
+      },
+    ]),
+  } as never);
+  render(<MeetingScreen />);
+  await screen.findByText('Office review');
+  await waitFor(() =>
+    expect(screen.getByLabelText('Meeting title').props.value).toBe('Office review'),
+  );
+  fireEvent.press(await screen.findByRole('radio', { name: /^Up to 4 people/ }));
+  fireEvent.press(screen.getByLabelText('Start meeting'));
+  await waitFor(() =>
+    expect(startMeeting).toHaveBeenCalledWith('session-1', 'fluid-nemotron', 4, 'Office review'),
+  );
+});
+
+it('does not join a later in-person selection after switching to online', async () => {
+  const joinCalendarMeeting = jest.fn();
+  const startOnlineMeeting = jest.fn();
+  jest.mocked(createVerityClient).mockReturnValue({
+    getAttendeeSettings: jest.fn().mockResolvedValue({ configured: true }),
+    getUpcomingMeetings: jest.fn().mockResolvedValue([
+      {
+        eventKey: 'later',
+        title: 'Later review',
+        startsAt: Date.now() + 3_600_000,
+        endsAt: Date.now() + 7_200_000,
+        calendar: 'Work',
+        provider: 'meet',
+        decision: null,
+        meetingId: null,
+      },
+    ]),
+    joinCalendarMeeting,
+    startOnlineMeeting,
+  } as never);
+  render(<MeetingScreen />);
+  fireEvent.press(await screen.findByText('Later review'));
+  await waitFor(() =>
+    expect(screen.getByLabelText('Meeting title').props.value).toBe('Later review'),
+  );
+  fireEvent.press(screen.getByText('Online meeting'));
+  await waitFor(() => expect(screen.queryByText('Configure online meetings')).toBeNull());
+  await waitFor(() => expect(screen.getByLabelText('Start meeting')).toBeDisabled());
+  fireEvent.press(screen.getByLabelText('Start meeting'));
+  expect(joinCalendarMeeting).not.toHaveBeenCalled();
+  expect(startOnlineMeeting).not.toHaveBeenCalled();
+});
+
+it('preserves a typed title when calendar loading finishes and uses a deliberately selected title', async () => {
+  let resolveEvents!: (events: unknown[]) => void;
+  const pending = new Promise<unknown[]>((resolve) => {
+    resolveEvents = resolve;
+  });
+  jest
+    .mocked(createVerityClient)
+    .mockReturnValue({ getUpcomingMeetings: jest.fn().mockReturnValue(pending) } as never);
+  render(<MeetingScreen />);
+  fireEvent.changeText(await screen.findByLabelText('Meeting title'), 'My notes');
+  await act(async () => {
+    resolveEvents([
+      {
+        eventKey: 'office',
+        title: 'Office review',
+        startsAt: Date.now(),
+        endsAt: Date.now() + 3_600_000,
+        calendar: 'Work',
+        provider: null,
+        decision: null,
+        meetingId: null,
+      },
+    ]);
+  });
+  await screen.findByText('Office review');
+  expect(screen.getByLabelText('Meeting title').props.value).toBe('My notes');
+  fireEvent.press(screen.getByText('Office review'));
+  await waitFor(() =>
+    expect(screen.getByLabelText('Meeting title').props.value).toBe('Office review'),
+  );
+});
+
+it('discards a finished meeting only after confirmation', async () => {
+  const measure = jest
+    .spyOn(require('react-native').View.prototype, 'measureInWindow')
+    .mockImplementation(function (this: unknown, callback: unknown) {
+      (callback as (x: number, y: number, w: number, h: number) => void)(300, 40, 40, 40);
+    });
+  const meeting: MeetingRecord = {
+    id: 'meeting-discard',
+    sessionId: 'session-1',
+    serverId: null,
+    engine: 'fluid-nemotron',
+    startedAt: Date.now() - 60_000,
+    endedAt: Date.now(),
+    state: 'ended',
+    title: 'Weekly sync',
+    transcript: 'Hello',
+    error: null,
+  };
+  jest
+    .mocked(useLocalSearchParams)
+    .mockReturnValue({ sessionId: 'session-1', meetingId: meeting.id });
+  jest.mocked(listMeetings).mockResolvedValue([meeting]);
+  render(<MeetingScreen />);
+  const openDiscard = async () => {
+    fireEvent.press(await screen.findByLabelText('Meeting actions'));
+    fireEvent.press(await screen.findByText('Discard meeting…'));
+    expect(await screen.findByText('Discard “Weekly sync”?')).toBeOnTheScreen();
+  };
+  await openDiscard();
+  expect(
+    screen.getByText(/Deletes the transcript and the summary on this device\./),
+  ).toBeOnTheScreen();
+  fireEvent.press(screen.getByText('Cancel'));
+  expect(discardFinishedMeeting).not.toHaveBeenCalled();
+
+  await openDiscard();
+  fireEvent.press(screen.getByText('Discard'));
+  await waitFor(() =>
+    expect(discardFinishedMeeting).toHaveBeenCalledWith(
+      'session-1',
+      expect.objectContaining({ id: meeting.id }),
+    ),
+  );
+  measure.mockRestore();
 });

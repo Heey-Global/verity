@@ -1,0 +1,48 @@
+[
+  {
+    "name": "verity_planning_start",
+    "title": "Verity · Planning · Start",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": null,
+    "skill": "planning",
+    "compatibility": {
+      "name": "verity_start_planning"
+    }
+  },
+  {
+    "name": "verity_planning_present",
+    "title": "Verity · Planning · Present",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": null,
+    "skill": "planning",
+    "compatibility": {
+      "name": "verity_present_plan"
+    }
+  },
+  {
+    "name": "verity_planning_implement",
+    "title": "Verity · Planning · Implement",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": null,
+    "skill": "planning",
+    "compatibility": {
+      "name": "verity_end_planning",
+      "action": "implement"
+    }
+  },
+  {
+    "name": "verity_planning_discard",
+    "title": "Verity · Planning · Discard",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": null,
+    "skill": "planning",
+    "compatibility": {
+      "name": "verity_end_planning",
+      "action": "discard"
+    }
+  }
+]

@@ -1,4 +1,4 @@
-import type { Backend } from '@verity/session';
+import type { Backend, Conductor } from '@verity/session';
 import {
   BackendTerminationUnconfirmedError,
   InMemoryEventBus,
@@ -46,6 +46,7 @@ import {
   runBackendHandoff,
   startSession,
   stopSession,
+  tryRunExclusive,
   worktreeRoot,
 } from './server-fixture.test-helper.js';
 import {
@@ -573,12 +574,69 @@ describe('DELETE /sessions/:id', () => {
 
     const res = await app.inject({ method: 'DELETE', url: '/sessions/s1' });
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({ sessionId: 's1' });
+    expect(res.json()).toEqual({ sessionId: 's1', cleanup: 'pending' });
     // Gone from the store, so gone from the list the overview renders.
     expect(await ctx.store.getSession('s1')).toBeUndefined();
     const list = await app.inject({ method: 'GET', url: '/sessions' });
     expect(list.json()).toEqual([]);
   });
+
+  it.each([false, true])(
+    'retains idle admission while preparation awaits I/O (deadline=%s)',
+    async (deadline) => {
+      await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+      let release!: () => void;
+      let entered!: () => void;
+      let held = false;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const ready = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      tryRunExclusive.mockImplementationOnce(async (_id, fn) => {
+        held = true;
+        try {
+          return { ran: true, value: await fn() };
+        } finally {
+          held = false;
+        }
+      });
+      const a = buildServer({
+        eventStore: ctx.store,
+        bus,
+        conductor,
+        queueSessionArtifacts: async () => {
+          entered();
+          await gate;
+        },
+      });
+      await a.ready();
+      if (deadline) vi.useFakeTimers();
+      const request = a.inject({ method: 'DELETE', url: '/sessions/s1' });
+      const response = request.then((value) => value);
+      try {
+        await ready;
+        expect(held).toBe(true);
+        expect(tryRunExclusive).toHaveBeenCalledWith('s1', expect.any(Function));
+        if (deadline) {
+          await vi.advanceTimersByTimeAsync(15_000);
+          expect((await response).statusCode).toBe(503);
+          expect(held).toBe(true);
+          expect(await ctx.store.getSession('s1')).toBeDefined();
+        }
+      } finally {
+        release();
+        vi.useRealTimers();
+      }
+      try {
+        expect((await response).statusCode).toBe(deadline ? 503 : 200);
+        await vi.waitFor(() => expect(held).toBe(false));
+      } finally {
+        await a.close();
+      }
+    },
+  );
 
   it('queues overlapping deletions in the same project behind the preview fence', async () => {
     await ctx.store.createProject({
@@ -638,6 +696,51 @@ describe('DELETE /sessions/:id', () => {
     }
   });
 
+  it.each([false, true])(
+    'stops publications while sleeping cleanup or workspace ownership is deferred (busy=%s)',
+    async (busy) => {
+      await ctx.store.upsertProject({
+        id: 'sleep-delete',
+        owner: 'local',
+        repo: 'sleep',
+        containerName: 'sleep',
+        state: 'sleeping',
+      });
+      await ctx.store.createSession({
+        sessionId: 'sleep-session',
+        projectId: 'sleep-delete',
+        worktree: '/wt/sleep-session',
+        model: 'm',
+      });
+      const remove = vi.fn(async () => undefined);
+      const runtimeCleanup = vi.fn(async () => 'deferred' as const);
+      const localPreviewManager = new LocalPreviewManager({ store: ctx.store } as never);
+      const stopPublications = vi.spyOn(localPreviewManager, 'stopSession');
+      const a = buildServer({
+        eventStore: ctx.store,
+        bus,
+        conductor: { ...conductor, isDeletionWorktreeBusy: () => busy } as unknown as Conductor,
+        queueSessionArtifacts: async () => {},
+        cleanupDeletedSessionRuntime: runtimeCleanup,
+        localPreviewManager,
+        worktrees: { add: async () => '/unused', remove },
+      });
+      try {
+        const res = await a.inject({ method: 'DELETE', url: '/sessions/sleep-session?force=true' });
+        expect(res.statusCode).toBe(200);
+        expect(res.json()).toMatchObject({ sessionId: 'sleep-session', cleanup: 'pending' });
+        expect(await ctx.store.getSession('sleep-session')).toBeUndefined();
+        expect((await ctx.store.getProject('sleep-delete'))?.state).toBe('sleeping');
+        await vi.waitFor(() => expect(stopPublications).toHaveBeenCalledWith('sleep-session'));
+        expect(await ctx.store.listPendingSessionDeletions()).toHaveLength(1);
+        expect(remove).not.toHaveBeenCalled();
+      } finally {
+        await a.close();
+        await localPreviewManager.close();
+      }
+    },
+  );
+
   it('returns 404 for an unknown session', async () => {
     const res = await app.inject({ method: 'DELETE', url: '/sessions/missing' });
     expect(res.statusCode).toBe(404);
@@ -674,7 +777,7 @@ describe('DELETE /sessions/:id', () => {
     try {
       const res = await a.inject({ method: 'DELETE', url: '/sessions/s1?force=true' });
       expect(res.statusCode).toBe(200);
-      expect(res.json()).toEqual({ sessionId: 's1' });
+      expect(res.json()).toEqual({ sessionId: 's1', cleanup: 'pending' });
       expect(runBackendHandoff).toHaveBeenCalledWith('s1', expect.any(Function));
       // The agent is reaped, not merely detached — and reaping happens BEFORE the
       // worktree is removed, so the process is never orphaned against a deleted cwd.
@@ -759,7 +862,7 @@ describe('DELETE /sessions/:id', () => {
     }
   });
 
-  it('keeps a busy session and its worktree when reaping fails', async () => {
+  it('logically deletes a busy session but retains its worktree when reaping fails', async () => {
     const provisioner = {
       add: vi.fn(async (branch: string) => `/wt/${branch.replace(/\//g, '-')}`),
       remove: vi.fn(async () => undefined),
@@ -776,8 +879,9 @@ describe('DELETE /sessions/:id', () => {
     });
     try {
       const res = await a.inject({ method: 'DELETE', url: '/sessions/s1?force=true' });
-      expect(res.statusCode).toBe(500);
-      expect(await ctx.store.getSession('s1')).toBeDefined();
+      expect(res.statusCode).toBe(200);
+      expect(await ctx.store.getSession('s1')).toBeUndefined();
+      expect(await ctx.store.isSessionDeleting('s1')).toBe(true);
       expect(closeSession).not.toHaveBeenCalled();
       expect(provisioner.remove).not.toHaveBeenCalled();
     } finally {
@@ -817,10 +921,58 @@ describe('DELETE /sessions/:id', () => {
     try {
       const res = await a.inject({ method: 'DELETE', url: '/sessions/s1' });
       expect(res.statusCode).toBe(200);
-      expect(purge).toHaveBeenCalledWith('s1');
+      expect(purge).toHaveBeenCalledWith('s1', [
+        { backend: 'codex', backendSessionId: 'thread-1' },
+      ]);
       // Ran while the binding was still readable — i.e. before the cascade.
       expect(seenBindings).toEqual([['thread-1']]);
       expect(await ctx.store.getSession('s1')).toBeUndefined();
+    } finally {
+      await a.close();
+    }
+  });
+
+  it('persists cleanup ownership before deletion and wakes cleanup after the cascade', async () => {
+    const queue = vi.fn(async (id: string) => {
+      expect(await ctx.store.getSession(id)).toBeDefined();
+    });
+    const schedule = vi.fn();
+    const a = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      queueSessionArtifacts: queue,
+      scheduleSessionCleanup: schedule,
+    });
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    isBusy.mockReturnValue(false);
+    try {
+      expect((await a.inject({ method: 'DELETE', url: '/sessions/s1' })).statusCode).toBe(200);
+      expect(queue).toHaveBeenCalledWith('s1');
+      expect(schedule).toHaveBeenCalledOnce();
+      expect(await ctx.store.getSession('s1')).toBeUndefined();
+    } finally {
+      await a.close();
+    }
+  });
+
+  it('retains the session if durable cleanup ownership cannot be saved', async () => {
+    const schedule = vi.fn();
+    const a = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      queueSessionArtifacts: async () => {
+        throw new Error('disk full');
+      },
+      scheduleSessionCleanup: schedule,
+    });
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    isBusy.mockReturnValue(false);
+    try {
+      expect((await a.inject({ method: 'DELETE', url: '/sessions/s1' })).statusCode).toBe(503);
+      expect(await ctx.store.getSession('s1')).toBeDefined();
+      expect(schedule).not.toHaveBeenCalled();
     } finally {
       await a.close();
     }
@@ -843,7 +995,7 @@ describe('DELETE /sessions/:id', () => {
     try {
       const res = await a.inject({ method: 'DELETE', url: '/sessions/s1' });
       expect(res.statusCode).toBe(200);
-      expect(purge).toHaveBeenCalledWith('s1');
+      expect(purge).toHaveBeenCalledWith('s1', []);
       expect(await ctx.store.getSession('s1')).toBeUndefined();
     } finally {
       await a.close();
@@ -853,15 +1005,17 @@ describe('DELETE /sessions/:id', () => {
   it('gives up on a purge that never settles instead of holding the request open', async () => {
     // A wedged data volume makes `unlink` hang rather than fail, so the purge neither
     // resolves nor rejects. Waiting for it would hold DELETE open and stall the
-    // project-delete loop behind it; the files it left are what the startup sweep
-    // collects on the next boot.
+    // project-delete loop behind it; durable cleanup retains the pending purge.
+    let releasePurge!: () => void;
     let purgeStarted!: () => void;
     const started = new Promise<void>((resolve) => {
       purgeStarted = resolve;
     });
     const purge = vi.fn(() => {
       purgeStarted();
-      return new Promise<void>(() => undefined);
+      return new Promise<void>((resolve) => {
+        releasePurge = resolve;
+      });
     });
     const a = buildServer({
       eventStore: ctx.store,
@@ -879,10 +1033,11 @@ describe('DELETE /sessions/:id', () => {
       await vi.advanceTimersByTimeAsync(10_000);
       const res = await pending;
       expect(res.statusCode).toBe(200);
-      expect(purge).toHaveBeenCalledWith('s1');
+      expect(purge).toHaveBeenCalledWith('s1', []);
       expect(await ctx.store.getSession('s1')).toBeUndefined();
     } finally {
       vi.useRealTimers();
+      releasePurge();
       await a.close();
     }
   });
@@ -2530,7 +2685,24 @@ describe('POST /sessions (injected worktree provisioner)', () => {
     }
   });
 
-  it('removes a provisioned worktree when the session row cannot be created', async () => {
+  it('removes an unowned allocated worktree when persisting the session fails', async () => {
+    const f = fake();
+    const a = buildServer({ eventStore: ctx.store, bus, conductor, worktrees: f.provisioner });
+    const create = vi
+      .spyOn(ctx.store, 'createSession')
+      .mockRejectedValueOnce(new Error('database unavailable'));
+    try {
+      const res = await a.inject({ method: 'POST', url: '/sessions', payload: { prompt: 'go' } });
+      expect(res.statusCode).toBe(500);
+      expect(f.provisioner.remove).toHaveBeenCalledOnce();
+      expect(startSession).not.toHaveBeenCalled();
+    } finally {
+      create.mockRestore();
+      await a.close();
+    }
+  });
+
+  it('preserves an existing session worktree when a colliding session row cannot be created', async () => {
     const f = fake();
     await ctx.store.createSession({ sessionId: 'existing', worktree: '/wt/collision', model: 'm' });
     f.provisioner.add.mockImplementationOnce(async (branch: string) => {
@@ -2542,7 +2714,8 @@ describe('POST /sessions (injected worktree provisioner)', () => {
       const res = await a.inject({ method: 'POST', url: '/sessions', payload: { prompt: 'go' } });
       expect(res.statusCode).toBe(500);
       expect(res.json()).toEqual({ error: 'internal error' });
-      expect(f.removed).toEqual(['/wt/collision']);
+      expect(f.removed).toEqual([]);
+      expect(await ctx.store.getSession('existing')).toBeDefined();
       expect(startSession).not.toHaveBeenCalled();
     } finally {
       await a.close();
@@ -3199,12 +3372,12 @@ describe('POST /sessions with project field (#174)', () => {
       });
 
       expect(res.statusCode).toBe(201);
-      expect(projectWorktrees.add).not.toHaveBeenCalled();
+      expect(projectWorktrees.add).toHaveBeenCalledOnce();
       const { sessionId }: { sessionId: string } = res.json();
       expect(await ctx.store.getSession(sessionId)).toMatchObject({
         sessionId,
         projectId: 'p-local-active',
-        worktree: expect.stringContaining('/__local__-my-project/.verity-document-sessions/'),
+        worktree: '/data/dev/__local__-my-project/.verity-sessions/agent-local',
       });
     } finally {
       await a.close();

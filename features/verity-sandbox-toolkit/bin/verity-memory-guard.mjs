@@ -618,7 +618,7 @@ export function createMemoryGuard(options) {
 }
 
 /** gVisor names itself in the kernel version it reports, e.g. `4.19.0-gvisor`. */
-function runsUnderGvisor(readFile = readFsFile) {
+export function runsUnderGvisor(readFile = readFsFile) {
   return /gvisor/iu.test(tryRead(readFile, '/proc/version') ?? '');
 }
 

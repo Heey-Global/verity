@@ -4,6 +4,7 @@ import { PreviewConnector, hashPreviewPin } from '@verity/preview-tunnel';
 import type { EventStore, LiveMeetingSyncRecord } from '@verity/store';
 import { z } from 'zod';
 import {
+  PREVIEW_CREATE_FAILURE_CODES,
   PreviewShareRemovalQueuedError,
   type PreviewEdgeControl,
   type PreviewEdgeBinding,
@@ -29,6 +30,53 @@ interface MeetingStartDiagnostic {
   botCreateAttempted: boolean;
   event: 'progress' | 'failed';
 }
+const UPLINK_SHARE_REFUSALS: Record<string, string> = {
+  webhook_unsupported: 'The Uplink refused a webhook share for this server.',
+  limit_reached: 'The Uplink share limit is reached. End another online meeting or preview first.',
+  not_entitled: 'Online sharing is not included in the Uplink plan of this server.',
+  unavailable: 'The Uplink cannot create a share right now.',
+  invalid_request: 'The Uplink rejected the share request as invalid.',
+};
+
+/**
+ * Names the Uplink step that failed before the bot was created. Phases and codes come from
+ * the bounded diagnostic vocabulary, so the text never carries raw upstream errors.
+ */
+export function uplinkStartFailure(phase: MeetingStartDiagnostic['phase'], code: string) {
+  const hint = 'Check Uplink / Online Sharing and retry.';
+  // Only codes this server knows reach the message; anything else is reported as `unknown`.
+  const shown = PREVIEW_CREATE_FAILURE_CODES.has(code) ? code : 'unknown';
+  const step = `(Uplink step: ${phase}${code === 'pending' || code === 'ready' ? '' : ` · ${shown}`})`;
+  const reason = ((): string => {
+    switch (phase) {
+      case 'ensure_sharing':
+        return 'Could not enable online sharing on the Uplink.';
+      case 'capability_check':
+        return code === 'webhook_not_negotiated'
+          ? 'The current Uplink connection has not confirmed webhook support. Reconnecting Uplink renegotiates it.'
+          : 'Online sharing is not available on the Uplink connection.';
+      case 'share_create':
+        return code === 'pending'
+          ? 'The Uplink share request did not complete: no answer or an unusable reply.'
+          : (Object.hasOwn(UPLINK_SHARE_REFUSALS, shown) && UPLINK_SHARE_REFUSALS[shown]) ||
+              'The Uplink refused the webhook share.';
+      case 'connector_connect':
+        return 'The webhook share was created, but its connector could not connect to the Uplink.';
+      case 'share_ready':
+        return 'Online sharing stopped while the webhook share was being created.';
+      case 'connector_ready':
+      case 'provider_setup':
+        // The Uplink steps finished; the failure lies in local setup before the bot request.
+        return 'The webhook share is ready, but preparing the meeting failed before Verity contacted the provider.';
+      default: {
+        const unhandled: never = phase;
+        return `Online meeting start failed at ${String(unhandled)}.`;
+      }
+    }
+  })();
+  return `${reason} ${hint} ${step}`;
+}
+
 /** Safe startup guidance that the API may expose without internal error details. */
 export class OnlineMeetingStartError extends Error {}
 export class UnassignedMeetingNotFoundError extends Error {
@@ -403,6 +451,8 @@ export class AttendeeMeetings {
         await this.publish(state);
         return { meetingId: id };
       } catch (error) {
+        const failedPhase = phase;
+        const failedCode = code;
         if (code === 'pending' || code === 'ready') code = 'failed';
         emit('failed');
         if (error instanceof AttendeeRequestRejected) state.botCreateAttempted = false;
@@ -426,7 +476,7 @@ export class AttendeeMeetings {
           throw new OnlineMeetingStartError(
             error instanceof AttendeeRequestRejected
               ? `Attendee rejected the meeting request (${error.status}). Check Connected services and the meeting link, then retry.`
-              : 'Could not open the Uplink webhook connection. Check Uplink / Online Sharing and retry.',
+              : uplinkStartFailure(failedPhase, failedCode),
             { cause: error },
           );
         }
@@ -519,9 +569,19 @@ export class AttendeeMeetings {
   /** Stops the bot of an unassigned meeting and forgets what it heard. False when the
    * meeting is unknown or was assigned meanwhile: published meetings stay. */
   async discard(id: string): Promise<boolean> {
+    return this.discardOwned(id, null);
+  }
+
+  /** Forgets the provider state of a finished meeting discarded from `sessionId`; the
+   * published meeting itself is deleted by the caller. False when it is not ours. */
+  async discardFinished(sessionId: string, id: string): Promise<boolean> {
+    return this.discardOwned(id, sessionId);
+  }
+
+  private async discardOwned(id: string, sessionId: string | null): Promise<boolean> {
     return this.serial(async () => {
       const state = await this.options.store.getAttendeeState<OnlineMeeting>(`meeting:${id}`);
-      if (!state || state.meeting.sessionId !== null) return false;
+      if (!state || state.meeting.sessionId !== sessionId) return false;
       state.discarded = true;
       this.forget(state);
       await this.save(state);

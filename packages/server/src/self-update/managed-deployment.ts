@@ -1,4 +1,5 @@
 import { releaseChannelFromEnv } from './release-channel.js';
+import { constants } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import {
   link,
@@ -24,6 +25,99 @@ export const MANAGED_DEPLOYMENT_ROOT = '/var/lib/verity/updater/managed-deployme
 const MANAGED_DEPLOYMENT_MARKER_VERSION = 1 as const;
 export const MANAGED_DEPLOYMENT_SPEC_FILE = 'server-deployment.json';
 export const MANAGED_HOST_DIAGNOSTIC_BACKUP_FILE = 'server-deployment.before-host-diagnostics.json';
+const MANAGED_PROJECT_EGRESS_BACKUP_FILE = 'server-deployment.before-project-egress.json';
+
+export async function readManagedProjectEgressBackup(
+  rootPath: string,
+): Promise<ServerDeploymentSpec | null> {
+  return readManagedBackup(rootPath, MANAGED_PROJECT_EGRESS_BACKUP_FILE);
+}
+
+export const PROJECT_EGRESS_MOUNTS: ServerDeploymentSpecBody['mounts'] = [
+  {
+    source: { kind: 'bind', path: '/run/verity-egress' },
+    target: '/run/verity-egress',
+    readOnly: true,
+  },
+  {
+    source: { kind: 'bind', path: '/etc/verity-egress-server' },
+    target: '/run/verity-egress-key',
+    readOnly: true,
+  },
+];
+export const PROJECT_EGRESS_ENVIRONMENT = [
+  'VERITY_PROJECT_EGRESS_SOCKET',
+  'VERITY_PROJECT_EGRESS_KEY_PATH',
+] as const;
+
+/** Only verified host provisioning may introduce these fixed server-only control mounts. */
+export async function migrateManagedProjectEgress(options: {
+  root: string;
+  deploymentId: string;
+  image: string;
+  controlGid: number;
+}): Promise<ManagedDeploymentState> {
+  const root = await openUpdaterOwnedRoot(options.root);
+  try {
+    const pinned = `/proc/self/fd/${root.fd}`;
+    const existing = await readManagedDeploymentFiles(pinned);
+    if (!existing.managed) throw new Error(existing.reason);
+    if (
+      existing.spec.deploymentId !== options.deploymentId ||
+      existing.spec.image !== options.image
+    )
+      throw new Error('managed authority changed before project egress migration');
+    const current = existing.spec.mounts.filter((mount) =>
+      PROJECT_EGRESS_MOUNTS.some((expected) => expected.target === mount.target),
+    );
+    const environment = existing.spec.environment.filter((entry) =>
+      PROJECT_EGRESS_ENVIRONMENT.some((name) => name === entry.name),
+    );
+    if (current.length || environment.length) {
+      if (
+        JSON.stringify(current) !== JSON.stringify(PROJECT_EGRESS_MOUNTS) ||
+        environment.length !== PROJECT_EGRESS_ENVIRONMENT.length ||
+        !environment.every(
+          (entry) => entry.source.kind === 'env' && entry.source.name === entry.name,
+        ) ||
+        !existing.spec.user.supplementaryGids.includes(options.controlGid)
+      )
+        throw new Error(
+          'project egress authority is partial or differs from verified installation',
+        );
+      return existing;
+    }
+    const body: ServerDeploymentSpecBody & { checksum?: string } = { ...existing.spec };
+    delete body.checksum;
+    const candidate = parseServerDeploymentSpec(
+      sealDeploymentSpec({
+        ...body,
+        mounts: [...body.mounts, ...PROJECT_EGRESS_MOUNTS],
+        environment: [
+          ...body.environment,
+          ...PROJECT_EGRESS_ENVIRONMENT.map((name) => ({
+            name,
+            source: { kind: 'env' as const, name },
+          })),
+        ],
+        user: {
+          ...body.user,
+          supplementaryGids: [...new Set([...body.user.supplementaryGids, options.controlGid])],
+        },
+      }),
+    );
+    if (!candidate) throw new Error('project egress deployment authority is not allowlisted');
+    const backup = await readJson(join(pinned, MANAGED_PROJECT_EGRESS_BACKUP_FILE));
+    if (backup === undefined)
+      await writeAtomicExclusive(pinned, MANAGED_PROJECT_EGRESS_BACKUP_FILE, existing.spec);
+    else if (parseServerDeploymentSpec(backup)?.deploymentId !== options.deploymentId)
+      throw new Error('invalid project egress authority checkpoint');
+    await writeAtomic(pinned, MANAGED_DEPLOYMENT_SPEC_FILE, candidate);
+    return { managed: true, marker: existing.marker, spec: candidate };
+  } finally {
+    await root.close();
+  }
+}
 export const MANAGED_DEVCONTAINER_BUILDER_BACKUP_FILE =
   'server-deployment.before-devcontainer-builder.json';
 export const MANAGED_DEPLOYMENT_MARKER_FILE = 'managed-deployment.json';
@@ -630,6 +724,13 @@ export async function configureManagedUpdateChannel(rootPath: string): Promise<v
     const pinnedRoot = `/proc/self/fd/${root.fd}`;
     const existing = await readManagedDeploymentFiles(pinnedRoot);
     if (!existing.managed) throw new Error(existing.reason);
+    if (
+      channel === 'stable' &&
+      (await readJson(join(pinnedRoot, MANAGED_STAGING_ASSESSMENT_FILE))) !== undefined
+    )
+      throw new Error(
+        'Staging network protection requires verified deactivation before changing channel',
+      );
     const environment = existing.spec.environment.filter(
       (entry) => entry.name !== 'VERITY_UPDATE_CHANNEL',
     );
@@ -643,6 +744,72 @@ export async function configureManagedUpdateChannel(rootPath: string): Promise<v
     if (validated === null) throw new Error('update channel configuration is not allowlisted');
     await writeAtomic(pinnedRoot, MANAGED_DEPLOYMENT_SPEC_FILE, validated);
     await writeAtomic(pinnedRoot, 'update-channel.json', channel);
+  } finally {
+    await root.close();
+  }
+}
+
+export const MANAGED_STAGING_ASSESSMENT_FILE = 'project-egress-staging-assessment.json';
+
+/** Assessment authority never inherits the legacy process-environment fallback. */
+export async function readDurableManagedUpdateChannel(
+  rootPath: string,
+): Promise<'stable' | 'staging' | undefined> {
+  const root = await openUpdaterOwnedRoot(rootPath);
+  try {
+    const pinned = `/proc/self/fd/${root.fd}`;
+    if (!(await readManagedDeploymentFiles(pinned)).managed)
+      throw new Error('unmanaged channel authority');
+    let file;
+    try {
+      file = await open(
+        join(pinned, 'update-channel.json'),
+        constants.O_RDONLY | constants.O_NOFOLLOW,
+      );
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+      throw error;
+    }
+    try {
+      const info = await file.stat();
+      if (
+        !info.isFile() ||
+        info.uid !== process.geteuid?.() ||
+        (info.mode & 0o077) !== 0 ||
+        info.size > 32
+      )
+        throw new Error('untrusted durable update channel');
+      const value: unknown = JSON.parse(await file.readFile('utf8'));
+      if (value !== 'stable' && value !== 'staging')
+        throw new Error('invalid durable update channel');
+      return value;
+    } finally {
+      await file.close();
+    }
+  } finally {
+    await root.close();
+  }
+}
+
+/** Written before host authority is granted; failed attempts remain conservative. */
+export async function markManagedStagingAssessment(
+  rootPath: string,
+  image: string,
+  operationId: string,
+  completed = false,
+): Promise<void> {
+  const root = await openUpdaterOwnedRoot(rootPath);
+  try {
+    const pinned = `/proc/self/fd/${root.fd}`;
+    const state = await readManagedDeploymentFiles(pinned);
+    if (!state.managed || state.spec.image !== image)
+      throw new Error('assessment deployment changed');
+    await writeAtomic(pinned, MANAGED_STAGING_ASSESSMENT_FILE, {
+      version: 1,
+      image,
+      operationId,
+      completed,
+    });
   } finally {
     await root.close();
   }
@@ -683,6 +850,13 @@ export async function writeManagedUpdateChannel(
     const pinnedRoot = `/proc/self/fd/${root.fd}`;
     const state = await readManagedDeploymentFiles(pinnedRoot);
     if (!state.managed) throw new Error(state.reason);
+    if (
+      channel === 'stable' &&
+      (await readJson(join(pinnedRoot, MANAGED_STAGING_ASSESSMENT_FILE))) !== undefined
+    )
+      throw new Error(
+        'Staging network protection requires verified deactivation before changing channel',
+      );
     await writeAtomic(pinnedRoot, 'update-channel.json', channel);
   } finally {
     await root.close();

@@ -1526,3 +1526,87 @@ engines, with existing `runc` and old `runsc` containers alive throughout renewa
 registration and rollback fault injection. Fake-host tests establish transaction and
 message behavior, not running-container continuity on a real engine. Neither a live
 host mutation nor release publication is part of implementing this amendment.
+
+## Amendment: managed project egress preparation
+
+Network protection host components follow the signed, fixed-purpose host renewal
+boundary rather than requiring manual environment configuration. An independently
+verified release supplies a bounded provisioning payload; actual firewall
+operations run in the host service context. Initial installation prepares stable
+key/runtime paths before managed startup and derives private authority after
+database migration. Updates checkpoint sealed server mount/environment authority
+before introducing the matching active/standby control bindings.
+
+Installation does not change the default-off global switch, recreate project
+containers or restart Docker. Controller renewal preserves reserved-bridge denial,
+registry state and kernel deadlines; unrelated bridges are outside its rules.
+Availability requires authenticated live packet-enforcement readiness, never just
+a successful asset copy. Safe reason codes distinguish unsupported profiles and
+controller/configuration failures without exposing credentials or raw journals.
+
+Native host profiles remain unaccepted until install/update/reboot/recovery and
+independent traffic evidence establish the exact runtime combination. The empty
+profile gate is retained. Compatibility delivery to older updater versions and
+rollback over protected generations require explicit transition tests before
+production rollout. See [managed provisioning](../project-egress-managed-install.md)
+for the complete delivery, safety and acceptance boundary.
+
+
+### Compatibility-release retrofit diagnostics and recovery
+
+An installed image without the project-egress deployment contract may only
+receive the compatibility release first. The next targeted repair update uses
+that installed image's independent signature verification and fixed provisioning
+admission; missing admission never authorizes running the target helper directly.
+Managed servers missing socket wiring expose pending provisioning and the updater
+logs a fixed skip reason. Root-owned installation diagnostics explain failures
+but cannot establish readiness.
+
+Managed controller renewal persists its rollback snapshots and immutable release
+identities before changing the controller, link or configuration. A content-addressed recovery helper is installed before journal mutations. Its
+boot oneshot precedes Docker and bootstrap, takes the installation lock and
+establishes denial before restoring prior files. Subsequent provisioner invocations
+use the same recovery path. A failed recovery retains the journal and blocks
+startup; native boot ordering and crash acceptance remain required.
+
+Release-owned native profiles bind exact kernel, OS, Docker, runtime tree,
+controller/Node/BPF artifacts, pinned prerequisite packages and retained acceptance
+evidence. Startup revalidates those inputs. No native profile is accepted yet.
+Preparation adds the reviewed relay runtime through Docker reload and installs
+persistent private bpffs without restarting Docker. Old updater caller deadlines
+must be tested independently from the longer new host oneshot deadline.
+
+A root-owned inventory contract is persisted after native preflight and before
+controller activation, outside rollback snapshots. Servers require fencing only
+when that contract is present and latch the requirement; unsupported staging and
+manual static authorities do not acquire a dependency on an absent controller.
+
+Authoritative destination mutations fence direct corridors before persistence,
+then acknowledge the conservative old/new inventory under the database mutation
+lock. A leased heartbeat closes readiness when synchronization expires. Retained
+hostname and public-IP history protects cached clients across mutations and host
+controller restarts. Removed hostnames remain in DNS refresh coverage because
+retained clients may resolve them again; dropping coverage requires proof of
+client retirement. Transient refresh failures keep direct admission closed. Incomplete or unrepresentable inventory cannot grant admission.
+Relay cutover permits at most the target image and one still-active prior image
+under the same execution contract; unknown or additional retained images fail.
+
+Native managed-host lifecycle acceptance, signed compatibility-update acceptance
+and application positive controls remain required before production activation.
+Staging preparation and unit tests do not supply that evidence. See
+[native profiles](../project-egress-native-profiles.md) for the evidence boundary.
+
+
+### Staging assessment admission
+
+The regular signed updater can authorize a separate unaccepted Staging assessment
+using its durable channel state and inspected deployment-state volume. Image tags,
+labels and environment defaults grant no such authority. Installed-state
+reconciliation after cutover supports compatibility callers without inventing an
+update journal. The private host descriptor binds measured host/runtime/artifact
+and package identities; startup revalidates it and the durable Staging channel.
+A conservative attempt marker fences both Stable-channel writers before host
+authority is granted. Automated deactivation and marker clearance remain pending.
+This does not populate the production profile list or establish native acceptance.
+See [native profiles](../project-egress-native-profiles.md) for supported candidate
+hosts, the regular Staging test sequence and evidence requirements.

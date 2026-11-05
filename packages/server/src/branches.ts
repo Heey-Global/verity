@@ -566,14 +566,20 @@ export function createGitBranchService(opts: GitBranchServiceOptions): GitBranch
           }
         }
       }
-      // Keep only real local branches — a reflog token can be a bare SHA (detached
-      // checkout, e.g. a #122 preview) which `branchExists` filters out. Drop the base
-      // and the current branch (added first, below). The existence probes are
-      // independent, so run them in parallel — this is on the ~2s `/sessions` poll
-      // path and a long session can accumulate several distinct branches.
+      // A long session can leave hundreds of reflog candidates. One refs listing
+      // filters detached SHAs without spawning one Docker exec per candidate.
       const named = candidates.filter((name) => name !== here && name !== baseBranch);
-      const exists = await Promise.all(named.map((name) => branchExists(worktreePath, name)));
-      extra = named.filter((_, i) => exists[i]);
+      if (named.length > 0) {
+        const refs = await git([
+          '-C',
+          opts.repoDir ?? worktreePath,
+          'for-each-ref',
+          '--format=%(refname)',
+          'refs/heads',
+        ]);
+        const local = new Set(refs.trim().split('\n'));
+        extra = named.filter((name) => local.has(`refs/heads/${name}`));
+      }
     } catch {
       // No reflog / git error → just the current branch (single-branch behavior).
     }

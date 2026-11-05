@@ -70,6 +70,7 @@ import {
   useRef,
   useState,
   type ReactNode,
+  type ComponentProps,
   type RefCallback,
 } from 'react';
 import {
@@ -130,6 +131,9 @@ import {
 } from '../lib/projectGroups';
 import { formatResetDisplay } from '../lib/time';
 import { SessionChat } from './session/[id]';
+import { HomeInbox } from '../components/home/HomeInbox';
+import { HomeTabBar, type HomeTab } from '../components/home/HomeTabBar';
+import { useHomePreferences } from '../lib/homePreferences';
 import { toneColor } from '../theme/tokens';
 import { tint } from '../components/ui/tint';
 
@@ -609,6 +613,26 @@ function SessionList({ client }: { client: VerityClient }) {
     },
     [client, refresh, refreshProjects],
   );
+  // The "New Home" preview (Settings › This app): Home beside the project list.
+  // Off, the overview below renders exactly as it always has.
+  const homePreferences = useHomePreferences();
+  const [homeTab, setHomeTab] = useState<HomeTab>('home');
+  const [homeCount, setHomeCount] = useState(0);
+  const openSessionFromHome = useCallback(
+    (sessionId: string) => {
+      const session = sessions.find((candidate) => candidate.sessionId === sessionId);
+      // `onOpenSession` only prefetches and marks the session seen; the rows
+      // navigate through their own Link, so Home navigates here, once.
+      if (session) onOpenSession(session);
+      if (wide) setSelectedId(sessionId);
+      else router.push({ pathname: '/session/[id]', params: { id: sessionId } });
+    },
+    [sessions, onOpenSession, wide],
+  );
+  const repairFromHome = useCallback(
+    (projectId: string) => void repairProjectRow(projectId),
+    [repairProjectRow],
+  );
 
   const confirmSandboxUpdate = useCallback(
     (project: ProjectRecord) => {
@@ -966,13 +990,42 @@ function SessionList({ client }: { client: VerityClient }) {
     </View>
   );
 
+  const sidebar = homePreferences.inbox ? (
+    <View style={styles.flex}>
+      {/* Both stay mounted so switching keeps scroll positions and Home's count
+          stays current while the project list is open. */}
+      <View style={[styles.flex, homeTab === 'home' ? null : styles.hiddenPane]}>
+        <HomeInbox
+          client={client}
+          sessions={sessions}
+          projects={projects}
+          selectedSessionId={wide ? selectedId : null}
+          refreshing={refreshingOverview}
+          onRefresh={() => void onRefreshOverview()}
+          onOpenSession={openSessionFromHome}
+          onRepairProject={repairFromHome}
+          onCountChange={setHomeCount}
+        />
+      </View>
+      <View style={[styles.flex, homeTab === 'projects' ? null : styles.hiddenPane]}>{master}</View>
+      <HomeTabBar
+        tab={homeTab}
+        onChange={setHomeTab}
+        count={homeCount}
+        bottomInset={insets.bottom}
+      />
+    </View>
+  ) : (
+    master
+  );
+
   finishHomeWork();
-  if (!wide) return <SchedulingDiagnostics stage="sidebar">{master}</SchedulingDiagnostics>;
+  if (!wide) return <SchedulingDiagnostics stage="sidebar">{sidebar}</SchedulingDiagnostics>;
 
   return (
     <View style={styles.splitRow}>
       <View style={[styles.leftPane, { width: sidebarWidth }]}>
-        <SchedulingDiagnostics stage="sidebar">{master}</SchedulingDiagnostics>
+        <SchedulingDiagnostics stage="sidebar">{sidebar}</SchedulingDiagnostics>
       </View>
       <View style={styles.rightPane}>
         {selectedId && baseUrl ? (
@@ -1063,6 +1116,108 @@ function statusToneStyle(tone: ProjectOverviewStatus['tone']) {
       return styles.projectStatusIdle;
   }
 }
+
+// Keep unchanged drag wrappers out of selection and shared-collection updates.
+const ProjectSessionEntry = memo(function ProjectSessionEntry({
+  scope,
+  order,
+  reorder,
+  enabled,
+  divider,
+  session,
+  reorderable,
+  interactionsLocked,
+  onRename,
+  onOpenLinks,
+  onToggleFavorite,
+  onDelete,
+  onSelect,
+  onOpen,
+  onMoveUp,
+  onMoveDown,
+  unread,
+  previewActive,
+  previewPublic,
+  previewUrl,
+  repo,
+  projectKind,
+  selected,
+  renaming,
+}: Omit<
+  ComponentProps<typeof SessionRow>,
+  'dragHandleRef' | 'dragIssueRef' | 'dragMarkersRef' | 'floating'
+> & {
+  scope: string;
+  order: readonly string[];
+  reorder: ProjectReorderController;
+  enabled: boolean;
+  divider: boolean;
+}) {
+  const renderRow = useCallback(
+    (handle: RefCallback<View>, issue: RefCallback<View>, markers: RefCallback<View>) => (
+      <Fragment>
+        {divider ? <View style={styles.sessionDivider} /> : null}
+        <SessionRow
+          dragHandleRef={handle}
+          dragIssueRef={issue}
+          dragMarkersRef={markers}
+          session={session}
+          reorderable={reorderable}
+          interactionsLocked={interactionsLocked}
+          onRename={onRename}
+          onOpenLinks={onOpenLinks}
+          onToggleFavorite={onToggleFavorite}
+          onDelete={onDelete}
+          onSelect={onSelect}
+          onOpen={onOpen}
+          onMoveUp={onMoveUp}
+          onMoveDown={onMoveDown}
+          unread={unread}
+          previewActive={previewActive}
+          previewPublic={previewPublic}
+          previewUrl={previewUrl}
+          repo={repo}
+          projectKind={projectKind}
+          selected={selected}
+          renaming={renaming}
+        />
+      </Fragment>
+    ),
+    [
+      divider,
+      session,
+      reorderable,
+      interactionsLocked,
+      onRename,
+      onOpenLinks,
+      onToggleFavorite,
+      onDelete,
+      onSelect,
+      onOpen,
+      onMoveUp,
+      onMoveDown,
+      unread,
+      previewActive,
+      previewPublic,
+      previewUrl,
+      repo,
+      projectKind,
+      selected,
+      renaming,
+    ],
+  );
+  return (
+    <SessionDragSlot
+      id={`session:${session.sessionId}`}
+      scope={scope}
+      order={order}
+      reorder={reorder}
+      enabled={enabled}
+    >
+      {renderRow}
+    </SessionDragSlot>
+  );
+});
 
 const ProjectGroup = memo(function ProjectGroup({
   group,
@@ -1157,42 +1312,26 @@ const ProjectGroup = memo(function ProjectGroup({
     () => (
       <View style={styles.projectSessions}>
         {group.sessions.map((session, index) => (
-          <SessionDragSlot
+          <ProjectSessionEntry
             key={session.sessionId}
-            id={`session:${session.sessionId}`}
             scope={group.id}
             order={sessionDragOrder}
             reorder={reorder}
             enabled={sessionDragEnabled}
-          >
-            {(handle, issue, markers) => (
-              <Fragment>
-                {/* Quiet inset hairline between sessions (never above the first — the
-                  project header already draws its own bottom border). Inset to start
-                  under the session title, leaving the dot gutter clear (iOS-style
-                  leading inset), so adjacent session blocks read as separate without
-                  the restless full-width line grid the group had before. */}
-                {index > 0 ? <View style={styles.sessionDivider} /> : null}
-                <SessionRow
-                  session={session}
-                  dragHandleRef={handle}
-                  dragIssueRef={issue}
-                  dragMarkersRef={markers}
-                  reorderable={sessionReordering}
-                  interactionsLocked={reordering}
-                  {...rowCallbacks.get(session.sessionId)!}
-                  unread={unread.has(session.sessionId)}
-                  previewActive={previewUrls.has(session.sessionId)}
-                  previewPublic={publicPreviews.has(session.sessionId)}
-                  previewUrl={previewUrls.get(session.sessionId) ?? null}
-                  repo={group.repo}
-                  projectKind={group.project?.kind}
-                  selected={selectedId === session.sessionId}
-                  renaming={renamingId === session.sessionId}
-                />
-              </Fragment>
-            )}
-          </SessionDragSlot>
+            divider={index > 0}
+            session={session}
+            reorderable={sessionReordering}
+            interactionsLocked={reordering}
+            {...rowCallbacks.get(session.sessionId)!}
+            unread={unread.has(session.sessionId)}
+            previewActive={previewUrls.has(session.sessionId)}
+            previewPublic={publicPreviews.has(session.sessionId)}
+            previewUrl={previewUrls.get(session.sessionId) ?? null}
+            repo={group.repo}
+            projectKind={group.project?.kind}
+            selected={selectedId === session.sessionId}
+            renaming={renamingId === session.sessionId}
+          />
         ))}
       </View>
     ),
@@ -2143,6 +2282,7 @@ const styles = StyleSheet.create((theme) => ({
     flex: 1,
     backgroundColor: theme.colors.background,
   },
+  hiddenPane: { display: 'none' },
   limitMeters: {
     gap: 1,
     paddingHorizontal: theme.spacing.md,

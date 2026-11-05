@@ -1,4 +1,4 @@
-import { useMemo, type ReactNode, type RefCallback } from 'react';
+import { memo, useMemo, type ReactNode, type RefCallback } from 'react';
 import type { View } from 'react-native';
 import Reanimated, { useAnimatedRef } from 'react-native-reanimated';
 import { StyleSheet } from 'react-native-unistyles';
@@ -8,7 +8,7 @@ import { projectHandleRef } from '../lib/projectHandleRef';
 import { useProjectRowDrag, type ProjectReorderController } from './useProjectReorder';
 
 /** The static slot stays measurable while its row moves on the UI thread. */
-export function SessionDragSlot({
+export const SessionDragSlot = memo(function SessionDragSlot({
   id,
   scope,
   order,
@@ -54,7 +54,7 @@ export function SessionDragSlot({
       </Reanimated.View>
     </Reanimated.View>
   );
-}
+});
 
 const styles = StyleSheet.create((theme) => ({
   placeholder: {

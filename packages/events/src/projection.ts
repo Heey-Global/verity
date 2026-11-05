@@ -3,11 +3,12 @@ import type { AgentEvent } from './events.js';
 /**
  * The event discriminants the session-overview projections actually read.
  *
- * The overview needs four things from a session's log — its status badge, its
- * cumulative token usage, its latest per-window rate-limit states, and how many
- * events it has. The first three are decided ENTIRELY by the discriminants below;
- * every other kind of event (`text`, `thinking`, `tool_call`, `tool_result`,
- * `raw`, …) is skipped by all three projections. Those skipped kinds are also the
+ * The overview needs five things from a session's log — its status badge, its
+ * cumulative token usage, its latest per-window rate-limit states, how many
+ * events it has, and the question it is waiting on. All but the count are decided
+ * ENTIRELY by the discriminants below; every other kind of event (`text`,
+ * `thinking`, `tool_call`, `tool_result`, `raw`, …) is skipped by every one of
+ * them. Those skipped kinds are also the
  * bulk of a real log, and the only ones carrying large payloads.
  *
  * So this set is what lets `GET /sessions` answer from a narrow slice instead of
@@ -31,6 +32,10 @@ export const SESSION_PROJECTION_EVENT_TYPES = [
   'permission',
   // Read by `aggregateUsage` (`result`, already listed) and `latestRateLimits`.
   'rate_limit',
+  // Read by the summary's open-question fact (`openChoicesFromProjection` in the
+  // server), so an overview can answer a session's last question without its log.
+  // Status projections skip it; a small payload emitted at most once per turn.
+  'choices',
 ] as const satisfies readonly AgentEvent['t'][];
 
 /** Membership test for {@link SESSION_PROJECTION_EVENT_TYPES}. */

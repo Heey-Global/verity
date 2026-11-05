@@ -1,4 +1,4 @@
-import { type VerityClient } from '@verity/mobile';
+import { type VerityClient, VerityApiError } from '@verity/mobile';
 import { subscribeLiveRefresh } from './liveConnection';
 import { AppState } from 'react-native';
 import { createVerityClient, getActiveMeetingServerId, subscribeVerityBaseUrl } from './client';
@@ -12,6 +12,7 @@ import {
 import {
   acknowledgeMeeting,
   acknowledgeNote,
+  deleteMeeting,
   getSyncCursor,
   hasPendingMeetingSync,
   importChanges,
@@ -46,6 +47,45 @@ export function subscribeFollowedRemoteMeeting(
   };
 }
 
+const isDiscardedError = (error: unknown) =>
+  error instanceof VerityApiError && error.status === 409 && error.code === 'meeting_deleted';
+
+/**
+ * Discards a finished meeting: on its server for every device when it was shared, then
+ * on this device. A meeting saved only here is deleted locally. Throws when the meeting
+ * is still recording or its server is not the connected one; nothing is deleted then.
+ */
+export async function discardFinishedMeeting(
+  sessionId: string,
+  meeting: { id: string; serverId?: string | null; state: string; engine?: string },
+  suppliedClient?: VerityClient,
+): Promise<void> {
+  // Same rule as the server: an online meeting is finished only once it has ended.
+  if (meeting.state === 'active' || (meeting.engine === 'attendee' && meeting.state !== 'ended'))
+    throw new Error('End the meeting before discarding it.');
+  if (meeting.serverId != null) {
+    if (meeting.serverId !== getActiveMeetingServerId())
+      throw new Error('Reconnect to this meeting’s server to discard it.');
+    const client = suppliedClient ?? createVerityClient();
+    if (!client) throw new Error('Connect to your server to discard this meeting.');
+    // An upload already on its way would otherwise create the meeting after the delete.
+    await flushing.get(meeting.serverId)?.catch(() => undefined);
+    try {
+      await client.discardSessionMeeting(sessionId, meeting.id);
+    } catch (error) {
+      // Never uploaded: only this copy is left. Any other 404 (an older server without
+      // discarding, an unknown session) keeps the meeting and reports the failure.
+      if (!(
+        error instanceof VerityApiError &&
+        error.status === 404 &&
+        error.code === 'meeting_not_found'
+      ))
+        throw error;
+    }
+  }
+  await deleteMeeting(meeting.id, meeting.serverId ?? null);
+}
+
 function flushMeetingOutbox(serverId: string): Promise<void> {
   const inFlight = flushing.get(serverId);
   if (inFlight) return inFlight;
@@ -59,7 +99,13 @@ function flushMeetingOutbox(serverId: string): Promise<void> {
         await client.putLiveMeeting(meeting);
         await acknowledgeMeeting(serverId, meeting.id, meeting.revision);
       } catch (error) {
-        firstError ??= error;
+        // Discarded elsewhere: retrying would fail forever, so this copy goes too.
+        // A failed local delete must not stop the rest of the outbox.
+        if (isDiscardedError(error))
+          await deleteMeeting(meeting.id, serverId).catch((reason: unknown) => {
+            firstError ??= reason;
+          });
+        else firstError ??= error;
       }
     }
     for (const { sessionId, note } of await pendingNotes(serverId)) {
@@ -67,7 +113,11 @@ function flushMeetingOutbox(serverId: string): Promise<void> {
         await client.putLiveMeetingNote(sessionId, note);
         await acknowledgeNote(serverId, note.id, note.revision);
       } catch (error) {
-        firstError ??= error;
+        if (isDiscardedError(error))
+          await deleteMeeting(note.meetingId, serverId).catch((reason: unknown) => {
+            firstError ??= reason;
+          });
+        else firstError ??= error;
       }
     }
     if (firstError) throw firstError;
@@ -98,7 +148,14 @@ export async function syncMeetingSession(
   if (getActiveMeetingServerId() !== serverId) return { pending: true };
   const after = await getSyncCursor(serverId, sessionId);
   const changes = await client.getLiveMeetingChanges(sessionId, after);
-  await importChanges(serverId, sessionId, changes.cursor, changes.meetings, changes.notes);
+  await importChanges(
+    serverId,
+    sessionId,
+    changes.cursor,
+    changes.meetings,
+    changes.notes,
+    changes.deletedMeetingIds,
+  );
   return { pending: pending || (await hasPendingMeetingSync(serverId, sessionId)) };
 }
 

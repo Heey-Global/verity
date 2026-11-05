@@ -3,6 +3,7 @@ import { Resolver } from 'node:dns/promises';
 import { createSocket } from 'node:dgram';
 import {
   createProjectEgressResolver,
+  createProjectEgressResolvers,
   EGRESS_DNS_MIXED,
   EGRESS_DNS_NOT_PUBLIC,
 } from './project-egress-resolver.js';
@@ -197,4 +198,31 @@ it('reports the public subset of a mixed answer and classifies independent of re
     { address: '8.8.4.4', ttl: 0 },
   ]);
   await expect(f.resolve('downloads.example.com')).rejects.not.toHaveProperty('code');
+});
+
+it('refreshes protected DNS addresses without host inventory commands while admission keeps live exclusions', async () => {
+  const destinationAllowed = vi.fn(async () => false);
+  const dns = {
+    resolve4: vi.fn(async () => [{ address: '8.8.8.8', ttl: 30 }]),
+    resolve6: vi.fn(async () => [{ address: '2606:4700:4700::1111', ttl: 30 }]),
+    cancel: vi.fn(),
+  };
+  const { resolve, resolveProtected } = createProjectEgressResolvers({
+    servers: ['1.1.1.1'],
+    destinationAllowed,
+    createResolver: () => dns,
+  });
+  for (const host of ['api.github.com', 'registry.npmjs.org', 'pypi.org'])
+    expect((await resolveProtected(host)).addresses).toHaveLength(2);
+  expect(destinationAllowed).not.toHaveBeenCalled();
+  await expect(resolve('downloads.example.com')).rejects.toMatchObject({
+    code: EGRESS_DNS_NOT_PUBLIC,
+  });
+  expect(destinationAllowed).toHaveBeenCalledTimes(2);
+  dns.resolve4.mockResolvedValue([{ address: '127.0.0.1', ttl: 30 }]);
+  await expect(resolveProtected('api.github.com')).rejects.toMatchObject({
+    code: EGRESS_DNS_MIXED,
+    publicAddresses: ['2606:4700:4700::1111'],
+  });
+  expect(destinationAllowed).toHaveBeenCalledTimes(2);
 });

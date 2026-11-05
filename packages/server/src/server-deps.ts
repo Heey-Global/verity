@@ -81,17 +81,30 @@ export interface ServerDeps {
    * knowledge roots reporting "not found" and changes nothing else.
    */
   dataRoot?: string | undefined;
+  /** Persist artifact ownership before the session's foreign-key cascade. Failures abort deletion. */
+  queueSessionArtifacts?: ((sessionId: string) => Promise<void>) | undefined;
+  /** Wake the durable cleanup worker after the session row has been removed. */
+  scheduleSessionCleanup?: (() => void) | undefined;
+  /** True only after privileged home fencing and artifact cleanup have completed. */
+  cleanupDeletedSessionRuntime?:
+    | ((
+        sessionId: string,
+        projectId: string | null,
+      ) => Promise<'clean' | 'absent' | 'deferred' | 'not-applicable'>)
+    | undefined;
   /**
-   * Delete the backend transcript files a session left on the runner runtime, so a
-   * deleted session takes its conversation with it and not just its row (see
-   * `session-artifacts.ts`). Called immediately BEFORE the store delete, because the
-   * `session_backend_state` rows that name those files go with the FK cascade.
-   *
-   * Absent on deployments without the runner supervisor, where no such files exist.
-   * Never rejects: a transcript that could not be removed is logged by the
-   * implementation, and must not fail the delete it belongs to.
+   * Delete backend transcript files. Legacy integrations run before the cascade
+   * when termination is confirmed, or retry durably afterward with saved bindings.
+   * Deferred implementations must use those bindings rather than query deleted rows.
+   * Failures retain the cleanup obligation without preventing logical deletion.
+   * Absent on deployments without backend artifacts.
    */
-  purgeSessionArtifacts?: ((sessionId: string) => Promise<void>) | undefined;
+  purgeSessionArtifacts?:
+    | ((
+        sessionId: string,
+        bindings?: readonly { backend: string; backendSessionId: string }[],
+      ) => Promise<void>)
+    | undefined;
   /** Verified official release-channel resolver. Absent means this deployment is unmanaged. */
   serverUpdateResolver?: ReleaseChannelResolver | undefined;
   /** Privileged Updater control channel. Absent leaves the update action unavailable. */
@@ -116,7 +129,10 @@ export interface ServerDeps {
       ) => Promise<{ addresses: readonly string[]; ttlSeconds: number } | undefined>)
     | undefined;
   /** Whether the host egress service answers; network protection can only be enabled then. */
-  projectEgressAvailable?: (() => Promise<boolean>) | undefined;
+  projectEgressAvailable?: ((fresh?: boolean) => Promise<boolean>) | undefined;
+  projectEgressStatus?:
+    | ((fresh?: boolean) => Promise<import('./project-egress-health.js').ProjectEgressHealth>)
+    | undefined;
   previewSharingCapability?:
     (() => Promise<PreviewSharingCapability> | PreviewSharingCapability) | undefined;
   previewShareManager?: PreviewShareManager | undefined;
@@ -221,6 +237,7 @@ export interface ServerDeps {
    * logger — the factory form lets the conductor's background-failure sink
    * (`onTurnError`) log through the same logger (see `buildControlPlane`).
    */
+  onConductorReady?: ((conductor: Conductor) => void) | undefined;
   conductor: Conductor | ((logger: FastifyBaseLogger) => Conductor);
   /**
    * Root directory under which `POST /sessions` provisions a fresh worktree per

@@ -1,3 +1,4 @@
+import { hasCodeContent, legacySessionCodePath } from './project-code.js';
 import type { Conductor } from '@verity/session';
 import { PROJECT_MEMORY_MAX_CHARS } from '@verity/store';
 import { type FastifyInstance, type FastifyReply } from 'fastify';
@@ -46,7 +47,10 @@ import {
   recoverFileHistory,
   sessionFileHistory,
 } from './session-file-history.js';
-import { registerSessionFileRoutes } from './session-file-routes.js';
+import {
+  registerSessionFileRoutes,
+  SessionFileRootUnavailableError,
+} from './session-file-routes.js';
 import { fileVersion, FileWriteError, writeSessionText } from './session-file-write.js';
 import type { SessionFileRootName } from './session-files.js';
 import {
@@ -107,6 +111,12 @@ export function registerServerSessionFiles(
   ];
 
   registerSessionFileRoutes(app, {
+    resolveProjectRoot: async (id) => {
+      if (!deps.dataRoot || !(await deps.eventStore.getProject(id))) return undefined;
+      return ensureProjectKnowledge(deps.dataRoot, id);
+    },
+    resolveSharedRoot: async () =>
+      deps.dataRoot ? ensureSharedKnowledge(deps.dataRoot) : undefined,
     documentStatus: async (id) => {
       const session = await deps.eventStore.getSession(id);
       if (!session?.projectId || !deps.dataRoot) return undefined;
@@ -114,33 +124,98 @@ export function registerServerSessionFiles(
       if (!view) return undefined;
       const running = conductor.isBusy(id);
       try {
+        const workspace = documentWorkspace(deps.dataRoot, session.projectId, view);
+        const pending = await workspace.hasPendingChanges();
         return {
           running,
-          pending: await documentWorkspace(
-            deps.dataRoot,
-            session.projectId,
-            view,
-          ).hasPendingChanges(),
+          pending,
+          excludedEntries: workspace.excludedEntries,
+          ...(workspace.warning ? { warning: workspace.warning } : {}),
         };
       } catch {
         // A file may still be changing during a live turn; never label it published.
-        return { running, pending: true };
+        return { running, pending: true, inspectionError: true };
       }
     },
-    workspaceKind: async (id) =>
-      isDocumentWorkspace((await deps.eventStore.getSession(id))?.worktree ?? '')
-        ? 'documents'
-        : 'code',
+    codeAvailable: async (id) => {
+      const session = await deps.eventStore.getSession(id);
+      if (!session) return false;
+      const project = session.projectId
+        ? await deps.eventStore.getProject(session.projectId)
+        : undefined;
+      if (project?.kind === 'control_plane') return false;
+      if (project?.kind !== 'local') {
+        const legacy = legacySessionCodePath(session.worktree, session.sessionId);
+        return legacy
+          ? lstat(legacy).then(
+              (entry) => entry.isDirectory(),
+              () => false,
+            )
+          : true;
+      }
+      const code = legacySessionCodePath(session.worktree, session.sessionId) ?? session.worktree;
+      if (await hasCodeContent(code)) return true;
+      return deps.projectCloneRoot
+        ? hasCodeContent(projectClonePath(deps.projectCloneRoot, project))
+        : false;
+    },
+    workspaceKind: async (id) => {
+      const session = await deps.eventStore.getSession(id);
+      const project = session?.projectId
+        ? await deps.eventStore.getProject(session.projectId)
+        : undefined;
+      const legacy = session
+        ? legacySessionCodePath(session.worktree, session.sessionId)
+        : undefined;
+      if (legacy)
+        return project?.kind !== 'control_plane' &&
+          (await lstat(legacy).then(
+            (entry) => entry.isDirectory(),
+            () => false,
+          ))
+          ? 'code'
+          : 'documents';
+      return 'code';
+    },
     // A knowledge root is created on first browse rather than only at
     // provisioning: the folder is the source of truth (ADR 0022 D1), so an
     // explorer that can show it is the shortest path to one that exists.
     resolveRoot: async (id, root) => {
       const session = await deps.eventStore.getSession(id);
-      if (!session) return undefined;
-      if (root === 'worktree') return session.worktree;
-      if (deps.dataRoot === undefined) return undefined;
+      if (!session)
+        throw new SessionFileRootUnavailableError(
+          'Session not found. Reopen the session and try again.',
+          404,
+        );
+      if (root === 'worktree') {
+        const project = session.projectId
+          ? await deps.eventStore.getProject(session.projectId)
+          : undefined;
+        const legacy = legacySessionCodePath(session.worktree, session.sessionId);
+        if (legacy && project?.kind !== 'control_plane') {
+          const entry = await lstat(legacy).catch((error: unknown) => {
+            if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+            throw error;
+          });
+          if (entry?.isSymbolicLink())
+            throw new Error(
+              'The code working directory must not be a symlink. Repair the Sandbox to continue.',
+            );
+          if (entry?.isDirectory()) return legacy;
+        }
+        return session.worktree;
+      }
+      if (deps.dataRoot === undefined)
+        throw new SessionFileRootUnavailableError(
+          'Knowledge storage is not configured. Ask your administrator to configure it.',
+          503,
+        );
       if (root === 'shared') return ensureSharedKnowledge(deps.dataRoot);
-      if (session.projectId === null) return undefined;
+      if (session.projectId === null)
+        throw new SessionFileRootUnavailableError(
+          'This session is not linked to a project. Open the Wiki from a project.',
+          404,
+        );
       const projectRoot = await ensureProjectKnowledge(deps.dataRoot, session.projectId);
       if (root === 'documents') return join(projectRoot, 'insights');
       if (root === 'sources') return join(projectRoot, 'sources');
@@ -176,6 +251,13 @@ export function registerServerSessionFiles(
         );
       } catch (error) {
         await directoryHandle?.close().catch(() => undefined);
+        // A project with no recorded decisions still has a usable Decisions view.
+        if (
+          root.root === 'knowledge' &&
+          target.rel === 'insights/decisions' &&
+          (error as NodeJS.ErrnoException).code === 'ENOENT'
+        )
+          return { root: root.root, path: target.rel, entries: [], truncated: false };
         if (error instanceof Error && error.message === 'invalid path') {
           reply.code(400);
           return { error: 'invalid path' };

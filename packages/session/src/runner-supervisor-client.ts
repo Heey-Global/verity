@@ -2103,8 +2103,11 @@ export async function requestRunnerSupervisor(
     const timeout = setTimeout(
       () =>
         finish(
-          new Error(
-            `runner supervisor request timed out: ${typeof request.kind === 'string' ? request.kind : 'unknown'}`,
+          Object.assign(
+            new Error(
+              `runner supervisor request timed out: ${typeof request.kind === 'string' ? request.kind : 'unknown'}`,
+            ),
+            { code: 'ETIMEDOUT' },
           ),
         ),
       timeoutMs,
@@ -2117,10 +2120,33 @@ export async function requestRunnerSupervisor(
           throw new Error('runner supervisor returned an invalid frame count');
         }
         const parsed: unknown = JSON.parse(line);
-        if (!isObject(parsed) || parsed.ok !== true) throw new Error(rejectionMessage(parsed));
+        if (!isObject(parsed) || parsed.ok !== true) {
+          const error = new Error(rejectionMessage(parsed));
+          if (request.kind === 'reclaim-package-caches') {
+            // Carry structured evidence only; the storage collector validates it
+            // against its own allowlist before showing anything in diagnostics.
+            Object.assign(error, {
+              runnerCacheFailure:
+                isObject(parsed) && parsed.runnerCacheFailure !== undefined
+                  ? parsed.runnerCacheFailure
+                  : {
+                      code:
+                        isObject(parsed) && parsed.error === 'unknown supervisor request'
+                          ? 'unsupported'
+                          : isObject(parsed) && parsed.ok === false
+                            ? 'supervisor-rejected'
+                            : 'invalid-response',
+                    },
+            });
+          }
+          throw error;
+        }
         finish(undefined, parsed);
       } catch (error) {
-        finish(error instanceof Error ? error : new Error(String(error)));
+        const failure = error instanceof Error ? error : new Error(String(error));
+        if (request.kind === 'reclaim-package-caches' && !('runnerCacheFailure' in failure))
+          Object.assign(failure, { runnerCacheFailure: { code: 'invalid-response' } });
+        finish(failure);
       }
     };
     // A refusal the supervisor already sent outranks the transport error that
@@ -2136,7 +2162,14 @@ export async function requestRunnerSupervisor(
     });
     socket.on('data', (chunk: Buffer) => {
       if (buffer.length + chunk.length > MAX_RESPONSE_BYTES) {
-        finish(new Error('runner supervisor response too large'));
+        finish(
+          Object.assign(
+            new Error('runner supervisor response too large'),
+            request.kind === 'reclaim-package-caches'
+              ? { runnerCacheFailure: { code: 'invalid-response' } }
+              : {},
+          ),
+        );
         return;
       }
       buffer = Buffer.concat([buffer, chunk]);
@@ -2385,6 +2418,14 @@ export class SupervisorRunnerRecovery implements RunnerRecovery {
       if (state.startCommandId !== marker.startCommandId || state.status === 'claimed') {
         return { status: 'uncertain' };
       }
+      // New supervisors distinguish their actual/adopted workers from stale durable
+      // state. Older supervisors omit this field and retain the compatibility checks.
+      if (
+        state.status === 'running' &&
+        response.workerStatus !== undefined &&
+        response.workerStatus !== 'live'
+      )
+        return { status: 'uncertain' };
       const turnDir = join(runtime, 'turns', marker.turnId);
       const eventFilePath = join(turnDir, 'events.jsonl');
       const controlSocketPath = join(turnDir, 'control.sock');

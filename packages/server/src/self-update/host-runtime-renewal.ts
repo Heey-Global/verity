@@ -89,7 +89,7 @@ export async function runtimeRenewalMayHaveStarted(
 }
 
 /** Adopt only our exact, bounded daemon-owned job. A lost connection never kills host work. */
-async function runJob(
+export async function runHostRenewalJob(
   docker: RenewalDocker,
   spec: ContainerSpec,
   onInstallationState: (mayHaveStarted: boolean) => void = () => undefined,
@@ -153,7 +153,7 @@ async function runJob(
       Object.entries(spec.labels ?? {}).every(([key, value]) => inspect.labels?.[key] === value)
     ) {
       await docker.removeContainer(id);
-      return runJob(docker, spec, onInstallationState, false);
+      return runHostRenewalJob(docker, spec, onInstallationState, false);
     }
     throw new Error('Runtime renewal job differs from its authorized configuration');
   }
@@ -164,7 +164,17 @@ async function runJob(
   } else if (!['running', 'exited'].includes(inspect.status ?? ''))
     throw new Error('Runtime renewal job has an unsupported lifecycle state');
   // Both stages have their own timeout inside Docker. Retain a running job if wait disconnects.
-  const status = await docker.waitContainer(id);
+  // The HTTP wait must outlive the helper's own timeout and forced-kill grace.
+  // A shorter transport budget reports failure while the owned host job continues.
+  const seconds =
+    spec.entrypoint?.[0] === 'timeout' && spec.entrypoint[1] === '--kill-after=5s'
+      ? /^(\d+)s$/u.exec(spec.entrypoint[2] ?? '')
+      : null;
+  const waitTimeoutMs = Math.max(
+    300_000,
+    seconds === null ? 0 : Number(seconds[1]) * 1000 + 30_000,
+  );
+  const status = await docker.waitContainer(id, { timeoutMs: waitTimeoutMs });
   if (status !== 0) {
     let recovery: 'unchanged' | 'restored' | 'recovery-required' =
       spec.labels?.['verity.renewal-stage'] === 'verify' ? 'unchanged' : 'recovery-required';
@@ -234,7 +244,7 @@ async function renewHostRuntimeServiceImpl(
   onInstallationState(true);
   onInstallationState(await runtimeRenewalMayHaveStarted(docker, journal));
   // Trust starts in the already-installed image, never in target code verifying itself.
-  const verificationId = await runJob(docker, {
+  const verificationId = await runHostRenewalJob(docker, {
     ...base('verify', journal.previousDigest),
     network: 'bridge',
     binds: [],
@@ -249,7 +259,7 @@ async function renewHostRuntimeServiceImpl(
     ],
     env: ['HOME=/tmp', 'TUF_ROOT=/tmp/tuf'],
   });
-  const installationId = await runJob(
+  const installationId = await runHostRenewalJob(
     docker,
     {
       ...base('install', journal.targetDigest),

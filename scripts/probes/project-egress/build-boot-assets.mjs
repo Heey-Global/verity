@@ -52,7 +52,7 @@ async function include(name, from, optional = false) {
   for (const dependency of Object.keys(manifest.optionalDependencies ?? {}))
     await include(dependency, found.real, true);
 }
-for (const name of ['@verity/server', '@electric-sql/pglite']) await include(name, root);
+for (const name of ['@verity/server']) await include(name, root);
 await writeFile(join(output, 'package.json'), '{"type":"module"}\n');
 await build({
   entryPoints: ['scripts/probes/project-egress/boot-server.ts'],
@@ -106,8 +106,13 @@ await cp('scripts/probes/project-egress', join(output, 'probe'), {
   recursive: true,
   filter: (path) => !path.endsWith('__pycache__'),
 });
+await cp('deploy/gvisor/versions.env', join(output, 'native-runtime-pins.env'));
 await cp('deploy/egress', join(output, 'units'), { recursive: true });
 await cp(
   'packages/server/dist/project-egress-host-main.mjs',
   join(output, 'project-egress-host-main.mjs'),
 );
+
+await mkdir(join(output, 'installer'), { recursive: true });
+for (const name of ['project-egress-install.py', 'project-egress-managed.py'])
+  await cp(join('scripts', name), join(output, 'installer', name));

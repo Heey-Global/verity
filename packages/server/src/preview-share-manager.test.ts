@@ -16,6 +16,7 @@ import type { ContainerInspect, DockerClient } from './docker.js';
 import { sandboxAgentSeedHostPath } from './self-update/agent-seed-stamp.js';
 import {
   PreviewShareConflictError,
+  PreviewNetworkProtectionError,
   PreviewShareInputError,
   PreviewShareManager,
   PreviewShareNotFoundError,
@@ -2908,6 +2909,35 @@ describe('managed public links', () => {
     };
   }
 
+  it.each([false, true])(
+    'takes managed forwarding offline when sandbox inspection fails (running: %s)',
+    async (running) => {
+      const f = managedFixture();
+      if (running) f.run();
+      f.docker.inspectContainer.mockRejectedValueOnce(new Error('inspection unavailable'));
+      await f.manager.reconcile();
+      expect(f.docker.removeContainer).toHaveBeenCalledWith('connector-id');
+      expect(f.docker.createContainer).toHaveBeenLastCalledWith(
+        expect.objectContaining({ env: expect.arrayContaining(['VERITY_PREVIEW_OFFLINE=1']) }),
+      );
+      expect(f.share().state).toBe('active');
+    },
+  );
+
+  it('revokes managed links on protected generations even while the managed instance is stopped', async () => {
+    const f = managedFixture();
+    const original = f.docker.inspectContainer.getMockImplementation()!;
+    f.docker.inspectContainer.mockImplementation(async (id) => ({
+      ...(await original(id)),
+      networks: { [`verity-egress-${'a'.repeat(32)}`]: {} },
+    }));
+    await f.manager.reconcile();
+    expect(f.share().state).toBe('revoked');
+    expect(f.edge.remove).toHaveBeenCalledWith('share-id');
+    expect(f.docker.removeContainer).toHaveBeenCalledWith('connector-id');
+    expect(f.docker.createContainer).not.toHaveBeenCalled();
+  });
+
   // A port-based link used to be revoked here, silently changing both its URL and PIN.
   it('keeps the link offline and retargets the same link after restart and sandbox recreation', async () => {
     const f = managedFixture();
@@ -2972,4 +3002,39 @@ it('storage maintenance skips active public previews without replacing connector
   expect(mutation).not.toHaveBeenCalled();
   expect(f.docker.removeContainer).not.toHaveBeenCalled();
   expect(f.docker.createContainer).not.toHaveBeenCalled();
+});
+
+describe('protected preview ingress availability', () => {
+  it('rejects public creation before requesting an edge or attaching a legacy connector', async () => {
+    const f = fixture();
+    f.inspect.networks = { [`verity-egress-${'a'.repeat(32)}`]: {} };
+    await expect(
+      f.manager.create({ devServerId: 'dev-1', pin: '123456', ttlSeconds: 3600 }),
+    ).rejects.toBeInstanceOf(PreviewNetworkProtectionError);
+    expect(f.edge.create).not.toHaveBeenCalled();
+    expect(f.docker.createContainer).not.toHaveBeenCalled();
+  });
+
+  it('rejects local HTTP and static targets before inspecting or mounting their contents', async () => {
+    const f = fixture();
+    f.store.getSession.mockResolvedValue({ sessionId: 's1', projectId: 'p1' } as never);
+    f.inspect.networks = { [`verity-egress-${'a'.repeat(32)}`]: {} };
+    for (const target of [{ targetPort: 3000 }, { staticPath: '.' }])
+      await expect(f.manager.prepareLocalTarget('s1', target)).rejects.toBeInstanceOf(
+        PreviewNetworkProtectionError,
+      );
+    expect(f.docker.createContainer).not.toHaveBeenCalled();
+  });
+
+  it('revokes retained public links instead of rebuilding a connector after a protected generation starts', async () => {
+    const f = fixture();
+    const current = retainShare(f, { connectorContainerId: 'connector-id' });
+    f.inspect.networks = { [`verity-egress-${'a'.repeat(32)}`]: {} };
+    f.inspect.labels = { 'verity.container-generation': 'generation-2' };
+    await f.manager.reconcile();
+    expect(current().state).toBe('revoked');
+    expect(f.edge.remove).toHaveBeenCalledWith(f.record.id);
+    expect(f.docker.removeContainer).toHaveBeenCalledWith('connector-id');
+    expect(f.docker.createContainer).not.toHaveBeenCalled();
+  });
 });

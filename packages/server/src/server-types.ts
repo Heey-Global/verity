@@ -13,6 +13,7 @@ import type { PullRequestStatus } from './forge-provider.js';
 import type { ProjectAgent } from './project-agent-policy.js';
 import type { SandboxUpdateStatus } from './sandbox-updates.js';
 import type { SessionGoogleStatus } from './session-google-status.js';
+import type { OpenChoices, PendingPermissionRequest } from './session-inbox-facts.js';
 import type { SessionStatus } from './status.js';
 import type { ToolkitCarrier, ToolkitDriftVerdict } from './toolkit-drift.js';
 import type { VulnerabilitySummary } from './vulnerability-session.js';
@@ -142,6 +143,9 @@ export interface PublicProjectRecord extends Omit<
   state: Exclude<ProjectRecord['state'], 'sleeping_starting' | 'sleeping' | 'waking'>;
   /** Detailed lifecycle state for clients that understand sandbox sleep/wake. */
   lifecycleState?: ProjectRecord['state'];
+  /** Keys of this project's Home items the requesting person dismissed. Present
+   *  on the overview list, which fills it (and `collapsed`) in per person. */
+  inboxDismissed?: string[];
   /** Latest published release for the overview version badge (#release-badge).
    *  All null when GitHub isn't configured, the repo has no releases, or the
    *  lookup hasn't resolved yet — the overview then simply shows no version. */
@@ -272,6 +276,9 @@ export interface SessionPrSummary {
 
 export interface SessionSummary extends SessionRecord {
   linked?: boolean;
+  /** Keys of this session's Home items the requesting person dismissed. Like
+   *  `lastSeenEventCount`, filled in per person when the summary is delivered. */
+  inboxDismissed?: string[];
   /** Position within a manually ordered overview group; null means automatic. */
   sortOrder?: number | null;
   status: SessionStatus;
@@ -280,6 +287,14 @@ export interface SessionSummary extends SessionRecord {
   pendingPermissions: string[];
   /** Present only when awaiting_input is specifically the parked permission above. */
   permissionAwaitingInput?: true;
+  /** What each open permission prompt asks, so an overview can decide it without
+   * opening the session. Absent when nothing is pending; ids without a durable
+   * event in the current turn (linked-session approvals) stay only in
+   * {@link pendingPermissions}. */
+  pendingPermissionRequests?: PendingPermissionRequest[];
+  /** The current turn's unanswered `verity:choices` block, while the session waits
+   * on it. Absent while running, after an answer, and on sessions without one. */
+  openChoices?: OpenChoices;
   /** Cumulative token usage across the session's turns (§13a). */
   usage: UsageTotals;
   /** Latest 5-hour rate-limit state observed in the session log, if any. */

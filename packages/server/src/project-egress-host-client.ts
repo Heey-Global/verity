@@ -1,4 +1,8 @@
 import { request } from 'node:http';
+import {
+  ProjectEgressHealthError,
+  type ProjectEgressHealthReason,
+} from './project-egress-health.js';
 import { isAbsolute } from 'node:path';
 import {
   projectEgressHostRequest,
@@ -13,29 +17,36 @@ import {
  */
 export function createProjectEgressHostClient(options: {
   socketPath: string;
-  token: string;
+  token: string | (() => string);
   timeoutMs?: number;
 }): (input: ProjectEgressHostRequest) => Promise<ProjectEgressHostResponse> {
   const timeoutMs = options.timeoutMs ?? 5000;
   if (
     !isAbsolute(options.socketPath) ||
-    !/^[a-f0-9]{64}$/u.test(options.token) ||
+    (typeof options.token === 'string' && !/^[a-f0-9]{64}$/u.test(options.token)) ||
     !Number.isInteger(timeoutMs) ||
     timeoutMs < 1 ||
     timeoutMs > 30_000
   )
-    throw new Error('Invalid host control client configuration');
+    throw new ProjectEgressHealthError('invalid_configuration');
   return async (input) => {
+    let token: string;
+    try {
+      token = typeof options.token === 'function' ? options.token() : options.token;
+    } catch {
+      throw new ProjectEgressHealthError('key_unreadable');
+    }
+    if (!/^[a-f0-9]{64}$/u.test(token)) throw new ProjectEgressHealthError('invalid_configuration');
     const command = projectEgressHostRequest.parse(input);
     const body = JSON.stringify(command);
     return new Promise<ProjectEgressHostResponse>((resolve, reject) => {
       const abort = new AbortController();
       // A total deadline, including response reads, not an inactivity timeout.
-      const timer = setTimeout(() => abort.abort(), timeoutMs);
-      const fail = () => {
+      const timer = setTimeout(() => fail('timeout'), timeoutMs);
+      const fail = (reason: ProjectEgressHealthReason) => {
         clearTimeout(timer);
         abort.abort();
-        reject(new Error('Host control operation failed; execution outcome may be unknown'));
+        reject(new ProjectEgressHealthError(reason));
       };
       const call = request(
         {
@@ -46,14 +57,14 @@ export function createProjectEgressHostClient(options: {
           maxHeaderSize: 4096,
           signal: abort.signal,
           headers: {
-            authorization: `Bearer ${options.token}`,
+            authorization: `Bearer ${token}`,
             'content-type': 'application/json',
             'content-length': Buffer.byteLength(body),
           },
         },
         (response) => {
-          if (response.statusCode !== 200) {
-            fail();
+          if (response.statusCode !== 200 && response.statusCode !== 409) {
+            fail(response.statusCode === 401 ? 'authentication_failed' : 'host_not_ready');
             return;
           }
           const chunks: Buffer[] = [];
@@ -61,18 +72,47 @@ export function createProjectEgressHostClient(options: {
           response.on('data', (chunk: Buffer) => {
             size += chunk.length;
             if (size > 8192) {
-              fail();
+              fail('protocol_mismatch');
               return;
             }
             chunks.push(chunk);
           });
-          response.on('error', fail);
+          response.on('error', () => fail('service_unreachable'));
           response.on('end', () => {
             try {
+              if (response.statusCode === 409) {
+                const refused: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+                const reason =
+                  typeof refused === 'object' && refused !== null && 'reason' in refused
+                    ? refused.reason
+                    : undefined;
+                fail(
+                  command.operation === 'health' && reason === 'mandatory_inventory_incomplete'
+                    ? reason
+                    : 'host_not_ready',
+                );
+                return;
+              }
               const result = projectEgressHostResponse.parse(
                 JSON.parse(Buffer.concat(chunks).toString('utf8')),
               );
-              if (command.operation === 'current') {
+              if (
+                command.operation === 'inventory-begin' ||
+                command.operation === 'inventory-commit' ||
+                command.operation === 'inventory-renew'
+              ) {
+                if (
+                  !('token' in result) ||
+                  result.state !==
+                    (command.operation === 'inventory-begin'
+                      ? 'inventory-denied'
+                      : 'inventory-ready') ||
+                  result.token !== command.token
+                )
+                  throw new Error('Mismatched inventory acknowledgement');
+              } else if (command.operation === 'health') {
+                if (result.state !== 'health') throw new Error('Mismatched host health');
+              } else if (command.operation === 'current') {
                 if (
                   result.state !== 'current' ||
                   result.projectId !== command.projectId ||
@@ -101,6 +141,10 @@ export function createProjectEgressHostClient(options: {
                 if (
                   !expectedStates.includes(result.state) ||
                   result.state === 'current' ||
+                  result.state === 'health' ||
+                  result.state === 'inventory-denied' ||
+                  result.state === 'inventory-ready' ||
+                  !('generation' in result) ||
                   result.generation !== generation
                 )
                   throw new Error('Mismatched host acknowledgement');
@@ -108,12 +152,20 @@ export function createProjectEgressHostClient(options: {
               clearTimeout(timer);
               resolve(result);
             } catch {
-              fail();
+              fail('protocol_mismatch');
             }
           });
         },
       );
-      call.on('error', fail);
+      call.on('error', (error: NodeJS.ErrnoException) =>
+        fail(
+          error.code === 'ENOENT'
+            ? 'socket_missing'
+            : error.code === 'EACCES' || error.code === 'EPERM'
+              ? 'permission_denied'
+              : 'service_unreachable',
+        ),
+      );
       call.end(body);
     });
   };

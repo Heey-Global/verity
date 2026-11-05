@@ -177,3 +177,15 @@ it('cleans a stale socket without replacing its directory or stealing an active 
     await rm(root, { recursive: true, force: true });
   }
 });
+
+it('targets the production helper mode in the native helper-death proof', () => {
+  const channel = readFileSync('packages/server/src/project-egress-deadline-channel.ts', 'utf8');
+  // Derive the command from the actual launcher so a transport change cannot silently
+  // leave the native containment probe looking for a process that never exists.
+  const launchMode = /project-egress-deadline\.py', '(--[a-z]+)'/u.exec(channel)?.[1];
+  expect(launchMode).toBeDefined();
+  for (const file of ['host-smoke.ts', 'composed-proof.py', 'test_composed.py']) {
+    const source = readFileSync(`scripts/probes/project-egress/${file}`, 'utf8');
+    expect(source).toContain(`project-egress-deadline.py\\0${launchMode}`);
+  }
+});

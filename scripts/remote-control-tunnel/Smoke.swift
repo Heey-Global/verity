@@ -207,8 +207,18 @@ func runProductionTunnelSmoke(endpoint: URL, outerPin: String, corePin: String, 
       tunnel.stop()
       let snapshot = try! JSONSerialization.jsonObject(with: Data(tunnel.exportDataDiagnostics()!.utf8)) as! [String: Any]
       let events = snapshot["events"] as! [[String: Any]]
-      precondition(events.filter { $0["event"] as? String == "cancel_requested" }.count == 1)
-      precondition(events.filter { $0["event"] as? String == "socket_cancel" }.count == 1)
+      let cancelRequests = events.filter { $0["event"] as? String == "cancel_requested" }.count
+      let socketCancels = events.filter { $0["event"] as? String == "socket_cancel" }.count
+      let dropped = snapshot["dropped"] as! Int
+      // The bounded recorder preserves the prefix, so overflow can omit teardown.
+      // Complete captures still require both receipts; duplicate stop is never valid.
+      precondition(cancelRequests <= 1 && socketCancels <= 1)
+      if dropped == 0 {
+        precondition(cancelRequests == 1 && socketCancels == 1)
+      } else {
+        precondition(events.count == RemoteDataDiagnostics.capacity)
+        print("production-diagnostics-gap dropped=\(dropped)")
+      }
       precondition(snapshot["sessionHash"] as? String != "fixture-session")
       precondition(snapshot["delegateAvailable"] as? Bool == false)
       let streamSnapshots = snapshot["streams"] as! [[String: Any]]

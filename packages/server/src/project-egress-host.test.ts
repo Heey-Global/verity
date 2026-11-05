@@ -12,6 +12,7 @@ import {
   openProjectEgressHostStore,
   verifyEgressHostContainer,
   verifyEgressHostRuntime,
+  createEgressHostRuntimeRegistrationGuard,
   verifyEgressHostNetwork,
 } from './project-egress-host-runtime.js';
 import { listenProjectEgressHost } from './project-egress-host-control.js';
@@ -273,6 +274,10 @@ it('requires authentication on the real Unix listener and never exposes raw exec
       call.on('error', reject);
       call.end(JSON.stringify(body));
     });
+  expect(await send('wrong', { operation: 'health' })).toBe(401);
+  expect(await send('a'.repeat(64), { operation: 'health' })).toBe(200);
+  expect(deps.save).not.toHaveBeenCalled();
+  expect(deps.inspectNetwork).not.toHaveBeenCalled();
   expect(await send('wrong', { operation: 'register', binding })).toBe(401);
   expect(deps.apply).not.toHaveBeenCalled();
   expect(await send('a'.repeat(64), { operation: 'register', binding })).toBe(200);
@@ -591,4 +596,65 @@ it('answers names read-only from enforcement, never for unknown or retired gener
   await host.execute({ operation: 'retire', projectId: binding.projectId, generation: 'gen1' });
   expect(await ask('downloads.example.com')).toEqual({ state: 'unresolved', generation: 'gen1' });
   expect(enforcement.requestDirect).toHaveBeenCalledTimes(1);
+});
+
+it('does not advertise health when read-only host compatibility checks fail', async () => {
+  const { deps } = fixture();
+  const verifyHealth = vi.fn(async () => {
+    throw new Error('unsupported Docker host');
+  });
+  const host = new ProjectEgressHost({ version: 1, records: [] }, { ...deps, verifyHealth });
+  await expect(host.execute({ operation: 'health' })).rejects.toThrow('unsupported Docker host');
+  expect(verifyHealth).toHaveBeenCalledExactlyOnceWith();
+  expect(deps.save).not.toHaveBeenCalled();
+  expect(deps.apply).not.toHaveBeenCalled();
+  expect(deps.inspectNetwork).not.toHaveBeenCalled();
+});
+
+it('pins serving runtime registrations even when a replacement is otherwise supported', () => {
+  const runtimes = {
+    'runsc-project': {
+      path: '/opt/verity/runsc/release-20261101.0/runsc',
+      runtimeArgs: ['--host-uds=create', '--network=sandbox', '--platform=systrap'],
+    },
+    'runsc-relay': {
+      path: '/opt/verity/runsc/release-20261101.0/runsc',
+      runtimeArgs: ['--host-uds=open', '--network=sandbox', '--platform=systrap'],
+    },
+  };
+  const verify = createEgressHostRuntimeRegistrationGuard(runtimes);
+  verify(structuredClone(runtimes));
+  const changed = structuredClone(runtimes);
+  changed['runsc-relay'].path = '/opt/verity/runsc/release-20261102.0/runsc';
+  verifyEgressHostRuntime(changed, 'relay');
+  expect(() => verify(changed)).toThrow('registration changed');
+  changed['runsc-relay'] = structuredClone(runtimes['runsc-relay']);
+  changed['runsc-project'].runtimeArgs.reverse();
+  expect(() => verify(changed)).toThrow('registration changed');
+});
+
+it('secures a fresh Docker bind directory before reading the missing host registry', async () => {
+  const root = await mkdtemp('/tmp/egress-initial-bind-');
+  try {
+    await chmod(root, 0o755);
+    await expect(openProjectEgressHostStore(root)).rejects.toThrow('private');
+    const store = await openProjectEgressHostStore(root, { preparePrivate: true });
+    expect(await store.load()).toEqual({ version: 1, records: [] });
+    // The normal serving path now accepts the prepared directory without mutation.
+    await expect(openProjectEgressHostStore(root)).resolves.toBeDefined();
+    await chmod(root, 0o777);
+    await expect(openProjectEgressHostStore(root, { preparePrivate: true })).rejects.toThrow(
+      'writable',
+    );
+    await chmod(root, 0o700);
+    const link = root + '-link';
+    await symlink(root, link);
+    try {
+      await expect(openProjectEgressHostStore(link, { preparePrivate: true })).rejects.toThrow();
+    } finally {
+      await rm(link);
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });

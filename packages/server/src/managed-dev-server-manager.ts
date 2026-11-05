@@ -1,3 +1,4 @@
+import { PreviewNetworkProtectionError } from './preview-network-policy.js';
 import {
   ManagedDevServerConflictError,
   managedDevServerBindingsEqual,
@@ -29,6 +30,13 @@ const MANAGED_SHARE_TTL_SECONDS = 30 * 86_400;
 
 export type StartedBy = 'agent' | 'operator' | 'recovery';
 
+/** IDs needed to stop processes after the session's FK cascade removed their rows. */
+export interface ManagedSessionCleanupSnapshot {
+  sessionId: string;
+  projectId: string | null;
+  instanceIds: string[];
+}
+
 export interface ManagedDevServerRuntime {
   startManagedServer(
     project: ProjectRecord,
@@ -47,7 +55,10 @@ export interface ManagedDevServerRuntime {
     instanceId: string,
   ): Promise<{ alive: boolean; exitCode: number | null }>;
   managedServerLogs(project: ProjectRecord, instanceId: string, lines?: number): Promise<string>;
-  listListeningProcesses(project: ProjectRecord): Promise<ListeningProcess[]>;
+  listListeningProcesses(
+    project: ProjectRecord,
+    options?: { fresh?: boolean },
+  ): Promise<ListeningProcess[]>;
 }
 
 /** The subset of the local preview manager a managed instance publishes through. */
@@ -179,6 +190,7 @@ export class ManagedDevServerManager {
   private readonly checkedAt = new Map<string, number>();
   /** Projects with an instance that should be running; they must not sleep. */
   private activeProjects = new Set<string>();
+  private readonly deletingSessions = new Set<string>();
   private readonly pendingLinkEnds = new Map<string, string | undefined>();
   private readonly pendingUnpublish = new Map<string, ManagedDevServerInstanceRecord>();
   private closed = false;
@@ -236,7 +248,25 @@ export class ManagedDevServerManager {
     }
   }
 
+  private async sessionUnavailable(sessionId: string): Promise<boolean> {
+    return (
+      this.deletingSessions.has(sessionId) ||
+      (await this.options.store.isSessionDeleting(sessionId)) ||
+      (await this.options.store.getSession(sessionId)) === undefined
+    );
+  }
+
+  private async assertStartAllowed(sessionId: string): Promise<void> {
+    if (await this.sessionUnavailable(sessionId))
+      throw new ManagedDevServerError('session is being deleted', 409);
+  }
+
   private async context(sessionId: string): Promise<SessionContext> {
+    if (
+      this.deletingSessions.has(sessionId) ||
+      (await this.options.store.isSessionDeleting(sessionId))
+    )
+      throw new ManagedDevServerError('session is being deleted', 409);
     const session = await this.options.store.getSession(sessionId);
     if (!session?.projectId || !session.worktree)
       throw new ManagedDevServerError('session not found', 404);
@@ -690,6 +720,42 @@ export class ManagedDevServerManager {
     return this.options.runtime.managedServerLogs(project, instance.id, lines);
   }
 
+  /** Snapshot IDs; admission is fenced by the durable deletion record. */
+  async captureSessionCleanup(sessionId: string): Promise<ManagedSessionCleanupSnapshot> {
+    const [session, instances] = await Promise.all([
+      this.options.store.getSession(sessionId),
+      this.servers.listInstances({ sessionId }),
+    ]);
+    return {
+      sessionId,
+      projectId: session?.projectId ?? instances[0]?.projectId ?? null,
+      instanceIds: instances.map((instance) => instance.id),
+    };
+  }
+
+  /** Drain late starts under the same project lock without waking sleeping sandboxes. */
+  async cleanupDeletedSession(
+    snapshot: ManagedSessionCleanupSnapshot,
+  ): Promise<'clean' | 'deferred'> {
+    this.deletingSessions.add(snapshot.sessionId);
+    const projectId = snapshot.projectId;
+    if (projectId === null) return 'clean';
+    return this.locked(projectId, async () => {
+      const project = await this.options.store.getProject(projectId);
+      if (!project) return 'clean';
+      if (project.state !== 'active' || !project.containerName) return 'deferred';
+      for (const instanceId of snapshot.instanceIds) {
+        await this.options.runtime.stopManagedServer(project, instanceId);
+        this.pendingUnpublish.delete(instanceId);
+        this.pendingLinkEnds.delete(instanceId);
+        this.publishRetryAt.delete(instanceId);
+      }
+      await this.refreshReserved();
+      this.refreshQuietly(project);
+      return 'clean';
+    });
+  }
+
   /**
    * Called before a session is deleted or moved: its processes must not outlive
    * its worktree. A move also forgets the instances, which belong to the source
@@ -725,6 +791,7 @@ export class ManagedDevServerManager {
     local?: boolean,
   ): Promise<void> {
     const { project, sessionId } = context;
+    await this.assertStartAllowed(sessionId);
     if ((project.state === 'sleeping' || project.state === 'waking') && this.options.wakeSandbox) {
       // Record the intent, wake the sandbox, and let supervision start the server
       // once it is up: an instance that should run but has no process is started.
@@ -752,6 +819,7 @@ export class ManagedDevServerManager {
             ? (instance.accessStartedAt ?? instance.startedAt ?? new Date(this.now()))
             : new Date(this.now()),
       });
+      await this.assertStartAllowed(sessionId);
       this.activeProjects.add(project.id);
       void this.options
         .wakeSandbox(project.id, sessionId)
@@ -767,7 +835,9 @@ export class ManagedDevServerManager {
     }
     if (project.state !== 'active' || !project.containerName)
       throw new ManagedDevServerError('the project sandbox is not running', 409);
-    const processes = await this.options.runtime.listListeningProcesses(project).catch(() => []);
+    const processes = await this.options.runtime
+      .listListeningProcesses(project, { fresh: true })
+      .catch(() => []);
     const busy = new Set(processes.map((process) => process.port));
     let instance = await this.servers.ensureInstance({
       serverId: entry.id,
@@ -858,6 +928,7 @@ export class ManagedDevServerManager {
       });
       return;
     }
+    await this.assertStartAllowed(sessionId);
     const result = await this.options.runtime.startManagedServer(project, {
       instanceId: instance.id,
       ...(secrets.length > 0 ? { secrets } : {}),
@@ -870,6 +941,10 @@ export class ManagedDevServerManager {
         VERITY_SESSION_ID: sessionId,
       },
     });
+    if (await this.sessionUnavailable(sessionId)) {
+      if (result.ok) await this.options.runtime.stopManagedServer(project, instance.id);
+      throw new ManagedDevServerError('session is being deleted', 409);
+    }
     const now = new Date(this.now());
     if (!result.ok) {
       await this.servers.updateInstance(instance.id, {
@@ -958,7 +1033,8 @@ export class ManagedDevServerManager {
     instance: ManagedDevServerInstanceRecord,
   ): Promise<void> {
     const local = this.options.localShares;
-    if (!local || !instance.localAccess) return;
+    if (!local || !instance.localAccess || (await this.sessionUnavailable(instance.sessionId)))
+      return;
     if (
       !instance.lastRunCommand ||
       !instance.lastRunWorkdir ||
@@ -1005,12 +1081,17 @@ export class ManagedDevServerManager {
     }
     await this.refreshReserved();
     try {
-      await local.create(instance.sessionId, {
+      await this.assertStartAllowed(instance.sessionId);
+      const share = await local.create(instance.sessionId, {
         targetPort: instance.sandboxPort,
         ttlSeconds: MANAGED_SHARE_TTL_SECONDS,
         networkPort: reservation.port,
         managedInstanceId: instance.id,
       });
+      if (await this.sessionUnavailable(instance.sessionId)) {
+        await local.stop(share.id);
+        return;
+      }
       this.publishRetryAt.delete(instance.id);
       if (instance.detail) await this.servers.updateInstance(instance.id, { detail: null });
     } catch (error) {
@@ -1020,7 +1101,10 @@ export class ManagedDevServerManager {
       await this.refreshReserved();
       this.publishRetryAt.set(instance.id, this.now() + 30_000);
       await this.servers.updateInstance(instance.id, {
-        detail: 'Could not open it on your network yet. Retrying shortly.',
+        detail:
+          error instanceof PreviewNetworkProtectionError
+            ? error.message
+            : 'Could not open it on your network yet. Retrying shortly.',
       });
       this.options.log?.('verity: managed dev server could not publish locally', {
         projectId: project.id,

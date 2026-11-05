@@ -42,10 +42,8 @@ export interface SessionsTable {
    */
   project_id: ColumnType<string | null, string | null | undefined, string | null>;
   /**
-   * Operator's "last seen" mark for the overview unread dot (#387): the session's
-   * `eventCount` at the last open. NULL = never opened → not unread. Global (no
-   * per-device scoping), so the mark syncs across every device hitting this server.
-   * Advanced monotonically by {@link EventStore.setSessionSeen}.
+   * Legacy shared "last seen" mark (#387), copied into `user_view_state` for every
+   * person by migration 0189 and no longer written. Read state is per person now.
    */
   last_seen_event_count: ColumnType<number | null, number | null | undefined, number | null>;
   /**
@@ -423,9 +421,8 @@ export interface ProjectsTable {
   /** Operator-defined overview order. NULL = never manually ordered; those rows
    *  sort after ordered projects by their stable creation order. */
   sort_order: ColumnType<number | null, number | null | undefined, number | null>;
-  /** Operator's overview fold state for this project group. `false` = expanded
-   *  (default for a freshly registered project). Persisted so the choice syncs
-   *  across every device; there is no per-device/per-operator scoping. */
+  /** Legacy shared fold state, copied into `user_view_state` for every person by
+   *  migration 0189 and no longer written. Folding is per person now. */
   collapsed: ColumnType<boolean, boolean | undefined, boolean>;
   /** True once a repo was explicitly added as a Verity project. Installation-sync
    *  cache rows stay false while still `absent`, so the overview can show paused
@@ -870,6 +867,11 @@ interface RunningTurnsTable {
 }
 
 export interface SessionBackendStateTable {
+  context_fingerprint: ColumnType<
+    string | null,
+    string | null | undefined,
+    string | null | undefined
+  >;
   session_id: string;
   backend: string;
   backend_session_id: string;
@@ -1640,7 +1642,35 @@ export interface VulnDigestsTable {
   user_id: string;
   day: string;
 }
+export interface UserContextTable {
+  user_id: string;
+  instructions: string;
+  memory: string;
+  revision: number;
+}
+
+/** A person's view of one project or session (exactly one of the two is set). */
+export interface UserViewStateTable {
+  user_id: string;
+  project_id: string | null;
+  session_id: string | null;
+  collapsed: ColumnType<boolean, boolean | undefined, boolean>;
+  last_seen_event_count: number | null;
+  /** Keys of the Home items this person dismissed, oldest first. */
+  inbox_dismissed: ColumnType<string[], string | undefined, string>;
+}
+
+interface SessionDeletionsTable {
+  session_id: string;
+  payload: string;
+  worktree: string | null;
+  cleanup_pending: Generated<boolean>;
+}
+
 export interface Database {
+  session_deletions: SessionDeletionsTable;
+  user_context: UserContextTable;
+  user_view_state: UserViewStateTable;
   qa_dispatches: QADispatchesTable;
   qa_manual_repairs: QAManualRepairsTable;
   qa_assignments: QAAssignmentsTable;
@@ -1673,6 +1703,7 @@ export interface Database {
   live_meeting_insights: LiveMeetingInsightsTable;
   live_meeting_commands: LiveMeetingCommandsTable;
   live_meeting_sync_clock: LiveMeetingSyncClockTable;
+  live_meeting_deletions: LiveMeetingDeletionsTable;
   session_links: SessionLinksTable;
   session_link_deliveries: SessionLinkDeliveriesTable;
   session_link_pending_messages: SessionLinkPendingMessagesTable;
@@ -1808,6 +1839,15 @@ interface LiveMeetingCommandsTable {
 interface LiveMeetingSyncClockTable {
   id: boolean;
   sequence: number;
+}
+
+interface LiveMeetingDeletionsTable {
+  meeting_id: string;
+  session_id: string;
+  deleted_seq: number;
+  deleted_at: number;
+  engine: string;
+  started_at: number;
 }
 
 interface LiveMeetingNotesTable {

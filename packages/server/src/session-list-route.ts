@@ -2,9 +2,10 @@ import { measureLatencyPhase, type EventStore, type SessionRecord } from '@verit
 import type { FastifyInstance } from 'fastify';
 import type { AttentionSignal } from './attention.js';
 import type { SessionSummary, SessionListEnvelope } from './server.js';
+import { viewerId } from './view-state-routes.js';
 
 export interface SessionListRouteDeps {
-  store: Pick<EventStore, 'listSessions' | 'sessionSortOrders' | 'linkedSessionIds'>;
+  store: Pick<EventStore, 'listSessions' | 'sessionSortOrders' | 'linkedSessionIds' | 'viewState'>;
   prunePrSummaryCache: (liveWorktrees: ReadonlySet<string>) => void;
   pruneBranchCache: (liveWorktrees: ReadonlySet<string>) => void;
   summarizeSessions: (sessions: SessionRecord[]) => Promise<SessionSummary[]>;
@@ -55,7 +56,21 @@ export function registerSessionListRoute(app: FastifyInstance, deps: SessionList
     return read;
   };
   app.get('/sessions', async (request): Promise<SessionSummary[] | SessionListEnvelope> => {
-    const summaries = await sharedLoad();
+    const [shared, views] = await Promise.all([
+      sharedLoad(),
+      deps.store.viewState.sessionViews(viewerId(request)),
+    ]);
+    // The shared load may serve several people at once, so each answer gets its
+    // own copies carrying the requester's read mark and dismissed Home items.
+    // A session this person never touched is unread-neutral and hides nothing.
+    const summaries = shared.map((summary) => {
+      const view = views.get(summary.sessionId);
+      return {
+        ...summary,
+        lastSeenEventCount: view?.lastSeenEventCount ?? null,
+        inboxDismissed: view?.inboxDismissed ?? [],
+      };
+    });
     if ((request.query as { envelope?: unknown } | undefined)?.envelope !== '1') return summaries;
     const attention = await measureLatencyPhase('session_attention', deps.collectAttention);
     // Absent when healthy, so the envelope stays quiet in the steady state.

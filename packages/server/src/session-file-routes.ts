@@ -1,3 +1,4 @@
+import { join } from 'node:path';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 
@@ -6,7 +7,12 @@ import { sessionParams } from './session-route-schemas.js';
 
 /** Which of the explorer's roots a request addresses. Omitted → the worktree, so
  *  every pre-knowledge client keeps browsing exactly what it browsed before. */
-const sessionFileRoot = z.enum(SESSION_FILE_ROOTS).default('worktree');
+const sessionFileRoot = z
+  .enum([...SESSION_FILE_ROOTS, 'wiki', 'raw-sources'])
+  .default('worktree')
+  .transform((root): SessionFileRootName =>
+    root === 'wiki' ? 'documents' : root === 'raw-sources' ? 'sources' : root,
+  );
 
 const sessionFileQuery = z.object({
   root: sessionFileRoot,
@@ -66,13 +72,34 @@ interface SessionFileTarget {
   dir: string;
 }
 
+export class SessionFileRootUnavailableError extends Error {
+  constructor(
+    message: string,
+    readonly status: 404 | 503,
+  ) {
+    super(message);
+  }
+}
+
 export interface SessionFileRouteDeps {
+  resolveProjectRoot?: (projectId: string) => Promise<string | undefined>;
+  resolveSharedRoot?: () => Promise<string | undefined>;
   documentStatus?:
-    | ((sessionId: string) => Promise<{ pending: boolean; running: boolean } | undefined>)
+    | ((sessionId: string) => Promise<
+        | {
+            pending: boolean;
+            running: boolean;
+            warning?: string;
+            inspectionError?: boolean;
+            excludedEntries?: { path: string; reason: 'generated' | 'unsupported' }[];
+          }
+        | undefined
+      >)
     | undefined;
   /** The directory backing `root` for this session, or `undefined` when the
    *  session does not exist — or, for a knowledge root, when the session has no
    *  project or the deployment has no knowledge folder configured. */
+  codeAvailable?: ((sessionId: string) => Promise<boolean>) | undefined;
   workspaceKind?: ((sessionId: string) => Promise<'documents' | 'code'>) | undefined;
   resolveRoot: (sessionId: string, root: SessionFileRootName) => Promise<string | undefined>;
   list: (reply: FastifyReply, target: SessionFileTarget, path: string) => Promise<unknown>;
@@ -107,12 +134,122 @@ export interface SessionFileRouteDeps {
 /** Registers file browsing, upload, preview, download, delete, and move routes
  *  over the session's worktree and the project's knowledge folders. */
 export function registerSessionFileRoutes(app: FastifyInstance, deps: SessionFileRouteDeps): void {
+  // Resolve writes relative to Wiki itself so intermediate symlinks cannot reach Sources.
+  const writeWiki = async (
+    reply: FastifyReply,
+    target: SessionFileTarget,
+    body: SessionFileWriteBody,
+  ) => {
+    const result = await deps.write(
+      reply,
+      { root: 'documents', dir: join(target.dir, 'insights') },
+      {
+        ...body,
+        root: 'documents',
+        path: body.path.slice('insights/'.length),
+      },
+    );
+    return result && typeof result === 'object' && 'path' in result
+      ? { ...result, path: body.path }
+      : result;
+  };
+  const resolveProjectRoot = deps.resolveProjectRoot;
+  if (resolveProjectRoot) {
+    const projectTarget = async (request: FastifyRequest, reply: FastifyReply) => {
+      const { id } = sessionParams.parse(request.params);
+      const dir = await resolveProjectRoot(id);
+      if (!dir) {
+        reply.code(404).send({ error: 'Project knowledge not found' });
+        return undefined;
+      }
+      return { root: 'knowledge' as const, dir };
+    };
+    const wikiPath = (path: string) =>
+      path.startsWith('insights/') && !path.replaceAll('\\', '/').split('/').includes('..');
+    app.get('/projects/:id/knowledge/files', async (request, reply) => {
+      const { path } = sessionFileQuery.parse(request.query);
+      const target = await projectTarget(request, reply);
+      return target ? deps.list(reply, target, path) : reply;
+    });
+    app.get('/projects/:id/knowledge/files/content', async (request, reply) => {
+      const { path } = sessionFileQuery.parse(request.query);
+      const target = await projectTarget(request, reply);
+      if (!target) return reply;
+      const content = await deps.content(reply, target, path);
+      return content && typeof content === 'object' && 'editable' in content
+        ? { ...content, editable: wikiPath(path) && content.editable }
+        : content;
+    });
+    app.get('/projects/:id/knowledge/files/download', async (request, reply) => {
+      const { path } = sessionFileQuery.parse(request.query);
+      const target = await projectTarget(request, reply);
+      return target ? deps.download(reply, target, path) : reply;
+    });
+    app.put(
+      '/projects/:id/knowledge/files/content',
+      { bodyLimit: 6_100_000 },
+      async (request, reply) => {
+        const body = sessionFileWriteBody.parse(request.body);
+        if (!wikiPath(body.path))
+          return reply.code(403).send({ error: 'Only Wiki files can be edited here.' });
+        const target = await projectTarget(request, reply);
+        return target ? writeWiki(reply, target, body) : reply;
+      },
+    );
+  }
+  const resolveSharedRoot = deps.resolveSharedRoot;
+  if (resolveSharedRoot) {
+    const isSharedWikiPath = (path: string) =>
+      path.startsWith('insights/') && !path.replaceAll('\\', '/').split('/').includes('..');
+    const sharedTarget = async (reply: FastifyReply) => {
+      const dir = await resolveSharedRoot();
+      if (!dir) {
+        reply.code(404).send({ error: 'Shared knowledge is not configured' });
+        return undefined;
+      }
+      return { root: 'shared' as const, dir };
+    };
+    app.get('/knowledge/shared/files', async (request, reply) => {
+      const { path } = sessionFileQuery.parse(request.query);
+      const value = await sharedTarget(reply);
+      return value ? deps.list(reply, value, path) : reply;
+    });
+    app.get('/knowledge/shared/files/content', async (request, reply) => {
+      const { path } = sessionFileQuery.parse(request.query);
+      const value = await sharedTarget(reply);
+      if (!value) return reply;
+      const content = await deps.content(reply, value, path);
+      return content && typeof content === 'object' && 'editable' in content
+        ? { ...content, editable: isSharedWikiPath(path) && content.editable }
+        : content;
+    });
+    app.get('/knowledge/shared/files/download', async (request, reply) => {
+      const { path } = sessionFileQuery.parse(request.query);
+      const value = await sharedTarget(reply);
+      return value ? deps.download(reply, value, path) : reply;
+    });
+    app.put('/knowledge/shared/files/content', { bodyLimit: 6_100_000 }, async (request, reply) => {
+      const body = sessionFileWriteBody.parse(request.body);
+      if (!isSharedWikiPath(body.path))
+        return reply.code(403).send({ error: 'Only Shared Wiki files can be edited here.' });
+      const value = await sharedTarget(reply);
+      return value ? writeWiki(reply, value, body) : reply;
+    });
+  }
+
   const target = async (
     id: string,
     root: SessionFileRootName,
     reply: FastifyReply,
   ): Promise<SessionFileTarget | undefined> => {
-    const dir = await deps.resolveRoot(id, root);
+    let dir: string | undefined;
+    try {
+      dir = await deps.resolveRoot(id, root);
+    } catch (error) {
+      if (!(error instanceof SessionFileRootUnavailableError)) throw error;
+      reply.code(error.status).send({ error: error.message });
+      return undefined;
+    }
     if (dir === undefined) {
       // A knowledge root is missing for more reasons than a missing session —
       // a session without a project, a deployment without a data root — and
@@ -150,6 +287,7 @@ export function registerSessionFileRoutes(app: FastifyInstance, deps: SessionFil
       ? {
           ...listed,
           workspaceKind: await deps.workspaceKind(id),
+          codeAvailable: await deps.codeAvailable?.(id),
           documentStatus: await deps.documentStatus?.(id),
         }
       : listed;

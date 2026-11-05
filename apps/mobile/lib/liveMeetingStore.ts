@@ -570,15 +570,52 @@ export async function hasPendingMeetingSync(serverId: string, sessionId: string)
   return row?.pending === 1;
 }
 
+async function removeMeetingRows(
+  connection: SQLite.SQLiteDatabase,
+  id: string,
+  serverId: string | null,
+): Promise<void> {
+  const owned = await connection.getFirstAsync<{ id: string }>(
+    serverId === null
+      ? 'SELECT id FROM meetings WHERE id = ?'
+      : 'SELECT id FROM meetings WHERE id = ? AND server_id = ?',
+    ...(serverId === null ? [id] : [id, serverId]),
+  );
+  if (!owned) {
+    // A note written after the meeting went is an orphan the server keeps refusing.
+    await connection.runAsync(
+      'DELETE FROM meeting_notes WHERE meeting_id = ? AND NOT EXISTS (SELECT 1 FROM meetings WHERE id = ?)',
+      id,
+      id,
+    );
+    return;
+  }
+  await connection.runAsync('DELETE FROM meeting_notes WHERE meeting_id = ?', id);
+  await connection.runAsync('DELETE FROM meetings WHERE id = ?', id);
+}
+
+/**
+ * Deletes a meeting with its notes and drafts from this device. Nothing is left to sync,
+ * so a discarded meeting is not uploaded again.
+ */
+export async function deleteMeeting(id: string, serverId: string | null = null): Promise<void> {
+  const connection = await db();
+  // With a server, only that server's copy goes; a same-id meeting elsewhere stays.
+  await connection.withTransactionAsync(() => removeMeetingRows(connection, id, serverId));
+}
+
 export async function importChanges(
   serverId: string,
   sessionId: string,
   cursor: number,
   meetings: LiveMeeting[],
   notes: LiveMeetingNote[],
+  deletedMeetingIds: readonly string[] = [],
 ): Promise<void> {
   const connection = await db();
   await connection.withTransactionAsync(async () => {
+    // Discarded on another device: only this server's copy goes, never a same-id local one.
+    for (const id of deletedMeetingIds) await removeMeetingRows(connection, id, serverId);
     for (const meeting of meetings) {
       await connection.runAsync(
         `INSERT INTO meetings

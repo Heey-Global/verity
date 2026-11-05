@@ -61,3 +61,30 @@ another session or copied into its home.
 This document describes the storage contract. Migration, confinement and lifecycle
 verification must accompany rollout; a new path alone does not establish that
 those guarantees have been deployed.
+
+## Deletion and retry behavior
+
+The server persists cleanup ownership under
+`<dataVolumeRoot>/pending-session-cleanup/session-homes/<sha256(session-id)>.json`
+before deleting the session row and its backend bindings. Failure to persist this
+record fails the request while retaining the session. Once the row is deleted,
+the request does not wait for `delete-session-home` or transcript removal.
+
+A serial background worker runs at startup, after successful deletion, and every
+30 seconds. It skips records whose session row still exists, retains failed
+records, and removes a record only after all candidate runtimes have been cleaned.
+Pending records survive server restarts. This worker runs independently of the
+one-time orphan transcript sweep. Missing runtimes need no cleanup.
+
+A slow supervisor does not mean that the session deletion was rolled back. The
+supervisor's `delete-session-home` handler first lists stored turns and cancels
+matching turns, then asks the broker to delete the home. The broker writes the
+start fence, waits for matching child processes to close, acquires the home lease,
+purges legacy native state where present, and removes the home. Turn-history
+scans, process shutdown, native-state purging, and recursive filesystem removal
+can all contribute latency; filesystem work is particularly costly under a loaded
+gVisor sandbox. The broker request has a 30-second supervisor timeout; the server
+cleanup worker gives each supervisor request 10 seconds and retries later. A
+timed-out request can still finish inside the broker, so retries must remain
+idempotent. These are code-path explanations, not a measurement identifying
+which phase caused a particular timeout.

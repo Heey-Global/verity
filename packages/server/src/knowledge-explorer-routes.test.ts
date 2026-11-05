@@ -4,6 +4,7 @@ import {
   mkdtempSync,
   readFileSync,
   statSync,
+  symlinkSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
@@ -185,6 +186,111 @@ describe('session explorer knowledge roots', () => {
     expect(listed.json<{ entries: { name: string }[] }>().entries).toMatchObject([
       { name: 'Preisliste.md', kind: 'file' },
     ]);
+  });
+
+  it('browses Shared without a session and preserves revision and path protections', async () => {
+    await ctx.store.deleteSession('s-knowledge');
+    await ctx.store.deleteSession('s-loose');
+    const listing = await app.inject('/knowledge/shared/files');
+    expect(listing.statusCode).toBe(200);
+    expect(listing.json()).toMatchObject({ root: 'shared' });
+    const file = join(sharedKnowledgeDir(dataRoot), 'insights/reference.md');
+    writeFileSync(file, 'Original reference');
+    const response = await app.inject('/knowledge/shared/files/content?path=insights/reference.md');
+    expect(response.statusCode).toBe(200);
+    const snapshot = response.json<{ version: string; content: string }>();
+    expect(snapshot.content).toBe('Original reference');
+    const original = join(sharedKnowledgeDir(dataRoot), 'sources/documents/original.txt');
+    writeFileSync(original, 'Immutable source');
+    const source = await app.inject(
+      '/knowledge/shared/files/content?path=sources/documents/original.txt',
+    );
+    expect(source.json()).toMatchObject({ editable: false, content: 'Immutable source' });
+    const download = await app.inject(
+      '/knowledge/shared/files/download?path=sources/documents/original.txt',
+    );
+    expect(download.statusCode).toBe(200);
+    expect(download.body).toBe('Immutable source');
+
+    const save = (expectedVersion: string, path = 'insights/reference.md') =>
+      app.inject({
+        method: 'PUT',
+        url: '/knowledge/shared/files/content',
+        payload: { root: 'shared', path, content: 'Updated reference', expectedVersion },
+      });
+    expect((await save(snapshot.version)).statusCode).toBe(200);
+    expect((await save(snapshot.version)).statusCode).toBe(409);
+    expect(readFileSync(file, 'utf8')).toBe('Updated reference');
+    symlinkSync('../sources', join(sharedKnowledgeDir(dataRoot), 'insights/alias'));
+    expect(
+      (
+        await save(
+          fileVersion(Buffer.from('Immutable source')),
+          'insights/alias/documents/original.txt',
+        )
+      ).statusCode,
+    ).toBe(400);
+    expect(readFileSync(original, 'utf8')).toBe('Immutable source');
+    expect((await save(snapshot.version, 'sources/original.md')).statusCode).toBe(403);
+    expect((await save(snapshot.version, 'insights/../sources/original.md')).statusCode).toBe(403);
+    expect(
+      (await app.inject('/knowledge/shared/files/content?path=../outside.md')).statusCode,
+    ).toBe(400);
+  });
+
+  it('browses project knowledge without sessions and confines edits to its Wiki', async () => {
+    await ctx.store.deleteSession('s-knowledge');
+    const base = '/projects/p-1/knowledge/files';
+    const listing = await app.inject(base);
+    expect(listing.statusCode).toBe(200);
+    expect(listing.json()).toMatchObject({ root: 'knowledge' });
+    expect((await app.inject(`${base}?path=insights/decisions`)).json()).toMatchObject({
+      entries: [],
+    });
+    const dir = projectKnowledgeDir(dataRoot, 'p-1');
+    writeFileSync(join(dir, 'insights/note.md'), 'Project note');
+    writeFileSync(join(dir, 'sources/documents/original.txt'), 'Source');
+    const snapshot = (await app.inject(`${base}/content?path=insights/note.md`)).json();
+    expect(snapshot).toMatchObject({ content: 'Project note', editable: true });
+    const save = (path: string) =>
+      app.inject({
+        method: 'PUT',
+        url: `${base}/content`,
+        payload: {
+          root: 'shared',
+          path,
+          content: 'Revised',
+          expectedVersion: snapshot.version,
+        },
+      });
+    expect((await save('insights/note.md')).statusCode).toBe(200);
+    expect((await save('insights/note.md')).statusCode).toBe(409);
+    expect(readFileSync(join(dir, 'insights/note.md'), 'utf8')).toBe('Revised');
+    symlinkSync('../sources', join(dir, 'insights/alias'));
+    const escaped = await app.inject({
+      method: 'PUT',
+      url: `${base}/content`,
+      payload: {
+        path: 'insights/alias/documents/original.txt',
+        content: 'Overwritten',
+        expectedVersion: fileVersion(Buffer.from('Source')),
+      },
+    });
+    expect(escaped.statusCode).toBe(400);
+    expect(readFileSync(join(dir, 'sources/documents/original.txt'), 'utf8')).toBe('Source');
+    expect((await save('sources/documents/original.txt')).statusCode).toBe(403);
+    expect((await save('insights/../sources/documents/original.txt')).statusCode).toBe(403);
+    expect(
+      (await app.inject(`${base}/content?path=sources/documents/original.txt`)).json(),
+    ).toMatchObject({ editable: false });
+    expect((await app.inject(`${base}/download?path=sources/documents/original.txt`)).body).toBe(
+      'Source',
+    );
+    expect((await app.inject(`${base}/content?path=../other/file.md`)).statusCode).toBe(400);
+    expect((await app.inject('/projects/missing/knowledge/files')).statusCode).toBe(404);
+    expect(
+      listing.json<{ entries: { name: string }[] }>().entries.map((entry) => entry.name),
+    ).not.toContain('shared');
   });
 
   it('keeps the worktree root exactly what it was', async () => {
@@ -421,15 +527,41 @@ describe('session explorer knowledge roots', () => {
   });
 
   it('has no knowledge folder for a session without a project', async () => {
-    const res = await app.inject({ method: 'GET', url: '/sessions/s-loose/files?root=knowledge' });
-
-    expect(res.statusCode).toBe(404);
-    // The worktree root of the same session still works, so the message must not
-    // send the operator looking for a missing session.
-    expect(res.json()).toEqual({ error: 'this session has no knowledge folder' });
+    for (const root of ['knowledge', 'documents', 'sources', 'drafts']) {
+      const res = await app.inject({ method: 'GET', url: `/sessions/s-loose/files?root=${root}` });
+      expect(res.statusCode).toBe(404);
+      expect(res.json()).toMatchObject({
+        error: 'This session is not linked to a project. Open the Wiki from a project.',
+      });
+    }
     const worktreeRoot = await app.inject({ method: 'GET', url: '/sessions/s-loose/files' });
     expect(worktreeRoot.statusCode).toBe(200);
   });
+  it('reports unavailable knowledge storage without claiming the Wiki is empty', async () => {
+    const unconfigured = buildServer({
+      eventStore: ctx.store,
+      bus: new InMemoryEventBus(),
+      conductor: {} as Conductor,
+    });
+    try {
+      const res = await unconfigured.inject('/sessions/s-knowledge/files?root=documents');
+      expect(res.statusCode).toBe(503);
+      expect(res.json()).toEqual({
+        error: 'Knowledge storage is not configured. Ask your administrator to configure it.',
+      });
+    } finally {
+      await unconfigured.close();
+    }
+  });
+
+  it('distinguishes a missing session from unavailable project knowledge', async () => {
+    const res = await app.inject({ method: 'GET', url: '/sessions/missing/files?root=documents' });
+    expect(res.statusCode).toBe(404);
+    expect(res.json()).toMatchObject({
+      error: 'Session not found. Reopen the session and try again.',
+    });
+  });
+
   it('creates and edits text in every root without overwriting create collisions', async () => {
     for (const root of ['worktree', 'knowledge', 'shared'] as const) {
       const url = '/sessions/s-knowledge/files/content';

@@ -5,6 +5,9 @@ import { describe, expect, it, vi } from 'vitest';
 import { parseServerDeploymentSpec, type ServerDeploymentSpecBody } from './deployment-spec.js';
 import {
   advanceManagedDeploymentImage,
+  readDurableManagedUpdateChannel,
+  writeManagedUpdateChannel,
+  markManagedStagingAssessment,
   configureManagedUpdateChannel,
   initializeManagedDeployment,
   MANAGED_DEPLOYMENT_MARKER_FILE,
@@ -13,6 +16,9 @@ import {
   migrateManagedControlPlaneRunner,
   migrateManagedDevcontainerBuilder,
   migrateManagedHostDiagnostics,
+  migrateManagedProjectEgress,
+  readManagedProjectEgressBackup,
+  PROJECT_EGRESS_MOUNTS,
   MANAGED_DEVCONTAINER_BUILDER_BACKUP_FILE,
   MANAGED_HOST_DIAGNOSTIC_BACKUP_FILE,
 } from './managed-deployment.js';
@@ -678,4 +684,92 @@ describe('managed devcontainer builder migration', () => {
       false,
     );
   });
+});
+
+describe('managed project egress provisioning authority', () => {
+  it('preserves the legacy checkpoint and carries server-only controls through image advancement', async () => {
+    const directory = await root();
+    const initial = await initializeManagedDeployment({
+      root: directory,
+      deploymentId: 'egress-test',
+      spec: adoptionSpec(),
+    });
+    if (!initial.managed) throw new Error(initial.reason);
+    const options = {
+      root: directory,
+      deploymentId: initial.spec.deploymentId,
+      image: initial.spec.image,
+      controlGid: 65531,
+    };
+    const migrated = await migrateManagedProjectEgress(options);
+    if (!migrated.managed) throw new Error(migrated.reason);
+    expect(migrated.spec.mounts.slice(-2)).toEqual(PROJECT_EGRESS_MOUNTS);
+    expect(migrated.spec.user.supplementaryGids).toContain(65531);
+    expect(await readManagedProjectEgressBackup(directory)).toEqual(initial.spec);
+    expect(await migrateManagedProjectEgress(options)).toEqual(migrated);
+    const target = `ghcr.io/heey-global/verity/verity-server@sha256:${'b'.repeat(64)}`;
+    await advanceManagedDeploymentImage({
+      root: directory,
+      deploymentId: initial.spec.deploymentId,
+      fromImage: initial.spec.image,
+      toImage: target,
+    });
+    const advanced = await readManagedDeployment(directory);
+    expect(advanced.managed && advanced.spec.mounts).toEqual(migrated.spec.mounts);
+    expect(await readManagedProjectEgressBackup(directory)).toEqual(initial.spec);
+  });
+  it('rejects a partial authority instead of silently broadening it', async () => {
+    const directory = await root();
+    const spec = adoptionSpec();
+    const partial = {
+      ...spec,
+      environment: [
+        ...spec.environment,
+        {
+          name: 'VERITY_PROJECT_EGRESS_SOCKET',
+          source: { kind: 'env' as const, name: 'VERITY_PROJECT_EGRESS_SOCKET' },
+        },
+      ],
+    };
+    const initial = await initializeManagedDeployment({
+      root: directory,
+      deploymentId: 'egress-test',
+      spec: partial,
+    });
+    if (!initial.managed) throw new Error(initial.reason);
+    await expect(
+      migrateManagedProjectEgress({
+        root: directory,
+        deploymentId: initial.spec.deploymentId,
+        image: initial.spec.image,
+        controlGid: 65531,
+      }),
+    ).rejects.toThrow('partial');
+    expect(await readManagedDeployment(directory)).toEqual(initial);
+  });
+});
+
+it('requires a durable private channel for assessment and fences both stable writers', async () => {
+  const directory = await root();
+  const spec = adoptionSpec();
+  await initializeManagedDeployment({ root: directory, spec, deploymentId: 'channel-test' });
+  vi.stubEnv('VERITY_UPDATE_CHANNEL', 'staging');
+  try {
+    expect(await readDurableManagedUpdateChannel(directory)).toBeUndefined();
+    await writeManagedUpdateChannel(directory, 'staging');
+    expect(await readDurableManagedUpdateChannel(directory)).toBe('staging');
+    await markManagedStagingAssessment(directory, spec.image, 'a'.repeat(24));
+    const before = await readFile(join(directory, MANAGED_DEPLOYMENT_SPEC_FILE), 'utf8');
+    await expect(writeManagedUpdateChannel(directory, 'stable')).rejects.toThrow(
+      /verified deactivation/,
+    );
+    vi.stubEnv('VERITY_UPDATE_CHANNEL', 'stable');
+    await expect(configureManagedUpdateChannel(directory)).rejects.toThrow(/verified deactivation/);
+    expect(await readFile(join(directory, MANAGED_DEPLOYMENT_SPEC_FILE), 'utf8')).toBe(before);
+    expect(await readDurableManagedUpdateChannel(directory)).toBe('staging');
+    await chmod(join(directory, 'update-channel.json'), 0o644);
+    await expect(readDurableManagedUpdateChannel(directory)).rejects.toThrow(/untrusted/);
+  } finally {
+    vi.unstubAllEnvs();
+  }
 });

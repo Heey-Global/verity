@@ -8,7 +8,12 @@ on:
       - 'deploy/gvisor-ci.Dockerfile'
       - 'deploy/gvisor/versions.env'
       - 'deploy/egress/**'
+      - 'scripts/project-egress-managed.py'
+      - 'scripts/build-project-egress-release.mjs'
+      - 'deploy/host/verity-egress-provision'
+      - 'scripts/probes/project-egress/test_native_profile.py'
       - 'scripts/build-project-egress-host.mjs'
+      - 'scripts/project-egress-install.py'
       - 'features/verity-sandbox-toolkit/**'
       - 'deploy/verity-sandbox.Dockerfile'
       - 'deploy/project-relay.Dockerfile'
@@ -38,6 +43,9 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '26.13.0'
+      - uses: ./.github/actions/reclaim-runner-disk
+        with:
+          minimum-free-gib: '40'
       - run: npm ci --workspace @verity/server --include-workspace-root --ignore-scripts
       - name: Bundle actual host adapter for the disposable runtime
         run: node scripts/probes/project-egress/build-adapter.mjs

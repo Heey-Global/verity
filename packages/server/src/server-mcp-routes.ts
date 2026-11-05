@@ -1,3 +1,5 @@
+import { appendProjectOverview } from './project-overview-file.js';
+import { connectorToolAvailable } from './agent-tool-availability.js';
 import {
   createQAAssignmentTool,
   trustedQAAssignmentConsent,
@@ -48,10 +50,7 @@ import {
   parseBrokeredDopplerBinding,
 } from './brokered-doppler-binding.js';
 import { createControlDiagnosticsTool } from './control-diagnostics-tool.js';
-import {
-  createDocumentWorkspaceProvisioner,
-  documentViewForSession,
-} from './document-workspace.js';
+import { documentViewForSession } from './document-workspace.js';
 import './fastify-augmentation.js';
 import { gmailHasStandingAuthorization } from './gmail-tool.js';
 import { assertSafeGmailSendSnapshot, type GmailDraftSendSnapshot } from './gmail.js';
@@ -246,14 +245,12 @@ export function registerServerMcpRoutes({
           ...(settings?.defaultBranch == null ? {} : { baseBranch: settings.defaultBranch }),
         };
         const provisioner =
-          isLocalProject(project) && deps.dataRoot
-            ? createDocumentWorkspaceProvisioner(deps.dataRoot, project.id, projectClone)
-            : (deps.projectWorktrees?.(project, projectClone, worktreeOpts) ??
-              createGitWorktreeProvisioner({
-                repoDir: projectClone,
-                worktreeRoot: join(projectClone, '.verity-sessions'),
-                ...worktreeOpts,
-              }));
+          deps.projectWorktrees?.(project, projectClone, worktreeOpts) ??
+          createGitWorktreeProvisioner({
+            repoDir: projectClone,
+            worktreeRoot: join(projectClone, '.verity-sessions'),
+            ...worktreeOpts,
+          });
         await deps.refreshProjectToken?.(project);
         const worktree = await provisioner.add(makeBranch(name));
         try {
@@ -503,7 +500,18 @@ export function registerServerMcpRoutes({
     const emitMcpApp = (sessionId: string, event: Extract<AgentEvent, { t: 'mcp_app' }>) =>
       emitSessionEvent(deps.eventStore, deps.bus, sessionId, event);
     registerHttpMcpProxyRoute(app, {
-      resolveCaller: deps.mcpProxyResolveCaller,
+      resolveCaller: async (input) => {
+        const caller = await deps.mcpProxyResolveCaller!(input);
+        if (!caller) return undefined;
+        const session = await deps.eventStore.getSession(caller.sessionId);
+        if (session?.projectId !== input.projectId) return undefined;
+        if (deps.authRegistry?.isEnabled() === true) {
+          const principal = await runningTurnInitiator(caller.sessionId, caller.turnId);
+          if (!principal || !(await canExecuteAs(principal.userId, input.projectId)))
+            return undefined;
+        }
+        return caller;
+      },
       resolveConnection: resolveMcpAppConnection,
       intercept: createMcpAppsInterceptor({
         emit: emitMcpApp,
@@ -976,6 +984,33 @@ export function registerServerMcpRoutes({
     });
     const gateway = createMcpGateway({
       ...gatewayDeps,
+      capabilityVersionForCaller: async (caller) => {
+        const active = conductor.agentCapabilityVersion?.(caller.sessionId);
+        if (active !== undefined) return active;
+        return (await deps.eventStore.getSessionBackendStates(caller.sessionId)).some((state) =>
+          state.contextFingerprint?.startsWith('v2:canonical:'),
+        )
+          ? 2
+          : 1;
+      },
+      toolAvailable: async (input) => {
+        const user = await runningTurnInitiator(input.sessionId, input.turnId);
+        if (!(await canExecuteAs(user?.userId, input.projectId))) return false;
+        if (
+          (await deps.eventStore.repairs.qa()).session_id === input.sessionId &&
+          input.toolName !== 'verity_qa_analysis'
+        )
+          return false;
+        if (
+          assistantToolRefusal(
+            await deps.eventStore.assistant.settings(),
+            input.sessionId,
+            input.toolName,
+          )
+        )
+          return false;
+        return connectorToolAvailable(deps.eventStore, input);
+      },
       // Approval cannot restore rights revoked from the initiating user while waiting.
       authorizeExecution: async (input) => {
         const running = (await deps.eventStore.listRunningTurns()).find(
@@ -1022,6 +1057,11 @@ export function registerServerMcpRoutes({
         );
         if (assistantRefusal !== undefined)
           throw new ControlPlaneSessionAuthorityError(assistantRefusal);
+        const principal = await runningTurnInitiator(sessionId, input.turnId);
+        if (!(await canExecuteAs(principal?.userId, projectId)))
+          throw new ControlPlaneSessionAuthorityError(
+            'The calling user no longer has project execution permission.',
+          );
         if (toolName === 'verity_vulnerabilities') {
           await vulnerabilityTool.authorize(input);
           return;
@@ -1083,6 +1123,14 @@ export function registerServerMcpRoutes({
           const session = await deps.eventStore.getSession(sessionId);
           if (session?.projectId !== projectId)
             throw new ControlPlaneSessionAuthorityError('session project changed');
+          return;
+        }
+        if (toolName === 'verity_memory_append') {
+          if (!deps.dataRoot)
+            throw new ControlPlaneSessionAuthorityError('Memory storage unavailable');
+          const principal = await runningTurnInitiator(input.sessionId, input.turnId);
+          if (!principal || !(await canExecuteAs(principal.userId, input.projectId)))
+            throw new ControlPlaneSessionAuthorityError('An active directing user is required');
           return;
         }
         if (toolName === 'verity_knowledge') {
@@ -1382,6 +1430,7 @@ export function registerServerMcpRoutes({
         )
           return false;
         if (
+          toolName === 'verity_memory_append' ||
           toolName === 'verity_secret_output' ||
           toolName === 'verity_list_linked_sessions' ||
           toolName === 'verity_repairs' ||
@@ -1581,6 +1630,21 @@ export function registerServerMcpRoutes({
           return {
             mandate: (await deps.eventStore.repairs.mandate(session.projectId)) ?? null,
             incidents: await deps.eventStore.repairs.incidents(session.projectId),
+          };
+        }
+        if (input.toolName === 'verity_memory_append') {
+          const request = input.request as { scope: 'user' | 'project'; text: string };
+          const principal = await runningTurnInitiator(input.sessionId, input.turnId);
+          if (!principal || !deps.dataRoot)
+            throw new ControlPlaneSessionAuthorityError('Memory authority unavailable');
+          if (request.scope === 'user')
+            return {
+              length: (
+                await deps.eventStore.userContext.appendMemory(principal.userId, request.text)
+              ).memory.length,
+            };
+          return {
+            length: await appendProjectOverview(deps.dataRoot, input.projectId, request.text),
           };
         }
         if (input.toolName === 'verity_tasks') {

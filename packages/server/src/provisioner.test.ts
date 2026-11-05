@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { verifyEgressHostContainer } from './project-egress-host-runtime.js';
 import { ProjectEgressLifecycle } from './project-egress-lifecycle.js';
 import { ProjectEgressHost } from './project-egress-host.js';
@@ -440,6 +441,7 @@ function createProvisioner(
   return new ProvisionerImpl({
     // No real supervisor runs here; tests that care pass their own.
     supervisorReachable: async () => undefined,
+    supervisorStackHealth: async () => undefined,
     prepareLocalWorkspace: async () => undefined,
     // A host larger than any quota asserted here, so CPU expectations do not depend
     // on the machine running the suite. The clamp itself is tested on its own.
@@ -594,6 +596,100 @@ describe('ProvisionerImpl (#174)', () => {
     await ctx.store.upsertProject({ id, ...baseInput, state: stateOverride });
     return id;
   }
+
+  it('drains pending cleanup after the runner starts and before a retained wake admits turns', async () => {
+    const id = await seedProject('active');
+    const retained = {
+      id: 'container-1',
+      running: false,
+      image: 'sandbox:test',
+      networks: { [projectNetworkName(id)]: {} },
+      labels: { [PROJECT_ID_LABEL]: id, [CONTAINER_GENERATION_LABEL]: 'generation-1' },
+    };
+    const { client: docker } = fakeDocker({
+      inspectContainer: vi
+        .fn()
+        .mockResolvedValueOnce(retained)
+        .mockResolvedValue({ ...retained, running: true }),
+    });
+    const relay = defaultProjectRelay();
+    relay.reactivate = relay.start.bind(relay);
+    const order: string[] = [];
+    const containerCommand = vi.fn<ContainerCommandRunner>(async () => {
+      order.push('stack-start');
+      return { stdout: '', stderr: '' };
+    });
+    let finishCleanup!: () => void;
+    let enteredCleanup!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      enteredCleanup = resolve;
+    });
+    const cleanup = new Promise<void>((resolve) => {
+      finishCleanup = resolve;
+    });
+    const supervisorReachable = vi.fn(async () => {
+      order.push('reachable');
+    });
+    const onRunnerReady = vi.fn(async () => {
+      order.push('runner-ready');
+      await new Promise<void>(() => undefined);
+    });
+    const beforeRunnerAdmission = vi.fn(async () => {
+      order.push('cleanup');
+      enteredCleanup();
+      await cleanup;
+    });
+    const provisioner = createProvisioner({
+      store: ctx.store,
+      db: ctx.db,
+      docker,
+      projectTokenMint: async () => undefined,
+      defaultImageRef: 'sandbox:test',
+      hostCloneRoot: '/work',
+      dataVolumeRoot: '/srv',
+      runnerSupervisor: true,
+      dockerHostForBuild: 'unix:///var/run/docker.sock',
+      projectRelay: relay,
+      containerCommand,
+      beforeRunnerAdmission,
+      supervisorReachable,
+      onRunnerReady,
+      isDirectory: () => true,
+    });
+    // Seed the legacy success cache before a same-name retained restart.
+    await provisioner.reconcileRunnerSupervisors([(await ctx.store.getProject(id))!]);
+    await ctx.store.updateProjectSleepState(id, 'sleeping', {
+      sleepCompatibilityFingerprint: sandboxSleepCompatibilityFingerprint(retained),
+      sleepingSince: new Date(),
+      wakeStartedAt: null,
+    });
+    order.length = 0;
+    onRunnerReady.mockClear();
+    const wake = provisioner.ensureProjectSandboxAwake(id);
+    try {
+      await Promise.race([
+        entered,
+        wake.then(() => {
+          throw new Error('wake admitted turns without cleanup');
+        }),
+      ]);
+      expect(order).toContain('runner-ready');
+      expect(order.indexOf('stack-start')).toBeLessThan(order.indexOf('reachable'));
+      expect(order.indexOf('reachable')).toBeLessThan(order.indexOf('runner-ready'));
+      expect(order).toContain('cleanup');
+      expect((await ctx.store.getProject(id))?.state).toBe('waking');
+    } finally {
+      finishCleanup();
+    }
+    const active = await wake;
+    expect(active.state).toBe('active');
+    expect(onRunnerReady).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ id }));
+    expect(beforeRunnerAdmission).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ id }));
+    // A success from before sleep must not suppress reconciliation of this start.
+    const commands = containerCommand.mock.calls.length;
+    await provisioner.reconcileRunnerSupervisors([active]);
+    expect(containerCommand).toHaveBeenCalledTimes(commands + 1);
+  });
 
   it.each([false, true])(
     'provisions and replaces experimental generations only through the host (Runner: %s)',
@@ -763,8 +859,7 @@ describe('ProvisionerImpl (#174)', () => {
       git,
       projectEgress: egress,
       projectEgressEnabled: async () => false,
-      sandboxRuntime: 'runsc-project',
-      verifySandboxRuntime: async () => {},
+      sandboxCapAdd: ['NET_ADMIN'],
       projectTokenMint: async () => 'tok',
       defaultImageRef: 'image:test',
       hostCloneRoot: root,
@@ -779,6 +874,7 @@ describe('ProvisionerImpl (#174)', () => {
         network: projectNetworkName(id),
         restartPolicy: 'unless-stopped',
       });
+      expect(spec.runtime).toBeUndefined();
       expect(calls.some((call) => call.method === 'startContainer')).toBe(true);
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -803,6 +899,39 @@ describe('ProvisionerImpl (#174)', () => {
     expect(
       calls.some(({ method }) => method === 'stopContainer' || method === 'removeContainer'),
     ).toBe(false);
+    expect(await ctx.store.getProject(id)).toMatchObject({ state: 'active' });
+  });
+
+  it('reconciles an inspected open generation with a staged unavailable controller', async () => {
+    const id = await seedProject('active');
+    const { client: docker, calls } = fakeDocker({
+      inspectContainer: async () => ({
+        id: 'retained',
+        running: true,
+        labels: { [PROJECT_ID_LABEL]: id, [CONTAINER_GENERATION_LABEL]: 'gen-1' },
+        networks: { [projectNetworkName(id)]: {} },
+      }),
+    });
+    const egress = new ProjectEgressLifecycle(async () => {
+      throw new Error('host unavailable');
+    }, {});
+    const provisioner = createProvisioner({
+      store: ctx.store,
+      db: ctx.db,
+      docker,
+      projectEgress: egress,
+      projectEgressEnabled: async () => false,
+      projectTokenMint: async () => undefined,
+      defaultImageRef: 'sandbox:test',
+      hostCloneRoot: '/work',
+    });
+    provisioner.attachProjectBusyProbe(async () => false);
+    const recreate = vi.spyOn(provisioner, 'recreateContainer');
+    await expect(
+      provisioner.reconcileRelays([(await ctx.store.getProject(id))!], {}),
+    ).resolves.toBeUndefined();
+    expect(recreate).not.toHaveBeenCalled();
+    expect(calls.some(({ method }) => method === 'stopContainer')).toBe(false);
     expect(await ctx.store.getProject(id)).toMatchObject({ state: 'active' });
   });
 
@@ -1941,42 +2070,49 @@ describe('ProvisionerImpl (#174)', () => {
     expect(spec.ulimits).toEqual([{ name: 'core', soft: 0, hard: 0 }]);
   });
 
-  it('allocates a local document workspace without initializing Git', async () => {
-    const id = randomUUID();
-    await ctx.store.upsertProject({
-      id,
-      ...baseInput,
-      owner: 'local',
-      repo: 'my-project',
-      containerName: 'verity-local--my-project',
-      kind: 'local',
-      cloneDir: 'local-my-project',
-    });
-    const { runner: git, calls: gitCalls } = fakeGit([
-      { match: /^init -b main / },
-      { match: /commit --allow-empty -m chore: initialize project$/ },
-    ]);
-    const { client: docker, calls: dockerCalls } = fakeDocker({ createdContainerId: 'cid-local' });
-    const provisioner = createProvisioner({
-      store: ctx.store,
-      db: ctx.db,
-      docker,
-      projectTokenMint: async () => undefined,
-      defaultImageRef: 'ghcr.io/heey-global/dev-base:default',
-      hostCloneRoot: '/var/lib/verity-dev',
-      git,
-      isDirectory: () => false,
-    });
+  it('initializes an internal Git workspace for a local project', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'local-git-workspace-'));
+    try {
+      const id = randomUUID();
+      await ctx.store.upsertProject({
+        id,
+        ...baseInput,
+        owner: 'local',
+        repo: 'my-project',
+        containerName: 'verity-local--my-project',
+        kind: 'local',
+        cloneDir: 'local-my-project',
+      });
+      const { runner: git, calls: gitCalls } = fakeGit([
+        { match: /^init -b main / },
+        { match: /commit --allow-empty -m chore: initialize project$/ },
+      ]);
+      const { client: docker, calls: dockerCalls } = fakeDocker({
+        createdContainerId: 'cid-local',
+      });
+      const provisioner = createProvisioner({
+        store: ctx.store,
+        db: ctx.db,
+        docker,
+        projectTokenMint: async () => undefined,
+        defaultImageRef: 'ghcr.io/heey-global/dev-base:default',
+        hostCloneRoot: root,
+        git,
+        isDirectory: () => false,
+        prepareLocalWorkspace: undefined,
+      });
 
-    const result = await provisioner.provision(id);
+      const result = await provisioner.provision(id);
 
-    expect(result.state).toBe('active');
-    expect(gitCalls.some((call) => call.args.includes('clone'))).toBe(false);
-    expect(gitCalls).toEqual([]);
-    const created = dockerCalls.find((call) => call.method === 'createContainer');
-    expect((created?.payload as ContainerSpec).binds).toContain(
-      '/var/lib/verity-dev/local-my-project:/work',
-    );
+      expect(result.state).toBe('active');
+      expect(gitCalls.some((call) => call.args.includes('clone'))).toBe(false);
+      expect(gitCalls.some((call) => call.args[0] === 'init')).toBe(true);
+      expect(gitCalls.some((call) => call.args.includes('--allow-empty'))).toBe(true);
+      const created = dockerCalls.find((call) => call.method === 'createContainer');
+      expect((created?.payload as ContainerSpec).binds).toContain(`${root}/local-my-project:/work`);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   /** What `git init` leaves in a fresh `.git/config`, written `key=value`. A key with no
@@ -2405,19 +2541,39 @@ describe('ProvisionerImpl (#174)', () => {
     },
   );
 
-  it('resumes an incomplete migration without Git and skips completed migrations', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'document-migration-resume-'));
+  it('retains existing local history and legacy Documents while allocating code worktrees', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'local-code-resume-'));
     const id = randomUUID();
-    const project = await ctx.store.upsertProject({
+    await ctx.store.upsertProject({
       id,
       ...baseInput,
       kind: 'local',
       owner: '__local__',
-      repo: 'documents',
-      cloneDir: 'documents',
+      repo: 'code',
+      cloneDir: 'code',
     });
-    const state = join(root, 'document-migrations', id);
-    mkdirSync(state, { recursive: true });
+    const clone = join(root, 'code');
+    execFileSync('git', ['init', '-q', '-b', 'main', clone]);
+    execFileSync('git', [
+      '-C',
+      clone,
+      '-c',
+      'user.name=Test',
+      '-c',
+      'user.email=test@example.com',
+      '-c',
+      'commit.gpgsign=false',
+      'commit',
+      '--allow-empty',
+      '-qm',
+      'initial',
+    ]);
+    const head = execFileSync('git', ['-C', clone, 'rev-parse', 'HEAD'], { encoding: 'utf8' });
+    const sessionId = randomUUID();
+    const view = join(clone, '.verity-document-sessions', 'existing');
+    mkdirSync(view, { recursive: true });
+    writeFileSync(join(view, 'note.md'), 'keep');
+    await ctx.store.createSession({ sessionId, projectId: id, worktree: view, model: 'test' });
     const provisioner = createProvisioner({
       store: ctx.store,
       db: ctx.db,
@@ -2425,44 +2581,20 @@ describe('ProvisionerImpl (#174)', () => {
       projectTokenMint: async () => undefined,
       defaultImageRef: 'image:test',
       hostCloneRoot: root,
-      dataVolumeRoot: root,
+      prepareLocalWorkspace: undefined,
     });
-    const recreate = vi.spyOn(provisioner, 'recreateContainer').mockResolvedValue(project);
     try {
-      writeFileSync(join(state, 'manifest.json'), JSON.stringify({ stage: 'archived' }));
       await provisioner.prepareLocalDocuments(id);
-      expect(recreate).toHaveBeenCalledOnce();
-      writeFileSync(join(state, 'manifest.json'), JSON.stringify({ stage: 'complete' }));
       await provisioner.prepareLocalDocuments(id);
-      expect(recreate).toHaveBeenCalledOnce();
+      expect(execFileSync('git', ['-C', clone, 'rev-parse', 'HEAD'], { encoding: 'utf8' })).toBe(
+        head,
+      );
+      expect(readFileSync(join(view, 'note.md'), 'utf8')).toBe('keep');
+      expect(existsSync(join(clone, '.verity-sessions', `code-${sessionId}`, '.git'))).toBe(true);
+      expect((await ctx.store.getSession(sessionId))?.worktree).toBe(view);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
-  });
-
-  it('refuses Code connection without document storage instead of publishing local history', async () => {
-    const project = await ctx.store.upsertProject({
-      id: randomUUID(),
-      ...baseInput,
-      kind: 'local',
-      owner: '__local__',
-      repo: 'local-project',
-      cloneDir: 'local-project',
-    });
-    const { runner: git, calls } = fakeGit([]);
-    const provisioner = createProvisioner({
-      store: ctx.store,
-      db: ctx.db,
-      docker: fakeDocker().client,
-      projectTokenMint: async () => undefined,
-      defaultImageRef: 'image:test',
-      hostCloneRoot: '/var/lib/verity-dev',
-      git,
-    });
-    await expect(
-      provisioner.linkCloneToGitHub(project, { owner: 'acme', repo: 'code' }, undefined),
-    ).rejects.toThrow('requires configured document storage');
-    expect(calls).toEqual([]);
   });
 
   it.each(['provision', 'recreateContainer'] as const)(
@@ -2876,6 +3008,10 @@ describe('ProvisionerImpl (#174)', () => {
     const { runner: git } = fakeGit([{ match: /\bclone\b/ }, { match: /remote set-url/ }]);
     const { client: docker, calls: dockerCalls } = fakeDocker({ createdContainerId: 'cid-1' });
     const prepareRunnerRuntime = vi.fn();
+    const supervisorReachable = vi.fn(async () => undefined);
+    const onRunnerReady = vi.fn(async () => {
+      await new Promise<void>(() => undefined);
+    });
     const containerCommand = vi.fn<ContainerCommandRunner>(async () => ({
       stdout: '',
       stderr: '',
@@ -2895,11 +3031,17 @@ describe('ProvisionerImpl (#174)', () => {
       dockerHostForBuild: 'unix:///var/run/docker.sock',
       prepareRunnerRuntime,
       containerCommand,
+      supervisorReachable,
+      onRunnerReady,
       isDirectory: (path) => path === `/srv/verity/runners/${id}`,
     });
 
     const result = await provisioner.provision(id);
     expect(result.state).toBe('active');
+    expect(onRunnerReady).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ id }));
+    expect(supervisorReachable.mock.invocationCallOrder[0]).toBeLessThan(
+      onRunnerReady.mock.invocationCallOrder[0]!,
+    );
     expect(prepareRunnerRuntime).toHaveBeenCalledWith(`/srv/verity/runners/${id}`, {
       uid: 1101,
       gid: 1101,
@@ -2945,13 +3087,225 @@ describe('ProvisionerImpl (#174)', () => {
     );
     await provisioner.reconcileRunnerSupervisors([result]);
     expect(containerCommand).toHaveBeenCalledTimes(2);
+    expect(onRunnerReady).toHaveBeenCalledOnce();
     expect(containerCommand).toHaveBeenLastCalledWith(
       expect.objectContaining({ timeoutMs: 12_000 }),
     );
     containerCommand.mockRejectedValueOnce(new Error('docker exec unavailable'));
-    await expect(provisioner.reconcileRunnerSupervisors([result])).rejects.toThrow(
-      /reconciliation failed for 1 project/,
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 60_001);
+    try {
+      await expect(provisioner.reconcileRunnerSupervisors([result])).rejects.toThrow(
+        /reconciliation failed for 1 project/,
+      );
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it('notifies runner readiness once per generation and again after an actual repair', async () => {
+    const id = await seedProject('active');
+    const project = (await ctx.store.getProject(id))!;
+    const { client: docker } = fakeDocker();
+    let healthy = true;
+    const containerCommand = vi.fn<ContainerCommandRunner>(async () => {
+      healthy = true;
+      return { stdout: '', stderr: '' };
+    });
+    const onRunnerReady = vi.fn(async () => undefined);
+    const supervisorReachable = vi.fn(async () => undefined);
+    const provisioner = createProvisioner({
+      store: ctx.store,
+      db: ctx.db,
+      docker,
+      projectTokenMint: async () => undefined,
+      defaultImageRef: 'sandbox:test',
+      hostCloneRoot: '/work',
+      dataVolumeRoot: '/srv',
+      runnerSupervisor: true,
+      dockerHostForBuild: 'unix:///var/run/docker.sock',
+      supervisorStackHealth: async () => healthy,
+      containerCommand,
+      onRunnerReady,
+      supervisorReachable,
+      isDirectory: () => true,
+    });
+    await provisioner.reconcileRunnerSupervisors([project]);
+    await provisioner.reconcileRunnerSupervisors([project]);
+    expect(onRunnerReady).toHaveBeenCalledOnce();
+    expect(containerCommand).not.toHaveBeenCalled();
+    healthy = false;
+    await provisioner.reconcileRunnerSupervisors([project]);
+    expect(onRunnerReady).toHaveBeenCalledTimes(2);
+    expect(supervisorReachable).toHaveBeenCalledOnce();
+    await provisioner.reconcileRunnerSupervisors([project]);
+    expect(onRunnerReady).toHaveBeenCalledTimes(2);
+    await provisioner.reconcileRunnerSupervisors([{ ...project, containerName: 'replacement' }]);
+    expect(onRunnerReady).toHaveBeenCalledTimes(3);
+    expect(containerCommand).toHaveBeenCalledOnce();
+  });
+
+  it('uses stack health without Docker execs even after the legacy refresh interval', async () => {
+    const id = await seedProject();
+    const project = { ...(await ctx.store.getProject(id))!, state: 'active' as const };
+    const { client: docker } = fakeDocker();
+    const health = vi.fn(async () => true);
+    const containerCommand = vi.fn<ContainerCommandRunner>();
+    const provisioner = createProvisioner({
+      store: ctx.store,
+      db: ctx.db,
+      docker,
+      projectTokenMint: async () => 'tok',
+      defaultImageRef: 'sandbox:test',
+      hostCloneRoot: '/srv/workspaces',
+      dataVolumeRoot: '/srv',
+      runnerSupervisor: true,
+      dockerHostForBuild: 'unix:///var/run/docker.sock',
+      supervisorStackHealth: health,
+      containerCommand,
+      isDirectory: () => true,
+    });
+    await provisioner.reconcileRunnerSupervisors([project]);
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 120_000);
+    try {
+      await provisioner.reconcileRunnerSupervisors([project]);
+      expect(health).toHaveBeenCalledTimes(2);
+      expect(health).toHaveBeenCalledWith(`/srv/runners/${id}`);
+      expect(containerCommand).not.toHaveBeenCalled();
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it('repairs an unhealthy stack once and verifies readiness before accepting success', async () => {
+    const id = await seedProject();
+    const project = { ...(await ctx.store.getProject(id))!, state: 'active' as const };
+    const { client: docker } = fakeDocker();
+    const health = vi.fn(async () => true).mockResolvedValueOnce(false);
+    const containerCommand = vi.fn<ContainerCommandRunner>(async () => ({
+      stdout: '',
+      stderr: '',
+    }));
+    const provisioner = createProvisioner({
+      store: ctx.store,
+      db: ctx.db,
+      docker,
+      projectTokenMint: async () => 'tok',
+      defaultImageRef: 'sandbox:test',
+      hostCloneRoot: '/srv/workspaces',
+      dataVolumeRoot: '/srv',
+      runnerSupervisor: true,
+      dockerHostForBuild: 'unix:///var/run/docker.sock',
+      supervisorStackHealth: health,
+      containerCommand,
+      isDirectory: () => true,
+    });
+    await provisioner.reconcileRunnerSupervisors([project]);
+    await provisioner.reconcileRunnerSupervisors([project]);
+    expect(containerCommand).toHaveBeenCalledOnce();
+    expect(health).toHaveBeenCalledTimes(3);
+    expect(health.mock.invocationCallOrder[0]).toBeLessThan(
+      containerCommand.mock.invocationCallOrder[0]!,
     );
+    expect(containerCommand.mock.invocationCallOrder[0]).toBeLessThan(
+      health.mock.invocationCallOrder[1]!,
+    );
+  });
+
+  it('backs off a repair that exits successfully but leaves the stack unhealthy', async () => {
+    const id = await seedProject();
+    const project = { ...(await ctx.store.getProject(id))!, state: 'active' as const };
+    const { client: docker } = fakeDocker();
+    const health = vi.fn(async () => false);
+    const containerCommand = vi.fn<ContainerCommandRunner>(async () => ({
+      stdout: '',
+      stderr: '',
+    }));
+    const provisioner = createProvisioner({
+      store: ctx.store,
+      db: ctx.db,
+      docker,
+      projectTokenMint: async () => 'tok',
+      defaultImageRef: 'sandbox:test',
+      hostCloneRoot: '/srv/workspaces',
+      dataVolumeRoot: '/srv',
+      runnerSupervisor: true,
+      dockerHostForBuild: 'unix:///var/run/docker.sock',
+      supervisorStackHealth: health,
+      containerCommand,
+      isDirectory: () => true,
+    });
+    let now = 0;
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    try {
+      await expect(provisioner.reconcileRunnerSupervisors([project])).rejects.toThrow(
+        /reconciliation failed/,
+      );
+      await expect(provisioner.reconcileRunnerSupervisors([project])).rejects.toThrow(
+        /reconciliation failed/,
+      );
+      expect(containerCommand).toHaveBeenCalledOnce();
+      expect(health).toHaveBeenCalledTimes(2);
+      now = 5_000;
+      health.mockResolvedValue(true);
+      await provisioner.reconcileRunnerSupervisors([project]);
+      expect(containerCommand).toHaveBeenCalledOnce();
+      expect(health).toHaveBeenCalledTimes(3);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it('backs off failed runner starts to one minute and clears backoff for a replacement', async () => {
+    const id = await seedProject();
+    const project = { ...(await ctx.store.getProject(id))!, state: 'active' as const };
+    const { runner: git } = fakeGit([]);
+    const { client: docker } = fakeDocker();
+    const containerCommand = vi
+      .fn<ContainerCommandRunner>()
+      .mockRejectedValue(new Error('unavailable'));
+    const provisioner = createProvisioner({
+      store: ctx.store,
+      db: ctx.db,
+      docker,
+      git,
+      projectTokenMint: async () => 'tok',
+      defaultImageRef: 'ghcr.io/example/dev-base:default',
+      hostCloneRoot: '/srv/workspaces',
+      dataVolumeRoot: '/srv',
+      runnerSupervisor: true,
+      dockerHostForBuild: 'unix:///var/run/docker.sock',
+      containerCommand,
+      isDirectory: () => true,
+    });
+    let now = 0;
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    const fail = () =>
+      expect(provisioner.reconcileRunnerSupervisors([project])).rejects.toThrow(
+        /reconciliation failed/,
+      );
+    try {
+      let attempts = 0;
+      for (const delay of [5_000, 10_000, 20_000, 40_000, 60_000, 60_000]) {
+        await fail();
+        expect(containerCommand).toHaveBeenCalledTimes(++attempts);
+        const calls = containerCommand.mock.calls.length;
+        now += delay - 1;
+        await fail();
+        expect(containerCommand).toHaveBeenCalledTimes(calls);
+        now++;
+      }
+      const calls = containerCommand.mock.calls.length;
+      containerCommand.mockResolvedValue({ stdout: '', stderr: '' });
+      await provisioner.reconcileRunnerSupervisors([{ ...project, containerName: 'replacement' }]);
+      expect(containerCommand).toHaveBeenCalledTimes(calls + 1);
+      await provisioner.reconcileRunnerSupervisors([{ ...project, containerName: 'replacement' }]);
+      expect(containerCommand).toHaveBeenCalledTimes(calls + 1);
+      now += 60_001;
+      await provisioner.reconcileRunnerSupervisors([{ ...project, containerName: 'replacement' }]);
+      expect(containerCommand).toHaveBeenCalledTimes(calls + 2);
+    } finally {
+      clock.mockRestore();
+    }
   });
 
   it('shares overlapping supervisor reads without skipping newly active projects and retries failures', async () => {
@@ -2981,55 +3335,68 @@ describe('ProvisionerImpl (#174)', () => {
       containerCommand,
       isDirectory: () => true,
     });
-    const first = provisioner.reconcileRunnerSupervisors([project]);
-    const second = provisioner.reconcileRunnerSupervisors([project, other]);
-    await new Promise((done) => setImmediate(done));
-    expect(containerCommand).toHaveBeenCalledTimes(2);
-    expect(
-      containerCommand.mock.calls.filter(
-        ([options]) => options.containerName === project.containerName,
-      ),
-    ).toHaveLength(1);
-    release({ stdout: '', stderr: '' });
-    await Promise.all([first, second]);
-    let reject!: (reason: Error) => void;
-    containerCommand.mockImplementationOnce(
-      () =>
-        new Promise((_done, fail) => {
-          reject = fail;
-        }),
-    );
-    const failed = Promise.allSettled([
-      provisioner.reconcileRunnerSupervisors([project]),
-      provisioner.reconcileRunnerSupervisors([project]),
-    ]);
-    await new Promise((done) => setImmediate(done));
-    expect(containerCommand).toHaveBeenCalledTimes(3);
-    reject(new Error('exec failed'));
-    expect((await failed).map((result) => result.status)).toEqual(['rejected', 'rejected']);
-    containerCommand.mockResolvedValueOnce({ stdout: '', stderr: '' });
-    await provisioner.reconcileRunnerSupervisors([project]);
-    expect(containerCommand).toHaveBeenCalledTimes(4);
-    const releases = new Map<string, (value: { stdout: string; stderr: string }) => void>();
-    containerCommand.mockImplementation(
-      (options) =>
-        new Promise((done) => {
-          releases.set(options.containerName, done);
-        }),
-    );
-    const oldRun = provisioner.reconcileRunnerSupervisors([project]);
-    const replacement = { ...project, containerName: 'replacement-container' };
-    const freshRun = provisioner.reconcileRunnerSupervisors([replacement]);
-    await new Promise((done) => setImmediate(done));
-    expect(containerCommand).toHaveBeenCalledTimes(6);
-    releases.get(project.containerName)!({ stdout: '', stderr: '' });
-    await oldRun;
-    const sharedRun = provisioner.reconcileRunnerSupervisors([replacement]);
-    await new Promise((done) => setImmediate(done));
-    // Completion for a retired container must not erase the replacement's fence.
-    expect(containerCommand).toHaveBeenCalledTimes(6);
-    releases.get(replacement.containerName)!({ stdout: '', stderr: '' });
-    await Promise.all([freshRun, sharedRun]);
+    let now = Date.now();
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    try {
+      const first = provisioner.reconcileRunnerSupervisors([project]);
+      const second = provisioner.reconcileRunnerSupervisors([project, other]);
+      await new Promise((done) => setImmediate(done));
+      expect(containerCommand).toHaveBeenCalledTimes(2);
+      expect(
+        containerCommand.mock.calls.filter(
+          ([options]) => options.containerName === project.containerName,
+        ),
+      ).toHaveLength(1);
+      release({ stdout: '', stderr: '' });
+      await Promise.all([first, second]);
+      now += 60_001;
+      let reject!: (reason: Error) => void;
+      containerCommand.mockImplementationOnce(
+        () =>
+          new Promise((_done, fail) => {
+            reject = fail;
+          }),
+      );
+      const failed = Promise.allSettled([
+        provisioner.reconcileRunnerSupervisors([project]),
+        provisioner.reconcileRunnerSupervisors([project]),
+      ]);
+      await new Promise((done) => setImmediate(done));
+      expect(containerCommand).toHaveBeenCalledTimes(3);
+      reject(new Error('exec failed'));
+      expect((await failed).map((result) => result.status)).toEqual(['rejected', 'rejected']);
+      containerCommand.mockResolvedValueOnce({ stdout: '', stderr: '' });
+      await expect(provisioner.reconcileRunnerSupervisors([project])).rejects.toThrow(
+        /reconciliation failed/,
+      );
+      expect(containerCommand).toHaveBeenCalledTimes(3);
+      now += 5_001;
+      await provisioner.reconcileRunnerSupervisors([project]);
+      expect(containerCommand).toHaveBeenCalledTimes(4);
+      const releases = new Map<string, (value: { stdout: string; stderr: string }) => void>();
+      containerCommand.mockImplementation(
+        (options) =>
+          new Promise((done) => {
+            releases.set(options.containerName, done);
+          }),
+      );
+      now += 60_001;
+      const oldRun = provisioner.reconcileRunnerSupervisors([project]);
+      const replacement = { ...project, containerName: 'replacement-container' };
+      const freshRun = provisioner.reconcileRunnerSupervisors([replacement]);
+      await new Promise((done) => setImmediate(done));
+      expect(containerCommand).toHaveBeenCalledTimes(6);
+      releases.get(project.containerName)!({ stdout: '', stderr: '' });
+      await oldRun;
+      const sharedRun = provisioner.reconcileRunnerSupervisors([replacement]);
+      await new Promise((done) => setImmediate(done));
+      // Completion for a retired container must not erase the replacement's fence.
+      expect(containerCommand).toHaveBeenCalledTimes(6);
+      releases.get(replacement.containerName)!({ stdout: '', stderr: '' });
+      await Promise.all([freshRun, sharedRun]);
+    } finally {
+      clock.mockRestore();
+    }
   });
 
   it('does not exec the Runner watchdog into a sandbox that a replacement is retiring', async () => {
@@ -11841,3 +12208,351 @@ describe('devcontainerBuilderIdle', () => {
     ).toBeUndefined();
   });
 });
+
+describe('disconnectGitHub', () => {
+  it.each(['active', 'absent'] as const)(
+    'disconnects a deleted remote offline and retains commits, Documents and session paths: %s',
+    async (state) => {
+      const root = mkdtempSync(join(tmpdir(), 'disconnect-code-'));
+      const id = randomUUID();
+      const project = await ctx.store.upsertProject({
+        id,
+        containerName: `test-disconnect-${randomUUID()}`,
+        owner: 'deleted',
+        repo: 'repository',
+        kind: 'github',
+        cloneDir: 'retained',
+        state,
+      });
+      const clone = join(root, 'retained');
+      execFileSync('git', ['init', '-q', '-b', 'main', clone]);
+      execFileSync('git', [
+        '-C',
+        clone,
+        '-c',
+        'user.name=Test',
+        '-c',
+        'user.email=test@example.com',
+        '-c',
+        'commit.gpgsign=false',
+        'commit',
+        '--allow-empty',
+        '-qm',
+        'initial',
+      ]);
+      execFileSync('git', [
+        '-C',
+        clone,
+        'remote',
+        'add',
+        'origin',
+        'https://github.com/deleted/nonexistent',
+      ]);
+      const head = execFileSync('git', ['-C', clone, 'rev-parse', 'HEAD'], { encoding: 'utf8' });
+      const documents = join(root, 'knowledge', id, 'insights');
+      mkdirSync(documents, { recursive: true });
+      writeFileSync(join(documents, 'note.md'), 'keep');
+      const sessionId = randomUUID();
+      await ctx.store.createSession({
+        sessionId,
+        projectId: id,
+        worktree: join(clone, '.verity-sessions', 'existing'),
+        model: 'test',
+      });
+      const relay = defaultProjectRelay();
+      const stop = vi.spyOn(relay, 'stop');
+      const { client: docker } = fakeDocker();
+      const provisioner = createProvisioner({
+        store: ctx.store,
+        db: ctx.db,
+        docker,
+        projectRelay: relay,
+        projectTokenMint: async () => {
+          throw new Error('Must not contact GitHub');
+        },
+        defaultImageRef: 'image:test',
+        hostCloneRoot: root,
+      });
+      const recreate = vi
+        .spyOn(provisioner, 'recreateContainer')
+        .mockImplementation(async () => (await ctx.store.getProject(id))!);
+      try {
+        const local = await provisioner.withProjectExclusiveMutation(id, () =>
+          provisioner.disconnectGitHub(project),
+        );
+        expect(local).toMatchObject({ id, kind: 'local', cloneDir: 'retained' });
+        expect(stop).toHaveBeenCalledWith(id);
+        expect(recreate).toHaveBeenCalledTimes(state === 'absent' ? 0 : 1);
+        expect(local.state).toBe(state);
+        expect(execFileSync('git', ['-C', clone, 'remote'], { encoding: 'utf8' }).trim()).toBe('');
+        expect(execFileSync('git', ['-C', clone, 'rev-parse', 'HEAD'], { encoding: 'utf8' })).toBe(
+          head,
+        );
+        expect(readFileSync(join(documents, 'note.md'), 'utf8')).toBe('keep');
+        expect((await ctx.store.getSession(sessionId))?.worktree).toBe(
+          join(clone, '.verity-sessions', 'existing'),
+        );
+        await provisioner.withProjectExclusiveMutation(id, () =>
+          provisioner.disconnectGitHub(local),
+        );
+        expect((await ctx.store.getProject(id))?.kind).toBe('local');
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+});
+
+it('retains local history and reports a redacted signature-policy rejection during linking', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'link-signature-'));
+  const project = await ctx.store.upsertProject({
+    id: randomUUID(),
+    containerName: `test-disconnect-${randomUUID()}`,
+    owner: '__local__',
+    repo: 'code',
+    kind: 'local',
+    cloneDir: 'code',
+    state: 'absent',
+  });
+  const clone = join(root, 'code');
+  execFileSync('git', ['init', '-q', '-b', 'main', clone]);
+  execFileSync('git', [
+    '-C',
+    clone,
+    '-c',
+    'user.name=Test',
+    '-c',
+    'user.email=test@example.com',
+    '-c',
+    'commit.gpgsign=false',
+    'commit',
+    '--allow-empty',
+    '-qm',
+    'initial',
+  ]);
+  const head = execFileSync('git', ['-C', clone, 'rev-parse', 'HEAD'], { encoding: 'utf8' });
+  const token = 'test-link-token';
+  const git: GitRunner = async (args) => {
+    if (args.includes('ls-remote')) return { stdout: '', stderr: '' };
+    if (args.includes('push'))
+      throw Object.assign(new Error('push failed'), {
+        stderr: `GH013: Commits must have verified signatures. ${gitAuthHeader(token)} ${token}`,
+      });
+    return {
+      stdout: execFileSync('git', [...args], {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+      }),
+      stderr: '',
+    };
+  };
+  const provisioner = createProvisioner({
+    store: ctx.store,
+    db: ctx.db,
+    docker: fakeDocker().client,
+    projectTokenMint: async () => token,
+    defaultImageRef: 'image:test',
+    hostCloneRoot: root,
+    prepareLocalWorkspace: undefined,
+    git,
+  });
+  try {
+    const error = await provisioner
+      .linkCloneToGitHub(project, { owner: 'acme', repo: 'code' }, token)
+      .catch((cause: unknown) => cause);
+    expect(error).toBeInstanceOf(ProvisioningError);
+    const detail = (error as Error).cause as Error;
+    expect(detail.message).toContain('Commits must have verified signatures');
+    expect(detail.message).not.toContain(token);
+    expect(detail.message).not.toContain(gitAuthHeader(token));
+    expect(execFileSync('git', ['-C', clone, 'rev-parse', 'HEAD'], { encoding: 'utf8' })).toBe(
+      head,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+it.each([
+  'dirty-empty',
+  'different-default',
+  'ignored-collision',
+  'ambiguous-retry',
+  'published-retry',
+  'signed-merge',
+] as const)(
+  'preserves local edits and the destination branch when linking: %s',
+  async (scenario) => {
+    const root = mkdtempSync(join(tmpdir(), 'link-preservation-'));
+    const clone = join(root, 'code');
+    const remote = join(root, 'remote');
+    let mergeNumber = 0;
+    const run = (...args: string[]) =>
+      execFileSync('git', args, {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: { ...process.env, GIT_COMMITTER_DATE: `@${1700000000 + mergeNumber} +0000` },
+      });
+    const commit = (repo: string) =>
+      run(
+        '-C',
+        repo,
+        '-c',
+        'user.name=Test',
+        '-c',
+        'user.email=test@example.com',
+        '-c',
+        'commit.gpgsign=false',
+        'commit',
+        '--allow-empty',
+        '-qm',
+        'initial',
+      );
+    run('init', '-q', '-b', 'main', clone);
+    writeFileSync(join(clone, 'file.txt'), 'original');
+    run('-C', clone, 'add', 'file.txt');
+    if (scenario === 'ignored-collision') {
+      writeFileSync(join(clone, '.gitignore'), 'asset.txt\n');
+      run('-C', clone, 'add', '.gitignore');
+    }
+    commit(clone);
+    run('init', '-q', '-b', 'master', remote);
+    if (scenario !== 'dirty-empty' && scenario !== 'published-retry') {
+      if (scenario === 'ignored-collision') {
+        writeFileSync(join(remote, 'asset.txt'), 'remote asset');
+        run('-C', remote, 'add', 'asset.txt');
+        writeFileSync(join(clone, 'asset.txt'), 'local asset');
+      }
+      commit(remote);
+    } else if (scenario === 'dirty-empty') writeFileSync(join(clone, 'file.txt'), 'uncommitted');
+    const calls: string[][] = [];
+    const git: GitRunner = async (args) => {
+      calls.push([...args]);
+      if (args.includes('merge') && args.includes('--allow-unrelated-histories')) mergeNumber++;
+      if (args.includes('push')) {
+        if (scenario === 'published-retry') {
+          run('-C', remote, 'fetch', clone, 'HEAD');
+          run('-C', remote, 'update-ref', 'refs/heads/main', 'FETCH_HEAD');
+          run('-C', remote, 'symbolic-ref', 'HEAD', 'refs/heads/main');
+        }
+
+        if (
+          scenario === 'ambiguous-retry' &&
+          calls.filter((call) => call.includes('push')).length === 1
+        ) {
+          // Simulate acceptance followed by transport failure, without a network push.
+          run('-C', remote, 'fetch', clone, 'HEAD');
+          run('-C', remote, 'update-ref', args.at(-1)!.split(':')[1]!, 'FETCH_HEAD');
+          throw new Error('connection lost after remote accepted import');
+        }
+        return { stdout: '', stderr: '' };
+      }
+      const localArgs = args.map((arg) => (arg === 'https://github.com/acme/code' ? remote : arg));
+      return { stdout: run(...localArgs), stderr: '' };
+    };
+    const project = await ctx.store.upsertProject({
+      id: randomUUID(),
+      containerName: `link-${randomUUID()}`,
+      owner: '__local__',
+      repo: 'code',
+      cloneDir: 'code',
+      kind: 'local',
+      state: 'absent',
+    });
+    const signing = await import('./signed-bootstrap.js');
+    const originalSignMerge = signing.createSignedMergeCommit;
+    const signedMerge =
+      scenario === 'signed-merge'
+        ? vi
+            .spyOn(signing, 'createSignedMergeCommit')
+            .mockImplementation((runner, repo, identity) =>
+              originalSignMerge(runner, repo, identity, async ({ payloadPath }) => {
+                writeFileSync(
+                  `${payloadPath}.sig`,
+                  '-----BEGIN SSH SIGNATURE-----\nfixture\n-----END SSH SIGNATURE-----\n',
+                );
+              }),
+            )
+        : undefined;
+    const provisioner = createProvisioner({
+      store: ctx.store,
+      db: ctx.db,
+      docker: fakeDocker().client,
+      defaultImageRef: 'image:test',
+      hostCloneRoot: root,
+      prepareLocalWorkspace: undefined,
+      veritySettings:
+        scenario === 'signed-merge'
+          ? async () => ({
+              ...(await ctx.store.updateVeritySettings({
+                gitUserName: 'Signer',
+                gitUserEmail: 'signer@example.com',
+              })),
+              gitSshPrivateKey: 'fixture',
+            })
+          : undefined,
+
+      git,
+    });
+    try {
+      if (scenario === 'dirty-empty') {
+        await expect(
+          provisioner.linkCloneToGitHub(project, { owner: 'acme', repo: 'code' }, undefined),
+        ).rejects.toThrow('uncommitted changes');
+        expect(calls.some((args) => args.includes('push'))).toBe(false);
+        expect(readFileSync(join(clone, 'file.txt'), 'utf8')).toBe('uncommitted');
+      } else if (scenario === 'published-retry') {
+        await provisioner.linkCloneToGitHub(project, { owner: 'acme', repo: 'code' }, undefined);
+        const retry = await provisioner.linkCloneToGitHub(
+          project,
+          { owner: 'acme', repo: 'code' },
+          undefined,
+        );
+        expect(retry.defaultBranch).toBe('main');
+        expect(run('-C', clone, 'remote', 'get-url', 'origin').trim()).toBe(remote);
+        expect(calls.filter((args) => args.includes('push'))).toHaveLength(1);
+      } else if (scenario === 'ignored-collision') {
+        await expect(
+          provisioner.linkCloneToGitHub(project, { owner: 'acme', repo: 'code' }, undefined),
+        ).rejects.toThrow('merging the existing GitHub repository');
+        expect(readFileSync(join(clone, 'asset.txt'), 'utf8')).toBe('local asset');
+        expect(calls.some((args) => args.includes('push'))).toBe(false);
+      } else {
+        let acceptedHead: string | undefined;
+        if (scenario === 'ambiguous-retry') {
+          await expect(
+            provisioner.linkCloneToGitHub(project, { owner: 'acme', repo: 'code' }, undefined),
+          ).rejects.toThrow('retry to recover');
+          acceptedHead = run('-C', remote, 'rev-parse', 'verity/import-main').trim();
+        }
+        const result = await provisioner.linkCloneToGitHub(
+          project,
+          { owner: 'acme', repo: 'code' },
+          undefined,
+        );
+        if (scenario === 'signed-merge') {
+          expect(signedMerge).toHaveBeenCalledOnce();
+          expect(run('-C', clone, 'cat-file', '-p', 'HEAD')).toContain(
+            'gpgsig -----BEGIN SSH SIGNATURE-----',
+          );
+          expect(run('-C', clone, 'show', '-s', '--format=%ce', 'HEAD').trim()).toBe(
+            'signer@example.com',
+          );
+        }
+        expect(result.defaultBranch).toBe('master');
+        expect(result.importBranch).toBe('verity/import-main');
+        if (acceptedHead) {
+          expect(run('-C', clone, 'rev-parse', 'HEAD').trim()).toBe(acceptedHead);
+          expect(calls.filter((args) => args.includes('push')).map((args) => args.at(-1))).toEqual([
+            'HEAD:refs/heads/verity/import-main',
+            'HEAD:refs/heads/verity/import-main',
+          ]);
+        }
+        expect(run('-C', remote, 'rev-list', '--count', 'master').trim()).toBe('1');
+      }
+    } finally {
+      signedMerge?.mockRestore();
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);

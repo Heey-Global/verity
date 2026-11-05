@@ -106,6 +106,8 @@ async function harness(
     enabled?: boolean;
     registry?: boolean;
     forgejo?: boolean;
+    capabilities?: GhTokenCapabilityRegistry;
+    mint?: () => Promise<string>;
   } = {},
 ) {
   const upstreamPort = await listen(
@@ -139,7 +141,7 @@ async function harness(
       outgoing.end(body);
     });
   };
-  const mint = vi.fn(async () => token);
+  const mint = vi.fn(options.mint ?? (async () => token));
   const adapter = options.registry
     ? createGhcrForgeAdapter({
         packages: async () => ['acme/app/server'],
@@ -161,7 +163,7 @@ async function harness(
           resolve: (value) =>
             Promise.resolve(value === cap ? { ...binding, forgeConnectionId: 'forge' } : undefined),
         }
-      : capabilities,
+      : (options.capabilities ?? capabilities),
     ...(options.forgejo
       ? { certificateFor: () => issueGatewayServerCertificate(ca, { serverName: 'forge.test' }) }
       : {}),
@@ -1047,4 +1049,38 @@ describe('brokered forge TLS boundary', () => {
       expect(await readFile(join(clone, '.git', 'config'), 'utf8')).not.toContain(token);
     },
   );
+});
+
+it('does not dispatch a Forge request revoked while adapter credentials are resolving', async () => {
+  let valid = true;
+  const h = await harness((_req, res) => res.end('unexpected'), {
+    capabilities: { ...capabilities, resolve: async () => (valid ? binding : undefined) },
+    mint: async () => {
+      valid = false;
+      return token;
+    },
+  });
+  const result = await call(h.port, '/repos/acme/app/issues');
+  expect(result.status).toBe(401);
+  expect(h.received).toHaveLength(0);
+});
+
+it('closes an existing Forge stream when its exact capability is revoked', async () => {
+  let valid = true;
+  let received!: () => void;
+  const admitted = new Promise<void>((resolve) => {
+    received = resolve;
+  });
+  const h = await harness(
+    (_req, res) => {
+      res.write('frame');
+      received();
+    },
+    { capabilities: { ...capabilities, resolve: async () => (valid ? binding : undefined) } },
+  );
+  const result = call(h.port, '/repos/acme/app/issues').catch(() => ({ status: 0, body: '' }));
+  await admitted;
+  valid = false;
+  await result;
+  expect(h.received).toHaveLength(1);
 });

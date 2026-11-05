@@ -108,12 +108,15 @@ it('joins concurrent refreshes instead of overlapping them', async () => {
   expect(inventory.allows('140.82.112.6')).toBe(false);
 });
 
-it('lets configured hosts add public addresses without invalidating the inventory', async () => {
+it('lets configured hosts with definitive private answers contribute no public addresses', async () => {
   const inventory = createProtectedAddressInventory({
     hosts: ['api.github.com'],
     configuredHosts: ['matrix.example.net', 'internal.example.org'],
     resolve: async (host) => {
-      if (host === 'internal.example.org') throw new Error('Forbidden project DNS answer');
+      if (host === 'internal.example.org')
+        throw Object.assign(new Error('Forbidden project DNS answer'), {
+          code: EGRESS_DNS_NOT_PUBLIC,
+        });
       return {
         addresses: [host === 'matrix.example.net' ? '198.51.100.20' : '140.82.112.6'],
         expiresAt: 1e12,
@@ -173,7 +176,7 @@ it('keeps configured broker addresses through transient failures and only an ove
   await inventory.refresh();
   for (const next of ['timeout', 'oversized'] as const) {
     mode = next;
-    await inventory.refresh();
+    await expect(inventory.refresh()).rejects.toThrow('inventory incomplete');
     expect(inventory.allows('198.51.100.20')).toBe(false);
   }
   mode = 'gone';
@@ -195,9 +198,9 @@ it('keeps the public front ends of a mixed protected answer and reports configur
       });
     },
   });
-  await inventory.refresh();
+  await expect(inventory.refresh()).rejects.toThrow('inventory incomplete');
   expect(inventory.allows('104.16.0.34')).toBe(false);
-  expect(inventory.allows('198.51.100.7')).toBe(true);
+  expect(inventory.allows('198.51.100.7')).toBe(false);
   expect(reported).toEqual(['matrix.example.net']);
 });
 
@@ -205,4 +208,30 @@ it('keeps exa.ai broker-only for project grants while its search endpoint is a s
   expect(mandatoryEgressRoute('mcp.exa.ai')).toBe('search');
   expect(SYSTEM_DIRECT_TARGETS).toEqual([{ host: 'mcp.exa.ai', protocol: 'tcp', port: 443 }]);
   expect(PROTECTED_ADDRESS_HOSTS).not.toContain('mcp.exa.ai');
+});
+
+it('denies direct admission when configured-host resolution is missing or stale', async () => {
+  let now = 0;
+  let fail = true;
+  const inventory = createProtectedAddressInventory({
+    hosts: [],
+    configuredHosts: ['broker.example.org'],
+    now: () => now,
+    maxAgeMs: 100,
+    resolve: async () => {
+      if (fail) throw new Error('temporary DNS failure');
+      return { addresses: ['198.51.100.20'], expiresAt: 1e12 };
+    },
+  });
+  await expect(inventory.refresh()).rejects.toThrow('inventory incomplete');
+  expect(inventory.allows('203.0.113.9')).toBe(false);
+  fail = false;
+  await inventory.refresh();
+  expect(inventory.allows('203.0.113.9')).toBe(true);
+  expect(inventory.allows('198.51.100.20')).toBe(false);
+  fail = true;
+  now = 50;
+  await expect(inventory.refresh()).rejects.toThrow('inventory incomplete');
+  now = 101;
+  expect(inventory.allows('203.0.113.9')).toBe(false);
 });

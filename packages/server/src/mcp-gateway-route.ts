@@ -1,6 +1,10 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { bearerToken } from './auth.js';
-import { internalConnectionIdentity, requestArrivedInternally } from './internal-listener.js';
+import {
+  internalConnectionIdentity,
+  internalConnectionGenerationSignal,
+  requestArrivedInternally,
+} from './internal-listener.js';
 import type { McpGateway } from './mcp-gateway.js';
 
 export interface McpGatewayRouteDeps {
@@ -21,11 +25,13 @@ export function registerMcpGatewayRoutes(app: FastifyInstance, deps: McpGatewayR
         reply.code(401);
         return { error: 'unauthorized' };
       }
+      const signal = internalConnectionGenerationSignal(request);
       const presented = bearerToken(request.headers.authorization);
       const response = await deps.gateway.handle({
         projectId: socketIdentity.projectId,
         token: presented,
         body: request.body,
+        ...(signal === undefined ? {} : { transport: { identity: socketIdentity, signal } }),
       });
       reply.code(response.status);
       // MCP acknowledges a notification with an empty 202. Returning undefined from an

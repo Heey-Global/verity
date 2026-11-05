@@ -1,3 +1,6 @@
+import { openProjectEgressInventoryHistory } from './project-egress-inventory-history.js';
+import { ProjectEgressHealthError } from './project-egress-health.js';
+import { createManagedSystemInventory } from './project-egress-system-inventory.js';
 import { z } from 'zod';
 import { inspectEgressHostDirectTransport } from './project-egress-host-inspection.js';
 import { createPostgresDb, ProjectEgressStore } from '@verity/store';
@@ -7,11 +10,12 @@ import {
   egressHostDestinationAllowed,
   egressHostDirectChecks,
   unavailableEgressAuthority,
+  verifyEgressHostAuthorityReady,
 } from './project-egress-host-authority.js';
 import { createProjectEgressHostEnforcement } from './project-egress-host-enforcement.js';
 import { hostProjectDeadlineEnforcer } from './project-egress-deadline.js';
 import { inspectProjectFenceAttachment } from './project-egress-attachment.js';
-import { createProjectEgressResolver } from './project-egress-resolver.js';
+import { createProjectEgressResolvers } from './project-egress-resolver.js';
 import {
   createProtectedAddressInventory,
   SYSTEM_DIRECT_TARGETS,
@@ -25,7 +29,7 @@ import {
   verifyProjectEgressDockerHost,
 } from './project-egress-host-service.js';
 import { egressRelayPolicy } from './project-egress-relay-policy.js';
-/** Experimental host entrypoint. Not installed or enabled by production setup. */
+/** Managed host entrypoint. Activation requires a validated runtime profile and complete inventory. */
 import { readFile } from 'node:fs/promises';
 import { ProjectEgressHost, projectEgressBootstrapRules } from './project-egress-host.js';
 import { applyProjectFenceRules, projectFenceTable } from './project-egress-fence.js';
@@ -36,6 +40,8 @@ import {
   inspectEgressHostNetwork,
   openProjectEgressHostStore,
   projectEgressHostDocker,
+  verifyEgressHostRuntime,
+  createEgressHostRuntimeRegistrationGuard,
 } from './project-egress-host-runtime.js';
 
 if (process.platform !== 'linux' || process.getuid?.() !== 0)
@@ -60,20 +66,110 @@ if (authority !== undefined && relayPolicy?.packetEnforcement !== true)
   throw new Error('Direct authority requires host packet enforcement');
 const database = authority === undefined ? undefined : createPostgresDb(authority.databaseUrl);
 const projectPolicy = database === undefined ? undefined : new ProjectEgressStore(database);
-const policyStore = projectPolicy ?? unavailableEgressAuthority;
-const resolve =
+// Deny and pre-daemon restore paths never depend on a Docker registration read.
+const servingRuntimeRegistration =
+  mode === 'serve'
+    ? createEgressHostRuntimeRegistrationGuard(
+        JSON.parse(await projectEgressHostDocker('info', '--format', '{{json .Runtimes}}')),
+      )
+    : undefined;
+let runtimeRegistrationCheck: Promise<void> | undefined;
+const verifyServingRuntimeRegistration = (): Promise<void> => {
+  if (!servingRuntimeRegistration) return Promise.resolve();
+  runtimeRegistrationCheck ??= projectEgressHostDocker('info', '--format', '{{json .Runtimes}}')
+    .then((reply) => servingRuntimeRegistration(JSON.parse(reply)))
+    .finally(() => {
+      runtimeRegistrationCheck = undefined;
+    });
+  return runtimeRegistrationCheck;
+};
+
+const policyStore: Pick<ProjectEgressStore, 'readForAdmission'> = {
+  readForAdmission: async (...args) => {
+    if (inventoryPersistenceFailed)
+      throw new ProjectEgressHealthError('mandatory_inventory_incomplete');
+    systemInventory.verify();
+    await verifyServingRuntimeRegistration();
+    return (projectPolicy ?? unavailableEgressAuthority).readForAdmission(...args);
+  },
+};
+const { resolve, resolveProtected } =
   authority === undefined
-    ? () => Promise.reject(new Error('Host DNS authority is not configured'))
-    : createProjectEgressResolver({
+    ? {
+        resolve: () => Promise.reject(new Error('Host DNS authority is not configured')),
+        resolveProtected: () => Promise.reject(new Error('Host DNS authority is not configured')),
+      }
+    : createProjectEgressResolvers({
         servers: authority.dnsServers,
         destinationAllowed: egressHostDestinationAllowed,
       });
+const inventoryHistory = await openProjectEgressInventoryHistory('/var/lib/verity-egress');
+let inventoryPersistenceFailed = false;
+const resolveInventory: typeof resolveProtected = async (host) => {
+  try {
+    const result = await resolveProtected(host);
+    try {
+      await inventoryHistory.addAddresses(result.addresses);
+    } catch (error) {
+      inventoryPersistenceFailed = true;
+      throw error;
+    }
+    return result;
+  } catch (error) {
+    const addresses =
+      typeof error === 'object' && error !== null && 'publicAddresses' in error
+        ? error.publicAddresses
+        : undefined;
+    if (
+      Array.isArray(addresses) &&
+      addresses.every((address): address is string => typeof address === 'string')
+    ) {
+      try {
+        await inventoryHistory.addAddresses(addresses);
+      } catch (failure) {
+        inventoryPersistenceFailed = true;
+        throw failure;
+      }
+    }
+    throw error;
+  }
+};
 // Addresses of broker/system destinations are never direct, whatever name points at them.
-const protectedAddresses = createProtectedAddressInventory({
-  resolve,
-  configuredHosts: authority?.mandatoryHosts ?? [],
+let protectedAddresses = createProtectedAddressInventory({
+  resolve: resolveInventory,
+  configuredHosts: [
+    ...new Set([...inventoryHistory.hosts(), ...(authority?.mandatoryHosts ?? [])]),
+  ],
   reportConfiguredFailure: (host, error) => {
     console.error(`Configured broker host ${host} could not be resolved`, error);
+  },
+});
+const managedInventory = authority?.managedInventoryComplete === false;
+const deploymentMandatoryHosts = [...(authority?.mandatoryHosts ?? [])];
+const systemInventory = createManagedSystemInventory({
+  managed: managedInventory,
+  healthy: () => !inventoryPersistenceFailed,
+  invalidate: () => {
+    if (managedInventory && authority) authority.managedInventoryComplete = false;
+  },
+  replace: async (hosts, addresses) => {
+    if (!authority) throw new Error('Direct authority is not configured');
+    try {
+      await inventoryHistory.addHosts([...deploymentMandatoryHosts, ...hosts]);
+      await inventoryHistory.addAddresses(addresses);
+    } catch (error) {
+      inventoryPersistenceFailed = true;
+      throw error;
+    }
+    const next = createProtectedAddressInventory({
+      resolve: resolveInventory,
+      configuredHosts: inventoryHistory.dnsHosts([...deploymentMandatoryHosts, ...hosts]),
+    });
+    await next.refresh();
+    protectedAddresses = next;
+    inventoryPersistenceFailed = false;
+    authority.mandatoryHosts = inventoryHistory.hosts();
+    authority.managedInventoryComplete = true;
   },
 });
 const deadline = hostProjectDeadlineEnforcer();
@@ -88,7 +184,22 @@ const enforcement = createProjectEgressHostEnforcement({
   dependencies: {
     inspect: inspectProjectFenceAttachment,
     apply: applyProjectFenceRules,
-    ...egressHostDirectChecks(authority, protectedAddresses),
+    ...(() => {
+      const checks = egressHostDirectChecks(authority, {
+        allows: (address) => protectedAddresses.allows(address),
+      });
+      return {
+        directTargetAllowed: async (host: string) =>
+          !inventoryPersistenceFailed &&
+          systemInventory.ready() &&
+          (await checks.directTargetAllowed(host)),
+        destinationAllowed: async (address: string) =>
+          !inventoryPersistenceFailed &&
+          systemInventory.ready() &&
+          !inventoryHistory.protectedAddress(address) &&
+          (await checks.destinationAllowed(address)),
+      };
+    })(),
     reportSystemFailure: (target, error) =>
       console.error(`System destination ${target.host} was not admitted`, error),
     resolve,
@@ -115,7 +226,25 @@ const enforcement = createProjectEgressHostEnforcement({
   },
 });
 
+const verifyHost = async () => {
+  const info: unknown = JSON.parse(await projectEgressHostDocker('info', '--format', '{{json .}}'));
+  verifyProjectEgressDockerHost(info);
+};
 const controller = new ProjectEgressHost(await store.load(), {
+  ...(managedInventory ? { systemInventory } : {}),
+  verifyHealth: async () => {
+    if (inventoryPersistenceFailed)
+      throw new ProjectEgressHealthError('mandatory_inventory_incomplete');
+    systemInventory.verify();
+    await verifyServingRuntimeRegistration();
+    verifyEgressHostAuthorityReady(authority);
+    await verifyHost();
+    const runtimes: unknown = JSON.parse(
+      await projectEgressHostDocker('info', '--format', '{{json .Runtimes}}'),
+    );
+    verifyEgressHostRuntime(runtimes, 'sandbox');
+    verifyEgressHostRuntime(runtimes, 'relay');
+  },
   ...(relayPolicy?.packetEnforcement === true
     ? { enforcement, bootId: (await readFile('/proc/sys/kernel/random/boot_id', 'utf8')).trim() }
     : {}),
@@ -156,12 +285,7 @@ if (mode === 'restore') {
   const service = await serveProjectEgressHost({
     restore: () => controller.restore(),
     deny: () => controller.shutdown(),
-    verifyHost: async () => {
-      const info: unknown = JSON.parse(
-        await projectEgressHostDocker('info', '--format', '{{json .}}'),
-      );
-      verifyProjectEgressDockerHost(info);
-    },
+    verifyHost,
     revalidate: () => controller.revalidate(),
     listen: async () => {
       const token = (await readFile('/etc/verity-egress/control.key', 'utf8')).trim();

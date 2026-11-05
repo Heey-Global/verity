@@ -253,6 +253,18 @@ it('checks actual socket ownership, contents and non-symlinked ancestors', async
   await expect(
     inspectEgressRelay(binding, f.reply[0]!.Id, policy, docker),
   ).resolves.toBeUndefined();
+  // A subsequent refresh must inspect shared ancestors again.
+  await chmod(root, 0o777);
+  await expect(inspectEgressRelay(binding, f.reply[0]!.Id, policy, docker)).rejects.toThrow(
+    'ancestor',
+  );
+  await chmod(root, 0o700);
+  const secondSocket = join(root, expected[1]!.subpath, expected[1]!.socket);
+  await chmod(secondSocket, 0o640);
+  await expect(inspectEgressRelay(binding, f.reply[0]!.Id, policy, docker)).rejects.toThrow(
+    'inode',
+  );
+  await chmod(secondSocket, 0o660);
   const dir = join(root, expected[0]!.subpath);
   await writeFile(join(dir, 'extra'), 'unexpected');
   await expect(inspectEgressRelay(binding, f.reply[0]!.Id, policy, docker)).rejects.toThrow();
@@ -361,4 +373,18 @@ it('accepts only the brokered Forge route settings in the relay environment', ()
     ['VERITY_DNS_UPSTREAM=203.0.113.1'],
   ])
     expect(check(env), env.join(' ')).toThrow('Untrusted relay');
+});
+
+it('accepts exactly the pinned old/new relay images with the same execution contract', () => {
+  const next = { ...policy, image: `repo@sha256:${'d'.repeat(64)}`, previousImage: policy.image };
+  const old = fixture();
+  expect(verifyEgressRelay(binding, next, old.reply, image, old.volume)).toHaveLength(3);
+  const latest = fixture();
+  latest.reply[0]!.Config.Image = next.image;
+  expect(verifyEgressRelay(binding, next, latest.reply, image, latest.volume)).toHaveLength(3);
+  old.reply[0]!.Config.Image = `repo@sha256:${'e'.repeat(64)}`;
+  expect(() => verifyEgressRelay(binding, next, old.reply, image, old.volume)).toThrow();
+  const altered = fixture();
+  altered.reply[0]!.Config.User = '0:0';
+  expect(() => verifyEgressRelay(binding, next, altered.reply, image, altered.volume)).toThrow();
 });

@@ -1,0 +1,13 @@
+[
+  {
+    "name": "verity_memory_append",
+    "title": "Verity · Memory · Append",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": null,
+    "skill": "memory-curate",
+    "compatibility": {
+      "name": "verity_memory_append"
+    }
+  }
+]

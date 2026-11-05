@@ -4,6 +4,8 @@ const events = new Set([
   'capture_started',
   'stream_open_requested',
   'stream_opened',
+  'stream_local_read_started',
+  'stream_local_read_completed',
   'stream_send_requested',
   'stream_send_completed',
   'stream_stalled',
@@ -189,6 +191,8 @@ function acceptedDataDiagnostics(value: unknown): string | null {
     const streamEvent = [
       'stream_open_requested',
       'stream_opened',
+      'stream_local_read_started',
+      'stream_local_read_completed',
       'stream_send_requested',
       'stream_send_completed',
       'stream_stalled',

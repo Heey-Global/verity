@@ -1237,7 +1237,7 @@ try {
   const helpers: { pid: number; command: string }[] = [];
   for (const pid of children) {
     const command = await readFile(`/proc/${pid}/cmdline`, 'utf8').catch(() => '');
-    if (command.includes('/opt/verity-egress/project-egress-deadline.py\0--worker'))
+    if (command.includes('/opt/verity-egress/project-egress-deadline.py\0--serve'))
       helpers.push({ pid: Number(pid), command });
   }
   assert.equal(helpers.length, 1, 'Exactly one actual resident deadline helper must be present');

@@ -2,7 +2,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { PreviewEdge } from '@verity/preview-tunnel';
 import { LocalPreviewManager, type LocalPreviewManagerOptions } from './local-preview-manager.js';
 import { containerGenerationOf } from './project-relay-migration.js';
-import { PreviewShareManager } from './preview-share-manager.js';
+import { PreviewShareManager, PreviewNetworkProtectionError } from './preview-share-manager.js';
 
 const managers: LocalPreviewManager[] = [];
 afterEach(async () => {
@@ -33,6 +33,7 @@ function fixture() {
   const records = new Map<string, import('@verity/store').LocalPreviewShareRecord>();
   const options = {
     store: {
+      isSessionDeleting: async () => false,
       getProject: async () => project,
       getSession: async () => ({ projectId: 'p1' }),
       createLocalPreviewShare: async (input: import('@verity/store').LocalPreviewShareRecord) => {
@@ -530,4 +531,261 @@ it('storage maintenance preserves active previews and does not remove their conn
   expect(mutation).not.toHaveBeenCalled();
   expect(manager.listProject('p1').map((item) => item.id)).toContain(share.id);
   expect(docker.removeContainer).not.toHaveBeenCalled();
+});
+
+it('rejects protected local preview creation before opening an edge or connector', async () => {
+  const f = fixture();
+  const listen = vi.spyOn(PreviewEdge.prototype, 'listen').mockResolvedValue(18100);
+  vi.spyOn(PreviewShareManager.prototype, 'prepareLocalTarget').mockRejectedValue(
+    new PreviewNetworkProtectionError(),
+  );
+  await expect(f.manager.create('s1', { targetPort: 3000 })).rejects.toThrow('network-protected');
+  expect(listen).not.toHaveBeenCalled();
+  expect(f.docker.createContainer).not.toHaveBeenCalled();
+});
+
+it('closes the edge and connector on protected generation detection without restoring the stale link', async () => {
+  const f = fixture();
+  vi.spyOn(PreviewEdge.prototype, 'listen').mockResolvedValue(18100);
+  const close = vi.spyOn(PreviewEdge.prototype, 'close').mockResolvedValue();
+  const share = await f.manager.create('s1', { targetPort: 3000 });
+  const sandbox = await f.docker.inspectContainer();
+  f.docker.inspectContainer.mockImplementation(async () => ({
+    ...sandbox,
+    labels: { 'verity.container-generation': 'generation-2' },
+    networks: { [`verity-egress-${'a'.repeat(32)}`]: {} },
+  }));
+  await f.manager.reconcile();
+  expect(close).toHaveBeenCalledOnce();
+  expect(f.docker.removeContainer).toHaveBeenCalledWith('c1');
+  expect(f.manager.list('s1')).toEqual([]);
+  await f.manager.reconcile();
+  expect(f.docker.createContainer).toHaveBeenCalledOnce();
+  expect(f.manager.portOf(share.id)).toBeUndefined();
+});
+
+it('revokes a dormant durable link when restoration discovers a protected target', async () => {
+  const f = fixture();
+  vi.spyOn(PreviewEdge.prototype, 'listen').mockResolvedValue(18100);
+  vi.spyOn(PreviewEdge.prototype, 'close').mockResolvedValue();
+  const share = await f.manager.create('s1', { targetPort: 3000 });
+  const sandbox = await f.docker.inspectContainer();
+  f.docker.inspectContainer.mockImplementation(async () => ({
+    ...sandbox,
+    labels: { 'verity.container-generation': 'generation-2' },
+  }));
+  await f.manager.reconcile();
+  vi.spyOn(PreviewShareManager.prototype, 'prepareLocalTarget').mockRejectedValue(
+    new PreviewNetworkProtectionError(),
+  );
+  await f.manager.reconcile();
+  expect(f.manager.portOf(share.id)).toBeUndefined();
+  expect(f.manager.list('s1')).toEqual([]);
+  expect(f.docker.createContainer).toHaveBeenCalledOnce();
+});
+
+it.each([
+  ['create', 'stop-session'],
+  ['create', 'move-project'],
+  ['restore', 'stop-session'],
+  ['restore', 'move-project'],
+] as const)('does not wait for unrelated %s while %s', async (source, action) => {
+  const { manager, options, docker } = fixture();
+  const project = { id: 'p2', containerName: 'sandbox', state: 'active' };
+  options.store.getProject = async () => project as never;
+  options.store.getSession = async () => ({ projectId: project.id }) as never;
+  vi.spyOn(PreviewShareManager.prototype, 'prepareLocalTarget').mockResolvedValue({
+    project: project as never,
+    session: {} as never,
+    generation: 'generation-1',
+    staticMount: undefined,
+  });
+  let current = manager;
+  if (source === 'restore') {
+    await manager.create('s2', { targetPort: 3000 });
+    await manager.close();
+    current = new LocalPreviewManager(options);
+    managers.push(current);
+  }
+  let finish!: (value: { id: string }) => void;
+  let entered!: () => void;
+  const started = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  docker.createContainer.mockImplementationOnce(() => {
+    entered();
+    return new Promise((resolve) => {
+      finish = resolve;
+    });
+  });
+  const creation =
+    source === 'restore' ? current.restore() : current.create('s2', { targetPort: 3000 });
+  await started;
+  let release: (() => void) | undefined;
+  let completed = false;
+  const operation = (
+    action === 'stop-session'
+      ? current.stopSession('s1')
+      : current.beginSessionMove('p1').then((value) => {
+          release = value;
+        })
+  ).then(() => {
+    completed = true;
+  });
+  try {
+    // An unrelated connector can remain hung indefinitely without holding deletion open.
+    await vi.waitFor(() => expect(completed).toBe(true), { timeout: 200, interval: 5 });
+  } finally {
+    finish({ id: 'pending-connector' });
+    await creation;
+    await operation;
+    release?.();
+  }
+  expect(current.list('s2')).toHaveLength(1);
+});
+
+it.each(['stop-session', 'move-project'] as const)(
+  'waits for a matching creation during %s and rejects it before exposure',
+  async (action) => {
+    const { manager, docker } = fixture();
+    let finish!: (value: { id: string }) => void;
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    docker.createContainer.mockImplementationOnce(() => {
+      entered();
+      return new Promise((resolve) => {
+        finish = resolve;
+      });
+    });
+    const creation = manager.create('s1', { targetPort: 3000 });
+    const rejected = expect(creation).rejects.toThrow('project changed during preview creation');
+    await started;
+    let completed = false;
+    let release: (() => void) | undefined;
+    const operation = (
+      action === 'stop-session'
+        ? manager.stopSession('s1')
+        : manager.beginSessionMove('p1').then((value) => {
+            release = value;
+          })
+    ).then(() => {
+      completed = true;
+    });
+    try {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(completed).toBe(false);
+    } finally {
+      finish({ id: 'pending-connector' });
+      await rejected;
+      await operation;
+      release?.();
+    }
+    expect(manager.list('s1')).toEqual([]);
+    expect(docker.removeContainer).toHaveBeenCalledWith('pending-connector');
+  },
+);
+
+it.each(['stop-session', 'move-project'] as const)(
+  'waits for a matching restoration during %s and never exposes its connector',
+  async (action) => {
+    const { manager, options, docker } = fixture();
+    await manager.create('s1', { targetPort: 3000 });
+    await manager.close();
+    const restored = new LocalPreviewManager(options);
+    managers.push(restored);
+    let finish!: (value: { id: string }) => void;
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    docker.createContainer.mockImplementationOnce(() => {
+      entered();
+      return new Promise((resolve) => {
+        finish = resolve;
+      });
+    });
+    const recovery = restored.restore();
+    await started;
+    let completed = false;
+    let release: (() => void) | undefined;
+    const operation = (
+      action === 'stop-session'
+        ? restored.stopSession('s1')
+        : restored.beginSessionMove('p1').then((value) => {
+            release = value;
+          })
+    ).then(() => {
+      completed = true;
+    });
+    try {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(completed).toBe(false);
+    } finally {
+      finish({ id: 'pending-restored-connector' });
+      await recovery;
+      await operation;
+      release?.();
+    }
+    expect(docker.removeContainer).toHaveBeenCalledWith('pending-restored-connector');
+    expect(restored.ownsConnector('pending-restored-connector')).toBe(false);
+    expect(restored.list('s1')).toHaveLength(action === 'stop-session' ? 0 : 1);
+  },
+);
+
+it('rejects local creation once deletion intent is durable', async () => {
+  const { manager, options, docker } = fixture();
+  vi.spyOn(options.store, 'isSessionDeleting').mockResolvedValue(true);
+  await expect(manager.create('s1', { targetPort: 3000 })).rejects.toThrow(
+    'local previews are stopping',
+  );
+  expect(docker.createContainer).not.toHaveBeenCalled();
+});
+
+it('revokes a local connector that finishes after deletion intent becomes durable', async () => {
+  const { manager, options, docker } = fixture();
+  let resume!: (value: { id: string }) => void;
+  let entered!: () => void;
+  const started = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  docker.createContainer.mockImplementationOnce(() => {
+    entered();
+    return new Promise((resolve) => {
+      resume = resolve;
+    });
+  });
+  const creation = manager.create('s1', { targetPort: 3000 });
+  const rejected = expect(creation).rejects.toThrow('project changed during preview creation');
+  await started;
+  vi.spyOn(options.store, 'isSessionDeleting').mockResolvedValue(true);
+  resume({ id: 'late-connector' });
+  await rejected;
+  expect(manager.list('s1')).toEqual([]);
+  expect(docker.removeContainer).toHaveBeenCalledWith('late-connector');
+});
+
+it('stops retained local connectors after session deletion removes their durable rows', async () => {
+  const { manager, options, docker } = fixture();
+  await manager.create('s1', { targetPort: 3000 });
+  vi.spyOn(options.store, 'listLocalPreviewShares').mockResolvedValue([]);
+  await manager.stopSession('s1');
+  expect(docker.removeContainer).toHaveBeenCalledWith('c1');
+  expect(manager.list('s1')).toEqual([]);
+  expect(manager.heldPorts().size).toBe(0);
+});
+
+it('releases a dormant share port after its database row has cascaded away', async () => {
+  const { manager, docker, options } = fixture();
+  const share = await manager.create('s1', { targetPort: 3000 });
+  await manager.close();
+  const restored = new LocalPreviewManager(options);
+  managers.push(restored);
+  docker.createContainer.mockRejectedValueOnce(new Error('Docker unavailable'));
+  await restored.reconcile();
+  await options.store.deleteLocalPreviewShare(share.id);
+  await restored.stopSession('s1');
+  const successor = await restored.create('s2', { targetPort: 4000 });
+  expect(new URL(successor.url).port).toBe(new URL(share.url).port);
 });

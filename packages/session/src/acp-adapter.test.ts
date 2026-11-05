@@ -485,6 +485,28 @@ describe('AcpEventAdapter', () => {
     ]);
   });
 
+  it('preserves MCP routing names while emitting readable display metadata', () => {
+    const adapter = new AcpEventAdapter();
+    const events = adapter.consume({
+      sessionUpdate: 'tool_call',
+      toolCallId: 'display-call',
+      title: 'command text is not MCP metadata',
+      name: 'mcp__verity__verity_knowledge_record_decision',
+      status: 'in_progress',
+      rawInput: { title: 'Retention' },
+    });
+    for (const event of events.filter(
+      (event) => event.t === 'tool_call' || event.t === 'tool_call_start',
+    )) {
+      expect(event).toMatchObject({
+        name: 'mcp__verity__verity_knowledge_record_decision',
+        title: 'Verity · Knowledge · Record Decision',
+        source: 'verity',
+      });
+    }
+    expect(events.some((event) => event.t === 'tool_call')).toBe(true);
+  });
+
   it('classifies a failed MCP tool without copying its output into diagnostics', () => {
     const adapter = new AcpEventAdapter();
     const events = adapter.consume({

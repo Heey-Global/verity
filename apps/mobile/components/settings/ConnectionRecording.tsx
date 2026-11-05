@@ -1,11 +1,40 @@
+import {
+  createConnectionDiagnosticReport,
+  loadConnectionDiagnosticReports,
+  saveConnectionDiagnosticReport,
+  removeConnectionDiagnosticReport,
+  type ConnectionDiagnosticReport,
+} from '../../lib/connectionDiagnosticReport';
 import { SelectedConnectionTest } from './SelectedConnectionTest';
 import type { ConnectionRecordingExport, VerityClient } from '@verity/mobile';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Clipboard from 'expo-clipboard';
 import { randomUUID, digestStringAsync, CryptoDigestAlgorithm } from 'expo-crypto';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { View } from 'react-native';
+import { Alert, Share, View } from 'react-native';
+import { StyleSheet } from 'react-native-unistyles';
 import { CardRow, Eyebrow, RowCard } from '../premium/PremiumChrome';
+import {
+  Actions,
+  Button,
+  SourceTags,
+  StatusLine,
+  StepIndicator,
+  TestCard,
+  Toast,
+  completeness,
+  formatReportTime,
+  testName,
+  holdReason,
+  useHold,
+  useTransientMessage,
+} from './DiagnosticsParts';
+import { Text } from '../ui';
+import {
+  assertNativeTunnelInactive,
+  selectedRecordingContext,
+} from '../../lib/selectedRecordingContext';
+import { isNativeTunnelUnsupported } from '../../lib/nativeTunnelSupport';
 import { getServerProfile } from '../../lib/serverProfile';
 import {
   exportRemoteDataDiagnostics,
@@ -40,6 +69,16 @@ function httpFailureStatus(value: unknown): number | undefined {
     ? value.status
     : undefined;
 }
+// Core records a long test for 30 s after arming; this covers its expiry and clock skew.
+const SERVER_EXPIRY_MARGIN_MS = 30_000;
+const LONG_STEPS = [
+  'Prepare with VPN on',
+  'Turn VPN off and reproduce the problem',
+  'Turn VPN on and collect',
+  'Result',
+] as const;
+const IDLE_MESSAGE =
+  'Keep VPN on and start. When asked, turn VPN off and use the app until the problem happens.';
 const preparationLabels: Record<Preparation['stage'], string> = {
   storage: 'saving the run',
   'local-and-admission': 'preparing the device connection',
@@ -121,6 +160,47 @@ async function freshStatus(client: VerityClient, runId: string) {
 export function ConnectionRecording({ client }: { client: VerityClient | null }) {
   const serverId = getServerProfile()?.serverId;
   const key = serverId ? `verity.connectionRecording.v1.${serverId}` : null;
+  const currentServer = useRef(serverId);
+  currentServer.current = serverId;
+  const [reports, setReports] = useState<ConnectionDiagnosticReport[]>([]);
+  const [reportMessage, setReportMessage] = useTransientMessage();
+  const [reportsUnavailable, setReportsUnavailable] = useState(false);
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const [problemReport, setProblemReport] = useState<ConnectionDiagnosticReport | null>(null);
+  const [problemArchived, setProblemArchived] = useState(false);
+  const [problemStopConfirmed, setProblemStopConfirmed] = useState(false);
+  const [holdLeft, holdUntil, held, holdLoaded] = useHold(
+    serverId ? `verity.connectionRecording.hold.v1.${serverId}` : null,
+  );
+  const problemReleasedRef = useRef(false);
+  problemReleasedRef.current = problemArchived && problemStopConfirmed;
+  const problemArchivedRef = useRef(false);
+  problemArchivedRef.current = problemArchived;
+  const [quickCaptureBlocked, setQuickCaptureBlocked] = useState(true);
+  const quickCaptureBlockedRef = useRef(true);
+  const ownQuickCapture = useCallback((blocked: boolean) => {
+    quickCaptureBlockedRef.current = blocked;
+    setQuickCaptureBlocked(blocked);
+  }, []);
+  const refreshReports = useCallback(() => {
+    if (!serverId) return;
+    void loadConnectionDiagnosticReports(serverId).then(
+      (values) => {
+        if (currentServer.current !== serverId) return;
+        setReports(values);
+        setReportsUnavailable(false);
+      },
+      () => {
+        if (currentServer.current === serverId) setReportsUnavailable(true);
+      },
+    );
+  }, [serverId]);
+  useEffect(() => {
+    setReports([]);
+    setReportsUnavailable(false);
+    setReportMessage('');
+    refreshReports();
+  }, [refreshReports]);
   const captureDeadline = useRef<number | null>(null);
   const runRef = useRef<SavedRun | null>(null);
   const [selectedBusy, setSelectedBusy] = useState(false);
@@ -130,22 +210,30 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
   const [collecting, setCollecting] = useState(false);
   const collectingRef = useRef<number | null>(null);
   const preparingRef = useRef<number | null>(null);
-  const ownSelected = useCallback((busy: boolean) => {
-    if (busy && (preparingRef.current !== null || collectingRef.current !== null)) return false;
-    selectedBusyRef.current = busy;
-    setSelectedBusy(busy);
-    return true;
-  }, []);
+  const ownSelected = useCallback(
+    (busy: boolean) => {
+      if (
+        busy &&
+        (preparingRef.current !== null ||
+          collectingRef.current !== null ||
+          held() ||
+          (runRef.current !== null && !problemReleasedRef.current))
+      )
+        return false;
+      selectedBusyRef.current = busy;
+      setSelectedBusy(busy);
+      return true;
+    },
+    [held],
+  );
   const [ready, setReady] = useState(false);
   const [remaining, setRemaining] = useState(0);
-  const [message, setMessage] = useState(
-    'Connect through VPN to prepare App, Core and Uplink together for a 30-second test.',
-  );
+  const [message, setMessage] = useState(IDLE_MESSAGE);
   const revision = useRef(0);
   const mounted = useRef(true);
   const saving = useRef<Promise<void>>(Promise.resolve());
   const save = (value: SavedRun) => {
-    runRef.current = value;
+    if (currentServer.current === serverId) runRef.current = value;
     const write = saving.current
       .catch(() => undefined)
       .then(async () => {
@@ -159,6 +247,8 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
     mounted.current = true;
     let current = true;
     setLoaded(false);
+    setProblemArchived(false);
+    setProblemStopConfirmed(false);
     setReady(false);
     setPreparing(false);
     setCollecting(false);
@@ -167,19 +257,17 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
     collectingRef.current = null;
     runRef.current = null;
     captureDeadline.current = null;
-    setMessage(
-      'Connect through VPN to prepare App, Core and Uplink together for a 30-second test.',
-    );
+    setMessage(IDLE_MESSAGE);
+    setProblemReport(null);
     void (async () => {
       try {
         const saved = key ? parseSaved(await AsyncStorage.getItem(key)) : null;
         if (current) {
           runRef.current = saved;
-          if (saved)
-            setMessage('Saved run available. Stop and collect, or retry collection with VPN.');
+          if (saved) setMessage('Turn VPN on and collect its report, or discard it.');
         }
       } catch {
-        if (current) setMessage('Could not read the saved run. Recording is unavailable.');
+        if (current) setMessage('Could not read the last long test. Close and reopen Diagnostics.');
       } finally {
         if (current) setLoaded(true);
       }
@@ -194,7 +282,16 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
     let current = true;
     let polling = false;
     const poll = async () => {
-      if (polling) return;
+      // Polling only follows a saved long test, and never races its collection or
+      // discard; without the old mode switch the quick test must stay untouched.
+      if (
+        polling ||
+        selectedBusyRef.current ||
+        runRef.current === null ||
+        problemArchivedRef.current ||
+        collectingRef.current !== null
+      )
+        return;
       polling = true;
       const token = revision.current;
       const valid = () => current && token === revision.current;
@@ -219,7 +316,7 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
           if (left && saved && saved.diagnosticsVersion === 3) await stopRemoteDataRecording();
           setMessage((previous) =>
             previous.startsWith('Ready')
-              ? 'Local recording ended. Stop and collect the saved evidence.'
+              ? 'Recording time is up. Turn VPN back on, then collect the report.'
               : previous,
           );
           return;
@@ -240,7 +337,7 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
         setRemaining(freshRemaining);
         if (freshRemaining <= 0) {
           setReady(false);
-          setMessage('Local recording ended. Stop and collect the saved evidence.');
+          setMessage('Recording time is up. Turn VPN back on, then collect the report.');
           if (freshLeft) await stopRemoteDataRecording();
           return;
         }
@@ -260,14 +357,14 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
         setReady(confirmed);
         setMessage(
           confirmed
-            ? 'Ready — turn off VPN and use the app normally. Stop and collect when finished.'
-            : 'Recording readiness is unconfirmed. Local evidence remains available; stop and collect.',
+            ? 'Ready — turn off VPN now and use the app until the problem happens. Then tap Stop.'
+            : 'Core and Uplink have not confirmed the recording. This device keeps recording; stop when you are done.',
         );
       } catch {
         if (valid()) {
           setReady(false);
           setMessage(
-            'Recording readiness is unconfirmed. Local evidence remains available; reconnect VPN to collect.',
+            'Core and Uplink cannot be reached right now. This device keeps recording; turn VPN on to collect.',
           );
         }
       } finally {
@@ -283,8 +380,23 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
   }, [client]);
 
   const start = async () => {
-    if (selectedBusyRef.current || !loaded || preparing || collectingRef.current || !key || !client)
+    if (
+      quickCaptureBlockedRef.current ||
+      held() ||
+      selectedBusyRef.current ||
+      !loaded ||
+      preparing ||
+      collectingRef.current ||
+      !key ||
+      !client
+    )
       return;
+    if (runRef.current) {
+      setMessage('Finish or discard the previous long test first.');
+      return;
+    }
+    setProblemArchived(false);
+    setProblemReport(null);
     const token = ++revision.current;
     const current = () => mounted.current && token === revision.current;
     preparingRef.current = token;
@@ -292,7 +404,7 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
     setRemaining(0);
     setPreparing(true);
     setReady(false);
-    setMessage('Preparing local recording, Core and Uplink…');
+    setMessage('Preparing this device, Core and Uplink…');
     const saved: SavedRun = {
       runId: randomUUID(),
       startedAt: Date.now(),
@@ -317,6 +429,7 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
         saved.targetSession = (
           await digestStringAsync(CryptoDigestAlgorithm.SHA256, sessionId)
         ).slice(0, 16);
+        if (!current()) throw new Error('Recording cancelled');
         await save(saved);
         if (!current()) throw new Error('Recording cancelled');
         saved.preparation = { stage: 'remote-start', failed: false };
@@ -370,7 +483,9 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
         throw new Error('Recording expired');
       setRemaining(Math.min(left, saved.expiresAt - Date.now()));
       setReady(true);
-      setMessage('Ready — turn off VPN and use the app normally. Stop and collect when finished.');
+      setMessage(
+        'Ready — turn off VPN now and use the app until the problem happens. Then tap Stop.',
+      );
     } catch (error) {
       if (!current()) return;
       saved.preparation = {
@@ -392,7 +507,7 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
       await save(saved).catch(() => undefined);
       if (mounted.current && token === revision.current)
         setMessage(
-          `${error instanceof Error && error.message === 'diagnostics_version_unavailable' ? 'Uplink does not support this recording version. Update Uplink before retrying.' : `Preparation failed while ${preparationLabels[saved.preparation.stage]}.${saved.preparation.httpStatus ? ` HTTP ${String(saved.preparation.httpStatus)}.` : ''}`} ${localStopped ? 'Local recording stopped.' : 'Local stop could not be confirmed.'} ${remoteStopped ? 'Keep VPN on and retry.' : 'Core/Uplink stop unconfirmed; they expire automatically. Retry collection with VPN.'}`,
+          `${error instanceof Error && error.message === 'diagnostics_version_unavailable' ? 'Your Uplink does not support this test yet. Update Uplink and try again.' : `It failed while ${preparationLabels[saved.preparation.stage]}.${saved.preparation.httpStatus ? ` HTTP ${String(saved.preparation.httpStatus)}.` : ''}`} ${localStopped ? '' : 'This device could not confirm that it stopped recording. '}${remoteStopped ? 'Keep VPN on and collect the report.' : 'Core and Uplink stop by themselves within a minute. Keep VPN on and collect the report.'}`,
         );
     } finally {
       // A prior DELETE may have completed before the pending start created the run.
@@ -425,26 +540,33 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
       setRemaining(0);
       setMessage(
         localStopped
-          ? 'Local recording stopped. Collecting Core and Uplink…'
-          : 'Local stop unconfirmed. Collecting available evidence…',
+          ? 'Stopped. Collecting Core and Uplink data…'
+          : 'Collecting the available data…',
       );
       if (!saved) {
         setMessage(
           localStopped
-            ? 'Local recording stopped. No coordinated run saved.'
-            : 'Local stop could not be confirmed.',
+            ? 'Recording stopped.'
+            : 'This device could not confirm that it stopped recording. Try again.',
         );
         return;
       }
       const local = await exportRemoteDataDiagnostics();
       if (!current()) return;
+      let selectedLocal =
+        local.status === 'ready'
+          ? selectRemoteRecording(local.recording, saved.startedAt, saved.expiresAt)
+          : null;
+      if (selectedLocal && saved.targetSession) {
+        const snapshots = JSON.parse(selectedLocal) as Array<{ sessionHash?: string }>;
+        selectedLocal =
+          snapshots.length === 1 && snapshots[0]?.sessionHash === saved.targetSession
+            ? selectedLocal
+            : null;
+      }
       const updated = {
         ...saved,
-        local:
-          local.status === 'ready'
-            ? (selectRemoteRecording(local.recording, saved.startedAt, saved.expiresAt) ??
-              saved.local)
-            : saved.local,
+        local: selectedLocal ?? saved.local,
       };
       let persisted = true;
       try {
@@ -455,9 +577,15 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
       if (!current()) return;
       let remote: ConnectionRecordingExport | null = null;
       let remoteStopped = false;
+      let absentOnVerifiedCore = false;
+      let administration: VerityClient | null = null;
+      let fingerprint: string | null = null;
       try {
-        if (!client) throw new Error('Core unavailable');
-        const status = await client.stopConnectionRecording(saved.runId);
+        const context = selectedRecordingContext();
+        fingerprint = await context.verify();
+        if (!current()) return;
+        administration = context.client;
+        const status = await administration.stopConnectionRecording(saved.runId);
         if (!current()) return;
         remoteStopped =
           status.runId === saved.runId &&
@@ -468,38 +596,87 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
       }
       if (!current()) return;
       try {
-        if (!client) throw new Error('Core unavailable');
-        const result = await client.exportConnectionRecording(
+        if (!administration) throw new Error('Direct Core unavailable');
+        const result = await administration.exportConnectionRecording(
           saved.runId,
           saved.diagnosticsVersion ?? 1,
         );
         if (!current()) return;
-        if (result.status.runId === saved.runId) remote = result;
-      } catch {
+        if (
+          result.status.runId === saved.runId &&
+          result.status.installationFingerprint === fingerprint
+        ) {
+          remote = result;
+          remoteStopped ||=
+            ['stopped', 'expired'].includes(result.status.phase) &&
+            result.status.core.state === 'stopped' &&
+            result.status.uplink.state === 'stopped';
+        }
+      } catch (error) {
+        if (
+          administration &&
+          error &&
+          typeof error === 'object' &&
+          'status' in error &&
+          error.status === 404
+        )
+          absentOnVerifiedCore = true;
         /* Local evidence remains available while the tunnel is unavailable. */
       }
       if (!current()) return;
-      const bundle = {
-        version: 1,
+      let bundle = createConnectionDiagnosticReport({
         runId: saved.runId,
         startedAt: new Date(saved.startedAt).toISOString(),
-        preparation: saved.preparation ?? null,
-        app: {
-          available: updated.local !== null,
-          stopped: localStopped,
-          recording: updated.local ? (JSON.parse(updated.local) as unknown) : null,
-        },
-        remote: { available: remote !== null, stopped: remoteStopped, recording: remote },
-      };
+        testType: 'problem_recording',
+        outcome: saved.preparation?.failed ? 'failed' : 'unknown',
+        preparation: saved.preparation,
+        local: updated.local,
+        localStopped,
+        remote,
+        remoteStopped,
+        localUnavailableReason: local.status === 'ready' ? 'unmatched' : local.status,
+      });
+      let reportStored = false;
+      if (serverId) {
+        try {
+          await saveConnectionDiagnosticReport(serverId, bundle);
+          const retainedReport = (await loadConnectionDiagnosticReports(serverId)).find(
+            (entry) => entry.runId === saved.runId,
+          );
+          if (!retainedReport) throw new Error('Saved report unavailable');
+          bundle = retainedReport;
+          reportStored = true;
+          if (!current()) return;
+          setProblemReport(bundle);
+          setProblemArchived(true);
+          setProblemStopConfirmed(localStopped && (bundle.remote.stopped || absentOnVerifiedCore));
+          refreshReports();
+        } catch {
+          persisted = false;
+        }
+      }
+      if (!current()) return;
       await Clipboard.setStringAsync(JSON.stringify(bundle));
       if (!current()) return;
+      if (!reportStored) setProblemReport(bundle);
+      setReportMessage('Report copied to the clipboard.');
       setMessage(
-        remote && remote.uplink.available && updated.local && localStopped && remoteStopped
-          ? 'App, Core and Uplink recording copied.'
-          : `Partial recording copied. ${!updated.local ? 'App recording missing. ' : ''}${!remote ? 'Core/Uplink export unavailable. ' : !remote.uplink.available ? 'Uplink export missing. ' : ''}${!localStopped ? 'Local stop unconfirmed. ' : ''}${!remoteStopped ? 'Core/Uplink stop unconfirmed. ' : ''}Turn VPN on and tap Stop and collect again. ${!persisted ? 'Saving locally failed; keep this screen open.' : ''}`,
+        [
+          reportStored
+            ? ''
+            : 'The report could not be saved on this device – paste it somewhere before leaving.',
+          absentOnVerifiedCore
+            ? 'Your Core no longer has data for this test.'
+            : !remote
+              ? 'Core and Uplink data is missing. Turn VPN on and collect again.'
+              : '',
+          persisted ? '' : 'This device could not save its own part of the test.',
+        ]
+          .filter(Boolean)
+          .join(' '),
       );
     } catch {
-      if (current()) setMessage('Could not copy the recording. Retry Stop and collect.');
+      if (current()) setMessage('Could not copy the report. The test is kept – try again.');
     } finally {
       if (collectingRef.current === token) {
         collectingRef.current = null;
@@ -508,35 +685,427 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
     }
   };
 
+  const newProblem = async () => {
+    const expected = runRef.current;
+    if (
+      !expected ||
+      !problemArchived ||
+      preparingRef.current !== null ||
+      collectingRef.current !== null ||
+      selectedBusyRef.current ||
+      remaining > 0 ||
+      !key
+    )
+      return;
+    if (!problemStopConfirmed) {
+      setMessage(
+        'Core and Uplink have not confirmed that they stopped. Collect again or discard this test.',
+      );
+      return;
+    }
+    const token = ++revision.current;
+    const current = () =>
+      mounted.current &&
+      token === revision.current &&
+      currentServer.current === serverId &&
+      runRef.current?.runId === expected.runId;
+    collectingRef.current = token;
+    setCollecting(true);
+    try {
+      if (!(await stopRemoteDataRecording())) throw new Error('Stop unconfirmed');
+      if (!current()) return;
+      if (
+        !serverId ||
+        !(await loadConnectionDiagnosticReports(serverId)).some(
+          (report) => report.runId === expected.runId,
+        )
+      )
+        throw new Error('Saved copy missing');
+      if (!current()) return;
+      await AsyncStorage.removeItem(key);
+      if (!current()) return;
+      runRef.current = null;
+      setProblemArchived(false);
+      setProblemStopConfirmed(false);
+      setProblemReport(null);
+      setMessage(IDLE_MESSAGE);
+    } catch {
+      if (current())
+        setMessage(
+          'The app could not confirm that the last test stopped. Collect again or discard it.',
+        );
+    } finally {
+      if (collectingRef.current === token) {
+        collectingRef.current = null;
+        setCollecting(false);
+      }
+    }
+  };
+  const discardProblem = async () => {
+    const expected = runRef.current;
+    if (
+      !expected ||
+      preparingRef.current !== null ||
+      collectingRef.current !== null ||
+      selectedBusyRef.current ||
+      !key
+    )
+      return;
+    const token = ++revision.current;
+    const current = () =>
+      mounted.current &&
+      token === revision.current &&
+      currentServer.current === serverId &&
+      runRef.current?.runId === expected.runId;
+    collectingRef.current = token;
+    setCollecting(true);
+    let stage: 'stop' | 'storage' = 'stop';
+    try {
+      // Only a confirmed local Stop lets the unfinished run go; saved reports stay.
+      // Without a confirmed Stop, discard needs the same proof as the quick test:
+      // no native tunnel is running, or the device has none that could capture.
+      if (!(await stopRemoteDataRecording())) {
+        const inactive = await assertNativeTunnelInactive().then(
+          () => true,
+          (error: unknown) => isNativeTunnelUnsupported(error),
+        );
+        if (!inactive) throw new Error('Stop unconfirmed');
+      }
+      if (!current()) return;
+      // Core and Uplink may still record this run. Without their confirmed Stop,
+      // no new test starts until the run has expired on the server side.
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const remoteStopped = client
+        ? await Promise.race([
+            client.stopConnectionRecording(expected.runId).then(
+              (value) =>
+                value.runId === expected.runId &&
+                value.core.state === 'stopped' &&
+                value.uplink.state === 'stopped',
+              () => false,
+            ),
+            new Promise<false>((resolve) => {
+              timer = setTimeout(() => resolve(false), 5000);
+            }),
+          ]).finally(() => clearTimeout(timer))
+        : false;
+      if (!current()) return;
+      // Persist the wait before the run disappears, so no reopening skips it.
+      stage = 'storage';
+      // A save still in flight (collect or the expiry poll) must not write the
+      // discarded run back after it has been removed.
+      await saving.current.catch(() => undefined);
+      if (!current()) return;
+      // Preparation can delay server arming beyond the local deadline. Cover
+      // the full server recording window from discard, plus the existing margin.
+      if (!remoteStopped) await holdUntil(Date.now() + 45_000 + SERVER_EXPIRY_MARGIN_MS);
+      await AsyncStorage.removeItem(key);
+      if (!current()) return;
+      runRef.current = null;
+      setProblemArchived(false);
+      setProblemStopConfirmed(false);
+      setProblemReport(null);
+      setReady(false);
+      setRemaining(0);
+      setMessage(IDLE_MESSAGE);
+      setReportMessage('Unfinished long test discarded.');
+    } catch {
+      if (current())
+        setMessage(
+          stage === 'stop'
+            ? 'The app could not confirm that this device stopped recording. Wait a moment and try again.'
+            : 'This device could not update its saved test. Nothing was discarded; try again.',
+        );
+    } finally {
+      if (collectingRef.current === token) {
+        collectingRef.current = null;
+        setCollecting(false);
+      }
+    }
+  };
+  const shareReport = (value: ConnectionDiagnosticReport) => {
+    Share.share({ message: JSON.stringify(value) }).catch(() =>
+      setReportMessage('Sharing is unavailable. Use Copy instead.'),
+    );
+  };
+  const confirmDiscardProblem = () =>
+    Alert.alert(
+      'Discard this long test?',
+      problemArchived || reports.some((entry) => entry.runId === runRef.current?.runId)
+        ? 'The unfinished test is removed from this device. Its saved report is kept.'
+        : 'Its data has not been collected yet and will be lost. Other saved reports are kept.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Discard', style: 'destructive', onPress: () => void discardProblem() },
+      ],
+    );
+  const switchDisabled = selectedBusy || preparing || collecting || remaining > 0;
+  const run = runRef.current;
+  const recording = !preparing && !collecting && remaining > 0;
+  const awaitingCollection =
+    run !== null && !problemArchived && !preparing && !collecting && !recording;
+  const archivedRun = run !== null && problemArchived && !preparing && !collecting && !recording;
+  const step = preparing ? 0 : recording ? 1 : collecting || awaitingCollection ? 2 : 3;
+  const longBlockedReason =
+    !loaded || !holdLoaded
+      ? 'Loading…'
+      : !client
+        ? 'Connect to your Core first.'
+        : holdLeft > 0
+          ? holdReason(holdLeft)
+          : selectedBusy
+            ? 'Finish the quick test first.'
+            : quickCaptureBlocked
+              ? 'Waiting for the quick test above.'
+              : undefined;
+  const quickBlockedReason =
+    preparing ||
+    collecting ||
+    remaining > 0 ||
+    (run !== null && !(problemArchived && problemStopConfirmed))
+      ? 'Finish the long test first.'
+      : holdLeft > 0
+        ? holdReason(holdLeft)
+        : !loaded || !holdLoaded
+          ? 'Loading…'
+          : !client
+            ? 'Connect to your Core first.'
+            : undefined;
+  const failedPreparation = run?.preparation?.failed === true;
   return (
     <View>
-      <Eyebrow>Connection recording</Eyebrow>
-      <RowCard>
+      <Eyebrow>Connection tests</Eyebrow>
+      <View style={styles.stack}>
         <SelectedConnectionTest
-          disabled={!loaded || preparing || collecting || remaining > 0 || !client}
-          onBusy={ownSelected}
-        />
-        <CardRow
-          title="Record connection"
-          subtitle={message}
           disabled={
-            selectedBusy || !loaded || preparing || collecting || !key || !client || remaining > 0
+            !loaded ||
+            preparing ||
+            collecting ||
+            remaining > 0 ||
+            !holdLoaded ||
+            holdLeft > 0 ||
+            !client ||
+            (runRef.current !== null && !(problemArchived && problemStopConfirmed))
           }
-          onPress={() => void start()}
+          blockedReason={quickBlockedReason}
+          onBusy={ownSelected}
+          onCaptureBlocked={ownQuickCapture}
+          onReport={refreshReports}
         />
-        <CardRow
-          title="Stop and collect"
-          disabled={selectedBusy}
-          subtitle="Stops this device immediately. Turn VPN back on to collect Core and Uplink; otherwise a partial report is copied."
-          onPress={() => void collect()}
+        <TestCard
+          title="Long test with VPN switch-off"
+          description="For problems that only appear sometimes · up to 30 seconds"
+          attention={failedPreparation || (archivedRun && !problemStopConfirmed)}
+        >
+          {run || preparing ? <StepIndicator steps={LONG_STEPS} current={step} /> : null}
+          {preparing ? <StatusLine title="Preparing…" detail={message} /> : null}
+          {recording ? (
+            <StatusLine
+              title={`${ready ? 'Recording' : 'Recording, not confirmed'} · ${String(Math.ceil(remaining / 1000))} s left`}
+              detail={message}
+              tone={ready ? 'ok' : 'problem'}
+            />
+          ) : null}
+          {collecting ? <StatusLine title="Collecting the report…" detail={message} /> : null}
+          {awaitingCollection ? (
+            <StatusLine
+              title={
+                failedPreparation
+                  ? 'Preparation failed'
+                  : `Recording finished · ${formatReportTime(new Date(run.startedAt).toISOString())}`
+              }
+              detail={message}
+              tone={failedPreparation ? 'problem' : 'neutral'}
+            />
+          ) : null}
+          {archivedRun ? (
+            <>
+              <StatusLine
+                title="Report saved"
+                detail={problemReport ? completeness(problemReport) : undefined}
+                tone={problemReport && !problemReport.complete ? 'problem' : 'ok'}
+              />
+              {problemReport ? <SourceTags sources={problemReport.sources} /> : null}
+              {!problemStopConfirmed ? (
+                <StatusLine
+                  tone="problem"
+                  title="Not confirmed as stopped"
+                  detail="Turn VPN on and collect again, or discard this test to start over."
+                />
+              ) : null}
+              {message ? <StatusLine title={message} tone="problem" /> : null}
+            </>
+          ) : null}
+          {!run && !preparing ? <StatusLine title={longBlockedReason ?? message} /> : null}
+          <Actions>
+            {!run && !preparing ? (
+              <Button
+                label="Start long test"
+                fullWidth
+                disabled={
+                  selectedBusy ||
+                  quickCaptureBlocked ||
+                  !loaded ||
+                  collecting ||
+                  !key ||
+                  !client ||
+                  !holdLoaded ||
+                  holdLeft > 0 ||
+                  remaining > 0
+                }
+                onPress={() => void start()}
+              />
+            ) : null}
+            {preparing || recording ? (
+              <Button
+                label={preparing ? 'Cancel' : 'Stop recording'}
+                variant={preparing ? 'secondary' : 'primary'}
+                fullWidth
+                disabled={selectedBusy}
+                onPress={() => void collect()}
+              />
+            ) : null}
+            {awaitingCollection || archivedRun ? (
+              <Button
+                label={archivedRun ? 'Collect again' : 'Collect report'}
+                variant={archivedRun && problemStopConfirmed ? 'text' : 'primary'}
+                fullWidth
+                disabled={selectedBusy}
+                onPress={() => void collect()}
+              />
+            ) : null}
+            {(archivedRun || awaitingCollection) && problemReport ? (
+              <Button
+                label="Share report"
+                variant={problemStopConfirmed ? 'secondary' : 'primary'}
+                fullWidth
+                onPress={() => shareReport(problemReport)}
+              />
+            ) : null}
+            {archivedRun && problemStopConfirmed ? (
+              <Button label="Start new long test" fullWidth onPress={() => void newProblem()} />
+            ) : null}
+            {awaitingCollection || (archivedRun && !problemStopConfirmed) ? (
+              <Button
+                label="Discard and start over"
+                variant="text"
+                fullWidth
+                disabled={selectedBusy}
+                onPress={confirmDiscardProblem}
+              />
+            ) : null}
+          </Actions>
+        </TestCard>
+      </View>
+      <Toast message={reportMessage} />
+      {reportsUnavailable ? (
+        <StatusLine
+          tone="problem"
+          title="Saved reports could not be loaded"
+          detail="Nothing was deleted. Close and reopen Diagnostics to try again."
         />
-        {ready ? (
-          <CardRow
-            title={`${String(Math.ceil(remaining / 1000))} seconds of local recording remaining`}
-            chevron={false}
-          />
-        ) : null}
-      </RowCard>
+      ) : null}
+      {reports.length > 0 ? (
+        <>
+          <Eyebrow>Saved reports</Eyebrow>
+          <RowCard>
+            {reports.map((report) => {
+              const open = expanded === report.runId;
+              return (
+                <View key={report.runId}>
+                  <CardRow
+                    title={`${testName(report.testType)} · ${formatReportTime(report.startedAt)}`}
+                    subtitle={completeness(report)}
+                    chevron={false}
+                    accessibilityLabel={`${testName(report.testType)}, ${formatReportTime(report.startedAt)}, ${completeness(report)}. ${open ? 'Hide' : 'Show'} actions`}
+                    onPress={() => setExpanded(open ? null : report.runId)}
+                  />
+                  {open ? (
+                    <View style={styles.reportDetail}>
+                      <SourceTags sources={report.sources} />
+                      <Actions>
+                        <Button
+                          label="Share"
+                          size="compact"
+                          disabled={switchDisabled}
+                          onPress={() => shareReport(report)}
+                        />
+                        <Button
+                          label="Copy"
+                          size="compact"
+                          variant="secondary"
+                          disabled={switchDisabled}
+                          onPress={() => {
+                            void Clipboard.setStringAsync(JSON.stringify(report)).then(
+                              () => setReportMessage('Report copied to the clipboard.'),
+                              () => setReportMessage('Clipboard unavailable.'),
+                            );
+                          }}
+                        />
+                        <Button
+                          label="Delete"
+                          size="compact"
+                          variant="destructive"
+                          disabled={switchDisabled}
+                          onPress={() => {
+                            Alert.alert(
+                              'Delete this report?',
+                              'It is removed from this device. Share or copy it first if you still need it.',
+                              [
+                                { text: 'Cancel', style: 'cancel' },
+                                {
+                                  text: 'Delete',
+                                  style: 'destructive',
+                                  onPress: () => {
+                                    if (serverId)
+                                      void removeConnectionDiagnosticReport(
+                                        serverId,
+                                        report.runId,
+                                      ).then(
+                                        () => {
+                                          if (runRef.current?.runId === report.runId) {
+                                            setProblemArchived(false);
+                                            setProblemReport(null);
+                                          }
+                                          setExpanded(null);
+                                          refreshReports();
+                                        },
+                                        () => setReportMessage('Could not delete the report.'),
+                                      );
+                                  },
+                                },
+                              ],
+                            );
+                          }}
+                        />
+                      </Actions>
+                      <Text variant="footnote">
+                        {[
+                          `Run ${report.runId}`,
+                          `This device stopped: ${report.app.stopped ? 'yes' : 'not confirmed'}`,
+                          `Core and Uplink stopped: ${report.remote.stopped ? 'yes' : 'not confirmed'}`,
+                          report.gaps.length > 0 ? `Notes: ${report.gaps.join(', ')}` : '',
+                        ]
+                          .filter(Boolean)
+                          .join('\n')}
+                      </Text>
+                    </View>
+                  ) : null}
+                </View>
+              );
+            })}
+          </RowCard>
+        </>
+      ) : null}
     </View>
   );
 }
+
+const styles = StyleSheet.create((theme) => ({
+  stack: { gap: theme.spacing.md },
+  reportDetail: {
+    gap: theme.spacing.md,
+    paddingHorizontal: theme.spacing.lg,
+    paddingBottom: theme.spacing.lg,
+  },
+}));

@@ -30,6 +30,7 @@ import { createVerityClient } from '../../../../lib/client';
 import { repairProject } from '../../../../lib/projectRepair';
 import { toolkitDriftNotice } from '../../../../lib/projectSetup';
 import { projectIdParam, useProjectDetail } from '../../../../lib/useProjectDetail';
+import { ProjectDestinations } from '../../../../components/settings/ProjectDestinations';
 import { Button, useConfirm } from '../../../../components/ui';
 
 export default function ProjectSandboxScreen() {
@@ -82,6 +83,7 @@ function ProjectSandboxView({ client, projectId }: { client: VerityClient; proje
         onUpdated={onProjectUpdated}
         onReload={() => void load(true)}
       />
+      <ProjectDestinations client={client} projectId={projectId} />
     </SettingsScaffold>
   );
 }

@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
-import { chmod, cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, cp, lstat, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
@@ -14,7 +14,22 @@ import {
 import { hardenCodexAcpSource } from '../../features/verity-sandbox-toolkit/bin/verity-cli-install.mjs';
 
 const claudePrefix = process.env.VERITY_PROBE_CLAUDE_PREFIX;
+// Audit a candidate adapter without replacing the image's global installation.
+const codexPrefix = process.env.VERITY_PROBE_CODEX_ACP_PREFIX;
+const backend = process.env.VERITY_PROBE_BACKEND;
+assert.ok(!backend || ['codex', 'claude'].includes(backend), 'Unknown probe backend');
+const commands =
+  backend === 'codex'
+    ? ['codex-acp']
+    : backend === 'claude'
+      ? ['claude-agent-acp']
+      : ['claude-agent-acp', 'codex-acp'];
 for (const id of ['claude-acp', 'claude-code', 'codex-acp', 'codex']) {
+  if (
+    (backend === 'codex' && id.startsWith('claude')) ||
+    (backend === 'claude' && id.startsWith('codex'))
+  )
+    continue;
   const manifest = JSON.parse(
     await readFile(
       new URL(`../../features/verity-sandbox-toolkit/npm/${id}/package.json`, import.meta.url),
@@ -26,7 +41,9 @@ for (const id of ['claude-acp', 'claude-code', 'codex-acp', 'codex']) {
     await readFile(
       id === 'claude-code' && claudePrefix
         ? join(claudePrefix, 'node_modules', name, 'package.json')
-        : `/usr/local/lib/node_modules/${name}/package.json`,
+        : id === 'codex-acp' && codexPrefix
+          ? join(codexPrefix, 'node_modules', name, 'package.json')
+          : `/usr/local/lib/node_modules/${name}/package.json`,
       'utf8',
     ),
   );
@@ -42,8 +59,6 @@ try {
   if (claudePrefix)
     await cp(claudePrefix, join(project, 'claude-cli'), { recursive: true, dereference: true });
   await mkdir(join(project, '.codex'), { recursive: true });
-  await mkdir(join(root, 'codex-sessions'));
-  await mkdir(join(root, 'codex-state', 'thread-writer-locks'), { recursive: true });
   await writeFile(join(project, 'AGENTS.md'), 'Harmless repository guidance.\n');
   await writeFile(
     join(project, '.claude', 'agents', 'injected.md'),
@@ -69,7 +84,11 @@ try {
   // Clone the installed adapter so this probe never changes the image or its
   // package files. Apply the very transformation used by the image installer.
   const codexAdapter = dirname(
-    require.resolve('/usr/local/lib/node_modules/@agentclientprotocol/codex-acp/package.json'),
+    require.resolve(
+      codexPrefix
+        ? join(codexPrefix, 'node_modules/@agentclientprotocol/codex-acp/package.json')
+        : '/usr/local/lib/node_modules/@agentclientprotocol/codex-acp/package.json',
+    ),
   );
   const copy = join(project, 'probe-adapter');
   await cp(codexAdapter, copy, { recursive: true, dereference: true });
@@ -80,12 +99,20 @@ try {
   await writeFile(entry, hardenCodexAcpSource(unpatched));
 
   for (const planning of [false, true]) {
-    for (const command of ['claude-agent-acp', 'codex-acp']) {
+    for (const command of commands) {
+      // Each launch owns its runtime fixture; a previous native process must not
+      // determine whether the next scenario's required mount roots exist.
+      const runtimeDir = join(root, `${command}-${planning ? 'planning' : 'normal'}`);
+      // The broker also mounts its project-wide npm cache in planning mode.
+      // Production prepares it before launching; this standalone probe must too.
+      await mkdir(join(runtimeDir, 'package-cache', 'npm'), { recursive: true, mode: 0o700 });
+      await mkdir(join(runtimeDir, 'codex-sessions'), { recursive: true });
+      await mkdir(join(runtimeDir, 'codex-state', 'thread-writer-locks'), { recursive: true });
       const options = {
         enforceRoot: false,
         agentUid: process.getuid(),
         agentGid: process.getgid(),
-        runtimeDir: root,
+        runtimeDir,
         env: {
           PATH: process.env.PATH,
           HOME: formerHome,
@@ -122,6 +149,13 @@ try {
         command === 'codex-acp' ? process.execPath : '/usr/local/bin/claude-agent-acp';
       const executableArgs = command === 'codex-acp' ? [entry] : [];
       const confinedArgs = spec.args.slice(7, -1);
+      for (let i = 0; i < confinedArgs.length - 1; i++) {
+        if (confinedArgs[i] === '--runtime-root')
+          assert.ok(
+            (await lstat(confinedArgs[i + 1])).isDirectory(),
+            `Missing runtime fixture: ${confinedArgs[i + 1]}`,
+          );
+      }
       const child = spawn(
         planning ? confinedArgs[0] : executable,
         planning ? [...confinedArgs.slice(1), executable, ...executableArgs] : executableArgs,
@@ -159,7 +193,16 @@ try {
             reject(error);
           };
           child.once('error', fail);
-          child.once('exit', (code) => fail(new Error(`ACP exit ${code}: ${stderr}`)));
+          child.stdin.on('error', () => {
+            // The child exit carries the sandbox diagnostic; EPIPE must not hide it.
+          });
+          child.once('close', (code, signal) =>
+            fail(
+              new Error(
+                `ACP ${command} ${planning ? 'planning' : 'normal'} exit ${code} (${signal}): ${stderr}`,
+              ),
+            ),
+          );
           lines.on('line', (line) => {
             void (async () => {
               let reply;
@@ -177,8 +220,15 @@ try {
                     ? { _meta: await CLAUDE_ACP_PROFILE.sessionMeta({ cwd: project }) }
                     : {}),
                 });
-              if (reply.id === 2) {
+              if (reply.id === 2 && command === 'codex-acp') {
                 assert.ok(reply.result.sessionId);
+                send(3, 'session/load', {
+                  sessionId: reply.result.sessionId,
+                  cwd: project,
+                  mcpServers: [],
+                });
+              }
+              if ((reply.id === 2 && command !== 'codex-acp') || reply.id === 3) {
                 assert.ok(!JSON.stringify(reply.result).includes('injected'));
                 assert.equal(await readFile(canary, 'utf8').catch(() => undefined), undefined);
                 clearTimeout(timer);
