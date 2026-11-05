@@ -2,7 +2,7 @@
 import { VerityApiError } from '@verity/mobile';
 import type { VerityClient, OnboardingStatus, SecretUnlocked } from '@verity/mobile';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
-import { AppState, type AppStateStatus, Linking } from 'react-native';
+import { Alert, AppState, type AppStateStatus, Linking } from 'react-native';
 
 const mockReplace = jest.fn<void, [string]>();
 const mockPush = jest.fn<void, [string]>();
@@ -44,11 +44,13 @@ const mockRefreshBiometricUnlockSecret = jest
 const mockUnlockAuthTokenWithBiometrics = jest
   .fn<Promise<boolean>, [string | null]>()
   .mockResolvedValue(false);
+const mockClearStoredAuthState = jest.fn<Promise<void>, [string]>().mockResolvedValue();
 const mockUnlockServerSecretWithBiometrics = jest
   .fn<Promise<boolean>, [string | null, (password: string) => Promise<SecretUnlocked>]>()
   .mockResolvedValue(false);
 jest.mock('../lib/authToken', () => ({
   canUseBiometricUnlock: () => mockCanUseBiometricUnlock(),
+  clearStoredAuthState: (baseUrl: string) => mockClearStoredAuthState(baseUrl),
   disableBiometricUnlock: (baseUrl: string | null) => mockDisableBiometricUnlock(baseUrl),
   enableBiometricUnlock: (baseUrl: string | null, masterPassword?: string) =>
     mockEnableBiometricUnlock(baseUrl, masterPassword),
@@ -128,6 +130,7 @@ beforeEach(() => {
   mockGetAuthToken.mockReset();
   mockGetAuthToken.mockReturnValue('device-token');
   mockSetAuthToken.mockClear();
+  mockClearStoredAuthState.mockReset().mockResolvedValue();
   mockCanUseBiometricUnlock.mockReset();
   mockCanUseBiometricUnlock.mockResolvedValue(false);
   mockEnableBiometricUnlock.mockClear();
@@ -460,6 +463,86 @@ describe('onboarding master-password step', () => {
     // password that is in fact correct.
     expect(await screen.findByText(/not authorized for this server/)).toBeOnTheScreen();
     expect(screen.queryByText('Incorrect password.')).toBeNull();
+  });
+
+  it('unlock mode: an unpaired device can pair again without reinstalling the app', async () => {
+    mockLocalSearchParams = { returnTo: '/' };
+    mockGetVerityBaseUrl.mockReturnValue('https://verity.test:8082');
+    const unlockSecret = jest
+      .fn<Promise<SecretUnlocked>, [string]>()
+      .mockRejectedValue(new VerityApiError(401, 'valid device pairing is required'));
+    const getSecretStatus = jest.fn<Promise<'sealed'>, []>().mockResolvedValue('sealed');
+    mockCreateVerityClient.mockReturnValue(fakeClient({ getSecretStatus, unlockSecret }));
+    const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+    try {
+      render(<OnboardingMasterPassword />);
+      fireEvent.changeText(await screen.findByLabelText('Master password'), 'correct-pw');
+      fireEvent.press(screen.getByLabelText('Unlock secret store'));
+      expect(await screen.findByText(/not authorized for this server/)).toBeOnTheScreen();
+
+      fireEvent.press(screen.getByLabelText('Pair this device again with a new pairing code'));
+      expect(alert).toHaveBeenCalledTimes(1);
+      const buttons = alert.mock.calls[0]![2]!;
+      // Cancelling keeps every stored credential.
+      buttons.find((button) => button.style === 'cancel')?.onPress?.();
+      expect(mockClearStoredAuthState).not.toHaveBeenCalled();
+      expect(mockReplace).not.toHaveBeenCalled();
+
+      await act(async () => {
+        buttons.find((button) => button.text === 'Pair again')!.onPress!();
+      });
+      await waitFor(() => expect(mockReplace).toHaveBeenCalledWith('/onboarding/server-url'));
+      expect(mockClearStoredAuthState).toHaveBeenCalledWith('https://verity.test:8082');
+    } finally {
+      alert.mockRestore();
+    }
+  });
+
+  it('keeps pairing recovery retryable when stored credentials cannot be removed', async () => {
+    mockLocalSearchParams = { returnTo: '/' };
+    mockClearStoredAuthState.mockRejectedValueOnce(new Error('SecureStore unavailable'));
+    mockCreateVerityClient.mockReturnValue(
+      fakeClient({
+        getSecretStatus: jest.fn<Promise<'sealed'>, []>().mockResolvedValue('sealed'),
+      }),
+    );
+    const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+    try {
+      render(<OnboardingMasterPassword />);
+      await screen.findByLabelText('Master password');
+      fireEvent.press(screen.getByLabelText('Pair this device again with a new pairing code'));
+      await act(async () => {
+        alert.mock.calls[0]![2]!.find((button) => button.text === 'Pair again')!.onPress!();
+      });
+      expect(await screen.findByText(/Could not remove this device/)).toBeOnTheScreen();
+      expect(mockReplace).not.toHaveBeenCalled();
+      fireEvent.press(screen.getByLabelText('Pair this device again with a new pairing code'));
+      await act(async () => {
+        alert.mock.calls[1]![2]!.find((button) => button.text === 'Pair again')!.onPress!();
+      });
+      await waitFor(() => expect(mockReplace).toHaveBeenCalledWith('/onboarding/server-url'));
+    } finally {
+      alert.mockRestore();
+    }
+  });
+
+  it('unlock mode: pairing again is offered on the device unlock screen before any error', async () => {
+    mockLocalSearchParams = { returnTo: '/' };
+    const getSecretStatus = jest.fn<Promise<'sealed'>, []>().mockResolvedValue('sealed');
+    mockCreateVerityClient.mockReturnValue(fakeClient({ getSecretStatus }));
+    render(<OnboardingMasterPassword />);
+    await screen.findByLabelText('Master password');
+    expect(
+      screen.getByLabelText('Pair this device again with a new pairing code'),
+    ).toBeOnTheScreen();
+  });
+
+  it('setup wizard: no pair-again action outside device authorization', async () => {
+    const getSecretStatus = jest.fn<Promise<'sealed'>, []>().mockResolvedValue('sealed');
+    mockCreateVerityClient.mockReturnValue(fakeClient({ getSecretStatus }));
+    render(<OnboardingMasterPassword />);
+    await screen.findByLabelText('Master password');
+    expect(screen.queryByLabelText('Pair this device again with a new pairing code')).toBeNull();
   });
 
   it('unlock mode: correct password with returnTo goes back to sessions', async () => {
