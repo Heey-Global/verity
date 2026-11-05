@@ -108,26 +108,41 @@ function sectionOf(heading: string): Section {
 /** "None", "N/A" and the like: an empty section written out, not a decision. */
 const PLACEHOLDER = /^(?:none|n\/?a|n\.a\.|keine|nothing open|—|-)\.?$/i;
 
-const RECOMMENDED = /\s*\((?:recommended|empfohlen)\)\s*$/i;
+const RECOMMENDED = /\((?:recommended|empfohlen)\)$/i;
 
 /** `**Question?** — Option A (recommended) | Option B`; the bold and the options
- *  are optional, so a plain question still blocks implementation. */
+ *  are optional, so a plain question still blocks implementation. Parsed with
+ *  string operations: the text comes from the agent, and patterns with
+ *  adjacent optional whitespace backtrack quadratically on long runs of it. */
 function parseDecision(item: string): PlanDecision {
   const line = item.split('\n')[0]!.trim();
-  const bold = /^\*\*(.+?)\*\*\s*(?:[—–:-]\s*)?(.*)$/.exec(line);
-  const split = bold ? null : /^(.+?\?)\s*(?:[—–:-]\s*)?(.*)$/.exec(line);
-  const question = (bold?.[1] ?? split?.[1] ?? line).trim();
-  const rest = (bold?.[2] ?? split?.[2] ?? '').trim();
+  let question = line;
+  let rest = '';
+  const boldEnd = line.startsWith('**') ? line.indexOf('**', 2) : -1;
+  if (boldEnd > 2) {
+    question = line.slice(2, boldEnd);
+    rest = line.slice(boldEnd + 2);
+  } else if (line.includes('?')) {
+    question = line.slice(0, line.indexOf('?') + 1);
+    rest = line.slice(line.indexOf('?') + 1);
+  }
+  rest = rest
+    .trim()
+    .replace(/^[—–:-]/, '')
+    .trim();
   const options: string[] = [];
   let recommended: string | undefined;
   for (const raw of rest ? rest.split('|') : []) {
-    const marked = RECOMMENDED.test(raw);
-    const option = raw.replace(RECOMMENDED, '').trim();
+    const trimmed = raw.trim();
+    const marked = RECOMMENDED.test(trimmed);
+    const option = (marked ? trimmed.replace(RECOMMENDED, '') : trimmed).trim();
     if (!option) continue;
     options.push(option);
     if (marked && recommended === undefined) recommended = option;
   }
-  return recommended === undefined ? { question, options } : { question, options, recommended };
+  return recommended === undefined
+    ? { question: question.trim(), options }
+    : { question: question.trim(), options, recommended };
 }
 
 /** Shared by the proposal card and task persistence: only numbered steps in the
@@ -146,14 +161,16 @@ export function parsePlanningProposal(markdown: string): PlanningProposal {
   let section: Section = 'goal';
   for (const [index, line] of lines.entries()) {
     if (index === titleIndex) continue;
-    const heading = /^#{1,6}\s+(.+)$/.exec(line.trim());
+    const heading = /^#{1,6}\s+(\S.*)$/.exec(line.trim());
     if (heading) {
       section = sectionOf(heading[1]!);
       continue;
     }
-    const step = /^\d{1,3}[.)]\s+(.+)$/.exec(line);
+    const step = /^\d{1,3}[.)]\s+(\S.*)$/.exec(line);
     // Only an unindented marker starts an item; nested bullets belong to the one above.
-    const item = /^(?:\d{1,3}[.)]|[-*])\s+(.+)$/.exec(line);
+    // `\S` after the spaces keeps these linear: with `.+` the spaces could be split
+    // between both groups, and a long run of them backtracks quadratically.
+    const item = /^(?:\d{1,3}[.)]|[-*])\s+(\S.*)$/.exec(line);
     if (section === 'criteria' || section === 'decisions') {
       const list = section === 'criteria' ? criteria : decisions;
       if (item) list.push(item[1]!.trim());

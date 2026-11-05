@@ -162,3 +162,26 @@ describe('parsePlanningProposal spec sections', () => {
     expect(decision?.recommended).toBe(decision?.options[0]);
   });
 });
+
+it('parses a line of many spaces in linear time', () => {
+  // Plans are agent-written text; a quadratic pattern would let one pasted
+  // line stall the server and every client rendering the card. The trailing
+  // line separator makes a backtracking pattern fail only after trying every
+  // split of the spaces.
+  const spaces = ' '.repeat(50_000);
+  const started = Date.now();
+  parsePlanningProposal(
+    [
+      '## Acceptance criteria',
+      `-${spaces}\u2028`,
+      '## Open decisions',
+      `1.${spaces}\u2028`,
+      `2. **Q?**${spaces}\u2028`,
+      `3. Q?${spaces}x (recommended)${spaces}\u2028`,
+      `# ${spaces}\u2028`,
+      '## Steps',
+      `1.${spaces}\u2028`,
+    ].join('\n'),
+  );
+  expect(Date.now() - started).toBeLessThan(1000);
+});
