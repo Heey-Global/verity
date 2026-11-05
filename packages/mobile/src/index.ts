@@ -358,6 +358,8 @@ export {
   projectRuntimeStartedSchema,
   projectSettingsSchema,
   PROJECT_AGENTS,
+  PROJECT_DESIGN_LEVELS,
+  mockupReviewSchema,
   projectStateSchema,
   automationScheduleSchema,
   sessionAutomationSchema,
@@ -407,6 +409,9 @@ export {
   type ProjectSettings,
   type ProjectSettingsPatch,
   type ProjectAgent,
+  type ProjectDesignLevel,
+  type MockupReview,
+  type MockupReviewScreen,
   type ProjectLifecycleState,
   type ProjectState,
   type MessageSearchResult,
@@ -724,6 +729,16 @@ export type {
 } from './audit.js';
 
 export { qaAssignmentView } from './ui/qaAssignment.js';
+export {
+  mockupBarView,
+  mockupProgress,
+  mockupRoundView,
+  reviewOrder,
+  type MockupBarView,
+  type MockupRoundView,
+  type MockupScreenView,
+  type MockupVerdict,
+} from './ui/mockups.js';
 
 export { projectEgressPolicySchema, type ProjectEgressPolicy } from './projectEgress.js';
 export type {

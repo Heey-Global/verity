@@ -35,6 +35,7 @@ export function actionTitle(name: string, title?: string, source?: string): stri
     verity_start_planning: 'verity_planning_start',
     verity_present_plan: 'verity_planning_present',
     verity_end_planning: 'verity_planning_implement',
+    verity_present_mockups: 'verity_mockups_present',
     verity_list_sessions: 'verity_session_list',
     verity_send_session_message: 'verity_session_send_message',
     verity_list_linked_sessions: 'verity_session_list_links',

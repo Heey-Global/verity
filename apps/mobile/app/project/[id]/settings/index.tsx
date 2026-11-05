@@ -28,6 +28,7 @@ import { CodeHostIcon } from '../../../../components/CodeHostIcon';
 import { settingsStyles as styles } from '../../../../components/settings/settingsStyles';
 import type { StatusPillIntent } from '../../../../components/StatusPill';
 import { createVerityClient } from '../../../../lib/client';
+import { designLevelLabel } from '../../../../lib/designLevels';
 import { useDeleteProject } from '../../../../lib/projectDelete';
 import { useNewDesignChoice } from '../../../../lib/homePreferences';
 import { useProjectConnections } from '../../../../lib/useProjectConnections';
@@ -107,7 +108,8 @@ function ProjectSettingsIndexView({
     pathname:
       | '/project/[id]/settings/repository'
       | '/project/[id]/settings/sandbox'
-      | '/project/[id]/settings/model',
+      | '/project/[id]/settings/model'
+      | '/project/[id]/settings/design',
   ) => router.push({ pathname, params: { id: projectId } });
   const toService = (section: 'doppler' | 'drive' | 'mcp' | 'matrix' | 'google') =>
     router.push({
@@ -313,6 +315,13 @@ function ProjectSettingsIndexView({
             subtitle={allowedAgentsSummary(detail.settings?.allowedAgents)}
             value={defaultModel !== null ? modelDisplayName(defaultModel) : 'Automatic'}
             onPress={() => to('/project/[id]/settings/model')}
+          />
+          <SettingsNavRow
+            icon="layout"
+            title="Design"
+            subtitle="Mockups before the agent builds"
+            value={designLevelLabel(detail.settings?.designLevel)}
+            onPress={() => to('/project/[id]/settings/design')}
           />
         </SettingsListPanel>
       </SettingsGroup>

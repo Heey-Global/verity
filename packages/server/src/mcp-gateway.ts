@@ -1,6 +1,7 @@
 import { withProjectTransportAuthority } from './project-transport-authority.js';
 import type { InternalConnectionIdentity } from './internal-listener.js';
 import { capabilityVariants, capabilityArguments } from './agent-capabilities.js';
+import { presentMockupsRequestSchema } from './mockups.js';
 import { actionTitle, qaAnalysisRequestSchema, QA_ANALYSIS_DESCRIPTION } from '@verity/events';
 import {
   vulnerabilityRequestSchema,
@@ -348,6 +349,7 @@ const TOOL_SCHEMAS = {
   verity_start_planning: z.object({}).strict(),
   verity_present_plan: z.object({ plan: z.string().trim().min(1).max(50_000) }).strict(),
   verity_end_planning: z.object({ action: z.enum(['implement', 'discard']).optional() }).strict(),
+  verity_present_mockups: presentMockupsRequestSchema,
   verity_repairs: z.object({ action: z.literal('status') }).strict(),
   verity_assistant: assistantRequestSchema,
   verity_qa_analysis: qaAnalysisRequestSchema,
@@ -510,6 +512,8 @@ const TOOL_DESCRIPTIONS: Record<GatewayToolName, string> = {
     'Submit the complete current plan while the session is in planning mode, as Markdown with a short "# Title", "## Goal" (one sentence) and "## Steps" (a numbered list, one line per step), plus "## Out of scope", "## Acceptance criteria" (a list) and "## Open decisions" when they have content. Write each open decision as "1. **Question?** — Option A (recommended) | Option B"; the plan cannot be implemented while any is listed, so present the revised plan without it once the user answers. Verity pins the card above the composer with Implement and Dismiss buttons. Submit the whole revised plan again whenever it changes; end your turn without repeating it or explaining the buttons.',
   verity_end_planning:
     'Implement the latest submitted plan when the user explicitly tells you to go ahead in the chat. Their message is the approval, so there is no second confirmation. End your turn immediately; implementation starts in a new turn. Use action discard to ask once to leave planning without implementing, including before a plan exists.',
+  verity_present_mockups:
+    'Present rendered mockups for review after an accepted plan listed them, before implementing the rest. Give each screen a short name and the path of its PNG or JPEG image relative to this session worktree, at most 12 screens. Verity shows them in the chat and waits until the user approves every screen; end your turn right after this call. When the user comments, Verity tells you what to change: revise those screens and present all of them again. Unchanged approved screens stay approved.',
   verity_repairs:
     'Read the current project repair mandate and incidents, including assigned sessions and verification state. This tool grants no execution rights and cannot mark a repair successful.',
   verity_assistant: ASSISTANT_TOOL_DESCRIPTION,

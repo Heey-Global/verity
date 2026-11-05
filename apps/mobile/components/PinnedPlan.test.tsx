@@ -20,6 +20,18 @@ const props = {
 
 beforeEach(() => jest.clearAllMocks());
 
+it('shows planned mockup screens before the implementation is approved', () => {
+  render(
+    <PinnedPlan
+      {...props}
+      markdown={`${markdown}\n\n## Mockups\n- Home review entry\n- Full-screen review`}
+    />,
+  );
+  expect(screen.getByText('Mockups')).toBeOnTheScreen();
+  expect(screen.getByText('Home review entry')).toBeOnTheScreen();
+  expect(screen.getByText('Full-screen review')).toBeOnTheScreen();
+});
+
 it('presents concise bullet titles with descriptions reserved for details', () => {
   render(<PinnedPlan {...props} />);
   expect(screen.getByText('Separate gestures')).toBeOnTheScreen();

@@ -42,6 +42,7 @@ describe('parsePlanningProposal', () => {
       outOfScope: '',
       criteria: [],
       decisions: [],
+      mockups: [],
     });
   });
   it('keeps legacy numbered plans readable', () => {
@@ -68,6 +69,10 @@ describe('parsePlanningProposal spec sections', () => {
     '1. **Show prices incl. VAT?** — Incl. VAT (recommended) | Excl. VAT',
     '2. Which payment provider?',
     '',
+    '## Mockups',
+    '- **Pricing** — plans with the yearly toggle.',
+    '- **Checkout**',
+    '',
     '## Steps',
     '1. **Page** — build the pricing page.',
     '2. **Tests** — cover the toggle.',
@@ -90,7 +95,15 @@ describe('parsePlanningProposal spec sections', () => {
         },
         { question: 'Which payment provider?', options: [] },
       ],
+      mockups: ['**Pricing** — plans with the yearly toggle.', '**Checkout**'],
     });
+  });
+
+  it.each(['None', 'n/a'])('lists no mockups for the placeholder %s', (placeholder) => {
+    // A written-out empty section must not hold the build for a review of nothing.
+    expect(
+      parsePlanningProposal(`## Mockups\n- ${placeholder}\n## Steps\n1. Do it`).mockups,
+    ).toEqual([]);
   });
 
   it.each([

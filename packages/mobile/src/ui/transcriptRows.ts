@@ -1,3 +1,4 @@
+import { mockupRoundView } from './mockups.js';
 import { qaAssignmentView } from './qaAssignment.js';
 import type { Message, ToolCallMessage } from '../happy/message.js';
 import { PRESENT_PLAN_TOOL, START_PLANNING_TOOL, planningToolName } from '@verity/events';
@@ -129,7 +130,9 @@ function buildRows(
       rows.push({ kind: 'message', message: m });
       continue;
     }
-    if (qaAssignmentView(m.tool)) {
+    // A presented mockup round is the agent's message to the reviewer; folded into
+    // a tool group the build would wait on screens nobody can see.
+    if (qaAssignmentView(m.tool) || mockupRoundView(m.tool, undefined)) {
       flushAll();
       rows.push({ kind: 'message', message: m });
       continue;

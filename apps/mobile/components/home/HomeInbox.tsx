@@ -19,6 +19,7 @@ import { Alert, Image, Pressable, RefreshControl, ScrollView, View } from 'react
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { Icon } from '../Icon';
+import { MockupThumbs } from '../session/MockupReview';
 import { Button, Card, CardHead, StatusTag, Text } from '../ui';
 import { tint } from '../ui/tint';
 import { useTaskPreferences } from '../../lib/taskPreferences';
@@ -66,7 +67,8 @@ export function HomeInbox({
   selectedSessionId?: string | null;
   refreshing: boolean;
   onRefresh: () => void;
-  onOpenSession: (sessionId: string) => void;
+  /** `mockups` opens the session with its mockup review in front. */
+  onOpenSession: (sessionId: string, options?: { mockups?: boolean }) => void;
   /** Where "Open" on a project item leads; the project route when omitted. */
   onOpenProject?: ((projectId: string) => void) | undefined;
   onRepairProject: (projectId: string) => void;
@@ -141,7 +143,8 @@ export function useInboxFeed({
   all: readonly InboxItem[];
   /** The keys the server reports dismissed for this person; memoised by the caller. */
   serverHidden: ReadonlySet<string>;
-  onOpenSession: (sessionId: string) => void;
+  /** `mockups` opens the session with its mockup review in front. */
+  onOpenSession: (sessionId: string, options?: { mockups?: boolean }) => void;
   onOpenProject?: ((projectId: string) => void) | undefined;
   onRepairProject: (projectId: string) => void;
   /** After an answer or a dismissal is saved, for a screen that does not poll. */
@@ -228,6 +231,8 @@ export function useInboxFeed({
   const run = useCallback(
     async (item: InboxItem, action: InboxAction) => {
       if (action.kind === 'open_session') return onOpenSession(action.sessionId);
+      if (action.kind === 'review_mockups')
+        return onOpenSession(action.sessionId, { mockups: true });
       if (action.kind === 'open_project') {
         if (onOpenProject) onOpenProject(action.projectId);
         else router.push({ pathname: '/project/[id]', params: { id: action.projectId } });
@@ -451,6 +456,15 @@ export function InboxCard({
           <Text variant="bodySmall" tone="muted" numberOfLines={3}>
             {item.message}
           </Text>
+        ) : null}
+        {item.mockups !== undefined && item.mockups.length > 0 ? (
+          <MockupThumbs
+            screens={item.mockups}
+            onOpen={() => {
+              const review = item.actions.find((action) => action.kind === 'review_mockups');
+              if (review) onAction(review);
+            }}
+          />
         ) : null}
         {item.request !== undefined ? (
           // Allow is decided from exactly what the tool receives, so the input is

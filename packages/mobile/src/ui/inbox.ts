@@ -1,5 +1,6 @@
-import type { ProjectRecord, SessionSummary, UpcomingMeeting } from '../api.js';
+import type { MockupReviewScreen, ProjectRecord, SessionSummary, UpcomingMeeting } from '../api.js';
 import { sessionAttention } from './attention.js';
+import { mockupProgress, reviewOrder } from './mockups.js';
 import { projectNeedsRepair } from './projectBadge.js';
 import { projectDisplayName } from './projectName.js';
 import { pullRequestMergeButton } from './pullRequest.js';
@@ -26,7 +27,13 @@ import { toolCallView } from './toolCall.js';
  */
 
 export type InboxItemKind =
-  'meeting' | 'permission' | 'question' | 'crashed' | 'merge_ready' | 'project_health';
+  | 'meeting'
+  | 'permission'
+  | 'question'
+  | 'mockup_review'
+  | 'crashed'
+  | 'merge_ready'
+  | 'project_health';
 
 /** What a tap on an item's answer does. The app maps each to an existing route. */
 export type InboxAction =
@@ -39,6 +46,7 @@ export type InboxAction =
   | { kind: 'skip_meeting'; label: string; eventKey: string }
   | { kind: 'repair_project'; label: string; projectId: string }
   | { kind: 'open_session'; label: string; sessionId: string }
+  | { kind: 'review_mockups'; label: string; sessionId: string }
   | { kind: 'open_project'; label: string; projectId: string };
 
 export interface InboxItem {
@@ -59,6 +67,8 @@ export interface InboxItem {
   request?: string;
   sessionId?: string;
   projectId?: string;
+  /** The screens of a mockup review, shown as thumbnails on the item. */
+  mockups?: MockupReviewScreen[];
   /** Answers in display order; the first is the primary one. */
   actions: InboxAction[];
   /** Sort time in epoch ms (meetings: start; sessions: last activity). */
@@ -87,11 +97,13 @@ export interface InboxInput {
 export const MEETING_LEAD_MS = 15 * 60_000;
 
 // Higher first. Meetings are time-bound; a parked permission blocks a running
-// agent; a question blocks a finished turn; the rest can wait a moment.
+// agent; a question or a mockup review blocks a finished turn; the rest can
+// wait a moment.
 const RANK: Record<InboxItemKind, number> = {
-  meeting: 6,
-  permission: 5,
-  question: 4,
+  meeting: 7,
+  permission: 6,
+  question: 5,
+  mockup_review: 4,
   crashed: 3,
   merge_ready: 2,
   project_health: 1,
@@ -163,6 +175,7 @@ export function inboxSummary(items: readonly InboxItem[]): string {
   add('meeting', 'meeting soon', 'meetings soon');
   add('permission', 'permission', 'permissions');
   add('question', 'question', 'questions');
+  add('mockup_review', 'mockup review', 'mockup reviews');
   add('crashed', 'crashed session', 'crashed sessions');
   add('merge_ready', 'pull request ready', 'pull requests ready');
   add('project_health', 'project needs care', 'projects need care');
@@ -296,6 +309,30 @@ function sessionItems(
       title: 'Waiting for your answer',
       context: where,
       actions: [open('Answer')],
+    });
+  }
+
+  // Mockups: the build waits until every screen is approved or comments are sent.
+  const review = session.mockupReview;
+  if (review?.state === 'pending' && review.screens.length > 0) {
+    const undecided = review.screens.some((screen) => screen.verdict === 'open');
+    items.push({
+      ...base,
+      // Each round asks anew: a dismissed round comes back once the agent revised it.
+      key: `mockups:${session.sessionId}:${String(review.revision)}`,
+      kind: 'mockup_review',
+      tag: 'Mockups',
+      tone: 'attention',
+      title: undecided ? 'Review mockups' : 'Send your mockup comments',
+      context: `${where} · ${String(review.screens.length)} ${
+        review.screens.length === 1 ? 'screen' : 'screens'
+      }`,
+      message: `${mockupProgress(review)}. Implementation waits for your review.`,
+      mockups: reviewOrder(review.screens),
+      actions: [
+        { kind: 'review_mockups', label: 'Review', sessionId: session.sessionId },
+        open('Open session'),
+      ],
     });
   }
 

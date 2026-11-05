@@ -15,11 +15,13 @@ export function SplitScreenRedirect({
   targetMessageId,
   targetSearchQuery,
   retrySecret,
+  mockups,
 }: {
   id: string;
   targetMessageId?: string;
   targetSearchQuery?: string;
   retrySecret?: string;
+  mockups?: string;
 }) {
   useFocusEffect(
     useCallback(() => {
@@ -30,9 +32,10 @@ export function SplitScreenRedirect({
           ...(targetMessageId ? { targetMessageId } : {}),
           ...(targetSearchQuery ? { targetSearchQuery } : {}),
           ...(retrySecret ? { retrySecret } : {}),
+          ...(mockups ? { mockups } : {}),
         },
       });
-    }, [id, retrySecret, targetMessageId, targetSearchQuery]),
+    }, [id, retrySecret, targetMessageId, targetSearchQuery, mockups]),
   );
   return null;
 }

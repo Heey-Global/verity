@@ -171,6 +171,7 @@ describe('planProposalContent', () => {
       outOfScope: '',
       criteria: [],
       decisions: [],
+      mockups: [],
     });
   });
   it('keeps old plain plans readable and preserves multiline steps', () => {
@@ -181,6 +182,7 @@ describe('planProposalContent', () => {
       outOfScope: '',
       criteria: [],
       decisions: [],
+      mockups: [],
     });
     expect(planProposalContent('## Steps\n1. Change detection\n   and verify it.')).toEqual({
       title: '',
@@ -189,6 +191,7 @@ describe('planProposalContent', () => {
       outOfScope: '',
       criteria: [],
       decisions: [],
+      mockups: [],
     });
   });
 });

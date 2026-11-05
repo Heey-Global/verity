@@ -87,6 +87,8 @@ export interface SessionRecord {
   planning?: SessionPlanning | null;
   planningRevision?: number;
   planningPlan?: string | null;
+  /** Mockups the agent presented for review. Absent when it never presented any. */
+  mockupReview?: SessionMockupReview;
   /** Operator-marked favorite, highlighted in the session list. Global like the
    *  unread mark, so it syncs across devices. Absent means not a favorite. */
   favorite?: boolean;
@@ -96,6 +98,54 @@ export interface SessionRecord {
  *  ends planning. `implemented` / `discarded`: how the last planning round ended,
  *  which tells the app whether the newest plan was carried out. */
 export type SessionPlanning = 'active' | 'implemented' | 'discarded';
+
+/** `pending`: screens wait for the reviewer. `revising`: the reviewer sent comments
+ *  and the agent is reworking them. `approved`: every screen was approved, and the
+ *  implementation went on. */
+export type SessionMockupState = 'pending' | 'revising' | 'approved';
+
+/** One presented screen. The image is a snapshot in the attachment store, so the
+ *  round stays as it was reviewed even when the agent rewrites the file later. */
+export interface MockupScreenRecord {
+  name: string;
+  /** SHA-256 of the image in the attachment store. */
+  attachment: string;
+  mediaType: 'image/png' | 'image/jpeg';
+  width: number;
+  height: number;
+  verdict: 'open' | 'approved' | 'comment';
+  /** The reviewer's comment while `verdict` is `comment`. */
+  comment?: string;
+}
+
+export interface SessionMockupReview {
+  state: SessionMockupState;
+  /** Increments with each presentation; decisions name the round they were made for. */
+  revision: number;
+  screens: MockupScreenRecord[];
+}
+
+/** The review as stored; `state` null before the first presentation. */
+export interface SessionMockups {
+  state: SessionMockupState | null;
+  revision: number;
+  screens: MockupScreenRecord[];
+}
+
+function mockupReview(
+  state: SessionMockupState | null,
+  revision: number,
+  screens: unknown,
+): { mockupReview?: SessionMockupReview } {
+  if (state === null) return {};
+  return {
+    mockupReview: {
+      state,
+      revision,
+      screens: Array.isArray(screens) ? (screens as MockupScreenRecord[]) : [],
+    },
+  };
+}
 
 export interface SessionLinkRecord {
   sessionId: string;
@@ -463,6 +513,8 @@ export interface ProjectSettingsRecord {
   googleDriveFolderId: string | null;
   googleDriveFolderName: string | null;
   googleDriveAccessMode: 'read-only' | 'read-write';
+  /** Design module: whether plans include mockups the user approves before the build. */
+  designLevel: ProjectDesignLevel;
   /** Agents sessions in this project may use; null permits every connected agent. */
   allowedAgents: ProjectAgent[] | null;
   createdAt: Date;
@@ -520,7 +572,12 @@ type ProjectSettingsKey =
   | 'googleDriveFolderId'
   | 'googleDriveFolderName'
   | 'googleDriveAccessMode'
+  | 'designLevel'
   | 'allowedAgents';
+
+/** `off`: no mockups. `on_request`: mockups when the user asks for them.
+ *  `required`: every plan that changes the UI includes mockups. */
+export type ProjectDesignLevel = 'off' | 'on_request' | 'required';
 
 export type ProjectSettingsPatch = {
   [K in ProjectSettingsKey]?: ProjectSettingsRecord[K] | undefined;
@@ -2070,6 +2127,9 @@ export class EventStore implements EventSink {
         'planning',
         'planning_revision',
         'planning_plan',
+        'mockup_review',
+        'mockup_revision',
+        'mockup_screens',
         'favorite',
       ])
       .where('session_id', '=', sessionId)
@@ -2085,6 +2145,7 @@ export class EventStore implements EventSink {
       ...(row.planning !== null ? { planning: row.planning } : {}),
       planningRevision: row.planning_revision,
       planningPlan: row.planning_plan,
+      ...mockupReview(row.mockup_review, row.mockup_revision, row.mockup_screens),
       ...(row.favorite ? { favorite: true } : {}),
     };
   }
@@ -2814,6 +2875,9 @@ export class EventStore implements EventSink {
         'planning',
         'planning_revision',
         'planning_plan',
+        'mockup_review',
+        'mockup_revision',
+        'mockup_screens',
         'favorite',
       ])
       // session_id tiebreaker: `created_at` is `now()` (tx-start), so rapid
@@ -2831,6 +2895,7 @@ export class EventStore implements EventSink {
       ...(r.planning !== null ? { planning: r.planning } : {}),
       planningRevision: r.planning_revision,
       planningPlan: r.planning_plan,
+      ...mockupReview(r.mockup_review, r.mockup_revision, r.mockup_screens),
       ...(r.favorite ? { favorite: true } : {}),
     }));
   }
@@ -3301,6 +3366,10 @@ export class EventStore implements EventSink {
       .updateTable('sessions')
       .set({
         planning: 'active',
+        // A new plan revokes reviews belonging to the previous accepted work.
+        mockup_review: null,
+        mockup_screens: '[]',
+        mockup_revision: sql`mockup_revision + 1`,
         planning_plan: null,
         planning_revision: sql`planning_revision + 1`,
       })
@@ -3319,6 +3388,51 @@ export class EventStore implements EventSink {
       .returning('planning_revision')
       .executeTakeFirst();
     return row?.planning_revision;
+  }
+
+  /**
+   * Change a session's mockup review under a row lock. `change` sees the current
+   * review and answers the next one, or `undefined` to leave it as is; two devices
+   * deciding different screens at once therefore both keep their verdict. Answers
+   * the stored review, or `undefined` when the session is missing or nothing changed.
+   */
+  async updateSessionMockups(
+    sessionId: string,
+    change: (current: SessionMockups) => SessionMockups | undefined,
+    expectedPlanningRevision?: number,
+  ): Promise<SessionMockups | undefined> {
+    return this.db.transaction().execute(async (tx) => {
+      const row = await tx
+        .selectFrom('sessions')
+        .select(['mockup_review', 'mockup_revision', 'mockup_screens', 'planning_revision'])
+        .where('session_id', '=', sessionId)
+        .forUpdate()
+        .executeTakeFirst();
+      if (!row) return undefined;
+      if (
+        expectedPlanningRevision !== undefined &&
+        row.planning_revision !== expectedPlanningRevision
+      )
+        return undefined;
+      const next = change({
+        state: row.mockup_review,
+        revision: row.mockup_revision,
+        screens: Array.isArray(row.mockup_screens)
+          ? (row.mockup_screens as MockupScreenRecord[])
+          : [],
+      });
+      if (next === undefined) return undefined;
+      await tx
+        .updateTable('sessions')
+        .set({
+          mockup_review: next.state,
+          mockup_revision: next.revision,
+          mockup_screens: JSON.stringify(next.screens),
+        })
+        .where('session_id', '=', sessionId)
+        .execute();
+      return next;
+    });
   }
 
   async getSessionBackendState(
@@ -5718,6 +5832,35 @@ export class EventStore implements EventSink {
       .execute();
   }
 
+  /** Commit the reviewed snapshot and its continuation together for restart recovery. */
+  async enqueueMockupContinuation(
+    input: QueuedTurnInput,
+    review: SessionMockups,
+    previousScreens: SessionMockups['screens'] = review.screens,
+  ): Promise<boolean> {
+    return this.db.transaction().execute(async (tx) => {
+      const result = await tx
+        .updateTable('sessions')
+        .set({ mockup_review: review.state, mockup_screens: JSON.stringify(review.screens) })
+        .where('session_id', '=', input.sessionId)
+        .where('mockup_revision', '=', review.revision)
+        .where('mockup_review', '=', 'pending')
+        .where(sql<boolean>`mockup_screens::jsonb = ${JSON.stringify(previousScreens)}::jsonb`)
+        .executeTakeFirst();
+      if (result.numUpdatedRows === 0n) return false;
+      await tx
+        .insertInto('queued_turns')
+        .values({
+          id: input.id,
+          session_id: input.sessionId,
+          prompt: input.prompt,
+          opts: JSON.stringify(input.opts),
+        })
+        .execute();
+      return true;
+    });
+  }
+
   /** Accept a plan and its implementation backlog entry together. A restart
    * between acceptance and the live queue update must still recover the work. */
   async enqueuePlanImplementation(
@@ -7476,6 +7619,7 @@ export class EventStore implements EventSink {
       google_drive_folder_id: string | null;
       google_drive_folder_name: string | null;
       google_drive_access_mode: 'read-only' | 'read-write';
+      design_level: ProjectDesignLevel;
       allowed_agents: ProjectAgent[] | null;
       created_at: Date;
       updated_at: Date;
@@ -7500,6 +7644,7 @@ export class EventStore implements EventSink {
       googleDriveFolderId: row.google_drive_folder_id,
       googleDriveFolderName: row.google_drive_folder_name,
       googleDriveAccessMode: row.google_drive_access_mode,
+      designLevel: row.design_level,
       allowedAgents: row.allowed_agents,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
@@ -7521,6 +7666,7 @@ export class EventStore implements EventSink {
     'google_drive_folder_id',
     'google_drive_folder_name',
     'google_drive_access_mode',
+    'design_level',
     'allowed_agents',
     'created_at',
     'updated_at',
@@ -8685,6 +8831,7 @@ export class EventStore implements EventSink {
       google_drive_folder_id: normalizeSetting(patch.googleDriveFolderId),
       google_drive_folder_name: normalizeSetting(patch.googleDriveFolderName),
       google_drive_access_mode: patch.googleDriveAccessMode ?? 'read-write',
+      design_level: patch.designLevel ?? 'on_request',
       allowed_agents: allowedAgentsColumn(patch.allowedAgents),
     };
     return this.db.transaction().execute(async (tx) => {
@@ -8766,6 +8913,7 @@ export class EventStore implements EventSink {
             ...(patch.googleDriveAccessMode !== undefined
               ? { google_drive_access_mode: patch.googleDriveAccessMode }
               : {}),
+            ...(patch.designLevel !== undefined ? { design_level: patch.designLevel } : {}),
             ...(patch.googleDriveFolderName !== undefined
               ? { google_drive_folder_name: normalizeSetting(patch.googleDriveFolderName) }
               : {}),

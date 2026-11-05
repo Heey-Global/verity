@@ -44,6 +44,13 @@ export interface UseSession extends SessionModelState {
   decidePermission: (toolUseId: string, decision: PermissionDecision) => void;
   /** End planning mode: implement the latest plan or discard it. */
   decidePlanning: (action: 'implement' | 'discard', planningRevision?: number) => void;
+  /** Approve, comment on or reopen one mockup screen; resolves false on failure. */
+  decideMockup: (
+    screen: string,
+    decision: { verdict: 'approved' | 'open' } | { verdict: 'comment'; comment: string },
+  ) => Promise<boolean>;
+  /** Send the commented screens back to the agent; resolves false on failure. */
+  sendMockupComments: () => Promise<boolean>;
   /** Switch the session's engine/model from its next turn onward; the choice is
    * persisted, so the header chip + subsequent turns reflect it. */
   switchModel: (model: string) => void;
@@ -220,6 +227,15 @@ export function useSession(client: VerityClient, sessionId: string, baseUrl: str
     [model],
   );
 
+  const decideMockup = useCallback(
+    (
+      screen: string,
+      decision: { verdict: 'approved' | 'open' } | { verdict: 'comment'; comment: string },
+    ) => model.decideMockup(screen, decision),
+    [model],
+  );
+  const sendMockupComments = useCallback(() => model.sendMockupComments(), [model]);
+
   return {
     ...state,
     refreshMetadata: () => model.refreshMetadata(),
@@ -232,6 +248,8 @@ export function useSession(client: VerityClient, sessionId: string, baseUrl: str
     dismissPending,
     decidePermission,
     decidePlanning,
+    decideMockup,
+    sendMockupComments,
     switchModel,
   };
 }

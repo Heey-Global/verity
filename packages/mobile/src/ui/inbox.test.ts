@@ -201,6 +201,38 @@ describe('inboxItems', () => {
     expect(items.map(labels)).toEqual([['Resume', 'Open'], ['Open']]);
   });
 
+  it('asks for a mockup review only while the round waits, keyed per round', () => {
+    const screen = (name: string, verdict: 'open' | 'approved' | 'comment') => ({
+      name,
+      attachment: 'a'.repeat(64),
+      mediaType: 'image/png',
+      width: 1,
+      height: 1,
+      verdict,
+    });
+    const waiting = session('w', {
+      mockupReview: {
+        state: 'pending',
+        revision: 2,
+        screens: [screen('Home', 'approved'), screen('Spec', 'open')],
+      },
+    });
+    const [item] = inboxItems({ sessions: [waiting], projects: [project()], now: NOW });
+    // A dismissed round must come back once the agent presents a revised one.
+    expect(item).toMatchObject({ kind: 'mockup_review', key: 'mockups:w:2' });
+    expect(item?.mockups?.map((entry) => entry.name)).toEqual(['Spec', 'Home']);
+    expect(item?.actions.map((action) => action.kind)).toEqual(['review_mockups', 'open_session']);
+    // Approved or revising rounds wait on nobody; an item would ask for nothing.
+    for (const state of ['approved', 'revising'] as const)
+      expect(
+        inboxItems({
+          sessions: [session('w', { mockupReview: { ...waiting.mockupReview!, state } })],
+          projects: [project()],
+          now: NOW,
+        }),
+      ).toEqual([]);
+  });
+
   it('offers Merge exactly when the session’s merge button would', () => {
     const ready = inboxItems({
       sessions: [

@@ -29,6 +29,21 @@ export function planningToolName(name: string): PlanningToolName | undefined {
   );
 }
 
+/** Presents rendered mockups for review; outside planning mode, after a plan with a
+ *  Mockups section was accepted. */
+export const PRESENT_MOCKUPS_TOOL = 'verity_present_mockups';
+
+/** The focused name agents see for {@link PRESENT_MOCKUPS_TOOL}. */
+export const PRESENT_MOCKUPS_FOCUSED_TOOL = 'verity_mockups_present';
+
+/** Whether a reported tool name presents mockups, under any backend's qualification
+ *  (bare for Codex, `mcp__verity__…` for Claude, `verity_…` for OpenCode) and under
+ *  either its gateway or its focused name. */
+export function isPresentMockupsTool(name: string): boolean {
+  const canonical = name.replace(/^mcp__verity__/u, '').replace(/^verity_verity_/u, 'verity_');
+  return canonical === PRESENT_MOCKUPS_TOOL || canonical === PRESENT_MOCKUPS_FOCUSED_TOOL;
+}
+
 /** The prompt of the turn that carries out an accepted plan. */
 export const IMPLEMENT_PLAN_PROMPT =
   'Planning mode has ended and I accepted the plan. Implement the latest plan you presented.';
@@ -62,10 +77,15 @@ What the plan deliberately leaves out, in one or two lines.
 ## Open decisions
 1. **Question for the user?** — Option A (recommended) | Option B
 
+## Mockups
+- **Screen name** — what the mockup shows.
+
 ## Steps
 1. **Short step title** — one line on what changes and where.
 
 \`\`\`
+
+Include Mockups only when the note returned by \`${START_PLANNING_TOOL}\` asks for it or the user wants mockups: list each screen to mock up. Planned mockups are built and approved before the rest of the implementation starts.
 
 Keep each step, criterion and decision to one line and the whole plan scannable on a phone. List under Open decisions only choices that need the user's answer; the card shows each as tappable options, marks the recommended one, and blocks implementation until no decision is left. When the user answers, apply the answer and present the revised plan without that decision. After submitting, end your turn without repeating the plan or explaining the buttons. Submit the whole revised plan again whenever it changes. Do not add a \`verity:choices\` block to ask whether to implement the plan, since the card's button already asks that, and do not call \`ExitPlanMode\`.
 
@@ -90,9 +110,11 @@ export interface PlanningProposal {
   criteria: string[];
   /** Open decisions. While any is listed, the plan cannot be implemented. */
   decisions: PlanDecision[];
+  /** Screens to mock up and have approved before the rest is implemented. */
+  mockups: string[];
 }
 
-type Section = 'goal' | 'steps' | 'outOfScope' | 'criteria' | 'decisions' | 'other';
+type Section = 'goal' | 'steps' | 'outOfScope' | 'criteria' | 'decisions' | 'mockups' | 'other';
 
 function sectionOf(heading: string): Section {
   const name = heading.trim().toLowerCase();
@@ -102,6 +124,7 @@ function sectionOf(heading: string): Section {
   if (/^(acceptance criteria|criteria)\b/.test(name)) return 'criteria';
   // Only the documented heading blocks: "Decisions made" records settled choices.
   if (/^open decisions\b/.test(name)) return 'decisions';
+  if (/^mockups?\b/.test(name)) return 'mockups';
   return 'other';
 }
 
@@ -157,6 +180,7 @@ export function parsePlanningProposal(markdown: string): PlanningProposal {
   const outOfScope: string[] = [];
   const criteria: string[] = [];
   const decisions: string[] = [];
+  const mockups: string[] = [];
   const hasStepsHeading = lines.some((line) => /^#{1,6}\s+steps\b/i.test(line.trim()));
   let section: Section = 'goal';
   for (const [index, line] of lines.entries()) {
@@ -171,8 +195,9 @@ export function parsePlanningProposal(markdown: string): PlanningProposal {
     // `\S` after the spaces keeps these linear: with `.+` the spaces could be split
     // between both groups, and a long run of them backtracks quadratically.
     const item = /^(?:\d{1,3}[.)]|[-*])\s+(\S.*)$/.exec(line);
-    if (section === 'criteria' || section === 'decisions') {
-      const list = section === 'criteria' ? criteria : decisions;
+    if (section === 'criteria' || section === 'decisions' || section === 'mockups') {
+      const list =
+        section === 'criteria' ? criteria : section === 'decisions' ? decisions : mockups;
       if (item) list.push(item[1]!.trim());
       else if (line.trim() && list.length > 0) list[list.length - 1] += `\n${line.trim()}`;
     } else if (section === 'outOfScope') {
@@ -194,6 +219,7 @@ export function parsePlanningProposal(markdown: string): PlanningProposal {
     decisions: decisions
       .filter((item) => !PLACEHOLDER.test(item.split('\n')[0]!.trim()))
       .map(parseDecision),
+    mockups: mockups.filter((item) => !PLACEHOLDER.test(item.split('\n')[0]!.trim())),
   };
 }
 

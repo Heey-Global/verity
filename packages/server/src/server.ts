@@ -165,7 +165,8 @@ import { registerPackageInstallRoute } from './package-install-route.js';
 import { registerPackageArtifactRoutes } from './package-artifact-routes.js';
 import { authorizePairedRoute } from './paired-route-policy.js';
 import { registerPairingRoutes } from './pairing-routes.js';
-import { createSessionPlanning, registerPlanningRoutes } from './planning.js';
+import { createSessionMockups, registerMockupRoutes } from './mockups.js';
+import { createSessionPlanning, registerPlanningRoutes, type PlanningDeps } from './planning.js';
 import { startPullRequestReadyMonitor, type PushSessionContext } from './pr-ready-push.js';
 import { registerPreviewShareRoutes } from './preview-share-routes.js';
 import {
@@ -670,17 +671,27 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   deps.onConductorReady?.(conductor);
   const publishSessionEvent = (sessionId: string, event: AgentEvent): Promise<void> =>
     emitSessionEvent(deps.eventStore, deps.bus, sessionId, event);
+  const dispatchServerTurn: PlanningDeps['dispatchTurn'] = (
+    sessionId,
+    prompt,
+    opts,
+    dispatchOpts,
+  ) => {
+    // No await before dispatch: deletion must not reopen a quiesced worktree.
+    if (sessionsBeingReaped.has(sessionId)) {
+      throw Object.assign(new Error('session is being deleted with its project'), {
+        statusCode: 409,
+      });
+    }
+    return conductor.dispatchTurn(sessionId, prompt, opts, dispatchOpts);
+  };
   const sessionPlanning = createSessionPlanning({
     eventStore: deps.eventStore,
-    dispatchTurn: (sessionId, prompt, opts, dispatchOpts) => {
-      // No await before dispatch: deletion must not reopen a quiesced worktree.
-      if (sessionsBeingReaped.has(sessionId)) {
-        throw Object.assign(new Error('session is being deleted with its project'), {
-          statusCode: 409,
-        });
-      }
-      return conductor.dispatchTurn(sessionId, prompt, opts, dispatchOpts);
-    },
+    dispatchTurn: dispatchServerTurn,
+  });
+  const sessionMockups = createSessionMockups({
+    eventStore: deps.eventStore,
+    dispatchTurn: dispatchServerTurn,
   });
   // Teardown exclusion for `DELETE /projects/:id`. Between the moment that route
   // quiesces a project's sessions and the moment its purge has removed the clone
@@ -3514,6 +3525,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     vulnerabilityService,
     canExecuteAs,
     sessionPlanning,
+    sessionMockups,
     publishSessionEvent,
     projectSettingsStore,
     isProjectSessionModel,
@@ -3534,6 +3546,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       deps.authRegistry.verify(requestCredential(request)) === true,
   });
   registerPlanningRoutes(app, { eventStore: deps.eventStore, planning: sessionPlanning });
+  registerMockupRoutes(app, { mockups: sessionMockups });
   registerAutomationRoutes(app, {
     eventStore: deps.eventStore,
     checkScript: (automation) => automationExecutor.checkScript(automation),
@@ -5148,6 +5161,9 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             ...(session.planning !== undefined ? { planning: session.planning } : {}),
             planningRevision: session.planningRevision,
             planningPlan: session.planningPlan,
+            // The status bar follows the review the same way, including decisions
+            // made on another device.
+            mockupReview: session.mockupReview ?? null,
           };
         } catch {
           return base; // unknown session / git hiccup → raw isBusy, omit name+branch, keep the poll alive
