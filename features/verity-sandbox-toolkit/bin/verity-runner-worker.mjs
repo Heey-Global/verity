@@ -24700,6 +24700,8 @@ function planningToolName(name2) {
     return aliases[canonical];
   return PLANNING_TOOLS.find((tool) => name2 === tool || name2 === `mcp__verity__${tool}` || name2 === `verity_${tool}`);
 }
+var PRESENT_MOCKUPS_TOOL = "verity_present_mockups";
+var PRESENT_MOCKUPS_FOCUSED_TOOL = "verity_mockups_present";
 var PLANNING_SYSTEM_PROMPT = `# Planning mode (Verity)
 
 Before a materially larger change with real design choices, offer to plan it first: ask with a \`verity:choices\` block whose options include "Plan first" (recommended) and "Implement directly". When the user picks "Plan first", or asks in any wording to plan before implementing, call \`${START_PLANNING_TOOL}\` and then work out the plan without changing any files. Small, clear tasks need no planning.`;
@@ -24724,14 +24726,23 @@ What the plan deliberately leaves out, in one or two lines.
 ## Open decisions
 1. **Question for the user?** \u2014 Option A (recommended) | Option B
 
+## Mockups
+- **Screen name** \u2014 what the mockup shows.
+
 ## Steps
 1. **Short step title** \u2014 one line on what changes and where.
 
 \`\`\`
 
+Include Mockups only when the note returned by \`${START_PLANNING_TOOL}\` asks for it or the user wants mockups: list each screen to mock up. Planned mockups are built and approved before the rest of the implementation starts.
+
 Keep each step, criterion and decision to one line and the whole plan scannable on a phone. List under Open decisions only choices that need the user's answer; the card shows each as tappable options, marks the recommended one, and blocks implementation until no decision is left. When the user answers, apply the answer and present the revised plan without that decision. After submitting, end your turn without repeating the plan or explaining the buttons. Submit the whole revised plan again whenever it changes. Do not add a \`verity:choices\` block to ask whether to implement the plan, since the card's button already asks that, and do not call \`ExitPlanMode\`.
 
 Never start implementing on your own. If the user tells you in the chat to go ahead, call \`${END_PLANNING_TOOL}\` (after submitting the plan, if you have not yet): their message already authorizes implementation; no extra confirmation is needed. Verity starts implementation once your turn ends. End your turn right after it returns. If the user wants to leave planning without a plan, call the same tool with action "discard"; it asks once before restoring file access. Do not create tasks for unaccepted proposal steps. Accepted steps are saved automatically as assigned tasks; update those existing tasks instead of creating duplicates.`;
+
+// node_modules/@verity/events/dist/mockups.js
+var PRESENT = `\`${PRESENT_MOCKUPS_FOCUSED_TOOL}\` (\`${PRESENT_MOCKUPS_TOOL}\` in tool sets without focused names)`;
+var MOCKUPS_FIRST_PROMPT = `The plan lists mockups. Build only those first, without implementing the rest of the plan: render each listed screen as a PNG or JPEG file in this worktree (use the project's own mockup tooling where it has one), then call ${PRESENT} with a short name and the relative path of each image, and end your turn. Verity shows them to the user for review. Continue with the remaining steps only after Verity tells you every screen was approved; when the user comments instead, revise the affected screens and present all of them again.`;
 
 // node_modules/@verity/events/dist/session-handoff-tool.js
 var import_zod2 = __toESM(require_zod(), 1);
@@ -25512,6 +25523,7 @@ function actionTitle(name2, title3, source) {
     verity_start_planning: "verity_planning_start",
     verity_present_plan: "verity_planning_present",
     verity_end_planning: "verity_planning_implement",
+    verity_present_mockups: "verity_mockups_present",
     verity_list_sessions: "verity_session_list",
     verity_send_session_message: "verity_session_send_message",
     verity_list_linked_sessions: "verity_session_list_links",
