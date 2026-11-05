@@ -31,6 +31,7 @@ jest.mock('../lib/homePreferences', () => ({
 
 import type { SessionSummary, VerityClient } from '@verity/mobile';
 import { act, fireEvent, render, screen, within } from '@testing-library/react-native';
+import { Alert } from 'react-native';
 
 import ProjectEntry from '../app/project/[id]/index';
 import ProjectSettingsIndexScreen from '../app/project/[id]/settings/index';
@@ -104,6 +105,7 @@ function clientWith(sessions: SessionSummary[], extra: Record<string, unknown> =
       dismissed ? [key] : [],
     ),
     setProjectInboxDismissed: jest.fn(async () => [] as string[]),
+    deleteSession: jest.fn().mockResolvedValue({ sessionId: 'deleted' }),
     ...extra,
   });
   return client as unknown as VerityClient & Record<string, jest.Mock>;
@@ -233,6 +235,21 @@ describe('project page', () => {
     expect(screen.queryByLabelText(/^login/)).toBeNull();
     fireEvent.press(screen.getByLabelText(/★ blog/));
     expect(onOpenSession).toHaveBeenCalledWith('blog');
+  });
+
+  it('deletes a session after confirmation and tells the host which one', async () => {
+    const alert = jest.spyOn(Alert, 'alert');
+    const onSessionChanged = jest.fn();
+    const { client } = await renderPage([running], { onSessionChanged });
+    fireEvent.press(screen.getByRole('tab', { name: 'Work' }));
+    fireEvent(screen.getByLabelText(/^login/), 'longPress');
+    const menu = alert.mock.calls.at(-1)![2]!;
+    act(() => menu.find((button) => button.text === 'Delete')!.onPress!());
+    const confirm = alert.mock.calls.at(-1)![2]!;
+    await act(async () => confirm.find((button) => button.text === 'Delete')!.onPress!());
+    expect(client.deleteSession).toHaveBeenCalledWith('login', {});
+    // The wide layout clears its session pane and refreshes its list from this.
+    expect(onSessionChanged).toHaveBeenCalledWith('login', true);
   });
 
   it('shows the project knowledge in its own tab', async () => {

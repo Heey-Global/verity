@@ -82,6 +82,7 @@ export function ProjectPage({
   onBack,
   onOpenSession,
   onRepairProject,
+  onSessionChanged,
   selectedSessionId,
   initialTab = 'overview',
 }: {
@@ -92,20 +93,30 @@ export function ProjectPage({
   onOpenSession: (sessionId: string) => void;
   /** What Repair on a health item does; the sandbox settings, which offer it, when omitted. */
   onRepairProject?: ((projectId: string) => void) | undefined;
+  /** A session was renamed, (un)favorited or deleted on this page. */
+  onSessionChanged?: ((sessionId: string, deleted: boolean) => void) | undefined;
   selectedSessionId?: string | null | undefined;
   initialTab?: ProjectTab;
 }) {
   const { theme } = useUnistyles();
   const { detail, loading, error, load } = useProjectDetail(client, projectId);
   const connections = useProjectConnections(client, projectId);
+  const refreshConnections = connections.refresh;
   const [tab, setTab] = useState<ProjectTab>(initialTab);
   const [refreshing, setRefreshing] = useState(false);
   const reload = useCallback(() => void load(true), [load]);
   const refresh = useCallback(() => {
     setRefreshing(true);
-    connections.refresh();
+    refreshConnections();
     void load(true).finally(() => setRefreshing(false));
-  }, [connections, load]);
+  }, [refreshConnections, load]);
+  const sessionChanged = useCallback(
+    (sessionId: string, deleted: boolean) => {
+      reload();
+      onSessionChanged?.(sessionId, deleted);
+    },
+    [reload, onSessionChanged],
+  );
   const openSettings = useCallback(
     () => router.push({ pathname: '/project/[id]/settings', params: { id: projectId } }),
     [projectId],
@@ -169,7 +180,7 @@ export function ProjectPage({
                 projectId={projectId}
                 sessions={detail.sessions}
                 onOpenSession={onOpenSession}
-                onChanged={reload}
+                onChanged={sessionChanged}
               />
             )}
           </ScrollView>

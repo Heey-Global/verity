@@ -4943,16 +4943,15 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       );
       // The project page shows this person's dismissed health items too, so the
       // project carries their view state just as its sessions do.
-      const [seen] = await projectsAsSeenBy(viewer, [
-        presentProject(
-          resolved.project,
-          resolved.release,
-          sandboxUpdate,
-          projectToolkitDrift(resolved.project, await serverToolkitIdentity()),
-        ),
-      ]);
+      const presented = presentProject(
+        resolved.project,
+        resolved.release,
+        sandboxUpdate,
+        projectToolkitDrift(resolved.project, await serverToolkitIdentity()),
+      );
+      const [seen] = await projectsAsSeenBy(viewer, [presented]);
       return {
-        project: seen!,
+        project: seen ?? presented,
         settings: publicProjectSettings(settings),
         sessions: await sessionsAsSeenBy(viewer, await summarizeSessions(sessions)),
       };

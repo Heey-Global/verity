@@ -638,6 +638,8 @@ function SessionList({ client }: { client: VerityClient }) {
     if (!projectParam || !newDesign) return;
     setOpenProjectId(projectParam);
     setHomeTab('projects');
+    // Consumed: the same link must open the page again after "Projects" closed it.
+    router.setParams({ project: undefined });
   }, [projectParam, newDesign]);
   const [homeCount, setHomeCount] = useState(0);
   const openSessionFromHome = useCallback(
@@ -1025,6 +1027,11 @@ function SessionList({ client }: { client: VerityClient }) {
         onBack={() => setOpenProjectId(null)}
         onOpenSession={openSessionFromHome}
         onRepairProject={repairFromHome}
+        onSessionChanged={(sessionId, deleted) => {
+          // The list and the session pane beside the page show the same sessions.
+          if (deleted && selectedId === sessionId) setSelectedId(null);
+          void refresh({ silent: true });
+        }}
         selectedSessionId={selectedId}
       />
     ) : null;

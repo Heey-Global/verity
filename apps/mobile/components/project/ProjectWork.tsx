@@ -91,8 +91,9 @@ export function ProjectWork({
   projectId: string;
   sessions: readonly SessionSummary[];
   onOpenSession: (sessionId: string) => void;
-  /** After a rename, favorite or delete, so the page reloads the list. */
-  onChanged: () => void;
+  /** After a rename, favorite or delete of `sessionId`, so the page and its
+   *  host (the wide layout's list and session pane) catch up. */
+  onChanged: (sessionId: string, deleted: boolean) => void;
 }) {
   const [filter, setFilter] = useState<WorkFilter>('all');
   const textPrompt = useTextPrompt();
@@ -110,7 +111,7 @@ export function ProjectWork({
       (name) => {
         void client
           .renameSession(session.sessionId, name.trim() || null)
-          .then(onChanged, failed('Could not rename session'));
+          .then(() => onChanged(session.sessionId, false), failed('Could not rename session'));
       },
       'plain-text',
       session.name ?? '',
@@ -118,11 +119,11 @@ export function ProjectWork({
   const toggleFavorite = (session: SessionSummary) =>
     void client
       .setSessionFavorite(session.sessionId, session.favorite !== true)
-      .then(onChanged, failed('Could not update favorite'));
+      .then(() => onChanged(session.sessionId, false), failed('Could not update favorite'));
   const remove = (session: SessionSummary, force = false) =>
-    void client
-      .deleteSession(session.sessionId, force ? { force } : {})
-      .then(onChanged, (caught) => {
+    void client.deleteSession(session.sessionId, force ? { force } : {}).then(
+      () => onChanged(session.sessionId, true),
+      (caught) => {
         if (caught instanceof VerityApiError && caught.status === 409 && !force) {
           Alert.alert(
             'Session is still running',
@@ -135,7 +136,8 @@ export function ProjectWork({
           return;
         }
         failed('Could not delete session')(caught);
-      });
+      },
+    );
   const confirmRemove = (session: SessionSummary) =>
     Alert.alert(
       'Delete session?',
