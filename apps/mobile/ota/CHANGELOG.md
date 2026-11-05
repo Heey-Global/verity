@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.84.6](https://github.com/Heey-Global/verity/compare/mobile-v1.84.5...mobile-v1.84.6) (2026-11-05)
+
+
+### Features
+
+* **mobile:** add a project page to the new design preview ([#2277](https://github.com/Heey-Global/verity/issues/2277)) ([2e28b54](https://github.com/Heey-Global/verity/commit/2e28b547bae3874f85e995877a4da9d8dcdbf106))
+* **mobile:** show projects as compact cards in the new design ([#2283](https://github.com/Heey-Global/verity/issues/2283)) ([03ee51a](https://github.com/Heey-Global/verity/commit/03ee51aa3052a13ad4543b9983d707f366faeb64))
+* **planning:** structured specs and mockups from real app components ([#2279](https://github.com/Heey-Global/verity/issues/2279)) ([1485be0](https://github.com/Heey-Global/verity/commit/1485be00bf71aa08a0d5fbb0293ab606a4f1089b))
+
+
+### Bug Fixes
+
+* **mobile:** offer newer server releases after host update failure ([#2286](https://github.com/Heey-Global/verity/issues/2286)) ([d99be22](https://github.com/Heey-Global/verity/commit/d99be22a78f48d08f993eac01cfdbc89814eb150))
+
 ## [1.84.5](https://github.com/Heey-Global/verity/compare/mobile-v1.84.4...mobile-v1.84.5) (2026-11-05)
 
 
