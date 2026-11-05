@@ -1,13 +1,34 @@
+import type { AssistantConversation } from '@verity/mobile';
+
+import { getAuthToken, isBiometricUnlockEnabled } from './authToken';
+import { getVerityBaseUrl } from './client';
+import { getServerProfile } from './serverProfile';
+
 import {
   createWatchInboxDrainer,
   showWatchSettings,
-  WATCH_PROJECT_LIMIT,
-  watchCaptureProject,
-  watchProjectList,
+  watchLink,
+  watchScopeAllowed,
+  watchSnapshot,
   type WatchCapture,
 } from './watchCapture';
 
-jest.mock('./tasksStore', () => ({ captureTask: jest.fn() }));
+jest.mock('./tasksStore', () => ({ taskAccountScope: jest.fn(() => 'account-1') }));
+jest.mock('./client', () => ({
+  getVerityBaseUrl: jest.fn(() => null),
+  subscribeVerityBaseUrl: jest.fn(() => () => undefined),
+}));
+jest.mock('./authToken', () => ({
+  getAuthToken: jest.fn(() => null),
+  isBiometricUnlockEnabled: jest.fn(async () => false),
+  subscribeAuthToken: jest.fn(() => () => undefined),
+}));
+jest.mock('./serverProfile', () => ({ getServerProfile: jest.fn(() => null) }));
+jest.mock('./verityConversation', () => ({
+  answerVerity: jest.fn(),
+  sendToVerity: jest.fn(),
+  subscribeVerity: jest.fn(() => () => undefined),
+}));
 
 const capture = (id: string): WatchCapture => ({
   id,
@@ -47,12 +68,12 @@ describe('watch inbox drain', () => {
     expect(box.entries).toHaveLength(0);
   });
 
-  // The silent failure: acknowledging a capture the queue never stored deletes
+  // The silent failure: acknowledging a capture the outbox never stored deletes
   // the only copy of the recording on the iPhone.
   it('keeps a capture in the inbox when saving fails', async () => {
     const box = inbox([capture('a')]);
     const save = jest.fn(async () => {
-      throw new Error('Sign in to save tasks');
+      throw new Error('Sign in to talk to Verity.');
     });
     await expect(createWatchInboxDrainer(box, save)()).rejects.toThrow('Sign in');
     expect(box.acknowledge).not.toHaveBeenCalled();
@@ -84,85 +105,88 @@ describe('watch inbox drain', () => {
   });
 });
 
-describe('watch project list', () => {
-  const project = (id: string) => ({ id, repo: `repo-${id}` });
-  const capturedAt = (projectId: string, createdAt: string) => ({
-    projectId,
-    origin: 'user' as const,
-    createdAt,
-  });
-
-  it('puts the last quick-capture project first, then the most recently captured into', () => {
-    const list = watchProjectList(
-      [project('a'), project('b'), project('c')],
-      [capturedAt('b', '2026-10-08T09:00:00Z'), capturedAt('c', '2026-10-08T10:00:00Z')],
-      'a',
-    );
-    expect(list).toEqual([
-      { id: 'a', name: 'repo-a' },
-      { id: 'c', name: 'repo-c' },
-      { id: 'b', name: 'repo-b' },
-    ]);
-  });
-
-  // The silent failure: a remembered project from another account or a deleted
-  // one must not push itself into the list.
-  it('ignores a last project that is not in the list', () => {
-    const list = watchProjectList([project('a'), project('b')], [], 'gone');
-    expect(list.map((entry) => entry.id)).toEqual(['a', 'b']);
-  });
-
-  it('keeps the last project even when it falls beyond the cut', () => {
-    const projects = Array.from({ length: WATCH_PROJECT_LIMIT + 3 }, (_, i) => project(`p${i}`));
-    const last = projects[projects.length - 1].id;
-    const list = watchProjectList(projects, [], last);
-    expect(list).toHaveLength(WATCH_PROJECT_LIMIT);
-    expect(list[0].id).toBe(last);
+describe('watch account', () => {
+  it('hands words only to the account they were said in', () => {
+    expect(watchScopeAllowed('account-1', 'account-1')).toBe(true);
+    expect(watchScopeAllowed('account-1', 'account-2')).toBe(false);
+    expect(watchScopeAllowed('account-1', null)).toBe(false);
+    // An interrupted recording has no account: it goes to the one signed in.
+    expect(watchScopeAllowed(undefined, 'account-2')).toBe(true);
   });
 });
 
-describe('watch capture project', () => {
-  const known = { scope: 'account-1', ids: new Set(['p1']) };
-  const picked = (overrides: Partial<WatchCapture>): WatchCapture => ({
-    ...capture('a'),
-    projectId: 'p1',
-    scope: 'account-1',
-    ...overrides,
-  });
+describe('watch snapshot', () => {
+  const conversation: AssistantConversation = {
+    availability: 'ready',
+    sessionId: 'assistant',
+    revision: 9,
+    state: 'needs_you',
+    items: [
+      { kind: 'message', id: 'm-1', at: 1, text: 'Set up Hansen' },
+      { kind: 'reply', id: 'r-2', at: 2, text: 'Which client?' },
+      { kind: 'task', id: 't-3', at: 3, title: 'x', projectId: 'p', state: 'saved' },
+    ],
+    question: {
+      id: 'q-4',
+      question: 'Which client?',
+      options: [{ label: 'Hansen', recommended: true }, { label: 'Müller' }],
+      multiSelect: false,
+    },
+    approvals: [{ id: 'perm-1', tool: 'verity_gmail' }],
+  };
 
-  it('saves to the project picked on the watch', () => {
-    expect(watchCaptureProject(picked({}), known, 'account-1')).toBe('p1');
-  });
-
-  // Each of these would otherwise file the note under a project the user did
-  // not pick, or under another account's project.
-  it.each([
-    ['no project was picked', picked({ projectId: undefined })],
-    ['it was picked under another account', picked({ scope: 'account-2' })],
-    ['the project is unknown here', picked({ projectId: 'p2' })],
-  ])('holds the capture when %s', (_, held) => {
-    expect(() => watchCaptureProject(held, known, 'account-1')).toThrow();
-  });
-
-  // Right after an account switch the loaded projects can still be the previous
-  // account's while the task queue already writes for the new one.
-  it('holds a capture while the known projects belong to another sign-in', () => {
-    expect(() => watchCaptureProject(picked({}), known, 'account-2')).toThrow('another account');
-  });
-
-  it('holds every capture until the projects are loaded', () => {
-    expect(() => watchCaptureProject(picked({}), null, 'account-1')).toThrow();
-  });
-
-  it('keeps a held capture in the inbox and saves the next one', async () => {
-    const box = inbox([picked({ id: 'a', scope: 'account-2' }), picked({ id: 'b' })]);
-    const saved: string[] = [];
-    const save = jest.fn(async (c: WatchCapture) => {
-      saved.push(`${c.id}:${watchCaptureProject(c, known, 'account-1')}`);
+  it('keeps what the wrist needs: state, latest reply, question and approvals', () => {
+    expect(watchSnapshot(conversation, 'ready', 'account-1')).toEqual({
+      availability: 'ready',
+      state: 'needs_you',
+      revision: 9,
+      approvals: 1,
+      scope: 'account-1',
+      reply: 'Which client?',
+      question: {
+        id: 'q-4',
+        text: 'Which client?',
+        options: ['Hansen', 'Müller'],
+        multiSelect: false,
+      },
     });
-    await expect(createWatchInboxDrainer(box, save)()).rejects.toThrow('another account');
-    expect(saved).toEqual(['b:p1']);
-    expect(box.entries.map((entry) => entry.id)).toEqual(['a']);
+  });
+
+  it('tells the watch when Verity is not this account’s, and nothing when signed out', () => {
+    expect(watchSnapshot(null, 'denied', 'account-1')).toMatchObject({ availability: 'denied' });
+    expect(watchSnapshot(conversation, 'ready', null)).toBeNull();
+  });
+});
+
+describe('watch link', () => {
+  const direct = { url: 'https://verity.example', transport: 'direct', tlsPin: 'sha256-pin' };
+  beforeEach(() => {
+    jest.mocked(getVerityBaseUrl).mockReturnValue('https://verity.example');
+    jest.mocked(getAuthToken).mockReturnValue('token');
+    jest.mocked(isBiometricUnlockEnabled).mockResolvedValue(false);
+    jest.mocked(getServerProfile).mockReturnValue({ endpoints: [direct] } as never);
+  });
+
+  it('hands native code the pinned direct connection of the signed-in account', async () => {
+    expect(await watchLink()).toEqual({
+      baseUrl: 'https://verity.example',
+      token: 'token',
+      tlsPin: 'sha256-pin',
+      scope: 'account-1',
+    });
+  });
+
+  it('keeps a sign-in behind Face ID, and every connection but a pinned direct one, in the app', async () => {
+    jest.mocked(isBiometricUnlockEnabled).mockResolvedValue(true);
+    expect(await watchLink()).toBeNull();
+    jest.mocked(isBiometricUnlockEnabled).mockResolvedValue(false);
+    jest
+      .mocked(getServerProfile)
+      .mockReturnValue({ endpoints: [{ ...direct, transport: 'uplink' }] } as never);
+    expect(await watchLink()).toBeNull();
+    jest.mocked(getServerProfile).mockReturnValue({ endpoints: [direct] } as never);
+    jest.mocked(getAuthToken).mockReturnValue(null);
+    expect(await watchLink()).toBeNull();
   });
 });
 

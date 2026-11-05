@@ -4,17 +4,14 @@ import Foundation
 import WatchConnectivity
 import WatchKit
 
-/// One voice capture on the watch. The audio stays on disk until the iPhone has
-/// sent back its transcript, so a capture survives an unreachable phone, a
-/// relaunch, a watch restart or an iPhone that could not store the file, and is
-/// offered again from `resend()`. A capture is only sent once it has a
-/// project: picked after the recording, or the last project used when the
-/// picker is left without a tap. It waits on the watch as "Choose project"
-/// when no list is on the watch, when its account is unknown or differs from
-/// the list's (`settle`), or when it was recovered from a cut-short recording.
+/// One thing said to Verity on the watch. The audio stays on disk until the
+/// iPhone has sent back its transcript, so a capture survives an unreachable
+/// phone, a relaunch, a watch restart or an iPhone that could not store the
+/// file, and is offered again from `resend()`. The iPhone passes the transcript
+/// to Verity under the capture's id, so a capture sent twice reaches her once.
 struct Capture: Codable, Identifiable, Equatable {
   enum State: String, Codable {
-    /// Recorded; waiting for a project, then for WatchConnectivity to deliver the file.
+    /// Recorded; waiting for WatchConnectivity to deliver the file.
     case queued
     /// Transferred; the transcript has not come back yet.
     case delivered
@@ -30,8 +27,9 @@ struct Capture: Codable, Identifiable, Equatable {
   /// The iPhone refused the file. Kept apart from `state` because the refusal
   /// can arrive before WatchConnectivity reports the transfer as finished.
   var rejected: Bool?
-  /// Picked on the watch. `scope` is the account the project list came from,
-  /// so the iPhone never files the task under a different account.
+  /// Picked on watch builds that still had a project picker; new captures leave
+  /// it empty. `scope` is the account the watch knew while recording, so the
+  /// iPhone never hands the words to a different account's Verity.
   var projectId: String?
   var projectName: String?
   var scope: String?
@@ -43,8 +41,8 @@ struct WatchProject: Codable, Identifiable, Equatable, Sendable {
   let name: String
 }
 
-/// The iPhone's latest project list (`VerityWatchInbox.setProjects`), stored so
-/// the picker works while the phone is away.
+/// The iPhone's latest project list (`VerityWatchInbox.setProjects`). The watch
+/// only needs its account (`scope`) now; the list itself is kept for older payloads.
 struct ProjectList: Codable, Equatable, Sendable {
   var scope: String?
   var projects: [WatchProject] = []
@@ -73,8 +71,51 @@ struct ProjectList: Codable, Equatable, Sendable {
 
 /// Wire format shared with `VerityWatchInbox` on the iPhone. Bump `version` on
 /// any incompatible change; each side ignores payloads it does not understand.
+/// Additions that an older side can ignore (`target`, `verity`, `answer`) keep it.
 enum WatchProtocol {
   static let version = 1
+}
+
+/// Verity's conversation as the iPhone last saw it (`lib/watchCapture.ts`):
+/// small enough for the wrist, the full conversation stays on the iPhone.
+struct VeritySnapshot: Equatable, Sendable {
+  struct Question: Equatable, Sendable {
+    let id: String
+    let text: String?
+    let options: [String]
+    let multiSelect: Bool
+  }
+
+  /// `ready`, `disabled`, `unavailable` or `denied`.
+  let availability: String
+  /// `idle`, `working`, `needs_you` or `failed`.
+  let state: String
+  let reply: String?
+  let question: Question?
+  let approvals: Int
+  let scope: String?
+
+  init?(context: [String: Any]) {
+    guard context["v"] as? Int == WatchProtocol.version,
+      let verity = context["verity"] as? [String: Any],
+      let availability = verity["availability"] as? String,
+      let state = verity["state"] as? String
+    else { return nil }
+    self.availability = availability
+    self.state = state
+    reply = verity["reply"] as? String
+    approvals = verity["approvals"] as? Int ?? 0
+    scope = verity["scope"] as? String
+    if let question = verity["question"] as? [String: Any], let id = question["id"] as? String,
+      let options = question["options"] as? [String], !options.isEmpty
+    {
+      self.question = Question(
+        id: id, text: question["text"] as? String, options: options,
+        multiSelect: question["multiSelect"] as? Bool ?? false)
+    } else {
+      question = nil
+    }
+  }
 }
 
 @MainActor
@@ -88,11 +129,11 @@ final class CaptureStore: NSObject, ObservableObject {
   @Published private(set) var phoneReachable = false
   @Published var error: String?
   @Published private(set) var projectList = ProjectList()
-  /// The capture the project picker is open for.
-  @Published private(set) var choosing: String?
-  /// The picker was opened from a row, not by a recording: it offers "Back".
-  @Published private(set) var reopened = false
-  /// Brief feedback after a project was picked.
+  /// Verity's conversation as the iPhone last reported it.
+  @Published private(set) var verity: VeritySnapshot?
+  /// Questions answered here whose answer may still be on its way.
+  @Published private(set) var answered: Set<String> = []
+  /// Brief feedback after a recording was handed over.
   @Published private(set) var confirmation: Confirmation?
 
   struct Confirmation: Equatable {
@@ -109,6 +150,7 @@ final class CaptureStore: NSObject, ObservableObject {
   private let directory: URL
   private let indexURL: URL
   private let projectsURL: URL
+  private let answeredKey = "verity.answeredQuestions"
   private var confirmationReset: Task<Void, Never>?
 
   private override init() {
@@ -128,8 +170,8 @@ final class CaptureStore: NSObject, ObservableObject {
     {
       projectList = saved
     }
+    answered = Set(UserDefaults.standard.stringArray(forKey: answeredKey) ?? [])
     recoverInterruptedRecordings()
-    settleProjectless()
   }
 
   /// A recording only enters the index when it stops. If watchOS ended the app
@@ -145,12 +187,19 @@ final class CaptureStore: NSObject, ObservableObject {
       guard UUID(uuidString: id) != nil, !known.contains(id) else { continue }
       let created =
         (try? file.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? Date()
-      // No scope: the file may be cut short, so it waits for a tap rather than
-      // being filed by the fallback.
+      // No scope: the iPhone hands it to the account signed in there.
       captures.insert(Capture(id: id, createdAt: created, durationMs: 0, state: .queued), at: 0)
       recovered = true
     }
-    if recovered { persist() }
+    if recovered {
+      persist()
+      resendWhenActive()
+    }
+  }
+
+  /// Sends what recovery queued once WatchConnectivity is up; activation also resends.
+  private func resendWhenActive() {
+    if WCSession.default.activationState == .activated { resend() }
   }
 
   func activate() {
@@ -159,110 +208,62 @@ final class CaptureStore: NSObject, ObservableObject {
     WCSession.default.activate()
   }
 
-  // MARK: Projects
+  // MARK: Verity
 
-  /// The picker's order: the projects picked here last and before that, then
-  /// the iPhone's last, then the iPhone's order (most recently captured into first).
-  var orderedProjects: [WatchProject] {
-    let projects = projectList.projects
-    var ordered: [WatchProject] = []
-    for id in [
-      projectList.watchLastProjectId, projectList.watchPreviousProjectId,
-      projectList.phoneLastProjectId,
-    ].compactMap({ $0 }) {
-      if let project = projects.first(where: { $0.id == id }), !ordered.contains(project) {
-        ordered.append(project)
-      }
-    }
-    return ordered + projects.filter { !ordered.contains($0) }
+  /// Nothing sent yet reached the iPhone, and the iPhone is away: words wait on
+  /// the watch. Distinct from Verity working on something she already has.
+  var waitingForPhone: Bool {
+    !phoneReachable
+      && (captures.contains { $0.state == .queued }
+        || !WCSession.default.outstandingUserInfoTransfers.isEmpty)
   }
 
-  /// The two shortcuts on top of the picker.
-  var shortcutProjects: [WatchProject] { Array(orderedProjects.prefix(2)) }
-  var otherProjects: [WatchProject] { Array(orderedProjects.dropFirst(2)) }
-  /// Where a capture goes when the picker is left without a tap.
-  var fallbackProject: WatchProject? { orderedProjects.first }
-
-  /// Opens the picker for a capture still waiting as "Choose project".
-  func reopen(_ id: String) {
-    guard captures.contains(where: { $0.id == id && $0.projectId == nil }) else { return }
-    reopened = true
-    choosing = id
+  /// The open question, unless it was answered here and the answer is on its way.
+  var openQuestion: VeritySnapshot.Question? {
+    guard let question = verity?.question, !answered.contains(question.id) else { return nil }
+    return question
   }
 
-  /// Closes a reopened picker without a pick; the capture keeps waiting.
-  func closePicker() {
-    choosing = nil
-    reopened = false
-  }
-
-  /// Files the capture under `project` and hands it to the iPhone.
-  func assign(_ id: String, to project: WatchProject) {
-    guard fileCapture(id, under: project) else {
-      choosing = nil
+  /// Answers Verity's open question. WatchConnectivity queues the answer across
+  /// launches until the iPhone takes it; the iPhone sends it under this id, so
+  /// a repeated delivery is one answer, and one given on the iPhone first wins.
+  func answer(_ question: VeritySnapshot.Question, with labels: [String]) {
+    guard !labels.isEmpty, WCSession.default.activationState == .activated else {
+      error = "Not connected to iPhone yet. Try again in a moment."
       return
     }
-    if project.id != projectList.watchLastProjectId {
-      projectList.watchPreviousProjectId = projectList.watchLastProjectId
-      projectList.watchLastProjectId = project.id
-      saveProjects()
+    var payload: [String: Any] = [
+      "v": WatchProtocol.version, "kind": "answer", "id": UUID().uuidString.lowercased(),
+      "questionId": question.id, "labels": labels,
+    ]
+    if let scope = projectList.scope { payload["scope"] = scope }
+    // The queued transfer survives an absent iPhone; the message arrives at once
+    // while it is near. The iPhone takes the second copy of the same id as one.
+    WCSession.default.transferUserInfo(payload)
+    if WCSession.default.isReachable {
+      WCSession.default.sendMessage(payload, replyHandler: nil, errorHandler: nil)
     }
-    choosing = nil
-    reopened = false
+    answered.insert(question.id)
+    UserDefaults.standard.set(Array(answered), forKey: answeredKey)
     WKInterfaceDevice.current().play(.success)
     confirm(
       Confirmation(
-        title: "Saved to \(project.name)",
-        detail: phoneReachable ? "Transcribing on iPhone…" : "Sends when iPhone is nearby"))
+        title: "Answered",
+        detail: phoneReachable ? "Verity continues." : "Sends when iPhone is nearby"))
   }
 
-  /// Closes the picker without a pick: the capture goes to the last project
-  /// used. Without any project list it stays as "Choose project".
-  func settleChoice() {
-    guard let id = choosing else { return }
-    choosing = nil
-    // A picker reopened from a row closes like "Back": the capture keeps waiting.
-    if reopened {
-      reopened = false
-      return
-    }
-    settle(id)
-  }
-
-  /// Files every capture of the current account that still has no project
-  /// (one left in the picker while the list changed) under the last project
-  /// used. A capture spoken before any list was on the watch has no account
-  /// and keeps waiting for a tap, like one from another account.
-  private func settleProjectless() {
-    for capture in captures where capture.projectId == nil && capture.id != choosing {
-      settle(capture.id)
-    }
-  }
-
-  /// Files the capture under the fallback project, but only when it was spoken
-  /// under the account whose list is on the watch now. A capture from another
-  /// account, or one whose account is unknown (recorded before any list came,
-  /// or filed by an older version), keeps waiting as "Choose project": only a
-  /// tap may cross accounts.
-  private func settle(_ id: String) {
-    guard let project = fallbackProject,
-      let capture = captures.first(where: { $0.id == id }),
-      capture.scope != nil && capture.scope == projectList.scope
-    else { return }
-    _ = fileCapture(id, under: project)
-  }
-
-  /// Records the project on the capture and sends it. False if the capture is
-  /// unknown or already filed.
-  private func fileCapture(_ id: String, under project: WatchProject) -> Bool {
-    guard captures.contains(where: { $0.id == id && $0.projectId == nil }) else { return false }
-    update(id) {
-      $0.projectId = project.id
-      $0.projectName = project.name
-      $0.scope = projectList.scope
-    }
-    if let filed = captures.first(where: { $0.id == id }) { send(filed) }
-    return true
+  /// Asks the iPhone for Verity's state while it is near. Its reply carries what
+  /// it knows at once; it then reads the server and sends every change.
+  func refreshVerity() {
+    let session = WCSession.default
+    guard session.activationState == .activated, session.isReachable else { return }
+    session.sendMessage(
+      ["v": WatchProtocol.version, "kind": "refresh"],
+      // Runs on a WatchConnectivity queue, not the main actor.
+      replyHandler: { @Sendable reply in
+        let snapshot = VeritySnapshot(context: reply)
+        Task { @MainActor in if let snapshot { self.receive(snapshot) } }
+      }, errorHandler: nil)
   }
 
   private func confirm(_ message: Confirmation) {
@@ -272,6 +273,19 @@ final class CaptureStore: NSObject, ObservableObject {
       try? await Task.sleep(for: .seconds(1.5))
       guard !Task.isCancelled else { return }
       confirmation = nil
+    }
+  }
+
+  private func receive(_ snapshot: VeritySnapshot?) {
+    guard snapshot != verity else { return }
+    verity = snapshot
+    // Forget answers to questions that are gone, so the set stays small.
+    guard let snapshot else { return }
+    let current = snapshot.question?.id
+    let keep = answered.filter { $0 == current }
+    if keep != answered {
+      answered = keep
+      UserDefaults.standard.set(Array(answered), forKey: answeredKey)
     }
   }
 
@@ -285,7 +299,6 @@ final class CaptureStore: NSObject, ObservableObject {
     guard next != projectList else { return }
     projectList = next
     saveProjects()
-    settleProjectless()
   }
 
   private func saveProjects() {
@@ -326,15 +339,11 @@ final class CaptureStore: NSObject, ObservableObject {
         recorder.isMeteringEnabled = true
         guard recorder.record() else { throw CaptureError.recorder }
         self.recorder = recorder
-        // The account whose list is on the watch as the recording starts: a
-        // fallback never files the capture under a list that arrives later.
+        // The account the watch knows as the recording starts.
         current = (id, Date(), projectList.scope)
         heardSpeech = false
         quietSince = nil
         elapsed = 0
-        // A picker still open for the previous capture: file it under the last project.
-        settleChoice()
-        choosing = nil
         confirmation = nil
         recording = true
         meter = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { _ in
@@ -362,9 +371,12 @@ final class CaptureStore: NSObject, ObservableObject {
       scope: current.scope)
     captures.insert(capture, at: 0)
     persist()
-    // Sent once a project is picked, or filed under the last one on leaving the picker.
-    reopened = false
-    choosing = capture.id
+    send(capture)
+    WKInterfaceDevice.current().play(.success)
+    confirm(
+      Confirmation(
+        title: "Sent to Verity",
+        detail: phoneReachable ? "Transcribing on iPhone…" : "Sends when iPhone is nearby"))
   }
 
   /// Meter tick: drives the level bars and stops after ~1.5 s of silence once
@@ -395,7 +407,6 @@ final class CaptureStore: NSObject, ObservableObject {
   private func send(_ capture: Capture) {
     let session = WCSession.default
     guard session.activationState == .activated else { return }
-    guard let projectId = capture.projectId else { return }
     let url = audioURL(capture.id)
     guard FileManager.default.fileExists(atPath: url.path) else { return }
     var metadata: [String: Any] = [
@@ -404,8 +415,9 @@ final class CaptureStore: NSObject, ObservableObject {
       "id": capture.id,
       "createdAt": ISO8601DateFormatter().string(from: capture.createdAt),
       "durationMs": capture.durationMs,
-      "projectId": projectId,
+      "target": "verity",
     ]
+    if let projectId = capture.projectId { metadata["projectId"] = projectId }
     if let scope = capture.scope { metadata["scope"] = scope }
     session.transferFile(url, metadata: metadata)
   }
@@ -420,8 +432,7 @@ final class CaptureStore: NSObject, ObservableObject {
     // iPhone (reinstall, cleared inbox); the iPhone ignores a copy it already has.
     let stale = Date().addingTimeInterval(-10 * 60)
     for capture in captures
-    where capture.projectId != nil
-      && (capture.state == .queued || (capture.state == .delivered && capture.createdAt < stale))
+    where (capture.state == .queued || (capture.state == .delivered && capture.createdAt < stale))
       && !inFlight.contains(capture.id)
     {
       update(capture.id) { $0.rejected = nil }
@@ -465,23 +476,42 @@ extension CaptureStore: WCSessionDelegate {
   ) {
     let reachable = session.isReachable
     let list = ProjectList(context: session.receivedApplicationContext)
+    let snapshot = VeritySnapshot(context: session.receivedApplicationContext)
     Task { @MainActor in
       self.phoneReachable = reachable
       if let list { self.receive(list) }
-      if activationState == .activated { self.resend() }
+      self.receive(snapshot)
+      if activationState == .activated {
+        self.resend()
+        self.refreshVerity()
+      }
     }
   }
 
   nonisolated func session(
     _ session: WCSession, didReceiveApplicationContext applicationContext: [String: Any]
   ) {
-    guard let list = ProjectList(context: applicationContext) else { return }
-    Task { @MainActor in self.receive(list) }
+    let list = ProjectList(context: applicationContext)
+    let snapshot = VeritySnapshot(context: applicationContext)
+    Task { @MainActor in
+      if let list { self.receive(list) }
+      self.receive(snapshot)
+    }
   }
 
   nonisolated func sessionReachabilityDidChange(_ session: WCSession) {
     let reachable = session.isReachable
-    Task { @MainActor in self.phoneReachable = reachable }
+    Task { @MainActor in
+      self.phoneReachable = reachable
+      if reachable { self.refreshVerity() }
+    }
+  }
+
+  /// Verity's state sent the fast way while this app is open.
+  nonisolated func session(_ session: WCSession, didReceiveMessage message: [String: Any]) {
+    guard message["kind"] as? String == "verity", let snapshot = VeritySnapshot(context: message)
+    else { return }
+    Task { @MainActor in self.receive(snapshot) }
   }
 
   nonisolated func session(

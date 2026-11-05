@@ -111,7 +111,7 @@ private struct CaptureComplicationView: View {
             mark.frame(width: 24, height: 17)
             Text("Verity").font(.headline)
           }
-          Text("Quick capture").font(.caption).lineLimit(1).minimumScaleFactor(0.7)
+          Text("Talk to Verity").font(.caption).lineLimit(1).minimumScaleFactor(0.7)
         }
       default:
         ZStack {
@@ -133,7 +133,7 @@ struct VerityWatchComplication: Widget {
       CaptureComplicationView(entry: entry)
     }
     .configurationDisplayName("Verity")
-    .description("Tap to start recording a task immediately.")
+    .description("Tap to talk to Verity.")
     .supportedFamilies([.accessoryCircular, .accessoryCorner, .accessoryRectangular, .accessoryInline])
   }
 }

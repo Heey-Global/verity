@@ -40,8 +40,6 @@ const EXEMPT: Partial<Record<string, Counts>> = {
   // readable beneath it, and the header badge's white figure sits on signature,
   // which has no on-colour role.
   'app/session/[id].tsx': { rawColor: 4 },
-  // A photo thumbnail's remove control: white on a dark veil over any image.
-  'components/QuickCaptureCard.tsx': { rawColor: 2 },
   // A photo viewer: the image sits on near-black with white controls in
   // either theme, so the picture's own colours are not tinted by the theme.
   'components/ImageLightbox.tsx': { rawColor: 5 },

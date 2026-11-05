@@ -4,10 +4,10 @@ import Speech
 import UIKit
 import WatchConnectivity
 
-/// A watch capture held on the iPhone until JavaScript has stored it as a task.
+/// A watch capture held on the iPhone until it has reached Verity.
 private struct WatchInboxEntry: Codable {
-  /// `stored`: JavaScript saved the task. The entry stays without audio for a
-  /// while so a late redelivery of the same recording is recognised, not saved again.
+  /// `stored`: handed to Verity, natively or by JavaScript. The entry stays without
+  /// audio for a while so a late redelivery of the same recording is recognised.
   enum State: String, Codable { case received, transcribed, failed, stored }
 
   let id: String
@@ -53,6 +53,15 @@ final class VerityWatchInbox: NSObject, WCSessionDelegate {
   /// The latest project list from JavaScript, kept so it can be sent once the
   /// session activates or the watch app gets installed. Only touched on `queue`.
   private var projectContext: [String: Any]?
+  /// Verity's conversation as the watch shows it (`VerityAssistantLink.snapshot`),
+  /// sent with the project list. Only touched on `queue`.
+  private var verity: [String: Any]?
+  /// While set, a read is held open on the server and every change goes to the
+  /// watch. Only touched on `queue`.
+  private var following = false
+  private var followUntil = Date.distantPast
+  private var link: VerityAssistantLink { VerityAssistantLink.shared }
+  private var answersDirectory: URL { directory.appendingPathComponent("answers", isDirectory: true) }
 
   private let queue = DispatchQueue(label: "build.verity.watch-inbox")
   private let directory: URL
@@ -63,6 +72,7 @@ final class VerityWatchInbox: NSObject, WCSessionDelegate {
     directory = support.appendingPathComponent("watch-inbox", isDirectory: true)
     super.init()
     try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    try? FileManager.default.createDirectory(at: answersDirectory, withIntermediateDirectories: true)
   }
 
   func activate() {
@@ -97,9 +107,11 @@ final class VerityWatchInbox: NSObject, WCSessionDelegate {
     }
   }
 
-  /// On `queue`.
+  /// On `queue`. The application context holds one value, so the project list and
+  /// Verity's state travel together; the watch reads each part it understands.
   private func pushProjects() {
-    guard let context = projectContext, WCSession.isSupported() else { return }
+    guard var context = projectContext, WCSession.isSupported() else { return }
+    if let verity { context["verity"] = verity }
     let session = WCSession.default
     guard session.activationState == .activated, session.isPaired, session.isWatchAppInstalled
     else { return }
@@ -116,6 +128,9 @@ final class VerityWatchInbox: NSObject, WCSessionDelegate {
   /// used up their attempts, and stored ones, stay until `retention`.
   private func retry() {
     let now = Date()
+    // Words transcribed earlier that did not reach Verity yet, and answers.
+    for entry in entries() where entry.state == .transcribed { forward(entry.id) }
+    for answer in answers() { forwardAnswer(answer) }
     for entry in entries() where entry.state != .transcribed && !transcribing.contains(entry.id) {
       let expired = now.timeIntervalSince(entry.receivedAt) > Self.retention
       if entry.state == .stored {
@@ -167,8 +182,31 @@ final class VerityWatchInbox: NSObject, WCSessionDelegate {
       try? FileManager.default.removeItem(at: audioURL(id))
       entry.state = .stored
       try? save(entry)
-      log("\(id.prefix(8)) stored as task")
+      log("\(id.prefix(8)) handed to Verity by the app")
     }
+  }
+
+  /// Answers from the watch that native code could not deliver.
+  func pendingAnswers() -> [[String: Any]] {
+    queue.sync { answers().map { $0.dictionary } }
+  }
+
+  func acknowledgeAnswer(_ id: String) {
+    queue.sync { removeAnswer(id) }
+  }
+
+  /// JavaScript's direct connection, or nil when there is none (signed out, uplink).
+  func setLink(_ config: VerityAssistantLink.Config?) {
+    queue.async {
+      self.link.configure(config)
+      if config != nil { self.retry() }
+    }
+  }
+
+  /// Verity's state as JavaScript last read it, for the watch. A newer state
+  /// from the native read wins over an older one from JavaScript.
+  func setVerity(_ snapshot: [String: Any]?) {
+    queue.async { self.publish(snapshot, force: false) }
   }
 
   /// Drops transcribed captures JavaScript cannot save (another account, a
@@ -218,6 +256,35 @@ final class VerityWatchInbox: NSObject, WCSessionDelegate {
   }
 
   func sessionDidBecomeInactive(_ session: WCSession) {}
+
+  /// An answer to Verity's question, queued on the watch across launches.
+  func session(_ session: WCSession, didReceiveUserInfo userInfo: [String: Any] = [:]) {
+    receiveAnswer(userInfo)
+  }
+
+  /// Immediate messages while the watch app is open: an answer sent the fast way,
+  /// or a request for Verity's current state.
+  func session(
+    _ session: WCSession, didReceiveMessage message: [String: Any],
+    replyHandler: @escaping ([String: Any]) -> Void
+  ) {
+    guard message["v"] as? Int == Self.protocolVersion else { return replyHandler([:]) }
+    if message["kind"] as? String == "answer" {
+      receiveAnswer(message)
+      return replyHandler(["v": Self.protocolVersion, "kind": "received"])
+    }
+    // `refresh`: answer with what is known at once, then read the server.
+    queue.async {
+      var reply: [String: Any] = ["v": Self.protocolVersion, "kind": "verity"]
+      if let verity = self.verity { reply["verity"] = verity }
+      replyHandler(reply)
+      self.follow(for: 30)
+    }
+  }
+
+  func session(_ session: WCSession, didReceiveMessage message: [String: Any]) {
+    if message["kind"] as? String == "answer" { receiveAnswer(message) }
+  }
 
   func sessionWatchStateDidChange(_ session: WCSession) {
     // The watch app was just installed, or another watch paired.
@@ -343,8 +410,9 @@ final class VerityWatchInbox: NSObject, WCSessionDelegate {
       return
     }
     if entry.state == .transcribed {
-      // Only the durable text is needed for later project assignment.
+      // Only the durable text is needed from here on.
       try? FileManager.default.removeItem(at: audioURL(id))
+      forward(id)
     }
     // The watch only hears about a failure once no retry is left.
     if entry.state == .transcribed || (entry.attempts ?? 0) >= Self.maxAttempts {
@@ -395,6 +463,182 @@ final class VerityWatchInbox: NSObject, WCSessionDelegate {
       throw error
     }
     return try await collect.value
+  }
+
+  // MARK: Verity (on `queue`)
+
+  private struct WatchAnswer: Codable {
+    let id: String
+    let questionId: String
+    let labels: [String]
+    let scope: String?
+    var dictionary: [String: Any] {
+      var value: [String: Any] = ["id": id, "questionId": questionId, "labels": labels]
+      if let scope { value["scope"] = scope }
+      return value
+    }
+  }
+
+  private var forwarding = Set<String>()
+
+  /// Sends a transcribed capture to Verity without waiting for JavaScript. On
+  /// success the entry is done; otherwise it stays for JavaScript, which shows a
+  /// refusal to the user and sends under the same id.
+  private func forward(_ id: String) {
+    guard let entry = load(id), entry.state == .transcribed, let text = entry.text,
+      !forwarding.contains(id), link.accepts(scope: entry.scope)
+    else { return }
+    forwarding.insert(id)
+    let backgroundTime = BackgroundTime("verity-send") {}
+    let started = Date()
+    Task {
+      let delivery = await self.link.sendMessage(requestId: id, text: text)
+      let elapsed = Int(Date().timeIntervalSince(started) * 1000)
+      self.queue.async {
+        self.forwarding.remove(id)
+        defer { backgroundTime.end() }
+        switch delivery {
+        case .sent:
+          guard var entry = self.load(id) else { return }
+          entry.state = .stored
+          try? self.save(entry)
+          self.log("\(id.prefix(8)) sent to Verity in \(elapsed) ms")
+          self.follow(for: 90)
+          let notify = self.onChange
+          DispatchQueue.main.async { notify?() }
+        case .later(let reason), .refused(let reason):
+          self.log("\(id.prefix(8)) left for the app: \(reason)")
+        }
+      }
+    }
+  }
+
+  private func receiveAnswer(_ payload: [String: Any]) {
+    guard payload["v"] as? Int == Self.protocolVersion, payload["kind"] as? String == "answer",
+      let id = payload["id"] as? String, isCaptureId(id),
+      let questionId = payload["questionId"] as? String,
+      let labels = payload["labels"] as? [String], !labels.isEmpty
+    else { return }
+    queue.async {
+      // The fast and the queued delivery of one answer arrive both.
+      guard !FileManager.default.fileExists(atPath: self.answerURL(id).path) else { return }
+      let answer = WatchAnswer(
+        id: id, questionId: questionId, labels: labels, scope: payload["scope"] as? String)
+      guard let data = try? JSONEncoder().encode(answer),
+        (try? data.write(
+          to: self.answerURL(id),
+          options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])) != nil
+      else { return }
+      self.log("\(id.prefix(8)) answer received")
+      self.forwardAnswer(answer)
+      let notify = self.onChange
+      DispatchQueue.main.async { notify?() }
+    }
+  }
+
+  private func forwardAnswer(_ answer: WatchAnswer) {
+    guard !forwarding.contains(answer.id), link.accepts(scope: answer.scope) else { return }
+    forwarding.insert(answer.id)
+    let backgroundTime = BackgroundTime("verity-answer") {}
+    Task {
+      let delivery = await self.link.sendAnswer(
+        requestId: answer.id, questionId: answer.questionId, labels: answer.labels)
+      self.queue.async {
+        self.forwarding.remove(answer.id)
+        defer { backgroundTime.end() }
+        switch delivery {
+        case .sent:
+          self.removeAnswer(answer.id)
+          self.log("\(answer.id.prefix(8)) answer sent to Verity")
+          self.follow(for: 90)
+        case .refused(let reason):
+          // Answered elsewhere first or replaced: nothing left to deliver.
+          self.removeAnswer(answer.id)
+          self.log("\(answer.id.prefix(8)) answer refused: \(reason)")
+          self.follow(for: 10)
+        case .later(let reason):
+          self.log("\(answer.id.prefix(8)) answer left for the app: \(reason)")
+        }
+      }
+    }
+  }
+
+  private func answers() -> [WatchAnswer] {
+    let files =
+      (try? FileManager.default.contentsOfDirectory(
+        at: answersDirectory, includingPropertiesForKeys: nil)) ?? []
+    return files.filter { $0.pathExtension == "json" }
+      .compactMap { try? JSONDecoder().decode(WatchAnswer.self, from: Data(contentsOf: $0)) }
+  }
+
+  private func removeAnswer(_ id: String) {
+    guard isCaptureId(id) else { return }
+    try? FileManager.default.removeItem(at: answerURL(id))
+  }
+
+  private func answerURL(_ id: String) -> URL { answersDirectory.appendingPathComponent("\(id).json") }
+
+  /// Holds a read open on the server for `seconds` (longer while Verity works or
+  /// waits for the user) and hands every change to the watch as it happens.
+  private func follow(for seconds: TimeInterval) {
+    followUntil = max(followUntil, Date().addingTimeInterval(seconds))
+    guard !following, link.config != nil else { return }
+    following = true
+    let backgroundTime = BackgroundTime("verity-follow") {}
+    Task {
+      var after: Int?
+      var failures = 0
+      while self.queue.sync(execute: { Date() < self.followUntil }) {
+        do {
+          let conversation = try await self.link.conversation(after: after, waitMs: 20_000)
+          failures = 0
+          after = conversation["revision"] as? Int
+          let snapshot = VerityAssistantLink.snapshot(conversation, scope: self.link.config?.scope)
+          self.queue.sync {
+            self.publish(snapshot, force: true)
+            // Keep following while there is more to come.
+            if snapshot["state"] as? String == "working" {
+              self.followUntil = max(self.followUntil, Date().addingTimeInterval(60))
+            }
+          }
+        } catch {
+          failures += 1
+          if failures >= 5 { break }
+          try? await Task.sleep(for: .seconds(Double(failures) * 2))
+        }
+      }
+      let gaveUp = failures >= 5
+      self.queue.async {
+        self.following = false
+        backgroundTime.end()
+        // A request that arrived while this loop was ending extended the window.
+        if !gaveUp, Date() < self.followUntil { self.follow(for: 0) }
+      }
+    }
+  }
+
+  /// Stores Verity's state for the watch and sends it: by message when the watch
+  /// app is open, which arrives at once, and in the application context for its
+  /// next launch. `force` is the native read; JavaScript's copy never replaces a
+  /// newer revision of the same account.
+  private func publish(_ snapshot: [String: Any]?, force: Bool) {
+    if !force, let snapshot, let current = verity,
+      current["scope"] as? String == snapshot["scope"] as? String,
+      (snapshot["revision"] as? Int ?? 0) < (current["revision"] as? Int ?? 0)
+    {
+      return
+    }
+    if let snapshot, let current = verity, NSDictionary(dictionary: snapshot).isEqual(to: current) {
+      return
+    }
+    verity = snapshot
+    pushProjects()
+    guard let snapshot, WCSession.isSupported() else { return }
+    let session = WCSession.default
+    guard session.activationState == .activated, session.isReachable else { return }
+    session.sendMessage(
+      ["v": Self.protocolVersion, "kind": "verity", "verity": snapshot], replyHandler: nil,
+      errorHandler: nil)
   }
 
   // MARK: Storage (on `queue`)

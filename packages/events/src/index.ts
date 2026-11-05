@@ -239,6 +239,7 @@ export {
 export type { BoundedHistoryPage, BoundedHistoryResult } from './history.js';
 
 export * from './vulnerability.js';
+export * from './assistant-conversation.js';
 export {
   nativeRetirementSchema,
   runnerCacheReclamationSchema,

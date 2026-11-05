@@ -1688,6 +1688,7 @@ export interface Database {
   qa_decisions: QADecisionsTable;
   assistant_settings: AssistantSettingsTable;
   assistant_project_grants: AssistantProjectGrantsTable;
+  assistant_requests: AssistantRequestsTable;
   scheduling_requests: SchedulingRequestsTable;
   scheduling_holds: SchedulingHoldsTable;
   vuln_digests: VulnDigestsTable;
@@ -1956,6 +1957,15 @@ interface AssistantProjectGrantsTable {
   sponsor_user_id: string;
   revision: Generated<number>;
   updated_at: Generated<Date>;
+}
+interface AssistantRequestsTable {
+  request_id: string;
+  session_id: string;
+  user_id: string;
+  kind: import('./assistant.js').AssistantRequestKind;
+  question_id: string | null;
+  state: Generated<'pending' | 'accepted'>;
+  created_at: Generated<Date>;
 }
 interface SchedulingRequestsTable {
   id: string;

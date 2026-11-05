@@ -243,6 +243,9 @@ export {
   AssistantStore,
   type AssistantGrant,
   type AssistantMode,
+  type AssistantRequest,
+  type AssistantRequestClaim,
+  type AssistantRequestKind,
   type AssistantSettings,
 } from './assistant.js';
 

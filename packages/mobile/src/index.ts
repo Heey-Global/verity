@@ -726,3 +726,9 @@ export type {
 export { qaAssignmentView } from './ui/qaAssignment.js';
 
 export { projectEgressPolicySchema, type ProjectEgressPolicy } from './projectEgress.js';
+export type {
+  AssistantConversation,
+  AssistantConversationItem,
+  AssistantDelivery,
+  AssistantQuestion,
+} from '@verity/events';

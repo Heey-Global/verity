@@ -1,41 +1,41 @@
 import {
-  dispatchTaskVoiceShortcut,
+  dispatchVerityShortcut,
   dispatchVoiceShortcut,
-  subscribeTaskVoiceShortcut,
+  subscribeVerityShortcut,
   subscribeVoiceShortcut,
 } from './voiceShortcut';
 
-it('keeps task capture separate from chat dictation and removes unmounted listeners', () => {
+it('keeps Verity separate from chat dictation and removes unmounted listeners', () => {
   const chat = jest.fn();
-  const task = jest.fn();
+  const verity = jest.fn();
   const removeChat = subscribeVoiceShortcut(chat);
-  const removeTask = subscribeTaskVoiceShortcut(task);
+  const removeVerity = subscribeVerityShortcut(verity);
   try {
-    dispatchTaskVoiceShortcut();
-    expect(task).toHaveBeenCalledTimes(1);
+    dispatchVerityShortcut();
+    expect(verity).toHaveBeenCalledTimes(1);
     expect(chat).not.toHaveBeenCalled();
     dispatchVoiceShortcut();
     expect(chat).toHaveBeenCalledTimes(1);
-    expect(task).toHaveBeenCalledTimes(1);
-    removeTask();
+    expect(verity).toHaveBeenCalledTimes(1);
+    removeVerity();
     removeChat();
-    dispatchTaskVoiceShortcut();
+    dispatchVerityShortcut();
     dispatchVoiceShortcut();
     expect(chat).toHaveBeenCalledTimes(1);
-    expect(task).toHaveBeenCalledTimes(1);
+    expect(verity).toHaveBeenCalledTimes(1);
   } finally {
-    removeTask();
+    removeVerity();
     removeChat();
   }
 });
 
-it('carries the request for the assistant to task capture', () => {
-  const task = jest.fn();
-  const remove = subscribeTaskVoiceShortcut(task);
+it('carries how Verity should open', () => {
+  const verity = jest.fn();
+  const remove = subscribeVerityShortcut(verity);
   try {
-    dispatchTaskVoiceShortcut({ target: 'assistant' });
-    dispatchTaskVoiceShortcut();
-    expect(task.mock.calls).toEqual([[{ target: 'assistant' }], [{}]]);
+    dispatchVerityShortcut({ mode: 'text' });
+    dispatchVerityShortcut();
+    expect(verity.mock.calls).toEqual([[{ mode: 'text' }], [{}]]);
   } finally {
     remove();
   }

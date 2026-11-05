@@ -73,7 +73,8 @@ import { createProcessAgentLoginService } from './agent-login.js';
 import { subscribeAgentProcessLogging } from './agent-process-logging.js';
 import { claudeSubscriptionPlan, codexSubscriptionPlan } from './agent-subscription.js';
 import { registerAssistantRoutes } from './assistant-routes.js';
-import { type AssistantToolDeps } from './assistant-tool.js';
+import { registerAssistantConversationRoutes } from './assistant-conversation-routes.js';
+import { assistantProjectsFor, type AssistantToolDeps } from './assistant-tool.js';
 import { registerAttachmentRoute } from './attachment-route.js';
 import { AttendeeMeetings } from './attendee-meetings.js';
 import { attendeeResearchHints } from './attendee-research.js';
@@ -879,6 +880,12 @@ const DEFAULT_BODY_LIMIT_BYTES = 2 * 1024 * 1024;
 // session whose LOG is longer than this is the ordinary case, and the one the
 // bound exists for.
 const PROJECTION_TAIL = 200;
+/** Newest events read for the assistant conversation projection. */
+const ASSISTANT_CONVERSATION_EVENTS = 1_500;
+/** Verity answers on phone and Watch, so she runs on the faster Sonnet. */
+export const ASSISTANT_MODEL: (typeof CLAUDE_MODELS)[number] = 'claude-sonnet-5-5';
+/** The model assistant sessions were created with before; moved to {@link ASSISTANT_MODEL}. */
+const PREVIOUS_ASSISTANT_MODEL = 'claude-opus-5-5';
 
 const ACTIVITY_BUSY_CACHE_MAX_SESSIONS = 512;
 
@@ -6573,11 +6580,42 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     const project = await ensureVerityControlProject();
     const result = await sessionCreate.spawn(
       // Claude is the backend that enforces Verity-tools-only turns (docs/assistant.md).
-      { projectId: project.id, sessionId: id, name: 'Verity · Assistant', model: DEFAULT_MODEL },
+      { projectId: project.id, sessionId: id, name: 'Verity · Assistant', model: ASSISTANT_MODEL },
       app.log,
     );
     if (result.statusCode >= 300) throw new Error('Assistant session could not be created');
     return id;
+  };
+  /**
+   * Moves an assistant session created on the former default model to
+   * {@link ASSISTANT_MODEL}, like an operator's model switch: under the backend
+   * fence, with the old resume handles dropped so the next turn resumes from the
+   * transcript. Only between turns, and only when Sonnet is available; otherwise
+   * the session keeps its model and is tried again with the next message.
+   */
+  const moveAssistantToFastModel = async (id: string): Promise<void> => {
+    const session = await deps.eventStore.getSession(id);
+    if (session?.model !== PREVIOUS_ASSISTANT_MODEL || conductor.isBusy(id)) return;
+    if (!(await availableModels()).models.includes(ASSISTANT_MODEL)) return;
+    try {
+      await conductor.runBackendHandoff(id, async () => {
+        const live = await deps.eventStore.getSession(id);
+        if (live?.model !== PREVIOUS_ASSISTANT_MODEL) return false;
+        const previous = await deps.eventStore.getSessionBackendStates(id);
+        if (!(await deps.eventStore.setSessionModel(id, ASSISTANT_MODEL))) return false;
+        try {
+          await deps.eventStore.deleteSessionBackendStates(id);
+        } catch (error) {
+          await deps.eventStore.setSessionModel(id, live.model);
+          throw error;
+        }
+        conductor.closeSession?.(id);
+        for (const state of previous) conductor.closeSession?.(state.backendSessionId);
+        return true;
+      });
+    } catch (error) {
+      app.log.warn({ err: error, sessionId: id }, 'verity: assistant model switch deferred');
+    }
   };
   registerAssistantRoutes(app, deps.eventStore, {
     ensureSession: () =>
@@ -6586,6 +6624,91 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       })),
     sessionExists: async (id) => (await deps.eventStore.getSession(id)) !== undefined,
     cancel: (id) => conductor.cancelTurn(id),
+  });
+  /**
+   * Logs how long one message took: to Verity's first visible reaction and to the
+   * end of the turn, from when the server accepted it. The prompt is recognised
+   * by its text; a message queued behind another turn also counts the wait.
+   */
+  const watchAssistantTiming = (sessionId: string, requestId: string, prompt: string) => {
+    const accepted = Date.now();
+    let started = false;
+    let firstMs: number | undefined;
+    const stop = deps.bus.subscribe(sessionId, ({ event }) => {
+      if (!started) {
+        started = event.t === 'prompt' && event.text === prompt;
+        return;
+      }
+      const topLevel = !('parentToolId' in event) || event.parentToolId === undefined;
+      if (
+        firstMs === undefined &&
+        topLevel &&
+        (event.t === 'text' || event.t === 'tool_call' || event.t === 'error')
+      )
+        firstMs = Date.now() - accepted;
+      if (event.t === 'result' || event.t === 'interrupted') finish(event.t);
+    });
+    const timer = setTimeout(() => finish('unfinished'), 15 * 60_000);
+    timer.unref();
+    function finish(outcome: string) {
+      stop();
+      clearTimeout(timer);
+      app.log.info(
+        { sessionId, requestId, outcome, firstMs, doneMs: Date.now() - accepted },
+        'verity: assistant message timing',
+      );
+    }
+    return {
+      cancel: () => {
+        stop();
+        clearTimeout(timer);
+      },
+    };
+  };
+  registerAssistantConversationRoutes(app, deps.eventStore, {
+    sessionExists: async (id) => (await deps.eventStore.getSession(id)) !== undefined,
+    // Text arrives as many small deltas, so the window is wider than a status tail.
+    recentEvents: async (id) =>
+      (await deps.eventStore.getEventsBeforeSeq(id, ASSISTANT_CONVERSATION_EVENTS)).events,
+    facts: async (id) => {
+      const session = await deps.eventStore.getSession(id);
+      if (session === undefined) throw new UnknownSessionError(id);
+      const summary = await summarizeSession(session);
+      return {
+        status: summary.status,
+        busy: conductor.isBusy(id),
+        choicesOpen: summary.openChoices !== undefined,
+        approvals: (summary.pendingPermissionRequests ?? []).map((approval) => ({
+          toolUseId: approval.toolUseId,
+          tool: approval.tool,
+        })),
+      };
+    },
+    subscribe: (id, listener) => deps.bus.subscribe(id, () => listener()),
+    projects: (userId) => assistantProjectsFor(assistantToolDeps, userId),
+    dispatch: async (id, prompt, turn) => {
+      await moveAssistantToFastModel(id);
+      // Watching before the dispatch: an idle session persists the prompt inside it.
+      const timing = watchAssistantTiming(id, turn.requestId, prompt);
+      try {
+        await conductor.dispatchTurn(
+          id,
+          prompt,
+          {},
+          { clientReplyId: turn.requestId, initiatedBy: { userId: turn.userId } },
+        );
+        return { ok: true };
+      } catch (error) {
+        timing.cancel();
+        if (error instanceof UnknownSessionError)
+          return { ok: false, status: 409, error: 'The Verity assistant session is gone.' };
+        if (error instanceof QueueFullError)
+          return { ok: false, status: 429, error: 'Verity has too many messages waiting.' };
+        if (error instanceof SessionBusyError)
+          return { ok: false, status: 409, error: 'Verity is restarting. Try again shortly.' };
+        throw error;
+      }
+    },
   });
   if (deps.repairDiscovery) {
     const qaEnabled = async () => {
