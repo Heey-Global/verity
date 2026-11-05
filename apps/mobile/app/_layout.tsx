@@ -275,6 +275,7 @@ function HydratedRoot() {
                 name="project/[id]/settings/model"
                 options={{ title: 'Default model' }}
               />
+              <Stack.Screen name="project/[id]/settings/design" options={{ title: 'Design' }} />
               <Stack.Screen name="new" options={{ title: 'New agent' }} />
               <Stack.Screen name="new-project" options={{ title: 'New project' }} />
               {/* Settings is a flat stack of sibling routes, not a nested layout:
