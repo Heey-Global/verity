@@ -287,9 +287,8 @@ export function MockupReviewSheet({
 
   useEffect(() => {
     if (scroller !== null && width > 0) scroller.scrollTo({ x: index * width, animated: false });
-    // Jump only when the page size or the opening position changes, not while swiping.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scroller, width]);
+    // Reopening a retained modal must align its picture with the verdict target.
+  }, [scroller, width, index, visible]);
 
   const byName = useMemo(() => new Map(screens.map((screen) => [screen.name, screen])), [screens]);
   const ordered = order
