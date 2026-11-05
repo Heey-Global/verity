@@ -50,6 +50,7 @@ const ready: VerityState = {
 beforeEach(() => {
   jest.clearAllMocks();
   mockVoice.state = 'idle';
+  mockVoice.error = undefined;
   jest.mocked(useVerity).mockReturnValue(ready);
 });
 
@@ -153,4 +154,16 @@ it('stops dictation on send and sends once the final words are in', () => {
   expect(sendToVerity).toHaveBeenCalledWith(
     expect.objectContaining({ text: 'Call Hansen tomorrow' }),
   );
+});
+
+it('keeps the words instead of sending when dictation failed', () => {
+  const screen = render(<VerityPanel mode="text" projectId={null} onClose={jest.fn()} />);
+  mockVoice.state = 'recording';
+  fireEvent.changeText(screen.getByLabelText('Message to Verity'), 'Call Han');
+  fireEvent.press(screen.getByLabelText('Send to Verity'));
+  mockVoice.state = 'idle';
+  mockVoice.error = 'Speech recognition stopped.';
+  screen.rerender(<VerityPanel mode="text" projectId={null} onClose={jest.fn()} />);
+  expect(sendToVerity).not.toHaveBeenCalled();
+  expect(screen.getByDisplayValue('Call Han')).toBeTruthy();
 });

@@ -100,6 +100,8 @@ export function VerityPanel({
   useEffect(() => {
     if (voice.state !== 'idle' || !sendWhenStopped.current) return;
     sendWhenStopped.current = false;
+    // Dictation failed: the words may be cut short, so they wait for a look first.
+    if (voice.error) return;
     void send();
   });
 
