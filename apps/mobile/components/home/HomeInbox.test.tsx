@@ -229,7 +229,7 @@ it('opens a project and hands repair to the overview', async () => {
   expect(router.push).toHaveBeenCalledWith({ pathname: '/project/[id]', params: { id: 'broken' } });
 });
 
-it('sends "Tell Verity" to quick capture with the assistant preselected', async () => {
+it('opens Verity from "Tell Verity"', async () => {
   await renderInbox([]);
   fireEvent.press(await screen.findByRole('button', { name: 'Tell Verity' }));
   expect(dispatchVerityShortcut).toHaveBeenCalledWith();

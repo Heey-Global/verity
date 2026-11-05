@@ -378,7 +378,7 @@ export function VerityHeader({
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="Tell Verity"
-          accessibilityHint="Records a note for Verity: an idea, a mail or an appointment"
+          accessibilityHint="Opens Verity to listen: ask her or tell her an idea, a mail or an appointment"
           onPress={() => dispatchVerityShortcut()}
           style={({ pressed }) => [styles.capture, pressed ? styles.capturePressed : null]}
         >

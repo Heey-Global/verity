@@ -7,6 +7,7 @@ import {
   discardOutgoing,
   flushVerity,
   followVerity,
+  refreshVerity,
   resetVerityForTests,
   retryOutgoing,
   sendToVerity,
@@ -199,4 +200,31 @@ describe('following the conversation', () => {
       waitMs: 2_000,
     });
   });
+});
+
+it('never lets an older read replace a newer one', async () => {
+  mockClient.assistantConversation.mockResolvedValueOnce({ ...conversation, revision: 5 });
+  await refreshVerity();
+  mockClient.assistantConversation.mockResolvedValueOnce({ ...conversation, revision: 3 });
+  await refreshVerity();
+  expect(state().conversation?.revision).toBe(5);
+});
+
+it('sends words added while a delivery is under way in the same flush', async () => {
+  let release: () => void = () => undefined;
+  mockClient.sendAssistantMessage.mockImplementationOnce(
+    () => new Promise((resolve) => (release = () => resolve({ delivered: true }))),
+  );
+  mockClient.sendAssistantMessage.mockResolvedValue({ delivered: true });
+  const first = sendToVerity({ text: 'one', input: 'text' });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const second = sendToVerity({ text: 'two', input: 'text' });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  release();
+  await Promise.all([first, second]);
+  expect(mockClient.sendAssistantMessage.mock.calls.map(([body]) => body.text)).toEqual([
+    'one',
+    'two',
+  ]);
+  expect(await saved()).toEqual([]);
 });

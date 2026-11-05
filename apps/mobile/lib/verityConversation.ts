@@ -64,9 +64,24 @@ function restore(): Promise<void> {
   return restored;
 }
 
+let persisted: Promise<void> = Promise.resolve();
+
+/** Writes run in order and each stores the outbox as it is then, so a slow
+ *  earlier write can never land last and bring back a discarded entry. */
 async function saveOutbox(outbox: Outgoing[]): Promise<void> {
   set({ outbox });
-  await AsyncStorage.setItem(KEY, JSON.stringify(outbox));
+  const write = persisted.then(() => AsyncStorage.setItem(KEY, JSON.stringify(state.outbox)));
+  persisted = write.catch(() => undefined);
+  await write;
+}
+
+/** Takes a read unless it is older than the one shown: a quick refresh and a
+ *  held read can answer out of order. */
+function showConversation(next: AssistantConversation): void {
+  const current = state.conversation;
+  if (current !== null && current.sessionId === next.sessionId && next.revision < current.revision)
+    return set({ access: 'ready' });
+  set({ conversation: next, access: 'ready' });
 }
 
 /** What a failed delivery means for its outbox entry. */
@@ -90,52 +105,66 @@ export function deliveryOutcome(error: unknown): {
 
 /** Sends every outbox entry of the current account, oldest first. */
 export function flushVerity(): Promise<void> {
-  flushing ??= (async () => {
-    await restore();
-    const scope = taskAccountScope();
-    const client = createVerityClient();
-    if (scope === null || client === null) return;
-    for (const entry of state.outbox) {
-      if (entry.scope !== scope || entry.held === true) continue;
-      try {
-        if (entry.kind === 'message')
-          await client.sendAssistantMessage({
-            requestId: entry.requestId,
-            text: entry.text,
-            input: entry.input,
-            device: entry.device ?? 'phone',
-            ...(entry.projectId !== undefined ? { projectId: entry.projectId } : {}),
-          });
-        else
-          await client.answerAssistantQuestion({
-            requestId: entry.requestId,
-            questionId: entry.questionId,
-            labels: entry.labels,
-            device: entry.device ?? 'phone',
-          });
-        await saveOutbox(state.outbox.filter((item) => item.requestId !== entry.requestId));
-      } catch (error) {
-        const outcome = deliveryOutcome(error);
-        if (outcome.action === 'drop') {
-          set({ notice: outcome.message });
-          await saveOutbox(state.outbox.filter((item) => item.requestId !== entry.requestId));
-          continue;
-        }
-        await saveOutbox(
-          state.outbox.map((item) =>
-            item.requestId === entry.requestId
-              ? { ...item, error: outcome.message, held: outcome.action === 'hold' }
-              : item,
-          ),
-        );
-        // Keep the order: a later message must not overtake an undelivered one.
-        if (outcome.action === 'retry') break;
-      }
-    }
+  if (flushing) {
+    // Words added meanwhile are not in the running pass; run one more.
+    flushAgain = true;
+    return flushing;
+  }
+  flushing = (async () => {
+    do {
+      flushAgain = false;
+      await flushOnce();
+    } while (flushAgain);
   })().finally(() => {
     flushing = null;
   });
   return flushing;
+}
+
+let flushAgain = false;
+
+async function flushOnce(): Promise<void> {
+  await restore();
+  const scope = taskAccountScope();
+  const client = createVerityClient();
+  if (scope === null || client === null) return;
+  for (const entry of state.outbox) {
+    if (entry.scope !== scope || entry.held === true) continue;
+    try {
+      if (entry.kind === 'message')
+        await client.sendAssistantMessage({
+          requestId: entry.requestId,
+          text: entry.text,
+          input: entry.input,
+          device: entry.device ?? 'phone',
+          ...(entry.projectId !== undefined ? { projectId: entry.projectId } : {}),
+        });
+      else
+        await client.answerAssistantQuestion({
+          requestId: entry.requestId,
+          questionId: entry.questionId,
+          labels: entry.labels,
+          device: entry.device ?? 'phone',
+        });
+      await saveOutbox(state.outbox.filter((item) => item.requestId !== entry.requestId));
+    } catch (error) {
+      const outcome = deliveryOutcome(error);
+      if (outcome.action === 'drop') {
+        set({ notice: outcome.message });
+        await saveOutbox(state.outbox.filter((item) => item.requestId !== entry.requestId));
+        continue;
+      }
+      await saveOutbox(
+        state.outbox.map((item) =>
+          item.requestId === entry.requestId
+            ? { ...item, error: outcome.message, held: outcome.action === 'hold' }
+            : item,
+        ),
+      );
+      // Keep the order: a later message must not overtake an undelivered one.
+      if (outcome.action === 'retry') break;
+    }
+  }
 }
 
 export async function refreshVerity(): Promise<void> {
@@ -145,7 +174,7 @@ export async function refreshVerity(): Promise<void> {
     return;
   }
   try {
-    set({ conversation: await client.assistantConversation(), access: 'ready' });
+    showConversation(await client.assistantConversation());
   } catch (error) {
     set({
       access: error instanceof VerityApiError && error.status === 403 ? 'denied' : 'offline',
@@ -157,7 +186,13 @@ async function enqueue(entry: Outgoing): Promise<void> {
   await restore();
   // A watch capture handed over twice keeps its first entry.
   if (state.outbox.some((item) => item.requestId === entry.requestId)) return;
-  await saveOutbox([...state.outbox, entry]);
+  try {
+    await saveOutbox([...state.outbox, entry]);
+  } catch (error) {
+    // Not stored, so not sent either: the caller keeps the words and says so.
+    set({ outbox: state.outbox.filter((item) => item.requestId !== entry.requestId) });
+    throw error;
+  }
   await flushVerity();
   await refreshVerity();
 }
@@ -281,16 +316,16 @@ export async function followVerity(
       );
       if (signal.aborted) return;
       failures = 0;
-      set({ conversation: next, access: 'ready' });
+      showConversation(next);
       if (next.revision === before && Date.now() - started < VERITY_HELD_MIN_MS)
         await sleep(verityPollMs(state, open()), signal);
     } catch (error) {
       if (signal.aborted) return;
       failures += 1;
-      set({
-        access: error instanceof VerityApiError && error.status === 403 ? 'denied' : 'offline',
-      });
-      await sleep(Math.min(30_000, 1_000 * 2 ** failures), signal);
+      const denied = error instanceof VerityApiError && error.status === 403;
+      set({ access: denied ? 'denied' : 'offline' });
+      // Not this user's Verity: that rarely changes, so ask seldom.
+      await sleep(denied ? 5 * 60_000 : Math.min(30_000, 1_000 * 2 ** failures), signal);
     }
   }
 }
@@ -360,6 +395,8 @@ export function resetVerityForTests(): void {
   state = { conversation: null, access: 'unknown', outbox: [], notice: null };
   restored = null;
   flushing = null;
+  flushAgain = false;
+  persisted = Promise.resolve();
   stopFollowing();
   followers = 0;
   openPanels = 0;

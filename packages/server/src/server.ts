@@ -6578,9 +6578,13 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     id = await deps.eventStore.assistant.replaceSession(id, randomUUID());
     if (await deps.eventStore.getSession(id)) return id;
     const project = await ensureVerityControlProject();
+    // Sonnet when offered; otherwise the default Claude model, as before.
+    const model = (await availableModels()).models.includes(ASSISTANT_MODEL)
+      ? ASSISTANT_MODEL
+      : DEFAULT_MODEL;
     const result = await sessionCreate.spawn(
       // Claude is the backend that enforces Verity-tools-only turns (docs/assistant.md).
-      { projectId: project.id, sessionId: id, name: 'Verity · Assistant', model: ASSISTANT_MODEL },
+      { projectId: project.id, sessionId: id, name: 'Verity · Assistant', model },
       app.log,
     );
     if (result.statusCode >= 300) throw new Error('Assistant session could not be created');
@@ -6594,10 +6598,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
    * the session keeps its model and is tried again with the next message.
    */
   const moveAssistantToFastModel = async (id: string): Promise<void> => {
-    const session = await deps.eventStore.getSession(id);
-    if (session?.model !== PREVIOUS_ASSISTANT_MODEL || conductor.isBusy(id)) return;
-    if (!(await availableModels()).models.includes(ASSISTANT_MODEL)) return;
     try {
+      const session = await deps.eventStore.getSession(id);
+      if (session?.model !== PREVIOUS_ASSISTANT_MODEL || conductor.isBusy(id)) return;
+      if (!(await availableModels()).models.includes(ASSISTANT_MODEL)) return;
       await conductor.runBackendHandoff(id, async () => {
         const live = await deps.eventStore.getSession(id);
         if (live?.model !== PREVIOUS_ASSISTANT_MODEL) return false;
@@ -6704,8 +6708,9 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           return { ok: false, status: 409, error: 'The Verity assistant session is gone.' };
         if (error instanceof QueueFullError)
           return { ok: false, status: 429, error: 'Verity has too many messages waiting.' };
+        // Transient: devices retry a 503 under the same request id.
         if (error instanceof SessionBusyError)
-          return { ok: false, status: 409, error: 'Verity is restarting. Try again shortly.' };
+          return { ok: false, status: 503, error: 'Verity is restarting. Try again shortly.' };
         throw error;
       }
     },

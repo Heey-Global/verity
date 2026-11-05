@@ -28,6 +28,9 @@ private struct WatchInboxEntry: Codable {
   /// from; JavaScript only saves the task when both still match.
   var projectId: String?
   var scope: String?
+  /// The server refused the native delivery for good; only the app, which can
+  /// show the refusal, sends it from here on.
+  var refusedNatively: Bool?
 }
 
 /// Receives Apple Watch captures natively. iOS can wake or launch Verity in the
@@ -486,13 +489,14 @@ final class VerityWatchInbox: NSObject, WCSessionDelegate {
   /// refusal to the user and sends under the same id.
   private func forward(_ id: String) {
     guard let entry = load(id), entry.state == .transcribed, let text = entry.text,
-      !forwarding.contains(id), link.accepts(scope: entry.scope)
+      entry.refusedNatively != true, !forwarding.contains(id), link.accepts(scope: entry.scope)
     else { return }
     forwarding.insert(id)
     let backgroundTime = BackgroundTime("verity-send") {}
     let started = Date()
     Task {
-      let delivery = await self.link.sendMessage(requestId: id, text: text)
+      let delivery = await self.link.sendMessage(
+        requestId: id, text: text, projectId: entry.projectId)
       let elapsed = Int(Date().timeIntervalSince(started) * 1000)
       self.queue.async {
         self.forwarding.remove(id)
@@ -506,8 +510,14 @@ final class VerityWatchInbox: NSObject, WCSessionDelegate {
           self.follow(for: 90)
           let notify = self.onChange
           DispatchQueue.main.async { notify?() }
-        case .later(let reason), .refused(let reason):
+        case .later(let reason):
           self.log("\(id.prefix(8)) left for the app: \(reason)")
+        case .refused(let reason):
+          if var entry = self.load(id) {
+            entry.refusedNatively = true
+            try? self.save(entry)
+          }
+          self.log("\(id.prefix(8)) refused, left for the app: \(reason)")
         }
       }
     }

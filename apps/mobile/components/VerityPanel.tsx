@@ -5,6 +5,7 @@ import { Alert, TextInput, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { useVoiceInput } from '../hooks/useVoiceInput';
+import { taskAccountScope } from '../lib/tasksStore';
 import {
   answerVerity,
   discardOutgoing,
@@ -15,13 +16,15 @@ import {
   type Outgoing,
   type VerityState,
 } from '../lib/verityConversation';
+import { subscribeVerityShortcut } from '../lib/voiceShortcut';
 import { Button, Card, IconButton, Sheet, StatusDot, Text } from './ui';
 
 /** Newest items shown in the panel; the full conversation is one tap away. */
 const RECENT = 8;
 
-/** What the user had typed or dictated but not sent, kept across minimising. */
-let draft = '';
+/** What the user had typed or dictated but not sent, kept across minimising,
+ *  and only offered again in the account it was written in. */
+let draft = { scope: null as string | null, text: '' };
 
 /**
  * Verity's panel behind the V (docs/assistant.md): the one way to tell Verity
@@ -42,7 +45,7 @@ export function VerityPanel({
 }) {
   const { theme } = useUnistyles();
   const verity = useVerity(true);
-  const [text, setText] = useState(draft);
+  const [text, setText] = useState(() => (draft.scope === taskAccountScope() ? draft.text : ''));
   const [sending, setSending] = useState(false);
   const dictated = useRef(false);
   const voice = useVoiceInput(text, (value) => {
@@ -51,8 +54,10 @@ export function VerityPanel({
   });
   const started = useRef(false);
   useEffect(() => {
-    draft = text;
+    draft = { scope: taskAccountScope(), text };
   }, [text]);
+  // The shortcut that opened the panel starts and stops dictation while it is open.
+  useEffect(() => subscribeVerityShortcut(() => voice.toggle()), [voice]);
   useEffect(() => {
     if (started.current || mode !== 'voice') return;
     started.current = true;
@@ -67,7 +72,7 @@ export function VerityPanel({
     try {
       // The outbox holds it from here on, so the field can clear even offline.
       setText('');
-      draft = '';
+      draft = { scope: null, text: '' };
       await sendToVerity({
         text: message,
         input: dictated.current ? 'voice' : 'text',

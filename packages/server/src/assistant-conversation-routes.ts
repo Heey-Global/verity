@@ -193,7 +193,7 @@ export function registerAssistantConversationRoutes(
       userId: target.userId,
       kind: 'message',
     });
-    if (!claim.claimed) return replay(reply, claim, target, body.requestId);
+    if (!claim.claimed) return replay(reply, claim, target, body.requestId, 'message');
     const prompt = assistantMessagePrompt(body.text, {
       device: body.device,
       input: body.input,
@@ -211,7 +211,14 @@ export function registerAssistantConversationRoutes(
     // closed, and the device that answered must still see its own success.
     const previous = await store.assistant.request(body.requestId);
     if (previous !== undefined)
-      return replay(reply, { claimed: false, request: previous }, target, body.requestId);
+      return replay(
+        reply,
+        { claimed: false, request: previous },
+        target,
+        body.requestId,
+        'answer',
+        body.questionId,
+      );
     const { question } = await conversation(target.sessionId);
     if (question === null || question.id !== body.questionId)
       return reply.code(409).send({
@@ -232,7 +239,8 @@ export function registerAssistantConversationRoutes(
       kind: 'answer',
       questionId: body.questionId,
     });
-    if (!claim.claimed) return replay(reply, claim, target, body.requestId);
+    if (!claim.claimed)
+      return replay(reply, claim, target, body.requestId, 'answer', body.questionId);
     return send(reply, target, body.requestId, formatChoiceAnswer(body.labels));
   });
 }
@@ -242,11 +250,19 @@ function replay(
   claim: Exclude<Awaited<ReturnType<EventStore['assistant']['claimRequest']>>, { claimed: true }>,
   target: { sessionId: string; userId: string },
   requestId: string,
+  kind: 'message' | 'answer',
+  questionId?: string,
 ) {
   if ('answeredBy' in claim)
     return reply.code(409).send({ error: 'This question was already answered.', code: 'answered' });
   // A request id belongs to the user and session that minted it.
-  if (claim.request.user_id !== target.userId || claim.request.session_id !== target.sessionId)
+  // ...and to the one message or answer it was minted for.
+  if (
+    claim.request.user_id !== target.userId ||
+    claim.request.session_id !== target.sessionId ||
+    claim.request.kind !== kind ||
+    (questionId !== undefined && claim.request.question_id !== questionId)
+  )
     return reply.code(409).send({ error: 'This request id is already in use.', code: 'conflict' });
   if (claim.request.state === 'pending')
     return reply

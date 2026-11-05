@@ -341,6 +341,33 @@ describe('assistant conversation routes', () => {
     }
   });
 
+  it('refuses a request id reused for an answer instead of reporting it delivered', async () => {
+    await enable();
+    const { app, log, setFacts } = server();
+    try {
+      log.push({ t: 'prompt', text: 'Set up the new client' }, choices);
+      setFacts({ ...idle, choicesOpen: true });
+      await app.inject({
+        method: 'POST',
+        url: '/assistant/conversation/messages',
+        payload: message,
+      });
+      const reused = await app.inject({
+        method: 'POST',
+        url: '/assistant/conversation/answers',
+        payload: {
+          requestId: message.requestId,
+          questionId: 'q-2',
+          labels: ['Hansen'],
+          device: 'watch',
+        },
+      });
+      expect(reused.json()).toMatchObject({ code: 'conflict' });
+    } finally {
+      await app.close();
+    }
+  });
+
   it('lets a refused delivery be retried under the same id', async () => {
     await enable();
     const { app, dispatch } = server();

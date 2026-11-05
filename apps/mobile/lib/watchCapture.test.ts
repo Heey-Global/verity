@@ -22,6 +22,7 @@ jest.mock('./authToken', () => ({
   getAuthToken: jest.fn(() => null),
   isBiometricUnlockEnabled: jest.fn(async () => false),
   subscribeAuthToken: jest.fn(() => () => undefined),
+  subscribeBiometricUnlock: jest.fn(() => () => undefined),
 }));
 jest.mock('./serverProfile', () => ({ getServerProfile: jest.fn(() => null) }));
 jest.mock('./verityConversation', () => ({

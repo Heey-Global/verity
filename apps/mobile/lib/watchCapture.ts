@@ -2,7 +2,12 @@ import type { AssistantConversation } from '@verity/mobile';
 import { requireOptionalNativeModule } from 'expo-modules-core';
 import { AppState, Platform } from 'react-native';
 
-import { getAuthToken, isBiometricUnlockEnabled, subscribeAuthToken } from './authToken';
+import {
+  getAuthToken,
+  isBiometricUnlockEnabled,
+  subscribeAuthToken,
+  subscribeBiometricUnlock,
+} from './authToken';
 import { getVerityBaseUrl, subscribeVerityBaseUrl } from './client';
 import { getServerProfile } from './serverProfile';
 import { taskAccountScope } from './tasksStore';
@@ -213,10 +218,16 @@ export async function watchLink(): Promise<WatchLink | null> {
   return { baseUrl, token, tlsPin: endpoint.tlsPin, scope };
 }
 
+let linkSync = 0;
+
+/** Hands native code the current link. Only the latest call writes: a sign-out
+ *  must not be overtaken by an earlier call still checking Face ID. */
 function syncLink(): void {
   if (!native) return;
+  const call = ++linkSync;
   void watchLink()
-    .then((link) => native.setLink(link))
+    .catch(() => null)
+    .then((link) => (call === linkSync ? native.setLink(link) : undefined))
     .catch(() => undefined);
 }
 
@@ -245,6 +256,8 @@ export function startWatchInbox(): () => void {
   const unsubscribeVerity = subscribeVerity((current) => {
     syncAccount();
     const snapshot = watchSnapshot(current.conversation, current.access, taskAccountScope());
+    // Nothing read yet: keep what native code last sent rather than clearing it.
+    if (snapshot === null && taskAccountScope() !== null) return;
     const key = JSON.stringify(snapshot);
     if (key === last) return;
     last = key;
@@ -262,6 +275,7 @@ export function startWatchInbox(): () => void {
     syncAccount();
     syncLink();
   });
+  const unsubscribeBiometric = subscribeBiometricUnlock(syncLink);
   const unsubscribeBaseUrl = subscribeVerityBaseUrl(() => {
     syncAccount();
     syncLink();
@@ -273,6 +287,7 @@ export function startWatchInbox(): () => void {
     subscription.remove();
     appState.remove();
     unsubscribeToken();
+    unsubscribeBiometric();
     unsubscribeBaseUrl();
   };
 }

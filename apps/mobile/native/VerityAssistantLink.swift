@@ -101,10 +101,13 @@ final class VerityAssistantLink: @unchecked Sendable {
 
   // MARK: Requests
 
-  func sendMessage(requestId: String, text: String) async -> Delivery {
-    await deliver(
-      "/assistant/conversation/messages",
-      ["requestId": requestId, "text": text, "input": "voice", "device": "watch"])
+  /// `projectId`: picked on older watch builds, offered to Verity as context.
+  func sendMessage(requestId: String, text: String, projectId: String?) async -> Delivery {
+    var body: [String: Any] = [
+      "requestId": requestId, "text": text, "input": "voice", "device": "watch",
+    ]
+    if let projectId { body["projectId"] = projectId }
+    return await deliver("/assistant/conversation/messages", body)
   }
 
   func sendAnswer(requestId: String, questionId: String, labels: [String]) async -> Delivery {
@@ -129,11 +132,16 @@ final class VerityAssistantLink: @unchecked Sendable {
       if status == 200 || status == 202 { return .sent }
       let payload = response as? [String: Any]
       let message = payload?["error"] as? String ?? "HTTP \(status)"
-      // `pending`: another delivery of this id is under way; ask again later.
-      if status == 429 || status >= 500 || status == 401 || payload?["code"] as? String == "pending" {
-        return .later(message)
+      let code = payload?["code"] as? String
+      // Final: not this user's Verity, switched off, an invalid request, or an
+      // answer to a question that is closed. Everything else (busy, restarting,
+      // another delivery of this id under way, offline) is worth another try.
+      if status == 400 || status == 403
+        || (status == 409 && ["answered", "stale_question", "conflict", "disabled"].contains(code))
+      {
+        return .refused(message)
       }
-      return .refused(message)
+      return .later(message)
     } catch {
       return .later(error.localizedDescription)
     }
