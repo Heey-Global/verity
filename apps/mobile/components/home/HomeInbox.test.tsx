@@ -79,7 +79,7 @@ function fakeClient(meetings: Promise<UpcomingMeeting[]> = Promise.resolve([])) 
 async function renderInbox(
   sessions: SessionSummary[],
   client = fakeClient(),
-  extra: { selectedSessionId?: string } = {},
+  extra: { selectedSessionId?: string; onOpenVerity?: () => void } = {},
 ) {
   const onOpenSession = jest.fn();
   const onRepairProject = jest.fn();
@@ -380,4 +380,16 @@ describe('dismissing', () => {
     expect(client.skipCalendarMeeting).toHaveBeenCalledWith('cal:weekly');
     expect(client.setSessionInboxDismissed).not.toHaveBeenCalled();
   });
+});
+
+it('opens Verity’s page from her header only when Home is given the way there', async () => {
+  const onOpenVerity = jest.fn();
+  await renderInbox([], fakeClient(), { onOpenVerity });
+  fireEvent.press(screen.getByTestId('home-verity'));
+  expect(onOpenVerity).toHaveBeenCalled();
+});
+
+it('keeps Verity’s header a plain identity without a page to open', async () => {
+  await renderInbox([]);
+  expect(screen.queryByTestId('home-verity')).toBeNull();
 });

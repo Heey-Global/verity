@@ -4751,6 +4751,30 @@ it('browses Shared without a session and sends the revision for edits', async ()
   await expect(client.listSharedKnowledgeFiles()).rejects.toThrow('Update the Verity server');
 });
 
+it('reads the latest Shared pages with decision provenance', async () => {
+  const entries = [
+    {
+      path: 'insights/decisions/d1.md',
+      title: 'Verity owns Global',
+      area: 'decisions',
+      modifiedAt: '2026-11-05T10:00:00.000Z',
+      decision: { sessionId: 's-42', confirmedAt: '2026-11-03T16:14:02.187Z' },
+    },
+    {
+      path: 'insights/tone.md',
+      title: 'Tone',
+      area: 'wiki',
+      modifiedAt: '2026-11-04T10:00:00.000Z',
+    },
+  ];
+  const { fetch, calls } = fakeFetchSequence(json({ entries }), json({ entries: [{ path: 'x' }] }));
+  const client = new VerityClient({ baseUrl: 'http://host', fetch });
+  expect(await client.listRecentSharedKnowledge(5)).toEqual({ entries, truncated: false });
+  expect(calls[0]?.url).toBe('http://host/knowledge/shared/recent?limit=5');
+  // A malformed answer fails loudly instead of rendering rows without a title.
+  await expect(client.listRecentSharedKnowledge()).rejects.toThrow();
+});
+
 it('preserves Wiki exclusion reasons and unknown save status while accepting older servers', () => {
   const directory = { path: '', entries: [], truncated: false };
   const status = {

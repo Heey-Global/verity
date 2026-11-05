@@ -164,6 +164,7 @@ it('allows active users to read Shared centrally but reserves changes for admini
     '/knowledge/shared/files',
     '/knowledge/shared/files/content',
     '/knowledge/shared/files/download',
+    '/knowledge/shared/recent',
   ]) {
     expect(await authorizePairedRoute(store, 'member', 'GET', route, {})).toBe('allow');
     expect(await authorizePairedRoute(store, 'disabled', 'GET', route, {})).toBe('forbidden');

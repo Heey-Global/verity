@@ -418,6 +418,8 @@ export {
   type SessionCreateResult,
   type SessionDetail,
   type SessionDirectory,
+  type RecentSharedKnowledge,
+  type RecentSharedKnowledgeList,
   type SessionFileContent,
   type SessionFileEntry,
   type SessionFileRoot,

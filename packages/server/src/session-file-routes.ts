@@ -1,4 +1,5 @@
 import { join } from 'node:path';
+import { RECENT_SHARED_LIMIT_MAX, recentSharedKnowledge } from './shared-knowledge-recent.js';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 
@@ -131,6 +132,10 @@ export interface SessionFileRouteDeps {
   ) => Promise<unknown>;
 }
 
+const recentSharedQuery = z.object({
+  limit: z.coerce.number().int().min(1).max(RECENT_SHARED_LIMIT_MAX).default(8),
+});
+
 /** Registers file browsing, upload, preview, download, delete, and move routes
  *  over the session's worktree and the project's knowledge folders. */
 export function registerSessionFileRoutes(app: FastifyInstance, deps: SessionFileRouteDeps): void {
@@ -222,6 +227,15 @@ export function registerSessionFileRoutes(app: FastifyInstance, deps: SessionFil
       return content && typeof content === 'object' && 'editable' in content
         ? { ...content, editable: isSharedWikiPath(path) && content.editable }
         : content;
+    });
+    // The most recently changed pages, for Verity's page in the app.
+    app.get('/knowledge/shared/recent', async (request, reply) => {
+      const query = recentSharedQuery.safeParse(request.query);
+      if (!query.success) return reply.code(400).send({ error: 'Invalid limit' });
+      const value = await sharedTarget(reply);
+      if (!value) return reply;
+      reply.header('cache-control', 'no-store');
+      return recentSharedKnowledge(value.dir, query.data.limit);
     });
     app.get('/knowledge/shared/files/download', async (request, reply) => {
       const { path } = sessionFileQuery.parse(request.query);

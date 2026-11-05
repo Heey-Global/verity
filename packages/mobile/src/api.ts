@@ -1970,6 +1970,24 @@ export type ModelList = z.infer<typeof modelListSchema>;
 export const branchSwitchedSchema = z.object({ branch: z.string() });
 export type BranchSwitched = z.infer<typeof branchSwitchedSchema>;
 
+/** Response of `GET /knowledge/shared/recent`: the latest pages, newest first. */
+const recentSharedKnowledgeSchema = z.object({
+  entries: z.array(
+    z.object({
+      path: z.string().min(1),
+      title: z.string(),
+      area: z.enum(['decisions', 'wiki', 'sources']),
+      modifiedAt: z.string(),
+      // Only a confirmed decision records where it came from.
+      decision: z.object({ sessionId: z.string(), confirmedAt: z.string() }).optional(),
+    }),
+  ),
+  /** More files than the server scans; newer pages may be missing from the list. */
+  truncated: z.boolean().default(false),
+});
+export type RecentSharedKnowledgeList = z.infer<typeof recentSharedKnowledgeSchema>;
+export type RecentSharedKnowledge = z.infer<typeof recentSharedKnowledgeSchema>['entries'][number];
+
 export const sessionFileEntrySchema = z.object({
   name: z.string(),
   path: z.string(),
@@ -6038,6 +6056,14 @@ export class VerityClient {
       },
     );
     return sessionFileContentSchema.parse(await res.json());
+  }
+
+  /** The most recently changed Shared pages, for Verity's page. */
+  async listRecentSharedKnowledge(limit = 8): Promise<RecentSharedKnowledgeList> {
+    const res = await this.request(`/knowledge/shared/recent?limit=${String(limit)}`, {
+      method: 'GET',
+    });
+    return recentSharedKnowledgeSchema.parse(await res.json());
   }
 
   async listSharedKnowledgeFiles(path = ''): Promise<SessionDirectory> {
