@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.84.8](https://github.com/Heey-Global/verity/compare/mobile-v1.84.7...mobile-v1.84.8) (2026-11-05)
+
+
+### Features
+
+* **mockups:** add design review rounds before implementation ([#2295](https://github.com/Heey-Global/verity/issues/2295)) ([b77eae1](https://github.com/Heey-Global/verity/commit/b77eae10c57c6cb1564e01e030ae7a917fa3e398))
+
 ## [1.84.7](https://github.com/Heey-Global/verity/compare/mobile-v1.84.6...mobile-v1.84.7) (2026-11-05)
 
 
