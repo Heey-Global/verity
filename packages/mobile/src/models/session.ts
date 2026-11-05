@@ -234,13 +234,6 @@ export interface SessionModelOptions {
   ready?: Promise<unknown>;
 }
 
-/**
- * Headless controller for the chat screen: drives the {@link SessionStream}
- * lifecycle (live transcript via the reducer) and sends operator turns through
- * {@link VerityClient.sendTurn}. Exposes plain {@link SessionModelState} + actions
- * so the RN screen is a thin renderer (feed `state.session.messages` to the
- * transcript, call {@link sendTurn}). All orchestration is unit-tested here.
- */
 /** What the card says when ending planning failed. A 409 with a code this
  *  build does not know shows the server's own text, so a newer refusal is not
  *  mistaken for planning having ended. */
@@ -260,6 +253,13 @@ function planningDecisionError(error: unknown): string {
   }
 }
 
+/**
+ * Headless controller for the chat screen: drives the {@link SessionStream}
+ * lifecycle (live transcript via the reducer) and sends operator turns through
+ * {@link VerityClient.sendTurn}. Exposes plain {@link SessionModelState} + actions
+ * so the RN screen is a thin renderer (feed `state.session.messages` to the
+ * transcript, call {@link sendTurn}). All orchestration is unit-tested here.
+ */
 export class SessionModel {
   private readonly stream: SessionStream;
   private _session: SessionState;

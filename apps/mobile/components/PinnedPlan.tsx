@@ -118,9 +118,9 @@ export function PinnedPlan({
               <Text style={styles.stepTitle}>{decision.question}</Text>
               {decision.options.length > 0 ? (
                 <View style={styles.options}>
-                  {decision.options.map((option) => (
+                  {decision.options.map((option, optionIndex) => (
                     <Button
-                      key={option}
+                      key={`${String(optionIndex)}:${option}`}
                       label={option === decision.recommended ? `${option} · recommended` : option}
                       accessibilityLabel={`Answer ${decision.question} with ${option}`}
                       size="compact"

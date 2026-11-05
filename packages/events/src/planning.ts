@@ -174,7 +174,9 @@ export function parsePlanningProposal(markdown: string): PlanningProposal {
     steps,
     outOfScope: outOfScope.join('\n').trim(),
     criteria,
-    decisions: decisions.filter((item) => !PLACEHOLDER.test(item)).map(parseDecision),
+    decisions: decisions
+      .filter((item) => !PLACEHOLDER.test(item.split('\n')[0]!.trim()))
+      .map(parseDecision),
   };
 }
 

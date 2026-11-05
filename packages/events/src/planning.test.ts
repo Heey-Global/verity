@@ -132,6 +132,14 @@ describe('parsePlanningProposal spec sections', () => {
     },
   );
 
+  it('does not block on a placeholder followed by a wrapped line', () => {
+    expect(
+      parsePlanningProposal(
+        '## Open decisions\n- None\n  everything was settled in chat\n## Steps\n1. Do it',
+      ).decisions,
+    ).toEqual([]);
+  });
+
   it('does not block on decisions recorded as already made', () => {
     expect(
       parsePlanningProposal('## Decisions made\n1. EU hosting\n## Steps\n1. Do it').decisions,
