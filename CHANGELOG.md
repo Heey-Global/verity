@@ -6,6 +6,19 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.82.0](https://github.com/Heey-Global/verity/compare/v4.81.0...v4.82.0) (2026-11-05)
+
+
+### Features
+
+* add Verity's page for cross-project knowledge ([#2289](https://github.com/Heey-Global/verity/issues/2289)) ([4c8d848](https://github.com/Heey-Global/verity/commit/4c8d84820e50a43c1c5b4f213efd28aca3331d16))
+* **mockups:** add design review rounds before implementation ([#2295](https://github.com/Heey-Global/verity/issues/2295)) ([b77eae1](https://github.com/Heey-Global/verity/commit/b77eae10c57c6cb1564e01e030ae7a917fa3e398))
+
+
+### Bug Fixes
+
+* **gmail:** download attachments directly to workspace files ([#2294](https://github.com/Heey-Global/verity/issues/2294)) ([c02f2a7](https://github.com/Heey-Global/verity/commit/c02f2a76225ee562aa2fc36f680f385b956772b5))
+
 ## [4.81.0](https://github.com/Heey-Global/verity/compare/v4.80.2...v4.81.0) (2026-11-05)
 
 
