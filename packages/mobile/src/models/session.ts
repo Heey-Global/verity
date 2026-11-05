@@ -1031,9 +1031,10 @@ export class SessionModel {
       const acceptPlanning = activityRequest > this._planningDecisionAfterActivityRequest;
       // A poll sent before the reviewer's own verdict would undo it on screen.
       const mockupChanged =
+        activity.mockupReview !== undefined &&
         activityRequest > this._mockupDecisionAfterActivityRequest &&
-        !sameMockupReview(activity.mockupReview, this._mockupReview);
-      if (mockupChanged) this._mockupReview = activity.mockupReview;
+        !sameMockupReview(activity.mockupReview ?? undefined, this._mockupReview);
+      if (mockupChanged) this._mockupReview = activity.mockupReview ?? undefined;
       if (activity.pendingPermissions !== undefined) {
         this.stream.reconcilePendingPermissions(activity.pendingPermissions, seqAtRequest);
       }

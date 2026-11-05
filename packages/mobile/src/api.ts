@@ -487,7 +487,7 @@ export const sessionActivitySchema = z.object({
   planning: sessionPlanningSchema,
   planningRevision: z.number().int().nonnegative().optional(),
   planningPlan: z.string().nullable().optional(),
-  mockupReview: mockupReviewSchema,
+  mockupReview: mockupReviewSchema.nullable(),
 });
 export type SessionActivity = z.infer<typeof sessionActivitySchema>;
 

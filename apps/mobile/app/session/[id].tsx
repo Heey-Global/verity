@@ -4859,7 +4859,11 @@ export const SessionChat = memo(function SessionChat({
           view={mockupBar}
           busy={decidingMockup}
           onReview={() => openMockups()}
-          onSend={() => void sendMockupComments()}
+          onSend={() => {
+            void sendMockupComments().then((sent) => {
+              if (!sent) openMockups();
+            });
+          }}
         />
       ) : null}
       <MockupReviewSheet
