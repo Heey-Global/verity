@@ -156,7 +156,12 @@ export function createGmailTool(deps: {
   googleAccessToken: (accountId?: string) => Promise<string | undefined>;
   gmail?: {
     search(token: string, query: string, maxResults: number, pageToken?: string): Promise<unknown>;
-    downloadAttachment?(token: string, messageId: string, partId: string): Promise<unknown>;
+    downloadAttachment?(
+      token: string,
+      messageId: string,
+      partId: string,
+      worktree: string,
+    ): Promise<unknown>;
     readThread(token: string, threadId: string): Promise<unknown>;
     createDraft(token: string, input: GmailDraftInput): Promise<unknown>;
     listSenders(token: string): Promise<GmailSendAs[]>;
@@ -266,10 +271,16 @@ export function createGmailTool(deps: {
       }
       if (request.action === 'download_attachment') {
         await verifyCredentialUnchanged(input, credential);
+        const session = await deps.eventStore.getSession(input.sessionId);
+        if (session?.projectId !== input.projectId)
+          throw new Error('Google access is restricted to the calling session');
+        if (!session.worktree)
+          throw new Error('This session has no workspace to download attachments into');
         return (gmail.downloadAttachment ?? downloadGmailAttachment)(
           token,
           request.messageId,
           request.partId,
+          session.worktree,
         );
       }
       if (request.action === 'prepare_draft_send') {
