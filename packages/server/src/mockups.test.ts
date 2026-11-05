@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { MOCKUPS_APPROVED_DISPLAY, MOCKUPS_APPROVED_PROMPT } from '@verity/events';
 import { EventStore } from '@verity/store';
+import { Conductor, type Backend, type RunTurnOptions } from '@verity/session';
 import { createTestDb, truncateAll, type TestDb } from '@verity/store/testing';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -338,5 +339,114 @@ describe('POST /sessions/:id/mockups', () => {
       payload: { action: 'send', revision: 1 },
     });
     expect(response.statusCode).toBe(404);
+  });
+});
+
+describe('mockup review through the real conductor', () => {
+  function liveReview() {
+    const runs: RunTurnOptions[] = [];
+    const errors: Error[] = [];
+    const backend: Backend = {
+      run: async (opts) => {
+        runs.push(opts);
+        return { sessionId: 's1', exitCode: 0, stderr: '', aborted: false };
+      },
+    };
+    const makeConductor = () =>
+      new Conductor({
+        store,
+        backend,
+        worktreeExists: async () => true,
+        onTurnError: (_id, error) => errors.push(error),
+      });
+    const conductor = makeConductor();
+    mockups = createSessionMockups({
+      eventStore: store,
+      dispatchTurn: conductor.dispatchTurn.bind(conductor),
+    });
+    return { runs, errors, conductor, makeConductor };
+  }
+
+  it('dispatches comments, reviews revised images, then continues approved work', async () => {
+    const { runs, errors, conductor } = liveReview();
+    await present();
+    expect((await mockups.decide('s1', 1, 'Home', { verdict: 'approved' })).ok).toBe(true);
+    await mockups.decide('s1', 1, 'Spec', { verdict: 'comment', comment: 'Enlarge the title' });
+    expect((await mockups.sendComments('s1', 1)).ok).toBe(true);
+    await vi.waitFor(() => expect(runs).toHaveLength(1));
+    await vi.waitFor(() => expect(conductor.isBusy('s1')).toBe(false));
+    expect(runs[0]?.prompt).toContain('Enlarge the title');
+    expect((await store.getSession('s1'))?.mockupReview?.state).toBe('revising');
+    writeFileSync(join(worktree, 'spec.png'), png(393, 852, 2));
+    const revised = await present();
+    expect(revised.revision).toBe(2);
+    expect(revised.screens.map((screen) => screen.verdict)).toEqual(['approved', 'open']);
+    expect((await mockups.decide('s1', 2, 'Spec', { verdict: 'approved' })).ok).toBe(true);
+    await vi.waitFor(() => expect(runs).toHaveLength(2));
+    await vi.waitFor(() => expect(conductor.isBusy('s1')).toBe(false));
+    expect(runs[1]?.prompt).toBe(MOCKUPS_APPROVED_PROMPT);
+    expect(runs[1]?.planning).not.toBe(true);
+    expect(await store.listQueuedTurns()).toEqual([]);
+    expect(errors).toEqual([]);
+  });
+
+  it.each(['approved', 'comments'] as const)(
+    'recovers %s after interruption between durable enqueue and live dispatch',
+    async (action) => {
+      const { runs, errors, makeConductor } = liveReview();
+      await present();
+      await mockups.decide('s1', 1, 'Home', { verdict: 'approved' });
+      if (action === 'comments')
+        await mockups.decide('s1', 1, 'Spec', { verdict: 'comment', comment: 'Move the title' });
+      const enqueue = store.enqueueMockupContinuation.bind(store);
+      const interrupt = vi
+        .spyOn(store, 'enqueueMockupContinuation')
+        .mockImplementationOnce(async (...args) => {
+          const accepted = await enqueue(...args);
+          expect(accepted).toBe(true);
+          throw new Error('simulated process interruption');
+        });
+      const request =
+        action === 'approved'
+          ? mockups.decide('s1', 1, 'Spec', { verdict: 'approved' })
+          : mockups.sendComments('s1', 1);
+      await expect(request).rejects.toThrow('simulated process interruption');
+      interrupt.mockRestore();
+      expect(runs).toHaveLength(0);
+      expect(await store.listQueuedTurns()).toHaveLength(1);
+      expect((await store.getSession('s1'))?.mockupReview?.state).toBe(
+        action === 'approved' ? 'approved' : 'revising',
+      );
+      const restarted = makeConductor();
+      await restarted.recover();
+      await vi.waitFor(() => expect(runs).toHaveLength(1));
+      await vi.waitFor(() => expect(restarted.isBusy('s1')).toBe(false));
+      expect(runs[0]?.prompt).toContain(
+        action === 'approved' ? MOCKUPS_APPROVED_PROMPT : 'Move the title',
+      );
+      expect(await store.listQueuedTurns()).toEqual([]);
+      await restarted.recover();
+      expect(runs).toHaveLength(1);
+      expect(errors).toEqual([]);
+    },
+  );
+
+  it('starts one continuation when two reviewers approve the last screen together', async () => {
+    const { conductor, runs, errors } = liveReview();
+    await present();
+    await mockups.decide('s1', 1, 'Home', { verdict: 'approved' });
+    const otherDevice = createSessionMockups({
+      eventStore: store,
+      dispatchTurn: conductor.dispatchTurn.bind(conductor),
+    });
+    const results = await Promise.all([
+      mockups.decide('s1', 1, 'Spec', { verdict: 'approved' }),
+      otherDevice.decide('s1', 1, 'Spec', { verdict: 'approved' }),
+    ]);
+    expect(results.filter((result) => result.ok)).toHaveLength(1);
+    await vi.waitFor(() => expect(runs).toHaveLength(1));
+    await vi.waitFor(() => expect(conductor.isBusy('s1')).toBe(false));
+    expect(await store.listQueuedTurns()).toEqual([]);
+    expect(errors).toEqual([]);
   });
 });
