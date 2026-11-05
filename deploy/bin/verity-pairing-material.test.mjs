@@ -3,10 +3,12 @@ import { X509Certificate } from 'node:crypto';
 import {
   mkdtempSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   statSync,
   symlinkSync,
   unlinkSync,
+  utimesSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -101,6 +103,29 @@ test('creates stable identity and TLS material with a fresh compact one-time cod
   assert.equal(constraints.status, 0, constraints.stderr);
   assert.match(constraints.stdout, /Basic Constraints: critical/);
   assert.match(constraints.stdout, /CA:FALSE/);
+});
+
+test('leaves no certificate-issuing side files behind and sweeps earlier leftovers', () => {
+  const state = mkdtempSync(join(tmpdir(), 'verity-pairing-leftovers-'));
+  // Leftovers of earlier releases, whose cleanup missed the files `openssl ca` adds,
+  // owned by a run that has certainly exited.
+  const exited = spawnSync('true').pid;
+  writeFileSync(join(state, `tls-cert.pem.${exited}.index.tmp.attr`), 'unique_subject = no\n');
+  writeFileSync(join(state, `tls-cert.pem.${exited}.serial.tmp.old`), '00\n');
+  const hourAgo = new Date(Date.now() - 2 * 3_600_000);
+  for (const name of readdirSync(state)) utimesSync(join(state, name), hourAgo, hourAgo);
+  // A fresh file may belong to a concurrent run in another namespace and stays.
+  writeFileSync(join(state, 'tls-cert.pem.1.csr.tmp'), 'in flight');
+  writeFileSync(join(state, 'unrelated.tmp'), 'kept');
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const result = run(state);
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(
+      readdirSync(state).filter((name) => name.startsWith('tls-cert.pem.')),
+      ['tls-cert.pem.1.csr.tmp'],
+    );
+  }
+  assert.equal(readFileSync(join(state, 'unrelated.tmp'), 'utf8'), 'kept');
 });
 
 test('refuses a symlink at every generated-material boundary', () => {

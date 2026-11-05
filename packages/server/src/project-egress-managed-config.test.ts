@@ -85,3 +85,52 @@ it('formats inspected IPv6 addresses as database URL authorities', () => {
   });
   expect(new URL(result.authority.databaseUrl).hostname).toBe('[fd42::3]');
 });
+
+it('retains only the installed immutable relay still needed by protected generations', () => {
+  const first = managedEgressConfiguration(input());
+  const nextInput = input();
+  nextInput.env.VERITY_PROJECT_RELAY_IMAGE = `ghcr.io/example/relay@sha256:${'c'.repeat(64)}`;
+  const next = managedEgressConfiguration({
+    ...nextInput,
+    previousRelay: first.relay,
+    activeRelayImages: [first.relay.image],
+  });
+  expect(next.relay.previousImage).toBe(first.relay.image);
+  expect(next.relay.image).toBe(nextInput.env.VERITY_PROJECT_RELAY_IMAGE);
+  const repeated = managedEgressConfiguration({
+    ...nextInput,
+    previousRelay: next.relay,
+    activeRelayImages: [first.relay.image, next.relay.image],
+  });
+  expect(repeated.relay).toEqual(next.relay);
+  const retired = managedEgressConfiguration({
+    ...nextInput,
+    previousRelay: next.relay,
+    activeRelayImages: [next.relay.image],
+  });
+  expect(retired.relay.previousImage).toBeUndefined();
+  const thirdInput = input();
+  thirdInput.env.VERITY_PROJECT_RELAY_IMAGE = `ghcr.io/example/relay@sha256:${'d'.repeat(64)}`;
+  expect(() =>
+    managedEgressConfiguration({
+      ...thirdInput,
+      previousRelay: next.relay,
+      activeRelayImages: [first.relay.image, next.relay.image],
+    }),
+  ).toThrow('more than one retained');
+  expect(() =>
+    managedEgressConfiguration({
+      ...nextInput,
+      previousRelay: first.relay,
+      activeRelayImages: ['untrusted:latest'],
+    }),
+  ).toThrow('outside installed');
+  const changed = { ...first.relay, dataVolume: 'other-data' };
+  expect(() =>
+    managedEgressConfiguration({
+      ...nextInput,
+      previousRelay: changed,
+      activeRelayImages: [first.relay.image],
+    }),
+  ).toThrow('execution contract');
+});

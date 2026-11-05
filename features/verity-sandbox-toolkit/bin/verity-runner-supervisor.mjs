@@ -2399,6 +2399,13 @@ export function createTurnStarter(runtimeDir, runnerInstanceId, options = {}) {
   return {
     start,
     cancel,
+    // A persisted running flag and a stale socket inode are not proof of life.
+    // Only this supervisor's child or a worker adopted under its liveness lock is.
+    workerStatus(turnId) {
+      return children.has(turnId) || options.adoptedTurns?.has(turnId) === true
+        ? 'live'
+        : 'uncertain';
+    },
     runTrustedCli(request, onSpawned, outputOptions = {}) {
       return runTrustedCliViaBroker(request, {
         runtimeDir,
@@ -2784,7 +2791,14 @@ export async function handleSupervisorRequest(
       return { ok: true, turns: await listTurns(runtimeDir) };
     case 'get-turn': {
       if (typeof request.turnId !== 'string') throw new Error('invalid turnId');
-      return { ok: true, state: await readTurnState(runtimeDir, request.turnId) };
+      const state = await readTurnState(runtimeDir, request.turnId);
+      return {
+        ok: true,
+        state,
+        ...(state?.status === 'running' && typeof turnStarter?.workerStatus === 'function'
+          ? { workerStatus: turnStarter.workerStatus(request.turnId) }
+          : {}),
+      };
     }
     case 'claim-turn':
       return { ok: true, ...(await claimTurn(runtimeDir, request, runnerInstanceId)) };

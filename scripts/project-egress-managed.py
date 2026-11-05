@@ -21,8 +21,11 @@ spec = importlib.util.spec_from_file_location(
     'egress_install', Path(__file__).with_name('project-egress-install.py'))
 base = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(base)
-ASSETS = (*base.ASSETS, 'node')
+ASSETS = (*base.ASSETS, 'node', 'native-runtime-pins.env')
 SERVICE = 'verity-egress-host.service'
+INVENTORY_CONTRACT = 'etc/verity-egress-server/inventory-contract.json'
+ASSESSMENT_CONFIG = 'etc/verity-egress/assessment.json'
+ASSESSMENT_NOTICE = 'etc/verity-egress-server/assessment.json'
 
 
 def ensure_control_group(gid, run):
@@ -164,6 +167,10 @@ def unit_files(files, gid):
     units = {}
     for name, relative in base.UNITS.items():
         content = files[name].decode().replace('/usr/bin/node ', '/opt/verity-egress/node ')
+        content = content.replace('# Experimental fixture unit; not installed by verity-install.',
+                                  '# Managed profile-gated unit.')
+        content = content.replace('# Experimental Docker drop-in; not installed by verity-install.',
+                                  '# Managed profile-gated Docker prerequisite.')
         content = content.replace('Group=verity-egress-control', 'Group=' + str(gid))
         # Restart=on-failure handles controller crashes; Upholds would race an
         # intentional controller-only upgrade while Docker remains running.
@@ -174,6 +181,8 @@ def unit_files(files, gid):
             content = content.replace('ReadWritePaths=',
                                       'ReadWritePaths=/etc/verity-egress ', 1)
             content = content.replace('ExecStartPre=',
+                                      'ExecStartPre=/usr/bin/python3 /usr/local/libexec/verity/'
+                                      'project-egress-managed.py verify-runtime\n'
                                       'ExecStartPre=/usr/bin/python3 /usr/local/libexec/verity/'
                                       'project-egress-managed.py refresh-authority\nExecStartPre=', 1)
         units[relative] = content.encode()
@@ -219,7 +228,7 @@ TRANSACTION_FILES = frozenset((*base.UNITS.values(),
     'usr/local/libexec/verity/project-egress-managed.py',
     'usr/local/libexec/verity/project-egress-install.py',
     'etc/verity-egress/relay.json', 'etc/verity-egress/authority.json',
-    'etc/verity-egress/database.json'))
+    'etc/verity-egress/database.json', ASSESSMENT_CONFIG))
 JOURNAL = 'var/lib/verity-egress/install-transaction.json'
 
 
@@ -257,7 +266,7 @@ def recover_transaction(root, run):
     if (not isinstance(value, dict) or set(value) != {'version', 'previous', 'target', 'snapshots'}
             or value['version'] != 1 or not isinstance(value['snapshots'], dict)
             or not set(value['snapshots']) <= TRANSACTION_FILES
-            or not (TRANSACTION_FILES - {'etc/verity-egress/database.json'}) <= set(value['snapshots'])):
+            or not (TRANSACTION_FILES - {'etc/verity-egress/database.json', ASSESSMENT_CONFIG}) <= set(value['snapshots'])):
         raise ValueError('Invalid managed transaction journal')
     release = verified_release(root, value['target'])
     previous = value['previous']
@@ -307,6 +316,172 @@ def recover_transaction(root, run):
     return True
 
 
+RECOVERY_UNIT = 'etc/systemd/system/verity-egress-recovery.service'
+RECOVERY_DROPIN = 'etc/systemd/system/verity-egress-bootstrap.service.d/recovery.conf'
+RECOVERY_DOCKER_DROPIN = 'etc/systemd/system/docker.service.d/egress-recovery.conf'
+
+
+def install_boot_recovery(root, run):
+    """Install immutable recovery code before any journaled activation mutation."""
+    files = {'project-egress-managed.py': Path(__file__).read_bytes(),
+             'project-egress-install.py': Path(base.__file__).read_bytes()}
+    identity = base.digest(b''.join(name.encode() + files[name] for name in sorted(files)))
+    parent = root / 'opt/verity-egress-recovery'
+    destination = parent / identity
+    base.trusted_parent(destination / 'entry', root)
+    if destination.exists() or destination.is_symlink():
+        info = destination.lstat()
+        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid()
+                or info.st_mode & 0o222 or {p.name for p in destination.iterdir()} != set(files)):
+            raise ValueError('Untrusted boot recovery release')
+        for name, data in files.items():
+            info = (destination / name).lstat()
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
+                    or info.st_mode & 0o222 or (destination / name).read_bytes() != data):
+                raise ValueError('Modified boot recovery release')
+    else:
+        base.durable_mkdir(parent)
+        temporary = Path(tempfile.mkdtemp(prefix='.prepare-', dir=parent))
+        try:
+            for name, data in files.items():
+                base.atomic_file(temporary / name, data, 0o444)
+            temporary.chmod(0o555)
+            base.sync_directory(temporary)
+            os.rename(temporary, destination)
+            base.sync_directory(parent)
+        finally:
+            if temporary.exists():
+                temporary.chmod(0o700)
+                shutil.rmtree(temporary)
+    # Systemd resolves every ReadWritePaths entry before executing recovery.
+    # A fresh host must have the mutable helper destination before unit startup.
+    directory(root / 'usr/local/libexec/verity', root, 0o755)
+    # These persist outside rollback snapshots: a failed first installation
+    # must retain its recovery dependency for the next boot.
+    unit = f'''[Unit]
+Description=Recover interrupted Verity project network installation
+Before=verity-egress-bootstrap.service docker.service
+After=local-fs.target systemd-tmpfiles-setup.service
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/bin/python3 -B {destination}/project-egress-managed.py recover
+RemainAfterExit=yes
+TimeoutStartSec=120
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/verity-egress /etc/verity-egress /etc/verity-egress-server /run/verity-egress /etc/systemd/system /usr/local/libexec/verity /opt
+RestrictAddressFamilies=AF_UNIX AF_NETLINK AF_INET AF_INET6
+'''
+    dropin = b'[Unit]\nRequires=verity-egress-recovery.service\nAfter=verity-egress-recovery.service\n'
+    for relative, data in ((RECOVERY_UNIT, unit.encode()), (RECOVERY_DROPIN, dropin),
+                           (RECOVERY_DOCKER_DROPIN, dropin)):
+        path = root / relative
+        base.trusted_parent(path, root)
+        if path.exists() or path.is_symlink():
+            info = path.lstat()
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o022:
+                raise ValueError('Untrusted boot recovery unit')
+        base.atomic_file(path, data, 0o644)
+    run('/usr/bin/systemctl', 'daemon-reload')
+    # Run clean before the journal exists; otherwise bootstrap would wait for
+    # recovery to acquire the install lock held by this activation process.
+    run('/usr/bin/systemctl', 'start', 'verity-egress-recovery.service')
+    return destination
+
+
+def recover_boot(root=Path('/'), run=base.command):
+    """Recovery only: never stage assets or admit a runtime profile."""
+    journal = root / JOURNAL
+    if not journal.exists() and not journal.is_symlink():
+        return False
+    state = root / 'var/lib/verity-egress'
+    base.trusted_parent(state / 'install.lock', root)
+    lock_fd = os.open(state / 'install.lock', os.O_CREAT | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(lock_fd, 'a') as lock:
+        info = os.fstat(lock.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o077:
+            raise ValueError('Untrusted managed installation lock')
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        def boot_command(*args):
+            if args == ('/usr/bin/systemctl', 'stop', SERVICE):
+                active = run('/usr/bin/systemctl', 'show', '--property=ActiveState',
+                             '--value', SERVICE).strip()
+                if active in ('inactive', 'failed'):
+                    # The controller may have a pending start behind this unit.
+                    # Stopping an inactive unit would cancel that fresh admission.
+                    return ''
+                if active not in ('active', 'activating', 'deactivating', 'reloading'):
+                    raise ValueError('Cannot establish boot controller state')
+            return run(*args)
+        result = recover_transaction(root, boot_command)
+        # Boot recovery deliberately leaves the controller stopped. It does not
+        # convert a previously persisted in-progress diagnostic into readiness.
+        projection = root / 'etc/verity-egress-server/control.key'
+        info = projection.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o027:
+            raise ValueError('Untrusted server key projection')
+        directory(root / 'run/verity-egress', root, 0o750, info.st_gid)
+        write_status(root, info.st_gid, 'controller_failed')
+        return result
+
+
+def reconcile_stopped_relay_policy(root, run, target):
+    """The stopped controller can no longer append an old-image relay after this read."""
+    registry = root / 'var/lib/verity-egress/registry.json'
+    state = json.loads(private_file(registry)) if registry.exists() else {'version': 1, 'records': []}
+    if (not isinstance(state, dict) or state.get('version') != 1
+            or not isinstance(state.get('records'), list) or len(state['records']) > 10000):
+        raise ValueError('Invalid stopped relay registry')
+    active = set()
+    for record in state['records']:
+        if not isinstance(record, dict):
+            raise ValueError('Invalid stopped relay record')
+        if record.get('retired') is True:
+            continue
+        containers = record.get('containers')
+        if not isinstance(containers, dict):
+            raise ValueError('Invalid stopped relay containers')
+        relay = containers.get('relay')
+        if relay is None:
+            continue
+        if not isinstance(relay, str) or not re.fullmatch('[a-f0-9]{64}', relay):
+            raise ValueError('Invalid stopped relay identity')
+        inspected = json.loads(run('/usr/bin/docker', '--host=unix:///var/run/docker.sock',
+                                   'container', 'inspect', relay))
+        if (not isinstance(inspected, list) or len(inspected) != 1
+                or inspected[0].get('Id') != relay):
+            raise ValueError('Stopped relay inspection mismatch')
+        image = inspected[0].get('Config', {}).get('Image')
+        if not isinstance(image, str):
+            raise ValueError('Stopped relay image missing')
+        active.add(image)
+    new = json.loads(target)
+    old_path = root / 'etc/verity-egress/relay.json'
+    old = json.loads(private_file(old_path)) if old_path.exists() else None
+    # Empty generations may safely prune stale retention only while starts are stopped.
+    new.pop('previousImage', None)
+    if active:
+        if not isinstance(old, dict):
+            raise ValueError('Protected relay has no installed release authority')
+        allowed = {old.get('image'), old.get('previousImage'), new.get('image')}
+        if any(image not in allowed for image in active):
+            raise ValueError('Protected relay is outside installed release authority')
+        old_contract = {k: v for k, v in old.items() if k not in ('image', 'previousImage')}
+        new_contract = {k: v for k, v in new.items() if k not in ('image', 'previousImage')}
+        if old_contract != new_contract:
+            raise ValueError('Protected relay execution contract cannot change during cutover')
+        retained = active - {new.get('image')}
+        if len(retained) > 1:
+            raise ValueError('Update requires more than one retained protected relay image')
+        if retained:
+            new['previousImage'] = retained.pop()
+    return (json.dumps(new, sort_keys=True) + '\n').encode()
+
+
 def activate(root, run, release, files, configs, gid):
     current = root / 'opt/verity-egress'
     if current.exists() and not current.is_symlink():
@@ -335,6 +510,7 @@ def activate(root, run, release, files, configs, gid):
     journal = root / JOURNAL
     if journal.exists() or journal.is_symlink():
         raise ValueError('Managed transaction requires recovery')
+    install_boot_recovery(root, run)
     transaction = {'version': 1, 'previous': old_target, 'target': str(release),
                    'snapshots': {name: None if data is None else data.hex()
                                  for name, data in snapshots.items()}}
@@ -346,6 +522,9 @@ def activate(root, run, release, files, configs, gid):
     try:
         base.stop_controller(run)
         run(*deny)
+        relay_path = 'etc/verity-egress/relay.json'
+        if relay_path in configs:
+            changes[relay_path] = reconcile_stopped_relay_policy(root, run, configs[relay_path])
         base.switch_link(current, str(release))
         for relative, data in changes.items():
             base.atomic_file(root / relative, data, 0o600 if relative in configs else 0o644)
@@ -362,7 +541,7 @@ def activate(root, run, release, files, configs, gid):
 
 def provision(source, relay=None, authority=None, gid=65531, root=Path('/'), run=base.command,
               check=base.runtime_preflight, database=None, prepare_only=False,
-              group_setup=None):
+              group_setup=None, assessment_authorization=None):
     if (root == Path('/') and os.geteuid() != 0) or not 1 <= gid <= 2147483647:
         raise ValueError('Managed provisioning requires root and a positive control gid')
     files = release_files(source)
@@ -421,8 +600,17 @@ def provision(source, relay=None, authority=None, gid=65531, root=Path('/'), run
                 for relative, data in configs.items():
                     base.atomic_file(root / relative, data, 0o600)
             return write_status(root, gid, 'runtime_unsupported')
+        assessment = None
         try:
-            check(root, run, str(release / 'node'))
+            if assessment_authorization is not None:
+                authorization = json.loads(private_file(assessment_authorization))
+                assessment = base.prepare_staging_assessment(root, run, str(release / 'node'), authorization)
+                base.runtime_preflight(root, run, str(release / 'node'), assessment=assessment)
+                configs[ASSESSMENT_CONFIG] = (json.dumps(assessment, sort_keys=True) + '\n').encode()
+            elif check is base.runtime_preflight:
+                base.prepare_managed_prerequisites(root, run, str(release / 'node'))
+            if assessment is None:
+                check(root, run, str(release / 'node'))
         except (ValueError, OSError, subprocess.SubprocessError):
             # Preserve running release/config/units on incompatible upgrades.
             if not (root / 'opt/verity-egress').is_symlink():
@@ -431,11 +619,37 @@ def provision(source, relay=None, authority=None, gid=65531, root=Path('/'), run
             return write_status(root, gid, 'runtime_unsupported')
         try:
             reject_bridge_collisions(root, run)
+            # Persist before the first controller can synchronize/open admission.
+            # Never roll this contract back: protected generations may survive.
+            shared_file(root / INVENTORY_CONTRACT, b'{"version":1,"required":true}\n', gid)
+            if assessment is not None:
+                shared_file(root / ASSESSMENT_NOTICE,
+                            b'{"scope":"staging-assessment","productionAccepted":false}\n', gid)
             activate(root, run, release, files, configs, gid)
         except Exception:
             write_status(root, gid, 'controller_failed')
             raise
+        if assessment is None:
+            for relative in (ASSESSMENT_CONFIG, ASSESSMENT_NOTICE):
+                path = root / relative
+                if path.exists() or path.is_symlink():
+                    private_file(path) if relative == ASSESSMENT_CONFIG else None
+                    path.unlink()
+                    base.sync_directory(path.parent)
         return write_status(root, gid, 'ready', True)
+
+
+def verify_runtime(root=Path('/'), run=base.command):
+    # Production evidence always wins; a candidate never upgrades that evidence.
+    try:
+        base.runtime_preflight(root, run, str(root / 'opt/verity-egress/node'))
+        return
+    except ValueError:
+        path = root / ASSESSMENT_CONFIG
+        if not path.exists() and not path.is_symlink():
+            raise
+    descriptor = json.loads(private_file(path))
+    base.runtime_preflight(root, run, str(root / 'opt/verity-egress/node'), assessment=descriptor)
 
 
 def main():
@@ -448,15 +662,25 @@ def main():
     managed.add_argument('--control-gid', type=int, default=65531)
     managed.add_argument('--database-config', type=Path)
     managed.add_argument('--prepare-only', action='store_true')
+    managed.add_argument('--assessment-authorization', type=Path)
     actions.add_parser('refresh-authority')
+    actions.add_parser('recover')
+    actions.add_parser('verify-runtime')
     args = parser.parse_args()
     try:
+        if args.action == 'verify-runtime':
+            verify_runtime()
+            return
+        if args.action == 'recover':
+            recover_boot()
+            return
         if args.action == 'refresh-authority':
             refresh_authority()
             return
         result = provision(args.release.resolve(), args.relay_config, args.authority_config,
                            args.control_gid, database=args.database_config,
-                           prepare_only=args.prepare_only)
+                           prepare_only=args.prepare_only,
+                           assessment_authorization=args.assessment_authorization)
     except Exception:
         # Command output is consumed by diagnostics; do not print config paths,
         # database URLs, raw subprocess errors or secret material.

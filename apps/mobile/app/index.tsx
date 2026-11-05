@@ -70,6 +70,7 @@ import {
   useRef,
   useState,
   type ReactNode,
+  type ComponentProps,
   type RefCallback,
 } from 'react';
 import {
@@ -1116,6 +1117,108 @@ function statusToneStyle(tone: ProjectOverviewStatus['tone']) {
   }
 }
 
+// Keep unchanged drag wrappers out of selection and shared-collection updates.
+const ProjectSessionEntry = memo(function ProjectSessionEntry({
+  scope,
+  order,
+  reorder,
+  enabled,
+  divider,
+  session,
+  reorderable,
+  interactionsLocked,
+  onRename,
+  onOpenLinks,
+  onToggleFavorite,
+  onDelete,
+  onSelect,
+  onOpen,
+  onMoveUp,
+  onMoveDown,
+  unread,
+  previewActive,
+  previewPublic,
+  previewUrl,
+  repo,
+  projectKind,
+  selected,
+  renaming,
+}: Omit<
+  ComponentProps<typeof SessionRow>,
+  'dragHandleRef' | 'dragIssueRef' | 'dragMarkersRef' | 'floating'
+> & {
+  scope: string;
+  order: readonly string[];
+  reorder: ProjectReorderController;
+  enabled: boolean;
+  divider: boolean;
+}) {
+  const renderRow = useCallback(
+    (handle: RefCallback<View>, issue: RefCallback<View>, markers: RefCallback<View>) => (
+      <Fragment>
+        {divider ? <View style={styles.sessionDivider} /> : null}
+        <SessionRow
+          dragHandleRef={handle}
+          dragIssueRef={issue}
+          dragMarkersRef={markers}
+          session={session}
+          reorderable={reorderable}
+          interactionsLocked={interactionsLocked}
+          onRename={onRename}
+          onOpenLinks={onOpenLinks}
+          onToggleFavorite={onToggleFavorite}
+          onDelete={onDelete}
+          onSelect={onSelect}
+          onOpen={onOpen}
+          onMoveUp={onMoveUp}
+          onMoveDown={onMoveDown}
+          unread={unread}
+          previewActive={previewActive}
+          previewPublic={previewPublic}
+          previewUrl={previewUrl}
+          repo={repo}
+          projectKind={projectKind}
+          selected={selected}
+          renaming={renaming}
+        />
+      </Fragment>
+    ),
+    [
+      divider,
+      session,
+      reorderable,
+      interactionsLocked,
+      onRename,
+      onOpenLinks,
+      onToggleFavorite,
+      onDelete,
+      onSelect,
+      onOpen,
+      onMoveUp,
+      onMoveDown,
+      unread,
+      previewActive,
+      previewPublic,
+      previewUrl,
+      repo,
+      projectKind,
+      selected,
+      renaming,
+    ],
+  );
+  return (
+    <SessionDragSlot
+      id={`session:${session.sessionId}`}
+      scope={scope}
+      order={order}
+      reorder={reorder}
+      enabled={enabled}
+    >
+      {renderRow}
+    </SessionDragSlot>
+  );
+});
+
 const ProjectGroup = memo(function ProjectGroup({
   group,
   floating = false,
@@ -1209,42 +1312,26 @@ const ProjectGroup = memo(function ProjectGroup({
     () => (
       <View style={styles.projectSessions}>
         {group.sessions.map((session, index) => (
-          <SessionDragSlot
+          <ProjectSessionEntry
             key={session.sessionId}
-            id={`session:${session.sessionId}`}
             scope={group.id}
             order={sessionDragOrder}
             reorder={reorder}
             enabled={sessionDragEnabled}
-          >
-            {(handle, issue, markers) => (
-              <Fragment>
-                {/* Quiet inset hairline between sessions (never above the first — the
-                  project header already draws its own bottom border). Inset to start
-                  under the session title, leaving the dot gutter clear (iOS-style
-                  leading inset), so adjacent session blocks read as separate without
-                  the restless full-width line grid the group had before. */}
-                {index > 0 ? <View style={styles.sessionDivider} /> : null}
-                <SessionRow
-                  session={session}
-                  dragHandleRef={handle}
-                  dragIssueRef={issue}
-                  dragMarkersRef={markers}
-                  reorderable={sessionReordering}
-                  interactionsLocked={reordering}
-                  {...rowCallbacks.get(session.sessionId)!}
-                  unread={unread.has(session.sessionId)}
-                  previewActive={previewUrls.has(session.sessionId)}
-                  previewPublic={publicPreviews.has(session.sessionId)}
-                  previewUrl={previewUrls.get(session.sessionId) ?? null}
-                  repo={group.repo}
-                  projectKind={group.project?.kind}
-                  selected={selectedId === session.sessionId}
-                  renaming={renamingId === session.sessionId}
-                />
-              </Fragment>
-            )}
-          </SessionDragSlot>
+            divider={index > 0}
+            session={session}
+            reorderable={sessionReordering}
+            interactionsLocked={reordering}
+            {...rowCallbacks.get(session.sessionId)!}
+            unread={unread.has(session.sessionId)}
+            previewActive={previewUrls.has(session.sessionId)}
+            previewPublic={publicPreviews.has(session.sessionId)}
+            previewUrl={previewUrls.get(session.sessionId) ?? null}
+            repo={group.repo}
+            projectKind={group.project?.kind}
+            selected={selectedId === session.sessionId}
+            renaming={renamingId === session.sessionId}
+          />
         ))}
       </View>
     ),

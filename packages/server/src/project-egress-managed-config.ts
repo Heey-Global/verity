@@ -88,6 +88,8 @@ export function managedEgressConfiguration(input: {
   databaseInspection: unknown;
   dnsServers: string[];
   previousAuthority?: unknown;
+  previousRelay?: unknown;
+  activeRelayImages?: readonly string[];
 }) {
   const { env } = input;
   const source = new URL(env.DATABASE_URL ?? '');
@@ -124,7 +126,7 @@ export function managedEgressConfiguration(input: {
       ? (JSON.parse(env.VERITY_EGRESS_MANDATORY_HOSTS) as unknown)
       : [],
   });
-  const relay = egressRelayPolicy.parse({
+  let relay = egressRelayPolicy.parse({
     image: env.VERITY_PROJECT_RELAY_IMAGE || env.VERITY_BUNDLED_PROJECT_RELAY_IMAGE,
     dataVolume: env.VERITY_DATA_VOLUME,
     socketOwnerUid: Number(env.VERITY_SERVER_UID ?? '1000'),
@@ -134,6 +136,24 @@ export function managedEgressConfiguration(input: {
     codexSubpath: 'relay/codex',
     packetEnforcement: true,
   });
+  if (input.previousRelay !== undefined) {
+    const old = egressRelayPolicy.parse(input.previousRelay);
+    const { image: oldImage, previousImage: oldPrevious, ...oldContract } = old;
+    const { image: newImage, ...newContract } = relay;
+    const active = [
+      ...new Set(input.activeRelayImages ?? [oldImage, ...(oldPrevious ? [oldPrevious] : [])]),
+    ];
+    if (active.some((image) => image !== oldImage && image !== oldPrevious && image !== newImage))
+      throw new Error('Protected relay is outside installed release authority');
+    if (active.length && JSON.stringify(oldContract) !== JSON.stringify(newContract))
+      throw new Error('Protected relay execution contract cannot change during cutover');
+    const retained = active.filter((image) => image !== newImage);
+    if (retained.length > 1)
+      throw new Error('Update requires more than one retained protected relay image');
+    if (retained[0]) relay = egressRelayPolicy.parse({ ...relay, previousImage: retained[0] });
+  } else if (input.activeRelayImages?.length) {
+    throw new Error('Protected relay has no installed release authority');
+  }
   return {
     relay,
     authority,

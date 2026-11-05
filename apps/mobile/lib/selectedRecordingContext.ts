@@ -1,9 +1,42 @@
-import { requireNativeModule } from 'expo-modules-core';
+import { requireOptionalNativeModule } from 'expo-modules-core';
+import { nativeTunnelUnsupported } from './nativeTunnelSupport';
 import { VerityClient } from '@verity/mobile';
 import { CryptoDigestAlgorithm, digestStringAsync } from 'expo-crypto';
 import { getAuthToken } from './authToken';
 import { createPinnedFetch } from './pinnedTransport';
 import { getServerProfile } from './serverProfile';
+
+/**
+ * Confirms no native DATA tunnel is running on this device. It needs no paired
+ * direct connection. Starting a test fails closed on every error; discarding
+ * an unfinished test additionally accepts `isNativeTunnelUnsupported`, raised
+ * only when the module reports itself unsupported: such a device
+ * has no tunnel that could be capturing. Any other failure still fails closed.
+ */
+export async function assertNativeTunnelInactive() {
+  // Expo returns null both for absence and some initialization errors. That
+  // ambiguity cannot establish inactivity, so discard must fail closed too.
+  const native = requireOptionalNativeModule<{
+    isActive(): Promise<boolean>;
+    isSupported(): Promise<boolean>;
+  }>('VerityRemoteControlTunnel');
+  if (!native) throw new Error('Native status unavailable.');
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      (async () => {
+        if (!(await native.isSupported())) throw nativeTunnelUnsupported();
+        if (await native.isActive())
+          throw new Error('An existing DATA tunnel must be stopped before testing.');
+      })(),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error('Native status unavailable.')), 3000);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 /** Never use the normal client's remote fallback for diagnostic administration. */
 export function selectedRecordingContext() {
@@ -46,28 +79,7 @@ export function selectedRecordingContext() {
       uplinkOrigin: remote.uplinkOrigin,
       installationHandle: remote.installationHandle,
     },
-    async assertInactive() {
-      const native = requireNativeModule<{
-        isActive(): Promise<boolean>;
-        isSupported(): Promise<boolean>;
-      }>('VerityRemoteControlTunnel');
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      try {
-        await Promise.race([
-          (async () => {
-            if (!(await native.isSupported()))
-              throw new Error('Native connection test unsupported.');
-            if (await native.isActive())
-              throw new Error('An existing DATA tunnel must be stopped before testing.');
-          })(),
-          new Promise<never>((_, reject) => {
-            timer = setTimeout(() => reject(new Error('Native status unavailable.')), 3000);
-          }),
-        ]);
-      } finally {
-        clearTimeout(timer);
-      }
-    },
+    assertInactive: assertNativeTunnelInactive,
     async verify() {
       const descriptor = await client.getRemoteControlDescriptor();
       if (

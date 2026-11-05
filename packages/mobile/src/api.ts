@@ -2078,7 +2078,10 @@ const inboxDismissedSchema = z.object({
   inboxDismissed: z.array(z.string()),
 });
 
-const sessionDeletedSchema = z.object({ sessionId: z.string().min(1) });
+const sessionDeletedSchema = z.object({
+  sessionId: z.string().min(1),
+  cleanup: z.enum(['pending', 'complete']).optional(),
+});
 export type SessionDeleted = z.infer<typeof sessionDeletedSchema>;
 
 /** Body for `POST /sessions` (create an empty session/worktree). `name` both seeds the worktree

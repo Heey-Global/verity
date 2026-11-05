@@ -385,7 +385,11 @@ export function registerSessionCreateRoute(
       });
     } catch (error) {
       await deps.deleteSessionEverywhere(sessionId).catch(() => false);
-      if (allocatedWorktree !== undefined) {
+      if (
+        allocatedWorktree !== undefined &&
+        !(await deps.eventStore.isWorktreeBeingDeleted(worktree)) &&
+        !(await deps.eventStore.listSessions()).some((owner) => owner.worktree === worktree)
+      ) {
         await allocatedWorktree.remove(worktree).catch(() => undefined);
       }
       // The project was deleted while this spawn was still provisioning, which

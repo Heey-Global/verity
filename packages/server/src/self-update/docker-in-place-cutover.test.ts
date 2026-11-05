@@ -1,3 +1,5 @@
+import { readdir, readFile, utimes, writeFile, mkdir } from 'node:fs/promises';
+import { join } from 'node:path';
 import { runInNewContext } from 'node:vm';
 import { describe, expect, it, vi } from 'vitest';
 import { createEmbeddedDb } from '@verity/store/testing';
@@ -200,6 +202,131 @@ describe('standby promotion cutover', () => {
       backend: 'verity-managed-server-g1',
       drains: [30_000],
     });
+  });
+
+  it('retires stopped leftover Servers of this deployment and keeps their logs', async () => {
+    const { root, daemon } = await prepared();
+    const serverSpec = daemon.spec(MANAGED_SERVER_NAME)!;
+    // A bootstrap-era Server an earlier retirement never removed, stopped.
+    const leftover = await daemon.docker.createContainer({
+      ...serverSpec,
+      name: 'verity-managed-server-g7',
+    });
+    await daemon.docker.stopContainer(leftover.id);
+    // Created but never started: possibly a concurrent repair's, so it stays.
+    await daemon.docker.createContainer({ ...serverSpec, name: 'verity-managed-server-g6' });
+    // A running Server under another name is not this cutover's to stop.
+    const running = await daemon.docker.createContainer({
+      ...serverSpec,
+      name: 'verity-managed-server-g9',
+    });
+    await daemon.docker.startContainer(running.id);
+    // Another deployment's Server on the same daemon is never touched.
+    await daemon.docker.createContainer({
+      ...serverSpec,
+      name: 'verity-managed-server-g8',
+      labels: { ...serverSpec.labels, 'verity.managed-deployment-id': 'other-deployment' },
+    });
+    daemon.logs.set(MANAGED_SERVER_NAME, 'old generation said goodbye\n');
+    daemon.logs.set('verity-managed-server-g7', 'leftover token=ghp_' + 'x'.repeat(36) + '\n');
+
+    await expect(resumeUpdateCutover(await cutover(root, daemon))).resolves.toMatchObject({
+      phase: 'committed',
+    });
+
+    expect(daemon.names()).toEqual([
+      'verity-managed-server-g1',
+      'verity-managed-server-g6',
+      'verity-managed-server-g8',
+      'verity-managed-server-g9',
+    ]);
+    const logs = join(root, 'server-logs');
+    expect((await readdir(logs)).sort()).toEqual([
+      'verity-managed-server-g7.log',
+      'verity-managed-server.log',
+    ]);
+    expect(await readFile(join(logs, 'verity-managed-server.log'), 'utf8')).toContain(
+      'old generation said goodbye',
+    );
+    expect(await readFile(join(logs, 'verity-managed-server-g7.log'), 'utf8')).not.toContain(
+      'ghp_' + 'x'.repeat(36),
+    );
+  });
+
+  it('preserves a leftover that restarts while its logs are archived', async () => {
+    const { root, daemon } = await prepared();
+    const leftover = await daemon.docker.createContainer({
+      ...daemon.spec(MANAGED_SERVER_NAME)!,
+      name: 'verity-managed-server-g7',
+    });
+    await daemon.docker.stopContainer(leftover.id);
+    vi.mocked(daemon.docker.containerLogs!).mockImplementation(async (id) => {
+      if (id === leftover.id) await daemon.docker.startContainer(id);
+      return '';
+    });
+
+    await expect(resumeUpdateCutover(await cutover(root, daemon))).resolves.toMatchObject({
+      phase: 'committed',
+    });
+    expect(daemon.status('verity-managed-server-g7')).toBe('running');
+    expect(daemon.docker.removeStoppedContainer).toHaveBeenCalledWith(leftover.id);
+    expect(daemon.docker.removeContainer).not.toHaveBeenCalledWith(leftover.id);
+  });
+
+  it('never lets leftover log copies evict the retired generation logs', async () => {
+    const { root, daemon } = await prepared();
+    const serverSpec = daemon.spec(MANAGED_SERVER_NAME)!;
+    for (const name of [
+      'verity-managed-server-g5',
+      'verity-managed-server-g6',
+      'verity-managed-server-g7',
+    ])
+      await daemon.docker.stopContainer(
+        (await daemon.docker.createContainer({ ...serverSpec, name })).id,
+      );
+    daemon.logs.set(MANAGED_SERVER_NAME, 'the retired generation\n');
+    daemon.logs.set('verity-managed-server-g5', 'leftover five\n');
+    daemon.logs.set('verity-managed-server-g6', 'leftover six\n');
+    // g7 stopped long ago and has nothing in the window: no empty copy is written.
+
+    await resumeUpdateCutover(await cutover(root, daemon));
+
+    expect(daemon.names()).toEqual(['verity-managed-server-g1']);
+    const kept = await readdir(join(root, 'server-logs'));
+    expect(kept).toHaveLength(2);
+    expect(kept).toContain('verity-managed-server.log');
+    expect(kept).not.toContain('verity-managed-server-g7.log');
+  });
+
+  it('keeps only the two most recent retired Server logs', async () => {
+    const { root, daemon } = await prepared();
+    daemon.logs.set(MANAGED_SERVER_NAME, 'retired\n');
+    const logs = join(root, 'server-logs');
+    await mkdir(logs, { recursive: true });
+    for (const [name, age] of [
+      ['verity-managed-server-g3.log', 3],
+      ['verity-managed-server-g4.log', 2],
+      ['unrelated.txt', 9],
+    ] as const) {
+      await writeFile(join(logs, name), name);
+      const at = new Date(Date.now() - age * 3_600_000);
+      await utimes(join(logs, name), at, at);
+    }
+    await resumeUpdateCutover(await cutover(root, daemon));
+    expect((await readdir(logs)).sort()).toEqual([
+      'unrelated.txt',
+      'verity-managed-server-g4.log',
+      'verity-managed-server.log',
+    ]);
+  });
+
+  it('still retires the old Server when its logs cannot be read', async () => {
+    const { root, daemon } = await prepared();
+    vi.mocked(daemon.docker.containerLogs!).mockRejectedValue(new Error('log driver none'));
+    await expect(resumeUpdateCutover(await cutover(root, daemon))).resolves.toMatchObject({
+      phase: 'committed',
+    });
+    expect(daemon.names()).toEqual(['verity-managed-server-g1']);
   });
 
   it('restores traffic when stopping the old Server fails before it is fenced', async () => {

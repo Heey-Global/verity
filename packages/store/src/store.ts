@@ -1,3 +1,9 @@
+import {
+  egressDestinationDb,
+  withEgressDestinationTransaction,
+  type EgressDestinationMutation,
+  unguardedEgressDestinationMutation,
+} from './egress-destination-mutation.js';
 import { UserContextStore } from './user-context.js';
 import { ViewStateStore } from './view-state.js';
 import { AssistantStore } from './assistant.js';
@@ -16,6 +22,7 @@ import {
   type BoundedHistoryResult,
 } from '@verity/events';
 import { createHash, randomUUID } from 'node:crypto';
+import { resolve } from 'node:path';
 import {
   type AgentEvent,
   SESSION_PROJECTION_EVENT_TYPES,
@@ -1248,7 +1255,116 @@ const ABANDONED_TURN_FENCE_INSTANCE = 'verity:abandoned-turn-fence';
  * is persisted and again when it is read back, so the log can never hold — or
  * hand out — an event that violates the schema.
  */
+interface SessionDeletionState {
+  session?: { sessionId?: string; projectId?: string | null; worktree?: string };
+  previewIds?: string[];
+  managed?: { sessionId: string; projectId: string | null; instanceIds: string[] };
+  terminationConfirmed?: boolean;
+  legacyArtifactsPurged?: boolean;
+  artifactBindings?: { backend: string; backendSessionId: string }[];
+  purgedArtifactBindings?: { backend: string; backendSessionId: string }[];
+}
+
+/** Ownership is monotonic even when an older Server writes its retry snapshot. */
+function mergeSessionDeletionState(
+  current: SessionDeletionState,
+  next: SessionDeletionState,
+): SessionDeletionState {
+  const managed = current.managed ?? next.managed;
+  const session = current.session ?? next.session;
+  return {
+    ...current,
+    ...next,
+    artifactBindings: [
+      ...new Map(
+        [...(current.artifactBindings ?? []), ...(next.artifactBindings ?? [])].map((binding) => [
+          JSON.stringify([binding.backend, binding.backendSessionId]),
+          binding,
+        ]),
+      ).values(),
+    ],
+    purgedArtifactBindings: [
+      ...new Map(
+        [...(current.purgedArtifactBindings ?? []), ...(next.purgedArtifactBindings ?? [])].map(
+          (binding) => [JSON.stringify([binding.backend, binding.backendSessionId]), binding],
+        ),
+      ).values(),
+    ],
+    ...(session === undefined ? {} : { session }),
+    previewIds: [...new Set([...(current.previewIds ?? []), ...(next.previewIds ?? [])])],
+    ...(managed === undefined
+      ? {}
+      : {
+          managed: {
+            ...managed,
+            projectId: current.managed?.projectId ?? next.managed?.projectId ?? null,
+            instanceIds: [
+              ...new Set([
+                ...(current.managed?.instanceIds ?? []),
+                ...(next.managed?.instanceIds ?? []),
+              ]),
+            ],
+          },
+        }),
+    ...(current.legacyArtifactsPurged || next.legacyArtifactsPurged
+      ? { legacyArtifactsPurged: true }
+      : {}),
+    ...(current.terminationConfirmed || next.terminationConfirmed
+      ? { terminationConfirmed: true }
+      : {}),
+  };
+}
+
+// PGlite has one physical connection, where advisory locks are re-entrant even
+// through different EventStore wrappers. Keep physical cleanup exclusive there too.
+const sessionDeletionCleanupTails = new WeakMap<Kysely<Database>, Map<string, Promise<void>>>();
+
 export class EventStore implements EventSink {
+  private egressDestinationMutation: EgressDestinationMutation = unguardedEgressDestinationMutation;
+
+  /** Installed before request handlers; every destination store shares this barrier. */
+  setEgressDestinationMutation(barrier: EgressDestinationMutation): void {
+    this.egressDestinationMutation = barrier;
+  }
+
+  /** Plain endpoint metadata only; usable while credentials are sealed. */
+  async readEgressDestinationUrls(): Promise<string[]> {
+    const [settings, mcp, forge, matrix, accounts] = await Promise.all([
+      this.db
+        .selectFrom('verity_settings')
+        .select(['opencode_base_url', 'transcribe_base_url'])
+        .where('id', '=', 'global')
+        .executeTakeFirst(),
+      this.db
+        .selectFrom('http_mcp_connections')
+        .select(['url', 'oauth_authorization_endpoint', 'oauth_token_endpoint'])
+        .execute(),
+      this.db.selectFrom('forge_connections').select('base_url').execute(),
+      this.db.selectFrom('matrix_connector_config').select('endpoint').execute(),
+      this.db.selectFrom('integration_accounts').select('endpoint').execute(),
+    ]);
+    return [
+      settings?.opencode_base_url,
+      settings?.transcribe_base_url,
+      ...mcp.flatMap((row) => [
+        row.url,
+        row.oauth_authorization_endpoint,
+        row.oauth_token_endpoint,
+      ]),
+      ...forge.map((row) => row.base_url),
+      ...matrix.map((row) => row.endpoint),
+      ...accounts.map((row) => row.endpoint),
+    ].filter((url): url is string => typeof url === 'string' && url.trim().length > 0);
+  }
+
+  private get db(): Kysely<Database> {
+    return egressDestinationDb(this.rootDb);
+  }
+
+  withEgressDestinationTransaction<T>(action: () => Promise<T>): Promise<T> {
+    return withEgressDestinationTransaction(this.rootDb, action);
+  }
+
   private readonly backupRevocationListeners = new Set<() => Promise<void>>();
 
   /** Wake destination synchronization after commit; the DB outbox remains the durable authority. */
@@ -1427,14 +1543,17 @@ export class EventStore implements EventSink {
    *   {@link SecretCipher} whose key is derived from the master password.
    */
   constructor(
-    private readonly db: Kysely<Database>,
+    private readonly rootDb: Kysely<Database>,
     private readonly cipher: SecretCipher = createPassthroughCipher(),
   ) {
+    const db = rootDb;
     this.userContext = new UserContextStore(db);
     this.viewState = new ViewStateStore(db);
     this.projectEgress = new ProjectEgressStore(db);
     this.knowledge = new KnowledgeStore(db);
-    this.integrations = new IntegrationStore(db, cipher);
+    this.integrations = new IntegrationStore(db, cipher, (action) =>
+      this.egressDestinationMutation(action),
+    );
     this.liveMeetings = new LiveMeetingStore(db, cipher);
     this.managedDevServers = new ManagedDevServerStore(db);
     this.vulnerabilityScans = new VulnerabilityScanStore(db);
@@ -1879,24 +1998,46 @@ export class EventStore implements EventSink {
       project_id: session.projectId ?? null,
     };
     const projectId = session.projectId;
-    if (projectId === undefined || projectId === null) {
-      await this.db.insertInto('sessions').values(values).execute();
-      return;
-    }
-    await this.db.transaction().execute(async (tx) => {
-      const project = await tx
-        .selectFrom('projects')
-        .select('hidden_at')
-        // SHARE, not UPDATE: concurrent spawns for the same project must not
-        // serialize against each other, only against a delete.
-        .forShare()
-        .where('id', '=', projectId)
-        .executeTakeFirst();
-      // An unknown project id is left to the foreign key — same rejection, and
-      // the FK is the authority on it.
-      if (project?.hidden_at != null) throw new DeletedProjectError(projectId);
+    const insert = async (tx: Kysely<Database>): Promise<void> => {
+      // Never occupy the serving pool waiting behind long physical cleanup.
+      const admission = await sql<{
+        locked: boolean;
+      }>`select pg_try_advisory_xact_lock(hashtext(${this.sessionEventAppendLockKey(session.sessionId)})) as locked`.execute(
+        tx,
+      );
+      if (admission.rows[0]?.locked !== true) throw new Error('Session is being deleted');
+      await this.sessionWorktreeLock(tx, session.worktree);
+      if (
+        await tx
+          .selectFrom('session_deletions')
+          .select('session_id')
+          .where('session_id', '=', session.sessionId)
+          .executeTakeFirst()
+      )
+        throw new Error('Session is being deleted');
+      if (
+        await tx
+          .selectFrom('session_deletions')
+          .select('session_id')
+          .where('worktree', '=', resolve(session.worktree))
+          .where('cleanup_pending', '=', true)
+          .executeTakeFirst()
+      )
+        throw new Error('Session worktree is being deleted');
+      if (projectId !== undefined && projectId !== null) {
+        const project = await tx
+          .selectFrom('projects')
+          .select('hidden_at')
+          // SHARE, not UPDATE: unrelated spawns only serialize against a project delete.
+          .forShare()
+          .where('id', '=', projectId)
+          .executeTakeFirst();
+        if (project?.hidden_at != null) throw new DeletedProjectError(projectId);
+      }
       await tx.insertInto('sessions').values(values).execute();
-    });
+    };
+    if (this.db.isTransaction) await insert(this.db);
+    else await this.db.transaction().execute(insert);
   }
 
   /** The immutable model choice of the newest ordinary session in a scope.
@@ -2077,7 +2218,9 @@ export class EventStore implements EventSink {
   }
 
   get forgeConnections(): ForgeConnectionStore {
-    return new ForgeConnectionStore(this.db, this.cipher);
+    return new ForgeConnectionStore(this.db, this.cipher, (action) =>
+      this.egressDestinationMutation(action),
+    );
   }
 
   get googleAccounts(): GoogleAccountStore {
@@ -3812,9 +3955,260 @@ export class EventStore implements EventSink {
    * This is the ONE delete path through the otherwise append-only store: it
    * removes a whole session on operator request, not individual events.
    */
+  /** Permanent admission tombstone; cleanup payload survives the session FK cascade. */
+  async queueSessionDeletion(sessionId: string, payload: string): Promise<void> {
+    await this.db.transaction().execute(async (tx) => {
+      await this.sessionEventAppendLock(tx, sessionId);
+      if (
+        await tx
+          .selectFrom('session_deletions')
+          .select('session_id')
+          .where('session_id', '=', sessionId)
+          .executeTakeFirst()
+      )
+        return;
+      const parsed = JSON.parse(payload) as SessionDeletionState;
+      const session = await tx
+        .selectFrom('sessions')
+        .select('worktree')
+        .where('session_id', '=', sessionId)
+        .executeTakeFirst();
+      const path = parsed.session?.worktree ?? session?.worktree;
+      const worktree = path === undefined ? null : resolve(path);
+      if (worktree !== null) {
+        await this.sessionWorktreeLock(tx, worktree);
+        if (
+          await tx
+            .selectFrom('session_deletions')
+            .select('session_id')
+            .where('worktree', '=', worktree)
+            .where('cleanup_pending', '=', true)
+            .executeTakeFirst()
+        )
+          throw new Error('Session worktree is being deleted');
+      }
+      await tx
+        .insertInto('session_deletions')
+        .values({ session_id: sessionId, payload, worktree })
+        .execute();
+    });
+  }
+
+  private async sessionWorktreeLock(tx: Kysely<Database>, path: string): Promise<void> {
+    const result = await sql<{
+      locked: boolean;
+    }>`select pg_try_advisory_xact_lock(hashtext(${'session-worktree:' + resolve(path)})) as locked`.execute(
+      tx,
+    );
+    if (result.rows[0]?.locked !== true) throw new Error('Session worktree is being deleted');
+  }
+
+  async isWorktreeBeingDeleted(path: string): Promise<boolean> {
+    return (
+      (await this.db
+        .selectFrom('session_deletions')
+        .select('session_id')
+        .where('worktree', '=', resolve(path))
+        .where('cleanup_pending', '=', true)
+        .executeTakeFirst()) !== undefined
+    );
+  }
+
+  async getSessionDeletion(
+    sessionId: string,
+  ): Promise<{ payload: string; cleanupPending: boolean } | undefined> {
+    const row = await this.db
+      .selectFrom('session_deletions')
+      .select(['payload', 'cleanup_pending'])
+      .where('session_id', '=', sessionId)
+      .executeTakeFirst();
+    return row === undefined
+      ? undefined
+      : { payload: row.payload, cleanupPending: row.cleanup_pending };
+  }
+
+  async isSessionDeleting(sessionId: string): Promise<boolean> {
+    return (
+      (await this.db
+        .selectFrom('session_deletions')
+        .select('session_id')
+        .where('session_id', '=', sessionId)
+        .executeTakeFirst()) !== undefined
+    );
+  }
+
+  async listPendingSessionDeletions(): Promise<{ sessionId: string; payload: string }[]> {
+    const rows = await this.db
+      .selectFrom('session_deletions')
+      .select(['session_id', 'payload'])
+      .where('cleanup_pending', '=', true)
+      .execute();
+    return rows.map((row) => ({ sessionId: row.session_id, payload: row.payload }));
+  }
+
+  async updateSessionDeletionPayload(sessionId: string, payload: string): Promise<void> {
+    await this.db.transaction().execute(async (tx) => {
+      await this.sessionEventAppendLock(tx, sessionId);
+      const current = await tx
+        .selectFrom('session_deletions')
+        .select(['payload', 'cleanup_pending'])
+        .where('session_id', '=', sessionId)
+        .forUpdate()
+        .executeTakeFirst();
+      if (!current?.cleanup_pending) return;
+      const merged = mergeSessionDeletionState(
+        JSON.parse(current.payload) as SessionDeletionState,
+        JSON.parse(payload) as SessionDeletionState,
+      );
+      await tx
+        .updateTable('session_deletions')
+        .set({ payload: JSON.stringify(merged) })
+        .where('session_id', '=', sessionId)
+        .execute();
+    });
+  }
+
+  async finishSessionDeletionCleanup(sessionId: string): Promise<void> {
+    await this.withSessionDeletionCleanup(sessionId, () => Promise.resolve(true));
+  }
+
+  /** Hold cross-Server cleanup ownership without a transaction around host I/O.
+   * Callback queries need their own pool connections; an open transaction here
+   * deadlocks the single-connection test driver and can exhaust a production pool. */
+  async withSessionDeletionCleanup(
+    sessionId: string,
+    work: (payload: string) => Promise<boolean>,
+  ): Promise<boolean> {
+    let tails = sessionDeletionCleanupTails.get(this.db);
+    if (!tails) {
+      tails = new Map();
+      sessionDeletionCleanupTails.set(this.db, tails);
+    }
+    const previous = tails.get(sessionId) ?? Promise.resolve();
+    let release!: () => void;
+    const completion = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const queued = previous.catch(() => undefined).then(() => completion);
+    tails.set(sessionId, queued);
+    await previous.catch(() => undefined);
+    try {
+      return await this.db.connection().execute(async (connection) => {
+        const sessionKey = `session-cleanup:${sessionId}`;
+        await sql`select pg_advisory_lock(hashtext(${sessionKey}))`.execute(connection);
+        let worktree: string | null = null;
+        try {
+          const owned = await connection
+            .selectFrom('session_deletions')
+            .select(['worktree', 'payload', 'cleanup_pending'])
+            .where('session_id', '=', sessionId)
+            .executeTakeFirst();
+          if (!owned?.cleanup_pending) return true;
+          worktree = owned.worktree;
+          if (worktree !== null)
+            await sql`select pg_advisory_lock(hashtext(${'session-worktree:' + worktree}))`.execute(
+              connection,
+            );
+          // A completed tombstone is permanent: stale requests cannot restart cleanup
+          // after a different session legitimately reused the released worktree path.
+          const current = await connection
+            .selectFrom('session_deletions')
+            .select(['payload', 'cleanup_pending'])
+            .where('session_id', '=', sessionId)
+            .executeTakeFirst();
+          if (!current?.cleanup_pending) return true;
+          if (!(await work(current.payload))) return false;
+          await connection
+            .updateTable('session_deletions')
+            .set({ cleanup_pending: false, payload: '{}', worktree: null })
+            .where('session_id', '=', sessionId)
+            .execute();
+          return true;
+        } finally {
+          try {
+            if (worktree !== null)
+              await sql`select pg_advisory_unlock(hashtext(${'session-worktree:' + worktree}))`.execute(
+                connection,
+              );
+          } finally {
+            await sql`select pg_advisory_unlock(hashtext(${sessionKey}))`.execute(connection);
+          }
+        }
+      });
+    } finally {
+      release();
+      if (tails.get(sessionId) === queued) tails.delete(sessionId);
+    }
+  }
+
   async deleteSession(sessionId: string): Promise<boolean> {
     await waitForPendingMessageProjections(this.db);
     return this.db.transaction().execute(async (tx) => {
+      await this.sessionEventAppendLock(tx, sessionId);
+      // Freeze FK-backed creations before capturing the IDs the cascade will erase.
+      // A start committed after the initial HTTP snapshot must still be cleaned up.
+      await tx
+        .selectFrom('sessions')
+        .select('session_id')
+        .where('session_id', '=', sessionId)
+        .forUpdate()
+        .execute();
+      const deletion = await tx
+        .selectFrom('session_deletions')
+        .select('payload')
+        .where('session_id', '=', sessionId)
+        .forUpdate()
+        .executeTakeFirst();
+      if (deletion) {
+        const payload = JSON.parse(deletion.payload) as SessionDeletionState;
+        if (payload.session?.sessionId === sessionId) {
+          const bindings = await tx
+            .selectFrom('session_backend_state')
+            .select(['backend', 'backend_session_id'])
+            .where('session_id', '=', sessionId)
+            .execute();
+          payload.artifactBindings =
+            mergeSessionDeletionState(payload, {
+              artifactBindings: bindings.map((row) => ({
+                backend: row.backend,
+                backendSessionId: row.backend_session_id,
+              })),
+            }).artifactBindings ?? [];
+          const previews = await tx
+            .selectFrom('local_preview_shares')
+            .select('id')
+            .where('session_id', '=', sessionId)
+            .execute();
+          const instances = await tx
+            .selectFrom('managed_dev_server_instances')
+            .select(['id', 'project_id'])
+            .where('session_id', '=', sessionId)
+            .execute();
+          payload.previewIds = [
+            ...new Set([...(payload.previewIds ?? []), ...previews.map((row) => row.id)]),
+          ];
+          if (payload.managed || instances.length > 0)
+            payload.managed = {
+              sessionId,
+              projectId:
+                payload.managed?.projectId ??
+                instances[0]?.project_id ??
+                payload.session.projectId ??
+                null,
+              instanceIds: [
+                ...new Set([
+                  ...(payload.managed?.instanceIds ?? []),
+                  ...instances.map((row) => row.id),
+                ]),
+              ],
+            };
+          await tx
+            .updateTable('session_deletions')
+            .set({ payload: JSON.stringify(payload) })
+            .where('session_id', '=', sessionId)
+            .execute();
+        }
+      }
       await tx.deleteFrom('transcript_lines').where('session_id', '=', sessionId).execute();
       await tx.deleteFrom('events').where('session_id', '=', sessionId).execute();
       // A session-scoped secret permission (ADR 0011 D2) is supposed to die with its
@@ -3938,6 +4332,7 @@ export class EventStore implements EventSink {
    * alongside `seq` (#32) — matching what the read paths surface.
    */
   async appendEvent(sessionId: string, event: AgentEvent): Promise<{ seq: number; ts: number }> {
+    if (await this.isSessionDeleting(sessionId)) throw new Error('Session is being deleted');
     const { type, payload } = await this.prepareEventRow(event);
     // Takes the cross-process append lock like every other writer. Server generations
     // overlap during reattach/cutover, so "the generation that writes a session's events
@@ -3948,22 +4343,23 @@ export class EventStore implements EventSink {
     // {@link appendEventForRunningTurn}'s predicate and still take the lower id — exactly
     // the reversal that lock exists to rule out.
     //
-    // Taken from the insert's own source rather than by opening a transaction around it:
-    // a lone statement is its own transaction, so an `xact` lock acquired while producing
-    // the row to insert is held across the insert and released at its commit — the same
-    // window a BEGIN/lock/INSERT/COMMIT would give, at one round trip instead of four.
-    // This is the hot path for a locally-run turn's every streamed delta.
-    const row = await this.withSessionEventAppend(sessionId, async () => {
-      const result = await sql<{ id: number; created_at: Date }>`
-        insert into events (session_id, type, payload)
-        select ${sessionId}, ${type}, ${payload}::jsonb
-        from (select pg_advisory_xact_lock(hashtext(${this.sessionEventAppendLockKey(sessionId)}))) as _lock
-        returning id, created_at
-      `.execute(this.db);
-      const inserted = result.rows[0];
-      if (inserted === undefined) throw new Error(`failed to append event to session ${sessionId}`);
-      return inserted;
-    });
+    // READ COMMITTED takes a new snapshot per statement. Acquire the lock before
+    // the INSERT so a tombstone committed during lock contention is visible.
+    const row = await this.withSessionEventAppend(sessionId, () =>
+      this.db.transaction().execute(async (tx) => {
+        await this.sessionEventAppendLock(tx, sessionId);
+        const result = await sql<{ id: number; created_at: Date }>`
+          insert into events (session_id, type, payload)
+          select ${sessionId}, ${type}, ${payload}::jsonb
+          where not exists (select 1 from session_deletions where session_id = ${sessionId})
+          returning id, created_at
+        `.execute(tx);
+        const inserted = result.rows[0];
+        if (inserted === undefined)
+          throw new Error(`failed to append event to session ${sessionId}`);
+        return inserted;
+      }),
+    );
     this.enqueuePersistedMessageEvent(
       sessionId,
       Number(row.id),
@@ -4009,6 +4405,7 @@ export class EventStore implements EventSink {
           select ${sessionId}, ${type}, ${payload}::jsonb
           from running_turns
           where session_id = ${sessionId}
+            and not exists (select 1 from session_deletions where session_id = ${sessionId})
             and prompt_seq = ${anchor.promptSeq}
             and turn_id is not distinct from ${anchor.turnId}
             and not exists (
@@ -4104,6 +4501,7 @@ export class EventStore implements EventSink {
     sessionId: string,
     frame: RunnerFrameIngest,
   ): Promise<RunnerFrameIngestResult> {
+    if (await this.isSessionDeleting(sessionId)) throw new Error('Session is being deleted');
     if (frame.protocolVersion !== RUNNER_FRAME_PROTOCOL_VERSION) {
       throw new Error(
         `unsupported runner frame protocol version ${frame.protocolVersion} ` +
@@ -4153,6 +4551,14 @@ export class EventStore implements EventSink {
           await this.sessionEventAppendLock(tx, sessionId);
         }
         await sql`select pg_advisory_xact_lock(hashtext(${frame.turnId}))`.execute(tx);
+        if (
+          await tx
+            .selectFrom('session_deletions')
+            .select('session_id')
+            .where('session_id', '=', sessionId)
+            .executeTakeFirst()
+        )
+          throw new Error('Session is being deleted');
 
         // (0) the turn was abandoned by recovery — refuse everything from the fence on.
         // Contiguity puts every already-claimed frame below it, so a replay of what the
@@ -4354,6 +4760,18 @@ export class EventStore implements EventSink {
    * cannot be killed, so its side effects on the worktree are the residual cost of
    * bounding step 5 — the fence bounds what reaches the LOG, not what reaches the disk.
    */
+  /** An abandoned stream fence closes the log, but never proves worker exit. */
+  async hasAbandonedRunnerTurns(sessionId: string): Promise<boolean> {
+    return (
+      (await this.db
+        .selectFrom('runner_frames')
+        .select('turn_id')
+        .where('session_id', '=', sessionId)
+        .where('payload_hash', '=', ABANDONED_TURN_FENCE_HASH)
+        .executeTakeFirst()) !== undefined
+    );
+  }
+
   async fenceAbandonedTurn(sessionId: string, turnId: string): Promise<void> {
     await this.db.transaction().execute(async (tx) => {
       await sql`select pg_advisory_xact_lock(hashtext(${turnId}))`.execute(tx);
@@ -5472,6 +5890,7 @@ export class EventStore implements EventSink {
     promptSeq: number;
     markerId?: string;
   }): Promise<void> {
+    if (await this.isSessionDeleting(input.sessionId)) throw new Error('Session is being deleted');
     const markerId = input.markerId ?? randomUUID();
     await this.db
       .insertInto('running_turns')
@@ -7286,6 +7705,16 @@ export class EventStore implements EventSink {
   }
 
   async updateVeritySettings(patch: VeritySettingsPatch): Promise<VeritySettingsRecord> {
+    if (patch.opencodeBaseUrl !== undefined || patch.transcribeBaseUrl !== undefined)
+      return this.egressDestinationMutation(() =>
+        this.updateVeritySettingsWithoutInventoryBarrier(patch),
+      );
+    return this.updateVeritySettingsWithoutInventoryBarrier(patch);
+  }
+
+  private async updateVeritySettingsWithoutInventoryBarrier(
+    patch: VeritySettingsPatch,
+  ): Promise<VeritySettingsRecord> {
     const values = {
       id: 'global',
       advanced_mode_enabled: patch.advancedModeEnabled ?? false,
@@ -8855,28 +9284,12 @@ export class EventStore implements EventSink {
   }
 
   async upsertHttpMcpConnection(record: HttpMcpConnectionRecord): Promise<void> {
-    await this.db
-      .insertInto('http_mcp_connections')
-      .values({
-        id: record.id,
-        ...(record.ownerUserId === undefined ? {} : { owner_user_id: record.ownerUserId }),
-        name: record.name,
-        url: record.url,
-        authorization: this.encryptSecret(record.authorization),
-        auth_type: record.authType ?? (record.authorization === null ? 'none' : 'static'),
-        oauth_client_id: record.oauthClientId ?? null,
-        oauth_token_auth_method: record.oauthTokenAuthMethod ?? 'client_secret_post',
-        oauth_client_secret: this.encryptSecret(record.oauthClientSecret ?? null),
-        oauth_authorization_endpoint: record.oauthAuthorizationEndpoint ?? null,
-        oauth_token_endpoint: record.oauthTokenEndpoint ?? null,
-        oauth_scopes: record.oauthScopes ?? null,
-        oauth_access_token: this.encryptSecret(record.oauthAccessToken ?? null),
-        oauth_refresh_token: this.encryptSecret(record.oauthRefreshToken ?? null),
-        oauth_expires_at: record.oauthExpiresAt?.toISOString() ?? null,
-        enabled: record.enabled,
-      })
-      .onConflict((conflict) =>
-        conflict.column('id').doUpdateSet({
+    return this.egressDestinationMutation(async () => {
+      await this.db
+        .insertInto('http_mcp_connections')
+        .values({
+          id: record.id,
+          ...(record.ownerUserId === undefined ? {} : { owner_user_id: record.ownerUserId }),
           name: record.name,
           url: record.url,
           authorization: this.encryptSecret(record.authorization),
@@ -8891,9 +9304,27 @@ export class EventStore implements EventSink {
           oauth_refresh_token: this.encryptSecret(record.oauthRefreshToken ?? null),
           oauth_expires_at: record.oauthExpiresAt?.toISOString() ?? null,
           enabled: record.enabled,
-        }),
-      )
-      .execute();
+        })
+        .onConflict((conflict) =>
+          conflict.column('id').doUpdateSet({
+            name: record.name,
+            url: record.url,
+            authorization: this.encryptSecret(record.authorization),
+            auth_type: record.authType ?? (record.authorization === null ? 'none' : 'static'),
+            oauth_client_id: record.oauthClientId ?? null,
+            oauth_token_auth_method: record.oauthTokenAuthMethod ?? 'client_secret_post',
+            oauth_client_secret: this.encryptSecret(record.oauthClientSecret ?? null),
+            oauth_authorization_endpoint: record.oauthAuthorizationEndpoint ?? null,
+            oauth_token_endpoint: record.oauthTokenEndpoint ?? null,
+            oauth_scopes: record.oauthScopes ?? null,
+            oauth_access_token: this.encryptSecret(record.oauthAccessToken ?? null),
+            oauth_refresh_token: this.encryptSecret(record.oauthRefreshToken ?? null),
+            oauth_expires_at: record.oauthExpiresAt?.toISOString() ?? null,
+            enabled: record.enabled,
+          }),
+        )
+        .execute();
+    });
   }
 
   async listHttpMcpConnections(ownerUserId?: string): Promise<HttpMcpConnectionRecord[]> {
@@ -8945,11 +9376,13 @@ export class EventStore implements EventSink {
   }
 
   async deleteHttpMcpConnection(id: string): Promise<boolean> {
-    const result = await this.db
-      .deleteFrom('http_mcp_connections')
-      .where('id', '=', id)
-      .executeTakeFirst();
-    return (result.numDeletedRows ?? 0n) > 0n;
+    return this.egressDestinationMutation(async () => {
+      const result = await this.db
+        .deleteFrom('http_mcp_connections')
+        .where('id', '=', id)
+        .executeTakeFirst();
+      return (result.numDeletedRows ?? 0n) > 0n;
+    });
   }
 
   async upsertProjectMcpBinding(binding: ProjectMcpBindingRecord): Promise<void> {

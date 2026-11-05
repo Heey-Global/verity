@@ -48,6 +48,7 @@ printf '%s\n' 'd /sys/fs/bpf/verity_egress_deadline 0700 root root -' > /etc/tmp
 mkdir -p /etc/systemd/system/verity-egress-host.service.d
 cat > /etc/systemd/system/verity-egress-host.service.d/packet-fixture.conf <<'UNIT'
 [Unit]
+ConditionPathExists=/var/lib/verity-egress-fixture/controller-enabled
 RequiresMountsFor=/sys/fs/bpf
 After=systemd-tmpfiles-setup.service
 UNIT
@@ -91,8 +92,9 @@ RemainAfterExit=yes
 WantedBy=multi-user.target
 UNIT
 for component in gateway server; do
+  credential='LoadCredentialEncrypted=database-url:/etc/verity-boot/database-url.cred'
   dependencies='After=verity-egress-host.service verity-boot-gateway.service'
-  if [[ $component == gateway ]]; then dependencies='After=network.target'; fi
+  if [[ $component == gateway ]]; then dependencies='After=network.target'; credential=''; fi
   cat > "/etc/systemd/system/verity-boot-$component.service" <<UNIT
 [Unit]
 Description=Disposable real Verity $component
@@ -101,6 +103,7 @@ $dependencies
 User=1000
 Group=1000
 Environment=PROJECT_EGRESS_DISPOSABLE=yes
+$credential
 ExecStart=/usr/bin/node /opt/verity-fixture/boot-server.mjs $component
 WorkingDirectory=/opt/verity-fixture
 SupplementaryGroups=verity-runner verity-relay verity-egress-control
@@ -121,3 +124,7 @@ fixture_volume_root=$(docker volume inspect --format '{{.Mountpoint}}' verity-bo
 setfacl -m u:1000:x "$(dirname "$fixture_volume_root")"
 chown 1000:1000 "$fixture_volume_root"
 docker run --rm --runtime runsc-project --entrypoint /bin/true verity-boot-observed-runner:local
+
+# Exercise the real managed preparer twice on native systemd/Docker without
+# treating experimental lifecycle composition as production certification.
+python3 "$assets/probe/boot-managed-stage.py"

@@ -1,4 +1,5 @@
 import { releaseChannelFromEnv } from './release-channel.js';
+import { constants } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import {
   link,
@@ -723,6 +724,13 @@ export async function configureManagedUpdateChannel(rootPath: string): Promise<v
     const pinnedRoot = `/proc/self/fd/${root.fd}`;
     const existing = await readManagedDeploymentFiles(pinnedRoot);
     if (!existing.managed) throw new Error(existing.reason);
+    if (
+      channel === 'stable' &&
+      (await readJson(join(pinnedRoot, MANAGED_STAGING_ASSESSMENT_FILE))) !== undefined
+    )
+      throw new Error(
+        'Staging network protection requires verified deactivation before changing channel',
+      );
     const environment = existing.spec.environment.filter(
       (entry) => entry.name !== 'VERITY_UPDATE_CHANNEL',
     );
@@ -736,6 +744,72 @@ export async function configureManagedUpdateChannel(rootPath: string): Promise<v
     if (validated === null) throw new Error('update channel configuration is not allowlisted');
     await writeAtomic(pinnedRoot, MANAGED_DEPLOYMENT_SPEC_FILE, validated);
     await writeAtomic(pinnedRoot, 'update-channel.json', channel);
+  } finally {
+    await root.close();
+  }
+}
+
+export const MANAGED_STAGING_ASSESSMENT_FILE = 'project-egress-staging-assessment.json';
+
+/** Assessment authority never inherits the legacy process-environment fallback. */
+export async function readDurableManagedUpdateChannel(
+  rootPath: string,
+): Promise<'stable' | 'staging' | undefined> {
+  const root = await openUpdaterOwnedRoot(rootPath);
+  try {
+    const pinned = `/proc/self/fd/${root.fd}`;
+    if (!(await readManagedDeploymentFiles(pinned)).managed)
+      throw new Error('unmanaged channel authority');
+    let file;
+    try {
+      file = await open(
+        join(pinned, 'update-channel.json'),
+        constants.O_RDONLY | constants.O_NOFOLLOW,
+      );
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+      throw error;
+    }
+    try {
+      const info = await file.stat();
+      if (
+        !info.isFile() ||
+        info.uid !== process.geteuid?.() ||
+        (info.mode & 0o077) !== 0 ||
+        info.size > 32
+      )
+        throw new Error('untrusted durable update channel');
+      const value: unknown = JSON.parse(await file.readFile('utf8'));
+      if (value !== 'stable' && value !== 'staging')
+        throw new Error('invalid durable update channel');
+      return value;
+    } finally {
+      await file.close();
+    }
+  } finally {
+    await root.close();
+  }
+}
+
+/** Written before host authority is granted; failed attempts remain conservative. */
+export async function markManagedStagingAssessment(
+  rootPath: string,
+  image: string,
+  operationId: string,
+  completed = false,
+): Promise<void> {
+  const root = await openUpdaterOwnedRoot(rootPath);
+  try {
+    const pinned = `/proc/self/fd/${root.fd}`;
+    const state = await readManagedDeploymentFiles(pinned);
+    if (!state.managed || state.spec.image !== image)
+      throw new Error('assessment deployment changed');
+    await writeAtomic(pinned, MANAGED_STAGING_ASSESSMENT_FILE, {
+      version: 1,
+      image,
+      operationId,
+      completed,
+    });
   } finally {
     await root.close();
   }
@@ -776,6 +850,13 @@ export async function writeManagedUpdateChannel(
     const pinnedRoot = `/proc/self/fd/${root.fd}`;
     const state = await readManagedDeploymentFiles(pinnedRoot);
     if (!state.managed) throw new Error(state.reason);
+    if (
+      channel === 'stable' &&
+      (await readJson(join(pinnedRoot, MANAGED_STAGING_ASSESSMENT_FILE))) !== undefined
+    )
+      throw new Error(
+        'Staging network protection requires verified deactivation before changing channel',
+      );
     await writeAtomic(pinnedRoot, 'update-channel.json', channel);
   } finally {
     await root.close();

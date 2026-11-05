@@ -1660,7 +1660,15 @@ export interface UserViewStateTable {
   inbox_dismissed: ColumnType<string[], string | undefined, string>;
 }
 
+interface SessionDeletionsTable {
+  session_id: string;
+  payload: string;
+  worktree: string | null;
+  cleanup_pending: Generated<boolean>;
+}
+
 export interface Database {
+  session_deletions: SessionDeletionsTable;
   user_context: UserContextTable;
   user_view_state: UserViewStateTable;
   qa_dispatches: QADispatchesTable;

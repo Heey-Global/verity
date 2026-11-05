@@ -308,7 +308,7 @@ attest their executable versions or runtime arguments; those remain a release
 and native-host validation obligation. A successful preflight does not prove
 boot persistence, kernel BPF compatibility, socket reachability from the Server,
 or receiver-side isolation. The installer currently rejects every target kernel:
-`ACCEPTED_KERNEL_RELEASES` is empty. Both preflight and apply remain unavailable
+`ACCEPTED_NATIVE_PROFILES` is empty. Both preflight and apply remain unavailable
 until an exact profile is accepted through a reviewed code change backed by
 native install, upgrade and recovery evidence. Kernel compatibility remains unaccepted until native-host evidence
 identifies and verifies that kernel, compiled BPF objects and gVisor release

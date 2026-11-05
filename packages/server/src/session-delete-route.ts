@@ -1,6 +1,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 
+import { deletionDeadline, SessionDeletionDeadlineError } from './session-deletion.js';
 import { sessionParams } from './session-route-schemas.js';
 
 const deleteSessionQuery = z.object({
@@ -27,6 +28,30 @@ export function registerSessionDeleteRoute(
   app.delete('/sessions/:id', async (request, reply): Promise<unknown> => {
     const { id } = sessionParams.parse(request.params);
     const { force } = deleteSessionQuery.parse(request.query);
-    return deps.remove(request, reply, id, force);
+    const startedAt = Date.now();
+    request.log.info(
+      { sessionId: id, phase: 'request', outcome: 'started' },
+      'verity: session delete phase',
+    );
+    let outcome = 'completed';
+    try {
+      return await deletionDeadline(deps.remove(request, reply, id, force), 15_000);
+    } catch (error) {
+      outcome = error instanceof SessionDeletionDeadlineError ? 'deadline' : 'failed';
+      if (!(error instanceof SessionDeletionDeadlineError)) throw error;
+      reply.code(503).header('retry-after', '5');
+      return { error: error.message };
+    } finally {
+      request.log.info(
+        {
+          sessionId: id,
+          phase: 'request',
+          outcome,
+          statusCode: reply.statusCode,
+          elapsedMs: Date.now() - startedAt,
+        },
+        'verity: session delete phase',
+      );
+    }
   });
 }

@@ -5276,3 +5276,32 @@ migrations['0190_live_meeting_deletions'] = {
     await sql`drop table live_meeting_deletions`.execute(db);
   },
 };
+
+migrations['0191_session_deletions'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    // Survives the session cascade: a crashed delete retains cleanup ownership.
+    await sql`create table session_deletions (
+      session_id text primary key,
+      payload text not null,
+      cleanup_pending boolean not null default true
+    )`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table session_deletions`.execute(db);
+  },
+};
+
+migrations['0192_session_deletion_worktrees'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table session_deletions add column worktree text`.execute(db);
+    await sql`update session_deletions
+      set worktree = payload::jsonb #>> '{session,worktree}'
+      where cleanup_pending`.execute(db);
+    await sql`create index session_deletions_pending_worktree
+      on session_deletions(worktree) where cleanup_pending`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop index session_deletions_pending_worktree`.execute(db);
+    await sql`alter table session_deletions drop column worktree`.execute(db);
+  },
+};

@@ -79,6 +79,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends clang linux-libc-dev dpkg-dev \
     && rm -rf /var/lib/apt/lists/*
 COPY deploy/egress deploy/egress
+COPY deploy/gvisor/versions.env deploy/gvisor/versions.env
 RUN mkdir -p /egress-objects \
     && for program in project-egress-deadline project-egress-renew; do \
       clang -O2 -g -target bpf -I/usr/include/$(dpkg-architecture -qDEB_HOST_MULTIARCH) \

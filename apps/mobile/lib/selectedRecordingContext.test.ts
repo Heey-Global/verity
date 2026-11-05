@@ -1,6 +1,11 @@
 const mockActive = jest.fn();
+let mockModule: 'present' | 'missing' | 'broken' | 'unsupported' = 'present';
 jest.mock('expo-modules-core', () => ({
-  requireNativeModule: () => ({ isSupported: async () => true, isActive: () => mockActive() }),
+  requireOptionalNativeModule: () => {
+    if (mockModule === 'missing') return null;
+    if (mockModule === 'broken') throw new Error('Native module failed to initialize');
+    return { isSupported: async () => mockModule !== 'unsupported', isActive: () => mockActive() };
+  },
 }));
 const mockFetch = jest.fn();
 const mockToken = jest.fn();
@@ -15,7 +20,8 @@ jest.mock('expo-crypto', () => ({
   CryptoDigestAlgorithm: { SHA256: 'SHA-256' },
   digestStringAsync: async () => 'a'.repeat(64),
 }));
-import { selectedRecordingContext } from './selectedRecordingContext';
+import { assertNativeTunnelInactive, selectedRecordingContext } from './selectedRecordingContext';
+import { isNativeTunnelUnsupported } from './nativeTunnelSupport';
 const remote = {
   installationId: 'installation',
   installationHandle: 'h'.repeat(22),
@@ -92,5 +98,24 @@ it('bounds an unresponsive native status query', async () => {
     await pending;
   } finally {
     jest.useRealTimers();
+  }
+});
+
+it('does not treat an unavailable module as proof that no tunnel can capture', async () => {
+  try {
+    mockModule = 'unsupported';
+    const unsupported = await assertNativeTunnelInactive().catch((error: unknown) => error);
+    expect(isNativeTunnelUnsupported(unsupported)).toBe(true);
+    mockModule = 'missing';
+    const missing = await assertNativeTunnelInactive().catch((error: unknown) => error);
+    expect(missing).toBeInstanceOf(Error);
+    expect(isNativeTunnelUnsupported(missing)).toBe(false);
+    // A present module that fails to load must not count as "nothing can capture".
+    mockModule = 'broken';
+    const broken = await assertNativeTunnelInactive().catch((error: unknown) => error);
+    expect(broken).toBeInstanceOf(Error);
+    expect(isNativeTunnelUnsupported(broken)).toBe(false);
+  } finally {
+    mockModule = 'present';
   }
 });

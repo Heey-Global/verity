@@ -1,3 +1,8 @@
+import {
+  egressDestinationDb,
+  type EgressDestinationMutation,
+  unguardedEgressDestinationMutation,
+} from './egress-destination-mutation.js';
 import { sql, type Kysely } from 'kysely';
 import type { SecretCipher } from './crypto.js';
 import type { Database } from './schema.js';
@@ -21,9 +26,14 @@ export type ForgeConnectionInput = ForgeConnection & ForgeConnectionCredentials;
 /** Metadata remains readable while sealed; credentials require explicit access. */
 export class ForgeConnectionStore {
   constructor(
-    private readonly db: Kysely<Database>,
+    private readonly rootDb: Kysely<Database>,
     private readonly cipher: SecretCipher,
+    private readonly egressDestinationMutation: EgressDestinationMutation = unguardedEgressDestinationMutation,
   ) {}
+
+  private get db(): Kysely<Database> {
+    return egressDestinationDb(this.rootDb);
+  }
 
   async list(): Promise<ForgeConnection[]> {
     const rows = await this.db
@@ -69,49 +79,55 @@ export class ForgeConnectionStore {
 
   /** Replace credentials atomically; an existing connection cannot change identity. */
   async upsert(input: ForgeConnectionInput): Promise<void> {
-    const url = new URL(input.baseUrl);
-    if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash) {
-      throw new Error('Forge base URL must use HTTPS without credentials, query or fragment');
-    }
-    const baseUrl = url.toString().replace(/\/$/u, '');
-    const row = {
-      id: input.id,
-      provider: input.provider,
-      base_url: baseUrl,
-      label: input.label,
-      custom_ca_pem: input.customCaPem ?? null,
-      personal_token:
-        input.personalToken === null ? null : this.cipher.encrypt(input.personalToken),
-      github_app_id: input.githubAppId,
-      github_app_installation_id: input.githubAppInstallationId,
-      github_app_private_key:
-        input.githubAppPrivateKey === null ? null : this.cipher.encrypt(input.githubAppPrivateKey),
-    };
-    const result = await this.db
-      .insertInto('forge_connections')
-      .values(row)
-      .onConflict((oc) =>
-        oc
-          .column('id')
-          .doUpdateSet({
-            label: row.label,
-            custom_ca_pem: row.custom_ca_pem,
-            personal_token: row.personal_token,
-            github_app_id: row.github_app_id,
-            github_app_installation_id: row.github_app_installation_id,
-            github_app_private_key: row.github_app_private_key,
-            updated_at: sql`now()`,
-          })
-          .where('forge_connections.provider', '=', input.provider)
-          .where('forge_connections.base_url', '=', baseUrl),
-      )
-      .returning('id')
-      .executeTakeFirst();
-    if (!result) throw new Error('Cannot change forge connection provider or base URL');
+    return this.egressDestinationMutation(async () => {
+      const url = new URL(input.baseUrl);
+      if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash) {
+        throw new Error('Forge base URL must use HTTPS without credentials, query or fragment');
+      }
+      const baseUrl = url.toString().replace(/\/$/u, '');
+      const row = {
+        id: input.id,
+        provider: input.provider,
+        base_url: baseUrl,
+        label: input.label,
+        custom_ca_pem: input.customCaPem ?? null,
+        personal_token:
+          input.personalToken === null ? null : this.cipher.encrypt(input.personalToken),
+        github_app_id: input.githubAppId,
+        github_app_installation_id: input.githubAppInstallationId,
+        github_app_private_key:
+          input.githubAppPrivateKey === null
+            ? null
+            : this.cipher.encrypt(input.githubAppPrivateKey),
+      };
+      const result = await this.db
+        .insertInto('forge_connections')
+        .values(row)
+        .onConflict((oc) =>
+          oc
+            .column('id')
+            .doUpdateSet({
+              label: row.label,
+              custom_ca_pem: row.custom_ca_pem,
+              personal_token: row.personal_token,
+              github_app_id: row.github_app_id,
+              github_app_installation_id: row.github_app_installation_id,
+              github_app_private_key: row.github_app_private_key,
+              updated_at: sql`now()`,
+            })
+            .where('forge_connections.provider', '=', input.provider)
+            .where('forge_connections.base_url', '=', baseUrl),
+        )
+        .returning('id')
+        .executeTakeFirst();
+      if (!result) throw new Error('Cannot change forge connection provider or base URL');
+    });
   }
 
   /** Referenced connections are protected by foreign keys. */
   async delete(id: string): Promise<void> {
-    await this.db.deleteFrom('forge_connections').where('id', '=', id).execute();
+    return this.egressDestinationMutation(async () => {
+      await this.db.deleteFrom('forge_connections').where('id', '=', id).execute();
+    });
   }
 }

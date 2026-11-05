@@ -236,3 +236,68 @@ it('retries retained cleanup after a timeout without overlapping scans, and stop
     vi.useRealTimers();
   }
 });
+
+it('lets another session finish while an artifact purge remains stalled', async () => {
+  const f = await cleanupFixture();
+  f.state('ready');
+  await queueSessionCleanup(f.root, { ...f.record, sessionId: 'other' });
+  let release!: () => void;
+  let entered!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const ready = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const processor = createSessionCleanupProcessor({
+    ...f.options,
+    purgeArtifacts: async (_projectId, record) => {
+      if (record.sessionId === f.record.sessionId) {
+        entered();
+        await gate;
+      }
+      return 'clean';
+    },
+  });
+  const blocked = processor.runSession(f.record.sessionId);
+  try {
+    await ready;
+    const other = processor.runSession('other');
+    await vi.waitFor(async () =>
+      expect((await pendingSessionCleanups(f.root)).some((r) => r.sessionId === 'other')).toBe(
+        false,
+      ),
+    );
+    await other;
+  } finally {
+    release();
+    await blocked;
+    await f.close();
+  }
+});
+
+it.each([false, true])(
+  'merges final bindings even after an earlier cleanup completed (%s)',
+  async (completed) => {
+    const f = await cleanupFixture();
+    try {
+      f.state('ready');
+      const processor = createSessionCleanupProcessor(f.options);
+      if (completed) await processor.runSession(f.record.sessionId);
+      else
+        await queueSessionCleanup(f.root, {
+          ...f.record,
+          progress: { project: { homeDeleted: true, artifactsDeleted: true } },
+        });
+      const late = { backend: 'codex', backendSessionId: 'late-thread' };
+      await processor.runSession(f.record.sessionId, { ...f.record, bindings: [late] });
+      expect(f.purgeArtifacts).toHaveBeenLastCalledWith(
+        'project',
+        expect.objectContaining({ bindings: [late] }),
+      );
+      expect(await pendingSessionCleanups(f.root)).toEqual([]);
+    } finally {
+      await f.close();
+    }
+  },
+);

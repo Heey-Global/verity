@@ -41,6 +41,26 @@ rolled-back journal can restore its confirmed Server identity after validating
 it against the sealed deployment; ambiguous state remains an explicit error.
 The Gateway already restores its persisted backend before opening its listener.
 
+## Network protection retrofit readiness
+
+The managed Network protection retrofit prepares a host controller, persistent
+recovery, exact native prerequisites and authenticated destination inventory.
+Production requires an accepted native profile and fresh host health. The
+accepted profile list is currently empty. The regular signed Staging update can
+separately authorize an explicitly unaccepted assessment on supported native
+hosts, with exact identity checks and startup revalidation. This does not supply
+production acceptance. Assessment attempts conservatively block changing to
+Stable; automated deactivation and marker clearance are not yet implemented.
+
+Installed updater admission still controls target provisioning. Older releases
+need the automatic compatibility sequence; already-installed caller timeouts
+must be included in native repair/retry acceptance. Updating preserves the default-off
+switch and existing projects. Once the host is healthy and admitted for its
+production profile or explicit Staging assessment, enabling the
+switch affects the next project container start. See
+[managed installation and recovery](project-egress-managed-install.md) and
+[native profile evidence](project-egress-native-profiles.md).
+
 ## Release ownership
 
 Backend, native mobile, and website retain separate Release Please configurations

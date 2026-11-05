@@ -153,6 +153,10 @@ function fakeDaemon() {
       get(id).status = 'exited';
       return Promise.resolve();
     }),
+    removeStoppedContainer: vi.fn(async (id: string) => {
+      if (get(id).status === 'running') throw new Error('container is running');
+      containers.delete(id);
+    }),
     removeContainer: vi.fn(async (id: string) => {
       get(id);
       containers.delete(id);

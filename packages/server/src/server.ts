@@ -28,7 +28,6 @@ import {
   type RateLimitState,
 } from '@verity/events';
 import {
-  BackendTerminationUnconfirmedError,
   CODEX_DEFAULT_MODEL,
   isCodexModel,
   QueueFullError,
@@ -258,6 +257,12 @@ import { registerSessionBranchReadRoute } from './session-branch-read-route.js';
 import { registerSessionBranchSwitchRoute } from './session-branch-switch-route.js';
 import { registerSessionControlRoutes } from './session-control-routes.js';
 import { registerSessionCreateRoute } from './session-create-route.js';
+import {
+  createSessionDeletionManager,
+  type SessionDeletionPayload,
+  deletionDeadline,
+  SessionDeletionDeadlineError,
+} from './session-deletion.js';
 import { registerSessionDeleteRoute } from './session-delete-route.js';
 import { emitNotice, emitSessionEvent } from './session-event-writer.js';
 import { sessionGoogleStatus } from './session-google-status.js';
@@ -1661,6 +1666,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   // background-failure sink can log through it (chicken/egg: the conductor is
   // built before the routes, but the logger exists once `app` does).
   const conductor = typeof deps.conductor === 'function' ? deps.conductor(app.log) : deps.conductor;
+  deps.onConductorReady?.(conductor);
   const publishSessionEvent = (sessionId: string, event: AgentEvent): Promise<void> =>
     emitSessionEvent(deps.eventStore, deps.bus, sessionId, event);
   const sessionPlanning = createSessionPlanning({
@@ -2788,7 +2794,11 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         queuedTurnRecovery = undefined;
       });
   };
-  app.addHook('onReady', () => recoverQueuedTurns('startup'));
+  app.addHook('onReady', async () => {
+    for (const record of await deps.eventStore.listPendingSessionDeletions())
+      conductor.beginSessionDeletion?.(record.sessionId);
+    recoverQueuedTurns('startup');
+  });
   const spawnWorktreeRoot = deps.spawnWorktreeRoot ?? join(tmpdir(), 'verity-sessions');
   // Real git worktree when injected (deployment); else an empty scratch dir.
   const worktrees = deps.worktrees ?? createScratchProvisioner({ worktreeRoot: spawnWorktreeRoot });
@@ -6265,13 +6275,185 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   // an unknown id. Worktree removal is best-effort: a session whose worktree was
   // already cleaned up (resumable=false) still deletes cleanly, and the repo-root
   // checkout (`workspaceDir`, e.g. `/work`) is NEVER removed (safety guard #105).
+  const deletionRequestIds = new Map<string, string>();
+  const sessionDeletions = createSessionDeletionManager({
+    store: deps.eventStore,
+    fence: (id) => conductor.beginSessionDeletion?.(id),
+    terminationConfirmed: (id) => conductor.isDeletionTerminationConfirmed?.(id) ?? false,
+    stop: async (id) => {
+      if (conductor.stopForDeletion) return conductor.stopForDeletion(id);
+      // Compatibility with custom conductors: inability to prove termination parks
+      // physical cleanup, but must not prevent a durable logical deletion.
+      return false;
+    },
+    capture: async (session) => ({
+      session: {
+        sessionId: session.sessionId,
+        worktree: session.worktree,
+        projectId: session.projectId,
+        model: session.model,
+      },
+      ...(!deps.queueSessionArtifacts && deps.purgeSessionArtifacts
+        ? {
+            legacyArtifactsRequired: true,
+            artifactBindings: (
+              await deps.eventStore.getSessionBackendStates(session.sessionId)
+            ).map(({ backend, backendSessionId }) => ({ backend, backendSessionId })),
+          }
+        : {}),
+      previewIds: (await deps.eventStore.listLocalPreviewShares())
+        .filter((share) => share.sessionId === session.sessionId)
+        .map((share) => share.id),
+      ...(deps.managedDevServerManager
+        ? { managed: await deps.managedDevServerManager.captureSessionCleanup(session.sessionId) }
+        : {}),
+      ...(await (async () => {
+        const marker = (await deps.eventStore.listRunningTurns()).find(
+          (turn) => turn.sessionId === session.sessionId,
+        );
+        return marker?.turnId && marker.startCommandId
+          ? { runnerIdentity: { turnId: marker.turnId, startCommandId: marker.startCommandId } }
+          : {};
+      })()),
+    }),
+    prepare: async (id) => {
+      await deps.queueSessionArtifacts?.(id);
+    },
+    ...(!deps.queueSessionArtifacts && deps.purgeSessionArtifacts
+      ? {
+          beforeDelete: async (id: string, payload: SessionDeletionPayload) => {
+            await deps.purgeSessionArtifacts!(id, payload.artifactBindings ?? []);
+          },
+        }
+      : {}),
+    releasePublications: async (payload) => {
+      for (const shareId of payload.previewIds) await deps.localPreviewManager?.stop(shareId);
+      await deps.localPreviewManager?.stopSession(payload.session.sessionId);
+      if (
+        payload.managed &&
+        deps.managedDevServerManager &&
+        (await deps.managedDevServerManager.cleanupDeletedSession(payload.managed)) !== 'clean'
+      )
+        return false;
+      return true;
+    },
+    confirmTermination: async (payload) => {
+      const { session } = payload;
+      if (
+        conductor.isDeletionWorktreeBusy?.(session.sessionId) ||
+        !deps.cleanupDeletedSessionRuntime
+      )
+        return false;
+      const outcome = await deps.cleanupDeletedSessionRuntime(session.sessionId, session.projectId);
+      if (conductor.isDeletionWorktreeBusy?.(session.sessionId)) return false;
+      return outcome === 'absent' || (outcome === 'clean' && payload.runnerIdentity !== undefined);
+    },
+    cleanup: async (payload, terminationConfirmed) => {
+      const { session } = payload;
+      deps.scheduleSessionCleanup?.();
+      if (conductor.isDeletionWorktreeBusy?.(session.sessionId)) return false;
+      // Successful privileged home deletion kills/fences exact workers. A missing
+      // DB marker after cascade is not evidence that a process has exited.
+      if (deps.cleanupDeletedSessionRuntime) {
+        const result = await deps.cleanupDeletedSessionRuntime(
+          session.sessionId,
+          session.projectId,
+        );
+        if (result === 'deferred') return false;
+        if (result === 'not-applicable' && !terminationConfirmed) return false;
+        if (result === 'clean' && !terminationConfirmed && !payload.runnerIdentity) return false;
+      } else if (!terminationConfirmed) return false;
+      if (conductor.isDeletionWorktreeBusy?.(session.sessionId)) return false;
+      conductor.closeSession?.(session.sessionId);
+      let cleanupWorktrees = worktrees;
+      if (session.projectId !== null && deps.projectCloneRoot !== undefined) {
+        const project = await deps.eventStore.getProject(session.projectId);
+        if (project !== undefined && !isControlPlaneProject(project)) {
+          const projectClone = projectClonePath(deps.projectCloneRoot, project);
+          cleanupWorktrees =
+            isDocumentWorkspace(session.worktree) && deps.dataRoot
+              ? createDocumentWorkspaceProvisioner(deps.dataRoot, project.id, projectClone)
+              : (deps.projectWorktrees?.(project, projectClone) ??
+                createGitWorktreeProvisioner({
+                  repoDir: projectClone,
+                  worktreeRoot: join(projectClone, '.verity-sessions'),
+                }));
+        }
+      }
+      if (conductor.isDeletionWorktreeBusy?.(session.sessionId)) return false;
+      if (
+        (await deps.eventStore.listSessions()).some((owner) => owner.worktree === session.worktree)
+      )
+        return false;
+      if (session.worktree !== deps.workspaceDir) await cleanupWorktrees.remove(session.worktree);
+      return true;
+    },
+    report: (sessionId, phase, outcome, elapsedMs, error) => {
+      app.log.info(
+        {
+          sessionId,
+          reqId: deletionRequestIds.get(sessionId),
+          phase,
+          outcome,
+          elapsedMs,
+          ...(error === undefined
+            ? {}
+            : { errorKind: error instanceof Error ? error.name : 'unknown' }),
+        },
+        'verity: session delete phase',
+      );
+    },
+  });
+  const deletionRetryTimer = setInterval(() => {
+    void sessionDeletions
+      .resume()
+      .catch((error: unknown) =>
+        app.log.warn({ err: error }, 'verity: session deletion retry failed'),
+      );
+  }, 30_000);
+  deletionRetryTimer.unref();
+  app.addHook('onReady', () => {
+    void sessionDeletions
+      .resume()
+      .catch((error: unknown) =>
+        app.log.warn({ err: error }, 'verity: session deletion recovery failed'),
+      );
+  });
+  app.addHook('onClose', () => {
+    clearInterval(deletionRetryTimer);
+    sessionDeletions.close();
+  });
+
   registerSessionDeleteRoute(app, {
     remove: async (request, reply, id, force) => {
       if (conductor.isMovingSession?.(id)) {
         reply.code(409);
         return { error: 'Wait for the session move to finish before deleting.' };
       }
-      const session = await deps.eventStore.getSession(id);
+      request.log.info(
+        { sessionId: id, phase: 'lookup', outcome: 'started' },
+        'verity: session delete phase',
+      );
+      const session = await deletionDeadline(deps.eventStore.getSession(id), 15_000).then(
+        (session) => {
+          request.log.info(
+            { sessionId: id, phase: 'lookup', outcome: 'completed' },
+            'verity: session delete phase',
+          );
+          return session;
+        },
+        (error: unknown) => {
+          request.log.info(
+            {
+              sessionId: id,
+              phase: 'lookup',
+              outcome: error instanceof SessionDeletionDeadlineError ? 'deadline' : 'failed',
+            },
+            'verity: session delete phase',
+          );
+          throw error;
+        },
+      );
       if (!session) {
         reply.code(404);
         return { error: `session ${id} not found` };
@@ -6284,68 +6466,47 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         reply.code(409);
         return { error: `session ${id} has an active meeting job — stop it before deleting` };
       }
-      const deleteClaimed = async (): Promise<{ sessionId: string } | { error: string }> => {
-        // The ownership barrier has either settled the live turn (forced delete) or
-        // atomically proved the session idle (ordinary delete). Close every retained
-        // backend handle while that same fence is still held, before its worktree and
-        // durable state disappear.
-        conductor.closeSession?.(id);
-        let cleanupWorktrees = worktrees;
-        if (session.projectId !== null && deps.projectCloneRoot !== undefined) {
-          const project = await deps.eventStore.getProject(session.projectId);
-          if (project !== undefined && !isControlPlaneProject(project)) {
-            const projectClone = projectClonePath(deps.projectCloneRoot, project);
-            cleanupWorktrees =
-              isDocumentWorkspace(session.worktree) && deps.dataRoot
-                ? createDocumentWorkspaceProvisioner(deps.dataRoot, project.id, projectClone)
-                : (deps.projectWorktrees?.(project, projectClone) ??
-                  createGitWorktreeProvisioner({
-                    repoDir: projectClone,
-                    worktreeRoot: join(projectClone, '.verity-sessions'),
-                  }));
-          }
-        }
-        const deleted = await deleteSessionEverywhere(id);
-        if (!deleted) {
-          // Raced with another delete between the lookup and here — already gone.
-          reply.code(404);
-          return { error: `session ${id} not found` };
-        }
-        // Best-effort filesystem cleanup. The session is already gone from the
-        // store; a worktree-removal failure (e.g. it was already removed) must not
-        // turn a successful delete into an error — log and move on. Never remove the
-        // repo-root checkout (guards a stale row whose worktree is the main tree).
-        if (session.worktree !== deps.workspaceDir) {
-          try {
-            await cleanupWorktrees.remove(session.worktree);
-          } catch (error) {
-            request.log.error(
-              { err: error, sessionId: id, worktree: session.worktree },
-              'verity: failed to remove worktree on session delete',
-            );
-          }
-        }
-        return { sessionId: id };
-      };
-
-      if (force) {
-        try {
-          return await conductor.runBackendHandoff(id, deleteClaimed);
-        } catch (error) {
-          if (error instanceof BackendTerminationUnconfirmedError) {
-            reply.code(503);
-            reply.header('retry-after', '5');
-            return { error: `session ${id} still has an unterminated backend; try again` };
-          }
-          throw error;
-        }
-      }
-      const claimed = await conductor.tryRunExclusive(id, deleteClaimed);
-      if (!claimed.ran) {
+      if (!force && conductor.isBusy(id)) {
         reply.code(409);
         return { error: `session ${id} is busy — finish the turn before deleting it` };
       }
-      return claimed.value;
+      deletionRequestIds.set(id, request.id);
+      try {
+        if (force) return await sessionDeletions.remove(session);
+        let removal: ReturnType<typeof sessionDeletions.remove> | undefined;
+        const admission = await conductor.tryRunExclusive(id, async () => {
+          let release!: () => void;
+          const admitted = new Promise<void>((resolve) => {
+            release = resolve;
+          });
+          removal = sessionDeletions.remove(session, release);
+          // The HTTP deadline must not release an unfinished admission operation.
+          void removal.catch(() => undefined);
+          await Promise.race([
+            admitted,
+            sessionDeletions.waitForLogical(id).catch(() => undefined),
+          ]);
+        });
+        if (!admission.ran) {
+          reply.code(409);
+          return { error: `session ${id} is busy — finish the turn before deleting it` };
+        }
+        return await removal;
+      } catch (error) {
+        request.log.warn(
+          { errorKind: error instanceof Error ? error.name : 'unknown', sessionId: id },
+          'verity: session deletion deferred',
+        );
+        reply.code(503).header('retry-after', '5');
+        return {
+          error:
+            error instanceof SessionDeletionDeadlineError
+              ? error.message
+              : 'Session deletion could not be completed; retry shortly',
+        };
+      } finally {
+        if (deletionRequestIds.get(id) === request.id) deletionRequestIds.delete(id);
+      }
     },
   });
 

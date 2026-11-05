@@ -6,6 +6,24 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.80.1](https://github.com/Heey-Global/verity/compare/v4.80.0...v4.80.1) (2026-11-05)
+
+
+### Bug Fixes
+
+* **deps:** update dependency kysely to v0.29.8 ([#2268](https://github.com/Heey-Global/verity/issues/2268)) ([b196c30](https://github.com/Heey-Global/verity/commit/b196c302767d52e1339a5b21360c860ed1963e28))
+* **deps:** update dependency pdfjs-dist to v6.5.438 ([#2269](https://github.com/Heey-Global/verity/issues/2269)) ([a4de1d3](https://github.com/Heey-Global/verity/commit/a4de1d30ff783d6ca545e139983e6123014fe7b8))
+* **egress:** enable signed staging assessment and harden provisioning ([#2258](https://github.com/Heey-Global/verity/issues/2258)) ([8414db2](https://github.com/Heey-Global/verity/commit/8414db2c3247a1e201146f13a2c59a14cb255846))
+* **egress:** expose retrofit status and recover interrupted renewal ([#2253](https://github.com/Heey-Global/verity/issues/2253)) ([a0c904e](https://github.com/Heey-Global/verity/commit/a0c904eb4aa073c04ab9d37bb6f7caf1246eedc6))
+* **installer:** clean pairing leftovers and tolerate vanished containers ([#2260](https://github.com/Heey-Global/verity/issues/2260)) ([d6114aa](https://github.com/Heey-Global/verity/commit/d6114aa2ac51179fd5d4afb7d257ca81ae3dc24d))
+* **knowledge:** clarify unavailable Wiki errors ([#2264](https://github.com/Heey-Global/verity/issues/2264)) ([cd4fdff](https://github.com/Heey-Global/verity/commit/cd4fdffe559809f7b56ef92677bbb854ecfe8aed))
+* **meetings:** name the failed Uplink step when an online meeting cannot start ([#2261](https://github.com/Heey-Global/verity/issues/2261)) ([66c8a48](https://github.com/Heey-Global/verity/commit/66c8a480c8a607317904c55aba1c526c027b0d3f))
+* **preview:** preserve online shares during update key handover ([#2256](https://github.com/Heey-Global/verity/issues/2256)) ([cf5026d](https://github.com/Heey-Global/verity/commit/cf5026d2db3757569b5ee346a3f1e68f60eefed6))
+* **self-update:** retire leftover Servers, retain logs and tolerate seed cleanup churn ([#2265](https://github.com/Heey-Global/verity/issues/2265)) ([9661dde](https://github.com/Heey-Global/verity/commit/9661ddefcef789f29f6aa65b78ace837473bcd88))
+* **server:** back off PR polling without CI and scan local projects ([#2263](https://github.com/Heey-Global/verity/issues/2263)) ([7d6ceed](https://github.com/Heey-Global/verity/commit/7d6ceed1ee1b74a82a795c95770f1cfc4baeb240))
+* **server:** bound session deletion and preserve safe deferred cleanup ([#2267](https://github.com/Heey-Global/verity/issues/2267)) ([ab75186](https://github.com/Heey-Global/verity/commit/ab751868fe5f5e9be72af8a12b4f0294db05d3a1))
+* **storage:** expose bounded runner cache failure diagnostics ([#2257](https://github.com/Heey-Global/verity/issues/2257)) ([f6e89c3](https://github.com/Heey-Global/verity/commit/f6e89c3228860ce1b61832cdab36a2b91c35f957))
+
 ## [4.80.0](https://github.com/Heey-Global/verity/compare/v4.79.0...v4.80.0) (2026-11-04)
 
 
