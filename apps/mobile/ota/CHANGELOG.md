@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.84.7](https://github.com/Heey-Global/verity/compare/mobile-v1.84.6...mobile-v1.84.7) (2026-11-05)
+
+
+### Features
+
+* add Verity's page for cross-project knowledge ([#2289](https://github.com/Heey-Global/verity/issues/2289)) ([4c8d848](https://github.com/Heey-Global/verity/commit/4c8d84820e50a43c1c5b4f213efd28aca3331d16))
+
+
+### Bug Fixes
+
+* **mobile:** keep overview hooks before loading returns ([#2288](https://github.com/Heey-Global/verity/issues/2288)) ([44a0e11](https://github.com/Heey-Global/verity/commit/44a0e118227ebc0a92a58dd00271c4f298ba089d))
+
 ## [1.84.6](https://github.com/Heey-Global/verity/compare/mobile-v1.84.5...mobile-v1.84.6) (2026-11-05)
 
 
