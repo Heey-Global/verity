@@ -66,11 +66,17 @@ export function VerityPanel({
     voice.toggle();
   }, [mode, voice]);
 
+  // Send pressed while dictating: stop, and send once the final words are in.
+  const sendWhenStopped = useRef(false);
   const send = async () => {
+    if (voice.state === 'recording') {
+      sendWhenStopped.current = true;
+      voice.toggle();
+      return;
+    }
     const message = text.trim();
     if (!message || sendingRef.current) return;
     sendingRef.current = true;
-    if (voice.state === 'recording') voice.abort();
     setSending(true);
     try {
       // The outbox holds it from here on, so the field can clear even offline.
@@ -90,6 +96,12 @@ export function VerityPanel({
       setSending(false);
     }
   };
+
+  useEffect(() => {
+    if (voice.state !== 'idle' || !sendWhenStopped.current) return;
+    sendWhenStopped.current = false;
+    void send();
+  });
 
   const conversation = verity.conversation;
   const sessionId = conversation?.sessionId ?? null;

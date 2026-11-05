@@ -137,3 +137,20 @@ it('tells a member who is not an administrator that Verity is not theirs to use'
   const screen = render(<VerityPanel mode="text" projectId={null} onClose={jest.fn()} />);
   expect(screen.getByText(/available to administrators/)).toBeTruthy();
 });
+
+it('stops dictation on send and sends once the final words are in', () => {
+  const screen = render(<VerityPanel mode="text" projectId={null} onClose={jest.fn()} />);
+  mockVoice.state = 'recording';
+  fireEvent.changeText(screen.getByLabelText('Message to Verity'), 'Call Hansen');
+  fireEvent.press(screen.getByLabelText('Send to Verity'));
+  expect(mockVoice.toggle).toHaveBeenCalledTimes(1);
+  expect(mockVoice.abort).not.toHaveBeenCalled();
+  expect(sendToVerity).not.toHaveBeenCalled();
+  // The recognizer delivered its final result and stopped.
+  fireEvent.changeText(screen.getByLabelText('Message to Verity'), 'Call Hansen tomorrow');
+  mockVoice.state = 'idle';
+  screen.rerender(<VerityPanel mode="text" projectId={null} onClose={jest.fn()} />);
+  expect(sendToVerity).toHaveBeenCalledWith(
+    expect.objectContaining({ text: 'Call Hansen tomorrow' }),
+  );
+});

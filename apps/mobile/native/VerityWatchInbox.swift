@@ -611,9 +611,16 @@ final class VerityWatchInbox: NSObject, WCSessionDelegate {
           after = nil
         }
         do {
+          let asked = Date()
           let conversation = try await self.link.conversation(after: after, waitMs: 20_000)
           failures = 0
-          after = conversation["revision"] as? Int
+          let revision = conversation["revision"] as? Int
+          // Unchanged at once: the server did not hold the read (Verity switched
+          // off or unavailable). Pause instead of asking again right away.
+          if let after, revision == after, Date().timeIntervalSince(asked) < 1.5 {
+            try? await Task.sleep(for: .seconds(5))
+          }
+          after = revision
           let snapshot = VerityAssistantLink.snapshot(conversation, scope: scope)
           self.queue.sync {
             // Read for an account that signed out meanwhile: the next pass reads anew.
