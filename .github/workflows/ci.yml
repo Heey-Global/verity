@@ -45,14 +45,9 @@ env:
   VERITY_TEST_TIMEOUT_MS: '60000'
 
 concurrency:
-  # PRs group by source branch, so a force-push cancels its own stale run. Pushes to
-  # main group by commit SHA (unique per merge) so back-to-back merges NEVER cancel
-  # each other: a cancelled run reports `cancelled`, which the `ci-checks` gate treats
-  # as failure and stamps a false red X on the merge commit (seen with #465, cancelled
-  # 3s later by #464's merge). `github.head_ref` is empty on push, so the fallback picks
-  # the SHA there.
-  # Targeted diagnostics must not cancel full manual CI on the same commit.
-  group: ci-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.head_ref || github.sha }}${{ github.event_name == 'workflow_dispatch' && inputs['lint-comparison-only'] && '-lint-comparison' || '' }}${{ github.event_name == 'workflow_dispatch' && inputs['check-suite'] == 'server-image' && '-server-image' || '' }}
+  # A title/body edit must never cancel the source run for the same PR head.
+  # PR duplicates reuse validated tree evidence below; older heads stay isolated.
+  group: ci-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.run_id || github.sha }}${{ github.event_name == 'workflow_dispatch' && inputs['lint-comparison-only'] && '-lint-comparison' || '' }}${{ github.event_name == 'workflow_dispatch' && inputs['check-suite'] == 'server-image' && '-server-image' || '' }}
   cancel-in-progress: true
 
 jobs:
@@ -111,6 +106,7 @@ jobs:
           fi
 
   changes:
+    timeout-minutes: 65
     if: ${{ !inputs['lint-comparison-only'] }}
     runs-on: ubuntu-26.04
     # `actions: read` is for the base commit's own CI verdict, which the
@@ -147,6 +143,29 @@ jobs:
       # an output of minting a token, so mint one that can only read metadata,
       # and only for the branches that can be release PRs; a fork PR has no
       # secrets and runs the full suite like any other PR.
+      # Publish the checkout identity before expensive jobs so later PR events
+      # can wait for this run. Each duplicate still validates its own title above.
+      - name: Record PR checkout context
+        if: github.event_name == 'pull_request'
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
+        run: node scripts/ci-pr-evidence.mjs write "$RUNNER_TEMP/ci-context.json"
+      # renovate: datasource=github-actions depName=actions/upload-artifact
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: github.event_name == 'pull_request'
+        with:
+          name: ci-context-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ci-context.json
+          retention-days: 3
+      - name: Reuse identical PR checkout checks
+        id: duplicate
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: echo "reuse=$(node scripts/ci-pr-evidence.mjs read)" >> "$GITHUB_OUTPUT"
       - name: Resolve release app identity
         id: app-token
         if: >-
@@ -169,6 +188,7 @@ jobs:
           CHECK_SUITE: ${{ inputs['check-suite'] || 'full' }}
           RELEASE_TRAIN: ${{ inputs['release-train'] || 'full' }}
           RELEASE_PR: ${{ inputs['release-pr'] || '' }}
+          REUSE_PR_CHECKS: ${{ steps.duplicate.outputs.reuse || 'false' }}
           PR_NUMBER: ${{ github.event.pull_request.number || '' }}
           PR_AUTHOR: ${{ github.event.pull_request.user.login || '' }}
           PR_HEAD: ${{ github.event.pull_request.head.ref || '' }}
@@ -355,20 +375,13 @@ jobs:
             if [ "$release_only" = "true" ] || [ "${{ github.event_name }}" = "push" ]; then
               # Main routing and release inheritance both depend on the exact
               # base having completed successfully. Anything else fails broad.
-              runs="repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${verdict_base}&event=push&per_page=1"
-              verdict="$(gh api "$runs" --jq \
-                '(.workflow_runs[0] // {}) | "\(.status // "missing")/\(.conclusion // "none")"' \
-                2>/dev/null || echo 'unreadable/none')"
               # Release Please opens its metadata PR while main CI is still
-              # running. Wait for that exact base instead of starting a second
-              # full suite; source-bearing pushes retain their existing routing.
+              # running. Only metadata PRs may wait; main pushes query once.
+              wait_args=()
               if [ "$release_only" = "true" ] && [ "${{ github.event_name }}" != "push" ]; then
-                case "$verdict" in
-                  queued/none|in_progress/none|pending/none|waiting/none)
-                    verdict="$(node scripts/ci-base-verdict.mjs "$verdict_base" "$verdict" || echo 'unreadable/none')"
-                    ;;
-                esac
+                wait_args=(--wait)
               fi
+              verdict="$(node scripts/ci-base-verdict.mjs "$verdict_base" "${wait_args[@]}" || echo 'unreadable/none')"
               if [ "$verdict" = "completed/success" ]; then
                 base_green=true
               elif [ "$release_only" = "true" ]; then
@@ -379,7 +392,9 @@ jobs:
             fi
           fi
 
-          if [ "${{ github.event_name }}" = "schedule" ]; then
+          if [ "${REUSE_PR_CHECKS:-false}" = "true" ]; then
+            echo "::notice::Identical PR checkout already passed ci-checks; retaining current title validation"
+          elif [ "${{ github.event_name }}" = "schedule" ]; then
             # The expensive repository-wide threshold belongs to one predictable
             # integration run, not every merge. It runs without first repeating
             # the same suite in the uninstrumented shard job.
@@ -1944,6 +1959,22 @@ jobs:
     if: ${{ always() && !cancelled() && !inputs['lint-comparison-only'] }}
     runs-on: ubuntu-26.04
     steps:
+      # Parallel PR events may carry different title snapshots. Read the live
+      # title at the required gate so an older run cannot green a now-invalid title.
+      # renovate: datasource=github-actions depName=actions/checkout
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: github.event_name == 'pull_request'
+        with:
+          persist-credentials: false
+      - name: Validate current PR title
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          title="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq .title)"
+          .github/scripts/validate-release-title "$title"
       - name: Verify all required jobs succeeded
         run: |
           set -euo pipefail
