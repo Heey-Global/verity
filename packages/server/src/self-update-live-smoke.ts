@@ -71,8 +71,8 @@
  * first connection, so the candidate never answers and the quiesced generation
  * the rollback would return to cannot reclaim a control plane either. Both halves
  * fail, and what the stage is really about is what is left — an operation parked
- * in `rollback-activating-old` with its authority already back on the old digest,
- * which the recovery above finishes once the database returns.
+ * in `rollback-activating-old` without restoring authority before the schema
+ * can be checked. Recovery finishes once the database returns.
  *
  * The caller supplies an ISOLATED daemon (see deploy/bin/verity-self-update-live-smoke).
  * That is not optional: the managed deployment's identifiers — the container names
@@ -1806,18 +1806,14 @@ async function postgresContainer(client: DockerClient): Promise<string> {
  * not this stage's — an update that commits onto a healthy Server and then loses
  * the store leaves a deployment no worse than the store took away by itself.
  *
- * What follows is forced, and the point: the standby holds no control plane, so
- * it survives the loss and then cannot resume — `claimControlPlane` needs the
- * database it is being asked to come back on — and the cold start behind the
- * fallback cannot come up either. Both halves therefore fail, the aggregate says
- * so, and the operation stays parked in `rollback-activating-old` with its
- * authority already back on the old digest. That is the durable intent the ADR
- * asks for: nothing committed, nothing lost, and a rollback that any later
- * attempt can finish once the store is back — which is what
- * {@link cutoverRecoversRollback} then does, from the same container.
+ * Both readiness and rollback schema proof must fail while the database is
+ * absent. Authority stays on the candidate digest, maintenance stays active,
+ * and the operation remains in `rollback-activating-old`. No old writers may
+ * resume until schema proof succeeds. After checking that refusal, explicitly
+ * stop the retained container to exercise cold recovery once the store returns.
  */
 async function cutoverLosesTheDatabase(managedRoot: string): Promise<void> {
-  const previousDigest = required('VERITY_SMOKE_PREVIOUS_DIGEST');
+  const targetDigest = required('VERITY_SMOKE_TARGET_DIGEST');
   const client = docker();
   const before = await managedServer(client);
   const routedBefore = (await routedBackend()).host;
@@ -1874,7 +1870,7 @@ async function cutoverLosesTheDatabase(managedRoot: string): Promise<void> {
     );
     const authority = await readManagedDeployment(managedRoot);
     if (!authority.managed) fail(`managed authority unavailable: ${authority.reason}`);
-    expect(authority.spec.image === previousDigest, `authority kept ${authority.spec.image}`);
+    expect(authority.spec.image === targetDigest, `authority kept ${authority.spec.image}`);
 
     // The route never moved, so nothing a client can reach was ever pointed at
     // the generation that could not connect.
@@ -1883,15 +1879,18 @@ async function cutoverLosesTheDatabase(managedRoot: string): Promise<void> {
       `the Gateway was switched to ${(await routedBackend()).host} by a cutover that never became ready`,
     );
 
-    // The standby did not survive being asked to come back, which is the whole
-    // of this gate: the generation a rollback returns to needs the same store
-    // the candidate could not reach, so there is nothing left to route at and
-    // the cutover has to leave the container stopped rather than serving.
-    const old = await client.inspectContainer(before.id);
     expect(
-      !old.running,
-      'the standby that could not reclaim the control plane was left running, so the Gateway could be routed at a process holding none',
+      (await gatewayController(managedRoot).status()).maintenance,
+      'schema proof failed but the Gateway left maintenance',
     );
+
+    // Schema proof refused before attempting to resume the standby. A second
+    // fault (loss of that retained process) proves the next attempt can recover
+    // without relying on its in-memory key. This stop belongs to fault injection,
+    // not to the production rollback policy.
+    await client.stopContainer(before.id);
+    const old = await client.inspectContainer(before.id);
+    expect(!old.running, 'the retained Server did not stop for the cold recovery scenario');
     process.stdout.write(
       `left ${before.id} stopped and the rollback unfinished after the store went away\n`,
     );
