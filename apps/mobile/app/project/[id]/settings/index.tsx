@@ -29,7 +29,7 @@ import { settingsStyles as styles } from '../../../../components/settings/settin
 import type { StatusPillIntent } from '../../../../components/StatusPill';
 import { createVerityClient } from '../../../../lib/client';
 import { useDeleteProject } from '../../../../lib/projectDelete';
-import { useNewDesign } from '../../../../lib/homePreferences';
+import { useNewDesignChoice } from '../../../../lib/homePreferences';
 import { useProjectConnections } from '../../../../lib/useProjectConnections';
 import { projectIdParam, useProjectDetail } from '../../../../lib/useProjectDetail';
 import { Button } from '../../../../components/ui';
@@ -59,8 +59,9 @@ function ProjectSettingsIndexView({
 }) {
   const { theme } = useUnistyles();
   const { detail, loading, error, setError, load } = useProjectDetail(client, projectId);
-  // The new design shows project knowledge on the project page instead.
-  const newDesign = useNewDesign();
+  // The new design shows project knowledge on the project page instead. Until
+  // the stored choice is known the row stays away, so it never flashes and goes.
+  const newDesign = useNewDesignChoice();
   const {
     available,
     usage,
@@ -122,7 +123,7 @@ function ProjectSettingsIndexView({
         refreshConnections();
       }}
     >
-      {newDesign ? null : (
+      {newDesign !== false ? null : (
         <SettingsGroup title="Knowledge">
           <SettingsListPanel>
             <SettingsNavRow

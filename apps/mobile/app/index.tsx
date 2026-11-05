@@ -1017,6 +1017,9 @@ function SessionList({ client }: { client: VerityClient }) {
     </View>
   );
 
+  // Sessions and projects poll separately; a health item handled on Home changes
+  // only the projects, so the page beside it follows both.
+  const reloadToken = useMemo(() => [sessions, projects], [sessions, projects]);
   const projectPage =
     wide && openProjectId !== null ? (
       <ProjectPage
@@ -1028,7 +1031,7 @@ function SessionList({ client }: { client: VerityClient }) {
         onOpenSession={openSessionFromHome}
         onRepairProject={repairFromHome}
         // Home beside the page shows the same items; it must not offer an answered one again.
-        reloadOn={sessions}
+        reloadOn={reloadToken}
         onInboxSaved={() => void Promise.allSettled([refresh({ silent: true }), refreshProjects()])}
         onSessionChanged={(sessionId, deleted) => {
           // The list and the session pane beside the page show the same sessions.
