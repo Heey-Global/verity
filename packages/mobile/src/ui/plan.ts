@@ -3,6 +3,7 @@ import {
   PRESENT_PLAN_TOOL,
   planningToolName,
   parsePlanningProposal,
+  type PlanDecision,
 } from '@verity/events';
 
 import type { ToolCall } from '../happy/message.js';
@@ -136,6 +137,23 @@ export function planProposalHeadline(markdown: string): string {
 
 /** The pinned card and server-created tasks share the proposal's structure. */
 export const planProposalContent = parsePlanningProposal;
+
+/** "5 steps · 4 criteria · 1 decision" — what the card holds, zero counts left out. */
+export function planProposalCounts(markdown: string): string {
+  const { steps, criteria, decisions } = parsePlanningProposal(markdown);
+  const count = (n: number, one: string, many: string) =>
+    n === 0 ? [] : [`${String(n)} ${n === 1 ? one : many}`];
+  return [
+    ...count(steps.length, 'step', 'steps'),
+    ...count(criteria.length, 'criterion', 'criteria'),
+    ...count(decisions.length, 'decision', 'decisions'),
+  ].join(' · ');
+}
+
+/** The chat message a tapped option sends; the agent revises the plan from it. */
+export function planDecisionAnswer(decision: PlanDecision, option: string): string {
+  return `${decision.question} → ${option}`;
+}
 
 /** Fall back to the original proposal when structured fields would hide content.
  * Approval must cover the same text that the implementation turn receives. */

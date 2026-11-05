@@ -4,6 +4,8 @@ import {
   isPlanImplementationPermission,
   planHeadline,
   planProposalContent,
+  planProposalCounts,
+  planDecisionAnswer,
   planProposalFullyRepresented,
   planProposal,
   planProposalRevision,
@@ -166,6 +168,9 @@ describe('planProposalContent', () => {
       title: 'Separate gestures',
       goal: 'Avoid accidental drags.',
       steps: ['**Threshold** — change detection.', '**Tests** — verify scrolling.'],
+      outOfScope: '',
+      criteria: [],
+      decisions: [],
     });
   });
   it('keeps old plain plans readable and preserves multiline steps', () => {
@@ -173,11 +178,17 @@ describe('planProposalContent', () => {
       title: '',
       goal: 'A plain plan',
       steps: [],
+      outOfScope: '',
+      criteria: [],
+      decisions: [],
     });
     expect(planProposalContent('## Steps\n1. Change detection\n   and verify it.')).toEqual({
       title: '',
       goal: '',
       steps: ['Change detection\nand verify it.'],
+      outOfScope: '',
+      criteria: [],
+      decisions: [],
     });
   });
 });
@@ -220,4 +231,21 @@ describe('isPlanImplementationPermission', () => {
     expect(isPlanImplementationPermission({ tool: 'verity_secret_run', input: {} })).toBe(false);
     expect(isPlanImplementationPermission(null)).toBe(false);
   });
+});
+
+describe('planProposalCounts', () => {
+  it('names what the card holds and leaves out empty sections', () => {
+    expect(
+      planProposalCounts(
+        '## Acceptance criteria\n- A\n- B\n## Open decisions\n1. **Q?** — X | Y\n## Steps\n1. One\n2. Two',
+      ),
+    ).toBe('2 steps · 2 criteria · 1 decision');
+    expect(planProposalCounts('## Steps\n1. One')).toBe('1 step');
+  });
+});
+
+it('answers a decision with its question, so the agent knows which choice was made', () => {
+  expect(planDecisionAnswer({ question: 'Region?', options: ['EU', 'US'] }, 'EU')).toBe(
+    'Region? → EU',
+  );
 });

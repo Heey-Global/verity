@@ -15,6 +15,7 @@ const props = {
   error: undefined,
   onDismiss: jest.fn(),
   onImplement: jest.fn(),
+  onAnswerDecision: jest.fn(),
 };
 
 beforeEach(() => jest.clearAllMocks());
@@ -78,4 +79,42 @@ it('collapses on sending and reopens a new revision, including identical text', 
   expect(screen.getByText('Separate gestures')).toBeOnTheScreen();
   expect(screen.getByLabelText('Show full plan')).toBeOnTheScreen();
   expect(props.onDismiss).not.toHaveBeenCalled();
+});
+
+const spec = [
+  '# Pricing page',
+  '## Goal',
+  'Pick a plan in two taps.',
+  '## Acceptance criteria',
+  '- Toggle above the plans',
+  '- Recommended plan highlighted',
+  '## Open decisions',
+  '1. **Show prices incl. VAT?** — Incl. VAT (recommended) | Excl. VAT',
+  '## Steps',
+  '1. **Page** — build it.',
+].join('\n');
+
+it('shows criteria and answers an open decision through the chat', () => {
+  render(<PinnedPlan {...props} markdown={spec} />);
+  expect(screen.getByText('1 step · 2 criteria · 1 decision')).toBeOnTheScreen();
+  expect(screen.getByText('Toggle above the plans')).toBeOnTheScreen();
+  expect(screen.getByText('Show prices incl. VAT?')).toBeOnTheScreen();
+  expect(screen.getByText('Incl. VAT · recommended')).toBeOnTheScreen();
+  fireEvent.press(screen.getByLabelText('Answer Show prices incl. VAT? with Excl. VAT'));
+  expect(props.onAnswerDecision).toHaveBeenCalledWith('Show prices incl. VAT? → Excl. VAT');
+});
+
+it('keeps Implement locked while a decision is open, and only then', () => {
+  // The server refuses such a plan; an enabled button would only produce an error.
+  const view = render(<PinnedPlan {...props} markdown={spec} />);
+  expect(screen.getByText('Answer the open decision to implement.')).toBeOnTheScreen();
+  fireEvent.press(screen.getByLabelText('Implement plan'));
+  expect(props.onImplement).not.toHaveBeenCalled();
+
+  view.rerender(
+    <PinnedPlan {...props} markdown={spec.replace(/## Open decisions\n.*\n/, '')} revision={2} />,
+  );
+  expect(screen.queryByText('Answer the open decision to implement.')).toBeNull();
+  fireEvent.press(screen.getByLabelText('Implement plan'));
+  expect(props.onImplement).toHaveBeenCalledTimes(1);
 });

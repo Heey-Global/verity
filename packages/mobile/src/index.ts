@@ -118,6 +118,8 @@ export {
   isPlanImplementationPermission,
   planProposalHeadline,
   planProposalContent,
+  planProposalCounts,
+  planDecisionAnswer,
   planProposalFullyRepresented,
   planView,
   type PlanEntry,
@@ -448,6 +450,7 @@ export type {
   UserTextMessage,
 } from './happy/message.js';
 export { formatChoiceAnswer, type ChoicesOption, type RiskClass } from '@verity/events';
+export type { PlanDecision } from '@verity/events';
 export { PROJECT_IMAGE_REBUILDING_WARNING } from '@verity/events';
 export { END_PLANNING_TOOL, START_PLANNING_TOOL, planningToolName } from '@verity/events';
 export {
