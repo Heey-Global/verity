@@ -1971,7 +1971,7 @@ export const branchSwitchedSchema = z.object({ branch: z.string() });
 export type BranchSwitched = z.infer<typeof branchSwitchedSchema>;
 
 /** Response of `GET /knowledge/shared/recent`: the latest pages, newest first. */
-export const recentSharedKnowledgeSchema = z.object({
+const recentSharedKnowledgeSchema = z.object({
   entries: z.array(
     z.object({
       path: z.string().min(1),

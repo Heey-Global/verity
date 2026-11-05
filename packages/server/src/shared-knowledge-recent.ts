@@ -3,7 +3,7 @@ import { open, readdir, stat } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 
 /** Where a Shared knowledge file lives, as the app names the three areas. */
-export type SharedKnowledgeArea = 'decisions' | 'wiki' | 'sources';
+type SharedKnowledgeArea = 'decisions' | 'wiki' | 'sources';
 
 export type RecentSharedKnowledgeEntry = {
   /** Relative to the Shared root, with `/` separators. */
@@ -17,7 +17,7 @@ export type RecentSharedKnowledgeEntry = {
 
 export const RECENT_SHARED_LIMIT_MAX = 20;
 /** The walk stops after this many files, so a large library cannot stall the page. */
-export const RECENT_SHARED_SCAN_MAX = 2_000;
+const RECENT_SHARED_SCAN_MAX = 2_000;
 /** Enough of a file for its header and first heading. */
 const HEAD_BYTES = 4_096;
 
