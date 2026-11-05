@@ -4,10 +4,13 @@ import { z } from 'zod';
 import { projectSocketBindingName } from './project-relay-identity.js';
 import type { ProjectEgressNetworkBinding } from './project-egress-host.js';
 
+const immutableImage = z.string().regex(/^(?:[a-zA-Z0-9./:_-]+@)?sha256:[a-f0-9]{64}$/u);
 const subpath = z.string().regex(/^[a-zA-Z0-9_-]+(?:\/[a-zA-Z0-9_-]+)*$/u);
 /** Loaded only by the host service, never from a start request or container label. */
 export const egressRelayPolicy = z.strictObject({
-  image: z.string().regex(/^(?:[a-zA-Z0-9./:_-]+@)?sha256:[a-f0-9]{64}$/u),
+  image: immutableImage,
+  /** One retained immutable image for protected generations across server cutover. */
+  previousImage: immutableImage.optional(),
   dataVolume: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/u),
   socketOwnerUid: z.number().int().nonnegative(),
   relayGid: z.number().int().positive(),
@@ -146,7 +149,7 @@ export function verifyEgressRelay(
   const environment = [...image.Config.Env, 'NODE_OPTIONS=--max-old-space-size=96'];
   if (
     value.Image !== image.Id ||
-    value.Config.Image !== policy.image ||
+    ![policy.image, policy.previousImage].includes(value.Config.Image) ||
     value.Config.User !== `65532:${policy.relayGid}` ||
     JSON.stringify(value.Config.Entrypoint) !==
       JSON.stringify(['/nodejs/bin/node', '/app/dist/main.js']) ||
@@ -212,11 +215,14 @@ export async function inspectEgressRelay(
     .array(z.object({ State: z.object({ Running: z.literal(false) }) }))
     .length(1)
     .safeParse(container).success;
+  const inspectedImage = relay.parse(container)[0]!.Config.Image;
+  if (![policy.image, policy.previousImage].includes(inspectedImage))
+    throw new Error('Relay image is outside the installed transition policy');
   const paths = verifyEgressRelay(
     binding,
     policy,
     container,
-    JSON.parse(await docker('image', 'inspect', policy.image)),
+    JSON.parse(await docker('image', 'inspect', inspectedImage)),
     JSON.parse(await docker('volume', 'inspect', policy.dataVolume)),
   );
   // Shared ancestors belong to the same current inspection, not a later refresh.

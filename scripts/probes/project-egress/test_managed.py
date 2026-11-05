@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import tempfile
+import sys
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -54,6 +55,8 @@ class ManagedTests(unittest.TestCase):
 
     def execute(self, *args):
         self.calls.append(args)
+        if '--property=ActiveState' in args:
+            return 'inactive'
         if 'show' in args:
             return 'loaded' if self.loaded else 'not-found'
         if 'daemon-reload' in args:
@@ -67,11 +70,65 @@ class ManagedTests(unittest.TestCase):
     def unsupported(self, *_):
         raise ValueError('Kernel has no accepted native installation profile')
 
+    def test_staging_descriptor_is_private_transactional_and_never_production_evidence(self):
+        authorization = self.source.parent / 'assessment-authorization.json'
+        authorization.write_text('{"operation":"fixed-updater-test"}')
+        authorization.chmod(0o600)
+        descriptor = {'scope': 'staging-assessment', 'productionAccepted': False,
+                      'authorization': {'operation': 'fixed-updater-test'}, 'profile': {}}
+        with patch.object(managed.base, 'prepare_staging_assessment', return_value=descriptor) as prepare, patch.object(managed.base, 'runtime_preflight') as verify:
+            result = self.provision(assessment_authorization=authorization)
+        self.assertTrue(result['available'])
+        prepare.assert_called_once()
+        self.assertEqual(prepare.call_args.args[-1], {'operation': 'fixed-updater-test'})
+        self.assertEqual(verify.call_args.kwargs, {'assessment': descriptor})
+        stored = self.root / managed.ASSESSMENT_CONFIG
+        self.assertEqual(json.loads(stored.read_text()), descriptor)
+        self.assertEqual(stored.stat().st_mode & 0o777, 0o600)
+        self.assertIs(json.loads((self.root / managed.ASSESSMENT_NOTICE).read_text())['productionAccepted'], False)
+        self.assertEqual(managed.base.ACCEPTED_NATIVE_PROFILES, ())
+
+    def test_runtime_verifier_uses_private_assessment_only_after_production_rejection(self):
+        self.provision()
+        path = self.root / managed.ASSESSMENT_CONFIG
+        managed.base.atomic_file(path, b'{"scope":"staging-assessment"}', 0o600)
+        with patch.object(managed.base, 'runtime_preflight', side_effect=[ValueError('not accepted'), None]) as verify:
+            managed.verify_runtime(self.root, self.execute)
+        self.assertEqual(verify.call_count, 2)
+        self.assertEqual(verify.call_args.kwargs, {'assessment': {'scope': 'staging-assessment'}})
+        path.chmod(0o644)
+        with patch.object(managed.base, 'runtime_preflight', side_effect=ValueError('not accepted')):
+            with self.assertRaises(ValueError):
+                managed.verify_runtime(self.root, self.execute)
+        with patch.object(managed.base, 'runtime_preflight') as verify:
+            managed.verify_runtime(self.root, self.execute)
+        verify.assert_called_once()
+        self.assertEqual(verify.call_args.kwargs, {})
+
+    def test_default_activation_rejects_unaccepted_profile_on_every_retry(self):
+        # A synthetic unsupported callback would miss skipped production preflight.
+        self.assertEqual(managed.base.ACCEPTED_NATIVE_PROFILES, ())
+        (self.root / 'proc/1').mkdir(parents=True)
+        (self.root / 'proc/1/comm').write_text('systemd\n')
+        with patch.object(managed.base, 'accepted_native_profile',
+                          wraps=managed.base.accepted_native_profile) as gate:
+            results = [managed.provision(self.source, self.relay, self.authority,
+                       CONTROL_GID, self.root, self.execute,
+                       group_setup=lambda *_: None) for _ in range(2)]
+        self.assertEqual(gate.call_count, 2)
+        self.assertEqual(results, [{'available': False, 'reason': 'runtime_unsupported',
+                                   'controlGid': CONTROL_GID}] * 2)
+        self.assertFalse((self.root / managed.INVENTORY_CONTRACT).exists())
+        self.assertFalse((self.root / managed.JOURNAL).exists())
+        self.assertFalse((self.root / 'opt/verity-egress').exists())
+        self.assertEqual(self.calls, [])
+
     def test_unsupported_prepares_usable_mounts_without_firewall_or_units(self):
         result = self.provision(self.unsupported)
         self.assertEqual(result, {'available': False, 'reason': 'runtime_unsupported', 'controlGid': CONTROL_GID})
         self.assertEqual(self.calls, [])
         self.assertFalse((self.root / 'opt/verity-egress').exists())
+        self.assertFalse((self.root / managed.INVENTORY_CONTRACT).exists())
         self.assertFalse((self.root / 'etc/systemd').exists())
         for relative in ['etc/verity-egress/control.key', 'etc/verity-egress/authority.json']:
             self.assertEqual((self.root / relative).stat().st_mode & 0o777, 0o600)
@@ -84,6 +141,24 @@ class ManagedTests(unittest.TestCase):
         tmpfiles = (self.root / 'etc/tmpfiles.d/verity-egress.conf').read_text()
         self.assertIn(f'd /run/verity-egress 0750 0 {CONTROL_GID}', tmpfiles)
         self.assertIn('/etc/verity-egress-server/status.json', tmpfiles)
+
+    def test_inventory_contract_precedes_controller_and_survives_failed_upgrade(self):
+        observed = []
+
+        def run(*args):
+            if 'start' in args and args[-1] == managed.SERVICE:
+                contract = self.root / managed.INVENTORY_CONTRACT
+                self.assertEqual(json.loads(contract.read_text()), {'version': 1, 'required': True})
+                self.assertEqual(contract.stat().st_mode & 0o777, 0o640)
+                self.assertEqual(contract.stat().st_gid, CONTROL_GID)
+                observed.append(True)
+            return self.execute(*args)
+
+        self.provision(run=run)
+        self.assertTrue(observed)
+        self.crash_upgrade()
+        self.assertTrue((self.root / managed.INVENTORY_CONTRACT).is_file())
+        self.assertNotIn(managed.INVENTORY_CONTRACT, managed.TRANSACTION_FILES)
 
     def test_prepare_requires_no_database_or_configuration_and_never_checks_runtime(self):
         result = managed.provision(self.source, gid=CONTROL_GID, root=self.root, run=self.execute,
@@ -102,6 +177,54 @@ class ManagedTests(unittest.TestCase):
         self.provision(self.unsupported)
         self.assertEqual(before, [(path.stat().st_ino, path.read_bytes() if path.is_file() else None)
                                   for path in paths])
+
+    def test_relay_created_after_config_snapshot_is_retained_before_replacement_starts(self):
+        old_image, new_image = 'sha256:' + 'a' * 64, 'sha256:' + 'b' * 64
+        relay_id = 'c' * 64
+        self.relay.write_text(json.dumps({'image': old_image, 'packetEnforcement': True}))
+        self.provision()
+        self.relay.write_text(json.dumps({'image': new_image, 'packetEnforcement': True}))
+        observed = []
+
+        def run(*args):
+            if 'stop' in args and args[-1] == managed.SERVICE:
+                registry = self.root / 'var/lib/verity-egress/registry.json'
+                managed.base.atomic_file(registry, json.dumps({'version': 1, 'records': [
+                    {'retired': False, 'containers': {'relay': relay_id}}]}).encode(), 0o600)
+            if 'container' in args and 'inspect' in args:
+                self.calls.append(args)
+                return json.dumps([{'Id': relay_id, 'Config': {'Image': old_image}}])
+            if 'start' in args and args[-1] == managed.SERVICE:
+                policy = json.loads((self.root / 'etc/verity-egress/relay.json').read_text())
+                self.assertEqual(policy['previousImage'], old_image)
+                observed.append(policy)
+            return self.execute(*args)
+
+        self.provision(run=run)
+        self.assertEqual(len(observed), 1)
+        self.assertEqual(observed[0]['image'], new_image)
+        stop = max(i for i, args in enumerate(self.calls) if 'stop' in args and args[-1] == managed.SERVICE)
+        inspect = max(i for i, args in enumerate(self.calls) if 'container' in args and 'inspect' in args)
+        self.assertLess(stop, inspect)
+
+    def test_stopped_relay_reconciliation_rejects_unknown_third_or_changed_contract(self):
+        old, older, target, foreign = ['sha256:' + c * 64 for c in 'abcd']
+        self.relay.write_text(json.dumps({'image': old, 'packetEnforcement': True}))
+        self.provision()
+        managed.base.atomic_file(self.root / 'etc/verity-egress/relay.json',
+            json.dumps({'image': old, 'previousImage': older, 'packetEnforcement': True}).encode(), 0o600)
+        for images, extra, reason in [([foreign], {}, 'outside installed'),
+                                     ([old, older], {}, 'more than one'),
+                                     ([old], {'relayGid': 42}, 'contract cannot change')]:
+            records = [{'containers': {'relay': str(i + 1) * 64}} for i in range(len(images))]
+            managed.base.atomic_file(self.root / 'var/lib/verity-egress/registry.json',
+                json.dumps({'version': 1, 'records': records}).encode(), 0o600)
+            def run(*args):
+                index = int(args[-1][0]) - 1
+                return json.dumps([{'Id': args[-1], 'Config': {'Image': images[index]}}])
+            with self.subTest(reason=reason), self.assertRaisesRegex(ValueError, reason):
+                managed.reconcile_stopped_relay_policy(self.root, run,
+                    json.dumps({'image': target, 'packetEnforcement': True, **extra}).encode())
 
     def test_corrupt_assets_never_touch_host(self):
         (self.source / 'node').write_text('tampered')
@@ -160,13 +283,16 @@ class ManagedTests(unittest.TestCase):
         self.assertIn(f'Group={CONTROL_GID}', host)
         self.assertIn('/opt/verity-egress/node ', host)
         self.assertIn('project-egress-managed.py refresh-authority', host)
+        self.assertLess(host.index('project-egress-managed.py verify-runtime'),
+                        host.index('project-egress-managed.py refresh-authority'))
+        self.assertNotIn('not installed by verity-install', host)
         writable = ' '.join(line.partition('=')[2] for line in host.splitlines()
                             if line.startswith('ReadWritePaths='))
         self.assertIn('/etc/verity-egress', writable.split())
         self.assertEqual((self.root / 'usr/local/libexec/verity/project-egress-managed.py').read_bytes(),
                          SOURCE.read_bytes())
         self.assertLess(next(i for i, cmd in enumerate(self.calls) if cmd[-1] == 'deny'),
-                        next(i for i, cmd in enumerate(self.calls) if 'daemon-reload' in cmd))
+                        max(i for i, cmd in enumerate(self.calls) if 'daemon-reload' in cmd))
         self.assertEqual((self.root / 'opt/verity-egress/node').stat().st_mode & 0o777, 0o555)
 
     def test_unmanaged_prefix_collision_never_applies_rules(self):
@@ -310,7 +436,7 @@ class ManagedTests(unittest.TestCase):
     def test_interrupted_first_install_removes_partial_units_after_denial(self):
         def crash(*args):
             self.execute(*args)
-            if 'daemon-reload' in args:
+            if 'daemon-reload' in args and (self.root / managed.JOURNAL).exists():
                 raise KeyboardInterrupt('simulated process death')
             return 'loaded' if self.loaded else 'not-found'
 
@@ -323,6 +449,103 @@ class ManagedTests(unittest.TestCase):
         self.assertFalse((self.root / managed.JOURNAL).exists())
         self.assertTrue(any(cmd[-1] == 'deny' for cmd in self.calls))
         self.assertFalse(any('start' in cmd for cmd in self.calls))
+
+    def test_recovery_dependency_is_durable_before_first_activation_journal(self):
+        observed = []
+
+        def run(*args):
+            self.execute(*args)
+            if args[-1] == 'verity-egress-recovery.service':
+                self.assertFalse((self.root / managed.JOURNAL).exists())
+                unit = (self.root / managed.RECOVERY_UNIT).read_text()
+                writable = next(line.partition('=')[2].split() for line in unit.splitlines()
+                                if line.startswith('ReadWritePaths='))
+                for absolute in writable:
+                    self.assertTrue((self.root / absolute.lstrip('/')).is_dir(), absolute)
+                entry = next(line.split(' ', 2)[2].rsplit(' ', 1)[0]
+                             for line in unit.splitlines() if line.startswith('ExecStart='))
+                helper = Path(entry)
+                self.assertTrue(helper.is_file())
+                self.assertEqual(helper.stat().st_mode & 0o777, 0o444)
+                self.assertEqual(helper.parent.stat().st_mode & 0o777, 0o555)
+                self.assertIn('Before=verity-egress-bootstrap.service docker.service', unit)
+                for relative in (managed.RECOVERY_DROPIN, managed.RECOVERY_DOCKER_DROPIN):
+                    dropin = (self.root / relative).read_text()
+                    self.assertIn('Requires=verity-egress-recovery.service', dropin)
+                    self.assertIn('After=verity-egress-recovery.service', dropin)
+                observed.append(helper)
+            return 'loaded' if self.loaded else 'not-found'
+
+        self.provision(run=run)
+        self.assertEqual(len(observed), 1)
+        self.assertNotIn(managed.RECOVERY_UNIT, managed.TRANSACTION_FILES)
+        self.assertNotIn(managed.RECOVERY_DOCKER_DROPIN, managed.TRANSACTION_FILES)
+
+    def test_boot_recovery_uses_immutable_helper_after_mutable_helper_replacement(self):
+        self.crash_upgrade()
+        unit = (self.root / managed.RECOVERY_UNIT).read_text()
+        entry = next(line.split(' ', 2)[2].rsplit(' ', 1)[0]
+                     for line in unit.splitlines() if line.startswith('ExecStart='))
+        helper = Path(entry)
+        mutable = self.root / 'usr/local/libexec/verity/project-egress-managed.py'
+        mutable.write_text('raise RuntimeError("incomplete helper replacement")')
+        copy_spec = importlib.util.spec_from_file_location('immutable_recovery', helper)
+        copy = importlib.util.module_from_spec(copy_spec)
+        with patch.object(sys, 'dont_write_bytecode', True):
+            copy_spec.loader.exec_module(copy)
+        self.assertTrue(copy.recover_boot(self.root, self.execute))
+        self.assertFalse((self.root / managed.JOURNAL).exists())
+        self.assertNotIn('incomplete helper replacement', mutable.read_text())
+        status = json.loads((self.root / 'run/verity-egress/status.json').read_text())
+        self.assertEqual(status['reason'], 'controller_failed')
+        self.assertEqual(status['state'], 'unavailable')
+
+    def test_boot_recovery_needs_no_source_or_runtime_admission_and_is_locked(self):
+        previous, config, key = self.crash_upgrade()
+        lock = self.root / 'var/lib/verity-egress/install.lock'
+        with lock.open('a') as owner:
+            managed.fcntl.flock(owner, managed.fcntl.LOCK_EX | managed.fcntl.LOCK_NB)
+            with self.assertRaises(BlockingIOError):
+                managed.recover_boot(self.root, self.execute)
+        self.calls.clear()
+        self.assertTrue(managed.recover_boot(self.root, self.execute))
+        self.assertFalse(any('stop' in cmd for cmd in self.calls))
+        self.assertEqual((self.root / 'opt/verity-egress').resolve(), previous)
+        self.assertEqual((self.root / 'etc/verity-egress/authority.json').read_bytes(), config)
+        self.assertEqual((self.root / 'etc/verity-egress/control.key').read_bytes(), key)
+        self.assertFalse((self.root / managed.JOURNAL).exists())
+        self.assertFalse(any('start' in cmd for cmd in self.calls))
+        self.calls.clear()
+        self.assertFalse(managed.recover_boot(self.root, self.execute))
+        self.assertEqual(self.calls, [])
+
+    def test_boot_recovery_stops_a_live_controller_before_independent_denial(self):
+        self.crash_upgrade()
+        self.calls.clear()
+
+        def active(*args):
+            result = self.execute(*args)
+            return 'active' if '--property=ActiveState' in args else result
+
+        self.assertTrue(managed.recover_boot(self.root, active))
+        stop = next(i for i, cmd in enumerate(self.calls) if 'stop' in cmd)
+        deny = next(i for i, cmd in enumerate(self.calls) if cmd[-1] == 'deny')
+        self.assertLess(stop, deny)
+        self.assertFalse(any('start' in cmd for cmd in self.calls))
+
+    def test_unknown_boot_controller_state_denies_but_retains_journal(self):
+        self.crash_upgrade()
+        self.calls.clear()
+
+        def unknown(*args):
+            result = self.execute(*args)
+            return 'unknown' if '--property=ActiveState' in args else result
+
+        with self.assertRaisesRegex(ValueError, 'boot controller state'):
+            managed.recover_boot(self.root, unknown)
+        self.assertTrue((self.root / managed.JOURNAL).exists())
+        self.assertTrue(any(cmd[-1] == 'deny' for cmd in self.calls))
+        self.assertFalse(any('daemon-reload' in cmd for cmd in self.calls))
 
     def test_unsupported_upgrade_preserves_running_bundle_units_and_config(self):
         self.provision()

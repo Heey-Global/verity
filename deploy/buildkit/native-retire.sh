@@ -1,5 +1,14 @@
 #!/usr/bin/env bash
 # Sourced by the release-owned snapshotter reconciler; never accepts a supplied path or command.
+# A container can exit and be removed between `docker ps` and `docker inspect`; short-lived
+# helpers do so all the time. One that no inventory lists any more cannot use the
+# builder, so a failed inspection of it is not evidence of an unknown client. A
+# container that is still listed but cannot be inspected keeps blocking.
+container_gone() {
+    local listed
+    listed=$(timeout 10 docker ps -aq --no-trunc --filter "id=$1") || return 1
+    [[ -z $listed ]]
+}
 native_retire() (
     set -euo pipefail
     local target=$root/runc-native quarantine=$root/.verity-native-retired record=$state/native-retirement.json
@@ -73,7 +82,15 @@ native_retire() (
     ids=$(timeout 10 docker ps -aq) || { blocker consumer-inventory-unavailable; ids=; }
     local seen=" " consumers=0
     for id in $ids; do
-        metadata=$(timeout 5 docker inspect --format '{"mounts":{{json .Mounts}},"identity":{{json .Config.Hostname}},"running":{{json .State.Running}}}' "$id") || { blocker consumer-inspection-failed; continue; }
+        if ! metadata=$(timeout 5 docker inspect --format '{"mounts":{{json .Mounts}},"identity":{{json .Config.Hostname}},"running":{{json .State.Running}}}' "$id" 2>/dev/null); then
+            if ! container_gone "$id"; then
+                local inspect_error
+                inspect_error=$(timeout 5 docker inspect --format '{{.Id}}' "$id" 2>&1 >/dev/null | head -c 512 || true)
+                printf 'Could not inspect builder consumer %s: %s\n' "$id" "${inspect_error:-unknown error}" >&2
+                blocker consumer-inspection-failed
+            fi
+            continue
+        fi
         jq -e '.mounts | type == "array"' <<< "$metadata" >/dev/null || { blocker consumer-inspection-invalid; continue; }
         if ! jq -e --arg socket "$run_dir" '.mounts | any(.Source as $s | $s == "/" or $s == $socket or $s == ($socket + "/buildkitd.sock") or ($socket | startswith($s + "/")))' <<< "$metadata" >/dev/null; then continue; fi
         identity=$(jq -er '.identity | select(test("^[a-zA-Z0-9-]{1,64}$"))' <<< "$metadata") || { blocker consumer-identity-invalid; continue; }

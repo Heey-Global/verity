@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.84.4](https://github.com/Heey-Global/verity/compare/mobile-v1.84.3...mobile-v1.84.4) (2026-11-05)
+
+
+### Features
+
+* **mobile:** clarify connection diagnostic tests and recovery ([#2266](https://github.com/Heey-Global/verity/issues/2266)) ([5e43ac7](https://github.com/Heey-Global/verity/commit/5e43ac7c1d7848390a14a4cdba8a52973cb8ef7c))
+
+
+### Bug Fixes
+
+* **deps:** update dependency kysely to v0.29.8 ([#2268](https://github.com/Heey-Global/verity/issues/2268)) ([b196c30](https://github.com/Heey-Global/verity/commit/b196c302767d52e1339a5b21360c860ed1963e28))
+* **deps:** update dependency pdfjs-dist to v6.5.438 ([#2269](https://github.com/Heey-Global/verity/issues/2269)) ([a4de1d3](https://github.com/Heey-Global/verity/commit/a4de1d30ff783d6ca545e139983e6123014fe7b8))
+* **egress:** expose retrofit status and recover interrupted renewal ([#2253](https://github.com/Heey-Global/verity/issues/2253)) ([a0c904e](https://github.com/Heey-Global/verity/commit/a0c904eb4aa073c04ab9d37bb6f7caf1246eedc6))
+* **knowledge:** clarify unavailable Wiki errors ([#2264](https://github.com/Heey-Global/verity/issues/2264)) ([cd4fdff](https://github.com/Heey-Global/verity/commit/cd4fdffe559809f7b56ef92677bbb854ecfe8aed))
+* **server:** bound session deletion and preserve safe deferred cleanup ([#2267](https://github.com/Heey-Global/verity/issues/2267)) ([ab75186](https://github.com/Heey-Global/verity/commit/ab751868fe5f5e9be72af8a12b4f0294db05d3a1))
+
+
+### Performance Improvements
+
+* **mobile:** isolate unchanged sidebar session wrappers ([#2259](https://github.com/Heey-Global/verity/issues/2259)) ([8830880](https://github.com/Heey-Global/verity/commit/883088001c85b322c522c234e0dc11a0aa412da7))
+
 ## [1.84.3](https://github.com/Heey-Global/verity/compare/mobile-v1.84.2...mobile-v1.84.3) (2026-11-04)
 
 

@@ -70,6 +70,7 @@ export function agentSeedPublicationKey(image: string, version?: string): string
 
 type CompanionDocker = Pick<
   DockerClient,
+  | 'containerLogs'
   | 'createContainer'
   | 'inspectContainer'
   | 'listContainers'
@@ -566,10 +567,31 @@ async function cleanupManagedAgentSeeds(
   try {
     await options.docker.startContainer(helper.id);
     if ((await wait(helper.id)) !== 0)
-      throw new Error('seed cleanup helper could not establish a complete, unambiguous inventory');
+      throw new Error(
+        `seed cleanup helper could not establish a complete, unambiguous inventory${await seedCleanupReason(options.docker, helper.id)}`,
+      );
   } finally {
     await options.docker.removeContainer(helper.id);
   }
+}
+
+/** The helper prints its result as one JSON line; name why it skipped, if it said. */
+async function seedCleanupReason(
+  docker: Pick<DockerClient, 'containerLogs'>,
+  helperId: string,
+): Promise<string> {
+  const output = await docker.containerLogs?.(helperId, 20).catch(() => undefined);
+  for (const line of (output ?? '').split('\n').reverse()) {
+    const start = line.indexOf('{');
+    if (start < 0) continue;
+    try {
+      const result = JSON.parse(line.slice(start)) as { skipped?: unknown };
+      if (typeof result.skipped === 'string') return `: ${result.skipped.slice(0, 300)}`;
+    } catch {
+      // Not the result line; keep looking.
+    }
+  }
+  return '';
 }
 
 export async function runManagedCompanionHandoff(

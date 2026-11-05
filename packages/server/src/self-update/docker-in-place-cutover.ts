@@ -22,6 +22,7 @@ import {
   type UpdateCutoverDeps,
 } from './update-cutover.js';
 import { readUpdateJournal } from './update-journal.js';
+import { archiveRetiredServerLogs } from './retired-server-logs.js';
 import { openActivationGate } from './activation-gate.js';
 import { generationOperationId } from './docker-update-preparation.js';
 import {
@@ -77,6 +78,7 @@ export type StandbyPromotionDocker = Pick<
   | 'listContainers'
   | 'pullImage'
   | 'removeContainer'
+  | 'removeStoppedContainer'
   | 'replaceContainerImage'
   | 'startContainer'
   | 'stopContainer'
@@ -676,6 +678,58 @@ export async function dockerStandbyPromotion(
       await probe(state, 'observe', observeTimeoutMs, candidateHost, journal.targetDigest);
     },
     retireOld: async (state) => {
+      const keepLogs = (containerId: string, containerName: string) =>
+        archiveRetiredServerLogs({
+          managedRoot: options.managedRoot,
+          docker,
+          containerId,
+          containerName,
+          log,
+        });
+      // An earlier cutover whose retirement never completed, or an installer repair
+      // that recreated the bootstrap Server, can leave a stopped Server of this
+      // deployment behind. Nothing retries that removal once its journal is gone,
+      // and the installer refuses to run while two Server containers exist. Only
+      // exited ones are retired: the candidate now serves, and a running or just
+      // created Server under another name is not this cutover's to touch.
+      try {
+        // Without a deployment identity no container can be proven to be ours.
+        const inventory =
+          journal.deploymentId && docker.removeStoppedContainer
+            ? ((await docker.listContainers?.()) ?? [])
+            : [];
+        for (const container of inventory) {
+          if (container.id === state.oldContainerId || container.id === state.candidateContainerId)
+            continue;
+          if (
+            container.labels?.[MANAGED_DEPLOYMENT_LABEL] !== journal.deploymentId ||
+            container.labels?.[MANAGED_ROLE_LABEL] !== 'server'
+          )
+            continue;
+          const name = container.names?.find((entry) =>
+            /^verity-managed-server(?:-g[1-9][0-9]{0,9})?$/u.test(entry),
+          );
+          if (name === undefined || name === candidateHost) continue;
+          const inspect = await docker.inspectContainer(container.id).catch((error: unknown) => {
+            if (missing(error)) return undefined;
+            throw error;
+          });
+          // Only a Server that ran and ended is stale; a created, not yet started one
+          // may be a concurrent repair's.
+          if (inspect === undefined || !['exited', 'dead'].includes(inspect.status ?? '')) continue;
+          await keepLogs(container.id, name);
+          await ignoreMissing(() => docker.removeStoppedContainer!(container.id));
+          log(`Removed leftover stopped Server ${name}`);
+        }
+      } catch (error) {
+        // The next committed cutover sweeps again; a leak must not undo a success.
+        log(
+          `Could not remove leftover Server containers: ${error instanceof Error ? error.message : 'unknown error'}`,
+        );
+      }
+      // The generation this cutover replaced goes last, so its logs are the newest
+      // copy kept and leftover copies can never evict them.
+      await keepLogs(state.oldContainerId, oldHost);
       await ignoreMissing(() => docker.removeContainer(state.oldContainerId));
     },
 

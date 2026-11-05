@@ -2,7 +2,7 @@ import * as http from 'node:http';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   createDockerClient,
   createUnixSocketFetch,
@@ -2489,6 +2489,21 @@ describe('createDockerClient runtime + response validation', () => {
       status: 200,
       message: 'missing Id in /containers/{id}/json',
     });
+  });
+
+  it('allows a bounded wait longer than the default for owned host installation', async () => {
+    const timeout = vi.spyOn(AbortSignal, 'timeout');
+    try {
+      const fetch = fakeFetch([
+        { match: /\/containers\/abc\/wait/, method: 'POST', resp: res({ StatusCode: 0 }) },
+      ]);
+      await client(fetch).waitContainer?.('abc', { timeoutMs: 780_000 });
+      expect(timeout).toHaveBeenLastCalledWith(780_000);
+      await client(fetch).waitContainer?.('abc');
+      expect(timeout).toHaveBeenLastCalledWith(300_000);
+    } finally {
+      timeout.mockRestore();
+    }
   });
 
   it('waitContainer refuses a wait that reports a daemon-side error alongside its code', async () => {

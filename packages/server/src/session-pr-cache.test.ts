@@ -171,6 +171,40 @@ describe('shared session PR cache', () => {
     expect(load).toHaveBeenCalledTimes(2);
   });
 
+  it('falls back to the settled cadence when an open PR never gets any checks', async () => {
+    // A repository without CI never leaves the "checks not started yet" state.
+    let now = 0;
+    const noChecks = { completed: 0, total: 0, successful: 0, failed: 0, pending: 0 };
+    let status: PullRequestStatus = {
+      ...pr,
+      pipeline: 'unknown',
+      mergeable: true,
+      mergeState: 'clean',
+      headSha: 'a'.repeat(40),
+      checks: noChecks,
+    };
+    const load = vi.fn(async () => status);
+    const cache = createSessionPrCache({ load, now: () => now });
+    const readAt = async (at: number, background = false) => {
+      now = at;
+      await cache.get(session, { background });
+      return load.mock.calls.length;
+    };
+    expect(await readAt(0)).toBe(1);
+    // Shortly after a push the PR is still expected to start CI soon.
+    expect(await readAt(15_000)).toBe(2);
+    expect(await readAt(300_000)).toBe(3);
+    // After the grace window the settled open-PR cadence applies.
+    expect(await readAt(315_000)).toBe(3);
+    expect(await readAt(330_000)).toBe(4);
+    expect(await readAt(400_000, true)).toBe(4);
+    expect(await readAt(450_000, true)).toBe(5);
+    // A new head commit may start CI, so the fast cadence returns for it.
+    status = { ...status, headSha: 'b'.repeat(40) };
+    expect(await readAt(480_000)).toBe(6);
+    expect(await readAt(495_000)).toBe(7);
+  });
+
   it('backs off absent PRs in the background but discovers them quickly when viewed', async () => {
     let now = 0;
     const load = vi

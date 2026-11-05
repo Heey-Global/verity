@@ -3,9 +3,27 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useFocusEffect } from 'expo-router';
 import { randomUUID } from 'expo-crypto';
 import * as Clipboard from 'expo-clipboard';
-import { AppState } from 'react-native';
-import { CardRow } from '../premium/PremiumChrome';
-import { selectedRecordingContext } from '../../lib/selectedRecordingContext';
+import { Alert, AppState, Share } from 'react-native';
+import {
+  assertNativeTunnelInactive,
+  selectedRecordingContext,
+} from '../../lib/selectedRecordingContext';
+import { isNativeTunnelUnsupported } from '../../lib/nativeTunnelSupport';
+import {
+  Actions,
+  Button,
+  SourceTags,
+  StatusLine,
+  StepIndicator,
+  TestCard,
+  Toast,
+  holdReason,
+  useHold,
+  useTransientMessage,
+  completeness,
+  formatReportTime,
+  type StatusTone,
+} from './DiagnosticsParts';
 import {
   selectedRecordingAttempt,
   type SelectedLocalRecording,
@@ -16,6 +34,7 @@ import {
   createConnectionDiagnosticReport,
   saveConnectionDiagnosticReport,
   loadConnectionDiagnosticReports,
+  type ConnectionDiagnosticReport,
 } from '../../lib/connectionDiagnosticReport';
 import type { ConnectionRecordingExport } from '@verity/mobile';
 
@@ -26,6 +45,23 @@ const prerequisiteMessages = new Set([
   'Native connection test unsupported.',
   'An existing DATA tunnel must be stopped before testing.',
 ]);
+/** The same prerequisites, said the way a user can act on them. */
+const prerequisiteHelp: Record<string, string> = {
+  'Select a paired direct HTTPS connection before testing.':
+    'This test needs a direct connection to your Core. Select it in Connection settings.',
+  'Unlock the paired direct connection before testing.':
+    'Unlock the direct connection to your Core, then try again.',
+  'The direct Core does not match the paired remote installation.':
+    'The direct connection leads to a different Core than remote access. Check the pairing.',
+  'Native connection test unsupported.': 'This device does not support the connection test.',
+  'An existing DATA tunnel must be stopped before testing.':
+    'Another connection test is still running on this device. Wait a moment and try again.',
+};
+type Result = { tone: StatusTone; title: string; detail: string };
+// Wait from discard, after preparation has ended: server arming can occur
+// later than the locally saved start time (45 s recording plus 15 s margin).
+const QUICK_SERVER_EXPIRY_MS = 60_000;
+const QUICK_STEPS = ['Testing the connection', 'Result'] as const;
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/iu;
 type SavedTest = {
   runId: string;
@@ -84,8 +120,11 @@ export function SelectedConnectionTest({
   visible = true,
   onReport,
   onCaptureBlocked,
+  blockedReason,
 }: {
   disabled: boolean;
+  /** Why `disabled` holds, shown instead of a silently greyed-out button. */
+  blockedReason?: string | undefined;
   onBusy: (busy: boolean) => boolean | void;
   visible?: boolean;
   onReport?: () => void;
@@ -93,9 +132,14 @@ export function SelectedConnectionTest({
 }) {
   const serverId = getServerProfile()?.serverId;
   const storageKey = serverId ? `verity.selectedConnectionTest.v1.${serverId}` : null;
-  const [message, setMessage] = useState(
-    'One health request. Ends automatically after the response; metadata capture is limited to 30 seconds. Requires a paired direct connection.',
+  // Only actionable problems stay on screen; the outcome lives in `result`.
+  const [message, setMessage] = useState('');
+  const [result, setResult] = useState<Result | null>(null);
+  const [toast, showToast] = useTransientMessage();
+  const [holdLeft, holdUntil, held, holdLoaded] = useHold(
+    serverId ? `verity.selectedConnectionTest.hold.v1.${serverId}` : null,
   );
+  const [report, setReport] = useState<ConnectionDiagnosticReport | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [saved, setSaved] = useState<SavedTest | null>(null);
   const [busy, setBusy] = useState(false);
@@ -103,8 +147,15 @@ export function SelectedConnectionTest({
   const [archived, setArchived] = useState(false);
   const [canStartAnother, setCanStartAnother] = useState(false);
   useEffect(() => {
-    onCaptureBlocked?.(!loaded || busy || (saved !== null && !(archived && canStartAnother)));
-  }, [loaded, busy, saved, archived, canStartAnother, onCaptureBlocked]);
+    onCaptureBlocked?.(
+      // Until the stored wait is read, a just-discarded run may still be recording.
+      !loaded ||
+        !holdLoaded ||
+        busy ||
+        holdLeft > 0 ||
+        (saved !== null && !(archived && canStartAnother)),
+    );
+  }, [loaded, holdLoaded, busy, holdLeft, saved, archived, canStartAnother, onCaptureBlocked]);
 
   const [localFailure, setLocalFailure] = useState<{
     kind: string;
@@ -142,9 +193,9 @@ export function SelectedConnectionTest({
     setLocalFailure(null);
     setBusy(operation.current !== null);
     setPhase(operation.current ? 'Stopping' : 'Preparing');
-    setMessage(
-      'One health request. Ends automatically after the response; metadata capture is limited to 30 seconds. Requires a paired direct connection.',
-    );
+    setMessage('');
+    setResult(null);
+    setReport(null);
     void (async () => {
       try {
         const value = parseSavedTest(storageKey ? await AsyncStorage.getItem(storageKey) : null);
@@ -152,12 +203,9 @@ export function SelectedConnectionTest({
         retained.current = value;
         setSaved(value);
         setLoaded(true);
-        if (value)
-          setMessage(
-            'Saved quick test. Collect this run’s report; starting another test will not recover missing evidence.',
-          );
       } catch {
-        if (current) setMessage('Saved test unavailable. Reopen Diagnostics before testing.');
+        if (current)
+          setMessage('Could not read the last quick test. Close and reopen Diagnostics.');
       }
     })();
     return () => {
@@ -194,7 +242,7 @@ export function SelectedConnectionTest({
       });
   };
   const start = async () => {
-    if (disabled || !loaded || retained.current || operation.current) return;
+    if (disabled || !loaded || retained.current || operation.current || held()) return;
     const controller = new AbortController();
     operation.current = controller;
     setBusy(true);
@@ -210,7 +258,9 @@ export function SelectedConnectionTest({
     let verified = false;
     let responseStatus: number | undefined;
     setLocalFailure(null);
-    setMessage('Checking the paired direct connection…');
+    setMessage('');
+    setResult(null);
+    setReport(null);
     try {
       const context = selectedRecordingContext();
       stage = 'direct-descriptor';
@@ -266,8 +316,18 @@ export function SelectedConnectionTest({
         await persist(attempt);
       }
       if (focused.current && scope.current === storageKey)
-        setMessage(
-          `HTTP ${result.status}. Test ended automatically after the response. Collect the App, Core and Uplink report.`,
+        setResult(
+          result.status < 400
+            ? {
+                tone: 'ok',
+                title: 'Connection works',
+                detail: `Your Core answered through Uplink (HTTP ${String(result.status)}).`,
+              }
+            : {
+                tone: 'problem',
+                title: 'Connection reached Core, but it returned an error',
+                detail: `HTTP ${String(result.status)}. Collect the report to see the details.`,
+              },
         );
     } catch (error) {
       if (attempt) {
@@ -276,16 +336,33 @@ export function SelectedConnectionTest({
       }
       recordFailure(stage, error);
       if (focused.current && scope.current === storageKey)
-        setMessage(
+        setResult(
           error instanceof Error && error.message === 'Selected cleanup failed'
-            ? 'Stop could not be confirmed. Collect available evidence; do not start another test.'
+            ? {
+                tone: 'problem',
+                title: 'The test may still be running',
+                detail:
+                  'The app could not confirm that it stopped. Collect the report to finish it.',
+              }
             : !verified && error instanceof Error && prerequisiteMessages.has(error.message)
-              ? error.message
+              ? {
+                  tone: 'problem',
+                  title: 'The test could not start',
+                  detail: prerequisiteHelp[error.message] ?? error.message,
+                }
               : responseStatus !== undefined
-                ? `HTTP ${responseStatus} received. Test ended; collect the report for result and Stop status.`
+                ? {
+                    tone: 'problem',
+                    title: 'Connection interrupted',
+                    detail: `Your Core answered (HTTP ${String(responseStatus)}), but the test did not finish cleanly.`,
+                  }
                 : controller.signal.aborted
-                  ? 'Test cancelled. Collect any available evidence.'
-                  : 'Test failed during preparation or request. Collect available evidence. No successful result confirmed.',
+                  ? { tone: 'neutral', title: 'Test cancelled', detail: '' }
+                  : {
+                      tone: 'problem',
+                      title: 'Connection failed',
+                      detail: 'The request did not get through. The report shows where it stopped.',
+                    },
         );
     } finally {
       if (attempt?.localStatus === 'pending')
@@ -372,6 +449,7 @@ export function SelectedConnectionTest({
         if (!retainedReport) throw new Error('Saved report unavailable');
         bundle = retainedReport;
         if (scope.current === storageKey) {
+          setReport(bundle);
           setArchived(true);
           setCanStartAnother(nativeInactive && (bundle.remote.stopped || absentOnVerifiedCore));
           onReport?.();
@@ -381,14 +459,17 @@ export function SelectedConnectionTest({
       }
       if (controller.signal.aborted || !focused.current || scope.current !== storageKey) return;
       await Clipboard.setStringAsync(JSON.stringify(bundle));
-      if (focused.current && scope.current === storageKey)
+      if (focused.current && scope.current === storageKey) {
+        if (!stored) setReport(bundle);
+        showToast('Report copied to the clipboard.');
         setMessage(
-          `${bundle.complete ? 'Complete report copied.' : 'Partial report copied. Missing sources or unconfirmed Stop are listed in the report.'}${absentOnVerifiedCore ? ' Core has no retained report for this run.' : ''}${stored ? ' This run is retained in Saved reports.' : ' Saving failed or Saved reports is full; keep this run and copy its report before leaving.'}`,
+          `${absentOnVerifiedCore ? 'Your Core no longer has data for this test. ' : ''}${stored ? '' : 'The report could not be saved on this device – paste it somewhere before leaving.'}`.trim(),
         );
+      }
     } catch (error) {
       recordFailure('clipboard', error);
       if (focused.current && scope.current === storageKey)
-        setMessage('Could not copy the report. This run is retained; retry collection.');
+        setMessage('Could not copy the report. The test is kept – try again.');
     } finally {
       operation.current = null;
       if (focused.current) setBusy(false);
@@ -399,7 +480,9 @@ export function SelectedConnectionTest({
     const expected = retained.current;
     if (!expected || !archived || operation.current || !storageKey || disabled) return;
     if (!canStartAnother) {
-      setMessage('Cannot start another test while Stop is unconfirmed.');
+      setMessage(
+        'The app could not confirm that the last test stopped. Collect again or discard it.',
+      );
       return;
     }
     const controller = new AbortController();
@@ -433,79 +516,218 @@ export function SelectedConnectionTest({
       setArchived(false);
       setCanStartAnother(false);
       setLocalFailure(null);
-      setMessage(
-        'Previous report retained in Saved reports. Ready for one health request with automatic Stop.',
-      );
+      setMessage('');
+      setResult(null);
+      setReport(null);
     } catch {
-      if (current()) setMessage('Cannot start another test while native Stop is unconfirmed.');
+      if (current())
+        setMessage(
+          'The app could not confirm that the last test stopped on this device. Try again.',
+        );
     } finally {
       operation.current = null;
       if (focused.current) setBusy(false);
       onBusy(false);
     }
   };
+  const discard = async () => {
+    const expected = retained.current;
+    if (!expected || operation.current || !storageKey) return;
+    const controller = new AbortController();
+    operation.current = controller;
+    setBusy(true);
+    setPhase('Stopping');
+    if (onBusy(true) === false) {
+      operation.current = null;
+      setBusy(false);
+      setPhase('Preparing');
+      setMessage('Finish or wait for the long test first.');
+      return;
+    }
+    let stage: 'stop' | 'storage' = 'stop';
+    try {
+      // Discarding never runs while this device might still be capturing. A
+      // device without the native test cannot be capturing, so it may discard.
+      await assertNativeTunnelInactive().catch((error: unknown) => {
+        if (!isNativeTunnelUnsupported(error)) throw error;
+      });
+      if (scope.current !== storageKey || retained.current?.runId !== expected.runId) return;
+      stage = 'storage';
+      // Late evidence still being persisted must not write the run back.
+      await writes.current.catch(() => undefined);
+      if (scope.current !== storageKey || retained.current?.runId !== expected.runId) return;
+      // Without a confirmed Core/Uplink Stop the server may still record this run
+      // until it expires; persist that wait before the run disappears. A legacy
+      // run without a start time predates this app version and has long expired.
+      const startedAt = expected.startedAt === null ? Number.NaN : Date.parse(expected.startedAt);
+      if (!(archived && canStartAnother) && Number.isFinite(startedAt))
+        await holdUntil(Date.now() + QUICK_SERVER_EXPIRY_MS);
+      await AsyncStorage.removeItem(storageKey);
+      if (scope.current !== storageKey) return;
+      retained.current = null;
+      setSaved(null);
+      setArchived(false);
+      setCanStartAnother(false);
+      setLocalFailure(null);
+      setResult(null);
+      setReport(null);
+      setMessage('');
+    } catch {
+      if (focused.current && scope.current === storageKey)
+        setMessage(
+          stage === 'stop'
+            ? 'The app could not confirm that the test stopped on this device. Wait a moment and try again.'
+            : 'This device could not update its saved test. Nothing was discarded; try again.',
+        );
+    } finally {
+      operation.current = null;
+      if (focused.current) {
+        setBusy(false);
+        setPhase('Preparing');
+      }
+      onBusy(false);
+    }
+  };
+  const confirmDiscard = () =>
+    Alert.alert(
+      'Discard this quick test?',
+      archived
+        ? 'The unfinished test is removed from this device. Its saved report is kept.'
+        : 'Its data has not been collected yet and will be lost. Other saved reports are kept.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Discard', style: 'destructive', onPress: () => void discard() },
+      ],
+    );
   if (!visible) return null;
+  const collecting = busy && phase === 'Collecting';
+  const running = busy && !collecting;
+  const finished = saved !== null && !busy;
+  const unfinished = finished && !archived;
+  const blocked = finished && archived && !canStartAnother;
+  const shown: Result | null = unfinished
+    ? (result ?? {
+        tone: 'neutral',
+        title: 'A quick test has not been finished',
+        detail: `${formatReportTime(saved.startedAt)}. Collect its report to finish it, or discard it.`,
+      })
+    : finished && archived && report
+      ? {
+          tone: report.complete ? (result?.tone ?? 'ok') : 'problem',
+          title: result?.title ?? 'Report saved',
+          detail: completeness(report),
+        }
+      : !saved && !busy
+        ? result
+        : null;
   return (
-    <>
-      <CardRow title="Quick test status" subtitle={message} chevron={false} />
-      {saved ? (
-        <CardRow
-          title={`Quick test · ${saved.runId.slice(0, 8)}`}
-          subtitle={`${saved.startedAt ?? 'Older saved run — start time unavailable'} · ${busy ? phase : saved.outcome === 'unknown' ? 'Result unknown' : 'Ended'}`}
-          chevron={false}
+    <TestCard
+      title="Quick test"
+      description="Checks once whether the connection works right now · about 5 seconds"
+      attention={shown?.tone === 'problem'}
+    >
+      {running || collecting || finished ? (
+        <StepIndicator steps={QUICK_STEPS} current={running ? 0 : 1} />
+      ) : null}
+      {running ? (
+        <StatusLine
+          title={phase === 'Stopping' ? 'Stopping…' : 'Testing the connection…'}
+          detail="One request to your Core through Uplink. Stops by itself."
         />
       ) : null}
-      {!saved ? (
-        <CardRow
-          title="Start quick test"
-          disabled={disabled || !loaded || busy}
-          onPress={() => void start()}
+      {collecting ? (
+        <StatusLine title="Collecting the report…" detail="Gathering App, Core and Uplink data." />
+      ) : null}
+      {shown && !busy ? (
+        <StatusLine title={shown.title} detail={shown.detail} tone={shown.tone} />
+      ) : null}
+      {finished && archived && report ? <SourceTags sources={report.sources} /> : null}
+      {blocked ? (
+        <StatusLine
+          tone="problem"
+          title="Not confirmed as stopped"
+          detail="Turn VPN on and collect again, or discard this test to start over."
         />
       ) : null}
-      {busy ? (
-        <CardRow
-          title={
-            phase === 'Collecting'
-              ? 'Collecting report…'
-              : phase === 'Stopping'
-                ? 'Stopping…'
-                : 'Stop test'
-          }
-          disabled={phase === 'Stopping' || phase === 'Collecting'}
-          onPress={() => {
-            setPhase('Stopping');
-            operation.current?.abort();
-          }}
-        />
+      {message ? <StatusLine tone="problem" title={message} /> : null}
+      {!saved && !busy && holdLeft > 0 ? (
+        <StatusLine title={holdReason(holdLeft)} />
+      ) : !saved && !busy && disabled && blockedReason ? (
+        <StatusLine title={blockedReason} />
       ) : null}
-      {saved && !busy ? (
-        <CardRow
-          title="Copy report"
-          subtitle="App, Core and Uplink for this quick test. Missing evidence is identified."
-          disabled={disabled}
-          onPress={() => void collect()}
-        />
-      ) : null}
-      {archived && !busy ? (
-        <CardRow
-          title="Start another quick test"
-          subtitle="The previous report remains in Saved reports."
-          disabled={disabled}
-          onPress={() => void another()}
-        />
-      ) : null}
-      {localFailure && !busy ? (
-        <CardRow
-          title="Copy local test failure"
-          subtitle={`Failed step: ${localFailure.stage}. Stop remains unconfirmed unless recorded in the combined report.`}
-          onPress={() => {
-            void Clipboard.setStringAsync(JSON.stringify(localFailure)).then(
-              () => setMessage('Local failure copied. This is not the combined report.'),
-              () => setMessage('Clipboard unavailable.'),
-            );
-          }}
-        />
-      ) : null}
-    </>
+      <Actions>
+        {!saved && !busy ? (
+          <Button
+            label="Start quick test"
+            disabled={disabled || !loaded || !holdLoaded || holdLeft > 0}
+            fullWidth
+            onPress={() => void start()}
+          />
+        ) : null}
+        {running ? (
+          <Button
+            label={phase === 'Stopping' ? 'Stopping…' : 'Stop test'}
+            variant="secondary"
+            disabled={phase === 'Stopping'}
+            fullWidth
+            onPress={() => {
+              setPhase('Stopping');
+              operation.current?.abort();
+            }}
+          />
+        ) : null}
+        {unfinished || (finished && archived) ? (
+          <Button
+            label={unfinished ? 'Collect report' : 'Collect again'}
+            variant={unfinished || blocked ? 'primary' : 'text'}
+            disabled={disabled}
+            fullWidth
+            onPress={() => void collect()}
+          />
+        ) : null}
+        {finished && archived && report ? (
+          <Button
+            label="Share report"
+            variant={canStartAnother ? 'secondary' : 'primary'}
+            fullWidth
+            onPress={() => {
+              Share.share({ message: JSON.stringify(report) }).catch(() =>
+                showToast('Sharing is unavailable. Use Collect again to copy it.'),
+              );
+            }}
+          />
+        ) : null}
+        {finished && archived && canStartAnother ? (
+          <Button
+            label="Start new quick test"
+            disabled={disabled}
+            fullWidth
+            onPress={() => void another()}
+          />
+        ) : null}
+        {unfinished || blocked ? (
+          <Button
+            label="Discard and start over"
+            variant="text"
+            fullWidth
+            onPress={confirmDiscard}
+          />
+        ) : null}
+        {localFailure && !busy ? (
+          <Button
+            label="Copy technical failure details"
+            variant="text"
+            fullWidth
+            onPress={() => {
+              void Clipboard.setStringAsync(JSON.stringify(localFailure)).then(
+                () => showToast('Failure details copied. This is not the full report.'),
+                () => setMessage('Clipboard unavailable.'),
+              );
+            }}
+          />
+        ) : null}
+      </Actions>
+      <Toast message={toast} />
+    </TestCard>
   );
 }

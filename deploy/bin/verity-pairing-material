@@ -165,6 +165,24 @@ if [ "$had_ca_chain" = true ] && [ -s "$tls_cert" ]; then
     | grep -oE 'DNS:[A-Za-z0-9.-]+|IP Address:[0-9.]+' || true)"
 fi
 
+# `openssl ca` writes <database>.attr, <database>.old and <serial>.old beside the
+# files named in its config. Earlier releases left exactly those behind on every run.
+# Sweep them on every run, invitation-only refreshes included, once they are clearly
+# stale; the issuing block below then cleans up its own set as a whole.
+for leftover in "$tls_cert".*.tmp*; do
+  [ -f "$leftover" ] && [ ! -L "$leftover" ] || continue
+  owner="${leftover#"$tls_cert".}"
+  owner="${owner%%.*}"
+  [[ "$owner" =~ ^[0-9]+$ ]] || continue
+  [ "$owner" != "$$" ] || continue
+  # Issuance takes seconds. An hour-old file belongs to no live run, whatever user or
+  # PID namespace started it, which a PID probe alone cannot tell.
+  modified=$(stat -c %Y -- "$leftover" 2>/dev/null) || continue
+  [[ "$modified" =~ ^[0-9]+$ ]] && [ $(($(date +%s) - modified)) -gt 3600 ] || continue
+  # Housekeeping only: a leftover that cannot be removed must not stop issuance.
+  rm -f -- "$leftover" 2>/dev/null || true
+done
+
 # Reissue the leaf certificate so a newly selected IP or DNS name is always in
 # its SANs. The stable TLS key keeps the public-key pin unchanged for paired apps.
 if [[ ${VERITY_PAIRING_INVITATION_ONLY:-0} != 1 ]]; then
@@ -175,7 +193,8 @@ ca_config_temporary="$tls_cert.$$.ca.tmp"
 ca_index_temporary="$tls_cert.$$.index.tmp"
 ca_serial_temporary="$tls_cert.$$.serial.tmp"
 ca_newcerts_temporary="$tls_cert.$$.newcerts.tmp"
-trap 'rm -rf "$temporary" "$csr_temporary" "$extensions_temporary" "$ca_config_temporary" "$ca_index_temporary" "$ca_serial_temporary" "$ca_newcerts_temporary"' EXIT
+ca_side_files=("$ca_index_temporary.attr" "$ca_index_temporary.old" "$ca_index_temporary.attr.old" "$ca_index_temporary.new" "$ca_index_temporary.attr.new" "$ca_serial_temporary.old" "$ca_serial_temporary.new")
+trap 'rm -rf "$temporary" "$csr_temporary" "$extensions_temporary" "$ca_config_temporary" "$ca_index_temporary" "$ca_serial_temporary" "$ca_newcerts_temporary" "${ca_side_files[@]}"' EXIT
 openssl req -new -sha256 -key "$tls_key" -out "$csr_temporary" \
   -subj '/CN=Verity local control plane'
 printf '%s\n' \
@@ -216,7 +235,7 @@ chmod 0644 "$temporary"
 if [ "$(id -u)" = 0 ]; then chown root:root "$temporary"; fi
 mv -f "$temporary" "$tls_cert"
 rm -rf "$csr_temporary" "$extensions_temporary" "$ca_config_temporary" \
-  "$ca_index_temporary" "$ca_serial_temporary" "$ca_newcerts_temporary"
+  "$ca_index_temporary" "$ca_serial_temporary" "$ca_newcerts_temporary" "${ca_side_files[@]}"
 trap - EXIT
 fi
 

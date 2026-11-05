@@ -2,6 +2,8 @@
 import json
 import os
 from pathlib import Path
+import ipaddress
+import re
 import secrets
 import socket
 import subprocess
@@ -12,6 +14,9 @@ import urllib.request
 
 ROOT = Path('/var/lib/verity-egress-fixture')
 PASSWORD = 'disposable-boot-proof-password'
+DATABASE = 'verity-boot-postgres'
+DATABASE_NETWORK = 'verity-boot-database'
+DATABASE_CREDENTIAL = Path('/etc/verity-boot/database-url.cred')
 
 
 def run(*args):
@@ -90,6 +95,78 @@ def registry_ready():
         return response.status == 200
 
 
+def database_image():
+    image = Path('/opt/verity-fixture/postgres-image.txt').read_text().strip()
+    if not re.fullmatch(r'postgres:[A-Za-z0-9._-]+@sha256:[a-f0-9]{64}', image):
+        raise ValueError('Native database fixture requires the pinned deployment image')
+    return image
+
+
+def database_url(password):
+    inspected = json.loads(run('docker', 'inspect', DATABASE))
+    assert len(inspected) == 1
+    database = inspected[0]
+    assert database['Name'] == '/' + DATABASE and database['State']['Running'] is True
+    assert database['Config']['Image'] == database_image()
+    assert database['Config']['Labels']['com.docker.compose.service'] == 'postgres'
+    assert not database['HostConfig']['PortBindings'], 'Database must not publish host ports'
+    networks = database['NetworkSettings']['Networks']
+    assert set(networks) == {DATABASE_NETWORK}
+    address = networks[DATABASE_NETWORK]['IPAddress']
+    assert ipaddress.IPv4Address(address).is_private
+    assert re.fullmatch('[a-f0-9]{64}', password)
+    return f'postgres://verity:{password}@{address}:5432/verity'
+
+
+def wait_database():
+    # Initdb's temporary socket-only server is not the reachable final service.
+    wait(lambda: run('docker', 'exec', DATABASE, 'pg_isready', '-h', '127.0.0.1',
+                     '-U', 'verity', '-d', 'verity') ==
+         '127.0.0.1:5432 - accepting connections', 60)
+
+
+def store_database_credential(url):
+    # systemd decrypts only into the service's runtime credential directory.
+    encrypted = subprocess.check_output(
+        ['systemd-creds', 'encrypt', '--with-key=host', '--name=database-url', '-', '-'],
+        input=url, text=True, stderr=subprocess.DEVNULL)
+    DATABASE_CREDENTIAL.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    descriptor = os.open(DATABASE_CREDENTIAL, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(descriptor, 'w') as output:
+        output.write(encrypted)
+
+
+def setup_database():
+    password = secrets.token_hex(32)
+    run('docker', 'network', 'create', '--internal', DATABASE_NETWORK)
+    run('docker', 'volume', 'create', 'verity-boot-postgres-data')
+    # Pass bootstrap authentication in process memory, never argv or a fixture file.
+    subprocess.check_output(['docker', 'run', '-d', '--name', DATABASE, '--network', DATABASE_NETWORK,
+        '--restart', 'unless-stopped', '--memory', '192m', '--memory-swap', '192m',
+        '--cpus', '0.5', '--pids-limit', '64', '--env', 'POSTGRES_PASSWORD',
+        '--env', 'POSTGRES_USER=verity', '--env', 'POSTGRES_DB=verity',
+        '--env', 'POSTGRES_INITDB_ARGS=--auth-host=scram-sha-256',
+        '--label', 'com.docker.compose.service=postgres',
+        '--mount', 'type=volume,source=verity-boot-postgres-data,target=/var/lib/postgresql',
+        database_image(), 'postgres', '-c', 'shared_buffers=16MB', '-c', 'max_connections=20',
+        '-c', 'work_mem=1MB', '-c', 'maintenance_work_mem=16MB',
+        '-c', 'idle_in_transaction_session_timeout=60000'],
+        env={**os.environ, 'POSTGRES_PASSWORD': password}, text=True, stderr=subprocess.DEVNULL)
+    wait_database()
+    store_database_credential(database_url(password))
+
+
+def recover_database():
+    run('docker', 'start', DATABASE)
+    wait_database()
+    # Reinspect after Docker reboot; plaintext exists only in process memory.
+    url = subprocess.check_output(
+        ['systemd-creds', 'decrypt', '--name=database-url', str(DATABASE_CREDENTIAL), '-'],
+        text=True, stderr=subprocess.DEVNULL).strip()
+    password = url.split('@', 1)[0].removeprefix('postgres://verity:')
+    store_database_credential(database_url(password))
+
+
 def setup():
     assert os.getuid() == 0 and Path('/var/lib/cloud/data/instance-id').read_text().strip() == 'verity-boot-probe'
     run('docker', 'run', '-d', '--name', 'verity-boot-registry', '--network', 'host', '--restart', 'no',
@@ -103,6 +180,7 @@ def setup():
         run('docker', 'pull', target)
         refs[role] = json.loads(run('docker', 'image', 'inspect', target))[0]['RepoDigests'][0]
     data_root = json.loads(run('docker', 'volume', 'inspect', 'verity-boot-data'))[0]['Mountpoint']
+    setup_database()
     config = {'runnerImage': refs['runner'], 'relayImage': refs['relay'], 'dataRoot': data_root, 'gatewayKey': secrets.token_hex(32),
               'controlToken': Path('/etc/verity-egress/control.key').read_text().strip()}
     (ROOT / 'config.json').write_text(json.dumps(config))
@@ -114,6 +192,8 @@ def setup():
     os.chmod('/etc/verity-egress/relay.json', 0o600)
     with open('/etc/hosts', 'a') as hosts:
         hosts.write('\n127.0.0.1 verity-agent-gateway\n')
+    # Permit automatic controller startup only after fixture configuration exists.
+    (ROOT / 'controller-enabled').touch()
     run('systemctl', 'restart', 'verity-egress-host.service')
     run('systemctl', 'start', 'verity-boot-gateway.service', 'verity-boot-server.service')
     wait(lambda: api('/healthz'))
@@ -128,6 +208,7 @@ def setup():
 
 
 def recover(replace=False):
+    recover_database()
     run('systemctl', 'start', 'verity-boot-gateway.service', 'verity-boot-server.service')
     wait(lambda: api('/healthz'))
     token = api('/secret/unlock', {'password': PASSWORD, 'deviceLabel': 'boot recovery'})['token']

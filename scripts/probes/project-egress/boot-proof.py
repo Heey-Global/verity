@@ -133,6 +133,24 @@ def verify_boot_denial(ruleset):
                 assert set(expressions[1]) == {'counter'} and expressions[2] == {'drop': None}, 'Missing bootstrap drop'
 
 
+def verify_managed_staging(value):
+    assert value['version'] == 1 and value['scope'] == 'native-managed-staging-only'
+    assert value['productionAccepted'] is False and value['directAuthorityConfigured'] is False
+    for key in ('keyPreserved', 'dockerProcessPreserved', 'firewallTablesPreserved',
+                'activeUnitsPreserved', 'repeatedPreparationStable', 'unacceptedActivationRejected',
+                'repeatedActivationRejectionStable', 'controllerNeverStarted'):
+        assert value[key] is True, 'Managed staging safety proof missing: ' + key
+    assert isinstance(value['releaseManifest'], dict) and value['releaseManifest']
+    candidate = value['nativeCandidate']
+    assert candidate['version'] == 1 and candidate['scope'] == 'native-profile-candidate'
+    assert candidate['accepted'] is False, 'Candidate metadata cannot grant acceptance'
+    assert isinstance(candidate['blockers'], list)
+    assert isinstance(candidate['evidenceMissing'], list) and candidate['evidenceMissing']
+    for name in ('node', 'project-egress-host-main.mjs',
+                 'project-egress-deadline.bpf.o', 'project-egress-renew.bpf.o'):
+        assert candidate['artifacts'][name] == value['releaseManifest'][name], 'Candidate artifact mismatch'
+
+
 def verify_packet(snapshot):
     spec = importlib.util.spec_from_file_location('deadline_guard', Path(__file__).resolve().parents[3] / 'deploy/egress/project-egress-deadline.py')
     deadline = importlib.util.module_from_spec(spec)
@@ -283,6 +301,9 @@ def main():
         vm.start()
         vm.upload(sys.argv[2])
         vm.ssh('sudo env PROJECT_EGRESS_DISPOSABLE=yes bash /opt/verity-fixture/probe/boot-native-install.sh', timeout=600)
+        staging = json.loads(vm.ssh('sudo cat /var/lib/verity-egress-fixture/managed-staging.json'))
+        verify_managed_staging(staging)
+        (evidence / 'managed-staging.json').write_text(json.dumps(staging, indent=2))
         vm.ssh('sudo python3 /opt/verity-fixture/probe/boot-guest.py observer-positive before')
         vm.ssh('sudo python3 /opt/verity-fixture/probe/boot-guest.py setup', timeout=300)
         guest = 'sudo python3 /opt/verity-fixture/probe/boot-guest.py '

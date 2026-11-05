@@ -72,6 +72,15 @@ interface SessionFileTarget {
   dir: string;
 }
 
+export class SessionFileRootUnavailableError extends Error {
+  constructor(
+    message: string,
+    readonly status: 404 | 503,
+  ) {
+    super(message);
+  }
+}
+
 export interface SessionFileRouteDeps {
   resolveProjectRoot?: (projectId: string) => Promise<string | undefined>;
   resolveSharedRoot?: () => Promise<string | undefined>;
@@ -233,7 +242,14 @@ export function registerSessionFileRoutes(app: FastifyInstance, deps: SessionFil
     root: SessionFileRootName,
     reply: FastifyReply,
   ): Promise<SessionFileTarget | undefined> => {
-    const dir = await deps.resolveRoot(id, root);
+    let dir: string | undefined;
+    try {
+      dir = await deps.resolveRoot(id, root);
+    } catch (error) {
+      if (!(error instanceof SessionFileRootUnavailableError)) throw error;
+      reply.code(error.status).send({ error: error.message });
+      return undefined;
+    }
     if (dir === undefined) {
       // A knowledge root is missing for more reasons than a missing session —
       // a session without a project, a deployment without a data root — and

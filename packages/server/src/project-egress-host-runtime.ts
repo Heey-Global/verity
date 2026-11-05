@@ -137,6 +137,26 @@ export function verifyEgressHostRuntime(
     throw new Error('Unsupported host runtime network profile');
 }
 
+/** Native preflight accepted this exact serving registration. A later updater may
+ * install another individually valid runsc release before egress renewal fails;
+ * the retained controller must then stop admitting under its old profile.
+ */
+export function createEgressHostRuntimeRegistrationGuard(
+  initial: unknown,
+): (reply: unknown) => void {
+  const registration = (reply: unknown): string => {
+    verifyEgressHostRuntime(reply, 'sandbox');
+    verifyEgressHostRuntime(reply, 'relay');
+    const runtime = z.object({ path: z.string(), runtimeArgs: z.array(z.string()) });
+    const runtimes = z.object({ 'runsc-project': runtime, 'runsc-relay': runtime }).parse(reply);
+    return JSON.stringify([runtimes['runsc-project'], runtimes['runsc-relay']]);
+  };
+  const accepted = registration(initial);
+  return (reply) => {
+    if (registration(reply) !== accepted) throw new Error('Serving runtime registration changed');
+  };
+}
+
 export async function inspectEgressHostContainer(
   binding: ProjectEgressNetworkBinding,
   id: string,
@@ -159,10 +179,30 @@ export async function inspectEgressHostContainer(
 }
 
 /** The service manager holds an exclusive flock for this directory for its lifetime. */
-export async function openProjectEgressHostStore(directory: string): Promise<{
+export async function openProjectEgressHostStore(
+  directory: string,
+  options: { preparePrivate?: boolean } = {},
+): Promise<{
   load(): Promise<ProjectEgressHostState>;
   save(state: ProjectEgressHostState): Promise<void>;
 }> {
+  if (options.preparePrivate) {
+    const handle = await open(
+      directory,
+      constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+    );
+    try {
+      const info = await handle.stat();
+      if (info.uid !== process.getuid?.() || (info.mode & 0o022) !== 0)
+        throw new Error('Host state directory must be owned and not writable by other users');
+      if ((info.mode & 0o077) !== 0) {
+        await handle.chmod(0o700);
+        await handle.sync();
+      }
+    } finally {
+      await handle.close();
+    }
+  }
   const stat = await lstat(directory);
   if (
     !stat.isDirectory() ||

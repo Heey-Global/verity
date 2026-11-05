@@ -5289,6 +5289,7 @@ function SessionFilesSheet({
         if (!active) return;
         setError(err instanceof Error ? err.message : String(err));
         setEntries([]);
+        setDocumentStatus(undefined);
         setTruncated(false);
       })
       .finally(() => {
@@ -6478,7 +6479,11 @@ function SessionFilesSheet({
                     the modifiers it reported have to be withdrawn here too. */}
                 <ScrollView style={styles.filesList} onScrollBeginDrag={forgetModifiers}>
                   {entries.length === 0 ? (
-                    <Text style={styles.sheetEmpty}>No files</Text>
+                    <Text style={styles.sheetEmpty}>
+                      {error
+                        ? 'Files could not be loaded. Reopen this view to try again.'
+                        : 'No files'}
+                    </Text>
                   ) : (
                     entries.map((entry) => {
                       const meta = fileEntryMeta(entry);
