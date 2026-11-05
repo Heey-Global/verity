@@ -55,6 +55,13 @@ describe('mockupImage', () => {
     });
   });
 
+  it.each([png(0, 100), png(100, 0), jpeg(0, 100), jpeg(100, 0)])(
+    'rejects zero image dimensions',
+    (bytes) => {
+      expect(() => mockupImage(bytes)).toThrow(/positive/);
+    },
+  );
+
   it('refuses anything else', () => {
     expect(() => mockupImage(Buffer.from('<svg/>'))).toThrow(/PNG or JPEG/);
   });

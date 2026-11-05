@@ -47,11 +47,11 @@ export function mockupImage(
   bytes: Buffer,
 ): Pick<MockupScreenRecord, 'mediaType' | 'width' | 'height'> {
   if (bytes.length >= 24 && bytes.subarray(0, 8).equals(PNG_SIGNATURE)) {
-    return {
+    return validMockupSize({
       mediaType: 'image/png',
       width: bytes.readUInt32BE(16),
       height: bytes.readUInt32BE(20),
-    };
+    });
   }
   if (bytes.length >= 4 && bytes[0] === 0xff && bytes[1] === 0xd8) {
     let offset = 2;
@@ -60,16 +60,20 @@ export function mockupImage(
       const length = bytes.readUInt16BE(offset + 2);
       // SOF0–SOF15 carry the frame size; C4 (DHT), C8 (JPG) and CC (DAC) do not.
       if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc)
-        return {
+        return validMockupSize({
           mediaType: 'image/jpeg',
           height: bytes.readUInt16BE(offset + 5),
           width: bytes.readUInt16BE(offset + 7),
-        };
+        });
       if (length < 2) break;
       offset += 2 + length;
     }
   }
   throw new Error('a mockup must be a PNG or JPEG image');
+}
+function validMockupSize(image: Pick<MockupScreenRecord, 'mediaType' | 'width' | 'height'>) {
+  if (image.width <= 0 || image.height <= 0) throw new Error('mockup dimensions must be positive');
+  return image;
 }
 const PNG_SIGNATURE = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
 

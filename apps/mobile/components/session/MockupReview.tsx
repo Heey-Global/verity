@@ -16,6 +16,7 @@ import {
   type NativeScrollEvent,
   type NativeSyntheticEvent,
 } from 'react-native';
+import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
@@ -321,7 +322,7 @@ export function MockupReviewSheet({
 
   return (
     <Modal visible={visible} animationType="slide" onRequestClose={onClose}>
-      <View style={[styles.sheet, { paddingTop: insets.top }]}>
+      <KeyboardAvoidingView behavior="padding" style={[styles.sheet, { paddingTop: insets.top }]}>
         <View style={styles.head}>
           <View style={styles.flex}>
             <Text variant="row" numberOfLines={1}>
@@ -446,7 +447,7 @@ export function MockupReviewSheet({
             </>
           )}
         </View>
-      </View>
+      </KeyboardAvoidingView>
     </Modal>
   );
 }

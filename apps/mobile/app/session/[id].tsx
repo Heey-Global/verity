@@ -4863,6 +4863,7 @@ export const SessionChat = memo(function SessionChat({
         />
       ) : null}
       <MockupReviewSheet
+        key={mockupReview?.revision}
         visible={mockupSheet !== null && mockupReview !== undefined}
         screens={mockupReview?.screens ?? []}
         title={planTitle(planningPlan) ?? 'Mockups'}
