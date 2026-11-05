@@ -4,8 +4,7 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { Icon, type IconName } from '../../components/Icon';
 import { Text } from '../../components/ui';
 
-export type ScreenState =
-  { kind: 'approved' } | { kind: 'comment'; text: string } | { kind: 'open' };
+type ScreenState = { kind: 'approved' } | { kind: 'comment'; text: string } | { kind: 'open' };
 
 export interface MockupScreenSample {
   name: string;

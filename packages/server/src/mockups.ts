@@ -16,9 +16,9 @@ import { z } from 'zod';
 import type { PlanningDeps } from './planning.js';
 import { readWorktreeFile } from './worktree-file.js';
 
-export const MAX_MOCKUP_SCREENS = 12;
+const MAX_MOCKUP_SCREENS = 12;
 const MAX_MOCKUP_BYTES = 15 * 1024 * 1024;
-export const MAX_MOCKUP_COMMENT = 4_000;
+const MAX_MOCKUP_COMMENT = 4_000;
 
 export const presentMockupsRequestSchema = z
   .object({

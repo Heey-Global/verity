@@ -10,7 +10,7 @@ import { getServerProfile } from '../lib/serverProfile';
 // Resolve an attachment to a renderable URI: a stored ref (id) → the server's
 // content-addressed endpoint (expo-image lazy-fetches + disk-caches it); a pending
 // upload or a legacy inline attachment (data) → a data URI.
-export function attachmentSource(a: {
+function attachmentSource(a: {
   id?: string;
   data?: string;
   mediaType: string;
