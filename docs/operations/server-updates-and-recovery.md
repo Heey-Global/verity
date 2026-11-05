@@ -213,6 +213,22 @@ previous container, the previous route and the previous control-plane generation
 The app reports the operation as `rolled-back` or `failed`, and the deployment keeps
 serving throughout except for the maintenance window.
 
+After a terminal host preparation failure, the app keeps the failure and any
+unverified-restoration warning visible. If the selected channel offers a different
+image, **Install <version>** starts a fresh idempotent request through the normal
+authenticated update path. Signature, compatibility, journal lease, host preparation
+and readiness checks still apply; offering an update does not confirm host recovery.
+An unfinished update cannot be replaced unless the Server explicitly permits it.
+Retrying the same failed image remains blocked while host recovery is unverified.
+Use **Check for updates** to refresh the status, including when no release is offered.
+
+This presentation fix must be delivered in an app update to reach installations
+still running Server 4.80.0. It uses existing status and install endpoints, tolerates
+absent optional host metadata, and does not require installing a Server update first.
+Only releases actually offered by the selected channel are installable. Local tests
+are not evidence of successful recovery on an affected host; app distribution and
+an authorized update/readiness check remain separate delivery steps.
+
 When it does not resolve itself, check in this order:
 
 ```sh
