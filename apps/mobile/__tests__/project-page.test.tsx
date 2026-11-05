@@ -262,6 +262,23 @@ describe('project page', () => {
     expect(client.listProjectKnowledgeFiles).toHaveBeenCalledWith('p/1', '');
   });
 
+  it('reloads when the wide layout polled newer sessions beside it', async () => {
+    const client = clientWith([running]);
+    mockCreateVerityClient.mockReturnValue(client);
+    const page = (reloadOn: unknown) => (
+      <ProjectPage client={client} projectId="p/1" onOpenSession={jest.fn()} reloadOn={reloadOn} />
+    );
+    const view = render(page(1));
+    await screen.findByTestId('project-line');
+    const reads = client.getProject.mock.calls.length;
+    view.rerender(page(1));
+    expect(client.getProject).toHaveBeenCalledTimes(reads);
+    view.rerender(page(2));
+    await act(async () => undefined);
+    // Without this the page beside Home keeps showing items Home already answered.
+    expect(client.getProject).toHaveBeenCalledTimes(reads + 1);
+  });
+
   it('goes back to the project list from the wide layout’s column', async () => {
     const onBack = jest.fn();
     await renderPage([], { inline: true, onBack });

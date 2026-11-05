@@ -203,18 +203,21 @@ export function useInboxFeed({
       setOverrides((current) => new Map(current).set(item.key, dismissed));
       void Promise.resolve()
         .then(save)
-        .then(() => onSaved?.())
-        .catch(() => {
-          setOverrides((current) => {
-            const next = new Map(current);
-            next.delete(item.key);
-            return next;
-          });
-          Alert.alert(
-            dismissed ? 'Not hidden' : 'Not restored',
-            'Verity could not save this. Try again in a moment.',
-          );
-        });
+        .then(
+          // Outside the failure branch: the save landed whatever the follow-up does.
+          () => onSaved?.(),
+          () => {
+            setOverrides((current) => {
+              const next = new Map(current);
+              next.delete(item.key);
+              return next;
+            });
+            Alert.alert(
+              dismissed ? 'Not hidden' : 'Not restored',
+              'Verity could not save this. Try again in a moment.',
+            );
+          },
+        );
     },
     [client, onSaved],
   );

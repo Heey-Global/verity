@@ -1028,6 +1028,7 @@ function SessionList({ client }: { client: VerityClient }) {
         onOpenSession={openSessionFromHome}
         onRepairProject={repairFromHome}
         // Home beside the page shows the same items; it must not offer an answered one again.
+        reloadOn={sessions}
         onInboxSaved={() => void Promise.allSettled([refresh({ silent: true }), refreshProjects()])}
         onSessionChanged={(sessionId, deleted) => {
           // The list and the session pane beside the page show the same sessions.

@@ -10,7 +10,7 @@ import {
   type VerityClient,
 } from '@verity/mobile';
 import { Stack, router } from 'expo-router';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, RefreshControl, ScrollView, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
@@ -84,6 +84,7 @@ export function ProjectPage({
   onRepairProject,
   onSessionChanged,
   onInboxSaved,
+  reloadOn,
   selectedSessionId,
   initialTab = 'overview',
 }: {
@@ -94,6 +95,11 @@ export function ProjectPage({
   onOpenSession: (sessionId: string) => void;
   /** What Repair on a health item does; the sandbox settings, which offer it, when omitted. */
   onRepairProject?: ((projectId: string) => void) | undefined;
+  /**
+   * Changes whenever the host polled newer sessions and projects; the page then
+   * reloads too, so it never lags the list and Home beside it.
+   */
+  reloadOn?: unknown;
   /** An inbox item on this page was answered, dismissed or restored. */
   onInboxSaved?: (() => void) | undefined;
   /** A session was renamed, (un)favorited or deleted on this page. */
@@ -113,6 +119,15 @@ export function ProjectPage({
     refreshConnections();
     void load(true).finally(() => setRefreshing(false));
   }, [refreshConnections, load]);
+  const firstReload = useRef(true);
+  useEffect(() => {
+    // The mount already loads; only later host polls ask for another read.
+    if (firstReload.current) {
+      firstReload.current = false;
+      return;
+    }
+    reload();
+  }, [reloadOn, reload]);
   const inboxSaved = useCallback(() => {
     reload();
     onInboxSaved?.();
