@@ -71,6 +71,7 @@ describe('GET /sessions/:id/activity', () => {
       terminationUnconfirmed: false,
       name: null,
       planningPlan: null,
+      mockupReview: null,
       planningRevision: 0,
     });
   });
@@ -120,6 +121,7 @@ describe('GET /sessions/:id/activity', () => {
       terminationUnconfirmed: false,
       name: null,
       planningPlan: null,
+      mockupReview: null,
       planningRevision: 0,
       branch: 'feat/122-x',
     });
@@ -144,6 +146,7 @@ describe('GET /sessions/:id/activity', () => {
       terminationUnconfirmed: false,
       name: 'Auth Refactor',
       planningPlan: null,
+      mockupReview: null,
       planningRevision: 0,
     });
     await noBranches.close();
@@ -176,6 +179,7 @@ describe('GET /sessions/:id/activity', () => {
       terminationUnconfirmed: false,
       name: null,
       planningPlan: null,
+      mockupReview: null,
       planningRevision: 0,
     });
     await noBranches.close();
