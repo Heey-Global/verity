@@ -136,6 +136,8 @@ it('independently verifies the release before authorizing the bounded host onesh
     capAdd: ['CHOWN', 'FOWNER', 'DAC_OVERRIDE'],
   });
   expect(jobs[1]?.binds).not.toContain('/:/host');
+  expect(jobs[1]?.binds).toContain('/run/systemd:/run/systemd');
+  expect(jobs[1]?.binds?.some((bind) => bind.includes('/run/dbus'))).toBe(false);
   expect(jobs[1]?.binds).toContain('/opt/verity-egress-recovery:/opt/verity-egress-recovery');
   expect(jobs[1]?.entrypoint).toEqual(['timeout', '--kill-after=5s', '750s', 'bash']);
   expect(jobs[1]?.command).toEqual(['/opt/verity-install/deploy/host/verity-egress-provision']);

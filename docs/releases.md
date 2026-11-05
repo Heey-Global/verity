@@ -35,6 +35,26 @@ verified. After an external Repair, update status rechecks the target's declared
 service capabilities and exact Docker runtime registrations before offering a
 fresh attempt. The journal's failure record remains intact.
 
+Project network protection provisioning uses a separate host service. Its bounded
+helper exposes the direct systemd manager socket, not the system D-Bus socket.
+`systemd-run --wait` requires the latter even as root, so the helper submits the
+service without that option and observes its state and an atomic result instead.
+Each launch has a persisted identity; resumed helpers observe running host work
+without restarting it, and completion must match that launch. A missing result,
+failed service or expired wait never establishes successful restoration. A
+successful invocation that reports an unsupported native profile remains distinct
+from available network protection and is not cached as ready.
+
+The provisioning payload is bundled in the target image. Hosts affected by the
+system-bus mismatch need a newly approved signed target containing the correction;
+changing source code does not alter an already published target. Improved
+Updater error classification takes effect once the installed Updater contains
+that change. Provisioning errors then identify the job, stage and exit status and,
+when a matching helper diagnostic is available, an allowlisted phase and code.
+Raw helper errors and private configuration are not included in those diagnostics.
+Local fixture tests do not establish a successful live update: verify the actual
+server version and host network-protection readiness after an authorized retry.
+
 Startup recovery refuses to create a bootstrap Server beside an existing managed
 generation. If the Gateway has lost its persisted selection, a promoted or
 rolled-back journal can restore its confirmed Server identity after validating

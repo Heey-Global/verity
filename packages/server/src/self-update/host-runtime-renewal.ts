@@ -59,6 +59,48 @@ export class HostRuntimeRenewalError extends Error {
   }
 }
 
+const egressPhases = new Set(['staging', 'submit', 'observe']);
+const egressFailureCodes = new Set([
+  'command_failed',
+  'observation_failed',
+  'attempt_missing',
+  'attempt_invalid',
+  'wait_timeout',
+  'result_missing',
+  'result_invalid',
+  'host_failed',
+  'start_unverified',
+]);
+
+/** Helper output is untrusted and may contain credentials: relay only fixed diagnostic fields. */
+function egressPreparationError(spec: ContainerSpec, status: number, logs: string): Error {
+  const stage = spec.labels?.['verity.renewal-stage'] === 'verify' ? 'verify' : 'install';
+  const operation = /^verity-egress-(?:install|verify)-([a-f0-9]{24})$/u.exec(spec.name ?? '')?.[1];
+  let detail = '';
+  if (operation !== undefined && logs.length <= 4096) {
+    try {
+      const result = JSON.parse(logs.trim()) as Record<string, unknown>;
+      if (
+        result.version === 1 &&
+        result.kind === 'egress-provisioning' &&
+        result.operationId === operation &&
+        result.exitCode === status &&
+        typeof result.phase === 'string' &&
+        egressPhases.has(result.phase) &&
+        typeof result.code === 'string' &&
+        egressFailureCodes.has(result.code)
+      )
+        detail = `, phase ${result.phase}, code ${result.code}`;
+    } catch {
+      /* Missing or invalid diagnostics never establish successful restoration. */
+    }
+  }
+  const error = new HostRuntimeRenewalError(stage === 'verify' ? 'unchanged' : 'recovery-required');
+  error.name = 'ProjectEgressProvisioningError';
+  error.message = `Project network protection preparation failed (${stage}, exit ${status}${operation === undefined ? '' : `, operation ${operation}`}${detail}). ${stage === 'verify' ? 'Target verification did not complete.' : 'Host changes may require recovery; inspect the provisioning unit journal.'}`;
+  return error;
+}
+
 function renewalKey(journal: UpdateJournal): string {
   return createHash('sha256')
     .update(`${journal.deploymentId}\0${journal.updateId}\0${journal.targetDigest}`)
@@ -176,6 +218,12 @@ export async function runHostRenewalJob(
   );
   const status = await docker.waitContainer(id, { timeoutMs: waitTimeoutMs });
   if (status !== 0) {
+    if (spec.labels?.['verity.managed-role'] === 'egress-provisioning') {
+      const logs = await docker.containerLogs?.(id, 1).catch(() => '');
+      const error = egressPreparationError(spec, status, logs ?? '');
+      await docker.removeContainer(id);
+      throw error;
+    }
     let recovery: 'unchanged' | 'restored' | 'recovery-required' =
       spec.labels?.['verity.renewal-stage'] === 'verify' ? 'unchanged' : 'recovery-required';
     if (recovery !== 'unchanged' && docker.containerLogs !== undefined) {

@@ -13,16 +13,85 @@ identifier=${VERITY_EGRESS_PROVISION_ID:?}
 [[ $identifier =~ ^[a-f0-9]{24}$ ]] || die 'invalid provisioning identity'
 stage=/var/lib/verity-egress/provision/$identifier
 unit=verity-egress-provision-$identifier.service
+phase=staging
+failure=command_failed
+report_failure() {
+  local status=$?
+  trap - EXIT
+  if (( status != 0 )); then
+    jq -cn --arg id "$identifier" --arg phase "$phase" --arg code "$failure" --argjson status "$status" \
+      '{version:1,kind:"egress-provisioning",operationId:$id,phase:$phase,code:$code,exitCode:$status}'
+  fi
+  exit "$status"
+}
+trap report_failure EXIT
+fail() { failure=$1; exit 1; }
+# --wait needs the full system bus, which this helper deliberately does not mount.
+# Direct manager queries use the existing /run/systemd/private socket instead.
+observe() {
+  local reply key value
+  phase=observe
+  reply=$(timeout --kill-after=1s 5s systemctl show --property=LoadState --property=ActiveState "$unit" 2>/dev/null) || {
+    [[ $reply == *'LoadState=not-found'* ]] || fail observation_failed
+  }
+  state=''
+  load=''
+  while IFS='=' read -r key value; do
+    case $key in ActiveState) state=$value ;; LoadState) load=$value ;; esac
+  done <<<"$reply"
+  [[ $load = loaded || $load = not-found ]] || fail observation_failed
+  case $state in active|activating|deactivating|reloading|inactive|failed) ;; *) fail observation_failed ;; esac
+}
+read_attempt() {
+  [[ -f $stage/attempt && ! -L $stage/attempt ]] || fail attempt_missing
+  attempt=$(cat "$stage/attempt")
+  [[ $attempt =~ ^[A-Za-z0-9]{12}$ ]] || fail attempt_invalid
+}
+valid_result() {
+  [[ -f $stage/result.json && ! -L $stage/result.json ]] &&
+    jq -e --arg id "$identifier" --arg attempt "$attempt" \
+      '.version == 1 and .operationId == $id and .attempt == $attempt and
+       (.exitCode | type == "number" and . == floor and . >= 0 and . <= 255) and
+       (.available | type == "boolean")' "$stage/result.json" >/dev/null 2>&1
+}
+wait_for_result() {
+  local deadline=$((SECONDS + 725)) result
+  read_attempt
+  while :; do
+    observe
+    case $state in
+      active|activating|deactivating|reloading)
+        (( SECONDS < deadline )) || fail wait_timeout
+        sleep 1 ;;
+      *)
+        if [[ ! -f $stage/result.json ]]; then
+          [[ $state != failed ]] || fail host_failed
+          fail result_missing
+        fi
+        valid_result || fail result_invalid
+        result=$(jq -r '.exitCode' "$stage/result.json")
+        if (( result != 0 )); then failure=host_failed; exit "$result"; fi
+        [[ $state != failed ]] || fail host_failed
+        # Unsupported native profiles may complete successfully but stay unavailable.
+        return ;;
+    esac
+  done
+}
 # A host oneshot outlives a disconnected Docker job. Never rewrite its input.
-state=$(systemctl show --property=ActiveState --value "$unit" 2>/dev/null || true)
-if [[ $state = active || $state = activating ]]; then
-  systemctl start --wait "$unit"
+[[ ! -L /var/lib/verity-egress/provision && ! -L $stage ]] || die 'unsafe staging directory'
+observe
+if [[ $state = active || $state = activating || $state = deactivating || $state = reloading ]]; then
+  wait_for_result
   exit
 fi
-[[ ! -L /var/lib/verity-egress/provision && ! -L $stage ]] || die 'unsafe staging directory'
+phase=staging
 install -d -m 0700 /var/lib/verity-egress/provision
-if [[ -f $stage/result.json ]] && jq -e '.version == 1 and .exitCode == 0 and .available == true' "$stage/result.json" >/dev/null; then
-  exit 0
+if [[ -f $stage/attempt && ! -L $stage/attempt ]]; then
+  read_attempt
+  if valid_result && jq -e '.exitCode == 0 and .available == true' "$stage/result.json" >/dev/null; then
+    [[ $state != failed ]] || fail host_failed
+    exit 0
+  fi
 fi
 if [[ ! -f $stage/ready ]]; then
   [[ ! -e $stage ]] || rm -rf -- "$stage"
@@ -33,7 +102,6 @@ if [[ ! -f $stage/ready ]]; then
   export VERITY_EGRESS_EXISTING_AUTHORITY=/etc/verity-egress/authority.json
   export VERITY_EGRESS_EXISTING_RELAY=/etc/verity-egress/relay.json
   node /app/packages/server/dist/project-egress-managed-config-main.js "$stage/config"
-  assessment_option=''
   if [[ -n ${VERITY_EGRESS_ASSESSMENT_CHANNEL_PATH:-} ]]; then
     # Only the installed updater supplies this read-only authority; image identity
     # alone cannot distinguish stable and staging (they share a signed digest).
@@ -57,17 +125,31 @@ if os.environ.get('VERITY_EGRESS_ASSESSMENT_CHANNEL_OWNER_UID') != '0':
 with open(sys.argv[1], 'x') as output:
     json.dump(value, output)
 ASSESSMENT
-    assessment_option="--assessment-authorization '$stage/assessment-authorization.json'"
   fi
-  # The fixed host wrapper persists completion even if the Docker caller disconnects.
-  cat >"$stage/apply.sh" <<APPLY
+  touch "$stage/ready"
+  sync -f "$stage"
+fi
+# Refresh only a stopped job's launcher, including staging left by older releases.
+# Bind completion to this launch so a stale success cannot satisfy a retry.
+attempt_file=$(mktemp "$stage/.attempt.XXXXXXXXXXXX")
+attempt=${attempt_file##*.}
+printf '%s\n' "$attempt" >"$attempt_file"
+sync -f "$attempt_file"
+mv -fT "$attempt_file" "$stage/attempt"
+rm -f "$stage/result.json" "$stage/result.json.tmp"
+assessment_option=''
+if [[ -f $stage/assessment-authorization.json ]]; then
+  assessment_option="--assessment-authorization '$stage/assessment-authorization.json'"
+fi
+# The fixed host wrapper persists completion even if the Docker caller disconnects.
+cat >"$stage/apply.sh" <<APPLY
 #!/usr/bin/env bash
 set -u
 finish() {
   result=\$?
   available=\$(jq -r '.state == "ready" and .reason == "ready"' /run/verity-egress/status.json 2>/dev/null || echo false)
   [[ \$available = true ]] || available=false
-  printf '{"version":1,"exitCode":%s,"available":%s}\\n' "\$result" "\$available" >'$stage/result.json.tmp'
+  printf '{"version":1,"operationId":"$identifier","attempt":"$attempt","exitCode":%s,"available":%s}\\n' "\$result" "\$available" >'$stage/result.json.tmp'
   sync -f '$stage/result.json.tmp'
   mv -f '$stage/result.json.tmp' '$stage/result.json'
   sync -f '$stage'
@@ -83,14 +165,21 @@ fi
   --relay-config '$stage/config/relay.json' --authority-config '$stage/config/authority.json' \\
   --database-config '$stage/config/database.json' $assessment_option
 APPLY
-  chmod 0700 "$stage/apply.sh"
-  touch "$stage/ready"
-  sync -f "$stage"
-fi
+chmod 0700 "$stage/apply.sh"
+sync -f "$stage/apply.sh"
+sync -f "$stage"
 # The host systemd manager executes the verified staged payload in the real host
 # mount and network namespaces. No firewall capability enters this Docker job.
 # The host oneshot has its own timeout and persists after a caller disconnects.
-systemd-run --quiet --wait --collect --unit="$unit" --service-type=exec \
+phase=submit
+if timeout --kill-after=1s 10s systemd-run --quiet --collect --unit="$unit" --service-type=exec \
   --property=TimeoutStartSec=720s --property=RuntimeMaxSec=720s \
   --property=NoNewPrivileges=yes --property=PrivateTmp=yes \
-  /bin/bash "$stage/apply.sh"
+  /bin/bash "$stage/apply.sh" >/dev/null 2>&1; then
+  wait_for_result
+else
+  status=$?
+  failure=start_unverified
+  # A disconnected submission may already have started host work. Never stop it.
+  exit "$status"
+fi
