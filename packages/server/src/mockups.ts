@@ -117,6 +117,7 @@ export function createSessionMockups(deps: MockupDeps) {
     prompt: string,
     displayPrompt: string,
     initiatedBy: { userId: string } | undefined,
+    previousScreens?: SessionMockups['screens'],
   ): Promise<boolean> {
     const result = await deps.dispatchTurn(
       sessionId,
@@ -126,6 +127,7 @@ export function createSessionMockups(deps: MockupDeps) {
         displayPrompt,
         queueBehindActiveTurn: true,
         mockupContinuation: after,
+        ...(previousScreens !== undefined ? { mockupPreviousScreens: previousScreens } : {}),
         ...(initiatedBy !== undefined ? { initiatedBy } : {}),
       },
     );
@@ -165,6 +167,7 @@ export function createSessionMockups(deps: MockupDeps) {
       initiatedBy?: { userId: string },
     ): Promise<MockupActionResult> {
       let failure: MockupActionResult | undefined;
+      let approved: SessionMockups | undefined;
       const stored = await store.updateSessionMockups(sessionId, (current) => {
         if (current.revision !== revision) failure = { ok: false, code: 'stale' };
         else if (current.state !== 'pending') failure = { ok: false, code: 'notPending' };
@@ -179,21 +182,23 @@ export function createSessionMockups(deps: MockupDeps) {
             ? { ...rest, verdict: 'comment', comment: decision.comment }
             : { ...rest, verdict: decision.verdict };
         });
-        return {
-          ...current,
-          state: 'pending',
-          screens,
-        };
+        if (screens.every((screen) => screen.verdict === 'approved')) {
+          approved = { ...current, state: 'approved', screens };
+          // The final verdict is committed only with the durable continuation.
+          return current;
+        }
+        return { ...current, screens };
       });
       if (!stored) return failure ?? { ok: false, code: 'notFound' };
-      if (stored.screens.every((screen) => screen.verdict === 'approved')) {
-        const after: SessionMockups = { ...stored, state: 'approved' };
+      if (approved !== undefined) {
+        const after = approved;
         const started = await dispatchAfter(
           sessionId,
           after,
           MOCKUPS_APPROVED_PROMPT,
           MOCKUPS_APPROVED_DISPLAY,
           initiatedBy,
+          stored.screens,
         );
         return { ok: true, review: started ? after : stored };
       }

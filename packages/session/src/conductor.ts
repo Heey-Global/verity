@@ -754,6 +754,7 @@ export interface DispatchTurnOptions extends PromptOrigin {
   planningConsent?: PlanningConsent;
   /** Reviewed snapshot to commit atomically with the continuation backlog. */
   mockupContinuation?: SessionMockups;
+  mockupPreviousScreens?: SessionMockups['screens'];
 }
 
 interface QueuedConductorTurn extends PromptOrigin {
@@ -3699,6 +3700,7 @@ export class Conductor {
             !(await this.deps.store.enqueueMockupContinuation(
               input,
               dispatchOpts.mockupContinuation,
+              dispatchOpts.mockupPreviousScreens,
             ))
           ) {
             accepted = false;

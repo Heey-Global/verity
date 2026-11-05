@@ -5826,15 +5826,16 @@ export class EventStore implements EventSink {
   async enqueueMockupContinuation(
     input: QueuedTurnInput,
     review: SessionMockups,
+    previousScreens: SessionMockups['screens'] = review.screens,
   ): Promise<boolean> {
     return this.db.transaction().execute(async (tx) => {
       const result = await tx
         .updateTable('sessions')
-        .set({ mockup_review: review.state })
+        .set({ mockup_review: review.state, mockup_screens: JSON.stringify(review.screens) })
         .where('session_id', '=', input.sessionId)
         .where('mockup_revision', '=', review.revision)
         .where('mockup_review', '=', 'pending')
-        .where(sql<boolean>`mockup_screens::jsonb = ${JSON.stringify(review.screens)}::jsonb`)
+        .where(sql<boolean>`mockup_screens::jsonb = ${JSON.stringify(previousScreens)}::jsonb`)
         .executeTakeFirst();
       if (result.numUpdatedRows === 0n) return false;
       await tx

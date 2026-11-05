@@ -131,6 +131,7 @@ beforeEach(async () => {
           opts: {},
         },
         dispatchOpts.mockupContinuation!,
+        dispatchOpts.mockupPreviousScreens,
       ),
     }),
   );
@@ -301,6 +302,7 @@ describe('POST /sessions/:id/mockups', () => {
     const last = await post({ action: 'decide', revision: 1, screen: 'Spec', verdict: 'approved' });
     // Otherwise the review reads as approved while no turn will ever continue it.
     expect(last.json().mockupReview.state).toBe('pending');
+    expect(last.json().mockupReview.screens[1].verdict).toBe('open');
     expect((await store.getSession('s1'))?.mockupReview?.state).toBe('pending');
   });
 
