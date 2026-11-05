@@ -488,7 +488,9 @@ describe('onboarding master-password step', () => {
       expect(mockClearStoredAuthState).not.toHaveBeenCalled();
       expect(mockReplace).not.toHaveBeenCalled();
 
-      buttons.find((button) => button.text === 'Pair again')!.onPress!();
+      await act(async () => {
+        buttons.find((button) => button.text === 'Pair again')!.onPress!();
+      });
       await waitFor(() => expect(mockReplace).toHaveBeenCalledWith('/onboarding/server-url'));
       expect(mockClearStoredAuthState).toHaveBeenCalledWith('https://verity.test:8082');
     } finally {
@@ -509,11 +511,15 @@ describe('onboarding master-password step', () => {
       render(<OnboardingMasterPassword />);
       await screen.findByLabelText('Master password');
       fireEvent.press(screen.getByLabelText('Pair this device again with a new pairing code'));
-      alert.mock.calls[0]![2]!.find((button) => button.text === 'Pair again')!.onPress!();
+      await act(async () => {
+        alert.mock.calls[0]![2]!.find((button) => button.text === 'Pair again')!.onPress!();
+      });
       expect(await screen.findByText(/Could not remove this device/)).toBeOnTheScreen();
       expect(mockReplace).not.toHaveBeenCalled();
       fireEvent.press(screen.getByLabelText('Pair this device again with a new pairing code'));
-      alert.mock.calls[1]![2]!.find((button) => button.text === 'Pair again')!.onPress!();
+      await act(async () => {
+        alert.mock.calls[1]![2]!.find((button) => button.text === 'Pair again')!.onPress!();
+      });
       await waitFor(() => expect(mockReplace).toHaveBeenCalledWith('/onboarding/server-url'));
     } finally {
       alert.mockRestore();
