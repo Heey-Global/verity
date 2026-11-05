@@ -119,25 +119,28 @@ export function ProjectPage({
     refreshConnections();
     void load(true).finally(() => setRefreshing(false));
   }, [refreshConnections, load]);
-  const firstReload = useRef(true);
+  // Compared with the last value rather than skipping a first run: the mount
+  // already loads, and a re-run with the same token (a re-mounted effect, a new
+  // `reload`) must not read again.
+  const lastReloadOn = useRef(reloadOn);
   useEffect(() => {
-    // The mount already loads; only later host polls ask for another read.
-    if (firstReload.current) {
-      firstReload.current = false;
-      return;
-    }
+    if (Object.is(lastReloadOn.current, reloadOn)) return;
+    lastReloadOn.current = reloadOn;
     reload();
   }, [reloadOn, reload]);
+  // A host that passes `reloadOn` refreshes after the change and moves the token;
+  // reading here as well would fetch the detail twice.
+  const hostReloads = reloadOn !== undefined;
   const inboxSaved = useCallback(() => {
-    reload();
+    if (!hostReloads) reload();
     onInboxSaved?.();
-  }, [reload, onInboxSaved]);
+  }, [hostReloads, reload, onInboxSaved]);
   const sessionChanged = useCallback(
     (sessionId: string, deleted: boolean) => {
-      reload();
+      if (!hostReloads) reload();
       onSessionChanged?.(sessionId, deleted);
     },
-    [reload, onSessionChanged],
+    [hostReloads, reload, onSessionChanged],
   );
   // Held by the page rather than the Overview tab: switching tabs must not drop
   // an answer in flight or its reply id, or a second tap could send it twice.
