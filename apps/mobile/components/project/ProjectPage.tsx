@@ -33,7 +33,7 @@ const TABS: readonly { value: ProjectTab; label: string }[] = [
 ];
 
 /** How many of the project's sessions have an open pull request. */
-export function openPullRequests(sessions: readonly SessionSummary[]): number {
+function openPullRequests(sessions: readonly SessionSummary[]): number {
   return sessions.filter((session) => session.pullRequest?.phase === 'open').length;
 }
 
