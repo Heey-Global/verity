@@ -13,6 +13,26 @@ type PairedRoutePolicy =
  * permission are declared here. Everything else remains administrator-only,
  * including collections and cross-project actions. */
 const resourceRules: ReadonlyMap<string, ResourceRule> = new Map([
+  // The person's own view of a project or session (fold, read mark, dismissed
+  // Home items) is stored per user and changes nothing anyone else sees, so
+  // reading the resource is enough. Resources the member cannot read are refused
+  // exactly as their reads are, so no view state is written for them.
+  [
+    routeScopeKey('PATCH', '/projects/:id/collapsed'),
+    { kind: 'project', parameter: 'id', permission: 'read' },
+  ],
+  [
+    routeScopeKey('PATCH', '/projects/:id/inbox-dismissed'),
+    { kind: 'project', parameter: 'id', permission: 'read' },
+  ],
+  [
+    routeScopeKey('PATCH', '/sessions/:id/seen'),
+    { kind: 'session', parameter: 'id', permission: 'read' },
+  ],
+  [
+    routeScopeKey('PATCH', '/sessions/:id/inbox-dismissed'),
+    { kind: 'session', parameter: 'id', permission: 'read' },
+  ],
   [
     routeScopeKey('GET', '/projects/:id/knowledge/files'),
     { kind: 'project', parameter: 'id', permission: 'read' },
