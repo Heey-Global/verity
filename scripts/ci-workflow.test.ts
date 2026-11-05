@@ -5406,6 +5406,18 @@ describe('changed-area detector', () => {
     const changed = ['packages/server/src/app.ts'];
     expect(await run(event, changed, { reusePrChecks: true })).toEqual(all('false'));
     expect((await run(event, changed)).test).toBe('true');
+    expect(
+      await run(
+        {
+          ...event,
+          releaseTrain: 'mobile',
+          releasePr: '119',
+          prHead: 'release-please--branches--main--components--mobile',
+        },
+        ['apps/mobile/app.config.ts'],
+        { reusePrChecks: true },
+      ),
+    ).toEqual(all('false'));
   });
 
   it('runs everything on a manual dispatch, which has no base to diff against', async () => {

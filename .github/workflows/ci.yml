@@ -154,6 +154,7 @@ jobs:
       # renovate: datasource=github-actions depName=actions/upload-artifact
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: github.event_name == 'pull_request'
+        continue-on-error: true
         with:
           name: ci-context-${{ github.run_attempt }}
           path: ${{ runner.temp }}/ci-context.json
@@ -393,6 +394,8 @@ jobs:
           fi
 
           if [ "${REUSE_PR_CHECKS:-false}" = "true" ]; then
+            lint=false; typecheck=false; test=false; contract_test=false; coverage=false
+            installer=false; mobile=false; mobile_app=false; server_image=false; agent_seed_drift=false
             echo "::notice::Identical PR checkout already passed ci-checks; retaining current title validation"
           elif [ "${{ github.event_name }}" = "schedule" ]; then
             # The expensive repository-wide threshold belongs to one predictable
