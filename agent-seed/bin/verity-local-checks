@@ -1,28 +1,21 @@
 #!/usr/bin/env bash
-# Records the operator's answer to the pre-push hook's dependency question.
-#
-# The hook runs the repository's lint and format scripts before a push. In a
-# fresh session worktree node_modules does not exist, and installing it runs
-# code from the registry — a decision for the operator, not for a hook. The hook
-# therefore stops and offers two ways on: install the dependencies, or skip lint
-# and format for this session. This tool records the second answer.
+# Records an explicit session skip of pre-push lint and format checks.
+# Missing compatible dependencies are prepared automatically by the hook;
+# requesting a push authorizes that preparation without another question.
+# A skip applies only while dependencies are missing and its inputs match.
+# Secret scan and code review are not affected.
 #
 # Usage:
 #   verity-local-checks skip     # skip lint/format while dependencies are missing
-#   verity-local-checks reset    # forget that decision; the hook asks again
+#   verity-local-checks reset    # forget the skip; prepare dependencies as needed
 #   verity-local-checks status   # exit 0 skip active, 1 none, 3 stale (inputs changed)
 #
-# The marker (.agents/.local-checks-skip, listed in the sandbox's global git
-# ignore file next to the review marker, never committed) carries a fingerprint
-# of package.json and the lockfile. When either changes, the recorded answer no
-# longer covers what would be installed, so the marker is stale and the hook
-# asks again. Once node_modules exists the hook ignores the marker and runs the
-# checks; the marker only ever stands in for dependencies that are not there.
-# Secret scan and code review are not affected by it.
+# The per-checkout marker is never committed. Its fingerprint binds the skip
+# to package.json and the npm lockfiles; changed inputs invalidate it.
 set -euo pipefail
 
 usage() {
-  sed -n '10,13p' "$0" | sed 's/^# \{0,1\}//' >&2
+  sed -n '9,11p' "$0" | sed 's/^# \{0,1\}//' >&2
   exit 2
 }
 
@@ -53,7 +46,7 @@ case "${1:-}" in
     ;;
   reset)
     rm -f "$MARKER"
-    echo "Lint and format run again on the next push (or the hook asks again while dependencies are missing)." >&2
+    echo "Lint and format run again on the next push; missing dependencies are prepared automatically." >&2
     ;;
   status)
     [ -f "$MARKER" ] || exit 1
