@@ -1257,7 +1257,9 @@ describe('Matrix connector image gate', () => {
     expect(build.with?.push).toBe(false);
     expect(job['timeout-minutes']).toBeLessThanOrEqual(45);
     expect(aggregate.needs).toContain('matrix-connector-image');
-    expect(aggregate.steps[0]?.run).toContain('require_success matrix-connector-image');
+    expect(
+      aggregate.steps.find((step) => step.name === 'Verify all required jobs succeeded')?.run,
+    ).toContain('require_success matrix-connector-image');
 
     const outputDir = await mkdtemp(join(tmpdir(), 'verity-matrix-ci-'));
     try {
@@ -4648,7 +4650,7 @@ describe('changed-area detector', () => {
     // 21,000-character ceiling. Crossing it creates a zero-job failure with no
     // logs, so keep enough room that a useful comment cannot silently break CI.
     expect(detect?.run?.length).toBeLessThan(20_500);
-    expect(detect?.run).toContain('&event=push&');
+    expect(readFileSync('scripts/ci-base-verdict.mjs', 'utf8')).toContain('&event=push&');
     expect(workflow.concurrency?.group).toContain('${{ github.event_name }}');
     const title = workflow.jobs.changes.steps.find(
       (step) => step.name === 'Validate Conventional Commit title',
@@ -4736,6 +4738,7 @@ describe('changed-area detector', () => {
       added?: string[];
       renamedFrom?: string[];
       baseVerdict?: string | null;
+      reusePrChecks?: boolean;
       previousReleaseFiles?: string[];
       previousReleaseVerdict?: string;
       releaseAuthor?: string;
@@ -4833,7 +4836,10 @@ describe('changed-area detector', () => {
         .replaceAll('${{ github.event.before }}', event.before ?? '')
         .replaceAll('${{ github.event.pull_request.base.sha }}', event.baseSha ?? '')
         .replaceAll('${{ github.base_ref }}', event.baseRef ?? 'main');
-      await writeFile(join(dir, 'detect.sh'), script);
+      // Routing tests stub the verdict boundary; identity and waiting are
+      // exercised by ci-base-verdict.test.ts against the real helper.
+      const verdictBoundary = `node() { if [[ "$1" == scripts/ci-base-verdict.mjs ]]; then gh api "head_sha=$2"; else command node "$@"; fi; }\n`;
+      await writeFile(join(dir, 'detect.sh'), verdictBoundary + script);
 
       const output = join(dir, 'github-output');
       await writeFile(output, '');
@@ -4845,6 +4851,7 @@ describe('changed-area detector', () => {
           GITHUB_REPOSITORY: 'heey-global/verity',
           GITHUB_REF_NAME: 'release-branch',
           GITHUB_SHA: 'release-sha',
+          REUSE_PR_CHECKS: options.reusePrChecks ? 'true' : 'false',
           CHECK_SUITE: event.checkSuite ?? 'full',
           RELEASE_TRAIN: event.releaseTrain ?? 'full',
           RELEASE_PR: event.releasePr ?? '',
@@ -5280,7 +5287,10 @@ describe('changed-area detector', () => {
         .replaceAll('${{ github.event_name }}', 'push')
         .replaceAll('${{ github.event.before }}', before)
         .replaceAll('${{ github.base_ref }}', 'main');
-      await writeFile(join(dir, 'detect.sh'), script);
+      // Routing tests stub the verdict boundary; identity and waiting are
+      // exercised by ci-base-verdict.test.ts against the real helper.
+      const verdictBoundary = `node() { if [[ "$1" == scripts/ci-base-verdict.mjs ]]; then gh api "head_sha=$2"; else command node "$@"; fi; }\n`;
+      await writeFile(join(dir, 'detect.sh'), verdictBoundary + script);
       const output = join(dir, 'github-output');
       await writeFile(output, '');
       // `git` is deliberately the real one here; `gh` is not, and it answers the
@@ -5393,6 +5403,25 @@ describe('changed-area detector', () => {
       ...all('true'),
       coverage: 'false',
     });
+  });
+
+  it('skips duplicate expensive jobs only after the exact-checkout proof succeeded', async () => {
+    const event = { name: 'pull_request', baseRef: 'main' };
+    const changed = ['packages/server/src/app.ts'];
+    expect(await run(event, changed, { reusePrChecks: true })).toEqual(all('false'));
+    expect((await run(event, changed)).test).toBe('true');
+    expect(
+      await run(
+        {
+          ...event,
+          releaseTrain: 'mobile',
+          releasePr: '119',
+          prHead: 'release-please--branches--main--components--mobile',
+        },
+        ['apps/mobile/app.config.ts'],
+        { reusePrChecks: true },
+      ),
+    ).toEqual(all('false'));
   });
 
   it('runs everything on a manual dispatch, which has no base to diff against', async () => {
