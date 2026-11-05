@@ -155,6 +155,16 @@ const post = (payload: Record<string, unknown>) =>
   app.inject({ method: 'POST', url: '/sessions/s1/mockups', payload });
 
 describe('presenting mockups', () => {
+  it('rejects a presentation overtaken by a planning restart', async () => {
+    const put = store.putAttachment.bind(store);
+    vi.spyOn(store, 'putAttachment').mockImplementationOnce(async (...args) => {
+      await store.startSessionPlanning('s1');
+      return put(...args);
+    });
+    await expect(present()).rejects.toThrow(/planning changed/);
+    expect((await store.getSession('s1'))?.mockupReview).toBeUndefined();
+  });
+
   it('snapshots each image so the round survives a rewritten file', async () => {
     const round = await present();
     expect(round).toMatchObject({ state: 'pending', revision: 1 });

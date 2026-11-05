@@ -3399,15 +3399,21 @@ export class EventStore implements EventSink {
   async updateSessionMockups(
     sessionId: string,
     change: (current: SessionMockups) => SessionMockups | undefined,
+    expectedPlanningRevision?: number,
   ): Promise<SessionMockups | undefined> {
     return this.db.transaction().execute(async (tx) => {
       const row = await tx
         .selectFrom('sessions')
-        .select(['mockup_review', 'mockup_revision', 'mockup_screens'])
+        .select(['mockup_review', 'mockup_revision', 'mockup_screens', 'planning_revision'])
         .where('session_id', '=', sessionId)
         .forUpdate()
         .executeTakeFirst();
       if (!row) return undefined;
+      if (
+        expectedPlanningRevision !== undefined &&
+        row.planning_revision !== expectedPlanningRevision
+      )
+        return undefined;
       const next = change({
         state: row.mockup_review,
         revision: row.mockup_revision,

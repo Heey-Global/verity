@@ -150,10 +150,12 @@ export function createSessionMockups(deps: MockupDeps) {
         const attachment = await store.putAttachment(image.mediaType, bytes.toString('base64'));
         screens.push({ name: screen.name, attachment, ...image });
       }
-      const stored = await store.updateSessionMockups(sessionId, (current) =>
-        nextMockupRound(current, screens),
+      const stored = await store.updateSessionMockups(
+        sessionId,
+        (current) => nextMockupRound(current, screens),
+        session.planningRevision,
       );
-      if (!stored) throw new Error('session not found');
+      if (!stored) throw new Error('session missing or planning changed while preparing mockups');
       return stored;
     },
 
