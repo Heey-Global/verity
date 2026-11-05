@@ -30,6 +30,15 @@ previous_image="${2:-$image}"
 # `deploy/docker-compose.yml`, not in the Server image.
 previous_tag="${3:-}"
 smoke_profile="${VERITY_SMOKE_PROFILE:-full}"
+fixture_mode="${4:-}"
+if [[ -n "$fixture_mode" && "$fixture_mode" != '--rollback-fixture' ]]; then
+  echo "invalid smoke fixture mode: $fixture_mode" >&2
+  exit 2
+fi
+if [[ -n "$fixture_mode" && "$smoke_profile" != full ]]; then
+  echo 'the rollback fixture requires the full smoke profile' >&2
+  exit 2
+fi
 if [[ -z "$image" ]]; then
   echo 'usage: verity-self-update-live-smoke <target-server-image> <previous-server-image> <previous-release-tag>' >&2
   exit 2
@@ -165,6 +174,34 @@ if ! docker compose version >/dev/null 2>&1; then
   exit 1
 fi
 
+# Each child owns its cleanup trap. The next child must pass the same daemon
+# identity and emptiness guards, so incomplete cleanup cannot become adoption.
+# Keep the real cross-version/data-preservation proof separate from fault
+# injection: candidate startup can migrate beyond the released image's window.
+run_smoke_passes() {
+  local driver="$1"
+  echo '--- pass 1: released predecessor to candidate, including data preservation'
+  VERITY_SMOKE_PROFILE=release "$driver" "$image" "$previous_image" "$previous_tag"
+  echo '--- pass 2: complete rollback matrix on a fresh, schema-compatible fixture'
+  VERITY_SMOKE_PROFILE=full "$driver" "$image" "$image" HEAD --rollback-fixture
+}
+
+if [[ "$smoke_profile" == full && -z "$fixture_mode" &&
+      "${VERITY_SMOKE_ALLOW_NO_ROLLBACK:-false}" != true ]]; then
+  run_smoke_passes "${BASH_SOURCE[0]}"
+  exit 0
+fi
+
+# The fault matrix uses the candidate's Compose contract and byte-identical
+# baseline image. This exception cannot admit a different predecessor image or
+# erase the real release admission proof, which ran in the first pass.
+if [[ "$fixture_mode" == '--rollback-fixture' ]]; then
+  [[ "$previous_tag" == HEAD && "$previous_image" == "$image" ]] || {
+    echo 'rollback fixture requires the candidate image and its HEAD Compose contract' >&2
+    exit 2
+  }
+fi
+
 repo='ghcr.io/heey-global/verity/verity-server'
 registry_image='registry:2.8.3@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373'
 postgres_image='postgres:18-alpine'
@@ -215,8 +252,9 @@ done
 # otherwise reject a published release on every installation. This is mandatory
 # even for the release profile and the emergency rollback-scenario override.
 echo '--- stage: verify the released predecessor can update to the candidate'
-if [[ "${VERITY_SMOKE_BOOTSTRAP:-false}" == true ]]; then
-  # The workflow permits bootstrap only when no published predecessor exists.
+if [[ "${VERITY_SMOKE_BOOTSTRAP:-false}" == true || "$fixture_mode" == '--rollback-fixture' ]]; then
+  # Bootstrap has no released predecessor. The rollback fixture already proved
+  # the real predecessor transition in pass 1; here only identical images qualify.
   [[ "$(docker inspect --format '{{.Id}}' "$previous_image")" == \
      "$(docker inspect --format '{{.Id}}' "$image")" ]] || exit 1
 else
@@ -1338,7 +1376,7 @@ node packages/server/dist/self-update-live-smoke.js relay-journal
 # still a rollback onto a retained container, not a rebuild.
 lost_database_incarnation="$(server_incarnation)"
 
-echo '--- stage: take the database away after the point of no return'
+echo '--- stage: lose the database, refuse unsafe rollback, then stop the retained process'
 node packages/server/dist/self-update-live-smoke.js cutover-loses-the-database
 
 # Nothing above restarts it: the stage stops this container and the recovery
@@ -1348,9 +1386,8 @@ echo '--- restoring the database the cutover lost'
 docker start verity-postgres >/dev/null
 wait_for_postgres verity-postgres
 
-# For the same reason as after the withheld resume: the listener is still holding
-# the request the failed rollback published, and the Server about to be cold-started
-# has to boot into a directive derived from the phase alone.
+# The schema proof failed before publishing a resume request. Clear the old
+# quiesce request so cold recovery reads its directive from the durable phase.
 echo '--- stage: retire the request the interrupted rollback left behind'
 node packages/server/dist/self-update-live-smoke.js relay-journal
 
@@ -1374,8 +1411,8 @@ fi
 echo 'the same container came back once the database did'
 
 # Sealed for the same reason as every other cold start above, and worth asserting
-# here because the key survived none of this: the process holding it exited when
-# it could not reclaim the control plane.
+# here because the fault stage explicitly stopped the retained process after
+# proving that unavailable schema evidence prevents its reactivation.
 echo '--- the generation recovered from the database loss must come back sealed'
 expect_secret_status "$server" sealed
 

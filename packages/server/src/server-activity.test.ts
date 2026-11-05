@@ -1,6 +1,7 @@
 import { boundedHistoryResultSchema, type AgentEvent } from '@verity/events';
 import { InMemoryEventBus } from '@verity/session';
 import type { FastifyInstance } from 'fastify';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { gunzipSync } from 'node:zlib';
@@ -1946,11 +1947,21 @@ describe('overview projections read only the narrow event slice', () => {
       pr: async () => null,
     });
     const server = buildServer({ eventStore: ctx.store, bus, conductor, sessionStorage: storage });
+    const acquisitions = new AsyncLocalStorage<{ count: number }>();
+    let measurement: { count: number } | undefined;
+    server.addHook('onRequest', (_request, _reply, done) => {
+      if (measurement) acquisitions.run(measurement, done);
+      else done();
+    });
     await server.ready();
     const original = ctx.store.listSessionProjectionFacts.bind(ctx.store);
+    let releaseBackground: () => void = () => undefined;
+    let backgroundRead: Promise<unknown> = Promise.resolve();
     const facts = vi
       .spyOn(ctx.store, 'listSessionProjectionFacts')
       .mockImplementation(async (...args) => {
+        releaseBackground();
+        await backgroundRead;
         const result = await original(...args);
         for (const entry of result.values()) {
           entry.eventsTruncated = true;
@@ -1958,7 +1969,34 @@ describe('overview projections read only the narrow event slice', () => {
         }
         return result;
       });
-    const acquire = vi.spyOn(PgliteDriver.prototype, 'acquireConnection');
+    // A prototype-wide spy also counts background recovery/timer reads, even
+    // from the shared fixture app. Measure only this request's async context.
+    // Preserve the dynamic database receiver via .call(this) inside the spy.
+    // eslint-disable-next-line @typescript-eslint/unbound-method
+    const originalAcquire = PgliteDriver.prototype.acquireConnection;
+    const acquire = vi
+      .spyOn(PgliteDriver.prototype, 'acquireConnection')
+      .mockImplementation(function (this: PgliteDriver) {
+        const current = acquisitions.getStore();
+        if (current) current.count++;
+        return originalAcquire.call(this);
+      });
+    const measure = async () => {
+      // Register outside the request context, like a pre-existing timer. Its
+      // query is forced to overlap the request so a global counter fails here.
+      backgroundRead = new Promise<void>((resolve) => {
+        releaseBackground = resolve;
+      }).then(async () => {
+        await ctx.store.listProjects();
+        await ctx.store.listSessions();
+      });
+      const current = { count: 0 };
+      measurement = current;
+      acquire.mockClear();
+      const response = await server.inject('/sessions');
+      measurement = undefined;
+      return { response, count: current.count };
+    };
     const seed = async (n: number) => {
       await ctx.store.createSession({
         sessionId: `pool-${n}`,
@@ -1970,17 +2008,16 @@ describe('overview projections read only the narrow event slice', () => {
     };
     try {
       await seed(0);
-      acquire.mockClear();
-      expect((await server.inject('/sessions')).statusCode).toBe(200);
-      const small = acquire.mock.calls.length;
-      expect(small).toBeGreaterThan(0);
+      const small = await measure();
+      expect(small.response.statusCode).toBe(200);
+      expect(small.count).toBeGreaterThan(0);
       for (let n = 1; n < 40; n++) await seed(n);
-      acquire.mockClear();
-      const large = await server.inject('/sessions');
-      expect(large.statusCode).toBe(200);
-      expect(large.json()).toHaveLength(40);
-      expect(acquire.mock.calls.length).toBeLessThanOrEqual(small);
-      expect(acquire.mock.calls.length).toBeLessThanOrEqual(12);
+      const large = await measure();
+      expect(large.response.statusCode).toBe(200);
+      expect(large.response.json()).toHaveLength(40);
+      expect(large.count).toBeLessThanOrEqual(small.count);
+      expect(large.count).toBeLessThanOrEqual(12);
+      expect(acquire.mock.calls.length).toBeGreaterThanOrEqual(large.count + 2);
     } finally {
       acquire.mockRestore();
       facts.mockRestore();
