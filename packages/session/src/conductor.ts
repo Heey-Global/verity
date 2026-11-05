@@ -19,6 +19,7 @@ import { PLANNING_PERMISSION_MODE } from './runner.js';
 import type {
   EventStore,
   PlanningConsent,
+  SessionMockups,
   QueuedTurnOpts,
   RunningTurnRecord,
   SessionRecord,
@@ -751,6 +752,8 @@ export interface DispatchTurnOptions extends PromptOrigin {
   /** Atomically accept this plan revision with the durable implementation queue. */
   planningRevision?: number;
   planningConsent?: PlanningConsent;
+  /** Reviewed snapshot to commit atomically with the continuation backlog. */
+  mockupContinuation?: SessionMockups;
 }
 
 interface QueuedConductorTurn extends PromptOrigin {
@@ -3617,7 +3620,11 @@ export class Conductor {
     // check and the write) do we fall back to enqueueing behind it (#90 Stage A),
     // which runs the message as a fresh `--resume` turn the moment claude is free.
     // Validate the prompt here too so we never steer/queue a blank turn.
-    if (this.inFlight.has(sessionId) || dispatchOpts.planningRevision !== undefined) {
+    if (
+      this.inFlight.has(sessionId) ||
+      dispatchOpts.planningRevision !== undefined ||
+      dispatchOpts.mockupContinuation !== undefined
+    ) {
       if (opts.requireStandalone === true) throw new SessionBusyError(sessionId);
       if (!turnHasContent(prompt, opts))
         throw new Error('turn must have a prompt or an attachment');
@@ -3682,6 +3689,16 @@ export class Conductor {
               dispatchOpts.planningRevision,
               (event) => this.deps.bus?.publish(sessionId, event),
               dispatchOpts.planningConsent,
+            ))
+          ) {
+            accepted = false;
+            return;
+          }
+        } else if (dispatchOpts.mockupContinuation !== undefined) {
+          if (
+            !(await this.deps.store.enqueueMockupContinuation(
+              input,
+              dispatchOpts.mockupContinuation,
             ))
           ) {
             accepted = false;

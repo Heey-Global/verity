@@ -5822,6 +5822,34 @@ export class EventStore implements EventSink {
       .execute();
   }
 
+  /** Commit the reviewed snapshot and its continuation together for restart recovery. */
+  async enqueueMockupContinuation(
+    input: QueuedTurnInput,
+    review: SessionMockups,
+  ): Promise<boolean> {
+    return this.db.transaction().execute(async (tx) => {
+      const result = await tx
+        .updateTable('sessions')
+        .set({ mockup_review: review.state })
+        .where('session_id', '=', input.sessionId)
+        .where('mockup_revision', '=', review.revision)
+        .where('mockup_review', '=', 'pending')
+        .where(sql<boolean>`mockup_screens::jsonb = ${JSON.stringify(review.screens)}::jsonb`)
+        .executeTakeFirst();
+      if (result.numUpdatedRows === 0n) return false;
+      await tx
+        .insertInto('queued_turns')
+        .values({
+          id: input.id,
+          session_id: input.sessionId,
+          prompt: input.prompt,
+          opts: JSON.stringify(input.opts),
+        })
+        .execute();
+      return true;
+    });
+  }
+
   /** Accept a plan and its implementation backlog entry together. A restart
    * between acceptance and the live queue update must still recover the work. */
   async enqueuePlanImplementation(

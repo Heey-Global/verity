@@ -106,36 +106,26 @@ export interface MockupDeps {
 export function createSessionMockups(deps: MockupDeps) {
   const store = deps.eventStore;
 
-  /** Run a server turn after a decision was stored; if the turn is refused, put the
-   *  round back so the reviewer can try again instead of waiting on nothing. */
+  /** The conductor commits this transition with the durable continuation. */
   async function dispatchAfter(
     sessionId: string,
-    before: SessionMockups,
     after: SessionMockups,
     prompt: string,
     displayPrompt: string,
     initiatedBy: { userId: string } | undefined,
   ): Promise<boolean> {
-    let accepted = false;
-    try {
-      const result = await deps.dispatchTurn(
-        sessionId,
-        prompt,
-        {},
-        {
-          displayPrompt,
-          queueBehindActiveTurn: true,
-          ...(initiatedBy !== undefined ? { initiatedBy } : {}),
-        },
-      );
-      accepted = result.accepted !== false;
-    } finally {
-      if (!accepted)
-        await store.updateSessionMockups(sessionId, (current) =>
-          current.revision === after.revision && current.state === after.state ? before : undefined,
-        );
-    }
-    return accepted;
+    const result = await deps.dispatchTurn(
+      sessionId,
+      prompt,
+      {},
+      {
+        displayPrompt,
+        queueBehindActiveTurn: true,
+        mockupContinuation: after,
+        ...(initiatedBy !== undefined ? { initiatedBy } : {}),
+      },
+    );
+    return result.accepted !== false;
   }
 
   return {
@@ -171,9 +161,7 @@ export function createSessionMockups(deps: MockupDeps) {
       initiatedBy?: { userId: string },
     ): Promise<MockupActionResult> {
       let failure: MockupActionResult | undefined;
-      let before: SessionMockups | undefined;
       const stored = await store.updateSessionMockups(sessionId, (current) => {
-        before = current;
         if (current.revision !== revision) failure = { ok: false, code: 'stale' };
         else if (current.state !== 'pending') failure = { ok: false, code: 'notPending' };
         else if (!current.screens.some((screen) => screen.name === name))
@@ -189,21 +177,21 @@ export function createSessionMockups(deps: MockupDeps) {
         });
         return {
           ...current,
-          state: screens.every((screen) => screen.verdict === 'approved') ? 'approved' : 'pending',
+          state: 'pending',
           screens,
         };
       });
       if (!stored) return failure ?? { ok: false, code: 'notFound' };
-      if (stored.state === 'approved') {
+      if (stored.screens.every((screen) => screen.verdict === 'approved')) {
+        const after: SessionMockups = { ...stored, state: 'approved' };
         const started = await dispatchAfter(
           sessionId,
-          before!,
-          stored,
+          after,
           MOCKUPS_APPROVED_PROMPT,
           MOCKUPS_APPROVED_DISPLAY,
           initiatedBy,
         );
-        if (!started) return { ok: true, review: before! };
+        return { ok: true, review: started ? after : stored };
       }
       return { ok: true, review: stored };
     },
@@ -215,26 +203,24 @@ export function createSessionMockups(deps: MockupDeps) {
       initiatedBy?: { userId: string },
     ): Promise<MockupActionResult> {
       let failure: MockupActionResult | undefined;
-      let before: SessionMockups | undefined;
       const stored = await store.updateSessionMockups(sessionId, (current) => {
-        before = current;
         if (current.revision !== revision) failure = { ok: false, code: 'stale' };
         else if (current.state !== 'pending') failure = { ok: false, code: 'notPending' };
         else if (!current.screens.some((screen) => screen.verdict === 'comment'))
           failure = { ok: false, code: 'noComments' };
-        return failure ? undefined : { ...current, state: 'revising' };
+        return failure ? undefined : current;
       });
       if (!stored) return failure ?? { ok: false, code: 'notFound' };
       const comments = stored.screens.filter((screen) => screen.verdict === 'comment').length;
+      const after: SessionMockups = { ...stored, state: 'revising' };
       const started = await dispatchAfter(
         sessionId,
-        before!,
-        stored,
+        after,
         mockupFeedbackPrompt(stored.screens),
         mockupFeedbackDisplay(comments),
         initiatedBy,
       );
-      return { ok: true, review: started ? stored : before! };
+      return { ok: true, review: started ? after : stored };
     },
   };
 }

@@ -41,6 +41,14 @@ const review = (
 });
 
 describe('mockupRoundView', () => {
+  it.each([
+    'verity_present_mockups',
+    'verity_mockups_present',
+    'verity_verity_present_mockups',
+    'mcp__verity__verity_mockups_present',
+  ])('recognizes %s', (name) => {
+    expect(mockupRoundView({ ...tool, name }, undefined)?.screens).toHaveLength(2);
+  });
   it('shows the live verdicts on the round under review', () => {
     const view = mockupRoundView(
       tool,

@@ -113,10 +113,20 @@ beforeEach(async () => {
   writeFileSync(join(worktree, 'home.png'), png(393, 852));
   writeFileSync(join(worktree, 'spec.png'), png(393, 852, 1));
   await store.createSession({ sessionId: 's1', worktree, model: 'm' });
-  dispatchTurn = vi.fn<PlanningDeps['dispatchTurn']>(async () => ({
-    queued: true,
-    accepted: true,
-  }));
+  dispatchTurn = vi.fn<PlanningDeps['dispatchTurn']>(
+    async (sessionId, prompt, _opts, dispatchOpts) => ({
+      queued: true,
+      accepted: await store.enqueueMockupContinuation(
+        {
+          id: crypto.randomUUID(),
+          sessionId,
+          prompt,
+          opts: {},
+        },
+        dispatchOpts.mockupContinuation!,
+      ),
+    }),
+  );
   mockups = createSessionMockups({ eventStore: store, dispatchTurn });
   app = Fastify();
   registerMockupRoutes(app, { mockups });
@@ -264,6 +274,17 @@ describe('POST /sessions/:id/mockups', () => {
     // point here is that a blank comment never reaches the round.
     expect(response.statusCode).toBeGreaterThanOrEqual(400);
     expect((await store.getSession('s1'))?.mockupReview?.screens[0]?.verdict).toBe('open');
+  });
+
+  it('keeps continuation work durable after recreating the store', async () => {
+    await present();
+    await post({ action: 'decide', revision: 1, screen: 'Home', verdict: 'approved' });
+    await post({ action: 'decide', revision: 1, screen: 'Spec', verdict: 'approved' });
+    const restarted = new EventStore(ctx.db);
+    expect((await restarted.getSession('s1'))?.mockupReview?.state).toBe('approved');
+    const queued = await ctx.db.selectFrom('queued_turns').selectAll().execute();
+    expect(queued).toHaveLength(1);
+    expect(queued[0]?.prompt).toBe(MOCKUPS_APPROVED_PROMPT);
   });
 
   it('puts the round back when the continuation turn is refused', async () => {

@@ -426,6 +426,13 @@ export function MockupReviewSheet({
                   )}
                 </View>
                 <View style={styles.flex}>
+                  <Button
+                    label={current.verdict === 'approved' ? 'Approved' : 'Approve'}
+                    fullWidth
+                    loading={deciding}
+                    disabled={current.verdict === 'approved'}
+                    onPress={() => void approve()}
+                  />
                   {!open && comments ? (
                     <Button
                       label="Send comments"
@@ -433,15 +440,7 @@ export function MockupReviewSheet({
                       loading={deciding}
                       onPress={() => void onSend().then((sent) => sent && onClose())}
                     />
-                  ) : (
-                    <Button
-                      label={current.verdict === 'approved' ? 'Approved' : 'Approve'}
-                      fullWidth
-                      loading={deciding}
-                      disabled={current.verdict === 'approved'}
-                      onPress={() => void approve()}
-                    />
-                  )}
+                  ) : null}
                 </View>
               </View>
             </>

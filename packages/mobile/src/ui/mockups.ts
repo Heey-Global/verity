@@ -1,3 +1,4 @@
+import { isPresentMockupsTool } from '@verity/events';
 import type { MockupReview, MockupReviewScreen } from '../api.js';
 import type { ToolCall } from '../happy/message.js';
 import { unwrapToolResult } from './toolResult.js';
@@ -35,8 +36,7 @@ export function mockupRoundView(
   tool: ToolCall,
   current: MockupReview | undefined,
 ): MockupRoundView | undefined {
-  if (tool.state !== 'completed' || !/(?:^|__)verity_present_mockups$/.test(tool.name))
-    return undefined;
+  if (tool.state !== 'completed' || !isPresentMockupsTool(tool.name)) return undefined;
   const result = unwrapToolResult(tool.result);
   if (!result || result.presented !== true || !Number.isInteger(result.mockupRevision))
     return undefined;

@@ -54,3 +54,12 @@ it('offers sending only once every screen is decided and keeps failed sends open
   await act(async () => fireEvent.press(screen.getByRole('button', { name: 'Send comments' })));
   expect(props.onClose).toHaveBeenCalledTimes(1);
 });
+
+it('lets a reviewer replace the final comment with approval', async () => {
+  render(
+    <MockupReviewSheet {...props} screens={[{ ...home, verdict: 'comment', comment: 'Larger' }]} />,
+  );
+  expect(screen.getByRole('button', { name: 'Send comments' })).toBeTruthy();
+  await act(async () => fireEvent.press(screen.getByRole('button', { name: 'Approve' })));
+  expect(props.onDecide).toHaveBeenCalledWith('Home', { verdict: 'approved' });
+});
