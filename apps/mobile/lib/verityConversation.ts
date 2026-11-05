@@ -293,7 +293,8 @@ export function dismissVerityNotice(): void {
  */
 export function verityPollMs(current: VerityState, open: boolean): number {
   if (!open) return 30_000;
-  const waiting = current.outbox.some((entry) => entry.held !== true);
+  const scope = taskAccountScope();
+  const waiting = current.outbox.some((entry) => entry.held !== true && entry.scope === scope);
   return current.conversation?.state === 'working' || waiting ? 2_000 : 6_000;
 }
 
@@ -341,7 +342,7 @@ export async function followVerity(
     }
     const scope = taskAccountScope();
     const before = state.conversation?.revision;
-    const retrying = state.outbox.some((entry) => entry.held !== true);
+    const retrying = state.outbox.some((entry) => entry.held !== true && entry.scope === scope);
     const started = Date.now();
     try {
       const next = await client.assistantConversation(

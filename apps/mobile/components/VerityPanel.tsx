@@ -47,6 +47,8 @@ export function VerityPanel({
   const verity = useVerity(true);
   const [text, setText] = useState(() => (draft.scope === taskAccountScope() ? draft.text : ''));
   const [sending, setSending] = useState(false);
+  // State lags a fast double tap; this guards the second one.
+  const sendingRef = useRef(false);
   const dictated = useRef(false);
   const voice = useVoiceInput(text, (value) => {
     if (value.trim()) dictated.current = true;
@@ -66,7 +68,8 @@ export function VerityPanel({
 
   const send = async () => {
     const message = text.trim();
-    if (!message || sending) return;
+    if (!message || sendingRef.current) return;
+    sendingRef.current = true;
     if (voice.state === 'recording') voice.abort();
     setSending(true);
     try {
@@ -83,6 +86,7 @@ export function VerityPanel({
       setText(message);
       Alert.alert('Not sent', error instanceof Error ? error.message : 'Try again');
     } finally {
+      sendingRef.current = false;
       setSending(false);
     }
   };
