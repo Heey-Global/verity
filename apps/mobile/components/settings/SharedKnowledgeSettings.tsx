@@ -18,9 +18,12 @@ import {
 export function SharedKnowledgeSettings({
   initialPath,
   projectId,
+  embedded = false,
 }: {
   initialPath?: string;
   projectId?: string;
+  /** Shown inside the project page's Knowledge tab rather than as its own route. */
+  embedded?: boolean;
 }) {
   const client = useMemo(() => createVerityClient(), []);
   const [path, setPath] = useState('');
@@ -136,6 +139,7 @@ export function SharedKnowledgeSettings({
   return (
     <SettingsScaffold
       title={title}
+      embedded={embedded}
       detail
       state={{ error, saving }}
       onRetry={() => {

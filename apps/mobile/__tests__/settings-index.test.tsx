@@ -93,7 +93,7 @@ describe('settings index — destinations', () => {
         'Devices & Web Browsers',
         'Logs',
       ],
-      ['New Home (preview)', 'Show welcome tour again', 'Diagnostics', 'Try demo'],
+      ['New design (preview)', 'Show welcome tour again', 'Diagnostics', 'Try demo'],
     ];
     groups.forEach((group, index) => {
       const rows = group.findAll(

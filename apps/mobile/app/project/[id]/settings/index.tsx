@@ -7,16 +7,13 @@
 import {
   allowedAgentsSummary,
   codeHostForProject,
-  forgejoConnection,
-  githubRepositoryAccessReady,
   providerName,
-  type ForgeConnection,
   modelDisplayName,
   projectBadge,
   type VerityClient,
 } from '@verity/mobile';
-import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
-import { useCallback, useMemo, useState } from 'react';
+import { router, useLocalSearchParams } from 'expo-router';
+import { useMemo } from 'react';
 import { ActivityIndicator, Text, View } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
 
@@ -32,6 +29,8 @@ import { settingsStyles as styles } from '../../../../components/settings/settin
 import type { StatusPillIntent } from '../../../../components/StatusPill';
 import { createVerityClient } from '../../../../lib/client';
 import { useDeleteProject } from '../../../../lib/projectDelete';
+import { useNewDesign } from '../../../../lib/homePreferences';
+import { useProjectConnections } from '../../../../lib/useProjectConnections';
 import { projectIdParam, useProjectDetail } from '../../../../lib/useProjectDetail';
 import { Button } from '../../../../components/ui';
 
@@ -60,88 +59,15 @@ function ProjectSettingsIndexView({
 }) {
   const { theme } = useUnistyles();
   const { detail, loading, error, setError, load } = useProjectDetail(client, projectId);
-  const [connectionRefresh, setConnectionRefresh] = useState(0);
-  const [usage, setUsage] = useState({ google: 0, mcp: 0, matrix: 0 });
-  const [forgeConnections, setForgeConnections] = useState<ForgeConnection[] | null>(null);
-  const [available, setAvailable] = useState({
-    github: false,
-    forgejo: false,
-    doppler: false,
-    drive: false,
-    google: false,
-    mcp: false,
-    matrix: false,
-  });
-  const [driveFolderNames, setDriveFolderNames] = useState<string[] | null>(null);
-  useFocusEffect(
-    useCallback(() => {
-      let active = true;
-      void Promise.allSettled([
-        Promise.resolve().then(() => client.getVeritySettings()),
-        Promise.resolve().then(() => client.getGoogleDriveConnection()),
-        Promise.resolve().then(() => client.getProjectGoogleConnection(projectId, 'gmail')),
-        Promise.resolve().then(() => client.getProjectGoogleConnection(projectId, 'calendar')),
-        Promise.resolve().then(() => client.getProjectGoogleConnection(projectId, 'contacts')),
-        Promise.resolve().then(() => client.listHttpMcpConnections()),
-        Promise.resolve().then(() => client.listIntegrations()),
-        Promise.resolve().then(() => client.listProjectMcpBindings(projectId)),
-        Promise.resolve().then(() => client.listProjectDriveFolders(projectId)),
-        Promise.resolve().then(() => client.listConnections()),
-      ]).then((results) => {
-        if (!active) return;
-        const [
-          settings,
-          drive,
-          gmail,
-          calendar,
-          contacts,
-          mcp,
-          integrations,
-          bindings,
-          folders,
-          forge,
-        ] = results;
-        const forgeList = forge.status === 'fulfilled' ? forge.value : null;
-        setForgeConnections(forgeList?.connections ?? null);
-        setDriveFolderNames(
-          folders.status === 'fulfilled' ? folders.value.map((folder) => folder.name) : null,
-        );
-        setUsage({
-          google: [gmail, calendar, contacts].filter(
-            (item) => item.status === 'fulfilled' && item.value.enabled,
-          ).length,
-          mcp:
-            bindings.status === 'fulfilled'
-              ? bindings.value.filter((binding) => binding.enabled).length
-              : 0,
-          matrix:
-            integrations.status === 'fulfilled'
-              ? integrations.value.sources.filter((source) => source.projectId === projectId).length
-              : 0,
-        });
-        setAvailable({
-          github: settings.status === 'fulfilled' && githubRepositoryAccessReady(settings.value),
-          forgejo:
-            forgeList?.forgejoProjectsAvailable === true &&
-            forgejoConnection(forgeList) !== undefined,
-          doppler:
-            settings.status === 'fulfilled' &&
-            Boolean(settings.value?.dopplerServiceTokenConfigured),
-          drive: drive.status === 'fulfilled' && drive.value.connected,
-          google: [gmail, calendar, contacts].some(
-            (item) => item.status === 'fulfilled' && item.value.connected,
-          ),
-          mcp: mcp.status === 'fulfilled' && mcp.value.length > 0,
-          matrix:
-            integrations.status === 'fulfilled' &&
-            integrations.value.accounts.some((account) => account.provider === 'matrix'),
-        });
-      });
-      return () => {
-        active = false;
-      };
-    }, [client, connectionRefresh, projectId]),
-  );
+  // The new design shows project knowledge on the project page instead.
+  const newDesign = useNewDesign();
+  const {
+    available,
+    usage,
+    driveFolderNames,
+    forgeConnections,
+    refresh: refreshConnections,
+  } = useProjectConnections(client, projectId);
   const [deleting, remove] = useDeleteProject(client, setError);
 
   if (loading && detail === undefined) {
@@ -159,7 +85,7 @@ function ProjectSettingsIndexView({
         screenTitle="Project settings"
         onRetry={() => {
           load();
-          setConnectionRefresh((value) => value + 1);
+          refreshConnections();
         }}
       />
     );
@@ -193,21 +119,23 @@ function ProjectSettingsIndexView({
       state={{ error, saving: false }}
       onRetry={() => {
         load();
-        setConnectionRefresh((value) => value + 1);
+        refreshConnections();
       }}
     >
-      <SettingsGroup title="Knowledge">
-        <SettingsListPanel>
-          <SettingsNavRow
-            icon="book-open"
-            title="Project knowledge"
-            subtitle="Decisions, Wiki and Raw Sources"
-            onPress={() =>
-              router.push({ pathname: '/project/[id]/knowledge', params: { id: projectId } })
-            }
-          />
-        </SettingsListPanel>
-      </SettingsGroup>
+      {newDesign ? null : (
+        <SettingsGroup title="Knowledge">
+          <SettingsListPanel>
+            <SettingsNavRow
+              icon="book-open"
+              title="Project knowledge"
+              subtitle="Decisions, Wiki and Raw Sources"
+              onPress={() =>
+                router.push({ pathname: '/project/[id]/knowledge', params: { id: projectId } })
+              }
+            />
+          </SettingsListPanel>
+        </SettingsGroup>
+      )}
       <SettingsGroup title="Context">
         <SettingsListPanel>
           <SettingsNavRow

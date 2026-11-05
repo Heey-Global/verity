@@ -148,6 +148,7 @@ export function Row({
   leading,
   trailing,
   onPress,
+  onLongPress,
   navigates = false,
   selected,
   disabled = false,
@@ -163,6 +164,9 @@ export function Row({
    *  unreachable for VoiceOver, which hears the row as one element. */
   trailing?: ReactNode;
   onPress?: () => void;
+  /** The row's secondary actions (rename, delete) on a long press. Only with
+   *  `onPress`; name the actions in `accessibilityHint`. */
+  onLongPress?: (() => void) | undefined;
   navigates?: boolean;
   selected?: boolean;
   disabled?: boolean;
@@ -209,6 +213,7 @@ export function Row({
   return (
     <Pressable
       onPress={onPress}
+      onLongPress={onLongPress}
       disabled={disabled}
       accessibilityRole={choice ? 'radio' : 'button'}
       accessibilityLabel={
