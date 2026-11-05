@@ -8,6 +8,7 @@ const shared = read('_shared/WatchCaptureComplication.swift');
 const app = read('VerityWatch/VerityWatchApp.swift');
 const store = read('VerityWatch/CaptureStore.swift');
 const widget = read('VerityWatchComplication/VerityWatchComplication.swift');
+const mark = read('_shared/VerityMarkShape.swift');
 
 describe('Watch complication capture entry', () => {
   it('registers the actual complication URL and starts rather than toggles recording', () => {
@@ -51,8 +52,14 @@ describe('Watch complication capture entry', () => {
     expect(widget).not.toMatch(/Image\("[^"]+"\)|image: "/);
     const config = require(resolve(targetRoot, 'VerityWatchComplication/expo-target.config.js'));
     expect(config.images).toBeUndefined();
+    // The Watch app draws the same mark, so it lives with the sources both targets link.
+    expect(mark).toContain('#if os(watchOS)');
+    expect(mark).toContain('struct VerityMarkShape: Shape');
+    expect(mark).not.toContain('private struct VerityMarkShape');
+    expect(widget).not.toContain('struct VerityMarkShape');
+    expect(app).toContain('VerityMarkShape()');
     const marker = 'outline: [(CGFloat, CGFloat)] = [';
-    const outline = widget.slice(widget.indexOf(marker) + marker.length);
+    const outline = mark.slice(mark.indexOf(marker) + marker.length);
     const points = [
       ...outline.slice(0, outline.indexOf(']')).matchAll(/\((-?[\d.]+), (-?[\d.]+)\)/g),
     ];
