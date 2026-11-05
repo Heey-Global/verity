@@ -82,7 +82,12 @@ class DeadlineChannelTests(unittest.TestCase):
             parent.wait(timeout=5)
             for _ in range(100):
                 status = Path(f'/proc/{pid}/stat')
-                if not status.exists() or status.read_text().split()[2] == 'Z':
+                try:
+                    state = status.read_text().split()[2]
+                except (FileNotFoundError, ProcessLookupError):
+                    # The child can be reaped between opening and reading procfs.
+                    break
+                if state == 'Z':
                     break
                 time.sleep(.01)
             else:

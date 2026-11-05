@@ -627,6 +627,13 @@ describe('ProvisionerImpl (#174)', () => {
     const cleanup = new Promise<void>((resolve) => {
       finishCleanup = resolve;
     });
+    const supervisorReachable = vi.fn(async () => {
+      order.push('reachable');
+    });
+    const onRunnerReady = vi.fn(async () => {
+      order.push('runner-ready');
+      await new Promise<void>(() => undefined);
+    });
     const beforeRunnerAdmission = vi.fn(async () => {
       order.push('cleanup');
       enteredCleanup();
@@ -645,6 +652,8 @@ describe('ProvisionerImpl (#174)', () => {
       projectRelay: relay,
       containerCommand,
       beforeRunnerAdmission,
+      supervisorReachable,
+      onRunnerReady,
       isDirectory: () => true,
     });
     // Seed the legacy success cache before a same-name retained restart.
@@ -655,6 +664,7 @@ describe('ProvisionerImpl (#174)', () => {
       wakeStartedAt: null,
     });
     order.length = 0;
+    onRunnerReady.mockClear();
     const wake = provisioner.ensureProjectSandboxAwake(id);
     try {
       await Promise.race([
@@ -663,13 +673,17 @@ describe('ProvisionerImpl (#174)', () => {
           throw new Error('wake admitted turns without cleanup');
         }),
       ]);
-      expect(order).toEqual(['stack-start', 'cleanup']);
+      expect(order).toContain('runner-ready');
+      expect(order.indexOf('stack-start')).toBeLessThan(order.indexOf('reachable'));
+      expect(order.indexOf('reachable')).toBeLessThan(order.indexOf('runner-ready'));
+      expect(order).toContain('cleanup');
       expect((await ctx.store.getProject(id))?.state).toBe('waking');
     } finally {
       finishCleanup();
     }
     const active = await wake;
     expect(active.state).toBe('active');
+    expect(onRunnerReady).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ id }));
     expect(beforeRunnerAdmission).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ id }));
     // A success from before sleep must not suppress reconciliation of this start.
     const commands = containerCommand.mock.calls.length;
@@ -2994,6 +3008,10 @@ describe('ProvisionerImpl (#174)', () => {
     const { runner: git } = fakeGit([{ match: /\bclone\b/ }, { match: /remote set-url/ }]);
     const { client: docker, calls: dockerCalls } = fakeDocker({ createdContainerId: 'cid-1' });
     const prepareRunnerRuntime = vi.fn();
+    const supervisorReachable = vi.fn(async () => undefined);
+    const onRunnerReady = vi.fn(async () => {
+      await new Promise<void>(() => undefined);
+    });
     const containerCommand = vi.fn<ContainerCommandRunner>(async () => ({
       stdout: '',
       stderr: '',
@@ -3013,11 +3031,17 @@ describe('ProvisionerImpl (#174)', () => {
       dockerHostForBuild: 'unix:///var/run/docker.sock',
       prepareRunnerRuntime,
       containerCommand,
+      supervisorReachable,
+      onRunnerReady,
       isDirectory: (path) => path === `/srv/verity/runners/${id}`,
     });
 
     const result = await provisioner.provision(id);
     expect(result.state).toBe('active');
+    expect(onRunnerReady).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ id }));
+    expect(supervisorReachable.mock.invocationCallOrder[0]).toBeLessThan(
+      onRunnerReady.mock.invocationCallOrder[0]!,
+    );
     expect(prepareRunnerRuntime).toHaveBeenCalledWith(`/srv/verity/runners/${id}`, {
       uid: 1101,
       gid: 1101,
@@ -3063,6 +3087,7 @@ describe('ProvisionerImpl (#174)', () => {
     );
     await provisioner.reconcileRunnerSupervisors([result]);
     expect(containerCommand).toHaveBeenCalledTimes(2);
+    expect(onRunnerReady).toHaveBeenCalledOnce();
     expect(containerCommand).toHaveBeenLastCalledWith(
       expect.objectContaining({ timeoutMs: 12_000 }),
     );
@@ -3075,6 +3100,48 @@ describe('ProvisionerImpl (#174)', () => {
     } finally {
       clock.mockRestore();
     }
+  });
+
+  it('notifies runner readiness once per generation and again after an actual repair', async () => {
+    const id = await seedProject('active');
+    const project = (await ctx.store.getProject(id))!;
+    const { client: docker } = fakeDocker();
+    let healthy = true;
+    const containerCommand = vi.fn<ContainerCommandRunner>(async () => {
+      healthy = true;
+      return { stdout: '', stderr: '' };
+    });
+    const onRunnerReady = vi.fn(async () => undefined);
+    const supervisorReachable = vi.fn(async () => undefined);
+    const provisioner = createProvisioner({
+      store: ctx.store,
+      db: ctx.db,
+      docker,
+      projectTokenMint: async () => undefined,
+      defaultImageRef: 'sandbox:test',
+      hostCloneRoot: '/work',
+      dataVolumeRoot: '/srv',
+      runnerSupervisor: true,
+      dockerHostForBuild: 'unix:///var/run/docker.sock',
+      supervisorStackHealth: async () => healthy,
+      containerCommand,
+      onRunnerReady,
+      supervisorReachable,
+      isDirectory: () => true,
+    });
+    await provisioner.reconcileRunnerSupervisors([project]);
+    await provisioner.reconcileRunnerSupervisors([project]);
+    expect(onRunnerReady).toHaveBeenCalledOnce();
+    expect(containerCommand).not.toHaveBeenCalled();
+    healthy = false;
+    await provisioner.reconcileRunnerSupervisors([project]);
+    expect(onRunnerReady).toHaveBeenCalledTimes(2);
+    expect(supervisorReachable).toHaveBeenCalledOnce();
+    await provisioner.reconcileRunnerSupervisors([project]);
+    expect(onRunnerReady).toHaveBeenCalledTimes(2);
+    await provisioner.reconcileRunnerSupervisors([{ ...project, containerName: 'replacement' }]);
+    expect(onRunnerReady).toHaveBeenCalledTimes(3);
+    expect(containerCommand).toHaveBeenCalledOnce();
   });
 
   it('uses stack health without Docker execs even after the legacy refresh interval', async () => {

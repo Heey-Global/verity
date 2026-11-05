@@ -164,6 +164,7 @@ export function createTurnStarter(
     pending: Promise<Record<string, unknown>>;
   };
   cancel(turnId: string): Promise<Record<string, unknown>>;
+  workerStatus(turnId: string): 'live' | 'uncertain';
   runTrustedCli(
     request: Record<string, unknown>,
     onSpawned?: () => void,
@@ -181,6 +182,7 @@ export function handleSupervisorRequest(
       accepted: true;
       pending: Promise<Record<string, unknown>>;
     };
+    workerStatus?(turnId: string): 'live' | 'uncertain';
     runTrustedCli?(
       request: Record<string, unknown>,
       onSpawned?: () => void,

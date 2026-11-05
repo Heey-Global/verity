@@ -119,91 +119,165 @@ export function createSessionCleanupProcessor(options: {
     reason: 'retry' | 'unsafe',
     error?: unknown,
   ) => void;
+  refreshBindings?: (sessionId: string) => Promise<PendingSessionCleanup['bindings']>;
   now?: () => number;
   stopped?: () => boolean;
-}): { run: (readyProjectId?: string) => Promise<void> } {
-  let tail = Promise.resolve();
+}): {
+  run: (readyProjectId?: string) => Promise<void>;
+  runSession: (sessionId: string, captured?: PendingSessionCleanup) => Promise<void>;
+} {
+  const tails = new Map<string, Promise<void>>();
   const now = options.now ?? Date.now;
-  const scan = async (readyProjectId?: string): Promise<void> => {
-    for (const record of await pendingSessionCleanups(options.root)) {
-      if (options.stopped?.()) return;
-      if (await options.sessionExists(record.sessionId)) continue;
-      if (readyProjectId !== undefined && !record.runnerProjectIds.includes(readyProjectId))
-        continue;
-      const previous = JSON.stringify(record);
-      const progress = (record.progress ??= {});
-      let admissionFailure: Error | undefined;
-      for (const projectId of record.runnerProjectIds) {
-        if (readyProjectId !== undefined && readyProjectId !== projectId) continue;
-        const step = Object.hasOwn(progress, projectId)
-          ? progress[projectId]!
-          : (progress[projectId] = {});
-        if (step.homeDeleted && step.artifactsDeleted) continue;
-        const state = await options.runtimeState(projectId);
-        if (state === 'absent') {
-          step.homeDeleted = true;
-          step.artifactsDeleted = true;
-          continue;
-        }
-        const admission = projectId === readyProjectId;
-        if (!admission && (step.parked || (step.retryAt ?? 0) > now())) continue;
-        if (!admission && state !== 'ready') continue;
-        let retry = false;
-        let error: unknown;
-        if (!step.homeDeleted && (admission || state === 'ready')) {
-          try {
-            await options.deleteHome(projectId, record);
-            step.homeDeleted = true;
-          } catch (cause) {
-            retry = true;
-            error = cause;
-            if (admission)
-              admissionFailure =
-                cause instanceof Error
-                  ? cause
-                  : new Error('Pending session home cleanup failed', { cause });
-          }
-        }
-        // The broker must fence late writers before any independent artifact purge.
-        if (!step.artifactsDeleted && !step.parked && step.homeDeleted) {
-          try {
-            const result = await options.purgeArtifacts(projectId, record);
-            if (result === 'clean') step.artifactsDeleted = true;
-            else if (result === 'unsafe') {
-              step.parked = 'unsafe-artifact-path';
-              options.report(projectId, record, 'unsafe');
-            } else retry = true;
-          } catch (cause) {
-            retry = true;
-            error = cause;
-          }
-        }
-        if (retry) {
-          step.failures = Math.min(32, (step.failures ?? 0) + 1);
-          step.retryAt = now() + Math.min(1_800_000, 30_000 * 2 ** Math.min(step.failures - 1, 6));
-          // A durable first-error report avoids repeating the same warning after restarts.
-          if (step.failures === 1) options.report(projectId, record, 'retry', error);
-        } else {
-          step.failures = 0;
+  const processRecord = async (
+    record: PendingSessionCleanup,
+    readyProjectId?: string,
+  ): Promise<void> => {
+    if (options.stopped?.() || (await options.sessionExists(record.sessionId))) return;
+    // The session's absence proves the cascade-time snapshot committed. Read it
+    // here, not before the existence check, so a concurrent delete cannot race it.
+    const retained = await options.refreshBindings?.(record.sessionId);
+    if (retained) {
+      const bindings = [
+        ...new Map(
+          [...record.bindings, ...retained].map((binding) => [
+            JSON.stringify([binding.backend, binding.backendSessionId]),
+            binding,
+          ]),
+        ).values(),
+      ];
+      if (bindings.length > record.bindings.length) {
+        record.bindings = bindings;
+        for (const step of Object.values(record.progress ?? {})) {
+          step.artifactsDeleted = false;
           step.retryAt = 0;
         }
+        await queueSessionCleanup(options.root, record);
       }
-      if (
-        record.runnerProjectIds.every(
-          (id) => progress[id]?.homeDeleted && progress[id]?.artifactsDeleted,
-        )
+    }
+    const previous = JSON.stringify(record);
+    const progress = (record.progress ??= {});
+    let admissionFailure: Error | undefined;
+    for (const projectId of record.runnerProjectIds) {
+      if (readyProjectId !== undefined && readyProjectId !== projectId) continue;
+      const step = Object.hasOwn(progress, projectId)
+        ? progress[projectId]!
+        : (progress[projectId] = {});
+      if (step.homeDeleted && step.artifactsDeleted) continue;
+      const state = await options.runtimeState(projectId);
+      if (state === 'absent') {
+        step.homeDeleted = true;
+        step.artifactsDeleted = true;
+        continue;
+      }
+      const admission = projectId === readyProjectId;
+      if (!admission && (step.parked || (step.retryAt ?? 0) > now())) continue;
+      if (!admission && state !== 'ready') continue;
+      let retry = false;
+      let error: unknown;
+      if (!step.homeDeleted && (admission || state === 'ready')) {
+        try {
+          await options.deleteHome(projectId, record);
+          step.homeDeleted = true;
+        } catch (cause) {
+          retry = true;
+          error = cause;
+          if (admission)
+            admissionFailure =
+              cause instanceof Error
+                ? cause
+                : new Error('Pending session home cleanup failed', { cause });
+        }
+      }
+      // The broker must fence late writers before any independent artifact purge.
+      if (!step.artifactsDeleted && !step.parked && step.homeDeleted) {
+        try {
+          const result = await options.purgeArtifacts(projectId, record);
+          if (result === 'clean') step.artifactsDeleted = true;
+          else if (result === 'unsafe') {
+            step.parked = 'unsafe-artifact-path';
+            options.report(projectId, record, 'unsafe');
+          } else retry = true;
+        } catch (cause) {
+          retry = true;
+          error = cause;
+        }
+      }
+      if (retry) {
+        step.failures = Math.min(32, (step.failures ?? 0) + 1);
+        step.retryAt = now() + Math.min(1_800_000, 30_000 * 2 ** Math.min(step.failures - 1, 6));
+        // A durable first-error report avoids repeating the same warning after restarts.
+        if (step.failures === 1) options.report(projectId, record, 'retry', error);
+      } else {
+        step.failures = 0;
+        step.retryAt = 0;
+      }
+    }
+    if (
+      record.runnerProjectIds.every(
+        (id) => progress[id]?.homeDeleted && progress[id]?.artifactsDeleted,
       )
-        await finishSessionCleanup(options.root, record.sessionId);
-      else if (JSON.stringify(record) !== previous) await queueSessionCleanup(options.root, record);
-      if (admissionFailure !== undefined) throw admissionFailure;
+    )
+      await finishSessionCleanup(options.root, record.sessionId);
+    else if (JSON.stringify(record) !== previous) await queueSessionCleanup(options.root, record);
+    if (admissionFailure !== undefined) throw admissionFailure;
+  };
+  const scan = async (
+    readyProjectId?: string,
+    sessionId?: string,
+    captured?: PendingSessionCleanup,
+  ): Promise<void> => {
+    const records = await pendingSessionCleanups(options.root);
+    if (captured && !records.some((record) => record.sessionId === captured.sessionId))
+      records.push(captured);
+    for (const pending of records) {
+      if (sessionId !== undefined && pending.sessionId !== sessionId) continue;
+      if (readyProjectId !== undefined && !pending.runnerProjectIds.includes(readyProjectId))
+        continue;
+      const previous = tails.get(pending.sessionId) ?? Promise.resolve();
+      const operation = previous
+        .catch(() => undefined)
+        .then(async () => {
+          // Re-read under this session's ownership; another scan may have completed it.
+          const saved = (await pendingSessionCleanups(options.root)).find(
+            (record) => record.sessionId === pending.sessionId,
+          );
+          const current = saved ?? captured;
+          if (!current) return;
+          if (captured) {
+            const bindings = [
+              ...new Map(
+                [...current.bindings, ...captured.bindings].map((binding) => [
+                  JSON.stringify([binding.backend, binding.backendSessionId]),
+                  binding,
+                ]),
+              ).values(),
+            ];
+            const added = bindings.length > current.bindings.length;
+            current.bindings = bindings;
+            current.runnerProjectIds = [
+              ...new Set([...current.runnerProjectIds, ...captured.runnerProjectIds]),
+            ];
+            if (added)
+              for (const step of Object.values(current.progress ?? {})) {
+                step.artifactsDeleted = false;
+                step.retryAt = 0;
+              }
+            // Recreate an earlier job that already finished before final capture.
+            if (!saved || added) await queueSessionCleanup(options.root, current);
+          }
+          await processRecord(current, readyProjectId);
+        });
+      tails.set(pending.sessionId, operation);
+      try {
+        await operation;
+      } finally {
+        if (tails.get(pending.sessionId) === operation) tails.delete(pending.sessionId);
+      }
     }
   };
   return {
-    run: (readyProjectId) => {
-      const operation = tail.then(() => scan(readyProjectId));
-      tail = operation.catch(() => undefined);
-      return operation;
-    },
+    run: (projectId) => scan(projectId),
+    runSession: (id, captured) => scan(undefined, id, captured),
   };
 }
 

@@ -15,6 +15,7 @@ it('forwards the managed server manager to app and agent routes', async () => {
       liveMeetings: { unfinishedResults: async () => [] },
       getSession: async () => ({ projectId: 'p1' }),
       listMovePreviewRestarts: async () => [],
+      listPendingSessionDeletions: async () => [],
     } as unknown as ControlPlaneDeps['eventStore'],
     bus: new InMemoryEventBus(),
     managedDevServerManager: { view } as unknown as NonNullable<

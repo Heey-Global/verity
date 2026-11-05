@@ -770,6 +770,8 @@ export interface ProvisionerOptions {
   docker: DockerClient;
   /** Runs after a project container has started, before provisioning succeeds. */
   onContainerStarted?: ((project: ProjectRecord) => Promise<void>) | undefined;
+  /** Advisory notification after Runner readiness; never awaited under a lifecycle fence. */
+  onRunnerReady?: ((project: ProjectRecord) => Promise<void>) | undefined;
   /** Runs with lifecycle admission fenced, after the Runner stack is ready. */
   beforeRunnerAdmission?: ((project: ProjectRecord) => Promise<void>) | undefined;
   /** Data-minimised lifecycle observer. It must never affect a transition. */
@@ -2602,6 +2604,10 @@ export class ProvisionerImpl implements Provisioner {
     string,
     { containerName: string; generation: number | undefined; at: number }
   >();
+  private readonly runnerReadyNotifications = new Map<
+    string,
+    { containerName: string; generation: number | undefined }
+  >();
   private readonly supervisorRetry = new Map<
     string,
     {
@@ -2867,6 +2873,30 @@ export class ProvisionerImpl implements Provisioner {
     await this.classifyProjectSandbox(project);
   }
 
+  private notifyRunnerReady(project: ProjectRecord, repaired = false): void {
+    if (this.opts.onRunnerReady === undefined) return;
+    const generation = this.sandboxReplacementGenerations.get(project.id);
+    const last = this.runnerReadyNotifications.get(project.id);
+    if (
+      !repaired &&
+      last?.containerName === project.containerName &&
+      last.generation === generation
+    )
+      return;
+    const notification = { containerName: project.containerName, generation };
+    this.runnerReadyNotifications.set(project.id, notification);
+    // Recovery may resolve a backend through this very provisioner. Awaiting that
+    // work here would deadlock on the lifecycle operation currently making it ready.
+    void Promise.resolve()
+      .then(() => this.opts.onRunnerReady?.(project))
+      .catch(() => {
+        // The observer owns error reporting. Leave its notification retryable without
+        // turning an otherwise healthy Sandbox transition into a provisioning failure.
+        if (this.runnerReadyNotifications.get(project.id) === notification)
+          this.runnerReadyNotifications.delete(project.id);
+      });
+  }
+
   async reconcileRunnerSupervisors(projects: readonly ProjectRecord[]): Promise<void> {
     const runtimeRoot = this.opts.dataVolumeRoot;
     const supervisorEnabled = this.opts.runnerSupervisor === true && runtimeRoot !== undefined;
@@ -2886,6 +2916,9 @@ export class ProvisionerImpl implements Provisioner {
     }
     for (const id of this.supervisorHealthy.keys()) {
       if (!activeIds.has(id)) this.supervisorHealthy.delete(id);
+    }
+    for (const id of this.runnerReadyNotifications.keys()) {
+      if (!activeIds.has(id)) this.runnerReadyNotifications.delete(id);
     }
     const outcomes = await Promise.all(
       projects
@@ -2940,6 +2973,7 @@ export class ProvisionerImpl implements Provisioner {
                     (health === undefined && retained && Date.now() - last.at < 60_000)
                   ) {
                     this.supervisorRetry.delete(project.id);
+                    if (hasRunnerRuntime) this.notifyRunnerReady(project);
                     return undefined;
                   }
                   await this.containerCommand({
@@ -2962,7 +2996,10 @@ export class ProvisionerImpl implements Provisioner {
                     )) === false
                   )
                     throw new Error('Runner stack remains unhealthy after repair');
+                  if (runtime !== undefined)
+                    await (this.opts.supervisorReachable ?? serverCanReachSupervisor)(runtime);
                   if (this.supervisorReconciliations.get(project.id) === entry) {
+                    if (hasRunnerRuntime) this.notifyRunnerReady(project, health === false);
                     this.supervisorRetry.delete(project.id);
                     this.supervisorHealthy.set(project.id, {
                       containerName: project.containerName,
@@ -3819,6 +3856,7 @@ export class ProvisionerImpl implements Provisioner {
             const running = await this.opts.docker.inspectContainer(project.containerName);
             if (!running.running) throw new Error('Docker did not report the Sandbox as running');
             this.supervisorHealthy.delete(project.id);
+            this.runnerReadyNotifications.delete(project.id);
             await this.opts.onContainerStarted?.(project);
 
             const runnerRuntimePath =
@@ -3846,6 +3884,10 @@ export class ProvisionerImpl implements Provisioner {
                     ? 'verity-runner-stack-start'
                     : 'verity-egress-connector-start --standalone',
               });
+            }
+            if (runnerRuntimePath !== undefined) {
+              await (this.opts.supervisorReachable ?? serverCanReachSupervisor)(runnerRuntimePath);
+              this.notifyRunnerReady(project);
             }
             await this.opts.beforeRunnerAdmission?.(project);
             return (await this.opts.store.updateProjectSleepState(project.id, 'active', {
@@ -6638,6 +6680,7 @@ export class ProvisionerImpl implements Provisioner {
     }
     try {
       this.supervisorHealthy.delete(project.id);
+      this.runnerReadyNotifications.delete(project.id);
       await this.opts.onContainerStarted?.(project);
     } catch (cause) {
       const message = `post-start projection failed: ${failureMessage(cause)}`;
@@ -6692,6 +6735,7 @@ export class ProvisionerImpl implements Provisioner {
         });
         if (runnerRuntimePath !== undefined) {
           await (this.opts.supervisorReachable ?? serverCanReachSupervisor)(runnerRuntimePath);
+          this.notifyRunnerReady(project);
         }
       } catch (cause) {
         const component =
