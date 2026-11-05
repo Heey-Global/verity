@@ -295,6 +295,20 @@ describe('POST /sessions/:id/mockups', () => {
     expect(queued[0]?.prompt).toBe(MOCKUPS_APPROVED_PROMPT);
   });
 
+  it('revokes the previous review when planning restarts', async () => {
+    await present();
+    expect(await store.startSessionPlanning('s1')).toBe(true);
+    const response = await post({
+      action: 'decide',
+      revision: 1,
+      screen: 'Home',
+      verdict: 'approved',
+    });
+    expect(response.statusCode).toBe(409);
+    expect(dispatchTurn).not.toHaveBeenCalled();
+    expect((await store.getSession('s1'))?.mockupReview).toBeUndefined();
+  });
+
   it('puts the round back when the continuation turn is refused', async () => {
     dispatchTurn.mockResolvedValue({ queued: false, accepted: false });
     await present();

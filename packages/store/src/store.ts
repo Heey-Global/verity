@@ -3366,6 +3366,10 @@ export class EventStore implements EventSink {
       .updateTable('sessions')
       .set({
         planning: 'active',
+        // A new plan revokes reviews belonging to the previous accepted work.
+        mockup_review: null,
+        mockup_screens: '[]',
+        mockup_revision: sql`mockup_revision + 1`,
         planning_plan: null,
         planning_revision: sql`planning_revision + 1`,
       })
