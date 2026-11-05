@@ -1,3 +1,9 @@
+import {
+  egressDestinationDb,
+  withEgressDestinationTransaction,
+  type EgressDestinationMutation,
+  unguardedEgressDestinationMutation,
+} from './egress-destination-mutation.js';
 import { UserContextStore } from './user-context.js';
 import { ViewStateStore } from './view-state.js';
 import { AssistantStore } from './assistant.js';
@@ -1249,6 +1255,51 @@ const ABANDONED_TURN_FENCE_INSTANCE = 'verity:abandoned-turn-fence';
  * hand out — an event that violates the schema.
  */
 export class EventStore implements EventSink {
+  private egressDestinationMutation: EgressDestinationMutation = unguardedEgressDestinationMutation;
+
+  /** Installed before request handlers; every destination store shares this barrier. */
+  setEgressDestinationMutation(barrier: EgressDestinationMutation): void {
+    this.egressDestinationMutation = barrier;
+  }
+
+  /** Plain endpoint metadata only; usable while credentials are sealed. */
+  async readEgressDestinationUrls(): Promise<string[]> {
+    const [settings, mcp, forge, matrix, accounts] = await Promise.all([
+      this.db
+        .selectFrom('verity_settings')
+        .select(['opencode_base_url', 'transcribe_base_url'])
+        .where('id', '=', 'global')
+        .executeTakeFirst(),
+      this.db
+        .selectFrom('http_mcp_connections')
+        .select(['url', 'oauth_authorization_endpoint', 'oauth_token_endpoint'])
+        .execute(),
+      this.db.selectFrom('forge_connections').select('base_url').execute(),
+      this.db.selectFrom('matrix_connector_config').select('endpoint').execute(),
+      this.db.selectFrom('integration_accounts').select('endpoint').execute(),
+    ]);
+    return [
+      settings?.opencode_base_url,
+      settings?.transcribe_base_url,
+      ...mcp.flatMap((row) => [
+        row.url,
+        row.oauth_authorization_endpoint,
+        row.oauth_token_endpoint,
+      ]),
+      ...forge.map((row) => row.base_url),
+      ...matrix.map((row) => row.endpoint),
+      ...accounts.map((row) => row.endpoint),
+    ].filter((url): url is string => typeof url === 'string' && url.trim().length > 0);
+  }
+
+  private get db(): Kysely<Database> {
+    return egressDestinationDb(this.rootDb);
+  }
+
+  withEgressDestinationTransaction<T>(action: () => Promise<T>): Promise<T> {
+    return withEgressDestinationTransaction(this.rootDb, action);
+  }
+
   private readonly backupRevocationListeners = new Set<() => Promise<void>>();
 
   /** Wake destination synchronization after commit; the DB outbox remains the durable authority. */
@@ -1427,14 +1478,17 @@ export class EventStore implements EventSink {
    *   {@link SecretCipher} whose key is derived from the master password.
    */
   constructor(
-    private readonly db: Kysely<Database>,
+    private readonly rootDb: Kysely<Database>,
     private readonly cipher: SecretCipher = createPassthroughCipher(),
   ) {
+    const db = rootDb;
     this.userContext = new UserContextStore(db);
     this.viewState = new ViewStateStore(db);
     this.projectEgress = new ProjectEgressStore(db);
     this.knowledge = new KnowledgeStore(db);
-    this.integrations = new IntegrationStore(db, cipher);
+    this.integrations = new IntegrationStore(db, cipher, (action) =>
+      this.egressDestinationMutation(action),
+    );
     this.liveMeetings = new LiveMeetingStore(db, cipher);
     this.managedDevServers = new ManagedDevServerStore(db);
     this.vulnerabilityScans = new VulnerabilityScanStore(db);
@@ -2077,7 +2131,9 @@ export class EventStore implements EventSink {
   }
 
   get forgeConnections(): ForgeConnectionStore {
-    return new ForgeConnectionStore(this.db, this.cipher);
+    return new ForgeConnectionStore(this.db, this.cipher, (action) =>
+      this.egressDestinationMutation(action),
+    );
   }
 
   get googleAccounts(): GoogleAccountStore {
@@ -7286,6 +7342,16 @@ export class EventStore implements EventSink {
   }
 
   async updateVeritySettings(patch: VeritySettingsPatch): Promise<VeritySettingsRecord> {
+    if (patch.opencodeBaseUrl !== undefined || patch.transcribeBaseUrl !== undefined)
+      return this.egressDestinationMutation(() =>
+        this.updateVeritySettingsWithoutInventoryBarrier(patch),
+      );
+    return this.updateVeritySettingsWithoutInventoryBarrier(patch);
+  }
+
+  private async updateVeritySettingsWithoutInventoryBarrier(
+    patch: VeritySettingsPatch,
+  ): Promise<VeritySettingsRecord> {
     const values = {
       id: 'global',
       advanced_mode_enabled: patch.advancedModeEnabled ?? false,
@@ -8855,28 +8921,12 @@ export class EventStore implements EventSink {
   }
 
   async upsertHttpMcpConnection(record: HttpMcpConnectionRecord): Promise<void> {
-    await this.db
-      .insertInto('http_mcp_connections')
-      .values({
-        id: record.id,
-        ...(record.ownerUserId === undefined ? {} : { owner_user_id: record.ownerUserId }),
-        name: record.name,
-        url: record.url,
-        authorization: this.encryptSecret(record.authorization),
-        auth_type: record.authType ?? (record.authorization === null ? 'none' : 'static'),
-        oauth_client_id: record.oauthClientId ?? null,
-        oauth_token_auth_method: record.oauthTokenAuthMethod ?? 'client_secret_post',
-        oauth_client_secret: this.encryptSecret(record.oauthClientSecret ?? null),
-        oauth_authorization_endpoint: record.oauthAuthorizationEndpoint ?? null,
-        oauth_token_endpoint: record.oauthTokenEndpoint ?? null,
-        oauth_scopes: record.oauthScopes ?? null,
-        oauth_access_token: this.encryptSecret(record.oauthAccessToken ?? null),
-        oauth_refresh_token: this.encryptSecret(record.oauthRefreshToken ?? null),
-        oauth_expires_at: record.oauthExpiresAt?.toISOString() ?? null,
-        enabled: record.enabled,
-      })
-      .onConflict((conflict) =>
-        conflict.column('id').doUpdateSet({
+    return this.egressDestinationMutation(async () => {
+      await this.db
+        .insertInto('http_mcp_connections')
+        .values({
+          id: record.id,
+          ...(record.ownerUserId === undefined ? {} : { owner_user_id: record.ownerUserId }),
           name: record.name,
           url: record.url,
           authorization: this.encryptSecret(record.authorization),
@@ -8891,9 +8941,27 @@ export class EventStore implements EventSink {
           oauth_refresh_token: this.encryptSecret(record.oauthRefreshToken ?? null),
           oauth_expires_at: record.oauthExpiresAt?.toISOString() ?? null,
           enabled: record.enabled,
-        }),
-      )
-      .execute();
+        })
+        .onConflict((conflict) =>
+          conflict.column('id').doUpdateSet({
+            name: record.name,
+            url: record.url,
+            authorization: this.encryptSecret(record.authorization),
+            auth_type: record.authType ?? (record.authorization === null ? 'none' : 'static'),
+            oauth_client_id: record.oauthClientId ?? null,
+            oauth_token_auth_method: record.oauthTokenAuthMethod ?? 'client_secret_post',
+            oauth_client_secret: this.encryptSecret(record.oauthClientSecret ?? null),
+            oauth_authorization_endpoint: record.oauthAuthorizationEndpoint ?? null,
+            oauth_token_endpoint: record.oauthTokenEndpoint ?? null,
+            oauth_scopes: record.oauthScopes ?? null,
+            oauth_access_token: this.encryptSecret(record.oauthAccessToken ?? null),
+            oauth_refresh_token: this.encryptSecret(record.oauthRefreshToken ?? null),
+            oauth_expires_at: record.oauthExpiresAt?.toISOString() ?? null,
+            enabled: record.enabled,
+          }),
+        )
+        .execute();
+    });
   }
 
   async listHttpMcpConnections(ownerUserId?: string): Promise<HttpMcpConnectionRecord[]> {
@@ -8945,11 +9013,13 @@ export class EventStore implements EventSink {
   }
 
   async deleteHttpMcpConnection(id: string): Promise<boolean> {
-    const result = await this.db
-      .deleteFrom('http_mcp_connections')
-      .where('id', '=', id)
-      .executeTakeFirst();
-    return (result.numDeletedRows ?? 0n) > 0n;
+    return this.egressDestinationMutation(async () => {
+      const result = await this.db
+        .deleteFrom('http_mcp_connections')
+        .where('id', '=', id)
+        .executeTakeFirst();
+      return (result.numDeletedRows ?? 0n) > 0n;
+    });
   }
 
   async upsertProjectMcpBinding(binding: ProjectMcpBindingRecord): Promise<void> {

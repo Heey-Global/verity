@@ -1,3 +1,4 @@
+import { createProjectEgressInventoryContractReader } from './project-egress-inventory-contract.js';
 import { runnerCacheTargetFromEnv } from './runner-cache-storage.js';
 import { parseOomScoreAdj } from './sandbox-memory-policy.js';
 import {
@@ -932,6 +933,7 @@ async function main(): Promise<void> {
       projectEgressProvisioningPending:
         managedDeployment && !process.env.VERITY_PROJECT_EGRESS_SOCKET?.trim(),
       projectEgressKeyPath: process.env.VERITY_PROJECT_EGRESS_KEY_PATH?.trim() || undefined,
+      projectEgressInventoryRequired: createProjectEgressInventoryContractReader(),
       agentGatewayUrl: process.env.VERITY_AGENT_GATEWAY_URL?.trim() || undefined,
       agentGatewayClaudePort: parsePort(process.env.VERITY_AGENT_GATEWAY_CLAUDE_PORT, 9443),
       // Every project relay has a fixed Claude upstream, and every Claude project

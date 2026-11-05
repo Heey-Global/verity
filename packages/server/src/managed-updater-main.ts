@@ -1,3 +1,4 @@
+import { reconcileInstalledProjectEgressHost } from './self-update/project-egress-provisioning.js';
 import { hostRuntimePreparationReady } from './self-update/host-runtimes.js';
 import { lstat, readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -159,6 +160,19 @@ export async function startManagedUpdaterMain(): Promise<void> {
   });
   // Connector failures must not keep the update control socket offline.
   scheduleMatrixReconcile();
+  // A successor can complete the predecessor's pending Staging provisioning
+  // only from the installed sealed deployment and durable channel authority.
+  void runner
+    .enqueueExclusive(async () => {
+      const result = await reconcileInstalledProjectEgressHost({
+        managedRoot: MANAGED_DEPLOYMENT_ROOT,
+        docker,
+      });
+      console.log(`[self-update] Staging network preparation: ${result}`);
+    })
+    .catch(() => {
+      console.error('Installed Staging network preparation remains pending');
+    });
   // Open the control boundary first: the repair uses the normal standby and
   // quiesce exchange. It never recreates a live Server outside that lifecycle.
   void runner

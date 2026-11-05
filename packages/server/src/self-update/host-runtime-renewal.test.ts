@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { ContainerInspect, ContainerSpec } from '../docker.js';
 import {
+  runHostRenewalJob,
   renewHostRuntimeService,
   parseRuntimeServiceRequirements,
 } from './host-runtime-renewal.js';
@@ -335,5 +336,18 @@ describe('authenticated runtime service renewal', () => {
       { revision: 1, renewalProtocol: 1, features: [], extra: true },
     ])
       expect(parseRuntimeServiceRequirements(value)).toBeNull();
+  });
+});
+
+it('waits beyond the owned installer timeout when adopting a long-running job', async () => {
+  const h = fixture();
+  await h.run();
+  const spec = h.docker.createContainer.mock.calls.find(
+    ([value]) => value.labels?.['verity.renewal-stage'] === 'install',
+  )![0];
+  const entrypoint = ['timeout', '--kill-after=5s', '750s', 'bash'];
+  await runHostRenewalJob(h.docker, { ...spec, name: 'long-install', entrypoint });
+  expect(h.docker.waitContainer).toHaveBeenLastCalledWith(expect.any(String), {
+    timeoutMs: Number.parseInt(entrypoint[2]!, 10) * 1000 + 30_000,
   });
 });

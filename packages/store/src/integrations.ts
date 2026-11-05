@@ -1,3 +1,8 @@
+import {
+  egressDestinationDb,
+  type EgressDestinationMutation,
+  unguardedEgressDestinationMutation,
+} from './egress-destination-mutation.js';
 import type { Kysely } from 'kysely';
 import { MatrixOutboundStore } from './matrix-outbound.js';
 import type { Database } from './schema.js';
@@ -70,10 +75,15 @@ export interface IntegrationEvent {
 
 export class IntegrationStore {
   constructor(
-    private readonly db: Kysely<Database>,
+    private readonly rootDb: Kysely<Database>,
     private readonly cipher: SecretCipher = createPassthroughCipher(),
+    private readonly egressDestinationMutation: EgressDestinationMutation = unguardedEgressDestinationMutation,
   ) {
-    this.outbound = new MatrixOutboundStore(db, cipher);
+    this.outbound = new MatrixOutboundStore(rootDb, cipher);
+  }
+
+  private get db(): Kysely<Database> {
+    return egressDestinationDb(this.rootDb);
   }
 
   readonly outbound: MatrixOutboundStore;
@@ -127,27 +137,29 @@ export class IntegrationStore {
     username: string;
     password: string;
   }): Promise<void> {
-    const previous = await this.matrixConfigSummary();
-    if (
-      previous &&
-      (previous.endpoint !== input.endpoint || previous.username !== input.username)
-    ) {
-      throw new Error(
-        'Changing the Matrix account requires resetting its device and room bindings',
-      );
-    }
-    await this.db
-      .insertInto('matrix_connector_config')
-      .values({
-        id: 'matrix',
-        endpoint: input.endpoint,
-        username: input.username,
-        password_secret: this.cipher.encrypt(input.password),
-      })
-      .onConflict((c) =>
-        c.column('id').doUpdateSet({ password_secret: this.cipher.encrypt(input.password) }),
-      )
-      .execute();
+    return this.egressDestinationMutation(async () => {
+      const previous = await this.matrixConfigSummary();
+      if (
+        previous &&
+        (previous.endpoint !== input.endpoint || previous.username !== input.username)
+      ) {
+        throw new Error(
+          'Changing the Matrix account requires resetting its device and room bindings',
+        );
+      }
+      await this.db
+        .insertInto('matrix_connector_config')
+        .values({
+          id: 'matrix',
+          endpoint: input.endpoint,
+          username: input.username,
+          password_secret: this.cipher.encrypt(input.password),
+        })
+        .onConflict((c) =>
+          c.column('id').doUpdateSet({ password_secret: this.cipher.encrypt(input.password) }),
+        )
+        .execute();
+    });
   }
 
   async upsertAccount(input: {
@@ -158,27 +170,29 @@ export class IntegrationStore {
     status: string;
     lastError?: string | null | undefined;
   }): Promise<void> {
-    await this.db
-      .insertInto('integration_accounts')
-      .values({
-        id: input.id,
-        provider: input.provider,
-        endpoint: input.endpoint,
-        display_name: input.displayName,
-        status: input.status,
-        last_error: input.lastError ?? null,
-        updated_at: new Date().toISOString(),
-      })
-      .onConflict((c) =>
-        c.column('id').doUpdateSet({
+    return this.egressDestinationMutation(async () => {
+      await this.db
+        .insertInto('integration_accounts')
+        .values({
+          id: input.id,
+          provider: input.provider,
           endpoint: input.endpoint,
           display_name: input.displayName,
           status: input.status,
           last_error: input.lastError ?? null,
           updated_at: new Date().toISOString(),
-        }),
-      )
-      .execute();
+        })
+        .onConflict((c) =>
+          c.column('id').doUpdateSet({
+            endpoint: input.endpoint,
+            display_name: input.displayName,
+            status: input.status,
+            last_error: input.lastError ?? null,
+            updated_at: new Date().toISOString(),
+          }),
+        )
+        .execute();
+    });
   }
 
   async replaceImportDiagnostics(

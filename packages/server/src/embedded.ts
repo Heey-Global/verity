@@ -1,3 +1,4 @@
+import { createProjectEgressInventorySynchronizer } from './project-egress-system-inventory.js';
 import { AGENT_SKILL_MANIFEST_HASH } from '@verity/events';
 import { resolveAgentContext } from './agent-context.js';
 import { createGitHubQAAnalysis } from './github-qa-analysis.js';
@@ -768,6 +769,7 @@ export interface EmbeddedServerConfig {
   projectEgressSocketPath?: string | undefined;
   projectEgressProvisioningPending?: boolean | undefined;
   projectEgressKeyPath?: string | undefined;
+  projectEgressInventoryRequired?: (() => boolean) | undefined;
   diagnosticServerContainerId?: string | undefined;
   hostDiagnosticSnapshotPath?: string | undefined;
   /** Enable fail-closed Docker/runsc readiness for the production Secret Job Executor path. */
@@ -1976,6 +1978,31 @@ export async function buildEmbeddedServer(
   // 503 until unlock.
   const secretCipher = createSealableSecretCipher();
   const eventStore = new EventStore(db, secretCipher);
+  const systemInventorySync =
+    config.projectEgressSocketPath && config.projectEgressKeyPath
+      ? createProjectEgressInventorySynchronizer({
+          enabled: config.projectEgressInventoryRequired ?? (() => false),
+          command: createProjectEgressHostClient({
+            socketPath: config.projectEgressSocketPath,
+            token: () => readFileSync(config.projectEgressKeyPath!, 'utf8').trim(),
+          }),
+          readUrls: () => eventStore.readEgressDestinationUrls(),
+          transaction: (action) => eventStore.withEgressDestinationTransaction(action),
+        })
+      : undefined;
+  if (systemInventorySync) eventStore.setEgressDestinationMutation(systemInventorySync.mutate);
+  // A controller restart starts incomplete; periodic re-synchronization repairs
+  // that state. Configuration writes always use the synchronous prechange barrier.
+  const synchronizeSystemInventory = () =>
+    systemInventorySync?.refresh().catch(() => {
+      console.warn('verity: system destination inventory synchronization unavailable');
+    });
+  await synchronizeSystemInventory();
+  const systemInventoryTimer = systemInventorySync
+    ? setInterval(() => void synchronizeSystemInventory(), 10_000)
+    : undefined;
+  systemInventoryTimer?.unref();
+
   if (config.controlPlaneRunner === true) {
     await ensureControlPlaneProject(eventStore);
   }
@@ -6287,6 +6314,7 @@ export async function buildEmbeddedServer(
   app.addHook('onClose', () => clearInterval(dockerExecDiagnosticTimer));
   app.addHook('onClose', () => listenerDiscovery?.close());
   app.addHook('onClose', () => projectEgress?.close());
+  app.addHook('onClose', () => clearInterval(systemInventoryTimer));
   if (!localPreviewManager) previewRecoveryReady = true;
   managedDevServerLog.current = (message, detail) => app.log.info(detail ?? {}, message);
   app.addHook('onClose', () => managedDevServerManager?.close());

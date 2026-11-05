@@ -96,7 +96,21 @@ export function createProjectEgressHostClient(options: {
               const result = projectEgressHostResponse.parse(
                 JSON.parse(Buffer.concat(chunks).toString('utf8')),
               );
-              if (command.operation === 'health') {
+              if (
+                command.operation === 'inventory-begin' ||
+                command.operation === 'inventory-commit' ||
+                command.operation === 'inventory-renew'
+              ) {
+                if (
+                  !('token' in result) ||
+                  result.state !==
+                    (command.operation === 'inventory-begin'
+                      ? 'inventory-denied'
+                      : 'inventory-ready') ||
+                  result.token !== command.token
+                )
+                  throw new Error('Mismatched inventory acknowledgement');
+              } else if (command.operation === 'health') {
                 if (result.state !== 'health') throw new Error('Mismatched host health');
               } else if (command.operation === 'current') {
                 if (
@@ -128,6 +142,9 @@ export function createProjectEgressHostClient(options: {
                   !expectedStates.includes(result.state) ||
                   result.state === 'current' ||
                   result.state === 'health' ||
+                  result.state === 'inventory-denied' ||
+                  result.state === 'inventory-ready' ||
+                  !('generation' in result) ||
                   result.generation !== generation
                 )
                   throw new Error('Mismatched host acknowledgement');

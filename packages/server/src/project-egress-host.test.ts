@@ -12,6 +12,7 @@ import {
   openProjectEgressHostStore,
   verifyEgressHostContainer,
   verifyEgressHostRuntime,
+  createEgressHostRuntimeRegistrationGuard,
   verifyEgressHostNetwork,
 } from './project-egress-host-runtime.js';
 import { listenProjectEgressHost } from './project-egress-host-control.js';
@@ -608,4 +609,52 @@ it('does not advertise health when read-only host compatibility checks fail', as
   expect(deps.save).not.toHaveBeenCalled();
   expect(deps.apply).not.toHaveBeenCalled();
   expect(deps.inspectNetwork).not.toHaveBeenCalled();
+});
+
+it('pins serving runtime registrations even when a replacement is otherwise supported', () => {
+  const runtimes = {
+    'runsc-project': {
+      path: '/opt/verity/runsc/release-20261101.0/runsc',
+      runtimeArgs: ['--host-uds=create', '--network=sandbox', '--platform=systrap'],
+    },
+    'runsc-relay': {
+      path: '/opt/verity/runsc/release-20261101.0/runsc',
+      runtimeArgs: ['--host-uds=open', '--network=sandbox', '--platform=systrap'],
+    },
+  };
+  const verify = createEgressHostRuntimeRegistrationGuard(runtimes);
+  verify(structuredClone(runtimes));
+  const changed = structuredClone(runtimes);
+  changed['runsc-relay'].path = '/opt/verity/runsc/release-20261102.0/runsc';
+  verifyEgressHostRuntime(changed, 'relay');
+  expect(() => verify(changed)).toThrow('registration changed');
+  changed['runsc-relay'] = structuredClone(runtimes['runsc-relay']);
+  changed['runsc-project'].runtimeArgs.reverse();
+  expect(() => verify(changed)).toThrow('registration changed');
+});
+
+it('secures a fresh Docker bind directory before reading the missing host registry', async () => {
+  const root = await mkdtemp('/tmp/egress-initial-bind-');
+  try {
+    await chmod(root, 0o755);
+    await expect(openProjectEgressHostStore(root)).rejects.toThrow('private');
+    const store = await openProjectEgressHostStore(root, { preparePrivate: true });
+    expect(await store.load()).toEqual({ version: 1, records: [] });
+    // The normal serving path now accepts the prepared directory without mutation.
+    await expect(openProjectEgressHostStore(root)).resolves.toBeDefined();
+    await chmod(root, 0o777);
+    await expect(openProjectEgressHostStore(root, { preparePrivate: true })).rejects.toThrow(
+      'writable',
+    );
+    await chmod(root, 0o700);
+    const link = root + '-link';
+    await symlink(root, link);
+    try {
+      await expect(openProjectEgressHostStore(link, { preparePrivate: true })).rejects.toThrow();
+    } finally {
+      await rm(link);
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });

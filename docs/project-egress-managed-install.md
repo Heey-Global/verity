@@ -67,8 +67,8 @@ timeouts and unsupported runtime/install failures have sanitized reason codes.
 No raw command output, database URL or control token is returned to the app.
 Disabling remains possible during a host-service outage.
 
-**Native production acceptance remains pending.** The accepted kernel-profile set
-is intentionally empty. Consequently staging and wiring alone do not make the
+**Native production acceptance remains pending.** The accepted native-profile set
+is intentionally empty. Consequently asset preparation and wiring alone do not make the
 switch available on a production host. Do not populate that set merely to pass
 preflight. Accept an exact kernel, Docker, gVisor and BPF artifact combination only
 after real host install/update/reboot/crash/daemon-restart/rollback tests, with
@@ -78,14 +78,39 @@ orchestration and error handling, not kernel isolation or uninterrupted host
 connectivity. Supported dependency provisioning and protected application routes
 must be verified on that same profile before declaring the switch ready.
 
-Managed direct authority also remains closed until deployment-specific broker,
-model and MCP hosts are synchronized from authoritative live server settings.
-The installer cannot infer encrypted connector configuration from environment
-variables. It marks that inventory incomplete; neither an empty host list nor
-an accepted kernel profile may silently turn it into direct-network authority.
-Automatic host package/runtime/bpffs provisioning also needs the accepted native
-profile's exact dependency contract. These are remaining production blockers,
-not manual setup steps delegated to the user.
+Managed direct authority starts closed. After native preflight, the installer
+persists a root-owned inventory contract before controller activation. Servers
+serialize endpoint mutations with synchronization, but require host fencing only
+once that contract exists. Unsupported staging and legacy manual authorities
+therefore retain configuration access. The contract survives rollback; a missing
+or unreadable contract after it was observed cannot disable synchronization in
+that Server process. The installer cannot infer configured
+broker/model/MCP destinations from deployment environment variables. The Server
+must synchronize bounded endpoint metadata through the authenticated control
+protocol before the host can report readiness. Configuration changes must fence
+existing direct corridors before persistence; unchanged snapshots renew a bounded
+lease without periodically interrupting traffic. Controller restart or stale
+synchronization closes readiness. Static installation destinations remain part
+of both hostname classification and protected-address resolution. Explicit IP
+endpoints are included too. Conservative hostname and observed public-IP history
+survives controller restart so cached clients cannot bypass system-destination
+classification after an endpoint changes. Removed hostnames remain in DNS refresh
+coverage until retirement of their credential-bearing clients can be established;
+a changed address must not create a direct bypass through a project-owned alias.
+Transient failures refreshing retained names can therefore close direct admission.
+Malformed endpoint metadata keeps
+admission closed; repairing it can require a Server restart to retire cached
+clients.
+
+Automatic host package/runtime/bpffs preparation is restricted to exact
+release-owned native profiles. See [native profile delivery](project-egress-native-profiles.md).
+The regular Staging updater may separately authorize an explicitly unaccepted
+assessment, with startup identity checks and a durable fence against switching
+back to Stable. See the Staging assessment section in that document for supported
+hosts and the pending deactivation limitation.
+An empty accepted profile set is a production blocker, not a request for manual
+host setup. Package names alone or a matching kernel release cannot establish
+acceptance.
 
 Older installed updaters cannot execute provisioning code they do not contain.
 Release compatibility parsing/admission first, then require the new provisioning
@@ -125,3 +150,39 @@ active host unit, authenticated health, socket, key permissions and read-only
 server mounts, then use an isolated project to verify allowed and denied traffic
 while observing existing workloads. Preserve independent dual-stack packet
 evidence. A passed image smoke test is not this production acceptance.
+
+
+## Protected relay generations during updates
+
+Host policy accepts the new immutable relay image and at most one retained
+immutable image for existing protected generations. Configuration generation
+inspects the private host registry and the referenced Docker containers; only
+images already admitted by the installed policy may be retained. Socket mounts,
+volume, UID/GID and execution restrictions remain exact. After stopping the old
+controller and establishing denial, activation re-inspects the registry and
+containers before replacing the policy. A relay started after the earlier
+configuration snapshot must still retain its admitted image. Unused prior images
+are pruned only from this stopped-controller snapshot. An update requiring more than one retained
+image, an unknown image or a changed execution contract fails before replacing
+controller authority; it must not silently orphan or weaken protected generations.
+
+## Boot recovery and runtime revalidation
+
+Before activation writes its transaction journal, the installer durably installs
+an immutable recovery helper and dependencies ordering it before Docker and the
+bootstrap fence. Recovery acquires the installation lock and establishes denial
+before restoring snapshots. It does not authorize a new runtime, remove state or
+flush rules. Controller startup separately revalidates the exact native profile
+before refreshing database authority and starting service. Tests of mocked
+systemd commands do not establish native boot ordering or packet continuity.
+
+## Installed-updater timeout compatibility
+
+New updaters allow up to 750 seconds for the bounded provisioning container; the
+host oneshot has a separate 720-second bound. An already-installed 4.80 updater
+still enforces its original 110-second caller limit. Target code cannot expand
+that installed limit. If package preparation exceeds it, the update may fail
+while its owned host oneshot continues to its own bound and persists its result.
+That is a recoverable failure, not completed provisioning or a completed update.
+The old-updater repair path must be tested natively, including disconnected
+callers and retries, before a release promises one-update completion.

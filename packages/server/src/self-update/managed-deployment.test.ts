@@ -5,6 +5,9 @@ import { describe, expect, it, vi } from 'vitest';
 import { parseServerDeploymentSpec, type ServerDeploymentSpecBody } from './deployment-spec.js';
 import {
   advanceManagedDeploymentImage,
+  readDurableManagedUpdateChannel,
+  writeManagedUpdateChannel,
+  markManagedStagingAssessment,
   configureManagedUpdateChannel,
   initializeManagedDeployment,
   MANAGED_DEPLOYMENT_MARKER_FILE,
@@ -744,4 +747,29 @@ describe('managed project egress provisioning authority', () => {
     ).rejects.toThrow('partial');
     expect(await readManagedDeployment(directory)).toEqual(initial);
   });
+});
+
+it('requires a durable private channel for assessment and fences both stable writers', async () => {
+  const directory = await root();
+  const spec = adoptionSpec();
+  await initializeManagedDeployment({ root: directory, spec, deploymentId: 'channel-test' });
+  vi.stubEnv('VERITY_UPDATE_CHANNEL', 'staging');
+  try {
+    expect(await readDurableManagedUpdateChannel(directory)).toBeUndefined();
+    await writeManagedUpdateChannel(directory, 'staging');
+    expect(await readDurableManagedUpdateChannel(directory)).toBe('staging');
+    await markManagedStagingAssessment(directory, spec.image, 'a'.repeat(24));
+    const before = await readFile(join(directory, MANAGED_DEPLOYMENT_SPEC_FILE), 'utf8');
+    await expect(writeManagedUpdateChannel(directory, 'stable')).rejects.toThrow(
+      /verified deactivation/,
+    );
+    vi.stubEnv('VERITY_UPDATE_CHANNEL', 'stable');
+    await expect(configureManagedUpdateChannel(directory)).rejects.toThrow(/verified deactivation/);
+    expect(await readFile(join(directory, MANAGED_DEPLOYMENT_SPEC_FILE), 'utf8')).toBe(before);
+    expect(await readDurableManagedUpdateChannel(directory)).toBe('staging');
+    await chmod(join(directory, 'update-channel.json'), 0o644);
+    await expect(readDurableManagedUpdateChannel(directory)).rejects.toThrow(/untrusted/);
+  } finally {
+    vi.unstubAllEnvs();
+  }
 });
