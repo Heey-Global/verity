@@ -1017,9 +1017,29 @@ function SessionList({ client }: { client: VerityClient }) {
     </View>
   );
 
-  // Sessions and projects poll separately; a health item handled on Home changes
-  // only the projects, so the page beside it follows both.
-  const reloadToken = useMemo(() => [sessions, projects], [sessions, projects]);
+  // What the open page shows, as text: polls hand back fresh arrays even when
+  // nothing changed, and its detail route is not cheap, so it reloads only when
+  // this project's sessions or health moved. A health item handled on Home
+  // changes only the projects, so both count.
+  const reloadToken = useMemo(() => {
+    if (openProjectId === null) return '';
+    const project = projects.find((candidate) => candidate.id === openProjectId);
+    return JSON.stringify([
+      project?.state,
+      project?.inboxDismissed,
+      sessions
+        .filter((session) => session.projectId === openProjectId)
+        .map((session) => [
+          session.sessionId,
+          session.status,
+          session.eventCount,
+          session.name,
+          session.favorite,
+          session.inboxDismissed,
+          session.pullRequest?.phase,
+        ]),
+    ]);
+  }, [openProjectId, projects, sessions]);
   const projectPage =
     wide && openProjectId !== null ? (
       <ProjectPage

@@ -60,7 +60,8 @@ function ProjectSettingsIndexView({
   const { theme } = useUnistyles();
   const { detail, loading, error, setError, load } = useProjectDetail(client, projectId);
   // The new design shows project knowledge on the project page instead. Until
-  // the stored choice is known the row stays away, so it never flashes and goes.
+  // the stored choice is known the row stays away: appearing late is calmer than
+  // showing and then vanishing for a device that has the preview on.
   const newDesign = useNewDesignChoice();
   const {
     available,
