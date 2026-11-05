@@ -336,6 +336,8 @@ function HydratedRoot() {
               <Stack.Screen name="secure-device" options={{ headerShown: false }} />
               {/* The onboarding wizard renders its own header/progress (#320). */}
               <Stack.Screen name="onboarding" options={{ headerShown: false }} />
+              {/* Spec mockups (apps/mobile/mockups); demo mode only, see the route. */}
+              <Stack.Screen name="mockups/[spec]/[mockup]" options={{ title: 'Mockup' }} />
             </Stack>
             {isDemoMode() ? (
               // Product images are rendered from the showcase; the banner would

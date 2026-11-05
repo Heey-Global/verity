@@ -91,3 +91,31 @@ at twice the CSS resolution and writes the PNGs to
 top of the script; `--only <scene>` renders a single scene. On Linux, Chromium
 needs its system libraries (`npx playwright install-deps chromium`). Clock
 times in the images follow the moment of rendering.
+
+## Mockups
+
+A spec's mockups can be built from the app's real components instead of drawn
+by hand. Each spec has a folder under `apps/mobile/mockups/<spec>/`; every
+`.tsx` file there with a default export is one screen, composed of the
+components in `apps/mobile/components/ui` (and other shared components such as
+the Home inbox) with sample data. Helpers shared by the screens export only
+named members. `apps/mobile/mockups/registry.ts` lists the specs, and the route
+`/mockups/<spec>/<screen>` shows a screen. The route works only in demo mode;
+otherwise it sends the operator home, so sample data never appears beside live
+data.
+
+Mockups follow the design system from the start: the design-system guard scans
+`apps/mobile/mockups` with no recorded debt. When a screen needs something the
+components do not offer, extend the component or note the gap in the mockup,
+rather than styling a local copy.
+
+```sh
+npm run build:web --workspace @verity/mobile-app -- --max-workers 1
+npx playwright install chromium-headless-shell
+npm run render:mockups -- --spec factory-spec [--screen home] [--out <dir>]
+```
+
+The script serves the export in demo mode and writes `<screen>-phone.png`
+(393×852) and `<screen>-desktop.png` (1440×900) at twice the CSS resolution to
+`.cache/mockups/<spec>/`. A mockup added after the last export needs a rebuild;
+the script stops instead of rendering the route's "not found" list.

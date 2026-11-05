@@ -18,12 +18,20 @@
 // smallest element containing all of the crop's text markers. The files sit
 // directly in the website's assets folder because the website's checks and
 // Dockerfile list every asset by its flat `assets/<file>` path.
-import { createReadStream, existsSync, mkdirSync, statSync } from 'node:fs';
-import { createServer } from 'node:http';
-import { dirname, extname, join, resolve, sep } from 'node:path';
+import { mkdirSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, URL } from 'node:url';
 import { parseArgs } from 'node:util';
 import { chromium } from 'playwright';
+
+import {
+  blurFocus,
+  exportBaseUrl,
+  openDemoPage,
+  requireExport,
+  serve,
+  settle,
+} from './lib/app-export.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const { values: args } = parseArgs({
@@ -35,9 +43,6 @@ const { values: args } = parseArgs({
     'app-store': { type: 'boolean', default: false },
   },
 });
-
-// Storage keys read by apps/mobile/lib/demoMode.ts and demoShowcase.ts.
-const STORAGE = { 'verity.demoMode.v1': '1', 'verity.demoShowcase.v1': '1' };
 
 const PHONE = { width: 393, height: 852 };
 const DESKTOP = { width: 1440, height: 900 };
@@ -135,65 +140,8 @@ const SCENES = [
   },
 ];
 
-// The callbacks passed to `page.evaluate` run in the page. The scripts' type
-// program has no DOM library (adding it would retype `fetch` for every script),
-// so each callback reads the few browser globals it needs through this shape.
-/**
- * @typedef {{ innerText: string, getBoundingClientRect(): { x: number, y: number, width: number, height: number } }} PageElement
- * @typedef {{
- *   document: {
- *     fonts: { ready: Promise<unknown> },
- *     querySelectorAll(selector: string): ArrayLike<PageElement>,
- *     activeElement: { blur?: () => void } | null,
- *   },
- *   localStorage: { setItem(key: string, value: string): void },
- * }} PageGlobals
- */
-
-/** @type {Record<string, string>} */
-const CONTENT_TYPES = {
-  '.html': 'text/html',
-  '.js': 'text/javascript',
-  '.json': 'application/json',
-  '.css': 'text/css',
-  '.png': 'image/png',
-  '.ttf': 'font/ttf',
-  '.wasm': 'application/wasm',
-  '.ico': 'image/x-icon',
-};
-
-// The export expects the `/app` base path (apps/mobile/app.config.ts) and
-// client-side routing, so unknown paths fall back to index.html.
-/**
- * @param {string} dist
- * @returns {Promise<import('node:http').Server>}
- */
-function serve(dist) {
-  const server = createServer((req, res) => {
-    let pathname = '/';
-    try {
-      pathname = decodeURIComponent(new URL(req.url ?? '/', 'http://local').pathname);
-    } catch {
-      // A malformed escape is served the app shell like any unknown path.
-    }
-    let file = join(dist, pathname.replace(/^\/app(?=\/|$)/, ''));
-    if (!file.startsWith(dist + sep) || !existsSync(file) || statSync(file).isDirectory())
-      file = join(dist, 'index.html');
-    res.setHeader('content-type', CONTENT_TYPES[extname(file)] ?? 'application/octet-stream');
-    createReadStream(file).pipe(res);
-  });
-  return new Promise((ready) => server.listen(0, '127.0.0.1', () => ready(server)));
-}
-
-/** @param {import('playwright').Page} page */
-async function settle(page) {
-  await page.waitForLoadState('networkidle');
-  await page.evaluate(
-    () => /** @type {PageGlobals} */ (/** @type {unknown} */ (globalThis)).document.fonts.ready,
-  );
-  // Demo replies and layout animations are timer-driven, not network-driven.
-  await page.waitForTimeout(1500);
-}
+/** @typedef {import('./lib/app-export.mjs').PageGlobals} PageGlobals */
+/** @typedef {import('./lib/app-export.mjs').PageElement} PageElement */
 
 /**
  * @param {import('playwright').Page} page
@@ -220,21 +168,7 @@ async function cropBox(page, markers) {
  * @param {string} out
  */
 async function render(browser, base, scene, out) {
-  const context = await browser.newContext({
-    viewport: scene.viewport,
-    deviceScaleFactor: scene.deviceScaleFactor ?? 2,
-    colorScheme: 'dark',
-    locale: 'en-US',
-    timezoneId: 'Europe/Berlin',
-  });
-  await context.addInitScript((entries) => {
-    const { localStorage } = /** @type {PageGlobals} */ (/** @type {unknown} */ (globalThis));
-    for (const [key, value] of Object.entries(entries)) localStorage.setItem(key, value);
-  }, STORAGE);
-  const page = await context.newPage();
-  /** @type {string[]} */
-  const errors = [];
-  page.on('pageerror', (error) => errors.push(error.message));
+  const { context, page, errors } = await openDemoPage(browser, scene);
   await page.goto(`${base}/`);
   await settle(page);
   for (const step of scene.steps ?? []) {
@@ -245,12 +179,7 @@ async function render(browser, base, scene, out) {
     await settle(page);
   }
   if (errors.length) throw new Error(`${scene.name}: ${errors.join('; ')}`);
-  // The browser client focuses the composer; images show it at rest.
-  await page.evaluate(() => {
-    const { document } = /** @type {PageGlobals} */ (/** @type {unknown} */ (globalThis));
-    document.activeElement?.blur?.();
-  });
-  await page.waitForTimeout(300);
+  await blurFocus(page);
   if (!scene.cropsOnly) {
     await page.screenshot({ path: join(out, `app-${scene.name}.png`) });
     console.log(`app-${scene.name}.png`);
@@ -277,10 +206,7 @@ async function render(browser, base, scene, out) {
 }
 
 const dist = resolve(args.dist ?? '');
-if (!args['base-url'] && !existsSync(join(dist, 'index.html')))
-  throw new Error(
-    `No browser export in ${dist}. Run: npm run build:web --workspace @verity/mobile-app -- --max-workers 1`,
-  );
+if (!args['base-url']) requireExport(dist);
 // Store shots stay out of the published website assets unless --out says so.
 const out = resolve(
   args.out ?? join(root, args['app-store'] ? '.cache/app-store' : 'docs/website/site/assets'),
@@ -330,8 +256,7 @@ if (baseUrl !== undefined && !URL.canParse(baseUrl))
 const server = baseUrl ? null : await serve(dist);
 const browser = await chromium.launch();
 try {
-  const address = /** @type {import('node:net').AddressInfo | undefined} */ (server?.address());
-  const base = baseUrl ?? `http://127.0.0.1:${address?.port}/app`;
+  const base = baseUrl ?? exportBaseUrl(/** @type {import('node:http').Server} */ (server));
   // One scene at a time: each export instance holds a full app in memory.
   for (const scene of scenes) await render(browser, base, scene, out);
 } finally {
