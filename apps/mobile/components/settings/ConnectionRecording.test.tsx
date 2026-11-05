@@ -12,7 +12,7 @@ jest.mock('./SelectedConnectionTest', () => ({
   }) => {
     require('react').useEffect(() => onCaptureBlocked?.(false), [onCaptureBlocked]);
     const { Pressable, Text } = require('react-native');
-    if (!visible) return null;
+    if (visible === false) return null;
     return (
       <Pressable disabled={disabled} onPress={() => onBusy(true)}>
         <Text>Mock selected start</Text>
@@ -38,11 +38,13 @@ const mockDigest = jest.fn(async () => 'abcdef0123456789');
 let mockServerId = 'paired-core';
 let mockAdministration: ReturnType<typeof client>;
 const mockVerifyAdministration = jest.fn();
+const mockNativeInactive = jest.fn(async () => undefined);
 jest.mock('../../lib/selectedRecordingContext', () => ({
   selectedRecordingContext: () => ({
     verify: () => mockVerifyAdministration(),
     client: mockAdministration,
   }),
+  assertNativeTunnelInactive: () => mockNativeInactive(),
 }));
 jest.mock('expo-crypto', () => ({
   randomUUID: () => '11111111-1111-4111-8111-111111111111',
@@ -69,19 +71,21 @@ jest.mock('../../lib/remoteDataDiagnostics', () => ({
   selectRemoteRecording: (value: string) => value,
 }));
 import { ConnectionRecording } from './ConnectionRecording';
+import { nativeTunnelUnsupported } from '../../lib/nativeTunnelSupport';
 import { Alert } from 'react-native';
 import {
   createConnectionDiagnosticReport,
   saveConnectionDiagnosticReport,
 } from '../../lib/connectionDiagnosticReport';
 function render(element: React.ReactElement) {
-  const result = testingRender(element);
-  fireEvent.press(screen.getByText('Record a connection problem'));
-  return result;
+  return testingRender(element);
 }
 function pressCollect() {
   fireEvent.press(
-    screen.queryByText('Stop and collect') ?? screen.getByText('Collect problem report'),
+    screen.queryByText('Stop recording') ??
+      screen.queryByText('Cancel') ??
+      screen.queryByText('Collect again') ??
+      screen.getByText('Collect report'),
   );
 }
 function status() {
@@ -146,6 +150,7 @@ function client() {
 }
 beforeEach(async () => {
   mockServerId = 'paired-core';
+  mockNativeInactive.mockReset().mockResolvedValue(undefined);
   await AsyncStorage.clear();
   jest.clearAllMocks();
   mockVerifyAdministration.mockReset();
@@ -162,14 +167,12 @@ beforeEach(async () => {
   mockCopy.mockResolvedValue(undefined);
 });
 async function pressStart() {
-  await waitFor(() =>
-    expect(screen.getByText('Start problem recording').parent?.parent).toBeTruthy(),
-  );
+  await waitFor(() => expect(screen.getByText('Start long test').parent?.parent).toBeTruthy());
   // Wait for the saved run read to settle before pressing its enabled action.
   await act(async () => {
     await Promise.resolve();
   });
-  fireEvent.press(screen.getByText('Start problem recording'));
+  fireEvent.press(screen.getByText('Start long test'));
 }
 it('does not start on opening, then arms local before Core and declares ready only with every source', async () => {
   const api = client();
@@ -223,7 +226,7 @@ it('stops locally offline, retains run across reopening and retries collection w
   api.stopConnectionRecording.mockRejectedValue(new Error('offline'));
   api.exportConnectionRecording.mockRejectedValue(new Error('offline'));
   pressCollect();
-  await screen.findByText(/Partial report copied/);
+  await screen.findAllByText(/Incomplete –/);
   expect(mockStop.mock.invocationCallOrder[0]).toBeLessThan(
     api.stopConnectionRecording.mock.invocationCallOrder[0]!,
   );
@@ -231,9 +234,9 @@ it('stops locally offline, retains run across reopening and retries collection w
   first.unmount();
   const next = client();
   render(<ConnectionRecording client={next as never} />);
-  await screen.findByText(/Saved problem recording ·/);
+  await screen.findByText(/Recording finished ·/);
   pressCollect();
-  await screen.findByText(/Partial report copied/);
+  await screen.findAllByText(/Incomplete –/);
   expect(next.stopConnectionRecording).toHaveBeenCalledWith(runId);
   expect(next.exportConnectionRecording).toHaveBeenCalledWith(runId, 3);
   expect(mockStart).toHaveBeenCalledTimes(1);
@@ -250,7 +253,7 @@ it('a late Core start cannot restore ready after Stop', async () => {
   await pressStart();
   await waitFor(() => expect(api.startConnectionRecording).toHaveBeenCalled());
   pressCollect();
-  await screen.findByText(/Partial report copied/);
+  await screen.findAllByText(/Incomplete –/);
   expect(api.stopConnectionRecording).toHaveBeenCalledTimes(1);
   await act(async () => {
     resolve(status());
@@ -350,7 +353,7 @@ it('removes Ready when the local capture expires', async () => {
     });
     expect(screen.queryByText(/Ready — turn off VPN/)).toBeNull();
     expect(
-      screen.getByText('Local recording ended. Stop and collect the saved evidence.'),
+      screen.getByText('Recording time is up. Turn VPN back on, then collect the report.'),
     ).toBeOnTheScreen();
   } finally {
     jest.useRealTimers();
@@ -363,7 +366,7 @@ it('explains missing version support before another recording attempt', async ()
   render(<ConnectionRecording client={api as never} />);
   await pressStart();
   await waitFor(() =>
-    expect(screen.getByText(/Uplink does not support this recording version/)).toBeTruthy(),
+    expect(screen.getByText(/Your Uplink does not support this test yet/)).toBeTruthy(),
   );
   expect(mockStop).toHaveBeenCalled();
 });
@@ -381,7 +384,7 @@ it.each([1, 2])('collects saved runs using version %s', async (version) => {
   );
   const api = client();
   render(<ConnectionRecording client={api as never} />);
-  await screen.findByText(/Saved problem recording ·/);
+  await screen.findByText(/Recording finished ·/);
   pressCollect();
   await waitFor(() => expect(api.exportConnectionRecording).toHaveBeenCalledWith(runId, version));
 });
@@ -421,7 +424,7 @@ it('withdraws readiness on unreachable polling while preserving local recording'
     await act(async () => {
       jest.advanceTimersByTime(1000);
     });
-    expect(screen.getByText(/Recording readiness is unconfirmed/)).toBeTruthy();
+    expect(screen.getByText(/cannot be reached right now/)).toBeTruthy();
     expect(mockStop).not.toHaveBeenCalled();
   } finally {
     jest.useRealTimers();
@@ -455,7 +458,7 @@ it('bounds unreachable readiness requests without overlapping polls', async () =
     await act(async () => {
       jest.advanceTimersByTime(1000);
     });
-    expect(screen.getByText(/Recording readiness is unconfirmed/)).toBeTruthy();
+    expect(screen.getByText(/cannot be reached right now/)).toBeTruthy();
     expect(mockStop).not.toHaveBeenCalled();
   } finally {
     jest.useRealTimers();
@@ -499,7 +502,7 @@ it('does not overwrite a saved problem recording with another start', async () =
   render(<ConnectionRecording client={api as never} />);
   await pressStart();
   await screen.findByText(/Ready — turn off VPN/);
-  expect(screen.queryByText('Start problem recording')).toBeNull();
+  expect(screen.queryByText('Start long test')).toBeNull();
   const stored = await AsyncStorage.getItem('verity.connectionRecording.v1.paired-core');
   expect(JSON.parse(stored!).runId).toBe(runId);
   expect(mockStart).toHaveBeenCalledTimes(1);
@@ -513,7 +516,7 @@ it('preserves the failed preparation stage across reopening without exporting ra
   await screen.findByText(/Preparation failed/);
   view.unmount();
   render(<ConnectionRecording client={api as never} />);
-  await screen.findByText(/Saved problem recording ·/);
+  await screen.findByText('Preparation failed');
   pressCollect();
   await waitFor(() => expect(mockCopy).toHaveBeenCalled());
   const report = JSON.parse(mockCopy.mock.calls[0]![0] as string);
@@ -534,8 +537,8 @@ it('confirms Stop from retained terminal evidence when stop acknowledgement fail
   expect(report.remote.available).toBe(true);
   expect(report.remote.stopped).toBe(true);
   mockRemaining.mockResolvedValue(0);
-  fireEvent.press(screen.getByText('Start another problem recording'));
-  await screen.findByText('Start problem recording');
+  fireEvent.press(screen.getByText('Start new long test'));
+  await screen.findByText('Start long test');
 });
 
 it('exports only the HTTP status from a failed preparation response', async () => {
@@ -560,7 +563,7 @@ it('retains completed preparation after reopening', async () => {
   await screen.findByText(/Ready — turn off VPN/);
   view.unmount();
   render(<ConnectionRecording client={api as never} />);
-  await screen.findByText(/Saved problem recording ·/);
+  await screen.findByText(/Recording finished ·/);
   pressCollect();
   await waitFor(() => expect(mockCopy).toHaveBeenCalled());
   expect(JSON.parse(mockCopy.mock.calls[0]![0] as string).preparation).toEqual({
@@ -572,52 +575,49 @@ it('retains completed preparation after reopening', async () => {
 it('prevents legacy recording while the selected test owns the controls', async () => {
   render(<ConnectionRecording client={client() as never} />);
   await waitFor(() => expect(AsyncStorage.getItem).toHaveBeenCalled());
-  fireEvent.press(screen.getByText('Quick connection test'));
   await screen.findByText('Mock selected start');
+  await waitFor(() => expect(screen.getByText('Start long test')).toBeEnabled());
   act(() => {
     fireEvent.press(screen.getByText('Mock selected start'));
-    fireEvent.press(screen.getByText('Record a connection problem'));
+  });
+  // While the quick test owns the native capture, the long test cannot start.
+  expect(screen.getByText('Finish the quick test first.')).toBeTruthy();
+  expect(screen.getByText('Start long test')).toBeDisabled();
+  fireEvent.press(screen.getByText('Start long test'));
+  await act(async () => {
+    await Promise.resolve();
   });
   expect(mockStart).not.toHaveBeenCalled();
 });
 
-it('shows a test choice before actions and never mixes the quick and problem controls', async () => {
+it('lists both tests with their own start action and starts neither on opening', async () => {
   testingRender(<ConnectionRecording client={client() as never} />);
-  await waitFor(() => expect(AsyncStorage.getItem).toHaveBeenCalled());
-  expect(screen.queryByText('Start problem recording')).toBeNull();
-  expect(screen.queryByText('Mock selected start')).toBeNull();
-  expect(screen.queryByText('Stop and collect')).toBeNull();
-  fireEvent.press(screen.getByText('Quick connection test'));
   await screen.findByText('Mock selected start');
-  expect(screen.queryByText('Start problem recording')).toBeNull();
-  fireEvent.press(screen.getByText('Record a connection problem'));
-  await screen.findByText('Start problem recording');
-  expect(screen.queryByText('Mock selected start')).toBeNull();
+  await waitFor(() => expect(screen.getByText('Start long test')).toBeEnabled());
+  expect(screen.getByText('Long test with VPN switch-off')).toBeTruthy();
+  expect(screen.queryByText('Stop recording')).toBeNull();
   expect(mockStart).not.toHaveBeenCalled();
 });
 
-it('labels an old problem recording by date and identity instead of presenting it as the quick test', async () => {
+it('presents an unfinished old long test with its date and a way to finish or discard it', async () => {
   const oldId = '22222222-2222-4222-8222-222222222222';
   await AsyncStorage.setItem(
     'verity.connectionRecording.v1.paired-core',
     JSON.stringify({
       runId: oldId,
-      startedAt: Date.parse('2025-10-01T12:00:00.000Z'),
-      expiresAt: Date.parse('2025-10-01T12:00:45.000Z'),
+      // Local noon, so the rendered local date is 1 Oct in every timezone.
+      startedAt: new Date(2025, 9, 1, 12).getTime(),
+      expiresAt: new Date(2025, 9, 1, 12, 0, 45).getTime(),
       local: null,
-      preparation: { stage: 'remote-start', failed: true },
     }),
   );
   testingRender(<ConnectionRecording client={client() as never} />);
-  fireEvent.press(screen.getByText('Quick connection test'));
-  await screen.findByText('Mock selected start');
-  expect(screen.queryByText('Collect problem report')).toBeNull();
-  fireEvent.press(screen.getByText('Record a connection problem'));
-  await screen.findByText('Problem recording · 22222222');
-  expect(screen.getByText(/Saved problem recording · 2025-10-01T12:00:00.000Z/)).toBeTruthy();
-  expect(screen.getByText('Collect problem report')).toBeTruthy();
-  expect(screen.queryByText('Start problem recording')).toBeNull();
-  expect(screen.queryByText('Mock selected start')).toBeNull();
+  await screen.findByText(/Recording finished · 1 Oct 2025/);
+  expect(screen.getByText('Collect report')).toBeTruthy();
+  expect(screen.getByText('Discard and start over')).toBeTruthy();
+  expect(screen.queryByText('Start long test')).toBeNull();
+  // The quick test explains why it waits instead of silently greying out.
+  expect(screen.getByText('Mock selected start')).toBeDisabled();
   expect(mockStart).not.toHaveBeenCalled();
 });
 
@@ -637,7 +637,7 @@ it('does not restore the old profile run after its session digest resolves late'
   await act(async () => {
     release('abcdef0123456789');
   });
-  await screen.findByText('Start problem recording');
+  await screen.findByText('Start long test');
   expect(screen.queryByText(`Problem recording · ${runId.slice(0, 8)}`)).toBeNull();
   expect(await AsyncStorage.getItem('verity.connectionRecording.v1.other-core')).toBeNull();
   expect(api.startConnectionRecording).not.toHaveBeenCalled();
@@ -649,7 +649,7 @@ it('locks the transition to another problem recording until the old reference is
   await pressStart();
   await screen.findByText(/Ready — turn off VPN/);
   pressCollect();
-  await screen.findByText('Start another problem recording');
+  await screen.findByText('Start new long test');
   const original = jest.mocked(AsyncStorage.removeItem).getMockImplementation()!;
   let release!: () => void;
   const spy = jest.spyOn(AsyncStorage, 'removeItem').mockImplementation(async (key) => {
@@ -659,7 +659,7 @@ it('locks the transition to another problem recording until the old reference is
     return original(key);
   });
   try {
-    const button = screen.getByText('Start another problem recording');
+    const button = screen.getByText('Start new long test');
     act(() => {
       fireEvent.press(button);
       fireEvent.press(button);
@@ -667,7 +667,7 @@ it('locks the transition to another problem recording until the old reference is
     await waitFor(() => expect(release).toBeDefined());
     expect(spy).toHaveBeenCalledTimes(1);
     await act(async () => release());
-    await screen.findByText('Start problem recording');
+    await screen.findByText('Start long test');
     expect(await AsyncStorage.getItem('verity.connectionRecording.v1.paired-core')).toBeNull();
   } finally {
     spy.mockImplementation(original);
@@ -702,10 +702,10 @@ it('does not block future problem recordings forever when the verified Core has 
     Object.assign(new Error('not retained'), { status: 404 }),
   );
   pressCollect();
-  await screen.findByText(/Core has no retained report for this run/);
+  await screen.findByText(/Your Core no longer has data for this test/);
   mockRemaining.mockResolvedValue(0);
-  fireEvent.press(screen.getByText('Start another problem recording'));
-  await screen.findByText('Start problem recording');
+  fireEvent.press(screen.getByText('Start new long test'));
+  await screen.findByText('Start long test');
   expect(await AsyncStorage.getItem('verity.connectionRecording.v1.paired-core')).toBeNull();
 });
 
@@ -714,15 +714,10 @@ it('blocks quick capture until an ended problem recording is collected', async (
   await pressStart();
   await screen.findByText(/Ready — turn off VPN/);
   mockRemaining.mockResolvedValue(0);
-  await waitFor(() => expect(screen.getByText('Quick connection test')).toBeEnabled(), {
-    timeout: 3000,
-  });
-  fireEvent.press(screen.getByText('Quick connection test'));
+  await screen.findByText(/Recording time is up/, {}, { timeout: 3000 });
   expect(screen.getByText('Mock selected start')).toBeDisabled();
-  fireEvent.press(screen.getByText('Record a connection problem'));
   pressCollect();
-  await screen.findByText('Start another problem recording');
-  fireEvent.press(screen.getByText('Quick connection test'));
+  await screen.findByText('Start new long test');
   expect(screen.getByText('Mock selected start')).toBeEnabled();
 });
 it('keeps an archived problem restart available after deleting an unrelated report', async () => {
@@ -744,15 +739,16 @@ it('keeps an archived problem restart available after deleting an unrelated repo
   await pressStart();
   await screen.findByText(/Ready — turn off VPN/);
   pressCollect();
-  await screen.findByText('Start another problem recording');
+  await screen.findByText('Start new long test');
   const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => {});
   try {
-    fireEvent.press(screen.getByText('Delete saved report · 22222222'));
+    fireEvent.press(screen.getByText('Quick test · Earlier test'));
+    fireEvent.press(screen.getByText('Delete'));
     await act(async () =>
       alert.mock.calls[0]![2]!.find((button) => button.text === 'Delete')!.onPress!(),
     );
-    await waitFor(() => expect(screen.queryByText('Delete saved report · 22222222')).toBeNull());
-    expect(screen.getByText('Start another problem recording')).toBeTruthy();
+    await waitFor(() => expect(screen.queryByText('Quick test · Earlier test')).toBeNull());
+    expect(screen.getByText('Start new long test')).toBeTruthy();
   } finally {
     alert.mockRestore();
   }
@@ -766,8 +762,8 @@ it('does not release quick capture after a partial problem report with unconfirm
   api.stopConnectionRecording.mockRejectedValue(new Error('offline'));
   api.exportConnectionRecording.mockRejectedValue(new Error('offline'));
   pressCollect();
-  await screen.findByText('Start another problem recording');
-  fireEvent.press(screen.getByText('Quick connection test'));
+  await screen.findByText('Not confirmed as stopped');
+  expect(screen.queryByText('Start new long test')).toBeNull();
   expect(screen.getByText('Mock selected start')).toBeDisabled();
 });
 
@@ -785,4 +781,150 @@ it('copies the retained merged problem report when later remote collection fails
   await waitFor(() => expect(mockCopy).toHaveBeenCalledTimes(2));
   const report = JSON.parse(mockCopy.mock.calls[1]![0] as string);
   expect(report.remote).toEqual(previous.remote);
+});
+
+async function confirmDiscard() {
+  const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => {});
+  try {
+    fireEvent.press(screen.getByText('Discard and start over'));
+    await act(async () =>
+      alert.mock.calls[0]![2]!.find((button) => button.text === 'Discard')!.onPress!(),
+    );
+  } finally {
+    alert.mockRestore();
+  }
+}
+it('discards a stuck long test only after a confirmed local Stop and keeps saved reports', async () => {
+  const storageKey = 'verity.connectionRecording.v1.paired-core';
+  const api = client();
+  const view = render(<ConnectionRecording client={api as never} />);
+  await pressStart();
+  await screen.findByText(/Ready — turn off VPN/);
+  api.stopConnectionRecording.mockRejectedValue(new Error('offline'));
+  api.exportConnectionRecording.mockRejectedValue(new Error('offline'));
+  pressCollect();
+  await screen.findByText('Not confirmed as stopped');
+  // Without a confirmed local Stop and with a tunnel still running, the run stays.
+  mockStop.mockResolvedValueOnce(false);
+  mockNativeInactive.mockRejectedValueOnce(
+    new Error('An existing DATA tunnel must be stopped before testing.'),
+  );
+  await confirmDiscard();
+  await screen.findByText(/could not confirm that this device stopped recording/);
+  expect(await AsyncStorage.getItem(storageKey)).not.toBeNull();
+  await confirmDiscard();
+  await waitFor(() => expect(AsyncStorage.getItem(storageKey)).resolves.toBeNull());
+  expect(screen.getByText(/^Long test · Today/)).toBeTruthy();
+  // Core and Uplink never confirmed Stop: they may still record the discarded run,
+  // so neither test may start on top of it until that run has expired.
+  expect(
+    screen.getAllByText(/still finishing the previous test · ready in \d+ s/),
+  ).not.toHaveLength(0);
+  expect(screen.getByText('Mock selected start')).toBeDisabled();
+  expect(screen.getByText('Start long test')).toBeDisabled();
+  // Reopening Diagnostics must not skip the wait.
+  view.unmount();
+  render(<ConnectionRecording client={api as never} />);
+  await screen.findByText(/still finishing the previous test · ready in \d+ s/);
+  expect(screen.getByText('Start long test')).toBeDisabled();
+});
+it('releases both tests at once when Core and Uplink confirm Stop while discarding', async () => {
+  const api = client();
+  render(<ConnectionRecording client={api as never} />);
+  await pressStart();
+  await screen.findByText(/Ready — turn off VPN/);
+  const stopped = api.stopConnectionRecording.getMockImplementation();
+  api.stopConnectionRecording.mockRejectedValue(new Error('offline'));
+  api.exportConnectionRecording.mockRejectedValue(new Error('offline'));
+  pressCollect();
+  await screen.findByText('Not confirmed as stopped');
+  api.stopConnectionRecording.mockImplementation(stopped!);
+  await confirmDiscard();
+  await waitFor(() => expect(screen.getByText('Start long test')).toBeEnabled());
+  expect(screen.queryByText(/still finishing the previous test/)).toBeNull();
+  expect(screen.getByText('Mock selected start')).toBeEnabled();
+});
+
+it('stays idle without a saved long test even while a native capture is reported', async () => {
+  // A quick test's native capture must never read as a running long test.
+  mockRemaining.mockResolvedValue(25_000);
+  const api = client();
+  testingRender(<ConnectionRecording client={api as never} />);
+  await waitFor(() => expect(screen.getByText('Start long test')).toBeEnabled());
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+  });
+  // No saved long test: the poll must not even read the native capture.
+  expect(mockRemaining).not.toHaveBeenCalled();
+  expect(screen.queryByText(/^Recording/)).toBeNull();
+  expect(screen.queryByText('Stop recording')).toBeNull();
+  expect(screen.getByText('Mock selected start')).toBeEnabled();
+  expect(api.getConnectionRecording).not.toHaveBeenCalled();
+  expect(mockStop).not.toHaveBeenCalled();
+});
+
+it('lets a device without the native tunnel discard a long test whose preparation failed', async () => {
+  const storageKey = 'verity.connectionRecording.v1.paired-core';
+  await AsyncStorage.setItem(
+    storageKey,
+    JSON.stringify({
+      runId,
+      startedAt: new Date(2025, 9, 1, 12).getTime(),
+      expiresAt: new Date(2025, 9, 1, 12, 0, 45).getTime(),
+      local: null,
+      preparation: { stage: 'local-and-admission', failed: true },
+    }),
+  );
+  // Without the native module, local Stop can never be confirmed.
+  mockStop.mockResolvedValue(false);
+  mockNativeInactive.mockRejectedValueOnce(nativeTunnelUnsupported());
+  testingRender(<ConnectionRecording client={client() as never} />);
+  await screen.findByText('Preparation failed');
+  await confirmDiscard();
+  await waitFor(() => expect(AsyncStorage.getItem(storageKey)).resolves.toBeNull());
+  await waitFor(() => expect(screen.getByText('Start long test')).toBeEnabled());
+});
+
+it('discards a long test when Stop is unconfirmed but no native tunnel is running', async () => {
+  const storageKey = 'verity.connectionRecording.v1.paired-core';
+  await AsyncStorage.setItem(
+    storageKey,
+    JSON.stringify({
+      runId,
+      startedAt: new Date(2025, 9, 1, 12).getTime(),
+      expiresAt: new Date(2025, 9, 1, 12, 0, 45).getTime(),
+      local: null,
+    }),
+  );
+  mockStop.mockResolvedValue(false);
+  mockNativeInactive.mockResolvedValueOnce(undefined);
+  testingRender(<ConnectionRecording client={client() as never} />);
+  await screen.findByText(/Recording finished · 1 Oct 2025/);
+  await confirmDiscard();
+  await waitFor(() => expect(AsyncStorage.getItem(storageKey)).resolves.toBeNull());
+});
+
+it('waits from long-test discard even after the locally saved expiry passed', async () => {
+  const storageKey = 'verity.connectionRecording.v1.paired-core';
+  await AsyncStorage.setItem(
+    storageKey,
+    JSON.stringify({
+      runId,
+      startedAt: Date.now() - 120_000,
+      expiresAt: Date.now() - 75_000,
+      local: null,
+    }),
+  );
+  const api = client();
+  api.stopConnectionRecording.mockRejectedValue(new Error('offline'));
+  render(<ConnectionRecording client={api as never} />);
+  await screen.findByText(/Recording finished ·/);
+  const discardedAt = Date.now();
+  await confirmDiscard();
+  await waitFor(() => expect(AsyncStorage.getItem(storageKey)).resolves.toBeNull());
+  const deadline = Number(
+    await AsyncStorage.getItem('verity.connectionRecording.hold.v1.paired-core'),
+  );
+  expect(deadline).toBeGreaterThanOrEqual(discardedAt + 75_000);
+  expect(screen.getByText('Start long test')).toBeDisabled();
 });
