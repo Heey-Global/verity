@@ -57,6 +57,7 @@ export function HomeInbox({
   onOpenProject,
   onRepairProject,
   onCountChange,
+  onOpenVerity,
 }: {
   client: VerityClient;
   sessions: readonly SessionSummary[];
@@ -71,6 +72,8 @@ export function HomeInbox({
   onRepairProject: (projectId: string) => void;
   /** How many items Home shows, for the tab bar's count. */
   onCountChange?: (count: number) => void;
+  /** Opens Verity's page from her header. */
+  onOpenVerity?: (() => void) | undefined;
 }) {
   const meetings = useUpcomingMeetings(client);
   const now = useClock(CLOCK_TICK_MS);
@@ -98,7 +101,7 @@ export function HomeInbox({
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
       testID="home-inbox"
     >
-      <VerityHeader summary={inboxSummary(feed.items)} />
+      <VerityHeader summary={inboxSummary(feed.items)} onOpen={onOpenVerity} />
       {feed.items.length > 0 ? (
         <Text variant="eyebrow" style={styles.section}>
           For you
@@ -340,30 +343,37 @@ export function InboxFeedList({
 }
 
 /** Verity's identity and capture on Home; exported for the design-system catalog. */
-export function VerityHeader({ summary }: { summary: string }) {
+export function VerityHeader({
+  summary,
+  onOpen,
+}: {
+  summary: string;
+  /** Opens Verity's page (the new design); without it the identity is not a control. */
+  onOpen?: (() => void) | undefined;
+}) {
   const { theme } = useUnistyles();
   // The field opens quick capture, which only listens while task capture is on
   // and an account is known; without them it would be a button that does nothing.
   const capture = useTaskPreferences().enabled && taskAccountScope() !== null;
   return (
     <View style={styles.header}>
-      <View style={styles.identity}>
-        <View style={styles.markHalo}>
-          <Image
-            source={MARK}
-            accessibilityIgnoresInvertColors
-            style={{ width: 32, height: 32 / MARK_RATIO }}
-          />
+      {onOpen ? (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`Verity, ${summary}`}
+          accessibilityHint="Opens Verity's page with your instructions, memory and shared knowledge"
+          onPress={onOpen}
+          testID="home-verity"
+          style={({ pressed }) => [styles.identity, pressed ? styles.capturePressed : null]}
+        >
+          <VerityIdentity summary={summary} testID="home-summary" />
+          <Icon name="chevron-right" size={20} color={theme.colors.textMuted} />
+        </Pressable>
+      ) : (
+        <View style={styles.identity}>
+          <VerityIdentity summary={summary} testID="home-summary" />
         </View>
-        <View style={styles.flex}>
-          <Text variant="title" accessibilityRole="header">
-            Verity
-          </Text>
-          <Text variant="subtitle" testID="home-summary">
-            {summary}
-          </Text>
-        </View>
-      </View>
+      )}
       {capture ? (
         <Pressable
           accessibilityRole="button"
@@ -381,6 +391,29 @@ export function VerityHeader({ summary }: { summary: string }) {
         </Pressable>
       ) : null}
     </View>
+  );
+}
+
+/** Verity's mark on its halo, her name and one line; shared by Home and her page. */
+export function VerityIdentity({ summary, testID }: { summary: string; testID?: string }) {
+  return (
+    <>
+      <View style={styles.markHalo}>
+        <Image
+          source={MARK}
+          accessibilityIgnoresInvertColors
+          style={{ width: 32, height: 32 / MARK_RATIO }}
+        />
+      </View>
+      <View style={styles.flex}>
+        <Text variant="title" accessibilityRole="header">
+          Verity
+        </Text>
+        <Text variant="subtitle" testID={testID}>
+          {summary}
+        </Text>
+      </View>
+    </>
   );
 }
 

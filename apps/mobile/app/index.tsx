@@ -136,6 +136,7 @@ import { HomeTabBar, type HomeTab } from '../components/home/HomeTabBar';
 import { useNewDesign } from '../lib/homePreferences';
 import { ProjectPage } from '../components/project/ProjectPage';
 import { ProjectCard } from '../components/project/ProjectCard';
+import { VerityPage } from '../components/verity/VerityPage';
 import { toneColor } from '../theme/tokens';
 import { tint } from '../components/ui/tint';
 
@@ -634,7 +635,28 @@ function SessionList({ client }: { client: VerityClient }) {
     [wide],
   );
   // `/project/[id]` hands a wide screen over to this column with a `project` param.
-  const { project: projectParam } = useLocalSearchParams<{ project?: string }>();
+  const { project: projectParam, verity: verityParam } = useLocalSearchParams<{
+    project?: string;
+    verity?: string;
+  }>();
+  // Verity's page in the wide layout's left column, in place of Home. On a phone
+  // it is its own route.
+  const [verityOpen, setVerityOpen] = useState(false);
+  const openVerity = useCallback(() => {
+    if (!wide) {
+      router.push('/verity');
+      return;
+    }
+    setVerityOpen(true);
+    setHomeTab('home');
+  }, [wide]);
+  // `/verity` hands a wide screen over to this column with a `verity` param.
+  useEffect(() => {
+    if (!verityParam || !newDesign) return;
+    setVerityOpen(true);
+    setHomeTab('home');
+    router.setParams({ verity: undefined });
+  }, [verityParam, newDesign]);
   useEffect(() => {
     if (!projectParam || !newDesign) return;
     setOpenProjectId(projectParam);
@@ -1097,7 +1119,16 @@ function SessionList({ client }: { client: VerityClient }) {
     <View style={styles.flex}>
       {/* Both stay mounted so switching keeps scroll positions and Home's count
           stays current while the project list is open. */}
-      <View style={[styles.flex, homeTab === 'home' ? null : styles.hiddenPane]}>
+      {/* Home stays mounted under Verity's page, so its count keeps up. */}
+      {wide && verityOpen && homeTab === 'home' ? (
+        <VerityPage client={client} onBack={() => setVerityOpen(false)} />
+      ) : null}
+      <View
+        style={[
+          styles.flex,
+          homeTab === 'home' && !(wide && verityOpen) ? null : styles.hiddenPane,
+        ]}
+      >
         <HomeInbox
           client={client}
           sessions={sessions}
@@ -1109,6 +1140,7 @@ function SessionList({ client }: { client: VerityClient }) {
           onOpenProject={wide ? openProject : undefined}
           onRepairProject={repairFromHome}
           onCountChange={setHomeCount}
+          onOpenVerity={openVerity}
         />
       </View>
       <View style={[styles.flex, homeTab === 'projects' ? null : styles.hiddenPane]}>

@@ -211,6 +211,16 @@ describe('session explorer knowledge roots', () => {
     );
     expect(download.statusCode).toBe(200);
     expect(download.body).toBe('Immutable source');
+    // Verity's page lists the same library's latest pages through its own route.
+    const recent = await app.inject('/knowledge/shared/recent?limit=5');
+    expect(recent.statusCode).toBe(200);
+    expect(recent.json<{ entries: { path: string; area: string }[] }>().entries).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ path: 'insights/reference.md', area: 'wiki' }),
+        expect.objectContaining({ path: 'sources/documents/original.txt', area: 'sources' }),
+      ]),
+    );
+    expect((await app.inject('/knowledge/shared/recent?limit=99')).statusCode).toBe(400);
 
     const save = (expectedVersion: string, path = 'insights/reference.md') =>
       app.inject({

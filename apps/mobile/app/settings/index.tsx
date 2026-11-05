@@ -1,7 +1,7 @@
 import { networkProtectionStatus } from '../../lib/networkProtection';
 import { resetFeatureHints } from '../../lib/featureHints';
 import { useTaskPreferences } from '../../lib/taskPreferences';
-import { setNewDesignEnabled, useNewDesign } from '../../lib/homePreferences';
+import { setNewDesignEnabled, useNewDesign, useNewDesignChoice } from '../../lib/homePreferences';
 // Settings, top level: what is left to set up, where everything lives, and the
 // two app-wide switches. Everything with a form of its own is one tap deeper.
 //
@@ -71,6 +71,7 @@ export default function SettingsIndexScreen() {
 function SettingsIndexView({ client }: { client: VerityClient }) {
   const taskPreferences = useTaskPreferences();
   const newDesign = useNewDesign();
+  const designChoice = useNewDesignChoice();
   const reload = useLoadVeritySettings(client);
   const { settings, secretStatus, loading, failed } = useVeritySettings();
   const githubConnected = githubRepositoryAccessReady(settings);
@@ -198,16 +199,20 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
           />
         </SettingsListPanel>
       </SettingsGroup>
-      <SettingsGroup title="Knowledge">
-        <SettingsListPanel>
-          <SettingsNavRow
-            icon="book-open"
-            title="Shared knowledge"
-            subtitle="Reference material available to agents across projects"
-            onPress={() => router.push('/settings/shared-knowledge')}
-          />
-        </SettingsListPanel>
-      </SettingsGroup>
+      {/* The new design keeps Shared knowledge on Verity's page; until the stored
+          choice is known the group stays away rather than show and vanish. */}
+      {designChoice !== false ? null : (
+        <SettingsGroup title="Knowledge">
+          <SettingsListPanel>
+            <SettingsNavRow
+              icon="book-open"
+              title="Shared knowledge"
+              subtitle="Reference material available to agents across projects"
+              onPress={() => router.push('/settings/shared-knowledge')}
+            />
+          </SettingsListPanel>
+        </SettingsGroup>
+      )}
       <SettingsGroup title="Features">
         <SettingsListPanel>
           <SettingsNavRow
