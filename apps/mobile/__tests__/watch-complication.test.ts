@@ -31,7 +31,8 @@ describe('Watch complication capture entry', () => {
     );
     expect(start).toContain('guard !recording, !starting else { return }');
     expect(start).toContain('starting = true');
-    expect(start.indexOf('choosing = nil')).toBeGreaterThan(
+    // Feedback from the previous recording clears only once the new one runs.
+    expect(start.indexOf('confirmation = nil')).toBeGreaterThan(
       start.indexOf('guard recorder.record()'),
     );
   });
@@ -74,6 +75,6 @@ describe('Watch complication capture entry', () => {
     expect(complication.entitlements?.['com.apple.security.application-groups']).toBeUndefined();
     expect(watch.entitlements?.['com.apple.security.application-groups']).toBeUndefined();
     expect(shared).not.toContain('UserDefaults');
-    expect(widget).toContain('Text("Quick capture")');
+    expect(widget).toContain('Text("Talk to Verity")');
   });
 });
