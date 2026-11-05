@@ -408,7 +408,9 @@ async function withListener(
   }
 }
 
-it('implements a submitted plan on the user instruction without another approval', async () => {
+/** A planning turn that presents `plan`, then the user's chat instruction to go
+ *  ahead and the agent's `verity_end_planning` call; returns that call's result. */
+async function implementByChatInstruction(plan: string) {
   const harness = build({ planningTools: true, unlocked: true });
   await harness.store.createProject({
     id: 'p1',
@@ -437,6 +439,7 @@ it('implements a submitted plan on the user instruction without another approval
   await harness.store.markTurnRunning({ sessionId: 's1', promptSeq: prompt.seq });
   await harness.store.bindTurnIdentity('s1', { turnId: 't1', startCommandId: 'c1' });
   const token = harness.tokens.issue({ projectId: 'p1', sessionId: 's1', turnId: 't1' });
+  let implemented: { isError?: boolean; content?: unknown } | undefined;
   await withListener(harness, async (socketPath) => {
     let id = 0;
     const call = async (name: string, args: object) => {
@@ -449,11 +452,11 @@ it('implements a submitted plan on the user instruction without another approval
       return (JSON.parse(response.body) as { result: { isError?: boolean } }).result;
     };
     // Outside planning mode there is no plan to show or end.
-    expect((await call('verity_present_plan', { plan: '1. Do it' })).isError).toBe(true);
+    expect((await call('verity_present_plan', { plan })).isError).toBe(true);
 
     expect((await call('verity_start_planning', {})).isError).toBeUndefined();
     expect((await harness.store.getSession('s1'))?.planning).toBe('active');
-    expect((await call('verity_present_plan', { plan: '1. Do it' })).isError).toBeUndefined();
+    expect((await call('verity_present_plan', { plan })).isError).toBeUndefined();
     expect((await call('verity_start_planning', {})).isError).toBe(true);
     // Starting and presenting only restrict the agent or show text: no card.
     expect(harness.approvals).toEqual([]);
@@ -462,7 +465,7 @@ it('implements a submitted plan on the user instruction without another approval
       t: 'tool_call',
       id: 'plan1',
       name: 'verity_present_plan',
-      input: { plan: '1. Do it' },
+      input: { plan },
     });
     await harness.store.appendEvent('s1', {
       t: 'tool_result',
@@ -476,9 +479,14 @@ it('implements a submitted plan on the user instruction without another approval
       steered: true,
       initiatedBy: { userId: 'u1' },
     });
-    const implemented = await call('verity_end_planning', {});
-    expect(implemented.isError, JSON.stringify(implemented)).toBeUndefined();
+    implemented = await call('verity_end_planning', {});
   });
+  return { harness, implemented };
+}
+
+it('implements a submitted plan on the user instruction without another approval', async () => {
+  const { harness, implemented } = await implementByChatInstruction('1. Do it');
+  expect(implemented?.isError, JSON.stringify(implemented)).toBeUndefined();
   // Reconfirming a chat instruction would leave the same decision in two places.
   expect(harness.approvals).toEqual([]);
   expect((await harness.store.getSession('s1'))?.planning).toBe('implemented');
@@ -488,6 +496,18 @@ it('implements a submitted plan on the user instruction without another approval
       dispatchOpts: expect.objectContaining({ queueBehindActiveTurn: true }),
     }),
   ]);
+});
+
+it('refuses a chat instruction to implement while the plan lists open decisions', async () => {
+  // "Leg los" must not start work on a choice the user never made; the card's
+  // button is locked for the same plan, and the chat must not route around it.
+  const { harness, implemented } = await implementByChatInstruction(
+    '## Open decisions\n1. **Show prices incl. VAT?** — Incl. VAT (recommended) | Excl. VAT\n## Steps\n1. Do it',
+  );
+  expect(implemented?.isError).toBe(true);
+  expect(JSON.stringify(implemented)).toContain('open decisions');
+  expect((await harness.store.getSession('s1'))?.planning).toBe('active');
+  expect(harness.dispatches).toEqual([]);
 });
 
 it('runs an approved plan for the approving user and still refuses them once revoked', async () => {

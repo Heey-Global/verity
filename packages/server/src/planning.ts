@@ -6,6 +6,7 @@ import {
   IMPLEMENT_PLAN_DISPLAY,
   IMPLEMENT_PLAN_PROMPT,
   PRESENT_PLAN_TOOL,
+  parsePlanningProposal,
   planningToolName,
 } from '@verity/events';
 import type { DispatchTurnOptions, TurnOptions } from '@verity/session';
@@ -92,6 +93,15 @@ function presentedRevision(value: unknown): number | undefined {
   return undefined;
 }
 
+/** Decisions the plan still leaves to the user. A plan with any cannot be
+ *  implemented: the work would start on a choice nobody made. */
+export function openPlanDecisions(plan: string | null | undefined): number {
+  return plan ? parsePlanningProposal(plan).decisions.length : 0;
+}
+
+export const OPEN_DECISIONS_ERROR =
+  'The plan still has open decisions. Answer them so the plan can be revised before implementing.';
+
 export interface PlanningDeps {
   eventStore: Pick<
     EventStore,
@@ -109,7 +119,8 @@ export interface SessionPlanningActions {
   /** Enter planning mode. Answers whether the session exists. */
   start(sessionId: string): Promise<boolean>;
   /** Leave planning mode and start the implementation as a turn of its own.
-   *  Answers false when the session was not planning (already decided).
+   *  Answers false when the session was not planning (already decided), the
+   *  revision is stale, or the plan still lists open decisions.
    *  `initiatedBy` is the user who approved the plan; the implementation turn runs
    *  for them, and an authenticated server refuses tool calls in a turn without one. */
   implement(
@@ -137,6 +148,7 @@ export function createSessionPlanning(deps: PlanningDeps): SessionPlanningAction
       const session = await store.getSession(sessionId);
       if (session?.planningRevision !== planningRevision || session.planningPlan == null)
         return false;
+      if (openPlanDecisions(session.planningPlan) > 0) return false;
       // Acceptance and the implementation backlog entry share one transaction;
       // recovery can resume it even if the server exits before updating its queue.
       const result = await deps.dispatchTurn(
@@ -197,6 +209,14 @@ export function registerPlanningRoutes(
     if (!ended) {
       reply.code(409);
       const session = await deps.eventStore.getSession(id);
+      if (
+        body.action === 'implement' &&
+        session?.planning === 'active' &&
+        session.planningRevision === body.planningRevision &&
+        openPlanDecisions(session.planningPlan) > 0
+      ) {
+        return { error: OPEN_DECISIONS_ERROR, code: 'openDecisions' };
+      }
       if (body.planningRevision !== undefined && session?.planning === 'active') {
         return {
           error: 'The plan was updated. Please review the current plan.',

@@ -4800,6 +4800,11 @@ export const SessionChat = memo(function SessionChat({
           error={planningError}
           onDismiss={dismissPlan}
           onImplement={() => implementPlan(planningRevision)}
+          onAnswerDecision={(answer) => {
+            void sendTurn(answer).then((accepted) => {
+              if (accepted) scrollToLatest(true);
+            });
+          }}
         />
       ) : null}
       {client ? <QAApprovalCard client={client} sessionId={sessionId} /> : null}

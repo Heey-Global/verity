@@ -57,6 +57,8 @@ export {
   END_PLANNING_TOOL,
   DISMISSED_PLAN_SYSTEM_PROMPT,
   parsePlanningProposal,
+  type PlanDecision,
+  type PlanningProposal,
   IMPLEMENT_PLAN_DISPLAY,
   IMPLEMENT_PLAN_PROMPT,
   PLANNING_ACTIVE_SYSTEM_PROMPT,

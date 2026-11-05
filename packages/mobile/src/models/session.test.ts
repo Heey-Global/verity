@@ -3208,6 +3208,42 @@ describe('SessionModel — planning', () => {
     }
   });
 
+  it('tells the user to answer open decisions instead of calling planning over', async () => {
+    // "Planning already ended" would send the user away from a plan that is
+    // still waiting for their answer.
+    const { connect } = recordingConnect();
+    const client = stubClient();
+    client.decidePlanning = vi.fn(async () => {
+      throw new VerityApiError(409, 'open decisions', { code: 'openDecisions' });
+    });
+    const model = new SessionModel({ client, sessionId: 's1', transport: connect });
+    try {
+      await model.decidePlanning('implement', 1);
+      expect(model.state.planningError).toBe(
+        'Answer the open decisions first; the plan will be revised.',
+      );
+    } finally {
+      model.stop();
+    }
+  });
+
+  it('shows the server text for a refusal this build does not know', async () => {
+    // Mapping every 409 to "Planning already ended." would contradict a plan
+    // that is still on screen and waiting.
+    const { connect } = recordingConnect();
+    const client = stubClient();
+    client.decidePlanning = vi.fn(async () => {
+      throw new VerityApiError(409, 'Approval needs a newer app.', { code: 'futureRule' });
+    });
+    const model = new SessionModel({ client, sessionId: 's1', transport: connect });
+    try {
+      await model.decidePlanning('implement', 1);
+      expect(model.state.planningError).toBe('Approval needs a newer app.');
+    } finally {
+      model.stop();
+    }
+  });
+
   it('explains a decision that lost to another one', async () => {
     const { connect } = recordingConnect();
     const client = stubClient();

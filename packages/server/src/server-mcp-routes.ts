@@ -83,7 +83,12 @@ import { createMcpAppsInterceptor } from './mcp-apps.js';
 import { registerMcpGatewayRoutes } from './mcp-gateway-route.js';
 import { createMcpGateway } from './mcp-gateway.js';
 import { authorizePairedRoute } from './paired-route-policy.js';
-import { createSessionPlanning, trustedPlanInstructionConsent } from './planning.js';
+import {
+  createSessionPlanning,
+  OPEN_DECISIONS_ERROR,
+  openPlanDecisions,
+  trustedPlanInstructionConsent,
+} from './planning.js';
 import { resolveProjectDefaultModel } from './project-agent-policy.js';
 import { projectClonePath } from './provisioner.js';
 import type { ServerDeps } from './server-deps.js';
@@ -1602,6 +1607,13 @@ export function registerServerMcpRoutes({
           }
           // The user's instruction in chat already authorizes implementation.
           const planningRevision = planningApprovalRevisions.get(input.request as object);
+          const planned = await deps.eventStore.getSession(input.sessionId);
+          if (
+            planningRevision !== undefined &&
+            planned?.planningRevision === planningRevision &&
+            openPlanDecisions(planned.planningPlan) > 0
+          )
+            throw new ControlPlaneSessionAuthorityError(OPEN_DECISIONS_ERROR);
           if (
             planningRevision === undefined ||
             !(await sessionPlanning.implement(

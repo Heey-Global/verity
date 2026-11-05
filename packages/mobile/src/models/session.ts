@@ -234,6 +234,25 @@ export interface SessionModelOptions {
   ready?: Promise<unknown>;
 }
 
+/** What the card says when ending planning failed. A 409 with a code this
+ *  build does not know shows the server's own text, so a newer refusal is not
+ *  mistaken for planning having ended. */
+function planningDecisionError(error: unknown): string {
+  if (!(error instanceof VerityApiError) || error.status !== 409)
+    return 'Could not end planning. Try again.';
+  switch (error.code) {
+    case 'stalePlan':
+      return 'The plan was updated. Please review it again.';
+    case 'openDecisions':
+      return 'Answer the open decisions first; the plan will be revised.';
+    case undefined:
+    case 'notPlanning':
+      return 'Planning already ended.';
+    default:
+      return error.message;
+  }
+}
+
 /**
  * Headless controller for the chat screen: drives the {@link SessionStream}
  * lifecycle (live transcript via the reducer) and sends operator turns through
@@ -1373,12 +1392,7 @@ export class SessionModel {
       this._planning = result.planning;
       this._planningDecisionAfterActivityRequest = this._activityRequest;
     } catch (error) {
-      this._planningError =
-        error instanceof VerityApiError && error.status === 409 && error.code === 'stalePlan'
-          ? 'The plan was updated. Please review it again.'
-          : error instanceof VerityApiError && error.status === 409
-            ? 'Planning already ended.'
-            : 'Could not end planning. Try again.';
+      this._planningError = planningDecisionError(error);
     } finally {
       this._decidingPlanning = false;
       this.emit();

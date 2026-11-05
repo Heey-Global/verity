@@ -58,6 +58,29 @@ const decide = (action: string, id = 's1') =>
   });
 
 describe('planning routes', () => {
+  it('refuses to implement a plan with open decisions until a revision resolves them', async () => {
+    // The card locks Implement for such a plan; a stale or scripted request must
+    // not start the work on a choice the user never made.
+    await store.setSessionPlanning('s1', 'active');
+    await store.presentSessionPlan(
+      's1',
+      '## Open decisions\n1. **Region?** — EU (recommended) | US\n## Steps\n1. Do it',
+    );
+    const refused = await decide('implement');
+    expect(refused.statusCode).toBe(409);
+    expect(refused.json()).toMatchObject({ code: 'openDecisions' });
+    expect((await store.getSession('s1'))?.planning).toBe('active');
+    expect(dispatchTurn).not.toHaveBeenCalled();
+
+    await store.presentSessionPlan('s1', '## Steps\n1. Do it in the EU');
+    const accepted = await app.inject({
+      method: 'POST',
+      url: '/sessions/s1/planning',
+      payload: { action: 'implement', planningRevision: 2 },
+    });
+    expect(accepted.json()).toEqual({ planning: 'implemented' });
+  });
+
   it('implements the plan as a turn of its own behind the planning turn', async () => {
     await store.setSessionPlanning('s1', 'active');
     await store.presentSessionPlan('s1', '1. Do it');

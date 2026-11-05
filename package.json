@@ -52,7 +52,8 @@
     "test:watch": "vitest",
     "coverage": "vitest run --coverage",
     "enrollment:schemas": "node scripts/enrollment-proof/export-schemas.ts",
-    "render:app-screens": "node scripts/render-app-screens.mjs"
+    "render:app-screens": "node scripts/render-app-screens.mjs",
+    "render:mockups": "node scripts/render-mockups.mjs"
   },
   "devDependencies": {
     "@agentclientprotocol/claude-agent-acp": "0.99.1",
