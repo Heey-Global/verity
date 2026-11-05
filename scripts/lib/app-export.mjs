@@ -8,7 +8,7 @@ import { extname, join, sep } from 'node:path';
 import { URL } from 'node:url';
 
 // Storage keys read by apps/mobile/lib/demoMode.ts and demoShowcase.ts.
-export const DEMO_STORAGE = { 'verity.demoMode.v1': '1', 'verity.demoShowcase.v1': '1' };
+const DEMO_STORAGE = { 'verity.demoMode.v1': '1', 'verity.demoShowcase.v1': '1' };
 
 // The callbacks passed to `page.evaluate` run in the page. The scripts' type
 // program has no DOM library (adding it would retype `fetch` for every script),
