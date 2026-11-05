@@ -200,7 +200,7 @@ export function createSessionMockups(deps: MockupDeps) {
           initiatedBy,
           stored.screens,
         );
-        return { ok: true, review: started ? after : stored };
+        return started ? { ok: true, review: after } : { ok: false, code: 'stale' };
       }
       return { ok: true, review: stored };
     },
@@ -229,7 +229,7 @@ export function createSessionMockups(deps: MockupDeps) {
         mockupFeedbackDisplay(comments),
         initiatedBy,
       );
-      return { ok: true, review: started ? after : stored };
+      return started ? { ok: true, review: after } : { ok: false, code: 'stale' };
     },
   };
 }
