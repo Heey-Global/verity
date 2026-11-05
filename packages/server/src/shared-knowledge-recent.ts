@@ -1,5 +1,5 @@
 import { constants } from 'node:fs';
-import { open, readdir, stat } from 'node:fs/promises';
+import { lstat, open, readdir, stat } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 
 /** Where a Shared knowledge file lives, as the app names the three areas. */
@@ -78,7 +78,13 @@ export async function recentSharedKnowledge(
   truncated: boolean;
 }> {
   const files: { path: string; mtime: number }[] = [];
-  const queue = ['insights', 'sources'];
+  // readdir follows a link given as its own path, so the two starting folders
+  // are checked here; inside the walk Dirent types already exclude links.
+  const queue: string[] = [];
+  for (const top of ['insights', 'sources']) {
+    const info = await lstat(join(root, top)).catch(() => undefined);
+    if (info?.isDirectory()) queue.push(top);
+  }
   let truncated = false;
   while (queue.length > 0 && !truncated) {
     const relative = queue.shift()!;

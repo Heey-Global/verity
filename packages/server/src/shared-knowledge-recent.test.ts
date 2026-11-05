@@ -70,6 +70,15 @@ it('never follows links or reads hidden and derived entries', async () => {
   expect(entries.map((entry) => entry.path)).toEqual(['insights/visible.md']);
 });
 
+it('does not start the walk in an area that is itself a link out of the library', async () => {
+  // readdir follows a link passed as its own path; Dirent filtering never sees it.
+  writeFileSync(join(outside, 'secret.md'), '# Outside the library');
+  symlinkSync(outside, join(root, 'sources'));
+  write('insights/visible.md', '# Visible', 1);
+  const { entries } = await recentSharedKnowledge(root, 20);
+  expect(entries.map((entry) => entry.path)).toEqual(['insights/visible.md']);
+});
+
 it('keeps a file with a damaged decision header, without provenance', () => {
   expect(
     describeHead('insights/decisions/x.md', '<!-- verity-decision:v1 {nope} -->\n# Kept'),
