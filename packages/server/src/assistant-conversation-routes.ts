@@ -210,8 +210,10 @@ export function registerAssistantConversationRoutes(
     if (target === undefined) return reply;
     // A replay is recognised before the question is checked: once answered, it is
     // closed, and the device that answered must still see its own success.
+    // A pending one goes on to the claim, which takes it over once it is stale
+    // (a server that stopped mid-delivery), instead of answering "pending" forever.
     const previous = await store.assistant.request(body.requestId);
-    if (previous !== undefined)
+    if (previous !== undefined && previous.state !== 'pending')
       return replay(
         reply,
         { claimed: false, request: previous },

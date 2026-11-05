@@ -277,6 +277,8 @@ final class CaptureStore: NSObject, ObservableObject {
   }
 
   private func receive(_ snapshot: VeritySnapshot?) {
+    // Another account's conversation never shows here, nor do its questions.
+    if let scope = snapshot?.scope, let current = projectList.scope, scope != current { return }
     guard snapshot != verity else { return }
     verity = snapshot
     // Forget answers to questions that are gone, so the set stays small.

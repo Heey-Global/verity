@@ -152,6 +152,7 @@ export function VerityPanel({
         ))}
         {conversation?.question ? (
           <QuestionCard
+            key={conversation.question.id}
             question={conversation.question}
             answering={verity.outbox.some(
               (entry) => entry.kind === 'answer' && entry.questionId === conversation.question?.id,

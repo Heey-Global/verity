@@ -59,8 +59,13 @@ function set(next: Partial<VerityState>): void {
 function restore(): Promise<void> {
   restored ??= AsyncStorage.getItem(KEY)
     .then((data) => {
-      const saved = data ? (JSON.parse(data) as Outgoing[]) : [];
-      if (Array.isArray(saved)) set({ outbox: [...saved, ...state.outbox] });
+      let saved: unknown = [];
+      try {
+        saved = data ? JSON.parse(data) : [];
+      } catch {
+        // Unreadable for good: starting empty beats refusing every message from now on.
+      }
+      if (Array.isArray(saved)) set({ outbox: [...(saved as Outgoing[]), ...state.outbox] });
     })
     .catch((error: unknown) => {
       restored = null;
@@ -148,6 +153,9 @@ async function flushOnce(): Promise<void> {
   if (scope === null || client === null) return;
   for (const entry of state.outbox) {
     if (entry.scope !== scope || entry.held === true) continue;
+    // Discarded or held while this pass was sending an earlier one.
+    if (!state.outbox.some((item) => item.requestId === entry.requestId && item.held !== true))
+      continue;
     try {
       if (entry.kind === 'message')
         await client.sendAssistantMessage({
@@ -187,12 +195,15 @@ async function flushOnce(): Promise<void> {
 
 export async function refreshVerity(): Promise<void> {
   const client = createVerityClient();
-  if (client === null || taskAccountScope() === null) {
+  const scope = taskAccountScope();
+  if (client === null || scope === null) {
     set({ conversation: null, access: 'unknown' });
     return;
   }
   try {
-    showConversation(await client.assistantConversation());
+    const next = await client.assistantConversation();
+    // Answered for an account that is no longer signed in.
+    if (taskAccountScope() === scope) showConversation(next);
   } catch (error) {
     set({
       access: error instanceof VerityApiError && error.status === 403 ? 'denied' : 'offline',
@@ -211,7 +222,8 @@ async function enqueue(entry: Outgoing): Promise<void> {
     set({ outbox: state.outbox.filter((item) => item.requestId !== entry.requestId) });
     throw error;
   }
-  await flushVerity();
+  // Stored from here on: a failed send is the outbox's to retry, not the caller's.
+  await flushVerity().catch(() => undefined);
   await refreshVerity();
 }
 
@@ -256,6 +268,7 @@ export function answerVerity(questionId: string, labels: string[], origin?: Orig
 
 /** Tries a held entry again under its original id. */
 export async function retryOutgoing(requestId: string): Promise<void> {
+  await restore();
   await saveOutbox(
     state.outbox.map((item) =>
       item.requestId === requestId ? { ...item, held: false, error: undefined } : item,
@@ -266,6 +279,7 @@ export async function retryOutgoing(requestId: string): Promise<void> {
 }
 
 export async function discardOutgoing(requestId: string): Promise<void> {
+  await restore();
   await saveOutbox(state.outbox.filter((item) => item.requestId !== requestId));
 }
 
@@ -325,6 +339,7 @@ export async function followVerity(
       await sleep(5_000, signal);
       continue;
     }
+    const scope = taskAccountScope();
     const before = state.conversation?.revision;
     const retrying = state.outbox.some((entry) => entry.held !== true);
     const started = Date.now();
@@ -336,6 +351,8 @@ export async function followVerity(
       );
       if (signal.aborted) return;
       failures = 0;
+      // Answered for an account that is no longer signed in: read again for the new one.
+      if (taskAccountScope() !== scope) continue;
       showConversation(next);
       if (next.revision === before && Date.now() - started < VERITY_HELD_MIN_MS)
         await sleep(verityPollMs(state, open()), signal);

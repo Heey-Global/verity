@@ -201,6 +201,8 @@ final class VerityWatchInbox: NSObject, WCSessionDelegate {
   /// JavaScript's direct connection, or nil when there is none (signed out, uplink).
   func setLink(_ config: VerityAssistantLink.Config?) {
     queue.async {
+      // Another account's (or no account's) state must not stay on the wrist.
+      if self.link.config?.scope != config?.scope { self.publish(nil, force: true) }
       self.link.configure(config)
       if config != nil { self.retry() }
     }
@@ -614,6 +616,8 @@ final class VerityWatchInbox: NSObject, WCSessionDelegate {
           after = conversation["revision"] as? Int
           let snapshot = VerityAssistantLink.snapshot(conversation, scope: scope)
           self.queue.sync {
+            // Read for an account that signed out meanwhile: the next pass reads anew.
+            guard self.link.config?.scope == scope else { return }
             self.publish(snapshot, force: true)
             // Keep following while there is more to come.
             if snapshot["state"] as? String == "working" {
@@ -643,6 +647,7 @@ final class VerityWatchInbox: NSObject, WCSessionDelegate {
   private func publish(_ snapshot: [String: Any]?, force: Bool) {
     if !force, let snapshot, let current = verity,
       current["scope"] as? String == snapshot["scope"] as? String,
+      current["availability"] as? String == snapshot["availability"] as? String,
       (snapshot["revision"] as? Int ?? 0) < (current["revision"] as? Int ?? 0)
     {
       return
