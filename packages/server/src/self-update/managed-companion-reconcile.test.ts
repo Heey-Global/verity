@@ -264,6 +264,36 @@ describe('managed companion reconciliation', () => {
     expect(state.removed).toEqual(['c'.repeat(64)]);
   });
 
+  it('names the reason when the seed cleanup helper skips', async () => {
+    const state = fake({ gateway: targetImage, updater: targetImage });
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const docker = {
+        ...state.docker,
+        waitContainer: vi.fn(async () => 2),
+        containerLogs: vi.fn(async () =>
+          JSON.stringify({
+            deleted: [],
+            skipped: 'a container still uses an ambiguous .current seed mount',
+          }),
+        ),
+      };
+      await reconcileWithCleanup({
+        managedRoot: '/managed',
+        docker,
+        journal,
+        reconcileRunner: async () => undefined,
+      });
+      expect(warning).toHaveBeenCalledWith(
+        'agent-seed cleanup skipped:',
+        'seed cleanup helper could not establish a complete, unambiguous inventory: a container still uses an ambiguous .current seed mount',
+      );
+      expect(state.removed).toEqual(['c'.repeat(64)]);
+    } finally {
+      warning.mockRestore();
+    }
+  });
+
   it('records the prior selection only after successful publication', async () => {
     const root = await mkdtemp(join(tmpdir(), 'verity-seed-previous-'));
     const source = await seedSource(root);
