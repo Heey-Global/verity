@@ -90,6 +90,17 @@ export function PinnedPlan({
                     </View>
                   );
                 })}
+                {content.mockups.length > 0 ? (
+                  <>
+                    <Text style={styles.sectionLabel}>Mockups</Text>
+                    {content.mockups.map((mockup, index) => (
+                      <View key={index} style={styles.step}>
+                        <Icon name="image" size={12} color={theme.colors.textMuted} />
+                        <Text style={[styles.description, styles.stepText]}>{mockup}</Text>
+                      </View>
+                    ))}
+                  </>
+                ) : null}
                 {content.criteria.length > 0 ? (
                   <>
                     <Text style={styles.sectionLabel}>Acceptance criteria</Text>

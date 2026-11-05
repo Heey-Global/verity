@@ -12,6 +12,7 @@ import {
   type QueuedItem,
   type SessionDetail,
   type SessionHistoryPage,
+  type MockupReview,
   type SessionPlanning,
   type TurnRequest,
 } from '../api.js';
@@ -161,6 +162,12 @@ export interface SessionModelState {
   planningPlan: string | null | undefined;
   /** True while an "implement" / "discard" decision is in flight. */
   decidingPlanning: boolean;
+  /** The mockup review the agent presented, if any; drives the review bar. */
+  mockupReview: MockupReview | undefined;
+  /** True while a mockup verdict or the comments are being sent. */
+  decidingMockup: boolean;
+  /** Why the last mockup decision failed, if it did. */
+  mockupError: string | undefined;
   /** Why the last planning decision failed, if it did. */
   planningError: string | undefined;
   /** True when older history exists before the loaded tail — the screen shows a
@@ -237,6 +244,34 @@ export interface SessionModelOptions {
 /** What the card says when ending planning failed. A 409 with a code this
  *  build does not know shows the server's own text, so a newer refusal is not
  *  mistaken for planning having ended. */
+/** The server answers with the stored review; compare what the bar shows. */
+function sameMockupReview(a: MockupReview | undefined, b: MockupReview | undefined): boolean {
+  if (a === undefined || b === undefined) return a === b;
+  return (
+    a.state === b.state &&
+    a.revision === b.revision &&
+    a.screens.length === b.screens.length &&
+    a.screens.every((screen, index) => {
+      const other = b.screens[index]!;
+      return (
+        screen.name === other.name &&
+        screen.attachment === other.attachment &&
+        screen.verdict === other.verdict &&
+        screen.comment === other.comment
+      );
+    })
+  );
+}
+
+function mockupDecisionError(error: unknown): string {
+  if (!(error instanceof VerityApiError)) return 'Could not save your review. Try again.';
+  if (error.status === 409 && error.code === 'stale')
+    return 'The mockups were updated. Please review the current ones.';
+  if (error.status === 409 && error.code === 'notPending')
+    return 'These mockups are no longer waiting for review.';
+  return error.message;
+}
+
 function planningDecisionError(error: unknown): string {
   if (!(error instanceof VerityApiError) || error.status !== 409)
     return 'Could not end planning. Try again.';
@@ -326,6 +361,10 @@ export class SessionModel {
   private _planningPlan: string | null | undefined;
   private _decidingPlanning = false;
   private _planningError: string | undefined;
+  private _mockupReview: MockupReview | undefined;
+  private _decidingMockup = false;
+  private _mockupError: string | undefined;
+  private _mockupDecisionAfterActivityRequest = 0;
   private _activityTimer: ReturnType<typeof setInterval> | undefined;
   // Guards against overlapping polls: the interval fires on a fixed cadence
   // regardless of whether the prior `loadActivity` resolved, and the poll now does a
@@ -517,6 +556,9 @@ export class SessionModel {
       planningPlan: this._planningPlan,
       decidingPlanning: this._decidingPlanning,
       planningError: this._planningError,
+      mockupReview: this._mockupReview,
+      decidingMockup: this._decidingMockup,
+      mockupError: this._mockupError,
       hasOlder: this._hasOlder,
       oldestHistorySeq: this._historyBefore,
       loadingOlder: this._loadingOlder,
@@ -987,6 +1029,11 @@ export class SessionModel {
       this._busyAtSeq = seqAtRequest;
       // Ending planning keeps the same revision: an older poll must not reactivate it.
       const acceptPlanning = activityRequest > this._planningDecisionAfterActivityRequest;
+      // A poll sent before the reviewer's own verdict would undo it on screen.
+      const mockupChanged =
+        activityRequest > this._mockupDecisionAfterActivityRequest &&
+        !sameMockupReview(activity.mockupReview, this._mockupReview);
+      if (mockupChanged) this._mockupReview = activity.mockupReview;
       if (activity.pendingPermissions !== undefined) {
         this.stream.reconcilePendingPermissions(activity.pendingPermissions, seqAtRequest);
       }
@@ -1051,6 +1098,7 @@ export class SessionModel {
           activity.planningRevision === undefined ||
           activity.planningRevision === this._planningRevision) &&
         sameItems(activity.queued, this._waiting) &&
+        !mockupChanged &&
         !nameChanged &&
         !modelSwitchPendingChanged &&
         !rateLimitPruned &&
@@ -1154,6 +1202,7 @@ export class SessionModel {
         this._planning = detail.planning;
         this._planningRevision = detail.planningRevision;
         this._planningPlan = detail.planningPlan;
+        this._mockupReview = detail.mockupReview;
       }
       this.emit();
     } catch {
@@ -1398,6 +1447,47 @@ export class SessionModel {
       this.emit();
     }
     void this.loadActivity();
+  }
+
+  /** Approve, comment on or reopen one mockup screen. Approving the last open
+   * screen makes the server continue the build; the review then reads `approved`. */
+  async decideMockup(
+    screen: string,
+    decision: { verdict: 'approved' | 'open' } | { verdict: 'comment'; comment: string },
+  ): Promise<boolean> {
+    const review = this._mockupReview;
+    if (this._decidingMockup || review === undefined) return false;
+    return this.mockupAction(() =>
+      this.opts.client.decideMockup(this.opts.sessionId, review.revision, screen, decision),
+    );
+  }
+
+  /** Hand the commented screens to the agent for a revised round. */
+  async sendMockupComments(): Promise<boolean> {
+    const review = this._mockupReview;
+    if (this._decidingMockup || review === undefined) return false;
+    return this.mockupAction(() =>
+      this.opts.client.sendMockupComments(this.opts.sessionId, review.revision),
+    );
+  }
+
+  private async mockupAction(send: () => Promise<MockupReview | undefined>): Promise<boolean> {
+    this._decidingMockup = true;
+    this._mockupError = undefined;
+    this.emit();
+    let ok = false;
+    try {
+      this._mockupReview = await send();
+      this._mockupDecisionAfterActivityRequest = this._activityRequest;
+      ok = true;
+    } catch (error) {
+      this._mockupError = mockupDecisionError(error);
+    } finally {
+      this._decidingMockup = false;
+      this.emit();
+    }
+    void this.loadActivity();
+    return ok;
   }
 
   async decidePermission(toolUseId: string, decision: PermissionDecision): Promise<void> {

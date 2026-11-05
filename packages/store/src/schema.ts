@@ -57,6 +57,15 @@ export interface SessionsTable {
   >;
   planning_revision: ColumnType<number, number | undefined, number>;
   planning_plan: ColumnType<string | null, string | null | undefined, string | null>;
+  /** Mockup review (see {@link SessionMockupState}). NULL = no mockups were presented. */
+  mockup_review: ColumnType<
+    'pending' | 'revising' | 'approved' | null,
+    'pending' | 'revising' | 'approved' | null | undefined,
+    'pending' | 'revising' | 'approved' | null
+  >;
+  mockup_revision: ColumnType<number, number | undefined, number>;
+  /** JSON array of {@link MockupScreenRecord}; written whole with each change. */
+  mockup_screens: ColumnType<unknown, string | null | undefined, string | null>;
   /** Operator-marked favorite; highlighted in the session list. */
   favorite: ColumnType<boolean, boolean | undefined, boolean>;
   created_at: ColumnType<Date, string | undefined, never>;
@@ -501,6 +510,8 @@ export interface ProjectSettingsTable {
   google_drive_folder_id: ColumnType<string | null, string | null | undefined, string | null>;
   google_drive_folder_name: ColumnType<string | null, string | null | undefined, string | null>;
   google_drive_access_mode: Generated<'read-only' | 'read-write'>;
+  /** Design module: whether plans include mockups to approve before implementation. */
+  design_level: Generated<'off' | 'on_request' | 'required'>;
   /** Agents sessions in this project may use; null permits every connected agent. */
   allowed_agents: ColumnType<
     ('claude' | 'codex' | 'opencode')[] | null,
