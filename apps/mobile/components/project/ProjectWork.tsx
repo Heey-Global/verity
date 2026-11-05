@@ -88,7 +88,8 @@ export function ProjectWork({
   onChanged,
 }: {
   client: VerityClient;
-  projectId: string;
+  /** The project a new session starts in; none for sessions outside a project. */
+  projectId?: string | undefined;
   sessions: readonly SessionSummary[];
   onOpenSession: (sessionId: string) => void;
   /** After a rename, favorite or delete of `sessionId`, so the page and its
@@ -175,7 +176,9 @@ export function ProjectWork({
           icon="plus"
           size="compact"
           variant="secondary"
-          onPress={() => router.push({ pathname: '/new', params: { projectId } })}
+          onPress={() =>
+            router.push(projectId ? { pathname: '/new', params: { projectId } } : '/new')
+          }
         />
       </View>
       {shown.length === 0 ? (

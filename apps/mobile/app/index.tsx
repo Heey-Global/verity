@@ -135,6 +135,7 @@ import { HomeInbox } from '../components/home/HomeInbox';
 import { HomeTabBar, type HomeTab } from '../components/home/HomeTabBar';
 import { useNewDesign } from '../lib/homePreferences';
 import { ProjectPage } from '../components/project/ProjectPage';
+import { ProjectCard } from '../components/project/ProjectCard';
 import { toneColor } from '../theme/tokens';
 import { tint } from '../components/ui/tint';
 
@@ -722,15 +723,42 @@ function SessionList({ client }: { client: VerityClient }) {
 
   const renderGroup = useCallback(
     (item: SessionProjectGroup, floating = false) => {
+      const collapsed = collapsedOverride.get(item.id) ?? item.project?.collapsed ?? false;
+      if (newDesign) {
+        // A project with a page opens it, a paused one too (its page reaches the
+        // settings with Repair, as the classic "…" did). Verity Control and
+        // sessions outside any project show their sessions in place.
+        const pageId =
+          item.project && !isVerityControlPlaneProject(item.project)
+            ? item.project.id
+            : item.inactiveProjectId;
+        return (
+          <ProjectCard
+            group={item}
+            client={client}
+            now={Date.now()}
+            reorder={reorder}
+            renderedOrder={activeGroupIds}
+            sortable={isReorderableGroup(item)}
+            floating={floating}
+            reordering={draggingAnything}
+            expanded={draggingProjectId === null && !collapsed}
+            onOpen={pageId !== undefined ? () => openProject(pageId) : undefined}
+            onToggle={() => toggleProjectGroup(item, collapsed)}
+            onOpenSession={openSessionFromHome}
+            onSessionChanged={(sessionId, deleted) => {
+              if (deleted && selectedId === sessionId) setSelectedId(null);
+              void refresh({ silent: true });
+            }}
+          />
+        );
+      }
       return (
         <ProjectGroup
           group={floating ? { ...item, sessions: [] } : item}
           floating={floating}
           wide={wide}
-          collapsed={
-            draggingProjectId !== null ||
-            (collapsedOverride.get(item.id) ?? item.project?.collapsed ?? false)
-          }
+          collapsed={draggingProjectId !== null || collapsed}
           onToggle={toggleProjectGroup}
           reorder={reorder}
           renderedOrder={activeGroupIds}
@@ -747,7 +775,6 @@ function SessionList({ client }: { client: VerityClient }) {
           onOpenSession={onOpenSession}
           onUpdateProject={confirmSandboxUpdate}
           onRepairProject={repairProjectRow}
-          onOpenProject={newDesign ? openProject : undefined}
           defaultNewSessionProject={defaultNewSessionProject}
           unread={unread}
           previewUrls={previewUrls}
@@ -783,6 +810,9 @@ function SessionList({ client }: { client: VerityClient }) {
       repairingProjectIds,
       newDesign,
       openProject,
+      openSessionFromHome,
+      client,
+      refresh,
       defaultNewSessionProject,
       refreshProjects,
       onToggleFavoriteSession,
@@ -1025,18 +1055,20 @@ function SessionList({ client }: { client: VerityClient }) {
     if (openProjectId === null) return '';
     const project = projects.find((candidate) => candidate.id === openProjectId);
     return JSON.stringify([
-      project?.state,
-      project?.inboxDismissed,
+      // The whole record: health reads its state, errors, updates and drift.
+      project,
       sessions
         .filter((session) => session.projectId === openProjectId)
         .map((session) => [
           session.sessionId,
           session.status,
+          session.backgroundWorking,
           session.eventCount,
           session.name,
           session.favorite,
           session.inboxDismissed,
           session.pullRequest?.phase,
+          session.pullRequest?.pipeline,
         ]),
     ]);
   }, [openProjectId, projects, sessions]);
@@ -1317,7 +1349,6 @@ const ProjectGroup = memo(function ProjectGroup({
   onOpenSession,
   onUpdateProject,
   onRepairProject,
-  onOpenProject,
   defaultNewSessionProject,
   unread,
   previewUrls,
@@ -1350,8 +1381,6 @@ const ProjectGroup = memo(function ProjectGroup({
   onOpenSession: (session: SessionSummary) => void;
   onUpdateProject: (project: ProjectRecord) => void;
   onRepairProject?: ((projectId: string) => void) | undefined;
-  /** The new design: the header's "…" opens the project page instead of its settings. */
-  onOpenProject?: ((projectId: string) => void) | undefined;
   defaultNewSessionProject?: ProjectRecord | undefined;
   unread: ReadonlySet<string>;
   previewUrls: ReadonlyMap<string, string | null>;
@@ -1658,16 +1687,7 @@ const ProjectGroup = memo(function ProjectGroup({
                     </Pressable>
                   </Link>
                 )}
-                {!controlPlane && onOpenProject ? (
-                  <Pressable
-                    style={styles.projectOpenButton}
-                    accessibilityRole="button"
-                    accessibilityLabel={`Open project ${group.title}`}
-                    onPress={() => onOpenProject(group.project!.id)}
-                  >
-                    <Icon name="more-horizontal" size={20} color={theme.colors.textMuted} />
-                  </Pressable>
-                ) : !controlPlane ? (
+                {!controlPlane ? (
                   <Link
                     href={{ pathname: '/project/[id]/settings', params: { id: group.project.id } }}
                     accessibilityLabel={`Open project settings for ${group.title}`}
