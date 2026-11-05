@@ -270,7 +270,7 @@ describe('project page', () => {
     );
     const view = render(page(1));
     await screen.findByTestId('project-line');
-    const reads = client.getProject.mock.calls.length;
+    const reads = (client.getProject as jest.Mock).mock.calls.length;
     view.rerender(page(1));
     expect(client.getProject).toHaveBeenCalledTimes(reads);
     view.rerender(page(2));
