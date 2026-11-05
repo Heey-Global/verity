@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.84.5](https://github.com/Heey-Global/verity/compare/mobile-v1.84.4...mobile-v1.84.5) (2026-11-05)
+
+
+### Bug Fixes
+
+* **mobile:** let a device pair again from the unlock screen ([#2270](https://github.com/Heey-Global/verity/issues/2270)) ([11463e7](https://github.com/Heey-Global/verity/commit/11463e75d1d24d737edda934dd5b26a325e84cee))
+
 ## [1.84.4](https://github.com/Heey-Global/verity/compare/mobile-v1.84.3...mobile-v1.84.4) (2026-11-05)
 
 
