@@ -937,6 +937,13 @@ describe('GET /projects (#174)', () => {
     expect(projects.find((project) => project.id === 'p-dismiss')?.inboxDismissed).toEqual([
       'health:p-dismiss:t',
     ]);
+    // The project page reads the same project through its detail route; without
+    // the person's state there, a dismissed health item would return on that page.
+    expect(
+      (await app.inject({ method: 'GET', url: '/projects/p-dismiss' })).json<{
+        project: { inboxDismissed?: string[] };
+      }>().project.inboxDismissed,
+    ).toEqual(['health:p-dismiss:t']);
   });
 
   it('refuses Home item keys of another subject and unknown ids', async () => {
