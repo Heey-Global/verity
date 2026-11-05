@@ -855,6 +855,32 @@ function SessionList({ client }: { client: VerityClient }) {
     confirmDeleteSession(renaming, remove, () => setRenaming(null));
   }, [renaming, remove]);
 
+  // What the open page shows, as text: polls hand back fresh arrays even when
+  // nothing changed, and its detail route is not cheap, so it reloads only when
+  // this project's sessions or health moved. A health item handled on Home
+  // changes only the projects, so both count.
+  const reloadToken = useMemo(() => {
+    if (openProjectId === null) return '';
+    const project = projects.find((candidate) => candidate.id === openProjectId);
+    return JSON.stringify([
+      // The whole record: health reads its state, errors, updates and drift.
+      project,
+      sessions
+        .filter((session) => session.projectId === openProjectId)
+        .map((session) => [
+          session.sessionId,
+          session.status,
+          session.backgroundWorking,
+          session.eventCount,
+          session.name,
+          session.favorite,
+          session.inboxDismissed,
+          session.pullRequest?.phase,
+          session.pullRequest?.pipeline,
+        ]),
+    ]);
+  }, [openProjectId, projects, sessions]);
+
   if (loading && sessions.length === 0) {
     return (
       <View style={styles.centered}>
@@ -1047,31 +1073,6 @@ function SessionList({ client }: { client: VerityClient }) {
     </View>
   );
 
-  // What the open page shows, as text: polls hand back fresh arrays even when
-  // nothing changed, and its detail route is not cheap, so it reloads only when
-  // this project's sessions or health moved. A health item handled on Home
-  // changes only the projects, so both count.
-  const reloadToken = useMemo(() => {
-    if (openProjectId === null) return '';
-    const project = projects.find((candidate) => candidate.id === openProjectId);
-    return JSON.stringify([
-      // The whole record: health reads its state, errors, updates and drift.
-      project,
-      sessions
-        .filter((session) => session.projectId === openProjectId)
-        .map((session) => [
-          session.sessionId,
-          session.status,
-          session.backgroundWorking,
-          session.eventCount,
-          session.name,
-          session.favorite,
-          session.inboxDismissed,
-          session.pullRequest?.phase,
-          session.pullRequest?.pipeline,
-        ]),
-    ]);
-  }, [openProjectId, projects, sessions]);
   const projectPage =
     wide && openProjectId !== null ? (
       <ProjectPage
