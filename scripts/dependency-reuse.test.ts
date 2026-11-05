@@ -66,6 +66,15 @@ describe('shared dependency reuse', () => {
     expect(existsSync(f.called)).toBe(false);
     expect(existsSync(join(f.worktree, 'node_modules', '.package-lock.json'))).toBe(false);
   });
+  it('reuses a compatible private npm installation on repeated install requests', () => {
+    const f = fixture();
+    mkdirSync(join(f.worktree, 'node_modules'));
+    writeFileSync(join(f.worktree, 'node_modules', '.package-lock.json'), '{"packages":{}}');
+    expect(f.run('status').status).toBe(0);
+    expect(f.run('install').status).toBe(0);
+    expect(f.run('install').status).toBe(0);
+    expect(existsSync(f.called)).toBe(false);
+  });
   it('keeps divergent lockfiles isolated and never installs in the shared root', () => {
     const f = fixture();
     writeFileSync(join(f.worktree, 'package-lock.json'), '{"changed":true}');

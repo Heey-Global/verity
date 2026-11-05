@@ -245,6 +245,10 @@ try {
   const action = process.argv[2] ?? 'status';
   if (action === 'status') process.exit(local || shared ? 0 : 1);
   if (action !== 'install') throw new Error('Usage: verity-dependencies status|install');
+  if (local) {
+    console.log('Using existing compatible project dependencies; no install needed.');
+    process.exit(0);
+  }
   if (shared && !local) {
     console.log('Using compatible shared project dependencies; no private install needed.');
     process.exit(0);
