@@ -33,7 +33,7 @@ export type Outgoing = {
   | { kind: 'answer'; questionId: string; labels: string[] }
 );
 
-export type VerityAccess = 'unknown' | 'ready' | 'denied' | 'offline';
+type VerityAccess = 'unknown' | 'ready' | 'denied' | 'offline';
 
 export interface VerityState {
   conversation: AssistantConversation | null;
@@ -291,7 +291,7 @@ export function dismissVerityNotice(): void {
  * Polling rate when the server cannot hold a read open (an older server): fast
  * while Verity works or something waits to be sent.
  */
-export function verityPollMs(current: VerityState, open: boolean): number {
+function verityPollMs(current: VerityState, open: boolean): number {
   if (!open) return 30_000;
   const scope = taskAccountScope();
   const waiting = current.outbox.some((entry) => entry.held !== true && entry.scope === scope);
@@ -299,7 +299,7 @@ export function verityPollMs(current: VerityState, open: boolean): number {
 }
 
 /** How long one read waits on the server for Verity to write something. */
-export const VERITY_WAIT_MS = 20_000;
+const VERITY_WAIT_MS = 20_000;
 /** While words wait to be resent, the read returns sooner so they are retried. */
 const VERITY_RETRY_WAIT_MS = 2_000;
 /** An unchanged answer sooner than this means the server did not hold the read. */

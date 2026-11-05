@@ -36,27 +36,6 @@ import type {
 } from './server-types.js';
 import { turnCore } from './session-request-core.js';
 
-export type {
-  ProjectSettingsRecord,
-  PublicProjectRecord,
-  SessionDetail,
-  SessionListEnvelope,
-  SessionSummary,
-  SpawnResult,
-} from './server-types.js';
-
-export type { ServerDeps } from './server-deps.js';
-
-export {
-  appendMeetingIndex,
-  CommandMeetingTranscriber,
-  meetingTranscriptionSettingsWhileSealed,
-  removeCancelledMeetingTranscript,
-  type MeetingTranscriber,
-  type MeetingTranscriptionSettings,
-  type MeetingTranscriptResult,
-} from './meeting-transcription.js';
-
 /** A check script's project cannot run right now (setting up, failed, or gone
  * to sleep in a state that cannot be woken). */
 export class ProjectNotReadyError extends Error {
@@ -97,15 +76,15 @@ export const UNKNOWN_SANDBOX_UPDATE: SandboxUpdateStatus = {
 // inspects active sandboxes and recreates the pre-relay ones once — so a short
 // cadence keeps a freshly relay-enabled deployment from lingering on legacy
 // shared-network containers, while a migrated fleet settles to a no-op.
-export const PROJECT_RELAY_MIGRATION_INTERVAL_MS = 60_000;
+const PROJECT_RELAY_MIGRATION_INTERVAL_MS = 60_000;
 
 /** Incoming and outgoing Servers overlap during the atomic update handoff. The
  * outgoing process may still own a generation's Unix sockets when the incoming
  * process makes its first adoption attempt, so retry promptly while ownership is
  * transferring instead of leaving broker access down for the normal minute. */
-export const PROJECT_RELAY_HANDOFF_RETRY_MS = 2_000;
+const PROJECT_RELAY_HANDOFF_RETRY_MS = 2_000;
 
-export const PROJECT_RELAY_HANDOFF_RETRY_WINDOW_MS = 30_000;
+const PROJECT_RELAY_HANDOFF_RETRY_WINDOW_MS = 30_000;
 
 /** Default lifetime of a cached session branch label — see the cache in
  *  `buildServer` and {@link ServerDeps.branchCacheTtlMs}. */
@@ -280,7 +259,7 @@ export function veritySettingsStore(store: EventStore): VeritySettingsStore {
   return store;
 }
 
-export function hasProjectSettingsStore(store: EventStore): store is ProjectSettingsStore {
+function hasProjectSettingsStore(store: EventStore): store is ProjectSettingsStore {
   return (
     'getProjectSettings' in store &&
     typeof store.getProjectSettings === 'function' &&
@@ -296,7 +275,7 @@ export function projectSettingsStore(store: EventStore): ProjectSettingsStore {
   return store;
 }
 
-export function hasProjectDeleteStore(store: EventStore): store is ProjectDeleteStore {
+function hasProjectDeleteStore(store: EventStore): store is ProjectDeleteStore {
   return 'hideProject' in store && typeof store.hideProject === 'function';
 }
 
@@ -329,7 +308,7 @@ export function emptyProjectSettings(projectId: string): ProjectSettingsRecord {
   };
 }
 
-export function configured(value: string | null | undefined): boolean {
+function configured(value: string | null | undefined): boolean {
   return Boolean(value?.trim());
 }
 
@@ -581,13 +560,13 @@ export function sortModelIds(ids: readonly string[]): string[] {
 // recent events the app loads on open (older turns come in on scroll-up).
 export const DEFAULT_HISTORY_PAGE = 40;
 
-export const MAX_ATTACHMENTS = 8;
+const MAX_ATTACHMENTS = 8;
 
-export const MAX_IMAGE_ATTACHMENT_BASE64_LEN = 10_000_000;
+const MAX_IMAGE_ATTACHMENT_BASE64_LEN = 10_000_000;
 
-export const MAX_FILE_ATTACHMENT_BYTES = 25_000_000;
+const MAX_FILE_ATTACHMENT_BYTES = 25_000_000;
 
-export const MAX_TURN_ATTACHMENT_BYTES = 50_000_000;
+const MAX_TURN_ATTACHMENT_BYTES = 50_000_000;
 
 // Fastify's default for any route that declares no limit of its own. Above
 // Fastify's own 1 MiB so the largest text bodies here (a knowledge document is
@@ -663,7 +642,7 @@ Always:
 - If a tool is missing, treat it as a provisioning gap to fix in the image/GitOps path, not something to install into this live container.
 - Report a boundary you hit plainly, with what you were trying to do and where it should be done instead. Do not present a blocked step as if it succeeded.`;
 
-export const REPEATED_OPERATOR_INSTRUCTION_PREFIXES = [
+const REPEATED_OPERATOR_INSTRUCTION_PREFIXES = [
   TERMINOLOGY_SYSTEM_PROMPT,
   CHOICES_SYSTEM_PROMPT,
   DELEGATION_SYSTEM_PROMPT,
@@ -712,7 +691,7 @@ export function isAttachmentBase64TotalSizeAllowed(
   );
 }
 
-export const turnAttachment = attachmentUploadSchema.refine(
+const turnAttachment = attachmentUploadSchema.refine(
   (attachment) => {
     const paddingCharacters = attachment.data.endsWith('==')
       ? 2
@@ -730,13 +709,13 @@ export const turnAttachment = attachmentUploadSchema.refine(
 
 /** Ceiling on a file name echoed back in an error. The schema caps a VALID name
  * at 255, but this reads the REJECTED body, where nothing has been validated. */
-export const MAX_ECHOED_FILE_NAME_LEN = 255;
+const MAX_ECHOED_FILE_NAME_LEN = 255;
 
 /** The submitted name of an attachment, or undefined when it carries none (an
  * image upload) or an unusable one. Control characters are stripped: a crafted
  * name must not be able to forge line structure in the client's banner or in the
  * log line this reason is written to. */
-export function echoableFileName(attachment: unknown): string | undefined {
+function echoableFileName(attachment: unknown): string | undefined {
   if (typeof attachment !== 'object' || attachment === null) return undefined;
   const { fileName } = attachment as { fileName?: unknown };
   if (typeof fileName !== 'string') return undefined;
@@ -747,7 +726,7 @@ export function echoableFileName(attachment: unknown): string | undefined {
 /** Why one attachment was rejected, in words the operator can act on. Derived
  * from the issue's position, not its message: Zod's own text ("expected string
  * to have >=1 characters") describes the schema, not the file. */
-export function attachmentIssueReason(issue: ZodError['issues'][number]): string {
+function attachmentIssueReason(issue: ZodError['issues'][number]): string {
   const field = issue.path[2];
   if (field === 'data') {
     if (issue.code === 'too_small') return 'is empty';
@@ -874,11 +853,11 @@ export function buildPullRequestCiFailureDisplayPrompt(number: number): string {
 /** Only GitHub sessions can read check runs and their logs (`gh`); `verity-repo`
  * exposes none, so a repair turn on another host that asks for them sends the
  * agent improvising with tools that have no credentials there. */
-export function readsCheckLogs(host: string): boolean {
+function readsCheckLogs(host: string): boolean {
   return host === 'GitHub';
 }
 
-export const LOCAL_CHECKS_INSTRUCTION =
+const LOCAL_CHECKS_INSTRUCTION =
   "Check logs cannot be read from this sandbox, so find the failing jobs in the repository's CI workflow files and reproduce them locally.";
 
 export function buildPullRequestCiFailurePrompt(pr: PullRequestStatus, host: string): string {
@@ -1005,7 +984,7 @@ export function makeBranch(name: string | undefined, issue?: number): string {
 // The allowlists below mirror exactly what apps/mobile/app/session/[id].tsx emits in
 // the newest-first transcript coordinate system. Anything else is redacted, so a name
 // that is not listed here silently degrades to `unknown` in the diagnostics.
-export const scrollDiagnosticNumberKeys = new Set([
+const scrollDiagnosticNumberKeys = new Set([
   'anchorOffsetY',
   'contentHeight',
   'delayMs',
@@ -1021,7 +1000,7 @@ export const scrollDiagnosticNumberKeys = new Set([
   'y',
 ]);
 
-export const scrollDiagnosticBooleanKeys = new Set([
+const scrollDiagnosticBooleanKeys = new Set([
   'acceptLatestState',
   'allowStalledRetry',
   'anchorAtBottom',
@@ -1044,7 +1023,7 @@ export const scrollDiagnosticBooleanKeys = new Set([
   'wasManualGesture',
 ]);
 
-export const scrollDiagnosticEvents = new Set([
+const scrollDiagnosticEvents = new Set([
   'begin-drag',
   'direction-change',
   'history-append-settled',
@@ -1067,19 +1046,15 @@ export const scrollDiagnosticEvents = new Set([
   'transcript-mode',
 ]);
 
-export const scrollDiagnosticBlockedByValues = new Set([
+const scrollDiagnosticBlockedByValues = new Set([
   'append-settling',
   'loading-older',
   'no-older-history',
 ]);
 
-export const scrollDiagnosticModeValues = new Set(['newest-first']);
+const scrollDiagnosticModeValues = new Set(['newest-first']);
 
-export const scrollDiagnosticReasonValues = new Set([
-  'deep-anchor-not-loaded',
-  'empty',
-  'saved-bottom',
-]);
+const scrollDiagnosticReasonValues = new Set(['deep-anchor-not-loaded', 'empty', 'saved-bottom']);
 
 export function redactScrollDiagnosticEvent(event: string): string {
   return scrollDiagnosticEvents.has(event) ? event : 'unknown';

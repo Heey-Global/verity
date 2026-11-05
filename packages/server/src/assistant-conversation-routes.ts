@@ -37,10 +37,10 @@ export interface AssistantConversationRouteDeps {
 }
 
 /** The longest a read waits for a change; well inside common proxy and client timeouts. */
-export const ASSISTANT_WAIT_MAX_MS = 25_000;
+const ASSISTANT_WAIT_MAX_MS = 25_000;
 /** After the first change, how long a waiting read collects more before answering,
  *  so a reply streamed in many small deltas costs a few reads, not one per word. */
-export const ASSISTANT_WAIT_SETTLE_MS = 120;
+const ASSISTANT_WAIT_SETTLE_MS = 120;
 
 const readQuerySchema = z.object({
   /** The revision the device already shows; the read waits while it is current. */

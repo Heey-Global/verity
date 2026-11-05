@@ -31,7 +31,7 @@ export interface WatchCapture {
 }
 
 /** An answer to Verity's question given on the watch. */
-export interface WatchAnswer {
+interface WatchAnswer {
   id: string;
   questionId: string;
   labels: string[];

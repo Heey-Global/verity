@@ -12,7 +12,7 @@ import type { SequencedEvent } from '@verity/store';
 import type { SessionStatus } from './status.js';
 
 /** Items a device receives; older ones stay in the session transcript. */
-export const ASSISTANT_CONVERSATION_ITEMS = 40;
+const ASSISTANT_CONVERSATION_ITEMS = 40;
 
 /** Matches a gateway tool by its bare name and by the `mcp__server__tool` form Claude uses. */
 const isTool = (name: string, tool: string) => name === tool || name.endsWith(`__${tool}`);
