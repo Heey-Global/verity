@@ -133,7 +133,8 @@ import { formatResetDisplay } from '../lib/time';
 import { SessionChat } from './session/[id]';
 import { HomeInbox } from '../components/home/HomeInbox';
 import { HomeTabBar, type HomeTab } from '../components/home/HomeTabBar';
-import { useHomePreferences } from '../lib/homePreferences';
+import { useNewDesign } from '../lib/homePreferences';
+import { ProjectPage } from '../components/project/ProjectPage';
 import { toneColor } from '../theme/tokens';
 import { tint } from '../components/ui/tint';
 
@@ -613,10 +614,33 @@ function SessionList({ client }: { client: VerityClient }) {
     },
     [client, refresh, refreshProjects],
   );
-  // The "New Home" preview (Settings › This app): Home beside the project list.
+  // The new design preview (Settings › This app): Home beside the project list.
   // Off, the overview below renders exactly as it always has.
-  const homePreferences = useHomePreferences();
+  const newDesign = useNewDesign();
+  // The project page shown in the wide layout's left column (new design only).
+  // On a phone the page is its own route.
+  const [openProjectId, setOpenProjectId] = useState<string | null>(null);
   const [homeTab, setHomeTab] = useState<HomeTab>('home');
+  const openProject = useCallback(
+    (projectId: string) => {
+      if (!wide) {
+        router.push({ pathname: '/project/[id]', params: { id: projectId } });
+        return;
+      }
+      setOpenProjectId(projectId);
+      setHomeTab('projects');
+    },
+    [wide],
+  );
+  // `/project/[id]` hands a wide screen over to this column with a `project` param.
+  const { project: projectParam } = useLocalSearchParams<{ project?: string }>();
+  useEffect(() => {
+    if (!projectParam || !newDesign) return;
+    setOpenProjectId(projectParam);
+    setHomeTab('projects');
+    // Consumed: the same link must open the page again after "Projects" closed it.
+    router.setParams({ project: undefined });
+  }, [projectParam, newDesign]);
   const [homeCount, setHomeCount] = useState(0);
   const openSessionFromHome = useCallback(
     (sessionId: string) => {
@@ -723,6 +747,7 @@ function SessionList({ client }: { client: VerityClient }) {
           onOpenSession={onOpenSession}
           onUpdateProject={confirmSandboxUpdate}
           onRepairProject={repairProjectRow}
+          onOpenProject={newDesign ? openProject : undefined}
           defaultNewSessionProject={defaultNewSessionProject}
           unread={unread}
           previewUrls={previewUrls}
@@ -756,6 +781,8 @@ function SessionList({ client }: { client: VerityClient }) {
       updatingProjectIds,
       repairProjectRow,
       repairingProjectIds,
+      newDesign,
+      openProject,
       defaultNewSessionProject,
       refreshProjects,
       onToggleFavoriteSession,
@@ -990,7 +1017,51 @@ function SessionList({ client }: { client: VerityClient }) {
     </View>
   );
 
-  const sidebar = homePreferences.inbox ? (
+  // What the open page shows, as text: polls hand back fresh arrays even when
+  // nothing changed, and its detail route is not cheap, so it reloads only when
+  // this project's sessions or health moved. A health item handled on Home
+  // changes only the projects, so both count.
+  const reloadToken = useMemo(() => {
+    if (openProjectId === null) return '';
+    const project = projects.find((candidate) => candidate.id === openProjectId);
+    return JSON.stringify([
+      project?.state,
+      project?.inboxDismissed,
+      sessions
+        .filter((session) => session.projectId === openProjectId)
+        .map((session) => [
+          session.sessionId,
+          session.status,
+          session.eventCount,
+          session.name,
+          session.favorite,
+          session.inboxDismissed,
+          session.pullRequest?.phase,
+        ]),
+    ]);
+  }, [openProjectId, projects, sessions]);
+  const projectPage =
+    wide && openProjectId !== null ? (
+      <ProjectPage
+        key={openProjectId}
+        client={client}
+        projectId={openProjectId}
+        inline
+        onBack={() => setOpenProjectId(null)}
+        onOpenSession={openSessionFromHome}
+        onRepairProject={repairFromHome}
+        // Home beside the page shows the same items; it must not offer an answered one again.
+        reloadOn={reloadToken}
+        onInboxSaved={() => void Promise.allSettled([refresh({ silent: true }), refreshProjects()])}
+        onSessionChanged={(sessionId, deleted) => {
+          // The list and the session pane beside the page show the same sessions.
+          if (deleted && selectedId === sessionId) setSelectedId(null);
+          void refresh({ silent: true });
+        }}
+        selectedSessionId={selectedId}
+      />
+    ) : null;
+  const sidebar = newDesign ? (
     <View style={styles.flex}>
       {/* Both stay mounted so switching keeps scroll positions and Home's count
           stays current while the project list is open. */}
@@ -1003,11 +1074,17 @@ function SessionList({ client }: { client: VerityClient }) {
           refreshing={refreshingOverview}
           onRefresh={() => void onRefreshOverview()}
           onOpenSession={openSessionFromHome}
+          onOpenProject={wide ? openProject : undefined}
           onRepairProject={repairFromHome}
           onCountChange={setHomeCount}
         />
       </View>
-      <View style={[styles.flex, homeTab === 'projects' ? null : styles.hiddenPane]}>{master}</View>
+      <View style={[styles.flex, homeTab === 'projects' ? null : styles.hiddenPane]}>
+        {/* The list stays mounted under an open project page, so going back keeps
+            its scroll position. */}
+        <View style={[styles.flex, projectPage ? styles.hiddenPane : null]}>{master}</View>
+        {projectPage}
+      </View>
       <HomeTabBar
         tab={homeTab}
         onChange={setHomeTab}
@@ -1240,6 +1317,7 @@ const ProjectGroup = memo(function ProjectGroup({
   onOpenSession,
   onUpdateProject,
   onRepairProject,
+  onOpenProject,
   defaultNewSessionProject,
   unread,
   previewUrls,
@@ -1272,6 +1350,8 @@ const ProjectGroup = memo(function ProjectGroup({
   onOpenSession: (session: SessionSummary) => void;
   onUpdateProject: (project: ProjectRecord) => void;
   onRepairProject?: ((projectId: string) => void) | undefined;
+  /** The new design: the header's "…" opens the project page instead of its settings. */
+  onOpenProject?: ((projectId: string) => void) | undefined;
   defaultNewSessionProject?: ProjectRecord | undefined;
   unread: ReadonlySet<string>;
   previewUrls: ReadonlyMap<string, string | null>;
@@ -1578,7 +1658,16 @@ const ProjectGroup = memo(function ProjectGroup({
                     </Pressable>
                   </Link>
                 )}
-                {!controlPlane ? (
+                {!controlPlane && onOpenProject ? (
+                  <Pressable
+                    style={styles.projectOpenButton}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Open project ${group.title}`}
+                    onPress={() => onOpenProject(group.project!.id)}
+                  >
+                    <Icon name="more-horizontal" size={20} color={theme.colors.textMuted} />
+                  </Pressable>
+                ) : !controlPlane ? (
                   <Link
                     href={{ pathname: '/project/[id]/settings', params: { id: group.project.id } }}
                     accessibilityLabel={`Open project settings for ${group.title}`}

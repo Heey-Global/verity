@@ -44,14 +44,7 @@ const TAG_INTENT = { attention: 'needsSetup', success: 'ready', neutral: 'option
  * (docs/design-system.md § 5.8 "Home presence").
  *
  * Items come from {@link inboxItems}, so they follow the same rules as the
- * project list's markers. Answers reuse the push-reply performer: the same
- * idempotent routes and the same optimistic status updates a notification
- * action uses. A tapped item hides at once and stays hidden until its source
- * stops reporting it, so a slow poll cannot bring it back for a second tap.
- *
- * The X dismisses an item for the operator on all their devices (a meeting's X
- * is its Skip). It hides at once and is saved after; if saving fails the card
- * returns with a message. Dismissed items wait folded at the bottom to restore.
+ * project list's markers; {@link useInboxFeed} answers and dismisses them.
  */
 export function HomeInbox({
   client,
@@ -61,6 +54,7 @@ export function HomeInbox({
   refreshing,
   onRefresh,
   onOpenSession,
+  onOpenProject,
   onRepairProject,
   onCountChange,
 }: {
@@ -72,12 +66,84 @@ export function HomeInbox({
   refreshing: boolean;
   onRefresh: () => void;
   onOpenSession: (sessionId: string) => void;
+  /** Where "Open" on a project item leads; the project route when omitted. */
+  onOpenProject?: ((projectId: string) => void) | undefined;
   onRepairProject: (projectId: string) => void;
   /** How many items Home shows, for the tab bar's count. */
   onCountChange?: (count: number) => void;
 }) {
   const meetings = useUpcomingMeetings(client);
   const now = useClock(CLOCK_TICK_MS);
+  const all = useMemo(
+    () => inboxItems({ sessions, projects, meetings, now }),
+    [sessions, projects, meetings, now],
+  );
+  const serverHidden = useMemo(
+    () => inboxDismissedKeys({ sessions, projects }),
+    [sessions, projects],
+  );
+  const feed = useInboxFeed({
+    client,
+    all,
+    serverHidden,
+    onOpenSession,
+    onOpenProject,
+    onRepairProject,
+  });
+  useEffect(() => onCountChange?.(feed.items.length), [feed.items.length, onCountChange]);
+
+  return (
+    <ScrollView
+      contentContainerStyle={styles.content}
+      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
+      testID="home-inbox"
+    >
+      <VerityHeader summary={inboxSummary(feed.items)} />
+      {feed.items.length > 0 ? (
+        <Text variant="eyebrow" style={styles.section}>
+          For you
+        </Text>
+      ) : null}
+      <InboxFeedList feed={feed} selectedSessionId={selectedSessionId} />
+    </ScrollView>
+  );
+}
+
+export type InboxFeed = ReturnType<typeof useInboxFeed>;
+
+/**
+ * The state behind an inbox list, shared by Home and a project's page: which
+ * items show, which wait dismissed, and what an answer or an X does.
+ *
+ * Answers reuse the push-reply performer: the same idempotent routes and the
+ * same optimistic status updates a notification action uses. A tapped item
+ * hides at once and stays hidden until its source stops reporting it, so a slow
+ * poll cannot bring it back for a second tap.
+ *
+ * The X dismisses an item for the operator on all their devices (a meeting's X
+ * is its Skip). It hides at once and is saved after; if saving fails the card
+ * returns with a message. Dismissed items wait folded at the bottom to restore.
+ */
+export function useInboxFeed({
+  client,
+  all,
+  serverHidden,
+  onOpenSession,
+  onOpenProject,
+  onRepairProject,
+  onSaved,
+}: {
+  client: VerityClient;
+  /** Every item in inbox order, dismissed ones included. */
+  all: readonly InboxItem[];
+  /** The keys the server reports dismissed for this person; memoised by the caller. */
+  serverHidden: ReadonlySet<string>;
+  onOpenSession: (sessionId: string) => void;
+  onOpenProject?: ((projectId: string) => void) | undefined;
+  onRepairProject: (projectId: string) => void;
+  /** After an answer or a dismissal is saved, for a screen that does not poll. */
+  onSaved?: (() => void) | undefined;
+}) {
   const perform = useMemo(() => createPushReplyPerformer(client), [client]);
   const [settled, setSettled] = useState<ReadonlySet<string>>(() => new Set());
   const [pending, setPending] = useState<string | null>(null);
@@ -88,14 +154,6 @@ export function HomeInbox({
   // State re-renders too late to stop a fast double tap; the ref does not.
   const running = useRef(false);
 
-  const all = useMemo(
-    () => inboxItems({ sessions, projects, meetings, now }),
-    [sessions, projects, meetings, now],
-  );
-  const serverHidden = useMemo(
-    () => inboxDismissedKeys({ sessions, projects }),
-    [sessions, projects],
-  );
   // A dismissal or restore shows before it is saved: `true` hides, `false` shows,
   // until the synced lists agree or the item is gone.
   const [overrides, setOverrides] = useState<ReadonlyMap<string, boolean>>(() => new Map());
@@ -132,7 +190,6 @@ export function HomeInbox({
   useEffect(() => {
     if (hidden.length === 0) setShowHidden(false);
   }, [hidden.length]);
-  useEffect(() => onCountChange?.(items.length), [items.length, onCountChange]);
 
   const setDismissed = useCallback(
     (item: InboxItem, dismissed: boolean) => {
@@ -146,26 +203,31 @@ export function HomeInbox({
       setOverrides((current) => new Map(current).set(item.key, dismissed));
       void Promise.resolve()
         .then(save)
-        .catch(() => {
-          setOverrides((current) => {
-            const next = new Map(current);
-            next.delete(item.key);
-            return next;
-          });
-          Alert.alert(
-            dismissed ? 'Not hidden' : 'Not restored',
-            'Verity could not save this. Try again in a moment.',
-          );
-        });
+        .then(
+          // Outside the failure branch: the save landed whatever the follow-up does.
+          () => onSaved?.(),
+          () => {
+            setOverrides((current) => {
+              const next = new Map(current);
+              next.delete(item.key);
+              return next;
+            });
+            Alert.alert(
+              dismissed ? 'Not hidden' : 'Not restored',
+              'Verity could not save this. Try again in a moment.',
+            );
+          },
+        );
     },
-    [client],
+    [client, onSaved],
   );
 
   const run = useCallback(
     async (item: InboxItem, action: InboxAction) => {
       if (action.kind === 'open_session') return onOpenSession(action.sessionId);
       if (action.kind === 'open_project') {
-        router.push({ pathname: '/project/[id]', params: { id: action.projectId } });
+        if (onOpenProject) onOpenProject(action.projectId);
+        else router.push({ pathname: '/project/[id]', params: { id: action.projectId } });
         return;
       }
       if (action.kind === 'repair_project') return onRepairProject(action.projectId);
@@ -186,12 +248,13 @@ export function HomeInbox({
         // `stale` means someone answered first; either way the item is done.
         replyIds.current.delete(replyKey);
         setSettled((current) => new Set(current).add(item.key));
+        onSaved?.();
       } finally {
         running.current = false;
         setPending(null);
       }
     },
-    [onOpenSession, onRepairProject, perform],
+    [onOpenSession, onOpenProject, onRepairProject, onSaved, perform],
   );
   const dismiss = useCallback(
     (item: InboxItem) => {
@@ -209,18 +272,29 @@ export function HomeInbox({
     [run, setDismissed],
   );
 
+  return {
+    items,
+    hidden,
+    pending,
+    showHidden,
+    toggleHidden: useCallback(() => setShowHidden((shown) => !shown), []),
+    run,
+    dismiss,
+    restore: useCallback((item: InboxItem) => setDismissed(item, false), [setDismissed]),
+  };
+}
+
+/** The cards of an inbox feed, then the fold of the dismissed ones. */
+export function InboxFeedList({
+  feed,
+  selectedSessionId,
+}: {
+  feed: InboxFeed;
+  selectedSessionId?: string | null | undefined;
+}) {
+  const { items, hidden, pending, showHidden, toggleHidden, run, dismiss, restore } = feed;
   return (
-    <ScrollView
-      contentContainerStyle={styles.content}
-      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
-      testID="home-inbox"
-    >
-      <VerityHeader summary={inboxSummary(items)} />
-      {items.length > 0 ? (
-        <Text variant="eyebrow" style={styles.section}>
-          For you
-        </Text>
-      ) : null}
+    <>
       {items.map((item) => (
         <InboxCard
           key={item.key}
@@ -233,7 +307,6 @@ export function HomeInbox({
             // `perform` reports failures as outcomes; anything it throws is
             // unexpected, but the operator still has to learn the answer was not sent.
             run(item, action).catch(() => {
-              setPending(null);
               Alert.alert('Not sent', 'Something went wrong. Open the session and try again.');
             });
           }}
@@ -245,7 +318,7 @@ export function HomeInbox({
             label={`${String(hidden.length)} hidden`}
             variant="text"
             size="compact"
-            onPress={() => setShowHidden((shown) => !shown)}
+            onPress={toggleHidden}
           />
         </View>
       ) : null}
@@ -257,12 +330,12 @@ export function HomeInbox({
               selected={false}
               pending={false}
               disabled={false}
-              onRestore={() => setDismissed(item, false)}
+              onRestore={() => restore(item)}
               onAction={() => undefined}
             />
           ))
         : null}
-    </ScrollView>
+    </>
   );
 }
 

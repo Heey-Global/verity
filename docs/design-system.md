@@ -180,6 +180,9 @@ Disabled is always 40 % opacity; pressed is always a slight darkening.
     appears only when the row navigates.
 - States: default, pressed (slightly darker surface), disabled (40 %), selected (`action`
   border with glow).
+- A row that opens something may keep its secondary actions (rename, favorite, delete)
+  behind a long press (`onLongPress`), never behind a second button in the row. The
+  `accessibilityHint` names them, since a long press is invisible.
 
 ### 5.2a Log list
 
