@@ -10,7 +10,6 @@ import {
   PanResponder,
   Platform,
   Pressable,
-  Image,
   Text,
   useWindowDimensions,
   View,
@@ -31,22 +30,25 @@ import { VerityPanel } from './VerityPanel';
 import { startWatchInbox } from '../lib/watchCapture';
 import { TasksPanel } from './TasksPanel';
 import { tint } from './ui/tint';
+import { VerityMark } from './VerityMark';
+import { useHomeShowsVerity } from '../lib/homeVerity';
 import { useTaskCaptureGesture } from '../hooks/useTaskCaptureGesture';
-import { taskCaptureGlyphOffset } from '../lib/taskCaptureMotion';
 
-const MARK = require('../assets/brand/verity-v-mark.png') as number;
-const MARK_RATIO = 240 / 168;
-
-/** Bubble diameter; half of it sits outside the screen edge. */
-const BUBBLE = 60;
-/** Extra touch area on the visible side, so the target is a full 52pt. */
-const EXTEND = 22;
+/** Bubble diameter: a whole circle, a full touch target on its own. */
+const BUBBLE = 52;
+/** Distance from the screen edge it docks to. */
+const INSET = 12;
 
 /**
  * The V: the one way to reach Verity from any screen (docs/assistant.md). A tap
  * opens her panel listening, a hold opens it for typing, a drag docks it on the
  * other edge. A badge shows when she waits for an answer or an approval.
  */
+/** Where the bubble rests on `side`, a little in from the edge. */
+export function dockedX(side: 'left' | 'right', width: number): number {
+  return side === 'left' ? INSET : width - BUBBLE - INSET;
+}
+
 export function VerityBubble() {
   useEffect(
     () =>
@@ -62,6 +64,7 @@ export function VerityBubble() {
   const pathname = usePathname();
   const params = useGlobalSearchParams<{ id?: string; selected?: string }>();
   const preferences = useTaskPreferences();
+  const homeShowsVerity = useHomeShowsVerity();
   const { tasks } = useTasks();
   const { projects, sessions, projectsScope } = useTaskContext();
   const [keyboard, setKeyboard] = useState(Keyboard.isVisible());
@@ -88,7 +91,7 @@ export function VerityBubble() {
   const bottom = height - insets.bottom - 100;
   useEffect(() => {
     const next = {
-      x: preferences.side === 'left' ? -BUBBLE / 2 : width - BUBBLE / 2,
+      x: dockedX(preferences.side, width),
       y: Math.max(top, Math.min(bottom, height * preferences.fraction)),
     };
     // A release saves its own resting place, which re-runs this effect while
@@ -111,7 +114,7 @@ export function VerityBubble() {
         },
         onPanResponderMove: (_, g) =>
           position.setValue({
-            x: Math.max(-BUBBLE / 2, Math.min(width - BUBBLE / 2, origin.current.x + g.dx)),
+            x: Math.max(0, Math.min(width - BUBBLE, origin.current.x + g.dx)),
             y: Math.max(top, Math.min(height - BUBBLE, origin.current.y + g.dy)),
           }),
         onPanResponderRelease: (_, g) => {
@@ -127,10 +130,7 @@ export function VerityBubble() {
             top,
             bottom,
           });
-          origin.current = {
-            x: rest.side === 'left' ? -BUBBLE / 2 : width - BUBBLE / 2,
-            y: rest.y,
-          };
+          origin.current = { x: dockedX(rest.side, width), y: rest.y };
           position.stopAnimation();
           Animated.spring(position, {
             toValue: origin.current,
@@ -153,7 +153,7 @@ export function VerityBubble() {
           // not at whatever mid-flight point the grab froze.
           setDragging(false);
           origin.current = {
-            x: preferences.side === 'left' ? -BUBBLE / 2 : width - BUBBLE / 2,
+            x: dockedX(preferences.side, width),
             y: Math.max(top, Math.min(bottom, height * preferences.fraction)),
           };
           Animated.spring(position, {
@@ -248,32 +248,24 @@ export function VerityBubble() {
     !tasksOpen &&
     !pathname.startsWith('/onboarding') &&
     !pathname.startsWith('/search') &&
-    !pathname.includes('unlock-device');
+    !pathname.includes('unlock-device') &&
+    // Home has her header and "Tell Verity"; a second V would sit on its cards.
+    !(homeShowsVerity && pathname === '/');
   return (
     <>
       {visible ? (
         <Animated.View
           {...pan.panHandlers}
-          // The wrapper extends 22pt onto the screen past the bubble so the
-          // touch target is 52pt wide where it can be hit; children outside
-          // a parent's bounds get no touches on Android, so slop would not do.
           style={{
             position: 'absolute',
             left: 0,
             top: 0,
-            transform: [
-              {
-                translateX: Animated.subtract(
-                  position.x,
-                  preferences.side === 'right' ? EXTEND : 0,
-                ),
-              },
-              { translateY: position.y },
-            ],
+            transform: [{ translateX: position.x }, { translateY: position.y }],
           }}
+          testID="verity-bubble"
         >
-          {/* Half tucked into the edge and translucent, so it reads as a handle
-              rather than a button; it only comes forward while being dragged. */}
+          {/* A whole circle with room to the edge: Verity's V on its halo, on the
+              app's surface (§ 5.8), not a cyan control tucked into the edge. */}
           <Pressable
             accessibilityRole="button"
             accessibilityLabel={count > 0 ? `Verity, ${String(count)} waiting for you` : 'Verity'}
@@ -282,44 +274,24 @@ export function VerityBubble() {
             onPress={gesture.onPress}
             onLongPress={gesture.onLongPress}
             delayLongPress={600}
-            // The pressable spans the bubble plus the extension on the visible
-            // side, so the whole 52pt the finger can reach records on tap.
-            style={{
-              paddingLeft: preferences.side === 'right' ? EXTEND : 0,
-              paddingRight: preferences.side === 'left' ? EXTEND : 0,
-            }}
           >
             <View
+              testID="verity-bubble-circle"
               style={{
                 width: BUBBLE,
                 height: BUBBLE,
                 borderRadius: BUBBLE / 2,
-                // A primary tint reads as a control without shouting like a
-                // filled button; full strength only while it is in the hand.
-                backgroundColor: tint(theme.colors.action, dragging ? 'ring' : 'fill'),
+                backgroundColor: theme.colors.surface,
                 borderWidth: 1,
-                borderColor: dragging ? theme.colors.action : tint(theme.colors.action, 'border'),
+                borderColor: dragging
+                  ? tint(theme.colors.signature, 'border')
+                  : theme.colors.border,
                 justifyContent: 'center',
                 alignItems: 'center',
+                ...theme.elevation.floating,
               }}
             >
-              <Animated.View
-                style={{
-                  transform: [
-                    {
-                      // Center within the visible portion as the circle crosses
-                      // an edge; no preference change or delayed animation moves it.
-                      translateX: taskCaptureGlyphOffset(position.x, width, BUBBLE),
-                    },
-                  ],
-                }}
-              >
-                <Image
-                  source={MARK}
-                  accessibilityIgnoresInvertColors
-                  style={{ width: 26, height: 26 / MARK_RATIO }}
-                />
-              </Animated.View>
+              <VerityMark size={40} glow={false} />
             </View>
             {count > 0 ? (
               <View
@@ -328,7 +300,7 @@ export function VerityBubble() {
                 style={{
                   position: 'absolute',
                   top: 0,
-                  [preferences.side === 'right' ? 'left' : 'right']: EXTEND - 4,
+                  [preferences.side === 'right' ? 'left' : 'right']: -4,
                   minWidth: 18,
                   height: 18,
                   paddingHorizontal: 5,

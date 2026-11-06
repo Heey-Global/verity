@@ -18,7 +18,10 @@ jest.mock('../lib/client', () => require('./support/settingsHarness').clientMock
 jest.mock('expo-crypto', () => ({ randomUUID: () => 'reply-1' }));
 jest.mock('../lib/voiceShortcut', () => ({ dispatchVerityShortcut: jest.fn() }));
 jest.mock('../lib/taskPreferences', () => ({ useTaskPreferences: () => ({ enabled: false }) }));
-jest.mock('../lib/tasksStore', () => ({ taskAccountScope: () => null }));
+jest.mock('../lib/tasksStore', () => ({
+  taskAccountScope: () => null,
+  useTasks: () => ({ tasks: [], pending: [], conflicts: [] }),
+}));
 const mockDesign = { value: true as boolean | undefined };
 const mockWide = { value: false };
 jest.mock('../lib/sessionLayout', () => ({

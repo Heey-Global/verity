@@ -118,10 +118,10 @@ keys use the platform monospace font. All sizes scale with the in-app font-zoom 
 
 **Elevation:**
 
-| Level    | Look                                                    | Use                                                                                                                                                                                                                                                                |
-| -------- | ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Flat     | 1 px `border`, no shadow                                | Cards and lists — the default                                                                                                                                                                                                                                      |
-| Floating | Soft dark shadow downward (`0 18px 50px` black at 60 %) | Sheets, menus, dialogs                                                                                                                                                                                                                                             |
+| Level    | Look                                                    | Use                                                                                                                                                                                                                                                                                                                                      |
+| -------- | ------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Flat     | 1 px `border`, no shadow                                | Cards and lists — the default                                                                                                                                                                                                                                                                                                            |
+| Floating | Soft dark shadow downward (`0 18px 50px` black at 60 %) | Sheets, menus, dialogs                                                                                                                                                                                                                                                                                                                   |
 | Glow     | Colored halo                                            | Four uses only: brand moments in `signature` (success check), Verity's presence in a live meeting or on Home in `signature` (§ 5.8), the selected card in `action`, and success and attention status dots in their tone. Buttons never glow. Dark theme only — in light, the selected card keeps its plain border and dots have no halo. |
 
 **Website.** `docs/website/site/index.html` uses the same roles, Inter, the
@@ -315,9 +315,16 @@ Meeting and Premium; it does not introduce a separate palette or set of effects.
   `surface`, 2 px `signature`-to-`action` edge and `signature` glow. At most one such
   surface appears on Home. A compact header does not require a surrounding pane.
   In light theme use a plain border and no glow or gradient.
-- **Capture:** reuse the shared text-field and tonal action treatments. Signature
-  identifies Verity; typing, microphone and send controls use `action`. The meeting's
-  model selector is not part of this Home pattern.
+- **Capture:** one component, `CaptureField`, for Home's "Tell Verity" (which opens her
+  panel) and the panel's composer: the shared field with a tonal microphone that turns
+  into a tonal stop while dictating, and a tonal send. Signature identifies Verity;
+  typing, microphone and send controls use `action`. Listening is said once, in the
+  field. The meeting's model selector is not part of this Home pattern.
+- **Mark:** `VerityMark` is her V on its `signature` halo — with glow for her identity on
+  Home and her page, flat on the floating V, in her panel's header and before her
+  answers there.
+- **Floating V:** a whole circle on `surface`, a little in from the screen edge, never
+  half outside it. On a phone's Home it steps back, since Home has her header and field.
 - **Attribution:** a small V mark may identify Verity's recommendation inside an inbox
   item. Keep the originating project and role visible. Meeting-specific newest-answer
   borders do not automatically apply to inbox cards.

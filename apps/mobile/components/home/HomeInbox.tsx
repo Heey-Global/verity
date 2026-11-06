@@ -15,21 +15,18 @@ import {
 import { randomUUID } from 'expo-crypto';
 import { router, useFocusEffect } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, Image, Pressable, RefreshControl, ScrollView, View } from 'react-native';
+import { Alert, Pressable, RefreshControl, ScrollView, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { Icon } from '../Icon';
+import { VerityMark } from '../VerityMark';
 import { MockupThumbs } from '../session/MockupReview';
-import { Button, Card, CardHead, StatusTag, Text } from '../ui';
+import { Button, CaptureField, Card, CardHead, StatusTag, Text } from '../ui';
 import { Disclosure } from '../ui/Disclosure';
 import { tint } from '../ui/tint';
 import { useTaskPreferences } from '../../lib/taskPreferences';
 import { taskAccountScope } from '../../lib/tasksStore';
 import { dispatchVerityShortcut } from '../../lib/voiceShortcut';
-
-const MARK = require('../../assets/brand/verity-v-mark.png') as number;
-// The mark's artwork is wider than tall.
-const MARK_RATIO = 240 / 168;
 
 /** The cached calendar list is cheap, but a watched calendar rarely changes. */
 const MEETING_REFRESH_MS = 5 * 60_000;
@@ -381,20 +378,12 @@ export function VerityHeader({
         </View>
       )}
       {capture ? (
-        <Pressable
-          accessibilityRole="button"
+        <CaptureField
+          placeholder="Tell Verity… an idea, a mail, an appointment"
           accessibilityLabel="Tell Verity"
           accessibilityHint="Opens Verity to listen: ask her or tell her an idea, a mail or an appointment"
-          onPress={() => dispatchVerityShortcut()}
-          style={({ pressed }) => [styles.capture, pressed ? styles.capturePressed : null]}
-        >
-          <Text variant="body" tone="faint" style={styles.flex}>
-            Tell Verity… an idea, a mail, an appointment
-          </Text>
-          <View style={styles.mic}>
-            <Icon name="mic" size={20} color={theme.colors.action} />
-          </View>
-        </Pressable>
+          onOpen={() => dispatchVerityShortcut()}
+        />
       ) : null}
     </View>
   );
@@ -404,13 +393,7 @@ export function VerityHeader({
 export function VerityIdentity({ summary, testID }: { summary: string; testID?: string }) {
   return (
     <>
-      <View style={styles.markHalo}>
-        <Image
-          source={MARK}
-          accessibilityIgnoresInvertColors
-          style={{ width: 32, height: 32 / MARK_RATIO }}
-        />
-      </View>
+      <VerityMark />
       <View style={styles.flex}>
         <Text variant="title" accessibilityRole="header">
           Verity
@@ -609,40 +592,7 @@ const styles = StyleSheet.create((theme) => {
     header: { gap: theme.spacing.lg, paddingBottom: theme.spacing.lg },
     identity: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.md },
     // Verity's identity on Home (§ 5.8): the meeting's V mark on a signature halo.
-    markHalo: {
-      width: 48,
-      height: 48,
-      borderRadius: 24,
-      alignItems: 'center',
-      justifyContent: 'center',
-      backgroundColor: tint(colors.signature, 'neutral'),
-      shadowColor: colors.signature,
-      ...theme.elevation.glow,
-    },
-    capture: {
-      minHeight: 48,
-      flexDirection: 'row',
-      alignItems: 'center',
-      gap: theme.spacing.sm,
-      paddingLeft: theme.spacing.md,
-      paddingRight: theme.spacing.xs,
-      paddingVertical: theme.spacing.xs,
-      borderRadius: theme.radius.control,
-      borderWidth: 1,
-      borderColor: colors.border,
-      backgroundColor: colors.surfaceAlt,
-    },
     capturePressed: { opacity: 0.7 },
-    mic: {
-      width: 40,
-      height: 40,
-      borderRadius: theme.radius.control,
-      alignItems: 'center',
-      justifyContent: 'center',
-      backgroundColor: tint(colors.action, 'fill'),
-      borderWidth: 1,
-      borderColor: tint(colors.action, 'border'),
-    },
     section: { marginTop: theme.spacing.sm, marginBottom: theme.spacing.xs },
     hiddenToggle: { alignItems: 'center', marginTop: theme.spacing.sm },
     actions: { flexDirection: 'row', flexWrap: 'wrap', gap: theme.spacing.sm },
