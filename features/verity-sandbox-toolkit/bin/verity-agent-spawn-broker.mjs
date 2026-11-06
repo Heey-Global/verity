@@ -784,7 +784,9 @@ function childEnvironment(command, source = process.env, sessionEnv = undefined)
   return {
     // First, so every fixed key below wins over anything a request supplied.
     ...runtimeContext,
-    PATH: `/opt/verity/package-managers:${source.PATH ?? '/usr/local/bin:/usr/bin:/bin'}`,
+    // Lifecycle launchers sanitize PATH before starting this broker. Restore the
+    // image-owned Git/forge guards without losing package shims or interpreter paths.
+    PATH: `/opt/verity/package-managers:/opt/agent-seed/bin:${source.PATH || '/usr/local/bin:/usr/bin:/bin'}`,
     HOME: source.VERITY_AGENT_HOME ?? '/home/dev',
     USER: source.VERITY_AGENT_USER ?? 'dev',
     LOGNAME: source.VERITY_AGENT_USER ?? 'dev',
