@@ -135,31 +135,82 @@ describe('duplicate PR CI evidence', () => {
       }),
     ).toBe(false);
   });
-  it('keeps title validation and publishes context before reuse; only proven reuse skips routing', () => {
+  it('publishes validated context before the dedicated resolver may reuse checks', () => {
+    type Step = {
+      name?: string;
+      id?: string;
+      env?: Record<string, string>;
+      run?: string;
+      uses?: string;
+      with?: Record<string, unknown>;
+    };
+    type Job = {
+      name?: string;
+      needs?: string | string[];
+      'timeout-minutes'?: number;
+      outputs?: Record<string, string>;
+      steps?: Step[];
+    };
     const workflow = parse(readFileSync('.github/workflows/ci.yml', 'utf8')) as {
       on: { pull_request: { types: string[] } };
       concurrency: { group: string };
-      jobs: {
-        changes: {
-          'timeout-minutes': number;
-          steps: { name?: string; id?: string; env?: Record<string, string>; run?: string }[];
-        };
-      };
+      jobs: Record<string, Job>;
     };
-    const steps = workflow.jobs.changes.steps;
-    const title = steps.findIndex(
-      (step: { name?: string }) => step.name === 'Validate Conventional Commit title',
+    const changes = workflow.jobs.changes!;
+    const resolver = workflow.jobs['resolve-check-plan']!;
+    const steps = changes.steps ?? [];
+    const title = steps.findIndex((step) => step.name === 'Validate Conventional Commit title');
+    const contextWrite = steps.findIndex((step) => step.run?.includes('ci-pr-evidence.mjs write'));
+    const contextUpload = steps.findIndex((step) =>
+      step.uses?.startsWith('actions/upload-artifact@'),
     );
-    const reuse = steps.findIndex((step: { id?: string }) => step.id === 'duplicate');
     expect(title).toBeGreaterThanOrEqual(0);
-    expect(reuse).toBeGreaterThan(title);
+    expect(contextWrite).toBeGreaterThan(title);
+    expect(contextUpload).toBeGreaterThan(contextWrite);
     expect(workflow.on.pull_request.types).toContain('edited');
     expect(workflow.concurrency.group).toContain(
       "github.event_name == 'pull_request' && github.run_id",
     );
-    expect(workflow.jobs.changes['timeout-minutes']).toBe(65);
-    const detect = steps.find((step: { id?: string }) => step.id === 'detect');
-    expect(detect?.env?.REUSE_PR_CHECKS).toContain('steps.duplicate.outputs.reuse');
-    expect(detect?.run).toContain('if [ "${REUSE_PR_CHECKS:-false}" = "true" ]; then');
+    expect(resolver.name).toBe('Resolve required checks');
+    expect(resolver.needs).toBe('changes');
+    expect(resolver['timeout-minutes']).toBe(65);
+    expect(
+      resolver.steps?.find((step) => step.uses?.startsWith('actions/checkout@'))?.with?.ref,
+    ).toBe('${{ github.sha }}');
+    expect(JSON.stringify(resolver)).toContain('needs.changes.outputs.tree');
+    const detector = resolver.steps?.find((step) => step.id === 'detect');
+    expect(detector?.env?.REUSE_PR_CHECKS).toContain('steps.duplicate.outputs.reuse');
+    expect(detector?.run).toContain('if [ "${REUSE_PR_CHECKS:-false}" = "true" ]; then');
+    const fastCommands = steps.map((step) => step.run ?? '').join('\n');
+    expect(fastCommands).not.toContain('ci-pr-evidence.mjs read');
+    expect(fastCommands).not.toContain('ci-base-verdict.mjs');
+    expect(steps.some((step) => step.id === 'duplicate')).toBe(false);
+
+    const outputNames = Object.keys(resolver.outputs ?? {});
+    expect(outputNames.length).toBeGreaterThan(0);
+    for (const [name, job] of Object.entries(workflow.jobs)) {
+      if (name === 'changes' || name === 'resolve-check-plan') continue;
+      const serialized = JSON.stringify(job);
+      for (const output of outputNames) {
+        expect(serialized, `${name} still routes from unverified ${output}`).not.toContain(
+          `needs.changes.outputs.${output}`,
+        );
+      }
+      if (!serialized.includes('needs.resolve-check-plan.outputs.')) continue;
+      const dependencies = typeof job.needs === 'string' ? [job.needs] : (job.needs ?? []);
+      expect(dependencies, `${name} consumes a resolver output without depending on it`).toContain(
+        'resolve-check-plan',
+      );
+    }
+    const aggregate = workflow.jobs['ci-checks']!;
+    expect(aggregate.needs).toContain('changes');
+    expect(aggregate.needs).toContain('resolve-check-plan');
+    const gate = aggregate.steps?.find(
+      (step) => step.name === 'Verify all required jobs succeeded',
+    );
+    expect(gate?.run).toContain('require_success changes "${{ needs.changes.result }}"');
+    expect(gate?.run).toContain(
+      'require_success resolve-check-plan "${{ needs.resolve-check-plan.result }}"',
+    );
   });
 });

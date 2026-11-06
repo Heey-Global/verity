@@ -16,7 +16,9 @@ it.each(['true', 'false'])('preserves script ownership when contract tests are %
     >;
   };
   const step = workflow.jobs.test!.steps.find((s) => s.run?.includes('vitest run --shard='))!;
-  expect(step.env?.CONTRACT_TEST_SELECTED).toBe('${{ needs.changes.outputs.contract_test }}');
+  expect(step.env?.CONTRACT_TEST_SELECTED).toBe(
+    '${{ needs.resolve-check-plan.outputs.contract_test }}',
+  );
   expect(step.env?.SHARD).toBe('${{ matrix.shard }}');
   const shards = workflow.jobs.test!.strategy?.matrix?.shard ?? [];
   const dir = mkdtempSync(join(tmpdir(), 'ci-test-ownership-'));

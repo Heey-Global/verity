@@ -34,6 +34,8 @@ type WorkflowStep = {
 };
 
 type WorkflowJob = {
+  needs?: string | string[];
+  if?: string;
   steps: WorkflowStep[];
 };
 
@@ -1440,8 +1442,8 @@ describe('coverage CI', () => {
   const job = workflow.jobs.coverage;
 
   it('is independently gated by the nightly coverage output', () => {
-    expect(job.needs).toBe('changes');
-    expect(job.if).toBe("needs.changes.outputs.coverage == 'true'");
+    expect(job.needs).toBe('resolve-check-plan');
+    expect(job.if).toBe("needs.resolve-check-plan.outputs.coverage == 'true'");
   });
 
   it('runs the instrumented suite against the shared PostgreSQL', () => {
@@ -2461,7 +2463,7 @@ describe('GitHub-hosted runner boundary', () => {
     };
     const knip = ci.jobs.knip;
     const commands = (knip?.steps ?? []).flatMap((step) => (step.run ? [step.run] : []));
-    expect(knip?.if).toBe("needs.changes.outputs.lint == 'true'");
+    expect(knip?.if).toBe("needs.resolve-check-plan.outputs.lint == 'true'");
     expect(commands).toContain('npm ci --ignore-scripts');
     expect(commands).not.toEqual(
       expect.arrayContaining([expect.stringContaining('--omit=optional')]),
@@ -2471,7 +2473,7 @@ describe('GitHub-hosted runner boundary', () => {
     const gate = ci.jobs['ci-checks'];
     expect(gate?.needs).toContain('knip');
     expect((gate?.steps ?? []).map((step) => step.run ?? '').join('\n')).toContain(
-      'require_when_changed knip "${{ needs.knip.result }}" "${{ needs.changes.outputs.lint }}"',
+      'require_when_changed knip "${{ needs.knip.result }}" "${{ needs.resolve-check-plan.outputs.lint }}"',
     );
   });
 
@@ -4612,9 +4614,13 @@ describe('changed-area detector', () => {
         inputs?: Record<string, { default?: string; options?: string[] }>;
       };
     };
-    jobs: { changes: WorkflowJob & { permissions?: Record<string, string> } };
+    jobs: Record<
+      'changes' | 'resolve-check-plan',
+      WorkflowJob & { permissions?: Record<string, string> }
+    >;
   };
-  const detect = workflow.jobs.changes.steps.find((step) => step.id === 'detect');
+  const routing = workflow.jobs['resolve-check-plan'];
+  const detect = routing.steps.find((step) => step.id === 'detect');
   const nativeWorkflow = parse(
     readFileSync('.github/workflows/mobile-native-verify.yml', 'utf8'),
   ) as {
@@ -4636,7 +4642,7 @@ describe('changed-area detector', () => {
   ] as const;
 
   it('can validate scoped pull requests with the workflow token', () => {
-    expect(workflow.jobs.changes.permissions?.['pull-requests']).toBe('read');
+    expect(routing.permissions?.['pull-requests']).toBe('read');
     const classifier = /detected_train="\$\(([^ ]+)/.exec(detect?.run ?? '')?.[1];
     expect(classifier).toBeDefined();
     expect(existsSync(classifier ?? '')).toBe(true);
@@ -4886,7 +4892,7 @@ describe('changed-area detector', () => {
    * current.
    */
   it('fetches the pull request base deep enough to have a merge base', () => {
-    expect(detect, 'the changes job has no `detect` step to read').toBeDefined();
+    expect(detect, 'the resolver job has no `detect` step to read').toBeDefined();
     // Comments dropped before anything is graded, or the step's own prose about
     // the flag this forbids would read as a use of it — trailing ones too, since
     // a note after a command sits on the command's own line. Stripped BEFORE
@@ -4945,11 +4951,9 @@ describe('changed-area detector', () => {
     //
     // Every checkout in the job, not the first: a second one added later would
     // leave this guarding a step that is no longer the one `detect` reads.
-    const checkouts = workflow.jobs.changes.steps.filter((step) =>
-      step.uses?.startsWith('actions/checkout@'),
-    );
+    const checkouts = routing.steps.filter((step) => step.uses?.startsWith('actions/checkout@'));
 
-    expect(checkouts, 'the changes job no longer checks anything out').not.toHaveLength(0);
+    expect(checkouts, 'the resolver job no longer checks anything out').not.toHaveLength(0);
     for (const checkout of checkouts) {
       // Stringified because YAML hands back the number and the step map is typed
       // as strings; `undefined` reads as its own name rather than passing.
@@ -5124,9 +5128,9 @@ describe('changed-area detector', () => {
    * script to carry it, and so can a composite action a job steps into.
    *
    * Which jobs matter is the whole question, and the answer is exactly "the ones
-   * the skip drops". `changes` is not one — it is the detector, it carries the
-   * allowlist, and it runs on every event including the release commit. Neither
-   * is `ci-checks`, which runs regardless of shard results unless the entire run
+   * the skip drops". `changes` and `resolve-check-plan` classify and resolve
+   * the checks, including the release allowlist, on every applicable event.
+   * Neither is `ci-checks`, which runs regardless of shard results unless the entire run
    * was superseded. Everything else is gated, so
    * everything else is scanned. release.yml and mobile-ota.yml are outside this
    * workflow and the detector does not gate them; they read these files by
@@ -5138,7 +5142,7 @@ describe('changed-area detector', () => {
     };
     // Named rather than derived: a job that stops being unconditional should
     // fail this list loudly instead of quietly scanning one surface less.
-    const unconditional = ['changes', 'public-snapshot', 'ci-checks'];
+    const unconditional = ['changes', 'resolve-check-plan', 'public-snapshot', 'ci-checks'];
     for (const name of unconditional) {
       expect(Object.keys(ci.jobs), `${name} is no longer a job in ci.yml`).toContain(name);
     }
