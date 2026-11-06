@@ -84,7 +84,7 @@
     "react-native": "0.86.3",
     "react-native-unistyles": "3.5.1",
     "release-please": "17.11.2",
-    "semver": "7.8.5",
+    "semver": "7.8.6",
     "typescript": "6.0.3",
     "typescript-eslint": "8.72.1",
     "uuid": "14.0.3",
