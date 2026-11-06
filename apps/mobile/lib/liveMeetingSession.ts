@@ -1,6 +1,7 @@
 import { meetingResearchModel } from './meetingResearchModel';
 import { VerityApiError } from '@verity/mobile';
 import { liveMeetingSTT, type STTEvent, type STTEngineId } from './liveMeetingSTT';
+import { replayMeetingJournal, type MeetingJournalEnvelope } from './liveMeetingJournal';
 import { createVerityClient, getVerityBaseUrl } from './client';
 import { isDemoMode, isEnteringDemoMode } from './demoMode';
 import { registerMeetingCaptureStatus } from './meetingCaptureStatus';
@@ -33,6 +34,11 @@ import {
   saveSpeakerEdits,
   setCaptureStatus,
   touchMeeting,
+  ownedMeeting,
+  nativeMeetingState,
+  persistNativeMeetingEvent,
+  persistRecoveredAudio,
+  restoreNativeCapture,
   type MeetingRecord,
   type TimedWord,
   type SpeakerCorrection,
@@ -69,6 +75,169 @@ let voiceDetector: VoiceMeetingCommandDetector | null = null;
 let recordingServerUrl: string | null = null;
 let voiceSendTail: Promise<void> = Promise.resolve();
 let voiceGeneration = 0;
+let nativeEventTail: Promise<void> = Promise.resolve();
+let nativeRecovery: Promise<void> | null = null;
+const nativeDrains = new Map<string, { pending: boolean; promise: Promise<void> }>();
+
+function reportNativeMirrorFailure(meetingId: string, error: unknown): void {
+  if (active?.id !== meetingId) return;
+  // The unacknowledged native journal remains recoverable even if SQLite is temporarily locked.
+  active = { ...active, error: `Native meeting results are pending: ${String(error)}` };
+  publish();
+}
+
+function drainNativeMeeting(meetingId: string): Promise<void> {
+  const previous = nativeDrains.get(meetingId);
+  if (previous) {
+    previous.pending = true;
+    return previous.promise;
+  }
+  const native = liveMeetingSTT;
+  if (!native?.readMeetingJournal || !native.acknowledgeMeetingJournal)
+    return Promise.reject(new Error('The native meeting journal is unavailable.'));
+  const state = { pending: true, promise: Promise.resolve() };
+  const run = (async () => {
+    do {
+      state.pending = false;
+      const result = await replayMeetingJournal(
+        {
+          read: (id, after, limit) => native.readMeetingJournal!(id, after, limit),
+          acknowledge: (id, through) => native.acknowledgeMeetingJournal!(id, through),
+        },
+        meetingId,
+        persistNativeEvent,
+        { maxBatches: 2 },
+      );
+      if (result.hasMore) state.pending = true;
+      // Yield between bounded batches without allowing a new bridge notification to skip the backlog.
+      if (state.pending) await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    } while (state.pending);
+  })();
+  state.promise = run;
+  nativeDrains.set(meetingId, state);
+  void run
+    .finally(() => {
+      if (nativeDrains.get(meetingId) === state) nativeDrains.delete(meetingId);
+    })
+    .catch(() => undefined);
+  return run;
+}
+
+function persistNativeEvent(envelope: MeetingJournalEnvelope): Promise<void> {
+  const operation = nativeEventTail.then(async () => {
+    const saved = await persistNativeMeetingEvent(envelope);
+    if (active?.id !== envelope.meetingId) return;
+    transcript = saved.transcript;
+    const event = envelope.event;
+    active = {
+      ...active,
+      transcript: transcriptText(transcript),
+      timedWords: saved.words,
+      speakerTurns: saved.turns,
+      captureGaps: saved.gaps,
+      captureStatus: saved.captureStatus,
+      error: saved.error,
+      ...(saved.terminal
+        ? { state: saved.terminal, endedAt: saved.endedAt ?? active.endedAt ?? Date.now() }
+        : {}),
+      ...(event.kind === 'health' ? { captureHealth: event } : {}),
+      ...(event.kind === 'speaker-status' ? { speakerStatus: event.state } : {}),
+      ...(event.kind === 'speaker'
+        ? { activeSpeaker: event.speaker, lastSpeakerAt: Date.now() }
+        : {}),
+      ...(event.kind === 'speaker-tentative'
+        ? { tentativeSpeakerTurns: event.turns, speakerHorizon: event.through }
+        : {}),
+    };
+    if (saved.terminal) {
+      stopHeartbeat();
+      stopVoiceDetector();
+    } else if (event.kind === 'status' && event.state === 'paused') {
+      voiceGeneration += 1;
+      voiceDetector?.pause(active.transcript);
+    }
+    publish();
+    // Replay only restores data. It must never re-send spoken requests from before a restart.
+  });
+  nativeEventTail = operation.catch(() => undefined);
+  return operation;
+}
+
+/** Also called on foreground entry; batches are bounded and unacknowledged data stays native. */
+export function recoverNativeMeetings(): Promise<void> {
+  if (nativeRecovery) return nativeRecovery;
+  const native = liveMeetingSTT;
+  if (!native?.journalMeetings || !native.readMeetingJournal || !native.acknowledgeMeetingJournal)
+    return Promise.resolve();
+  const run = (async () => {
+    const capture = await native.currentCapture?.();
+    if (capture && active?.id !== capture.meetingId) {
+      const meeting = await ownedMeeting(capture.meetingId);
+      if (meeting) {
+        active = { ...meeting, state: 'active', endedAt: null };
+        const saved = await nativeMeetingState(meeting.id);
+        transcript = saved?.transcript ?? emptySTTTranscript;
+        subscription?.remove();
+        subscription = native.addListener('onSTTEvent', onEvent);
+      }
+    }
+    for (const journal of await native.journalMeetings!()) {
+      // A different paired server's local journal waits until that server is selected.
+      if (!(await ownedMeeting(journal.meetingId))) continue;
+      await drainNativeMeeting(journal.meetingId);
+    }
+    const currentCapture = await native.currentCapture?.();
+    if (currentCapture && active?.id === currentCapture.meetingId) {
+      const status = currentCapture.state;
+      if (
+        status === 'preparing' ||
+        status === 'downloading' ||
+        status === 'listening' ||
+        status === 'paused'
+      ) {
+        active = { ...active, state: 'active', endedAt: null, captureStatus: status };
+        await restoreNativeCapture(currentCapture.meetingId, status);
+      }
+      publish();
+    }
+  })();
+  nativeRecovery = run;
+  void run
+    .finally(() => {
+      if (nativeRecovery === run) nativeRecovery = null;
+    })
+    .catch(() => undefined);
+  return run;
+}
+
+export async function recoverMeetingAudio(meetingId: string): Promise<void> {
+  if (hasActiveMeetingCapture()) throw new Error('End recording before recovering saved audio.');
+  if (!(await ownedMeeting(meetingId))) throw new Error('Reconnect to this meeting’s server.');
+  if (!liveMeetingSTT?.recoverAudioBuffer || !liveMeetingSTT.acknowledgeAudioRecovery)
+    throw new Error('Audio recovery requires an updated iOS build.');
+  await recoverNativeMeetings();
+  const checkpoint = await nativeMeetingState(meetingId);
+  // SQLite may have committed before a process exit interrupted the native audio acknowledgement.
+  const segments = await liveMeetingSTT.recoverAudioBuffer(
+    meetingId,
+    checkpoint?.confirmedAudioThrough ?? 0,
+  );
+  await persistRecoveredAudio(meetingId, segments);
+  await liveMeetingSTT.acknowledgeAudioRecovery(
+    meetingId,
+    segments.map((segment) => segment.id),
+  );
+  if (active?.id === meetingId) {
+    active = await ownedMeeting(meetingId);
+    publish();
+  }
+}
+
+export async function discardMeetingAudio(meetingId: string): Promise<void> {
+  if (hasActiveMeetingCapture()) throw new Error('End recording before discarding saved audio.');
+  if (!(await ownedMeeting(meetingId))) throw new Error('Reconnect to this meeting’s server.');
+  await liveMeetingSTT?.discardAudioBuffer?.(meetingId);
+}
 
 export function subscribeVoiceMeetingRequest(
   listener: (event: VoiceRequestEvent) => void,
@@ -402,7 +571,50 @@ function failLocalSave(id: string, error: unknown) {
 }
 
 function onEvent(event: STTEvent) {
+  if (event.journalMeetingId && event.journalSequence) {
+    const meetingId = event.journalMeetingId;
+    // Bridge delivery is only a wake-up signal: an older native backlog must be saved before this sequence.
+    void drainNativeMeeting(meetingId)
+      .then(() => {
+        if (
+          active?.id === meetingId &&
+          active.state === 'active' &&
+          !ending &&
+          (event.kind === 'segment' || event.kind === 'snapshot')
+        ) {
+          voiceDetector?.observe(active.transcript, event.final);
+        }
+        if (
+          event.kind === 'words' ||
+          event.kind === 'speaker' ||
+          (event.kind === 'segment' && event.final)
+        )
+          scheduleSpeakerNameCheck();
+      })
+      .catch((error) => reportNativeMirrorFailure(meetingId, error));
+    return;
+  }
   if (!active || active.state !== 'active') return;
+  if (event.kind === 'activity-status') {
+    if (!event.available) {
+      active = {
+        ...active,
+        error: 'The Lock Screen meeting display is unavailable. Open Verity to check recording.',
+      };
+      publish();
+    }
+    return;
+  }
+  if (event.kind === 'health') {
+    active = { ...active, captureHealth: event };
+    publish();
+    return;
+  }
+  if (event.kind === 'gap' || event.kind === 'buffer-status') {
+    active = { ...active, error: event.message };
+    publish();
+    return;
+  }
   const recordWords = (words: TimedWord[]) => {
     if (!active) return;
     const current = active.timedWords ?? [];
@@ -640,6 +852,7 @@ export function startMeeting(
   engine: STTEngineId = 'fluid-nemotron',
   expectedParticipants: number | null = null,
   title?: string,
+  options: { audioSafetyBuffer?: boolean } = {},
 ): Promise<MeetingRecord> {
   if (isDemoMode() || isEnteringDemoMode()) {
     return Promise.reject(
@@ -655,7 +868,7 @@ export function startMeeting(
       return meeting;
     });
   }
-  const started = startMeetingUnlocked(sessionId, engine, expectedParticipants, title);
+  const started = startMeetingUnlocked(sessionId, engine, expectedParticipants, title, options);
   startInFlight = started;
   const clear = () => {
     if (startInFlight === started) startInFlight = null;
@@ -669,6 +882,7 @@ async function startMeetingUnlocked(
   engine: STTEngineId,
   expectedParticipants: number | null,
   title?: string,
+  options: { audioSafetyBuffer?: boolean } = {},
 ): Promise<MeetingRecord> {
   await Promise.all([...pendingSaveSettlements]);
   if (shutdownInFlight) await shutdownInFlight;
@@ -718,6 +932,14 @@ async function startMeetingUnlocked(
   subscription = liveMeetingSTT.addListener('onSTTEvent', onEvent);
   publish();
   try {
+    if (options.audioSafetyBuffer && !liveMeetingSTT.configureMeeting)
+      throw new Error('The audio safety buffer requires an updated iOS build.');
+    await liveMeetingSTT.configureMeeting?.(
+      meeting.id,
+      meeting.sessionId,
+      meeting.startedAt,
+      options.audioSafetyBuffer ?? false,
+    );
     await liveMeetingSTT.start(engine, 'de-DE', ['Verity'], expectedParticipants ?? 4);
     heartbeat = setInterval(() => {
       if (active?.id !== meeting.id || active.state !== 'active') return;
@@ -755,6 +977,8 @@ export async function endMeeting(expectedMeetingId?: string): Promise<void> {
       throw new Error('Recording changed before the stop command was applied.');
     await liveMeetingSTT?.stop();
     nativeStopCompleted = true;
+    if (liveMeetingSTT?.readMeetingJournal) await drainNativeMeeting(meeting.id);
+    await nativeEventTail;
     await writeTail;
     await Promise.all([...pendingSaveSettlements]);
     if (saveError) throw saveError;
