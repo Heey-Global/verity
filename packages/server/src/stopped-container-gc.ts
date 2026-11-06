@@ -160,7 +160,7 @@ export async function retireStoppedContainers(input: {
   return result;
 }
 
-/** Reconcile old successful Compose init containers only after a newer server is running. */
+/** Reconcile bootstrap containers after their consumers have completed initialization. */
 export async function retireCompletedUpdateContainers(
   docker: Pick<DockerClient, 'listContainers' | 'inspectContainer' | 'removeStoppedContainer'>,
   completedDeployment?: { composeProject: string },
@@ -169,7 +169,7 @@ export async function retireCompletedUpdateContainers(
   const removed: string[] = [];
   for (const c of await docker.listContainers()) {
     if (
-      c.state !== 'exited' ||
+      (c.state !== 'exited' && !(completedDeployment && c.state === 'created')) ||
       !['verity-agent-seed', 'verity-managed-data-init'].includes(c.labels?.[serviceLabel] ?? '')
     )
       continue;
@@ -177,7 +177,15 @@ export async function retireCompletedUpdateContainers(
     if (!project || (completedDeployment && project !== completedDeployment.composeProject))
       continue;
     const inspect = await docker.inspectContainer(c.id);
-    if (inspect.running || inspect.status !== 'exited' || inspect.exitCode !== 0) continue;
+    if (
+      inspect.running ||
+      inspect.status !== c.state ||
+      inspect.imageId !== c.imageId ||
+      inspect.labels?.[serviceLabel] !== c.labels?.[serviceLabel] ||
+      inspect.labels?.[composeLabel] !== project ||
+      (inspect.status === 'exited' && inspect.exitCode !== 0)
+    )
+      continue;
     // Re-list at mutation time; the running consumer establishes successful bootstrap completion.
     const ready =
       completedDeployment !== undefined ||
@@ -194,6 +202,46 @@ export async function retireCompletedUpdateContainers(
     if (!ready) continue;
     await docker.removeStoppedContainer(c.id);
     removed.push(c.names?.[0] ?? c.id);
+  }
+  return removed;
+}
+
+/** Called under the completed update's journal lease, after companion reconciliation. */
+export async function retireCompletedHostPreparationJobs(
+  docker: Pick<DockerClient, 'listContainers' | 'inspectContainer' | 'removeStoppedContainer'>,
+  completed: { deploymentId: string; updateId: string; targetDigest: string },
+): Promise<string[]> {
+  if (!docker.listContainers || !docker.removeStoppedContainer) return [];
+  const removed: string[] = [];
+  const ownership = {
+    'verity.managed-deployment-id': completed.deploymentId,
+    'verity.update-id': completed.updateId,
+    'verity.target-digest': completed.targetDigest,
+  };
+  for (const candidate of await docker.listContainers()) {
+    const role = candidate.labels?.['verity.managed-role'];
+    const stage = candidate.labels?.['verity.renewal-stage'];
+    if (
+      candidate.state !== 'exited' ||
+      !['runtime-renewal', 'egress-provisioning'].includes(role ?? '') ||
+      !['verify', 'install'].includes(stage ?? '') ||
+      Object.entries(ownership).some(([key, value]) => candidate.labels?.[key] !== value)
+    )
+      continue;
+    const inspect = await docker.inspectContainer(candidate.id);
+    if (
+      inspect.running ||
+      inspect.status !== 'exited' ||
+      inspect.exitCode !== 0 ||
+      inspect.imageId !== candidate.imageId ||
+      inspect.labels?.['verity.managed-role'] !== role ||
+      inspect.labels?.['verity.renewal-stage'] !== stage ||
+      Object.entries(ownership).some(([key, value]) => inspect.labels?.[key] !== value)
+    )
+      continue;
+    // Never force-remove a helper that resumed after inspection, or delete its volumes.
+    await docker.removeStoppedContainer(candidate.id);
+    removed.push(candidate.names?.[0] ?? candidate.id);
   }
   return removed;
 }

@@ -15,6 +15,23 @@ merges do not approve a release.
 | Mobile native | Release Please PR, then production promotion PR | Separate Staging and production TestFlight binaries; approved production build verified for internal TestFlight testing |
 | Mobile OTA | Staging Release Please PR, then rolling production promotion PR per runtime | Separate Staging OTA and a specific approved production EAS update group |
 
+## Update helper container retention
+
+Successful runtime and project-network signature verification containers are
+removed before subsequent preparation starts. Installation containers remain
+available until completion is verified so interrupted host work can be resumed.
+After committed cutover and successful companion reconciliation, the Updater
+also removes successful helpers belonging to that exact update, and stopped or
+never-started Compose bootstrap containers for its deployment. Reconciliation leaves failed or
+ambiguous host helpers and helpers from other update attempts intact.
+Cleanup uses non-forcing removal for reconciliation and preserves volumes.
+
+This change ships in the Server release, including its bundled Updater. Prompt
+verification cleanup applies when the installed Updater contains the fix;
+changing the target image alone does not alter predecessor behavior. The
+successor's companion reconciliation can clean its committed update's successful
+leftovers. No sandbox toolkit release is required for this change.
+
 ## Runtime renewal recovery compatibility
 
 The runtime renewal fix explicitly authorizes Docker's `label=disable` security

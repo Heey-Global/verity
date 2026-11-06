@@ -1,4 +1,7 @@
-import { retireCompletedUpdateContainers } from '../stopped-container-gc.js';
+import {
+  retireCompletedHostPreparationJobs,
+  retireCompletedUpdateContainers,
+} from '../stopped-container-gc.js';
 import {
   cp,
   lstat,
@@ -516,6 +519,18 @@ async function reconcileManagedCompanionsOnce(
         error instanceof Error ? error.message : String(error),
       );
     }
+  }
+  try {
+    await retireCompletedHostPreparationJobs(options.docker, {
+      deploymentId: options.journal.deploymentId,
+      updateId: options.journal.updateId,
+      targetDigest: options.journal.targetDigest,
+    });
+  } catch (error) {
+    console.warn(
+      'completed host preparation cleanup deferred:',
+      error instanceof Error ? error.message : String(error),
+    );
   }
   const refreshed = await options.docker.listContainers();
   for (const item of refreshed.filter(

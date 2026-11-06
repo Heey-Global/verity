@@ -1,7 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { ProjectRecord } from '@verity/store';
-import type { DockerClient, DockerContainerSummary, DockerImageSummary } from './docker.js';
+import type {
+  ContainerInspect,
+  DockerClient,
+  DockerContainerSummary,
+  DockerImageSummary,
+} from './docker.js';
 import {
+  retireCompletedHostPreparationJobs,
   retireCompletedUpdateContainers,
   retireStoppedContainers,
 } from './stopped-container-gc.js';
@@ -44,13 +50,14 @@ function fixture() {
   const docker = {
     listContainers: vi.fn(async () => containers),
     listImages: vi.fn(async () => images),
-    inspectContainer: vi.fn(async (id: string) => ({
+    inspectContainer: vi.fn(async (id: string): Promise<ContainerInspect> => ({
       id,
       running: false,
       status: 'exited',
       imageId: 'old',
       finishedAt: new Date(now - 2 * 86400000).toISOString(),
       exitCode: 0,
+      labels: sandbox.labels,
     })),
     removeStoppedContainer: vi.fn(async () => {}),
     removeContainer: vi.fn(),
@@ -162,6 +169,40 @@ describe('stopped container retirement', () => {
   });
 });
 describe('completed update bootstrap jobs', () => {
+  it.each(['verity-agent-seed', 'verity-managed-data-init'])(
+    'retires a never-started %s only after explicit deployment completion',
+    async (service) => {
+      const f = fixture();
+      f.sandbox.state = 'created';
+      f.sandbox.labels = {
+        'com.docker.compose.service': service,
+        'com.docker.compose.project': 'deploy',
+      };
+      const inspect = await f.docker.inspectContainer('sandbox');
+      f.docker.inspectContainer.mockResolvedValue({ ...inspect, status: 'created' });
+      expect(await retireCompletedUpdateContainers(f.input.docker)).toEqual([]);
+      expect(
+        await retireCompletedUpdateContainers(f.input.docker, { composeProject: 'deploy' }),
+      ).toEqual(['verity-p']);
+      expect(f.docker.removeContainer).not.toHaveBeenCalled();
+    },
+  );
+  it.each([{ labels: {} }, { imageId: 'changed' }, { running: true }, { status: 'running' }])(
+    'retains bootstrap jobs whose fresh inspection changed: %j',
+    async (changed) => {
+      const f = fixture();
+      f.sandbox.labels = {
+        'com.docker.compose.service': 'verity-agent-seed',
+        'com.docker.compose.project': 'deploy',
+      };
+      const inspect = await f.docker.inspectContainer('sandbox');
+      f.docker.inspectContainer.mockResolvedValue({ ...inspect, ...changed });
+      expect(
+        await retireCompletedUpdateContainers(f.input.docker, { composeProject: 'deploy' }),
+      ).toEqual([]);
+      expect(f.docker.removeStoppedContainer).not.toHaveBeenCalled();
+    },
+  );
   it('removes successful old jobs only after a matching deployment server is running', async () => {
     const f = fixture();
     f.sandbox.labels = {
@@ -204,4 +245,75 @@ describe('completed update bootstrap jobs', () => {
     await retireCompletedUpdateContainers(f.input.docker);
     expect(f.docker.removeStoppedContainer).not.toHaveBeenCalled();
   });
+});
+
+describe('completed preparation job retirement', () => {
+  const completed = { deploymentId: 'deployment', updateId: 'update', targetDigest: 'target' };
+  function preparedJob(role = 'runtime-renewal', stage = 'install') {
+    const f = fixture();
+    f.sandbox.labels = {
+      'verity.managed-deployment-id': completed.deploymentId,
+      'verity.update-id': completed.updateId,
+      'verity.target-digest': completed.targetDigest,
+      'verity.managed-role': role,
+      'verity.renewal-stage': stage,
+    };
+    return f;
+  }
+  it.each([
+    ['runtime-renewal', 'verify'],
+    ['runtime-renewal', 'install'],
+    ['egress-provisioning', 'verify'],
+    ['egress-provisioning', 'install'],
+  ])('retires successful %s %s jobs only for the committed operation', async (role, stage) => {
+    const f = preparedJob(role, stage);
+    expect(await retireCompletedHostPreparationJobs(f.input.docker, completed)).toEqual([
+      'verity-p',
+    ]);
+    expect(f.docker.removeStoppedContainer).toHaveBeenCalledWith('sandbox');
+    expect(f.docker.removeContainer).not.toHaveBeenCalled();
+  });
+  it.each([
+    ['other-role', 'install'],
+    ['runtime-renewal', 'other-stage'],
+  ])('retains helpers with unrelated role or stage: %s %s', async (role, stage) => {
+    const f = preparedJob(role, stage);
+    expect(await retireCompletedHostPreparationJobs(f.input.docker, completed)).toEqual([]);
+    expect(f.docker.removeStoppedContainer).not.toHaveBeenCalled();
+  });
+  it.each(['deploymentId', 'updateId', 'targetDigest'] as const)(
+    'retains jobs from another %s',
+    async (field) => {
+      const f = preparedJob();
+      expect(
+        await retireCompletedHostPreparationJobs(f.input.docker, {
+          ...completed,
+          [field]: 'other',
+        }),
+      ).toEqual([]);
+      expect(f.docker.removeStoppedContainer).not.toHaveBeenCalled();
+    },
+  );
+  it.each([
+    { status: 'running', running: true },
+    { status: 'created' },
+    { exitCode: 1 },
+    { imageId: 'different' },
+    { labels: {} },
+  ])('retains failed, unsettled, or changed jobs: %j', async (changed) => {
+    const f = preparedJob();
+    const inspect = await f.docker.inspectContainer('sandbox');
+    f.docker.inspectContainer.mockResolvedValue({ ...inspect, ...changed });
+    expect(await retireCompletedHostPreparationJobs(f.input.docker, completed)).toEqual([]);
+    expect(f.docker.removeStoppedContainer).not.toHaveBeenCalled();
+  });
+  it.each(['runtime-renewal', 'egress-provisioning'])(
+    'retains running %s jobs without inspecting for removal',
+    async (role) => {
+      const f = preparedJob(role);
+      f.sandbox.state = 'running';
+      expect(await retireCompletedHostPreparationJobs(f.input.docker, completed)).toEqual([]);
+      expect(f.docker.removeStoppedContainer).not.toHaveBeenCalled();
+    },
+  );
 });
