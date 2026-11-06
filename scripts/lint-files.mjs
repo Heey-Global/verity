@@ -82,6 +82,10 @@ function createLintProject(configPath, cache, classifications) {
     globalThis.gc?.();
     const host = Object.assign(ts.createCompilerHost(config.options), {
       useSourceOfProjectReferenceRedirect: () => true,
+      // Documentation trees across the server's imports can exhaust a worker's
+      // heap. Preserve JS type annotations; the configured lint rules do not
+      // inspect TypeScript documentation tags.
+      jsDocParsingMode: ts.JSDocParsingMode.ParseForTypeInfo,
     });
     return ts.createProgram({
       rootNames: [...new Set([...files, ...ambient])],

@@ -66,6 +66,37 @@ it('rejects requested files outside the configured project', () => {
   expect(() => createLintProgram(config, [outside])).toThrow('is not included');
 });
 
+it('omits documentation ASTs while preserving imported JavaScript JSDoc types', () => {
+  const { write, config } = fixture();
+  write(
+    'tsconfig.json',
+    JSON.stringify({
+      compilerOptions: {
+        strict: true,
+        allowJs: true,
+        checkJs: true,
+        module: 'NodeNext',
+        types: [],
+      },
+      include: ['src/**/*'],
+    }),
+  );
+  const dependency = write(
+    'src/dependency.js',
+    '/** @param {string} input */\nexport function value(input) { return input; }',
+  );
+  const target = write(
+    'src/target.ts',
+    'import { value } from "./dependency.js";\n/** Documentation link: {@link value}. */\nexport const result: number = value("typed");',
+  );
+  const program = createLintProgram(config, [target]);
+  const source = program.getSourceFile(target)!;
+  program.getTypeChecker();
+  expect(ts.getJSDocCommentsAndTags(source.statements[1])).toHaveLength(0);
+  expect(program.getSourceFile(dependency)).toBeDefined();
+  expect(program.getSemanticDiagnostics(source).map(({ code }) => code)).toContain(2322);
+});
+
 it('uses current referenced sources for type-aware lint without build output or stale cache', async () => {
   const { root, write } = fixture();
   write(
