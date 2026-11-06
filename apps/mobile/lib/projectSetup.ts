@@ -102,8 +102,11 @@ export interface ProjectOverviewStatus {
 export function projectOverviewStatus(
   project: ProjectRecord,
   detection?: DevServerDetection | null,
+  /** Leave findings out where the project page's Security card shows them. */
+  options: { vulnerabilities?: boolean } = {},
 ): ProjectOverviewStatus | undefined {
-  const vulnerabilities = project.vulnerabilitySummary;
+  const vulnerabilities =
+    options.vulnerabilities === false ? undefined : project.vulnerabilitySummary;
   if (vulnerabilities?.unclassified && !vulnerabilities.count)
     return {
       label:

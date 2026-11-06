@@ -80,6 +80,19 @@ it.each([
     'provisioning_pending',
     'Automatic host service provisioning is pending. Install the next compatible server update.',
   ],
+  [
+    'assessment_authorization_invalid',
+    'The updater could not authorize the Staging host assessment.',
+  ],
+  [
+    'docker_host_unsupported',
+    'The Docker version or daemon configuration is not supported for this host assessment.',
+  ],
+  [
+    'native_package_unavailable',
+    'A required host package is unavailable from the configured package repositories.',
+  ],
+  ['relay_runtime_missing', 'The required project or relay runtime is missing.'],
   ['provisioning_in_progress', 'Automatic host service provisioning is in progress.'],
   [
     'runtime_unsupported',

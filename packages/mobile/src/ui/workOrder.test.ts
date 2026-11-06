@@ -48,4 +48,34 @@ describe('workOrder', () => {
       'a',
     ]);
   });
+
+  it('keeps active sessions in place when activity and server response order change', () => {
+    const active = [
+      session('a', { status: 'running', lastActivityAt: 1 }),
+      session('b', { status: 'awaiting_dependency', lastActivityAt: 2 }),
+      session('c', { backgroundWorking: true, lastActivityAt: 3 }),
+    ];
+    const before = workOrder(active).map((s) => s.sessionId);
+    expect(before).toEqual(['a', 'b', 'c']);
+    expect(
+      workOrder([...active].reverse().map((s) => ({ ...s, lastActivityAt: 100 }))).map(
+        (s) => s.sessionId,
+      ),
+    ).toEqual(before);
+    expect(
+      workOrder(active.map((s) => ({ ...s, lastActivityAt: s.sessionId === 'c' ? 999 : 0 }))).map(
+        (s) => s.sessionId,
+      ),
+    ).toEqual(before);
+  });
+
+  it('respects saved positions within the active group', () => {
+    expect(
+      workOrder([
+        session('a', { status: 'running', sortOrder: 1 }),
+        session('b', { status: 'running', sortOrder: 0 }),
+        session('c', { status: 'running' }),
+      ]).map((s) => s.sessionId),
+    ).toEqual(['b', 'a', 'c']);
+  });
 });

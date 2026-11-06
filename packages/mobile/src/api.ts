@@ -259,6 +259,14 @@ export const mockupReviewSchema = z
 export type MockupReview = NonNullable<z.infer<typeof mockupReviewSchema>>;
 export type MockupReviewScreen = MockupReview['screens'][number];
 
+/** Planning mode (`active`), or how the last planning round ended. A value this
+ * build does not know reads as absent rather than failing the whole response. */
+const sessionPlanningSchema = z
+  .enum(['active', 'implemented', 'discarded'])
+  .optional()
+  .catch(undefined);
+export type SessionPlanning = NonNullable<z.infer<typeof sessionPlanningSchema>>;
+
 export const sessionSummarySchema = z
   .object({
     sessionId: z.string().min(1),
@@ -285,6 +293,14 @@ export const sessionSummarySchema = z
     /** The unanswered question of the current turn. Absent on older servers, while
      * the session works and after an answer. */
     openChoices: openChoicesSchema.optional().catch(undefined),
+    /** Planning mode, so an overview can mark a session whose plan waits for
+     * approval. Absent on older servers and for a session that never planned. */
+    planning: sessionPlanningSchema,
+    planningRevision: z.number().int().nonnegative().optional().catch(undefined),
+    /** True while planning is active and a presented plan waits for approval. The
+     * list carries this instead of the plan text, which only the session shows.
+     * Absent on older servers, so they never mark a plan. */
+    planningPresented: z.literal(true).optional().catch(undefined),
     usage: usageTotalsSchema,
     /** Latest rate-limit state for this session. Optional for rollout with
      * older servers and absent until a runtime emits one. */
@@ -401,14 +417,6 @@ const queuedItemSchema = z.union([
   }),
 ]);
 export type QueuedItem = z.infer<typeof queuedItemSchema>;
-
-/** Planning mode (`active`), or how the last planning round ended. A value this
- * build does not know reads as absent rather than failing the whole response. */
-const sessionPlanningSchema = z
-  .enum(['active', 'implemented', 'discarded'])
-  .optional()
-  .catch(undefined);
-export type SessionPlanning = NonNullable<z.infer<typeof sessionPlanningSchema>>;
 
 const gmailSessionConnectionSchema = z.object({
   accountId: z.string().nullable().optional(),

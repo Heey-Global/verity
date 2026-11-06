@@ -5,6 +5,11 @@ export const projectEgressHealthReasons = [
   'provisioning_pending',
   'provisioning_in_progress',
   'runtime_unsupported',
+  'assessment_authorization_invalid',
+  'docker_host_unsupported',
+  'native_package_unavailable',
+  'relay_runtime_missing',
+
   'provisioning_failed',
   'controller_failed',
   'key_unreadable',
@@ -45,6 +50,10 @@ export function projectEgressInstallationFailure(input: unknown): ProjectEgressH
     status.reason !== 'provisioning_in_progress' &&
     status.reason !== 'mandatory_inventory_incomplete' &&
     status.reason !== 'runtime_unsupported' &&
+    status.reason !== 'assessment_authorization_invalid' &&
+    status.reason !== 'docker_host_unsupported' &&
+    status.reason !== 'native_package_unavailable' &&
+    status.reason !== 'relay_runtime_missing' &&
     status.reason !== 'provisioning_failed' &&
     status.reason !== 'controller_failed'
   )
