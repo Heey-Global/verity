@@ -78,6 +78,19 @@ describe('useCalendarMeetingChoice', () => {
     expect(result.current.manualLink).toBe(false);
   });
 
+  // Verity prepared the screen for one meeting; the default pick must not replace it.
+  it('picks the meeting Verity prepared, until the source changes', () => {
+    const upcoming = [meeting('now', NOW), meeting('client', NOW + 3_600_000)];
+    const { result, rerender } = renderHook(
+      ({ inPerson }: { inPerson: boolean }) =>
+        useCalendarMeetingChoice(upcoming, NOW, inPerson, 'client'),
+      { initialProps: { inPerson: false } },
+    );
+    expect(result.current.selectedEventKey).toBe('client');
+    rerender({ inPerson: true });
+    expect(result.current.selectedEventKey).toBe('now');
+  });
+
   it('opens the link field when the calendar has nothing to pick', () => {
     const { result, rerender } = renderHook(
       ({ upcoming }: { upcoming: UpcomingMeeting[] | null }) =>

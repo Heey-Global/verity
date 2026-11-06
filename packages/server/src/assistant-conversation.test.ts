@@ -104,6 +104,82 @@ describe('assistant conversation projection', () => {
     expect(projection).toMatchObject({ revision: 7, state: 'idle', question: null });
   });
 
+  it('shows a meeting Verity prepared or joined, and only her listing call is hidden', () => {
+    const projection = projectAssistantConversation(
+      sequenced([
+        { t: 'prompt', text: 'Join my next meeting' },
+        {
+          t: 'tool_call',
+          id: 'list',
+          name: 'mcp__verity__verity_assistant',
+          input: { action: 'meetings' },
+        },
+        { t: 'tool_result', id: 'list', output: '{}', isError: false },
+        {
+          t: 'tool_call',
+          id: 'prep',
+          name: 'mcp__verity__verity_assistant',
+          input: { action: 'prepare_meeting', mode: 'in_person', title: 'Standup' },
+        },
+        { t: 'tool_result', id: 'prep', output: '{}', isError: false },
+        {
+          t: 'tool_call',
+          id: 'join',
+          name: 'verity_assistant',
+          input: { action: 'join_meeting', eventKey: 'ev-1', title: 'Hansen call' },
+        },
+        { t: 'tool_result', id: 'join', output: 'starts later', isError: true },
+      ]),
+      idle,
+    );
+    expect(projection.items.slice(1)).toEqual([
+      {
+        kind: 'meeting',
+        id: 't-4',
+        at: 1_003,
+        action: 'prepare',
+        mode: 'in_person',
+        eventKey: null,
+        title: 'Standup',
+        state: 'ready',
+      },
+      {
+        kind: 'meeting',
+        id: 't-6',
+        at: 1_005,
+        action: 'join',
+        mode: 'online',
+        eventKey: 'ev-1',
+        title: 'Hansen call',
+        state: 'failed',
+      },
+    ]);
+    // Devices read the projection through this schema; a card it rejected would vanish.
+    expect(
+      assistantConversationSchema.parse({
+        availability: 'ready',
+        sessionId: 'assistant',
+        ...projection,
+      }).items,
+    ).toEqual(projection.items);
+  });
+
+  it('keeps the conversation readable when a newer server sends an unknown item', () => {
+    const read = assistantConversationSchema.parse({
+      availability: 'ready',
+      sessionId: 'assistant',
+      revision: 2,
+      state: 'idle',
+      items: [
+        { kind: 'hologram', id: 'x-1', at: 1 },
+        { kind: 'reply', id: 'r-2', at: 2, text: 'Done.' },
+      ],
+      question: null,
+      approvals: [],
+    });
+    expect(read.items).toEqual([{ kind: 'reply', id: 'r-2', at: 2, text: 'Done.' }]);
+  });
+
   it('offers the open question under an id that names its event', () => {
     const events = sequenced([
       { t: 'prompt', text: 'Set up the new client' },

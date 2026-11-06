@@ -146,9 +146,14 @@ function noteClockTime(startedAt: number, atSeconds: number) {
 }
 
 export default function MeetingScreen() {
-  const { sessionId, meetingId } = useLocalSearchParams<{
+  const { sessionId, meetingId, prepare, source, eventKey } = useLocalSearchParams<{
     sessionId: string;
     meetingId?: string;
+    /** `1`: Verity prepared a meeting; the start screen opens filled in, even after
+     *  an earlier meeting of this session. */
+    prepare?: string;
+    source?: string;
+    eventKey?: string;
   }>();
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
@@ -175,7 +180,9 @@ export default function MeetingScreen() {
     null,
   );
   const [engines, setEngines] = useState<STTEngine[]>([]);
-  const [meetingSource, setMeetingSource] = useState<'presence' | 'online'>('presence');
+  const [meetingSource, setMeetingSource] = useState<'presence' | 'online'>(
+    source === 'online' ? 'online' : 'presence',
+  );
   const [meetingUrl, setMeetingUrl] = useState('');
   const [now, setNow] = useState(Date.now());
   // Both sources can take a calendar title; online calls can also use its join link.
@@ -186,7 +193,7 @@ export default function MeetingScreen() {
     manualLink,
     setManualLink,
     selectedEvent: selectedCalendarEvent,
-  } = useCalendarMeetingChoice(upcoming, now, meetingSource === 'presence');
+  } = useCalendarMeetingChoice(upcoming, now, meetingSource === 'presence', eventKey ?? null);
   const selectedEvent =
     selectedCalendarEvent?.provider && canJoinCalendarMeeting(selectedCalendarEvent, now)
       ? selectedCalendarEvent
@@ -225,7 +232,7 @@ export default function MeetingScreen() {
   }, [meetingSource]);
   const [selectedEngine, setSelectedEngine] = useState<STTEngineId>('fluid-nemotron');
   const [expectedParticipants, setExpectedParticipants] = useState<number | null>(null);
-  const [showNewMeeting, setShowNewMeeting] = useState(false);
+  const [showNewMeeting, setShowNewMeeting] = useState(prepare === '1');
   const [syncError, setSyncError] = useState(false);
   // Every save is briefly pending; only a backlog that lasts is worth showing.
   const [syncPendingSince, setSyncPendingSince] = useState<number | null>(null);

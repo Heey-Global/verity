@@ -23,6 +23,24 @@ import { VerityMark } from './VerityMark';
 /** Newest items shown in the panel; the full conversation is one tap away. */
 const RECENT = 8;
 
+type MeetingItem = Extract<AssistantConversationItem, { kind: 'meeting' }>;
+
+/** The live meeting screen for a meeting Verity prepared or joined, in her session. */
+function meetingRoute(sessionId: string, item: MeetingItem) {
+  return {
+    pathname: '/meeting/[sessionId]' as const,
+    params:
+      item.action === 'join'
+        ? { sessionId }
+        : {
+            sessionId,
+            prepare: '1',
+            source: item.mode === 'online' ? 'online' : 'presence',
+            ...(item.eventKey ? { eventKey: item.eventKey } : {}),
+          },
+  };
+}
+
 /** What the user had typed or dictated but not sent, kept across minimising,
  *  and only offered again in the account it was written in. */
 let draft = { scope: null as string | null, text: '' };
@@ -107,6 +125,31 @@ export function VerityPanel({
 
   const conversation = verity.conversation;
   const sessionId = conversation?.sessionId ?? null;
+  const openMeeting = (item: MeetingItem) => {
+    if (!sessionId) return;
+    if (voice.state === 'recording') voice.toggle();
+    onClose();
+    router.push(meetingRoute(sessionId, item));
+  };
+  // A meeting Verity readies while the panel is open is what the user just asked for:
+  // its screen opens by itself. Meetings already settled when the panel opened do not.
+  const seenMeetings = useRef<Set<string> | null>(null);
+  useEffect(() => {
+    if (!conversation) return;
+    const meetings = conversation.items.filter((item) => item.kind === 'meeting');
+    if (seenMeetings.current === null) {
+      // One still being readied is the one the user is waiting for.
+      seenMeetings.current = new Set(
+        meetings.filter((item) => item.state !== 'pending').map((item) => item.id),
+      );
+      return;
+    }
+    const fresh = meetings.find(
+      (item) => item.state === 'ready' && !seenMeetings.current?.has(item.id),
+    );
+    for (const item of meetings) if (item.state !== 'pending') seenMeetings.current.add(item.id);
+    if (fresh) openMeeting(fresh);
+  });
   return (
     <Sheet
       visible
@@ -163,7 +206,7 @@ export function VerityPanel({
           <OutgoingCard key={entry.requestId} entry={entry} />
         ))}
         {(conversation?.items ?? []).slice(-RECENT).map((item) => (
-          <ItemView key={item.id} item={item} />
+          <ItemView key={item.id} item={item} onOpenMeeting={sessionId ? openMeeting : null} />
         ))}
         {conversation?.question ? (
           <QuestionCard
@@ -271,7 +314,13 @@ function OutgoingCard({ entry }: { entry: Outgoing }) {
   );
 }
 
-function ItemView({ item }: { item: AssistantConversationItem }) {
+function ItemView({
+  item,
+  onOpenMeeting,
+}: {
+  item: AssistantConversationItem;
+  onOpenMeeting: ((item: MeetingItem) => void) | null;
+}) {
   switch (item.kind) {
     case 'message':
       return (
@@ -313,6 +362,44 @@ function ItemView({ item }: { item: AssistantConversationItem }) {
                 ? 'Not assigned'
                 : 'Assigning…'}
           </Text>
+        </Card>
+      );
+    case 'meeting':
+      return (
+        <Card>
+          <Text variant="row">{item.title ?? 'Live meeting'}</Text>
+          <Text variant="subtitle">
+            {item.state === 'failed'
+              ? item.action === 'join'
+                ? 'Verity could not join'
+                : 'Could not prepare the meeting'
+              : item.state === 'pending'
+                ? item.action === 'join'
+                  ? 'Joining…'
+                  : 'Preparing…'
+                : item.action === 'join'
+                  ? 'Verity joined the call'
+                  : `Ready to start · ${item.mode === 'online' ? 'online' : 'in person'}`}
+          </Text>
+          {item.state !== 'pending' && onOpenMeeting ? (
+            <Button
+              label={
+                item.action === 'join' && item.state === 'ready'
+                  ? 'Open meeting'
+                  : 'Open start screen'
+              }
+              size="compact"
+              variant="secondary"
+              onPress={() =>
+                onOpenMeeting(
+                  // A failed join still leaves the start screen to try by hand.
+                  item.state === 'failed' && item.action === 'join'
+                    ? { ...item, action: 'prepare' }
+                    : item,
+                )
+              }
+            />
+          ) : null}
         </Card>
       );
     case 'error':
