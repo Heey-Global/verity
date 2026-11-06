@@ -4290,32 +4290,95 @@ describe('managed installer CI acceptance', () => {
     for (const path of paths) expect(Buffer.byteLength(path)).toBeLessThanOrEqual(107);
   });
 
-  it('reclaims the completed installer daemon and its image volume before recovery', () => {
-    const run = step?.run ?? '';
-    const installer = run.indexOf('deploy/bin/verity-managed-install-smoke ');
-    const recovery = run.indexOf('deploy/bin/verity-backup-restore-smoke ');
-    expect(installer).toBeGreaterThanOrEqual(0);
-    expect(recovery).toBeGreaterThan(installer);
-    // Stopping leaves a second full image store on disk during recovery builds.
-    const between = run.slice(run.indexOf('\n', installer), recovery);
-    const commands = execFileSync(
-      'bash',
-      ['-euo', 'pipefail', '-c', 'exec 3>&1; docker() { printf "%s\\n" "$*" >&3; }; ' + between],
-      {
-        encoding: 'utf8',
-        env: {
-          ...process.env,
-          VERITY_CI_MANAGED_DIND: 'completed-fixture',
-          VERITY_CI_MANAGED_DIND_VOLUME: 'completed-fixture-data',
-        },
-      },
-    )
-      .trim()
-      .split('\n');
-    expect(commands).toEqual([
-      '--host unix:///var/run/docker.sock rm --force completed-fixture',
-      '--host unix:///var/run/docker.sock volume rm completed-fixture-data',
-    ]);
+  it('runs backup recovery once, in its own leg, on the managed daemon fixture', () => {
+    // Run after the managed installer, the ~14 minute recovery acceptance made
+    // that leg the critical path of every main run, which release PRs wait for.
+    const runners = job.steps.filter((entry) =>
+      entry.run?.includes('deploy/bin/verity-backup-restore-smoke '),
+    );
+    expect(runners).toHaveLength(1);
+    const run = runners[0]?.run ?? '';
+    expect(runners[0]?.if).toBe("matrix.installer == 'recovery'");
+    expect(job.strategy.matrix.include.map((leg) => leg.installer)).toContain('recovery');
+    expect(step?.run).not.toContain('verity-backup-restore-smoke');
+    // Same pinned runsc daemon with the installer prerequisites as the managed leg.
+    expect(run).toContain('--file deploy/gvisor-ci.Dockerfile');
+    expect(run).toContain('--file deploy/managed-install-ci.Dockerfile');
+    expect(run).toContain(
+      `deploy/bin/verity-backup-restore-smoke "$VERITY_CI_IMAGE" "$recovery_dind_image" "${archive}"`,
+    );
+  });
+
+  describe('restore host preparation', () => {
+    const source = readFileSync('deploy/bin/verity-backup-restore-smoke', 'utf8');
+    const definition = (name: string) => {
+      const start = source.indexOf(`\n${name}() {\n`);
+      const end = source.indexOf('\n}\n', start + 1);
+      expect(start).toBeGreaterThanOrEqual(0);
+      expect(end).toBeGreaterThan(start);
+      return source.slice(start + 1, end + 2);
+    };
+    const digest = `ghcr.io/heey-global/verity/verity-server@sha256:${'a'.repeat(64)}`;
+    // Runs the real begin_host/finish_host against a stubbed preparation.
+    const adopt = async (prepare: string) => {
+      const work = await mkdtemp(join(tmpdir(), 'restore-host-'));
+      try {
+        const result = spawnSync(
+          'bash',
+          [
+            '-c',
+            [
+              'set -euo pipefail',
+              'work=$WORK',
+              'declare -A preparing=()',
+              `prepare_host() { ${prepare}; }`,
+              definition('begin_host'),
+              definition('finish_host'),
+              'begin_host x-fresh',
+              'finish_host x-fresh',
+              'printf "%s|%s|%s|%s" "$daemon_name" "${socket#"unix://$work"}" "$daemon_id" "$digest"',
+            ].join('\n'),
+          ],
+          { encoding: 'utf8', env: { ...process.env, WORK: work } },
+        );
+        return result;
+      } finally {
+        await rm(work, { recursive: true, force: true });
+      }
+    };
+    const ready = `printf '%s\\n%s\\n' daemon-1 '${digest}' >"$work/fresh.ready"`;
+
+    it('adopts a host only from a preparation that succeeded', async () => {
+      const ok = await adopt(`mkdir "$work/fresh"; ${ready}`);
+      expect(ok.status).toBe(0);
+      expect(ok.stdout).toBe(`x-fresh|/fresh/docker.sock|daemon-1|${digest}`);
+      // A background failure is visible only through `wait`. Adopting the
+      // half-prepared host would run the restore against a daemon that may not
+      // hold the candidate image, or not even be running.
+      const failed = await adopt(`${ready}; false`);
+      expect(failed.status).not.toBe(0);
+      expect(failed.stderr).toContain('restore fixture host fresh preparation failed');
+      expect(failed.stdout).toBe('');
+    });
+
+    it('adopts every prepared host, the fresh one only after the original is gone', () => {
+      const lines = source.split('\n');
+      const at = (line: string) => lines.indexOf(line);
+      for (const host of ['original', 'fresh', 'second']) {
+        expect(at(`begin_host "$${host}"`)).toBeGreaterThanOrEqual(0);
+      }
+      expect(source.match(/^finish_host /gm)).toHaveLength(3);
+      expect(at('finish_host "$original"')).toBeLessThan(at('begin_host "$fresh"'));
+      // The restore is original-host-free: preparing the fresh host early must
+      // not let it be adopted while the original daemon still exists.
+      expect(at('host_docker rm -f "$original" >/dev/null')).toBeGreaterThanOrEqual(0);
+      expect(at('host_docker rm -f "$original" >/dev/null')).toBeLessThan(
+        at('finish_host "$fresh"'),
+      );
+      // An abandoned preparation would otherwise outlive the cleanup that
+      // removes its daemon.
+      expect(definition('cleanup')).toContain('kill "$pid"');
+    });
   });
 
   it('runs the candidate through the installer in a separate disposable daemon', () => {

@@ -1554,7 +1554,7 @@ jobs:
           # host first and then `docker save | load`-ing into the empty host
           # unpacked the image twice and re-packed it once in between — about
           # a minute for the host load and a minute and a half per copy — and
-          # the managed leg never runs the image on the host at all.
+          # the managed and recovery legs never run the image on the host at all.
           outputs: type=docker,dest=${{ runner.temp }}/${{ env.VERITY_CI_IMAGE_ARCHIVE }}
           tags: ${{ env.VERITY_CI_IMAGE }}
           build-args: |
@@ -1596,7 +1596,7 @@ jobs:
           # was evicting the very blobs being written.
           cache-from: type=gha,scope=verity-server-amd64
           #
-          # One producer writes this scope; both installer legs only load its archive.
+          # One producer writes this scope; every server-image leg only loads its archive.
           cache-to: ${{ github.event_name != 'pull_request' && 'type=gha,mode=max,scope=verity-server-amd64,ignore-error=true' || '' }}
       # Avoid recompressing the multi-GB Docker archive on the runner.
       - name: Upload Server image archive
@@ -1630,14 +1630,19 @@ jobs:
     # bound only ever catches a hang. scripts/ci-workflow.test.ts enforces it for
     # every step in the repo that reads or writes a gha cache.
     timeout-minutes: 45
-    # Both installer paths exercise the exact same archive from one build.
-    # Independent verdicts remain visible when either installer fails.
+    # Both installer paths and the backup recovery acceptance exercise the
+    # exact same archive from one build. Independent verdicts remain visible
+    # when any of them fails. Recovery is its own leg: its separate-host
+    # capture/restore acceptance takes about 14 minutes, and run after the
+    # managed installer it made that leg the critical path of every main run
+    # — which every release PR waits for.
     strategy:
       fail-fast: false
       matrix:
         include:
           - installer: compose
           - installer: managed
+          - installer: recovery
     # Namespace every mutable smoke-test resource. This remains useful for local
     # reproduction and protects against future runner-layout changes.
     env:
@@ -1912,11 +1917,22 @@ jobs:
           VERITY_MANAGED_INSTALL_DAEMON_ID="$isolated_id" DOCKER_HOST="$isolated" \
             deploy/bin/verity-managed-install-smoke "$VERITY_CI_IMAGE" "$VERITY_CI_MANAGED_DIND"
 
-          # Reclaim the completed fixture's image store before recovery loads
-          # and builds another copy. Stopping alone retains the full data volume.
-          docker --host unix:///var/run/docker.sock rm --force "$VERITY_CI_MANAGED_DIND" >/dev/null
-          docker --host unix:///var/run/docker.sock volume rm "$VERITY_CI_MANAGED_DIND_VOLUME" >/dev/null
-          deploy/bin/verity-backup-restore-smoke "$VERITY_CI_IMAGE" "$managed_dind_image" "$RUNNER_TEMP/$VERITY_CI_IMAGE_ARCHIVE"
+      - name: Verify backup recovery on separate disposable Docker hosts
+        if: matrix.installer == 'recovery'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The recovery hosts run the same pinned runsc daemon fixture with the
+          # installer prerequisites as the managed leg; this leg builds its own.
+          gvisor_image="verity-gvisor-recovery:${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          recovery_dind_image="verity-recovery:${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          cleanup_recovery_images() {
+            docker --host unix:///var/run/docker.sock image rm --force "$recovery_dind_image" "$gvisor_image" >/dev/null 2>&1 || true
+          }
+          trap cleanup_recovery_images EXIT
+          docker build --file deploy/gvisor-ci.Dockerfile --tag "$gvisor_image" .
+          docker build --file deploy/managed-install-ci.Dockerfile --build-arg "VERITY_GVISOR_CI_IMAGE=$gvisor_image" --tag "$recovery_dind_image" .
+          deploy/bin/verity-backup-restore-smoke "$VERITY_CI_IMAGE" "$recovery_dind_image" "$RUNNER_TEMP/$VERITY_CI_IMAGE_ARCHIVE"
 
       - name: Clean Docker smoke artifacts
         if: always()
