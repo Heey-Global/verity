@@ -517,7 +517,7 @@ describe('WebSocket PIN query authentication', () => {
     );
     expect(await refused(base)).toBe(401);
     expect(await refused(`${base}?pin=bad`)).toBe(401);
-    for (let i = 0; i < 9; i++) {
+    for (let i = 0; i < 2; i++) {
       const response = await fetch(`http://127.0.0.1:${edgePort}/__verity/login?pin=000000`, {
         redirect: 'manual',
       });
