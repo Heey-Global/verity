@@ -208,6 +208,7 @@ jobs:
           ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
           ASC_APP_ID: ${{ (inputs.profile-source != '' || inputs.variant == 'staging') && secrets.STAGING_ASC_APP_ID || secrets.ASC_APP_ID }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          EXPO_APPLE_TEAM_TYPE: ${{ vars.APPLE_TEAM_TYPE }}
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
           GOOGLE_AUTH_ID: ${{ (inputs.profile-source != '' || inputs.variant == 'staging') && secrets.STAGING_GOOGLE_AUTH_ID || vars.GOOGLE_AUTH_ID || '340053543157-ohufghcdnc5do2lkjg7cgnkk67oac0e7.apps.googleusercontent.com' }}
         shell: bash
@@ -216,9 +217,26 @@ jobs:
           key_dir="$RUNNER_TEMP/app-store-connect"
           key_path="$key_dir/AuthKey_${ASC_KEY_ID}.p8"
           ipa="$RUNNER_TEMP/Verity.ipa"
+          # EAS needs Apple authentication to provision newly added extension targets.
+          case "${EXPO_APPLE_TEAM_TYPE:-}" in
+            IN_HOUSE|COMPANY_OR_ORGANIZATION|INDIVIDUAL) ;;
+            *) echo '::error::Set repository variable APPLE_TEAM_TYPE to the verified Apple Developer team type.' >&2; exit 1 ;;
+          esac
+          for name in ASC_KEY_ID ASC_ISSUER_ID ASC_KEY_P8 APPLE_TEAM_ID; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "::error::$name is required for EAS Apple authentication." >&2
+              exit 1
+            fi
+          done
+          umask 077
           mkdir -p "$key_dir"
+          trap 'rm -f "$key_path"' EXIT
           printf '%s' "$ASC_KEY_P8" > "$key_path"
           chmod 600 "$key_path"
+          export EXPO_ASC_API_KEY_PATH="$key_path"
+          export EXPO_ASC_KEY_ID="$ASC_KEY_ID"
+          export EXPO_ASC_ISSUER_ID="$ASC_ISSUER_ID"
+          export EXPO_APPLE_TEAM_ID="$APPLE_TEAM_ID"
 
           mint_asc_jwt() {
             ruby -ropenssl -rjson -rbase64 -e '
@@ -354,11 +372,16 @@ jobs:
         env:
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
           ASC_APP_ID: ${{ secrets.STAGING_ASC_APP_ID }}
         shell: bash
         run: |
           set -euo pipefail
           key_path="$RUNNER_TEMP/app-store-connect/AuthKey_${ASC_KEY_ID}.p8"
+          umask 077
+          mkdir -p "$(dirname "$key_path")"
+          printf '%s' "$ASC_KEY_P8" > "$key_path"
+          trap 'rm -f "$key_path" "$HOME/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8"' EXIT
           ipa="$RUNNER_TEMP/Verity.ipa"
           next_build="$(cat "$RUNNER_TEMP/staging-build-number")"
           mint_asc_jwt() {
