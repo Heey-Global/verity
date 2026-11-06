@@ -86,9 +86,11 @@ final class LiveMeetingAudioBuffer: @unchecked Sendable {
         // Keep the open file: recognition can finalize before the next audio buffer arrives.
         let openId = self.file == nil ? nil : self.manifest.segments.last?.id
         let expired = self.manifest.segments.filter { $0.id != openId && $0.end <= through }
-        self.manifest.segments.removeAll { segment in expired.contains { $0.id == segment.id } }
+        // Persist the transcript boundary, but keep file identities until deletion succeeds.
         try self.persist()
         for segment in expired { try self.remove(segment) }
+        self.manifest.segments.removeAll { segment in expired.contains { $0.id == segment.id } }
+        try self.persist()
       } catch { self.fail("Could not update the audio safety buffer: \(error.localizedDescription)") }
     }
   }
@@ -98,9 +100,11 @@ final class LiveMeetingAudioBuffer: @unchecked Sendable {
       self.file = nil
       do {
         let expired = self.manifest.segments.filter { $0.end <= self.manifest.confirmedThrough }
-        self.manifest.segments.removeAll { segment in expired.contains { $0.id == segment.id } }
+        // Persist the transcript boundary, but keep file identities until deletion succeeds.
         try self.persist()
         for segment in expired { try self.remove(segment) }
+        self.manifest.segments.removeAll { segment in expired.contains { $0.id == segment.id } }
+        try self.persist()
         if self.manifest.segments.isEmpty { try FileManager.default.removeItem(at: self.directory) }
       } catch { self.fail("Could not finalize the audio safety buffer: \(error.localizedDescription)") }
     }
@@ -152,7 +156,9 @@ final class LiveMeetingAudioBuffer: @unchecked Sendable {
     if let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize {
       bytes = max(0, bytes - Int64(size))
     }
-    try FileManager.default.removeItem(at: url)
+    if FileManager.default.fileExists(atPath: url.path) {
+      try FileManager.default.removeItem(at: url)
+    }
   }
 
   private func persist() throws {
@@ -210,6 +216,12 @@ final class LiveMeetingAudioBuffer: @unchecked Sendable {
     else { throw BufferError.unavailable("Apple Speech recovery is unavailable for this meeting's language.") }
     var recovered: [[String: Any]] = []
     for segment in manifest.segments {
+      // Deletion may have completed before its manifest update. Treat that retry as already consumed.
+      let sourceURL = directory.appendingPathComponent(segment.id).appendingPathExtension("caf")
+      if !FileManager.default.fileExists(atPath: sourceURL.path) {
+        recovered.append(["id": segment.id, "text": "", "start": segment.start, "end": segment.end])
+        continue
+      }
       let transcriber = SpeechTranscriber(locale: locale, transcriptionOptions: [.punctuation],
         reportingOptions: [], attributeOptions: [.audioTimeRange])
       guard await AssetInventory.status(forModules: [transcriber]) == .installed else {
@@ -274,15 +286,18 @@ final class LiveMeetingAudioBuffer: @unchecked Sendable {
     let directory = try directory(meetingId)
     var manifest = try load(directory)
     let acknowledged = manifest.segments.filter { segmentIds.contains($0.id) }
+    // Keep the manifest as retry bookkeeping until every acknowledged file is gone.
+    for segment in acknowledged {
+      let url = directory.appendingPathComponent(segment.id).appendingPathExtension("caf")
+      if FileManager.default.fileExists(atPath: url.path) {
+        try FileManager.default.removeItem(at: url)
+      }
+    }
     manifest.segments.removeAll { segmentIds.contains($0.id) }
     if manifest.segments.isEmpty { try FileManager.default.removeItem(at: directory) }
     else {
       try JSONEncoder().encode(manifest).write(to: directory.appendingPathComponent("manifest.json"),
         options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
-      for segment in acknowledged {
-        try FileManager.default.removeItem(at:
-          directory.appendingPathComponent(segment.id).appendingPathExtension("caf"))
-      }
     }
   }
 

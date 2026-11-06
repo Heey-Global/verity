@@ -463,7 +463,8 @@ private final class LiveSTTService {
   private func audioSessionChanged(name: Notification.Name, type: UInt?, reason: UInt?) async {
     guard activeEngine != nil, dictationOwner == nil else { return }
     if name == AVAudioSession.interruptionNotification {
-      if paused { return }
+      // Preparation has no microphone to pause; activation will validate audio availability.
+      guard audioEngine != nil, !paused else { return }
       if type == AVAudioSession.InterruptionType.began.rawValue {
         audioEngine?.pause()
         emit?(["kind": "gap", "at": progress.snapshot().seconds,
