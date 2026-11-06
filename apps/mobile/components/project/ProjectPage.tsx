@@ -23,6 +23,7 @@ import type { StatusIntent } from '../ui/Status';
 import { tint } from '../ui/tint';
 import { useProjectConnections, type ProjectConnections } from '../../lib/useProjectConnections';
 import { useProjectDetail } from '../../lib/useProjectDetail';
+import { ProjectTasksRow } from './ProjectTasksRow';
 import { ProjectWork } from './ProjectWork';
 import { ProjectSecurityCard } from '../vulnerability/ProjectSecurityCard';
 
@@ -323,7 +324,7 @@ function ProjectOverview({
         onOpenSession={onOpenSession}
       />
       <SectionHeader title="Content" variant="eyebrow" />
-      <ProjectContent detail={detail} connections={connections} />
+      <ProjectContent client={client} detail={detail} connections={connections} />
     </>
   );
 }
@@ -349,9 +350,11 @@ function sandboxIntent(badge: ReturnType<typeof projectBadge>, project: ProjectR
  * Only services the project uses appear; adding one is a project setting.
  */
 function ProjectContent({
+  client,
   detail,
   connections,
 }: {
+  client: VerityClient;
   detail: ProjectDetail;
   connections: ProjectConnections;
 }) {
@@ -373,6 +376,7 @@ function ProjectContent({
     driveFolderNames ?? (settings?.googleDriveFolderName ? [settings.googleDriveFolderName] : []);
   return (
     <Group>
+      <ProjectTasksRow client={client} projectId={id} />
       {host !== null ? (
         <Row
           leading={{
