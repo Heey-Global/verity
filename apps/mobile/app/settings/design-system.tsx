@@ -6,6 +6,7 @@ import { InboxCard, VerityHeader } from '../../components/home/HomeInbox';
 import { SettingsScaffold } from '../../components/settings/SettingsChrome';
 import {
   Button,
+  CaptureField,
   Card,
   ConfirmSheet,
   FilterChips,
@@ -35,6 +36,7 @@ export default function DesignSystemCatalog() {
   const [chip, setChip] = useState<'all' | 'running' | 'favorites'>('all');
   const [key, setKey] = useState('');
   const [notes, setNotes] = useState('');
+  const [capture, setCapture] = useState('');
   const [loading, setLoading] = useState(false);
   const [sheetOpen, setSheetOpen] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -193,6 +195,20 @@ export default function DesignSystemCatalog() {
 
       <View style={styles.section}>
         <SectionHeader title="Fields" />
+        <CaptureField
+          placeholder="Tell Verity… an idea, a mail, an appointment"
+          accessibilityLabel="Tell Verity"
+          onOpen={() => undefined}
+        />
+        <CaptureField
+          value={capture}
+          onChangeText={setCapture}
+          placeholder="Ask or tell Verity anything"
+          onMic={() => undefined}
+          onSend={() => undefined}
+          sendDisabled={!capture.trim()}
+          accessibilityLabel="Message to Verity"
+        />
         <TextField
           label="Server address"
           value=""

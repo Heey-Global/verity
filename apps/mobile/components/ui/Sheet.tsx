@@ -14,7 +14,7 @@ import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
-import { Icon } from '../Icon';
+import { Icon, type IconName } from '../Icon';
 import { Button } from './Button';
 
 // How far the sheet has to be dragged down before letting go closes it.
@@ -35,9 +35,15 @@ export function Sheet({
   footer,
   showClose = true,
   dismissible = true,
+  titleLeading,
+  headerAction,
 }: {
   visible: boolean;
   title: string;
+  /** A mark before the title, such as Verity's V on her panel. */
+  titleLeading?: ReactNode;
+  /** One icon button before the close control. */
+  headerAction?: ReactNode;
   onClose: () => void;
   children?: ReactNode;
   footer?: ReactNode;
@@ -103,9 +109,11 @@ export function Sheet({
           <View {...pan.panHandlers} style={styles.grabArea}>
             <View style={styles.handle} />
             <View style={styles.header}>
+              {titleLeading}
               <Text style={styles.title} accessibilityRole="header">
                 {title}
               </Text>
+              {headerAction}
               {showClose ? (
                 <Pressable
                   onPress={close}
@@ -134,6 +142,30 @@ export function Sheet({
         </Animated.View>
       </KeyboardAvoidingView>
     </Modal>
+  );
+}
+
+/** An icon button beside a sheet's close control, drawn like it. */
+export function SheetHeaderButton({
+  icon,
+  accessibilityLabel,
+  onPress,
+}: {
+  icon: IconName;
+  accessibilityLabel: string;
+  onPress: () => void;
+}) {
+  const { theme } = useUnistyles();
+  return (
+    <Pressable
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel={accessibilityLabel}
+      hitSlop={8}
+      style={styles.close}
+    >
+      <Icon name={icon} size={16} color={theme.colors.textMuted} />
+    </Pressable>
   );
 }
 

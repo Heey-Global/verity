@@ -21,7 +21,7 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { Icon } from '../Icon';
 import { VerityMark } from '../VerityMark';
 import { MockupThumbs } from '../session/MockupReview';
-import { Button, Card, CardHead, StatusTag, Text } from '../ui';
+import { Button, CaptureField, Card, CardHead, StatusTag, Text } from '../ui';
 import { Disclosure } from '../ui/Disclosure';
 import { tint } from '../ui/tint';
 import { useTaskPreferences } from '../../lib/taskPreferences';
@@ -378,20 +378,12 @@ export function VerityHeader({
         </View>
       )}
       {capture ? (
-        <Pressable
-          accessibilityRole="button"
+        <CaptureField
+          placeholder="Tell Verity… an idea, a mail, an appointment"
           accessibilityLabel="Tell Verity"
           accessibilityHint="Opens Verity to listen: ask her or tell her an idea, a mail or an appointment"
-          onPress={() => dispatchVerityShortcut()}
-          style={({ pressed }) => [styles.capture, pressed ? styles.capturePressed : null]}
-        >
-          <Text variant="body" tone="faint" style={styles.flex}>
-            Tell Verity… an idea, a mail, an appointment
-          </Text>
-          <View style={styles.mic}>
-            <Icon name="mic" size={20} color={theme.colors.action} />
-          </View>
-        </Pressable>
+          onOpen={() => dispatchVerityShortcut()}
+        />
       ) : null}
     </View>
   );
@@ -600,30 +592,7 @@ const styles = StyleSheet.create((theme) => {
     header: { gap: theme.spacing.lg, paddingBottom: theme.spacing.lg },
     identity: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.md },
     // Verity's identity on Home (§ 5.8): the meeting's V mark on a signature halo.
-    capture: {
-      minHeight: 48,
-      flexDirection: 'row',
-      alignItems: 'center',
-      gap: theme.spacing.sm,
-      paddingLeft: theme.spacing.md,
-      paddingRight: theme.spacing.xs,
-      paddingVertical: theme.spacing.xs,
-      borderRadius: theme.radius.control,
-      borderWidth: 1,
-      borderColor: colors.border,
-      backgroundColor: colors.surfaceAlt,
-    },
     capturePressed: { opacity: 0.7 },
-    mic: {
-      width: 40,
-      height: 40,
-      borderRadius: theme.radius.control,
-      alignItems: 'center',
-      justifyContent: 'center',
-      backgroundColor: tint(colors.action, 'fill'),
-      borderWidth: 1,
-      borderColor: tint(colors.action, 'border'),
-    },
     section: { marginTop: theme.spacing.sm, marginBottom: theme.spacing.xs },
     hiddenToggle: { alignItems: 'center', marginTop: theme.spacing.sm },
     actions: { flexDirection: 'row', flexWrap: 'wrap', gap: theme.spacing.sm },
