@@ -5403,6 +5403,7 @@ migrations['0196_project_inquiries'] = {
       source_session_id text not null references sessions(session_id) on delete cascade,
       target_project_id text not null references projects(id) on delete cascade,
       target_session_id text not null unique references sessions(session_id) on delete cascade,
+      change_approved boolean not null default false,
       primary key(source_session_id,target_project_id)
     )`.execute(db);
     await sql`create table project_inquiries (

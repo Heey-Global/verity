@@ -68,6 +68,7 @@ export function createProjectInquiries(deps: ProjectInquiryDeps) {
       // cannot change the posture of a write turn that became busy concurrently.
       const accepted = await deps.dispatch(current, async () => {
         if (!(await allowed(current))) return false;
+        await store.projectInquiries.activate(current.id);
         await store.setSessionPlanning(
           current.targetSessionId,
           current.kind === 'question' ? 'active' : 'implemented',

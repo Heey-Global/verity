@@ -3001,3 +3001,65 @@ it('keeps inquiry targets read-only even when a normal planning tool could mutat
   expect((await harness.store.getSession('s1'))?.planning).toBe('active');
   expect(harness.approvals).toEqual([]);
 });
+
+it('lets an approved inquiry change start, present and discard its own plan', async () => {
+  const harness = build({ planningTools: true, unlocked: true });
+  await harness.store.createProject({
+    id: 'p1',
+    kind: 'local',
+    owner: '__local__',
+    repo: 'alpha',
+    containerName: 'verity-alpha',
+    state: 'active',
+  });
+  await harness.store.createProject({
+    id: 'p2',
+    kind: 'local',
+    owner: '__local__',
+    repo: 'source',
+    containerName: 'verity-source',
+    state: 'active',
+  });
+  await harness.store.projectInquiries.setGrant('p2', 'p1', true);
+  for (const sessionId of ['source', 's1'])
+    await harness.store.createSession({
+      sessionId,
+      projectId: sessionId === 'source' ? 'p2' : 'p1',
+      worktree: `/tmp/inquiry-${sessionId}`,
+      model: 'm',
+    });
+  await harness.store.projectInquiries.bind('source', 'p1', 's1');
+  await harness.store.projectInquiries.create({
+    id: 'change',
+    sourceSessionId: 'source',
+    targetSessionId: 's1',
+    sourceProjectId: 'p2',
+    targetProjectId: 'p1',
+    title: 'Change',
+    body: 'Approved scope',
+    kind: 'change',
+    status: 'pending',
+    userId: null,
+  });
+  expect(await harness.store.projectInquiries.decide('change', 's1', true, null)).toBe(true);
+  await harness.store.projectInquiries.activate('change');
+  await harness.store.setSessionPlanning('s1', 'implemented');
+  const token = harness.tokens.issue({ projectId: 'p1', sessionId: 's1', turnId: 't1' });
+  await withListener(harness, async (socketPath) => {
+    for (const [name, args] of [
+      ['verity_start_planning', {}],
+      ['verity_present_plan', { plan: '1. Implement the approved scope' }],
+      ['verity_end_planning', { action: 'discard' }],
+    ] as const) {
+      const response = await postUnix(socketPath, `Bearer ${token}`, {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name, arguments: args },
+      });
+      const result = (JSON.parse(response.body) as { result: { isError?: boolean } }).result;
+      expect(result.isError, response.body).toBeUndefined();
+    }
+  });
+  expect((await harness.store.getSession('s1'))?.planning).toBe('discarded');
+});

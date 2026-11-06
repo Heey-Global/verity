@@ -107,6 +107,22 @@ export class ProjectInquiryStore {
     );
   }
 
+  /** The most recently admitted request controls the reusable target's posture. */
+  async activate(id: string): Promise<void> {
+    await sql`update project_inquiry_sessions s set change_approved=(i.kind='change')
+      from project_inquiries i where i.id=${id} and i.status='approved'
+      and s.target_session_id=i.target_session_id`.execute(this.db);
+  }
+
+  async isReadOnlyTarget(sessionId: string): Promise<boolean> {
+    return (
+      (
+        await sql`select 1 from project_inquiry_sessions
+        where target_session_id=${sessionId} and not change_approved`.execute(this.db)
+      ).rows.length > 0
+    );
+  }
+
   async bind(
     sourceSessionId: string,
     targetProjectId: string,

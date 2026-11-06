@@ -1081,7 +1081,7 @@ export function registerServerMcpRoutes({
           );
         if (
           (await deps.eventStore.getSession(sessionId))?.planning === 'active' &&
-          (await deps.eventStore.projectInquiries.isTarget(sessionId)) &&
+          (await deps.eventStore.projectInquiries.isReadOnlyTarget(sessionId)) &&
           toolName !== 'verity_app_help' &&
           !(
             toolName === 'verity_project_inquiry' &&
@@ -1668,7 +1668,7 @@ export function registerServerMcpRoutes({
           };
         }
         if (input.toolName === END_PLANNING_TOOL) {
-          if (await deps.eventStore.projectInquiries.isTarget(input.sessionId))
+          if (await deps.eventStore.projectInquiries.isReadOnlyTarget(input.sessionId))
             throw new ControlPlaneSessionAuthorityError(
               'Project inquiry sessions require target-side human change approval',
             );

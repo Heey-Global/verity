@@ -28,6 +28,7 @@ function harness() {
       allowed: vi.fn(async () => grant),
       isTarget: vi.fn(async (id: string) => id !== 'source'),
       bind: vi.fn(),
+      activate: vi.fn(),
       get: vi.fn(async (id: string) => rows.get(id)),
       create: vi.fn(async (input: ProjectInquiry) => {
         if (!rows.has(input.id)) rows.set(input.id, input);

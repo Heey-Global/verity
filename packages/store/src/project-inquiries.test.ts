@@ -51,12 +51,18 @@ it('keeps exact-scope approvals, reusable targets and revocation durable', async
   expect(await inquiries.decide('request', 'source', true, null)).toBe(false);
   expect(await inquiries.decide('request', 'target', true, null)).toBe(true);
   expect(await inquiries.decide('request', 'target', true, null)).toBe(false);
+  expect(await inquiries.isReadOnlyTarget('target')).toBe(true);
+  await inquiries.activate('request');
+  expect(await inquiries.isReadOnlyTarget('target')).toBe(false);
   await inquiries.markQueued('request');
   expect(await inquiries.answer('request', 'source', 'Done')).toBe(false);
   expect(await inquiries.answer('request', 'target', 'Done')).toBe(true);
   expect(await inquiries.unansweredDeliveries()).toHaveLength(1);
   await inquiries.markAnswerDelivered('request');
   expect(await inquiries.unansweredDeliveries()).toEqual([]);
+  await inquiries.create({ ...input, id: 'question', kind: 'question', status: 'approved' });
+  await inquiries.activate('question');
+  expect(await inquiries.isReadOnlyTarget('target')).toBe(true);
   await inquiries.create({ ...input, id: 'revoked' });
   await inquiries.setGrant('source', 'target', false);
   expect((await inquiries.get('revoked'))?.status).toBe('blocked');
