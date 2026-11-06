@@ -101,6 +101,19 @@ async function grantedProjects(
   input: { sessionId: string; turnId: string },
 ): Promise<{ projectId: string; name: string; mode: AssistantMode }[]> {
   const initiator = await deps.initiator(input.sessionId, input.turnId);
+  return assistantProjectsFor(deps, initiator?.userId);
+}
+
+/**
+ * The projects the assistant may use on behalf of `userId`: granted, live, and
+ * readable by that user. The conversation routes put this list into each
+ * message's context so a turn need not spend a model round asking for it; the
+ * tool still checks the grant again when it acts.
+ */
+export async function assistantProjectsFor(
+  deps: Pick<AssistantToolDeps, 'eventStore' | 'permitted'>,
+  userId: string | undefined,
+): Promise<{ projectId: string; name: string; mode: AssistantMode }[]> {
   const projects = new Map(
     (await deps.eventStore.listProjects()).map((project) => [project.id, project]),
   );
@@ -108,7 +121,7 @@ async function grantedProjects(
   for (const grant of await deps.eventStore.assistant.grants()) {
     const project = projects.get(grant.project_id);
     if (grant.mode === 'off' || !project || project.hiddenAt !== null || project.archived) continue;
-    if (!(await deps.permitted(initiator?.userId, project.id, 'read'))) continue;
+    if (!(await deps.permitted(userId, project.id, 'read'))) continue;
     granted.push({
       projectId: project.id,
       name: `${project.owner}/${project.repo}`,

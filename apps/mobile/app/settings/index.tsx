@@ -239,7 +239,7 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
           <SettingsNavRow
             icon="check-square"
             title="Tasks"
-            subtitle="Capture bubble, screenshot tips"
+            subtitle="Verity button, Apple Watch"
             status={
               taskPreferences.enabled
                 ? { intent: 'ready', label: 'On' }
