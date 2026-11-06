@@ -204,6 +204,9 @@ export class ProjectInquiryStore {
           ${input.targetProjectId},${input.title},${input.body},${input.kind},${input.status},${input.userId}) returning *`.execute(
         tx,
       );
+      await sql`insert into qa_dispatches(id,session_id,state)
+        values (${`project-inquiry:${input.id}`},${input.targetSessionId},'reserved')
+        on conflict do nothing`.execute(tx);
       return record(result.rows[0]!);
     });
   }
@@ -238,9 +241,19 @@ export class ProjectInquiryStore {
   }
 
   async answer(id: string, targetSessionId: string, answer: string): Promise<boolean> {
-    const result = await sql`update project_inquiries set status='answered',answer=${answer}
-      where id=${id} and target_session_id=${targetSessionId} and status='queued'`.execute(this.db);
-    return (result.numAffectedRows ?? 0n) > 0n;
+    return this.db.transaction().execute(async (tx) => {
+      const result = await sql<{
+        source_session_id: string;
+      }>`update project_inquiries set status='answered',answer=${answer}
+        where id=${id} and target_session_id=${targetSessionId} and status='queued'
+        returning source_session_id`.execute(tx);
+      const inquiry = result.rows[0];
+      if (!inquiry) return false;
+      await sql`insert into qa_dispatches(id,session_id,state)
+        values (${`project-inquiry-answer:${id}`},${inquiry.source_session_id},'reserved')
+        on conflict do nothing`.execute(tx);
+      return true;
+    });
   }
 
   async unansweredDeliveries(afterId?: string): Promise<ProjectInquiry[]> {
