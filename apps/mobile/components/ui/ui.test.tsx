@@ -5,6 +5,7 @@ import { AccessibilityInfo, StyleSheet, View } from 'react-native';
 
 import {
   Button,
+  CardHead,
   ConfirmSheet,
   Row,
   useConfirm,
@@ -505,5 +506,22 @@ describe('toneColor', () => {
     }
     expect(toneColor(theme.colors, 'danger')).toBe(theme.colors.attention);
     expect(toneColor(theme.colors, 'done')).toBe(theme.colors.success);
+  });
+});
+
+describe('CardHead', () => {
+  // Sharing the row's trailing rule (shrink, at most 45 %) cut a card's tag to
+  // "PERMISSI…" beside the dismiss button; the tag is the card's verdict.
+  it('keeps the status tag whole and lets the title give way', () => {
+    render(
+      <CardHead
+        title="Run trusted command with 2 secrets?"
+        trailing={<StatusTag intent="needsSetup" label="Permission" />}
+        onDismiss={() => undefined}
+      />,
+    );
+    const style = StyleSheet.flatten(screen.getByTestId('card-head-trailing').props.style);
+    expect(style.flexShrink).toBe(0);
+    expect(style.maxWidth).toBeUndefined();
   });
 });

@@ -228,6 +228,36 @@ export default function DesignSystemCatalog() {
         />
         <InboxCard
           item={{
+            key: 'catalog-permission',
+            kind: 'permission',
+            tag: 'Permission',
+            tone: 'attention',
+            title: 'Run trusted command with 2 secrets?',
+            context: 'acme/infra · Daily cluster check',
+            lines: [
+              { kind: 'code', text: '"/usr/local/bin/cluster-inspect" "job" "e2e"' },
+              {
+                kind: 'text',
+                text: 'Verity injects TS_AUTH_KEY as a file at TS_AUTHKEY_FILE, KUBECONFIG as a file at KUBECONFIG_FILE. This trusted process can read, transform, or disclose every one of them in full.',
+              },
+            ],
+            request: '{ "command": ["/usr/local/bin/cluster-inspect", "job", "e2e"] }',
+            actions: [
+              { kind: 'allow', label: 'Allow once', sessionId: 's', toolUseId: 't' },
+              { kind: 'deny', label: 'Deny', sessionId: 's', toolUseId: 't' },
+              { kind: 'open_session', label: 'Open', sessionId: 's' },
+            ],
+            at: 0,
+            dismiss: 'session',
+          }}
+          selected={false}
+          pending={false}
+          disabled={false}
+          onAction={() => undefined}
+          onDismiss={() => undefined}
+        />
+        <InboxCard
+          item={{
             key: 'catalog-merge',
             kind: 'merge_ready',
             tag: 'Merge ready',

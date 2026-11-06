@@ -109,7 +109,6 @@ import {
   planProposalHeadline,
   planProposalContent,
   planningToolName,
-  END_PLANNING_TOOL,
   START_PLANNING_TOOL,
   freezeTranscriptTail,
   frozenTranscriptRows,
@@ -148,11 +147,12 @@ import {
   rowRecycleType,
   secretGrantScopes,
   brokeredAuthSentence,
+  permissionSummary,
+  trustedCliCommandLine,
+  trustedCliRiskSentence,
   brokeredHttpSummary,
-  brokeredHttpTitle,
   listSessionsSentence,
   listSessionsSummary,
-  listSessionsTitle,
   permissionInputText,
   knowledgePublishSummary,
   packageInstallSummary,
@@ -161,11 +161,9 @@ import {
   printableFileHtml,
   sessionHandoffCaveats,
   sessionHandoffSummary,
-  sessionHandoffTitle,
   sessionProgressSummary,
   recentSessionMessagesSummary,
   spellOutBidiControls,
-  trustedCliInjectionSummary,
   trustedCliSecretLabel,
   trustedCliSummary,
   splitSearchHighlights,
@@ -9022,7 +9020,6 @@ function PermissionPrompt({
   const packageInstall =
     pending.tool === 'verity_package_install' ? packageInstallSummary(pending.input) : null;
   const planningTool = planningToolName(pending.tool);
-  const isEndPlanning = planningTool === END_PLANNING_TOOL;
   const isPresentPlan = planningTool === 'verity_present_plan';
   const knowledgeSummary = isKnowledge ? knowledgePublishSummary(pending.input) : null;
   const calendarSummary = isCalendar ? calendarChangeSummary(pending.input) : null;
@@ -9119,44 +9116,9 @@ function PermissionPrompt({
   // owns its own headline, first match wins in the order they are parsed above, and the next
   // tool adds a line here instead of another level of nesting. The fallback names the tool,
   // which is all that is known when no summariser recognised the input.
-  const cardTitle =
-    [
-      packageInstall?.title ?? null,
-      !isKnowledge
-        ? null
-        : knowledgeSummary?.replacesExisting
-          ? 'Save changes to Global Knowledge?'
-          : 'Publish insight to Global Knowledge?',
-      httpSummary === null ? null : brokeredHttpTitle(httpSummary),
-      cliSecretLabel === null ? null : `Run trusted command with ${cliSecretLabel}?`,
-      handoffSummary === null ? null : sessionHandoffTitle(handoffSummary),
-      linkedMessage === null
-        ? null
-        : approvedForDelivery
-          ? `Retry delivery to ${linkedMessage.targetSessionId}?`
-          : `Send to ${linkedMessage.targetSessionId} and continue the exchange?`,
-      listingSummary === null ? null : listSessionsTitle(listingSummary),
-      progressSummary === null ? null : `Read progress for session ${progressSummary.sessionId}?`,
-      recentSummary === null
-        ? null
-        : `Read ${String(recentSummary.count)} recent messages from session ${recentSummary.sessionId}?`,
-      calendarSummary?.title ?? null,
-      schedulingSummary === null ? null : spellOutBidiControls(schedulingSummary.title),
-      matrixSummary === null
-        ? null
-        : `Send Matrix message to ${spellOutBidiControls(matrixSummary.roomName)}?`,
-      gmailSummary === null ? null : `Send email to ${gmailSummary.to.join(', ')}?`,
-      isEndPlanning
-        ? grantInput?.action === 'discard'
-          ? 'Leave planning and change files?'
-          : 'Implement the plan?'
-        : null,
-      isPresentPlan ? 'Show the proposed plan?' : null,
-    ].find((title) => title !== null) ??
-    // Spelled out like every other string on the card. Tool names are server-controlled today,
-    // so this is consistency rather than exposure — but it is the headline, and the one field
-    // here that never passed a summariser.
-    `Allow ${spellOutBidiControls(view.title)}?`;
+  // Home's inbox titles the same request from the same function, so the two
+  // never word one approval differently.
+  const cardTitle = permissionSummary(pending.tool, pending.input, { approvedForDelivery }).title;
   const allow = (scope?: 'session' | 'project' | 'forever'): void => {
     if (!active) return;
     if (
@@ -9286,20 +9248,10 @@ function PermissionPrompt({
             {/* Command tokens are arbitrary strings and this is the card that hands a
                 secret to a process — the displayed order has to be the executed order. */}
             <Text style={styles.permissionSubtitle} selectable>
-              {spellOutBidiControls(
-                cliSummary.command.map((token) => JSON.stringify(token)).join(' '),
-              )}
+              {trustedCliCommandLine(cliSummary)}
             </Text>
           </ScrollView>
-          <Text style={styles.permissionHttpMeta}>
-            {cliSummary.entryScript !== null
-              ? `Entry script ${cliSummary.entryScript.path} (SHA-256 ${cliSummary.entryScript.sha256}, ${cliSummary.entryScript.loading} loading). `
-              : ''}
-            Verity injects {trustedCliInjectionSummary(cliSummary)}. This trusted process can read,
-            transform, or disclose{' '}
-            {cliSummary.secrets.length === 1 ? 'the complete secret' : 'every one of them in full'}.
-            Output redaction is hygiene only and cannot prevent exfiltration.
-          </Text>
+          <Text style={styles.permissionHttpMeta}>{trustedCliRiskSentence(cliSummary)}</Text>
         </View>
       ) : linkedMessage !== null ? (
         <View style={styles.permissionHttpSummary}>

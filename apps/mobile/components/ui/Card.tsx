@@ -92,7 +92,7 @@ export function CardHead({
         ) : null}
       </View>
       {trailing !== undefined || onDismiss !== undefined ? (
-        <View style={styles.trailing}>
+        <View style={styles.headTrailing} testID="card-head-trailing">
           {trailing}
           {onDismiss !== undefined ? (
             <IconButton icon="x" accessibilityLabel="Dismiss" onPress={onDismiss} />
@@ -421,6 +421,14 @@ const styles = StyleSheet.create((theme) => ({
   },
   divider: { height: 1, backgroundColor: theme.colors.border },
   head: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.md },
+  // A card's status tag is a few words and the card's whole verdict, so it keeps
+  // its width and the title beside it wraps instead ("PERMISSI…" said nothing).
+  headTrailing: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+    flexShrink: 0,
+  },
   // Rows fill their container, so a row inside a card spans the card's width.
   row: {
     flexGrow: 1,
