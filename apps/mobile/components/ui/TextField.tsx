@@ -14,7 +14,8 @@ const MAX_LINES = 6;
  * caller's job and must not happen while `error` is set.
  *
  * `secret` masks the value behind a reveal control and asks the platform not to
- * offer it to the password manager; `multiline` grows up to six lines.
+ * offer it to the password manager; `multiline` grows up to six lines, or
+ * between `lines.min` and `lines.max` for a document-sized text.
  */
 export function TextField({
   label,
@@ -26,6 +27,7 @@ export function TextField({
   error,
   secret = false,
   multiline = false,
+  lines,
   disabled = false,
   keyboardType,
   literal: literalInput = false,
@@ -43,6 +45,8 @@ export function TextField({
   error?: { title: string; message: string } | undefined;
   secret?: boolean;
   multiline?: boolean;
+  /** With `multiline`: the field opens at `min` lines and grows to `max`. */
+  lines?: { min: number; max: number };
   disabled?: boolean;
   keyboardType?: 'default' | 'url' | 'email-address' | 'number-pad';
   /** Input that must arrive exactly as typed (a pasted certificate): no
@@ -85,7 +89,17 @@ export function TextField({
         ]}
       >
         <TextInput
-          style={[styles.input, secret ? styles.mono : null, multiline ? styles.inputMulti : null]}
+          style={[
+            styles.input,
+            secret ? styles.mono : null,
+            multiline ? styles.inputMulti : null,
+            multiline && lines
+              ? {
+                  minHeight: theme.typography.body.lineHeight * lines.min,
+                  maxHeight: theme.typography.body.lineHeight * lines.max,
+                }
+              : null,
+          ]}
           value={value}
           onChangeText={onChangeText}
           onFocus={() => setFocused(true)}

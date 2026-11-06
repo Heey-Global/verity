@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { createVerityClient } from '../../lib/client';
-import { Button, TextField } from '../ui';
+import { Button, TextField, useConfirm } from '../ui';
 import { SettingsGroup, SettingsMessage, SettingsPanel, SettingsScaffold } from './SettingsChrome';
 
 type Snapshot = { instructions: string; memory: string; revision: number | string };
@@ -18,6 +18,7 @@ function ContextSettingsEditor({ projectId, kind }: ContextSettingsProps) {
   const [draft, setDraft] = useState('');
   const [error, setError] = useState<string>();
   const [saving, setSaving] = useState(false);
+  const [confirm, confirmSheet] = useConfirm();
   const title = kind === 'instructions' ? 'Instructions' : 'Memory';
   const load = useCallback(
     async (preserveDraft = false) => {
@@ -89,6 +90,7 @@ function ContextSettingsEditor({ projectId, kind }: ContextSettingsProps) {
       />
     );
   const limit = kind === 'instructions' ? 12_000 : 8_000;
+  const unchanged = !snapshot || draft === snapshot[kind];
   return (
     <SettingsScaffold
       title={title}
@@ -97,6 +99,18 @@ function ContextSettingsEditor({ projectId, kind }: ContextSettingsProps) {
       onRetry={() => {
         void load(!!snapshot);
       }}
+      // The screen's one main action, pinned clear of the home indicator (§ 5.1).
+      footer={
+        <Button
+          label="Save"
+          fullWidth
+          loading={saving}
+          disabled={!snapshot || unchanged}
+          onPress={() => {
+            void save(draft);
+          }}
+        />
+      }
     >
       <SettingsGroup
         title={projectId ? `Project ${title}` : `Personal ${title}`}
@@ -114,26 +128,34 @@ function ContextSettingsEditor({ projectId, kind }: ContextSettingsProps) {
             value={draft}
             onChangeText={setDraft}
             multiline
+            lines={{ min: 8, max: 24 }}
             maxLength={limit}
             disabled={!snapshot || saving}
             labelAccessory={undefined}
           />
-          <Button
-            label="Save"
-            disabled={!snapshot || saving || draft === snapshot[kind]}
-            onPress={() => {
-              void save(draft);
-            }}
-          />
-          <Button
-            label={`Clear ${title}`}
-            disabled={!snapshot || saving || snapshot[kind].length === 0}
-            onPress={() => {
-              void save('');
-            }}
-          />
+          {snapshot && snapshot[kind].length > 0 ? (
+            <Button
+              label={`Clear ${title}`}
+              variant="destructive"
+              size="compact"
+              disabled={saving}
+              onPress={() =>
+                confirm({
+                  title: `Clear ${title}?`,
+                  message:
+                    kind === 'memory'
+                      ? 'Agents no longer see these facts. Past conversations stay as they are.'
+                      : 'Agents no longer follow these rules. This cannot be undone.',
+                  confirmLabel: 'Clear',
+                  destructive: true,
+                  onConfirm: () => save(''),
+                })
+              }
+            />
+          ) : null}
         </SettingsPanel>
       </SettingsGroup>
+      {confirmSheet}
     </SettingsScaffold>
   );
 }
