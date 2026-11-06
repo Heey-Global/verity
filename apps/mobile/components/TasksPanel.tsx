@@ -41,26 +41,29 @@ interface TaskGroup {
   collapsible: boolean;
 }
 
-/** One task view at a time, with projects and sessions sharing the same row anatomy. */
-export function TasksPanel({
+/**
+ * The task list itself, wherever it is shown: the floating panel behind the V,
+ * or a project's Tasks screen. One task view at a time, with projects and
+ * sessions sharing the same row anatomy.
+ *
+ * `scope="project"` is a project's own list: only its tasks, Mine and Issues;
+ * the agents' working steps belong to their sessions, not here.
+ */
+export function TaskListBody({
   context: suppliedContext,
   projects,
   sessions = [],
-  side,
-  y,
-  onClose,
-  onCapture,
+  scope = 'panel',
+  onLeave,
 }: {
   context: TaskContext;
   projects: ProjectRecord[];
   sessions?: SessionSummary[];
-  side: 'left' | 'right';
-  y: number;
-  onClose(): void;
-  onCapture(): void;
+  scope?: 'panel' | 'project';
+  /** Before leaving for a session: the panel closes itself; a screen stays. */
+  onLeave(): void;
 }) {
   const { theme } = useUnistyles();
-  const { width, height } = useWindowDimensions();
   const { tasks, pending, conflicts, errors } = useTasks();
   const [showDone, setShowDone] = useState(false);
   const [descriptions, setDescriptions] = useState<string[]>([]);
@@ -119,7 +122,7 @@ export function TasksPanel({
   const githubConnected = githubData?.connected === true;
   const tab =
     (preferences.tab === 'issues' && !githubConnected) ||
-    (preferences.tab === 'agent' && context.sessionId === null)
+    (preferences.tab === 'agent' && (context.sessionId === null || scope === 'project'))
       ? 'mine'
       : preferences.tab;
   const selectTab = (value: 'mine' | 'agent' | 'issues') => {
@@ -128,7 +131,6 @@ export function TasksPanel({
       Alert.alert('Could not remember task view', 'Try again'),
     );
   };
-  const wide = width >= 900;
   const run = async (work: () => Promise<unknown>) => {
     if (busyRef.current) return;
     busyRef.current = true;
@@ -149,7 +151,7 @@ export function TasksPanel({
       setDispatching(sessionId ? 'existing' : 'new');
       try {
         const id = await dispatchTasks(items, sessionId);
-        onClose();
+        onLeave();
         router.push({ pathname: '/session/[id]', params: { id } });
       } finally {
         setDispatching(null);
@@ -221,7 +223,9 @@ export function TasksPanel({
       expanded: expanded.includes(id),
       collapsible: true,
     })),
-  ].filter((group) => group.items.length > 0);
+  ]
+    .filter((group) => scope === 'panel' || group.current)
+    .filter((group) => group.items.length > 0 || (scope === 'project' && group.current));
   const sessionIds = [...new Set(agentAll.map((task) => task.sessionId!))];
   sessionIds.sort((a, b) => (a === context.sessionId ? -1 : b === context.sessionId ? 1 : 0));
   const agentGroups: TaskGroup[] = sessionIds.map((id) => ({
@@ -421,7 +425,7 @@ export function TasksPanel({
           <Pressable
             style={styles.indent}
             onPress={() => {
-              onClose();
+              onLeave();
               router.push({ pathname: '/session/[id]', params: { id: task.sessionId! } });
             }}
           >
@@ -574,6 +578,227 @@ export function TasksPanel({
       },
     ];
   };
+  return (
+    <>
+      {suppliedContext.projectId === null ? (
+        <View style={styles.chips}>
+          {projects.map((project) =>
+            chip(
+              projectDisplayName(project),
+              () => {
+                void saveTaskPreferences({ projectId: project.id }).catch(() =>
+                  Alert.alert('Could not remember project', 'Try again'),
+                );
+              },
+              { accent: project.id === context.projectId },
+            ),
+          )}
+          {projects.length === 0 ? (
+            <Text style={styles.meta}>Create a project to capture tasks.</Text>
+          ) : null}
+        </View>
+      ) : null}
+      <View style={styles.tabs} accessibilityRole="tablist">
+        {(
+          [
+            'mine',
+            ...(context.sessionId !== null && scope === 'panel' ? (['agent'] as const) : []),
+            ...(githubConnected ? (['issues'] as const) : []),
+          ] as const
+        ).map((value) => (
+          <Pressable
+            key={value}
+            accessibilityRole="tab"
+            disabled={preferences.loaded === false}
+            accessibilityLabel={
+              value === 'mine' ? 'Mine' : value === 'agent' ? 'Agent' : 'GitHub Issues'
+            }
+            accessibilityState={{ selected: tab === value }}
+            onPress={() => selectTab(value)}
+            style={[styles.tab, tab === value ? styles.tabSelected : null]}
+          >
+            <Text style={[styles.tabLabel, tab === value ? styles.tabLabelSelected : null]}>
+              {value === 'mine' ? 'Mine' : value === 'agent' ? 'Agent' : 'Issues'}
+            </Text>
+            <View style={[styles.count, tab === value ? styles.tabCountSelected : null]}>
+              <Text
+                style={[styles.countLabel, tab === value ? styles.tabCountLabelSelected : null]}
+              >
+                {value === 'mine'
+                  ? String(
+                      tasks.filter(
+                        (task) =>
+                          !isStep(task) &&
+                          task.status !== 'done' &&
+                          task.status !== 'dropped' &&
+                          (scope === 'panel' || task.projectId === context.projectId),
+                      ).length,
+                    )
+                  : value === 'agent'
+                    ? `${String(agentDone)}/${String(agentAll.length)}`
+                    : String(githubData?.issues.length ?? 0)}
+              </Text>
+            </View>
+          </Pressable>
+        ))}
+      </View>
+      {githubError ? (
+        <View style={styles.footer}>
+          <Text accessibilityRole="alert" style={styles.meta}>
+            {githubError}
+          </Text>
+          {chip('Retry GitHub', () => setGithubRetry((value) => value + 1))}
+        </View>
+      ) : null}
+      {dispatching ? (
+        <View style={styles.dispatchStatus} accessibilityLiveRegion="polite">
+          <ActivityIndicator size="small" color={theme.colors.textMuted} />
+          <Text style={styles.meta}>
+            {dispatching === 'new' ? 'Starting new session…' : 'Sending task to session…'}
+          </Text>
+        </View>
+      ) : null}
+      {moving ? (
+        <KeyboardAwareScrollView bottomOffset={24}>
+          <Text style={styles.sectionLabel}>Move to</Text>
+          {[...projects.map((p) => ({ id: p.id, label: projectDisplayName(p) }))].map((project) => (
+            <Pressable
+              key={project.id}
+              style={({ pressed }) => [styles.moveTarget, pressed ? styles.pressed : null]}
+              onPress={() => {
+                void run(async () => {
+                  await patchTask(moving, { projectId: project.id, sessionId: null });
+                  setMoving(null);
+                });
+              }}
+            >
+              <Text style={styles.title}>{project.label}</Text>
+            </Pressable>
+          ))}
+          <View style={styles.chips}>
+            {chip('Cancel', () => setMoving(null), { whileBusy: true })}
+          </View>
+        </KeyboardAwareScrollView>
+      ) : (
+        <KeyboardAwareScrollView bottomOffset={24}>
+          {tab === 'issues' && context.projectId && githubData ? (
+            <TaskIssuesList
+              key={context.projectId}
+              projectId={context.projectId}
+              projectName={projectName(context.projectId)}
+              currentSessionId={context.sessionId ?? undefined}
+              issues={githubData.issues}
+              viewerLogin={githubData.viewerLogin}
+              onOpenSession={(id) => {
+                onLeave();
+                router.push({ pathname: '/session/[id]', params: { id } });
+              }}
+            />
+          ) : null}
+          {(tab === 'issues' ? [] : tab === 'agent' ? agentGroups : groups).map((group) => (
+            <View key={group.key}>
+              <Pressable
+                disabled={!group.collapsible}
+                accessibilityRole={group.collapsible ? 'button' : undefined}
+                accessibilityLabel={`${group.label} · ${String(group.items.length)}`}
+                accessibilityState={group.collapsible ? { expanded: group.expanded } : undefined}
+                onPress={() =>
+                  setExpanded((ids) =>
+                    ids.includes(group.key)
+                      ? ids.filter((id) => id !== group.key)
+                      : [...ids, group.key],
+                  )
+                }
+                style={styles.section}
+              >
+                {group.current ? (
+                  <View style={styles.currentDot} />
+                ) : (
+                  <Icon
+                    name={group.expanded ? 'chevron-down' : 'chevron-right'}
+                    size={16}
+                    color={theme.colors.textFaint}
+                  />
+                )}
+                <Text
+                  style={[
+                    styles.sectionLabel,
+                    !group.expanded ? styles.sectionLabelCollapsed : null,
+                  ]}
+                >
+                  {group.label}
+                </Text>
+                <View style={styles.count}>
+                  <Text style={styles.countLabel}>
+                    {tab === 'agent'
+                      ? `${String(group.items.filter((task) => task.status === 'done').length)}/${String(group.items.length)}`
+                      : String(group.items.length)}
+                  </Text>
+                </View>
+                {tab === 'agent' && group.current ? (
+                  <View style={styles.bar}>
+                    <View
+                      style={[
+                        styles.barFill,
+                        {
+                          width:
+                            `${String(Math.round((group.items.filter((task) => task.status === 'done').length / group.items.length) * 100))}%` as `${number}%`,
+                        },
+                      ]}
+                    />
+                  </View>
+                ) : null}
+              </Pressable>
+              {group.expanded ? group.items.map(tab === 'agent' ? agentRow : row) : null}
+            </View>
+          ))}
+        </KeyboardAwareScrollView>
+      )}
+      {tab === 'mine' ? (
+        <Pressable
+          onPress={() => setShowDone(!showDone)}
+          accessibilityRole="button"
+          style={styles.footer}
+        >
+          <Text style={styles.meta}>
+            {showDone ? 'Hide done' : `Show done (${String(done.length)})`}
+          </Text>
+        </Pressable>
+      ) : null}
+      {menu ? (
+        <ActionMenu
+          anchor={menu.anchor}
+          label="Task actions"
+          items={menuItems(tasks.find((task) => task.id === menu.task.id) ?? menu.task)}
+          onClose={() => setMenu(null)}
+        />
+      ) : null}
+    </>
+  );
+}
+
+/** The task list floating behind the V: positioned at the V on a wide screen,
+ *  a sheet on a phone, with Capture and Close in its head. */
+export function TasksPanel({
+  context,
+  projects,
+  sessions = [],
+  side,
+  y,
+  onClose,
+  onCapture,
+}: {
+  context: TaskContext;
+  projects: ProjectRecord[];
+  sessions?: SessionSummary[];
+  side: 'left' | 'right';
+  y: number;
+  onClose(): void;
+  onCapture(): void;
+}) {
+  const { theme } = useUnistyles();
+  const { width, height } = useWindowDimensions();
+  const wide = width >= 900;
   const headerButton = (label: string, icon: 'mic' | 'x', onPress: () => void) => (
     <Pressable
       accessibilityRole="button"
@@ -616,202 +841,14 @@ export function TasksPanel({
             {headerButton('Capture task', 'mic', onCapture)}
             {headerButton('Close', 'x', onClose)}
           </View>
-          {suppliedContext.projectId === null ? (
-            <View style={styles.chips}>
-              {projects.map((project) =>
-                chip(
-                  projectDisplayName(project),
-                  () => {
-                    void saveTaskPreferences({ projectId: project.id }).catch(() =>
-                      Alert.alert('Could not remember project', 'Try again'),
-                    );
-                  },
-                  { accent: project.id === context.projectId },
-                ),
-              )}
-              {projects.length === 0 ? (
-                <Text style={styles.meta}>Create a project to capture tasks.</Text>
-              ) : null}
-            </View>
-          ) : null}
-          <View style={styles.tabs} accessibilityRole="tablist">
-            {(
-              [
-                'mine',
-                ...(context.sessionId !== null ? (['agent'] as const) : []),
-                ...(githubConnected ? (['issues'] as const) : []),
-              ] as const
-            ).map((value) => (
-              <Pressable
-                key={value}
-                accessibilityRole="tab"
-                disabled={preferences.loaded === false}
-                accessibilityLabel={
-                  value === 'mine' ? 'Mine' : value === 'agent' ? 'Agent' : 'GitHub Issues'
-                }
-                accessibilityState={{ selected: tab === value }}
-                onPress={() => selectTab(value)}
-                style={[styles.tab, tab === value ? styles.tabSelected : null]}
-              >
-                <Text style={[styles.tabLabel, tab === value ? styles.tabLabelSelected : null]}>
-                  {value === 'mine' ? 'Mine' : value === 'agent' ? 'Agent' : 'Issues'}
-                </Text>
-                <View style={[styles.count, tab === value ? styles.tabCountSelected : null]}>
-                  <Text
-                    style={[styles.countLabel, tab === value ? styles.tabCountLabelSelected : null]}
-                  >
-                    {value === 'mine'
-                      ? String(
-                          tasks.filter(
-                            (task) =>
-                              !isStep(task) && task.status !== 'done' && task.status !== 'dropped',
-                          ).length,
-                        )
-                      : value === 'agent'
-                        ? `${String(agentDone)}/${String(agentAll.length)}`
-                        : String(githubData?.issues.length ?? 0)}
-                  </Text>
-                </View>
-              </Pressable>
-            ))}
-          </View>
-          {githubError ? (
-            <View style={styles.footer}>
-              <Text accessibilityRole="alert" style={styles.meta}>
-                {githubError}
-              </Text>
-              {chip('Retry GitHub', () => setGithubRetry((value) => value + 1))}
-            </View>
-          ) : null}
-          {dispatching ? (
-            <View style={styles.dispatchStatus} accessibilityLiveRegion="polite">
-              <ActivityIndicator size="small" color={theme.colors.textMuted} />
-              <Text style={styles.meta}>
-                {dispatching === 'new' ? 'Starting new session…' : 'Sending task to session…'}
-              </Text>
-            </View>
-          ) : null}
-          {moving ? (
-            <KeyboardAwareScrollView bottomOffset={24}>
-              <Text style={styles.sectionLabel}>Move to</Text>
-              {[...projects.map((p) => ({ id: p.id, label: projectDisplayName(p) }))].map(
-                (project) => (
-                  <Pressable
-                    key={project.id}
-                    style={({ pressed }) => [styles.moveTarget, pressed ? styles.pressed : null]}
-                    onPress={() => {
-                      void run(async () => {
-                        await patchTask(moving, { projectId: project.id, sessionId: null });
-                        setMoving(null);
-                      });
-                    }}
-                  >
-                    <Text style={styles.title}>{project.label}</Text>
-                  </Pressable>
-                ),
-              )}
-              <View style={styles.chips}>
-                {chip('Cancel', () => setMoving(null), { whileBusy: true })}
-              </View>
-            </KeyboardAwareScrollView>
-          ) : (
-            <KeyboardAwareScrollView bottomOffset={24}>
-              {tab === 'issues' && context.projectId && githubData ? (
-                <TaskIssuesList
-                  key={context.projectId}
-                  projectId={context.projectId}
-                  projectName={projectName(context.projectId)}
-                  currentSessionId={context.sessionId ?? undefined}
-                  issues={githubData.issues}
-                  viewerLogin={githubData.viewerLogin}
-                  onOpenSession={(id) => {
-                    onClose();
-                    router.push({ pathname: '/session/[id]', params: { id } });
-                  }}
-                />
-              ) : null}
-              {(tab === 'issues' ? [] : tab === 'agent' ? agentGroups : groups).map((group) => (
-                <View key={group.key}>
-                  <Pressable
-                    disabled={!group.collapsible}
-                    accessibilityRole={group.collapsible ? 'button' : undefined}
-                    accessibilityLabel={`${group.label} · ${String(group.items.length)}`}
-                    accessibilityState={
-                      group.collapsible ? { expanded: group.expanded } : undefined
-                    }
-                    onPress={() =>
-                      setExpanded((ids) =>
-                        ids.includes(group.key)
-                          ? ids.filter((id) => id !== group.key)
-                          : [...ids, group.key],
-                      )
-                    }
-                    style={styles.section}
-                  >
-                    {group.current ? (
-                      <View style={styles.currentDot} />
-                    ) : (
-                      <Icon
-                        name={group.expanded ? 'chevron-down' : 'chevron-right'}
-                        size={16}
-                        color={theme.colors.textFaint}
-                      />
-                    )}
-                    <Text
-                      style={[
-                        styles.sectionLabel,
-                        !group.expanded ? styles.sectionLabelCollapsed : null,
-                      ]}
-                    >
-                      {group.label}
-                    </Text>
-                    <View style={styles.count}>
-                      <Text style={styles.countLabel}>
-                        {tab === 'agent'
-                          ? `${String(group.items.filter((task) => task.status === 'done').length)}/${String(group.items.length)}`
-                          : String(group.items.length)}
-                      </Text>
-                    </View>
-                    {tab === 'agent' && group.current ? (
-                      <View style={styles.bar}>
-                        <View
-                          style={[
-                            styles.barFill,
-                            {
-                              width:
-                                `${String(Math.round((group.items.filter((task) => task.status === 'done').length / group.items.length) * 100))}%` as `${number}%`,
-                            },
-                          ]}
-                        />
-                      </View>
-                    ) : null}
-                  </Pressable>
-                  {group.expanded ? group.items.map(tab === 'agent' ? agentRow : row) : null}
-                </View>
-              ))}
-            </KeyboardAwareScrollView>
-          )}
-          {tab === 'mine' ? (
-            <Pressable
-              onPress={() => setShowDone(!showDone)}
-              accessibilityRole="button"
-              style={styles.footer}
-            >
-              <Text style={styles.meta}>
-                {showDone ? 'Hide done' : `Show done (${String(done.length)})`}
-              </Text>
-            </Pressable>
-          ) : null}
+          <TaskListBody
+            context={context}
+            projects={projects}
+            sessions={sessions}
+            onLeave={onClose}
+          />
         </View>
       </KeyboardAvoidingView>
-      {menu ? (
-        <ActionMenu
-          anchor={menu.anchor}
-          label="Task actions"
-          items={menuItems(tasks.find((task) => task.id === menu.task.id) ?? menu.task)}
-          onClose={() => setMenu(null)}
-        />
-      ) : null}
     </Modal>
   );
 }
