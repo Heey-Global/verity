@@ -6,6 +6,21 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.83.0](https://github.com/Heey-Global/verity/compare/v4.82.0...v4.83.0) (2026-11-06)
+
+
+### Features
+
+* **assistant:** talk to Verity from the V button and the Apple Watch ([#2298](https://github.com/Heey-Global/verity/issues/2298)) ([a14095a](https://github.com/Heey-Global/verity/commit/a14095a7da1515c92bbefaabaa6d0c9c3e51b363))
+
+
+### Bug Fixes
+
+* **deps:** update dependency @fastify/rate-limit to v11.2.2 ([#2309](https://github.com/Heey-Global/verity/issues/2309)) ([b3307d8](https://github.com/Heey-Global/verity/commit/b3307d8971fd979fdd61f498c6f4735f762b2016))
+* **deps:** update dependency fastify to v5.12.8 ([#2310](https://github.com/Heey-Global/verity/issues/2310)) ([a6aa794](https://github.com/Heey-Global/verity/commit/a6aa794a5920c1b6767a3d80d52ba1358b14119c))
+* **deps:** update dependency minimatch to v11.0.4 ([#2311](https://github.com/Heey-Global/verity/issues/2311)) ([913e491](https://github.com/Heey-Global/verity/commit/913e491dc184b8be274623d5aaf8ec4bd3bf7ffb))
+* **preview:** enforce strict PIN budget responses and escalating IP pauses ([#2299](https://github.com/Heey-Global/verity/issues/2299)) ([00d3ac6](https://github.com/Heey-Global/verity/commit/00d3ac6715292190914a36f8c05e56de81948ac9))
+
 ## [4.82.0](https://github.com/Heey-Global/verity/compare/v4.81.0...v4.82.0) (2026-11-05)
 
 
