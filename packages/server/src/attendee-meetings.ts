@@ -122,6 +122,20 @@ interface OnlineMeeting {
   /** The call the bot joined, so a second join of the same call can find it. */
   meetingUrl?: string;
   error?: string;
+  /** Last provider bot state, kept only to log its transitions. */
+  botState?: string;
+}
+/** Operational log for the meeting data path. Never receives tokens or meeting content. */
+export interface AttendeeMeetingsLog {
+  info(entry: Record<string, unknown>, message: string): void;
+  warn(entry: Record<string, unknown>, message: string): void;
+}
+const SNAPSHOT_LOG_INTERVAL_MS = 60_000;
+function failureFields(error: unknown) {
+  return {
+    error: error instanceof Error ? error.name : 'unknown',
+    ...(error instanceof AttendeeRequestRejected ? { status: error.status } : {}),
+  };
 }
 function assigned(meeting: OwnedMeeting): LiveMeetingSyncRecord | undefined {
   return meeting.sessionId === null ? undefined : { ...meeting, sessionId: meeting.sessionId };
@@ -147,6 +161,9 @@ export class AttendeeMeetings {
   private polling: Promise<void> | undefined;
   private readonly researchJobs = new Map<string, Promise<void>>();
   private readonly connectors = new Map<string, PreviewConnector>();
+  private readonly snapshotLogs = new Map<string, { utterances: number; at: number }>();
+  /** Last logged reconciliation failure per meeting, so a stuck meeting warns once per kind. */
+  private readonly failureLogs = new Map<string, string>();
   constructor(
     private readonly options: {
       store: EventStore;
@@ -158,6 +175,7 @@ export class AttendeeMeetings {
         requestId: string,
       ) => Promise<void>;
       client?: (key: string) => AttendeeClient;
+      log?: AttendeeMeetingsLog;
     },
   ) {
     this.unsubscribeSharing = options.edge?.onSharingDisabled?.(() => {
@@ -233,9 +251,15 @@ export class AttendeeMeetings {
 
   async open(): Promise<void> {
     this.receiver = createServer((request, response) => {
+      // Outcome only: the payload carries transcript text and the URL carries the share PIN.
+      const answer = (status: number, outcome: string, entry: Record<string, unknown> = {}) => {
+        response.writeHead(status).end();
+        // Info, not warn: the public share lets anyone probe this receiver.
+        this.options.log?.info({ status, outcome, ...entry }, 'Attendee webhook answered');
+      };
       void (async () => {
         if (request.method !== 'POST' || request.url !== ATTENDEE_WEBHOOK_PATH) {
-          response.writeHead(404).end();
+          answer(404, 'unknown_path');
           return;
         }
         const chunks: Buffer[] = [];
@@ -244,7 +268,7 @@ export class AttendeeMeetings {
           if (!Buffer.isBuffer(chunk)) throw new Error('Invalid request body');
           bytes += chunk.length;
           if (bytes > 1_000_000) {
-            response.writeHead(413).end();
+            answer(413, 'too_large');
             return;
           }
           chunks.push(Buffer.from(chunk));
@@ -257,21 +281,26 @@ export class AttendeeMeetings {
             (!row.state.botId && event.bot_metadata?.verityMeetingId === row.state.meeting.id),
         )?.state;
         const signature = request.headers['x-webhook-signature'];
-        if (
-          !state ||
-          state.phase === 'ended' ||
-          typeof signature !== 'string' ||
-          !verifyAttendeeSignature(payload, signature, state.credentials.webhookSecret)
-        ) {
-          response.writeHead(401).end();
+        const rejected = !state
+          ? 'unknown_meeting'
+          : state.phase === 'ended'
+            ? 'meeting_ended'
+            : typeof signature !== 'string'
+              ? 'signature_missing'
+              : !verifyAttendeeSignature(payload, signature, state.credentials.webhookSecret)
+                ? 'signature_invalid'
+                : undefined;
+        const entry = { trigger: event.trigger, ...(state ? { meetingId: state.meeting.id } : {}) };
+        if (rejected) {
+          answer(401, rejected, entry);
           return;
         }
         // Delivery acknowledgment is independent of provider/model calls. The durable
         // marker is a wake-up hint; full snapshots supply idempotent transcript recovery.
         await this.options.store.putAttendeeState(`event:${event.bot_id}`, event);
-        response.writeHead(202).end();
-      })().catch(() => {
-        if (!response.headersSent) response.writeHead(400).end();
+        answer(202, 'accepted', entry);
+      })().catch((error: unknown) => {
+        if (!response.headersSent) answer(400, 'invalid', failureFields(error));
       });
     });
     this.receiver.requestTimeout = 10_000;
@@ -615,6 +644,8 @@ export class AttendeeMeetings {
 
   /** Drops transcript and pending work so a discarded meeting keeps nothing it heard. */
   private forget(state: OnlineMeeting) {
+    this.snapshotLogs.delete(state.meeting.id);
+    this.failureLogs.delete(state.meeting.id);
     state.stopRequested = true;
     state.pendingRequests = {};
     state.meeting.transcript = '';
@@ -634,7 +665,9 @@ export class AttendeeMeetings {
   private poll() {
     if (this.closed || this.polling) return;
     this.polling = this.reconcile()
-      .catch(() => undefined)
+      .catch((error: unknown) => {
+        this.options.log?.warn(failureFields(error), 'Online meeting reconciliation failed');
+      })
       .finally(() => {
         this.polling = undefined;
       });
@@ -657,9 +690,19 @@ export class AttendeeMeetings {
             await this.finishDiscard(state);
           } else {
             if (state.phase !== 'ended') await this.reconcileOne(state);
+            this.failureLogs.delete(state.meeting.id);
             this.schedulePendingRequests(state);
           }
-        } catch {
+        } catch (error) {
+          const failure = failureFields(error);
+          const kind = JSON.stringify(failure);
+          if (this.failureLogs.get(state.meeting.id) !== kind) {
+            this.failureLogs.set(state.meeting.id, kind);
+            this.options.log?.warn(
+              { meetingId: state.meeting.id, phase: state.phase, ...failure },
+              'Online meeting reconciliation failed',
+            );
+          }
           state.error = 'Meeting connection interrupted; retrying recovery.';
           await this.save(state);
         }
@@ -704,6 +747,35 @@ export class AttendeeMeetings {
         await this.save(latest);
       });
     }
+  }
+  /** Utterance count and newest provider timestamp, at most once a minute while it grows. */
+  private logSnapshot(
+    state: OnlineMeeting,
+    botState: string,
+    snapshot: Array<{ timestamp_ms: number }>,
+    final: boolean,
+  ) {
+    const id = state.meeting.id;
+    const previous = this.snapshotLogs.get(id);
+    const now = Date.now();
+    const changed = previous?.utterances !== snapshot.length;
+    const due = !previous || now - previous.at >= SNAPSHOT_LOG_INTERVAL_MS;
+    if (!final && !(changed && due)) return;
+    if (final) this.snapshotLogs.delete(id);
+    else this.snapshotLogs.set(id, { utterances: snapshot.length, at: now });
+    this.options.log?.info(
+      {
+        meetingId: id,
+        botState,
+        utterances: snapshot.length,
+        lastTimestampMs: snapshot.reduce<number | null>(
+          (latest, item) =>
+            latest === null ? item.timestamp_ms : Math.max(latest, item.timestamp_ms),
+          null,
+        ),
+      },
+      'Online meeting transcript snapshot',
+    );
   }
   private async reconcileOne(state: OnlineMeeting, discard = false) {
     let event = await this.options.store.getAttendeeState<z.infer<typeof webhookSchema>>(
@@ -758,8 +830,21 @@ export class AttendeeMeetings {
     ) {
       await client.request(`bots/${encodeURIComponent(state.botId)}/leave`, 'POST');
     }
+    if (state.botState !== bot.state) {
+      this.options.log?.info(
+        {
+          meetingId: state.meeting.id,
+          botState: bot.state,
+          previousBotState: state.botState ?? null,
+        },
+        'Online meeting bot state changed',
+      );
+      state.botState = bot.state;
+      await this.save(state);
+    }
     const final = terminal.has(bot.state);
     const snapshot = discard ? [] : await client.transcript(state.botId);
+    if (!discard) this.logSnapshot(state, bot.state, snapshot, final);
     if (!discard) {
       if (state.timeOriginMs === undefined && snapshot.length) {
         state.timeOriginMs = snapshot.reduce(
