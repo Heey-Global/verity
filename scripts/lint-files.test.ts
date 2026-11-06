@@ -66,6 +66,54 @@ it('rejects requested files outside the configured project', () => {
   expect(() => createLintProgram(config, [outside])).toThrow('is not included');
 });
 
+it('omits TypeScript documentation ASTs while preserving JavaScript JSDoc types', () => {
+  const { write, config } = fixture();
+  write(
+    'tsconfig.json',
+    JSON.stringify({
+      compilerOptions: {
+        strict: true,
+        target: 'ES2023',
+        module: 'NodeNext',
+        types: [],
+        allowJs: true,
+        checkJs: true,
+        noEmit: true,
+      },
+      include: ['src/**/*'],
+    }),
+  );
+  const javascript = write(
+    'src/format.js',
+    '/** @param {number} value @returns {string} */ export function format(value) { return value.toFixed(1); }',
+  );
+  const target = write(
+    'src/target.ts',
+    "import { format } from './format.js';\n/** Documentation not needed for type-aware rules. @example text */\nexport const text = format(1);\nformat('invalid');\n/** @see {@link text} */\nexport const linked = text;",
+  );
+  const program = createLintProgram(config, [target]);
+  const source = program.getSourceFile(target)!;
+  const statement = source.statements.find(ts.isVariableStatement)!;
+  expect(
+    statement.getChildren(source).some((node) => node.kind === ts.SyntaxKind.JSDocComment),
+  ).toBe(false);
+  const linked = source.statements.filter(ts.isVariableStatement)[1]!;
+  expect(linked.getChildren(source).some((node) => node.kind === ts.SyntaxKind.JSDocComment)).toBe(
+    true,
+  );
+  const declaration = statement.declarationList.declarations[0]!;
+  expect(
+    program
+      .getTypeChecker()
+      .typeToString(program.getTypeChecker().getTypeAtLocation(declaration.name)),
+  ).toBe('string');
+  expect(program.getSemanticDiagnostics(source).map((diagnostic) => diagnostic.code)).toEqual([
+    2345,
+  ]);
+  const jsFunction = program.getSourceFile(javascript)!.statements.find(ts.isFunctionDeclaration)!;
+  expect(ts.getJSDocTags(jsFunction).map((tag) => tag.tagName.text)).toContain('param');
+});
+
 it('uses current referenced sources for type-aware lint without build output or stale cache', async () => {
   const { root, write } = fixture();
   write(

@@ -82,6 +82,9 @@ function createLintProject(configPath, cache, classifications) {
     globalThis.gc?.();
     const host = Object.assign(ts.createCompilerHost(config.options), {
       useSourceOfProjectReferenceRedirect: () => true,
+      // Keep JS annotations and TS documentation links needed for diagnostics,
+      // without retaining prose ASTs throughout large imported runtime graphs.
+      jsDocParsingMode: ts.JSDocParsingMode.ParseForTypeErrors,
     });
     return ts.createProgram({
       rootNames: [...new Set([...files, ...ambient])],
