@@ -55,6 +55,39 @@ it('grounds the result and deduplicates repeated uploads at one revision', async
     worker.close();
   }
 });
+it('files an empty meeting without asking the model to guess a summary', async () => {
+  await ctx.store.liveMeetings.putMeeting({
+    id: 'empty',
+    sessionId: 's',
+    engine: 'attendee',
+    title: 'Test',
+    startedAt: 0,
+    endedAt: 1000,
+    state: 'ended',
+    transcript: '',
+    captureStatus: 'paused',
+    ownerTokenHash: 'hash',
+    revision: 1,
+  });
+  const query = vi.fn().mockResolvedValue(answer);
+  const onReady = vi.fn().mockResolvedValue(undefined);
+  const worker = meetingResultWorker({ store: ctx.store, query, onReady, onError: vi.fn() });
+  try {
+    worker.start('s', 'empty');
+    await vi.waitFor(() => expect(onReady).toHaveBeenCalledWith('s', 'empty'));
+    expect(await ctx.store.liveMeetings.result('s', 'empty')).toMatchObject({
+      status: 'ready',
+      title: 'Test',
+      summary: null,
+      decisions: [],
+      tasks: [],
+      openQuestions: [],
+    });
+    expect(query).not.toHaveBeenCalled();
+  } finally {
+    worker.close();
+  }
+});
 it('fails after three attempts and permits an explicit retry', async () => {
   const query = vi.fn().mockRejectedValue(new Error('Unavailable'));
   const worker = meetingResultWorker({

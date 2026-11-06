@@ -5115,6 +5115,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     ...(deps.attendeeEdge ? { edge: deps.attendeeEdge } : {}),
     ingest: meetingController.ingest,
     spoken: attendeeResearchHints({ store: deps.eventStore, classify: meetingController.spoken }),
+    log: app.log,
   });
   registerAttendeeRoutes(app, attendeeMeetings, () =>
     Boolean(deps.secretCipher && !deps.secretCipher.isSealed()),
