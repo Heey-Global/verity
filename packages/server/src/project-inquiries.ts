@@ -68,6 +68,11 @@ export function createProjectInquiries(deps: ProjectInquiryDeps) {
       // cannot change the posture of a write turn that became busy concurrently.
       const accepted = await deps.dispatch(current, async () => {
         if (!(await allowed(current))) return false;
+        if (
+          (await store.repairs.dispatchReceipt(`project-inquiry:${current.id}`))?.state ===
+          'admitted'
+        )
+          return true;
         await store.projectInquiries.activate(current.id);
         await store.setSessionPlanning(
           current.targetSessionId,
@@ -212,7 +217,7 @@ export function registerProjectInquiryRoutes(
       .object({ targetProjectId: z.string().min(1), enabled: z.boolean() })
       .strict()
       .parse(request.body);
-    if (!(await deps.authorized(userId(request), body.targetProjectId)))
+    if (body.enabled && !(await deps.authorized(userId(request), body.targetProjectId)))
       return reply.code(403).send({ error: 'Target project unavailable' });
     await deps.store.projectInquiries.setGrant(id, body.targetProjectId, body.enabled);
     return { grants: await deps.store.projectInquiries.grants(id) };

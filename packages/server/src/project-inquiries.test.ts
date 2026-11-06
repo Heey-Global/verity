@@ -16,6 +16,9 @@ function harness() {
     validate(),
   );
   const store = {
+    repairs: {
+      dispatchReceipt: vi.fn(async (): Promise<{ state: string } | undefined> => undefined),
+    },
     getProject: vi.fn(async (id: string) => ({
       id,
       hiddenAt: null,
@@ -230,6 +233,47 @@ it('filters project approval queries before the bounded store list', async () =>
   try {
     expect((await app.inject('/project-inquiries/pending?projectId=target')).statusCode).toBe(200);
     expect(list).toHaveBeenCalledWith(undefined, true, ['target']);
+  } finally {
+    await app.close();
+  }
+});
+
+it('does not replay an admitted request posture after queue bookkeeping failed', async () => {
+  const h = harness();
+  h.store.projectInquiries.markQueued.mockRejectedValueOnce(new Error('bookkeeping failed'));
+  await expect(h.service.request('source', null, request)).rejects.toThrow('bookkeeping');
+  h.store.repairs.dispatchReceipt.mockResolvedValue({ state: 'admitted' });
+  h.planning.mockClear();
+  h.store.projectInquiries.activate.mockClear();
+  await h.service.recover();
+  expect(h.planning).not.toHaveBeenCalled();
+  expect(h.store.projectInquiries.activate).not.toHaveBeenCalled();
+  expect([...h.rows.values()][0]?.status).toBe('queued');
+});
+
+it('lets a source manager revoke a grant after losing target execution access', async () => {
+  const setGrant = vi.fn();
+  const grants = vi.fn(async () => []);
+  const store = { projectInquiries: { setGrant, grants } } as unknown as EventStore;
+  const deps = {
+    store,
+    authorized: async () => false,
+    busy: () => false,
+    createSession: async () => {},
+    dispatch: async () => true,
+  };
+  const app = Fastify();
+  registerProjectInquiryRoutes(app, deps, createProjectInquiries(deps), () => null);
+  try {
+    const send = (enabled: boolean) =>
+      app.inject({
+        method: 'PUT',
+        url: '/projects/source/inquiry-grants',
+        payload: { targetProjectId: 'target', enabled },
+      });
+    expect((await send(true)).statusCode).toBe(403);
+    expect((await send(false)).statusCode).toBe(200);
+    expect(setGrant).toHaveBeenCalledExactlyOnceWith('source', 'target', false);
   } finally {
     await app.close();
   }

@@ -391,3 +391,57 @@ it('does not associate a viewed PR from another branch with the active workspace
   expect((await call({ action: 'pr.view', number: 7, sessionId: 'session' })).statusCode).toBe(200);
   expect(remember).not.toHaveBeenCalled();
 });
+
+it('shares default-repository PR creation while recording each calling session', async () => {
+  let release!: (pr: ForgePullRequestView) => void;
+  const gate = new Promise<ForgePullRequestView>((resolve) => {
+    release = resolve;
+  });
+  const create = vi.fn(async () => gate);
+  const remember = vi.fn();
+  const getSession = vi.fn().mockResolvedValue({ projectId: 'p', worktree: '/wt' });
+  const { call, repositoryFor } = setup({
+    ops: operations({ createPullRequest: create }),
+    getSession,
+    currentRepositoryBranch: async () => pull.head,
+    store: {
+      getProjectRepository: vi.fn().mockResolvedValue({
+        ...project('forgejo'),
+        projectId: 'p',
+        id: 'default:p',
+        isDefault: true,
+        removedAt: null,
+      }),
+      listProjectRepositories: vi.fn(),
+      upsertSessionRepositoryWorkspace: vi.fn(),
+      recordRepositoryPullRequest: remember,
+    },
+  });
+  const first = call({
+    action: 'pr.create',
+    title: 'First',
+    head: pull.head,
+    sessionId: 'one',
+    dependsOn: ['https://github.com/team/api/pull/1'],
+  });
+  const second = call({
+    action: 'pr.create',
+    title: 'Second',
+    head: pull.head,
+    sessionId: 'two',
+    repositoryId: 'default:p',
+  });
+  const completed = Promise.all([first, second]);
+  await vi.waitFor(() => expect(repositoryFor).toHaveBeenCalledTimes(2));
+  release(pull);
+  expect((await completed).map((response) => response.statusCode)).toEqual([200, 200]);
+  expect(create).toHaveBeenCalledTimes(1);
+  for (const session of ['one', 'two'])
+    expect(remember).toHaveBeenCalledWith(
+      'p',
+      'default:p',
+      pull.head,
+      { ...pull, dependsOn: ['https://github.com/team/api/pull/1'] },
+      session,
+    );
+});

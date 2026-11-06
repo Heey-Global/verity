@@ -84,7 +84,10 @@ const requestSchema = z.discriminatedUnion('action', [
 export function registerProjectRepoRoute(app: FastifyInstance, deps: ProjectRepoRouteDeps): void {
   const creating = new Map<
     string,
-    Promise<Awaited<ReturnType<ForgeRepositoryOperations['createPullRequest']>>>
+    Promise<{
+      pr: Awaited<ReturnType<ForgeRepositoryOperations['createPullRequest']>>;
+      dependsOn?: string[] | undefined;
+    }>
   >();
   app.post('/internal/project/repo', async (request, reply) => {
     const presented = bearerToken(request.headers.authorization) ?? '';
@@ -148,7 +151,7 @@ export function registerProjectRepoRoute(app: FastifyInstance, deps: ProjectRepo
     const ops = repository.operations;
     const remember = async (
       pr: Awaited<ReturnType<typeof ops.createPullRequest>>,
-      created = false,
+      dependsOn?: string[],
     ) => {
       const actualBranch = sessionId
         ? await deps.currentRepositoryBranch?.(sessionId, selectedId ?? `default:${project.id}`)
@@ -171,9 +174,7 @@ export function registerProjectRepoRoute(app: FastifyInstance, deps: ProjectRepo
         pr.head,
         {
           ...pr,
-          ...(created && parsed.data.action === 'pr.create' && parsed.data.dependsOn !== undefined
-            ? { dependsOn: parsed.data.dependsOn }
-            : {}),
+          ...(dependsOn === undefined ? {} : { dependsOn }),
         },
         actualBranch === pr.head ? sessionId : undefined,
       );
@@ -183,14 +184,14 @@ export function registerProjectRepoRoute(app: FastifyInstance, deps: ProjectRepo
     try {
       switch (body.action) {
         case 'pr.create': {
-          const key = `${project.id}:${selectedId ?? 'default'}:${body.head}`;
+          const key = `${project.id}:${selectedId ?? `default:${project.id}`}:${body.head}`;
           let operation = creating.get(key);
           if (!operation) {
             operation = (async () => {
               const existing = await ops.findPullRequest({ head: body.head });
-              if (existing?.state === 'open') return remember(existing);
-              return remember(
-                await ops.createPullRequest({
+              if (existing?.state === 'open') return { pr: existing };
+              return {
+                pr: await ops.createPullRequest({
                   head: body.head,
                   base: body.base ?? (await ops.defaultBranch()),
                   title: body.title,
@@ -198,14 +199,15 @@ export function registerProjectRepoRoute(app: FastifyInstance, deps: ProjectRepo
                     .filter(Boolean)
                     .join('\n\n'),
                 }),
-                true,
-              );
+                dependsOn: body.dependsOn,
+              };
             })();
             creating.set(key, operation);
           }
           let pullRequest: Awaited<ReturnType<typeof ops.createPullRequest>>;
           try {
-            pullRequest = await operation;
+            const result = await operation;
+            pullRequest = await remember(result.pr, result.dependsOn);
           } finally {
             if (creating.get(key) === operation) creating.delete(key);
           }
