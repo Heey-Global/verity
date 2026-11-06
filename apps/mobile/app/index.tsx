@@ -1169,6 +1169,7 @@ function SessionList({ client }: { client: VerityClient }) {
         key={openProjectId}
         client={client}
         projectId={openProjectId}
+        selectedSessionId={selectedId}
         inline
         onBack={() => setOpenProjectId(null)}
         onOpenSession={openSessionFromHome}

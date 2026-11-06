@@ -245,12 +245,14 @@ export function ProjectWork({
   leadingRows = [],
   initialFilter = 'now',
   onOpenSession,
+  selectedSessionId,
   onChanged,
 }: {
   client: VerityClient;
   /** The project a new session starts in; none for sessions outside a project. */
   projectId?: string | undefined;
   sessions: readonly SessionSummary[];
+  selectedSessionId?: string | null | undefined;
   /** The page's inbox feed: what waits on the operator and how to answer it.
    *  Without one, Now derives the same items from the sessions — dismissed ones
    *  left out — but offers no answers in place. */
@@ -414,6 +416,7 @@ export function ProjectWork({
       >
         <Row
           title={label}
+          active={session.sessionId === selectedSessionId}
           subtitle={waiting?.subtitle ?? workSubtitle(session)}
           leading={
             needs && waiting !== undefined

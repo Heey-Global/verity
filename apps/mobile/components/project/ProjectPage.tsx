@@ -92,9 +92,11 @@ export function ProjectPage({
   onSessionChanged,
   onInboxSaved,
   reloadOn,
+  selectedSessionId,
 }: {
   client: VerityClient;
   projectId: string;
+  selectedSessionId?: string | null | undefined;
   inline?: boolean;
   onBack?: (() => void) | undefined;
   onOpenSession: (sessionId: string) => void;
@@ -212,6 +214,7 @@ export function ProjectPage({
           client={client}
           projectId={projectId}
           sessions={detail.sessions}
+          selectedSessionId={selectedSessionId}
           feed={feed}
           leadingRows={securityRows(security)}
           onOpenSession={onOpenSession}

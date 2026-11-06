@@ -260,6 +260,32 @@ describe('project page', () => {
     expect(screen.queryByLabelText(/^MCP/)).toBeNull();
   });
 
+  it('highlights the session open beside the project Work list', async () => {
+    await renderPage([running, favorite], { inline: true, selectedSessionId: running.sessionId });
+    fireEvent.press(screen.getByRole('tab', { name: 'All' }));
+    expect(
+      screen.getByRole('button', { name: /login, working/ }).props.accessibilityState,
+    ).toMatchObject({
+      selected: true,
+    });
+    expect(
+      screen.getByRole('button', { name: /blog, Favorite/i }).props.accessibilityState,
+    ).toMatchObject({
+      selected: false,
+    });
+  });
+
+  it('highlights the open session in Needs you without hiding its answers', async () => {
+    await renderPage([question, running], { inline: true, selectedSessionId: question.sessionId });
+    expect(screen.getByRole('button', { name: /^form,/ }).props.accessibilityState).toMatchObject({
+      selected: true,
+    });
+    expect(screen.getByRole('button', { name: /^login,/ }).props.accessibilityState).toMatchObject({
+      selected: false,
+    });
+    expect(screen.getByRole('button', { name: 'Zod' })).toBeTruthy();
+  });
+
   it('filters by what a session needs and opens a session', async () => {
     const { onOpenSession } = await renderPage([question, running, favorite, merged, failing]);
     expect(screen.getByTestId('project-work')).toBeTruthy();
