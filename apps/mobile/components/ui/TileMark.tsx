@@ -11,7 +11,7 @@ export type TileMarkTone = 'signature' | 'action' | 'success' | 'attention' | 'm
 export type TileMarkGlyph = IconName | '?' | '!';
 
 /** The mark's outer diameter, ring included; both corners use the same one. */
-export const TILE_MARK_SIZE = 12;
+const TILE_MARK_SIZE = 12;
 
 /**
  * A small filled disc on the corner of a row's icon tile (docs/design-system.md
