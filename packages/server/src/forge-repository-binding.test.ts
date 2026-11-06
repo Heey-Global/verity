@@ -108,3 +108,15 @@ describe('repository binding selection', () => {
     ).toBeUndefined();
   });
 });
+
+it('offers only current GitHub assignments for full GraphQL policy validation', async () => {
+  expect(
+    await resolveForgeRepositoryBinding(store(), binding, 'api.github.com', '/graphql'),
+  ).toEqual([
+    expect.objectContaining({ owner: 'app', repo: 'main' }),
+    expect.objectContaining({ owner: 'other-org', repo: 'api' }),
+  ]);
+  expect(
+    await resolveForgeRepositoryBinding(store(true), binding, 'api.github.com', '/graphql'),
+  ).toHaveLength(1);
+});

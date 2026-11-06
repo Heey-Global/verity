@@ -158,7 +158,7 @@ export class ProjectRepositoryStore {
           kind: input.kind,
           owner,
           repo,
-          forge_connection_id: input.forgeConnectionId ?? null,
+          forge_connection_id: input.kind === 'github' ? null : (input.forgeConnectionId ?? null),
           default_branch: input.defaultBranch ?? null,
         })
         .returningAll()

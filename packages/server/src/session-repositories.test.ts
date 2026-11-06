@@ -1,6 +1,13 @@
 import { expect, it, vi } from 'vitest';
 import type { EventStore, ProjectRecord } from '@verity/store';
-import { createSessionRepositories } from './session-repositories.js';
+import { mkdtemp, mkdir, writeFile, access, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import {
+  createSessionRepositories,
+  sessionRepositoryRoot,
+  removeSessionRepositoryWorkspaces,
+} from './session-repositories.js';
 
 function harness(planning = false, forge = false) {
   const project = {
@@ -79,4 +86,27 @@ it('persists broker proxy, CA and a host-specific capability helper before cross
     "credential.https://forge.test:8443.helper=!VERITY_FORGE_AUTHORITY='forge.test:8443' /opt/agent-seed/bin/verity-gh-cred",
   );
   expect(clone).toContain('https://forge.test:8443/other/api.git');
+});
+
+it('returns a container-accessible module path to sandbox callers', async () => {
+  const h = harness();
+  const opened = await h.service.openForSandbox('s', 'r');
+  expect(opened.workspace.worktree).toMatch(/^\/work\/\.verity-repositories\//);
+  expect(opened.workspace.worktree).not.toContain('/clones/');
+});
+it('cleans deterministic module paths after workspace database rows have disappeared', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'module-cleanup-'));
+  try {
+    const module = join(sessionRepositoryRoot(root, 'deleted'), 'repo');
+    const retained = sessionRepositoryRoot(root, 'other');
+    await mkdir(module, { recursive: true });
+    await mkdir(retained, { recursive: true });
+    await writeFile(join(module, 'tracked.txt'), 'repository data');
+    await removeSessionRepositoryWorkspaces(root, 'deleted');
+    await expect(access(module)).rejects.toThrow();
+    await expect(access(retained)).resolves.toBeUndefined();
+    await removeSessionRepositoryWorkspaces(root, 'deleted');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });

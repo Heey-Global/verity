@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { projectForRepository, type EventStore, type ProjectRecord } from '@verity/store';
 import type { FastifyInstance } from 'fastify';
@@ -7,6 +8,21 @@ import { FORGE_PROXY_CA_FILE } from './brokered-forge-proxy.js';
 import type { GitOutput } from './branches.js';
 import { containerPathFor } from './project-backend.js';
 import { projectClonePath } from './provisioner.js';
+
+export function sessionRepositoryRoot(projectRoot: string, sessionId: string): string {
+  return join(
+    projectRoot,
+    '.verity-repositories',
+    createHash('sha256').update(sessionId).digest('hex').slice(0, 20),
+  );
+}
+
+export async function removeSessionRepositoryWorkspaces(
+  projectRoot: string,
+  sessionId: string,
+): Promise<void> {
+  await rm(sessionRepositoryRoot(projectRoot, sessionId), { recursive: true, force: true });
+}
 
 export function createSessionRepositories(deps: {
   store: EventStore;
@@ -67,12 +83,7 @@ export function createSessionRepositories(deps: {
       const root = projectClonePath(deps.cloneRoot, project);
       const git = deps.git(project, root);
       const slot = createHash('sha256').update(repositoryId).digest('hex').slice(0, 20);
-      const worktree = join(
-        root,
-        '.verity-repositories',
-        createHash('sha256').update(sessionId).digest('hex').slice(0, 20),
-        slot,
-      );
+      const worktree = join(sessionRepositoryRoot(root, sessionId), slot);
       const target = projectForRepository(project, repository);
       let origin = 'https://github.com';
       if (target.kind === 'forgejo') {
@@ -145,7 +156,53 @@ export function createSessionRepositories(deps: {
       pending.delete(key);
     }
   }
-  return { list, open };
+  async function currentBranch(
+    sessionId: string,
+    repositoryId: string,
+  ): Promise<string | undefined> {
+    const session = await deps.store.getSession(sessionId);
+    const project = session?.projectId ? await deps.store.getProject(session.projectId) : undefined;
+    if (!session || !project || !deps.git || !deps.cloneRoot) return undefined;
+    const workspace =
+      repositoryId === `default:${project.id}`
+        ? session.worktree
+        : (await deps.store.listSessionRepositoryWorkspaces(sessionId)).find(
+            (entry) => entry.repositoryId === repositoryId,
+          )?.worktree;
+    if (!workspace) return undefined;
+    try {
+      return (
+        (
+          await deps.git(
+            project,
+            projectClonePath(deps.cloneRoot, project),
+          )(['-C', workspace, 'symbolic-ref', '--quiet', '--short', 'HEAD'])
+        ).trim() || undefined
+      );
+    } catch {
+      return undefined;
+    }
+  }
+  async function openForSandbox(sessionId: string, repositoryId: string) {
+    const result = z
+      .object({ workspace: z.object({ worktree: z.string() }).passthrough() })
+      .passthrough()
+      .parse(await open(sessionId, repositoryId));
+    const session = await deps.store.getSession(sessionId);
+    const project = session?.projectId ? await deps.store.getProject(session.projectId) : undefined;
+    if (!project || !deps.cloneRoot) throw new Error('project sandbox unavailable');
+    return {
+      ...result,
+      workspace: {
+        ...result.workspace,
+        worktree: containerPathFor(
+          result.workspace.worktree,
+          projectClonePath(deps.cloneRoot, project),
+        ),
+      },
+    };
+  }
+  return { list, open, currentBranch, openForSandbox };
 }
 
 export function registerSessionRepositoriesRoutes(

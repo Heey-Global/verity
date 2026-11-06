@@ -55,6 +55,7 @@ afterEach(async () => {
 function setup(options: {
   store?: ProjectRepoRouteDeps['store'];
   getSession?: ProjectRepoRouteDeps['getSession'];
+  currentRepositoryBranch?: ProjectRepoRouteDeps['currentRepositoryBranch'];
   kind?: ProjectRecord['kind'];
   ops?: ForgeRepositoryOperations;
   socket?: { projectId: string; containerGeneration: string } | 'external';
@@ -87,6 +88,9 @@ function setup(options: {
     repositoryFor,
     ...(options.store ? { store: options.store } : {}),
     ...(options.getSession ? { getSession: options.getSession } : {}),
+    ...(options.currentRepositoryBranch
+      ? { currentRepositoryBranch: options.currentRepositoryBranch }
+      : {}),
   });
   const call = (payload: unknown, token = 'cap') =>
     app.inject({
@@ -292,6 +296,7 @@ it('records a pull request against its validated session after a branch change',
       upsertSessionRepositoryWorkspace: vi.fn(),
     },
     getSession: vi.fn().mockResolvedValue({ projectId: 'p' }),
+    currentRepositoryBranch: vi.fn().mockResolvedValue(pull.head),
   });
   const response = await call({
     action: 'pr.create',
@@ -353,4 +358,21 @@ it('publishes and stores explicit PR dependency references', async () => {
       })
     ).statusCode,
   ).toBe(400);
+});
+
+it('does not associate a viewed PR from another branch with the active workspace', async () => {
+  const remember = vi.fn();
+  const { call } = setup({
+    ops: operations({ findPullRequest: vi.fn().mockResolvedValue(pull) }),
+    getSession: vi.fn().mockResolvedValue({ projectId: 'p' }),
+    currentRepositoryBranch: vi.fn().mockResolvedValue('other-branch'),
+    store: {
+      getProjectRepository: vi.fn(),
+      listProjectRepositories: vi.fn(),
+      recordRepositoryPullRequest: remember,
+      upsertSessionRepositoryWorkspace: vi.fn(),
+    },
+  });
+  expect((await call({ action: 'pr.view', number: 7, sessionId: 'session' })).statusCode).toBe(200);
+  expect(remember).not.toHaveBeenCalled();
 });

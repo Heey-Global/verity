@@ -79,6 +79,16 @@ describe('project repository assignments', () => {
     await expect(
       ctx.store.addProjectRepository({
         projectId: 'p',
+        name: 'Alias duplicate',
+        kind: 'github',
+        owner: 'elsewhere',
+        repo: 'api',
+        forgeConnectionId: 'legacy-github',
+      }),
+    ).rejects.toThrow();
+    await expect(
+      ctx.store.addProjectRepository({
+        projectId: 'p',
         name: 'default again',
         kind: 'github',
         owner: 'one',

@@ -8,9 +8,24 @@ export async function resolveForgeRepositoryBinding(
   binding: Binding,
   hostname: string,
   path: string,
-): Promise<Binding | undefined> {
+): Promise<Binding | Binding[] | undefined> {
   if (hostname === 'ghcr.io') return binding;
   const repositories = await store.listProjectRepositories(binding.projectId);
+  if (hostname === 'api.github.com' && path === '/graphql') {
+    // GraphQL mutations identify nodes rather than URL repositories. The GitHub
+    // adapter must validate every operation and remote node against one of these
+    // current assignments before any caller payload can leave the broker.
+    return repositories
+      .filter(
+        (repository) => repository.removedAt === null && (repository.kind ?? 'github') === 'github',
+      )
+      .map((repository) => ({
+        ...binding,
+        owner: repository.owner,
+        repo: repository.repo,
+        forgeConnectionId: repository.forgeConnectionId,
+      }));
+  }
   for (const repository of repositories) {
     if (
       repository.removedAt !== null ||
@@ -39,9 +54,7 @@ export async function resolveForgeRepositoryBinding(
       urlPath.startsWith(`/${repoPath}.git/`) ||
       urlPath === `${apiPrefix}${repoPath}`.toLowerCase() ||
       urlPath.startsWith(`${apiPrefix}${repoPath}/`.toLowerCase());
-    const legacyGraphql =
-      repository.isDefault && hostname === 'api.github.com' && urlPath === '/graphql';
-    if (matches || legacyGraphql)
+    if (matches)
       return {
         ...binding,
         owner: repository.owner,

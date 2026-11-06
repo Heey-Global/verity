@@ -4,7 +4,10 @@ Connect additional GitHub or Forgejo repositories in project repository settings
 The existing repository remains the default. Open a module from the session branch
 sheet or with `verity repo repository open <repository-id>`. Repository-specific
 instructions apply in that checkout. Each session/module pair has an isolated
-checkout and branch; reopening never resets existing history.
+checkout and branch; reopening never resets existing history. Sandbox callers receive
+container-accessible checkout paths. Session deletion removes module clones after
+the session runtime is fenced, using deterministic paths even after database rows
+have been deleted.
 
 Use `verity repo repository list` to inspect assignments. PR and issue commands
 accept `--repository <id>` and infer it from module checkouts. The sandbox supplies
@@ -16,7 +19,8 @@ proxy and CA configuration and use a host-specific capability helper. Removing a
 assignment prevents subsequent brokered remote access while retaining workspace
 history. The relay forwards forge CONNECT requests only to its fixed server broker;
 the broker checks configured hosts, current repository assignments and credentials
-before contacting a remote. The relay never opens a direct forge connection.
+before contacting a remote. GraphQL is validated against current GitHub assignments;
+operations and remote node ownership must match a single assigned repository. The relay never opens a direct forge connection.
 
 Deploy the matching server and project-relay images together. Existing relay
 containers retain their startup configuration; update existing project sandboxes

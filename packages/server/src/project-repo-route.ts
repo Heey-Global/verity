@@ -29,6 +29,10 @@ export interface ProjectRepoRouteDeps {
     | 'upsertSessionRepositoryWorkspace'
   >;
   openRepository?: (sessionId: string, repositoryId: string) => Promise<unknown>;
+  currentRepositoryBranch?: (
+    sessionId: string,
+    repositoryId: string,
+  ) => Promise<string | undefined>;
   getSession?: EventStore['getSession'];
   getProject: (projectId: string) => Promise<ProjectRecord | undefined>;
   /** Undefined when the project has no usable code host (local, or connection gone). */
@@ -143,6 +147,10 @@ export function registerProjectRepoRoute(app: FastifyInstance, deps: ProjectRepo
       return reply.code(503).send({ error: 'the code host connection is unavailable' });
     const ops = repository.operations;
     const remember = async (pr: Awaited<ReturnType<typeof ops.createPullRequest>>) => {
+      const actualBranch = sessionId
+        ? await deps.currentRepositoryBranch?.(sessionId, selectedId ?? `default:${project.id}`)
+        : undefined;
+      if (sessionId && deps.currentRepositoryBranch && actualBranch !== pr.head) return pr;
       if (sessionId && (selectedId === undefined || selectedId === `default:${project.id}`)) {
         const session = await deps.getSession?.(sessionId);
         if (session?.projectId === project.id)
@@ -164,7 +172,7 @@ export function registerProjectRepoRoute(app: FastifyInstance, deps: ProjectRepo
             ? { dependsOn: parsed.data.dependsOn }
             : {}),
         },
-        sessionId,
+        actualBranch === pr.head ? sessionId : undefined,
       );
       return pr;
     };

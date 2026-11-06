@@ -5,6 +5,7 @@ import {
 } from './project-inquiries.js';
 import {
   createSessionRepositories,
+  removeSessionRepositoryWorkspaces,
   registerSessionRepositoriesRoutes,
 } from './session-repositories.js';
 import { measureBranchReadStage, type BranchReadStage } from './branch-read-diagnostics.js';
@@ -3501,7 +3502,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       getProject: (projectId) => deps.eventStore.getProject(projectId),
       repositoryFor: deps.projectRepository,
       store: deps.eventStore,
-      openRepository: sessionRepositories.open,
+      openRepository: sessionRepositories.openForSandbox,
+      currentRepositoryBranch: sessionRepositories.currentBranch,
       getSession: (id) => deps.eventStore.getSession(id),
     });
   }
@@ -5431,6 +5433,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         const project = await deps.eventStore.getProject(session.projectId);
         if (project !== undefined && !isControlPlaneProject(project)) {
           const projectClone = projectClonePath(deps.projectCloneRoot, project);
+          await removeSessionRepositoryWorkspaces(projectClone, session.sessionId);
           cleanupWorktrees =
             isDocumentWorkspace(session.worktree) && deps.dataRoot
               ? createDocumentWorkspaceProvisioner(deps.dataRoot, project.id, projectClone)
