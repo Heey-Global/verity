@@ -1751,6 +1751,13 @@ export function registerServerMcpRoutes({
             request: tasksRequestSchema.parse(input.request),
           });
         }
+        if (
+          input.toolName === 'verity_project_inquiry' &&
+          (input.request as { operation?: string }).operation !== 'request'
+        ) {
+          const initiator = await runningTurnInitiator(input.sessionId, input.turnId);
+          return inquiryTool(input.sessionId, initiator?.userId ?? null, input.request);
+        }
         // Planning can begin while an external approval card is pending.
         if (
           (await sessionPlanning.isPlanning(input.sessionId)) ||
@@ -1759,6 +1766,10 @@ export function registerServerMcpRoutes({
           throw new ControlPlaneSessionAuthorityError(
             'External tools are unavailable in planning mode; use read-only local tools.',
           );
+        }
+        if (input.toolName === 'verity_project_inquiry') {
+          const initiator = await runningTurnInitiator(input.sessionId, input.turnId);
+          return inquiryTool(input.sessionId, initiator?.userId ?? null, input.request);
         }
         if (input.toolName === 'verity_list_linked_sessions') {
           const links = await deps.eventStore.listSessionLinks(input.sessionId);
@@ -1772,10 +1783,6 @@ export function registerServerMcpRoutes({
                 link.peerProjectId,
             })),
           };
-        }
-        if (input.toolName === 'verity_project_inquiry') {
-          const initiator = await runningTurnInitiator(input.sessionId, input.turnId);
-          return inquiryTool(input.sessionId, initiator?.userId ?? null, input.request);
         }
         if (input.toolName === 'verity_send_session_message') {
           const request = input.request as { targetSessionId?: string; message: string };

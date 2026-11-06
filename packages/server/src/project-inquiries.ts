@@ -83,6 +83,27 @@ export function createProjectInquiries(deps: ProjectInquiryDeps) {
       if (accepted) await store.projectInquiries.markQueued(current.id);
     });
   }
+  async function provision(inquiry: ProjectInquiry): Promise<void> {
+    if (inquiry.status !== 'provisioning') return;
+    if (!(await allowed(inquiry))) {
+      await store.projectInquiries.block(inquiry.id);
+      return;
+    }
+    const existing = await store.getSession(inquiry.targetSessionId);
+    if (!existing)
+      await deps.createSession(
+        inquiry.targetProjectId,
+        inquiry.targetSessionId,
+        `Inquiry · ${inquiry.title}`,
+      );
+    await store.projectInquiries.bind(
+      inquiry.sourceSessionId,
+      inquiry.targetProjectId,
+      inquiry.targetSessionId,
+    );
+    await store.createSessionLink(inquiry.sourceSessionId, inquiry.targetSessionId);
+    await store.projectInquiries.completeProvisioning(inquiry.id);
+  }
   return {
     async request(
       sourceSessionId: string,
@@ -119,21 +140,11 @@ export function createProjectInquiries(deps: ProjectInquiryDeps) {
       if (!(await allowed(candidate)))
         throw new Error('Target project is unavailable or not permitted');
       return serialized(`create:${sourceSessionId}:${request.targetProjectId}`, async () => {
-        const inquiry = await store.projectInquiries.create(candidate, async () => {
-          const existing = await store.getSession(targetSessionId);
-          if (!existing)
-            await deps.createSession(
-              request.targetProjectId,
-              targetSessionId,
-              `Inquiry · ${request.title}`,
-            );
-          await store.projectInquiries.bind(
-            sourceSessionId,
-            request.targetProjectId,
-            targetSessionId,
-          );
-          await store.createSessionLink(sourceSessionId, targetSessionId);
+        const inquiry = await store.projectInquiries.create({
+          ...candidate,
+          status: 'provisioning',
         });
+        await provision(inquiry);
         await deliver(inquiry);
         return (await store.projectInquiries.get(inquiry.id))!;
       });
@@ -170,7 +181,13 @@ export function createProjectInquiries(deps: ProjectInquiryDeps) {
       requestCursor = requests.length === 100 ? requests.at(-1)?.id : undefined;
       for (const inquiry of requests) {
         try {
-          await deliver(inquiry);
+          await serialized(
+            `create:${inquiry.sourceSessionId}:${inquiry.targetProjectId}`,
+            async () => {
+              await provision(inquiry);
+              await deliver(inquiry);
+            },
+          );
         } catch {
           /* Keep durable requests retryable; one unavailable target must not starve others. */
         }

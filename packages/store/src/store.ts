@@ -4416,6 +4416,7 @@ export class EventStore implements EventSink {
         .where('origin', '=', 'agent')
         .where('status', 'in', ['open', 'in_progress'])
         .execute();
+      await sql`delete from project_inquiries where target_session_id=${sessionId}`.execute(tx);
       const result = await tx
         .deleteFrom('sessions')
         .where('session_id', '=', sessionId)

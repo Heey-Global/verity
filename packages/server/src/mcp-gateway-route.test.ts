@@ -135,6 +135,7 @@ function build(
                   'verity_repairs',
                   'verity_qa_analysis',
                   'verity_app_help',
+                  'verity_project_inquiry',
                   'verity_http_request',
                 ]
               : ['verity_http_request'],
@@ -3062,4 +3063,62 @@ it('lets an approved inquiry change start, present and discard its own plan', as
     }
   });
   expect((await harness.store.getSession('s1'))?.planning).toBe('discarded');
+});
+
+it('executes inquiry list and answer tools while a question target remains in planning', async () => {
+  const h = build({ planningTools: true, unlocked: true });
+  for (const id of ['p1', 'source']) {
+    await h.store.createProject({
+      id,
+      kind: 'local',
+      owner: '__local__',
+      repo: id,
+      containerName: id,
+      state: 'active',
+    });
+    await h.store.createSession({
+      sessionId: id === 'p1' ? 's1' : id,
+      projectId: id,
+      worktree: `/wt/${id}`,
+      model: 'm',
+    });
+  }
+  await h.store.projectInquiries.setGrant('source', 'p1', true);
+  await h.store.projectInquiries.bind('source', 'p1', 's1');
+  await h.store.projectInquiries.create({
+    id: 'question',
+    sourceSessionId: 'source',
+    targetSessionId: 's1',
+    sourceProjectId: 'source',
+    targetProjectId: 'p1',
+    title: 'Question',
+    body: 'Inspect',
+    kind: 'question',
+    status: 'approved',
+    userId: null,
+  });
+  await h.store.projectInquiries.markQueued('question');
+  // Revocation defers delivery; the target can still record its answer durably.
+  await h.store.projectInquiries.setGrant('source', 'p1', false);
+  await h.store.startSessionPlanning('s1');
+  const token = h.tokens.issue({ projectId: 'p1', sessionId: 's1', turnId: 't1' });
+  await withListener(h, async (socketPath) => {
+    for (const args of [
+      { operation: 'list' },
+      { operation: 'answer', inquiryId: 'question', answer: 'Inspected' },
+    ]) {
+      const response = await postUnix(socketPath, `Bearer ${token}`, {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name: 'verity_project_inquiry', arguments: args },
+      });
+      expect(
+        (JSON.parse(response.body) as { result: { isError?: boolean } }).result.isError,
+        response.body,
+      ).toBeUndefined();
+    }
+  });
+  expect((await h.store.projectInquiries.get('question'))?.answer).toBe('Inspected');
+  expect((await h.store.getSession('s1'))?.planning).toBe('active');
 });

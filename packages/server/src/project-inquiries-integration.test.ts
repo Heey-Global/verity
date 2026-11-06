@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import { Conductor } from '@verity/session';
 import { createTestDb } from '@verity/store/testing';
 import { expect, it, vi } from 'vitest';
@@ -69,28 +68,6 @@ it('admits requests and answers through real durable conductor receipts exactly 
       body: 'Question',
       kind: 'question',
     };
-    // Seed the provisioned request, then exercise durable delivery and recovery.
-    const targetSessionId = createHash('sha256').update('inquiry:source:target').digest('hex');
-    const id = createHash('sha256').update('source:one').digest('hex');
-    await ctx.store.createSession({
-      sessionId: targetSessionId,
-      projectId: 'target',
-      worktree: '/wt/target',
-      model: 'm',
-    });
-    await ctx.store.projectInquiries.bind('source', 'target', targetSessionId);
-    await ctx.store.projectInquiries.create({
-      id,
-      sourceSessionId: 'source',
-      targetSessionId,
-      sourceProjectId: 'source',
-      targetProjectId: 'target',
-      title: input.title,
-      body: input.body,
-      kind: 'question',
-      status: 'approved',
-      userId: null,
-    });
     const inquiry = await service.request('source', null, input);
     expect(inquiry.status).toBe('queued');
     await vi.waitFor(() => expect(conductor.isBusy(inquiry.targetSessionId)).toBe(false));

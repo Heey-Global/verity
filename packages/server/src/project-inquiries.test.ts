@@ -34,12 +34,15 @@ function harness() {
       bind: vi.fn(),
       activate: vi.fn(),
       get: vi.fn(async (id: string) => rows.get(id)),
-      create: vi.fn(async (input: ProjectInquiry, provision?: () => Promise<void>) => {
+      create: vi.fn(async (input: ProjectInquiry) => {
         if (!rows.has(input.id)) {
-          await provision?.();
           rows.set(input.id, input);
         }
         return rows.get(input.id)!;
+      }),
+      completeProvisioning: vi.fn(async (id: string) => {
+        const row = rows.get(id)!;
+        row.status = row.kind === 'change' ? 'pending' : 'approved';
       }),
       markQueued: vi.fn(async (id: string) => {
         rows.get(id)!.status = 'queued';
@@ -64,7 +67,7 @@ function harness() {
       markAnswerDelivered,
       undelivered: vi.fn(async (after = '') =>
         [...rows.values()]
-          .filter((r) => r.status === 'approved' && r.id > after)
+          .filter((r) => ['approved', 'provisioning'].includes(r.status) && r.id > after)
           .sort((a, b) => a.id.localeCompare(b.id))
           .slice(0, 100),
       ),
@@ -277,4 +280,14 @@ it('lets a source manager revoke a grant after losing target execution access', 
   } finally {
     await app.close();
   }
+});
+
+it('recovers a durably reserved request after target provisioning fails', async () => {
+  const h = harness();
+  h.createSession.mockRejectedValueOnce(new Error('provisioning failed'));
+  await expect(h.service.request('source', null, request)).rejects.toThrow('provisioning failed');
+  expect([...h.rows.values()][0]?.status).toBe('provisioning');
+  await h.service.recover();
+  expect(h.createSession).toHaveBeenCalledTimes(2);
+  expect([...h.rows.values()][0]?.status).toBe('queued');
 });

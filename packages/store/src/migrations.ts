@@ -5407,16 +5407,17 @@ migrations['0196_project_inquiries'] = {
       change_approved boolean not null default false,
       primary key(source_session_id,target_project_id)
     )`.execute(db);
+    // Target IDs are reserved before provisioning; session deletion removes matching requests.
     await sql`create table project_inquiries (
       id text primary key,
       source_session_id text not null references sessions(session_id) on delete cascade,
-      target_session_id text not null references sessions(session_id) on delete cascade,
+      target_session_id text not null,
       source_project_id text not null references projects(id) on delete cascade,
       target_project_id text not null references projects(id) on delete cascade,
       title text not null,
       body text not null,
       kind text not null check(kind in ('question','change')),
-      status text not null check(status in ('pending','approved','rejected','queued','answered','blocked')),
+      status text not null check(status in ('provisioning','pending','approved','rejected','queued','answered','blocked')),
       created_at timestamptz not null default now(),
       answer text,
       answer_delivered boolean not null default false,

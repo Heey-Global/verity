@@ -164,17 +164,15 @@ it('rejects exhausted admission and conflicting retries before provisioning targ
     status: 'approved' as const,
     userId: null,
   };
-  let provisioned = 0;
-  const provision = async () => {
-    provisioned += 1;
-  };
   for (let index = 0; index < 20; index += 1)
-    await inquiries.create({ ...input, id: String(index) }, provision);
-  expect(provisioned).toBe(20);
-  await expect(inquiries.create({ ...input, id: 'overflow' }, provision)).rejects.toThrow('Daily');
-  await expect(inquiries.create({ ...input, body: 'Different' }, provision)).rejects.toThrow(
+    await inquiries.create({ ...input, id: String(index) });
+  expect(await inquiries.list()).toHaveLength(20);
+  await expect(inquiries.create({ ...input, id: 'overflow' })).rejects.toThrow('Daily');
+  await expect(inquiries.create({ ...input, body: 'Different' })).rejects.toThrow(
     'different request',
   );
-  await inquiries.create(input, provision);
-  expect(provisioned).toBe(20);
+  await inquiries.create(input);
+  expect(await inquiries.list()).toHaveLength(20);
+  await ctx.store.deleteSession('target');
+  expect(await inquiries.list()).toEqual([]);
 });

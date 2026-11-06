@@ -8,7 +8,7 @@ export interface ProjectInquiryGrant {
   createdAt: string;
 }
 export type ProjectInquiryStatus =
-  'pending' | 'approved' | 'rejected' | 'queued' | 'answered' | 'blocked';
+  'provisioning' | 'pending' | 'approved' | 'rejected' | 'queued' | 'answered' | 'blocked';
 export interface ProjectInquiry {
   id: string;
   sourceSessionId: string;
@@ -84,7 +84,7 @@ export class ProjectInquiryStore {
       if (!enabled)
         await sql`update project_inquiries set status='blocked'
           where source_project_id=${source} and target_project_id=${target}
-            and status in ('pending','approved')`.execute(tx);
+            and status in ('provisioning','pending','approved')`.execute(tx);
     });
   }
 
@@ -156,7 +156,7 @@ export class ProjectInquiryStore {
     targetProjectIds?: readonly string[],
   ): Promise<ProjectInquiry[]> {
     const rows = await sql<Row>`select * from project_inquiries
-      where (${sessionId ?? null}::text is null or source_session_id=${sessionId ?? null}
+      where status <> 'provisioning' and (${sessionId ?? null}::text is null or source_session_id=${sessionId ?? null}
         or target_session_id=${sessionId ?? null})
       and (${!pending} or status='pending')
       and (${targetProjectIds === undefined} or target_project_id in (select jsonb_array_elements_text(${JSON.stringify(targetProjectIds ?? [])}::jsonb)))
@@ -166,7 +166,6 @@ export class ProjectInquiryStore {
 
   async create(
     input: Omit<ProjectInquiry, 'createdAt' | 'answer' | 'decidedBy'>,
-    provision?: () => Promise<void>,
   ): Promise<ProjectInquiry> {
     return this.db.transaction().execute(async (tx) => {
       // Serialize the grant check, daily cap and insert across concurrent turns.
@@ -196,18 +195,31 @@ export class ProjectInquiryStore {
         )
       ).rows[0];
       if (Number(usage?.n) >= 20) throw new Error('Daily project inquiry limit reached (20)');
-      // Provision only after admission, while the project cap remains locked.
-      await provision?.();
       const result = await sql<Row>`insert into project_inquiries
         (id,source_session_id,target_session_id,source_project_id,target_project_id,title,body,kind,status,user_id)
         values(${input.id},${input.sourceSessionId},${input.targetSessionId},${input.sourceProjectId},
           ${input.targetProjectId},${input.title},${input.body},${input.kind},${input.status},${input.userId}) returning *`.execute(
         tx,
       );
-      await sql`insert into qa_dispatches(id,session_id,state)
+      if (input.status !== 'provisioning')
+        await sql`insert into qa_dispatches(id,session_id,state)
         values (${`project-inquiry:${input.id}`},${input.targetSessionId},'reserved')
         on conflict do nothing`.execute(tx);
       return record(result.rows[0]!);
+    });
+  }
+
+  /** Commit readiness and its dispatch reservation after runtime provisioning finishes. */
+  async completeProvisioning(id: string): Promise<void> {
+    await this.db.transaction().execute(async (tx) => {
+      const result = await sql<{ target_session_id: string }>`update project_inquiries
+        set status=case when kind='change' then 'pending' else 'approved' end
+        where id=${id} and status='provisioning' returning target_session_id`.execute(tx);
+      const row = result.rows[0];
+      if (row)
+        await sql`insert into qa_dispatches(id,session_id,state)
+        values (${`project-inquiry:${id}`},${row.target_session_id},'reserved')
+        on conflict do nothing`.execute(tx);
     });
   }
 
@@ -229,7 +241,7 @@ export class ProjectInquiryStore {
   }
 
   async block(id: string): Promise<void> {
-    await sql`update project_inquiries set status='blocked' where id=${id} and status in ('pending','approved')`.execute(
+    await sql`update project_inquiries set status='blocked' where id=${id} and status in ('provisioning','pending','approved')`.execute(
       this.db,
     );
   }
@@ -271,7 +283,7 @@ export class ProjectInquiryStore {
 
   async undelivered(afterId?: string): Promise<ProjectInquiry[]> {
     return (
-      await sql<Row>`select * from project_inquiries where status='approved' and id > ${afterId ?? ''} order by id limit 100`.execute(
+      await sql<Row>`select * from project_inquiries where status in ('provisioning','approved') and id > ${afterId ?? ''} order by id limit 100`.execute(
         this.db,
       )
     ).rows.map(record);
