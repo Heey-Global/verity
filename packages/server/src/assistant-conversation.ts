@@ -96,6 +96,7 @@ export function projectAssistantConversation(
         const item = index === undefined ? undefined : items[index];
         if (item?.kind === 'task') item.state = event.isError ? 'failed' : 'saved';
         if (item?.kind === 'assignment') item.state = event.isError ? 'failed' : 'sent';
+        if (item?.kind === 'meeting') item.state = event.isError ? 'failed' : 'ready';
         break;
       }
       case 'choices':
@@ -166,6 +167,23 @@ function toolItem(
       at,
       title: typeof record.title === 'string' ? record.title : '',
       projectId: typeof record.projectId === 'string' ? record.projectId : '',
+      state: 'pending',
+    };
+  }
+  if (
+    isTool(name, ASSISTANT_TOOL) &&
+    (record.action === 'prepare_meeting' || record.action === 'join_meeting')
+  ) {
+    return {
+      kind: 'meeting',
+      id,
+      at,
+      action: record.action === 'join_meeting' ? 'join' : 'prepare',
+      // Only online meetings can be joined; the schema refuses anything else.
+      mode:
+        record.action === 'prepare_meeting' && record.mode === 'in_person' ? 'in_person' : 'online',
+      eventKey: typeof record.eventKey === 'string' ? record.eventKey : null,
+      title: typeof record.title === 'string' ? record.title : null,
       state: 'pending',
     };
   }

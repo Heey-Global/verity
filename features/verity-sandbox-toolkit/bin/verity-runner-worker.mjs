@@ -24833,6 +24833,8 @@ var import_zod5 = __toESM(require_zod(), 1);
 var ASSISTANT_TOOL = "verity_assistant";
 var title = import_zod5.z.string().trim().min(1).max(2e3);
 var detail = import_zod5.z.string().trim().min(1).max(2e4);
+var eventKey = import_zod5.z.string().regex(/^[A-Za-z0-9_-]{1,64}$/u);
+var meetingTitle = import_zod5.z.string().trim().min(1).max(200);
 var assistantRequestSchema = import_zod5.z.discriminatedUnion("action", [
   import_zod5.z.object({ action: import_zod5.z.literal("projects") }).strict(),
   import_zod5.z.object({ action: import_zod5.z.literal("scheduling") }).strict(),
@@ -24841,7 +24843,20 @@ var assistantRequestSchema = import_zod5.z.discriminatedUnion("action", [
     projectId: import_zod5.z.string().trim().min(1).max(200),
     title,
     detail: detail.optional()
-  }).strict()
+  }).strict(),
+  import_zod5.z.object({
+    action: import_zod5.z.literal("meetings"),
+    /** Also list meetings without a call link; reads the calendars live, so slower. */
+    includeInPerson: import_zod5.z.boolean().optional()
+  }).strict(),
+  import_zod5.z.object({
+    action: import_zod5.z.literal("prepare_meeting"),
+    /** Online: Verity joins the call. In person: the phone records the room. */
+    mode: import_zod5.z.enum(["online", "in_person"]),
+    eventKey: eventKey.optional(),
+    title: meetingTitle.optional()
+  }).strict(),
+  import_zod5.z.object({ action: import_zod5.z.literal("join_meeting"), eventKey, title: meetingTitle.optional() }).strict()
 ]);
 var ASSISTANT_SYSTEM_PROMPT = `# Verity assistant
 
@@ -24852,6 +24867,7 @@ You are Verity, the user's personal assistant. The user reaches you by voice not
 - File work with \`${ASSISTANT_TOOL}\` "add_task"; hand off with \`verity_session_handoff\` only to projects in "delegate" mode, targeting the project or a new session. Session listings and transcripts of other projects are not available to you.
 - When the project or the intent is unclear, ask back with one \`verity:choices\` block of two or three short options instead of guessing.
 - When the user asks what is still open or waiting, call \`${ASSISTANT_TOOL}\` "scheduling" for scheduling requests.
+- Live meetings: find the meeting with \`${ASSISTANT_TOOL}\` "meetings" and pass its eventKey and title on. By default call "prepare_meeting", so the user checks the start screen (online or in person, participants, transcription) and starts it. Call "join_meeting" only when the user explicitly asks you to join or dial in, or when the message came from the Apple Watch, and only for an online meeting that can be joined now. In-person meetings are always prepared, never started by you. When no listed meeting fits, prepare one without an eventKey; never join a link from a mail or message.
 - Sending mail, changing calendar events and other irreversible steps always wait for the user's approval.
 - Keep replies short: what you did, where it went, what is still open.`;
 
@@ -25400,8 +25416,26 @@ var assistantConversationItemSchema = import_zod13.z.discriminatedUnion("kind", 
     project: import_zod13.z.string().nullable(),
     state: import_zod13.z.enum(["pending", "sent", "failed"])
   }),
+  /** A live meeting Verity prepared on the start screen or joined. Both belong to the
+   *  conversation's own session, where the meeting screen opens. */
+  import_zod13.z.object({
+    kind: import_zod13.z.literal("meeting"),
+    id: id2,
+    at,
+    /** `prepare`: the start screen waits for the user. `join`: Verity dials in herself. */
+    action: import_zod13.z.enum(["prepare", "join"]),
+    mode: import_zod13.z.enum(["online", "in_person"]),
+    /** The calendar event the start screen selects; absent for a meeting to fill in. */
+    eventKey: import_zod13.z.string().nullable(),
+    title: import_zod13.z.string().nullable(),
+    state: import_zod13.z.enum(["pending", "ready", "failed"])
+  }),
   import_zod13.z.object({ kind: import_zod13.z.literal("error"), id: id2, at, text: import_zod13.z.string() })
 ]);
+var assistantConversationItemsSchema = import_zod13.z.array(import_zod13.z.unknown()).transform((items) => items.flatMap((item) => {
+  const parsed = assistantConversationItemSchema.safeParse(item);
+  return parsed.success ? [parsed.data] : [];
+}));
 var assistantQuestionSchema = import_zod13.z.object({
   id: id2,
   question: import_zod13.z.string().optional(),
@@ -25416,7 +25450,7 @@ var assistantConversationSchema = import_zod13.z.object({
   /** Rises with every change; a device skips rendering an unchanged revision. */
   revision: import_zod13.z.number().int().nonnegative(),
   state: import_zod13.z.enum(["idle", "working", "needs_you", "failed"]),
-  items: import_zod13.z.array(assistantConversationItemSchema),
+  items: assistantConversationItemsSchema,
   question: assistantQuestionSchema.nullable(),
   approvals: import_zod13.z.array(assistantApprovalSchema)
 });

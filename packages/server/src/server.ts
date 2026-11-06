@@ -1211,6 +1211,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         (await deps.eventStore.hasProjectPermission(userId, projectId, 'read'))
       );
     },
+    administrator: async (userId) =>
+      userId === undefined
+        ? deps.authRegistry?.isEnabled() !== true
+        : deps.eventStore.isActiveAdministrator(userId),
   };
   const automationExecutor = createAutomationExecutor({
     isAuthorized: async (automation, session) => {
@@ -5167,6 +5171,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     warn: (obj, msg) => app.log.warn(obj, msg),
   };
   registerCalendarMeetingRoutes(app, calendarMeetings);
+  // Built after the gateway tools; the assistant's meeting actions read it per call.
+  assistantToolDeps.meetings = calendarMeetings;
   let calendarMeetingWatcher: ReturnType<typeof startCalendarMeetingWatcher> | undefined;
   app.addHook('onReady', async () => {
     // Before the server takes requests: no join of this process is under way yet.

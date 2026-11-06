@@ -148,9 +148,16 @@ function noteClockTime(startedAt: number, atSeconds: number) {
 }
 
 export default function MeetingScreen() {
-  const { sessionId, meetingId } = useLocalSearchParams<{
+  const { sessionId, meetingId, prepare, request, source, eventKey } = useLocalSearchParams<{
     sessionId: string;
     meetingId?: string;
+    /** `1`: Verity prepared a meeting; the start screen opens filled in, even after
+     *  an earlier meeting of this session. */
+    prepare?: string;
+    /** Differs per opening, so preparing the same meeting again fills it in again. */
+    request?: string;
+    source?: string;
+    eventKey?: string;
   }>();
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
@@ -177,7 +184,9 @@ export default function MeetingScreen() {
     null,
   );
   const [engines, setEngines] = useState<STTEngine[]>([]);
-  const [meetingSource, setMeetingSource] = useState<'presence' | 'online'>('presence');
+  const [meetingSource, setMeetingSource] = useState<'presence' | 'online'>(
+    source === 'online' ? 'online' : 'presence',
+  );
   const [meetingUrl, setMeetingUrl] = useState('');
   const [now, setNow] = useState(Date.now());
   // Both sources can take a calendar title; online calls can also use its join link.
@@ -188,7 +197,7 @@ export default function MeetingScreen() {
     manualLink,
     setManualLink,
     selectedEvent: selectedCalendarEvent,
-  } = useCalendarMeetingChoice(upcoming, now, meetingSource === 'presence');
+  } = useCalendarMeetingChoice(upcoming, now, meetingSource === 'presence', eventKey ?? null);
   const selectedEvent =
     selectedCalendarEvent?.provider && canJoinCalendarMeeting(selectedCalendarEvent, now)
       ? selectedCalendarEvent
@@ -231,7 +240,28 @@ export default function MeetingScreen() {
   const [pendingAudio, setPendingAudio] = useState<Array<{ meetingId: string; duration: number }>>(
     [],
   );
-  const [showNewMeeting, setShowNewMeeting] = useState(false);
+  const [showNewMeeting, setShowNewMeeting] = useState(prepare === '1');
+  // The screen can already be on the stack when Verity prepares another meeting; the new
+  // parameters then arrive without a remount.
+  const preparedFor = useRef(prepare === '1' ? (request ?? '') : null);
+  // A changed source makes the calendar choice pick again; this pick follows it.
+  const pendingPick = useRef<string | null>(null);
+  useEffect(() => {
+    if (prepare !== '1' || preparedFor.current === (request ?? '')) return;
+    preparedFor.current = request ?? '';
+    setShowNewMeeting(true);
+    setMeetingSource(source === 'online' ? 'online' : 'presence');
+    if (eventKey) {
+      setManualLink(false);
+      pendingPick.current = eventKey;
+      setSelectedEventKey(eventKey);
+    }
+  }, [prepare, request, source, eventKey, setManualLink, setSelectedEventKey]);
+  useEffect(() => {
+    if (pendingPick.current === null) return;
+    setSelectedEventKey(pendingPick.current);
+    pendingPick.current = null;
+  }, [meetingSource, setSelectedEventKey]);
   const [syncError, setSyncError] = useState(false);
   // Every save is briefly pending; only a backlog that lasts is worth showing.
   const [syncPendingSince, setSyncPendingSince] = useState<number | null>(null);

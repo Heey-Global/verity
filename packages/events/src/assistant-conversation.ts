@@ -84,9 +84,32 @@ export const assistantConversationItemSchema = z.discriminatedUnion('kind', [
     project: z.string().nullable(),
     state: z.enum(['pending', 'sent', 'failed']),
   }),
+  /** A live meeting Verity prepared on the start screen or joined. Both belong to the
+   *  conversation's own session, where the meeting screen opens. */
+  z.object({
+    kind: z.literal('meeting'),
+    id,
+    at,
+    /** `prepare`: the start screen waits for the user. `join`: Verity dials in herself. */
+    action: z.enum(['prepare', 'join']),
+    mode: z.enum(['online', 'in_person']),
+    /** The calendar event the start screen selects; absent for a meeting to fill in. */
+    eventKey: z.string().nullable(),
+    title: z.string().nullable(),
+    state: z.enum(['pending', 'ready', 'failed']),
+  }),
   z.object({ kind: z.literal('error'), id, at, text: z.string() }),
 ]);
 export type AssistantConversationItem = z.infer<typeof assistantConversationItemSchema>;
+
+/** Items a device understands. A newer server may add kinds; dropping them keeps the
+ *  rest of the conversation readable instead of failing the whole read. */
+const assistantConversationItemsSchema = z.array(z.unknown()).transform((items) =>
+  items.flatMap((item) => {
+    const parsed = assistantConversationItemSchema.safeParse(item);
+    return parsed.success ? [parsed.data] : [];
+  }),
+);
 
 export const assistantQuestionSchema = z.object({
   id,
@@ -107,7 +130,7 @@ export const assistantConversationSchema = z.object({
   /** Rises with every change; a device skips rendering an unchanged revision. */
   revision: z.number().int().nonnegative(),
   state: z.enum(['idle', 'working', 'needs_you', 'failed']),
-  items: z.array(assistantConversationItemSchema),
+  items: assistantConversationItemsSchema,
   question: assistantQuestionSchema.nullable(),
   approvals: z.array(assistantApprovalSchema),
 });
