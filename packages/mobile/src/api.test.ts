@@ -185,6 +185,39 @@ it('carries inbox facts and tolerates their absence or a malformed copy', () => 
   expect(malformed.status).toBe('awaiting_input');
 });
 
+it('reads a plan awaiting approval and ignores what it does not understand', () => {
+  const base = {
+    sessionId: 's1',
+    worktree: '/wt/s1',
+    model: 'm',
+    name: null,
+    status: 'completed',
+    usage: ZERO_USAGE,
+  };
+  // Without these fields the overview cannot mark a session whose plan waits.
+  const planned = sessionSummarySchema.parse({
+    ...base,
+    planning: 'active',
+    planningRevision: 2,
+    planningPresented: true,
+  });
+  expect(planned).toMatchObject({
+    planning: 'active',
+    planningRevision: 2,
+    planningPresented: true,
+  });
+  const odd = sessionSummarySchema.parse({
+    ...base,
+    planning: 'paused',
+    planningRevision: null,
+    planningPresented: 'yes',
+  });
+  expect(odd.planning).toBeUndefined();
+  expect(odd.planningPresented).toBeUndefined();
+  expect(odd.planningRevision).toBeUndefined();
+  expect(odd.status).toBe('completed');
+});
+
 interface Call {
   url: string;
   init: RequestInit | undefined;

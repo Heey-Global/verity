@@ -32,6 +32,7 @@ export type InboxItemKind =
   | 'meeting'
   | 'permission'
   | 'question'
+  | 'plan_review'
   | 'mockup_review'
   | 'crashed'
   | 'merge_ready'
@@ -103,12 +104,13 @@ export interface InboxInput {
 export const MEETING_LEAD_MS = 15 * 60_000;
 
 // Higher first. Meetings are time-bound; a parked permission blocks a running
-// agent; a question or a mockup review blocks a finished turn; the rest can
+// agent; a question, a plan or a mockup review blocks a finished turn; the rest can
 // wait a moment.
 const RANK: Record<InboxItemKind, number> = {
-  meeting: 7,
-  permission: 6,
-  question: 5,
+  meeting: 8,
+  permission: 7,
+  question: 6,
+  plan_review: 5,
   mockup_review: 4,
   crashed: 3,
   merge_ready: 2,
@@ -181,6 +183,7 @@ export function inboxSummary(items: readonly InboxItem[]): string {
   add('meeting', 'meeting soon', 'meetings soon');
   add('permission', 'permission', 'permissions');
   add('question', 'question', 'questions');
+  add('plan_review', 'plan to review', 'plans to review');
   add('mockup_review', 'mockup review', 'mockup reviews');
   add('crashed', 'crashed session', 'crashed sessions');
   add('merge_ready', 'pull request ready', 'pull requests ready');
@@ -321,6 +324,27 @@ function sessionItems(
       title: 'Waiting for your answer',
       context: where,
       actions: [open('Answer')],
+    });
+  }
+
+  // Plan: the agent presented a plan and waits for approval. Approving stays in
+  // the session, where the plan can be read in full. The key follows the
+  // revision, so a revised plan comes back after a dismissal.
+  if (
+    session.planning === 'active' &&
+    session.planningPresented === true &&
+    session.status !== 'running'
+  ) {
+    items.push({
+      ...base,
+      key: `plan:${session.sessionId}:${String(session.planningRevision ?? 0)}`,
+      kind: 'plan_review',
+      tag: 'Plan',
+      tone: 'attention',
+      title: 'Plan ready for review',
+      context: where,
+      message: 'Implementation waits for your approval.',
+      actions: [open('Review plan')],
     });
   }
 

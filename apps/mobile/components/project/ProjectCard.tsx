@@ -11,7 +11,7 @@ import { tint } from '../ui/tint';
 import { useProjectRowDrag, type ProjectReorderController } from '../useProjectReorder';
 import type { SessionProjectGroup } from '../../lib/projectGroups';
 import { projectInboxItems } from './ProjectPage';
-import { ProjectWork, workFilter } from './ProjectWork';
+import { isActive, ProjectWork } from './ProjectWork';
 
 /** What a project card says instead of listing its sessions. */
 export type ProjectCardFacts = {
@@ -31,11 +31,12 @@ export function projectCardFacts(group: SessionProjectGroup, now: number): Proje
     ? projectInboxItems(project, sessions, now)
     : inboxItems({ sessions, projects: [], now });
   const dismissed = inboxDismissedKeys({ sessions, projects: project ? [project] : [] });
-  // Findings are the page's Security card; the card keeps the project's own problems.
+  // Findings are the page's Security row; the card keeps the project's own problems.
   const status = group.project ? group.health : group.status;
   return {
     waiting: all.filter((item) => !dismissed.has(item.key)).length,
-    running: sessions.filter((session) => workFilter(session, 'running')).length,
+    running: sessions.filter((session) => isActive(session) || session.status === 'awaiting_input')
+      .length,
     health:
       status === undefined
         ? undefined
@@ -69,7 +70,7 @@ export function projectCardLine(group: SessionProjectGroup, facts: ProjectCardFa
  * same gesture as the classic list.
  *
  * Groups without a project page (sessions outside any project, Verity Control)
- * open in place instead and list their sessions as the page's Work tab does.
+ * open in place instead and list their sessions as the page's work list does.
  */
 export function ProjectCard({
   group,
@@ -174,6 +175,9 @@ export function ProjectCard({
               client={client}
               projectId={group.project?.id}
               sessions={group.sessions}
+              // The card's head already says what waits and runs; opened, it
+              // shows every session rather than a Now without in-place answers.
+              initialFilter="all"
               onOpenSession={onOpenSession}
               onChanged={onSessionChanged}
             />
