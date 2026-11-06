@@ -14,6 +14,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { EmbeddedKnowledge, KnowledgeScreen } from '../components/knowledge/KnowledgeBrowser';
+import { KnowledgeFileView } from '../components/knowledge/KnowledgeFileView';
 import { KnowledgePaneContext } from '../components/knowledge/KnowledgePane';
 import { SHARED } from '../components/knowledge/knowledgeScope';
 import { mockCreateVerityClient, mockPush, resetSettingsHarness } from './support/settingsHarness';
@@ -115,6 +116,26 @@ it.each([
     await waitFor(() => expect(screen.queryByLabelText('Content')).toBeNull());
   },
 );
+
+it('asks before closing a file beside the session with unsaved edits', async () => {
+  const api = client();
+  const onClose = jest.fn();
+  render(
+    <KnowledgeFileView
+      client={api as unknown as VerityClient}
+      scope={SHARED}
+      file={file.path}
+      chrome="pane"
+      onClose={onClose}
+    />,
+  );
+  fireEvent.press(await screen.findByText('Edit'));
+  fireEvent.changeText(screen.getByLabelText('Content'), 'Unsaved');
+  fireEvent.press(screen.getByLabelText('Close file'));
+  expect(onClose).not.toHaveBeenCalled();
+  await act(async () => fireEvent.press(screen.getByRole('button', { name: 'Discard' })));
+  expect(onClose).toHaveBeenCalled();
+});
 
 it('starts a project at its areas, without reading the Shared library', async () => {
   const api = client();

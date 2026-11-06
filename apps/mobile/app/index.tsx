@@ -195,7 +195,10 @@ function SessionList({ client }: { client: VerityClient }) {
     () => ({ openFile: (scope, file) => setKnowledgeFile({ scope, file }) }),
     [],
   );
-  // Choosing a session — from the list, Home or a project page — means reading it.
+  // Any other way to a session (a deep link, a move, a deletion) as well.
+  useEffect(() => setKnowledgeFile(null), [selectedId]);
+  // Choosing a session — from the list, Home or a project page — means reading it,
+  // even when it is the one already selected under the file.
   const selectSession = useCallback((sessionId: string | null) => {
     setKnowledgeFile(null);
     setSelectedId(sessionId);

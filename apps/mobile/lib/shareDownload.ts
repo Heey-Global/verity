@@ -41,14 +41,21 @@ export async function shareDownload({
     setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
     return;
   }
-  const directory = new Directory(Paths.cache, cacheFolder);
+  // One flat folder name: a project id such as "team/site" must not nest.
+  const directory = new Directory(Paths.cache, cacheFolder.replace(/[^\w.-]/g, '_'));
   directory.create({ intermediates: true, idempotent: true });
   const destination = new File(directory, name);
+  // Bearer and pin belong to the server the URL points at: a URL for another
+  // origin gets neither, rather than this server's token under system trust.
+  const origin = originOf(url);
   const baseUrl = getVerityBaseUrl();
-  const token = getAuthToken(baseUrl);
+  const own = origin !== undefined && baseUrl !== null && originOf(baseUrl) === origin;
+  const token = own ? getAuthToken(baseUrl) : null;
   const headers =
     token !== null && token.length > 0 ? { authorization: `Bearer ${token}` } : undefined;
-  const endpoint = getServerProfile()?.endpoints.find((candidate) => candidate.url === baseUrl);
+  const endpoint = getServerProfile()?.endpoints.find(
+    (candidate) => originOf(candidate.url) === origin,
+  );
   const tlsPin = endpoint?.transport === 'direct' ? endpoint.tlsPin : undefined;
   const file = tlsPin
     ? new File(
@@ -71,4 +78,12 @@ export async function shareDownload({
     mimeType: mimeTypeForFile(path),
     dialogTitle: `Open ${name}`,
   });
+}
+
+function originOf(url: string): string | undefined {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return undefined;
+  }
 }

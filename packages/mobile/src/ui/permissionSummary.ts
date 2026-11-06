@@ -80,6 +80,21 @@ export function permissionSummary(
   input: unknown,
   options: { approvedForDelivery?: boolean } = {},
 ): PermissionSummary {
+  // Every field below is written by the agent: session ids, recipients, paths,
+  // secret and variable names. Spelled out here once, so no title or line can
+  // reorder what the operator reads next to Allow, whichever branch made it.
+  const summary = summarize(tool, input, options);
+  return {
+    title: spellOutBidiControls(summary.title),
+    lines: summary.lines.map((line) => ({ ...line, text: spellOutBidiControls(line.text) })),
+  };
+}
+
+function summarize(
+  tool: string,
+  input: unknown,
+  options: { approvedForDelivery?: boolean },
+): PermissionSummary {
   const packageInstall = tool === 'verity_package_install' ? packageInstallSummary(input) : null;
   if (packageInstall !== null)
     return {

@@ -7,7 +7,7 @@ import { StyleSheet } from 'react-native-unistyles';
 import { FileContentPreview } from '../files/FileContentPreview';
 import { FileSheetHeader, HeaderIconButton, HeaderTextButton } from '../files/FileSheetHeader';
 import { MarkdownItem } from '../files/MarkdownItem';
-import { Button, Text, TextField } from '../ui';
+import { Button, Text, TextField, useConfirm } from '../ui';
 import { shareDownload } from '../../lib/shareDownload';
 import {
   downloadKnowledge,
@@ -49,6 +49,7 @@ export function KnowledgeFileView({
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string>();
   const [downloading, setDownloading] = useState(false);
+  const [confirm, confirmSheet] = useConfirm();
   const projectId = scope.kind === 'project' ? scope.projectId : '';
   // A save answered after the operator moved to another file must not land on it.
   const current = useRef(file);
@@ -223,7 +224,21 @@ export function KnowledgeFileView({
             <View style={styles.actions}>
               {actions}
               {onClose ? (
-                <HeaderIconButton icon="x" accessibilityLabel="Close file" onPress={onClose} />
+                <HeaderIconButton
+                  icon="x"
+                  accessibilityLabel="Close file"
+                  onPress={() =>
+                    editing && draft !== content?.content
+                      ? confirm({
+                          title: 'Discard changes?',
+                          message: 'Your edits to this file are not saved.',
+                          confirmLabel: 'Discard',
+                          destructive: true,
+                          onConfirm: onClose,
+                        })
+                      : onClose()
+                  }
+                />
               ) : null}
             </View>
           }
@@ -235,6 +250,7 @@ export function KnowledgeFileView({
         </Text>
       ) : null}
       {body}
+      {confirmSheet}
     </View>
   );
 }

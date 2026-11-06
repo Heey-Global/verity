@@ -85,3 +85,17 @@ it('keeps the server’s TLS pin on a direct connection', async () => {
     }),
   );
 });
+
+it('sends this server’s token only to this server and keeps a project id flat', async () => {
+  await shareDownload({
+    url: 'https://elsewhere.test/file.pdf',
+    path: 'file.pdf',
+    cacheFolder: 'knowledge-team/site',
+    webBlob: jest.fn(),
+  });
+  expect(mockDownloadFileAsync).toHaveBeenCalledWith(
+    'https://elsewhere.test/file.pdf',
+    expect.objectContaining({ uri: 'file:///cache/knowledge-team_site/file.pdf' }),
+    { idempotent: true },
+  );
+});

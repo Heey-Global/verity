@@ -31,6 +31,29 @@ describe('permissionSummary', () => {
     expect(summary.lines[1]?.text).toContain('the complete secret');
   });
 
+  // Agent-written ids, recipients and variable names sit next to Allow on Home,
+  // with the full input folded away; a bidi control there could reorder them.
+  it('spells out bidi controls in every title and line, whatever the tool', () => {
+    const rlo = '\u202e';
+    const cases = [
+      permissionSummary('verity_send_session_message', {
+        targetSessionId: `s${rlo}1`,
+        message: 'hi',
+      }),
+      permissionSummary('verity_session_progress', { sessionId: `s${rlo}2` }),
+      permissionSummary('verity_secret_run', {
+        command: ['run'],
+        secrets: [{ env: `PATH${rlo}X`, secretAlias: `KEY${rlo}` }],
+      }),
+    ];
+    for (const summary of cases) {
+      expect(summary.title.length).toBeGreaterThan(0);
+      for (const text of [summary.title, ...summary.lines.map((line) => line.text)])
+        expect(text).not.toContain(rlo);
+    }
+    expect(cases[0]!.title).toContain('<U+202E>');
+  });
+
   // A summariser that cannot read the input must not produce a confident title:
   // the card falls back to the tool's name and the raw input stays the thing to read.
   it('names the tool and adds no lines when nothing recognises the input', () => {
