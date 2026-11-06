@@ -15,6 +15,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import uuid
 
 ASSETS = (
@@ -39,9 +40,35 @@ STAGING_DOCKER_VERSIONS = frozenset(('29.8.0', '29.9.2'))
 
 
 class PreflightError(ValueError):
-    def __init__(self, reason):
+    def __init__(self, reason, step=None):
         super().__init__(reason)
         self.reason = reason
+        self.step = step
+
+
+# These values may cross the host journal and updater boundary; never use raw errors.
+PROVISION_FAILURE_REASONS = frozenset((
+    'assessment_authorization_invalid', 'docker_host_unsupported',
+    'native_package_unavailable', 'relay_runtime_missing',
+    'relay_reload_failed', 'relay_inspection_failed', 'relay_runtime_mismatch',
+    'relay_rollback_failed', 'native_identity_changed', 'native_packages_changed',
+    'native_prerequisites_failed', 'runtime_preflight_failed', 'activation_failed',
+    'recovery_failed', 'provisioning_failed',
+))
+PROVISION_STEPS = frozenset(('validation', 'recovery', 'prerequisites', 'runtime_preflight', 'activation'))
+
+
+def failure_diagnostic(error, reason='provisioning_failed', step='validation'):
+    diagnostic = getattr(error, 'egress_failure', {})
+    if isinstance(diagnostic, dict):
+        if isinstance(diagnostic.get('reason'), str) and diagnostic['reason'] in PROVISION_FAILURE_REASONS:
+            reason = diagnostic['reason']
+        if isinstance(diagnostic.get('step'), str) and diagnostic['step'] in PROVISION_STEPS:
+            step = diagnostic['step']
+    if isinstance(error, PreflightError):
+        reason = error.reason if isinstance(error.reason, str) and error.reason in PROVISION_FAILURE_REASONS else reason
+        step = error.step if isinstance(error.step, str) and error.step in PROVISION_STEPS else step
+    return {'reason': reason, 'step': step}
 
 
 RELAY_RUNTIME_ARGS = ['--platform=systrap', '--network=sandbox', '--host-uds=open']
@@ -295,10 +322,11 @@ def validate_staging_assessment(root, run, node_path, descriptor):
     actual = staging_identity(root, run, node_path)
     profile = descriptor['profile']
     if (not isinstance(profile, dict) or set(profile) != {*actual, 'packages'}
-            or any(actual[key] != profile[key] for key in actual)
-            or set(profile['packages']) != NATIVE_PACKAGES
+            or any(actual[key] != profile[key] for key in actual)):
+        raise PreflightError('native_identity_changed', 'runtime_preflight')
+    if (not isinstance(profile['packages'], dict) or set(profile['packages']) != NATIVE_PACKAGES
             or installed_assessment_packages(run) != profile['packages']):
-        raise ValueError('Staging assessment native identities changed')
+        raise PreflightError('native_packages_changed', 'runtime_preflight')
     return profile
 
 
@@ -365,6 +393,30 @@ def native_relay_configuration(root, profile):
     return daemon, original, config, runtime, runtimes
 
 
+def relay_identity(info):
+    runtime = info.get('Runtimes', {}).get('runsc-relay')
+    if runtime is None:
+        return None
+    return {'path': runtime.get('path'), 'runtimeArgs': runtime.get('runtimeArgs', [])}
+
+
+def await_relay_runtime(run, expected):
+    # Docker's ExecReload only sends SIGHUP; a successful command is not convergence.
+    deadline = time.monotonic() + 30
+    reason = 'relay_runtime_mismatch'
+    while True:
+        try:
+            info = json.loads(run('/usr/bin/docker', 'info', '--format', '{{json .}}'))
+            if relay_identity(info) == expected:
+                return
+            reason = 'relay_runtime_mismatch'
+        except (ValueError, OSError, subprocess.SubprocessError, AttributeError, TypeError):
+            reason = 'relay_inspection_failed'
+        if time.monotonic() >= deadline:
+            raise PreflightError(reason, 'prerequisites')
+        time.sleep(0.25)
+
+
 def prepare_native_profile(root, run, profile):
     """Shared exact preparation; admission is performed by the caller first."""
     daemon, original, config, runtime, runtimes = native_relay_configuration(root, profile)
@@ -383,7 +435,7 @@ def prepare_native_profile(root, run, profile):
             '-o', 'Dpkg::Options::=--force-confold', *expected)
         if sorted(run('/usr/bin/dpkg-query', '--show', '--showformat=${Package}=${Version}\n',
                       *sorted(packages)).splitlines()) != expected:
-            raise ValueError('Native package versions did not converge')
+                raise PreflightError('native_packages_changed', 'prerequisites')
     if runtimes.get('runsc-relay') != runtime:
         runtimes['runsc-relay'] = runtime
         candidate = daemon.with_name('.verity-egress-daemon.json')
@@ -393,14 +445,18 @@ def prepare_native_profile(root, run, profile):
             run('/usr/bin/dockerd', '--validate', '--config-file', str(candidate))
             atomic_file(daemon, candidate.read_bytes())
             try:
-                run('/usr/bin/systemctl', 'reload', 'docker.service')
-                info = json.loads(run('/usr/bin/docker', 'info', '--format', '{{json .}}'))
-                actual = info.get('Runtimes', {}).get('runsc-relay', {})
-                if {'path': actual.get('path'), 'runtimeArgs': actual.get('runtimeArgs', [])} != runtime:
-                    raise ValueError('Relay runtime reload did not converge')
+                try:
+                    run('/usr/bin/systemctl', 'reload', 'docker.service')
+                except Exception as error:
+                    raise PreflightError('relay_reload_failed', 'prerequisites') from error
+                await_relay_runtime(run, runtime)
             except Exception:
-                atomic_file(daemon, original)
-                run('/usr/bin/systemctl', 'reload', 'docker.service')
+                try:
+                    atomic_file(daemon, original)
+                    run('/usr/bin/systemctl', 'reload', 'docker.service')
+                    await_relay_runtime(run, relay_identity({'Runtimes': json.loads(original).get('runtimes', {})}))
+                except Exception as error:
+                    raise PreflightError('relay_rollback_failed', 'prerequisites') from error
                 raise
         finally:
             candidate.unlink(missing_ok=True)
@@ -526,7 +582,7 @@ def runtime_preflight(root, run=command, node_path='/usr/bin/node', *, assessmen
     packages = profile['packages']
     if sorted(run('/usr/bin/dpkg-query', '--show', '--showformat=${Package}=${Version}\n',
                   *sorted(packages)).splitlines()) != [name + '=' + packages[name] for name in sorted(packages)]:
-        raise ValueError('Native packages no longer match accepted profile')
+        raise PreflightError('native_packages_changed', 'runtime_preflight')
     for path in ('usr/sbin/nft', 'usr/sbin/bpftool', 'sbin/tc', 'sbin/ip',
                  'usr/bin/flock', 'usr/bin/nsenter', 'usr/bin/python3'):
         if not os.access(root / path, os.X_OK):

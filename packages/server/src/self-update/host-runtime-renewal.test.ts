@@ -374,6 +374,57 @@ describe('project egress helper failure diagnostics', () => {
     expect(h.docker.containerLogs).toHaveBeenCalledWith(expect.any(String), 1);
   });
 
+  it('reports an allowlisted host failure reason and step', async () => {
+    const h = await egressJobFixture();
+    h.docker.containerLogs.mockResolvedValue(
+      JSON.stringify({
+        ...diagnostic,
+        phase: 'observe',
+        code: 'host_failed',
+        reason: 'relay_reload_failed',
+        step: 'prerequisites',
+      }),
+    );
+    await expect(h.runJob()).rejects.toMatchObject({
+      recovery: 'recovery-required',
+      message: expect.stringContaining(
+        'phase observe, code host_failed, reason relay_reload_failed, step prerequisites',
+      ),
+    });
+  });
+
+  it.each([
+    { reason: 'postgres://secret@private', step: 'postgres://secret@private' },
+    { reason: 'unknown_failure', step: 'unknown_step' },
+    { reason: { message: 'secret' }, step: ['secret'] },
+    { reason: null, step: null },
+  ])('omits unsupported host diagnostics while retaining safe context: %j', async (fields) => {
+    const h = await egressJobFixture();
+    h.docker.containerLogs.mockResolvedValue(JSON.stringify({ ...diagnostic, ...fields }));
+    const error = await h.runJob().catch((failure: unknown) => failure);
+    expect(error).toMatchObject({
+      message: expect.stringContaining('phase submit, code start_unverified'),
+    });
+    expect(error).toMatchObject({
+      message: expect.not.stringMatching(/reason |step |secret|unknown_/u),
+    });
+  });
+
+  it('does not accept safe host diagnostics from another operation', async () => {
+    const h = await egressJobFixture();
+    h.docker.containerLogs.mockResolvedValue(
+      JSON.stringify({
+        ...diagnostic,
+        operationId: 'd'.repeat(24),
+        reason: 'relay_reload_failed',
+        step: 'prerequisites',
+      }),
+    );
+    await expect(h.runJob()).rejects.toMatchObject({
+      message: expect.not.stringMatching(/phase |reason |step /u),
+    });
+  });
+
   it.each([
     { ...diagnostic, operationId: 'd'.repeat(24) },
     { ...diagnostic, exitCode: 2 },

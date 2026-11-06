@@ -586,8 +586,9 @@ def provision(source, relay=None, authority=None, gid=65531, root=Path('/'), run
         write_status(root, gid, 'provisioning_in_progress')
         try:
             recover_transaction(root, run)
-        except Exception:
+        except Exception as error:
             write_status(root, gid, 'controller_failed')
+            error.egress_failure = base.failure_diagnostic(error, 'recovery_failed', 'recovery')
             raise
         # tmpfiles recreates the bind-mounted runtime path at boot, even while the
         # native profile remains unsupported and the controller stays disabled.
@@ -601,24 +602,39 @@ def provision(source, relay=None, authority=None, gid=65531, root=Path('/'), run
                     base.atomic_file(root / relative, data, 0o600)
             return write_status(root, gid, 'runtime_unsupported')
         assessment = None
+        step = 'prerequisites'
         try:
             if assessment_authorization is not None:
                 authorization = json.loads(private_file(assessment_authorization))
                 assessment = base.prepare_staging_assessment(root, run, str(release / 'node'), authorization)
+                step = 'runtime_preflight'
                 base.runtime_preflight(root, run, str(release / 'node'), assessment=assessment)
                 configs[ASSESSMENT_CONFIG] = (json.dumps(assessment, sort_keys=True) + '\n').encode()
             elif check is base.runtime_preflight:
                 base.prepare_managed_prerequisites(root, run, str(release / 'node'))
             if assessment is None:
+                step = 'runtime_preflight'
                 check(root, run, str(release / 'node'))
         except (ValueError, OSError, subprocess.SubprocessError) as error:
             # Preserve running release/config/units on incompatible upgrades.
             if not (root / 'opt/verity-egress').is_symlink():
                 for relative, data in configs.items():
                     base.atomic_file(root / relative, data, 0o600)
-            reason = (error.reason if isinstance(error, base.PreflightError) else
-                      'provisioning_failed' if assessment_authorization is not None else 'runtime_unsupported')
-            return write_status(root, gid, reason)
+            fallback = ('native_prerequisites_failed' if step == 'prerequisites' else 'runtime_preflight_failed')
+            diagnostic = base.failure_diagnostic(error, fallback, step)
+            # Keep the health/status vocabulary compatible; detailed codes belong
+            # to this invocation's outcome, not the public readiness contract.
+            reason = (diagnostic['reason'] if diagnostic['reason'] in {
+                'assessment_authorization_invalid', 'docker_host_unsupported',
+                'native_package_unavailable', 'relay_runtime_missing'} else
+                'provisioning_failed' if assessment_authorization is not None else 'runtime_unsupported')
+            result = write_status(root, gid, reason)
+            # An unsupported production profile remains a normal unavailable result.
+            if reason != 'runtime_unsupported' or isinstance(error, base.PreflightError):
+                result.update(diagnostic)
+            else:
+                result['step'] = step
+            return result
         try:
             reject_bridge_collisions(root, run)
             # Persist before the first controller can synchronize/open admission.
@@ -628,8 +644,9 @@ def provision(source, relay=None, authority=None, gid=65531, root=Path('/'), run
                 shared_file(root / ASSESSMENT_NOTICE,
                             b'{"scope":"staging-assessment","productionAccepted":false}\n', gid)
             activate(root, run, release, files, configs, gid)
-        except Exception:
+        except Exception as error:
             write_status(root, gid, 'controller_failed')
+            error.egress_failure = base.failure_diagnostic(error, 'activation_failed', 'activation')
             raise
         if assessment is None:
             for relative in (ASSESSMENT_CONFIG, ASSESSMENT_NOTICE):
@@ -683,10 +700,13 @@ def main():
                            args.control_gid, database=args.database_config,
                            prepare_only=args.prepare_only,
                            assessment_authorization=args.assessment_authorization)
-    except Exception:
+    except Exception as error:
         # Command output is consumed by diagnostics; do not print config paths,
         # database URLs, raw subprocess errors or secret material.
-        print(json.dumps({'available': False, 'reason': 'provisioning_failed',
+        reason, step = {'verify-runtime': ('runtime_preflight_failed', 'runtime_preflight'),
+                        'recover': ('recovery_failed', 'recovery')}.get(
+                            args.action, ('provisioning_failed', 'validation'))
+        print(json.dumps({'available': False, **base.failure_diagnostic(error, reason, step),
                           'controlGid': getattr(args, 'control_gid', 1000)}))
         raise SystemExit(1)
     print(json.dumps(result))

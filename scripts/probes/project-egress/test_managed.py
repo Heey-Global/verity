@@ -1,5 +1,6 @@
 """Managed provisioning guards; native firewall acceptance remains a separate gate."""
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -99,14 +100,44 @@ class ManagedTests(unittest.TestCase):
             for relative in ('run/verity-egress/status.json', 'etc/verity-egress-server/status.json'):
                 self.assertEqual(json.loads((self.root / relative).read_text())['reason'], reason)
 
-    def test_unclassified_assessment_failure_remains_provisioning_failure(self):
+    def test_unclassified_assessment_failure_identifies_step_without_raw_error(self):
         authorization = self.source.parent / 'authorization.json'
         authorization.write_text('{}')
         authorization.chmod(0o600)
         with patch.object(managed.base, 'prepare_staging_assessment', side_effect=ValueError('private diagnostic')):
             result = self.provision(assessment_authorization=authorization)
-        self.assertEqual(result['reason'], 'provisioning_failed')
+        self.assertEqual(result['reason'], 'native_prerequisites_failed')
+        self.assertEqual(result['step'], 'prerequisites')
+        self.assertEqual(json.loads((self.root / 'run/verity-egress/status.json').read_text())['reason'], 'provisioning_failed')
         self.assertNotIn('private diagnostic', (self.root / 'run/verity-egress/status.json').read_text())
+
+    def test_cli_preserves_only_safe_failure_codes_and_steps(self):
+        for error, reason, step in (
+                (managed.base.PreflightError('relay_runtime_mismatch', 'prerequisites'), 'relay_runtime_mismatch', 'prerequisites'),
+                (managed.base.PreflightError('postgres://private', 'private-path'), 'provisioning_failed', 'validation'),
+                (managed.base.PreflightError(['private'], ['private']), 'provisioning_failed', 'validation'),
+                (RuntimeError('postgres://private'), 'provisioning_failed', 'validation')):
+            output = io.StringIO()
+            with self.subTest(reason=reason), patch.object(sys, 'argv', ['managed', 'provision', str(self.source)]), \
+                    patch.object(managed, 'provision', side_effect=error), patch('sys.stdout', output):
+                with self.assertRaises(SystemExit) as exited:
+                    managed.main()
+            self.assertEqual(exited.exception.code, 1)
+            result = json.loads(output.getvalue())
+            self.assertEqual(result['reason'], reason)
+            self.assertEqual(result['step'], step)
+            self.assertFalse(result['available'])
+            self.assertNotIn('private', output.getvalue())
+
+    def test_recovery_and_activation_exceptions_retain_safe_step(self):
+        for function, reason, step in (('recover_transaction', 'recovery_failed', 'recovery'),
+                                       ('activate', 'activation_failed', 'activation')):
+            with self.subTest(step=step), patch.object(managed, function, side_effect=RuntimeError('private error')):
+                with self.assertRaises(RuntimeError) as failed:
+                    self.provision()
+            self.assertEqual(managed.base.failure_diagnostic(failed.exception), {'reason': reason, 'step': step})
+            status = json.loads((self.root / 'run/verity-egress/status.json').read_text())
+            self.assertEqual(status['reason'], 'controller_failed')
 
     def test_cli_reports_failed_assessment_as_failure(self):
         authorization = self.source.parent / 'authorization.json'
@@ -151,7 +182,7 @@ class ManagedTests(unittest.TestCase):
                        group_setup=lambda *_: None) for _ in range(2)]
         self.assertEqual(gate.call_count, 2)
         self.assertEqual(results, [{'available': False, 'reason': 'runtime_unsupported',
-                                   'controlGid': CONTROL_GID}] * 2)
+                                   'controlGid': CONTROL_GID, 'step': 'prerequisites'}] * 2)
         self.assertFalse((self.root / managed.INVENTORY_CONTRACT).exists())
         self.assertFalse((self.root / managed.JOURNAL).exists())
         self.assertFalse((self.root / 'opt/verity-egress').exists())
@@ -159,7 +190,8 @@ class ManagedTests(unittest.TestCase):
 
     def test_unsupported_prepares_usable_mounts_without_firewall_or_units(self):
         result = self.provision(self.unsupported)
-        self.assertEqual(result, {'available': False, 'reason': 'runtime_unsupported', 'controlGid': CONTROL_GID})
+        self.assertEqual(result, {'available': False, 'reason': 'runtime_unsupported',
+                                 'controlGid': CONTROL_GID, 'step': 'runtime_preflight'})
         self.assertEqual(self.calls, [])
         self.assertFalse((self.root / 'opt/verity-egress').exists())
         self.assertFalse((self.root / managed.INVENTORY_CONTRACT).exists())
