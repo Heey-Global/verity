@@ -30,6 +30,7 @@ import {
   vulnerabilitySessionSchema,
   vulnerabilityIgnoresSchema,
   type VulnerabilitySettings,
+  type VulnerabilityFixSelection,
 } from './vulnerability.js';
 import {
   boundedHistoryResultSchema,
@@ -2207,6 +2208,7 @@ export type DevicePushTokenRegistered = z.infer<typeof devicePushTokenRegistered
 /** Body for `POST /sessions/:id/turns`. */
 export interface TurnRequest {
   prompt: string;
+  vulnerabilityFix?: { findings?: VulnerabilityFixSelection[] };
   permissionMode?: string;
   model?: string;
   timeoutMs?: number;
@@ -6681,6 +6683,17 @@ export class VerityClient {
     return vulnerabilitySettingsSchema.parse(
       ((await res.json()) as { settings: unknown }).settings,
     );
+  }
+  async startVulnerabilityFix(
+    id: string,
+    body: { sessionId: string; findings?: VulnerabilityFixSelection[] },
+  ): Promise<{ sessionId: string; accepted: true }> {
+    const res = await this.request(`/projects/${encodeURIComponent(id)}/vulnerability-fix`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    return z.object({ sessionId: z.string(), accepted: z.literal(true) }).parse(await res.json());
   }
   async projectVulnerabilities(id: string) {
     return vulnerabilityProjectSchema.parse(

@@ -1,3 +1,4 @@
+import { vulnerabilityFixRequest } from './vulnerability-fix.js';
 // Module-level helpers, schemas and prompts of the HTTP server, kept apart from
 // `buildServer` so each file stays within the lint runner's per-file budget.
 import {
@@ -798,6 +799,7 @@ export function rejectedTurnAttachmentsMessage(
 export const turnBody = z
   .object({
     prompt: z.string(),
+    vulnerabilityFix: vulnerabilityFixRequest.optional(),
     ...turnCore,
     attachments: z.array(turnAttachment).max(MAX_ATTACHMENTS).optional(),
     // Client-minted idempotency key for a replayable quick reply (ADR 0008). A

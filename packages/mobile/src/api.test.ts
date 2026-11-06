@@ -4867,3 +4867,26 @@ it('holds a conversation read on the interactive lane until it changes', async (
   expect(calls[0]?.url).toBe('http://host/assistant/conversation?after=4&waitMs=20000');
   expect(calls[0]?.init).toMatchObject({ signal, transportLane: 'interactive' });
 });
+
+it('starts a vulnerability fix with encoded project identity and structured finding selection', async () => {
+  const findings = [
+    {
+      ecosystem: 'npm',
+      package: 'example',
+      advisoryId: 'GHSA-example',
+      source: 'package-lock.json',
+      version: '1',
+    },
+  ];
+  const body = { sessionId: 'request-id', findings };
+  const { fetch, calls } = fakeFetch(json({ sessionId: 'existing-fix', accepted: true }));
+  const client = new VerityClient({ baseUrl: 'http://host', fetch });
+  expect(await client.startVulnerabilityFix('project/id', body)).toEqual({
+    sessionId: 'existing-fix',
+    accepted: true,
+  });
+  expect(calls[0]).toMatchObject({
+    url: 'http://host/projects/project%2Fid/vulnerability-fix',
+    init: { method: 'POST', body: JSON.stringify(body) },
+  });
+});

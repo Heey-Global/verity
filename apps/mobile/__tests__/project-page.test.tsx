@@ -329,7 +329,7 @@ describe('project page', () => {
         findings: [finding],
         sessions: [],
       }),
-      createSession: jest.fn().mockResolvedValue({ sessionId: 'fix-1' }),
+      startVulnerabilityFix: jest.fn().mockResolvedValue({ sessionId: 'fix-1', accepted: true }),
     });
     mockCreateVerityClient.mockReturnValue(client);
     render(<ProjectPage client={client} projectId="p/1" onOpenSession={onOpenSession} />);
@@ -343,11 +343,20 @@ describe('project page', () => {
       params: { id: 'p/1' },
     });
     await act(async () => fireEvent.press(screen.getByRole('button', { name: 'Fix with agent' })));
-    const request = (client.createSession as jest.Mock).mock.calls[0]![0];
-    expect(request).toMatchObject({ projectId: 'p/1', name: 'Fix vulnerabilities' });
-    expect(request.prompt).toContain('example');
-    // Advisory prose is untrusted text; it never becomes part of the agent's instructions.
-    expect(request.prompt).not.toContain(finding.summary);
+    expect(client.startVulnerabilityFix).toHaveBeenCalledWith('p/1', {
+      sessionId: expect.any(String),
+      findings: [
+        expect.objectContaining({
+          package: 'example',
+          ecosystem: 'npm',
+          advisoryId: finding.advisoryId,
+          source: finding.source,
+          version: finding.version,
+        }),
+      ],
+    });
+    const request = (client.startVulnerabilityFix as jest.Mock).mock.calls[0]![1];
+    expect(JSON.stringify(request)).not.toContain(finding.summary);
     expect(onOpenSession).toHaveBeenCalledWith('fix-1');
   });
 
