@@ -297,7 +297,9 @@ function securityRows(security: ProjectSecurity | undefined): ReactElement[] {
     <Row
       key="security"
       title={packagesToUpdate(security.packages)}
-      subtitle={`Security · ${String(security.severe)} critical or high on main`}
+      subtitle={`Security · ${
+        security.severe === 1 ? '1 package' : `${String(security.severe)} packages`
+      } critical or high on main`}
       leading={{ icon: 'shield', intent: 'needsSetup' }}
       trailing={<StatusTag intent="needsSetup" label="Security" />}
       navigates

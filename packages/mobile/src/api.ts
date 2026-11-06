@@ -295,7 +295,7 @@ export const sessionSummarySchema = z
     /** Planning mode, so an overview can mark a session whose plan waits for
      * approval. Absent on older servers and for a session that never planned. */
     planning: sessionPlanningSchema,
-    planningRevision: z.number().int().nonnegative().optional(),
+    planningRevision: z.number().int().nonnegative().optional().catch(undefined),
     /** True while planning is active and a presented plan waits for approval. The
      * list carries this instead of the plan text, which only the session shows.
      * Absent on older servers, so they never mark a plan. */

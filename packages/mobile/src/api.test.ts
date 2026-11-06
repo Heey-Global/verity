@@ -206,9 +206,15 @@ it('reads a plan awaiting approval and ignores what it does not understand', () 
     planningRevision: 2,
     planningPresented: true,
   });
-  const odd = sessionSummarySchema.parse({ ...base, planning: 'paused', planningPresented: 'yes' });
+  const odd = sessionSummarySchema.parse({
+    ...base,
+    planning: 'paused',
+    planningRevision: null,
+    planningPresented: 'yes',
+  });
   expect(odd.planning).toBeUndefined();
   expect(odd.planningPresented).toBeUndefined();
+  expect(odd.planningRevision).toBeUndefined();
   expect(odd.status).toBe('completed');
 });
 

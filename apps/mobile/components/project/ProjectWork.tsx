@@ -168,6 +168,9 @@ function itemSubtitle(item: InboxItem, label: string): string | undefined {
  * with nothing in it is left out. All lists every session in {@link workOrder};
  * the star keeps the favorites.
  *
+ * Dismissing is Home's: an item dismissed there stays out of Now, and Home is
+ * where it is restored, so this list keeps no fold of hidden items.
+ *
  * Rows carry the session list's markers — the working dot, the blue dot for a new
  * answer, the star, automation and links. A row opens its session; a long press
  * offers favorite, the session settings (rename, move, linked sessions) and delete.
@@ -396,6 +399,15 @@ export function ProjectWork({
           subtitle={item.message}
           leading={{ icon: 'server', intent: 'needsSetup' }}
           trailing={<StatusTag intent={TONE_INTENT[item.tone]} label={item.tag} />}
+          // A project's own item is about its sandbox; the settings explain it
+          // even when no answer can be given here, such as a stalled update.
+          navigates
+          onPress={() =>
+            router.push({
+              pathname: '/project/[id]/settings/sandbox',
+              params: { id: item.projectId ?? projectId ?? '' },
+            })
+          }
           answers={answersFor(item)}
         />
       );
