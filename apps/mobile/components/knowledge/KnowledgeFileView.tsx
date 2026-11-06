@@ -157,7 +157,11 @@ export function KnowledgeFileView({
         message: 'Your edits to this file are not saved.',
         confirmLabel: 'Discard',
         destructive: true,
-        onConfirm: () => navigation.dispatch(event.data.action),
+        onConfirm: () => {
+          // Dispatching runs `beforeRemove` again; it must find nothing to keep.
+          dirtyNow.current = false;
+          navigation.dispatch(event.data.action);
+        },
       });
     });
   }, [chrome, confirm, navigation]);

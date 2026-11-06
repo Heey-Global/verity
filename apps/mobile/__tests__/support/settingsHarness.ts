@@ -34,15 +34,24 @@ export const mockNavigation = {
     removeListeners.add(listener);
     return () => removeListeners.delete(listener);
   },
-  dispatch: jest.fn<void, [unknown]>(),
+  // As in React Navigation, a dispatched removal asks the listeners again.
+  dispatch: jest.fn<void, [unknown]>((action) => {
+    runRemoval(action);
+  }),
 };
+/** Ask every `beforeRemove` listener; true when one held the removal. */
+function runRemoval(action: unknown): boolean {
+  let prevented = false;
+  const event = { preventDefault: () => (prevented = true), data: { action } };
+  for (const listener of [...removeListeners]) listener(event);
+  if (!prevented) mockRemoved(action);
+  return prevented;
+}
+/** The screen actually left: the removal passed every listener. */
+export const mockRemoved = jest.fn<void, [unknown]>();
 /** Play the header's back arrow or the swipe; true when a screen held it. */
 export function attemptBack(): boolean {
-  let prevented = false;
-  const event = { preventDefault: () => (prevented = true), data: { action: { type: 'GO_BACK' } } };
-  for (const listener of removeListeners) listener(event);
-  if (!prevented) mockNavigation.dispatch(event.data.action);
-  return prevented;
+  return runRemoval({ type: 'GO_BACK' });
 }
 // Both are awaited by their callers, so they resolve rather than return
 // `undefined` — here and again after every reset.
@@ -144,7 +153,8 @@ export function resetSettingsHarness(): void {
   mockReplace.mockReset();
   mockBack.mockReset();
   mockDismissTo.mockReset();
-  mockNavigation.dispatch.mockReset();
+  mockNavigation.dispatch.mockClear();
+  mockRemoved.mockReset();
   removeListeners.clear();
   mockOpenURL.mockReset();
   mockOpenURL.mockResolvedValue(undefined);

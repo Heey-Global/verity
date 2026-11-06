@@ -20,8 +20,8 @@ import { SHARED } from '../components/knowledge/knowledgeScope';
 import {
   attemptBack,
   mockCreateVerityClient,
-  mockNavigation,
   mockPush,
+  mockRemoved,
   resetSettingsHarness,
 } from './support/settingsHarness';
 
@@ -153,14 +153,16 @@ it('asks before back or the swipe discards an edit on a phone', async () => {
   client();
   render(<KnowledgeScreen scope={SHARED} file={file.path} />);
   expect(attemptBack()).toBe(false);
+  expect(mockRemoved).toHaveBeenCalledTimes(1);
   fireEvent.press(await screen.findByText('Edit'));
   fireEvent.changeText(screen.getByLabelText('Content'), 'Unsaved');
   act(() => {
     expect(attemptBack()).toBe(true);
   });
-  expect(mockNavigation.dispatch).toHaveBeenCalledTimes(1);
+  expect(mockRemoved).toHaveBeenCalledTimes(1);
+  // Discard sends the held back again; it must leave, not ask once more.
   await act(async () => fireEvent.press(screen.getByRole('button', { name: 'Discard' })));
-  expect(mockNavigation.dispatch).toHaveBeenCalledTimes(2);
+  expect(mockRemoved).toHaveBeenCalledTimes(2);
 });
 
 it('never lands a late save of one project’s file in another project’s view', async () => {
