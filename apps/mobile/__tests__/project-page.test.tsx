@@ -19,7 +19,10 @@ jest.mock('../lib/client', () => require('./support/settingsHarness').clientMock
 jest.mock('expo-crypto', () => ({ randomUUID: () => 'reply-1' }));
 jest.mock('../lib/voiceShortcut', () => ({ dispatchVerityShortcut: jest.fn() }));
 jest.mock('../lib/taskPreferences', () => ({ useTaskPreferences: () => ({ enabled: false }) }));
-jest.mock('../lib/tasksStore', () => ({ taskAccountScope: () => null }));
+jest.mock('../lib/tasksStore', () => ({
+  taskAccountScope: () => null,
+  useTasks: () => ({ tasks: [], pending: [], conflicts: [] }),
+}));
 const mockDesign = { value: true as boolean | undefined };
 const mockWide = { value: false };
 jest.mock('../lib/sessionLayout', () => ({
@@ -115,6 +118,7 @@ function clientWith(sessions: SessionSummary[], extra: Record<string, unknown> =
     ),
     setProjectInboxDismissed: jest.fn(async () => [] as string[]),
     deleteSession: jest.fn().mockResolvedValue({ sessionId: 'deleted' }),
+    setSessionSeen: jest.fn().mockResolvedValue({}),
     ...extra,
   });
   return client as unknown as VerityClient & Record<string, jest.Mock>;
@@ -274,6 +278,22 @@ describe('project page', () => {
     expect(onOpenSession).toHaveBeenCalledWith('blog');
     fireEvent.press(screen.getByRole('button', { name: 'New session' }));
     expect(mockPush).toHaveBeenCalledWith({ pathname: '/new', params: { projectId: 'p/1' } });
+  });
+
+  it('clears and persists unread activity when opening a chat from Now', async () => {
+    const { client, onOpenSession } = await renderPage([
+      session('answered', {
+        eventCount: 7,
+        lastSeenEventCount: 5,
+        eventCountVersion: 'agent-text-v2',
+      }),
+    ]);
+    expect(screen.getByLabelText('Unread messages')).toBeTruthy();
+    fireEvent.press(screen.getByLabelText('answered, new answer'));
+    expect(onOpenSession).toHaveBeenCalledWith('answered');
+    expect(client.setSessionSeen).toHaveBeenCalledWith('answered', 7, 'agent-text-v2');
+    expect(screen.queryByLabelText('Unread messages')).toBeNull();
+    await act(async () => undefined);
   });
 
   it('marks and orders Work the way the session list marks it', async () => {
@@ -513,7 +533,7 @@ describe('project helpers', () => {
 
   it('sorts Now into what waits and what moves, each session once', () => {
     const items = projectInboxItems(makeDetail().project, [question, failing, running], Date.now());
-    const sections = nowSections([question, failing, running, favorite], items);
+    const sections = nowSections([question, failing, running, favorite], items, new Set());
     expect(
       sections.needsYou.map((entry) =>
         entry.kind === 'session' ? entry.session.sessionId : entry.item.key,

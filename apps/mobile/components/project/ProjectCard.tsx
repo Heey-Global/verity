@@ -31,7 +31,8 @@ export function projectCardFacts(group: SessionProjectGroup, now: number): Proje
     ? projectInboxItems(project, sessions, now)
     : inboxItems({ sessions, projects: [], now });
   const dismissed = inboxDismissedKeys({ sessions, projects: project ? [project] : [] });
-  const status = group.status;
+  // Findings are the page's Security row; the card keeps the project's own problems.
+  const status = group.project ? group.health : group.status;
   return {
     waiting: all.filter((item) => !dismissed.has(item.key)).length,
     running: sessions.filter((session) => isActive(session) || session.status === 'awaiting_input')

@@ -23,6 +23,7 @@ import type { StatusIntent } from '../ui/Status';
 import { tint } from '../ui/tint';
 import { useProjectConnections, type ProjectConnections } from '../../lib/useProjectConnections';
 import { useProjectDetail } from '../../lib/useProjectDetail';
+import { ProjectTasksRow } from './ProjectTasksRow';
 import { ProjectWork } from './ProjectWork';
 import {
   packagesToUpdate,
@@ -217,6 +218,7 @@ export function ProjectPage({
         />
         <SectionHeader title="Content" variant="eyebrow" />
         <ProjectContent
+          client={client}
           detail={detail}
           connections={connections}
           security={security}
@@ -346,11 +348,13 @@ function sandboxIntent(badge: ReturnType<typeof projectBadge>, project: ProjectR
  * uses appear; adding one is a project setting.
  */
 function ProjectContent({
+  client,
   detail,
   connections,
   security,
   onOpenKnowledge,
 }: {
+  client: VerityClient;
   detail: ProjectDetail;
   connections: ProjectConnections;
   security: ProjectSecurity | undefined;
@@ -382,6 +386,7 @@ function ProjectContent({
         navigates
         onPress={onOpenKnowledge}
       />
+      <ProjectTasksRow client={client} projectId={id} />
       {security !== undefined ? (
         <Row
           leading={{ icon: 'shield', ...(severe ? { intent: 'needsSetup' as const } : {}) }}

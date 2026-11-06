@@ -1,6 +1,5 @@
 import {
   VerityApiError,
-  isUnread,
   markerAttention,
   modelDisplayName,
   sessionAttention,
@@ -31,6 +30,7 @@ import { Button, FilterChips, Group, IconButton, Row, SectionHeader, StatusTag, 
 import type { StatusIntent } from '../ui/Status';
 import { isLinkableSession } from '../../lib/sessionLinks';
 import { useSessionPreviews } from '../../lib/sessionPreviews';
+import { useUnread } from '../../hooks/useUnread';
 
 export type WorkFilter = 'now' | 'all' | 'favorites';
 
@@ -95,6 +95,8 @@ export type NeedsYouEntry =
 export function nowSections(
   sessions: readonly SessionSummary[],
   items: readonly InboxItem[],
+  /** Sessions with an answer the operator has not read ({@link useUnread}). */
+  unread: ReadonlySet<string>,
 ): { needsYou: NeedsYouEntry[]; active: SessionSummary[] } {
   const byId = new Map(sessions.map((session) => [session.sessionId, session]));
   const needsYou: NeedsYouEntry[] = [];
@@ -123,7 +125,7 @@ export function nowSections(
   const active = workOrder(
     sessions.filter(
       (session) =>
-        !taken.has(session.sessionId) && (isActive(session) || isUnread(session, new Map())),
+        !taken.has(session.sessionId) && (isActive(session) || unread.has(session.sessionId)),
     ),
   );
   return { needsYou, active };
@@ -201,9 +203,13 @@ export function ProjectWork({
   onChanged: (sessionId: string, deleted: boolean) => void;
 }) {
   const [filter, setFilter] = useState<WorkFilter>(initialFilter);
+  const { unread: unreadIds, markSeen } = useUnread(client, sessions);
   const previews = useSessionPreviews();
   const items = feed?.items;
-  const now = useMemo(() => nowSections(sessions, items ?? []), [sessions, items]);
+  const now = useMemo(
+    () => nowSections(sessions, items ?? [], unreadIds),
+    [sessions, items, unreadIds],
+  );
   // The visible item of each session, so All tags it the way Now does.
   const itemFor = useMemo(() => {
     const map = new Map<string, InboxItem>();
@@ -212,8 +218,6 @@ export function ProjectWork({
     return map;
   }, [items]);
   const listed = useMemo(
-    // No local overrides: the page reloads after opening a session, and the
-    // server's per-person mark is what every device agrees on.
     () =>
       filter === 'now' ? [] : workOrder(sessions.filter((session) => workFilter(session, filter))),
     [sessions, filter],
@@ -301,7 +305,7 @@ export function ProjectWork({
     const needs = waiting?.needs === true;
     const label = sessionLabel(session);
     const working = isActive(session);
-    const unread = !working && isUnread(session, new Map());
+    const unread = !working && unreadIds.has(session.sessionId);
     const item = waiting?.item;
     const statusTag =
       waiting !== undefined
@@ -360,7 +364,10 @@ export function ProjectWork({
         }
         navigates={needs}
         answers={needs && item !== undefined ? answersFor(item) : undefined}
-        onPress={() => onOpenSession(session.sessionId)}
+        onPress={() => {
+          markSeen(session.sessionId, session.eventCount, session.eventCountVersion);
+          onOpenSession(session.sessionId);
+        }}
         onLongPress={() => actions(session)}
         accessibilityLabel={spoken}
         accessibilityHint="Opens the session. Long press to favorite, link, rename or delete it."

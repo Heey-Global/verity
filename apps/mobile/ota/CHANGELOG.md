@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.85.2](https://github.com/Heey-Global/verity/compare/mobile-v1.85.1...mobile-v1.85.2) (2026-11-06)
+
+
+### Features
+
+* **mobile:** project tasks on the Overview and Verity's V and panel in the design system ([#2325](https://github.com/Heey-Global/verity/issues/2325)) ([ac461b8](https://github.com/Heey-Global/verity/commit/ac461b855197ffee24c333328760c29954a08fde))
+
+
+### Bug Fixes
+
+* **mobile:** clear unread markers when opening project chats ([#2323](https://github.com/Heey-Global/verity/issues/2323)) ([6db99a4](https://github.com/Heey-Global/verity/commit/6db99a405a64ed8b94b33a8457571fa239c1abec))
+
 ## [1.85.1](https://github.com/Heey-Global/verity/compare/mobile-v1.85.0...mobile-v1.85.1) (2026-11-06)
 
 
