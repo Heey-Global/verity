@@ -1,3 +1,4 @@
+import { ProjectInquiryCards } from './ProjectInquiryCards';
 import {
   inboxDismissedKeys,
   inboxItems,
@@ -317,6 +318,7 @@ function ProjectOverview({
         </Text>
       ) : null}
       <InboxFeedList feed={feed} selectedSessionId={selectedSessionId} />
+      <ProjectInquiryCards client={client} projectId={detail.project.id} />
       <ProjectSecurityCard
         client={client}
         projectId={detail.project.id}

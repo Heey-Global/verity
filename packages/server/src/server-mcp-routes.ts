@@ -124,6 +124,7 @@ import { createVulnerabilityTool } from './vulnerability-tool.js';
 import { createGitWorktreeProvisioner } from './worktree.js';
 interface ServerMcpRouteDeps {
   deps: ServerDeps;
+  inquiryTool: (sessionId: string, userId: string | null, request: unknown) => Promise<unknown>;
   app: FastifyInstance;
   conductor: Conductor;
   assistantToolDeps: AssistantToolDeps;
@@ -155,6 +156,7 @@ interface ServerMcpRouteDeps {
 }
 export function registerServerMcpRoutes({
   deps,
+  inquiryTool,
   app,
   conductor,
   assistantToolDeps,
@@ -579,7 +581,12 @@ export function registerServerMcpRoutes({
       sourceSessionId: string,
       requestedTarget: string | undefined,
     ) => {
-      const links = await deps.eventStore.listSessionLinks(sourceSessionId);
+      if (await deps.eventStore.projectInquiries.isTarget(sourceSessionId)) return undefined;
+      const links = [];
+      for (const link of await deps.eventStore.listSessionLinks(sourceSessionId)) {
+        if (!(await deps.eventStore.projectInquiries.isTarget(link.peerSessionId)))
+          links.push(link);
+      }
       if (requestedTarget !== undefined) {
         return links.find((link) => link.peerSessionId === requestedTarget);
       }
@@ -1072,6 +1079,19 @@ export function registerServerMcpRoutes({
           throw new ControlPlaneSessionAuthorityError(
             'The calling user no longer has project execution permission.',
           );
+        if (
+          (await deps.eventStore.getSession(sessionId))?.planning === 'active' &&
+          (await deps.eventStore.projectInquiries.isTarget(sessionId)) &&
+          toolName !== 'verity_app_help' &&
+          !(
+            toolName === 'verity_project_inquiry' &&
+            ['answer', 'list'].includes((input.request as { operation: string }).operation)
+          )
+        ) {
+          throw new ControlPlaneSessionAuthorityError(
+            'Inquiry investigation is read-only; changes require target-side human approval',
+          );
+        }
         if (toolName === 'verity_vulnerabilities') {
           await vulnerabilityTool.authorize(input);
           return;
@@ -1108,6 +1128,10 @@ export function registerServerMcpRoutes({
         // and recording the agreed steps belongs to planning. App help only reads the
         // static catalog, and explaining Verity is as much a part of planning.
         if (
+          !(
+            toolName === 'verity_project_inquiry' &&
+            (input.request as { operation?: string }).operation !== 'request'
+          ) &&
           toolName !== 'verity_tasks' &&
           toolName !== 'verity_repairs' &&
           toolName !== 'verity_app_help' &&
@@ -1118,6 +1142,7 @@ export function registerServerMcpRoutes({
             'External tools are unavailable in planning mode; use read-only local tools.',
           );
         }
+        if (toolName === 'verity_project_inquiry') return;
         if (toolName === PRESENT_MOCKUPS_TOOL) {
           const session = await deps.eventStore.getSession(sessionId);
           if (session?.projectId !== projectId)
@@ -1451,6 +1476,7 @@ export function registerServerMcpRoutes({
           toolName === 'verity_list_linked_sessions' ||
           toolName === 'verity_repairs' ||
           toolName === 'verity_qa_analysis' ||
+          toolName === 'verity_project_inquiry' ||
           toolName === 'verity_tasks' ||
           toolName === 'verity_app_help'
         ) {
@@ -1642,6 +1668,10 @@ export function registerServerMcpRoutes({
           };
         }
         if (input.toolName === END_PLANNING_TOOL) {
+          if (await deps.eventStore.projectInquiries.isTarget(input.sessionId))
+            throw new ControlPlaneSessionAuthorityError(
+              'Project inquiry sessions require target-side human change approval',
+            );
           if ((input.request as { action?: string }).action === 'discard') {
             if (
               !(await sessionPlanning.discard(
@@ -1742,6 +1772,10 @@ export function registerServerMcpRoutes({
                 link.peerProjectId,
             })),
           };
+        }
+        if (input.toolName === 'verity_project_inquiry') {
+          const initiator = await runningTurnInitiator(input.sessionId, input.turnId);
+          return inquiryTool(input.sessionId, initiator?.userId ?? null, input.request);
         }
         if (input.toolName === 'verity_send_session_message') {
           const request = input.request as { targetSessionId?: string; message: string };

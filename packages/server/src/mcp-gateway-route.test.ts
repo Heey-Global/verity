@@ -2961,3 +2961,43 @@ it('shows the stored general QA assignment on a one-time approval card', async (
     expect((await h.store.qaAssignments.get(id))?.state).toBe('proposed');
   });
 });
+
+it('keeps inquiry targets read-only even when a normal planning tool could mutate session state', async () => {
+  const harness = build({ planningTools: true, unlocked: true });
+  await harness.store.createProject({
+    id: 'p1',
+    kind: 'local',
+    owner: '__local__',
+    repo: 'alpha',
+    containerName: 'verity-alpha',
+    state: 'active',
+  });
+  for (const sessionId of ['source', 's1'])
+    await harness.store.createSession({
+      sessionId,
+      projectId: 'p1',
+      worktree: `/tmp/inquiry-${sessionId}`,
+      model: 'm',
+    });
+  await harness.store.projectInquiries.bind('source', 'p1', 's1');
+  await harness.store.startSessionPlanning('s1');
+  const token = harness.tokens.issue({ projectId: 'p1', sessionId: 's1', turnId: 't1' });
+  await withListener(harness, async (socketPath) => {
+    for (const [name, args] of [
+      ['verity_tasks', { action: 'add', tasks: [{ title: 'Unauthorized change' }] }],
+      ['verity_end_planning', { action: 'discard' }],
+    ] as const) {
+      const response = await postUnix(socketPath, `Bearer ${token}`, {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name, arguments: args },
+      });
+      const result = (JSON.parse(response.body) as { result: { isError?: boolean } }).result;
+      expect(result.isError, response.body).toBe(true);
+      expect(response.body).toContain('target-side human approval');
+    }
+  });
+  expect((await harness.store.getSession('s1'))?.planning).toBe('active');
+  expect(harness.approvals).toEqual([]);
+});

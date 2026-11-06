@@ -1,0 +1,158 @@
+import { createHash } from 'node:crypto';
+import { join } from 'node:path';
+import { projectForRepository, type EventStore, type ProjectRecord } from '@verity/store';
+import type { FastifyInstance } from 'fastify';
+import { z } from 'zod';
+import type { GitOutput } from './branches.js';
+import { containerPathFor } from './project-backend.js';
+import { projectClonePath } from './provisioner.js';
+
+export function createSessionRepositories(deps: {
+  store: EventStore;
+  cloneRoot?: string | undefined;
+  git?: ((project: ProjectRecord, clonePath: string) => GitOutput) | undefined;
+}) {
+  const pending = new Map<string, Promise<unknown>>();
+  async function list(sessionId: string) {
+    const session = await deps.store.getSession(sessionId);
+    if (!session?.projectId) throw new Error('project session required');
+    const workspaces = await deps.store.listSessionRepositoryWorkspaces(sessionId);
+    return {
+      repositories: (
+        await deps.store.listProjectRepositories(session.projectId, { includeRemoved: true })
+      ).map((repository) => ({
+        ...repository,
+        workspace:
+          workspaces.find((workspace) => workspace.repositoryId === repository.id) ??
+          (repository.isDefault
+            ? {
+                sessionId,
+                repositoryId: repository.id,
+                projectId: session.projectId,
+                worktree: session.worktree,
+                branch: null,
+              }
+            : null),
+      })),
+    };
+  }
+  async function open(sessionId: string, repositoryId: string) {
+    const key = `${sessionId}:${repositoryId}`;
+    const running = pending.get(key);
+    if (running) return running;
+    const operation = (async () => {
+      const session = await deps.store.getSession(sessionId);
+      if (!session?.projectId) throw new Error('project session required');
+      if (session.planning === 'active')
+        throw new Error('repository checkout is unavailable while planning');
+      const project = await deps.store.getProject(session.projectId);
+      const repository = await deps.store.getProjectRepository(session.projectId, repositoryId);
+      if (!project || !repository) throw new Error('repository is not connected to this project');
+      if (repository.isDefault)
+        return {
+          workspace: {
+            sessionId,
+            repositoryId,
+            projectId: project.id,
+            worktree: session.worktree,
+            branch: null,
+          },
+        };
+      const existing = (await deps.store.listSessionRepositoryWorkspaces(sessionId)).find(
+        (workspace) => workspace.repositoryId === repositoryId,
+      );
+      if (existing) return { workspace: existing };
+      if (!deps.cloneRoot || !deps.git) throw new Error('project sandbox unavailable');
+      const root = projectClonePath(deps.cloneRoot, project);
+      const git = deps.git(project, root);
+      const slot = createHash('sha256').update(repositoryId).digest('hex').slice(0, 20);
+      const worktree = join(
+        root,
+        '.verity-repositories',
+        createHash('sha256').update(sessionId).digest('hex').slice(0, 20),
+        slot,
+      );
+      const target = projectForRepository(project, repository);
+      let origin = 'https://github.com';
+      if (target.kind === 'forgejo') {
+        const connection = target.forgeConnectionId
+          ? await deps.store.forgeConnections.get(target.forgeConnectionId)
+          : undefined;
+        if (!connection) throw new Error('code host connection unavailable');
+        origin = connection.baseUrl.replace(/\/$/u, '');
+      }
+      const url = `${origin}/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.repo)}.git`;
+      const branch = `verity/${createHash('sha256').update(sessionId).digest('hex').slice(0, 12)}-${slot}`;
+      const path = containerPathFor(worktree, root);
+      // Every git command executes in the sandbox; credentials stay in the broker.
+      // A clone left by an interrupted request is reused rather than overwritten.
+      try {
+        await git(['-C', worktree, 'rev-parse', '--git-dir']);
+      } catch {
+        await git([
+          '-C',
+          session.worktree,
+          'clone',
+          ...(repository.defaultBranch ? ['--branch', repository.defaultBranch] : []),
+          '--',
+          url,
+          path,
+        ]);
+      }
+      try {
+        await git(['-C', worktree, 'show-ref', '--verify', `refs/heads/${branch}`]);
+        await git(['-C', worktree, 'checkout', branch]);
+      } catch {
+        await git(['-C', worktree, 'checkout', '-b', branch]);
+      }
+      await git(['-C', worktree, 'config', 'verity.repositoryId', repository.id]);
+      if (!(await deps.store.getProjectRepository(project.id, repositoryId)))
+        throw new Error('repository connection was revoked');
+      const workspace = await deps.store.upsertSessionRepositoryWorkspace({
+        sessionId,
+        repositoryId,
+        projectId: project.id,
+        worktree,
+        branch,
+      });
+      return { workspace };
+    })();
+    pending.set(key, operation);
+    try {
+      return await operation;
+    } finally {
+      pending.delete(key);
+    }
+  }
+  return { list, open };
+}
+
+export function registerSessionRepositoriesRoutes(
+  app: FastifyInstance,
+  service: ReturnType<typeof createSessionRepositories>,
+): void {
+  app.get('/sessions/:id/repositories', async (request, reply) => {
+    const { id } = z.object({ id: z.string().min(1) }).parse(request.params);
+    try {
+      return await service.list(id);
+    } catch {
+      return reply.code(404).send({ error: 'project session not found' });
+    }
+  });
+  app.post('/sessions/:id/repositories/:repositoryId/open', async (request, reply) => {
+    const { id, repositoryId } = z
+      .object({ id: z.string().min(1), repositoryId: z.string().min(1) })
+      .parse(request.params);
+    try {
+      return await service.open(id, repositoryId);
+    } catch (error) {
+      return reply.code(409).send({
+        error:
+          error instanceof Error &&
+          /planning|revoked|not connected|unavailable|required/u.test(error.message)
+            ? error.message
+            : 'repository checkout failed',
+      });
+    }
+  });
+}

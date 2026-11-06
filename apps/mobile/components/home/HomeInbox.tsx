@@ -1,3 +1,4 @@
+import { ProjectInquiryCards } from '../project/ProjectInquiryCards';
 import {
   createPushReplyPerformer,
   formatChoiceAnswer,
@@ -110,6 +111,7 @@ export function HomeInbox({
           For you
         </Text>
       ) : null}
+      <ProjectInquiryCards client={client} />
       <InboxFeedList feed={feed} selectedSessionId={selectedSessionId} />
     </ScrollView>
   );

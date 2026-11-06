@@ -296,3 +296,18 @@ export {
   type SessionViewState,
   type ViewSubject,
 } from './view-state.js';
+
+export {
+  ProjectRepositoryStore,
+  defaultProjectRepository,
+  projectForRepository,
+  type ProjectRepositoryRecord,
+  type AddProjectRepositoryInput,
+  type SessionRepositoryWorkspaceRecord,
+} from './project-repositories.js';
+
+export {
+  ProjectInquiryStore,
+  type ProjectInquiry,
+  type ProjectInquiryGrant,
+} from './project-inquiries.js';

@@ -1,3 +1,4 @@
+import { ProjectInquiryStore } from './project-inquiries.js';
 import {
   egressDestinationDb,
   withEgressDestinationTransaction,
@@ -5,6 +6,11 @@ import {
   unguardedEgressDestinationMutation,
 } from './egress-destination-mutation.js';
 import { UserContextStore } from './user-context.js';
+import {
+  ProjectRepositoryStore,
+  type AddProjectRepositoryInput,
+  type SessionRepositoryWorkspaceRecord,
+} from './project-repositories.js';
 import { ViewStateStore } from './view-state.js';
 import { AssistantStore } from './assistant.js';
 import { SchedulingStore } from './scheduling.js';
@@ -1377,6 +1383,65 @@ function mergeSessionDeletionState(
 const sessionDeletionCleanupTails = new WeakMap<Kysely<Database>, Map<string, Promise<void>>>();
 
 export class EventStore implements EventSink {
+  listProjectRepositories(projectId: string, options: { includeRemoved?: boolean } = {}) {
+    return new ProjectRepositoryStore(this.db, (id) => this.getProject(id)).list(
+      projectId,
+      options,
+    );
+  }
+
+  getProjectRepository(projectId: string, repositoryId?: string) {
+    return new ProjectRepositoryStore(this.db, (id) => this.getProject(id)).get(
+      projectId,
+      repositoryId,
+    );
+  }
+
+  addProjectRepository(input: AddProjectRepositoryInput) {
+    return new ProjectRepositoryStore(this.db, (id) => this.getProject(id)).add(input);
+  }
+
+  removeProjectRepository(projectId: string, repositoryId: string) {
+    return new ProjectRepositoryStore(this.db, (id) => this.getProject(id)).remove(
+      projectId,
+      repositoryId,
+    );
+  }
+
+  async recordRepositoryPullRequest(
+    projectId: string,
+    repositoryId: string,
+    branch: string,
+    pullRequest: unknown,
+    sessionId?: string,
+  ): Promise<void> {
+    let query = this.db
+      .updateTable('session_repository_workspaces')
+      .set({
+        pull_request: sql`case when pull_request->>'number' = (${JSON.stringify(pullRequest)}::jsonb)->>'number'
+          then pull_request || ${JSON.stringify(pullRequest)}::jsonb
+          else ${JSON.stringify(pullRequest)}::jsonb end`,
+        branch,
+      })
+      .where('project_id', '=', projectId)
+      .where('repository_id', '=', repositoryId);
+    query =
+      sessionId === undefined
+        ? query.where('branch', '=', branch)
+        : query.where('session_id', '=', sessionId);
+    await query.execute();
+  }
+
+  listSessionRepositoryWorkspaces(sessionId: string) {
+    return new ProjectRepositoryStore(this.db, (id) => this.getProject(id)).listWorkspaces(
+      sessionId,
+    );
+  }
+
+  upsertSessionRepositoryWorkspace(input: Omit<SessionRepositoryWorkspaceRecord, 'createdAt'>) {
+    return new ProjectRepositoryStore(this.db, (id) => this.getProject(id)).upsertWorkspace(input);
+  }
+
   private egressDestinationMutation: EgressDestinationMutation = unguardedEgressDestinationMutation;
 
   /** Installed before request handlers; every destination store shares this barrier. */
@@ -1618,6 +1683,7 @@ export class EventStore implements EventSink {
     this.repairs = new RepairSupervisionStore(db);
     this.qaAssignments = new QAAssignmentStore(db);
     this.assistant = new AssistantStore(db);
+    this.projectInquiries = new ProjectInquiryStore(db);
     this.scheduling = new SchedulingStore(db, cipher);
   }
 
@@ -1632,6 +1698,7 @@ export class EventStore implements EventSink {
   readonly repairs: RepairSupervisionStore;
   readonly qaAssignments: QAAssignmentStore;
   readonly assistant: AssistantStore;
+  readonly projectInquiries: ProjectInquiryStore;
   readonly scheduling: SchedulingStore;
   readonly managedDevServers: ManagedDevServerStore;
   readonly vulnerabilityScans: VulnerabilityScanStore;

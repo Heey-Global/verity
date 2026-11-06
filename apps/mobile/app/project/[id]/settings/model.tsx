@@ -1,3 +1,4 @@
+import { ProjectInquiryGrants } from '../../../../components/project/ProjectInquiryGrants';
 // Agents, per project: which connected agents may run here, and the model a new
 // session starts with. The default list is the project's own `GET /models`, so a
 // model that can be chosen here can actually be spawned; "Automatic" clears the
@@ -302,6 +303,7 @@ function ProjectAgentsView({ client, projectId }: { client: VerityClient; projec
         ) : null}
         {modelsError !== undefined ? <Text style={styles.fieldError}>{modelsError}</Text> : null}
       </SettingsGroup>
+      <ProjectInquiryGrants client={client} projectId={projectId} />
     </SettingsScaffold>
   );
 }

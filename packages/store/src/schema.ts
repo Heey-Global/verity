@@ -1,6 +1,28 @@
 import type { AgentEvent, Attachment } from '@verity/events';
 import type { ColumnType, Generated } from 'kysely';
 
+export interface ProjectRepositoriesTable {
+  id: string;
+  project_id: string;
+  name: string;
+  kind: 'github' | 'forgejo';
+  owner: string;
+  repo: string;
+  forge_connection_id: string | null;
+  default_branch: string | null;
+  removed_at: ColumnType<Date | null, Date | null | undefined, Date | null>;
+}
+
+export interface SessionRepositoryWorkspacesTable {
+  session_id: string;
+  repository_id: string;
+  project_id: string;
+  worktree: string;
+  branch: string;
+  pull_request: ColumnType<unknown, unknown, unknown>;
+  created_at: Generated<Date>;
+}
+
 /**
  * Postgres schema for the durable source of truth (concept §5a): an append-only
  * canonical-event log plus the session registry. The {@link EventStore} API
@@ -1761,6 +1783,8 @@ export interface Database {
   queued_turns: QueuedTurnsTable;
   running_turns: RunningTurnsTable;
   projects: ProjectsTable;
+  project_repositories: ProjectRepositoriesTable;
+  session_repository_workspaces: SessionRepositoryWorkspacesTable;
   users: UsersTable;
   project_memberships: ProjectMembershipsTable;
   project_identity_claims: ProjectIdentityClaimsTable;

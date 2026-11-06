@@ -108,6 +108,11 @@ export function createBrokeredForgeProxy(options: {
   certificateFor?(hostname: string): Promise<PemCertificate>;
   allowsHost?(authority: string): Promise<boolean>;
   capabilities: GhTokenCapabilityRegistry;
+  resolveRepository?: (
+    binding: NonNullable<Awaited<ReturnType<GhTokenCapabilityRegistry['resolve']>>>,
+    hostname: string,
+    path: string,
+  ) => Promise<NonNullable<Awaited<ReturnType<GhTokenCapabilityRegistry['resolve']>>> | undefined>;
   adapter: BrokeredForgeAdapter;
   enabled(projectId: string): boolean;
   actions?(projectId: string): ReadonlySet<ForgeAction>;
@@ -193,7 +198,13 @@ export function createBrokeredForgeProxy(options: {
               return;
             }
             const presented = capability(inner);
-            const binding = presented ? await options.capabilities.resolve(presented) : undefined;
+            const resolveBinding = async () => {
+              const current = presented ? await options.capabilities.resolve(presented) : undefined;
+              return current && options.resolveRepository
+                ? options.resolveRepository(current, hostname, path)
+                : current;
+            };
+            const binding = await resolveBinding();
             if (
               abort.signal.aborted ||
               !binding ||
@@ -249,7 +260,7 @@ export function createBrokeredForgeProxy(options: {
             );
             // Credential resolution may wait on a provider. The exact capability
             // and repository binding must still be live when payload leaves.
-            const still = presented ? await options.capabilities.resolve(presented) : undefined;
+            const still = await resolveBinding();
             const matches = (current: typeof still) =>
               current !== undefined &&
               current.projectId === binding.projectId &&
@@ -269,8 +280,7 @@ export function createBrokeredForgeProxy(options: {
               // revocation checks indefinitely while credentials keep flowing.
               const deadline = setTimeout(() => abort.abort(), 1000);
               deadline.unref();
-              void options.capabilities
-                .resolve(presented!)
+              void resolveBinding()
                 .then(
                   (current) => {
                     if (!matches(current) || !options.enabled(identity.projectId)) abort.abort();
