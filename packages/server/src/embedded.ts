@@ -15,6 +15,11 @@ import type { GitOutput } from './branches.js';
 import { SessionStorage } from './session-storage.js';
 import { RunnerCacheStorage } from './runner-cache-storage.js';
 import {
+  RunnerCacheMaintenance,
+  reclaimSleepingRunnerCaches,
+  cacheMaintenanceFailure,
+} from './runner-cache-maintenance.js';
+import {
   retireStoppedContainers,
   retireCompletedUpdateContainers,
 } from './stopped-container-gc.js';
@@ -4912,6 +4917,76 @@ export async function buildEmbeddedServer(
           pr: (project, branch) => readProjectStatus(project, branch),
         })
       : undefined;
+  const runnerCacheMaintenance = new RunnerCacheMaintenance({
+    request: (projectId, request) =>
+      requestRunnerSupervisor(
+        join(dataVolumeRoot!, 'runners', projectId, 'supervisor.sock'),
+        request,
+        30_000,
+      ),
+    resolveOwners: (input) => eventStore.resolveRunnerTurnOwnership(input),
+    offline: async (projectId, sessionIds, maxBytes) => {
+      if (
+        !projectDocker ||
+        !dataVolumeRoot ||
+        !provisioner?.withProjectExclusiveMutation ||
+        config.runnerSupervisor !== true ||
+        config.runnerSupervisorTrustedDefaultImage !== true ||
+        projectId === CONTROL_PLANE_RUNNER_PROJECT_ID
+      )
+        throw cacheMaintenanceFailure('runtime-not-idle');
+      return provisioner.withProjectExclusiveMutation(projectId, () =>
+        withStorageProjectMutation(projectId, async () => {
+          const assertIdle = async () => {
+            const project = await eventStore.getProject(projectId);
+            if (
+              project?.state !== 'sleeping' ||
+              project.imageOverrideRef ||
+              managedDevServerManager?.hasRunningServers(projectId) ||
+              (localPreviewManager?.listProject(projectId).length ?? 0) > 0 ||
+              (await eventStore.listPublicPreviewShares(projectId)).some((share) =>
+                ['creating', 'active', 'revoking'].includes(share.state),
+              )
+            )
+              throw cacheMaintenanceFailure('runtime-not-idle');
+            const sessions = new Set(
+              (await eventStore.listSessions())
+                .filter((session) => session.projectId === projectId)
+                .map((session) => session.sessionId),
+            );
+            if (sessions.size !== sessionIds.length || sessionIds.some((id) => !sessions.has(id)))
+              throw cacheMaintenanceFailure('runtime-not-idle');
+            if ((await eventStore.listRunningTurns()).some((turn) => sessions.has(turn.sessionId)))
+              throw cacheMaintenanceFailure('runtime-not-idle');
+          };
+          await assertIdle();
+          const selected =
+            typeof defaultProjectImage === 'function'
+              ? await defaultProjectImage()
+              : defaultProjectImage;
+          if (!selected) throw cacheMaintenanceFailure('unsupported');
+          const image = await projectDocker.inspectImageIdentity?.(selected);
+          if (!image) throw cacheMaintenanceFailure('unsupported');
+          const self = await projectDocker.inspectContainer(hostname());
+          return reclaimSleepingRunnerCaches({
+            docker: projectDocker,
+            projectId,
+            runtimeRoot: join(dataVolumeRoot, 'runners', projectId),
+            image: image.id,
+            runtime: PROJECT_RUNSC_RUNTIME,
+            serverContainerId: self.id,
+            runtimeGid: config.runnerRuntimeGid ?? 1101,
+            ...(config.dataVolume
+              ? { dataVolume: { name: config.dataVolume, root: dataVolumeRoot } }
+              : {}),
+            sessionIds,
+            maxBytes,
+            assertIdle,
+          });
+        }),
+      );
+    },
+  });
   const runnerCacheStorage =
     dataVolumeRoot === undefined
       ? undefined
@@ -4941,11 +5016,7 @@ export async function buildEmbeddedServer(
               .map(([projectId, ids]) => ({ projectId, sessionIds: [...ids] }));
           },
           request: (projectId, sessionIds, maxBytes) =>
-            requestRunnerSupervisor(
-              join(dataVolumeRoot, 'runners', projectId, 'supervisor.sock'),
-              { kind: 'reclaim-package-caches', sessionIds, maxBytes },
-              30_000,
-            ),
+            runnerCacheMaintenance.request(projectId, sessionIds, maxBytes),
         });
   const cleanupAbort = new AbortController();
   const cleanupProcessor =

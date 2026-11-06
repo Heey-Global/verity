@@ -161,6 +161,48 @@ describe('runner cache storage', () => {
     }
   });
 
+  it('resumes with the next project after a deadline instead of starving it', async () => {
+    let time = 0;
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => time);
+    try {
+      const request = vi.fn(async () => {
+        time += 60_000;
+        return response();
+      });
+      const storage = new RunnerCacheStorage({
+        listRuntimes: async () => [
+          { projectId: 'one', sessionIds: [] },
+          { projectId: 'two', sessionIds: [] },
+        ],
+        request,
+      });
+      await storage.runOnce();
+      await storage.runOnce();
+      expect(request).toHaveBeenCalledTimes(2);
+      expect(request).toHaveBeenNthCalledWith(1, 'one', [], 4 * 1024 ** 3);
+      expect(request).toHaveBeenNthCalledWith(2, 'two', [], 4 * 1024 ** 3);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it('rotates a runtime inventory larger than the per-pass limit', async () => {
+    const request = vi.fn(async () => response());
+    const storage = new RunnerCacheStorage({
+      listRuntimes: async () =>
+        Array.from({ length: 1001 }, (_, index) => ({
+          projectId: `p${String(index).padStart(4, '0')}`,
+          sessionIds: [],
+        })),
+      request,
+    });
+    await storage.runOnce();
+    expect(request).toHaveBeenCalledTimes(1000);
+    expect(storage.lastReport?.usageComplete).toBe(false);
+    await storage.runOnce();
+    expect(request).toHaveBeenNthCalledWith(1001, 'p1000', [], 4 * 1024 ** 3);
+  });
+
   it('reports failed enumeration as unknown rather than zero', async () => {
     const storage = new RunnerCacheStorage({
       listRuntimes: async () => {

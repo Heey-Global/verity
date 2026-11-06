@@ -40,13 +40,51 @@ selection. General XDG caches, backend state, authentication and transcripts sta
 inside their existing session/isolation boundaries. The runner does not otherwise
 configure a private pnpm store or Yarn cache; their defaults remain unchanged.
 
-Scheduled collection and **Reclaim now** use the same broker maintenance request.
-For known, inactive sessions, collection removes only the legacy
-`session-homes/<session-hash>/cache/_cacache` tree. It acquires the same cross-process
+Scheduled collection and **Reclaim now** negotiate cache-maintenance version 2
+and turn-ownership version 1 with the supervisor, and admission-fence version 1
+with the broker. Older active runtimes remain explicit unsupported blockers.
+New turn claims atomically persist the Verity session identity; this is distinct
+from a backend conversation identifier. Legacy ownership is resolved from
+Server running-turn identities or immutable ingested-frame bindings, with exact
+matching of any local start-command and runner-instance identity. Conflicts and
+missing evidence never imply settlement.
+
+Live collection scans at most 256 turn-directory entries per request. The
+supervisor retains one bounded continuation for up to five minutes; the Server
+resumes pages across bounded passes and rotates projects after a deadline.
+Incomplete scans cannot delete legacy caches. New turn admission invalidates a
+scan, and the final broker transaction excludes concurrent claims. A verified
+unsettled turn blocks only its owning session. Unmapped ambiguous turns retain
+all potentially affected legacy homes, while independently leased shared-cache
+maintenance can proceed. Missing-state counts stay visible in diagnostics.
+
+For known inactive sessions, collection removes only
+`session-homes/<session-hash>/cache/_cacache`. It acquires the same cross-process
 session-home lease as turn admission and rechecks live ownership; a busy home is
-retained. Unknown ownership, unsafe paths, symlinks and unsupported broker versions
-produce blockers rather than deletion. Files outside `_cacache`, including private
-backend caches and session history, are not cache-cleanup targets.
+retained. Unknown ownership, unsafe paths, symlinks and unsupported broker
+versions produce blockers rather than deletion. Files outside `_cacache`,
+including private backend caches and session history, remain intact. Archived
+known sessions are included; unknown home hashes do not establish deletion.
+
+A sleeping project with no supervisor listener can use a short-lived trusted
+sandbox helper without waking its project. This fallback requires the project
+lifecycle and preview/storage barriers, fresh idle/session/turn checks, a complete
+Docker consumer inventory, the trusted managed default image and no explicit
+project image override. Active, special/control-plane and unknown runtimes do not
+qualify merely because their socket is absent. Unknown consumers or live leases
+retain data. The helper mounts only that runtime subtree, has no network, uses a
+read-only root filesystem and bounded resources, and invokes the broker's fixed
+maintenance operation. It independently holds an exclusive runtime admission
+flock plus home/cache leases. Brokers and their surviving children inherit the
+shared admission fence; normal starts wait while offline maintenance owns it.
+Project lifecycle admission also checks for unfinished helper containers after a
+Server restart, protecting older toolkits that lack the fence. Transport failure
+leaves the helper and fence intact. Successful helpers are removed without
+volumes; stopped leftovers become eligible for maintenance GC after seven days.
+
+Offline reclamation can clear a known home's regenerable cache despite ambiguous
+historical turn state only after proving no consumer can write and acquiring the
+exclusive runtime fence. It does not alter the turn state or claim settlement.
 
 The embedded Server's `runnerCacheMaxBytes` setting defaults to 4 GiB per project.
 For the Server entrypoint, set `VERITY_RUNNER_NPM_CACHE_MAX_BYTES` to a positive
@@ -69,7 +107,7 @@ legacy-cache removal counts, shared-cache cleanup counts and blockers. Missing o
 partial measurements remain unknown/incomplete. These file-allocation figures
 are separate from filesystem free-space change and cannot establish an exact
 host-disk saving in the presence of shared allocation or concurrent host activity.
-Collection is bounded and sequential; unavailable runtime sockets and inventories
+Collection is bounded and sequential; unavailable or unsafe runtimes and inventories
 that exceed request limits remain explicit blockers.
 
 Maintenance failures use allowlisted codes in `storageReclamation.runnerCaches.blockers`:
@@ -88,7 +126,8 @@ can still produce an unclassified refusal.
 identifier is protected just as a missing or invalid state is. Settled states
 need no session identifier. These counts explain a refusal; they do not prove
 that a turn is abandoned or authorize deletion. A sleeping project's unavailable
-supervisor does not cause the collector to wake it or bypass the broker.
+supervisor does not cause the collector to wake it; the separately fenced helper
+reuses broker validation and leases.
 
 Deleting a session already queues durable cleanup outside session foreign-key
 cascades. The existing worker retries broker cleanup, which fences the deleted
@@ -100,15 +139,27 @@ whole session home.
 `runners/<project>/turns` contains persisted execution requests, state and events.
 There is currently no scheduled age/size retention for these turn directories.
 This package-cache collector does not remove them or introduce transcript
-retention. Their lifecycle needs a separate policy that preserves recovery and
-execution evidence.
+retention. Their lifecycle needs a separately approved policy that preserves recovery and
+execution evidence. Settled-turn retention remains disabled. A future policy
+must require Server acknowledgement of durable terminal ingestion/fencing and
+retain a terminal tombstone or permanent pruned-turn index: deleting the whole
+turn directory could otherwise let a retry execute the same turn identity again.
+Local settled state and age alone are insufficient.
 
 Rollout requires both the Server release and the matching sandbox toolkit/broker.
-An older broker cannot perform cache maintenance; the Server reports that state
-instead of falling back to direct filesystem deletion. After the usual release
+An older active broker cannot perform the new maintenance protocol; the Server
+reports that state instead of falling back to direct filesystem deletion. After the usual release
 and production promotion, verify the installed sandbox version, cache paths,
-activity blockers, remaining cache allocation and filesystem change. A successful
-code test does not establish live host reclamation or a converged growth trend.
+activity blockers, remaining cache allocation and filesystem change. Capture a baseline and post-rollout observations of sleeping-helper attempts,
+legacy-cache count and allocated bytes removed/remaining, shared-cache allocation,
+unknown-home and turn blockers, turn-directory count/allocation, stopped
+helper/image pins, and filesystem used/free bytes. Compare growth again after
+24 and 48 hours. Verify capabilities of existing custom and default runtimes,
+not only the Server version. Rollback disables the new maintenance path and
+preserves additive identity metadata; removed npm download caches regenerate on
+demand. A successful code test does not establish live host reclamation or a
+converged growth trend. Release publication, promotion and deployment require
+their normal approvals.
 
 ## Worktree lifecycle and recovery
 
