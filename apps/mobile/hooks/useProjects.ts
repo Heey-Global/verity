@@ -1,5 +1,6 @@
 import { AppState } from 'react-native';
 import { PreviewReadScheduler } from '../lib/previewReadScheduler';
+import { publishSessionPreviews } from '../lib/sessionPreviews';
 import { readContextProjects } from '../lib/sharedTaskContext';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useFocusEffect } from 'expo-router';
@@ -65,6 +66,8 @@ export function useProjects(client: VerityClient) {
         ? previous
         : publicIds,
     );
+    // The Work list of a project page shows the same markers without polling.
+    publishSessionPreviews({ urls, online: publicIds });
   }, []);
   const previewReads = useMemo(
     () => new PreviewReadScheduler(publishPreviews),

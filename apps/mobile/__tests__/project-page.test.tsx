@@ -37,6 +37,7 @@ import ProjectEntry from '../app/project/[id]/index';
 import ProjectSettingsIndexScreen from '../app/project/[id]/settings/index';
 import { ProjectPage, projectInboxItems, projectLine } from '../components/project/ProjectPage';
 import { workFilter } from '../components/project/ProjectWork';
+import { publishSessionPreviews } from '../lib/sessionPreviews';
 import { makeClient, makeDetail } from './support/projectHarness';
 import {
   mockCreateVerityClient,
@@ -281,6 +282,23 @@ describe('project page', () => {
     expect(within(screen.getByTestId('work-dot-quiet')).queryByRole('image')).toBeNull();
     // Done was drawn as a green status here; the session list never marked it.
     expect(screen.queryByLabelText('Done')).toBeNull();
+  });
+
+  it('marks a session whose preview is running, as the session list does', async () => {
+    // Home polls the previews; the Work list must show what it found, not nothing.
+    publishSessionPreviews({
+      urls: new Map([
+        ['login', 'http://10.0.0.2:3000'],
+        ['blog', 'https://blog.example.test'],
+      ]),
+      online: new Set(['blog']),
+    });
+    await renderPage([running, favorite]);
+    fireEvent.press(screen.getByRole('tab', { name: 'Work' }));
+    expect(screen.getByLabelText('login, working, shared on the local network')).toBeTruthy();
+    expect(screen.getByLabelText('blog, favorite, shared online')).toBeTruthy();
+    expect(screen.getAllByTestId('session-marker-shared')).toHaveLength(2);
+    publishSessionPreviews({ urls: new Map(), online: new Set() });
   });
 
   it('links a session from Work through the session settings', async () => {

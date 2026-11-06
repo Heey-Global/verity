@@ -24,6 +24,7 @@ import { WorkingDot } from '../WorkingDot';
 import { FilterChips, Group, IconButton, Row, StatusTag, Text } from '../ui';
 import type { StatusIntent } from '../ui/Status';
 import { isLinkableSession } from '../../lib/sessionLinks';
+import { useSessionPreviews } from '../../lib/sessionPreviews';
 
 export type WorkFilter = 'all' | 'running' | 'done' | 'favorites';
 
@@ -114,6 +115,7 @@ export function ProjectWork({
   onChanged: (sessionId: string, deleted: boolean) => void;
 }) {
   const [filter, setFilter] = useState<WorkFilter>('all');
+  const previews = useSessionPreviews();
   const shown = useMemo(
     // No local overrides: the page reloads after opening a session, and the
     // server's per-person mark is what every device agrees on.
@@ -216,9 +218,11 @@ export function ProjectWork({
               favorite: session.favorite === true,
               linked: session.linked,
               automation: session.automation?.status,
-              // Whether a preview is shared is known to the session list's
-              // preview poll only; the Work list does not run one.
-              shared: undefined,
+              shared: previews.urls.has(session.sessionId)
+                ? previews.online.has(session.sessionId)
+                  ? 'online'
+                  : 'local'
+                : undefined,
             });
             const spoken = [
               label,
@@ -248,7 +252,7 @@ export function ProjectWork({
                       ) : null}
                       <SessionMarkerColumn
                         markers={markers}
-                        previewUrl={null}
+                        previewUrl={previews.urls.get(session.sessionId) ?? null}
                         onOpenLinks={() => openSettings(session, true)}
                       />
                     </View>
