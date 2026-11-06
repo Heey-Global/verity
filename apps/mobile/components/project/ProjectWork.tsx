@@ -1,6 +1,5 @@
 import {
   VerityApiError,
-  isUnread,
   markerAttention,
   modelDisplayName,
   sessionBadge,
@@ -25,6 +24,7 @@ import { FilterChips, Group, IconButton, Row, StatusTag, Text } from '../ui';
 import type { StatusIntent } from '../ui/Status';
 import { isLinkableSession } from '../../lib/sessionLinks';
 import { useSessionPreviews } from '../../lib/sessionPreviews';
+import { useUnread } from '../../hooks/useUnread';
 
 export type WorkFilter = 'all' | 'running' | 'done' | 'favorites';
 
@@ -115,10 +115,9 @@ export function ProjectWork({
   onChanged: (sessionId: string, deleted: boolean) => void;
 }) {
   const [filter, setFilter] = useState<WorkFilter>('all');
+  const { unread: unreadIds, markSeen } = useUnread(client, sessions);
   const previews = useSessionPreviews();
   const shown = useMemo(
-    // No local overrides: the page reloads after opening a session, and the
-    // server's per-person mark is what every device agrees on.
     () => workOrder(sessions.filter((session) => workFilter(session, filter))),
     [sessions, filter],
   );
@@ -212,7 +211,7 @@ export function ProjectWork({
           {shown.map((session) => {
             const label = sessionLabel(session);
             const working = session.status === 'running' || session.backgroundWorking === true;
-            const unread = !working && isUnread(session, new Map());
+            const unread = !working && unreadIds.has(session.sessionId);
             const tag = showsSessionLabel(session.status) ? TAG_INTENT[session.status] : undefined;
             const markers = sessionMarkers({
               favorite: session.favorite === true,
@@ -258,7 +257,10 @@ export function ProjectWork({
                     </View>
                   ) : undefined
                 }
-                onPress={() => onOpenSession(session.sessionId)}
+                onPress={() => {
+                  markSeen(session.sessionId, session.eventCount, session.eventCountVersion);
+                  onOpenSession(session.sessionId);
+                }}
                 onLongPress={() => actions(session)}
                 accessibilityLabel={spoken}
                 accessibilityHint="Opens the session. Long press to favorite, link, rename or delete it."
