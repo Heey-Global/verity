@@ -148,12 +148,14 @@ function noteClockTime(startedAt: number, atSeconds: number) {
 }
 
 export default function MeetingScreen() {
-  const { sessionId, meetingId, prepare, source, eventKey } = useLocalSearchParams<{
+  const { sessionId, meetingId, prepare, request, source, eventKey } = useLocalSearchParams<{
     sessionId: string;
     meetingId?: string;
     /** `1`: Verity prepared a meeting; the start screen opens filled in, even after
      *  an earlier meeting of this session. */
     prepare?: string;
+    /** Differs per opening, so preparing the same meeting again fills it in again. */
+    request?: string;
     source?: string;
     eventKey?: string;
   }>();
@@ -241,19 +243,25 @@ export default function MeetingScreen() {
   const [showNewMeeting, setShowNewMeeting] = useState(prepare === '1');
   // The screen can already be on the stack when Verity prepares another meeting; the new
   // parameters then arrive without a remount.
-  const preparedFor = useRef(prepare === '1' ? `${source ?? ''}|${eventKey ?? ''}` : null);
+  const preparedFor = useRef(prepare === '1' ? (request ?? '') : null);
+  // A changed source makes the calendar choice pick again; this pick follows it.
+  const pendingPick = useRef<string | null>(null);
   useEffect(() => {
-    if (prepare !== '1') return;
-    const key = `${source ?? ''}|${eventKey ?? ''}`;
-    if (preparedFor.current === key) return;
-    preparedFor.current = key;
+    if (prepare !== '1' || preparedFor.current === (request ?? '')) return;
+    preparedFor.current = request ?? '';
     setShowNewMeeting(true);
     setMeetingSource(source === 'online' ? 'online' : 'presence');
     if (eventKey) {
       setManualLink(false);
+      pendingPick.current = eventKey;
       setSelectedEventKey(eventKey);
     }
-  }, [prepare, source, eventKey, setManualLink, setSelectedEventKey]);
+  }, [prepare, request, source, eventKey, setManualLink, setSelectedEventKey]);
+  useEffect(() => {
+    if (pendingPick.current === null) return;
+    setSelectedEventKey(pendingPick.current);
+    pendingPick.current = null;
+  }, [meetingSource, setSelectedEventKey]);
   const [syncError, setSyncError] = useState(false);
   // Every save is briefly pending; only a backlog that lasts is worth showing.
   const [syncPendingSince, setSyncPendingSince] = useState<number | null>(null);

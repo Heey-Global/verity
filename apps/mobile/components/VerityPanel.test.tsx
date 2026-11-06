@@ -225,7 +225,13 @@ describe('meetings Verity prepares', () => {
     expect(router.push).toHaveBeenCalledTimes(1);
     expect(router.push).toHaveBeenCalledWith({
       pathname: '/meeting/[sessionId]',
-      params: { sessionId: 'assistant', prepare: '1', source: 'online', eventKey: 'ev-1' },
+      params: {
+        sessionId: 'assistant',
+        prepare: '1',
+        request: expect.any(String),
+        source: 'online',
+        eventKey: 'ev-1',
+      },
     });
     expect(onClose).toHaveBeenCalled();
   });
@@ -234,6 +240,15 @@ describe('meetings Verity prepares', () => {
     jest
       .mocked(useVerity)
       .mockReturnValue(withItems({ ...prepared, at: Date.now() - 10 * 60_000, state: 'pending' }));
+    const screen = render(<VerityPanel mode="text" projectId={null} onClose={jest.fn()} />);
+    jest
+      .mocked(useVerity)
+      .mockReturnValue(withItems({ ...prepared, at: Date.now() - 10 * 60_000, state: 'ready' }));
+    screen.rerender(<VerityPanel mode="text" projectId={null} onClose={jest.fn()} />);
+    expect(router.push).not.toHaveBeenCalled();
+  });
+
+  it('does not open a meeting readied long ago that a refresh brings in', () => {
     const screen = render(<VerityPanel mode="text" projectId={null} onClose={jest.fn()} />);
     jest
       .mocked(useVerity)
@@ -256,7 +271,12 @@ describe('meetings Verity prepares', () => {
     fireEvent.press(screen.getByText('Open start screen'));
     expect(router.push).toHaveBeenCalledWith({
       pathname: '/meeting/[sessionId]',
-      params: { sessionId: 'assistant', prepare: '1', source: 'presence' },
+      params: {
+        sessionId: 'assistant',
+        prepare: '1',
+        request: expect.any(String),
+        source: 'presence',
+      },
     });
   });
 
@@ -279,7 +299,13 @@ describe('meetings Verity prepares', () => {
     fireEvent.press(screen.getByText('Open start screen'));
     expect(router.push).toHaveBeenLastCalledWith({
       pathname: '/meeting/[sessionId]',
-      params: { sessionId: 'assistant', prepare: '1', source: 'online', eventKey: 'ev-1' },
+      params: {
+        sessionId: 'assistant',
+        prepare: '1',
+        request: expect.any(String),
+        source: 'online',
+        eventKey: 'ev-1',
+      },
     });
   });
 });

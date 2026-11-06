@@ -38,6 +38,8 @@ function meetingRoute(sessionId: string, item: MeetingItem) {
         : {
             sessionId,
             prepare: '1',
+            // Each opening fills the screen in again, even for the same meeting.
+            request: `${item.id}-${String(Date.now())}`,
             source: item.mode === 'online' ? 'online' : 'presence',
             ...(item.eventKey ? { eventKey: item.eventKey } : {}),
           },
@@ -137,6 +139,7 @@ export function VerityPanel({
   // A meeting Verity readies while the panel is open is what the user just asked for:
   // its screen opens by itself. Meetings already settled when the panel opened do not.
   const seenMeetings = useRef<Set<string> | null>(null);
+  const openedAt = useRef(Date.now());
   useEffect(() => {
     if (!conversation) return;
     const meetings = conversation.items.filter((item) => item.kind === 'meeting');
@@ -152,7 +155,11 @@ export function VerityPanel({
       return;
     }
     const fresh = meetings.find(
-      (item) => item.state === 'ready' && !seenMeetings.current?.has(item.id),
+      (item) =>
+        item.state === 'ready' &&
+        !seenMeetings.current?.has(item.id) &&
+        // A refresh can bring in a meeting readied long before, e.g. from the Watch.
+        item.at >= openedAt.current - RECENT_MEETING_MS,
     );
     for (const item of meetings) if (item.state !== 'pending') seenMeetings.current.add(item.id);
     if (fresh) openMeeting(fresh);
