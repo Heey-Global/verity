@@ -31,7 +31,11 @@ export async function shareDownload({
   cacheFolder: string;
   webBlob: () => Promise<Blob>;
 }): Promise<void> {
-  const name = fileNameFromPath(path);
+  // The server names the file; on disk it must stay one plain name in its folder.
+  const name =
+    fileNameFromPath(path)
+      .replace(/[^\w.-]/g, '_')
+      .replace(/^\.+$/, '') || 'download';
   if (Platform.OS === 'web') {
     const objectUrl = URL.createObjectURL(await webBlob());
     const anchor = document.createElement('a');

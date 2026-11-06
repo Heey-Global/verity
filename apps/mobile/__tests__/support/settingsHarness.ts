@@ -26,6 +26,24 @@ export const mockPush = jest.fn<void, [string]>();
 export const mockReplace = jest.fn<void, [string]>();
 export const mockBack = jest.fn<void, []>();
 export const mockDismissTo = jest.fn<void, [string]>();
+type RemoveEvent = { preventDefault: () => void; data: { action: unknown } };
+const removeListeners = new Set<(event: RemoveEvent) => void>();
+/** `useNavigation()`: what a screen does before it is removed (back, swipe). */
+export const mockNavigation = {
+  addListener: (_type: 'beforeRemove', listener: (event: RemoveEvent) => void) => {
+    removeListeners.add(listener);
+    return () => removeListeners.delete(listener);
+  },
+  dispatch: jest.fn<void, [unknown]>(),
+};
+/** Play the header's back arrow or the swipe; true when a screen held it. */
+export function attemptBack(): boolean {
+  let prevented = false;
+  const event = { preventDefault: () => (prevented = true), data: { action: { type: 'GO_BACK' } } };
+  for (const listener of removeListeners) listener(event);
+  if (!prevented) mockNavigation.dispatch(event.data.action);
+  return prevented;
+}
 // Both are awaited by their callers, so they resolve rather than return
 // `undefined` — here and again after every reset.
 export const mockOpenURL = jest.fn<Promise<void>, [string]>().mockResolvedValue(undefined);
@@ -75,6 +93,8 @@ export function expoRouterMock(): Record<string, unknown> {
         };
       }, [cb]),
     useLocalSearchParams: () => searchParams,
+    // `beforeRemove` listeners land here, so a test can play back or swipe.
+    useNavigation: () => mockNavigation,
   };
 }
 
@@ -124,6 +144,8 @@ export function resetSettingsHarness(): void {
   mockReplace.mockReset();
   mockBack.mockReset();
   mockDismissTo.mockReset();
+  mockNavigation.dispatch.mockReset();
+  removeListeners.clear();
   mockOpenURL.mockReset();
   mockOpenURL.mockResolvedValue(undefined);
   mockSetStringAsync.mockReset();

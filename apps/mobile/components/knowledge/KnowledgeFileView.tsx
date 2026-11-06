@@ -1,5 +1,5 @@
 import type { SessionFileContent, VerityClient } from '@verity/mobile';
-import { Stack } from 'expo-router';
+import { Stack, useNavigation } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, ScrollView, View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
@@ -142,6 +142,25 @@ export function KnowledgeFileView({
   useEffect(() => report.current?.(dirty), [dirty]);
   // Gone means nothing left unsaved here.
   useEffect(() => () => report.current?.(false), []);
+  // As its own screen, back and the swipe go up a level; with unsaved edits
+  // they ask first, as the close button beside a session does.
+  const navigation = useNavigation();
+  const dirtyNow = useRef(dirty);
+  dirtyNow.current = dirty;
+  useEffect(() => {
+    if (chrome !== 'stack') return undefined;
+    return navigation.addListener('beforeRemove', (event) => {
+      if (!dirtyNow.current) return;
+      event.preventDefault();
+      confirm({
+        title: 'Discard changes?',
+        message: 'Your edits to this file are not saved.',
+        confirmLabel: 'Discard',
+        destructive: true,
+        onConfirm: () => navigation.dispatch(event.data.action),
+      });
+    });
+  }, [chrome, confirm, navigation]);
   const canEdit = content?.editable === true && content.version !== undefined;
   const actions = editing ? (
     <View style={styles.actions}>

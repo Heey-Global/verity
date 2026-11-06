@@ -1232,38 +1232,51 @@ function SessionList({ client }: { client: VerityClient }) {
                 file={knowledgeFile.file}
                 chrome="pane"
                 onClose={() => setKnowledgeFile(null)}
+                onDirtyChange={(dirty) => {
+                  knowledgeDirty.current = dirty;
+                }}
               />
             </View>
           ) : null}
-          {selectedId && baseUrl ? (
-            <DeferredSessionPane
-              sessionId={selectedId}
-              key={`${selectedId}:${moveGeneration}`}
-              fallback={
-                <View style={styles.rightPanePlaceholder} accessibilityRole="progressbar">
-                  <Text style={styles.rightPanePlaceholderText}>
-                    {sessions.find((session) => session.sessionId === selectedId)?.name ??
-                      'Session'}
-                  </Text>
-                  <ActivityIndicator />
-                  <Text style={styles.rightPanePlaceholderText}>Loading session…</Text>
-                </View>
-              }
-            >
-              <SessionChat
-                client={client}
+          {/* While a file lies over it, the session stays mounted but out of reach
+              of VoiceOver, TalkBack and the keyboard, so no control under the file
+              (an Allow, say) can be activated unseen. */}
+          <View
+            style={styles.flex}
+            accessibilityElementsHidden={knowledgeFile !== null}
+            importantForAccessibility={knowledgeFile !== null ? 'no-hide-descendants' : 'auto'}
+            aria-hidden={knowledgeFile !== null}
+          >
+            {selectedId && baseUrl ? (
+              <DeferredSessionPane
                 sessionId={selectedId}
-                baseUrl={baseUrl}
-                embedded
-                initialTargetMessageId={targetMessageId}
-                initialTargetSearchQuery={targetSearchQuery}
-                retrySecret={retrySecret}
-                initialMockupReview={selected === selectedId && mockups === '1'}
-              />
-            </DeferredSessionPane>
-          ) : (
-            <RightPanePlaceholder />
-          )}
+                key={`${selectedId}:${moveGeneration}`}
+                fallback={
+                  <View style={styles.rightPanePlaceholder} accessibilityRole="progressbar">
+                    <Text style={styles.rightPanePlaceholderText}>
+                      {sessions.find((session) => session.sessionId === selectedId)?.name ??
+                        'Session'}
+                    </Text>
+                    <ActivityIndicator />
+                    <Text style={styles.rightPanePlaceholderText}>Loading session…</Text>
+                  </View>
+                }
+              >
+                <SessionChat
+                  client={client}
+                  sessionId={selectedId}
+                  baseUrl={baseUrl}
+                  embedded
+                  initialTargetMessageId={targetMessageId}
+                  initialTargetSearchQuery={targetSearchQuery}
+                  retrySecret={retrySecret}
+                  initialMockupReview={selected === selectedId && mockups === '1'}
+                />
+              </DeferredSessionPane>
+            ) : (
+              <RightPanePlaceholder />
+            )}
+          </View>
         </View>
       </View>
     </KnowledgePaneContext.Provider>

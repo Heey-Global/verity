@@ -17,7 +17,13 @@ import { EmbeddedKnowledge, KnowledgeScreen } from '../components/knowledge/Know
 import { KnowledgeFileView } from '../components/knowledge/KnowledgeFileView';
 import { KnowledgePaneContext } from '../components/knowledge/KnowledgePane';
 import { SHARED } from '../components/knowledge/knowledgeScope';
-import { mockCreateVerityClient, mockPush, resetSettingsHarness } from './support/settingsHarness';
+import {
+  attemptBack,
+  mockCreateVerityClient,
+  mockNavigation,
+  mockPush,
+  resetSettingsHarness,
+} from './support/settingsHarness';
 
 const PROJECT = { kind: 'project', projectId: 'p' } as const;
 const file = {
@@ -120,21 +126,41 @@ it.each([
 it('asks before closing a file beside the session with unsaved edits', async () => {
   const api = client();
   const onClose = jest.fn();
-  render(
+  const onDirtyChange = jest.fn();
+  const view = render(
     <KnowledgeFileView
       client={api as unknown as VerityClient}
       scope={SHARED}
       file={file.path}
       chrome="pane"
       onClose={onClose}
+      onDirtyChange={onDirtyChange}
     />,
   );
   fireEvent.press(await screen.findByText('Edit'));
   fireEvent.changeText(screen.getByLabelText('Content'), 'Unsaved');
+  // The wide layout asks before another file or session replaces this one.
+  expect(onDirtyChange).toHaveBeenLastCalledWith(true);
   fireEvent.press(screen.getByLabelText('Close file'));
   expect(onClose).not.toHaveBeenCalled();
   await act(async () => fireEvent.press(screen.getByRole('button', { name: 'Discard' })));
   expect(onClose).toHaveBeenCalled();
+  view.unmount();
+  expect(onDirtyChange).toHaveBeenLastCalledWith(false);
+});
+
+it('asks before back or the swipe discards an edit on a phone', async () => {
+  client();
+  render(<KnowledgeScreen scope={SHARED} file={file.path} />);
+  expect(attemptBack()).toBe(false);
+  fireEvent.press(await screen.findByText('Edit'));
+  fireEvent.changeText(screen.getByLabelText('Content'), 'Unsaved');
+  act(() => {
+    expect(attemptBack()).toBe(true);
+  });
+  expect(mockNavigation.dispatch).toHaveBeenCalledTimes(1);
+  await act(async () => fireEvent.press(screen.getByRole('button', { name: 'Discard' })));
+  expect(mockNavigation.dispatch).toHaveBeenCalledTimes(2);
 });
 
 it('never lands a late save of one project’s file in another project’s view', async () => {
