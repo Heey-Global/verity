@@ -24,8 +24,7 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { formatResetDisplay, formatTimeUntil } from '../lib/time';
 import { AgentProviderIcon } from './AgentProviderIcon';
-import { Sheet } from './ui/Sheet';
-import { UsageRing, type UsageRingLevel } from './ui/UsageRing';
+import { Sheet, UsageRing, type UsageRingLevel } from './ui';
 
 type QuotaWindow = 'five_hour' | 'weekly';
 
@@ -88,7 +87,7 @@ function usageWindow(window: QuotaWindow, limit: ProviderLimitState, nowMs: numb
  * than drawn empty — some providers have no five-hour window at all — and a
  * provider left with none is left out too.
  */
-export function providerUsage(
+function providerUsage(
   rows: readonly ProviderLimitRow[],
   nowMs: number = Date.now(),
 ): ProviderUsage[] {
