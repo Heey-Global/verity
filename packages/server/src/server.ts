@@ -5574,17 +5574,22 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     pullRequest: (session) => sessionPrCache.get(session),
     dispatch: async (sessionId, prompt, userId, displayPrompt, requestKey) => {
       if (sessionsBeingReaped.has(sessionId)) throw new Error('Session is being deleted.');
-      await conductor.dispatchTurn(
+      const durableDispatchId = `vulnerability-fix:${sessionId}:${requestKey}`;
+      await deps.eventStore.reserveBackgroundDispatch(durableDispatchId, sessionId);
+      const result = await conductor.dispatchTurnWhenIdle(
         sessionId,
         prompt,
         {},
         {
           displayPrompt,
-          clientReplyId: `vulnerability-fix:${sessionId}:${requestKey}`,
-          queueBehindActiveTurn: true,
+          durableDispatchId,
           ...(userId ? { initiatedBy: { userId } } : {}),
         },
       );
+      if (!result.accepted)
+        throw Object.assign(new Error('The fix session is busy. Retry when it is idle.'), {
+          statusCode: 409,
+        });
     },
   });
   registerLiveMeetingIntakeRoutes(app, {
