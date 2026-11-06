@@ -218,9 +218,9 @@ export class ProjectInquiryStore {
     return (result.numAffectedRows ?? 0n) > 0n;
   }
 
-  async unansweredDeliveries(): Promise<ProjectInquiry[]> {
+  async unansweredDeliveries(afterId?: string): Promise<ProjectInquiry[]> {
     return (
-      await sql<Row>`select * from project_inquiries where status='answered' and not answer_delivered order by created_at limit 100`.execute(
+      await sql<Row>`select * from project_inquiries where status='answered' and not answer_delivered and id > ${afterId ?? ''} order by id limit 100`.execute(
         this.db,
       )
     ).rows.map(record);
@@ -231,9 +231,9 @@ export class ProjectInquiryStore {
     );
   }
 
-  async undelivered(): Promise<ProjectInquiry[]> {
+  async undelivered(afterId?: string): Promise<ProjectInquiry[]> {
     return (
-      await sql<Row>`select * from project_inquiries where status='approved' order by created_at limit 100`.execute(
+      await sql<Row>`select * from project_inquiries where status='approved' and id > ${afterId ?? ''} order by id limit 100`.execute(
         this.db,
       )
     ).rows.map(record);

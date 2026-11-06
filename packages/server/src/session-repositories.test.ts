@@ -2,7 +2,7 @@ import { expect, it, vi } from 'vitest';
 import type { EventStore, ProjectRecord } from '@verity/store';
 import { createSessionRepositories } from './session-repositories.js';
 
-function harness(planning = false) {
+function harness(planning = false, forge = false) {
   const project = {
     id: 'p',
     kind: 'github',
@@ -15,10 +15,10 @@ function harness(planning = false) {
     id: 'r',
     projectId: 'p',
     name: 'API',
-    kind: 'github',
+    kind: forge ? 'forgejo' : 'github',
     owner: 'other',
     repo: 'api',
-    forgeConnectionId: 'legacy-github',
+    forgeConnectionId: forge ? 'forge' : 'legacy-github',
     defaultBranch: 'main',
     isDefault: false,
     removedAt: null,
@@ -26,7 +26,7 @@ function harness(planning = false) {
   let revoked = false;
   const git = vi.fn(async (args: readonly string[]) => {
     if (args.includes('rev-parse')) throw new Error('missing');
-    return '';
+    return args.includes('--get-regexp') ? 'http.https://github.com.proxy http://broker:8080' : '';
   });
   const save = vi.fn(async (input: unknown) => input);
   const store = {
@@ -36,6 +36,7 @@ function harness(planning = false) {
       worktree: '/clones/project/sessions/s',
     })),
     getProject: vi.fn(async () => project),
+    forgeConnections: { get: vi.fn(async () => ({ baseUrl: 'https://forge.test:8443' })) },
     getProjectRepository: vi.fn(async (_project: string, id: string) =>
       id === 'r' && !revoked ? repository : undefined,
     ),
@@ -66,4 +67,16 @@ it('refuses unassigned repositories and read-only planning sessions before git r
   const readOnly = harness(true);
   await expect(readOnly.service.open('s', 'r')).rejects.toThrow('planning');
   expect(readOnly.git).not.toHaveBeenCalled();
+});
+
+it('persists broker proxy, CA and a host-specific capability helper before cross-host clone fetches', async () => {
+  const h = harness(false, true);
+  await h.service.open('s', 'r');
+  const clone = h.git.mock.calls.find(([args]) => args.includes('clone'))?.[0];
+  expect(clone).toContain('http.https://forge.test:8443.proxy=http://broker:8080');
+  expect(clone).toContain('http.https://forge.test:8443.sslCAInfo=/run/verity/forge-proxy/ca.crt');
+  expect(clone).toContain(
+    "credential.https://forge.test:8443.helper=!VERITY_FORGE_AUTHORITY='forge.test:8443' /opt/agent-seed/bin/verity-gh-cred",
+  );
+  expect(clone).toContain('https://forge.test:8443/other/api.git');
 });

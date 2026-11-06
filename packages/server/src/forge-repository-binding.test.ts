@@ -71,6 +71,24 @@ describe('repository binding selection', () => {
       ),
     ).toBeUndefined();
   });
+  it('allows release asset uploads only for assigned repositories', async () => {
+    expect(
+      await resolveForgeRepositoryBinding(
+        store(),
+        binding,
+        'uploads.github.com',
+        '/repos/other-org/api/releases/7/assets?name=file',
+      ),
+    ).toMatchObject({ owner: 'other-org', repo: 'api' });
+    expect(
+      await resolveForgeRepositoryBinding(
+        store(true),
+        binding,
+        'uploads.github.com',
+        '/repos/other-org/api/releases/7/assets',
+      ),
+    ).toBeUndefined();
+  });
   it('resolves REST operations only under the selected repository boundary', async () => {
     expect(
       await resolveForgeRepositoryBinding(

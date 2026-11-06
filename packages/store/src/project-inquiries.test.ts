@@ -1,3 +1,4 @@
+import { sql } from 'kysely';
 import { afterAll, beforeAll, beforeEach, expect, it } from 'vitest';
 import { createTestDb, truncateAll, type TestDb } from './testing.js';
 let ctx: TestDb;
@@ -60,4 +61,37 @@ it('keeps exact-scope approvals, reusable targets and revocation durable', async
   await inquiries.setGrant('source', 'target', false);
   expect((await inquiries.get('revoked'))?.status).toBe('blocked');
   expect(await inquiries.decide('revoked', 'target', true, null)).toBe(false);
+});
+
+it('pages both recovery queues beyond 100 rows without relying on delivery success', async () => {
+  for (const id of ['source', 'target']) {
+    await ctx.store.createProject({
+      id,
+      owner: 'team',
+      repo: id,
+      containerName: id,
+      state: 'active',
+    });
+    await ctx.store.createSession({
+      sessionId: id,
+      projectId: id,
+      worktree: `/${id}`,
+      model: 'test',
+    });
+  }
+  await sql`insert into project_inquiries (id, source_session_id, target_session_id, source_project_id, target_project_id, title, body, kind, status)
+    select 'request' || lpad(n::text,3,'0'), 'source', 'target', 'source', 'target', 'Question', 'Body', 'question', 'approved' from generate_series(1,120) n`.execute(
+    ctx.db,
+  );
+  const first = await ctx.store.projectInquiries.undelivered();
+  expect(first).toHaveLength(100);
+  const second = await ctx.store.projectInquiries.undelivered(first.at(-1)!.id);
+  expect(second).toHaveLength(20);
+  expect(new Set([...first, ...second].map((row) => row.id)).size).toBe(120);
+  await sql`update project_inquiries set status='answered', answer='Answer'`.execute(ctx.db);
+  const answers = await ctx.store.projectInquiries.unansweredDeliveries();
+  expect(answers).toHaveLength(100);
+  expect(await ctx.store.projectInquiries.unansweredDeliveries(answers.at(-1)!.id)).toHaveLength(
+    20,
+  );
 });

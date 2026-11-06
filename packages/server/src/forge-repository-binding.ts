@@ -29,7 +29,7 @@ export async function resolveForgeRepositoryBinding(
     const validHost =
       repository.kind === 'forgejo'
         ? hostname === host
-        : ['github.com', 'api.github.com'].includes(hostname);
+        : ['github.com', 'api.github.com', 'uploads.github.com'].includes(hostname);
     if (!validHost) continue;
     const identity = `${repository.owner}/${repository.repo}`;
     const urlPath = path.split('?')[0]!.toLowerCase();

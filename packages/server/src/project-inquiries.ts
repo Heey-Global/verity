@@ -25,6 +25,8 @@ export interface ProjectInquiryDeps {
 /** Messages are data; only a separate target-side human decision admits changes. */
 export function createProjectInquiries(deps: ProjectInquiryDeps) {
   const store = deps.store;
+  let requestCursor: string | undefined;
+  let answerCursor: string | undefined;
   const locks = new Map<string, Promise<unknown>>();
   async function serialized<T>(key: string, run: () => Promise<T>): Promise<T> {
     const previous = locks.get(key) ?? Promise.resolve();
@@ -157,15 +159,19 @@ export function createProjectInquiries(deps: ProjectInquiryDeps) {
       return inquiry;
     },
     async recover() {
-      for (const inquiry of await store.projectInquiries.undelivered()) {
+      const requests = await store.projectInquiries.undelivered(requestCursor);
+      requestCursor = requests.length === 100 ? requests.at(-1)?.id : undefined;
+      for (const inquiry of requests) {
         try {
           await deliver(inquiry);
         } catch {
           /* Keep durable requests retryable; one unavailable target must not starve others. */
         }
       }
-      if (deps.reply)
-        for (const inquiry of await store.projectInquiries.unansweredDeliveries()) {
+      if (deps.reply) {
+        const answers = await store.projectInquiries.unansweredDeliveries(answerCursor);
+        answerCursor = answers.length === 100 ? answers.at(-1)?.id : undefined;
+        for (const inquiry of answers) {
           try {
             if ((await allowed(inquiry)) && (await deps.reply(inquiry, () => allowed(inquiry))))
               await store.projectInquiries.markAnswerDelivered(inquiry.id);
@@ -173,6 +179,7 @@ export function createProjectInquiries(deps: ProjectInquiryDeps) {
             // Retry a failed notification without starving answers for other source sessions.
           }
         }
+      }
     },
   };
 }

@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { projectForRepository, type EventStore, type ProjectRecord } from '@verity/store';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import { FORGE_PROXY_CA_FILE } from './brokered-forge-proxy.js';
 import type { GitOutput } from './branches.js';
 import { containerPathFor } from './project-backend.js';
 import { projectClonePath } from './provisioner.js';
@@ -81,6 +82,25 @@ export function createSessionRepositories(deps: {
         if (!connection) throw new Error('code host connection unavailable');
         origin = connection.baseUrl.replace(/\/$/u, '');
       }
+      // Copy the existing broker transport into the module checkout. Runtime
+      // environment config is scoped to the default forge origin, so another host
+      // needs its own settings before the initial fetch as well as later agent git.
+      const proxy = (
+        await git(['-C', session.worktree, 'config', '--get-regexp', '^http\\..*\\.proxy$'])
+      )
+        .trim()
+        .split('\n')
+        .map((line) => line.slice(line.indexOf(' ') + 1))
+        .find(Boolean);
+      if (!proxy) throw new Error('forge proxy transport unavailable');
+      const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+      const transport = [
+        `http.${origin}.proxy=${proxy}`,
+        `http.${origin}.sslCAInfo=${FORGE_PROXY_CA_FILE}`,
+        `http.${origin}.sslVerify=true`,
+        `credential.${origin}.helper=`,
+        `credential.${origin}.helper=!VERITY_FORGE_AUTHORITY=${quote(new URL(origin).host)} /opt/agent-seed/bin/verity-gh-cred`,
+      ];
       const url = `${origin}/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.repo)}.git`;
       const branch = `verity/${createHash('sha256').update(sessionId).digest('hex').slice(0, 12)}-${slot}`;
       const path = containerPathFor(worktree, root);
@@ -93,6 +113,7 @@ export function createSessionRepositories(deps: {
           '-C',
           session.worktree,
           'clone',
+          ...transport.flatMap((config) => ['--config', config]),
           ...(repository.defaultBranch ? ['--branch', repository.defaultBranch] : []),
           '--',
           url,
