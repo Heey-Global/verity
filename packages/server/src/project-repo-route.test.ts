@@ -348,6 +348,21 @@ it('publishes and stores explicit PR dependency references', async () => {
     { ...pull, dependsOn },
     undefined,
   );
+  vi.mocked(ops.findPullRequest).mockResolvedValue(pull);
+  remember.mockClear();
+  expect(
+    (
+      await call({
+        action: 'pr.create',
+        title: 'Retry',
+        head: pull.head,
+        dependsOn: ['https://github.com/team/api/pull/2'],
+      })
+    ).statusCode,
+  ).toBe(200);
+  // A retry cannot rewrite local dependencies without publishing the same remote body.
+  expect(remember).toHaveBeenCalledWith('p', 'default:p', pull.head, pull, undefined);
+  expect(ops.createPullRequest).toHaveBeenCalledTimes(1);
   expect(
     (
       await call({

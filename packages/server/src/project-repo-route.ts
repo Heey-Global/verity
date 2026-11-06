@@ -146,7 +146,10 @@ export function registerProjectRepoRoute(app: FastifyInstance, deps: ProjectRepo
     if (repository === undefined)
       return reply.code(503).send({ error: 'the code host connection is unavailable' });
     const ops = repository.operations;
-    const remember = async (pr: Awaited<ReturnType<typeof ops.createPullRequest>>) => {
+    const remember = async (
+      pr: Awaited<ReturnType<typeof ops.createPullRequest>>,
+      created = false,
+    ) => {
       const actualBranch = sessionId
         ? await deps.currentRepositoryBranch?.(sessionId, selectedId ?? `default:${project.id}`)
         : undefined;
@@ -168,7 +171,7 @@ export function registerProjectRepoRoute(app: FastifyInstance, deps: ProjectRepo
         pr.head,
         {
           ...pr,
-          ...(parsed.data.action === 'pr.create' && parsed.data.dependsOn !== undefined
+          ...(created && parsed.data.action === 'pr.create' && parsed.data.dependsOn !== undefined
             ? { dependsOn: parsed.data.dependsOn }
             : {}),
         },
@@ -195,6 +198,7 @@ export function registerProjectRepoRoute(app: FastifyInstance, deps: ProjectRepo
                     .filter(Boolean)
                     .join('\n\n'),
                 }),
+                true,
               );
             })();
             creating.set(key, operation);
