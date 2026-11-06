@@ -330,14 +330,16 @@ export async function reconcileInstalledProjectEgressHost(options: {
         'image' in marker &&
         marker.image === installed &&
         'completed' in marker &&
-        marker.completed === true
+        marker.completed === true &&
+        'completionVersion' in marker &&
+        marker.completionVersion === 2
       )
         return 'already-attempted';
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
     }
     const operationId = createHash('sha256')
-      .update(`${state.spec.deploymentId}\0installed-staging-assessment-v1\0${installed}`)
+      .update(`${state.spec.deploymentId}\0installed-staging-assessment-v2\0${installed}`)
       .digest('hex')
       .slice(0, 24);
     await runProjectEgressProvision({

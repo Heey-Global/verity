@@ -1,4 +1,4 @@
-import { mkdtemp, rm, readFile } from 'node:fs/promises';
+import { mkdtemp, rm, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -328,6 +328,15 @@ it('reconciles installed staging once per image using its own signature authorit
     'org.verity.project-egress-deployment': '1',
   });
   try {
+    await writeFile(
+      join(directory, 'project-egress-staging-assessment.json'),
+      JSON.stringify({
+        version: 1,
+        image: previous,
+        operationId: 'a'.repeat(24),
+        completed: true,
+      }),
+    );
     expect(
       await reconcileInstalledProjectEgressHost({
         docker: daemon as unknown as DockerClient,

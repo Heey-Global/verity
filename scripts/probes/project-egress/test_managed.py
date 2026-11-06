@@ -88,6 +88,31 @@ class ManagedTests(unittest.TestCase):
         self.assertIs(json.loads((self.root / managed.ASSESSMENT_NOTICE).read_text())['productionAccepted'], False)
         self.assertEqual(managed.base.ACCEPTED_NATIVE_PROFILES, ())
 
+    def test_precondition_codes_are_persisted_without_raw_errors(self):
+        for reason in ('assessment_authorization_invalid', 'docker_host_unsupported',
+                       'native_package_unavailable', 'relay_runtime_missing'):
+            def fail(*_):
+                raise managed.base.PreflightError(reason)
+            result = self.provision(fail)
+            self.assertFalse(result['available'])
+            self.assertEqual(result['reason'], reason)
+            for relative in ('run/verity-egress/status.json', 'etc/verity-egress-server/status.json'):
+                self.assertEqual(json.loads((self.root / relative).read_text())['reason'], reason)
+
+    def test_cli_reports_failed_assessment_as_failure(self):
+        authorization = self.source.parent / 'authorization.json'
+        argv = ['managed', 'provision', str(self.source), '--relay-config', str(self.relay),
+                '--authority-config', str(self.authority), '--assessment-authorization', str(authorization)]
+        for available in (False, True):
+            with patch.object(sys, 'argv', argv), patch.object(managed, 'provision',
+                    return_value={'available': available, 'reason': 'ready' if available else 'docker_host_unsupported'}):
+                if available:
+                    managed.main()
+                else:
+                    with self.assertRaises(SystemExit) as error:
+                        managed.main()
+                    self.assertEqual(error.exception.code, 1)
+
     def test_runtime_verifier_uses_private_assessment_only_after_production_rejection(self):
         self.provision()
         path = self.root / managed.ASSESSMENT_CONFIG
