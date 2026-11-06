@@ -43,6 +43,7 @@ class PreflightError(ValueError):
         super().__init__(reason)
         self.reason = reason
 
+
 RELAY_RUNTIME_ARGS = ['--platform=systrap', '--network=sandbox', '--host-uds=open']
 RELAY_RUNTIME_AUTHORITY = 'etc/verity-egress/relay-runtime.json'
 PROJECT_RUNTIME_ARGS = ['--platform=systrap', '--network=sandbox', '--host-uds=create']

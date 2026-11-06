@@ -106,6 +106,22 @@ class StagingAssessmentTests(unittest.TestCase):
             with self.assertRaises(installer.PreflightError):
                 self.prepare()
 
+    def test_runtime_preflight_keeps_production_gate_and_checks_assessment_identity(self):
+        descriptor = self.prepare()
+        def run(*args):
+            if args[0] == '/usr/bin/systemctl':
+                return 'systemd 259'
+            if args[0] == str(self.release / 'node'):
+                return 'v26.12.1'
+            return self.execute(*args)
+        with patch.object(installer.os, 'geteuid', return_value=0):
+            with self.assertRaises(installer.PreflightError):
+                installer.runtime_preflight(self.root, run, str(self.release / 'node'))
+            with patch.object(installer, 'validate_staging_assessment', side_effect=RuntimeError('identity verification reached')) as validate:
+                with self.assertRaisesRegex(RuntimeError, 'identity verification reached'):
+                    installer.runtime_preflight(self.root, run, str(self.release / 'node'), assessment=descriptor)
+                validate.assert_called_once_with(self.root, run, str(self.release / 'node'), descriptor)
+
     def test_managed_ids_follow_the_existing_bounded_identifier_contract(self):
         for value in ('ubuntu-ac986397', 'verity-11111111-1111-4111-8111-111111111111'):
             self.assertEqual(self.prepare({**self.authorization, 'deploymentId': value})['authorization']['deploymentId'], value)

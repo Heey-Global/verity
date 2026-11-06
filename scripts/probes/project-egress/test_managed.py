@@ -99,6 +99,15 @@ class ManagedTests(unittest.TestCase):
             for relative in ('run/verity-egress/status.json', 'etc/verity-egress-server/status.json'):
                 self.assertEqual(json.loads((self.root / relative).read_text())['reason'], reason)
 
+    def test_unclassified_assessment_failure_remains_provisioning_failure(self):
+        authorization = self.source.parent / 'authorization.json'
+        authorization.write_text('{}')
+        authorization.chmod(0o600)
+        with patch.object(managed.base, 'prepare_staging_assessment', side_effect=ValueError('private diagnostic')):
+            result = self.provision(assessment_authorization=authorization)
+        self.assertEqual(result['reason'], 'provisioning_failed')
+        self.assertNotIn('private diagnostic', (self.root / 'run/verity-egress/status.json').read_text())
+
     def test_cli_reports_failed_assessment_as_failure(self):
         authorization = self.source.parent / 'authorization.json'
         argv = ['managed', 'provision', str(self.source), '--relay-config', str(self.relay),

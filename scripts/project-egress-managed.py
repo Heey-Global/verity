@@ -616,7 +616,9 @@ def provision(source, relay=None, authority=None, gid=65531, root=Path('/'), run
             if not (root / 'opt/verity-egress').is_symlink():
                 for relative, data in configs.items():
                     base.atomic_file(root / relative, data, 0o600)
-            return write_status(root, gid, error.reason if isinstance(error, base.PreflightError) else 'runtime_unsupported')
+            reason = (error.reason if isinstance(error, base.PreflightError) else
+                      'provisioning_failed' if assessment_authorization is not None else 'runtime_unsupported')
+            return write_status(root, gid, reason)
         try:
             reject_bridge_collisions(root, run)
             # Persist before the first controller can synchronize/open admission.
