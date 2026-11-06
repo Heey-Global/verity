@@ -203,6 +203,54 @@ describe('runner cache storage', () => {
     expect(request).toHaveBeenNthCalledWith(1001, 'p1000', [], 4 * 1024 ** 3);
   });
 
+  it('resumes incomplete scans promptly without waiting for the daily scheduler', async () => {
+    vi.useFakeTimers();
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ...response({ usageComplete: false, legacyBytes: null }),
+        maintenancePending: true,
+      })
+      .mockResolvedValue(response());
+    const storage = new RunnerCacheStorage({
+      listRuntimes: async () => [{ projectId: 'one', sessionIds: [] }],
+      request,
+    });
+    try {
+      await storage.runOnce();
+      expect(request).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(request).toHaveBeenCalledTimes(2);
+      expect(storage.lastReport?.usageComplete).toBe(true);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(request).toHaveBeenCalledTimes(2);
+    } finally {
+      storage.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it('cancels continuation scheduling when the Server closes', async () => {
+    vi.useFakeTimers();
+    const request = vi.fn(async () => ({
+      ...response({ usageComplete: false }),
+      maintenancePending: true,
+    }));
+    const storage = new RunnerCacheStorage({
+      listRuntimes: async () => [{ projectId: 'one', sessionIds: [] }],
+      request,
+    });
+    try {
+      await storage.runOnce();
+      storage.stop();
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(request).toHaveBeenCalledTimes(1);
+    } finally {
+      storage.stop();
+      vi.useRealTimers();
+    }
+  });
+
   it('reports failed enumeration as unknown rather than zero', async () => {
     const storage = new RunnerCacheStorage({
       listRuntimes: async () => {

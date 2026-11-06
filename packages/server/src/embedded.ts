@@ -6315,6 +6315,11 @@ export async function buildEmbeddedServer(
     });
   };
 
+  app.addHook('onClose', (_instance, done) => {
+    runnerCacheStorage?.stop();
+    done();
+  });
+
   if (embeddedSecretJobs !== undefined) {
     registerSecretJobRoutes(app, embeddedSecretJobs.service, (header) => {
       const token = /^Bearer ([^\s]+)$/i.exec(header ?? '')?.[1];

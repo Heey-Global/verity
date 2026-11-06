@@ -8,6 +8,7 @@ const PASS_BUDGET_MS = 60_000;
 const bytes = z.number().safe().nonnegative();
 const responseSchema = z.object({
   ok: z.literal(true),
+  maintenancePending: z.boolean().optional(),
   report: z.object({
     observedAt: z.iso.datetime({ offset: true }),
     sharedBytes: bytes.nullable(),
@@ -113,6 +114,9 @@ export class RunnerCacheStorage {
   private report: RunnerCacheReclamationReport | undefined;
   private readonly maxBytes: number;
   private nextProject: string | undefined;
+  private readonly pendingProjects = new Set<string>();
+  private continuationTimer: ReturnType<typeof setTimeout> | undefined;
+  private stopped = false;
 
   constructor(
     private readonly deps: {
@@ -130,10 +134,24 @@ export class RunnerCacheStorage {
     return this.report;
   }
 
+  stop(): void {
+    this.stopped = true;
+    clearTimeout(this.continuationTimer);
+    this.continuationTimer = undefined;
+  }
+
   runOnce(): Promise<void> {
+    if (this.stopped) return Promise.resolve();
     if (this.flight) return this.flight;
     this.flight = this.collect().finally(() => {
       this.flight = undefined;
+      if (!this.stopped && this.pendingProjects.size > 0 && this.continuationTimer === undefined) {
+        this.continuationTimer = setTimeout(() => {
+          this.continuationTimer = undefined;
+          void this.runOnce().catch(() => undefined);
+        }, 1000);
+        this.continuationTimer.unref();
+      }
     });
     return this.flight;
   }
@@ -174,7 +192,16 @@ export class RunnerCacheStorage {
                 ordered.findIndex((r) => r.projectId === this.nextProject),
               );
         const rotated = [...ordered.slice(start), ...ordered.slice(0, start)];
-        for (const runtime of rotated.slice(0, MAX_RUNTIMES)) {
+        const present = new Set(ordered.map((runtime) => runtime.projectId));
+        for (const projectId of this.pendingProjects)
+          if (!present.has(projectId)) this.pendingProjects.delete(projectId);
+        // Finish inventories before their inactivity TTL; regular projects retain
+        // their rotating cursor once each bounded continuation has completed.
+        const priority = [
+          ...rotated.filter((runtime) => this.pendingProjects.has(runtime.projectId)),
+          ...rotated.filter((runtime) => !this.pendingProjects.has(runtime.projectId)),
+        ];
+        for (const runtime of priority.slice(0, MAX_RUNTIMES)) {
           // An in-flight broker request has its own bound; do not start another after this budget.
           if (Date.now() >= deadline) {
             this.nextProject = runtime.projectId;
@@ -198,9 +225,12 @@ export class RunnerCacheStorage {
             continue;
           }
           try {
-            const { report: project } = responseSchema.parse(
+            const response = responseSchema.parse(
               await this.deps.request(runtime.projectId, sessionIds, this.maxBytes),
             );
+            if (response.maintenancePending) this.pendingProjects.add(runtime.projectId);
+            else this.pendingProjects.delete(runtime.projectId);
+            const project = response.report;
             const sharedBytes =
               report.sharedBytes === null || project.sharedBytes === null
                 ? null
@@ -239,6 +269,7 @@ export class RunnerCacheStorage {
                 );
             }
           } catch (error) {
+            this.pendingProjects.delete(runtime.projectId);
             incomplete(
               `Project ${runtime.projectId}: ${failureReason(error)} runner cache maintenance unavailable or invalid; caches retained where unverified.`,
             );
@@ -246,6 +277,7 @@ export class RunnerCacheStorage {
         }
       }
     } catch {
+      this.pendingProjects.clear();
       incomplete('Runner cache inventory is unavailable; caches retained.');
     }
     this.report = report;

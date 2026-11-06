@@ -2798,6 +2798,7 @@ async function reclaimPackageCachesPage(runtimeDir, request) {
     throw cacheMaintenanceFailure('turn-inventory-unavailable');
   }
   try {
+    scan.timer.refresh(); // Expire abandoned scans, not an inventory making bounded progress.
     if (scan.epoch !== (cacheClaimEpochs.get(runtimeDir) ?? 0))
       throw cacheMaintenanceFailure('turn-inventory-unavailable');
     if (request.scanId !== undefined) {

@@ -50,8 +50,10 @@ matching of any local start-command and runner-instance identity. Conflicts and
 missing evidence never imply settlement.
 
 Live collection scans at most 256 turn-directory entries per request. The
-supervisor retains one bounded continuation for up to five minutes; the Server
-resumes pages across bounded passes and rotates projects after a deadline.
+supervisor retains one bounded continuation with a five-minute inactivity timeout.
+The Server schedules coalesced one-second follow-up passes, prioritizes unfinished
+inventories and rotates regular projects after a deadline. Passes remain bounded
+and sequential; Server shutdown cancels follow-up scheduling.
 Incomplete scans cannot delete legacy caches. New turn admission invalidates a
 scan, and the final broker transaction excludes concurrent claims. A verified
 unsettled turn blocks only its owning session. Unmapped ambiguous turns retain

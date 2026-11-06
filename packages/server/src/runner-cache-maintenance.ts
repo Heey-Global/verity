@@ -26,6 +26,7 @@ export function cacheMaintenanceFailure(code: string): Error {
 function incompleteReport() {
   return {
     ok: true,
+    maintenancePending: true,
     report: {
       observedAt: new Date().toISOString(),
       sharedBytes: null,
