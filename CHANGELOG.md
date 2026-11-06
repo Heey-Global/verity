@@ -6,6 +6,21 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.84.1](https://github.com/Heey-Global/verity/compare/v4.84.0...v4.84.1) (2026-11-06)
+
+
+### Bug Fixes
+
+* **egress:** await Docker relay reload and preserve safe diagnostics ([#2346](https://github.com/Heey-Global/verity/issues/2346)) ([f7953fa](https://github.com/Heey-Global/verity/commit/f7953fafc4ec87033361a084f4c8b6b1b485369d))
+* **meetings:** preserve transcripts with pending provider segments ([#2349](https://github.com/Heey-Global/verity/issues/2349)) ([422a084](https://github.com/Heey-Global/verity/commit/422a0843693d86677f78333148618e639f857e8b))
+* **mobile:** authenticate EAS signing for native extension targets ([#2348](https://github.com/Heey-Global/verity/issues/2348)) ([258d3d3](https://github.com/Heey-Global/verity/commit/258d3d3e0f92e2316ad705d43d1166ee503c7377))
+
+
+### Performance Improvements
+
+* **ci:** separate fast changes classification from check resolution ([#2351](https://github.com/Heey-Global/verity/issues/2351)) ([19c4bc7](https://github.com/Heey-Global/verity/commit/19c4bc76091421711c813bd7b4a749c4ccd3b7e1))
+* **lint:** reduce documentation parsing in type-aware workers ([#2347](https://github.com/Heey-Global/verity/issues/2347)) ([a2aabac](https://github.com/Heey-Global/verity/commit/a2aabac422121043a99135b249ca6c862de6eb69))
+
 ## [4.84.0](https://github.com/Heey-Global/verity/compare/v4.83.0...v4.84.0) (2026-11-06)
 
 
