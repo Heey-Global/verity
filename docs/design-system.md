@@ -250,6 +250,15 @@ title; a log list keeps them dense and scannable.
 - The whole row is tappable, not just the toggle. Switching something off that has
   consequences (e.g. revoking public links) asks first.
 
+### 5.5a Filter chips
+
+- A single-choice row above a list (`FilterChips`). The selected chip takes the tonal
+  `action` fill of the primary button; the others are bordered and muted.
+- A chip may show a symbol instead of a word when the symbol is unmistakable, such as the
+  favorites star. Its label is still required and becomes the spoken name.
+- An action next to the chips (starting something new) is an icon button, not a labelled
+  button, so the row fits a phone without scrolling.
+
 ### 5.6 Sheet
 
 - One bottom-sheet component for every overlay that slides up.

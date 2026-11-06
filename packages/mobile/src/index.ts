@@ -204,6 +204,7 @@ export {
   type BrokeredJwtClaimSummary,
 } from './ui/brokeredHttpSummary.js';
 export { spellOutBidiControls } from './ui/bidi.js';
+export { workOrder } from './ui/workOrder.js';
 export {
   permissionSummary,
   trustedCliCommandLine,

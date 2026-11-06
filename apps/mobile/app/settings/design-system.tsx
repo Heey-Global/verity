@@ -8,6 +8,7 @@ import {
   Button,
   Card,
   ConfirmSheet,
+  FilterChips,
   Group,
   HintBox,
   IconButton,
@@ -31,6 +32,7 @@ import {
 export default function DesignSystemCatalog() {
   const [sharing, setSharing] = useState(true);
   const [remote, setRemote] = useState(false);
+  const [chip, setChip] = useState<'all' | 'running' | 'favorites'>('all');
   const [key, setKey] = useState('');
   const [notes, setNotes] = useState('');
   const [loading, setLoading] = useState(false);
@@ -170,6 +172,22 @@ export default function DesignSystemCatalog() {
           <Toggle value={false} />
           <Toggle value disabled />
           <Toggle value switching />
+        </View>
+        <View style={styles.inline}>
+          <View style={styles.chips}>
+            <FilterChips
+              options={[
+                { value: 'all', label: 'All' },
+                { value: 'running', label: 'Running' },
+                { value: 'favorites', label: 'Favorites', icon: 'star' },
+              ]}
+              value={chip}
+              onChange={setChip}
+              accessibilityLabel="Filter sessions"
+              compact
+            />
+          </View>
+          <IconButton icon="plus" accessibilityLabel="New session" onPress={() => undefined} />
         </View>
       </View>
 
@@ -321,4 +339,5 @@ const styles = StyleSheet.create((theme) => ({
   section: { gap: theme.spacing.sm },
   inline: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: theme.spacing.sm },
   cardBody: { flex: 1, gap: theme.spacing.xxs },
+  chips: { flex: 1, minWidth: 0 },
 }));

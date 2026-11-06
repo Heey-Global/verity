@@ -245,11 +245,69 @@ describe('project page', () => {
     expect(screen.getByLabelText(/^form/)).toBeTruthy();
     expect(screen.getByLabelText(/^login/)).toBeTruthy();
     expect(screen.queryByLabelText(/blog/)).toBeNull();
+    // A star, named for VoiceOver: the word no longer fits beside "+" on a phone.
     fireEvent.press(screen.getByRole('tab', { name: 'Favorites' }));
-    expect(screen.getByLabelText(/★ blog/)).toBeTruthy();
+    expect(screen.getByLabelText('blog, favorite')).toBeTruthy();
     expect(screen.queryByLabelText(/^login/)).toBeNull();
-    fireEvent.press(screen.getByLabelText(/★ blog/));
+    fireEvent.press(screen.getByLabelText('blog, favorite'));
     expect(onOpenSession).toHaveBeenCalledWith('blog');
+    fireEvent.press(screen.getByRole('button', { name: 'New session' }));
+    expect(mockPush).toHaveBeenCalledWith({ pathname: '/new', params: { projectId: 'p/1' } });
+  });
+
+  it('marks and orders Work the way the session list marks it', async () => {
+    const answered = session('answered', {
+      eventCount: 7,
+      lastSeenEventCount: 5,
+      lastActivityAt: Date.now() - 120_000,
+    });
+    const quiet = session('quiet', { lastActivityAt: Date.now() });
+    await renderPage([quiet, favorite, answered, running, question]);
+    fireEvent.press(screen.getByRole('tab', { name: 'Work' }));
+    const rows = within(screen.getByTestId('project-work'))
+      .getAllByRole('button')
+      .map((row) => row.props.accessibilityLabel as string | undefined)
+      .filter((label): label is string => label !== undefined && label.includes(','));
+    // Asking, working and new answers lead, even over a favorite; then favorites.
+    expect(rows).toEqual([
+      'form, Needs input',
+      'login, working',
+      'answered, new answer',
+      'blog, favorite',
+    ]);
+    // Blue for a new answer, the pulse while working, nothing for a quiet session.
+    expect(within(screen.getByTestId('work-dot-answered')).getByLabelText('Unread messages'));
+    expect(within(screen.getByTestId('work-dot-login')).getByLabelText('Agent is working'));
+    expect(within(screen.getByTestId('work-dot-quiet')).queryByRole('image')).toBeNull();
+    // Done was drawn as a green status here; the session list never marked it.
+    expect(screen.queryByLabelText('Done')).toBeNull();
+  });
+
+  it('links a session from Work through the session settings', async () => {
+    const alert = jest.spyOn(Alert, 'alert');
+    const linked = session('pair', { linked: true });
+    const { client } = await renderPage([running, linked]);
+    Object.assign(client, {
+      listProjects: jest.fn().mockResolvedValue([makeDetail().project]),
+      listSessions: jest.fn().mockResolvedValue([running, linked]),
+      listSessionLinks: jest.fn().mockResolvedValue([]),
+    });
+    fireEvent.press(screen.getByRole('tab', { name: 'Work' }));
+    fireEvent(screen.getByLabelText(/^login/), 'longPress');
+    const menu = alert.mock.calls.at(-1)![2]!;
+    expect(menu.map((button) => button.text)).toEqual([
+      'Add to favorites',
+      'Session settings',
+      'Delete',
+      'Cancel',
+    ]);
+    await act(async () => menu.find((button) => button.text === 'Session settings')!.onPress!());
+    expect(screen.getByText('Linked sessions')).toBeTruthy();
+    // The link marker on a row goes straight to its links.
+    fireEvent.press(screen.getByLabelText('Close session settings'));
+    expect(screen.queryByText('Linked sessions')).toBeNull();
+    await act(async () => fireEvent.press(screen.getByLabelText('Open linked sessions')));
+    expect(screen.getByText('Linked sessions')).toBeTruthy();
   });
 
   it('deletes a session after confirmation and tells the host which one', async () => {
