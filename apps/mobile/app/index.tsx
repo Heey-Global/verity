@@ -173,12 +173,14 @@ function SessionList({ client }: { client: VerityClient }) {
   // A `selected` route param preselects a session into the right pane — this is how
   // a freshly-started session (new.tsx → /session/[id] → Redirect on wide) and any
   // deep link land in the unified split layout instead of the old per-route sidebar.
-  const { selected, targetMessageId, targetSearchQuery, retrySecret } = useLocalSearchParams<{
-    selected?: string;
-    targetMessageId?: string;
-    targetSearchQuery?: string;
-    retrySecret?: string;
-  }>();
+  const { selected, targetMessageId, targetSearchQuery, retrySecret, mockups } =
+    useLocalSearchParams<{
+      selected?: string;
+      targetMessageId?: string;
+      targetSearchQuery?: string;
+      retrySecret?: string;
+      mockups?: string;
+    }>();
   const [selectedId, setSelectedId] = useState<string | null>(selected ?? null);
   if (selectedId) markFirstSessionRender(selectedId, 'selection-home-render-entry');
   const finishHomeWork = beginRenderWork('home-body', selectedId ?? undefined);
@@ -666,13 +668,19 @@ function SessionList({ client }: { client: VerityClient }) {
   }, [projectParam, newDesign]);
   const [homeCount, setHomeCount] = useState(0);
   const openSessionFromHome = useCallback(
-    (sessionId: string) => {
+    (sessionId: string, options?: { mockups?: boolean }) => {
       const session = sessions.find((candidate) => candidate.sessionId === sessionId);
       // `onOpenSession` only prefetches and marks the session seen; the rows
       // navigate through their own Link, so Home navigates here, once.
       if (session) onOpenSession(session);
-      if (wide) setSelectedId(sessionId);
-      else router.push({ pathname: '/session/[id]', params: { id: sessionId } });
+      if (wide) {
+        setSelectedId(sessionId);
+        router.setParams({ selected: sessionId, mockups: options?.mockups ? '1' : undefined });
+      } else
+        router.push({
+          pathname: '/session/[id]',
+          params: options?.mockups === true ? { id: sessionId, mockups: '1' } : { id: sessionId },
+        });
     },
     [sessions, onOpenSession, wide],
   );
@@ -877,6 +885,32 @@ function SessionList({ client }: { client: VerityClient }) {
     confirmDeleteSession(renaming, remove, () => setRenaming(null));
   }, [renaming, remove]);
 
+  // What the open page shows, as text: polls hand back fresh arrays even when
+  // nothing changed, and its detail route is not cheap, so it reloads only when
+  // this project's sessions or health moved. A health item handled on Home
+  // changes only the projects, so both count.
+  const reloadToken = useMemo(() => {
+    if (openProjectId === null) return '';
+    const project = projects.find((candidate) => candidate.id === openProjectId);
+    return JSON.stringify([
+      // The whole record: health reads its state, errors, updates and drift.
+      project,
+      sessions
+        .filter((session) => session.projectId === openProjectId)
+        .map((session) => [
+          session.sessionId,
+          session.status,
+          session.backgroundWorking,
+          session.eventCount,
+          session.name,
+          session.favorite,
+          session.inboxDismissed,
+          session.pullRequest?.phase,
+          session.pullRequest?.pipeline,
+        ]),
+    ]);
+  }, [openProjectId, projects, sessions]);
+
   if (loading && sessions.length === 0) {
     return (
       <View style={styles.centered}>
@@ -1069,31 +1103,6 @@ function SessionList({ client }: { client: VerityClient }) {
     </View>
   );
 
-  // What the open page shows, as text: polls hand back fresh arrays even when
-  // nothing changed, and its detail route is not cheap, so it reloads only when
-  // this project's sessions or health moved. A health item handled on Home
-  // changes only the projects, so both count.
-  const reloadToken = useMemo(() => {
-    if (openProjectId === null) return '';
-    const project = projects.find((candidate) => candidate.id === openProjectId);
-    return JSON.stringify([
-      // The whole record: health reads its state, errors, updates and drift.
-      project,
-      sessions
-        .filter((session) => session.projectId === openProjectId)
-        .map((session) => [
-          session.sessionId,
-          session.status,
-          session.backgroundWorking,
-          session.eventCount,
-          session.name,
-          session.favorite,
-          session.inboxDismissed,
-          session.pullRequest?.phase,
-          session.pullRequest?.pipeline,
-        ]),
-    ]);
-  }, [openProjectId, projects, sessions]);
   const projectPage =
     wide && openProjectId !== null ? (
       <ProjectPage
@@ -1191,6 +1200,7 @@ function SessionList({ client }: { client: VerityClient }) {
               initialTargetMessageId={targetMessageId}
               initialTargetSearchQuery={targetSearchQuery}
               retrySecret={retrySecret}
+              initialMockupReview={selected === selectedId && mockups === '1'}
             />
           </DeferredSessionPane>
         ) : (

@@ -4,7 +4,7 @@ import { startRuntimeDiagnostics, setRuntimeDiagnosticsScreen } from '../lib/run
 // Stack. The header colors come from the live theme via useUnistyles; the app is
 // locked to the dark theme (unistyles `initialTheme: 'dark'`, not OS-adaptive).
 // Component styles use StyleSheet.create.
-import { QuickCaptureBubble } from '../components/QuickCaptureBubble';
+import { VerityBubble } from '../components/VerityBubble';
 import { BrowserAlertHost } from '../components/ui/BrowserAlertHost';
 import { installBrowserAlerts } from '../lib/browserAlerts';
 
@@ -56,7 +56,7 @@ import { useFonts } from '@expo-google-fonts/inter/useFonts';
 import { adjustFontScale, hydrateFontScale } from '../lib/fontZoom';
 import { prepareInstallationState } from '../lib/installationState';
 import { showsMessageSearch } from '../lib/headerRoutes';
-import { dispatchTaskVoiceShortcut, dispatchVoiceShortcut } from '../lib/voiceShortcut';
+import { dispatchVerityShortcut, dispatchVoiceShortcut } from '../lib/voiceShortcut';
 import { NO_WINDOW_CONTROLS_INSET, type WindowControlsInset } from '../lib/windowControls';
 
 // The app is dark-only. Force the native interface style to dark AT RUNTIME so all
@@ -217,7 +217,7 @@ function HydratedRoot() {
       onSearch={handleSearchShortcut}
       onVoice={(action) => {
         if (action === 'task') {
-          dispatchTaskVoiceShortcut();
+          dispatchVerityShortcut();
           return;
         }
         if (pathname === '/' || pathname.startsWith('/session/')) dispatchVoiceShortcut();
@@ -275,6 +275,7 @@ function HydratedRoot() {
                 name="project/[id]/settings/model"
                 options={{ title: 'Default model' }}
               />
+              <Stack.Screen name="project/[id]/settings/design" options={{ title: 'Design' }} />
               <Stack.Screen name="new" options={{ title: 'New agent' }} />
               <Stack.Screen name="new-project" options={{ title: 'New project' }} />
               {/* Settings is a flat stack of sibling routes, not a nested layout:
@@ -348,7 +349,7 @@ function HydratedRoot() {
             ) : (
               <>
                 <ActiveMeetingOverlay />
-                <QuickCaptureBubble />
+                <VerityBubble />
               </>
             )}
             <BrowserAlertHost />

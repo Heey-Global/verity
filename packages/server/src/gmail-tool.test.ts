@@ -28,7 +28,12 @@ function setup(overrides: Partial<GmailToolStore> = {}) {
     ...overrides,
   };
   const gmail = {
-    downloadAttachment: vi.fn().mockResolvedValue({ encoding: 'base64', content: 'AP8=' }),
+    downloadAttachment: vi.fn().mockResolvedValue({
+      path: '/workspace/downloads/report.pdf',
+      filename: 'report.pdf',
+      mimeType: 'application/pdf',
+      size: 2,
+    }),
     search: vi.fn().mockResolvedValue({ messages: [] }),
     readThread: vi.fn().mockResolvedValue({ id: 't1', messages: [] }),
     createDraft: vi.fn().mockResolvedValue({ id: 'd1' }),
@@ -86,10 +91,18 @@ describe('Gmail session tool', () => {
 
   it('downloads attachments only with session access and unchanged credentials', async () => {
     const request = { action: 'download_attachment', messageId: 'm1', partId: '1' };
-    const { tool, gmail, claimGoogleWorkspaceInvocation } = setup();
+    const { tool, gmail, claimGoogleWorkspaceInvocation } = setup({
+      getSession: vi.fn().mockResolvedValue({ projectId: 'p1', worktree: '/workspace' }),
+    });
     expect(gmailHasStandingAuthorization(request)).toBe(true);
-    await expect(tool.invoke(input(request))).resolves.toMatchObject({ content: 'AP8=' });
-    expect(gmail.downloadAttachment).toHaveBeenCalledWith('token', 'm1', '1');
+    const result = await tool.invoke(input(request));
+    expect(result).toEqual({
+      path: '/workspace/downloads/report.pdf',
+      filename: 'report.pdf',
+      mimeType: 'application/pdf',
+      size: 2,
+    });
+    expect(gmail.downloadAttachment).toHaveBeenCalledWith('token', 'm1', '1', '/workspace');
     expect(claimGoogleWorkspaceInvocation).not.toHaveBeenCalled();
     const denied = setup({ getSessionGmailConnection: vi.fn().mockResolvedValue(undefined) });
     await expect(denied.tool.invoke(input(request))).rejects.toThrow('Gmail is not enabled');
@@ -102,6 +115,28 @@ describe('Gmail session tool', () => {
     });
     await expect(changed.tool.invoke(input(request))).rejects.toThrow('Gmail is not enabled');
     expect(changed.gmail.downloadAttachment).not.toHaveBeenCalled();
+  });
+
+  it('requires a workspace before downloading an attachment', async () => {
+    const { tool, gmail } = setup();
+    await expect(
+      tool.invoke(input({ action: 'download_attachment', messageId: 'm1', partId: '1' })),
+    ).rejects.toThrow('no workspace');
+    expect(gmail.downloadAttachment).not.toHaveBeenCalled();
+  });
+
+  it('rejects a session project change before writing an attachment', async () => {
+    const { tool, gmail } = setup({
+      getSession: vi
+        .fn()
+        .mockResolvedValueOnce({ projectId: 'p1', worktree: '/workspace' })
+        .mockResolvedValueOnce({ projectId: 'p1', worktree: '/workspace' })
+        .mockResolvedValue({ projectId: 'other', worktree: '/other' }),
+    });
+    await expect(
+      tool.invoke(input({ action: 'download_attachment', messageId: 'm1', partId: '1' })),
+    ).rejects.toThrow('restricted to the calling session');
+    expect(gmail.downloadAttachment).not.toHaveBeenCalled();
   });
 
   it('rejects an unknown send action', async () => {

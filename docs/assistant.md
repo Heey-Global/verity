@@ -58,8 +58,8 @@ Verity Control itself can never be granted.
 - Its turns also run without the backend's built-in tools (shell, files, web)
   and without the operator's own MCP connections; only the Verity gateway
   remains. A backend that cannot enforce this refuses the turn, so the assistant
-  session is created with the default Claude model; switching it to another
-  backend makes its turns fail instead of running unrestricted.
+  session runs on Claude Sonnet 5.5; switching it to another backend makes its
+  turns fail instead of running unrestricted.
 - The grant is the consent for `verity_assistant`; its calls run without a
   separate approval card. The handoff keeps its approval card.
 
@@ -84,13 +84,38 @@ guest, the title and the time, never the guest's link; push notifications still 
 session that made the request. The assistant reads the same overview with
 `verity_assistant` action `scheduling`, without the guests' links.
 
-## Quick capture
+## Conversation on phone and Watch
 
-When the assistant is on, the capture sheet offers **Verity** next to the
-project chips. A note sent there becomes a message in the assistant session
-instead of a task; the assistant decides where it belongs. The target is shown
-to administrators, who can read the assistant settings. Choosing a project keeps
-the previous behaviour.
+The floating V on the phone and the Watch app open one conversation with the
+assistant; there is no separate task capture. What the user says or types becomes
+a message in the assistant session, which answers it, files a task or hands work
+on. Both devices read the same projection of the session
+(`GET /assistant/conversation`), send messages and answers with client-minted
+request ids, and are refused unless the user is an administrator and the
+assistant is on.
+
+Requests are meant to be answered quickly:
+
+- The session runs on Claude Sonnet 5.5. An assistant session created on the
+  former default model is moved to it before its next message, between turns.
+- Each message's context line lists the projects the assistant may use, with id
+  and mode, so a turn does not spend a model round asking for them. The tool
+  checks the grant again when it acts.
+- A device holds one read open with `?after=<revision>&waitMs=<ms>` (at most
+  25 s). The server answers as soon as the session writes something, after
+  collecting further deltas for a moment, so a reply arrives as it is written
+  instead of at the next polling interval.
+- The Apple Watch reaches the conversation through the iPhone. Native code on
+  the iPhone transcribes a recording, sends it and holds a read open, and passes
+  each change to the watch at once while its app is open (and in the
+  application context for its next launch), without waiting for the iPhone app
+  to come to the front. This needs a certificate-pinned direct connection and a
+  sign-in that is not protected by Face ID, because the token is kept readable
+  after first unlock for background use. Otherwise, and for anything native code
+  could not deliver, the app sends the same request ids when it next runs.
+- The projection reports, per message, the milliseconds to the first visible
+  reaction and to the end of the turn. The server logs the same figures,
+  measured from acceptance, as `verity: assistant message timing`.
 
 ## Not yet included
 

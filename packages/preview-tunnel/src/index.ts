@@ -58,6 +58,14 @@ const CONNECTOR_PATH = '/__verity/connector';
 const COOKIE_NAME = '__Host-verity-preview';
 const SESSION_LIFETIME_SECONDS = 8 * 60 * 60;
 const MAX_LOGIN_IDENTITIES = 1024;
+const LOGIN_FAILURE_RESET_MS = 3_600_000;
+interface LoginFailures {
+  failures: number;
+  pauses: number;
+  lastFailureAt: number;
+  blockedUntil: number;
+  pending: boolean;
+}
 const CONNECTOR_HEARTBEAT_MS = 15_000;
 const EDGE_LOOP_PROBE_MS = 500;
 const EDGE_LOOP_LAG_REPORT_MS = 1_000;
@@ -338,7 +346,7 @@ export class PreviewEdge {
    * `handleUpgrade` call. */
   private selectedProtocol: string | false = false;
   private readonly streams: StreamRegistry<EdgeStream>;
-  private readonly loginFailures = new Map<string, number[]>();
+  private readonly loginFailures = new Map<string, LoginFailures>();
   private connector: WebSocket | undefined;
   private connectionGeneration = 0;
   private readonly reconnect: ReconnectWait<WebSocket>;
@@ -1457,7 +1465,11 @@ export class PreviewEdge {
   ): Promise<boolean> {
     const rejectBudget = (result: PinBudgetResult): void => {
       if (result.state === 'cooldown')
-        reject(429, 'Too many code attempts. Try again later.', String(result.retryAfterSeconds));
+        reject(
+          429,
+          `Too many code attempts. Try again in ${result.retryAfterSeconds} seconds.`,
+          String(result.retryAfterSeconds),
+        );
       else if (result.state === 'locked')
         reject(403, 'Code entry is locked. Ask the person who shared this preview for a new link.');
       else reject(503, 'Code verification is unavailable. Try again later.');
@@ -1467,6 +1479,8 @@ export class PreviewEdge {
       return false;
     }
     this.loginVerifications += 1;
+    let identity: string | undefined;
+    let attempts: LoginFailures | undefined;
     try {
       const client = this.loginClientIdentity(request);
       if (!client) {
@@ -1474,21 +1488,35 @@ export class PreviewEdge {
         return false;
       }
       const now = Date.now();
-      for (const [identity, attempts] of this.loginFailures) {
-        while (attempts[0] !== undefined && attempts[0] < now - 60_000) attempts.shift();
-        if (attempts.length === 0) this.loginFailures.delete(identity);
+      for (const [key, entry] of this.loginFailures) {
+        if (!entry.pending && now - entry.lastFailureAt >= LOGIN_FAILURE_RESET_MS)
+          this.loginFailures.delete(key);
       }
       if (!this.loginFailures.has(client) && this.loginFailures.size >= MAX_LOGIN_IDENTITIES) {
         reject(429, 'Code entry is busy. Try again in a minute.', '60');
         return false;
       }
-      const failures = this.loginFailures.get(client) ?? [];
-      if (failures.length >= 10) {
-        reject(429, 'Too many code attempts. Try again in a minute.', '60');
+      const entry = this.loginFailures.get(client) ?? {
+        failures: 0,
+        pauses: 0,
+        lastFailureAt: now,
+        blockedUntil: 0,
+        pending: false,
+      };
+      if (entry.blockedUntil > now) {
+        const seconds = Math.ceil((entry.blockedUntil - now) / 1000);
+        reject(429, `Too many code attempts. Try again in ${seconds} seconds.`, String(seconds));
         return false;
       }
-      failures.push(now);
-      this.loginFailures.set(client, failures);
+      // Serialize each identity so concurrent wrong PINs cannot race past its pause.
+      if (entry.pending) {
+        reject(429, 'A code check is already in progress. Try again shortly.', '1');
+        return false;
+      }
+      entry.pending = true;
+      this.loginFailures.set(client, entry);
+      identity = client;
+      attempts = entry;
       const pin = await readPin();
       if (this.expired()) {
         reject(410, 'This link has expired.');
@@ -1506,6 +1534,17 @@ export class PreviewEdge {
         attemptId = begin.attemptId;
       }
       const valid = await verifyPreviewPin(pin, this.options.pinHash);
+      if (!valid) {
+        // A failed durable finish must not erase a locally verified wrong PIN.
+        entry.lastFailureAt = Date.now();
+        entry.failures += 1;
+        if (entry.failures === 3) {
+          entry.failures = 0;
+          const pauseSeconds = Math.min(60 * 2 ** entry.pauses, 3600);
+          entry.pauses = Math.min(entry.pauses + 1, 6);
+          entry.blockedUntil = entry.lastFailureAt + pauseSeconds * 1000;
+        }
+      }
       if (this.options.pinBudget && attemptId) {
         // A correct code cannot grant access until its reservation is durably finished.
         const finish = await this.options.pinBudget
@@ -1524,9 +1563,12 @@ export class PreviewEdge {
         reject(410, 'This link has expired.');
         return false;
       }
-      this.loginFailures.delete(client);
       return true;
     } finally {
+      if (attempts && identity) {
+        attempts.pending = false;
+        if (attempts.failures === 0 && attempts.pauses === 0) this.loginFailures.delete(identity);
+      }
       this.loginVerifications -= 1;
     }
   }

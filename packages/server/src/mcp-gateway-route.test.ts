@@ -7,7 +7,7 @@ import { createTestDb, truncateAll, type TestDb } from '@verity/store/testing';
 import type { FastifyInstance } from 'fastify';
 import { sql } from 'kysely';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, request } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -129,6 +129,7 @@ function build(
               ? [
                   'verity_start_planning',
                   'verity_present_plan',
+                  'verity_present_mockups',
                   'verity_end_planning',
                   'verity_tasks',
                   'verity_repairs',
@@ -585,6 +586,123 @@ it('runs an approved plan for the approving user and still refuses them once rev
     expect(revoked.result.isError).toBe(true);
     expect(revoked.body).toContain('no longer has project execution permission');
   });
+});
+
+describe('mockup presentation through the project gateway', () => {
+  async function mockupCaller(planningTurn = false) {
+    const harness = build({ planningTools: true, unlocked: true, planningTurn });
+    const worktree = mkdtempSync(join(projectRoot, 'mockup-worktree-'));
+    const image = Buffer.alloc(33);
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]).copy(image);
+    image.writeUInt32BE(13, 8);
+    image.write('IHDR', 12, 'ascii');
+    image.writeUInt32BE(393, 16);
+    image.writeUInt32BE(852, 20);
+    writeFileSync(join(worktree, 'home.png'), image);
+    await harness.store.createProject({
+      id: 'p1',
+      kind: 'local',
+      owner: '__local__',
+      repo: 'alpha',
+      cloneDir: '__local__-alpha',
+      containerName: 'verity-alpha',
+      state: 'active',
+    });
+    await harness.store.createSession({ sessionId: 's1', projectId: 'p1', worktree, model: 'm' });
+    const token = harness.tokens.issue({ projectId: 'p1', sessionId: 's1', turnId: 't1' });
+    return { harness, worktree, image, token };
+  }
+
+  it('advertises and executes image presentation with a persisted round and attachment snapshot', async () => {
+    const { harness, worktree, image, token } = await mockupCaller();
+    await withListener(harness, async (socketPath) => {
+      const listed = await postUnix(socketPath, `Bearer ${token}`, {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/list',
+      });
+      expect(
+        (JSON.parse(listed.body) as { result: { tools: { name: string }[] } }).result.tools,
+      ).toContainEqual(expect.objectContaining({ name: 'verity_present_mockups' }));
+      let id = 1;
+      const present = (path: string) =>
+        postUnix(socketPath, `Bearer ${token}`, {
+          jsonrpc: '2.0',
+          id: ++id,
+          method: 'tools/call',
+          params: {
+            name: 'verity_present_mockups',
+            arguments: { screens: [{ name: 'Home', path }] },
+          },
+        });
+      // Escaping or absolute paths must never turn into reviewable attachment snapshots.
+      for (const path of ['../home.png', join(worktree, 'home.png')]) {
+        const rejected = await present(path);
+        expect(
+          (JSON.parse(rejected.body) as { result: { isError?: boolean } }).result.isError,
+        ).toBe(true);
+        expect((await harness.store.getSession('s1'))?.mockupReview).toBeUndefined();
+      }
+      const response = await present('home.png');
+      expect(response.status).toBe(200);
+      const result = (
+        JSON.parse(response.body) as {
+          result: { isError?: boolean; content: { type: string; text: string }[] };
+        }
+      ).result;
+      expect(result.isError).toBeUndefined();
+      const output = JSON.parse(result.content[0]!.text) as {
+        presented: boolean;
+        mockupRevision: number;
+        screens: { attachment: string }[];
+      };
+      const review = (await harness.store.getSession('s1'))?.mockupReview;
+      expect(output).toMatchObject({
+        presented: true,
+        mockupRevision: 1,
+        screens: [{ name: 'Home', width: 393, height: 852, verdict: 'open' }],
+      });
+      expect(review).toMatchObject({
+        state: 'pending',
+        revision: output.mockupRevision,
+        screens: [
+          { name: 'Home', attachment: output.screens[0]!.attachment, width: 393, height: 852 },
+        ],
+      });
+      expect(await harness.store.getAttachment(output.screens[0]!.attachment)).toMatchObject({
+        mediaType: 'image/png',
+        bytes: image,
+      });
+    });
+    expect(harness.approvals).toEqual([]);
+    expect(harness.invocations).toEqual([]);
+  });
+
+  it.each([false, true])(
+    'refuses presentation while planning (live turn restriction=%s)',
+    async (planningTurn) => {
+      const { harness, token } = await mockupCaller(planningTurn);
+      if (!planningTurn) await harness.store.startSessionPlanning('s1');
+      await withListener(harness, async (socketPath) => {
+        const response = await postUnix(socketPath, `Bearer ${token}`, {
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'tools/call',
+          params: {
+            name: 'verity_present_mockups',
+            arguments: { screens: [{ name: 'Home', path: 'home.png' }] },
+          },
+        });
+        expect(
+          (JSON.parse(response.body) as { result: { isError?: boolean } }).result.isError,
+        ).toBe(true);
+        expect(response.body).toContain('planning mode');
+        expect((await harness.store.getSession('s1'))?.mockupReview).toBeUndefined();
+      });
+      expect(harness.approvals).toEqual([]);
+      expect(harness.invocations).toEqual([]);
+    },
+  );
 });
 
 it('keeps the session task list available while planning, unlike external tools', async () => {

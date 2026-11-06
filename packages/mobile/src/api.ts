@@ -3,7 +3,16 @@ import {
   projectEgressRequestSchema,
   type ProjectEgressPolicy,
 } from './projectEgress.js';
-import { storageReclamationActionSchema, type StorageReclamationAction } from '@verity/events';
+import {
+  assistantConversationSchema,
+  assistantDeliverySchema,
+  storageReclamationActionSchema,
+  type AssistantAnswerRequest,
+  type AssistantConversation,
+  type AssistantDelivery,
+  type AssistantMessageRequest,
+  type StorageReclamationAction,
+} from '@verity/events';
 import { buildDiagnosticResponseSchema, systemLogResponseSchema } from './logs.js';
 import {
   auditHealthSchema,
@@ -73,7 +82,9 @@ export interface TransportRequestInit extends RequestInit {
 
 function readTransportLane(path: string): TransportLane {
   const pathname = path.split('?')[0]!;
-  return /^\/(?:sessions|projects)$/u.test(pathname) ||
+  // A held conversation read must not occupy one of the few background slots.
+  return pathname === '/assistant/conversation' ||
+    /^\/(?:sessions|projects)$/u.test(pathname) ||
     /^\/sessions\/[^/]+(?:\/(?:events|activity|history\/v1))?$/u.test(pathname)
     ? 'interactive'
     : 'background';
@@ -223,6 +234,30 @@ const pendingPermissionRequestSchema = z.object({
   input: z.unknown().optional(),
 });
 
+/** A mockup review: the screens the agent presented after the plan was accepted,
+ * each approved, commented or still open. A value this build does not understand
+ * reads as absent rather than failing the whole response, like `planning`. */
+export const mockupReviewSchema = z
+  .object({
+    state: z.enum(['pending', 'revising', 'approved']),
+    revision: z.number().int().nonnegative(),
+    screens: z.array(
+      z.object({
+        name: z.string(),
+        attachment: z.string(),
+        mediaType: z.string(),
+        width: z.number(),
+        height: z.number(),
+        verdict: z.enum(['open', 'approved', 'comment']),
+        comment: z.string().optional(),
+      }),
+    ),
+  })
+  .optional()
+  .catch(undefined);
+export type MockupReview = NonNullable<z.infer<typeof mockupReviewSchema>>;
+export type MockupReviewScreen = MockupReview['screens'][number];
+
 export const sessionSummarySchema = z
   .object({
     sessionId: z.string().min(1),
@@ -232,6 +267,8 @@ export const sessionSummarySchema = z
     name: z.string().nullable(),
     /** Project binding for multi-repo fleet sessions (#174). Older servers omit it. */
     projectId: z.string().nullable().optional(),
+    /** The open mockup review, if the agent presented mockups. */
+    mockupReview: mockupReviewSchema,
     /** Operator-marked favorite, highlighted in the session list. ABSENT means not a
      * favorite — servers omit it for unmarked sessions, and older servers never send it. */
     favorite: z.boolean().optional(),
@@ -461,6 +498,7 @@ export const sessionActivitySchema = z.object({
   planning: sessionPlanningSchema,
   planningRevision: z.number().int().nonnegative().optional(),
   planningPlan: z.string().nullable().optional(),
+  mockupReview: mockupReviewSchema.nullable(),
 });
 export type SessionActivity = z.infer<typeof sessionActivitySchema>;
 
@@ -638,6 +676,10 @@ export type LinkedProject = z.infer<typeof linkedProjectSchema>;
 export const PROJECT_AGENTS = ['claude', 'codex', 'opencode'] as const;
 export type ProjectAgent = (typeof PROJECT_AGENTS)[number];
 
+/** When an accepted plan stops for mockups before it is built. */
+export const PROJECT_DESIGN_LEVELS = ['off', 'on_request', 'required'] as const;
+export type ProjectDesignLevel = (typeof PROJECT_DESIGN_LEVELS)[number];
+
 export const projectSettingsSchema = z.object({
   projectId: z.string().min(1),
   // Broker-only Doppler mapping. Credentials remain central and never appear in
@@ -656,13 +698,20 @@ export const projectSettingsSchema = z.object({
   // Agents sessions in this project may use; null (or absent on an older server)
   // allows every connected agent.
   allowedAgents: z.array(z.enum(PROJECT_AGENTS)).nullable().optional(),
+  // When accepted plans stop for mockups; absent on an older server.
+  designLevel: z.enum(PROJECT_DESIGN_LEVELS).optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
 export type ProjectSettings = z.infer<typeof projectSettingsSchema>;
 
 type ProjectSettingsKey =
-  'defaultBranch' | 'defaultModel' | 'memory' | 'googleDriveAccessMode' | 'allowedAgents';
+  | 'defaultBranch'
+  | 'defaultModel'
+  | 'memory'
+  | 'googleDriveAccessMode'
+  | 'allowedAgents'
+  | 'designLevel';
 
 export type ProjectSettingsPatch = {
   [K in ProjectSettingsKey]?: ProjectSettings[K] | undefined;
@@ -5898,6 +5947,32 @@ export class VerityClient {
       .parse(await res.json());
   }
 
+  /** Approve a mockup screen, comment on it, or reopen it. 409 when the round
+   * changed meanwhile (`stale`) or no longer waits for review (`notPending`). */
+  async decideMockup(
+    id: string,
+    revision: number,
+    screen: string,
+    decision: { verdict: 'approved' | 'open' } | { verdict: 'comment'; comment: string },
+  ): Promise<MockupReview | undefined> {
+    const res = await this.request(`/sessions/${encodeURIComponent(id)}/mockups`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'decide', revision, screen, ...decision }),
+    });
+    return z.object({ mockupReview: mockupReviewSchema }).parse(await res.json()).mockupReview;
+  }
+
+  /** Send the round's comments to the agent, which revises the mockups. */
+  async sendMockupComments(id: string, revision: number): Promise<MockupReview | undefined> {
+    const res = await this.request(`/sessions/${encodeURIComponent(id)}/mockups`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'send', revision }),
+    });
+    return z.object({ mockupReview: mockupReviewSchema }).parse(await res.json()).mockupReview;
+  }
+
   async renameSession(id: string, name: string | null): Promise<SessionRenamed> {
     const res = await this.request(`/sessions/${encodeURIComponent(id)}`, {
       method: 'PATCH',
@@ -6513,6 +6588,45 @@ export class VerityClient {
         ),
       })
       .parse(await res.json());
+  }
+
+  /** The conversation with Verity as phone and Watch show it (docs/assistant.md). A
+   * member who is not an administrator gets a 403 {@link VerityApiError}. */
+  async assistantConversation(
+    options: { after?: number; waitMs?: number; signal?: AbortSignal } = {},
+  ): Promise<AssistantConversation> {
+    // With both, the server holds the read until the conversation moves past `after`.
+    const query =
+      options.after !== undefined && options.waitMs !== undefined
+        ? `?after=${String(options.after)}&waitMs=${String(options.waitMs)}`
+        : '';
+    const res = await this.request(`/assistant/conversation${query}`, {
+      method: 'GET',
+      ...(options.signal ? { signal: options.signal } : {}),
+    });
+    return assistantConversationSchema.parse(await res.json());
+  }
+
+  /** Sends what the user said or typed. Replaying a `requestId` never sends twice:
+   * the reply then says `delivered: false`. */
+  async sendAssistantMessage(body: AssistantMessageRequest): Promise<AssistantDelivery> {
+    const res = await this.request('/assistant/conversation/messages', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    return assistantDeliverySchema.parse(await res.json());
+  }
+
+  /** Answers the open question. A question already answered elsewhere or replaced
+   * is a 409 with code `answered` or `stale_question`. */
+  async answerAssistantQuestion(body: AssistantAnswerRequest): Promise<AssistantDelivery> {
+    const res = await this.request('/assistant/conversation/answers', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    return assistantDeliverySchema.parse(await res.json());
   }
 
   async projectAssistant(id: string, mode?: 'off' | 'tasks' | 'delegate') {

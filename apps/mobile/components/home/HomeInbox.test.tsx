@@ -8,9 +8,9 @@ jest.mock('expo-router', () => ({
 }));
 jest.mock('expo-crypto', () => {
   let n = 0;
-  return { randomUUID: () => `reply-${String((n += 1))}` };
+  return { randomUUID: jest.fn(() => `reply-${String((n += 1))}`) };
 });
-jest.mock('../../lib/voiceShortcut', () => ({ dispatchTaskVoiceShortcut: jest.fn() }));
+jest.mock('../../lib/voiceShortcut', () => ({ dispatchVerityShortcut: jest.fn() }));
 const mockCapture = { enabled: true, scope: 'account' as string | null };
 jest.mock('../../lib/taskPreferences', () => ({
   useTaskPreferences: () => ({ enabled: mockCapture.enabled }),
@@ -21,8 +21,9 @@ import type { ProjectRecord, SessionSummary, UpcomingMeeting, VerityClient } fro
 import { act, fireEvent, render, screen } from '@testing-library/react-native';
 import { Alert } from 'react-native';
 import { router } from 'expo-router';
+import { randomUUID } from 'expo-crypto';
 
-import { dispatchTaskVoiceShortcut } from '../../lib/voiceShortcut';
+import { dispatchVerityShortcut } from '../../lib/voiceShortcut';
 import { HomeInbox, RESUME_PROMPT, replyFor } from './HomeInbox';
 
 const ZERO_USAGE = {
@@ -130,7 +131,10 @@ it('answers a question in place and hides it until the session moves on', async 
     fireEvent.press(screen.getByRole('button', { name: 'Zod' }));
   });
   // Sent through the same idempotent route a notification reply uses.
-  expect(client.sendTurn).toHaveBeenCalledWith('form', { prompt: 'Zod', clientReplyId: 'reply-1' });
+  expect(client.sendTurn).toHaveBeenCalledWith('form', {
+    prompt: 'Zod',
+    clientReplyId: jest.mocked(randomUUID).mock.results.at(-1)?.value,
+  });
   expect(screen.queryByText('Which validation library?')).toBeNull();
   expect(onCountChange).toHaveBeenLastCalledWith(0);
 });
@@ -229,10 +233,10 @@ it('opens a project and hands repair to the overview', async () => {
   expect(router.push).toHaveBeenCalledWith({ pathname: '/project/[id]', params: { id: 'broken' } });
 });
 
-it('sends "Tell Verity" to quick capture with the assistant preselected', async () => {
+it('opens Verity from "Tell Verity"', async () => {
   await renderInbox([]);
   fireEvent.press(await screen.findByRole('button', { name: 'Tell Verity' }));
-  expect(dispatchTaskVoiceShortcut).toHaveBeenCalledWith({ target: 'assistant' });
+  expect(dispatchVerityShortcut).toHaveBeenCalledWith();
 });
 
 it('maps every network answer to the push-reply route it reuses', () => {

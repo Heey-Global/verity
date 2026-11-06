@@ -74,6 +74,11 @@ export {
   type SessionEventStats,
   type SessionRecord,
   type SessionPlanning,
+  type SessionMockupState,
+  type ProjectDesignLevel,
+  type SessionMockupReview,
+  type SessionMockups,
+  type MockupScreenRecord,
   type SessionSlideDeckRecord,
   type SessionWorkspaceFileRecord,
   type SessionGmailConnection,
@@ -243,6 +248,9 @@ export {
   AssistantStore,
   type AssistantGrant,
   type AssistantMode,
+  type AssistantRequest,
+  type AssistantRequestClaim,
+  type AssistantRequestKind,
   type AssistantSettings,
 } from './assistant.js';
 

@@ -5305,3 +5305,50 @@ migrations['0192_session_deletion_worktrees'] = {
     await sql`alter table session_deletions drop column worktree`.execute(db);
   },
 };
+
+migrations['0193_design_mockup_review'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table project_settings
+      add column design_level text not null default 'on_request'
+        check (design_level in ('off', 'on_request', 'required'))`.execute(db);
+    // One review round per session at a time: the screens the agent presented, each
+    // with the reviewer's verdict. The revision keeps a device from deciding a round
+    // the agent has already replaced.
+    await sql`alter table sessions
+      add column mockup_review text
+        check (mockup_review in ('pending', 'revising', 'approved')),
+      add column mockup_revision integer not null default 0 check (mockup_revision >= 0),
+      add column mockup_screens jsonb`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table sessions
+      drop column mockup_screens,
+      drop column mockup_revision,
+      drop column mockup_review`.execute(db);
+    await sql`alter table project_settings drop column design_level`.execute(db);
+  },
+};
+
+migrations['0194_assistant_requests'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    // One row per message or answer sent to the assistant from a device. The
+    // client-minted id makes a replayed delivery (Watch queue, app restart)
+    // return the first outcome instead of starting a second turn, and the
+    // partial unique index lets only one device answer a given question.
+    await sql`create table assistant_requests (
+      request_id text primary key,
+      session_id text not null references sessions(session_id) on delete cascade,
+      user_id text not null,
+      kind text not null check (kind in ('message', 'answer')),
+      question_id text,
+      state text not null default 'pending' check (state in ('pending', 'accepted')),
+      created_at timestamptz not null default now(),
+      check ((kind = 'answer') = (question_id is not null))
+    )`.execute(db);
+    await sql`create unique index assistant_requests_one_answer
+      on assistant_requests(session_id, question_id) where kind = 'answer'`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table assistant_requests`.execute(db);
+  },
+};

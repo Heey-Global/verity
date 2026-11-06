@@ -5,6 +5,7 @@
 import {
   IMPLEMENT_PLAN_DISPLAY,
   IMPLEMENT_PLAN_PROMPT,
+  MOCKUPS_FIRST_PROMPT,
   PRESENT_PLAN_TOOL,
   parsePlanningProposal,
   planningToolName,
@@ -151,9 +152,15 @@ export function createSessionPlanning(deps: PlanningDeps): SessionPlanningAction
       if (openPlanDecisions(session.planningPlan) > 0) return false;
       // Acceptance and the implementation backlog entry share one transaction;
       // recovery can resume it even if the server exits before updating its queue.
+      // A plan listing mockups is built in two halves: the mockups, then, once the
+      // user approved them, the rest (packages/server/src/mockups.ts).
+      const mockupsFirst =
+        parsePlanningProposal(session.planningPlan).mockups.length > 0
+          ? `\n\n${MOCKUPS_FIRST_PROMPT}`
+          : '';
       const result = await deps.dispatchTurn(
         sessionId,
-        `${IMPLEMENT_PLAN_PROMPT}\n\nApproved plan (revision ${planningRevision}):\n${session.planningPlan}`,
+        `${IMPLEMENT_PLAN_PROMPT}${mockupsFirst}\n\nApproved plan (revision ${planningRevision}):\n${session.planningPlan}`,
         {},
         {
           displayPrompt: IMPLEMENT_PLAN_DISPLAY,

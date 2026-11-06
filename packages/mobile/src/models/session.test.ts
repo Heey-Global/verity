@@ -1,4 +1,4 @@
-import type { SessionHistoryPage } from '../api.js';
+import type { MockupReview, SessionHistoryPage } from '../api.js';
 function historyPage(page: SessionHistoryPage) {
   return {
     ...page,
@@ -3097,6 +3097,173 @@ it('keeps a session usable after a missing knowledge error', async () => {
   } finally {
     model.stop();
   }
+});
+
+describe('SessionModel — mockup review lifecycle', () => {
+  const pending: MockupReview = {
+    state: 'pending',
+    revision: 2,
+    screens: [
+      {
+        name: 'Home',
+        attachment: 'a'.repeat(64),
+        mediaType: 'image/png',
+        width: 393,
+        height: 852,
+        verdict: 'open',
+      },
+    ],
+  };
+  const approved: MockupReview = {
+    ...pending,
+    state: 'approved',
+    screens: pending.screens.map((screen) => ({ ...screen, verdict: 'approved' })),
+  };
+  const activity = (mockupReview: MockupReview | null) => ({
+    busy: false,
+    queued: [],
+    mockupReview,
+  });
+
+  it('keeps the saved verdict when an earlier activity poll returns late', async () => {
+    const client = stubClient();
+    let resolvePoll!: (value: ReturnType<typeof activity>) => void;
+    const delayed = new Promise<ReturnType<typeof activity>>((resolve) => {
+      resolvePoll = resolve;
+    });
+    client.getActivity = vi
+      .fn()
+      .mockResolvedValueOnce(activity(pending))
+      .mockReturnValueOnce(delayed)
+      .mockResolvedValue(activity(approved));
+    const decideMockup = vi.fn().mockResolvedValue(approved);
+    client.decideMockup = decideMockup;
+    const model = new SessionModel({
+      client,
+      sessionId: 's1',
+      transport: recordingConnect().connect,
+      activityPollMs: 0,
+    });
+    try {
+      model.start();
+      await vi.waitFor(() => expect(model.state.mockupReview).toEqual(pending));
+      const olderPoll = model.refreshActivity();
+      expect(await model.decideMockup('Home', { verdict: 'approved' })).toBe(true);
+      expect(decideMockup).toHaveBeenCalledWith('s1', pending.revision, 'Home', {
+        verdict: 'approved',
+      });
+      resolvePoll(activity(pending));
+      await olderPoll;
+      // An old poll must not turn the review back into an unanswered question.
+      expect(model.state.mockupReview).toEqual(approved);
+    } finally {
+      model.stop();
+    }
+  });
+
+  it('preserves a review on omitted metadata and clears it only on explicit null', async () => {
+    const client = stubClient();
+    client.getActivity = vi
+      .fn()
+      .mockResolvedValueOnce(activity(pending))
+      .mockResolvedValueOnce({ busy: false, queued: [] })
+      .mockResolvedValue(activity(null));
+    const model = new SessionModel({
+      client,
+      sessionId: 's1',
+      transport: recordingConnect().connect,
+      activityPollMs: 0,
+    });
+    try {
+      model.start();
+      await vi.waitFor(() => expect(model.state.mockupReview).toEqual(pending));
+      await model.refreshActivity();
+      expect(model.state.mockupReview).toEqual(pending);
+      await model.refreshActivity();
+      expect(model.state.mockupReview).toBeUndefined();
+    } finally {
+      model.stop();
+    }
+  });
+
+  it('refreshes the current round after a rejected decision and keeps the error visible', async () => {
+    const client = stubClient();
+    const replacement = { ...pending, revision: pending.revision + 1 };
+    client.getActivity = vi
+      .fn()
+      .mockResolvedValueOnce(activity(pending))
+      .mockResolvedValue(activity(replacement));
+    client.decideMockup = vi
+      .fn()
+      .mockRejectedValue(new VerityApiError(409, 'Review changed', { code: 'stale' }));
+    const model = new SessionModel({
+      client,
+      sessionId: 's1',
+      transport: recordingConnect().connect,
+      activityPollMs: 0,
+    });
+    try {
+      model.start();
+      await vi.waitFor(() => expect(model.state.mockupReview).toEqual(pending));
+      expect(await model.decideMockup('Home', { verdict: 'approved' })).toBe(false);
+      await vi.waitFor(() => expect(model.state.mockupReview?.revision).toBe(replacement.revision));
+      expect(model.state.mockupError).toBe(
+        'The mockups were updated. Please review the current ones.',
+      );
+      expect(model.state.decidingMockup).toBe(false);
+      const retryDecision = vi
+        .fn()
+        .mockResolvedValue({ ...approved, revision: replacement.revision });
+      client.decideMockup = retryDecision;
+      expect(await model.decideMockup('Home', { verdict: 'approved' })).toBe(true);
+      expect(retryDecision).toHaveBeenCalledWith('s1', replacement.revision, 'Home', {
+        verdict: 'approved',
+      });
+      expect(model.state.mockupError).toBeUndefined();
+    } finally {
+      model.stop();
+    }
+  });
+
+  it('rejects duplicate decisions and comment submission while a verdict is in flight', async () => {
+    const client = stubClient();
+    client.getActivity = vi
+      .fn()
+      .mockResolvedValueOnce(activity(pending))
+      .mockResolvedValue(activity(approved));
+    let resolveDecision!: (review: MockupReview) => void;
+    const decideMockup = vi.fn().mockImplementation(
+      () =>
+        new Promise<MockupReview>((resolve) => {
+          resolveDecision = resolve;
+        }),
+    );
+    client.decideMockup = decideMockup;
+    const sendComments = vi.fn();
+    client.sendMockupComments = sendComments;
+    const model = new SessionModel({
+      client,
+      sessionId: 's1',
+      transport: recordingConnect().connect,
+      activityPollMs: 0,
+    });
+    try {
+      model.start();
+      await vi.waitFor(() => expect(model.state.mockupReview).toEqual(pending));
+      const saving = model.decideMockup('Home', { verdict: 'approved' });
+      expect(model.state.decidingMockup).toBe(true);
+      expect(await model.decideMockup('Home', { verdict: 'open' })).toBe(false);
+      expect(await model.sendMockupComments()).toBe(false);
+      expect(decideMockup).toHaveBeenCalledTimes(1);
+      expect(sendComments).not.toHaveBeenCalled();
+      resolveDecision(approved);
+      expect(await saving).toBe(true);
+      expect(model.state.decidingMockup).toBe(false);
+      expect(model.state.mockupReview).toEqual(approved);
+    } finally {
+      model.stop();
+    }
+  });
 });
 
 describe('SessionModel — planning', () => {
