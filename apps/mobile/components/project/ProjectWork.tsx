@@ -19,11 +19,12 @@ import {
 } from '@verity/mobile';
 import { router } from 'expo-router';
 import { useMemo, useState, type ReactElement } from 'react';
-import { Alert, View } from 'react-native';
+import { Alert, Platform, View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 
 import type { InboxFeed } from '../home/HomeInbox';
 import { SessionMarkerColumn, sessionMarkers, sessionMarkersLabel } from '../SessionMarkerColumn';
+import { SwipeableSessionRow } from '../SessionRowActions';
 import { SessionSettingsDialog } from '../SessionSettingsDialog';
 import { UnreadDot } from '../UnreadDot';
 import { WorkingDot } from '../WorkingDot';
@@ -37,7 +38,10 @@ export type WorkFilter = 'now' | 'all' | 'favorites';
 
 const EMPTY: Record<Exclude<WorkFilter, 'now'>, string> = {
   all: 'No sessions in this project yet.',
-  favorites: 'No favorites. Long press a session to add one.',
+  favorites:
+    Platform.OS === 'web'
+      ? 'No favorites. Right-click a session to add one.'
+      : 'No favorites. Swipe right on a session to add one.',
 };
 
 // Only the states a bare row cannot show carry a tag (showsSessionLabel): running
@@ -175,8 +179,9 @@ function itemSubtitle(item: InboxItem, label: string): string | undefined {
  * where it is restored, so this list keeps no fold of hidden items.
  *
  * Rows carry the session list's markers — the working dot, the blue dot for a new
- * answer, the star, automation and links. A row opens its session; a long press
- * offers favorite, the session settings (rename, move, linked sessions) and delete.
+ * answer, the star, automation and links. A row opens its session; swipe actions
+ * and the browser context menu offer favorite, session settings (rename, move,
+ * linked sessions) and delete.
  */
 export function ProjectWork({
   client,
@@ -288,16 +293,6 @@ export function ProjectWork({
         { text: 'Delete', style: 'destructive', onPress: () => remove(session) },
       ],
     );
-  const actions = (session: SessionSummary) =>
-    Alert.alert(sessionLabel(session), undefined, [
-      {
-        text: session.favorite === true ? 'Remove from favorites' : 'Add to favorites',
-        onPress: () => toggleFavorite(session),
-      },
-      { text: 'Session settings', onPress: () => openSettings(session) },
-      { text: 'Delete', style: 'destructive', onPress: () => confirmRemove(session) },
-      { text: 'Cancel', style: 'cancel' },
-    ]);
 
   const sessionRow = (
     session: SessionSummary,
@@ -342,45 +337,56 @@ export function ProjectWork({
       .filter((part): part is string => typeof part === 'string' && part !== '')
       .join(', ');
     return (
-      <Row
+      <SwipeableSessionRow
         key={session.sessionId}
-        title={label}
-        subtitle={waiting?.subtitle ?? workSubtitle(session)}
-        leading={
-          needs && waiting !== undefined
-            ? { dot: waiting.intent }
-            : {
-                element: (
-                  <View style={styles.dot} testID={`work-dot-${session.sessionId}`}>
-                    {working ? <WorkingDot /> : unread ? <UnreadDot /> : null}
-                  </View>
-                ),
-              }
-        }
-        trailing={
-          statusTag !== undefined || markers.length > 0 ? (
-            <View style={styles.trailing}>
-              {statusTag !== undefined ? (
-                <StatusTag intent={statusTag.intent} label={statusTag.label} />
-              ) : null}
-              <SessionMarkerColumn
-                markers={markers}
-                previewUrl={previews.urls.get(session.sessionId) ?? null}
-                onOpenLinks={() => openSettings(session, true)}
-              />
-            </View>
-          ) : undefined
-        }
-        navigates={needs}
-        answers={needs && item !== undefined ? answersFor(item) : undefined}
-        onPress={() => {
-          markSeen(session.sessionId, session.eventCount, session.eventCountVersion);
-          onOpenSession(session.sessionId);
-        }}
-        onLongPress={() => actions(session)}
-        accessibilityLabel={spoken}
-        accessibilityHint="Opens the session. Long press to favorite, link, rename or delete it."
-      />
+        favorite={session.favorite === true}
+        label={label}
+        onToggleFavorite={() => toggleFavorite(session)}
+        onEdit={() => openSettings(session)}
+        onDelete={() => confirmRemove(session)}
+      >
+        <Row
+          title={label}
+          subtitle={waiting?.subtitle ?? workSubtitle(session)}
+          leading={
+            needs && waiting !== undefined
+              ? { dot: waiting.intent }
+              : {
+                  element: (
+                    <View style={styles.dot} testID={`work-dot-${session.sessionId}`}>
+                      {working ? <WorkingDot /> : unread ? <UnreadDot /> : null}
+                    </View>
+                  ),
+                }
+          }
+          trailing={
+            statusTag !== undefined || markers.length > 0 ? (
+              <View style={styles.trailing}>
+                {statusTag !== undefined ? (
+                  <StatusTag intent={statusTag.intent} label={statusTag.label} />
+                ) : null}
+                <SessionMarkerColumn
+                  markers={markers}
+                  previewUrl={previews.urls.get(session.sessionId) ?? null}
+                  onOpenLinks={() => openSettings(session, true)}
+                />
+              </View>
+            ) : undefined
+          }
+          navigates={needs}
+          answers={needs && item !== undefined ? answersFor(item) : undefined}
+          onPress={() => {
+            markSeen(session.sessionId, session.eventCount, session.eventCountVersion);
+            onOpenSession(session.sessionId);
+          }}
+          accessibilityLabel={spoken}
+          accessibilityHint={
+            Platform.OS === 'web'
+              ? 'Opens the session. Right-click for favorite, edit and delete actions.'
+              : 'Opens the session. Swipe right to favorite, or left to edit or delete.'
+          }
+        />
+      </SwipeableSessionRow>
     );
   };
   const answersFor = (item: InboxItem) => {

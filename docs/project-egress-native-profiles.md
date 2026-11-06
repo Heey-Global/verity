@@ -103,7 +103,10 @@ canonical egress mounts remain explicitly pending. No fabricated update journal,
 manual target-helper invocation or signature substitution authorizes this path.
 
 The first assessment supports native systemd on little-endian x86_64 Ubuntu 24.04
-or 26.04 with rootful Docker 29.9.2 and live restore disabled. It verifies the
+or 26.04 with rootful Docker 29.8.0 or 29.9.2 and live restore disabled. These are
+assessment candidates, not accepted production profiles; the descriptor binds the
+exact observed Docker version and rejects version drift. Provisioning does not
+upgrade or restart Docker. It verifies the
 release-owned Node/controller/BPF artifacts and runtime pins, the complete gVisor
 runtime tree, exact runtime arguments and package identities. Missing allowlisted
 prerequisites are installed at exact versions selected from authenticated distro
@@ -129,3 +132,23 @@ update/reboot and failure-recovery checks with independent packet observations.
 Local tests and experimental boot lifecycle evidence do not prove this complete
 signed Staging route. Production acceptance additionally requires reviewed retained
 evidence and a release-owned exact profile exercised through production admission.
+
+### Assessment failure and retry contract
+
+Assessment authorization uses the same bounded deployment identifier contract as
+managed deployment state (including installer-generated `ubuntu-<hex8>` IDs).
+The private grant written before a job runs is not completion. Assessment
+preflight failure persists a fixed public reason code and exits unsuccessfully,
+so the Updater cannot mark that assessment completed. Raw exception text is
+never copied into public diagnostics. Codes distinguish invalid assessment
+authority, unsupported Docker host configuration, missing package candidates and
+missing project/relay runtimes.
+
+Only completion markers with `completionVersion: 2` suppress reconciliation.
+Older markers may represent swallowed preflight failures and are retried through
+a new deterministic installed-assessment operation identity. The host wrapper
+retains its private job result; retries preserve the control key and host state.
+The normal signed update delivers the repair. No manual host preparation or
+Docker upgrade is required for the listed assessment candidates. A successful
+installation still requires authenticated service readiness and actual Staging
+traffic acceptance before any production compatibility claim.

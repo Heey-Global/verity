@@ -16,7 +16,6 @@ import { useFocusedSessionRead } from '../../hooks/useFocusedSessionRead';
 import { useSessionGoogleStatus } from '../../hooks/useSessionGoogleStatus';
 import { reportRecordedScrollDiagnostic } from '../../lib/scrollDiagnostics';
 import { SessionBar, SessionBarContent, SessionBarTarget } from '../../components/ui/SessionBar';
-import { SessionVulnerabilityCard } from '../../components/vulnerability/SessionVulnerabilityCard';
 import {
   VulnerabilityFixSheet,
   VulnerabilityStarterCard,
@@ -4879,8 +4878,6 @@ export const SessionChat = memo(function SessionChat({
       {client ? <QAApprovalCard client={client} sessionId={sessionId} /> : null}
       {client ? <SchedulingRequestsCard client={client} sessionId={sessionId} /> : null}
       {client ? <AssistantSchedulingOverview client={client} sessionId={sessionId} /> : null}
-      {/* Last above the composer: below the plan and the PR bar, never above them. */}
-      {client ? <SessionVulnerabilityCard client={client} sessionId={sessionId} /> : null}
       <InputBar
         hasPlan={planning === 'active' && planningPlan != null}
         planning={planning === 'active'}

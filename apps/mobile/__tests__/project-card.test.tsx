@@ -198,6 +198,6 @@ describe('project card', () => {
     const needs = screen.getByTestId('work-needs-you');
     expect(within(needs).getByLabelText(/^loose, .*Question$/)).toBeTruthy();
     // Answers need the feed that sends them, which only the page holds.
-    expect(within(needs).queryAllByRole('button')).toHaveLength(1);
+    expect(within(needs).queryByRole('button', { name: 'Yes' })).toBeNull();
   });
 });

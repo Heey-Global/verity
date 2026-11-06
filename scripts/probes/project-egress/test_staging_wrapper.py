@@ -1,5 +1,6 @@
 """Execute the wrapper's authorization reader against controlled channel files."""
 import os
+import importlib.util
 from pathlib import Path
 import re
 import sys
@@ -23,7 +24,7 @@ class StagingWrapperTests(unittest.TestCase):
             channel_path.chmod(0o600)
             output = root / 'authorization.json'
             env = {'VERITY_EGRESS_ASSESSMENT_' + key: value for key, value in {
-                'DEPLOYMENT_ID': '12345678-1234-1234-1234-123456789abc',
+                'DEPLOYMENT_ID': 'ubuntu-ac986397',
                 'INSTALLED_DIGEST': 'ghcr.io/heey-global/verity/verity-server@sha256:' + 'a' * 64,
                 'TARGET_DIGEST': 'ghcr.io/heey-global/verity/verity-server@sha256:' + 'b' * 64,
                 'CHANNEL_PATH': '/var/lib/docker/volumes/verity-managed-deployment/_data/update-channel.json',
@@ -47,6 +48,20 @@ class StagingWrapperTests(unittest.TestCase):
         self.assertIs(value['productionAccepted'], False)
         self.assertEqual(value['channelOwnerUid'], 0)
         self.assertEqual(value['operationId'], 'c' * 24)
+
+    def test_installer_id_round_trips_from_wrapper_into_host_authorization(self):
+        source = WRAPPER.parents[2] / 'scripts/project-egress-install.py'
+        spec = importlib.util.spec_from_file_location('wrapper_installer', source)
+        installer = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(installer)
+        authorization = self.authorize()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            channel = root / authorization['channelPath'].lstrip('/')
+            channel.parent.mkdir(parents=True)
+            channel.write_text(json.dumps('staging'))
+            channel.chmod(0o600)
+            self.assertEqual(installer.staging_authorization(root, authorization)['deploymentId'], 'ubuntu-ac986397')
 
     def test_stable_and_foreign_owner_are_rejected(self):
         for options in ({'channel': 'stable'}, {'channel': {'channel': 'staging'}}, {'owner': 1000}):

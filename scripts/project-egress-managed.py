@@ -611,12 +611,14 @@ def provision(source, relay=None, authority=None, gid=65531, root=Path('/'), run
                 base.prepare_managed_prerequisites(root, run, str(release / 'node'))
             if assessment is None:
                 check(root, run, str(release / 'node'))
-        except (ValueError, OSError, subprocess.SubprocessError):
+        except (ValueError, OSError, subprocess.SubprocessError) as error:
             # Preserve running release/config/units on incompatible upgrades.
             if not (root / 'opt/verity-egress').is_symlink():
                 for relative, data in configs.items():
                     base.atomic_file(root / relative, data, 0o600)
-            return write_status(root, gid, 'runtime_unsupported')
+            reason = (error.reason if isinstance(error, base.PreflightError) else
+                      'provisioning_failed' if assessment_authorization is not None else 'runtime_unsupported')
+            return write_status(root, gid, reason)
         try:
             reject_bridge_collisions(root, run)
             # Persist before the first controller can synchronize/open admission.
@@ -688,6 +690,8 @@ def main():
                           'controlGid': getattr(args, 'control_gid', 1000)}))
         raise SystemExit(1)
     print(json.dumps(result))
+    if args.assessment_authorization is not None and not result['available']:
+        raise SystemExit(1)
 
 
 if __name__ == '__main__':
