@@ -21,6 +21,7 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { Icon } from '../Icon';
 import { MockupThumbs } from '../session/MockupReview';
 import { Button, Card, CardHead, StatusTag, Text } from '../ui';
+import { Disclosure } from '../ui/Disclosure';
 import { tint } from '../ui/tint';
 import { useTaskPreferences } from '../../lib/taskPreferences';
 import { taskAccountScope } from '../../lib/tasksStore';
@@ -466,13 +467,32 @@ export function InboxCard({
             }}
           />
         ) : null}
-        {item.request !== undefined ? (
-          // Allow is decided from exactly what the tool receives, so the input is
-          // shown whole; a clipped summary could hide the part that matters.
+        {item.lines?.map((line, index) => (
+          <Text
+            key={index}
+            variant={line.kind === 'code' ? 'code' : 'bodySmall'}
+            tone={line.kind === 'code' ? undefined : 'muted'}
+            selectable
+            testID={`inbox-line-${line.kind}`}
+          >
+            {line.text}
+          </Text>
+        ))}
+        {item.request === undefined ? null : item.lines !== undefined ? (
+          // Read in words first; the complete input stays one tap away, so Allow is
+          // never decided from a summary that could not be checked against it.
+          <Disclosure title="Full request">
+            <Text variant="code" testID="inbox-request" selectable>
+              {item.request}
+            </Text>
+          </Disclosure>
+        ) : (
+          // Nothing could put this tool into words, so the input is the thing to
+          // read and is shown whole; a clipped dump could hide the part that matters.
           <Text variant="code" testID="inbox-request" selectable>
             {item.request}
           </Text>
-        ) : null}
+        )}
         <View style={styles.actions}>
           {restoring ? (
             <Button label="Restore" size="compact" variant="secondary" onPress={onRestore} />

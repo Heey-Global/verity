@@ -135,6 +135,9 @@ import { HomeInbox } from '../components/home/HomeInbox';
 import { HomeTabBar, type HomeTab } from '../components/home/HomeTabBar';
 import { useNewDesign } from '../lib/homePreferences';
 import { ProjectPage } from '../components/project/ProjectPage';
+import { KnowledgeFileView } from '../components/knowledge/KnowledgeFileView';
+import { KnowledgePaneContext, type KnowledgePane } from '../components/knowledge/KnowledgePane';
+import type { KnowledgeScope } from '../components/knowledge/knowledgeScope';
 import { ProjectCard } from '../components/project/ProjectCard';
 import { VerityPage } from '../components/verity/VerityPage';
 import { toneColor } from '../theme/tokens';
@@ -182,6 +185,50 @@ function SessionList({ client }: { client: VerityClient }) {
       mockups?: string;
     }>();
   const [selectedId, setSelectedId] = useState<string | null>(selected ?? null);
+  // A knowledge file read in the wide layout's right column, over the session,
+  // which stays mounted underneath so closing the file shows it unchanged.
+  const [knowledgeFile, setKnowledgeFile] = useState<{
+    scope: KnowledgeScope;
+    file: string;
+  } | null>(null);
+  // Unsaved edits in that file: replacing it asks first, as its own close does.
+  const knowledgeDirty = useRef(false);
+  const afterDiscard = useCallback((action: () => void) => {
+    if (!knowledgeDirty.current) {
+      action();
+      return;
+    }
+    Alert.alert('Discard changes?', 'Your edits to this file are not saved.', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Discard',
+        style: 'destructive',
+        onPress: () => {
+          knowledgeDirty.current = false;
+          action();
+        },
+      },
+    ]);
+  }, []);
+  const knowledgePane = useMemo<KnowledgePane>(
+    () => ({ openFile: (scope, file) => afterDiscard(() => setKnowledgeFile({ scope, file })) }),
+    [afterDiscard],
+  );
+  // Any other way to a session (a deep link, a move, a deletion) as well —
+  // unless the file has unsaved edits, which then stay in front to be saved.
+  useEffect(() => {
+    if (!knowledgeDirty.current) setKnowledgeFile(null);
+  }, [selectedId]);
+  // Choosing a session — from the list, Home or a project page — means reading it,
+  // even when it is the one already selected under the file.
+  const selectSession = useCallback(
+    (sessionId: string | null) =>
+      afterDiscard(() => {
+        setKnowledgeFile(null);
+        setSelectedId(sessionId);
+      }),
+    [afterDiscard],
+  );
   if (selectedId) markFirstSessionRender(selectedId, 'selection-home-render-entry');
   const finishHomeWork = beginRenderWork('home-body', selectedId ?? undefined);
   useSessionLayoutNavigation(wide, selectedId, {
@@ -672,17 +719,23 @@ function SessionList({ client }: { client: VerityClient }) {
       const session = sessions.find((candidate) => candidate.sessionId === sessionId);
       // `onOpenSession` only prefetches and marks the session seen; the rows
       // navigate through their own Link, so Home navigates here, once.
-      if (session) onOpenSession(session);
       if (wide) {
-        setSelectedId(sessionId);
-        router.setParams({ selected: sessionId, mockups: options?.mockups ? '1' : undefined });
-      } else
-        router.push({
-          pathname: '/session/[id]',
-          params: options?.mockups === true ? { id: sessionId, mockups: '1' } : { id: sessionId },
+        // Nothing happens until unsaved edits in a file beside it are given up.
+        afterDiscard(() => {
+          if (session) onOpenSession(session);
+          setKnowledgeFile(null);
+          setSelectedId(sessionId);
+          router.setParams({ selected: sessionId, mockups: options?.mockups ? '1' : undefined });
         });
+        return;
+      }
+      if (session) onOpenSession(session);
+      router.push({
+        pathname: '/session/[id]',
+        params: options?.mockups === true ? { id: sessionId, mockups: '1' } : { id: sessionId },
+      });
     },
-    [sessions, onOpenSession, wide],
+    [sessions, onOpenSession, wide, afterDiscard],
   );
   const repairFromHome = useCallback(
     (projectId: string) => void repairProjectRow(projectId),
@@ -800,7 +853,7 @@ function SessionList({ client }: { client: VerityClient }) {
           onRenameSession={setRenaming}
           onToggleFavoriteSession={onToggleFavoriteSession}
           onDeleteSession={onDeleteSession}
-          onSelectSession={wide ? setSelectedId : undefined}
+          onSelectSession={wide ? selectSession : undefined}
           onNewSession={wide ? createSessionInPane : undefined}
           onOpenSession={onOpenSession}
           onUpdateProject={confirmSandboxUpdate}
@@ -1173,41 +1226,70 @@ function SessionList({ client }: { client: VerityClient }) {
   if (!wide) return <SchedulingDiagnostics stage="sidebar">{sidebar}</SchedulingDiagnostics>;
 
   return (
-    <View style={styles.splitRow}>
-      <View style={[styles.leftPane, { width: sidebarWidth }]}>
-        <SchedulingDiagnostics stage="sidebar">{sidebar}</SchedulingDiagnostics>
-      </View>
-      <View style={styles.rightPane}>
-        {selectedId && baseUrl ? (
-          <DeferredSessionPane
-            sessionId={selectedId}
-            key={`${selectedId}:${moveGeneration}`}
-            fallback={
-              <View style={styles.rightPanePlaceholder} accessibilityRole="progressbar">
-                <Text style={styles.rightPanePlaceholderText}>
-                  {sessions.find((session) => session.sessionId === selectedId)?.name ?? 'Session'}
-                </Text>
-                <ActivityIndicator />
-                <Text style={styles.rightPanePlaceholderText}>Loading session…</Text>
-              </View>
-            }
+    <KnowledgePaneContext.Provider value={knowledgePane}>
+      <View style={styles.splitRow}>
+        <View style={[styles.leftPane, { width: sidebarWidth }]}>
+          <SchedulingDiagnostics stage="sidebar">{sidebar}</SchedulingDiagnostics>
+        </View>
+        <View style={styles.rightPane}>
+          {knowledgeFile ? (
+            <View style={styles.knowledgeOverlay}>
+              <KnowledgeFileView
+                key={JSON.stringify([knowledgeFile.scope, knowledgeFile.file])}
+                client={client}
+                scope={knowledgeFile.scope}
+                file={knowledgeFile.file}
+                chrome="pane"
+                onClose={() => setKnowledgeFile(null)}
+                onDirtyChange={(dirty) => {
+                  knowledgeDirty.current = dirty;
+                }}
+              />
+            </View>
+          ) : null}
+          {/* While a file lies over it, the session stays mounted but takes no
+              touches and is hidden from VoiceOver and TalkBack, so no control under
+              the file (an Allow, say) can be activated unseen. */}
+          <View
+            style={styles.flex}
+            pointerEvents={knowledgeFile !== null ? 'none' : 'auto'}
+            accessibilityElementsHidden={knowledgeFile !== null}
+            importantForAccessibility={knowledgeFile !== null ? 'no-hide-descendants' : 'auto'}
+            aria-hidden={knowledgeFile !== null}
           >
-            <SessionChat
-              client={client}
-              sessionId={selectedId}
-              baseUrl={baseUrl}
-              embedded
-              initialTargetMessageId={targetMessageId}
-              initialTargetSearchQuery={targetSearchQuery}
-              retrySecret={retrySecret}
-              initialMockupReview={selected === selectedId && mockups === '1'}
-            />
-          </DeferredSessionPane>
-        ) : (
-          <RightPanePlaceholder />
-        )}
+            {selectedId && baseUrl ? (
+              <DeferredSessionPane
+                sessionId={selectedId}
+                key={`${selectedId}:${moveGeneration}`}
+                fallback={
+                  <View style={styles.rightPanePlaceholder} accessibilityRole="progressbar">
+                    <Text style={styles.rightPanePlaceholderText}>
+                      {sessions.find((session) => session.sessionId === selectedId)?.name ??
+                        'Session'}
+                    </Text>
+                    <ActivityIndicator />
+                    <Text style={styles.rightPanePlaceholderText}>Loading session…</Text>
+                  </View>
+                }
+              >
+                <SessionChat
+                  client={client}
+                  sessionId={selectedId}
+                  baseUrl={baseUrl}
+                  embedded
+                  initialTargetMessageId={targetMessageId}
+                  initialTargetSearchQuery={targetSearchQuery}
+                  retrySecret={retrySecret}
+                  initialMockupReview={selected === selectedId && mockups === '1'}
+                />
+              </DeferredSessionPane>
+            ) : (
+              <RightPanePlaceholder />
+            )}
+          </View>
+        </View>
       </View>
-    </View>
+    </KnowledgePaneContext.Provider>
   );
 }
 
@@ -2698,6 +2780,8 @@ const styles = StyleSheet.create((theme) => ({
     flex: 1,
     backgroundColor: theme.colors.background,
   },
+  // Above the session pane, which stays mounted below it.
+  knowledgeOverlay: { ...StyleSheet.absoluteFillObject, zIndex: 1 },
   rightPanePlaceholder: {
     flex: 1,
     alignItems: 'center',

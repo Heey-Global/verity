@@ -6,6 +6,8 @@ import { projectDisplayName } from './projectName.js';
 import { pullRequestMergeButton } from './pullRequest.js';
 import { sandboxUpdateNeedsAttention, isSecuritySandboxUpdate } from './sandboxUpdate.js';
 import { sessionLabel } from './sessionLabel.js';
+import { permissionInputText } from './permissionInput.js';
+import { permissionSummary, type PermissionLine } from './permissionSummary.js';
 import { toolCallView } from './toolCall.js';
 
 /**
@@ -61,9 +63,13 @@ export interface InboxItem {
   /** Where it comes from: project, session, time. */
   context: string;
   message?: string;
+  /** A permission in words: the command, address or message it concerns. When
+   *  present, {@link request} is the full input behind it rather than the thing
+   *  to read first. */
+  lines?: PermissionLine[];
   /** A permission's complete input, formatted. Allow is only offered together
-   *  with it, so the operator approves what the tool will receive rather than a
-   *  summary of it. */
+   *  with it, so the operator can always see what the tool will receive rather
+   *  than only a summary of it. */
   request?: string;
   sessionId?: string;
   projectId?: string;
@@ -215,6 +221,7 @@ function sessionItems(
       completedAt: null,
       description: null,
     });
+    const summary = permissionSummary(request.tool, request.input);
     const decidable = request.input !== undefined && !OPEN_TO_DECIDE.has(request.tool);
     items.push({
       ...base,
@@ -222,15 +229,20 @@ function sessionItems(
       kind: 'permission',
       tag: 'Permission',
       tone: 'attention',
-      title: view.headline,
+      title: summary.title,
       context: where,
-      ...(view.subtitle ? { message: view.subtitle } : {}),
-      ...(decidable ? { request: JSON.stringify(request.input, null, 2) } : {}),
+      ...(summary.lines.length > 0
+        ? { lines: summary.lines }
+        : view.subtitle
+          ? { message: view.subtitle }
+          : {}),
+      ...(decidable ? { request: permissionInputText(request.input) } : {}),
       actions: decidable
         ? [
             {
               kind: 'allow',
-              label: 'Allow',
+              // The session's card says the same: one call, nothing remembered.
+              label: 'Allow once',
               sessionId: session.sessionId,
               toolUseId: request.toolUseId,
             },

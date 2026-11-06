@@ -8,6 +8,7 @@ import {
   Button,
   Card,
   ConfirmSheet,
+  FilterChips,
   Group,
   HintBox,
   IconButton,
@@ -31,6 +32,7 @@ import {
 export default function DesignSystemCatalog() {
   const [sharing, setSharing] = useState(true);
   const [remote, setRemote] = useState(false);
+  const [chip, setChip] = useState<'all' | 'running' | 'favorites'>('all');
   const [key, setKey] = useState('');
   const [notes, setNotes] = useState('');
   const [loading, setLoading] = useState(false);
@@ -171,6 +173,22 @@ export default function DesignSystemCatalog() {
           <Toggle value disabled />
           <Toggle value switching />
         </View>
+        <View style={styles.inline}>
+          <View style={styles.chips}>
+            <FilterChips
+              options={[
+                { value: 'all', label: 'All' },
+                { value: 'running', label: 'Running' },
+                { value: 'favorites', label: 'Favorites', icon: 'star' },
+              ]}
+              value={chip}
+              onChange={setChip}
+              accessibilityLabel="Filter sessions"
+              compact
+            />
+          </View>
+          <IconButton icon="plus" accessibilityLabel="New session" onPress={() => undefined} />
+        </View>
       </View>
 
       <View style={styles.section}>
@@ -225,6 +243,36 @@ export default function DesignSystemCatalog() {
           pending={false}
           disabled={false}
           onAction={() => undefined}
+        />
+        <InboxCard
+          item={{
+            key: 'catalog-permission',
+            kind: 'permission',
+            tag: 'Permission',
+            tone: 'attention',
+            title: 'Run trusted command with 2 secrets?',
+            context: 'acme/infra · Daily cluster check',
+            lines: [
+              { kind: 'code', text: '"/usr/local/bin/cluster-inspect" "job" "e2e"' },
+              {
+                kind: 'text',
+                text: 'Verity injects TS_AUTH_KEY as a file at TS_AUTHKEY_FILE, KUBECONFIG as a file at KUBECONFIG_FILE. This trusted process can read, transform, or disclose every one of them in full.',
+              },
+            ],
+            request: '{ "command": ["/usr/local/bin/cluster-inspect", "job", "e2e"] }',
+            actions: [
+              { kind: 'allow', label: 'Allow once', sessionId: 's', toolUseId: 't' },
+              { kind: 'deny', label: 'Deny', sessionId: 's', toolUseId: 't' },
+              { kind: 'open_session', label: 'Open', sessionId: 's' },
+            ],
+            at: 0,
+            dismiss: 'session',
+          }}
+          selected={false}
+          pending={false}
+          disabled={false}
+          onAction={() => undefined}
+          onDismiss={() => undefined}
         />
         <InboxCard
           item={{
@@ -291,4 +339,5 @@ const styles = StyleSheet.create((theme) => ({
   section: { gap: theme.spacing.sm },
   inline: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: theme.spacing.sm },
   cardBody: { flex: 1, gap: theme.spacing.xxs },
+  chips: { flex: 1, minWidth: 0 },
 }));

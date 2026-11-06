@@ -5,6 +5,9 @@ import { RefreshControl, ScrollView, View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 
 import { VerityIdentity } from '../home/HomeInbox';
+import { KnowledgeColumn } from '../knowledge/KnowledgeBrowser';
+import { useKnowledgePane } from '../knowledge/KnowledgePane';
+import { SHARED, pushKnowledge } from '../knowledge/knowledgeScope';
 import { Button, Group, Row, SectionHeader, Text, TextField } from '../ui';
 
 const AREA: Record<RecentSharedKnowledge['area'], string> = {
@@ -62,6 +65,9 @@ export function VerityPage({
   const [question, setQuestion] = useState('');
   const [refreshing, setRefreshing] = useState(false);
   const [now, setNow] = useState(() => Date.now());
+  const pane = useKnowledgePane();
+  // In the wide layout's left column the library opens in the column itself.
+  const [browsing, setBrowsing] = useState(false);
 
   const load = useCallback(async () => {
     setNow(Date.now());
@@ -168,10 +174,10 @@ export function VerityPage({
               subtitle={recentLine(entry, now)}
               navigates
               onPress={() =>
-                router.push({
-                  pathname: '/settings/shared-knowledge',
-                  params: { path: entry.path },
-                })
+                // Beside the session in the wide layout; its own screen on a phone.
+                pane
+                  ? pane.openFile(SHARED, entry.path)
+                  : pushKnowledge(SHARED, { file: entry.path })
               }
             />
           ))}
@@ -207,12 +213,22 @@ export function VerityPage({
           title="Shared knowledge"
           subtitle="Reference material available to agents across projects"
           navigates
-          onPress={() => router.push('/settings/shared-knowledge')}
+          onPress={() =>
+            pane && onBack ? setBrowsing(true) : router.push('/settings/shared-knowledge')
+          }
         />
       </Group>
     </ScrollView>
   );
   if (!onBack) return page;
+  if (browsing)
+    return (
+      <KnowledgeColumn
+        client={client}
+        scope={SHARED}
+        exit={{ label: 'Verity', onPress: () => setBrowsing(false) }}
+      />
+    );
   return (
     <View style={styles.flex}>
       <View style={styles.topBar}>

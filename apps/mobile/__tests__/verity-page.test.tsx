@@ -17,6 +17,7 @@ import { act, fireEvent, render, screen } from '@testing-library/react-native';
 
 import { VerityPage, changedAgo, recentLine } from '../components/verity/VerityPage';
 import VerityScreen from '../app/verity';
+import { KnowledgePaneContext } from '../components/knowledge/KnowledgePane';
 import {
   mockCreateVerityClient,
   mockDismissTo,
@@ -96,8 +97,34 @@ it('opens a recently changed page in the Shared browser', async () => {
   fireEvent.press(screen.getByLabelText(/^Tone of voice/));
   expect(mockPush).toHaveBeenCalledWith({
     pathname: '/settings/shared-knowledge',
-    params: { path: 'insights/tone.md' },
+    params: { file: 'insights/tone.md' },
   });
+});
+
+it('opens a recently changed page beside the session in the wide layout', async () => {
+  // Over both columns it would hide the session the operator is reading.
+  const openFile = jest.fn();
+  const client = {
+    listRecentSharedKnowledge: jest.fn().mockResolvedValue({ entries: recent, truncated: false }),
+    listProjects: jest.fn().mockResolvedValue([control]),
+    listSharedKnowledgeFiles: jest
+      .fn()
+      .mockResolvedValue({ root: 'shared', path: '', entries: [], truncated: false }),
+  };
+  render(
+    <KnowledgePaneContext.Provider value={{ openFile }}>
+      <VerityPage client={client as unknown as VerityClient} onBack={jest.fn()} />
+    </KnowledgePaneContext.Provider>,
+  );
+  await act(async () => undefined);
+  fireEvent.press(screen.getByLabelText(/^Tone of voice/));
+  expect(openFile).toHaveBeenCalledWith({ kind: 'shared' }, 'insights/tone.md');
+  // Shared knowledge opens in the column, with the way back to Verity.
+  fireEvent.press(screen.getByLabelText(/^Shared knowledge/));
+  expect(await screen.findByTestId('embedded-knowledge')).toBeTruthy();
+  fireEvent.press(screen.getByText('Verity'));
+  expect(screen.getByTestId('verity-page')).toBeTruthy();
+  expect(mockPush).not.toHaveBeenCalled();
 });
 
 it('says when the list covers only part of a large library', async () => {

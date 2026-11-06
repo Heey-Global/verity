@@ -1,9 +1,14 @@
 import {
   VerityApiError,
   isUnread,
+  markerAttention,
+  modelDisplayName,
   sessionBadge,
   sessionLabel,
-  type BadgeTone,
+  showsSessionLabel,
+  workOrder,
+  type ProjectRecord,
+  type SessionStatus,
   type SessionSummary,
   type VerityClient,
 } from '@verity/mobile';
@@ -12,16 +17,22 @@ import { useMemo, useState } from 'react';
 import { Alert, View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 
-import { Button, FilterChips, Group, Row, StatusDot, Text, useTextPrompt } from '../ui';
+import { SessionMarkerColumn, sessionMarkers, sessionMarkersLabel } from '../SessionMarkerColumn';
+import { SessionSettingsDialog } from '../SessionSettingsDialog';
+import { UnreadDot } from '../UnreadDot';
+import { WorkingDot } from '../WorkingDot';
+import { FilterChips, Group, IconButton, Row, StatusTag, Text } from '../ui';
 import type { StatusIntent } from '../ui/Status';
+import { isLinkableSession } from '../../lib/sessionLinks';
+import { useSessionPreviews } from '../../lib/sessionPreviews';
 
 export type WorkFilter = 'all' | 'running' | 'done' | 'favorites';
 
-const FILTERS: readonly { value: WorkFilter; label: string }[] = [
+const FILTERS: readonly { value: WorkFilter; label: string; icon?: 'star' }[] = [
   { value: 'all', label: 'All' },
   { value: 'running', label: 'Running' },
   { value: 'done', label: 'Done' },
-  { value: 'favorites', label: 'Favorites' },
+  { value: 'favorites', label: 'Favorites', icon: 'star' },
 ];
 
 const EMPTY: Record<WorkFilter, string> = {
@@ -31,12 +42,13 @@ const EMPTY: Record<WorkFilter, string> = {
   favorites: 'No favorites. Long press a session to add one.',
 };
 
-const INTENT: Record<BadgeTone, StatusIntent> = {
-  idle: 'optional',
-  active: 'transient',
-  attention: 'needsSetup',
-  danger: 'needsSetup',
-  done: 'ready',
+// Only the states a bare row cannot show carry a tag (showsSessionLabel): running
+// has the working dot, done and idle are the absence of one. Done is not green
+// here, as it never was in the session list.
+const TAG_INTENT: Partial<Record<SessionStatus, StatusIntent>> = {
+  awaiting_input: 'needsSetup',
+  crashed: 'needsSetup',
+  awaiting_dependency: 'optional',
 };
 
 /** Which sessions a Work filter keeps. */
@@ -58,27 +70,33 @@ export function workFilter(session: SessionSummary, filter: WorkFilter): boolean
   }
 }
 
-/** The line under a session's name: what is new, and its pull request. */
+/** The line under a session's name: its pull request and what it wants, else its model. */
 function workSubtitle(session: SessionSummary): string | undefined {
   const parts: string[] = [];
-  // No local overrides here: the page reloads after opening a session, and the
-  // server's per-person mark is what every device agrees on.
-  if (isUnread(session, new Map())) parts.push('New activity');
   const pr = session.pullRequest;
   if (pr) {
     parts.push(`PR #${String(pr.number)}`);
     if (pr.phase === 'merged') parts.push('merged');
     else if (pr.phase === 'closed') parts.push('closed');
-    else if (pr.pipeline === 'failure') parts.push('checks failing');
-    else if (pr.pipeline === 'success') parts.push('checks passed');
   }
-  return parts.length > 0 ? parts.join(' · ') : undefined;
+  // The same PR signals the session list marks (CI failed, ready to merge, …).
+  for (const flag of markerAttention({
+    status: session.status,
+    pr: session.pr,
+    attention: session.attention,
+  }))
+    if (flag.kind !== 'unread') parts.push(flag.label);
+  if (parts.length > 0) return parts.join(' · ');
+  return session.model ? modelDisplayName(session.model) : undefined;
 }
 
 /**
- * A project's sessions as one list, filtered by what they are doing. A row
- * opens its session; a long press offers rename, favorite and delete. Unlike the
- * project list this view does not reorder: it shows the order the list keeps.
+ * A project's sessions as one list, filtered by what they are doing and ordered
+ * by {@link workOrder}: what needs the operator or is moving first, then
+ * favorites. Each row carries the session list's markers — the working dot, the
+ * blue dot for a new answer, the star, automation and links. A row opens its
+ * session; a long press offers favorite, the session settings (rename, move,
+ * linked sessions) and delete.
  */
 export function ProjectWork({
   client,
@@ -92,38 +110,44 @@ export function ProjectWork({
   projectId?: string | undefined;
   sessions: readonly SessionSummary[];
   onOpenSession: (sessionId: string) => void;
-  /** After a rename, favorite or delete of `sessionId`, so the page and its
-   *  host (the wide layout's list and session pane) catch up. */
+  /** After a rename, favorite, move, link or delete of `sessionId`, so the page
+   *  and its host (the wide layout's list and session pane) catch up. */
   onChanged: (sessionId: string, deleted: boolean) => void;
 }) {
   const [filter, setFilter] = useState<WorkFilter>('all');
-  const textPrompt = useTextPrompt();
+  const previews = useSessionPreviews();
   const shown = useMemo(
-    () => sessions.filter((session) => workFilter(session, filter)),
+    // No local overrides: the page reloads after opening a session, and the
+    // server's per-person mark is what every device agrees on.
+    () => workOrder(sessions.filter((session) => workFilter(session, filter))),
     [sessions, filter],
   );
+  const [settings, setSettings] = useState<{
+    session: SessionSummary;
+    links: boolean;
+    // Linking reaches sessions in other projects, which this page does not hold.
+    projects: ProjectRecord[];
+    everySession: SessionSummary[];
+  }>();
 
   const failed = (title: string) => (caught: unknown) =>
     Alert.alert(title, caught instanceof Error ? caught.message : 'Please try again.');
-  const rename = (session: SessionSummary) =>
-    textPrompt.prompt(
-      'Rename session',
-      'An empty name shows the session by its first prompt again.',
-      (name) => {
-        void client
-          .renameSession(session.sessionId, name.trim() || null)
-          .then(() => onChanged(session.sessionId, false), failed('Could not rename session'));
-      },
-      'plain-text',
-      session.name ?? '',
-    );
+  const openSettings = (session: SessionSummary, links = false) => {
+    void Promise.all([
+      client.listProjects().catch(() => [] as ProjectRecord[]),
+      client.listSessions().catch(() => [...sessions]),
+    ]).then(([projects, everySession]) => setSettings({ session, links, projects, everySession }));
+  };
   const toggleFavorite = (session: SessionSummary) =>
     void client
       .setSessionFavorite(session.sessionId, session.favorite !== true)
       .then(() => onChanged(session.sessionId, false), failed('Could not update favorite'));
   const remove = (session: SessionSummary, force = false) =>
     void client.deleteSession(session.sessionId, force ? { force } : {}).then(
-      () => onChanged(session.sessionId, true),
+      () => {
+        setSettings(undefined);
+        onChanged(session.sessionId, true);
+      },
       (caught) => {
         if (caught instanceof VerityApiError && caught.status === 409 && !force) {
           Alert.alert(
@@ -150,11 +174,11 @@ export function ProjectWork({
     );
   const actions = (session: SessionSummary) =>
     Alert.alert(sessionLabel(session), undefined, [
-      { text: 'Rename', onPress: () => rename(session) },
       {
         text: session.favorite === true ? 'Remove from favorites' : 'Add to favorites',
         onPress: () => toggleFavorite(session),
       },
+      { text: 'Session settings', onPress: () => openSettings(session) },
       { text: 'Delete', style: 'destructive', onPress: () => confirmRemove(session) },
       { text: 'Cancel', style: 'cancel' },
     ]);
@@ -171,11 +195,9 @@ export function ProjectWork({
             compact
           />
         </View>
-        <Button
-          label="New session"
+        <IconButton
           icon="plus"
-          size="compact"
-          variant="secondary"
+          accessibilityLabel="New session"
           onPress={() =>
             router.push(projectId ? { pathname: '/new', params: { projectId } } : '/new')
           }
@@ -188,22 +210,109 @@ export function ProjectWork({
       ) : (
         <Group>
           {shown.map((session) => {
-            const badge = sessionBadge(session.status);
+            const label = sessionLabel(session);
+            const working = session.status === 'running' || session.backgroundWorking === true;
+            const unread = !working && isUnread(session, new Map());
+            const tag = showsSessionLabel(session.status) ? TAG_INTENT[session.status] : undefined;
+            const markers = sessionMarkers({
+              favorite: session.favorite === true,
+              linked: session.linked,
+              automation: session.automation?.status,
+              shared: previews.urls.has(session.sessionId)
+                ? previews.online.has(session.sessionId)
+                  ? 'online'
+                  : 'local'
+                : undefined,
+            });
+            const spoken = [
+              label,
+              working ? 'working' : unread ? 'new answer' : null,
+              tag !== undefined ? sessionBadge(session.status).label : null,
+              markers.length > 0 ? sessionMarkersLabel(markers) : null,
+            ]
+              .filter((part): part is string => part !== null)
+              .join(', ');
             return (
               <Row
                 key={session.sessionId}
-                title={`${session.favorite === true ? '★ ' : ''}${sessionLabel(session)}`}
+                title={label}
                 subtitle={workSubtitle(session)}
-                trailing={<StatusDot intent={INTENT[badge.tone]} label={badge.label} />}
+                leading={{
+                  element: (
+                    <View style={styles.dot} testID={`work-dot-${session.sessionId}`}>
+                      {working ? <WorkingDot /> : unread ? <UnreadDot /> : null}
+                    </View>
+                  ),
+                }}
+                trailing={
+                  tag !== undefined || markers.length > 0 ? (
+                    <View style={styles.trailing}>
+                      {tag !== undefined ? (
+                        <StatusTag intent={tag} label={sessionBadge(session.status).label} />
+                      ) : null}
+                      <SessionMarkerColumn
+                        markers={markers}
+                        previewUrl={previews.urls.get(session.sessionId) ?? null}
+                        onOpenLinks={() => openSettings(session, true)}
+                      />
+                    </View>
+                  ) : undefined
+                }
                 onPress={() => onOpenSession(session.sessionId)}
                 onLongPress={() => actions(session)}
-                accessibilityHint="Opens the session. Long press to rename, favorite or delete it."
+                accessibilityLabel={spoken}
+                accessibilityHint="Opens the session. Long press to favorite, link, rename or delete it."
               />
             );
           })}
         </Group>
       )}
-      {textPrompt.dialog}
+      {settings ? (
+        <SessionSettingsDialog
+          key={settings.session.sessionId}
+          initialSection={settings.links ? 'links' : undefined}
+          sessionId={settings.session.sessionId}
+          sessionName={settings.session.name ?? null}
+          displayName={sessionLabel(settings.session)}
+          projectId={settings.session.projectId ?? null}
+          projectName={
+            settings.projects.find((project) => project.id === settings.session.projectId)?.repo ??
+            'No project'
+          }
+          canMove={
+            settings.session.status !== 'running' &&
+            settings.projects.some(
+              (project) => project.id === settings.session.projectId && project.kind === 'local',
+            )
+          }
+          moveDisabledReason={
+            settings.session.status === 'running'
+              ? 'Finish the current turn before changing projects.'
+              : 'Moving is available for normal sessions in local projects.'
+          }
+          client={client}
+          projects={settings.projects
+            .filter((project) => project.kind === 'local')
+            .map((project) => ({ id: project.id, name: project.repo }))}
+          // The same rule as the session list's dialog, so both offer the same partners.
+          linkableSessions={settings.everySession
+            .filter((candidate) =>
+              isLinkableSession(candidate, settings.session.sessionId, settings.projects),
+            )
+            .map((candidate) => ({
+              id: candidate.sessionId,
+              name: sessionLabel(candidate),
+              projectId: candidate.projectId!,
+              projectName:
+                settings.projects.find((project) => project.id === candidate.projectId)?.repo ??
+                candidate.projectId!,
+              detail: modelDisplayName(candidate.model),
+            }))}
+          onClose={() => setSettings(undefined)}
+          onDelete={() => confirmRemove(settings.session)}
+          onChanged={() => onChanged(settings.session.sessionId, false)}
+        />
+      ) : null}
     </View>
   );
 }
@@ -213,4 +322,7 @@ const styles = StyleSheet.create((theme) => ({
   flex: { flex: 1 },
   toolbar: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
   empty: { paddingVertical: theme.spacing.md },
+  // Every row keeps the slot, so names line up whether or not a dot is shown.
+  dot: { width: 12, alignItems: 'center' },
+  trailing: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
 }));

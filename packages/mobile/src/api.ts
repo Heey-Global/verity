@@ -6109,6 +6109,12 @@ export class VerityClient {
     return sessionFileContentSchema.parse(await res.json());
   }
 
+  /** Where a native download of a project knowledge file reads from; the
+   * caller sends the bearer itself (React Native's Blob has no arrayBuffer). */
+  projectKnowledgeFileDownloadUrl(projectId: string, path: string): string {
+    return `${this.baseUrl}/projects/${encodeURIComponent(projectId)}/knowledge/files/download?path=${encodeURIComponent(path)}`;
+  }
+
   async downloadProjectKnowledgeFile(projectId: string, path: string): Promise<Blob> {
     const res = await this.request(
       `/projects/${encodeURIComponent(projectId)}/knowledge/files/download?path=${encodeURIComponent(path)}`,
@@ -6157,6 +6163,11 @@ export class VerityClient {
       { method: 'GET' },
     );
     return sessionFileContentSchema.parse(await res.json());
+  }
+
+  /** Where a native download of a Shared knowledge file reads from. */
+  sharedKnowledgeFileDownloadUrl(path: string): string {
+    return `${this.baseUrl}/knowledge/shared/files/download?path=${encodeURIComponent(path)}`;
   }
 
   async downloadSharedKnowledgeFile(path: string): Promise<Blob> {

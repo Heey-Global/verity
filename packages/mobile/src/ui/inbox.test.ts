@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { ProjectRecord, SessionSummary, UpcomingMeeting } from '../api.js';
 import { inboxItems, inboxSummary, inboxView, MEETING_LEAD_MS, type InboxItem } from './inbox.js';
+import { permissionSummary } from './permissionSummary.js';
 
 const ZERO_USAGE = {
   inputTokens: 0,
@@ -162,13 +163,80 @@ describe('inboxItems', () => {
       now: NOW,
     });
     const permissions = items.filter((item) => item.kind === 'permission');
-    expect(permissions.map(labels)).toEqual([['Allow', 'Deny', 'Open'], ['Review'], ['Review']]);
+    expect(permissions.map(labels)).toEqual([
+      ['Allow once', 'Deny', 'Open'],
+      ['Review'],
+      ['Review'],
+    ]);
     expect(permissions[0]?.actions[0]).toMatchObject({ kind: 'allow', toolUseId: 't1' });
     // Allow travels with the complete input, never with only the tool's summary.
     expect(permissions[0]?.request).toBe(JSON.stringify({ url: 'https://api.exa.ai' }, null, 2));
     expect(permissions.slice(1).map((item) => item.request)).toEqual([undefined, undefined]);
     // An awaiting session whose question IS the permission is not also a question.
     expect(kinds(items)).not.toContain('question');
+  });
+
+  it('words a secret run the way the session card does, keeping the full input', () => {
+    const input = {
+      command: ['/usr/local/bin/cluster-inspect', 'job', 'e2e'],
+      secrets: [
+        { env: 'TS_AUTHKEY_FILE', injection: 'file', secretAlias: 'TAILSCALE_AUTH_KEY' },
+        { env: 'KUBECONFIG_B64_FILE', injection: 'file', secretAlias: 'KUBECONFIG' },
+      ],
+    };
+    const [item] = inboxItems({
+      sessions: [
+        session('k8s', {
+          status: 'awaiting_input',
+          permissionAwaitingInput: true,
+          pendingPermissions: ['t1'],
+          pendingPermissionRequests: [
+            { toolUseId: 't1', tool: 'verity_secret_run', riskClass: 'ask', input },
+          ],
+        }),
+      ],
+      projects: [project()],
+      now: NOW,
+    });
+    // Home showed the tool's name and a JSON dump; the session asked a question.
+    expect(item?.title).toBe(permissionSummary('verity_secret_run', input).title);
+    expect(item?.title).toBe('Run trusted command with 2 secrets?');
+    expect(item?.lines).toEqual([
+      { kind: 'code', text: '"/usr/local/bin/cluster-inspect" "job" "e2e"' },
+      {
+        kind: 'text',
+        text: expect.stringContaining(
+          'Verity injects TAILSCALE_AUTH_KEY as a file at TS_AUTHKEY_FILE, KUBECONFIG as a file at KUBECONFIG_B64_FILE.',
+        ) as string,
+      },
+    ]);
+    expect(item?.message).toBeUndefined();
+    // The summary is what to read first; the complete input still travels with Allow.
+    expect(item?.request).toBe(JSON.stringify(input, null, 2));
+  });
+
+  it('keeps an unknown tool readable from its raw input alone', () => {
+    const [item] = inboxItems({
+      sessions: [
+        session('egress', {
+          status: 'awaiting_input',
+          permissionAwaitingInput: true,
+          pendingPermissions: ['t1'],
+          pendingPermissionRequests: [
+            {
+              toolUseId: 't1',
+              tool: 'WebFetch',
+              riskClass: 'ask',
+              input: { url: 'https://api.exa.ai' },
+            },
+          ],
+        }),
+      ],
+      projects: [project()],
+      now: NOW,
+    });
+    expect(item?.lines).toBeUndefined();
+    expect(item?.request).toBe(JSON.stringify({ url: 'https://api.exa.ai' }, null, 2));
   });
 
   it('never offers a generic Allow for a package install', () => {

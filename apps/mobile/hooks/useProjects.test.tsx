@@ -2,6 +2,7 @@ import { act, renderHook, waitFor } from '@testing-library/react-native';
 import { AppState, type AppStateStatus } from 'react-native';
 import { VerityApiError, type VerityClient } from '@verity/mobile';
 import { useProjects } from './useProjects';
+import { useSessionPreviews } from '../lib/sessionPreviews';
 
 let mockFocused = true;
 const mockConnection = { connectionState: 'connected', resourceWatching: true };
@@ -257,6 +258,28 @@ it('cancels on background, ignores late results and resumes missing reads', asyn
   await waitFor(() => expect(client.listPublicPreviewShares).toHaveBeenCalledTimes(2));
   unmount();
   listener.mockRestore();
+});
+
+// A project's Work list is its own screen on a phone and reads the previews
+// from here; if Home stops publishing them, its markers vanish without error.
+it('publishes the previews it finds for the Work list', async () => {
+  const client = previewClient();
+  client.listPublicPreviewShares.mockResolvedValue([
+    {
+      sessionId: 'shared',
+      targetKind: 'static-folder',
+      state: 'active',
+      publicOrigin: 'https://shared.invalid',
+      expiresAt: new Date(Date.now() + 60000).toISOString(),
+    },
+  ]);
+  const { unmount } = renderHook(() => useProjects(client as unknown as VerityClient));
+  const { result } = renderHook(() => useSessionPreviews());
+  await waitFor(() => expect(result.current.urls.get('shared')).toBe('https://shared.invalid'));
+  expect(result.current.online.has('shared')).toBe(true);
+  // Signing out or switching servers unmounts it; the links must not outlive it.
+  unmount();
+  expect(result.current.urls.size).toBe(0);
 });
 
 it('retains cached links while hidden and catches up after discarded watches', async () => {

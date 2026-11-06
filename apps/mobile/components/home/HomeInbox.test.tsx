@@ -176,7 +176,7 @@ it('decides a described permission without opening the session', async () => {
       ],
     }),
   ]);
-  const allow = await screen.findByRole('button', { name: 'Allow' });
+  const allow = await screen.findByRole('button', { name: 'Allow once' });
   await act(async () => {
     fireEvent.press(allow);
   });
@@ -284,12 +284,45 @@ it('shows a permission’s whole input next to Allow, not just its summary', asy
       ],
     }),
   ]);
-  await screen.findByRole('button', { name: 'Allow' });
+  await screen.findByRole('button', { name: 'Allow once' });
   const request = screen.getByTestId('inbox-request');
   // Allow must never stand next to text the operator cannot read in full.
   expect(request.props.numberOfLines).toBeUndefined();
   expect(request.props.children).toContain('step 7');
   expect(request.props.children).toContain('hidden-detail');
+});
+
+it('words a secret run first and keeps its full request one tap away', async () => {
+  // Home showed "Verity · Secret · Run" over a JSON dump, while the session asked
+  // which secrets would go to which command.
+  await renderInbox([
+    session('k8s', {
+      status: 'awaiting_input',
+      permissionAwaitingInput: true,
+      pendingPermissions: ['t1'],
+      pendingPermissionRequests: [
+        {
+          toolUseId: 't1',
+          tool: 'verity_secret_run',
+          riskClass: 'ask',
+          input: {
+            command: ['/usr/local/bin/cluster-inspect', 'job', 'e2e'],
+            secrets: [{ env: 'KUBECONFIG_FILE', injection: 'file', secretAlias: 'KUBECONFIG' }],
+          },
+        },
+      ],
+    }),
+  ]);
+  expect(await screen.findByText('Run trusted command with KUBECONFIG?')).toBeOnTheScreen();
+  expect(screen.getByTestId('inbox-line-code').props.children).toBe(
+    '"/usr/local/bin/cluster-inspect" "job" "e2e"',
+  );
+  expect(screen.getByTestId('inbox-line-text').props.children).toContain(
+    'KUBECONFIG as a file at KUBECONFIG_FILE',
+  );
+  expect(screen.queryByTestId('inbox-request')).toBeNull();
+  fireEvent.press(screen.getByText('Full request'));
+  expect(screen.getByTestId('inbox-request').props.children).toContain('"secretAlias"');
 });
 
 describe('dismissing', () => {

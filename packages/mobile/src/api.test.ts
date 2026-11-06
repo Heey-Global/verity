@@ -2781,6 +2781,22 @@ describe('VerityClient session files', () => {
     expect(calls[0]?.url).toBe('http://host/sessions/s1/files/download?path=dist%2Fcontract.docx');
   });
 
+  // A native download reads the URL helper while the web path fetches through
+  // the client; if the two drift, only one platform downloads the right file.
+  it('points knowledge download URLs at the routes the client downloads from', async () => {
+    const blob = () =>
+      new Response(new Blob([new Uint8Array([1])]), {
+        status: 200,
+        headers: { 'content-type': 'application/octet-stream' },
+      });
+    const { fetch, calls } = fakeFetchSequence(blob(), blob());
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    await client.downloadSharedKnowledgeFile('insights/a b.md');
+    await client.downloadProjectKnowledgeFile('p/1', 'sources/x.pdf');
+    expect(client.sharedKnowledgeFileDownloadUrl('insights/a b.md')).toBe(calls[0]?.url);
+    expect(client.projectKnowledgeFileDownloadUrl('p/1', 'sources/x.pdf')).toBe(calls[1]?.url);
+  });
+
   it('uploads a file into a session worktree directory', async () => {
     const { fetch, calls } = fakeFetch(json({ path: 'docs/note.txt', size: 3 }));
     const client = new VerityClient({ baseUrl: 'http://host', fetch });
