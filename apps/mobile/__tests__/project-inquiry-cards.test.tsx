@@ -80,3 +80,12 @@ it('shows persisted PR dependencies beside the repository workspace', async () =
   );
   expect(view.getByText('/consumer')).toBeTruthy();
 });
+
+it('requests pending approvals within the displayed project before the server limit', async () => {
+  const listProjectInquiries = jest.fn().mockResolvedValue([]);
+  const client = { listProjectInquiries } as unknown as VerityClient;
+  render(<ProjectInquiryCards client={client} projectId="target-project" />);
+  await waitFor(() =>
+    expect(listProjectInquiries).toHaveBeenCalledWith(undefined, 'target-project'),
+  );
+});

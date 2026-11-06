@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { EventStore, ProjectInquiry } from '@verity/store';
-import { createProjectInquiries } from './project-inquiries.js';
+import Fastify from 'fastify';
+import { createProjectInquiries, registerProjectInquiryRoutes } from './project-inquiries.js';
 
 function harness() {
   const busy = new Set<string>();
@@ -209,4 +210,27 @@ it('does not provision a target when durable request admission is refused', asyn
   expect(h.createSession).not.toHaveBeenCalled();
   expect(h.store.projectInquiries.bind).not.toHaveBeenCalled();
   expect(h.store.createSessionLink).not.toHaveBeenCalled();
+});
+
+it('filters project approval queries before the bounded store list', async () => {
+  const list = vi.fn(async () => []);
+  const store = {
+    listProjects: async () => [{ id: 'other' }, { id: 'target' }],
+    projectInquiries: { list },
+  } as unknown as EventStore;
+  const deps = {
+    store,
+    authorized: async () => true,
+    busy: () => false,
+    createSession: async () => {},
+    dispatch: async () => true,
+  };
+  const app = Fastify();
+  registerProjectInquiryRoutes(app, deps, createProjectInquiries(deps), () => null);
+  try {
+    expect((await app.inject('/project-inquiries/pending?projectId=target')).statusCode).toBe(200);
+    expect(list).toHaveBeenCalledWith(undefined, true, ['target']);
+  } finally {
+    await app.close();
+  }
 });

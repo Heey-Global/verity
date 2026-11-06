@@ -16,7 +16,10 @@ export function ProjectInquiryCards({
   projectId?: string;
 }) {
   const resource = useScanResource(
-    useCallback(() => client.listProjectInquiries(sessionId), [client, sessionId]),
+    useCallback(
+      () => client.listProjectInquiries(sessionId, projectId),
+      [client, sessionId, projectId],
+    ),
   );
   const [busy, setBusy] = useState<string>();
   const decide = async (targetSessionId: string, id: string, decision: 'approve' | 'reject') => {

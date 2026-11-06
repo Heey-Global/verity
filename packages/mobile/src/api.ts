@@ -3510,10 +3510,10 @@ export class VerityClient {
     });
   }
 
-  async listProjectInquiries(sessionId?: string) {
+  async listProjectInquiries(sessionId?: string, projectId?: string) {
     const path =
       sessionId === undefined
-        ? '/project-inquiries/pending'
+        ? `/project-inquiries/pending${projectId === undefined ? '' : `?projectId=${encodeURIComponent(projectId)}`}`
         : `/sessions/${encodeURIComponent(sessionId)}/project-inquiries`;
     const res = await this.request(path, { method: 'GET' });
     return z.object({ inquiries: z.array(projectInquirySchema) }).parse(await res.json()).inquiries;

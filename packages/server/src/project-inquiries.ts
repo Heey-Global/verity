@@ -221,8 +221,12 @@ export function registerProjectInquiryRoutes(
     inquiries: await named(await deps.store.projectInquiries.list(params.parse(request.params).id)),
   }));
   app.get('/project-inquiries/pending', async (request) => {
+    const { projectId } = z
+      .object({ projectId: z.string().min(1).optional() })
+      .parse(request.query);
     const targets = [];
     for (const project of await deps.store.listProjects()) {
+      if (projectId !== undefined && project.id !== projectId) continue;
       if (await deps.authorized(userId(request), project.id)) targets.push(project.id);
     }
     // Apply access filtering before the bounded query so another user's requests
