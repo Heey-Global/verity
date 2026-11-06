@@ -20,16 +20,6 @@ it('uses the shared layout decision in every session entry route', () => {
   expect(read('app/session/[id].tsx')).toContain('<SplitScreenRedirect');
 });
 
-it('keeps compact usage windows in one row and exposes reset details on tap', () => {
-  const home = read('app/index.tsx');
-  expect(home).toContain('compact={wide && sidebarWidth < 380}');
-  expect(home).not.toContain('styles.limitSegmentsCompact');
-  expect(home).toContain('{!compact ? (');
-  expect(home).toContain('{compact || pace !== null ? (');
-  expect(home).toContain('Resets {text}');
-  expect(home).toContain('!compact && screenWidth >= WIDE_PROVIDER_LIMIT_MIN_WIDTH');
-});
-
 it('reclaims the empty chevron column only in the compact split sidebar', () => {
   const home = read('app/index.tsx');
   expect(home).toContain('const compactSidebar = layout.wide && layout.sidebarWidth < 380');

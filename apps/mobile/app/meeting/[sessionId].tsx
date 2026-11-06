@@ -33,6 +33,8 @@ import {
   clearSpeakerNameSuggestion,
   currentMeeting,
   endMeeting,
+  recoverMeetingAudio,
+  discardMeetingAudio,
   pauseMeeting,
   resumeMeeting,
   startMeeting,
@@ -146,9 +148,16 @@ function noteClockTime(startedAt: number, atSeconds: number) {
 }
 
 export default function MeetingScreen() {
-  const { sessionId, meetingId } = useLocalSearchParams<{
+  const { sessionId, meetingId, prepare, request, source, eventKey } = useLocalSearchParams<{
     sessionId: string;
     meetingId?: string;
+    /** `1`: Verity prepared a meeting; the start screen opens filled in, even after
+     *  an earlier meeting of this session. */
+    prepare?: string;
+    /** Differs per opening, so preparing the same meeting again fills it in again. */
+    request?: string;
+    source?: string;
+    eventKey?: string;
   }>();
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
@@ -175,7 +184,9 @@ export default function MeetingScreen() {
     null,
   );
   const [engines, setEngines] = useState<STTEngine[]>([]);
-  const [meetingSource, setMeetingSource] = useState<'presence' | 'online'>('presence');
+  const [meetingSource, setMeetingSource] = useState<'presence' | 'online'>(
+    source === 'online' ? 'online' : 'presence',
+  );
   const [meetingUrl, setMeetingUrl] = useState('');
   const [now, setNow] = useState(Date.now());
   // Both sources can take a calendar title; online calls can also use its join link.
@@ -186,7 +197,7 @@ export default function MeetingScreen() {
     manualLink,
     setManualLink,
     selectedEvent: selectedCalendarEvent,
-  } = useCalendarMeetingChoice(upcoming, now, meetingSource === 'presence');
+  } = useCalendarMeetingChoice(upcoming, now, meetingSource === 'presence', eventKey ?? null);
   const selectedEvent =
     selectedCalendarEvent?.provider && canJoinCalendarMeeting(selectedCalendarEvent, now)
       ? selectedCalendarEvent
@@ -225,7 +236,32 @@ export default function MeetingScreen() {
   }, [meetingSource]);
   const [selectedEngine, setSelectedEngine] = useState<STTEngineId>('fluid-nemotron');
   const [expectedParticipants, setExpectedParticipants] = useState<number | null>(null);
-  const [showNewMeeting, setShowNewMeeting] = useState(false);
+  const [audioSafetyBuffer, setAudioSafetyBuffer] = useState(false);
+  const [pendingAudio, setPendingAudio] = useState<Array<{ meetingId: string; duration: number }>>(
+    [],
+  );
+  const [showNewMeeting, setShowNewMeeting] = useState(prepare === '1');
+  // The screen can already be on the stack when Verity prepares another meeting; the new
+  // parameters then arrive without a remount.
+  const preparedFor = useRef(prepare === '1' ? (request ?? '') : null);
+  // A changed source makes the calendar choice pick again; this pick follows it.
+  const pendingPick = useRef<string | null>(null);
+  useEffect(() => {
+    if (prepare !== '1' || preparedFor.current === (request ?? '')) return;
+    preparedFor.current = request ?? '';
+    setShowNewMeeting(true);
+    setMeetingSource(source === 'online' ? 'online' : 'presence');
+    if (eventKey) {
+      setManualLink(false);
+      pendingPick.current = eventKey;
+      setSelectedEventKey(eventKey);
+    }
+  }, [prepare, request, source, eventKey, setManualLink, setSelectedEventKey]);
+  useEffect(() => {
+    if (pendingPick.current === null) return;
+    setSelectedEventKey(pendingPick.current);
+    pendingPick.current = null;
+  }, [meetingSource, setSelectedEventKey]);
   const [syncError, setSyncError] = useState(false);
   // Every save is briefly pending; only a backlog that lasts is worth showing.
   const [syncPendingSince, setSyncPendingSince] = useState<number | null>(null);
@@ -341,6 +377,10 @@ export default function MeetingScreen() {
   const refresh = useCallback(async () => {
     if (!sessionId) return;
     const saved = await listMeetings(sessionId);
+    const buffered = await liveMeetingSTT?.pendingAudioBuffers?.().catch(() => []);
+    setPendingAudio(
+      (buffered ?? []).filter((item) => saved.some((entry) => entry.id === item.meetingId)),
+    );
     if (
       !meetingId &&
       currentMeeting()?.state !== 'active' &&
@@ -911,9 +951,18 @@ export default function MeetingScreen() {
         await refresh();
         return;
       }
-      const next = await (meetingTitle.trim()
-        ? startMeeting(sessionId, selectedEngine, expectedParticipants ?? 4, meetingTitle.trim())
-        : startMeeting(sessionId, selectedEngine, expectedParticipants ?? 4));
+      const next = await (audioSafetyBuffer
+        ? startMeeting(
+            sessionId,
+            selectedEngine,
+            expectedParticipants ?? 4,
+            meetingTitle.trim() || undefined,
+            { audioSafetyBuffer: true },
+          )
+        : meetingTitle.trim()
+          ? startMeeting(sessionId, selectedEngine, expectedParticipants ?? 4, meetingTitle.trim())
+          : startMeeting(sessionId, selectedEngine, expectedParticipants ?? 4));
+      setAudioSafetyBuffer(false);
       setSyncError(true);
       setMeeting(next);
       setShowNewMeeting(false);
@@ -1121,6 +1170,9 @@ export default function MeetingScreen() {
   const syncDelayed = syncPendingSince !== null && now - syncPendingSince > 30_000;
   // The live header shows only what needs attention, in one fixed slot so nothing moves.
   const liveProblem =
+    (meeting?.captureHealth?.microphone === 'stalled'
+      ? 'Microphone interrupted · audio is not arriving; transcript may have a gap.'
+      : null) ??
     error ??
     meeting?.error ??
     (noteUnsaved ? 'Note not saved yet. Use retry in the note field.' : null) ??
@@ -1444,8 +1496,87 @@ export default function MeetingScreen() {
     return [...nameCards, ...cards];
   };
 
+  const audioRecoveryCards = (onlyMeetingId?: string) =>
+    currentMeeting()?.state === 'active'
+      ? null
+      : pendingAudio
+          .filter((item) => !onlyMeetingId || item.meetingId === onlyMeetingId)
+          .map((item) => (
+            <Card key={item.meetingId}>
+              <View style={styles.setupCard}>
+                <UiText variant="row">Saved audio needs attention</UiText>
+                <UiText variant="subtitle">
+                  {Math.ceil(item.duration)} seconds remain on this device. Recover locally with
+                  Apple Speech, or discard this audio. Nothing is uploaded.
+                </UiText>
+                <View style={styles.setupInline}>
+                  <Button
+                    label="Recover audio"
+                    disabled={busy}
+                    variant="secondary"
+                    size="compact"
+                    onPress={() => {
+                      setBusy(true);
+                      void recoverMeetingAudio(item.meetingId)
+                        .then(refresh)
+                        .catch((reason: unknown) =>
+                          Alert.alert('Could not recover audio', String(reason)),
+                        )
+                        .finally(() => setBusy(false));
+                    }}
+                  />
+                  <Button
+                    label="Discard audio"
+                    disabled={busy}
+                    variant="text"
+                    size="compact"
+                    onPress={() =>
+                      confirm({
+                        title: 'Discard saved audio?',
+                        message:
+                          'This permanently deletes the remaining local audio. The saved transcript and notes are kept.',
+                        confirmLabel: 'Discard audio',
+                        destructive: true,
+                        onConfirm: async () => {
+                          setBusy(true);
+                          try {
+                            await discardMeetingAudio(item.meetingId);
+                            await refresh();
+                          } catch (reason) {
+                            Alert.alert('Could not discard audio', String(reason));
+                          } finally {
+                            setBusy(false);
+                          }
+                        },
+                      })
+                    }
+                  />
+                </View>
+              </View>
+            </Card>
+          ));
+
+  const captureGapNotes = meeting?.captureGaps?.length ? (
+    <View style={styles.block} accessibilityLabel="Recording interruptions">
+      {meeting.captureGaps.map((gap, index) => (
+        <UiText key={`${gap.at}-${index}`} variant="footnote">
+          {Math.floor(gap.at / 60)}:{String(Math.floor(gap.at % 60)).padStart(2, '0')} ·{' '}
+          {gap.message}
+        </UiText>
+      ))}
+    </View>
+  ) : null;
+
   const statusLines = (
     <>
+      {meeting?.captureHealth?.microphone === 'stalled' ? (
+        <HintBox
+          title="Microphone interrupted"
+          message="Audio is not currently arriving. Open the meeting to check the microphone; this period may be missing from the transcript."
+        />
+      ) : null}
+      {captureGapNotes}
+      {meeting ? audioRecoveryCards(meeting.id) : null}
       {error || meeting?.error ? <Text style={styles.error}>{error ?? meeting?.error}</Text> : null}
       {meeting ? (
         <Text
@@ -1842,6 +1973,7 @@ export default function MeetingScreen() {
             />
           </View>
           {error ? <HintBox title="Could not start the meeting" message={error} /> : null}
+          {audioRecoveryCards()}
           {noteUnsaved || draft?.text.trim() ? (
             <Card>
               <View style={styles.setupCard} testID="unsaved-note">
@@ -2008,6 +2140,20 @@ export default function MeetingScreen() {
                   )}
                 </Group>
               </View>
+              {liveMeetingSTT?.configureMeeting ? (
+                <View style={styles.setupSection}>
+                  <Group>
+                    <Row
+                      title="Audio safety buffer"
+                      subtitle="Optional local recovery if transcription falls behind. Audio is deleted after its transcript is saved; unprocessed audio stays on this device until recovered or discarded."
+                      trailing={<Toggle value={audioSafetyBuffer} disabled={busy} />}
+                      disabled={busy}
+                      onPress={() => setAudioSafetyBuffer((value) => !value)}
+                      accessibilityLabel={`Audio safety buffer, ${audioSafetyBuffer ? 'on' : 'off'}`}
+                    />
+                  </Group>
+                </View>
+              ) : null}
             </>
           )}
           <Button
@@ -2371,6 +2517,7 @@ export default function MeetingScreen() {
               </Pressable>
             </View>
           )}
+          {captureGapNotes}
           <View style={styles.columns}>
             <View style={styles.column}>
               <View style={styles.roomHead}>
@@ -2557,6 +2704,7 @@ export default function MeetingScreen() {
           keyboardShouldPersistTaps="handled"
         >
           <MeetingWave active={!paused && !preparing} addressed={voiceSending} />
+          {captureGapNotes}
           {speakerRow(true)}
           {noticed}
           {composing === 'note' && finalizedNotes.length ? (

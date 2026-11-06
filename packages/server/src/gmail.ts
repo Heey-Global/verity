@@ -1,3 +1,6 @@
+import { stat, readdir, rm } from 'node:fs/promises';
+import { basename, join } from 'node:path';
+import { withGmailDownload, spoolGmailJson, publishGmailBody } from './gmail-download.js';
 import { projectTransportFetch } from './project-transport-authority.js';
 const GMAIL_API = 'https://gmail.googleapis.com/gmail/v1/users/me';
 const GMAIL_UPLOAD_API = 'https://gmail.googleapis.com/upload/gmail/v1/users/me';
@@ -192,56 +195,90 @@ export async function readGmailThread(
   };
 }
 
-/** Fetch a MIME part by its message-local identity, including inline attachments. */
+/** Fetch a MIME part into the calling session's workspace, including inline attachments. */
 export async function downloadGmailAttachment(
   accessToken: string,
   messageId: string,
   partId: string,
+  worktree: string,
   fetchImpl: FetchLike = fetch,
-): Promise<unknown> {
-  const message = await gmailJson<GmailMessage>(
-    `/messages/${encodeURIComponent(messageId)}?format=full`,
-    accessToken,
-    {},
-    fetchImpl,
-  );
-  const find = (part: GmailPart | undefined): GmailPart | undefined => {
-    if (part?.partId === partId) return part;
-    for (const child of part?.parts ?? []) {
-      const match = find(child);
-      if (match !== undefined) return match;
-    }
-    return undefined;
-  };
-  const part = find(message.payload);
-  if (!part?.filename) throw new Error('The requested Gmail attachment is not in this message');
-  const maxBytes = 10 * 1024 * 1024;
-  const checkSize = (size: number): void => {
-    if (size > maxBytes) throw new Error('Gmail attachment exceeds the 10 MiB download limit');
-  };
-  checkSize(part.body?.size ?? 0);
-  const body =
-    part.body?.attachmentId === undefined
-      ? part.body
-      : await gmailJson<{ data?: string; size?: number }>(
-          `/messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(part.body.attachmentId)}`,
-          accessToken,
-          {},
-          fetchImpl,
+): Promise<{
+  messageId: string;
+  partId: string;
+  filename: string;
+  mimeType: string;
+  size: number;
+  path: string;
+}> {
+  return withGmailDownload(worktree, async (directory, published) => {
+    const read = async (path: string): Promise<unknown> => {
+      const response = await projectTransportFetch(fetchImpl, `${GMAIL_API}${path}`, {
+        headers: { Authorization: `Bearer ${accessToken}`, Accept: 'application/json' },
+      });
+      if (!response.ok)
+        throw new GmailError(
+          `Gmail request failed (HTTP ${String(response.status)})`,
+          response.status,
         );
-  if (body?.data === undefined) throw new Error('The Gmail attachment has no data');
-  checkSize(body.size ?? 0);
-  checkSize(Math.floor((body.data.replace(/=+$/u, '').length * 3) / 4));
-  const bytes = Buffer.from(body.data, 'base64url');
-  return {
-    messageId,
-    partId,
-    filename: part.filename,
-    mimeType: part.mimeType ?? 'application/octet-stream',
-    size: bytes.length,
-    encoding: 'base64',
-    content: bytes.toString('base64'),
-  };
+      // Separate responses must not reuse spool filenames from the message response.
+      const entries = await readdir(directory);
+      for (const entry of entries) await rm(join(directory, entry));
+      return spoolGmailJson(response, directory);
+    };
+    const message = (await read(
+      `/messages/${encodeURIComponent(messageId)}?format=full`,
+    )) as GmailMessage;
+    const find = (part: GmailPart | undefined): GmailPart | undefined => {
+      if (part?.partId === partId) return part;
+      for (const child of part?.parts ?? []) {
+        const match = find(child);
+        if (match !== undefined) return match;
+      }
+      return undefined;
+    };
+    const part = find(message.payload);
+    if (!part?.filename) throw new Error('The requested Gmail attachment is not in this message');
+    const body =
+      part.body?.attachmentId === undefined
+        ? part.body
+        : ((await read(
+            `/messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(part.body.attachmentId)}`,
+          )) as { data?: string });
+    if (typeof body?.data !== 'string') throw new Error('The Gmail attachment has no data');
+    const saved = await publishGmailBody(body.data, directory, part.filename);
+    const size = (await stat(saved)).size;
+    for (const entry of await readdir(directory)) {
+      if (entry !== basename(saved)) await rm(join(directory, entry));
+    }
+    return {
+      messageId,
+      partId,
+      filename: part.filename,
+      mimeType: part.mimeType ?? 'application/octet-stream',
+      size,
+      path: join(published, basename(saved)),
+    };
+  }).catch((error: unknown) => {
+    if (error instanceof Error && 'code' in error) {
+      if (error.code === 'ENOENT')
+        throw new Error('The session workspace or download directory is unavailable', {
+          cause: error,
+        });
+      if (error.code === 'ENOSPC')
+        throw new Error('There is not enough disk space to save the Gmail attachment', {
+          cause: error,
+        });
+      if (error.code === 'ELOOP' || error.code === 'ENOTDIR' || error.code === 'EEXIST')
+        throw new Error('The Gmail download directory must be a regular directory, not a symlink', {
+          cause: error,
+        });
+      if (error.code === 'EACCES' || error.code === 'EPERM' || error.code === 'EROFS')
+        throw new Error('The Gmail attachment could not be written to the session workspace', {
+          cause: error,
+        });
+    }
+    throw error;
+  });
 }
 
 export interface GmailSendAs {

@@ -40,9 +40,13 @@ export function SettingsScaffold({
   state,
   footer,
   headerAction,
+  embedded = false,
   children,
 }: {
   title: string;
+  /** Inside another screen (a project page's tab): the host owns the navigation
+   *  title, so this scaffold does not set one. */
+  embedded?: boolean;
   /** One icon button on the right of the header, for a screen's secondary settings. */
   headerAction?: ReactNode;
   /** What "Retry" on the error banner should do. Omitted → no retry offered. */
@@ -71,13 +75,15 @@ export function SettingsScaffold({
   const pinned = footer !== undefined;
   return (
     <KeyboardAvoidingView style={styles.flex} behavior="padding" enabled={pinned}>
-      <Stack.Screen
-        options={{
-          title,
-          // Only when set: an explicit `undefined` would override a layout's own.
-          ...(headerAction !== undefined && { headerRight: () => headerAction }),
-        }}
-      />
+      {embedded ? null : (
+        <Stack.Screen
+          options={{
+            title,
+            // Only when set: an explicit `undefined` would override a layout's own.
+            ...(headerAction !== undefined && { headerRight: () => headerAction }),
+          }}
+        />
+      )}
       {error !== undefined ? <SettingsBanner message={error} onRetry={onRetry} /> : null}
       {/* Only on screens backed by the Verity settings store — that store is
           where a container-affecting save is recorded. */}

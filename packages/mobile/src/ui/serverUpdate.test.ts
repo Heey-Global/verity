@@ -561,3 +561,41 @@ it('does not promise a retry when no release is available and no preparation sid
   expect(view.action).toBeNull();
   expect(view.detail).not.toContain('Retry the update');
 });
+
+it.each([true, false])('offers a corrected release after host failure (sidecar: %s)', (sidecar) => {
+  const failed = operation({
+    state: 'failed',
+    phase: 'failed',
+    failureCode: 'host-runtime-failed',
+  });
+  const next = {
+    ...release,
+    version: '4.80.2',
+    serverImage: release.serverImage.replace(/b{64}$/, 'c'.repeat(64)),
+  };
+  const current = status({
+    installed: { version: '4.80.0', generation: 197 },
+    release: next,
+    operation: failed,
+    ...(sidecar
+      ? {
+          hostPreparation: {
+            updateId: failed.updateId,
+            targetDigest: failed.targetDigest,
+            stage: 'recovery-required' as const,
+          },
+        }
+      : {}),
+  });
+  expect(describeServerUpdate(current)).toMatchObject({
+    failed: true,
+    action: 'Install 4.80.2',
+    targetDigest: next.serverImage,
+    idempotencyKey: expect.stringContaining('g3'),
+  });
+  const panel = describeServerUpdatePanel(current);
+  expect(panel.cards).toHaveLength(2);
+  expect(panel.cards[0]?.status.tone).toBe('problem');
+  if (sidecar) expect(panel.cards[0]?.detail).toContain('Restoration could not be verified');
+  expect(panel.cards[1]?.action).toMatchObject({ kind: 'install', targetDigest: next.serverImage });
+});

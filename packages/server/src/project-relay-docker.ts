@@ -159,6 +159,9 @@ export function createDockerProjectRelayStarter(
         ...(options.forgeProxyEnabled?.(context.identity.projectId) === true
           ? [
               'VERITY_FORGE_PROXY=github',
+              // Repository assignments can change while this relay is running.
+              // The fixed server broker remains the authority for every CONNECT.
+              'VERITY_FORGE_AUTHORITY_MODE=broker',
               ...(options.forgeAuthorities
                 ? [
                     `VERITY_FORGE_AUTHORITIES=${JSON.stringify(await options.forgeAuthorities(context.identity.projectId))}`,

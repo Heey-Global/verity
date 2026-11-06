@@ -112,6 +112,11 @@ it('clears personal Memory without clearing Instructions', async () => {
   render(<ContextSettings kind="memory" />);
   await screen.findByDisplayValue('Old fact');
   fireEvent.press(screen.getByText('Clear Memory'));
+  // Clearing is irreversible, so it asks first (§ 5.7) and nothing is sent yet.
+  expect(replace).not.toHaveBeenCalled();
+  await act(async () => {
+    fireEvent.press(screen.getByRole('button', { name: 'Clear' }));
+  });
   await waitFor(() =>
     expect(replace).toHaveBeenCalledWith({
       instructions: 'Keep these rules',
@@ -134,4 +139,16 @@ it('edits authoritative project Memory through its revisioned endpoint', async (
   await waitFor(() =>
     expect(replace).toHaveBeenCalledWith('p', { memory: 'New project fact', revision: 'old' }),
   );
+});
+
+it('keeps Save as the one pinned action and offers Clear only for something to clear', async () => {
+  mockClient.mockReturnValue({
+    getUserContext: jest.fn().mockResolvedValue({ instructions: '', memory: '', revision: 1 }),
+    replaceUserContext: jest.fn(),
+  } as unknown as VerityClient);
+  render(<ContextSettings kind="instructions" />);
+  await act(async () => undefined);
+  expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
+  // An empty field has nothing to clear; a disabled Clear was the second big button.
+  expect(screen.queryByText('Clear Instructions')).toBeNull();
 });

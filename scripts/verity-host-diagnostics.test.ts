@@ -29,10 +29,12 @@ function collect(
 const kernel = process.argv.includes('_TRANSPORT=kernel');
 if (!kernel && process.env.TEST_FAIL_RUNTIME === '1') process.exit(1);
 const message = kernel ? 'Killed process 123 (private-name), docker-${'a'.repeat(64)}.scope credential' : 'containerManager.WaitPID failed EOF credential';
-const row = (index) => JSON.stringify({ __REALTIME_TIMESTAMP: String((Date.now() - 5000 - index * 1000) * 1000), MESSAGE: message });
+// Keep generated timestamps distinct when emission crosses a second boundary.
+const now = Date.now();
+const row = (index) => JSON.stringify({ __REALTIME_TIMESTAMP: String((now - 5000 - index * 1000) * 1000), MESSAGE: message });
 const count = process.env.TEST_MANY === '1' ? 2001 : 1;
 for (let index = 0; index < count; index++) process.stdout.write(row(index) + '\\n');
-if (process.env.TEST_BYTES === '1') process.stdout.write(JSON.stringify({__REALTIME_TIMESTAMP: String((Date.now() - 5000) * 1000), MESSAGE: 'x'.repeat(1048576)}) + '\\n');
+if (process.env.TEST_BYTES === '1') process.stdout.write(JSON.stringify({__REALTIME_TIMESTAMP: String((now - 5000) * 1000), MESSAGE: 'x'.repeat(1048576)}) + '\\n');
 `,
     { mode: 0o755 },
   );

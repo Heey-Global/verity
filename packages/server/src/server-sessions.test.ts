@@ -1097,9 +1097,11 @@ describe('DELETE /sessions/:id (worktree cleanup)', () => {
       const res = await a.inject({ method: 'DELETE', url: '/sessions/s-project-delete' });
       expect(res.statusCode).toBe(200);
       expect(defaultWorktrees.removed).toEqual([]);
-      expect(projectWorktrees.removed).toEqual([
-        '/data/dev/heey-global-verity/.verity-sessions/agent-delete',
-      ]);
+      await vi.waitFor(() =>
+        expect(projectWorktrees.removed).toEqual([
+          '/data/dev/heey-global-verity/.verity-sessions/agent-delete',
+        ]),
+      );
       expect(projectWorktreeFactory).toHaveBeenCalledWith(
         expect.objectContaining({ id: 'p-delete' }),
         '/data/dev/heey-global-verity',
@@ -1179,9 +1181,11 @@ describe('DELETE /sessions/:id (worktree cleanup)', () => {
       expect(res.statusCode).toBe(200);
       expect(syncProjectCheckout).not.toHaveBeenCalled();
       expect(startDevServer).not.toHaveBeenCalled();
-      expect(projectWorktrees.removed).toEqual([
-        '/data/dev/heey-global-verity/.verity-sessions/agent-preview',
-      ]);
+      await vi.waitFor(() =>
+        expect(projectWorktrees.removed).toEqual([
+          '/data/dev/heey-global-verity/.verity-sessions/agent-preview',
+        ]),
+      );
     } finally {
       await a.close();
     }

@@ -164,6 +164,7 @@ it('allows active users to read Shared centrally but reserves changes for admini
     '/knowledge/shared/files',
     '/knowledge/shared/files/content',
     '/knowledge/shared/files/download',
+    '/knowledge/shared/recent',
   ]) {
     expect(await authorizePairedRoute(store, 'member', 'GET', route, {})).toBe('allow');
     expect(await authorizePairedRoute(store, 'disabled', 'GET', route, {})).toBe('forbidden');
@@ -204,4 +205,40 @@ it('scopes direct project knowledge reads and edits to project permissions', asy
       id: 'p',
     }),
   ).toBe('allow');
+});
+
+it('lets a reader keep their own view state but hides resources they cannot read', async () => {
+  const store: PairedRoutePolicyStore = {
+    isActiveLocalUser: async () => true,
+    isActiveAdministrator: async () => false,
+    hasProjectPermission: async (_userId, projectId, permission) =>
+      projectId === 'shared' && permission === 'read',
+    getSession: async (id) =>
+      id === 'mine'
+        ? { projectId: 'shared' }
+        : id === 'theirs'
+          ? { projectId: 'other' }
+          : undefined,
+  };
+  for (const route of ['/projects/:id/collapsed', '/projects/:id/inbox-dismissed']) {
+    // Without these rules a member could not fold, read or dismiss anything at all.
+    expect(await authorizePairedRoute(store, 'reader', 'PATCH', route, { id: 'shared' })).toBe(
+      'allow',
+    );
+    // Refused like a read of the same project, whether it exists or not.
+    for (const id of ['other', 'missing'])
+      expect(await authorizePairedRoute(store, 'reader', 'PATCH', route, { id })).toBe('forbidden');
+  }
+  for (const route of ['/sessions/:id/seen', '/sessions/:id/inbox-dismissed']) {
+    expect(await authorizePairedRoute(store, 'reader', 'PATCH', route, { id: 'mine' })).toBe(
+      'allow',
+    );
+    // The same answers as `GET /sessions/:id` for that session.
+    expect(await authorizePairedRoute(store, 'reader', 'PATCH', route, { id: 'theirs' })).toBe(
+      'forbidden',
+    );
+    expect(await authorizePairedRoute(store, 'reader', 'PATCH', route, { id: 'gone' })).toBe(
+      'not_found',
+    );
+  }
 });

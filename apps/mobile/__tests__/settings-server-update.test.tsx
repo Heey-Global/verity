@@ -1123,3 +1123,101 @@ describe('stuck server update', () => {
     expect(sent.idempotencyKey).toContain('g155');
   });
 });
+
+describe('terminal host preparation failure', () => {
+  const failed = {
+    updateId: 'host-failed',
+    state: 'failed' as const,
+    phase: 'failed' as const,
+    step: 4,
+    totalSteps: 14,
+    generation: 198,
+    previousDigest: `ghcr.io/heey-global/verity/verity-server@sha256:${'a'.repeat(64)}`,
+    targetDigest: SERVER_IMAGE,
+    failureCode: 'host-runtime-failed',
+    startedAt: '2026-11-05T00:00:00.000Z',
+    updatedAt: '2026-11-05T00:01:00.000Z',
+  };
+  const nextRelease = {
+    ...RELEASE,
+    version: '4.80.2',
+    serverImage: SERVER_IMAGE.replace(/b{64}$/, 'c'.repeat(64)),
+  };
+  const hostPreparation = {
+    updateId: failed.updateId,
+    targetDigest: failed.targetDigest,
+    stage: 'recovery-required' as const,
+  };
+
+  it.each([true, false])(
+    'installs the offered correction with legacy metadata: %s',
+    async (sidecar) => {
+      let accept: (value: unknown) => void = () => undefined;
+      const requestServerUpdate = jest.fn().mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            accept = resolve;
+          }),
+      );
+      mockCreateVerityClient.mockReturnValue(
+        makeClient('unlocked', {
+          getServerUpdates: jest.fn().mockResolvedValue({
+            state: 'available',
+            installed: { version: '4.80.0' },
+            release: nextRelease,
+            operation: failed,
+            ...(sidecar ? { hostPreparation } : {}),
+          }),
+          requestServerUpdate,
+        }),
+      );
+      render(<ServerUpdateScreen />);
+      const install = await screen.findByLabelText(/^Install 4\.80\.2(,|$)/);
+      if (sidecar) expect(screen.getByText(/Restoration could not be verified/)).toBeOnTheScreen();
+      fireEvent.press(install);
+      fireEvent.press(install);
+      expect(requestServerUpdate).toHaveBeenCalledTimes(1);
+      expect(requestServerUpdate).toHaveBeenCalledWith({
+        targetDigest: nextRelease.serverImage,
+        idempotencyKey: expect.stringContaining('g198'),
+      });
+      await act(async () =>
+        accept({
+          ...failed,
+          updateId: 'new-update',
+          state: 'preparing',
+          phase: 'requested',
+          generation: 199,
+          targetDigest: nextRelease.serverImage,
+          failureCode: null,
+        }),
+      );
+      expect(screen.queryByLabelText(/^Install 4\.80\.2(,|$)/)).toBeNull();
+    },
+  );
+
+  it.each(['available', 'current'] as const)(
+    'keeps recovery guarded and refreshes status (%s)',
+    async (state) => {
+      const getServerUpdates = jest.fn().mockResolvedValue({
+        state,
+        release: RELEASE,
+        operation: failed,
+        hostPreparation,
+      });
+      const requestServerUpdate = jest.fn();
+      mockCreateVerityClient.mockReturnValue(
+        makeClient('unlocked', { getServerUpdates, requestServerUpdate }),
+      );
+      render(<ServerUpdateScreen />);
+      const check = await screen.findByLabelText(/^Check for updates(,|$)/);
+      expect(screen.queryByLabelText(/^Try again(,|$)/)).toBeNull();
+      if (state === 'current')
+        expect(screen.getByText(/No newer release is currently offered/)).toBeOnTheScreen();
+      const reads = getServerUpdates.mock.calls.length;
+      fireEvent.press(check);
+      await waitFor(() => expect(getServerUpdates).toHaveBeenCalledTimes(reads + 1));
+      expect(requestServerUpdate).not.toHaveBeenCalled();
+    },
+  );
+});

@@ -1,5 +1,71 @@
 # Changelog
 
+## [1.85.3](https://github.com/Heey-Global/verity/compare/mobile-v1.85.2...mobile-v1.85.3) (2026-11-06)
+
+
+### Bug Fixes
+
+* **egress:** repair automatic Staging host assessment ([#2329](https://github.com/Heey-Global/verity/issues/2329)) ([bbd8fe4](https://github.com/Heey-Global/verity/commit/bbd8fe44b3e02457e1c083670e0e643a1357bb1b))
+
+## [1.85.2](https://github.com/Heey-Global/verity/compare/mobile-v1.85.1...mobile-v1.85.2) (2026-11-06)
+
+
+### Features
+
+* **mobile:** project tasks on the Overview and Verity's V and panel in the design system ([#2325](https://github.com/Heey-Global/verity/issues/2325)) ([ac461b8](https://github.com/Heey-Global/verity/commit/ac461b855197ffee24c333328760c29954a08fde))
+
+
+### Bug Fixes
+
+* **mobile:** clear unread markers when opening project chats ([#2323](https://github.com/Heey-Global/verity/issues/2323)) ([6db99a4](https://github.com/Heey-Global/verity/commit/6db99a405a64ed8b94b33a8457571fa239c1abec))
+
+## [1.85.1](https://github.com/Heey-Global/verity/compare/mobile-v1.85.0...mobile-v1.85.1) (2026-11-06)
+
+
+### Features
+
+* **mobile:** navigable knowledge, Work markers, project security and readable approvals ([#2318](https://github.com/Heey-Global/verity/issues/2318)) ([fa1bc7c](https://github.com/Heey-Global/verity/commit/fa1bc7ca29894a859694353343665b202ed1720e))
+
+## [1.84.8](https://github.com/Heey-Global/verity/compare/mobile-v1.84.7...mobile-v1.84.8) (2026-11-05)
+
+
+### Features
+
+* **mockups:** add design review rounds before implementation ([#2295](https://github.com/Heey-Global/verity/issues/2295)) ([b77eae1](https://github.com/Heey-Global/verity/commit/b77eae10c57c6cb1564e01e030ae7a917fa3e398))
+
+## [1.84.7](https://github.com/Heey-Global/verity/compare/mobile-v1.84.6...mobile-v1.84.7) (2026-11-05)
+
+
+### Features
+
+* add Verity's page for cross-project knowledge ([#2289](https://github.com/Heey-Global/verity/issues/2289)) ([4c8d848](https://github.com/Heey-Global/verity/commit/4c8d84820e50a43c1c5b4f213efd28aca3331d16))
+
+
+### Bug Fixes
+
+* **mobile:** keep overview hooks before loading returns ([#2288](https://github.com/Heey-Global/verity/issues/2288)) ([44a0e11](https://github.com/Heey-Global/verity/commit/44a0e118227ebc0a92a58dd00271c4f298ba089d))
+
+## [1.84.6](https://github.com/Heey-Global/verity/compare/mobile-v1.84.5...mobile-v1.84.6) (2026-11-05)
+
+
+### Features
+
+* **mobile:** add a project page to the new design preview ([#2277](https://github.com/Heey-Global/verity/issues/2277)) ([2e28b54](https://github.com/Heey-Global/verity/commit/2e28b547bae3874f85e995877a4da9d8dcdbf106))
+* **mobile:** show projects as compact cards in the new design ([#2283](https://github.com/Heey-Global/verity/issues/2283)) ([03ee51a](https://github.com/Heey-Global/verity/commit/03ee51aa3052a13ad4543b9983d707f366faeb64))
+* **planning:** structured specs and mockups from real app components ([#2279](https://github.com/Heey-Global/verity/issues/2279)) ([1485be0](https://github.com/Heey-Global/verity/commit/1485be00bf71aa08a0d5fbb0293ab606a4f1089b))
+
+
+### Bug Fixes
+
+* **mobile:** offer newer server releases after host update failure ([#2286](https://github.com/Heey-Global/verity/issues/2286)) ([d99be22](https://github.com/Heey-Global/verity/commit/d99be22a78f48d08f993eac01cfdbc89814eb150))
+
+## [1.84.5](https://github.com/Heey-Global/verity/compare/mobile-v1.84.4...mobile-v1.84.5) (2026-11-05)
+
+
+### Bug Fixes
+
+* **mobile:** let a device pair again from the unlock screen ([#2270](https://github.com/Heey-Global/verity/issues/2270)) ([11463e7](https://github.com/Heey-Global/verity/commit/11463e75d1d24d737edda934dd5b26a325e84cee))
+
 ## [1.84.4](https://github.com/Heey-Global/verity/compare/mobile-v1.84.3...mobile-v1.84.4) (2026-11-05)
 
 

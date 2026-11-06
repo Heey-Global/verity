@@ -1,6 +1,59 @@
 import type { AgentEvent, Attachment } from '@verity/events';
 import type { ColumnType, Generated } from 'kysely';
 
+export interface ProjectInquiryGrantsTable {
+  source_project_id: string;
+  target_project_id: string;
+  enabled: Generated<boolean>;
+  created_at: Generated<Date>;
+}
+
+export interface ProjectInquirySessionsTable {
+  source_session_id: string;
+  target_project_id: string;
+  target_session_id: string;
+  change_approved: Generated<boolean>;
+}
+
+export interface ProjectInquiriesTable {
+  id: string;
+  source_session_id: string;
+  target_session_id: string;
+  source_project_id: string;
+  target_project_id: string;
+  title: string;
+  body: string;
+  kind: 'question' | 'change';
+  status: 'provisioning' | 'pending' | 'approved' | 'rejected' | 'queued' | 'answered' | 'blocked';
+  created_at: Generated<Date>;
+  answer: string | null;
+  answer_delivered: Generated<boolean>;
+  user_id: string | null;
+  decided_by: string | null;
+}
+
+export interface ProjectRepositoriesTable {
+  id: string;
+  project_id: string;
+  name: string;
+  kind: 'github' | 'forgejo';
+  owner: string;
+  repo: string;
+  forge_connection_id: string | null;
+  default_branch: string | null;
+  removed_at: ColumnType<Date | null, Date | null | undefined, Date | null>;
+}
+
+export interface SessionRepositoryWorkspacesTable {
+  session_id: string;
+  repository_id: string;
+  project_id: string;
+  worktree: string;
+  branch: string;
+  pull_request: ColumnType<unknown, unknown, unknown>;
+  created_at: Generated<Date>;
+}
+
 /**
  * Postgres schema for the durable source of truth (concept §5a): an append-only
  * canonical-event log plus the session registry. The {@link EventStore} API
@@ -57,6 +110,15 @@ export interface SessionsTable {
   >;
   planning_revision: ColumnType<number, number | undefined, number>;
   planning_plan: ColumnType<string | null, string | null | undefined, string | null>;
+  /** Mockup review (see {@link SessionMockupState}). NULL = no mockups were presented. */
+  mockup_review: ColumnType<
+    'pending' | 'revising' | 'approved' | null,
+    'pending' | 'revising' | 'approved' | null | undefined,
+    'pending' | 'revising' | 'approved' | null
+  >;
+  mockup_revision: ColumnType<number, number | undefined, number>;
+  /** JSON array of {@link MockupScreenRecord}; written whole with each change. */
+  mockup_screens: ColumnType<unknown, string | null | undefined, string | null>;
   /** Operator-marked favorite; highlighted in the session list. */
   favorite: ColumnType<boolean, boolean | undefined, boolean>;
   created_at: ColumnType<Date, string | undefined, never>;
@@ -501,6 +563,8 @@ export interface ProjectSettingsTable {
   google_drive_folder_id: ColumnType<string | null, string | null | undefined, string | null>;
   google_drive_folder_name: ColumnType<string | null, string | null | undefined, string | null>;
   google_drive_access_mode: Generated<'read-only' | 'read-write'>;
+  /** Design module: whether plans include mockups to approve before implementation. */
+  design_level: Generated<'off' | 'on_request' | 'required'>;
   /** Agents sessions in this project may use; null permits every connected agent. */
   allowed_agents: ColumnType<
     ('claude' | 'codex' | 'opencode')[] | null,
@@ -1667,7 +1731,20 @@ interface SessionDeletionsTable {
   cleanup_pending: Generated<boolean>;
 }
 
+interface VulnerabilityFixesTable {
+  project_id: string;
+  session_id: string;
+  finding_keys: string;
+  pending_keys: Generated<string>;
+  accepted: Generated<boolean>;
+  failed: Generated<boolean>;
+}
+
 export interface Database {
+  project_inquiry_grants: ProjectInquiryGrantsTable;
+  project_inquiry_sessions: ProjectInquirySessionsTable;
+  project_inquiries: ProjectInquiriesTable;
+  vulnerability_fixes: VulnerabilityFixesTable;
   session_deletions: SessionDeletionsTable;
   user_context: UserContextTable;
   user_view_state: UserViewStateTable;
@@ -1688,6 +1765,7 @@ export interface Database {
   qa_decisions: QADecisionsTable;
   assistant_settings: AssistantSettingsTable;
   assistant_project_grants: AssistantProjectGrantsTable;
+  assistant_requests: AssistantRequestsTable;
   scheduling_requests: SchedulingRequestsTable;
   scheduling_holds: SchedulingHoldsTable;
   vuln_digests: VulnDigestsTable;
@@ -1749,6 +1827,8 @@ export interface Database {
   queued_turns: QueuedTurnsTable;
   running_turns: RunningTurnsTable;
   projects: ProjectsTable;
+  project_repositories: ProjectRepositoriesTable;
+  session_repository_workspaces: SessionRepositoryWorkspacesTable;
   users: UsersTable;
   project_memberships: ProjectMembershipsTable;
   project_identity_claims: ProjectIdentityClaimsTable;
@@ -1956,6 +2036,15 @@ interface AssistantProjectGrantsTable {
   sponsor_user_id: string;
   revision: Generated<number>;
   updated_at: Generated<Date>;
+}
+interface AssistantRequestsTable {
+  request_id: string;
+  session_id: string;
+  user_id: string;
+  kind: import('./assistant.js').AssistantRequestKind;
+  question_id: string | null;
+  state: Generated<'pending' | 'accepted'>;
+  created_at: Generated<Date>;
 }
 interface SchedulingRequestsTable {
   id: string;

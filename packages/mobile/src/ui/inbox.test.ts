@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { ProjectRecord, SessionSummary, UpcomingMeeting } from '../api.js';
 import { inboxItems, inboxSummary, inboxView, MEETING_LEAD_MS, type InboxItem } from './inbox.js';
+import { permissionSummary } from './permissionSummary.js';
 
 const ZERO_USAGE = {
   inputTokens: 0,
@@ -162,13 +163,80 @@ describe('inboxItems', () => {
       now: NOW,
     });
     const permissions = items.filter((item) => item.kind === 'permission');
-    expect(permissions.map(labels)).toEqual([['Allow', 'Deny', 'Open'], ['Review'], ['Review']]);
+    expect(permissions.map(labels)).toEqual([
+      ['Allow once', 'Deny', 'Open'],
+      ['Review'],
+      ['Review'],
+    ]);
     expect(permissions[0]?.actions[0]).toMatchObject({ kind: 'allow', toolUseId: 't1' });
     // Allow travels with the complete input, never with only the tool's summary.
     expect(permissions[0]?.request).toBe(JSON.stringify({ url: 'https://api.exa.ai' }, null, 2));
     expect(permissions.slice(1).map((item) => item.request)).toEqual([undefined, undefined]);
     // An awaiting session whose question IS the permission is not also a question.
     expect(kinds(items)).not.toContain('question');
+  });
+
+  it('words a secret run the way the session card does, keeping the full input', () => {
+    const input = {
+      command: ['/usr/local/bin/cluster-inspect', 'job', 'e2e'],
+      secrets: [
+        { env: 'TS_AUTHKEY_FILE', injection: 'file', secretAlias: 'TAILSCALE_AUTH_KEY' },
+        { env: 'KUBECONFIG_B64_FILE', injection: 'file', secretAlias: 'KUBECONFIG' },
+      ],
+    };
+    const [item] = inboxItems({
+      sessions: [
+        session('k8s', {
+          status: 'awaiting_input',
+          permissionAwaitingInput: true,
+          pendingPermissions: ['t1'],
+          pendingPermissionRequests: [
+            { toolUseId: 't1', tool: 'verity_secret_run', riskClass: 'ask', input },
+          ],
+        }),
+      ],
+      projects: [project()],
+      now: NOW,
+    });
+    // Home showed the tool's name and a JSON dump; the session asked a question.
+    expect(item?.title).toBe(permissionSummary('verity_secret_run', input).title);
+    expect(item?.title).toBe('Run trusted command with 2 secrets?');
+    expect(item?.lines).toEqual([
+      { kind: 'code', text: '"/usr/local/bin/cluster-inspect" "job" "e2e"' },
+      {
+        kind: 'text',
+        text: expect.stringContaining(
+          'Verity injects TAILSCALE_AUTH_KEY as a file at TS_AUTHKEY_FILE, KUBECONFIG as a file at KUBECONFIG_B64_FILE.',
+        ) as string,
+      },
+    ]);
+    expect(item?.message).toBeUndefined();
+    // The summary is what to read first; the complete input still travels with Allow.
+    expect(item?.request).toBe(JSON.stringify(input, null, 2));
+  });
+
+  it('keeps an unknown tool readable from its raw input alone', () => {
+    const [item] = inboxItems({
+      sessions: [
+        session('egress', {
+          status: 'awaiting_input',
+          permissionAwaitingInput: true,
+          pendingPermissions: ['t1'],
+          pendingPermissionRequests: [
+            {
+              toolUseId: 't1',
+              tool: 'WebFetch',
+              riskClass: 'ask',
+              input: { url: 'https://api.exa.ai' },
+            },
+          ],
+        }),
+      ],
+      projects: [project()],
+      now: NOW,
+    });
+    expect(item?.lines).toBeUndefined();
+    expect(item?.request).toBe(JSON.stringify({ url: 'https://api.exa.ai' }, null, 2));
   });
 
   it('never offers a generic Allow for a package install', () => {
@@ -199,6 +267,79 @@ describe('inboxItems', () => {
       now: NOW,
     });
     expect(items.map(labels)).toEqual([['Resume', 'Open'], ['Open']]);
+  });
+
+  it('asks for a mockup review only while the round waits, keyed per round', () => {
+    const screen = (name: string, verdict: 'open' | 'approved' | 'comment') => ({
+      name,
+      attachment: 'a'.repeat(64),
+      mediaType: 'image/png',
+      width: 1,
+      height: 1,
+      verdict,
+    });
+    const waiting = session('w', {
+      mockupReview: {
+        state: 'pending',
+        revision: 2,
+        screens: [screen('Home', 'approved'), screen('Spec', 'open')],
+      },
+    });
+    const [item] = inboxItems({ sessions: [waiting], projects: [project()], now: NOW });
+    // A dismissed round must come back once the agent presents a revised one.
+    expect(item).toMatchObject({ kind: 'mockup_review', key: 'mockups:w:2' });
+    expect(item?.mockups?.map((entry) => entry.name)).toEqual(['Spec', 'Home']);
+    expect(item?.actions.map((action) => action.kind)).toEqual(['review_mockups', 'open_session']);
+    // Approved or revising rounds wait on nobody; an item would ask for nothing.
+    for (const state of ['approved', 'revising'] as const)
+      expect(
+        inboxItems({
+          sessions: [session('w', { mockupReview: { ...waiting.mockupReview!, state } })],
+          projects: [project()],
+          now: NOW,
+        }),
+      ).toEqual([]);
+  });
+
+  it('asks to review a presented plan while the session waits, keyed per revision', () => {
+    const planned = (over: Partial<SessionSummary> = {}) =>
+      session('p', {
+        planning: 'active',
+        planningRevision: 3,
+        planningPresented: true,
+        status: 'completed',
+        ...over,
+      });
+    const [item] = inboxItems({ sessions: [planned()], projects: [project()], now: NOW });
+    expect(item).toMatchObject({ kind: 'plan_review', tag: 'Plan', tone: 'attention' });
+    // Approving needs the plan in front of the operator, so the item only opens it.
+    expect(item?.actions.map((action) => action.kind)).toEqual(['open_session']);
+    // Nothing to review while the agent still writes, before a plan is presented,
+    // or once the round ended.
+    for (const over of [
+      { status: 'running' as const },
+      { planningPresented: undefined },
+      { planning: 'implemented' as const },
+      { planning: 'discarded' as const },
+    ])
+      expect(inboxItems({ sessions: [planned(over)], projects: [project()], now: NOW })).toEqual(
+        [],
+      );
+    // A dismissed plan returns once the agent presents a revision.
+    const revised = inboxView({
+      sessions: [planned({ planningRevision: 4, inboxDismissed: [item!.key] })],
+      projects: [project()],
+      now: NOW,
+    });
+    expect(revised.visible.map((entry) => entry.kind)).toEqual(['plan_review']);
+    expect(
+      inboxView({
+        sessions: [planned({ inboxDismissed: [item!.key] })],
+        projects: [project()],
+        now: NOW,
+      }).visible,
+    ).toEqual([]);
+    expect(inboxSummary([item!])).toBe('1 plan to review');
   });
 
   it('offers Merge exactly when the session’s merge button would', () => {

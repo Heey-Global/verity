@@ -156,7 +156,7 @@ if [ "$subcmd" = "push" ]; then
       echo
       echo "The pre-push gate names a way through every block it raises:"
       echo "  code review     verity-code-review run, then verity-code-review mark"
-      echo "  lint/format     install the dependencies, or verity-local-checks skip"
+      echo "  lint/format     fix check errors or dependency preparation; explicit skip: verity-local-checks skip"
       echo "  secret          rewrite the commit, or add the fingerprint to .gitleaksignore"
       echo "If this is an operator-directed push, re-run with VERITY_GIT_GUARD_DISABLE=1."
     } >&2

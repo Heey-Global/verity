@@ -118,6 +118,8 @@ export {
   isPlanImplementationPermission,
   planProposalHeadline,
   planProposalContent,
+  planProposalCounts,
+  planDecisionAnswer,
   planProposalFullyRepresented,
   planView,
   type PlanEntry,
@@ -202,6 +204,14 @@ export {
   type BrokeredJwtClaimSummary,
 } from './ui/brokeredHttpSummary.js';
 export { spellOutBidiControls } from './ui/bidi.js';
+export { workOrder } from './ui/workOrder.js';
+export {
+  permissionSummary,
+  trustedCliCommandLine,
+  trustedCliRiskSentence,
+  type PermissionLine,
+  type PermissionSummary,
+} from './ui/permissionSummary.js';
 export { permissionInputText } from './ui/permissionInput.js';
 export {
   knowledgePublishSummary,
@@ -295,6 +305,15 @@ export {
   type AttentionKind,
 } from './ui/attention.js';
 export {
+  sessionAgentMark,
+  sessionTile,
+  type SessionAgentMark,
+  type SessionTile,
+  type SessionTileGlyph,
+  type SessionTileResult,
+  type SessionTileTone,
+} from './ui/sessionTile.js';
+export {
   isPullRequestCheckingMergeability,
   isPullRequestConflicted,
   pullRequestMergeButton,
@@ -356,6 +375,8 @@ export {
   projectRuntimeStartedSchema,
   projectSettingsSchema,
   PROJECT_AGENTS,
+  PROJECT_DESIGN_LEVELS,
+  mockupReviewSchema,
   projectStateSchema,
   automationScheduleSchema,
   sessionAutomationSchema,
@@ -405,6 +426,9 @@ export {
   type ProjectSettings,
   type ProjectSettingsPatch,
   type ProjectAgent,
+  type ProjectDesignLevel,
+  type MockupReview,
+  type MockupReviewScreen,
   type ProjectLifecycleState,
   type ProjectState,
   type MessageSearchResult,
@@ -416,6 +440,8 @@ export {
   type SessionCreateResult,
   type SessionDetail,
   type SessionDirectory,
+  type RecentSharedKnowledge,
+  type RecentSharedKnowledgeList,
   type SessionFileContent,
   type SessionFileEntry,
   type SessionFileRoot,
@@ -448,6 +474,7 @@ export type {
   UserTextMessage,
 } from './happy/message.js';
 export { formatChoiceAnswer, type ChoicesOption, type RiskClass } from '@verity/events';
+export type { PlanDecision } from '@verity/events';
 export { PROJECT_IMAGE_REBUILDING_WARNING } from '@verity/events';
 export { END_PLANNING_TOOL, START_PLANNING_TOOL, planningToolName } from '@verity/events';
 export {
@@ -701,6 +728,10 @@ export {
   type FindingGroup,
   type PackageFindingGroup,
   packageFixPrompt,
+  vulnerabilityFixSelection,
+  vulnerabilityFindingKey,
+  VULNERABILITY_FIX_MESSAGE,
+  type VulnerabilityFixSelection,
   vulnerabilityFixPrompt,
   type VulnerabilityFinding,
   type VulnerabilitySettings,
@@ -719,5 +750,23 @@ export type {
 } from './audit.js';
 
 export { qaAssignmentView } from './ui/qaAssignment.js';
+export {
+  mockupBarView,
+  mockupProgress,
+  mockupRoundView,
+  reviewOrder,
+  type MockupBarView,
+  type MockupRoundView,
+  type MockupScreenView,
+  type MockupVerdict,
+} from './ui/mockups.js';
 
 export { projectEgressPolicySchema, type ProjectEgressPolicy } from './projectEgress.js';
+export type {
+  AssistantConversation,
+  AssistantConversationItem,
+  AssistantDelivery,
+  AssistantQuestion,
+} from '@verity/events';
+
+export { type ProjectRepository, type ProjectInquiry } from './projectCollaboration.js';

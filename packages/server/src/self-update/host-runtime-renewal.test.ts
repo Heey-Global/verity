@@ -339,6 +339,104 @@ describe('authenticated runtime service renewal', () => {
   });
 });
 
+async function egressJobFixture(stage: 'install' | 'verify' = 'install') {
+  const h = fixture();
+  h.verifyInstalled.mockRejectedValueOnce(new Error('receipt mismatch'));
+  await expect(h.run()).rejects.toThrow('receipt mismatch');
+  const job = [...h.jobs.values()].find(
+    (item) => item.spec.labels?.['verity.renewal-stage'] === stage,
+  )!;
+  job.spec.name = `verity-egress-${stage}-${'c'.repeat(24)}`;
+  job.spec.labels = { ...job.spec.labels, 'verity.managed-role': 'egress-provisioning' };
+  job.inspect.labels = job.spec.labels;
+  h.docker.waitContainer.mockResolvedValue(1);
+  return { ...h, spec: job.spec, runJob: () => runHostRenewalJob(h.docker, job.spec) };
+}
+
+describe('project egress helper failure diagnostics', () => {
+  const diagnostic = {
+    version: 1,
+    kind: 'egress-provisioning',
+    operationId: 'c'.repeat(24),
+    phase: 'submit',
+    code: 'start_unverified',
+    exitCode: 1,
+  };
+
+  it('reports the failing provisioning phase without claiming runtime restoration', async () => {
+    const h = await egressJobFixture();
+    h.docker.containerLogs.mockResolvedValue(JSON.stringify(diagnostic));
+    await expect(h.runJob()).rejects.toMatchObject({
+      name: 'ProjectEgressProvisioningError',
+      recovery: 'recovery-required',
+      message: expect.stringContaining('phase submit, code start_unverified'),
+    });
+    expect(h.docker.containerLogs).toHaveBeenCalledWith(expect.any(String), 1);
+  });
+
+  it.each([
+    { ...diagnostic, operationId: 'd'.repeat(24) },
+    { ...diagnostic, exitCode: 2 },
+    { ...diagnostic, phase: 'postgres://secret@private' },
+    { ...diagnostic, code: 'postgres://secret@private' },
+    {
+      version: 1,
+      updateId: journal.updateId,
+      targetDigest: journal.targetDigest,
+      outcome: 'restored',
+    },
+    null,
+  ])('refuses unbound or non-allowlisted helper output: %j', async (value) => {
+    const h = await egressJobFixture();
+    h.docker.containerLogs.mockResolvedValue(JSON.stringify(value));
+    await expect(h.runJob()).rejects.toMatchObject({
+      recovery: 'recovery-required',
+      message: expect.not.stringMatching(/phase |secret|restored/u),
+    });
+  });
+
+  it('keeps safe failure context when logs are unavailable', async () => {
+    const h = await egressJobFixture();
+    h.docker.containerLogs.mockRejectedValueOnce(new Error('private docker error'));
+    await expect(h.runJob()).rejects.toMatchObject({
+      recovery: 'recovery-required',
+      message: expect.stringContaining(
+        'Project network protection preparation failed (install, exit 1',
+      ),
+    });
+  });
+
+  it.each(['postgres://secret@private', 'x'.repeat(4097)])(
+    'does not relay raw or oversized logs',
+    async (logs) => {
+      const h = await egressJobFixture();
+      h.docker.containerLogs.mockResolvedValue(logs);
+      await expect(h.runJob()).rejects.toMatchObject({
+        recovery: 'recovery-required',
+        message: expect.not.stringMatching(/secret|xxxx|phase /u),
+      });
+    },
+  );
+
+  it('ignores private fields even in an otherwise valid diagnostic', async () => {
+    const h = await egressJobFixture();
+    h.docker.containerLogs.mockResolvedValue(
+      JSON.stringify({ ...diagnostic, error: 'postgres://secret@private' }),
+    );
+    const error = await h.runJob().catch((failure: unknown) => failure);
+    expect(error).toMatchObject({ message: expect.stringContaining('code start_unverified') });
+    expect(error).toMatchObject({ message: expect.not.stringContaining('secret') });
+  });
+
+  it('distinguishes signature verification from host installation', async () => {
+    const h = await egressJobFixture('verify');
+    await expect(h.runJob()).rejects.toMatchObject({
+      recovery: 'unchanged',
+      message: expect.stringContaining('Target verification did not complete'),
+    });
+  });
+});
+
 it('waits beyond the owned installer timeout when adopting a long-running job', async () => {
   const h = fixture();
   await h.run();

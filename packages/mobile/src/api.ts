@@ -1,9 +1,19 @@
+import { projectRepositorySchema, projectInquirySchema } from './projectCollaboration.js';
 import {
   projectEgressPolicySchema,
   projectEgressRequestSchema,
   type ProjectEgressPolicy,
 } from './projectEgress.js';
-import { storageReclamationActionSchema, type StorageReclamationAction } from '@verity/events';
+import {
+  assistantConversationSchema,
+  assistantDeliverySchema,
+  storageReclamationActionSchema,
+  type AssistantAnswerRequest,
+  type AssistantConversation,
+  type AssistantDelivery,
+  type AssistantMessageRequest,
+  type StorageReclamationAction,
+} from '@verity/events';
 import { buildDiagnosticResponseSchema, systemLogResponseSchema } from './logs.js';
 import {
   auditHealthSchema,
@@ -21,6 +31,7 @@ import {
   vulnerabilitySessionSchema,
   vulnerabilityIgnoresSchema,
   type VulnerabilitySettings,
+  type VulnerabilityFixSelection,
 } from './vulnerability.js';
 import {
   boundedHistoryResultSchema,
@@ -73,7 +84,9 @@ export interface TransportRequestInit extends RequestInit {
 
 function readTransportLane(path: string): TransportLane {
   const pathname = path.split('?')[0]!;
-  return /^\/(?:sessions|projects)$/u.test(pathname) ||
+  // A held conversation read must not occupy one of the few background slots.
+  return pathname === '/assistant/conversation' ||
+    /^\/(?:sessions|projects)$/u.test(pathname) ||
     /^\/sessions\/[^/]+(?:\/(?:events|activity|history\/v1))?$/u.test(pathname)
     ? 'interactive'
     : 'background';
@@ -223,6 +236,38 @@ const pendingPermissionRequestSchema = z.object({
   input: z.unknown().optional(),
 });
 
+/** A mockup review: the screens the agent presented after the plan was accepted,
+ * each approved, commented or still open. A value this build does not understand
+ * reads as absent rather than failing the whole response, like `planning`. */
+export const mockupReviewSchema = z
+  .object({
+    state: z.enum(['pending', 'revising', 'approved']),
+    revision: z.number().int().nonnegative(),
+    screens: z.array(
+      z.object({
+        name: z.string(),
+        attachment: z.string(),
+        mediaType: z.string(),
+        width: z.number(),
+        height: z.number(),
+        verdict: z.enum(['open', 'approved', 'comment']),
+        comment: z.string().optional(),
+      }),
+    ),
+  })
+  .optional()
+  .catch(undefined);
+export type MockupReview = NonNullable<z.infer<typeof mockupReviewSchema>>;
+export type MockupReviewScreen = MockupReview['screens'][number];
+
+/** Planning mode (`active`), or how the last planning round ended. A value this
+ * build does not know reads as absent rather than failing the whole response. */
+const sessionPlanningSchema = z
+  .enum(['active', 'implemented', 'discarded'])
+  .optional()
+  .catch(undefined);
+export type SessionPlanning = NonNullable<z.infer<typeof sessionPlanningSchema>>;
+
 export const sessionSummarySchema = z
   .object({
     sessionId: z.string().min(1),
@@ -232,6 +277,8 @@ export const sessionSummarySchema = z
     name: z.string().nullable(),
     /** Project binding for multi-repo fleet sessions (#174). Older servers omit it. */
     projectId: z.string().nullable().optional(),
+    /** The open mockup review, if the agent presented mockups. */
+    mockupReview: mockupReviewSchema,
     /** Operator-marked favorite, highlighted in the session list. ABSENT means not a
      * favorite — servers omit it for unmarked sessions, and older servers never send it. */
     favorite: z.boolean().optional(),
@@ -247,6 +294,14 @@ export const sessionSummarySchema = z
     /** The unanswered question of the current turn. Absent on older servers, while
      * the session works and after an answer. */
     openChoices: openChoicesSchema.optional().catch(undefined),
+    /** Planning mode, so an overview can mark a session whose plan waits for
+     * approval. Absent on older servers and for a session that never planned. */
+    planning: sessionPlanningSchema,
+    planningRevision: z.number().int().nonnegative().optional().catch(undefined),
+    /** True while planning is active and a presented plan waits for approval. The
+     * list carries this instead of the plan text, which only the session shows.
+     * Absent on older servers, so they never mark a plan. */
+    planningPresented: z.literal(true).optional().catch(undefined),
     usage: usageTotalsSchema,
     /** Latest rate-limit state for this session. Optional for rollout with
      * older servers and absent until a runtime emits one. */
@@ -364,14 +419,6 @@ const queuedItemSchema = z.union([
 ]);
 export type QueuedItem = z.infer<typeof queuedItemSchema>;
 
-/** Planning mode (`active`), or how the last planning round ended. A value this
- * build does not know reads as absent rather than failing the whole response. */
-const sessionPlanningSchema = z
-  .enum(['active', 'implemented', 'discarded'])
-  .optional()
-  .catch(undefined);
-export type SessionPlanning = NonNullable<z.infer<typeof sessionPlanningSchema>>;
-
 const gmailSessionConnectionSchema = z.object({
   accountId: z.string().nullable().optional(),
   accountName: z.string().nullable().optional(),
@@ -461,6 +508,7 @@ export const sessionActivitySchema = z.object({
   planning: sessionPlanningSchema,
   planningRevision: z.number().int().nonnegative().optional(),
   planningPlan: z.string().nullable().optional(),
+  mockupReview: mockupReviewSchema.nullable(),
 });
 export type SessionActivity = z.infer<typeof sessionActivitySchema>;
 
@@ -638,6 +686,10 @@ export type LinkedProject = z.infer<typeof linkedProjectSchema>;
 export const PROJECT_AGENTS = ['claude', 'codex', 'opencode'] as const;
 export type ProjectAgent = (typeof PROJECT_AGENTS)[number];
 
+/** When an accepted plan stops for mockups before it is built. */
+export const PROJECT_DESIGN_LEVELS = ['off', 'on_request', 'required'] as const;
+export type ProjectDesignLevel = (typeof PROJECT_DESIGN_LEVELS)[number];
+
 export const projectSettingsSchema = z.object({
   projectId: z.string().min(1),
   // Broker-only Doppler mapping. Credentials remain central and never appear in
@@ -656,13 +708,20 @@ export const projectSettingsSchema = z.object({
   // Agents sessions in this project may use; null (or absent on an older server)
   // allows every connected agent.
   allowedAgents: z.array(z.enum(PROJECT_AGENTS)).nullable().optional(),
+  // When accepted plans stop for mockups; absent on an older server.
+  designLevel: z.enum(PROJECT_DESIGN_LEVELS).optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
 export type ProjectSettings = z.infer<typeof projectSettingsSchema>;
 
 type ProjectSettingsKey =
-  'defaultBranch' | 'defaultModel' | 'memory' | 'googleDriveAccessMode' | 'allowedAgents';
+  | 'defaultBranch'
+  | 'defaultModel'
+  | 'memory'
+  | 'googleDriveAccessMode'
+  | 'allowedAgents'
+  | 'designLevel';
 
 export type ProjectSettingsPatch = {
   [K in ProjectSettingsKey]?: ProjectSettings[K] | undefined;
@@ -1970,6 +2029,24 @@ export type ModelList = z.infer<typeof modelListSchema>;
 export const branchSwitchedSchema = z.object({ branch: z.string() });
 export type BranchSwitched = z.infer<typeof branchSwitchedSchema>;
 
+/** Response of `GET /knowledge/shared/recent`: the latest pages, newest first. */
+const recentSharedKnowledgeSchema = z.object({
+  entries: z.array(
+    z.object({
+      path: z.string().min(1),
+      title: z.string(),
+      area: z.enum(['decisions', 'wiki', 'sources']),
+      modifiedAt: z.string(),
+      // Only a confirmed decision records where it came from.
+      decision: z.object({ sessionId: z.string(), confirmedAt: z.string() }).optional(),
+    }),
+  ),
+  /** More files than the server scans; newer pages may be missing from the list. */
+  truncated: z.boolean().default(false),
+});
+export type RecentSharedKnowledgeList = z.infer<typeof recentSharedKnowledgeSchema>;
+export type RecentSharedKnowledge = z.infer<typeof recentSharedKnowledgeSchema>['entries'][number];
+
 export const sessionFileEntrySchema = z.object({
   name: z.string(),
   path: z.string(),
@@ -2140,6 +2217,7 @@ export type DevicePushTokenRegistered = z.infer<typeof devicePushTokenRegistered
 /** Body for `POST /sessions/:id/turns`. */
 export interface TurnRequest {
   prompt: string;
+  vulnerabilityFix?: { findings?: VulnerabilityFixSelection[] };
   permissionMode?: string;
   model?: string;
   timeoutMs?: number;
@@ -3343,6 +3421,123 @@ export class VerityClient {
       body: JSON.stringify({ projectId, ids }),
     });
     return z.object({ ids: z.array(z.string()) }).parse(await res.json()).ids;
+  }
+
+  async listSessionRepositories(sessionId: string) {
+    const res = await this.request(`/sessions/${encodeURIComponent(sessionId)}/repositories`, {
+      method: 'GET',
+    });
+    return z
+      .object({
+        repositories: z.array(
+          projectRepositorySchema.extend({
+            workspace: z
+              .object({
+                worktree: z.string(),
+                branch: z.string().nullable(),
+                pullRequest: z
+                  .object({
+                    number: z.number(),
+                    url: z.string(),
+                    state: z.string(),
+                    dependsOn: z.array(z.string()).optional(),
+                  })
+                  .nullable()
+                  .optional(),
+              })
+              .passthrough()
+              .nullable(),
+          }),
+        ),
+      })
+      .parse(await res.json()).repositories;
+  }
+
+  async openSessionRepository(sessionId: string, repositoryId: string) {
+    await this.request(
+      `/sessions/${encodeURIComponent(sessionId)}/repositories/${encodeURIComponent(repositoryId)}/open`,
+      { method: 'POST' },
+    );
+  }
+
+  async listProjectRepositories(projectId: string) {
+    const res = await this.request(`/projects/${encodeURIComponent(projectId)}/repositories`, {
+      method: 'GET',
+    });
+    return z.object({ repositories: z.array(projectRepositorySchema) }).parse(await res.json())
+      .repositories;
+  }
+
+  async addProjectRepository(
+    projectId: string,
+    input: {
+      name: string;
+      kind: 'github' | 'forgejo';
+      owner: string;
+      repo: string;
+      forgeConnectionId?: string;
+      defaultBranch?: string;
+    },
+  ) {
+    const res = await this.request(`/projects/${encodeURIComponent(projectId)}/repositories`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+    return res.json();
+  }
+
+  async removeProjectRepository(projectId: string, repositoryId: string) {
+    await this.request(
+      `/projects/${encodeURIComponent(projectId)}/repositories/${encodeURIComponent(repositoryId)}`,
+      { method: 'DELETE' },
+    );
+  }
+
+  async listInquiryGrants(projectId: string) {
+    const res = await this.request(`/projects/${encodeURIComponent(projectId)}/inquiry-grants`, {
+      method: 'GET',
+    });
+    return z
+      .object({
+        grants: z.array(
+          z.object({
+            sourceProjectId: z.string(),
+            targetProjectId: z.string(),
+            enabled: z.boolean(),
+            createdAt: z.string(),
+          }),
+        ),
+      })
+      .parse(await res.json()).grants;
+  }
+
+  async setInquiryGrant(projectId: string, targetProjectId: string, enabled: boolean) {
+    await this.request(`/projects/${encodeURIComponent(projectId)}/inquiry-grants`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ targetProjectId, enabled }),
+    });
+  }
+
+  async listProjectInquiries(sessionId?: string, projectId?: string) {
+    const path =
+      sessionId === undefined
+        ? `/project-inquiries/pending${projectId === undefined ? '' : `?projectId=${encodeURIComponent(projectId)}`}`
+        : `/sessions/${encodeURIComponent(sessionId)}/project-inquiries`;
+    const res = await this.request(path, { method: 'GET' });
+    return z.object({ inquiries: z.array(projectInquirySchema) }).parse(await res.json()).inquiries;
+  }
+
+  async decideProjectInquiry(sessionId: string, inquiryId: string, decision: 'approve' | 'reject') {
+    await this.request(
+      `/sessions/${encodeURIComponent(sessionId)}/project-inquiries/${encodeURIComponent(inquiryId)}/decision`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ decision }),
+      },
+    );
   }
 
   async listSessionLinks(
@@ -5880,6 +6075,32 @@ export class VerityClient {
       .parse(await res.json());
   }
 
+  /** Approve a mockup screen, comment on it, or reopen it. 409 when the round
+   * changed meanwhile (`stale`) or no longer waits for review (`notPending`). */
+  async decideMockup(
+    id: string,
+    revision: number,
+    screen: string,
+    decision: { verdict: 'approved' | 'open' } | { verdict: 'comment'; comment: string },
+  ): Promise<MockupReview | undefined> {
+    const res = await this.request(`/sessions/${encodeURIComponent(id)}/mockups`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'decide', revision, screen, ...decision }),
+    });
+    return z.object({ mockupReview: mockupReviewSchema }).parse(await res.json()).mockupReview;
+  }
+
+  /** Send the round's comments to the agent, which revises the mockups. */
+  async sendMockupComments(id: string, revision: number): Promise<MockupReview | undefined> {
+    const res = await this.request(`/sessions/${encodeURIComponent(id)}/mockups`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'send', revision }),
+    });
+    return z.object({ mockupReview: mockupReviewSchema }).parse(await res.json()).mockupReview;
+  }
+
   async renameSession(id: string, name: string | null): Promise<SessionRenamed> {
     const res = await this.request(`/sessions/${encodeURIComponent(id)}`, {
       method: 'PATCH',
@@ -6016,6 +6237,12 @@ export class VerityClient {
     return sessionFileContentSchema.parse(await res.json());
   }
 
+  /** Where a native download of a project knowledge file reads from; the
+   * caller sends the bearer itself (React Native's Blob has no arrayBuffer). */
+  projectKnowledgeFileDownloadUrl(projectId: string, path: string): string {
+    return `${this.baseUrl}/projects/${encodeURIComponent(projectId)}/knowledge/files/download?path=${encodeURIComponent(path)}`;
+  }
+
   async downloadProjectKnowledgeFile(projectId: string, path: string): Promise<Blob> {
     const res = await this.request(
       `/projects/${encodeURIComponent(projectId)}/knowledge/files/download?path=${encodeURIComponent(path)}`,
@@ -6040,6 +6267,14 @@ export class VerityClient {
     return sessionFileContentSchema.parse(await res.json());
   }
 
+  /** The most recently changed Shared pages, for Verity's page. */
+  async listRecentSharedKnowledge(limit = 8): Promise<RecentSharedKnowledgeList> {
+    const res = await this.request(`/knowledge/shared/recent?limit=${String(limit)}`, {
+      method: 'GET',
+    });
+    return recentSharedKnowledgeSchema.parse(await res.json());
+  }
+
   async listSharedKnowledgeFiles(path = ''): Promise<SessionDirectory> {
     const res = await this.request(`/knowledge/shared/files?path=${encodeURIComponent(path)}`, {
       method: 'GET',
@@ -6056,6 +6291,11 @@ export class VerityClient {
       { method: 'GET' },
     );
     return sessionFileContentSchema.parse(await res.json());
+  }
+
+  /** Where a native download of a Shared knowledge file reads from. */
+  sharedKnowledgeFileDownloadUrl(path: string): string {
+    return `${this.baseUrl}/knowledge/shared/files/download?path=${encodeURIComponent(path)}`;
   }
 
   async downloadSharedKnowledgeFile(path: string): Promise<Blob> {
@@ -6489,6 +6729,45 @@ export class VerityClient {
       .parse(await res.json());
   }
 
+  /** The conversation with Verity as phone and Watch show it (docs/assistant.md). A
+   * member who is not an administrator gets a 403 {@link VerityApiError}. */
+  async assistantConversation(
+    options: { after?: number; waitMs?: number; signal?: AbortSignal } = {},
+  ): Promise<AssistantConversation> {
+    // With both, the server holds the read until the conversation moves past `after`.
+    const query =
+      options.after !== undefined && options.waitMs !== undefined
+        ? `?after=${String(options.after)}&waitMs=${String(options.waitMs)}`
+        : '';
+    const res = await this.request(`/assistant/conversation${query}`, {
+      method: 'GET',
+      ...(options.signal ? { signal: options.signal } : {}),
+    });
+    return assistantConversationSchema.parse(await res.json());
+  }
+
+  /** Sends what the user said or typed. Replaying a `requestId` never sends twice:
+   * the reply then says `delivered: false`. */
+  async sendAssistantMessage(body: AssistantMessageRequest): Promise<AssistantDelivery> {
+    const res = await this.request('/assistant/conversation/messages', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    return assistantDeliverySchema.parse(await res.json());
+  }
+
+  /** Answers the open question. A question already answered elsewhere or replaced
+   * is a 409 with code `answered` or `stale_question`. */
+  async answerAssistantQuestion(body: AssistantAnswerRequest): Promise<AssistantDelivery> {
+    const res = await this.request('/assistant/conversation/answers', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    return assistantDeliverySchema.parse(await res.json());
+  }
+
   async projectAssistant(id: string, mode?: 'off' | 'tasks' | 'delegate') {
     const res = await this.request(
       `/projects/${encodeURIComponent(id)}/assistant`,
@@ -6530,6 +6809,17 @@ export class VerityClient {
     return vulnerabilitySettingsSchema.parse(
       ((await res.json()) as { settings: unknown }).settings,
     );
+  }
+  async startVulnerabilityFix(
+    id: string,
+    body: { sessionId: string; findings?: VulnerabilityFixSelection[] },
+  ): Promise<{ sessionId: string; accepted: true }> {
+    const res = await this.request(`/projects/${encodeURIComponent(id)}/vulnerability-fix`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    return z.object({ sessionId: z.string(), accepted: z.literal(true) }).parse(await res.json());
   }
   async projectVulnerabilities(id: string) {
     return vulnerabilityProjectSchema.parse(

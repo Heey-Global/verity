@@ -1,10 +1,13 @@
-import type { ProjectRecord, SessionSummary, UpcomingMeeting } from '../api.js';
+import type { MockupReviewScreen, ProjectRecord, SessionSummary, UpcomingMeeting } from '../api.js';
 import { sessionAttention } from './attention.js';
+import { mockupProgress, reviewOrder } from './mockups.js';
 import { projectNeedsRepair } from './projectBadge.js';
 import { projectDisplayName } from './projectName.js';
 import { pullRequestMergeButton } from './pullRequest.js';
 import { sandboxUpdateNeedsAttention, isSecuritySandboxUpdate } from './sandboxUpdate.js';
 import { sessionLabel } from './sessionLabel.js';
+import { permissionInputText } from './permissionInput.js';
+import { permissionSummary, type PermissionLine } from './permissionSummary.js';
 import { toolCallView } from './toolCall.js';
 
 /**
@@ -26,7 +29,14 @@ import { toolCallView } from './toolCall.js';
  */
 
 export type InboxItemKind =
-  'meeting' | 'permission' | 'question' | 'crashed' | 'merge_ready' | 'project_health';
+  | 'meeting'
+  | 'permission'
+  | 'question'
+  | 'plan_review'
+  | 'mockup_review'
+  | 'crashed'
+  | 'merge_ready'
+  | 'project_health';
 
 /** What a tap on an item's answer does. The app maps each to an existing route. */
 export type InboxAction =
@@ -39,6 +49,7 @@ export type InboxAction =
   | { kind: 'skip_meeting'; label: string; eventKey: string }
   | { kind: 'repair_project'; label: string; projectId: string }
   | { kind: 'open_session'; label: string; sessionId: string }
+  | { kind: 'review_mockups'; label: string; sessionId: string }
   | { kind: 'open_project'; label: string; projectId: string };
 
 export interface InboxItem {
@@ -53,12 +64,18 @@ export interface InboxItem {
   /** Where it comes from: project, session, time. */
   context: string;
   message?: string;
+  /** A permission in words: the command, address or message it concerns. When
+   *  present, {@link request} is the full input behind it rather than the thing
+   *  to read first. */
+  lines?: PermissionLine[];
   /** A permission's complete input, formatted. Allow is only offered together
-   *  with it, so the operator approves what the tool will receive rather than a
-   *  summary of it. */
+   *  with it, so the operator can always see what the tool will receive rather
+   *  than only a summary of it. */
   request?: string;
   sessionId?: string;
   projectId?: string;
+  /** The screens of a mockup review, shown as thumbnails on the item. */
+  mockups?: MockupReviewScreen[];
   /** Answers in display order; the first is the primary one. */
   actions: InboxAction[];
   /** Sort time in epoch ms (meetings: start; sessions: last activity). */
@@ -87,11 +104,14 @@ export interface InboxInput {
 export const MEETING_LEAD_MS = 15 * 60_000;
 
 // Higher first. Meetings are time-bound; a parked permission blocks a running
-// agent; a question blocks a finished turn; the rest can wait a moment.
+// agent; a question, a plan or a mockup review blocks a finished turn; the rest can
+// wait a moment.
 const RANK: Record<InboxItemKind, number> = {
-  meeting: 6,
-  permission: 5,
-  question: 4,
+  meeting: 8,
+  permission: 7,
+  question: 6,
+  plan_review: 5,
+  mockup_review: 4,
   crashed: 3,
   merge_ready: 2,
   project_health: 1,
@@ -163,6 +183,8 @@ export function inboxSummary(items: readonly InboxItem[]): string {
   add('meeting', 'meeting soon', 'meetings soon');
   add('permission', 'permission', 'permissions');
   add('question', 'question', 'questions');
+  add('plan_review', 'plan to review', 'plans to review');
+  add('mockup_review', 'mockup review', 'mockup reviews');
   add('crashed', 'crashed session', 'crashed sessions');
   add('merge_ready', 'pull request ready', 'pull requests ready');
   add('project_health', 'project needs care', 'projects need care');
@@ -202,6 +224,7 @@ function sessionItems(
       completedAt: null,
       description: null,
     });
+    const summary = permissionSummary(request.tool, request.input);
     const decidable = request.input !== undefined && !OPEN_TO_DECIDE.has(request.tool);
     items.push({
       ...base,
@@ -209,15 +232,20 @@ function sessionItems(
       kind: 'permission',
       tag: 'Permission',
       tone: 'attention',
-      title: view.headline,
+      title: summary.title,
       context: where,
-      ...(view.subtitle ? { message: view.subtitle } : {}),
-      ...(decidable ? { request: JSON.stringify(request.input, null, 2) } : {}),
+      ...(summary.lines.length > 0
+        ? { lines: summary.lines }
+        : view.subtitle
+          ? { message: view.subtitle }
+          : {}),
+      ...(decidable ? { request: permissionInputText(request.input) } : {}),
       actions: decidable
         ? [
             {
               kind: 'allow',
-              label: 'Allow',
+              // The session's card says the same: one call, nothing remembered.
+              label: 'Allow once',
               sessionId: session.sessionId,
               toolUseId: request.toolUseId,
             },
@@ -296,6 +324,51 @@ function sessionItems(
       title: 'Waiting for your answer',
       context: where,
       actions: [open('Answer')],
+    });
+  }
+
+  // Plan: the agent presented a plan and waits for approval. Approving stays in
+  // the session, where the plan can be read in full. The key follows the
+  // revision, so a revised plan comes back after a dismissal.
+  if (
+    session.planning === 'active' &&
+    session.planningPresented === true &&
+    session.status !== 'running'
+  ) {
+    items.push({
+      ...base,
+      key: `plan:${session.sessionId}:${String(session.planningRevision ?? 0)}`,
+      kind: 'plan_review',
+      tag: 'Plan',
+      tone: 'attention',
+      title: 'Plan ready for review',
+      context: where,
+      message: 'Implementation waits for your approval.',
+      actions: [open('Review plan')],
+    });
+  }
+
+  // Mockups: the build waits until every screen is approved or comments are sent.
+  const review = session.mockupReview;
+  if (review?.state === 'pending' && review.screens.length > 0) {
+    const undecided = review.screens.some((screen) => screen.verdict === 'open');
+    items.push({
+      ...base,
+      // Each round asks anew: a dismissed round comes back once the agent revised it.
+      key: `mockups:${session.sessionId}:${String(review.revision)}`,
+      kind: 'mockup_review',
+      tag: 'Mockups',
+      tone: 'attention',
+      title: undecided ? 'Review mockups' : 'Send your mockup comments',
+      context: `${where} · ${String(review.screens.length)} ${
+        review.screens.length === 1 ? 'screen' : 'screens'
+      }`,
+      message: `${mockupProgress(review)}. Implementation waits for your review.`,
+      mockups: reviewOrder(review.screens),
+      actions: [
+        { kind: 'review_mockups', label: 'Review', sessionId: session.sessionId },
+        open('Open session'),
+      ],
     });
   }
 

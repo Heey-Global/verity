@@ -5,6 +5,7 @@ import { AccessibilityInfo, StyleSheet, View } from 'react-native';
 
 import {
   Button,
+  CardHead,
   ConfirmSheet,
   Row,
   useConfirm,
@@ -39,6 +40,25 @@ describe('Button', () => {
 });
 
 describe('Row', () => {
+  it('highlights the active destination and keeps its trailing content', () => {
+    const { rerender } = render(
+      <Row title="Session" active onPress={jest.fn()} trailing="Running" />,
+    );
+    const row = screen.getByRole('button', { name: 'Session, Running' });
+    expect(row.props.accessibilityState).toMatchObject({ selected: true });
+    expect(row).toHaveStyle({ backgroundColor: tint(lightTheme.colors.action, 'fill') });
+    expect(screen.getByText('Running')).toBeOnTheScreen();
+    rerender(<Row title="Session" onPress={jest.fn()} trailing="Running" />);
+    expect(
+      screen.getByRole('button', { name: 'Session, Running' }).props.accessibilityState,
+    ).toMatchObject({
+      selected: false,
+    });
+    expect(screen.getByRole('button', { name: 'Session, Running' })).not.toHaveStyle({
+      backgroundColor: tint(lightTheme.colors.action, 'fill'),
+    });
+  });
+
   // The chevron promises navigation; a row that only acts in place must not show it.
   it('shows the chevron only for rows that navigate', () => {
     // Count the drawn glyph (the mocked Feather host), not the wrappers around it.
@@ -505,5 +525,22 @@ describe('toneColor', () => {
     }
     expect(toneColor(theme.colors, 'danger')).toBe(theme.colors.attention);
     expect(toneColor(theme.colors, 'done')).toBe(theme.colors.success);
+  });
+});
+
+describe('CardHead', () => {
+  // Sharing the row's trailing rule (shrink, at most 45 %) cut a card's tag to
+  // "PERMISSI…" beside the dismiss button; the tag is the card's verdict.
+  it('keeps the status tag whole and lets the title give way', () => {
+    render(
+      <CardHead
+        title="Run trusted command with 2 secrets?"
+        trailing={<StatusTag intent="needsSetup" label="Permission" />}
+        onDismiss={() => undefined}
+      />,
+    );
+    const style = StyleSheet.flatten(screen.getByTestId('card-head-trailing').props.style);
+    expect(style.flexShrink).toBe(0);
+    expect(style.maxWidth).toBeUndefined();
   });
 });

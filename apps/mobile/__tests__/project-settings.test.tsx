@@ -1,6 +1,6 @@
 // The project entry route. The settings screens themselves are covered in
 // `project-settings-routes.test.tsx`.
-import { render } from '@testing-library/react-native';
+import { render, waitFor } from '@testing-library/react-native';
 import { router } from 'expo-router';
 
 // Expo Router exposes a fixed project id and records navigation destinations.
@@ -17,10 +17,15 @@ import ProjectEntry from '../app/project/[id]';
 
 const mockRouter = router as unknown as { replace: jest.Mock };
 
-it('opens project settings directly from the project entry route', () => {
+// With the new design preview off (the default), the entry still opens the
+// settings. It decides once the stored choice is read, so the redirect is awaited;
+// the preview's own route behaviour is covered in `project-page.test.tsx`.
+it('opens project settings from the project entry route without the preview', async () => {
   render(<ProjectEntry />);
-  expect(mockRouter.replace).toHaveBeenCalledWith({
-    pathname: '/project/[id]/settings',
-    params: { id: 'p/1' },
-  });
+  await waitFor(() =>
+    expect(mockRouter.replace).toHaveBeenCalledWith({
+      pathname: '/project/[id]/settings',
+      params: { id: 'p/1' },
+    }),
+  );
 });

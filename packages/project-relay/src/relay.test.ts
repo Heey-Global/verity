@@ -1262,3 +1262,38 @@ it('forwards native registry reads and only the fixed advisory write shape', asy
     ).status,
   ).toBe(400);
 });
+
+it('delegates changing forge authorities only to the fixed broker and honors broker refusal', async () => {
+  const socketPath = join(temporaryDirectory(), 'dynamic-broker.sock');
+  let allowed = true;
+  const targets: string[] = [];
+  const upstream = createHttpServer();
+  upstream.on('connect', (req, socket) => {
+    targets.push(req.url ?? '');
+    socket.end(
+      allowed ? 'HTTP/1.1 200 Connection Established\r\n\r\n' : 'HTTP/1.1 403 Forbidden\r\n\r\n',
+    );
+  });
+  servers.push(upstream);
+  await listenUnix(upstream, socketPath);
+  const port = await listenTcp(
+    createBrokerRelayServer({
+      socketPath,
+      forgeProxy: true,
+      brokerAuthorizesForgeAuthorities: true,
+    }),
+  );
+  const call = () =>
+    rawCall(port, 'CONNECT module.example:9443 HTTP/1.1\r\nHost: module.example:9443\r\n\r\n');
+  expect(await call()).toContain('200 Connection Established');
+  allowed = false;
+  expect(await call()).not.toContain('200 Connection Established');
+  expect(targets).toEqual(['module.example:9443', 'module.example:9443']);
+  expect(
+    await rawCall(
+      port,
+      'CONNECT module.example:9443/path HTTP/1.1\r\nHost: module.example:9443\r\n\r\n',
+    ),
+  ).toContain('405 Method Not Allowed');
+  expect(targets).toHaveLength(2);
+});

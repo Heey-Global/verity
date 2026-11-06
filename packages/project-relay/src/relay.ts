@@ -186,6 +186,9 @@ export interface BrokerRelayOptions {
   socketPath?: string;
   forgeProxy?: boolean;
   forgeAuthorities?: readonly string[];
+  /** Forward syntactically valid CONNECT requests only to the fixed managed broker.
+   * The broker validates current hosts, project assignments and credentials before egress. */
+  brokerAuthorizesForgeAuthorities?: boolean;
   limits?: Partial<RelayLimits>;
 }
 
@@ -257,14 +260,16 @@ export function createBrokerRelayServer(options: BrokerRelayOptions = {}): HttpS
   server.on('connect', (request, socket, head) => {
     if (
       options.forgeProxy !== true ||
-      !(
-        options.forgeAuthorities ?? [
-          'github.com:443',
-          'api.github.com:443',
-          'uploads.github.com:443',
-          'ghcr.io:443',
-        ]
-      ).includes(request.url ?? '') ||
+      !(options.brokerAuthorizesForgeAuthorities === true
+        ? /^(?:[a-zA-Z0-9.-]+|\[[a-fA-F0-9:]+\]):[0-9]{1,5}$/u.test(request.url ?? '')
+        : (
+            options.forgeAuthorities ?? [
+              'github.com:443',
+              'api.github.com:443',
+              'uploads.github.com:443',
+              'ghcr.io:443',
+            ]
+          ).includes(request.url ?? '')) ||
       head.length ||
       request.headers['transfer-encoding'] ||
       (request.headers['content-length'] !== undefined && request.headers['content-length'] !== '0')
@@ -345,6 +350,9 @@ export async function startRelay(
     host?: string;
     forgeProxy?: boolean;
     forgeAuthorities?: readonly string[];
+    /** Forward syntactically valid CONNECT requests only to the fixed managed broker.
+     * The broker validates current hosts, project assignments and credentials before egress. */
+    brokerAuthorizesForgeAuthorities?: boolean;
     brokerPort?: number;
     claudePort?: number;
     brokerSocketPath?: string;
@@ -361,6 +369,9 @@ export async function startRelay(
   const broker = createBrokerRelayServer({
     ...(options.brokerSocketPath === undefined ? {} : { socketPath: options.brokerSocketPath }),
     forgeProxy: options.forgeProxy ?? process.env.VERITY_FORGE_PROXY === 'github',
+    brokerAuthorizesForgeAuthorities:
+      options.brokerAuthorizesForgeAuthorities ??
+      process.env.VERITY_FORGE_AUTHORITY_MODE === 'broker',
     forgeAuthorities:
       options.forgeAuthorities ??
       (process.env.VERITY_FORGE_AUTHORITIES

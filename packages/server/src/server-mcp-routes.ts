@@ -22,6 +22,8 @@ import {
   answerAppHelp,
   appHelpRequestSchema,
   END_PLANNING_TOOL,
+  planningDesignNote,
+  PRESENT_MOCKUPS_TOOL,
   PRESENT_PLAN_TOOL,
   publishSessionProgressRequestSchema,
   RECENT_SESSION_MESSAGES_DEFAULT,
@@ -31,6 +33,7 @@ import {
   type AgentEvent,
 } from '@verity/events';
 import { PermissionDecisionInProgressError } from '@verity/session';
+import { presentMockupsRequestSchema, type SessionMockupActions } from './mockups.js';
 import type { EventStore, SessionRecord } from '@verity/store';
 import { isLocalProject, type ProjectRecord } from '@verity/store';
 import { type FastifyInstance } from 'fastify';
@@ -83,7 +86,12 @@ import { createMcpAppsInterceptor } from './mcp-apps.js';
 import { registerMcpGatewayRoutes } from './mcp-gateway-route.js';
 import { createMcpGateway } from './mcp-gateway.js';
 import { authorizePairedRoute } from './paired-route-policy.js';
-import { createSessionPlanning, trustedPlanInstructionConsent } from './planning.js';
+import {
+  createSessionPlanning,
+  OPEN_DECISIONS_ERROR,
+  openPlanDecisions,
+  trustedPlanInstructionConsent,
+} from './planning.js';
 import { resolveProjectDefaultModel } from './project-agent-policy.js';
 import { projectClonePath } from './provisioner.js';
 import type { ServerDeps } from './server-deps.js';
@@ -116,6 +124,7 @@ import { createVulnerabilityTool } from './vulnerability-tool.js';
 import { createGitWorktreeProvisioner } from './worktree.js';
 interface ServerMcpRouteDeps {
   deps: ServerDeps;
+  inquiryTool: (sessionId: string, userId: string | null, request: unknown) => Promise<unknown>;
   app: FastifyInstance;
   conductor: Conductor;
   assistantToolDeps: AssistantToolDeps;
@@ -136,6 +145,7 @@ interface ServerMcpRouteDeps {
   vulnerabilityService: ReturnType<typeof createVulnerabilityScanService>;
   canExecuteAs: (userId: string | null | undefined, projectId: string | null) => Promise<boolean>;
   sessionPlanning: ReturnType<typeof createSessionPlanning>;
+  sessionMockups: SessionMockupActions;
   publishSessionEvent: (sessionId: string, event: AgentEvent) => Promise<void>;
   projectSettingsStore: (store: EventStore) => ProjectSettingsStore;
   isProjectSessionModel: (model: string | undefined) => boolean;
@@ -146,6 +156,7 @@ interface ServerMcpRouteDeps {
 }
 export function registerServerMcpRoutes({
   deps,
+  inquiryTool,
   app,
   conductor,
   assistantToolDeps,
@@ -163,6 +174,7 @@ export function registerServerMcpRoutes({
   vulnerabilityService,
   canExecuteAs,
   sessionPlanning,
+  sessionMockups,
   publishSessionEvent,
   projectSettingsStore,
   isProjectSessionModel,
@@ -569,7 +581,12 @@ export function registerServerMcpRoutes({
       sourceSessionId: string,
       requestedTarget: string | undefined,
     ) => {
-      const links = await deps.eventStore.listSessionLinks(sourceSessionId);
+      if (await deps.eventStore.projectInquiries.isTarget(sourceSessionId)) return undefined;
+      const links = [];
+      for (const link of await deps.eventStore.listSessionLinks(sourceSessionId)) {
+        if (!(await deps.eventStore.projectInquiries.isTarget(link.peerSessionId)))
+          links.push(link);
+      }
       if (requestedTarget !== undefined) {
         return links.find((link) => link.peerSessionId === requestedTarget);
       }
@@ -1062,6 +1079,19 @@ export function registerServerMcpRoutes({
           throw new ControlPlaneSessionAuthorityError(
             'The calling user no longer has project execution permission.',
           );
+        if (
+          (await deps.eventStore.getSession(sessionId))?.planning === 'active' &&
+          (await deps.eventStore.projectInquiries.isReadOnlyTarget(sessionId)) &&
+          toolName !== 'verity_app_help' &&
+          !(
+            toolName === 'verity_project_inquiry' &&
+            ['answer', 'list'].includes((input.request as { operation: string }).operation)
+          )
+        ) {
+          throw new ControlPlaneSessionAuthorityError(
+            'Inquiry investigation is read-only; changes require target-side human approval',
+          );
+        }
         if (toolName === 'verity_vulnerabilities') {
           await vulnerabilityTool.authorize(input);
           return;
@@ -1098,6 +1128,10 @@ export function registerServerMcpRoutes({
         // and recording the agreed steps belongs to planning. App help only reads the
         // static catalog, and explaining Verity is as much a part of planning.
         if (
+          !(
+            toolName === 'verity_project_inquiry' &&
+            (input.request as { operation?: string }).operation !== 'request'
+          ) &&
           toolName !== 'verity_tasks' &&
           toolName !== 'verity_repairs' &&
           toolName !== 'verity_app_help' &&
@@ -1107,6 +1141,13 @@ export function registerServerMcpRoutes({
           throw new ControlPlaneSessionAuthorityError(
             'External tools are unavailable in planning mode; use read-only local tools.',
           );
+        }
+        if (toolName === 'verity_project_inquiry') return;
+        if (toolName === PRESENT_MOCKUPS_TOOL) {
+          const session = await deps.eventStore.getSession(sessionId);
+          if (session?.projectId !== projectId)
+            throw new ControlPlaneSessionAuthorityError('session project changed');
+          return;
         }
         if (toolName === 'verity_scheduling') {
           await schedulingTool.authorize({ projectId, sessionId, request: input.request });
@@ -1435,6 +1476,7 @@ export function registerServerMcpRoutes({
           toolName === 'verity_list_linked_sessions' ||
           toolName === 'verity_repairs' ||
           toolName === 'verity_qa_analysis' ||
+          toolName === 'verity_project_inquiry' ||
           toolName === 'verity_tasks' ||
           toolName === 'verity_app_help'
         ) {
@@ -1442,7 +1484,13 @@ export function registerServerMcpRoutes({
           return session?.projectId === projectId;
         }
 
-        if (toolName === START_PLANNING_TOOL || toolName === PRESENT_PLAN_TOOL) {
+        // Presenting mockups only stores images the session already has and asks the
+        // user to look at them; the review itself is the user's decision.
+        if (
+          toolName === START_PLANNING_TOOL ||
+          toolName === PRESENT_PLAN_TOOL ||
+          toolName === PRESENT_MOCKUPS_TOOL
+        ) {
           const session = await deps.eventStore.getSession(sessionId);
           return session?.projectId === projectId;
         }
@@ -1568,9 +1616,42 @@ export function registerServerMcpRoutes({
             throw new ControlPlaneSessionAuthorityError('Planning mode is already active.');
           if (!(await sessionPlanning.start(input.sessionId)))
             throw new ControlPlaneSessionAuthorityError('Planning mode is already active.');
+          // The note only guides how the plan is written, so a settings read that
+          // fails falls back to the default level rather than refusing to plan.
+          let designLevel: 'off' | 'on_request' | 'required' = 'on_request';
+          try {
+            designLevel =
+              (await projectSettingsStore(deps.eventStore).getProjectSettings(input.projectId))
+                ?.designLevel ?? designLevel;
+          } catch {
+            /* Default level. */
+          }
           return {
             planning: 'active',
-            note: 'Planning mode is on. Do not change any files in this turn either; Verity enforces it from the next message.',
+            note: `Planning mode is on. Do not change any files in this turn either; Verity enforces it from the next message. ${planningDesignNote(designLevel)}`,
+          };
+        }
+        if (input.toolName === PRESENT_MOCKUPS_TOOL) {
+          const review = await sessionMockups.present(
+            input.sessionId,
+            presentMockupsRequestSchema.parse(input.request),
+          );
+          return {
+            presented: true,
+            mockupRevision: review.revision,
+            // The chat renders this round from the result, so it keeps showing what
+            // was presented after later rounds replace the session's review.
+            screens: review.screens.map(({ name, attachment, width, height, verdict }) => ({
+              name,
+              attachment,
+              width,
+              height,
+              verdict,
+            })),
+            note:
+              review.state === 'approved'
+                ? 'Every screen is unchanged from an approved one. Continue implementing the accepted plan.'
+                : 'Verity shows the mockups in the chat and waits for the user to review each screen. End your turn now and do not implement the rest of the plan until Verity tells you they were approved.',
           };
         }
         if (input.toolName === PRESENT_PLAN_TOOL) {
@@ -1587,6 +1668,10 @@ export function registerServerMcpRoutes({
           };
         }
         if (input.toolName === END_PLANNING_TOOL) {
+          if (await deps.eventStore.projectInquiries.isReadOnlyTarget(input.sessionId))
+            throw new ControlPlaneSessionAuthorityError(
+              'Project inquiry sessions require target-side human change approval',
+            );
           if ((input.request as { action?: string }).action === 'discard') {
             if (
               !(await sessionPlanning.discard(
@@ -1602,6 +1687,13 @@ export function registerServerMcpRoutes({
           }
           // The user's instruction in chat already authorizes implementation.
           const planningRevision = planningApprovalRevisions.get(input.request as object);
+          const planned = await deps.eventStore.getSession(input.sessionId);
+          if (
+            planningRevision !== undefined &&
+            planned?.planningRevision === planningRevision &&
+            openPlanDecisions(planned.planningPlan) > 0
+          )
+            throw new ControlPlaneSessionAuthorityError(OPEN_DECISIONS_ERROR);
           if (
             planningRevision === undefined ||
             !(await sessionPlanning.implement(
@@ -1659,6 +1751,13 @@ export function registerServerMcpRoutes({
             request: tasksRequestSchema.parse(input.request),
           });
         }
+        if (
+          input.toolName === 'verity_project_inquiry' &&
+          (input.request as { operation?: string }).operation !== 'request'
+        ) {
+          const initiator = await runningTurnInitiator(input.sessionId, input.turnId);
+          return inquiryTool(input.sessionId, initiator?.userId ?? null, input.request);
+        }
         // Planning can begin while an external approval card is pending.
         if (
           (await sessionPlanning.isPlanning(input.sessionId)) ||
@@ -1667,6 +1766,10 @@ export function registerServerMcpRoutes({
           throw new ControlPlaneSessionAuthorityError(
             'External tools are unavailable in planning mode; use read-only local tools.',
           );
+        }
+        if (input.toolName === 'verity_project_inquiry') {
+          const initiator = await runningTurnInitiator(input.sessionId, input.turnId);
+          return inquiryTool(input.sessionId, initiator?.userId ?? null, input.request);
         }
         if (input.toolName === 'verity_list_linked_sessions') {
           const links = await deps.eventStore.listSessionLinks(input.sessionId);

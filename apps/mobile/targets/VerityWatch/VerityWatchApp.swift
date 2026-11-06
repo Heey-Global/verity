@@ -24,11 +24,10 @@ struct VerityWatchApp: App {
           guard WatchCaptureComplication.isRecordingURL(url) else { return }
           CaptureStore.shared.start()
         }
-        .onChange(of: scenePhase) { _, phase in
-          // Leaving the picker files the capture under the last project. Only on
-          // `.background`: a notification banner also makes the scene inactive.
-          if phase == .background { CaptureStore.shared.settleChoice() }
-        }
+    }
+    .onChange(of: scenePhase) { _, phase in
+      // Raising the wrist shows Verity's current state, not the last one delivered.
+      if phase == .active { CaptureStore.shared.refreshVerity() }
     }
   }
 }
@@ -39,8 +38,6 @@ struct CaptureView: View {
   var body: some View {
     if store.recording {
       RecordingView()
-    } else if let id = store.choosing {
-      ProjectPicker(captureId: id)
     } else if let confirmation = store.confirmation {
       SavedView(confirmation: confirmation)
     } else {
@@ -49,7 +46,8 @@ struct CaptureView: View {
   }
 }
 
-/// Record button in the title bar, the recent captures below as tappable rows.
+/// Verity on the wrist: where she is, her latest reply, her open question with
+/// its answers, and what was said here. The V in the title bar starts talking.
 private struct HomeView: View {
   @EnvironmentObject private var store: CaptureStore
 
@@ -59,31 +57,44 @@ private struct HomeView: View {
         if let error = store.error {
           Text(error).font(.footnote).foregroundStyle(.secondary)
         }
-        if store.captures.isEmpty {
-          Text("Tap the microphone and speak a task. It lands in your project on iPhone.")
+        StatusRow()
+        if let question = store.openQuestion {
+          QuestionSection(question: question)
+        }
+        if let approvals = store.verity?.approvals, approvals > 0 {
+          Label(
+            approvals == 1 ? "An approval waits on iPhone" : "\(approvals) approvals wait on iPhone",
+            systemImage: "iphone"
+          )
+          .font(.footnote).foregroundStyle(.secondary)
+        }
+        if let reply = store.verity?.reply, !reply.isEmpty {
+          NavigationLink { ReplyDetail(text: reply) } label: {
+            Text(reply).font(.footnote).lineLimit(5)
+          }
+        }
+        if store.captures.isEmpty && store.verity?.reply == nil {
+          Text("Tap the V and tell Verity what you need: a task, a question, an appointment.")
             .font(.footnote).foregroundStyle(.secondary)
         }
         ForEach(store.captures) { capture in
-          if capture.projectId == nil {
-            Button { store.reopen(capture.id) } label: { CaptureRow(capture: capture) }
-          } else {
-            NavigationLink { CaptureDetail(id: capture.id) } label: { CaptureRow(capture: capture) }
-              .listRowBackground(rowBackground(inFlight: capture.inFlight))
-          }
+          NavigationLink { CaptureDetail(id: capture.id) } label: { CaptureRow(capture: capture) }
+            .listRowBackground(rowBackground(inFlight: capture.inFlight))
         }
       }
       .navigationTitle { Text("Verity").foregroundStyle(accent) }
       .toolbar {
         ToolbarItem(placement: .topBarTrailing) {
           Button(action: store.start) {
-            Image(systemName: "mic.fill")
-              .font(.system(size: 13, weight: .bold)).foregroundStyle(.white)
+            VerityMarkShape().fill(.white)
+              .aspectRatio(VerityMarkShape.aspectRatio, contentMode: .fit)
+              .frame(width: 16)
               .frame(width: 34, height: 34)
-              .background(recordRed, in: Circle())
-              .shadow(color: recordRed.opacity(0.45), radius: 6, y: 2)
+              .background(highlight, in: Circle())
+              .overlay(Circle().stroke(accent.opacity(0.55)))
           }
           .buttonStyle(.plain)
-          .accessibilityLabel("Record")
+          .accessibilityLabel("Talk to Verity")
         }
       }
     }
@@ -97,6 +108,75 @@ private struct HomeView: View {
           Capsule().fill(accent).frame(width: 3).padding(.vertical, 6).padding(.leading, 3)
         }
       }
+  }
+}
+
+/// One line on where Verity stands. Words still on the watch ("Waiting for
+/// iPhone") are kept apart from work Verity already has ("Working").
+private struct StatusRow: View {
+  @EnvironmentObject private var store: CaptureStore
+
+  var body: some View {
+    HStack(spacing: 6) {
+      if store.waitingForPhone {
+        Image(systemName: "iphone.slash")
+        Text("Waiting for iPhone")
+      } else if let verity = store.verity {
+        switch (verity.availability, verity.state) {
+        case ("disabled", _): Text("Verity is switched off")
+        case ("denied", _): Text("Verity is for administrators")
+        case ("unavailable", _): Text("Verity is not available")
+        case (_, "working"):
+          ProgressView().controlSize(.mini).tint(sky)
+          Text("Verity is working")
+        case (_, "needs_you"): Text("Verity needs you").foregroundStyle(accent)
+        case (_, "failed"): Text("Stopped with an error").foregroundStyle(recordRed)
+        default: Text("Ready")
+        }
+      } else {
+        Text("Open Verity on iPhone once")
+      }
+    }
+    .font(.footnote).foregroundStyle(.secondary)
+  }
+}
+
+/// Verity's question with one button per answer. Several answers at once, or
+/// anything in her own words, is a new recording or the iPhone.
+private struct QuestionSection: View {
+  @EnvironmentObject private var store: CaptureStore
+  let question: VeritySnapshot.Question
+
+  var body: some View {
+    Section {
+      if question.multiSelect {
+        Text("Choose on iPhone, or tap the V and say it.")
+          .font(.caption2).foregroundStyle(.secondary)
+      } else {
+        ForEach(question.options, id: \.self) { option in
+          Button(option) { store.answer(question, with: [option]) }
+            .font(.footnote)
+        }
+      }
+    } header: {
+      Text(question.text ?? "Verity asks").textCase(nil)
+    }
+  }
+}
+
+/// A reply too long for the list, scrollable; the whole conversation is on iPhone.
+private struct ReplyDetail: View {
+  let text: String
+
+  var body: some View {
+    ScrollView {
+      VStack(alignment: .leading, spacing: 8) {
+        Text(text).font(.body)
+        Text("The whole conversation is in Verity on iPhone.")
+          .font(.footnote).foregroundStyle(.secondary)
+      }
+      .frame(maxWidth: .infinity, alignment: .leading)
+    }
   }
 }
 
@@ -141,7 +221,7 @@ private struct CaptureDetail: View {
       VStack(alignment: .leading, spacing: 8) {
         Text(capture.title).font(.body)
         Text(
-          [whenLabel(capture.createdAt), capture.projectName, capture.durationLabel]
+          [whenLabel(capture.createdAt), capture.durationLabel]
             .compactMap { $0 }.joined(separator: " · ")
         )
         .font(.footnote).foregroundStyle(.secondary)
@@ -174,70 +254,7 @@ private struct RecordingView: View {
   }
 }
 
-/// Shown after a recording stops: one tap files it under a project. The two
-/// projects used last are shortcuts on top; leaving without a tap files the
-/// capture under the last one (`CaptureStore.settleChoice`). Opened from a
-/// waiting row instead, it offers "Back".
-private struct ProjectPicker: View {
-  @EnvironmentObject private var store: CaptureStore
-  let captureId: String
-
-  var body: some View {
-    NavigationStack {
-      List {
-        if store.orderedProjects.isEmpty {
-          Text("Open Verity on iPhone to load projects")
-            .font(.footnote).foregroundStyle(.secondary)
-          Button("Back") { store.closePicker() }
-        } else {
-          Section {
-            HStack(spacing: 6) {
-              ForEach(Array(store.shortcutProjects.enumerated()), id: \.element.id) { index, project in
-                shortcut(project, last: index == 0)
-              }
-            }
-            .listRowBackground(Color.clear)
-            .listRowInsets(EdgeInsets())
-          }
-          Section {
-            ForEach(store.otherProjects) { project in
-              Button(project.name) { store.assign(captureId, to: project) }
-                .font(.footnote)
-            }
-            .listRowInsets(EdgeInsets(top: 2, leading: 10, bottom: 2, trailing: 10))
-          }
-          if store.reopened {
-            Button("Back") { store.closePicker() }.font(.footnote)
-          }
-        }
-      }
-      .environment(\.defaultMinListRowHeight, 32)
-      .navigationTitle { Text("Save to").foregroundStyle(accent) }
-    }
-  }
-
-  private func shortcut(_ project: WatchProject, last: Bool) -> some View {
-    Button { store.assign(captureId, to: project) } label: {
-      HStack(spacing: 4) {
-        if last { Image(systemName: "clock.arrow.circlepath").font(.caption2) }
-        Text(project.name).lineLimit(1).minimumScaleFactor(0.8)
-      }
-      .font(.footnote.weight(.semibold))
-      .frame(maxWidth: .infinity, minHeight: 38)
-      .background(
-        last ? AnyShapeStyle(highlight) : AnyShapeStyle(Color(white: 0.13)),
-        in: RoundedRectangle(cornerRadius: 12)
-      )
-      .overlay(
-        RoundedRectangle(cornerRadius: 12)
-          .stroke(last ? accent.opacity(0.55) : Color.white.opacity(0.12)))
-    }
-    .buttonStyle(.plain)
-    .accessibilityLabel(last ? "\(project.name), last used" : project.name)
-  }
-}
-
-/// Brief confirmation after a pick, then back to the list.
+/// Brief confirmation after a recording or an answer, then back to the list.
 private struct SavedView: View {
   let confirmation: CaptureStore.Confirmation
 
@@ -294,8 +311,8 @@ private func relativeDay(_ date: Date) -> String {
 }
 
 extension Capture {
-  /// Sent, but the transcript has not come back yet.
-  var inFlight: Bool { projectId != nil && (state == .queued || state == .delivered) }
+  /// Said, but the transcript has not come back yet.
+  var inFlight: Bool { state == .queued || state == .delivered }
 
   var durationLabel: String? {
     guard durationMs > 0 else { return nil }
@@ -311,12 +328,11 @@ extension Capture {
   }
 
   var subtitle: String {
-    let name = projectName ?? ""
     switch state {
-    case .queued where projectId == nil: return "Choose project"
-    case .queued: return "Sending · \(name)"
-    case .delivered: return "Transcribing · \(name)"
-    case .transcribed, .failed: return name
+    case .queued: return "Waiting to send"
+    case .delivered: return "Transcribing on iPhone"
+    case .transcribed: return "Sent to Verity"
+    case .failed: return "Not understood"
     }
   }
 }

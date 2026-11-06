@@ -14,6 +14,66 @@ type PairedRoutePolicy =
  * including collections and cross-project actions. */
 const resourceRules: ReadonlyMap<string, ResourceRule> = new Map([
   [
+    routeScopeKey('GET', '/projects/:id/inquiry-grants'),
+    { kind: 'project', parameter: 'id', permission: 'read' },
+  ],
+  [
+    routeScopeKey('PUT', '/projects/:id/inquiry-grants'),
+    { kind: 'project', parameter: 'id', permission: 'manage' },
+  ],
+  [
+    routeScopeKey('GET', '/sessions/:id/project-inquiries'),
+    { kind: 'session', parameter: 'id', permission: 'read' },
+  ],
+  [
+    routeScopeKey('POST', '/sessions/:id/project-inquiries'),
+    { kind: 'session', parameter: 'id', permission: 'execute' },
+  ],
+  [
+    routeScopeKey('POST', '/sessions/:id/project-inquiries/:inquiryId/decision'),
+    { kind: 'session', parameter: 'id', permission: 'execute' },
+  ],
+  [
+    routeScopeKey('GET', '/projects/:id/repositories'),
+    { kind: 'project', parameter: 'id', permission: 'read' },
+  ],
+  [
+    routeScopeKey('POST', '/projects/:id/repositories'),
+    { kind: 'project', parameter: 'id', permission: 'manage' },
+  ],
+  [
+    routeScopeKey('DELETE', '/projects/:id/repositories/:repositoryId'),
+    { kind: 'project', parameter: 'id', permission: 'manage' },
+  ],
+  [
+    routeScopeKey('GET', '/sessions/:id/repositories'),
+    { kind: 'session', parameter: 'id', permission: 'read' },
+  ],
+  [
+    routeScopeKey('POST', '/sessions/:id/repositories/:repositoryId/open'),
+    { kind: 'session', parameter: 'id', permission: 'execute' },
+  ],
+  // The person's own view of a project or session (fold, read mark, dismissed
+  // Home items) is stored per user and changes nothing anyone else sees, so
+  // reading the resource is enough. Resources the member cannot read are refused
+  // exactly as their reads are, so no view state is written for them.
+  [
+    routeScopeKey('PATCH', '/projects/:id/collapsed'),
+    { kind: 'project', parameter: 'id', permission: 'read' },
+  ],
+  [
+    routeScopeKey('PATCH', '/projects/:id/inbox-dismissed'),
+    { kind: 'project', parameter: 'id', permission: 'read' },
+  ],
+  [
+    routeScopeKey('PATCH', '/sessions/:id/seen'),
+    { kind: 'session', parameter: 'id', permission: 'read' },
+  ],
+  [
+    routeScopeKey('PATCH', '/sessions/:id/inbox-dismissed'),
+    { kind: 'session', parameter: 'id', permission: 'read' },
+  ],
+  [
     routeScopeKey('GET', '/projects/:id/knowledge/files'),
     { kind: 'project', parameter: 'id', permission: 'read' },
   ],
@@ -126,6 +186,10 @@ const resourceRules: ReadonlyMap<string, ResourceRule> = new Map([
     { kind: 'project', parameter: 'id', permission: 'read' },
   ],
   [
+    routeScopeKey('POST', '/projects/:id/vulnerability-fix'),
+    { kind: 'project', parameter: 'id', permission: 'execute' },
+  ],
+  [
     routeScopeKey('POST', '/projects/:id/vulnerability-scan'),
     { kind: 'project', parameter: 'id', permission: 'execute' },
   ],
@@ -198,7 +262,9 @@ const resourceRules: ReadonlyMap<string, ResourceRule> = new Map([
 ]);
 
 const activeUserRoutes = new Set([
+  routeScopeKey('GET', '/project-inquiries/pending'),
   routeScopeKey('GET', '/knowledge/shared/files'),
+  routeScopeKey('GET', '/knowledge/shared/recent'),
   routeScopeKey('GET', '/knowledge/shared/files/content'),
   routeScopeKey('GET', '/knowledge/shared/files/download'),
   // Personal context is bound to the authenticated identity inside the handlers.

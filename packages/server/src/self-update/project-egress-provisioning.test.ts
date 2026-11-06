@@ -1,4 +1,4 @@
-import { mkdtemp, rm, readFile } from 'node:fs/promises';
+import { mkdtemp, rm, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -136,6 +136,8 @@ it('independently verifies the release before authorizing the bounded host onesh
     capAdd: ['CHOWN', 'FOWNER', 'DAC_OVERRIDE'],
   });
   expect(jobs[1]?.binds).not.toContain('/:/host');
+  expect(jobs[1]?.binds).toContain('/run/systemd:/run/systemd');
+  expect(jobs[1]?.binds?.some((bind) => bind.includes('/run/dbus'))).toBe(false);
   expect(jobs[1]?.binds).toContain('/opt/verity-egress-recovery:/opt/verity-egress-recovery');
   expect(jobs[1]?.entrypoint).toEqual(['timeout', '--kill-after=5s', '750s', 'bash']);
   expect(jobs[1]?.command).toEqual(['/opt/verity-install/deploy/host/verity-egress-provision']);
@@ -326,6 +328,15 @@ it('reconciles installed staging once per image using its own signature authorit
     'org.verity.project-egress-deployment': '1',
   });
   try {
+    await writeFile(
+      join(directory, 'project-egress-staging-assessment.json'),
+      JSON.stringify({
+        version: 1,
+        image: previous,
+        operationId: 'a'.repeat(24),
+        completed: true,
+      }),
+    );
     expect(
       await reconcileInstalledProjectEgressHost({
         docker: daemon as unknown as DockerClient,

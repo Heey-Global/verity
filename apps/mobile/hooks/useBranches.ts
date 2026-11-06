@@ -58,7 +58,9 @@ export interface UseBranches {
   ) => Promise<{ ok: true } | { ok: false; dirty: boolean; message: string }>;
   mergePullRequest: (
     number: number,
-  ) => Promise<{ ok: true } | { ok: false; message: string; permissionDenied?: boolean }>;
+  ) => Promise<
+    { ok: true } | { ok: false; message: string; permissionDenied?: boolean; retryable?: boolean }
+  >;
   /** The base branch this session can be merged into WITHOUT GitHub, or undefined
    * when the project has a repository (merging goes through its PR) or the server is
    * older. Drives the local merge bar. */
@@ -331,13 +333,17 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
         await load();
         return { ok: true };
       } catch (err) {
-        if (err instanceof VerityApiError && err.status === 409) {
+        const retryable =
+          err instanceof VerityApiError &&
+          (err.code === 'merge_status_pending' || err.code === 'merge_status_unavailable');
+        if (err instanceof VerityApiError && (err.status === 409 || retryable)) {
           publishPullRequestStatusMutation({ sessionId });
           void load();
         }
         return {
           ok: false,
           permissionDenied: err instanceof VerityApiError && err.code === 'merge_permission_denied',
+          ...(retryable ? { retryable: true } : {}),
           message: err instanceof Error ? err.message : String(err),
         };
       }

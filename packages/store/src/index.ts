@@ -74,6 +74,11 @@ export {
   type SessionEventStats,
   type SessionRecord,
   type SessionPlanning,
+  type SessionMockupState,
+  type ProjectDesignLevel,
+  type SessionMockupReview,
+  type SessionMockups,
+  type MockupScreenRecord,
   type SessionSlideDeckRecord,
   type SessionWorkspaceFileRecord,
   type SessionGmailConnection,
@@ -243,6 +248,9 @@ export {
   AssistantStore,
   type AssistantGrant,
   type AssistantMode,
+  type AssistantRequest,
+  type AssistantRequestClaim,
+  type AssistantRequestKind,
   type AssistantSettings,
 } from './assistant.js';
 
@@ -288,3 +296,18 @@ export {
   type SessionViewState,
   type ViewSubject,
 } from './view-state.js';
+
+export {
+  ProjectRepositoryStore,
+  defaultProjectRepository,
+  projectForRepository,
+  type ProjectRepositoryRecord,
+  type AddProjectRepositoryInput,
+  type SessionRepositoryWorkspaceRecord,
+} from './project-repositories.js';
+
+export {
+  ProjectInquiryStore,
+  type ProjectInquiry,
+  type ProjectInquiryGrant,
+} from './project-inquiries.js';

@@ -5305,3 +5305,148 @@ migrations['0192_session_deletion_worktrees'] = {
     await sql`alter table session_deletions drop column worktree`.execute(db);
   },
 };
+
+migrations['0193_design_mockup_review'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table project_settings
+      add column design_level text not null default 'on_request'
+        check (design_level in ('off', 'on_request', 'required'))`.execute(db);
+    // One review round per session at a time: the screens the agent presented, each
+    // with the reviewer's verdict. The revision keeps a device from deciding a round
+    // the agent has already replaced.
+    await sql`alter table sessions
+      add column mockup_review text
+        check (mockup_review in ('pending', 'revising', 'approved')),
+      add column mockup_revision integer not null default 0 check (mockup_revision >= 0),
+      add column mockup_screens jsonb`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table sessions
+      drop column mockup_screens,
+      drop column mockup_revision,
+      drop column mockup_review`.execute(db);
+    await sql`alter table project_settings drop column design_level`.execute(db);
+  },
+};
+
+migrations['0194_assistant_requests'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    // One row per message or answer sent to the assistant from a device. The
+    // client-minted id makes a replayed delivery (Watch queue, app restart)
+    // return the first outcome instead of starting a second turn, and the
+    // partial unique index lets only one device answer a given question.
+    await sql`create table assistant_requests (
+      request_id text primary key,
+      session_id text not null references sessions(session_id) on delete cascade,
+      user_id text not null,
+      kind text not null check (kind in ('message', 'answer')),
+      question_id text,
+      state text not null default 'pending' check (state in ('pending', 'accepted')),
+      created_at timestamptz not null default now(),
+      check ((kind = 'answer') = (question_id is not null))
+    )`.execute(db);
+    await sql`create unique index assistant_requests_one_answer
+      on assistant_requests(session_id, question_id) where kind = 'answer'`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table assistant_requests`.execute(db);
+  },
+};
+
+migrations['0195_vulnerability_fixes'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`create table vulnerability_fixes (
+      project_id text primary key references projects(id) on delete cascade,
+      session_id text not null,
+      finding_keys text not null,
+      pending_keys text not null default '[]',
+      accepted boolean not null default false,
+      failed boolean not null default false
+    )`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table vulnerability_fixes`.execute(db);
+  },
+};
+
+migrations['0196_project_repositories'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    // The default repository remains in projects: upgrading never moves an existing
+    // clone, worktree, branch or PR association. These rows describe extra modules.
+    await sql`create table project_repositories (
+      id text primary key,
+      project_id text not null references projects(id) on delete cascade,
+      name text not null,
+      kind text not null check (kind in ('github', 'forgejo')),
+      owner text not null,
+      repo text not null,
+      forge_connection_id text,
+      default_branch text,
+      removed_at timestamptz,
+      check (id not like 'default:%')
+    )`.execute(db);
+    await sql`create unique index project_repositories_active_identity
+      on project_repositories(project_id, coalesce(forge_connection_id, ''), kind, lower(owner), lower(repo))
+      where removed_at is null`.execute(db);
+    await sql`create table session_repository_workspaces (
+      session_id text not null references sessions(session_id) on delete cascade,
+      repository_id text not null,
+      project_id text not null references projects(id) on delete cascade,
+      worktree text not null unique,
+      branch text not null,
+      pull_request jsonb,
+      created_at timestamptz not null default now(),
+      primary key (session_id, repository_id)
+    )`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table session_repository_workspaces`.execute(db);
+    await sql`drop table project_repositories`.execute(db);
+  },
+};
+
+migrations['0197_project_inquiries'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`create table project_inquiry_grants (
+      source_project_id text not null references projects(id) on delete cascade,
+      target_project_id text not null references projects(id) on delete cascade,
+      enabled boolean not null default true,
+      created_at timestamptz not null default now(),
+      primary key(source_project_id,target_project_id),
+      check(source_project_id <> target_project_id)
+    )`.execute(db);
+    // Keep the target boundary after source deletion; only deleting the target removes it.
+    await sql`create table project_inquiry_sessions (
+      source_session_id text not null,
+      target_project_id text not null references projects(id) on delete cascade,
+      target_session_id text not null unique references sessions(session_id) on delete cascade,
+      change_approved boolean not null default false,
+      primary key(source_session_id,target_project_id)
+    )`.execute(db);
+    // Target IDs are reserved before provisioning; session deletion removes matching requests.
+    await sql`create table project_inquiries (
+      id text primary key,
+      source_session_id text not null references sessions(session_id) on delete cascade,
+      target_session_id text not null,
+      source_project_id text not null references projects(id) on delete cascade,
+      target_project_id text not null references projects(id) on delete cascade,
+      title text not null,
+      body text not null,
+      kind text not null check(kind in ('question','change')),
+      status text not null check(status in ('provisioning','pending','approved','rejected','queued','answered','blocked')),
+      created_at timestamptz not null default now(),
+      answer text,
+      answer_delivered boolean not null default false,
+      user_id text,
+      decided_by text
+    )`.execute(db);
+    await sql`create index project_inquiries_delivery on project_inquiries(status,created_at)`.execute(
+      db,
+    );
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table project_inquiries`.execute(db);
+    await sql`drop table project_inquiry_sessions`.execute(db);
+    await sql`drop table project_inquiry_grants`.execute(db);
+  },
+};

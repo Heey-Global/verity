@@ -93,7 +93,7 @@ describe('settings index — destinations', () => {
         'Devices & Web Browsers',
         'Logs',
       ],
-      ['New Home (preview)', 'Show welcome tour again', 'Diagnostics', 'Try demo'],
+      ['New design (preview)', 'Show welcome tour again', 'Diagnostics', 'Try demo'],
     ];
     groups.forEach((group, index) => {
       const rows = group.findAll(
@@ -103,6 +103,22 @@ describe('settings index — destinations', () => {
     });
     expect(screen.queryByText('All changes saved')).toBeNull();
     expect(screen.queryByLabelText(/^Version /)).toBeNull();
+  });
+
+  it('leaves Shared knowledge to Verity’s page with the new design on', async () => {
+    const { setNewDesignEnabled } =
+      jest.requireActual<typeof import('../lib/homePreferences')>('../lib/homePreferences');
+    mockCreateVerityClient.mockReturnValue(makeClient('unlocked'));
+    act(() => setNewDesignEnabled(true));
+    try {
+      render(<SettingsIndexScreen />);
+      await screen.findByText('Personal context');
+      expect(screen.queryByText('Shared knowledge')).toBeNull();
+      // The personal context stays here as the second, technical way in.
+      expect(screen.getByText('Instructions')).toBeTruthy();
+    } finally {
+      act(() => setNewDesignEnabled(false));
+    }
   });
 
   it('keeps destinations usable while settings are pending', async () => {

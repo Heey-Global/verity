@@ -49,6 +49,7 @@ export function ServerUpdateSection({
   const { theme } = useUnistyles();
   const [status, setStatus] = useState<ServerUpdateStatus | undefined>(undefined);
   const [starting, setStarting] = useState(false);
+  const [checking, setChecking] = useState(false);
   const server = getVerityBaseUrl();
   const changingChannel = useServerUpdateChannelWritePending(server);
   const channelSavingChanged = useCallback(
@@ -393,6 +394,16 @@ export function ServerUpdateSection({
           />
         ))}
       </Card>
+      <Button
+        label="Check for updates"
+        loading={checking}
+        variant="secondary"
+        disabled={checking || starting || view.busy || changingChannel}
+        onPress={() => {
+          setChecking(true);
+          void refresh().finally(() => setChecking(false));
+        }}
+      />
       {actionError !== undefined ? <Text style={styles.reproHint}>{actionError}</Text> : null}
     </>
   );

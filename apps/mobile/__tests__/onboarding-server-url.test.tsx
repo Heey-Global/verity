@@ -91,6 +91,15 @@ beforeEach(() => {
 });
 
 describe('onboarding connection entry', () => {
+  it('offers scanning and pasting on recovery with an existing server address', () => {
+    mockGetVerityBaseUrl.mockReturnValue('https://verity.example.test:8082');
+    render(<OnboardingServerUrl />);
+    expect(screen.getByLabelText('Scan QR code')).toBeOnTheScreen();
+    expect(screen.getByLabelText('Paste pairing code')).toBeOnTheScreen();
+    fireEvent.press(screen.getByLabelText('Scan QR code'));
+    expect(screen.getByTestId('camera')).toBeOnTheScreen();
+  });
+
   it('welcomes first-run users with installer guidance and no manual address field', () => {
     render(<OnboardingServerUrl />);
     expect(screen.getByText('Secure pairing')).toBeOnTheScreen();

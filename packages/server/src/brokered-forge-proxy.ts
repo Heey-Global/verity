@@ -1,6 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import type { Duplex } from 'node:stream';
 import { TLSSocket, createSecureContext } from 'node:tls';
+import { randomUUID } from 'node:crypto';
 import type { PemCertificate } from './claude-egress-ca.js';
 import type { GhTokenCapabilityRegistry } from './github-token-broker.js';
 import type { InternalConnectionIdentity } from './internal-listener.js';
@@ -63,7 +64,27 @@ const SAFE_TRANSPORT_CODES = new Set([
   'ENOTFOUND',
   'EAI_AGAIN',
   'ABORT_ERR',
+  'ERR_STREAM_PREMATURE_CLOSE',
+  'ERR_SSL_WRONG_VERSION_NUMBER',
+  'ERR_SSL_UNEXPECTED_EOF_WHILE_READING',
+  'ERR_SSL_TLSV1_ALERT_UNKNOWN_CA',
+  'HPE_INVALID_METHOD',
+  'HPE_INVALID_HEADER_TOKEN',
+  'HPE_HEADER_OVERFLOW',
+  'HPE_INVALID_EOF_STATE',
 ]);
+type FailurePhase =
+  | 'certificate'
+  | 'client-tls'
+  | 'http-parser'
+  | 'request'
+  | 'upstream'
+  | 'response'
+  | 'idle-timeout'
+  | 'tunnel-timeout'
+  | 'request-timeout'
+  | 'generation-abort'
+  | 'authorization';
 const FORGE_PLACEHOLDER_PREFIX = 'verity-broker-';
 
 function capability(request: IncomingMessage): string | undefined {
@@ -100,6 +121,8 @@ async function bufferedBody(request: IncomingMessage): Promise<Buffer> {
   return Buffer.concat(chunks);
 }
 
+type RepositoryBinding = NonNullable<Awaited<ReturnType<GhTokenCapabilityRegistry['resolve']>>>;
+
 /** Extend the HTTP secret broker with a repository-bound streaming transport.
  * Only this server owns TLS keys and provider credentials. The project listener
  * supplies identity; neither CONNECT nor the decrypted request can choose it. */
@@ -108,6 +131,11 @@ export function createBrokeredForgeProxy(options: {
   certificateFor?(hostname: string): Promise<PemCertificate>;
   allowsHost?(authority: string): Promise<boolean>;
   capabilities: GhTokenCapabilityRegistry;
+  resolveRepository?: (
+    binding: NonNullable<Awaited<ReturnType<GhTokenCapabilityRegistry['resolve']>>>,
+    hostname: string,
+    path: string,
+  ) => Promise<RepositoryBinding | RepositoryBinding[] | undefined>;
   adapter: BrokeredForgeAdapter;
   enabled(projectId: string): boolean;
   actions?(projectId: string): ReadonlySet<ForgeAction>;
@@ -119,8 +147,33 @@ export function createBrokeredForgeProxy(options: {
     minVersion: 'TLSv1.2',
   });
   const transport = options.transport ?? brokeredHttpStreamTransport;
+  // A bad client can open many tunnels. Bound diagnostics across the proxy as
+  // well as deduplicating each tunnel's cascading abort/error/close events.
+  let diagnosticWindow = Date.now();
+  let diagnosticCount = 0;
   return {
     connect(request, socket, head, identity, generationSignal) {
+      const connectionId = randomUUID();
+      let phase: FailurePhase = 'request';
+      let reported = false;
+      let completed = false;
+      const report = (failurePhase: FailurePhase, error?: unknown) => {
+        if (reported || completed) return;
+        reported = true;
+        const now = Date.now();
+        if (now - diagnosticWindow >= 60_000) {
+          diagnosticWindow = now;
+          diagnosticCount = 0;
+        }
+        if (diagnosticCount >= 20) return;
+        diagnosticCount++;
+        const code = error instanceof Error && 'code' in error ? error.code : undefined;
+        console.warn('Forge broker connection failed', {
+          connectionId,
+          phase: failurePhase,
+          code: typeof code === 'string' && SAFE_TRANSPORT_CODES.has(code) ? code : 'UNKNOWN',
+        });
+      };
       void (async () => {
         const target = request.url ?? '';
         const hostname = target.endsWith(':443') ? target.slice(0, -4) : target;
@@ -144,6 +197,7 @@ export function createBrokeredForgeProxy(options: {
         }
         let selectedContext = context;
         if (options.certificateFor) {
+          phase = 'certificate';
           try {
             const certificate = await options.certificateFor(hostname);
             selectedContext = createSecureContext({
@@ -151,27 +205,54 @@ export function createBrokeredForgeProxy(options: {
               cert: certificate.certPem,
               minVersion: 'TLSv1.2',
             });
-          } catch {
+          } catch (error) {
+            report('certificate', error);
             socket.destroy();
             return;
           }
         }
         if (generationSignal?.aborted || socket.destroyed) return;
         socket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+        phase = 'client-tls';
         const tls = new TLSSocket(socket, { isServer: true, secureContext: selectedContext });
-        const tunnelDeadline = setTimeout(() => tls.destroy(), 10 * 60_000);
+        const tunnelDeadline = setTimeout(() => {
+          report('tunnel-timeout');
+          tls.destroy();
+        }, 10 * 60_000);
         tunnelDeadline.unref();
-        tls.once('close', () => clearTimeout(tunnelDeadline));
-        tls.on('error', () => tls.destroy());
-        tls.setTimeout(60_000, () => tls.destroy());
+        tls.once('secure', () => {
+          phase = 'http-parser';
+        });
+        tls.once('close', () => {
+          clearTimeout(tunnelDeadline);
+          if (!completed) report(generationSignal?.aborted ? 'generation-abort' : phase);
+        });
+        tls.on('error', (error) => {
+          report(phase, error);
+          tls.destroy();
+        });
+        tls.setTimeout(60_000, () => {
+          report('idle-timeout');
+          tls.destroy();
+        });
         const server = createServer({ maxHeaderSize: 16_384 }, (inner, response) => {
+          phase = 'request';
           response.shouldKeepAlive = false;
+          response.once('finish', () => {
+            completed = true;
+          });
           const abort = new AbortController();
-          const retire = () => abort.abort();
+          const retire = () => {
+            report('generation-abort');
+            abort.abort();
+          };
           generationSignal?.addEventListener('abort', retire, { once: true });
           if (generationSignal?.aborted) abort.abort();
           let authorizationPoll: ReturnType<typeof setInterval> | undefined;
-          const timeout = setTimeout(() => abort.abort(), 10 * 60_000);
+          const timeout = setTimeout(() => {
+            report('request-timeout');
+            abort.abort();
+          }, 10 * 60_000);
           timeout.unref();
           response.once('close', () => {
             clearTimeout(timeout);
@@ -192,8 +273,32 @@ export function createBrokeredForgeProxy(options: {
               response.end();
               return;
             }
+            const path = inner.url ?? '';
             const presented = capability(inner);
-            const binding = presented ? await options.capabilities.resolve(presented) : undefined;
+            let chosen: RepositoryBinding | undefined;
+            let candidates: RepositoryBinding[] = [];
+            const resolveBinding = async () => {
+              const current = presented ? await options.capabilities.resolve(presented) : undefined;
+              const resolved =
+                current && options.resolveRepository
+                  ? await options.resolveRepository(current, hostname, path)
+                  : current;
+              candidates = (Array.isArray(resolved) ? resolved : resolved ? [resolved] : []).filter(
+                (candidate) =>
+                  candidate.projectId === identity.projectId &&
+                  candidate.containerGeneration === identity.containerGeneration,
+              );
+              const selected = chosen;
+              return selected
+                ? candidates.find(
+                    (candidate) =>
+                      candidate.owner === selected.owner &&
+                      candidate.repo === selected.repo &&
+                      candidate.forgeConnectionId === selected.forgeConnectionId,
+                  )
+                : candidates[0];
+            };
+            let binding = await resolveBinding();
             if (
               abort.signal.aborted ||
               !binding ||
@@ -219,7 +324,6 @@ export function createBrokeredForgeProxy(options: {
               fail(response, 403);
               return;
             }
-            const path = inner.url ?? '';
             // API envelopes are bounded before parsing/policy; Git bodies remain binary streams.
             const body = options.adapter.streams({ hostname, method: inner.method ?? '', path })
               ? inner
@@ -236,20 +340,35 @@ export function createBrokeredForgeProxy(options: {
               fail(response, 403);
               return;
             }
-            const auth = await options.adapter.authorize(
-              {
-                hostname,
-                method: inner.method ?? '',
-                path,
-                ...(Buffer.isBuffer(body) ? { body } : {}),
-              },
-              binding,
-              options.actions?.(binding.projectId) ?? ALL_ACTIONS,
-              abort.signal,
-            );
+            let auth: Awaited<ReturnType<BrokeredForgeAdapter['authorize']>> | undefined;
+            let rejected: unknown;
+            for (const candidate of candidates) {
+              try {
+                auth = await options.adapter.authorize(
+                  {
+                    hostname,
+                    method: inner.method ?? '',
+                    path,
+                    ...(Buffer.isBuffer(body) ? { body } : {}),
+                  },
+                  candidate,
+                  options.actions?.(candidate.projectId) ?? ALL_ACTIONS,
+                  abort.signal,
+                );
+                chosen = candidate;
+                binding = candidate;
+                break;
+              } catch (error) {
+                rejected = error;
+              }
+            }
+            if (!auth)
+              throw rejected instanceof Error
+                ? rejected
+                : new Error('repository authorization failed', { cause: rejected });
             // Credential resolution may wait on a provider. The exact capability
             // and repository binding must still be live when payload leaves.
-            const still = presented ? await options.capabilities.resolve(presented) : undefined;
+            const still = await resolveBinding();
             const matches = (current: typeof still) =>
               current !== undefined &&
               current.projectId === binding.projectId &&
@@ -267,15 +386,23 @@ export function createBrokeredForgeProxy(options: {
               checking = true;
               // A wedged capability store must close the stream, not suspend
               // revocation checks indefinitely while credentials keep flowing.
-              const deadline = setTimeout(() => abort.abort(), 1000);
+              const deadline = setTimeout(() => {
+                report('authorization');
+                abort.abort();
+              }, 1000);
               deadline.unref();
-              void options.capabilities
-                .resolve(presented!)
+              void resolveBinding()
                 .then(
                   (current) => {
-                    if (!matches(current) || !options.enabled(identity.projectId)) abort.abort();
+                    if (!matches(current) || !options.enabled(identity.projectId)) {
+                      report('authorization');
+                      abort.abort();
+                    }
                   },
-                  () => abort.abort(),
+                  (error: unknown) => {
+                    report('authorization', error);
+                    abort.abort();
+                  },
                 )
                 .finally(() => {
                   clearTimeout(deadline);
@@ -316,6 +443,7 @@ export function createBrokeredForgeProxy(options: {
               body,
               signal: abort.signal,
             };
+            phase = 'upstream';
             let upstream = await brokeredDownload(
               transport,
               input,
@@ -324,6 +452,7 @@ export function createBrokeredForgeProxy(options: {
                   (hostname === 'api.github.com' &&
                     /\/(?:logs|zip|releases\/assets\/\d+)$/.test(path.split('?')[0]!))),
             );
+            phase = 'response';
             if (auth.verifyRelatedIssues)
               upstream = await verifyRelatedIssueResponse(upstream, binding.owner, binding.repo);
             await relayBrokeredHttpResponse(
@@ -338,11 +467,7 @@ export function createBrokeredForgeProxy(options: {
           })()
             .catch((error: unknown) => {
               if (!(error instanceof ForgePolicyError)) {
-                const code = error instanceof Error && 'code' in error ? error.code : undefined;
-                console.warn('Forge broker upstream request failed', {
-                  code:
-                    typeof code === 'string' && SAFE_TRANSPORT_CODES.has(code) ? code : 'UNKNOWN',
-                });
+                report(phase, error);
               }
               fail(response, error instanceof ForgePolicyError ? 403 : 502);
             })
@@ -355,11 +480,17 @@ export function createBrokeredForgeProxy(options: {
         server.maxRequestsPerSocket = 1;
         server.requestTimeout = 10 * 60_000;
         server.headersTimeout = 10_000;
-        server.on('clientError', () => tls.destroy());
+        server.on('clientError', (error) => {
+          report('http-parser', error);
+          tls.destroy();
+        });
         server.on('connect', (_inner, innerSocket) => innerSocket.destroy());
         server.on('upgrade', (_inner, innerSocket) => innerSocket.destroy());
         server.emit('connection', tls);
-      })().catch(() => socket.destroy());
+      })().catch((error: unknown) => {
+        report(phase, error);
+        socket.destroy();
+      });
     },
   };
 }

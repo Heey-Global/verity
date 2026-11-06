@@ -12,6 +12,9 @@ import { join, relative, sep } from 'node:path';
 import debt from './design-system-debt.json';
 
 const MOBILE_ROOT = join(__dirname, '..');
+// Spec mockups (mockups/) are held to the same rules from the start: they are
+// meant to become the screens they show, so a hex color drawn there would ship.
+const GUARDED_DIRS = ['app', 'components', 'mockups'] as const;
 
 const RULES = {
   // A hex or rgb() literal, or an alpha suffix glued onto a role
@@ -37,8 +40,6 @@ const EXEMPT: Partial<Record<string, Counts>> = {
   // readable beneath it, and the header badge's white figure sits on signature,
   // which has no on-colour role.
   'app/session/[id].tsx': { rawColor: 4 },
-  // A photo thumbnail's remove control: white on a dark veil over any image.
-  'components/QuickCaptureCard.tsx': { rawColor: 2 },
   // A photo viewer: the image sits on near-black with white controls in
   // either theme, so the picture's own colours are not tinted by the theme.
   'components/ImageLightbox.tsx': { rawColor: 5 },
@@ -75,7 +76,7 @@ function sourcesIn(dir: string): string[] {
 
 function scan(): Record<string, Counts> {
   const found: Record<string, Counts> = {};
-  for (const file of ['app', 'components'].flatMap((dir) => sourcesIn(join(MOBILE_ROOT, dir)))) {
+  for (const file of GUARDED_DIRS.flatMap((dir) => sourcesIn(join(MOBILE_ROOT, dir)))) {
     const source = readFileSync(file, 'utf8');
     const counts: Counts = {};
     for (const [rule, pattern] of Object.entries(RULES) as [Rule, RegExp][]) {
@@ -125,4 +126,11 @@ it('only exempts what is still there', () => {
       expect({ file, rule, count: found[file]?.[rule] ?? 0 }).toEqual({ file, rule, count });
     }
   }
+});
+
+it('never records debt or exemptions for mockups', () => {
+  // Mockups start on the design system. Recording one as debt or exempting it
+  // would let a mockup approve a look the app's components cannot deliver.
+  const excused = [...Object.keys(debt), ...Object.keys(EXEMPT)];
+  expect(excused.filter((file) => file.startsWith('mockups/'))).toEqual([]);
 });

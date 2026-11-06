@@ -1,3 +1,4 @@
+import { resolveForgeRepositoryBinding } from './forge-repository-binding.js';
 import { createProjectEgressInventorySynchronizer } from './project-egress-system-inventory.js';
 import { AGENT_SKILL_MANIFEST_HASH } from '@verity/events';
 import { resolveAgentContext } from './agent-context.js';
@@ -2098,10 +2099,12 @@ export async function buildEmbeddedServer(
             'verity_secret_output',
             'verity_publish_session_progress',
             'verity_send_session_message',
+            'verity_project_inquiry',
             'verity_list_linked_sessions',
             'verity_start_planning',
             'verity_present_plan',
             'verity_end_planning',
+            'verity_present_mockups',
             'verity_tasks',
             'verity_repairs',
             'verity_qa_analysis',
@@ -2123,10 +2126,12 @@ export async function buildEmbeddedServer(
             'verity_http_request',
             'verity_publish_session_progress',
             'verity_send_session_message',
+            'verity_project_inquiry',
             'verity_list_linked_sessions',
             'verity_start_planning',
             'verity_present_plan',
             'verity_end_planning',
+            'verity_present_mockups',
             'verity_tasks',
             'verity_repairs',
             'verity_qa_analysis',
@@ -3487,6 +3492,8 @@ export async function buildEmbeddedServer(
       : createBrokeredForgeProxy({
           certificate: forgeIdentity.certificate,
           capabilities: ghTokenCapabilities,
+          resolveRepository: (binding, hostname, path) =>
+            resolveForgeRepositoryBinding(eventStore, binding, hostname, path),
           allowsHost: async (authority) =>
             githubForgeAdapter.hosts.has(authority) ||
             ghcrForgeAdapter.hosts.has(authority) ||
@@ -3520,15 +3527,15 @@ export async function buildEmbeddedServer(
                 ? githubForgeAdapter.streams(request)
                 : !request.path.includes('/api/v1/'),
             authorize: async (request, binding, actions, signal) => {
-              const project = await eventStore.getProject(binding.projectId);
-              if (
-                !project ||
-                project.owner !== binding.owner ||
-                project.repo !== binding.repo ||
-                (project.forgeConnectionId ?? 'legacy-github') !==
-                  (binding.forgeConnectionId ?? 'legacy-github')
-              )
-                throw new Error('forge binding changed');
+              const project = (await eventStore.listProjectRepositories(binding.projectId)).find(
+                (repository) =>
+                  repository.removedAt === null &&
+                  repository.owner === binding.owner &&
+                  repository.repo === binding.repo &&
+                  (repository.forgeConnectionId ?? 'legacy-github') ===
+                    (binding.forgeConnectionId ?? 'legacy-github'),
+              );
+              if (!project) throw new Error('forge binding changed');
               if (project.kind !== 'forgejo')
                 return (
                   request.hostname === 'ghcr.io' ? ghcrForgeAdapter : githubForgeAdapter

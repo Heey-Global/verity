@@ -47,7 +47,7 @@ const config: ExpoConfig = {
   // The Google scheme must be registered in the native binary before its OAuth
   // redirect can return from the system browser.
   scheme: [staging ? 'verity-staging' : 'verity', googleOAuthScheme],
-  version: '1.84.0', // x-release-please-version
+  version: '1.86.0', // x-release-please-version
   // iPad and iPad-on-Mac should adapt to the user's current window/device
   // orientation, especially with Magic Keyboard or Stage Manager. Phone layouts
   // still render portrait-first through the app's responsive UI constraints.
@@ -105,6 +105,7 @@ const config: ExpoConfig = {
           }
         : {}),
       UIBackgroundModes: ['audio'],
+      NSSupportsLiveActivities: true,
       // Verity uses only standard/exempt encryption; declaring export compliance
       // stops EAS/App Store Connect prompting for it on every build.
       ITSAppUsesNonExemptEncryption: false,
@@ -202,7 +203,7 @@ const config: ExpoConfig = {
     // iOS 27 requires scene lifecycle adoption before UIKit creates the UI.
     './plugins/withSceneLifecycle',
     ...(cpuProfiling ? ['./plugins/withCPUProfiling'] : []),
-    // Links the native targets under ./targets (the Apple Watch quick capture app)
+    // Links the native targets under ./targets (Watch capture and meeting status)
     // into the generated Xcode project and registers them for EAS signing.
     '@bacons/apple-targets',
     // Efficient image rendering (chat attachments + previews).

@@ -7,7 +7,7 @@ import { createTestDb, truncateAll, type TestDb } from '@verity/store/testing';
 import type { FastifyInstance } from 'fastify';
 import { sql } from 'kysely';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, request } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -129,11 +129,13 @@ function build(
               ? [
                   'verity_start_planning',
                   'verity_present_plan',
+                  'verity_present_mockups',
                   'verity_end_planning',
                   'verity_tasks',
                   'verity_repairs',
                   'verity_qa_analysis',
                   'verity_app_help',
+                  'verity_project_inquiry',
                   'verity_http_request',
                 ]
               : ['verity_http_request'],
@@ -408,7 +410,9 @@ async function withListener(
   }
 }
 
-it('implements a submitted plan on the user instruction without another approval', async () => {
+/** A planning turn that presents `plan`, then the user's chat instruction to go
+ *  ahead and the agent's `verity_end_planning` call; returns that call's result. */
+async function implementByChatInstruction(plan: string) {
   const harness = build({ planningTools: true, unlocked: true });
   await harness.store.createProject({
     id: 'p1',
@@ -437,6 +441,7 @@ it('implements a submitted plan on the user instruction without another approval
   await harness.store.markTurnRunning({ sessionId: 's1', promptSeq: prompt.seq });
   await harness.store.bindTurnIdentity('s1', { turnId: 't1', startCommandId: 'c1' });
   const token = harness.tokens.issue({ projectId: 'p1', sessionId: 's1', turnId: 't1' });
+  let implemented: { isError?: boolean; content?: unknown } | undefined;
   await withListener(harness, async (socketPath) => {
     let id = 0;
     const call = async (name: string, args: object) => {
@@ -449,11 +454,11 @@ it('implements a submitted plan on the user instruction without another approval
       return (JSON.parse(response.body) as { result: { isError?: boolean } }).result;
     };
     // Outside planning mode there is no plan to show or end.
-    expect((await call('verity_present_plan', { plan: '1. Do it' })).isError).toBe(true);
+    expect((await call('verity_present_plan', { plan })).isError).toBe(true);
 
     expect((await call('verity_start_planning', {})).isError).toBeUndefined();
     expect((await harness.store.getSession('s1'))?.planning).toBe('active');
-    expect((await call('verity_present_plan', { plan: '1. Do it' })).isError).toBeUndefined();
+    expect((await call('verity_present_plan', { plan })).isError).toBeUndefined();
     expect((await call('verity_start_planning', {})).isError).toBe(true);
     // Starting and presenting only restrict the agent or show text: no card.
     expect(harness.approvals).toEqual([]);
@@ -462,7 +467,7 @@ it('implements a submitted plan on the user instruction without another approval
       t: 'tool_call',
       id: 'plan1',
       name: 'verity_present_plan',
-      input: { plan: '1. Do it' },
+      input: { plan },
     });
     await harness.store.appendEvent('s1', {
       t: 'tool_result',
@@ -476,9 +481,14 @@ it('implements a submitted plan on the user instruction without another approval
       steered: true,
       initiatedBy: { userId: 'u1' },
     });
-    const implemented = await call('verity_end_planning', {});
-    expect(implemented.isError, JSON.stringify(implemented)).toBeUndefined();
+    implemented = await call('verity_end_planning', {});
   });
+  return { harness, implemented };
+}
+
+it('implements a submitted plan on the user instruction without another approval', async () => {
+  const { harness, implemented } = await implementByChatInstruction('1. Do it');
+  expect(implemented?.isError, JSON.stringify(implemented)).toBeUndefined();
   // Reconfirming a chat instruction would leave the same decision in two places.
   expect(harness.approvals).toEqual([]);
   expect((await harness.store.getSession('s1'))?.planning).toBe('implemented');
@@ -488,6 +498,18 @@ it('implements a submitted plan on the user instruction without another approval
       dispatchOpts: expect.objectContaining({ queueBehindActiveTurn: true }),
     }),
   ]);
+});
+
+it('refuses a chat instruction to implement while the plan lists open decisions', async () => {
+  // "Leg los" must not start work on a choice the user never made; the card's
+  // button is locked for the same plan, and the chat must not route around it.
+  const { harness, implemented } = await implementByChatInstruction(
+    '## Open decisions\n1. **Show prices incl. VAT?** — Incl. VAT (recommended) | Excl. VAT\n## Steps\n1. Do it',
+  );
+  expect(implemented?.isError).toBe(true);
+  expect(JSON.stringify(implemented)).toContain('open decisions');
+  expect((await harness.store.getSession('s1'))?.planning).toBe('active');
+  expect(harness.dispatches).toEqual([]);
 });
 
 it('runs an approved plan for the approving user and still refuses them once revoked', async () => {
@@ -565,6 +587,123 @@ it('runs an approved plan for the approving user and still refuses them once rev
     expect(revoked.result.isError).toBe(true);
     expect(revoked.body).toContain('no longer has project execution permission');
   });
+});
+
+describe('mockup presentation through the project gateway', () => {
+  async function mockupCaller(planningTurn = false) {
+    const harness = build({ planningTools: true, unlocked: true, planningTurn });
+    const worktree = mkdtempSync(join(projectRoot, 'mockup-worktree-'));
+    const image = Buffer.alloc(33);
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]).copy(image);
+    image.writeUInt32BE(13, 8);
+    image.write('IHDR', 12, 'ascii');
+    image.writeUInt32BE(393, 16);
+    image.writeUInt32BE(852, 20);
+    writeFileSync(join(worktree, 'home.png'), image);
+    await harness.store.createProject({
+      id: 'p1',
+      kind: 'local',
+      owner: '__local__',
+      repo: 'alpha',
+      cloneDir: '__local__-alpha',
+      containerName: 'verity-alpha',
+      state: 'active',
+    });
+    await harness.store.createSession({ sessionId: 's1', projectId: 'p1', worktree, model: 'm' });
+    const token = harness.tokens.issue({ projectId: 'p1', sessionId: 's1', turnId: 't1' });
+    return { harness, worktree, image, token };
+  }
+
+  it('advertises and executes image presentation with a persisted round and attachment snapshot', async () => {
+    const { harness, worktree, image, token } = await mockupCaller();
+    await withListener(harness, async (socketPath) => {
+      const listed = await postUnix(socketPath, `Bearer ${token}`, {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/list',
+      });
+      expect(
+        (JSON.parse(listed.body) as { result: { tools: { name: string }[] } }).result.tools,
+      ).toContainEqual(expect.objectContaining({ name: 'verity_present_mockups' }));
+      let id = 1;
+      const present = (path: string) =>
+        postUnix(socketPath, `Bearer ${token}`, {
+          jsonrpc: '2.0',
+          id: ++id,
+          method: 'tools/call',
+          params: {
+            name: 'verity_present_mockups',
+            arguments: { screens: [{ name: 'Home', path }] },
+          },
+        });
+      // Escaping or absolute paths must never turn into reviewable attachment snapshots.
+      for (const path of ['../home.png', join(worktree, 'home.png')]) {
+        const rejected = await present(path);
+        expect(
+          (JSON.parse(rejected.body) as { result: { isError?: boolean } }).result.isError,
+        ).toBe(true);
+        expect((await harness.store.getSession('s1'))?.mockupReview).toBeUndefined();
+      }
+      const response = await present('home.png');
+      expect(response.status).toBe(200);
+      const result = (
+        JSON.parse(response.body) as {
+          result: { isError?: boolean; content: { type: string; text: string }[] };
+        }
+      ).result;
+      expect(result.isError).toBeUndefined();
+      const output = JSON.parse(result.content[0]!.text) as {
+        presented: boolean;
+        mockupRevision: number;
+        screens: { attachment: string }[];
+      };
+      const review = (await harness.store.getSession('s1'))?.mockupReview;
+      expect(output).toMatchObject({
+        presented: true,
+        mockupRevision: 1,
+        screens: [{ name: 'Home', width: 393, height: 852, verdict: 'open' }],
+      });
+      expect(review).toMatchObject({
+        state: 'pending',
+        revision: output.mockupRevision,
+        screens: [
+          { name: 'Home', attachment: output.screens[0]!.attachment, width: 393, height: 852 },
+        ],
+      });
+      expect(await harness.store.getAttachment(output.screens[0]!.attachment)).toMatchObject({
+        mediaType: 'image/png',
+        bytes: image,
+      });
+    });
+    expect(harness.approvals).toEqual([]);
+    expect(harness.invocations).toEqual([]);
+  });
+
+  it.each([false, true])(
+    'refuses presentation while planning (live turn restriction=%s)',
+    async (planningTurn) => {
+      const { harness, token } = await mockupCaller(planningTurn);
+      if (!planningTurn) await harness.store.startSessionPlanning('s1');
+      await withListener(harness, async (socketPath) => {
+        const response = await postUnix(socketPath, `Bearer ${token}`, {
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'tools/call',
+          params: {
+            name: 'verity_present_mockups',
+            arguments: { screens: [{ name: 'Home', path: 'home.png' }] },
+          },
+        });
+        expect(
+          (JSON.parse(response.body) as { result: { isError?: boolean } }).result.isError,
+        ).toBe(true);
+        expect(response.body).toContain('planning mode');
+        expect((await harness.store.getSession('s1'))?.mockupReview).toBeUndefined();
+      });
+      expect(harness.approvals).toEqual([]);
+      expect(harness.invocations).toEqual([]);
+    },
+  );
 });
 
 it('keeps the session task list available while planning, unlike external tools', async () => {
@@ -2822,4 +2961,164 @@ it('shows the stored general QA assignment on a one-time approval card', async (
     });
     expect((await h.store.qaAssignments.get(id))?.state).toBe('proposed');
   });
+});
+
+it('keeps inquiry targets read-only even when a normal planning tool could mutate session state', async () => {
+  const harness = build({ planningTools: true, unlocked: true });
+  await harness.store.createProject({
+    id: 'p1',
+    kind: 'local',
+    owner: '__local__',
+    repo: 'alpha',
+    containerName: 'verity-alpha',
+    state: 'active',
+  });
+  for (const sessionId of ['source', 's1'])
+    await harness.store.createSession({
+      sessionId,
+      projectId: 'p1',
+      worktree: `/tmp/inquiry-${sessionId}`,
+      model: 'm',
+    });
+  await harness.store.projectInquiries.bind('source', 'p1', 's1');
+  await harness.store.startSessionPlanning('s1');
+  const token = harness.tokens.issue({ projectId: 'p1', sessionId: 's1', turnId: 't1' });
+  await withListener(harness, async (socketPath) => {
+    for (const [name, args] of [
+      ['verity_tasks', { action: 'add', tasks: [{ title: 'Unauthorized change' }] }],
+      ['verity_end_planning', { action: 'discard' }],
+    ] as const) {
+      const response = await postUnix(socketPath, `Bearer ${token}`, {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name, arguments: args },
+      });
+      const result = (JSON.parse(response.body) as { result: { isError?: boolean } }).result;
+      expect(result.isError, response.body).toBe(true);
+      expect(response.body).toContain('target-side human approval');
+    }
+  });
+  expect((await harness.store.getSession('s1'))?.planning).toBe('active');
+  expect(harness.approvals).toEqual([]);
+});
+
+it('lets an approved inquiry change start, present and discard its own plan', async () => {
+  const harness = build({ planningTools: true, unlocked: true });
+  await harness.store.createProject({
+    id: 'p1',
+    kind: 'local',
+    owner: '__local__',
+    repo: 'alpha',
+    containerName: 'verity-alpha',
+    state: 'active',
+  });
+  await harness.store.createProject({
+    id: 'p2',
+    kind: 'local',
+    owner: '__local__',
+    repo: 'source',
+    containerName: 'verity-source',
+    state: 'active',
+  });
+  await harness.store.projectInquiries.setGrant('p2', 'p1', true);
+  for (const sessionId of ['source', 's1'])
+    await harness.store.createSession({
+      sessionId,
+      projectId: sessionId === 'source' ? 'p2' : 'p1',
+      worktree: `/tmp/inquiry-${sessionId}`,
+      model: 'm',
+    });
+  await harness.store.projectInquiries.bind('source', 'p1', 's1');
+  await harness.store.projectInquiries.create({
+    id: 'change',
+    sourceSessionId: 'source',
+    targetSessionId: 's1',
+    sourceProjectId: 'p2',
+    targetProjectId: 'p1',
+    title: 'Change',
+    body: 'Approved scope',
+    kind: 'change',
+    status: 'pending',
+    userId: null,
+  });
+  expect(await harness.store.projectInquiries.decide('change', 's1', true, null)).toBe(true);
+  await harness.store.projectInquiries.activate('change');
+  await harness.store.setSessionPlanning('s1', 'implemented');
+  const token = harness.tokens.issue({ projectId: 'p1', sessionId: 's1', turnId: 't1' });
+  await withListener(harness, async (socketPath) => {
+    for (const [name, args] of [
+      ['verity_start_planning', {}],
+      ['verity_present_plan', { plan: '1. Implement the approved scope' }],
+      ['verity_end_planning', { action: 'discard' }],
+    ] as const) {
+      const response = await postUnix(socketPath, `Bearer ${token}`, {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name, arguments: args },
+      });
+      const result = (JSON.parse(response.body) as { result: { isError?: boolean } }).result;
+      expect(result.isError, response.body).toBeUndefined();
+    }
+  });
+  expect((await harness.store.getSession('s1'))?.planning).toBe('discarded');
+});
+
+it('executes inquiry list and answer tools while a question target remains in planning', async () => {
+  const h = build({ planningTools: true, unlocked: true });
+  for (const id of ['p1', 'source']) {
+    await h.store.createProject({
+      id,
+      kind: 'local',
+      owner: '__local__',
+      repo: id,
+      containerName: id,
+      state: 'active',
+    });
+    await h.store.createSession({
+      sessionId: id === 'p1' ? 's1' : id,
+      projectId: id,
+      worktree: `/wt/${id}`,
+      model: 'm',
+    });
+  }
+  await h.store.projectInquiries.setGrant('source', 'p1', true);
+  await h.store.projectInquiries.bind('source', 'p1', 's1');
+  await h.store.projectInquiries.create({
+    id: 'question',
+    sourceSessionId: 'source',
+    targetSessionId: 's1',
+    sourceProjectId: 'source',
+    targetProjectId: 'p1',
+    title: 'Question',
+    body: 'Inspect',
+    kind: 'question',
+    status: 'approved',
+    userId: null,
+  });
+  await h.store.projectInquiries.markQueued('question');
+  // Revocation defers delivery; the target can still record its answer durably.
+  await h.store.projectInquiries.setGrant('source', 'p1', false);
+  await h.store.startSessionPlanning('s1');
+  const token = h.tokens.issue({ projectId: 'p1', sessionId: 's1', turnId: 't1' });
+  await withListener(h, async (socketPath) => {
+    for (const args of [
+      { operation: 'list' },
+      { operation: 'answer', inquiryId: 'question', answer: 'Inspected' },
+    ]) {
+      const response = await postUnix(socketPath, `Bearer ${token}`, {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name: 'verity_project_inquiry', arguments: args },
+      });
+      expect(
+        (JSON.parse(response.body) as { result: { isError?: boolean } }).result.isError,
+        response.body,
+      ).toBeUndefined();
+    }
+  });
+  expect((await h.store.projectInquiries.get('question'))?.answer).toBe('Inspected');
+  expect((await h.store.getSession('s1'))?.planning).toBe('active');
 });

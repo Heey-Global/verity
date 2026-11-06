@@ -1,7 +1,8 @@
-import { planProposalContent } from '@verity/mobile';
+import { planDecisionAnswer, planProposalContent, planProposalCounts } from '@verity/mobile';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Pressable, ScrollView, Text, View, useWindowDimensions } from 'react-native';
 import { Icon } from './Icon';
+import { Button } from './ui';
 import { useUnistyles } from 'react-native-unistyles';
 import { StyleSheet } from 'react-native-unistyles';
 
@@ -17,6 +18,7 @@ export function PinnedPlan({
   renderMarkdown,
   onDismiss,
   onImplement,
+  onAnswerDecision,
 }: {
   markdown: string;
   revision: number | undefined;
@@ -28,6 +30,9 @@ export function PinnedPlan({
   renderMarkdown(markdown: string): ReactNode;
   onDismiss(): void;
   onImplement(): void;
+  /** Sends the answer to an open decision as a chat message; the agent then
+   *  presents the plan revised without it. */
+  onAnswerDecision(answer: string): void;
 }) {
   const [details, setDetails] = useState(false);
   const [expanded, setExpanded] = useState(true);
@@ -47,6 +52,8 @@ export function PinnedPlan({
   const { theme } = useUnistyles();
   const content = planProposalContent(markdown);
   const blocked = deciding || disabled;
+  // A plan with open decisions cannot be implemented: the server refuses it too.
+  const undecided = content.decisions.length;
   return (
     <View style={styles.card}>
       <Pressable
@@ -59,7 +66,7 @@ export function PinnedPlan({
         <View style={styles.dot} />
         <Text style={styles.label}>Plan</Text>
         {updated ? <Text style={styles.updated}>Updated</Text> : null}
-        <Text style={styles.count}>{content.steps.length} steps</Text>
+        <Text style={styles.count}>{planProposalCounts(markdown)}</Text>
         <Icon
           name={expanded ? 'chevron-down' : 'chevron-right'}
           size={16}
@@ -83,6 +90,28 @@ export function PinnedPlan({
                     </View>
                   );
                 })}
+                {content.mockups.length > 0 ? (
+                  <>
+                    <Text style={styles.sectionLabel}>Mockups</Text>
+                    {content.mockups.map((mockup, index) => (
+                      <View key={index} style={styles.step}>
+                        <Icon name="image" size={12} color={theme.colors.textMuted} />
+                        <Text style={[styles.description, styles.stepText]}>{mockup}</Text>
+                      </View>
+                    ))}
+                  </>
+                ) : null}
+                {content.criteria.length > 0 ? (
+                  <>
+                    <Text style={styles.sectionLabel}>Acceptance criteria</Text>
+                    {content.criteria.map((criterion, index) => (
+                      <View key={index} style={styles.step}>
+                        <Icon name="circle" size={12} color={theme.colors.textMuted} />
+                        <Text style={[styles.description, styles.stepText]}>{criterion}</Text>
+                      </View>
+                    ))}
+                  </>
+                ) : null}
               </>
             )}
           </ScrollView>
@@ -93,9 +122,40 @@ export function PinnedPlan({
           >
             <Text style={styles.description}>{details ? 'Hide full plan' : 'Show full plan'}</Text>
           </Pressable>
+          {content.decisions.map((decision, index) => (
+            // Outside the scroll area: an open decision blocks the plan, so its
+            // answers stay in view however long the plan is.
+            <View key={`${String(index)}:${decision.question}`} style={styles.decision}>
+              <Text style={styles.stepTitle}>{decision.question}</Text>
+              {decision.options.length > 0 ? (
+                <View style={styles.options}>
+                  {decision.options.map((option, optionIndex) => (
+                    <Button
+                      key={`${String(optionIndex)}:${option}`}
+                      label={option === decision.recommended ? `${option} · recommended` : option}
+                      accessibilityLabel={`Answer ${decision.question} with ${option}`}
+                      size="compact"
+                      variant={option === decision.recommended ? 'primary' : 'secondary'}
+                      disabled={blocked}
+                      onPress={() => onAnswerDecision(planDecisionAnswer(decision, option))}
+                    />
+                  ))}
+                </View>
+              ) : (
+                <Text style={styles.description}>Answer in the chat.</Text>
+              )}
+            </View>
+          ))}
         </>
       ) : null}
       {error !== undefined ? <Text style={styles.error}>{error}</Text> : null}
+      {undecided > 0 ? (
+        <Text style={styles.description}>
+          {undecided === 1
+            ? 'Answer the open decision to implement.'
+            : `Answer the ${String(undecided)} open decisions to implement.`}
+        </Text>
+      ) : null}
       <View style={styles.actions}>
         <Pressable
           accessibilityRole="button"
@@ -114,12 +174,13 @@ export function PinnedPlan({
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="Implement plan"
-          disabled={blocked}
+          accessibilityState={{ disabled: blocked || undecided > 0 }}
+          disabled={blocked || undecided > 0}
           onPress={onImplement}
           style={({ pressed }) => [
             styles.button,
             styles.implement,
-            blocked && styles.disabled,
+            (blocked || undecided > 0) && styles.disabled,
             pressed && styles.pressed,
           ]}
         >
@@ -201,6 +262,19 @@ const styles = StyleSheet.create((theme) => ({
     fontFamily: theme.fonts.semibold,
   },
   stepText: { flex: 1 },
+  sectionLabel: {
+    ...theme.typography.label,
+    color: theme.colors.textMuted,
+    marginTop: theme.spacing.xs,
+    marginBottom: theme.spacing.sm,
+  },
+  decision: {
+    gap: theme.spacing.sm,
+    paddingTop: theme.spacing.sm,
+    borderTopWidth: 1,
+    borderTopColor: theme.colors.border,
+  },
+  options: { flexDirection: 'row', flexWrap: 'wrap', gap: theme.spacing.sm },
   stepTitle: {
     color: theme.colors.text,
     fontSize: theme.typography.bodySmall.fontSize,

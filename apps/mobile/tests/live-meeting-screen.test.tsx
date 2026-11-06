@@ -9,6 +9,7 @@ import {
   clearSpeakerNameSuggestion,
   currentMeeting,
   endMeeting,
+  recoverMeetingAudio,
   pauseMeeting,
   resumeMeeting,
   startMeeting,
@@ -27,6 +28,7 @@ import {
   type MeetingNote,
   type MeetingRecord,
 } from '../lib/liveMeetingStore';
+import { liveMeetingSTT } from '../lib/liveMeetingSTT';
 
 jest.mock('expo-router', () => ({
   router: { back: jest.fn(), push: jest.fn(), replace: jest.fn(), canGoBack: jest.fn(() => true) },
@@ -38,6 +40,8 @@ jest.mock('react-native-safe-area-context', () => ({
 }));
 jest.mock('../lib/liveMeetingSTT', () => ({
   liveMeetingSTT: {
+    configureMeeting: jest.fn(),
+    pendingAudioBuffers: jest.fn().mockResolvedValue([]),
     engines: jest
       .fn()
       .mockResolvedValue([{ id: 'fluid-nemotron', name: 'Nemotron', available: true }]),
@@ -61,6 +65,8 @@ jest.mock('../lib/liveMeetingSession', () => ({
     error: null,
   }),
   endMeeting: jest.fn(),
+  recoverMeetingAudio: jest.fn().mockResolvedValue(undefined),
+  discardMeetingAudio: jest.fn().mockResolvedValue(undefined),
   pauseMeeting: jest.fn().mockResolvedValue(undefined),
   resumeMeeting: jest.fn().mockResolvedValue(undefined),
   updateSpeakerEdits: jest.fn().mockResolvedValue(undefined),
@@ -107,6 +113,7 @@ beforeEach(() => {
   jest.mocked(saveNote).mockResolvedValue(undefined);
   jest.mocked(createVerityClient).mockReturnValue(null);
   jest.mocked(getActiveMeetingServerId).mockReturnValue(null);
+  jest.mocked(liveMeetingSTT!.pendingAudioBuffers!).mockResolvedValue([]);
 });
 
 // The transcript groups lines under a speaker heading, so "who said it" is the nearest
@@ -148,6 +155,52 @@ it('offers larger groups and passes their size to the recorder', async () => {
   fireEvent.press(await screen.findByRole('radio', { name: /^Larger group/ }));
   fireEvent.press(screen.getByLabelText('Start meeting'));
   await waitFor(() => expect(startMeeting).toHaveBeenCalledWith('session-1', 'fluid-nemotron', 10));
+});
+
+it('keeps raw audio buffering off unless explicitly enabled before starting', async () => {
+  render(<MeetingScreen />);
+  const toggle = await screen.findByLabelText('Audio safety buffer, off');
+  fireEvent.press(toggle);
+  expect(screen.getByLabelText('Audio safety buffer, on')).toBeOnTheScreen();
+  fireEvent.press(screen.getByLabelText('Start meeting'));
+  await waitFor(() =>
+    expect(startMeeting).toHaveBeenCalledWith('session-1', 'fluid-nemotron', 4, undefined, {
+      audioSafetyBuffer: true,
+    }),
+  );
+});
+
+it('offers explicit local recovery only for saved audio belonging to this session', async () => {
+  const saved: MeetingRecord = {
+    id: 'audio-meeting',
+    sessionId: 'session-1',
+    engine: 'fluid-nemotron',
+    startedAt: Date.now() - 60_000,
+    endedAt: Date.now(),
+    state: 'ended',
+    transcript: '',
+    error: null,
+  };
+  jest.mocked(listMeetings).mockResolvedValue([saved]);
+  jest.mocked(liveMeetingSTT!.pendingAudioBuffers!).mockResolvedValue([
+    { meetingId: 'audio-meeting', duration: 12, segments: 1, locale: 'de-DE' },
+    { meetingId: 'another-session', duration: 20, segments: 1, locale: 'de-DE' },
+  ]);
+  render(<MeetingScreen />);
+  expect(await screen.findByText(/Recover locally with Apple Speech/)).toBeOnTheScreen();
+  expect(screen.getAllByText('Recover audio')).toHaveLength(1);
+  const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => {});
+  jest.mocked(recoverMeetingAudio).mockRejectedValueOnce(new Error('Language assets missing'));
+  fireEvent.press(screen.getByText('Recover audio'));
+  await waitFor(() => expect(recoverMeetingAudio).toHaveBeenCalledWith('audio-meeting'));
+  await waitFor(() =>
+    expect(alert).toHaveBeenCalledWith(
+      'Could not recover audio',
+      expect.stringContaining('Language assets missing'),
+    ),
+  );
+  expect(screen.getByText('Recover audio')).toBeOnTheScreen();
+  alert.mockRestore();
 });
 
 it('shows a listening state before speech and numbered voices as they are recognized', async () => {

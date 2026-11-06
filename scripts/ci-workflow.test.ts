@@ -1836,7 +1836,9 @@ describe('self-update release gate', () => {
     const gate =
       'node packages/server/dist/self-update-release-compat.js "$previous_image" "$image"';
     expect(smoke).toContain(gate);
-    const beforeGate = smoke.slice(0, smoke.indexOf(gate));
+    // Inspect the per-pass body: full-profile orchestration dispatches a release
+    // child first, which must still prove real predecessor admission.
+    const beforeGate = smoke.slice(smoke.indexOf("repo='ghcr.io/"), smoke.indexOf(gate));
     expect(beforeGate).not.toContain('self-update-live-smoke.js prepare');
     expect(beforeGate).not.toContain('VERITY_SMOKE_ALLOW_NO_ROLLBACK');
     expect(beforeGate).not.toContain(`if [[ "$smoke_profile" == 'release'`);

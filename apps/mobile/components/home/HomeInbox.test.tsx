@@ -8,9 +8,9 @@ jest.mock('expo-router', () => ({
 }));
 jest.mock('expo-crypto', () => {
   let n = 0;
-  return { randomUUID: () => `reply-${String((n += 1))}` };
+  return { randomUUID: jest.fn(() => `reply-${String((n += 1))}`) };
 });
-jest.mock('../../lib/voiceShortcut', () => ({ dispatchTaskVoiceShortcut: jest.fn() }));
+jest.mock('../../lib/voiceShortcut', () => ({ dispatchVerityShortcut: jest.fn() }));
 const mockCapture = { enabled: true, scope: 'account' as string | null };
 jest.mock('../../lib/taskPreferences', () => ({
   useTaskPreferences: () => ({ enabled: mockCapture.enabled }),
@@ -21,8 +21,9 @@ import type { ProjectRecord, SessionSummary, UpcomingMeeting, VerityClient } fro
 import { act, fireEvent, render, screen } from '@testing-library/react-native';
 import { Alert } from 'react-native';
 import { router } from 'expo-router';
+import { randomUUID } from 'expo-crypto';
 
-import { dispatchTaskVoiceShortcut } from '../../lib/voiceShortcut';
+import { dispatchVerityShortcut } from '../../lib/voiceShortcut';
 import { HomeInbox, RESUME_PROMPT, replyFor } from './HomeInbox';
 
 const ZERO_USAGE = {
@@ -79,7 +80,7 @@ function fakeClient(meetings: Promise<UpcomingMeeting[]> = Promise.resolve([])) 
 async function renderInbox(
   sessions: SessionSummary[],
   client = fakeClient(),
-  extra: { selectedSessionId?: string } = {},
+  extra: { selectedSessionId?: string; onOpenVerity?: () => void } = {},
 ) {
   const onOpenSession = jest.fn();
   const onRepairProject = jest.fn();
@@ -130,7 +131,10 @@ it('answers a question in place and hides it until the session moves on', async 
     fireEvent.press(screen.getByRole('button', { name: 'Zod' }));
   });
   // Sent through the same idempotent route a notification reply uses.
-  expect(client.sendTurn).toHaveBeenCalledWith('form', { prompt: 'Zod', clientReplyId: 'reply-1' });
+  expect(client.sendTurn).toHaveBeenCalledWith('form', {
+    prompt: 'Zod',
+    clientReplyId: jest.mocked(randomUUID).mock.results.at(-1)?.value,
+  });
   expect(screen.queryByText('Which validation library?')).toBeNull();
   expect(onCountChange).toHaveBeenLastCalledWith(0);
 });
@@ -172,7 +176,7 @@ it('decides a described permission without opening the session', async () => {
       ],
     }),
   ]);
-  const allow = await screen.findByRole('button', { name: 'Allow' });
+  const allow = await screen.findByRole('button', { name: 'Allow once' });
   await act(async () => {
     fireEvent.press(allow);
   });
@@ -229,10 +233,10 @@ it('opens a project and hands repair to the overview', async () => {
   expect(router.push).toHaveBeenCalledWith({ pathname: '/project/[id]', params: { id: 'broken' } });
 });
 
-it('sends "Tell Verity" to quick capture with the assistant preselected', async () => {
+it('opens Verity from "Tell Verity"', async () => {
   await renderInbox([]);
   fireEvent.press(await screen.findByRole('button', { name: 'Tell Verity' }));
-  expect(dispatchTaskVoiceShortcut).toHaveBeenCalledWith({ target: 'assistant' });
+  expect(dispatchVerityShortcut).toHaveBeenCalledWith();
 });
 
 it('maps every network answer to the push-reply route it reuses', () => {
@@ -280,12 +284,45 @@ it('shows a permission’s whole input next to Allow, not just its summary', asy
       ],
     }),
   ]);
-  await screen.findByRole('button', { name: 'Allow' });
+  await screen.findByRole('button', { name: 'Allow once' });
   const request = screen.getByTestId('inbox-request');
   // Allow must never stand next to text the operator cannot read in full.
   expect(request.props.numberOfLines).toBeUndefined();
   expect(request.props.children).toContain('step 7');
   expect(request.props.children).toContain('hidden-detail');
+});
+
+it('words a secret run first and keeps its full request one tap away', async () => {
+  // Home showed "Verity · Secret · Run" over a JSON dump, while the session asked
+  // which secrets would go to which command.
+  await renderInbox([
+    session('k8s', {
+      status: 'awaiting_input',
+      permissionAwaitingInput: true,
+      pendingPermissions: ['t1'],
+      pendingPermissionRequests: [
+        {
+          toolUseId: 't1',
+          tool: 'verity_secret_run',
+          riskClass: 'ask',
+          input: {
+            command: ['/usr/local/bin/cluster-inspect', 'job', 'e2e'],
+            secrets: [{ env: 'KUBECONFIG_FILE', injection: 'file', secretAlias: 'KUBECONFIG' }],
+          },
+        },
+      ],
+    }),
+  ]);
+  expect(await screen.findByText('Run trusted command with KUBECONFIG?')).toBeOnTheScreen();
+  expect(screen.getByTestId('inbox-line-code').props.children).toBe(
+    '"/usr/local/bin/cluster-inspect" "job" "e2e"',
+  );
+  expect(screen.getByTestId('inbox-line-text').props.children).toContain(
+    'KUBECONFIG as a file at KUBECONFIG_FILE',
+  );
+  expect(screen.queryByTestId('inbox-request')).toBeNull();
+  fireEvent.press(screen.getByText('Full request'));
+  expect(screen.getByTestId('inbox-request').props.children).toContain('"secretAlias"');
 });
 
 describe('dismissing', () => {
@@ -380,4 +417,16 @@ describe('dismissing', () => {
     expect(client.skipCalendarMeeting).toHaveBeenCalledWith('cal:weekly');
     expect(client.setSessionInboxDismissed).not.toHaveBeenCalled();
   });
+});
+
+it('opens Verity’s page from her header only when Home is given the way there', async () => {
+  const onOpenVerity = jest.fn();
+  await renderInbox([], fakeClient(), { onOpenVerity });
+  fireEvent.press(screen.getByTestId('home-verity'));
+  expect(onOpenVerity).toHaveBeenCalled();
+});
+
+it('keeps Verity’s header a plain identity without a page to open', async () => {
+  await renderInbox([]);
+  expect(screen.queryByTestId('home-verity')).toBeNull();
 });

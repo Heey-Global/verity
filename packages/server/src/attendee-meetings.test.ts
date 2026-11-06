@@ -967,3 +967,142 @@ it('keeps the generic Uplink hint for a failure before any Uplink step reported'
     'The Uplink refused the webhook share. Check Uplink / Online Sharing and retry. (Uplink step: share_create · unknown)',
   );
 });
+
+it('logs the meeting data path without transcript text, PIN or credentials', async () => {
+  const { AttendeeRequestRejected } = await import('./attendee-client.js');
+  const running = {
+    meeting: {
+      id: 'meeting',
+      sessionId: 'session',
+      engine: 'attendee',
+      title: null,
+      startedAt: 0,
+      endedAt: null,
+      state: 'active',
+      transcript: '',
+      captureStatus: 'preparing',
+      ownerTokenHash: 'hash',
+      revision: 1,
+    },
+    botId: 'bot',
+    pin: '123456',
+    credentials: { apiKey: 'secret-key', webhookSecret: Buffer.alloc(32).toString('base64') },
+    identities: {},
+    phase: 'running',
+    stopRequested: false,
+    listenForVerity: false,
+  };
+  const rows = new Map<string, unknown>([['meeting:meeting', running]]);
+  const store = {
+    getSession: async () => ({ id: 'session' }),
+    getAttendeeState: async (id: string) => rows.get(id),
+    putAttendeeState: async (id: string, state: unknown) => {
+      rows.set(id, structuredClone(state));
+    },
+    deleteAttendeeState: async (id: string) => {
+      rows.delete(id);
+    },
+    listAttendeeState: async () =>
+      [...rows].filter(([id]) => id !== 'config').map(([id, state]) => ({ id, state })),
+  } as unknown as EventStore;
+  let failing = false;
+  const request = vi.fn(async () => {
+    if (failing) throw new AttendeeRequestRejected(502);
+    return { state: 'joined_recording' };
+  });
+  const transcript = vi.fn(async () => [
+    {
+      speaker_uuid: 'alice',
+      speaker_name: 'Alice',
+      timestamp_ms: 4000,
+      duration_ms: 500,
+      transcription: { transcript: 'confidential words' },
+    },
+  ]);
+  const log = { info: vi.fn(), warn: vi.fn() };
+  const service = new AttendeeMeetings({
+    store,
+    ingest: vi.fn(),
+    log,
+    client: () =>
+      ({ request, transcript }) as unknown as import('./attendee-client.js').AttendeeClient,
+  });
+  await service.open();
+  try {
+    await vi.waitFor(() =>
+      expect(log.info).toHaveBeenCalledWith(
+        {
+          meetingId: 'meeting',
+          botState: 'joined_recording',
+          utterances: 1,
+          lastTimestampMs: 4000,
+        },
+        'Online meeting transcript snapshot',
+      ),
+    );
+    expect(log.info).toHaveBeenCalledWith(
+      { meetingId: 'meeting', botState: 'joined_recording', previousBotState: null },
+      'Online meeting bot state changed',
+    );
+    const origin = (service as unknown as { targetOrigin: string }).targetOrigin;
+    const post = (path: string, body: unknown) =>
+      fetch(new URL(path, origin), { method: 'POST', body: JSON.stringify(body) });
+    expect((await post('/elsewhere', {})).status).toBe(404);
+    const event = {
+      idempotency_key: '00000000-0000-4000-8000-000000000000',
+      bot_id: 'bot',
+      trigger: 'transcript.update',
+      data: { transcript: 'confidential words' },
+    };
+    expect((await post('/webhooks/attendee', event)).status).toBe(401);
+    expect((await post('/webhooks/attendee', { ...event, bot_id: 'other' })).status).toBe(401);
+    expect((await post('/webhooks/attendee', 'not an event')).status).toBe(400);
+    expect(log.info).toHaveBeenCalledWith(
+      { status: 404, outcome: 'unknown_path' },
+      'Attendee webhook answered',
+    );
+    expect(log.info).toHaveBeenCalledWith(
+      {
+        status: 401,
+        outcome: 'signature_missing',
+        trigger: 'transcript.update',
+        meetingId: 'meeting',
+      },
+      'Attendee webhook answered',
+    );
+    expect(log.info).toHaveBeenCalledWith(
+      { status: 401, outcome: 'unknown_meeting', trigger: 'transcript.update' },
+      'Attendee webhook answered',
+    );
+    expect(log.info).toHaveBeenCalledWith(
+      { status: 400, outcome: 'invalid', error: 'ZodError' },
+      'Attendee webhook answered',
+    );
+    failing = true;
+    (service as unknown as { poll(): void }).poll();
+    await vi.waitFor(() =>
+      expect(log.warn).toHaveBeenCalledWith(
+        {
+          meetingId: 'meeting',
+          phase: expect.any(String),
+          error: 'Error',
+          status: 502,
+        },
+        'Online meeting reconciliation failed',
+      ),
+    );
+    // A meeting that stays broken warns once per failure kind, not on every poll.
+    (service as unknown as { poll(): void }).poll();
+    await vi.waitFor(() => expect(request.mock.calls.length).toBeGreaterThanOrEqual(3));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(
+      log.warn.mock.calls.filter(
+        ([, message]) => message === 'Online meeting reconciliation failed',
+      ),
+    ).toHaveLength(1);
+    const logged = JSON.stringify([...log.info.mock.calls, ...log.warn.mock.calls]);
+    expect(logged).not.toMatch(/confidential|123456|secret-key/u);
+  } finally {
+    await service.close();
+  }
+});

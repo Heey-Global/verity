@@ -1488,6 +1488,50 @@ describe('POST /sessions/:id/pull-request/merge', () => {
     }
   });
 
+  it.each([
+    { status: null, expected: 503, code: 'merge_status_unavailable' },
+    {
+      status: prStatus({ pipeline: 'success', mergeable: null }),
+      expected: 409,
+      code: 'merge_status_pending',
+    },
+    {
+      status: prStatus({ pipeline: 'running', mergeable: true }),
+      expected: 409,
+      code: 'merge_status_pending',
+    },
+  ])(
+    'distinguishes transient preflight from rejection: $code',
+    async ({ status, expected, code }) => {
+      await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+      branchSvc.current.mockResolvedValue('feature');
+      const mergePr = vi.fn().mockResolvedValue(true);
+      const lookup = vi.fn().mockResolvedValue(prStatus({ pipeline: 'success', mergeable: true }));
+      const server = buildServer({
+        eventStore: ctx.store,
+        bus,
+        conductor,
+        branches: branchSvc as unknown as NonNullable<ServerDeps['branches']>,
+        branchPrStatus: lookup,
+        mergePr,
+      });
+      try {
+        await server.inject({ method: 'GET', url: '/sessions/s1/branches' });
+        lookup.mockResolvedValue(status);
+        const response = await server.inject({
+          method: 'POST',
+          url: '/sessions/s1/pull-request/merge',
+          payload: { number: 119 },
+        });
+        expect(response.statusCode).toBe(expected);
+        expect(response.json()).toMatchObject({ code });
+        expect(mergePr).not.toHaveBeenCalled();
+      } finally {
+        await server.close();
+      }
+    },
+  );
+
   it('rejects a stale or forged notification before calling GitHub merge', async () => {
     await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
     branchSvc.current.mockResolvedValue('feat/119-ready');

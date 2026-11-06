@@ -88,6 +88,7 @@ it('deletes a discarded meeting with its notes and drafts', async () => {
   // Drafts are unfinalized rows of the same table, so one statement removes both.
   expect(deletes()).toEqual([
     ['DELETE FROM meeting_notes WHERE meeting_id = ?', 'meeting-1'],
+    ['DELETE FROM meeting_audio_recovery WHERE meeting_id = ?', 'meeting-1'],
     ['DELETE FROM meetings WHERE id = ?', 'meeting-1'],
   ]);
 });
@@ -106,6 +107,7 @@ it('applies a remote discard only to the copy from that server', async () => {
   // The other server's meeting row and notes stay; only notes without any meeting may go.
   expect(deletes()).toEqual([
     ['DELETE FROM meeting_notes WHERE meeting_id = ?', 'shared'],
+    ['DELETE FROM meeting_audio_recovery WHERE meeting_id = ?', 'shared'],
     ['DELETE FROM meetings WHERE id = ?', 'shared'],
     [expect.stringContaining('NOT EXISTS (SELECT 1 FROM meetings WHERE id = ?)'), 'other-server'],
   ]);
