@@ -112,6 +112,7 @@ function clientWith(sessions: SessionSummary[], extra: Record<string, unknown> =
     setProjectInboxDismissed: jest.fn(async () => [] as string[]),
     deleteSession: jest.fn().mockResolvedValue({ sessionId: 'deleted' }),
     setSessionSeen: jest.fn().mockResolvedValue({}),
+    setSessionFavorite: jest.fn().mockResolvedValue({}),
     ...extra,
   });
   return client as unknown as VerityClient & Record<string, jest.Mock>;
@@ -378,8 +379,19 @@ describe('project page', () => {
     expect(screen.queryByTestId('project-security')).toBeNull();
   });
 
-  it('links a session from Work through the session settings', async () => {
+  it('favorites from the swipe action without opening a long-press menu', async () => {
     const alert = jest.spyOn(Alert, 'alert');
+    const onSessionChanged = jest.fn();
+    const { client } = await renderPage([running], { onSessionChanged });
+    fireEvent.press(screen.getByRole('tab', { name: 'Work' }));
+    fireEvent(screen.getByLabelText(/^login/), 'longPress');
+    expect(alert).not.toHaveBeenCalled();
+    await act(async () => fireEvent.press(screen.getByLabelText('Favorite')));
+    expect(client.setSessionFavorite).toHaveBeenCalledWith('login', true);
+    expect(onSessionChanged).toHaveBeenCalledWith('login', false);
+  });
+
+  it('links a session from Work through the session settings', async () => {
     const linked = session('pair', { linked: true });
     const { client } = await renderPage([running, linked]);
     Object.assign(client, {
@@ -388,15 +400,7 @@ describe('project page', () => {
       listSessionLinks: jest.fn().mockResolvedValue([]),
     });
     fireEvent.press(screen.getByRole('tab', { name: 'Work' }));
-    fireEvent(screen.getByLabelText(/^login/), 'longPress');
-    const menu = alert.mock.calls.at(-1)![2]!;
-    expect(menu.map((button) => button.text)).toEqual([
-      'Add to favorites',
-      'Session settings',
-      'Delete',
-      'Cancel',
-    ]);
-    await act(async () => menu.find((button) => button.text === 'Session settings')!.onPress!());
+    await act(async () => fireEvent.press(screen.getAllByLabelText('Edit')[0]!));
     expect(screen.getByText('Linked sessions')).toBeTruthy();
     // The link marker on a row goes straight to its links.
     fireEvent.press(screen.getByLabelText('Close session settings'));
@@ -410,9 +414,7 @@ describe('project page', () => {
     const onSessionChanged = jest.fn();
     const { client } = await renderPage([running], { onSessionChanged });
     fireEvent.press(screen.getByRole('tab', { name: 'Work' }));
-    fireEvent(screen.getByLabelText(/^login/), 'longPress');
-    const menu = alert.mock.calls.at(-1)![2]!;
-    act(() => menu.find((button) => button.text === 'Delete')!.onPress!());
+    fireEvent.press(screen.getByLabelText('Delete'));
     const confirm = alert.mock.calls.at(-1)![2]!;
     await act(async () => confirm.find((button) => button.text === 'Delete')!.onPress!());
     expect(client.deleteSession).toHaveBeenCalledWith('login', {});
