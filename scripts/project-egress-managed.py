@@ -622,6 +622,11 @@ def provision(source, relay=None, authority=None, gid=65531, root=Path('/'), run
                     base.atomic_file(root / relative, data, 0o600)
             fallback = ('native_prerequisites_failed' if step == 'prerequisites' else 'runtime_preflight_failed')
             diagnostic = base.failure_diagnostic(error, fallback, step)
+            if diagnostic['reason'] == 'relay_rollback_failed':
+                # Unknown Docker recovery is fatal even when unavailable profiles
+                # are normally allowed to complete without activating protection.
+                write_status(root, gid, 'provisioning_failed')
+                raise
             # Keep the health/status vocabulary compatible; detailed codes belong
             # to this invocation's outcome, not the public readiness contract.
             reason = (diagnostic['reason'] if diagnostic['reason'] in {

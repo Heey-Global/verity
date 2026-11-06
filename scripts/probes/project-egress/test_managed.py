@@ -139,6 +139,29 @@ class ManagedTests(unittest.TestCase):
             status = json.loads((self.root / 'run/verity-egress/status.json').read_text())
             self.assertEqual(status['reason'], 'controller_failed')
 
+    def test_cli_rejects_unverified_relay_rollback_without_assessment(self):
+        provision = managed.provision
+
+        def failed_rollback(*_):
+            raise managed.base.PreflightError('relay_rollback_failed', 'prerequisites')
+
+        def provision_fixture(*args, **kwargs):
+            return provision(self.source, self.relay, self.authority, CONTROL_GID,
+                             self.root, self.execute, failed_rollback, group_setup=lambda *_: None)
+
+        output = io.StringIO()
+        with patch.object(sys, 'argv', ['managed', 'provision', str(self.source)]), \
+                patch.object(managed, 'provision', side_effect=provision_fixture), patch('sys.stdout', output):
+            with self.assertRaises(SystemExit) as exited:
+                managed.main()
+        self.assertEqual(exited.exception.code, 1)
+        result = json.loads(output.getvalue())
+        self.assertFalse(result['available'])
+        self.assertEqual(result['reason'], 'relay_rollback_failed')
+        self.assertEqual(result['step'], 'prerequisites')
+        self.assertEqual(json.loads((self.root / 'run/verity-egress/status.json').read_text())['reason'], 'provisioning_failed')
+        self.assertFalse((self.root / managed.INVENTORY_CONTRACT).exists())
+
     def test_cli_reports_failed_assessment_as_failure(self):
         authorization = self.source.parent / 'authorization.json'
         argv = ['managed', 'provision', str(self.source), '--relay-config', str(self.relay),
