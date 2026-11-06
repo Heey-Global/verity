@@ -37,7 +37,24 @@ elif command == 'host-python':
     status.parent.mkdir(exist_ok=True)
     status.write_text(json.dumps({'state': 'ready', 'reason': 'ready'}
         if mode != 'unavailable' else {'state': 'unsupported', 'reason': 'runtime_unsupported'}))
-    sys.exit(7 if mode == 'host-failure' else 0)
+    if mode == 'host-failure':
+        print(json.dumps({'available': False, 'reason': 'relay_runtime_mismatch', 'step': 'prerequisites'}))
+    elif mode == 'private-diagnostic':
+        print(json.dumps({'available': False, 'reason': 'postgres://secret@database', 'step': 'private-secret'}))
+    elif mode == 'nonstring-diagnostic':
+        print(json.dumps({'available': False, 'reason': [], 'step': []}))
+    elif mode == 'stderr-outcome':
+        print('private secret on stderr', file=sys.stderr)
+        print(json.dumps({'available': False, 'reason': 'relay_runtime_mismatch', 'step': 'prerequisites'}))
+    elif mode == 'oversized-outcome':
+        print(json.dumps({'available': False, 'reason': 'relay_runtime_mismatch', 'step': 'prerequisites', 'private': 'secret' * 1000}))
+    elif mode == 'malformed-outcome':
+        print('private secret not-json')
+    elif mode == 'multiple-outcomes':
+        print('{"available":true,"reason":"ready"}\n{"available":false,"reason":"provisioning_failed"}')
+    elif mode != 'silent-outcome':
+        print(json.dumps({'available': mode != 'unavailable', 'reason': 'runtime_unsupported' if mode == 'unavailable' else 'ready'}))
+    sys.exit(7 if mode in ['host-failure', 'private-diagnostic', 'nonstring-diagnostic', 'malformed-outcome', 'multiple-outcomes', 'silent-outcome', 'oversized-outcome', 'stderr-outcome'] else 0)
 elif command == 'systemd-run':
     # v252 --wait uses the full system bus; the authorized helper only mounts the manager socket.
     if '--wait' in args:
@@ -50,7 +67,11 @@ elif command == 'systemd-run':
     if mode in ['disconnect', 'timeout']:
         (root / 'active').touch()
         sys.exit(124 if mode == 'disconnect' else 0)
-    if mode in ['invalid', 'stale', 'missing', 'failed-missing']:
+    if mode == 'forged-diagnostics':
+        (stage / 'result.json').write_text(json.dumps({'version': 1, 'operationId': 'c' * 24,
+            'attempt': (stage / 'attempt').read_text().strip(), 'exitCode': 7, 'available': False,
+            'reason': 'postgres://secret@database', 'step': ['secret']}))
+    elif mode in ['invalid', 'stale', 'missing', 'failed-missing']:
         if mode != 'missing' and mode != 'failed-missing':
             result = {'version': 1, 'operationId': 'c' * 24,
                       'attempt': 'old-attempt', 'exitCode': 0, 'available': True}
@@ -59,7 +80,8 @@ elif command == 'systemd-run':
             (root / 'failed').touch()
     else:
         # Simulate a short-lived exec service completing before the submitter returns.
-        result = subprocess.call(['bash', args[-1]])
+        with (root / 'journal').open('a') as journal:
+            result = subprocess.call(['bash', args[-1]], stdout=journal, stderr=journal)
         if result:
             (root / 'failed').touch()
 elif command == 'systemctl':
@@ -179,6 +201,40 @@ class ProvisionWrapperTests(unittest.TestCase):
         result = self.run_wrapper('host-failure')
         self.diagnostic(result, 'host_failed')
         self.assertEqual(result.returncode, 7)
+
+    def test_failure_reason_survives_launcher_result_and_observer(self):
+        report = self.diagnostic(self.run_wrapper('host-failure'), 'host_failed')
+        completed = json.loads((self.stage / 'result.json').read_text())
+        for value in (report, completed):
+            self.assertEqual(value['reason'], 'relay_runtime_mismatch')
+            self.assertEqual(value['step'], 'prerequisites')
+        self.assertFalse(completed['available'])
+
+    def test_unknown_malformed_and_missing_outcomes_never_reuse_runtime_status(self):
+        for mode in ('private-diagnostic', 'nonstring-diagnostic', 'malformed-outcome', 'multiple-outcomes', 'silent-outcome', 'oversized-outcome', 'stderr-outcome'):
+            with self.subTest(mode=mode):
+                report = self.diagnostic(self.run_wrapper(mode), 'host_failed')
+                completed = json.loads((self.stage / 'result.json').read_text())
+                self.assertFalse(completed['available'])
+                self.assertNotIn('reason', report)
+                self.assertNotIn('step', report)
+                self.assertNotIn('secret', json.dumps(completed))
+                self.assertFalse((self.stage / 'outcome.json').exists())
+                self.assertNotIn('secret', (self.root / 'journal').read_text())
+
+    def test_observer_rejects_private_diagnostics_in_bound_result(self):
+        report = self.diagnostic(self.run_wrapper('forged-diagnostics'), 'host_failed')
+        self.assertEqual(report['exitCode'], 7)
+        self.assertNotIn('reason', report)
+        self.assertNotIn('step', report)
+
+    def test_retry_does_not_reuse_previous_failure_diagnostics(self):
+        self.diagnostic(self.run_wrapper('host-failure'), 'host_failed')
+        before = (self.stage / 'attempt').read_text()
+        report = self.diagnostic(self.run_wrapper('silent-outcome'), 'host_failed')
+        self.assertNotEqual(before, (self.stage / 'attempt').read_text())
+        self.assertNotIn('reason', report)
+        self.assertNotIn('step', report)
 
     def test_unavailable_completion_is_not_cached_as_ready(self):
         self.assertEqual(self.run_wrapper('unavailable').returncode, 0)

@@ -180,13 +180,13 @@ class StagingAssessmentTests(unittest.TestCase):
         node.chmod(0o644)
         node.write_bytes(b'other-node')
         node.chmod(0o444)
-        with self.assertRaisesRegex(ValueError, 'identities changed'):
+        with self.assertRaisesRegex(installer.PreflightError, 'native_identity_changed'):
             self.validate(descriptor)
         node.chmod(0o644)
         node.write_bytes(original)
         node.chmod(0o444)
         self.packages['python3'] = 'different'
-        with self.assertRaisesRegex(ValueError, 'identities changed'):
+        with self.assertRaisesRegex(installer.PreflightError, 'native_packages_changed'):
             self.validate(descriptor)
         self.packages['python3'] = '1.0-fixture'
         self.sidecar.chmod(0o755)

@@ -71,6 +71,30 @@ const egressFailureCodes = new Set([
   'host_failed',
   'start_unverified',
 ]);
+const egressFailureReasons = new Set([
+  'relay_reload_failed',
+  'relay_inspection_failed',
+  'relay_runtime_mismatch',
+  'relay_rollback_failed',
+  'native_identity_changed',
+  'native_packages_changed',
+  'native_prerequisites_failed',
+  'runtime_preflight_failed',
+  'activation_failed',
+  'recovery_failed',
+  'provisioning_failed',
+  'docker_host_unsupported',
+  'relay_runtime_missing',
+  'native_package_unavailable',
+  'assessment_authorization_invalid',
+]);
+const egressFailureSteps = new Set([
+  'validation',
+  'recovery',
+  'prerequisites',
+  'runtime_preflight',
+  'activation',
+]);
 
 /** Helper output is untrusted and may contain credentials: relay only fixed diagnostic fields. */
 function egressPreparationError(spec: ContainerSpec, status: number, logs: string): Error {
@@ -89,8 +113,13 @@ function egressPreparationError(spec: ContainerSpec, status: number, logs: strin
         egressPhases.has(result.phase) &&
         typeof result.code === 'string' &&
         egressFailureCodes.has(result.code)
-      )
+      ) {
         detail = `, phase ${result.phase}, code ${result.code}`;
+        if (typeof result.reason === 'string' && egressFailureReasons.has(result.reason))
+          detail += `, reason ${result.reason}`;
+        if (typeof result.step === 'string' && egressFailureSteps.has(result.step))
+          detail += `, step ${result.step}`;
+      }
     } catch {
       /* Missing or invalid diagnostics never establish successful restoration. */
     }

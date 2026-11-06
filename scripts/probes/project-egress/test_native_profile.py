@@ -1,10 +1,12 @@
 """Release-owned native profile admission and bounded prerequisite preparation."""
 import hashlib
 import importlib.util
+import itertools
 import json
 import os
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -76,6 +78,127 @@ class NativeProfileTests(unittest.TestCase):
     def prepare(self):
         return installer.prepare_managed_prerequisites(self.root, self.execute, str(self.release / 'node'))
 
+    def fresh_managed_release(self):
+        spec = importlib.util.spec_from_file_location('fresh_managed', SOURCE.with_name('project-egress-managed.py'))
+        managed = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(managed)
+        ownership = patch.object(managed.os, 'chown')
+        ownership.start()
+        self.addCleanup(ownership.stop)
+        # Source assets are not an already-installed controller or current-release link.
+        source = self.root / 'release-input'
+        self.release.rename(source)
+        self.release = source
+        for name in managed.ASSETS:
+            if not (source / name).exists():
+                (source / name).write_bytes(name.encode())
+        (source / 'manifest.json').write_text(json.dumps({
+            name: installer.digest((source / name).read_bytes()) for name in managed.ASSETS}))
+        relay = self.root / 'relay.json'
+        relay.write_text('{"packetEnforcement":true}')
+        authority = self.root / 'authority.json'
+        authority.write_text('{}')
+        self.assertFalse((self.root / 'opt/verity-egress').exists())
+        self.assertFalse((self.root / 'sys/fs/bpf/verity_egress_deadline').exists())
+        return managed, source, relay, authority
+
+    def test_first_managed_install_prepares_pin_and_staged_node_before_real_preflight(self):
+        managed, source, relay, authority = self.fresh_managed_release()
+        for relative in ('usr/sbin/nft', 'usr/sbin/bpftool', 'sbin/tc', 'sbin/ip',
+                         'usr/bin/flock', 'usr/bin/nsenter', 'usr/bin/python3'):
+            path = self.root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b'fixture executable')
+            path.chmod(0o555)
+        observations = []
+        stale = True
+        reload_requested = False
+
+        def execute(*args):
+            nonlocal stale, reload_requested
+            if args == ('/usr/bin/systemctl', '--version'):
+                return 'systemd 259'
+            if args[0].endswith('/node'):
+                node = Path(args[0])
+                self.assertNotEqual(node, self.root / 'opt/verity-egress/node')
+                self.assertEqual(node.parent.parent, self.root / 'opt/verity-egress-releases')
+                self.assertTrue(node.is_file())
+                pin = self.root / 'sys/fs/bpf/verity_egress_deadline'
+                self.assertEqual(pin.stat().st_mode & 0o777, 0o700)
+                self.assertFalse((self.root / 'opt/verity-egress').exists())
+                observations.append(node)
+                return 'v26.13.0'
+            result = self.execute(*args)
+            if args == ('/usr/bin/systemctl', 'reload', 'docker.service'):
+                reload_requested = True
+            if args[0] == '/usr/bin/docker' and reload_requested and stale:
+                stale = False
+                info = json.loads(result)
+                info['Runtimes'].pop('runsc-relay', None)
+                return json.dumps(info)
+            return result
+
+        def activate(root, run, release, files, configs, gid):
+            self.assertEqual(observations, [release / 'node'])
+            self.assertTrue((root / 'sys/fs/bpf/verity_egress_deadline').is_dir())
+
+        real_preflight = installer.runtime_preflight
+        real_stat = Path.stat
+        fixture_uid = os.geteuid()
+
+        def preflight(*args, **kwargs):
+            def host_stat(path, *stat_args, **stat_kwargs):
+                metadata = real_stat(path, *stat_args, **stat_kwargs)
+                if path == self.root / 'sys/fs/bpf/verity_egress_deadline':
+                    values = list(metadata)
+                    values[4] = 0
+                    return os.stat_result(values)
+                return metadata
+
+            # The sandbox fixture is unprivileged; only the host-root entry check
+            # and pin owner need emulation, not artifact admission or prerequisites.
+            with patch.object(installer.os, 'geteuid', side_effect=itertools.chain([0], itertools.repeat(fixture_uid))), \
+                    patch.object(Path, 'stat', host_stat):
+                return real_preflight(*args, **kwargs)
+
+        with patch.object(managed, 'base', installer), patch.object(managed, 'activate', side_effect=activate) as activation, \
+                patch.object(installer, 'runtime_preflight', side_effect=preflight) as check, \
+                patch.object(installer.os, 'setns', create=True), \
+                patch.object(installer.ctypes, 'CDLL', return_value=SimpleNamespace(nft_ctx_buffer_output=True)), \
+                patch.object(installer.time, 'sleep'):
+            result = managed.provision(source, relay, authority, os.getgid(), self.root, execute,
+                                       check=check, group_setup=lambda *_: None)
+        self.assertTrue(result['available'])
+        activation.assert_called_once()
+        self.assertFalse(stale)
+        self.assertEqual(self.calls.count(('/usr/bin/systemctl', 'reload', 'docker.service')), 1)
+        self.assertFalse(any('restart' in call or 'stop' in call for call in self.calls))
+
+    def test_first_managed_install_does_not_activate_after_failed_relay_convergence(self):
+        managed, source, relay, authority = self.fresh_managed_release()
+        daemon = self.root / 'etc/docker/daemon.json'
+        before = daemon.read_bytes()
+
+        def execute(*args):
+            result = self.execute(*args)
+            if args[0] == '/usr/bin/docker':
+                info = json.loads(result)
+                info['Runtimes'].pop('runsc-relay', None)
+                return json.dumps(info)
+            return result
+
+        with patch.object(managed, 'base', installer), patch.object(managed, 'activate') as activation, \
+                patch.object(installer.time, 'monotonic', side_effect=[0, 31, 32]):
+            result = managed.provision(source, relay, authority, os.getgid(), self.root, execute,
+                                       check=installer.runtime_preflight, group_setup=lambda *_: None)
+        self.assertFalse(result['available'])
+        self.assertEqual(result['reason'], 'relay_runtime_mismatch')
+        activation.assert_not_called()
+        self.assertEqual(daemon.read_bytes(), before)
+        self.assertFalse((self.root / 'sys/fs/bpf/verity_egress_deadline').exists())
+        self.assertFalse((self.root / 'opt/verity-egress').exists())
+        self.assertFalse((self.root / installer.RELAY_RUNTIME_AUTHORITY).exists())
+
     def test_native_workflows_follow_the_managed_provisioning_inputs(self):
         root = SOURCE.parent.parent
         for workflow in ('project-egress.yml', 'project-egress-boot.yml'):
@@ -141,6 +264,30 @@ class NativeProfileTests(unittest.TestCase):
         self.calls.clear()
         self.prepare()
         self.assertFalse(any('/usr/bin/apt-get' in call or 'reload' in call for call in self.calls))
+
+    def test_first_install_waits_for_signal_driven_relay_reload(self):
+        # systemctl reload returns after sending SIGHUP, before dockerd publishes runtimes.
+        observed = 0
+
+        def delayed(*args):
+            nonlocal observed
+            result = self.execute(*args)
+            if args[0] == '/usr/bin/docker' and ('reload', 'docker.service') in [call[1:] for call in self.calls]:
+                observed += 1
+                if observed < 3:
+                    info = json.loads(result)
+                    info['Runtimes'].pop('runsc-relay', None)
+                    return json.dumps(info)
+            return result
+
+        pin = self.root / 'sys/fs/bpf/verity_egress_deadline'
+        self.assertFalse(pin.exists())
+        with patch('time.sleep'):
+            installer.prepare_managed_prerequisites(self.root, delayed, str(self.release / 'node'))
+        self.assertGreaterEqual(observed, 3)
+        self.assertEqual(pin.stat().st_mode & 0o777, 0o700)
+        self.assertEqual(sum(call == ('/usr/bin/systemctl', 'reload', 'docker.service') for call in self.calls), 1)
+        self.assertFalse(any('stop' in call or 'restart' in call for call in self.calls))
 
     def renew_project_runtime(self):
         renewed = '/opt/verity/runsc/release-20261104.0/runsc'
@@ -237,11 +384,39 @@ class NativeProfileTests(unittest.TestCase):
                 if reloads == 1:
                     raise subprocess.CalledProcessError(1, args)
             return self.execute(*args)
-        with self.assertRaises(subprocess.CalledProcessError):
+        with self.assertRaisesRegex(installer.PreflightError, 'relay_reload_failed'):
             installer.prepare_managed_prerequisites(self.root, fail_first_reload, str(self.release / 'node'))
         self.assertEqual(daemon.read_bytes(), before)
         self.assertEqual(authority.read_bytes(), previous)
         self.assertEqual(reloads, 2)
+
+    def test_permanent_relay_mismatch_or_inspection_failure_rolls_back_before_pin_creation(self):
+        for reason in ('relay_runtime_mismatch', 'relay_inspection_failed'):
+            with self.subTest(reason=reason):
+                daemon = self.root / 'etc/docker/daemon.json'
+                original = daemon.read_bytes()
+                reloads = 0
+
+                def execute(*args):
+                    nonlocal reloads
+                    result = self.execute(*args)
+                    if args == ('/usr/bin/systemctl', 'reload', 'docker.service'):
+                        reloads += 1
+                    if args[0] == '/usr/bin/docker' and reloads == 1:
+                        if reason == 'relay_inspection_failed':
+                            return '{malformed'
+                        info = json.loads(result)
+                        info['Runtimes']['runsc-relay']['runtimeArgs'] = ['--network=host']
+                        return json.dumps(info)
+                    return result
+
+                with patch.object(installer.time, 'monotonic', side_effect=itertools.count(0, 31)), \
+                        self.assertRaisesRegex(installer.PreflightError, reason):
+                    installer.prepare_managed_prerequisites(self.root, execute, str(self.release / 'node'))
+                self.assertEqual(reloads, 2)
+                self.assertEqual(daemon.read_bytes(), original)
+                self.assertFalse((self.root / installer.RELAY_RUNTIME_AUTHORITY).exists())
+                self.assertFalse((self.root / 'sys/fs/bpf/verity_egress_deadline').exists())
 
     def test_bpffs_pin_creation_never_uses_disk_directory_fsync(self):
         original = installer.sync_directory
@@ -271,7 +446,7 @@ class NativeProfileTests(unittest.TestCase):
             if 'reload' in args:
                 raise RuntimeError('reload failed')
             return result
-        with self.assertRaisesRegex(RuntimeError, 'reload failed'):
+        with self.assertRaisesRegex(installer.PreflightError, 'relay_rollback_failed'):
             installer.prepare_managed_prerequisites(self.root, fail, str(self.release / 'node'))
         self.assertEqual((self.root / 'etc/docker/daemon.json').read_bytes(), original)
         self.assertFalse(any('restart' in call or 'stop' in call for call in self.calls))

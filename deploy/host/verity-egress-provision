@@ -15,12 +15,28 @@ stage=/var/lib/verity-egress/provision/$identifier
 unit=verity-egress-provision-$identifier.service
 phase=staging
 failure=command_failed
+# Only fixed diagnostic values may cross the host/helper trust boundary.
+# Slurping requires exactly one object, rejecting mixed or repeated output.
+diagnostic_filter='
+  if length == 1 and (.[0] | type == "object") then .[0] else {} end |
+  {available: (.available == true and .reason == "ready")} +
+  (if (.reason | type == "string") and (.reason as $reason | ["ready", "runtime_unsupported", "relay_reload_failed",
+      "relay_inspection_failed", "relay_runtime_mismatch", "relay_rollback_failed",
+      "native_identity_changed", "native_packages_changed", "native_prerequisites_failed",
+      "runtime_preflight_failed", "activation_failed", "recovery_failed", "provisioning_failed",
+      "docker_host_unsupported", "relay_runtime_missing", "native_package_unavailable",
+      "assessment_authorization_invalid"] | index($reason) != null)
+   then {reason} else {} end) +
+  (if (.step | type == "string") and (.step as $step | ["validation", "recovery", "prerequisites", "runtime_preflight", "activation"] | index($step) != null)
+   then {step} else {} end)'
+diagnostics='{}'
 report_failure() {
   local status=$?
   trap - EXIT
   if (( status != 0 )); then
     jq -cn --arg id "$identifier" --arg phase "$phase" --arg code "$failure" --argjson status "$status" \
-      '{version:1,kind:"egress-provisioning",operationId:$id,phase:$phase,code:$code,exitCode:$status}'
+      --argjson diagnostics "$diagnostics" \
+      '{version:1,kind:"egress-provisioning",operationId:$id,phase:$phase,code:$code,exitCode:$status} + $diagnostics'
   fi
   exit "$status"
 }
@@ -70,7 +86,11 @@ wait_for_result() {
         fi
         valid_result || fail result_invalid
         result=$(jq -r '.exitCode' "$stage/result.json")
-        if (( result != 0 )); then failure=host_failed; exit "$result"; fi
+        if (( result != 0 )); then
+          diagnostics=$(jq -cs "$diagnostic_filter | del(.available)" "$stage/result.json" 2>/dev/null) || diagnostics='{}'
+          failure=host_failed
+          exit "$result"
+        fi
         [[ $state != failed ]] || fail host_failed
         # Unsupported native profiles may complete successfully but stay unavailable.
         return ;;
@@ -136,7 +156,7 @@ attempt=${attempt_file##*.}
 printf '%s\n' "$attempt" >"$attempt_file"
 sync -f "$attempt_file"
 mv -fT "$attempt_file" "$stage/attempt"
-rm -f "$stage/result.json" "$stage/result.json.tmp"
+rm -f "$stage/result.json" "$stage/result.json.tmp" "$stage/outcome.json"
 assessment_option=''
 if [[ -f $stage/assessment-authorization.json ]]; then
   assessment_option="--assessment-authorization '$stage/assessment-authorization.json'"
@@ -145,11 +165,21 @@ fi
 cat >"$stage/apply.sh" <<APPLY
 #!/usr/bin/env bash
 set -u
+$(declare -p diagnostic_filter)
 finish() {
   result=\$?
-  available=\$(jq -r '.state == "ready" and .reason == "ready"' /run/verity-egress/status.json 2>/dev/null || echo false)
-  [[ \$available = true ]] || available=false
-  printf '{"version":1,"operationId":"$identifier","attempt":"$attempt","exitCode":%s,"available":%s}\\n' "\$result" "\$available" >'$stage/result.json.tmp'
+  trap - EXIT
+  outcome='{"available":false}'
+  if [[ -f '$stage/outcome.json' && ! -L '$stage/outcome.json' && \$(stat -c %s '$stage/outcome.json') -le 4096 ]]; then
+    outcome=\$(jq -cs "\$diagnostic_filter" '$stage/outcome.json' 2>/dev/null) || outcome='{"available":false}'
+  fi
+  rm -f '$stage/outcome.json'
+  outcome=\$(jq -c --argjson status "\$result" '.available = (.available and \$status == 0)' <<<"\$outcome")
+  # Journal and result carry only this attempt's sanitized outcome, never raw output.
+  printf '%s\\n' "\$outcome"
+  jq -cn --arg id '$identifier' --arg attempt '$attempt' --argjson status "\$result" \\
+    --argjson outcome "\$outcome" \\
+    '{version:1,operationId:\$id,attempt:\$attempt,exitCode:\$status} + \$outcome | .available = (.available and \$status == 0)' >'$stage/result.json.tmp'
   sync -f '$stage/result.json.tmp'
   mv -f '$stage/result.json.tmp' '$stage/result.json'
   sync -f '$stage'
@@ -163,7 +193,12 @@ fi
 /usr/bin/python3 '$stage/project-egress-managed.py' provision '$stage/release' \\
   --control-gid '${VERITY_EGRESS_CONTROL_GID:-65531}' \\
   --relay-config '$stage/config/relay.json' --authority-config '$stage/config/authority.json' \\
-  --database-config '$stage/config/database.json' $assessment_option
+  --database-config '$stage/config/database.json' $assessment_option 2>&1 | {
+  # Drain excess output so diagnostics cannot block provisioning or grow disk use.
+  head -c 4097
+  cat >/dev/null
+} >'$stage/outcome.json'
+exit "\${PIPESTATUS[0]}"
 APPLY
 chmod 0700 "$stage/apply.sh"
 sync -f "$stage/apply.sh"
