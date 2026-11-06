@@ -119,11 +119,17 @@ final class LiveMeetingJournal {
     let root = try rootFolder()
     return try manager.contentsOfDirectory(at: root, includingPropertiesForKeys: [.isDirectoryKey])
       .compactMap { directory -> [String: Any]? in
-        guard try directory.resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true else { return nil }
-        let state = try metadata(in: directory)
-        let pending = try files(in: directory).filter { $0.sequence > state.acknowledgedSequence }
-        guard !pending.isEmpty else { return nil }
-        return ["meetingId": state.meetingId, "pendingCount": pending.count]
+        do {
+          guard try directory.resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true else { return nil }
+          let state = try metadata(in: directory)
+          let pending = try files(in: directory).filter { $0.sequence > state.acknowledgedSequence }
+          guard !pending.isEmpty else { return nil }
+          return ["meetingId": state.meetingId, "pendingCount": pending.count]
+        } catch {
+          // A partial or damaged journal must not hide other meetings. Preserve it for recovery.
+          NSLog("LiveMeetingJournal: skipped an unreadable journal; its files were retained.")
+          return nil
+        }
       }
   }
 
