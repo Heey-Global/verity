@@ -741,3 +741,9 @@ export {
 } from './ui/mockups.js';
 
 export { projectEgressPolicySchema, type ProjectEgressPolicy } from './projectEgress.js';
+export type {
+  AssistantConversation,
+  AssistantConversationItem,
+  AssistantDelivery,
+  AssistantQuestion,
+} from '@verity/events';

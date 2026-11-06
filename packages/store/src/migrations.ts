@@ -5328,3 +5328,27 @@ migrations['0193_design_mockup_review'] = {
     await sql`alter table project_settings drop column design_level`.execute(db);
   },
 };
+
+migrations['0194_assistant_requests'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    // One row per message or answer sent to the assistant from a device. The
+    // client-minted id makes a replayed delivery (Watch queue, app restart)
+    // return the first outcome instead of starting a second turn, and the
+    // partial unique index lets only one device answer a given question.
+    await sql`create table assistant_requests (
+      request_id text primary key,
+      session_id text not null references sessions(session_id) on delete cascade,
+      user_id text not null,
+      kind text not null check (kind in ('message', 'answer')),
+      question_id text,
+      state text not null default 'pending' check (state in ('pending', 'accepted')),
+      created_at timestamptz not null default now(),
+      check ((kind = 'answer') = (question_id is not null))
+    )`.execute(db);
+    await sql`create unique index assistant_requests_one_answer
+      on assistant_requests(session_id, question_id) where kind = 'answer'`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table assistant_requests`.execute(db);
+  },
+};

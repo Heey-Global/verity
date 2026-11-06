@@ -4796,3 +4796,58 @@ it('preserves Wiki exclusion reasons and unknown save status while accepting old
     }).documentStatus,
   ).toEqual({ pending: false, running: false });
 });
+
+it('talks to Verity through the shared conversation routes', async () => {
+  const conversation = {
+    availability: 'ready',
+    sessionId: 'assistant',
+    revision: 4,
+    state: 'needs_you',
+    items: [{ kind: 'message', id: 'm-1', at: 1, text: 'Hi' }],
+    question: { id: 'q-3', options: [{ label: 'Hansen' }], multiSelect: false },
+    approvals: [],
+  };
+  const delivered = { requestId: 'req-00000001', delivered: true };
+  const { fetch, calls } = fakeFetchSequence(json(conversation), json(delivered), json(delivered));
+  const client = new VerityClient({ baseUrl: 'http://host', fetch });
+  expect(await client.assistantConversation()).toEqual(conversation);
+  const message = {
+    requestId: 'req-00000001',
+    text: 'Hi',
+    input: 'text',
+    device: 'phone',
+  } as const;
+  expect(await client.sendAssistantMessage(message)).toEqual(delivered);
+  const answer = {
+    requestId: 'req-00000001',
+    questionId: 'q-3',
+    labels: ['Hansen'],
+    device: 'phone' as const,
+  };
+  expect(await client.answerAssistantQuestion(answer)).toEqual(delivered);
+  expect(calls.map(({ url, init }) => [url, init?.method, init?.body])).toEqual([
+    ['http://host/assistant/conversation', 'GET', undefined],
+    ['http://host/assistant/conversation/messages', 'POST', JSON.stringify(message)],
+    ['http://host/assistant/conversation/answers', 'POST', JSON.stringify(answer)],
+  ]);
+});
+
+it('holds a conversation read on the interactive lane until it changes', async () => {
+  const conversation = {
+    availability: 'ready',
+    sessionId: 'assistant',
+    revision: 5,
+    state: 'working',
+    items: [{ kind: 'message', id: 'm-1', at: 1, text: 'Hi', timing: { firstMs: 800 } }],
+    question: null,
+    approvals: [],
+  };
+  const { fetch, calls } = fakeFetchSequence(json(conversation));
+  const client = new VerityClient({ baseUrl: 'http://host', fetch });
+  const signal = new AbortController().signal;
+  expect(await client.assistantConversation({ after: 4, waitMs: 20_000, signal })).toEqual(
+    conversation,
+  );
+  expect(calls[0]?.url).toBe('http://host/assistant/conversation?after=4&waitMs=20000');
+  expect(calls[0]?.init).toMatchObject({ signal, transportLane: 'interactive' });
+});

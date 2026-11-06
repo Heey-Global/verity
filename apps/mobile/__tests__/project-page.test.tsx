@@ -16,7 +16,7 @@ jest.mock('expo-router', () => ({
 }));
 jest.mock('../lib/client', () => require('./support/settingsHarness').clientMock());
 jest.mock('expo-crypto', () => ({ randomUUID: () => 'reply-1' }));
-jest.mock('../lib/voiceShortcut', () => ({ dispatchTaskVoiceShortcut: jest.fn() }));
+jest.mock('../lib/voiceShortcut', () => ({ dispatchVerityShortcut: jest.fn() }));
 jest.mock('../lib/taskPreferences', () => ({ useTaskPreferences: () => ({ enabled: false }) }));
 jest.mock('../lib/tasksStore', () => ({ taskAccountScope: () => null }));
 const mockDesign = { value: true as boolean | undefined };

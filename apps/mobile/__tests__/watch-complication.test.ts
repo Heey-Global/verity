@@ -8,6 +8,7 @@ const shared = read('_shared/WatchCaptureComplication.swift');
 const app = read('VerityWatch/VerityWatchApp.swift');
 const store = read('VerityWatch/CaptureStore.swift');
 const widget = read('VerityWatchComplication/VerityWatchComplication.swift');
+const mark = read('_shared/VerityMarkShape.swift');
 
 describe('Watch complication capture entry', () => {
   it('registers the actual complication URL and starts rather than toggles recording', () => {
@@ -31,7 +32,8 @@ describe('Watch complication capture entry', () => {
     );
     expect(start).toContain('guard !recording, !starting else { return }');
     expect(start).toContain('starting = true');
-    expect(start.indexOf('choosing = nil')).toBeGreaterThan(
+    // Feedback from the previous recording clears only once the new one runs.
+    expect(start.indexOf('confirmation = nil')).toBeGreaterThan(
       start.indexOf('guard recorder.record()'),
     );
   });
@@ -50,8 +52,14 @@ describe('Watch complication capture entry', () => {
     expect(widget).not.toMatch(/Image\("[^"]+"\)|image: "/);
     const config = require(resolve(targetRoot, 'VerityWatchComplication/expo-target.config.js'));
     expect(config.images).toBeUndefined();
+    // The Watch app draws the same mark, so it lives with the sources both targets link.
+    expect(mark).toContain('#if os(watchOS)');
+    expect(mark).toContain('struct VerityMarkShape: Shape');
+    expect(mark).not.toContain('private struct VerityMarkShape');
+    expect(widget).not.toContain('struct VerityMarkShape');
+    expect(app).toContain('VerityMarkShape()');
     const marker = 'outline: [(CGFloat, CGFloat)] = [';
-    const outline = widget.slice(widget.indexOf(marker) + marker.length);
+    const outline = mark.slice(mark.indexOf(marker) + marker.length);
     const points = [
       ...outline.slice(0, outline.indexOf(']')).matchAll(/\((-?[\d.]+), (-?[\d.]+)\)/g),
     ];
@@ -74,6 +82,6 @@ describe('Watch complication capture entry', () => {
     expect(complication.entitlements?.['com.apple.security.application-groups']).toBeUndefined();
     expect(watch.entitlements?.['com.apple.security.application-groups']).toBeUndefined();
     expect(shared).not.toContain('UserDefaults');
-    expect(widget).toContain('Text("Quick capture")');
+    expect(widget).toContain('Text("Talk to Verity")');
   });
 });

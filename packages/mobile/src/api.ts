@@ -3,7 +3,16 @@ import {
   projectEgressRequestSchema,
   type ProjectEgressPolicy,
 } from './projectEgress.js';
-import { storageReclamationActionSchema, type StorageReclamationAction } from '@verity/events';
+import {
+  assistantConversationSchema,
+  assistantDeliverySchema,
+  storageReclamationActionSchema,
+  type AssistantAnswerRequest,
+  type AssistantConversation,
+  type AssistantDelivery,
+  type AssistantMessageRequest,
+  type StorageReclamationAction,
+} from '@verity/events';
 import { buildDiagnosticResponseSchema, systemLogResponseSchema } from './logs.js';
 import {
   auditHealthSchema,
@@ -73,7 +82,9 @@ export interface TransportRequestInit extends RequestInit {
 
 function readTransportLane(path: string): TransportLane {
   const pathname = path.split('?')[0]!;
-  return /^\/(?:sessions|projects)$/u.test(pathname) ||
+  // A held conversation read must not occupy one of the few background slots.
+  return pathname === '/assistant/conversation' ||
+    /^\/(?:sessions|projects)$/u.test(pathname) ||
     /^\/sessions\/[^/]+(?:\/(?:events|activity|history\/v1))?$/u.test(pathname)
     ? 'interactive'
     : 'background';
@@ -6577,6 +6588,45 @@ export class VerityClient {
         ),
       })
       .parse(await res.json());
+  }
+
+  /** The conversation with Verity as phone and Watch show it (docs/assistant.md). A
+   * member who is not an administrator gets a 403 {@link VerityApiError}. */
+  async assistantConversation(
+    options: { after?: number; waitMs?: number; signal?: AbortSignal } = {},
+  ): Promise<AssistantConversation> {
+    // With both, the server holds the read until the conversation moves past `after`.
+    const query =
+      options.after !== undefined && options.waitMs !== undefined
+        ? `?after=${String(options.after)}&waitMs=${String(options.waitMs)}`
+        : '';
+    const res = await this.request(`/assistant/conversation${query}`, {
+      method: 'GET',
+      ...(options.signal ? { signal: options.signal } : {}),
+    });
+    return assistantConversationSchema.parse(await res.json());
+  }
+
+  /** Sends what the user said or typed. Replaying a `requestId` never sends twice:
+   * the reply then says `delivered: false`. */
+  async sendAssistantMessage(body: AssistantMessageRequest): Promise<AssistantDelivery> {
+    const res = await this.request('/assistant/conversation/messages', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    return assistantDeliverySchema.parse(await res.json());
+  }
+
+  /** Answers the open question. A question already answered elsewhere or replaced
+   * is a 409 with code `answered` or `stale_question`. */
+  async answerAssistantQuestion(body: AssistantAnswerRequest): Promise<AssistantDelivery> {
+    const res = await this.request('/assistant/conversation/answers', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    return assistantDeliverySchema.parse(await res.json());
   }
 
   async projectAssistant(id: string, mode?: 'off' | 'tasks' | 'delegate') {

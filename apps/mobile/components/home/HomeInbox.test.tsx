@@ -10,7 +10,7 @@ jest.mock('expo-crypto', () => {
   let n = 0;
   return { randomUUID: jest.fn(() => `reply-${String((n += 1))}`) };
 });
-jest.mock('../../lib/voiceShortcut', () => ({ dispatchTaskVoiceShortcut: jest.fn() }));
+jest.mock('../../lib/voiceShortcut', () => ({ dispatchVerityShortcut: jest.fn() }));
 const mockCapture = { enabled: true, scope: 'account' as string | null };
 jest.mock('../../lib/taskPreferences', () => ({
   useTaskPreferences: () => ({ enabled: mockCapture.enabled }),
@@ -23,7 +23,7 @@ import { Alert } from 'react-native';
 import { router } from 'expo-router';
 import { randomUUID } from 'expo-crypto';
 
-import { dispatchTaskVoiceShortcut } from '../../lib/voiceShortcut';
+import { dispatchVerityShortcut } from '../../lib/voiceShortcut';
 import { HomeInbox, RESUME_PROMPT, replyFor } from './HomeInbox';
 
 const ZERO_USAGE = {
@@ -233,10 +233,10 @@ it('opens a project and hands repair to the overview', async () => {
   expect(router.push).toHaveBeenCalledWith({ pathname: '/project/[id]', params: { id: 'broken' } });
 });
 
-it('sends "Tell Verity" to quick capture with the assistant preselected', async () => {
+it('opens Verity from "Tell Verity"', async () => {
   await renderInbox([]);
   fireEvent.press(await screen.findByRole('button', { name: 'Tell Verity' }));
-  expect(dispatchTaskVoiceShortcut).toHaveBeenCalledWith({ target: 'assistant' });
+  expect(dispatchVerityShortcut).toHaveBeenCalledWith();
 });
 
 it('maps every network answer to the push-reply route it reuses', () => {

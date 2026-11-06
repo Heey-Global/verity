@@ -24,7 +24,7 @@ import { Button, Card, CardHead, StatusTag, Text } from '../ui';
 import { tint } from '../ui/tint';
 import { useTaskPreferences } from '../../lib/taskPreferences';
 import { taskAccountScope } from '../../lib/tasksStore';
-import { dispatchTaskVoiceShortcut } from '../../lib/voiceShortcut';
+import { dispatchVerityShortcut } from '../../lib/voiceShortcut';
 
 const MARK = require('../../assets/brand/verity-v-mark.png') as number;
 // The mark's artwork is wider than tall.
@@ -383,8 +383,8 @@ export function VerityHeader({
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="Tell Verity"
-          accessibilityHint="Records a note for Verity: an idea, a mail or an appointment"
-          onPress={() => dispatchTaskVoiceShortcut({ target: 'assistant' })}
+          accessibilityHint="Opens Verity to listen: ask her or tell her an idea, a mail or an appointment"
+          onPress={() => dispatchVerityShortcut()}
           style={({ pressed }) => [styles.capture, pressed ? styles.capturePressed : null]}
         >
           <Text variant="body" tone="faint" style={styles.flex}>

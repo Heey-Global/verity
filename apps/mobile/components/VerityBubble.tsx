@@ -1,17 +1,16 @@
 import { refreshTaskContext, startTaskContext, useTaskContext } from '../lib/sharedTaskContext';
-import { Icon } from './Icon';
-import { bubbleRestingPlace, projectsByRecentCapture, taskContext } from '@verity/mobile';
+import { bubbleRestingPlace, taskContext } from '@verity/mobile';
 import * as Haptics from 'expo-haptics';
-import { router, useGlobalSearchParams, usePathname } from 'expo-router';
+import { useGlobalSearchParams, usePathname } from 'expo-router';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Alert,
   Animated,
   AppState,
   Keyboard,
   PanResponder,
   Platform,
   Pressable,
+  Image,
   Text,
   useWindowDimensions,
   View,
@@ -23,34 +22,36 @@ import { subscribeAuthToken } from '../lib/authToken';
 import { subscribeBrowserSession } from '../lib/browserSession';
 import { subscribeMeeting } from '../lib/liveMeetingSession';
 import { subscribeFollowedRemoteMeeting } from '../lib/liveMeetingSync';
-import {
-  taskAccountScope,
-  refreshTasks,
-  removeTask,
-  startTasksStore,
-  useTasks,
-} from '../lib/tasksStore';
+import { taskAccountScope, refreshTasks, startTasksStore, useTasks } from '../lib/tasksStore';
 import { saveTaskPreferences, useTaskPreferences } from '../lib/taskPreferences';
-import { subscribeTaskVoiceShortcut } from '../lib/voiceShortcut';
+import { subscribeVerityShortcut } from '../lib/voiceShortcut';
+import { useVerity } from '../lib/verityConversation';
 import { subscribeTasksPanel } from '../lib/taskPanelEvents';
-import { QuickCaptureCard } from './QuickCaptureCard';
-import { QuickCaptureIntro } from './QuickCaptureIntro';
-import { startWatchInbox, syncWatchProjects } from '../lib/watchCapture';
+import { VerityPanel } from './VerityPanel';
+import { startWatchInbox } from '../lib/watchCapture';
 import { TasksPanel } from './TasksPanel';
 import { tint } from './ui/tint';
 import { useTaskCaptureGesture } from '../hooks/useTaskCaptureGesture';
 import { taskCaptureGlyphOffset } from '../lib/taskCaptureMotion';
+
+const MARK = require('../assets/brand/verity-v-mark.png') as number;
+const MARK_RATIO = 240 / 168;
 
 /** Bubble diameter; half of it sits outside the screen edge. */
 const BUBBLE = 60;
 /** Extra touch area on the visible side, so the target is a full 52pt. */
 const EXTEND = 22;
 
-export function QuickCaptureBubble() {
+/**
+ * The V: the one way to reach Verity from any screen (docs/assistant.md). A tap
+ * opens her panel listening, a hold opens it for typing, a drag docks it on the
+ * other edge. A badge shows when she waits for an answer or an approval.
+ */
+export function VerityBubble() {
   useEffect(
     () =>
       subscribeTasksPanel(() => {
-        setPanel(true);
+        setTasksOpen(true);
         void refreshTasks().catch(() => undefined);
       }),
     [],
@@ -67,34 +68,22 @@ export function QuickCaptureBubble() {
   const [meeting, setMeeting] = useState(false);
   const [remoteMeeting, setRemoteMeeting] = useState(false);
   const [dragging, setDragging] = useState(false);
-  const [capture, setCapture] = useState(false);
-  const [captureToAssistant, setCaptureToAssistant] = useState(false);
-  const [intro, setIntro] = useState(false);
-  const [panel, setPanel] = useState(false);
+  /** Verity's panel and how it opened; null while minimised. */
+  const [verity, setVerity] = useState<'voice' | 'text' | null>(null);
+  const [tasksOpen, setTasksOpen] = useState(false);
   const gesture = useTaskCaptureGesture(
-    () => (preferences.introSeen || !preferences.loaded ? setCapture(true) : setIntro(true)),
-    () => setPanel(true),
+    () => setVerity('voice'),
+    () => setVerity('text'),
   );
-  const [saved, setSaved] = useState<{
-    id: string;
-    label: string;
-    kind: 'task' | 'assistant';
-  } | null>(null);
+  const conversation = useVerity(false);
   const position = useRef(new Animated.ValueXY()).current;
   const origin = useRef({ x: 0, y: 0 });
   const context = taskContext(pathname, params, sessions);
-  const recentProjects = projectsByRecentCapture(projects, tasks);
-  // Only what the operator captured counts: the agent's own steps live in
-  // their own section of the panel and must not nag from the badge.
-  const count = tasks.filter(
-    (task) =>
-      task.origin !== 'agent' &&
-      (task.status === 'open' || task.status === 'in_progress') &&
-      (context.sessionId
-        ? task.sessionId === context.sessionId ||
-          (task.projectId === context.projectId && task.sessionId === null)
-        : task.projectId === context.projectId),
-  ).length;
+  // What waits for the user: her open question, approvals, and words not sent yet.
+  const count =
+    (conversation.conversation?.question ? 1 : 0) +
+    (conversation.conversation?.approvals.length ?? 0) +
+    conversation.outbox.filter((entry) => entry.held === true).length;
   const top = insets.top + 52;
   const bottom = height - insets.bottom - 100;
   useEffect(() => {
@@ -188,29 +177,16 @@ export function QuickCaptureBubble() {
     ],
   );
   useEffect(() => startTasksStore(), []);
-  // Apple Watch captures land in the same queue once the store is running.
+  // The Apple Watch talks to the same Verity conversation through this phone.
   useEffect(() => startWatchInbox(), []);
-  // The watch picker offers the same projects, in the same order, as quick capture.
-  const accountScope = taskAccountScope();
-  useEffect(
-    () =>
-      syncWatchProjects(
-        accountScope,
-        projectsScope === accountScope ? projects : null,
-        tasks,
-        preferences.projectId,
-      ),
-    [accountScope, projectsScope, projects, tasks, preferences.projectId],
-  );
   useEffect(() => startTaskContext(), []);
   useEffect(() => {
-    if (capture || panel) void refreshTaskContext().catch(() => undefined);
-  }, [capture, panel]);
+    if (verity !== null || tasksOpen) void refreshTaskContext().catch(() => undefined);
+  }, [verity, tasksOpen]);
   useEffect(() => {
     const reset = () => {
-      setCapture(false);
-      setPanel(false);
-      setSaved(null);
+      setVerity(null);
+      setTasksOpen(false);
     };
 
     const app = AppState.addEventListener('change', (state) => {
@@ -245,16 +221,11 @@ export function QuickCaptureBubble() {
       hide.remove();
     };
   }, []);
-  useEffect(() => {
-    if (!saved) return;
-    const timer = setTimeout(() => setSaved(null), 4000);
-    return () => clearTimeout(timer);
-  }, [saved]);
   useEffect(
     () =>
-      subscribeTaskVoiceShortcut((request) => {
+      subscribeVerityShortcut((request) => {
         if (
-          capture ||
+          verity !== null ||
           taskAccountScope() === null ||
           meeting ||
           remoteMeeting ||
@@ -262,12 +233,10 @@ export function QuickCaptureBubble() {
           pathname.includes('unlock-device')
         )
           return;
-        setPanel(false);
-        setIntro(false);
-        setCaptureToAssistant(request.target === 'assistant');
-        setCapture(true);
+        setTasksOpen(false);
+        setVerity(request.mode ?? 'voice');
       }),
-    [capture, meeting, remoteMeeting, pathname],
+    [verity, meeting, remoteMeeting, pathname],
   );
   const visible =
     preferences.enabled &&
@@ -275,9 +244,8 @@ export function QuickCaptureBubble() {
     !keyboard &&
     !meeting &&
     !remoteMeeting &&
-    !capture &&
-    !intro &&
-    !panel &&
+    verity === null &&
+    !tasksOpen &&
     !pathname.startsWith('/onboarding') &&
     !pathname.startsWith('/search') &&
     !pathname.includes('unlock-device');
@@ -308,14 +276,8 @@ export function QuickCaptureBubble() {
               rather than a button; it only comes forward while being dragged. */}
           <Pressable
             accessibilityRole="button"
-            accessibilityLabel={
-              count > 0 ? `Capture task, ${String(count)} open tasks` : 'Capture task'
-            }
-            accessibilityHint={
-              preferences.introSeen
-                ? 'Double tap to record a task; long press to open the task list'
-                : 'Double tap to learn how task capture works; long press to open the task list'
-            }
+            accessibilityLabel={count > 0 ? `Verity, ${String(count)} waiting for you` : 'Verity'}
+            accessibilityHint="Double tap to talk to Verity; long press to type instead"
             onPressIn={gesture.onPressIn}
             onPress={gesture.onPress}
             onLongPress={gesture.onLongPress}
@@ -352,7 +314,11 @@ export function QuickCaptureBubble() {
                   ],
                 }}
               >
-                <Icon name="mic" size={24} color={theme.colors.action} />
+                <Image
+                  source={MARK}
+                  accessibilityIgnoresInvertColors
+                  style={{ width: 26, height: 26 / MARK_RATIO }}
+                />
               </Animated.View>
             </View>
             {count > 0 ? (
@@ -386,84 +352,22 @@ export function QuickCaptureBubble() {
           </Pressable>
         </Animated.View>
       ) : null}
-      {intro ? (
-        <QuickCaptureIntro
-          onClose={() => {
-            setIntro(false);
-            void saveTaskPreferences({ introSeen: true });
-          }}
-          onStart={() => {
-            setIntro(false);
-            void saveTaskPreferences({ introSeen: true });
-            setCapture(true);
-          }}
-        />
+      {verity !== null ? (
+        <VerityPanel mode={verity} projectId={context.projectId} onClose={() => setVerity(null)} />
       ) : null}
-      {capture ? (
-        <QuickCaptureCard
-          context={context}
-          projects={recentProjects}
-          preferAssistant={captureToAssistant}
-          onClose={() => {
-            setCapture(false);
-            setCaptureToAssistant(false);
-          }}
-          onSaved={(id, label, kind = 'task') => setSaved({ id, label, kind })}
-        />
-      ) : null}
-      {panel ? (
+      {tasksOpen ? (
         <TasksPanel
           context={context}
           projects={projects}
           sessions={sessions}
           side={preferences.side}
           y={origin.current.y}
-          onClose={() => setPanel(false)}
+          onClose={() => setTasksOpen(false)}
           onCapture={() => {
-            setPanel(false);
-            setCapture(true);
+            setTasksOpen(false);
+            setVerity('text');
           }}
         />
-      ) : null}
-      {saved ? (
-        <View
-          style={{
-            position: 'absolute',
-            bottom: 50,
-            alignSelf: 'center',
-            flexDirection: 'row',
-            gap: 16,
-            padding: 16,
-            borderRadius: 18,
-            backgroundColor: theme.colors.surface,
-          }}
-        >
-          <Text style={{ color: theme.colors.text }}>
-            {saved.kind === 'assistant' ? 'Sent' : 'Saved'} · {saved.label}
-          </Text>
-          <Pressable
-            onPress={() => {
-              // A message cannot be unsent; offer the conversation instead.
-              if (saved.kind === 'assistant') {
-                setSaved(null);
-                router.push(`/session/${saved.id}`);
-                return;
-              }
-              void removeTask(saved.id)
-                .then(() => setSaved(null))
-                .catch((error) =>
-                  Alert.alert(
-                    'Could not undo save',
-                    error instanceof Error ? error.message : 'Try again',
-                  ),
-                );
-            }}
-          >
-            <Text style={{ color: theme.colors.action }}>
-              {saved.kind === 'assistant' ? 'Open' : 'Undo'}
-            </Text>
-          </Pressable>
-        </View>
       ) : null}
     </>
   );
