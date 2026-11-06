@@ -1557,8 +1557,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         ? await deps.eventStore.repairs.attemptBoundary(dispatchId)
         : Number(receipt.prompt_seq);
     if (boundary === undefined || receipt?.state === 'reserved') return false;
-    const events = await deps.eventStore.listRecentSessionProjectionEvents(sessionId, 20);
-    return repairTurnTerminated(events.filter((row) => row.seq > boundary));
+    const latest = await deps.eventStore.latestSessionTurnControlEvent(sessionId, boundary);
+    return repairTurnTerminated(latest ? [latest] : []);
   };
   const reconcileSessionRepairs = async (projectId: string) => {
     for (const incident of await deps.eventStore.repairs.incidents(projectId)) {
@@ -1627,22 +1627,44 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           // the session is about to go with its project, and a delete that
           // fails leaves the PR state for the next poll to pick up.
           if (sessionsBeingReaped.has(sessionId)) return;
-          const latest = await sessionPrStatus(session).catch(() => null);
+          const currentSession = await deps.eventStore.getSession(sessionId);
+          if (!currentSession || currentSession.projectId !== session.projectId) return;
+          const latest = await sessionPrStatus(currentSession).catch(() => null);
           if (latest === null || !repair.applies(latest)) return;
           const initiatedBy = await deps.eventStore.latestPromptInitiator(sessionId);
           if (
-            session.planning === 'active' ||
+            currentSession.planning === 'active' ||
             (session.projectId !== null &&
               !(await canExecuteAs(initiatedBy?.userId, session.projectId)))
-          )
+          ) {
+            app.log.debug(
+              {
+                sessionId,
+                pullRequest: latest.number,
+                reason: currentSession.planning === 'active' ? 'planning' : 'execution_permission',
+              },
+              'automatic PR repair deferred',
+            );
             return;
+          }
           if (session.projectId !== null && latest.phase === 'open' && latest.headSha) {
             const origin = await deps.eventStore.repairs.registerSessionOrigin(
               session.projectId,
               `pr:${latest.number}`,
               sessionId,
             );
-            if (origin !== sessionId) return;
+            if (origin !== sessionId) {
+              app.log.debug(
+                {
+                  sessionId,
+                  pullRequest: latest.number,
+                  originatingSessionId: origin,
+                  reason: 'different_origin',
+                },
+                'automatic PR repair deferred',
+              );
+              return;
+            }
             await reconcileSessionRepairs(session.projectId);
           }
           marker = `${repair.id}:${repair.key(sessionId, latest)}`;
@@ -1669,7 +1691,33 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
               sessionId,
               marker,
             );
-            if (!claim?.dispatch_id) return;
+            if (!claim?.dispatch_id) {
+              const budgetUsed = await deps.eventStore.repairs.budgetUsed(
+                session.projectId,
+                `pr:${latest.number}`,
+              );
+              const incidents = await deps.eventStore.repairs.incidents(session.projectId);
+              const observed = incidents.find((row) => row.id === incident.id);
+              const owner = incidents.find((row) => row.owner_session_id !== null);
+              app.log.debug(
+                {
+                  sessionId,
+                  pullRequest: latest.number,
+                  incidentId: incident.id,
+                  incidentState: observed?.state,
+                  owningSessionId: owner?.owner_session_id,
+                  budgetUsed,
+                  reason:
+                    budgetUsed >= 2
+                      ? 'attempt_limit'
+                      : owner
+                        ? 'project_repair_active'
+                        : 'claim_unavailable',
+                },
+                'automatic PR repair deferred',
+              );
+              return;
+            }
             dispatchId = claim.dispatch_id;
             ownsMarker = true;
             preparingRepairDispatches.add(dispatchId);
@@ -1710,7 +1758,11 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
                 .deleteSessionAutomationMarker(sessionId, marker)
                 .catch(() => undefined);
           }
-        } catch {
+        } catch (err) {
+          app.log.warn(
+            { err, sessionId, pullRequest: pr.number, repair: repair.id },
+            'automatic PR repair failed',
+          );
           // Uncertain admission keeps its durable claim and marker until reconciled.
           if (dispatchId && !dispatchAttempted)
             await deps.eventStore.repairs.cancelReservedDispatch(dispatchId);

@@ -5764,6 +5764,27 @@ export class EventStore implements EventSink {
     return events;
   }
 
+  /** Task updates must not hide the completion that releases a repair claim. */
+  async latestSessionTurnControlEvent(
+    sessionId: string,
+    afterSeq: number,
+  ): Promise<SequencedEvent | undefined> {
+    const row = await this.db
+      .selectFrom('events')
+      .select(['id', 'payload', 'created_at'])
+      .where('session_id', '=', sessionId)
+      .where('id', '>', afterSeq)
+      .where('type', 'in', ['status', 'prompt', 'interrupted'])
+      .orderBy('id', 'desc')
+      .limit(1)
+      .executeTakeFirst();
+    if (!row) return undefined;
+    const parsed = parseAgentEvent(row.payload);
+    if (!parsed.success)
+      throw new Error(`corrupt event payload in session ${sessionId}: ${parsed.error.message}`);
+    return { seq: Number(row.id), ts: row.created_at.getTime(), event: parsed.data };
+  }
+
   /**
    * Whether this session's log holds a `task` event ANYWHERE.
    *
