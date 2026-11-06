@@ -123,6 +123,41 @@ function drainNativeMeeting(meetingId: string): Promise<void> {
   return run;
 }
 
+function tentativeSpeakerState(
+  meeting: MeetingRecord,
+  event: Extract<STTEvent, { kind: 'speaker-tentative' }>,
+): Partial<MeetingRecord> {
+  const limit = (meeting.expectedParticipants ?? 4) > 4 ? 10 : 4;
+  const turns = event.turns.filter(
+    (turn) =>
+      Number.isInteger(turn.speaker) &&
+      turn.speaker >= 0 &&
+      turn.speaker < limit &&
+      Number.isFinite(turn.start) &&
+      Number.isFinite(turn.end) &&
+      turn.start >= 0 &&
+      turn.end > turn.start,
+  );
+  const current = turns.reduce<(typeof turns)[number] | undefined>(
+    (latest, turn) => (!latest || turn.end > latest.end ? turn : latest),
+    undefined,
+  );
+  const previousHorizon = meeting.speakerHorizon ?? -Infinity;
+  const horizon = Number.isFinite(event.through) ? event.through : previousHorizon;
+  // This arrives with every diarizer chunk. Redraw only when it changes what the
+  // transcript shows: different open turns, or the horizon reaching a waiting word.
+  const changed =
+    JSON.stringify(turns) !== JSON.stringify(meeting.tentativeSpeakerTurns ?? []) ||
+    (meeting.timedWords ?? []).some(
+      (word) => word.start >= previousHorizon && word.start < horizon,
+    );
+  return {
+    tentativeSpeakerTurns: turns,
+    ...(Number.isFinite(horizon) ? { speakerHorizon: horizon } : {}),
+    ...(current && changed ? { activeSpeaker: current.speaker, lastSpeakerAt: Date.now() } : {}),
+  };
+}
+
 function persistNativeEvent(envelope: MeetingJournalEnvelope): Promise<void> {
   const operation = nativeEventTail.then(async () => {
     const saved = await persistNativeMeetingEvent(envelope);
@@ -145,9 +180,7 @@ function persistNativeEvent(envelope: MeetingJournalEnvelope): Promise<void> {
       ...(event.kind === 'speaker'
         ? { activeSpeaker: event.speaker, lastSpeakerAt: Date.now() }
         : {}),
-      ...(event.kind === 'speaker-tentative'
-        ? { tentativeSpeakerTurns: event.turns, speakerHorizon: event.through }
-        : {}),
+      ...(event.kind === 'speaker-tentative' ? tentativeSpeakerState(active, event) : {}),
     };
     if (saved.terminal) {
       stopHeartbeat();
@@ -170,10 +203,14 @@ export function recoverNativeMeetings(): Promise<void> {
   if (!native?.journalMeetings || !native.readMeetingJournal || !native.acknowledgeMeetingJournal)
     return Promise.resolve();
   const run = (async () => {
+    let restored = false;
     const capture = await native.currentCapture?.();
     if (capture && active?.id !== capture.meetingId) {
       const meeting = await ownedMeeting(capture.meetingId);
       if (meeting) {
+        stopVoiceDetector();
+        resetSpeakerNameChecks();
+        restored = true;
         active = { ...meeting, state: 'active', endedAt: null };
         const saved = await nativeMeetingState(meeting.id);
         transcript = saved?.transcript ?? emptySTTTranscript;
@@ -197,6 +234,7 @@ export function recoverNativeMeetings(): Promise<void> {
       ) {
         active = { ...active, state: 'active', endedAt: null, captureStatus: status };
         await restoreNativeCapture(currentCapture.meetingId, status);
+        if (restored) startVoiceDetector(active.transcript);
       }
       publish();
     }
@@ -538,6 +576,30 @@ function stopVoiceDetector() {
   recordingServerUrl = null;
 }
 
+function startVoiceDetector(baseline?: string) {
+  stopVoiceDetector();
+  recordingServerUrl = getVerityBaseUrl();
+  voiceDetector = new VoiceMeetingCommandDetector((command) => {
+    const meeting = active;
+    const serverUrl = recordingServerUrl;
+    const generation = voiceGeneration;
+    if (meeting?.state === 'active')
+      voiceSendTail = voiceSendTail
+        .then(() => {
+          const stillWanted = () =>
+            voiceGeneration === generation &&
+            active?.id === meeting.id &&
+            active.state === 'active' &&
+            active.captureStatus === 'listening' &&
+            !ending;
+          if (!stillWanted()) return;
+          return sendVoiceRequest(meeting, command, serverUrl, stillWanted);
+        })
+        .catch(() => undefined);
+  });
+  if (baseline !== undefined) voiceDetector?.pause(baseline);
+}
+
 function failLocalSave(id: string, error: unknown) {
   if (active?.id !== id) return;
   const wasCapturing = active.state === 'active';
@@ -689,37 +751,8 @@ function onEvent(event: STTEvent) {
     return;
   }
   if (event.kind === 'speaker-tentative') {
-    const limit = (active.expectedParticipants ?? 4) > 4 ? 10 : 4;
-    const turns = event.turns.filter(
-      (turn) =>
-        Number.isInteger(turn.speaker) &&
-        turn.speaker >= 0 &&
-        turn.speaker < limit &&
-        Number.isFinite(turn.start) &&
-        Number.isFinite(turn.end) &&
-        turn.start >= 0 &&
-        turn.end > turn.start,
-    );
-    const current = turns.reduce<(typeof turns)[number] | undefined>(
-      (latest, turn) => (!latest || turn.end > latest.end ? turn : latest),
-      undefined,
-    );
-    const previousHorizon = active.speakerHorizon ?? -Infinity;
-    const horizon = Number.isFinite(event.through) ? event.through : previousHorizon;
-    // This arrives with every diarizer chunk. Redraw only when it changes what the
-    // transcript shows: different open turns, or the horizon reaching a waiting word.
-    const changed =
-      JSON.stringify(turns) !== JSON.stringify(active.tentativeSpeakerTurns ?? []) ||
-      (active.timedWords ?? []).some(
-        (word) => word.start >= previousHorizon && word.start < horizon,
-      );
-    active = {
-      ...active,
-      tentativeSpeakerTurns: turns,
-      ...(Number.isFinite(horizon) ? { speakerHorizon: horizon } : {}),
-      ...(current && changed ? { activeSpeaker: current.speaker, lastSpeakerAt: Date.now() } : {}),
-    };
-    if (changed) publish();
+    active = { ...active, ...tentativeSpeakerState(active, event) };
+    publish();
     return;
   }
   if (event.kind === 'words') {
@@ -906,26 +939,7 @@ async function startMeetingUnlocked(
   active = meeting;
   resetSpeakerNameChecks();
   transcript = emptySTTTranscript;
-  stopVoiceDetector();
-  recordingServerUrl = getVerityBaseUrl();
-  voiceDetector = new VoiceMeetingCommandDetector((command) => {
-    const meeting = active;
-    const serverUrl = recordingServerUrl;
-    const generation = voiceGeneration;
-    if (meeting?.state === 'active')
-      voiceSendTail = voiceSendTail
-        .then(() => {
-          const stillWanted = () =>
-            voiceGeneration === generation &&
-            active?.id === meeting.id &&
-            active.state === 'active' &&
-            active.captureStatus === 'listening' &&
-            !ending;
-          if (!stillWanted()) return;
-          return sendVoiceRequest(meeting, command, serverUrl, stillWanted);
-        })
-        .catch(() => undefined);
-  });
+  startVoiceDetector();
   saveError = null;
   stopHeartbeat();
   subscription?.remove();

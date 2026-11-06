@@ -19,6 +19,16 @@ import {
 } from './liveMeetingSession';
 import { waitFor } from '@testing-library/react-native';
 
+const mockObserve = jest.fn();
+const mockPause = jest.fn();
+jest.mock('./liveMeetingVoice', () => ({
+  VoiceMeetingCommandDetector: jest.fn().mockImplementation(() => ({
+    observe: mockObserve,
+    pause: mockPause,
+    stop: jest.fn(),
+  })),
+}));
+
 jest.mock('./client', () => ({
   getActiveMeetingServerId: () => 'server-1',
   getVerityBaseUrl: () => 'https://example.test',
@@ -325,5 +335,63 @@ it('keeps native capture and its journal when the SQLite mirror is temporarily u
     state: 'listening',
   });
   await waitFor(() => expect(currentMeeting()?.transcript).toBe('Retained while locked'));
+  await endMeeting();
+});
+
+it('updates the current speaker from validated journaled tentative turns', async () => {
+  const meeting = await startMeeting('tentative-journal', 'apple-speech');
+  mockDeliver({
+    journalMeetingId: meeting.id,
+    journalSequence: 1,
+    kind: 'speaker-tentative',
+    through: 8,
+    turns: [
+      { speaker: 1, start: 1, end: 3 },
+      { speaker: 2, start: 3, end: 7 },
+      { speaker: 99, start: 7, end: 8 },
+    ],
+  });
+  await waitFor(() => expect(currentMeeting()?.activeSpeaker).toBe(2));
+  expect(currentMeeting()?.tentativeSpeakerTurns).toHaveLength(2);
+  expect(currentMeeting()?.lastSpeakerAt).toEqual(expect.any(Number));
+  await endMeeting();
+});
+
+it('restores command detection after replay without dispatching historical commands', async () => {
+  const meeting = await createMeeting('restore-assistants', 'apple-speech');
+  await setMeetingState(meeting.id, 'interrupted');
+  jest
+    .mocked(liveMeetingSTT!.currentCapture!)
+    .mockResolvedValue({ meetingId: meeting.id, state: 'listening' });
+  jest.mocked(liveMeetingSTT!.journalMeetings!).mockResolvedValueOnce([{ meetingId: meeting.id }]);
+  mockJournal.push({
+    meetingId: meeting.id,
+    sequence: 1,
+    event: {
+      kind: 'segment',
+      text: 'Verity, historical request.',
+      final: true,
+      start: 0,
+      end: 2,
+    },
+  });
+  mockPause.mockClear();
+  mockObserve.mockClear();
+  await recoverNativeMeetings();
+  expect(mockPause).toHaveBeenCalledWith('Verity, historical request.');
+  expect(mockObserve).not.toHaveBeenCalled();
+  mockDeliver({
+    journalMeetingId: meeting.id,
+    journalSequence: 2,
+    kind: 'segment',
+    text: 'Verity, new request.',
+    final: true,
+    start: 2,
+    end: 4,
+  });
+  await waitFor(() =>
+    expect(mockObserve).toHaveBeenCalledWith(expect.stringContaining('new request'), true),
+  );
+  jest.mocked(liveMeetingSTT!.currentCapture!).mockResolvedValue(null);
   await endMeeting();
 });
