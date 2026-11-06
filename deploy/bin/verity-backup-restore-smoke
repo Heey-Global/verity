@@ -26,8 +26,9 @@ cleanup() {
   local status=$?
   trap - EXIT
   # Never print the private input or installer output, even on an assertion failure.
-  # Stop a pending preparation and the docker client it is running, so neither
-  # creates a container or volume after the removals below.
+  # Stop a pending preparation and the docker client it is running before the
+  # removals below. A request the daemon already accepted can still complete;
+  # that only matters until the disposable hosted runner is discarded.
   local pid
   for pid in "${preparing[@]}"; do
     pkill -TERM -P "$pid" 2>/dev/null || true
