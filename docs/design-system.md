@@ -178,6 +178,11 @@ Disabled is always 40 % opacity; pressed is always a slight darkening.
     title never wraps to make room. The trailing side takes at most 45 % of the row; a
     status longer than that truncates, so the title is never squeezed. The chevron `›`
     appears only when the row navigates.
+  - **Answers (optional):** a row that waits on a decision the operator can make in place
+    (a question's options, a repair) shows those answers as compact buttons in a strip
+    under it, aligned with the title, the first one primary. The strip sits outside the
+    row's pressable area, so VoiceOver reaches each button; the row itself still opens
+    its subject. Rows without such a decision never carry one.
 - States: default, pressed (slightly darker surface), disabled (40 %), selected (`action`
   border with glow).
 - A row that opens something may keep its secondary actions (rename, favorite, delete)

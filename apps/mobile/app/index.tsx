@@ -1174,7 +1174,6 @@ function SessionList({ client }: { client: VerityClient }) {
           if (deleted && selectedId === sessionId) setSelectedId(null);
           void refresh({ silent: true });
         }}
-        selectedSessionId={selectedId}
       />
     ) : null;
   const sidebar = newDesign ? (
