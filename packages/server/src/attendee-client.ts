@@ -99,8 +99,16 @@ export class AttendeeClient {
   }
 
   async transcript(botId: string): Promise<AttendeeUtterance[]> {
-    return z
-      .array(attendeeUtteranceSchema)
-      .parse(await this.request(`bots/${encodeURIComponent(botId)}/transcript`));
+    return (
+      z
+        .array(
+          attendeeUtteranceSchema.extend({
+            transcription: attendeeUtteranceSchema.shape.transcription.nullable(),
+          }),
+        )
+        .parse(await this.request(`bots/${encodeURIComponent(botId)}/transcript`))
+        // Pending segments must not suppress completed text in the same snapshot.
+        .filter((utterance): utterance is AttendeeUtterance => utterance.transcription !== null)
+    );
   }
 }
