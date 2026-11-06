@@ -272,6 +272,21 @@ title; a log list keeps them dense and scannable.
 - An action next to the chips (starting something new) is an icon button, not a labelled
   button, so the row fits a phone without scrolling.
 
+### 5.5b Usage ring
+
+- One quota window as a small ring (`UsageRing`): the arc is the share used, a short
+  notch across the ring marks where usage would sit now at an even pace, and the window's
+  name (`5h`, `W`) sits inside in `Caption`.
+- A meter is a state, never an action or brand moment: the arc is `textMuted` while there
+  is room, `text` from 90 % and `attention` once the window is spent. A spent window has
+  no pace left to keep and draws no notch.
+- The reset time stands beside the ring. A figure appears only from 90 % (`93%`) or as
+  `Limit` in `attention`; below that the ring and notch carry the reading.
+- A window a provider does not report is left out, not drawn empty. Provider marks are
+  monochrome in `text`.
+- The ring is decoration for the text beside it; the group around it carries the spoken
+  label with figure, reset and pace for every window.
+
 ### 5.6 Sheet
 
 - One bottom-sheet component for every overlay that slides up.
