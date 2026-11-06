@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.85.3](https://github.com/Heey-Global/verity/compare/mobile-v1.85.2...mobile-v1.85.3) (2026-11-06)
+
+
+### Bug Fixes
+
+* **egress:** repair automatic Staging host assessment ([#2329](https://github.com/Heey-Global/verity/issues/2329)) ([bbd8fe4](https://github.com/Heey-Global/verity/commit/bbd8fe44b3e02457e1c083670e0e643a1357bb1b))
+
 ## [1.85.2](https://github.com/Heey-Global/verity/compare/mobile-v1.85.1...mobile-v1.85.2) (2026-11-06)
 
 
