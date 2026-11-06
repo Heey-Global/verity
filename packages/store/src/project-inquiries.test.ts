@@ -67,6 +67,9 @@ it('keeps exact-scope approvals, reusable targets and revocation durable', async
   await inquiries.setGrant('source', 'target', false);
   expect((await inquiries.get('revoked'))?.status).toBe('blocked');
   expect(await inquiries.decide('revoked', 'target', true, null)).toBe(false);
+  await ctx.store.deleteSession('source');
+  expect(await inquiries.isTarget('target')).toBe(true);
+  expect(await inquiries.isReadOnlyTarget('target')).toBe(true);
 });
 
 it('pages both recovery queues beyond 100 rows without relying on delivery success', async () => {
@@ -129,4 +132,49 @@ it('applies target visibility before limiting pending approvals', async () => {
   const visible = await ctx.store.projectInquiries.list(undefined, true, ['target']);
   expect(visible.map((row) => row.id)).toEqual(['visible']);
   expect(await ctx.store.projectInquiries.list(undefined, true, [])).toEqual([]);
+});
+
+it('rejects exhausted admission and conflicting retries before provisioning target sessions', async () => {
+  for (const id of ['source', 'target']) {
+    await ctx.store.createProject({
+      id,
+      owner: 'team',
+      repo: id,
+      containerName: id,
+      state: 'active',
+    });
+    await ctx.store.createSession({
+      sessionId: id,
+      projectId: id,
+      worktree: `/${id}`,
+      model: 'test',
+    });
+  }
+  const inquiries = ctx.store.projectInquiries;
+  await inquiries.setGrant('source', 'target', true);
+  const input = {
+    id: '0',
+    sourceSessionId: 'source',
+    targetSessionId: 'target',
+    sourceProjectId: 'source',
+    targetProjectId: 'target',
+    title: 'Question',
+    body: 'Inspect',
+    kind: 'question' as const,
+    status: 'approved' as const,
+    userId: null,
+  };
+  let provisioned = 0;
+  const provision = async () => {
+    provisioned += 1;
+  };
+  for (let index = 0; index < 20; index += 1)
+    await inquiries.create({ ...input, id: String(index) }, provision);
+  expect(provisioned).toBe(20);
+  await expect(inquiries.create({ ...input, id: 'overflow' }, provision)).rejects.toThrow('Daily');
+  await expect(inquiries.create({ ...input, body: 'Different' }, provision)).rejects.toThrow(
+    'different request',
+  );
+  await inquiries.create(input, provision);
+  expect(provisioned).toBe(20);
 });

@@ -30,8 +30,11 @@ function harness() {
       bind: vi.fn(),
       activate: vi.fn(),
       get: vi.fn(async (id: string) => rows.get(id)),
-      create: vi.fn(async (input: ProjectInquiry) => {
-        if (!rows.has(input.id)) rows.set(input.id, input);
+      create: vi.fn(async (input: ProjectInquiry, provision?: () => Promise<void>) => {
+        if (!rows.has(input.id)) {
+          await provision?.();
+          rows.set(input.id, input);
+        }
         return rows.get(input.id)!;
       }),
       markQueued: vi.fn(async (id: string) => {
@@ -62,12 +65,12 @@ function harness() {
           .slice(0, 100),
       ),
     },
-  } as unknown as EventStore;
+  };
   const createSession = vi.fn(async (projectId: string, id: string) => {
     sessions.set(id, { projectId });
   });
   const service = createProjectInquiries({
-    store,
+    store: store as unknown as EventStore,
     authorized: async () => true,
     createSession,
     reply,
@@ -76,6 +79,7 @@ function harness() {
   });
   return {
     service,
+    store,
     rows,
     busy,
     sessions,
@@ -194,4 +198,15 @@ it('advances request recovery past 100 busy targets', async () => {
   expect(h.dispatch).toHaveBeenCalledTimes(before);
   await h.service.recover();
   expect(h.dispatch).toHaveBeenCalledTimes(before + 1);
+});
+
+it('does not provision a target when durable request admission is refused', async () => {
+  const h = harness();
+  vi.mocked(h.store.projectInquiries.create).mockRejectedValueOnce(
+    new Error('Daily project inquiry limit reached (20)'),
+  );
+  await expect(h.service.request('source', null, request)).rejects.toThrow('Daily');
+  expect(h.createSession).not.toHaveBeenCalled();
+  expect(h.store.projectInquiries.bind).not.toHaveBeenCalled();
+  expect(h.store.createSessionLink).not.toHaveBeenCalled();
 });

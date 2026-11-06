@@ -166,6 +166,7 @@ export class ProjectInquiryStore {
 
   async create(
     input: Omit<ProjectInquiry, 'createdAt' | 'answer' | 'decidedBy'>,
+    provision?: () => Promise<void>,
   ): Promise<ProjectInquiry> {
     return this.db.transaction().execute(async (tx) => {
       // Serialize the grant check, daily cap and insert across concurrent turns.
@@ -195,6 +196,8 @@ export class ProjectInquiryStore {
         )
       ).rows[0];
       if (Number(usage?.n) >= 20) throw new Error('Daily project inquiry limit reached (20)');
+      // Provision only after admission, while the project cap remains locked.
+      await provision?.();
       const result = await sql<Row>`insert into project_inquiries
         (id,source_session_id,target_session_id,source_project_id,target_project_id,title,body,kind,status,user_id)
         values(${input.id},${input.sourceSessionId},${input.targetSessionId},${input.sourceProjectId},

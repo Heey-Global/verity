@@ -114,20 +114,21 @@ export function createProjectInquiries(deps: ProjectInquiryDeps) {
       if (!(await allowed(candidate)))
         throw new Error('Target project is unavailable or not permitted');
       return serialized(`create:${sourceSessionId}:${request.targetProjectId}`, async () => {
-        const existing = await store.getSession(targetSessionId);
-        if (!existing)
-          await deps.createSession(
+        const inquiry = await store.projectInquiries.create(candidate, async () => {
+          const existing = await store.getSession(targetSessionId);
+          if (!existing)
+            await deps.createSession(
+              request.targetProjectId,
+              targetSessionId,
+              `Inquiry · ${request.title}`,
+            );
+          await store.projectInquiries.bind(
+            sourceSessionId,
             request.targetProjectId,
             targetSessionId,
-            `Inquiry · ${request.title}`,
           );
-        await store.projectInquiries.bind(
-          sourceSessionId,
-          request.targetProjectId,
-          targetSessionId,
-        );
-        await store.createSessionLink(sourceSessionId, targetSessionId);
-        const inquiry = await store.projectInquiries.create(candidate);
+          await store.createSessionLink(sourceSessionId, targetSessionId);
+        });
         await deliver(inquiry);
         return (await store.projectInquiries.get(inquiry.id))!;
       });

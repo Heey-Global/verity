@@ -5399,8 +5399,9 @@ migrations['0196_project_inquiries'] = {
       primary key(source_project_id,target_project_id),
       check(source_project_id <> target_project_id)
     )`.execute(db);
+    // Keep the target boundary after source deletion; only deleting the target removes it.
     await sql`create table project_inquiry_sessions (
-      source_session_id text not null references sessions(session_id) on delete cascade,
+      source_session_id text not null,
       target_project_id text not null references projects(id) on delete cascade,
       target_session_id text not null unique references sessions(session_id) on delete cascade,
       change_approved boolean not null default false,
