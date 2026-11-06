@@ -63,10 +63,15 @@ export function registerSessionListRoute(app: FastifyInstance, deps: SessionList
     // The shared load may serve several people at once, so each answer gets its
     // own copies carrying the requester's read mark and dismissed Home items.
     // A session this person never touched is unread-neutral and hides nothing.
-    const summaries = shared.map((summary) => {
+    const summaries = shared.map(({ planningPlan, ...summary }): SessionSummary => {
       const view = views.get(summary.sessionId);
       return {
         ...summary,
+        // The plan text can run to pages and this route is polled by every
+        // device; an overview only needs to know that a plan waits for approval.
+        ...(summary.planning === 'active' && planningPlan != null
+          ? { planningPresented: true as const }
+          : {}),
         lastSeenEventCount: view?.lastSeenEventCount ?? null,
         inboxDismissed: view?.inboxDismissed ?? [],
       };

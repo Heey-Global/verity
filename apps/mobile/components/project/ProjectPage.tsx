@@ -10,30 +10,27 @@ import {
   type VerityClient,
 } from '@verity/mobile';
 import { Stack, router } from 'expo-router';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
 import { ActivityIndicator, RefreshControl, ScrollView, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { CodeHostIcon } from '../CodeHostIcon';
-import { InboxFeedList, useInboxFeed, type InboxFeed } from '../home/HomeInbox';
+import { useInboxFeed } from '../home/HomeInbox';
 import { KnowledgeColumn } from '../knowledge/KnowledgeBrowser';
 import type { KnowledgeScope } from '../knowledge/knowledgeScope';
-import { Button, FilterChips, Group, IconButton, Row, SectionHeader, StatusTag, Text } from '../ui';
+import { Button, Group, IconButton, Row, SectionHeader, StatusTag, Text } from '../ui';
 import type { StatusIntent } from '../ui/Status';
 import { tint } from '../ui/tint';
 import { useProjectConnections, type ProjectConnections } from '../../lib/useProjectConnections';
 import { useProjectDetail } from '../../lib/useProjectDetail';
 import { ProjectTasksRow } from './ProjectTasksRow';
 import { ProjectWork } from './ProjectWork';
-import { ProjectSecurityCard } from '../vulnerability/ProjectSecurityCard';
-
-export type ProjectTab = 'overview' | 'work' | 'knowledge';
-
-const TABS: readonly { value: ProjectTab; label: string }[] = [
-  { value: 'overview', label: 'Overview' },
-  { value: 'work', label: 'Work' },
-  { value: 'knowledge', label: 'Knowledge' },
-];
+import {
+  packagesToUpdate,
+  ProjectSecurityRow,
+  useProjectSecurity,
+  type ProjectSecurity,
+} from '../vulnerability/ProjectSecurity';
 
 /** How many of the project's sessions have an open pull request. */
 function openPullRequests(sessions: readonly SessionSummary[]): number {
@@ -64,7 +61,7 @@ export function projectInboxItems(
   return (
     inboxItems({ sessions, projects: [project], now })
       .filter((item) => item.projectId === project.id)
-      // The Security card on this page lists the findings and offers the fix;
+      // The page's own Security row lists the findings and offers the fix;
       // Home's item only says how many and leads here.
       .filter((item) => !item.key.startsWith(`health:${project.id}:vulnerabilities:`))
       .map((item) => ({
@@ -75,13 +72,15 @@ export function projectInboxItems(
 }
 
 /**
- * A project's own page in the new design (Settings › This app): what waits for
- * the operator here and what the project holds, its sessions, and its knowledge.
- * The gear leads to the project settings.
+ * A project's own page in the new design (Settings › This app), one scrolling
+ * page: the project, its work — by default what needs the operator and what is
+ * running ({@link ProjectWork}) — and what it holds, its knowledge first. The
+ * gear leads to the project settings.
  *
  * `inline` draws the page inside the wide layout's left column, with its own
- * "Projects" back control; otherwise it is a stack screen and names itself in
- * the navigation bar.
+ * "Projects" back control, and opens the knowledge in that column; otherwise it
+ * is a stack screen that names itself in the navigation bar and pushes the
+ * knowledge as a screen of its own.
  */
 export function ProjectPage({
   client,
@@ -94,10 +93,10 @@ export function ProjectPage({
   onInboxSaved,
   reloadOn,
   selectedSessionId,
-  initialTab = 'overview',
 }: {
   client: VerityClient;
   projectId: string;
+  selectedSessionId?: string | null | undefined;
   inline?: boolean;
   onBack?: (() => void) | undefined;
   onOpenSession: (sessionId: string) => void;
@@ -112,14 +111,13 @@ export function ProjectPage({
   onInboxSaved?: (() => void) | undefined;
   /** A session was renamed, (un)favorited or deleted on this page. */
   onSessionChanged?: ((sessionId: string, deleted: boolean) => void) | undefined;
-  selectedSessionId?: string | null | undefined;
-  initialTab?: ProjectTab;
 }) {
   const { theme } = useUnistyles();
   const { detail, loading, error, load } = useProjectDetail(client, projectId);
   const connections = useProjectConnections(client, projectId);
   const refreshConnections = connections.refresh;
-  const [tab, setTab] = useState<ProjectTab>(initialTab);
+  const [knowledgeOpen, setKnowledgeOpen] = useState(false);
+  const security = useProjectSecurity(client, projectId, onOpenSession);
   const knowledgeScope = useMemo<KnowledgeScope>(
     () => ({ kind: 'project', projectId }),
     [projectId],
@@ -154,8 +152,8 @@ export function ProjectPage({
     },
     [hostReloads, reload, onSessionChanged],
   );
-  // Held by the page rather than the Overview tab: switching tabs must not drop
-  // an answer in flight or its reply id, or a second tap could send it twice.
+  // Held by the page rather than the work list: switching its filter must not
+  // drop an answer in flight or its reply id, or a second tap could send it twice.
   const now = useClock();
   const all = useMemo(
     () => (detail ? projectInboxItems(detail.project, detail.sessions, now) : []),
@@ -180,6 +178,10 @@ export function ProjectPage({
     () => router.push({ pathname: '/project/[id]/settings', params: { id: projectId } }),
     [projectId],
   );
+  const openKnowledge = useCallback(() => {
+    if (inline) setKnowledgeOpen(true);
+    else router.push({ pathname: '/project/[id]/knowledge', params: { id: projectId } });
+  }, [inline, projectId]);
   const name = detail?.project.repo ?? 'Project';
   const gear = (
     <IconButton icon="settings" accessibilityLabel="Project settings" onPress={openSettings} />
@@ -202,49 +204,48 @@ export function ProjectPage({
       );
   } else {
     body = (
-      <>
+      <ScrollView
+        style={styles.flex}
+        contentContainerStyle={styles.content}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} />}
+      >
         <ProjectHero project={detail.project} sessions={detail.sessions} />
-        <View style={styles.tabs}>
-          <FilterChips
-            options={TABS}
-            value={tab}
-            onChange={setTab}
-            accessibilityLabel="Project sections"
-            wrap
+        <ProjectWork
+          client={client}
+          projectId={projectId}
+          sessions={detail.sessions}
+          selectedSessionId={selectedSessionId}
+          feed={feed}
+          leadingRows={securityRows(security)}
+          onOpenSession={onOpenSession}
+          onChanged={sessionChanged}
+        />
+        <SectionHeader title="Content" variant="eyebrow" />
+        <ProjectContent
+          client={client}
+          detail={detail}
+          connections={connections}
+          security={security}
+          onOpenKnowledge={openKnowledge}
+        />
+      </ScrollView>
+    );
+  }
+
+  if (inline && knowledgeOpen) {
+    return (
+      <View style={styles.flex} testID="project-knowledge">
+        <View style={styles.topBar}>
+          <Button
+            label={name}
+            icon="chevron-left"
+            variant="text"
+            size="compact"
+            onPress={() => setKnowledgeOpen(false)}
           />
         </View>
-        {tab === 'knowledge' ? (
-          <View style={styles.flex} testID="project-knowledge">
-            <KnowledgeColumn key={projectId} client={client} scope={knowledgeScope} />
-          </View>
-        ) : (
-          <ScrollView
-            style={styles.flex}
-            contentContainerStyle={styles.content}
-            refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} />}
-          >
-            {tab === 'overview' ? (
-              <ProjectOverview
-                client={client}
-                onOpenSession={onOpenSession}
-                feed={feed}
-                detail={detail}
-                connections={connections}
-                selectedSessionId={selectedSessionId}
-              />
-            ) : (
-              <ProjectWork
-                client={client}
-                projectId={projectId}
-                sessions={detail.sessions}
-                selectedSessionId={selectedSessionId}
-                onOpenSession={onOpenSession}
-                onChanged={sessionChanged}
-              />
-            )}
-          </ScrollView>
-        )}
-      </>
+        <KnowledgeColumn key={projectId} client={client} scope={knowledgeScope} />
+      </View>
     );
   }
 
@@ -295,39 +296,10 @@ function ProjectHero({
   );
 }
 
-function ProjectOverview({
-  client,
-  onOpenSession,
-  feed,
-  detail,
-  connections,
-  selectedSessionId,
-}: {
-  client: VerityClient;
-  onOpenSession: (sessionId: string) => void;
-  feed: InboxFeed;
-  detail: ProjectDetail;
-  connections: ProjectConnections;
-  selectedSessionId?: string | null | undefined;
-}) {
-  return (
-    <>
-      <SectionHeader title="For you in this project" variant="eyebrow" flush />
-      {feed.items.length === 0 ? (
-        <Text variant="body" tone="muted" testID="project-for-you-empty">
-          Nothing here needs you.
-        </Text>
-      ) : null}
-      <InboxFeedList feed={feed} selectedSessionId={selectedSessionId} />
-      <ProjectSecurityCard
-        client={client}
-        projectId={detail.project.id}
-        onOpenSession={onOpenSession}
-      />
-      <SectionHeader title="Content" variant="eyebrow" />
-      <ProjectContent client={client} detail={detail} connections={connections} />
-    </>
-  );
+/** Severe findings wait at the top of "Needs you", with the fix one tap away. */
+function securityRows(security: ProjectSecurity | undefined): ReactElement[] {
+  if (!security || (security.severe === 0 && !security.status)) return [];
+  return [<ProjectSecurityRow key="security" security={security} />];
 }
 
 /** Repair asks for a decision; the sandbox settings explain it and offer it. */
@@ -347,17 +319,22 @@ function sandboxIntent(badge: ReturnType<typeof projectBadge>, project: ProjectR
 }
 
 /**
- * What the project holds, each row leading to the setting that configures it.
- * Only services the project uses appear; adding one is a project setting.
+ * What the project holds: its knowledge, its findings, and the services it uses,
+ * each row leading to where it is read or configured. Only services the project
+ * uses appear; adding one is a project setting.
  */
 function ProjectContent({
   client,
   detail,
   connections,
+  security,
+  onOpenKnowledge,
 }: {
   client: VerityClient;
   detail: ProjectDetail;
   connections: ProjectConnections;
+  security: ProjectSecurity | undefined;
+  onOpenKnowledge: () => void;
 }) {
   const { theme } = useUnistyles();
   const { project, settings, sessions } = detail;
@@ -375,9 +352,32 @@ function ProjectContent({
   const host = project.kind === 'github' || project.kind === 'forgejo' ? project.kind : null;
   const drive =
     driveFolderNames ?? (settings?.googleDriveFolderName ? [settings.googleDriveFolderName] : []);
+  const severe = security !== undefined && security.severe > 0;
   return (
     <Group>
+      <Row
+        leading={{ icon: 'book-open' }}
+        title="Knowledge"
+        subtitle="Wiki, decisions and sources"
+        navigates
+        onPress={onOpenKnowledge}
+      />
       <ProjectTasksRow client={client} projectId={id} />
+      {security !== undefined ? (
+        <Row
+          leading={{ icon: 'shield', ...(severe ? { intent: 'needsSetup' as const } : {}) }}
+          title="Security"
+          subtitle={packagesToUpdate(security.packages)}
+          trailing={
+            <StatusTag
+              intent={severe ? 'needsSetup' : 'optional'}
+              label={security.status ?? (severe ? 'Security' : 'Review')}
+            />
+          }
+          navigates
+          onPress={security.show}
+        />
+      ) : null}
       {host !== null ? (
         <Row
           leading={{
@@ -485,8 +485,8 @@ const styles = StyleSheet.create((theme) => ({
     flexDirection: 'row',
     alignItems: 'center',
     gap: theme.spacing.md,
-    paddingHorizontal: theme.spacing.lg,
     paddingTop: theme.spacing.md,
+    paddingBottom: theme.spacing.sm,
   },
   initial: {
     width: 48,
@@ -496,7 +496,6 @@ const styles = StyleSheet.create((theme) => ({
     justifyContent: 'center',
     backgroundColor: tint(theme.colors.action, 'fill'),
   },
-  tabs: { paddingHorizontal: theme.spacing.lg, paddingVertical: theme.spacing.md },
   content: {
     paddingHorizontal: theme.spacing.lg,
     paddingBottom: theme.spacing.xl,

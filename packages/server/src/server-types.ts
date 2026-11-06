@@ -282,6 +282,9 @@ export interface SessionSummary extends SessionRecord {
   /** Keys of this session's Home items the requesting person dismissed. Like
    *  `lastSeenEventCount`, filled in per person when the summary is delivered. */
   inboxDismissed?: string[];
+  /** Only on the session list, which leaves out `planningPlan`: present while
+   *  planning is active and a presented plan waits for approval. */
+  planningPresented?: true;
   /** Position within a manually ordered overview group; null means automatic. */
   sortOrder?: number | null;
   status: SessionStatus;

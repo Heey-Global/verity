@@ -1,3 +1,5 @@
+import { isVulnerabilityWorkspace } from './vulnerability-project.js';
+import { registerVulnerabilityFixRoute, buildVulnerabilityFixPrompt } from './vulnerability-fix.js';
 import { measureBranchReadStage, type BranchReadStage } from './branch-read-diagnostics.js';
 import { registerProjectContextRoutes } from './project-context-routes.js';
 import { registerUserContextRoutes } from './user-context-routes.js';
@@ -1394,6 +1396,13 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   registerVulnerabilityRoutes(app, {
     eventStore: deps.eventStore,
     service: vulnerabilityService,
+    fixPullRequest: (session) => sessionPrCache.get(session),
+    fixLiveState: (id) =>
+      conductor.pendingPermissions(id).length
+        ? 'needs_attention'
+        : conductor.isBusy(id)
+          ? 'in_progress'
+          : undefined,
     settingsChanged: () => {
       vulnerabilityScheduler.wake();
       void vulnerabilitySessions.rebuild();
@@ -5559,6 +5568,30 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     publicProject: (project) => presentProject(project, null, UNKNOWN_SANDBOX_UPDATE, null),
     defaultModel: DEFAULT_MODEL,
   });
+  registerVulnerabilityFixRoute(app, {
+    store: deps.eventStore,
+    spawn: sessionCreate.spawn,
+    pullRequest: (session) => sessionPrCache.get(session),
+    dispatch: async (sessionId, prompt, userId, displayPrompt, requestKey) => {
+      if (sessionsBeingReaped.has(sessionId)) throw new Error('Session is being deleted.');
+      const durableDispatchId = `vulnerability-fix:${sessionId}:${requestKey}`;
+      await deps.eventStore.reserveBackgroundDispatch(durableDispatchId, sessionId);
+      const result = await conductor.dispatchTurnWhenIdle(
+        sessionId,
+        prompt,
+        {},
+        {
+          displayPrompt,
+          durableDispatchId,
+          ...(userId ? { initiatedBy: { userId } } : {}),
+        },
+      );
+      if (!result.accepted)
+        throw Object.assign(new Error('The fix session is busy. Retry when it is idle.'), {
+          statusCode: 409,
+        });
+    },
+  });
   registerLiveMeetingIntakeRoutes(app, {
     store: deps.eventStore,
     meetings: attendeeMeetings,
@@ -5850,7 +5883,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         };
       }
       const body = parsedBody.data;
-      const prompt = stripRepeatedOperatorInstructions(body.prompt);
+      let prompt = stripRepeatedOperatorInstructions(body.prompt);
       if (prompt.trim().length === 0 && (body.attachments?.length ?? 0) === 0) {
         reply.code(400);
         return { error: 'a turn needs a prompt or at least one attachment' };
@@ -5897,6 +5930,23 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           };
         }
       }
+      let vulnerabilityDisplayPrompt: string | undefined;
+      if (body.vulnerabilityFix) {
+        if (!session?.projectId || !isVulnerabilityWorkspace(session))
+          return reply.code(409).send({ error: 'A Code session is required.' });
+        if (session.planning === 'active' || body.permissionMode === 'plan')
+          return reply
+            .code(409)
+            .send({ error: 'Leave planning before starting a vulnerability fix.' });
+        const fix = await buildVulnerabilityFixPrompt(
+          deps.eventStore,
+          session.projectId,
+          body.vulnerabilityFix,
+          id,
+        );
+        prompt = fix.prompt;
+        vulnerabilityDisplayPrompt = fix.displayPrompt;
+      }
       const opts: TurnOptions = {
         permissionMode: body.permissionMode,
         model: body.model,
@@ -5929,6 +5979,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         // Quick replies add their idempotency key; with neither, the turn keeps the
         // plain 3-arg dispatch.
         const dispatchOpts = {
+          ...(vulnerabilityDisplayPrompt ? { displayPrompt: vulnerabilityDisplayPrompt } : {}),
           ...(body.clientReplyId !== undefined ? { clientReplyId: body.clientReplyId } : {}),
           ...(body.queueBehindActiveTurn ? { queueBehindActiveTurn: true } : {}),
           ...(request.localUserId ? { initiatedBy: { userId: request.localUserId } } : {}),

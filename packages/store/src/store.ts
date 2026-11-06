@@ -4359,6 +4359,19 @@ export class EventStore implements EventSink {
 
   /** Accept a background dispatch, its prompt and recovery marker in one commit.
    * Cancellation races on the same receipt row; only the winner can run the backend. */
+  /** Reserve a server-authored dispatch for atomic prompt admission and replay. */
+  async reserveBackgroundDispatch(id: string, sessionId: string): Promise<void> {
+    await this.db
+      .insertInto('qa_dispatches')
+      .values({
+        id,
+        session_id: sessionId,
+        state: 'reserved',
+      })
+      .onConflict((oc) => oc.column('id').doNothing())
+      .execute();
+  }
+
   async admitBackgroundDispatch(
     id: string,
     sessionId: string,

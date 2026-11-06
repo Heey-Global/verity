@@ -4334,9 +4334,11 @@ export const SessionChat = memo(function SessionChat({
       <VulnerabilityFixSheet
         groups={mainFixGroups}
         onClose={() => setMainFixGroups(null)}
-        onFix={(prompt) => {
+        onFix={(findings, prompt) => {
           setMainFixGroups(null);
-          sendQuickReply(prompt);
+          void sendTurn(prompt, {
+            vulnerabilityFix: { findings },
+          });
         }}
       />
       {staticPreviewOpen && projectId ? (

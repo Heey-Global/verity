@@ -1678,7 +1678,17 @@ interface SessionDeletionsTable {
   cleanup_pending: Generated<boolean>;
 }
 
+interface VulnerabilityFixesTable {
+  project_id: string;
+  session_id: string;
+  finding_keys: string;
+  pending_keys: Generated<string>;
+  accepted: Generated<boolean>;
+  failed: Generated<boolean>;
+}
+
 export interface Database {
+  vulnerability_fixes: VulnerabilityFixesTable;
   session_deletions: SessionDeletionsTable;
   user_context: UserContextTable;
   user_view_state: UserViewStateTable;
