@@ -5042,6 +5042,24 @@ describe('Conductor.startSession', () => {
     expect(conductor.isDeletionTerminationConfirmed(sessionId)).toBe(true);
   });
 
+  it('deduplicates a durable vulnerability dispatch after recreating the conductor', async () => {
+    const fake = scriptedBackend({ sessionId: 'durable-fix', model: 'sonnet', text: 'done' });
+    const deps = { store: ctx.store, backend: fake.backend, worktreeExists: async () => true };
+    const conductor = new Conductor(deps);
+    const { sessionId } = await conductor.startSession({ worktree: '/wt/fix', prompt: 'start' });
+    await vi.waitFor(() => expect(conductor.isBusy(sessionId)).toBe(false));
+    const id = 'vulnerability-fix:' + sessionId + ':batch';
+    await ctx.store.reserveBackgroundDispatch(id, sessionId);
+    await conductor.dispatchTurnWhenIdle(sessionId, 'fix', {}, { durableDispatchId: id });
+    await vi.waitFor(() => expect(conductor.isBusy(sessionId)).toBe(false));
+    const calls = fake.calls.length;
+    const restarted = new Conductor(deps);
+    expect(
+      await restarted.dispatchTurnWhenIdle(sessionId, 'fix', {}, { durableDispatchId: id }),
+    ).toEqual({ accepted: true });
+    expect(fake.calls).toHaveLength(calls);
+  });
+
   it('admits QA after initial-session marker cleanup fails', async () => {
     const cleanup = vi
       .spyOn(ctx.store, 'clearRunningTurn')

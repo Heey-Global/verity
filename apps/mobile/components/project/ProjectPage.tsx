@@ -27,6 +27,7 @@ import { ProjectTasksRow } from './ProjectTasksRow';
 import { ProjectWork } from './ProjectWork';
 import {
   packagesToUpdate,
+  ProjectSecurityRow,
   useProjectSecurity,
   type ProjectSecurity,
 } from '../vulnerability/ProjectSecurity';
@@ -294,36 +295,8 @@ function ProjectHero({
 
 /** Severe findings wait at the top of "Needs you", with the fix one tap away. */
 function securityRows(security: ProjectSecurity | undefined): ReactElement[] {
-  if (security === undefined || security.severe === 0) return [];
-  return [
-    <Row
-      key="security"
-      title={packagesToUpdate(security.packages)}
-      subtitle={`Security · ${
-        security.severe === 1 ? '1 package' : `${String(security.severe)} packages`
-      } critical or high on main`}
-      leading={{ icon: 'shield', intent: 'needsSetup' }}
-      trailing={<StatusTag intent="needsSetup" label="Security" />}
-      navigates
-      onPress={security.show}
-      answers={
-        <>
-          <Button
-            label="Fix with agent"
-            size="compact"
-            loading={security.starting}
-            onPress={security.fix}
-          />
-          <Button
-            label="Show findings"
-            size="compact"
-            variant="secondary"
-            onPress={security.show}
-          />
-        </>
-      }
-    />,
-  ];
+  if (!security || (security.severe === 0 && !security.status)) return [];
+  return [<ProjectSecurityRow key="security" security={security} />];
 }
 
 /** Repair asks for a decision; the sandbox settings explain it and offer it. */
@@ -395,7 +368,7 @@ function ProjectContent({
           trailing={
             <StatusTag
               intent={severe ? 'needsSetup' : 'optional'}
-              label={severe ? 'Security' : 'Review'}
+              label={security.status ?? (severe ? 'Security' : 'Review')}
             />
           }
           navigates
