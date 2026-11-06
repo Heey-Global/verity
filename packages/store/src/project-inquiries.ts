@@ -7,7 +7,7 @@ export interface ProjectInquiryGrant {
   enabled: boolean;
   createdAt: string;
 }
-export type ProjectInquiryStatus =
+type ProjectInquiryStatus =
   'provisioning' | 'pending' | 'approved' | 'rejected' | 'queued' | 'answered' | 'blocked';
 export interface ProjectInquiry {
   id: string;
