@@ -23,7 +23,7 @@ function workTier(session: SessionSummary, overrides: SeenOverrides = new Map())
   return 4;
 }
 
-/** A project's sessions in Work order: by {@link workTier}, then latest activity first. */
+/** Work tiers, with a fixed order for active sessions and latest activity for the rest. */
 export function workOrder(
   sessions: readonly SessionSummary[],
   overrides: SeenOverrides = new Map(),
@@ -33,7 +33,10 @@ export function workOrder(
     .sort(
       (a, b) =>
         a.tier - b.tier ||
-        (b.session.lastActivityAt ?? 0) - (a.session.lastActivityAt ?? 0) ||
+        (a.tier === 1
+          ? (a.session.sortOrder ?? Infinity) - (b.session.sortOrder ?? Infinity) ||
+            a.session.sessionId.localeCompare(b.session.sessionId)
+          : (b.session.lastActivityAt ?? 0) - (a.session.lastActivityAt ?? 0)) ||
         a.index - b.index,
     )
     .map(({ session }) => session);
