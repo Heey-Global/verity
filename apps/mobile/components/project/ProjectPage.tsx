@@ -24,6 +24,7 @@ import { tint } from '../ui/tint';
 import { useProjectConnections, type ProjectConnections } from '../../lib/useProjectConnections';
 import { useProjectDetail } from '../../lib/useProjectDetail';
 import { ProjectWork } from './ProjectWork';
+import { ProjectSecurityCard } from '../vulnerability/ProjectSecurityCard';
 
 export type ProjectTab = 'overview' | 'work' | 'knowledge';
 
@@ -59,12 +60,17 @@ export function projectInboxItems(
   sessions: readonly SessionSummary[],
   now: number,
 ): InboxItem[] {
-  return inboxItems({ sessions, projects: [project], now })
-    .filter((item) => item.projectId === project.id)
-    .map((item) => ({
-      ...item,
-      actions: item.actions.filter((action) => action.kind !== 'open_project'),
-    }));
+  return (
+    inboxItems({ sessions, projects: [project], now })
+      .filter((item) => item.projectId === project.id)
+      // The Security card on this page lists the findings and offers the fix;
+      // Home's item only says how many and leads here.
+      .filter((item) => !item.key.startsWith(`health:${project.id}:vulnerabilities:`))
+      .map((item) => ({
+        ...item,
+        actions: item.actions.filter((action) => action.kind !== 'open_project'),
+      }))
+  );
 }
 
 /**
@@ -218,6 +224,8 @@ export function ProjectPage({
           >
             {tab === 'overview' ? (
               <ProjectOverview
+                client={client}
+                onOpenSession={onOpenSession}
                 feed={feed}
                 detail={detail}
                 connections={connections}
@@ -286,11 +294,15 @@ function ProjectHero({
 }
 
 function ProjectOverview({
+  client,
+  onOpenSession,
   feed,
   detail,
   connections,
   selectedSessionId,
 }: {
+  client: VerityClient;
+  onOpenSession: (sessionId: string) => void;
   feed: InboxFeed;
   detail: ProjectDetail;
   connections: ProjectConnections;
@@ -305,6 +317,11 @@ function ProjectOverview({
         </Text>
       ) : null}
       <InboxFeedList feed={feed} selectedSessionId={selectedSessionId} />
+      <ProjectSecurityCard
+        client={client}
+        projectId={detail.project.id}
+        onOpenSession={onOpenSession}
+      />
       <SectionHeader title="Content" variant="eyebrow" />
       <ProjectContent detail={detail} connections={connections} />
     </>
