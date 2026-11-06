@@ -222,7 +222,7 @@ final class LiveMeetingAudioBuffer: @unchecked Sendable {
         recovered.append(["id": segment.id, "text": "", "start": segment.start, "end": segment.end])
         continue
       }
-      let transcriber = SpeechTranscriber(locale: locale, transcriptionOptions: [.punctuation],
+      let transcriber = SpeechTranscriber(locale: locale, transcriptionOptions: [],
         reportingOptions: [], attributeOptions: [.audioTimeRange])
       guard await AssetInventory.status(forModules: [transcriber]) == .installed else {
         throw BufferError.unavailable("Download the meeting language in Apple Speech before recovering audio.")
