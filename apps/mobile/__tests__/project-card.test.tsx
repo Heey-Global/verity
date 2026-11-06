@@ -24,6 +24,7 @@ import {
 import { fireEvent, render, screen } from '@testing-library/react-native';
 
 import { ProjectCard, projectCardFacts, projectCardLine } from '../components/project/ProjectCard';
+import { projectGroups } from '../lib/projectGroups';
 import type { ProjectReorderController } from '../components/useProjectReorder';
 import type { SessionProjectGroup } from '../lib/projectGroups';
 
@@ -128,10 +129,27 @@ describe('project card facts', () => {
 
   it('names the project’s own problem as its health', () => {
     const facts = projectCardFacts(
-      group([], { status: { label: 'Needs repair', tone: 'danger' } }),
+      group([], { health: { label: 'Needs repair', tone: 'danger' } }),
       Date.now(),
     );
     expect(facts.health).toEqual({ label: 'Needs repair', intent: 'needsSetup' });
+  });
+
+  // The project page's Security card shows findings; a red tag on every card
+  // repeated them. The project's own problems still show.
+  it('leaves vulnerabilities to the project page but keeps a broken sandbox', () => {
+    const vulnerable = { ...project, vulnerabilitySummary: { count: 3, critical: 1, high: 2 } };
+    const [quiet] = projectGroups([vulnerable], [], new Map(), new Map(), null);
+    expect(quiet!.status?.label).toBe('3 vulnerable packages');
+    expect(projectCardFacts(quiet!, Date.now()).health).toBeUndefined();
+    const [broken] = projectGroups(
+      [{ ...vulnerable, state: 'failed', provisionError: 'Sandbox container stopped' }],
+      [],
+      new Map(),
+      new Map(),
+      null,
+    );
+    expect(projectCardFacts(broken!, Date.now()).health?.intent).toBe('needsSetup');
   });
 
   it('falls back to the session count and then the metadata', () => {
