@@ -5352,3 +5352,19 @@ migrations['0194_assistant_requests'] = {
     await sql`drop table assistant_requests`.execute(db);
   },
 };
+
+migrations['0195_vulnerability_fixes'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`create table vulnerability_fixes (
+      project_id text primary key references projects(id) on delete cascade,
+      session_id text not null,
+      finding_keys text not null,
+      pending_keys text not null default '[]',
+      accepted boolean not null default false,
+      failed boolean not null default false
+    )`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table vulnerability_fixes`.execute(db);
+  },
+};

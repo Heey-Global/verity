@@ -33,6 +33,17 @@ UNITS = {
 # runtime binary/arguments. Add only entries backed by retained native managed
 # install/update/reboot/rollback and independent packet evidence.
 ACCEPTED_NATIVE_PROFILES = ()
+# Assessment candidates are not production acceptance. The descriptor binds the
+# exact observed version and rejects subsequent drift before controller startup.
+STAGING_DOCKER_VERSIONS = frozenset(('29.8.0', '29.9.2'))
+
+
+class PreflightError(ValueError):
+    def __init__(self, reason):
+        super().__init__(reason)
+        self.reason = reason
+
+
 RELAY_RUNTIME_ARGS = ['--platform=systrap', '--network=sandbox', '--host-uds=open']
 RELAY_RUNTIME_AUTHORITY = 'etc/verity-egress/relay-runtime.json'
 PROJECT_RUNTIME_ARGS = ['--platform=systrap', '--network=sandbox', '--host-uds=create']
@@ -137,14 +148,14 @@ def staging_authorization(root, authorization):
             or authorization['scope'] != 'staging-assessment'
             or authorization['productionAccepted'] is not False
             or not isinstance(authorization['deploymentId'], str)
-            or not re.fullmatch(r'[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}', authorization['deploymentId'])
+            or not re.fullmatch(r'[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}', authorization['deploymentId'])
             or any(not isinstance(authorization[name], str) or not re.fullmatch(official, authorization[name])
                    for name in ('installedDigest', 'targetDigest'))
             or not isinstance(authorization['operationId'], str)
             or not re.fullmatch('[a-f0-9]{24,64}', authorization['operationId'])
             or type(authorization['channelOwnerUid']) is not int
             or not 0 <= authorization['channelOwnerUid'] <= 2147483647):
-        raise ValueError('Invalid staging assessment authorization')
+        raise PreflightError('assessment_authorization_invalid')
     value = authorization['channelPath']
     if (not isinstance(value, str) or not value.startswith('/')
             or '..' in value.split('/') or str(Path(value)) != value
@@ -178,10 +189,10 @@ def staging_identity(root, run, node_path):
         raise ValueError('Staging assessment requires supported native Ubuntu x86_64')
     info = json.loads(run('/usr/bin/docker', '--host=unix:///var/run/docker.sock',
                           'info', '--format', '{{json .}}'))
-    if (info.get('OSType') != 'linux' or info.get('ServerVersion') != '29.9.2'
+    if (info.get('OSType') != 'linux' or info.get('ServerVersion') not in STAGING_DOCKER_VERSIONS
             or info.get('LiveRestoreEnabled') is not False
             or any('rootless' in item for item in info.get('SecurityOptions', []))):
-        raise ValueError('Staging assessment requires rootful pinned Docker')
+        raise PreflightError('docker_host_unsupported')
     node = Path(node_path).resolve(strict=True)
     artifacts = {}
     for name in ('node', 'project-egress-host-main.mjs', 'project-egress-deadline.bpf.o',
@@ -265,7 +276,7 @@ def prepare_staging_assessment(root, run, node_path, authorization):
             policy = run('/usr/bin/apt-cache', 'policy', name)
             candidates = re.findall(r'^\s*Candidate:\s*([A-Za-z0-9.+:~_-]{1,128})\s*$', policy, re.MULTILINE)
             if len(candidates) != 1 or candidates[0] == '(none)':
-                raise ValueError('No pinned native assessment package candidate')
+                raise PreflightError('native_package_unavailable')
             versions[name] = candidates[0]
     profile['packages'] = versions
     prepare_native_profile(root, run, profile)
@@ -500,12 +511,12 @@ def runtime_preflight(root, run=command, node_path='/usr/bin/node', *, assessmen
         raise ValueError('Requires Node 26.12.1 or newer in the 26.x release line')
     info = json.loads(run('/usr/bin/docker', '--host=unix:///var/run/docker.sock',
                           'info', '--format', '{{json .}}'))
-    if (info.get('OSType') != 'linux' or info.get('ServerVersion') != '29.9.2'
+    if (info.get('OSType') != 'linux' or info.get('ServerVersion') not in (STAGING_DOCKER_VERSIONS if assessment is not None else ('29.9.2',))
             or info.get('LiveRestoreEnabled') is not False
             or any('rootless' in item for item in info.get('SecurityOptions', []))):
-        raise ValueError('Requires validated rootful Docker 29.9.2 with live restore off')
+        raise PreflightError('docker_host_unsupported')
     if not {'runsc-project', 'runsc-relay'} <= set(info.get('Runtimes', {})):
-        raise ValueError('Requires reviewed runsc-project and runsc-relay runtimes')
+        raise PreflightError('relay_runtime_missing')
     profile = (accepted_native_profile(root, run, node_path) if assessment is None else
                validate_staging_assessment(root, run, node_path, assessment))
     relay = {'path': profile['runtime']['path'], 'runtimeArgs': RELAY_RUNTIME_ARGS}

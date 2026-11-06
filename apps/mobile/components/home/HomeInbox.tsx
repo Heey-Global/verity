@@ -291,7 +291,7 @@ export function useInboxFeed({
 }
 
 /** The cards of an inbox feed, then the fold of the dismissed ones. */
-export function InboxFeedList({
+function InboxFeedList({
   feed,
   selectedSessionId,
 }: {

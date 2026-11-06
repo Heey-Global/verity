@@ -164,6 +164,7 @@ export function Row({
   accessibilityLabel,
   accessibilityHint,
   expanded,
+  answers,
 }: {
   title: string;
   subtitle?: string | undefined;
@@ -182,6 +183,9 @@ export function Row({
   accessibilityLabel?: string;
   accessibilityHint?: string;
   expanded?: boolean;
+  /** Compact buttons that answer what the row waits on, in a strip under it and
+   *  outside its pressable area, so VoiceOver reaches each one. */
+  answers?: ReactNode;
 }) {
   const { theme } = useUnistyles();
   const choice = selected !== undefined;
@@ -216,10 +220,24 @@ export function Row({
       chevron={navigates && !choice}
     />
   );
+  const strip =
+    answers !== undefined ? (
+      <View style={[styles.answers, leading !== undefined ? styles.answersIndented : null]}>
+        {answers}
+      </View>
+    ) : null;
   if (onPress === undefined) {
-    return <View style={[styles.row, disabled ? styles.muted : null]}>{content}</View>;
+    const row = <View style={[styles.row, disabled ? styles.muted : null]}>{content}</View>;
+    return strip ? (
+      <View>
+        {row}
+        {strip}
+      </View>
+    ) : (
+      row
+    );
   }
-  return (
+  const pressable = (
     <Pressable
       onPress={onPress}
       onLongPress={onLongPress}
@@ -238,6 +256,14 @@ export function Row({
     >
       {content}
     </Pressable>
+  );
+  return strip ? (
+    <View>
+      {pressable}
+      {strip}
+    </View>
+  ) : (
+    pressable
   );
 }
 
@@ -460,6 +486,16 @@ const styles = StyleSheet.create((theme) => ({
     paddingHorizontal: theme.spacing.md + theme.spacing.xxs,
   },
   pressed: { backgroundColor: tint(theme.colors.text, 'neutral') },
+  // Under the row's text, so the answers read as belonging to it.
+  answers: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: theme.spacing.sm,
+    paddingHorizontal: theme.spacing.md + theme.spacing.xxs,
+    paddingBottom: theme.spacing.md,
+  },
+  // The leading tile (32) and the row's gap after it.
+  answersIndented: { paddingLeft: theme.spacing.md + theme.spacing.xxs + 32 + theme.spacing.md },
   tile: {
     width: 32,
     height: 32,

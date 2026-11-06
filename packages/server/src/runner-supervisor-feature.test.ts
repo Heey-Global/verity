@@ -619,6 +619,72 @@ describe('verity-runner supervisor runtime', () => {
       expect(spec.spawnOptions.env).not.toHaveProperty('GH_TOKEN');
     },
   );
+  it.each(['codex-acp', 'claude-agent-acp', 'opencode-acp'] as const)(
+    'resolves the guarded Git binary after a lifecycle launch of %s',
+    async (command) => {
+      const wrappers = join(runtimeDir, 'agent-seed', 'bin');
+      const shims = join(runtimeDir, 'package-managers');
+      const interpreter = join(runtimeDir, 'root-owned-node', 'bin');
+      for (const directory of [wrappers, shims, interpreter]) {
+        await mkdir(directory, { recursive: true });
+      }
+      for (const [directory, executable] of [
+        [wrappers, 'git'],
+        [shims, 'npm'],
+        [interpreter, 'node'],
+      ] as const) {
+        await writeFile(join(directory, executable), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+      }
+      const lifecyclePath = '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
+      const spec = agentLaunchSpec(
+        { command, args: [], cwd: '/work/project' },
+        {
+          agentUid: 1000,
+          agentGid: 1000,
+          connectorUrl: 'http://127.0.0.1:47821',
+          env: { PATH: `${interpreter}:${lifecyclePath}` },
+        },
+      );
+      // Map image-owned directories into the fixture; CI need not install the toolkit in /opt.
+      const environment = spec.spawnOptions.env ?? {};
+      const path = (environment.PATH ?? '')
+        .split(':')
+        .map((entry) =>
+          entry === '/opt/agent-seed/bin'
+            ? wrappers
+            : entry === '/opt/verity/package-managers'
+              ? shims
+              : entry,
+        );
+      const result = await execFileAsync(
+        '/bin/sh',
+        ['-c', 'command -v git; command -v npm; command -v node'],
+        { env: { ...environment, PATH: path.join(':') } },
+      );
+      expect(result.stdout.trim().split('\n')).toEqual([
+        join(wrappers, 'git'),
+        join(shims, 'npm'),
+        join(interpreter, 'node'),
+      ]);
+      expect(environment.PATH).toBe(
+        `/opt/verity/package-managers:/opt/agent-seed/bin:${interpreter}:${lifecyclePath}`,
+      );
+    },
+  );
+  it('restores system command lookup when the broker inherits an empty PATH', () => {
+    const spec = agentLaunchSpec(
+      { command: 'codex-acp', args: [], cwd: '/work/project' },
+      {
+        agentUid: 1000,
+        agentGid: 1000,
+        connectorUrl: 'http://127.0.0.1:47821',
+        env: { PATH: '' },
+      },
+    );
+    expect(spec.spawnOptions.env?.PATH).toBe(
+      '/opt/verity/package-managers:/opt/agent-seed/bin:/usr/local/bin:/usr/bin:/bin',
+    );
+  });
   it('passes only the local Claude connector coordinates through the root broker', () => {
     const spec = agentLaunchSpec(
       { command: 'claude-agent-acp', args: [], cwd: '/work/project' },
