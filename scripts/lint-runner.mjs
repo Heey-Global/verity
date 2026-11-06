@@ -77,7 +77,7 @@ function executeLint(files, heapMiB, cache, ambientCache) {
 
 /**
  * @param {string[]} files
- * @param {{ cache?: boolean, ambientCache?: boolean, heapMiB?: number, execute?: (files: string[], heapMiB: number) => WorkerResult,
+ * @param {{ cache?: boolean, ambientCache?: boolean, heapMiB?: number, execute?: (files: string[], heapMiB: number, ambientCache: boolean) => WorkerResult,
  * output?: (text: string) => void, error?: (text: string) => void }} [options]
  */
 export function runLint(files, options = {}) {
@@ -85,13 +85,13 @@ export function runLint(files, options = {}) {
   const heapMiB = options.heapMiB ?? workerHeapLimit();
   const execute =
     options.execute ??
-    ((batch, heap) =>
-      executeLint(batch, heap, options.cache ?? false, options.ambientCache ?? true));
+    ((batch, heap, ambientCache) =>
+      executeLint(batch, heap, ambientCache && (options.cache ?? false), ambientCache));
   const output = options.output ?? ((text) => process.stdout.write(text));
   const error = options.error ?? ((text) => process.stderr.write(text));
-  /** @param {string[]} batch @returns {number} */
-  function check(batch) {
-    const result = execute(batch, heapMiB);
+  /** @param {string[]} batch @param {boolean} [ambientCache] @returns {number} */
+  function check(batch, ambientCache = options.ambientCache ?? true) {
+    const result = execute(batch, heapMiB, ambientCache);
     if (result.status === 0 && !result.error) {
       output(result.stdout ?? '');
       error(result.stderr ?? '');
@@ -103,6 +103,14 @@ export function runLint(files, options = {}) {
         /FATAL ERROR:.*(?:heap out of memory|Allocation failed)/i.test(result.stderr ?? ''));
     if (memoryFailure) {
       if (batch.length === 1) {
+        if (ambientCache) {
+          // Optional classification metadata must not crowd out the actual type graph.
+          // Retry once in a fresh worker; rules, roots and heap budget stay unchanged.
+          error(
+            `Lint worker reached its memory budget; retrying ${batch[0]} without optional lint caches.\n`,
+          );
+          return check(batch, false);
+        }
         error(`Lint could not check ${batch[0]} within the ${heapMiB} MiB heap budget.\n`);
         error('No successful lint result was accepted for this file.\n');
         return 1;

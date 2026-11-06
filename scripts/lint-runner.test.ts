@@ -51,7 +51,7 @@ it('fails explicitly when even one file cannot fit, without accepting a partial 
   const execute = vi.fn(() => ({ ...outOfMemory, stdout: 'partial output' }));
   const io = options();
   expect(runLint(['large.ts'], { ...io, execute })).toBe(1);
-  expect(execute).toHaveBeenCalledTimes(1);
+  expect(execute).toHaveBeenCalledTimes(2);
   expect(io.output).not.toHaveBeenCalled();
   expect(io.error.mock.calls.map(([text]) => text).join('')).toContain('large.ts');
   expect(io.error.mock.calls.map(([text]) => text).join('')).toContain('No successful lint result');
@@ -167,4 +167,28 @@ it('passes worker arguments literally and disables core dumps', () => {
   expect(result.status).toBe(0);
   expect(result.stdout).toBe(`0\n${argument}`);
   expect(existsSync(marker)).toBe(false);
+});
+
+it('retries a single OOM without ambient metadata at the same heap and requires a clean result', () => {
+  const io = options();
+  const execute = vi.fn((files: string[], heap: number, ambient: boolean) => {
+    expect(files).toEqual(['large.ts']);
+    expect(heap).toBe(io.heapMiB);
+    return ambient ? outOfMemory : { status: 0, stdout: 'fully checked' };
+  });
+  expect(runLint(['large.ts'], { ...io, execute })).toBe(0);
+  expect(execute.mock.calls.map(([, , ambient]) => ambient)).toEqual([true, false]);
+  expect(io.output.mock.calls.map(([text]) => text).join('')).toBe('fully checked');
+});
+
+it('preserves findings from the fresh worker and never retries an already disabled cache', () => {
+  const execute = vi.fn((_files: string[], _heap: number, ambient: boolean) =>
+    ambient ? outOfMemory : { status: 1, stdout: 'real lint finding' },
+  );
+  const io = options();
+  expect(runLint(['large.ts'], { ...io, execute })).toBe(1);
+  expect(io.output.mock.calls.map(([text]) => text).join('')).toContain('real lint finding');
+  const disabled = vi.fn(() => outOfMemory);
+  expect(runLint(['large.ts'], { ...options(), ambientCache: false, execute: disabled })).toBe(1);
+  expect(disabled).toHaveBeenCalledTimes(1);
 });
