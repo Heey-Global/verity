@@ -36,7 +36,11 @@ function Inline({ text }: { text: string }) {
               {...(span.external
                 ? {
                     accessibilityRole: 'link' as const,
-                    onPress: () => void Linking.openURL(span.url),
+                    // Knowledge pages are written by agents and sources: only web
+                    // links open, whatever the parser calls external.
+                    onPress: () => {
+                      if (/^https?:\/\//i.test(span.url)) void Linking.openURL(span.url);
+                    },
                   }
                 : {})}
             >

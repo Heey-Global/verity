@@ -66,8 +66,6 @@ export function useProjects(client: VerityClient) {
         ? previous
         : publicIds,
     );
-    // The Work list of a project page shows the same markers without polling.
-    publishSessionPreviews({ urls, online: publicIds });
   }, []);
   // Another server's previews must not show under this one: start empty for
   // every client, and leave nothing behind when the overview goes away.
@@ -75,6 +73,12 @@ export function useProjects(client: VerityClient) {
     publishSessionPreviews({ urls: new Map(), online: new Set() });
     return () => publishSessionPreviews({ urls: new Map(), online: new Set() });
   }, [client]);
+  // The Work list of a project page shows exactly the markers this overview
+  // shows, without a poll of its own.
+  useEffect(
+    () => publishSessionPreviews({ urls: previewUrls, online: publicPreviews }),
+    [previewUrls, publicPreviews],
+  );
   const previewReads = useMemo(
     () => new PreviewReadScheduler(publishPreviews),
     [client, publishPreviews],
