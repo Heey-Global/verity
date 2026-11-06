@@ -15,10 +15,11 @@ import {
 import { randomUUID } from 'expo-crypto';
 import { router, useFocusEffect } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, Image, Pressable, RefreshControl, ScrollView, View } from 'react-native';
+import { Alert, Pressable, RefreshControl, ScrollView, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { Icon } from '../Icon';
+import { VerityMark } from '../VerityMark';
 import { MockupThumbs } from '../session/MockupReview';
 import { Button, Card, CardHead, StatusTag, Text } from '../ui';
 import { Disclosure } from '../ui/Disclosure';
@@ -26,10 +27,6 @@ import { tint } from '../ui/tint';
 import { useTaskPreferences } from '../../lib/taskPreferences';
 import { taskAccountScope } from '../../lib/tasksStore';
 import { dispatchVerityShortcut } from '../../lib/voiceShortcut';
-
-const MARK = require('../../assets/brand/verity-v-mark.png') as number;
-// The mark's artwork is wider than tall.
-const MARK_RATIO = 240 / 168;
 
 /** The cached calendar list is cheap, but a watched calendar rarely changes. */
 const MEETING_REFRESH_MS = 5 * 60_000;
@@ -404,13 +401,7 @@ export function VerityHeader({
 export function VerityIdentity({ summary, testID }: { summary: string; testID?: string }) {
   return (
     <>
-      <View style={styles.markHalo}>
-        <Image
-          source={MARK}
-          accessibilityIgnoresInvertColors
-          style={{ width: 32, height: 32 / MARK_RATIO }}
-        />
-      </View>
+      <VerityMark />
       <View style={styles.flex}>
         <Text variant="title" accessibilityRole="header">
           Verity
@@ -609,16 +600,6 @@ const styles = StyleSheet.create((theme) => {
     header: { gap: theme.spacing.lg, paddingBottom: theme.spacing.lg },
     identity: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.md },
     // Verity's identity on Home (§ 5.8): the meeting's V mark on a signature halo.
-    markHalo: {
-      width: 48,
-      height: 48,
-      borderRadius: 24,
-      alignItems: 'center',
-      justifyContent: 'center',
-      backgroundColor: tint(colors.signature, 'neutral'),
-      shadowColor: colors.signature,
-      ...theme.elevation.glow,
-    },
     capture: {
       minHeight: 48,
       flexDirection: 'row',

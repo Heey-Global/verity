@@ -138,6 +138,7 @@ import { ProjectPage } from '../components/project/ProjectPage';
 import { KnowledgeFileView } from '../components/knowledge/KnowledgeFileView';
 import { KnowledgePaneContext, type KnowledgePane } from '../components/knowledge/KnowledgePane';
 import type { KnowledgeScope } from '../components/knowledge/knowledgeScope';
+import { setHomeShowsVerity } from '../lib/homeVerity';
 import { ProjectCard } from '../components/project/ProjectCard';
 import { VerityPage } from '../components/verity/VerityPage';
 import { toneColor } from '../theme/tokens';
@@ -672,6 +673,12 @@ function SessionList({ client }: { client: VerityClient }) {
   // On a phone the page is its own route.
   const [openProjectId, setOpenProjectId] = useState<string | null>(null);
   const [homeTab, setHomeTab] = useState<HomeTab>('home');
+  // On a phone, Home's own header and "Tell Verity" are the way to Verity there.
+  const homeShowsVerity = newDesign && !wide && homeTab === 'home';
+  useEffect(() => {
+    setHomeShowsVerity(homeShowsVerity);
+    return () => setHomeShowsVerity(false);
+  }, [homeShowsVerity]);
   const openProject = useCallback(
     (projectId: string) => {
       if (!wide) {
