@@ -76,6 +76,57 @@ class VerityLiveSTT: Module {
       try await LiveSTTService.shared.finishDictation(session: session, abort: abort)
     }
 
+    AsyncFunction("configureMeeting") { (meetingId: String, sessionId: String, startedAt: Double, audioSafetyBuffer: Bool) async throws in
+      guard #available(iOS 26.0, *) else { return }
+      try await LiveSTTService.shared.configureMeeting(
+        meetingId: meetingId, sessionId: sessionId, startedAt: Date(timeIntervalSince1970: startedAt / 1000),
+        audioSafetyBuffer: audioSafetyBuffer)
+    }
+
+    AsyncFunction("currentCapture") { () async -> [String: Any]? in
+      guard #available(iOS 26.0, *) else { return nil }
+      return await LiveSTTService.shared.currentCapture()
+    }
+
+    AsyncFunction("journalMeetings") { () async throws -> [[String: Any]] in
+      try await LiveMeetingJournal.shared.meetings()
+    }
+
+    AsyncFunction("readMeetingJournal") { (meetingId: String, after: Int, limit: Int) async throws -> [[String: Any]] in
+      try await LiveMeetingJournal.shared.read(meetingId: meetingId, after: after, limit: limit)
+    }
+
+    AsyncFunction("acknowledgeMeetingJournal") { (meetingId: String, through: Int) async throws in
+      try await LiveMeetingJournal.shared.acknowledge(meetingId: meetingId, through: through)
+      if #available(iOS 26.0, *) { await LiveSTTService.shared.acknowledgeAudio(meetingId: meetingId, through: through) }
+    }
+
+    AsyncFunction("discardMeetingData") { (meetingId: String) async throws in
+      if #available(iOS 26.0, *) { try await LiveSTTService.shared.prepareAudioRecovery(meetingId: meetingId, allowOtherCapture: true) }
+      try await LiveMeetingJournal.shared.discard(meetingId: meetingId)
+      try LiveMeetingAudioBuffer.discard(meetingId: meetingId)
+    }
+
+    AsyncFunction("pendingAudioBuffers") { () throws -> [[String: Any]] in
+      try LiveMeetingAudioBuffer.pending()
+    }
+
+    AsyncFunction("discardAudioBuffer") { (meetingId: String) async throws in
+      if #available(iOS 26.0, *) { try await LiveSTTService.shared.prepareAudioRecovery(meetingId: meetingId) }
+      try LiveMeetingAudioBuffer.discard(meetingId: meetingId)
+    }
+
+    AsyncFunction("recoverAudioBuffer") { (meetingId: String, confirmedThrough: Double) async throws -> [[String: Any]] in
+      guard #available(iOS 26.0, *) else { throw LiveSTTError.unavailable("Audio recovery requires iOS 26.") }
+      try await LiveSTTService.shared.prepareAudioRecovery(meetingId: meetingId)
+      return try await LiveMeetingAudioBuffer.recover(meetingId: meetingId, confirmedThrough: confirmedThrough)
+    }
+
+    AsyncFunction("acknowledgeAudioRecovery") { (meetingId: String, segmentIds: [String]) async throws in
+      if #available(iOS 26.0, *) { try await LiveSTTService.shared.prepareAudioRecovery(meetingId: meetingId) }
+      try LiveMeetingAudioBuffer.acknowledgeRecovery(meetingId: meetingId, segmentIds: segmentIds)
+    }
+
     AsyncFunction("stop") { () async throws in
       guard #available(iOS 26.0, *) else { return }
       try await LiveSTTService.shared.stopMeeting()
@@ -189,6 +240,16 @@ private actor LiveSpeakerProcessor {
 private final class LiveSTTService {
   static let shared = LiveSTTService()
 
+  private var meetingId: String?
+  private var meetingSessionId: String?
+  private var meetingStartedAt = Date()
+  private var meetingState = "preparing"
+  private var progress = LiveMeetingProgress()
+  private var progressTask: Task<Void, Never>?
+  private var lastTranscriptAt: Date?
+  private var journalFailed = false
+  private var buffer: LiveMeetingAudioBuffer?
+  private var retainedBuffers: [String: LiveMeetingAudioBuffer] = [:]
   private var audioEngine: AVAudioEngine?
   private var microphoneInput: AsyncStream<AVAudioPCMBuffer>.Continuation?
   private var processingTask: Task<Void, Error>?
@@ -228,6 +289,30 @@ private final class LiveSTTService {
   private var dictationStartedAt: TimeInterval?
 
   private init() {
+    Task { await LiveMeetingActivity.discardOrphans() }
+    LiveMeetingActivity.onAvailabilityChanged = { [weak self] id, available in
+      guard let self, self.meetingId == id else { return }
+      self.emit?(["kind": "activity-status", "available": available])
+    }
+    LiveMeetingActivity.onAction = { [weak self] id, action in
+      guard let self, self.meetingId == id, self.activeEngine != nil else {
+        throw LiveSTTError.unavailable("This meeting is no longer recording.")
+      }
+      switch action {
+      case "pause": try self.pauseMeeting()
+      case "resume": try self.resumeMeeting()
+      case "end": try await self.stopMeeting()
+      default: throw LiveSTTError.unavailable("Unknown meeting action.")
+      }
+    }
+    for name in [AVAudioSession.interruptionNotification, AVAudioSession.routeChangeNotification,
+      AVAudioSession.mediaServicesWereResetNotification] {
+      observers.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
+        let type = (note.userInfo?[AVAudioSessionInterruptionTypeKey] as? NSNumber)?.uintValue
+        let reason = (note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? NSNumber)?.uintValue
+        Task { @MainActor in await self?.audioSessionChanged(name: name, type: type, reason: reason) }
+      })
+    }
     for name in [UIApplication.didEnterBackgroundNotification, UIApplication.didReceiveMemoryWarningNotification] {
       observers.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
         Task { @MainActor in
@@ -236,6 +321,7 @@ private final class LiveSTTService {
             UIApplication.shared.applicationState == .active { return }
           if name == UIApplication.didReceiveMemoryWarningNotification {
             self?.discardPreparation()
+            self?.disableSpeakers(message: "Speaker recognition paused because memory is low.")
           } else {
             self?.releasePreparedDictation()
           }
@@ -244,6 +330,156 @@ private final class LiveSTTService {
           }
         }
       })
+    }
+  }
+
+  func prepareAudioRecovery(meetingId: String, allowOtherCapture: Bool = false) async throws {
+    guard activeEngine == nil || (allowOtherCapture && self.meetingId != meetingId) else {
+      throw LiveSTTError.unavailable("End recording before changing saved audio.")
+    }
+    await retainedBuffers[meetingId]?.flush()
+    // Awaiting the writer must not allow a new recorder to take this same identity.
+    guard activeEngine == nil || (allowOtherCapture && self.meetingId != meetingId) else {
+      throw LiveSTTError.unavailable("Recording changed before saved audio was opened.")
+    }
+  }
+
+  func configureMeeting(meetingId: String, sessionId: String, startedAt: Date, audioSafetyBuffer: Bool) throws {
+    guard activeEngine == nil else { throw LiveSTTError.alreadyRunning }
+    try LiveMeetingJournal.shared.start(meetingId: meetingId)
+    self.meetingId = meetingId
+    meetingSessionId = sessionId
+    meetingStartedAt = startedAt
+    meetingState = "preparing"
+    journalFailed = false
+    buffer = nil
+    do {
+      if audioSafetyBuffer {
+        let newBuffer = try LiveMeetingAudioBuffer(meetingId: meetingId, enabled: true, onFailure: { [weak self] message in
+          Task { @MainActor in
+            guard let self, self.meetingId == meetingId else { return }
+            self.emit?(["kind": "buffer-status", "state": "failed", "message": message])
+          }
+        })
+        buffer = newBuffer
+        retainedBuffers[meetingId] = newBuffer
+      }
+    } catch {
+      buffer = nil
+      self.meetingId = nil
+      meetingSessionId = nil
+      LiveMeetingJournal.shared.close()
+      throw error
+    }
+  }
+
+  func currentCapture() -> [String: Any]? {
+    guard let meetingId, activeEngine != nil else { return nil }
+    return ["meetingId": meetingId, "state": meetingState]
+  }
+
+  func acknowledgeAudio(meetingId: String, through: Int) async {
+    // Finished writers must drain before their instance is released or recovery opens their files.
+    guard self.meetingId != meetingId else { return }
+    await retainedBuffers[meetingId]?.flush()
+    if self.meetingId != meetingId { retainedBuffers.removeValue(forKey: meetingId) }
+  }
+
+  private func deliver(_ event: [String: Any], to callback: ([String: Any]) -> Void) {
+    guard dictationOwner == nil, let meetingId else { callback(event); return }
+    guard !journalFailed else { return }
+    var event = event
+    event["recordedAt"] = Date().timeIntervalSince1970 * 1000
+    if event["kind"] as? String == "snapshot", event["final"] as? Bool == true {
+      event["audioThrough"] = progress.snapshot().seconds
+    }
+    let kind = event["kind"] as? String
+    if kind == "segment" || kind == "snapshot" { lastTranscriptAt = Date() }
+    if kind == "status", let state = event["state"] as? String { meetingState = state }
+    do {
+      let sequence = try LiveMeetingJournal.shared.append(event)
+      if event["final"] as? Bool == true {
+        if kind == "segment", let end = event["end"] as? Double {
+          // A synchronized journal entry is already durable local transcript storage;
+          // do not retain its raw audio merely because JavaScript is suspended.
+          retainedBuffers[meetingId]?.confirm(through: end)
+        } else if kind == "snapshot" {
+          retainedBuffers[meetingId]?.confirm(through: progress.snapshot().seconds)
+        }
+      }
+      var delivered = event
+      delivered["journalMeetingId"] = meetingId
+      delivered["journalSequence"] = sequence
+      callback(delivered)
+      if kind == "status" || kind == "health" { updateActivity() }
+    } catch {
+      journalFailed = true
+      meetingState = "failed"
+      callback(["kind": "status", "state": "failed", "message": "Native meeting save failed: \(error.localizedDescription)"])
+      // A full or inaccessible journal must stop capture instead of losing words silently.
+      Task { await self.failCapture(error) }
+    }
+  }
+
+  private func updateActivity() {
+    guard let meetingId else { return }
+    LiveMeetingActivity.update(meetingId: meetingId, state: meetingState,
+      lastAudioAt: progress.snapshot().lastAudio, lastTranscriptAt: lastTranscriptAt)
+  }
+
+  private func startProgressReporting() {
+    progressTask?.cancel()
+    progressTask = Task { [weak self] in
+      while !Task.isCancelled {
+        try? await Task.sleep(for: .seconds(5))
+        guard !Task.isCancelled, let self, self.meetingId != nil, self.activeEngine != nil else { return }
+        let snapshot = self.progress.snapshot()
+        let microphone = self.paused ? "paused" : ((snapshot.lastAudio?.timeIntervalSinceNow ?? -100) > -15 ? "running" : "stalled")
+        self.emit?(["kind": "health", "microphone": microphone,
+          "transcription": self.paused ? "paused" : "listening", "persistence": "saved",
+          "audioSeconds": snapshot.seconds,
+          "lastAudioAt": snapshot.lastAudio.map { $0.timeIntervalSince1970 * 1000 as Any } ?? NSNull(),
+          "lastTranscriptAt": self.lastTranscriptAt.map { $0.timeIntervalSince1970 * 1000 as Any } ?? NSNull()])
+        if ProcessInfo.processInfo.thermalState == .serious || ProcessInfo.processInfo.thermalState == .critical {
+          self.disableSpeakers(message: "Speaker recognition paused because the device is hot.")
+        }
+      }
+    }
+  }
+
+  private func disableSpeakers(message: String) {
+    guard dictationOwner == nil, activeEngine != nil, speakerModelTask != nil, !speakerUnavailable else { return }
+    speakerUnavailable = true
+    speakerInput?.finish()
+    speakerModelTask?.cancel()
+    speakerTask?.cancel()
+    speakerProcessor = nil
+    speakerModelTask = nil
+    speakerTask = nil
+    speakerInput = nil
+    emit?(["kind": "speaker-status", "state": "unavailable", "message": message])
+  }
+
+  private func audioSessionChanged(name: Notification.Name, type: UInt?, reason: UInt?) async {
+    guard activeEngine != nil, dictationOwner == nil else { return }
+    if name == AVAudioSession.interruptionNotification {
+      // Preparation has no microphone to pause; activation will validate audio availability.
+      guard audioEngine != nil, !paused else { return }
+      if type == AVAudioSession.InterruptionType.began.rawValue {
+        audioEngine?.pause()
+        emit?(["kind": "gap", "at": progress.snapshot().seconds,
+          "message": "Audio interrupted by another app or a call."])
+        emit?(["kind": "status", "state": "paused", "engine": activeEngine ?? ""])
+        paused = true
+      }
+      // Resume is explicit: the user may have intentionally switched microphone ownership.
+    } else if name == AVAudioSession.mediaServicesWereResetNotification {
+      emit?(["kind": "gap", "at": progress.snapshot().seconds, "message": "The audio service restarted."])
+      await failCapture(LiveSTTError.unavailable("Audio service restarted. Start a new recording to continue."))
+    } else if name == AVAudioSession.routeChangeNotification, !paused,
+      reason == AVAudioSession.RouteChangeReason.oldDeviceUnavailable.rawValue {
+      emit?(["kind": "gap", "at": progress.snapshot().seconds, "message": "The microphone was disconnected."])
+      do { try pauseMeeting() } catch { await failCapture(error) }
     }
   }
 
@@ -348,6 +584,8 @@ private final class LiveSTTService {
     dictationStartedAt = owner == nil ? nil : (tappedAt.map { $0 / 1000 } ?? Date().timeIntervalSince1970)
     firstAudioReported = false
     firstResultReported = false
+    progress = LiveMeetingProgress()
+    lastTranscriptAt = nil
     generation += 1
     let startGeneration = generation
     activeEngine = engine
@@ -356,8 +594,8 @@ private final class LiveSTTService {
     reportedOverflow = false
     speakerUnavailable = false
     emittedWordCount = 0
-    self.emit = emit
-    emit(["kind": "status", "state": "preparing", "engine": engine])
+    self.emit = { [weak self] event in self?.deliver(event, to: emit) }
+    self.emit?(["kind": "status", "state": "preparing", "engine": engine])
 
     do {
       guard await AVAudioApplication.requestRecordPermission() else {
@@ -365,7 +603,7 @@ private final class LiveSTTService {
       }
       try ensureActive(startGeneration)
       if participants > 0 {
-        emit(["kind": "speaker-status", "state": "loading"])
+        self.emit?(["kind": "speaker-status", "state": "loading"])
         speakerModelTask = Task { [weak self] in
           do {
             let processor = try await LiveSpeakerProcessor(participants: participants)
@@ -402,7 +640,12 @@ private final class LiveSTTService {
         throw LiveSTTError.unavailable("Unknown transcription engine: \(engine)")
       }
       guard generation == startGeneration else { return }
-      emit(["kind": "status", "state": "listening", "engine": engine])
+      self.emit?(["kind": "status", "state": "listening", "engine": engine])
+      if owner == nil, let meetingId {
+        LiveMeetingActivity.start(meetingId: meetingId, startedAt: meetingStartedAt, sessionId: meetingSessionId ?? "")
+        updateActivity()
+        startProgressReporting()
+      }
     } catch {
       if generation == startGeneration {
         stopMicrophone()
@@ -534,6 +777,16 @@ private final class LiveSTTService {
   }
 
   private func clear() {
+    if dictationOwner == nil {
+      progressTask?.cancel()
+      progressTask = nil
+      buffer?.finish()
+      buffer = nil
+      if let meetingId { LiveMeetingActivity.end(meetingId: meetingId) }
+      LiveMeetingJournal.shared.close()
+      meetingId = nil
+      meetingSessionId = nil
+    }
     speakerTask?.cancel()
     speakerModelTask?.cancel()
     audioEngine = nil
@@ -767,6 +1020,7 @@ private final class LiveSTTService {
         do {
           for await buffer in microphoneStream {
             _ = try await manager.process(audioBuffer: buffer)
+            guard self.nemotron === manager else { return }
             let text = await manager.getPartialTranscript()
             if text != last {
               last = text
@@ -775,7 +1029,7 @@ private final class LiveSTTService {
             }
           }
         } catch {
-          await self.failCapture(error)
+          if self.nemotron === manager { await self.failCapture(error) }
           throw error
         }
       }
@@ -797,6 +1051,7 @@ private final class LiveSTTService {
       for await _ in await manager.transcriptionUpdates {
         let confirmed = await manager.confirmedTranscript
         let volatile = await manager.volatileTranscript
+        guard self.parakeet === manager else { return }
         let text = [confirmed, volatile].filter { !$0.isEmpty }.joined(separator: " ")
         self.emit?(["kind": "snapshot", "text": text, "final": false])
       }
@@ -830,10 +1085,12 @@ private final class LiveSTTService {
           if speakerUnavailable { break }
           do {
             if let update = try await speakerProcessor.process(chunk) {
+              guard self.speakerProcessor === speakerProcessor else { return }
               emitSpeakerSegments(update.finalized)
               emitTentativeSpeakers(update)
             }
           } catch {
+            guard self.speakerProcessor === speakerProcessor else { return }
             speakerUnavailable = true
             speakerInput?.finish()
             emit?(["kind": "speaker-status", "state": "unavailable", "message": error.localizedDescription])
@@ -842,11 +1099,15 @@ private final class LiveSTTService {
         }
       }
     }
+    let audioProgress = progress
+    let safetyBuffer = dictationOwner == nil ? buffer : nil
     let speakerContinuation = speakerInput
     let captureGeneration = generation
     let reportLevel = dictationOwner != nil
     input.installTap(onBus: 0, bufferSize: 4096, format: format) { buffer, _ in
       guard let copy = Self.copyBuffer(buffer) else { return }
+      let audioStart = audioProgress.capture(frames: copy.frameLength, sampleRate: copy.format.sampleRate)
+      safetyBuffer?.append(copy, at: audioStart)
       let capturedAt = Date().timeIntervalSince1970
       if reportLevel, let channel = copy.floatChannelData?.pointee, copy.frameLength > 0 {
         let samples = UnsafeBufferPointer(start: channel, count: Int(copy.frameLength))
@@ -867,7 +1128,7 @@ private final class LiveSTTService {
           SpeakerAudio(samples: samples, sampleRate: copy.format.sampleRate)) {
           speakerContinuation.finish()
           Task { @MainActor [weak self] in
-            guard let self, !self.speakerUnavailable else { return }
+            guard let self, self.generation == captureGeneration, !self.speakerUnavailable else { return }
             self.speakerUnavailable = true
             self.speakerModelTask?.cancel()
             self.emit?(["kind": "speaker-status", "state": "unavailable", "message": "Speaker recognition fell behind audio capture."])
