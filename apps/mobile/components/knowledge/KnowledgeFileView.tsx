@@ -35,12 +35,15 @@ export function KnowledgeFileView({
   file,
   chrome,
   onClose,
+  onDirtyChange,
 }: {
   client: VerityClient;
   scope: KnowledgeScope;
   file: string;
   chrome: 'stack' | 'pane';
   onClose?: () => void;
+  /** Whether there are unsaved edits, so a host that replaces the view can ask first. */
+  onDirtyChange?: (dirty: boolean) => void;
 }) {
   const [content, setContent] = useState<SessionFileContent>();
   const [error, setError] = useState<string>();
@@ -52,8 +55,10 @@ export function KnowledgeFileView({
   const [confirm, confirmSheet] = useConfirm();
   const projectId = scope.kind === 'project' ? scope.projectId : '';
   // A save answered after the operator moved to another file must not land on it.
-  const current = useRef(file);
-  current.current = file;
+  // Scope and path together: the same path in another project is another file.
+  const identity = `${scope.kind}:${projectId}:${file}`;
+  const current = useRef(identity);
+  current.current = identity;
 
   useEffect(() => {
     let active = true;
@@ -78,36 +83,39 @@ export function KnowledgeFileView({
 
   const save = useCallback(async () => {
     if (draft === undefined || !content?.version || saving) return;
-    const target = file;
+    const target = identity;
     setSaving(true);
     try {
-      const next = await writeKnowledge(client, scope, target, draft, content.version);
+      const next = await writeKnowledge(client, scope, file, draft, content.version);
       if (current.current !== target) return;
       setContent(next);
       setDraft(undefined);
       setSaveError(undefined);
     } catch (failure) {
+      if (current.current !== target) return;
       // The draft stays, so a conflict or a dropped connection loses nothing.
       setSaveError(failure instanceof Error ? failure.message : 'Could not save');
     } finally {
       setSaving(false);
     }
-  }, [client, content?.version, draft, file, saving, scope]);
+  }, [client, content?.version, draft, file, identity, saving, scope]);
 
   // After a failed save: read the file's current version again but keep the
   // draft, so the next Save applies it on top of whatever changed meanwhile.
   const refreshVersion = useCallback(() => {
-    const target = file;
-    readKnowledge(client, scope, target).then(
+    const target = identity;
+    readKnowledge(client, scope, file).then(
       (next) => {
         if (current.current !== target) return;
         setContent(next);
         setSaveError(undefined);
       },
-      (failure: unknown) =>
-        setSaveError(failure instanceof Error ? failure.message : 'Could not reload file'),
+      (failure: unknown) => {
+        if (current.current !== target) return;
+        setSaveError(failure instanceof Error ? failure.message : 'Could not reload file');
+      },
     );
-  }, [client, file, scope]);
+  }, [client, file, identity, scope]);
 
   const download = useCallback(() => {
     setDownloading(true);
@@ -128,6 +136,12 @@ export function KnowledgeFileView({
 
   const name = file.split('/').at(-1) ?? file;
   const editing = draft !== undefined;
+  const dirty = editing && draft !== content?.content;
+  const report = useRef(onDirtyChange);
+  report.current = onDirtyChange;
+  useEffect(() => report.current?.(dirty), [dirty]);
+  // Gone means nothing left unsaved here.
+  useEffect(() => () => report.current?.(false), []);
   const canEdit = content?.editable === true && content.version !== undefined;
   const actions = editing ? (
     <View style={styles.actions}>
@@ -228,7 +242,7 @@ export function KnowledgeFileView({
                   icon="x"
                   accessibilityLabel="Close file"
                   onPress={() =>
-                    editing && draft !== content?.content
+                    dirty
                       ? confirm({
                           title: 'Discard changes?',
                           message: 'Your edits to this file are not saved.',

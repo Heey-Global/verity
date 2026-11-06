@@ -137,6 +137,31 @@ it('asks before closing a file beside the session with unsaved edits', async () 
   expect(onClose).toHaveBeenCalled();
 });
 
+it('never lands a late save of one project’s file in another project’s view', async () => {
+  let finish!: (value: unknown) => void;
+  const write = jest.fn(() => new Promise((resolve) => (finish = resolve)));
+  const read = jest.fn(async (projectId: string) => ({ ...file, content: `From ${projectId}` }));
+  const api = client({ getProjectKnowledgeFile: read, writeProjectKnowledgeFile: write });
+  const view = (projectId: string) => (
+    <KnowledgeFileView
+      client={api as unknown as VerityClient}
+      scope={{ kind: 'project', projectId }}
+      file={file.path}
+      chrome="pane"
+    />
+  );
+  const { rerender } = render(view('a'));
+  fireEvent.press(await screen.findByText('Edit'));
+  fireEvent.changeText(screen.getByLabelText('Content'), 'Edited in a');
+  act(() => fireEvent.press(screen.getByText('Save')));
+  // Same path, other project: the view stays mounted while a's save is in flight.
+  rerender(view('b'));
+  await act(async () => undefined);
+  await act(async () => finish({ ...file, content: 'Saved in a', version: 'z'.repeat(64) }));
+  expect(screen.queryByText('Saved in a')).toBeNull();
+  expect(await screen.findByText('From b')).toBeTruthy();
+});
+
 it('starts a project at its areas, without reading the Shared library', async () => {
   const api = client();
   render(<KnowledgeScreen scope={PROJECT} />);

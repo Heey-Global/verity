@@ -277,7 +277,9 @@ it('publishes the previews it finds for the Work list', async () => {
   const { result } = renderHook(() => useSessionPreviews());
   await waitFor(() => expect(result.current.urls.get('shared')).toBe('https://shared.invalid'));
   expect(result.current.online.has('shared')).toBe(true);
+  // Signing out or switching servers unmounts it; the links must not outlive it.
   unmount();
+  expect(result.current.urls.size).toBe(0);
 });
 
 it('retains cached links while hidden and catches up after discarded watches', async () => {

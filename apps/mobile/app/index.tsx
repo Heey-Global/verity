@@ -191,18 +191,41 @@ function SessionList({ client }: { client: VerityClient }) {
     scope: KnowledgeScope;
     file: string;
   } | null>(null);
+  // Unsaved edits in that file: replacing it asks first, as its own close does.
+  const knowledgeDirty = useRef(false);
+  const afterDiscard = useCallback((action: () => void) => {
+    if (!knowledgeDirty.current) {
+      action();
+      return;
+    }
+    Alert.alert('Discard changes?', 'Your edits to this file are not saved.', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Discard',
+        style: 'destructive',
+        onPress: () => {
+          knowledgeDirty.current = false;
+          action();
+        },
+      },
+    ]);
+  }, []);
   const knowledgePane = useMemo<KnowledgePane>(
-    () => ({ openFile: (scope, file) => setKnowledgeFile({ scope, file }) }),
-    [],
+    () => ({ openFile: (scope, file) => afterDiscard(() => setKnowledgeFile({ scope, file })) }),
+    [afterDiscard],
   );
   // Any other way to a session (a deep link, a move, a deletion) as well.
   useEffect(() => setKnowledgeFile(null), [selectedId]);
   // Choosing a session — from the list, Home or a project page — means reading it,
   // even when it is the one already selected under the file.
-  const selectSession = useCallback((sessionId: string | null) => {
-    setKnowledgeFile(null);
-    setSelectedId(sessionId);
-  }, []);
+  const selectSession = useCallback(
+    (sessionId: string | null) =>
+      afterDiscard(() => {
+        setKnowledgeFile(null);
+        setSelectedId(sessionId);
+      }),
+    [afterDiscard],
+  );
   if (selectedId) markFirstSessionRender(selectedId, 'selection-home-render-entry');
   const finishHomeWork = beginRenderWork('home-body', selectedId ?? undefined);
   useSessionLayoutNavigation(wide, selectedId, {
@@ -1203,7 +1226,7 @@ function SessionList({ client }: { client: VerityClient }) {
           {knowledgeFile ? (
             <View style={styles.knowledgeOverlay}>
               <KnowledgeFileView
-                key={`${knowledgeFile.scope.kind}:${knowledgeFile.file}`}
+                key={JSON.stringify([knowledgeFile.scope, knowledgeFile.file])}
                 client={client}
                 scope={knowledgeFile.scope}
                 file={knowledgeFile.file}
