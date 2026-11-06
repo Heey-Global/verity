@@ -171,7 +171,15 @@ Disabled is always 40 % opacity; pressed is always a slight darkening.
     tint with the icon in `textMuted`. The Premium row uses `signature` instead of `action`. A status-bearing icon may use
     `leading.intent`: `needsSetup` uses attention and `ready` uses success, both with
     the shared fill tint. Vulnerability finding rows use this to retain their severity
-    while still allowing navigation.
+    while still allowing navigation. `transient` uses the `action` tile for something in
+    motion, and `quiet` keeps the neutral tile in a row that can be tapped when the icon
+    states a fact rather than an action.
+  - **Tile marks (optional):** a 12 px filled disc (`TileMark`) on the tile's right corners,
+    with a 1.5 px ring in `surface` and its glyph cut out in `background`. The top corner
+    carries the subject's own state, the bottom corner a verdict; both corners use the same
+    mark, so a tile with two reads as one pair. Session rows in a project's Work list put the
+    agent's state on top (pulsing `signature` while working, `action` for a new answer,
+    `attention` with "?" while it waits) and an open pull request's checks below.
   - **Center:** title in `Row`, at most one subtitle in `Subtitle`. Never more than two lines.
   - **Trailing:** exactly one of value (muted), status, toggle or compact button. A trailing
     value is short ("On", "2"); a long one such as an address goes in the subtitle, so the

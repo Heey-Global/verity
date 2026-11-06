@@ -3,9 +3,11 @@ import {
   inboxView,
   markerAttention,
   modelDisplayName,
+  sessionAgentMark,
   sessionAttention,
   sessionBadge,
   sessionLabel,
+  sessionTile,
   showsSessionLabel,
   workOrder,
   type AttentionFlag,
@@ -13,8 +15,10 @@ import {
   type InboxAction,
   type InboxItem,
   type ProjectRecord,
+  type SessionAgentMark,
   type SessionStatus,
   type SessionSummary,
+  type SessionTile,
   type VerityClient,
 } from '@verity/mobile';
 import { router } from 'expo-router';
@@ -26,9 +30,19 @@ import type { InboxFeed } from '../home/HomeInbox';
 import { SessionMarkerColumn, sessionMarkers, sessionMarkersLabel } from '../SessionMarkerColumn';
 import { SwipeableSessionRow } from '../SessionRowActions';
 import { SessionSettingsDialog } from '../SessionSettingsDialog';
-import { UnreadDot } from '../UnreadDot';
-import { WorkingDot } from '../WorkingDot';
-import { Button, FilterChips, Group, IconButton, Row, SectionHeader, StatusTag, Text } from '../ui';
+import type { IconName } from '../Icon';
+import {
+  Button,
+  FilterChips,
+  Group,
+  IconButton,
+  Row,
+  SectionHeader,
+  StatusTag,
+  Text,
+  TileMark,
+} from '../ui';
+import type { TileMarkGlyph, TileMarkTone } from '../ui';
 import type { StatusIntent } from '../ui/Status';
 import { isLinkableSession } from '../../lib/sessionLinks';
 import { useSessionPreviews } from '../../lib/sessionPreviews';
@@ -141,6 +155,43 @@ export function workFilter(session: SessionSummary, filter: Exclude<WorkFilter, 
   return filter === 'all' || session.favorite === true;
 }
 
+// The tile's phase glyph: git symbols for code, so a pull request's verdict is
+// always a mark on a PR glyph and never a bare check or cross.
+const TILE_ICON: Record<SessionTile['glyph'], IconName> = {
+  pull_request: 'git-pull-request',
+  merged: 'git-merge',
+  automation: 'repeat',
+  session: 'message-square',
+};
+
+const TILE_INTENT: Record<SessionTile['tone'], StatusIntent | undefined> = {
+  progress: 'transient',
+  ready: 'ready',
+  problem: 'needsSetup',
+  quiet: undefined,
+};
+
+const RESULT_MARK: Record<
+  NonNullable<SessionTile['result']>,
+  { tone: TileMarkTone; glyph: TileMarkGlyph }
+> = {
+  running: { tone: 'action', glyph: 'loader' },
+  passed: { tone: 'success', glyph: 'check' },
+  failed: { tone: 'attention', glyph: 'x' },
+  conflict: { tone: 'attention', glyph: '!' },
+  checking: { tone: 'muted', glyph: 'more-horizontal' },
+};
+
+// The labels the row's old leading dots carried, kept so VoiceOver says the same.
+const AGENT_MARK: Record<
+  SessionAgentMark,
+  { tone: TileMarkTone; glyph?: TileMarkGlyph; pulsing?: boolean; label: string }
+> = {
+  question: { tone: 'attention', glyph: '?', label: 'Waiting for you' },
+  working: { tone: 'signature', pulsing: true, label: 'Agent is working' },
+  unread: { tone: 'action', label: 'Unread messages' },
+};
+
 /** The line under a session's name: its pull request and what it wants, else its model. */
 function workSubtitle(session: SessionSummary): string | undefined {
   const parts: string[] = [];
@@ -178,8 +229,11 @@ function itemSubtitle(item: InboxItem, label: string): string | undefined {
  * Dismissing is Home's: an item dismissed there stays out of Now, and Home is
  * where it is restored, so this list keeps no fold of hidden items.
  *
- * Rows carry the session list's markers — the working dot, the blue dot for a new
- * answer, the star, automation and links. A row opens its session; swipe actions
+ * Each row leads with its {@link sessionTile}: the pull request's phase and
+ * verdict, else automation, else a neutral tile, with the agent's state (working,
+ * new answer, waiting) as the tile's top mark; a "Needs you" row keeps the status
+ * dot of what it waits for. The trailing column keeps the star, automation and
+ * link markers. A row opens its session; swipe actions
  * and the browser context menu offer favorite, session settings (rename, move,
  * linked sessions) and delete.
  */
@@ -311,6 +365,10 @@ export function ProjectWork({
     const working = isActive(session);
     const unread = !working && unreadIds.has(session.sessionId);
     const item = waiting?.item;
+    const tile = sessionTile(session);
+    const agent = sessionAgentMark({ status: session.status, working, unread });
+    const result = tile.result !== undefined ? RESULT_MARK[tile.result] : undefined;
+    const tileIntent = TILE_INTENT[tile.tone];
     const statusTag =
       waiting !== undefined
         ? { label: waiting.tag, intent: waiting.intent }
@@ -330,7 +388,16 @@ export function ProjectWork({
     const spoken = [
       label,
       waiting?.subtitle,
-      working ? 'working' : unread ? 'new answer' : null,
+      // From the same mark the tile draws, so the screen and VoiceOver never
+      // disagree; waiting is spoken by the tag that names what it waits for.
+      agent === 'working' ? 'working' : agent === 'unread' ? 'new answer' : null,
+      // The row speaks one label, so the subtitle's PR verdict is not read on its
+      // own; the tile says it instead, unless the tag already does.
+      !needs &&
+      (tile.glyph === 'pull_request' || tile.glyph === 'merged') &&
+      tile.label.toLowerCase() !== statusTag?.label.toLowerCase()
+        ? tile.label
+        : null,
       statusTag?.label,
       markers.length > 0 ? sessionMarkersLabel(markers) : null,
     ]
@@ -352,11 +419,34 @@ export function ProjectWork({
             needs && waiting !== undefined
               ? { dot: waiting.intent }
               : {
-                  element: (
-                    <View style={styles.dot} testID={`work-dot-${session.sessionId}`}>
-                      {working ? <WorkingDot /> : unread ? <UnreadDot /> : null}
-                    </View>
-                  ),
+                  icon: TILE_ICON[tile.glyph],
+                  ...(tileIntent !== undefined ? { intent: tileIntent } : { quiet: true }),
+                  marks: {
+                    top:
+                      agent !== undefined ? (
+                        <View
+                          testID={`work-agent-${session.sessionId}`}
+                          accessibilityRole="image"
+                          accessibilityLabel={AGENT_MARK[agent].label}
+                        >
+                          <TileMark
+                            tone={AGENT_MARK[agent].tone}
+                            glyph={AGENT_MARK[agent].glyph}
+                            pulsing={AGENT_MARK[agent].pulsing === true}
+                          />
+                        </View>
+                      ) : undefined,
+                    bottom:
+                      result !== undefined ? (
+                        <View
+                          testID={`work-result-${session.sessionId}`}
+                          accessibilityRole="image"
+                          accessibilityLabel={tile.label}
+                        >
+                          <TileMark tone={result.tone} glyph={result.glyph} />
+                        </View>
+                      ) : undefined,
+                  },
                 }
           }
           trailing={
@@ -564,7 +654,5 @@ const styles = StyleSheet.create((theme) => ({
   toolbar: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
   section: { gap: theme.spacing.sm },
   empty: { paddingVertical: theme.spacing.md },
-  // Every row keeps the slot, so names line up whether or not a dot is shown.
-  dot: { width: 12, alignItems: 'center' },
   trailing: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
 }));

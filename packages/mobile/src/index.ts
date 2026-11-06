@@ -305,6 +305,15 @@ export {
   type AttentionKind,
 } from './ui/attention.js';
 export {
+  sessionAgentMark,
+  sessionTile,
+  type SessionAgentMark,
+  type SessionTile,
+  type SessionTileGlyph,
+  type SessionTileResult,
+  type SessionTileTone,
+} from './ui/sessionTile.js';
+export {
   isPullRequestCheckingMergeability,
   isPullRequestConflicted,
   pullRequestMergeButton,
