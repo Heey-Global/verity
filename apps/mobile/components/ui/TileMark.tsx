@@ -63,7 +63,11 @@ const styles = StyleSheet.create((theme) => ({
   },
   punctuation: {
     ...theme.typography.caption,
+    // Two steps under caption, matching the 8 px Feather glyphs in the 9 px
+    // space inside the ring.
+    fontSize: theme.typography.caption.fontSize - 2,
     fontFamily: theme.fonts.bold,
+    includeFontPadding: false,
     lineHeight: TILE_MARK_SIZE - 3,
     textAlign: 'center',
   },

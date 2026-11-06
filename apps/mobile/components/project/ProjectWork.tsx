@@ -388,10 +388,16 @@ export function ProjectWork({
     const spoken = [
       label,
       waiting?.subtitle,
-      working ? 'working' : unread ? 'new answer' : null,
+      // From the same mark the tile draws, so the screen and VoiceOver never
+      // disagree; waiting is spoken by the tag that names what it waits for.
+      agent === 'working' ? 'working' : agent === 'unread' ? 'new answer' : null,
       // The row speaks one label, so the subtitle's PR verdict is not read on its
-      // own; the tile says it instead.
-      !needs && (tile.glyph === 'pull_request' || tile.glyph === 'merged') ? tile.label : null,
+      // own; the tile says it instead, unless the tag already does.
+      !needs &&
+      (tile.glyph === 'pull_request' || tile.glyph === 'merged') &&
+      tile.label.toLowerCase() !== statusTag?.label.toLowerCase()
+        ? tile.label
+        : null,
       statusTag?.label,
       markers.length > 0 ? sessionMarkersLabel(markers) : null,
     ]

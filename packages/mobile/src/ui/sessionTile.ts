@@ -48,7 +48,8 @@ const PR_TILES: Record<
 };
 
 type PrKind = keyof typeof PR_TILES;
-const isPrKind = (kind: AttentionKind): kind is PrKind => Object.hasOwn(PR_TILES, kind);
+const isPrKind = (kind: AttentionKind): kind is PrKind =>
+  Object.prototype.hasOwnProperty.call(PR_TILES, kind);
 
 /** The leading tile for a session row. */
 export function sessionTile(session: TileInput): SessionTile {
