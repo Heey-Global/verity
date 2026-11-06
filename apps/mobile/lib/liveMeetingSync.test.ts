@@ -27,6 +27,7 @@ jest.mock('./client', () => ({
 }));
 jest.mock('./liveMeetingSession', () => ({
   currentMeeting: jest.fn().mockReturnValue(null),
+  recoverNativeMeetings: jest.fn().mockResolvedValue(undefined),
   subscribeMeeting: () => () => {},
   endMeeting: jest.fn().mockResolvedValue(undefined),
   pauseMeeting: jest.fn().mockResolvedValue(undefined),

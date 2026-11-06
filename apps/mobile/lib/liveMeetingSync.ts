@@ -7,6 +7,7 @@ import {
   endMeeting,
   pauseMeeting,
   resumeMeeting,
+  recoverNativeMeetings,
   subscribeMeeting,
 } from './liveMeetingSession';
 import {
@@ -224,6 +225,7 @@ export function startLiveMeetingSync(): () => void {
   let running = true;
   let ticking = false;
   let client = createVerityClient();
+  let lastBackgroundFlush = 0;
   const tick = async () => {
     if (!running || ticking || AppState.currentState !== 'active') return;
     ticking = true;
@@ -271,7 +273,13 @@ export function startLiveMeetingSync(): () => void {
       }
     }
     const serverId = getActiveMeetingServerId();
-    if (serverId) void flushMeetingOutbox(serverId).catch(() => undefined);
+    const background = AppState.currentState !== 'active';
+    // Reuse the paired transport while audio keeps the process alive. This is best effort;
+    // the native journal remains authoritative when JavaScript or the connection is suspended.
+    if (serverId && (!background || Date.now() - lastBackgroundFlush >= 10_000)) {
+      if (background) lastBackgroundFlush = Date.now();
+      void flushMeetingOutbox(serverId).catch(() => undefined);
+    }
   };
   const detachMeeting = subscribeMeeting(bindMeeting);
   const detachBase = subscribeVerityBaseUrl(() => {
@@ -281,9 +289,14 @@ export function startLiveMeetingSync(): () => void {
     void tick();
   });
   const appState = AppState.addEventListener('change', (state) => {
-    if (state === 'active') void tick();
+    if (state === 'active')
+      void recoverNativeMeetings()
+        .then(tick)
+        .catch(() => undefined);
   });
-  void tick();
+  void recoverNativeMeetings()
+    .then(tick)
+    .catch(() => undefined);
   return () => {
     running = false;
     clearInterval(timer);
