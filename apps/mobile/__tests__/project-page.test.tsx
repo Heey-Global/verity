@@ -329,7 +329,13 @@ describe('project page', () => {
     const { client } = await renderPage([]);
     fireEvent.press(screen.getByRole('tab', { name: 'Knowledge' }));
     expect(await screen.findByTestId('project-knowledge')).toBeTruthy();
-    expect(client.listProjectKnowledgeFiles).toHaveBeenCalledWith('p/1', '');
+    // The tab is the top level; on a phone each area opens as its own screen.
+    fireEvent.press(screen.getByText('Wiki'));
+    expect(mockPush).toHaveBeenLastCalledWith({
+      pathname: '/project/[id]/knowledge',
+      params: { id: 'p/1', folder: 'insights' },
+    });
+    expect(client.listProjectKnowledgeFiles).not.toHaveBeenCalled();
   });
 
   it('reloads when the wide layout polled newer sessions beside it', async () => {

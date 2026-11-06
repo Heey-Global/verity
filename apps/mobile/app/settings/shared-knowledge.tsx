@@ -1,7 +1,14 @@
 import { useLocalSearchParams } from 'expo-router';
-import { SharedKnowledgeSettings } from '../../components/settings/SharedKnowledgeSettings';
+
+import { KnowledgeScreen } from '../../components/knowledge/KnowledgeBrowser';
+import { SHARED } from '../../components/knowledge/knowledgeScope';
 
 export default function SharedKnowledgeScreen() {
-  const { path } = useLocalSearchParams<{ path?: string }>();
-  return <SharedKnowledgeSettings key={path ?? ''} initialPath={path} />;
+  // `path` is what links before folder/file named a file; it still opens it.
+  const { folder, file, path } = useLocalSearchParams<{
+    folder?: string;
+    file?: string;
+    path?: string;
+  }>();
+  return <KnowledgeScreen scope={SHARED} folder={folder} file={file ?? path} />;
 }

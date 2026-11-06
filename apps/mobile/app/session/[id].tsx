@@ -2446,7 +2446,7 @@ export const SessionChat = memo(function SessionChat({
   const [filesInitialRoot, setFilesInitialRoot] = useState<SessionFileRoot>('worktree');
   const openSessionFile = useCallback((path: string, root: SessionFileRoot = 'worktree') => {
     if (root === 'shared') {
-      router.push({ pathname: '/settings/shared-knowledge', params: { path } });
+      router.push({ pathname: '/settings/shared-knowledge', params: { file: path } });
       return;
     }
     setFilesInitialPath(path);

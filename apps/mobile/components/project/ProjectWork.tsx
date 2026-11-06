@@ -134,9 +134,7 @@ export function ProjectWork({
     void Promise.all([
       client.listProjects().catch(() => [] as ProjectRecord[]),
       client.listSessions().catch(() => [...sessions]),
-    ]).then(([projects, everySession]) =>
-      setSettings({ session, links, projects, everySession }),
-    );
+    ]).then(([projects, everySession]) => setSettings({ session, links, projects, everySession }));
   };
   const toggleFavorite = (session: SessionSummary) =>
     void client

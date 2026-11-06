@@ -1,7 +1,11 @@
 import { END_PLANNING_TOOL, planningToolName } from '@verity/events';
 
 import { spellOutBidiControls } from './bidi.js';
-import { brokeredAuthSentence, brokeredHttpSummary, brokeredHttpTitle } from './brokeredHttpSummary.js';
+import {
+  brokeredAuthSentence,
+  brokeredHttpSummary,
+  brokeredHttpTitle,
+} from './brokeredHttpSummary.js';
 import { calendarChangeSummary } from './calendarChangeSummary.js';
 import { gmailSendSummary } from './gmailSendSummary.js';
 import { knowledgePublishSummary } from './knowledgePublishSummary.js';

@@ -135,6 +135,9 @@ import { HomeInbox } from '../components/home/HomeInbox';
 import { HomeTabBar, type HomeTab } from '../components/home/HomeTabBar';
 import { useNewDesign } from '../lib/homePreferences';
 import { ProjectPage } from '../components/project/ProjectPage';
+import { KnowledgeFileView } from '../components/knowledge/KnowledgeFileView';
+import { KnowledgePaneContext, type KnowledgePane } from '../components/knowledge/KnowledgePane';
+import type { KnowledgeScope } from '../components/knowledge/knowledgeScope';
 import { ProjectCard } from '../components/project/ProjectCard';
 import { VerityPage } from '../components/verity/VerityPage';
 import { toneColor } from '../theme/tokens';
@@ -182,6 +185,21 @@ function SessionList({ client }: { client: VerityClient }) {
       mockups?: string;
     }>();
   const [selectedId, setSelectedId] = useState<string | null>(selected ?? null);
+  // A knowledge file read in the wide layout's right column, over the session,
+  // which stays mounted underneath so closing the file shows it unchanged.
+  const [knowledgeFile, setKnowledgeFile] = useState<{
+    scope: KnowledgeScope;
+    file: string;
+  } | null>(null);
+  const knowledgePane = useMemo<KnowledgePane>(
+    () => ({ openFile: (scope, file) => setKnowledgeFile({ scope, file }) }),
+    [],
+  );
+  // Choosing a session — from the list, Home or a project page — means reading it.
+  const selectSession = useCallback((sessionId: string | null) => {
+    setKnowledgeFile(null);
+    setSelectedId(sessionId);
+  }, []);
   if (selectedId) markFirstSessionRender(selectedId, 'selection-home-render-entry');
   const finishHomeWork = beginRenderWork('home-body', selectedId ?? undefined);
   useSessionLayoutNavigation(wide, selectedId, {
@@ -674,7 +692,7 @@ function SessionList({ client }: { client: VerityClient }) {
       // navigate through their own Link, so Home navigates here, once.
       if (session) onOpenSession(session);
       if (wide) {
-        setSelectedId(sessionId);
+        selectSession(sessionId);
         router.setParams({ selected: sessionId, mockups: options?.mockups ? '1' : undefined });
       } else
         router.push({
@@ -800,7 +818,7 @@ function SessionList({ client }: { client: VerityClient }) {
           onRenameSession={setRenaming}
           onToggleFavoriteSession={onToggleFavoriteSession}
           onDeleteSession={onDeleteSession}
-          onSelectSession={wide ? setSelectedId : undefined}
+          onSelectSession={wide ? selectSession : undefined}
           onNewSession={wide ? createSessionInPane : undefined}
           onOpenSession={onOpenSession}
           onUpdateProject={confirmSandboxUpdate}
@@ -1173,41 +1191,56 @@ function SessionList({ client }: { client: VerityClient }) {
   if (!wide) return <SchedulingDiagnostics stage="sidebar">{sidebar}</SchedulingDiagnostics>;
 
   return (
-    <View style={styles.splitRow}>
-      <View style={[styles.leftPane, { width: sidebarWidth }]}>
-        <SchedulingDiagnostics stage="sidebar">{sidebar}</SchedulingDiagnostics>
-      </View>
-      <View style={styles.rightPane}>
-        {selectedId && baseUrl ? (
-          <DeferredSessionPane
-            sessionId={selectedId}
-            key={`${selectedId}:${moveGeneration}`}
-            fallback={
-              <View style={styles.rightPanePlaceholder} accessibilityRole="progressbar">
-                <Text style={styles.rightPanePlaceholderText}>
-                  {sessions.find((session) => session.sessionId === selectedId)?.name ?? 'Session'}
-                </Text>
-                <ActivityIndicator />
-                <Text style={styles.rightPanePlaceholderText}>Loading session…</Text>
-              </View>
-            }
-          >
-            <SessionChat
-              client={client}
+    <KnowledgePaneContext.Provider value={knowledgePane}>
+      <View style={styles.splitRow}>
+        <View style={[styles.leftPane, { width: sidebarWidth }]}>
+          <SchedulingDiagnostics stage="sidebar">{sidebar}</SchedulingDiagnostics>
+        </View>
+        <View style={styles.rightPane}>
+          {knowledgeFile ? (
+            <View style={styles.knowledgeOverlay}>
+              <KnowledgeFileView
+                key={`${knowledgeFile.scope.kind}:${knowledgeFile.file}`}
+                client={client}
+                scope={knowledgeFile.scope}
+                file={knowledgeFile.file}
+                chrome="pane"
+                onClose={() => setKnowledgeFile(null)}
+              />
+            </View>
+          ) : null}
+          {selectedId && baseUrl ? (
+            <DeferredSessionPane
               sessionId={selectedId}
-              baseUrl={baseUrl}
-              embedded
-              initialTargetMessageId={targetMessageId}
-              initialTargetSearchQuery={targetSearchQuery}
-              retrySecret={retrySecret}
-              initialMockupReview={selected === selectedId && mockups === '1'}
-            />
-          </DeferredSessionPane>
-        ) : (
-          <RightPanePlaceholder />
-        )}
+              key={`${selectedId}:${moveGeneration}`}
+              fallback={
+                <View style={styles.rightPanePlaceholder} accessibilityRole="progressbar">
+                  <Text style={styles.rightPanePlaceholderText}>
+                    {sessions.find((session) => session.sessionId === selectedId)?.name ??
+                      'Session'}
+                  </Text>
+                  <ActivityIndicator />
+                  <Text style={styles.rightPanePlaceholderText}>Loading session…</Text>
+                </View>
+              }
+            >
+              <SessionChat
+                client={client}
+                sessionId={selectedId}
+                baseUrl={baseUrl}
+                embedded
+                initialTargetMessageId={targetMessageId}
+                initialTargetSearchQuery={targetSearchQuery}
+                retrySecret={retrySecret}
+                initialMockupReview={selected === selectedId && mockups === '1'}
+              />
+            </DeferredSessionPane>
+          ) : (
+            <RightPanePlaceholder />
+          )}
+        </View>
       </View>
-    </View>
+    </KnowledgePaneContext.Provider>
   );
 }
 
@@ -2698,6 +2731,8 @@ const styles = StyleSheet.create((theme) => ({
     flex: 1,
     backgroundColor: theme.colors.background,
   },
+  // Above the session pane, which stays mounted below it.
+  knowledgeOverlay: { ...StyleSheet.absoluteFillObject, zIndex: 1 },
   rightPanePlaceholder: {
     flex: 1,
     alignItems: 'center',

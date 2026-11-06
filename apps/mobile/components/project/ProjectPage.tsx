@@ -16,7 +16,8 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { CodeHostIcon } from '../CodeHostIcon';
 import { InboxFeedList, useInboxFeed, type InboxFeed } from '../home/HomeInbox';
-import { SharedKnowledgeSettings } from '../settings/SharedKnowledgeSettings';
+import { KnowledgeColumn } from '../knowledge/KnowledgeBrowser';
+import type { KnowledgeScope } from '../knowledge/knowledgeScope';
 import { Button, FilterChips, Group, IconButton, Row, SectionHeader, StatusTag, Text } from '../ui';
 import type { StatusIntent } from '../ui/Status';
 import { tint } from '../ui/tint';
@@ -112,6 +113,10 @@ export function ProjectPage({
   const connections = useProjectConnections(client, projectId);
   const refreshConnections = connections.refresh;
   const [tab, setTab] = useState<ProjectTab>(initialTab);
+  const knowledgeScope = useMemo<KnowledgeScope>(
+    () => ({ kind: 'project', projectId }),
+    [projectId],
+  );
   const [refreshing, setRefreshing] = useState(false);
   const reload = useCallback(() => void load(true), [load]);
   const refresh = useCallback(() => {
@@ -203,7 +208,7 @@ export function ProjectPage({
         </View>
         {tab === 'knowledge' ? (
           <View style={styles.flex} testID="project-knowledge">
-            <SharedKnowledgeSettings key={projectId} projectId={projectId} embedded />
+            <KnowledgeColumn key={projectId} client={client} scope={knowledgeScope} />
           </View>
         ) : (
           <ScrollView
