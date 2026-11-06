@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.85.1](https://github.com/Heey-Global/verity/compare/mobile-v1.85.0...mobile-v1.85.1) (2026-11-06)
+
+
+### Features
+
+* **mobile:** navigable knowledge, Work markers, project security and readable approvals ([#2318](https://github.com/Heey-Global/verity/issues/2318)) ([fa1bc7c](https://github.com/Heey-Global/verity/commit/fa1bc7ca29894a859694353343665b202ed1720e))
+
 ## [1.84.8](https://github.com/Heey-Global/verity/compare/mobile-v1.84.7...mobile-v1.84.8) (2026-11-05)
 
 
