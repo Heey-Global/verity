@@ -343,22 +343,38 @@ describe('POST /sessions/:id/mockups', () => {
 });
 
 describe('mockup review through the real conductor', () => {
+  const conductors: Conductor[] = [];
+  afterEach(async () => {
+    for (const conductor of conductors.splice(0)) {
+      await vi.waitFor(() => expect(conductor.isBusy('s1')).toBe(false));
+      await conductor.drainOnShutdown();
+    }
+  });
+
   function liveReview() {
     const runs: RunTurnOptions[] = [];
     const errors: Error[] = [];
     const backend: Backend = {
       run: async (opts) => {
         runs.push(opts);
+        await opts.store.appendEvent(opts.storeSessionId ?? 's1', {
+          t: 'result',
+          usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 },
+          stopReason: 'end_turn',
+        });
         return { sessionId: 's1', exitCode: 0, stderr: '', aborted: false };
       },
     };
-    const makeConductor = () =>
-      new Conductor({
+    const makeConductor = () => {
+      const instance = new Conductor({
         store,
         backend,
         worktreeExists: async () => true,
         onTurnError: (_id, error) => errors.push(error),
       });
+      conductors.push(instance);
+      return instance;
+    };
     const conductor = makeConductor();
     mockups = createSessionMockups({
       eventStore: store,
@@ -425,6 +441,8 @@ describe('mockup review through the real conductor', () => {
         action === 'approved' ? MOCKUPS_APPROVED_PROMPT : 'Move the title',
       );
       expect(await store.listQueuedTurns()).toEqual([]);
+      // A success without a terminal event would be recovered as an orphan prompt.
+      expect((await store.getEvents('s1')).at(-1)?.t).toBe('result');
       await restarted.recover();
       expect(runs).toHaveLength(1);
       expect(errors).toEqual([]);
