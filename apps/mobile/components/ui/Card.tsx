@@ -124,9 +124,18 @@ export function Group({ children }: { children: ReactNode }) {
 
 /** A Feather icon or a status dot; `element` is for a mark that is not a
  *  Feather glyph (an agent's logo), drawn in the same tile. `signature` draws
- *  the icon in the brand pink — reserved for the Premium mark (§ 2). */
+ *  the icon in the brand pink — reserved for the Premium mark (§ 2). `quiet`
+ *  keeps the neutral tile in a row that can be tapped, for a tile that states a
+ *  fact rather than an action. `marks` sit on the tile's right corners
+ *  ({@link TileMark}): `top` for the subject's own state, `bottom` for a verdict. */
 type Leading =
-  | { icon: IconName; signature?: boolean; intent?: StatusIntent }
+  | {
+      icon: IconName;
+      signature?: boolean;
+      intent?: StatusIntent;
+      quiet?: boolean;
+      marks?: { top?: ReactNode; bottom?: ReactNode };
+    }
   | { dot: StatusIntent }
   | { element: ReactNode };
 
@@ -327,11 +336,13 @@ function RowContent({
                 ? styles.tileAttention
                 : leading.intent === 'ready'
                   ? styles.tileReady
-                  : leading.signature === true
-                    ? styles.tileSignature
-                    : acts
-                      ? styles.tileAction
-                      : null,
+                  : leading.intent === 'transient'
+                    ? styles.tileAction
+                    : leading.signature === true
+                      ? styles.tileSignature
+                      : acts && leading.quiet !== true
+                        ? styles.tileAction
+                        : null,
             ]}
           >
             <Icon
@@ -342,13 +353,21 @@ function RowContent({
                   ? theme.colors.attention
                   : leading.intent === 'ready'
                     ? theme.colors.success
-                    : leading.signature === true
-                      ? theme.colors.signature
-                      : acts
-                        ? theme.colors.action
-                        : theme.colors.textMuted
+                    : leading.intent === 'transient'
+                      ? theme.colors.action
+                      : leading.signature === true
+                        ? theme.colors.signature
+                        : acts && leading.quiet !== true
+                          ? theme.colors.action
+                          : theme.colors.textMuted
               }
             />
+            {leading.marks?.top !== undefined ? (
+              <View style={styles.tileMarkTop}>{leading.marks.top}</View>
+            ) : null}
+            {leading.marks?.bottom !== undefined ? (
+              <View style={styles.tileMarkBottom}>{leading.marks.bottom}</View>
+            ) : null}
           </View>
         ) : 'element' in leading ? (
           <View style={styles.tile}>{leading.element}</View>
@@ -453,6 +472,10 @@ const styles = StyleSheet.create((theme) => ({
   tileAttention: { backgroundColor: tint(theme.colors.attention, 'fill') },
   tileReady: { backgroundColor: tint(theme.colors.success, 'fill') },
   tileSignature: { backgroundColor: tint(theme.colors.signature, 'fill') },
+  // Centred 3 px inside the tile's right edge and 3 px from its top or bottom, so
+  // a mark overlaps the corner without covering the 16 px glyph.
+  tileMarkTop: { position: 'absolute', top: -3, right: -3 },
+  tileMarkBottom: { position: 'absolute', bottom: -3, right: -3 },
   dotSlot: { width: 32, alignItems: 'center' },
   body: { flex: 1, minWidth: 0, gap: theme.spacing.xxs },
   title: { ...theme.typography.row, color: theme.colors.text },

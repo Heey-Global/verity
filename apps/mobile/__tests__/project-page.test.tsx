@@ -298,12 +298,36 @@ describe('project page', () => {
       'answered, new answer',
       'blog, favorite',
     ]);
-    // Blue for a new answer, the pulse while working, nothing for a quiet session.
-    expect(within(screen.getByTestId('work-dot-answered')).getByLabelText('Unread messages'));
-    expect(within(screen.getByTestId('work-dot-login')).getByLabelText('Agent is working'));
-    expect(within(screen.getByTestId('work-dot-quiet')).queryByRole('image')).toBeNull();
+    // The agent's state is the tile's top mark: blue for a new answer, the pulse
+    // while working, the question while it waits, nothing for a quiet session.
+    expect(screen.getByTestId('work-agent-answered').props.accessibilityLabel).toBe(
+      'Unread messages',
+    );
+    expect(screen.getByTestId('work-agent-login').props.accessibilityLabel).toBe(
+      'Agent is working',
+    );
+    expect(screen.getByTestId('work-agent-form').props.accessibilityLabel).toBe('Waiting for you');
+    expect(screen.queryByTestId('work-agent-quiet')).toBeNull();
     // Done was drawn as a green status here; the session list never marked it.
     expect(screen.queryByLabelText('Done')).toBeNull();
+  });
+
+  it('marks a pull request verdict on the tile, apart from the agent state', async () => {
+    const failing = session('checks', {
+      status: 'running',
+      pr: { phase: 'open', pipeline: 'failure', mergeable: false },
+    });
+    const quiet = session('quiet');
+    await renderPage([failing, quiet]);
+    fireEvent.press(screen.getByRole('tab', { name: 'Work' }));
+    // Both corners at once: the verdict below, the working agent above. Losing
+    // either to the other is the regression this layout exists to prevent.
+    expect(screen.getByTestId('work-result-checks')).toBeTruthy();
+    expect(screen.getByTestId('work-agent-checks').props.accessibilityLabel).toBe(
+      'Agent is working',
+    );
+    // A session without a pull request has no verdict to show.
+    expect(screen.queryByTestId('work-result-quiet')).toBeNull();
   });
 
   it('marks a session whose preview is running, as the session list does', async () => {

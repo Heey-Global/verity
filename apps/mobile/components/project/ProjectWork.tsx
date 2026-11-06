@@ -2,13 +2,17 @@ import {
   VerityApiError,
   markerAttention,
   modelDisplayName,
+  sessionAgentMark,
   sessionBadge,
   sessionLabel,
+  sessionTile,
   showsSessionLabel,
   workOrder,
   type ProjectRecord,
+  type SessionAgentMark,
   type SessionStatus,
   type SessionSummary,
+  type SessionTile,
   type VerityClient,
 } from '@verity/mobile';
 import { router } from 'expo-router';
@@ -18,9 +22,9 @@ import { StyleSheet } from 'react-native-unistyles';
 
 import { SessionMarkerColumn, sessionMarkers, sessionMarkersLabel } from '../SessionMarkerColumn';
 import { SessionSettingsDialog } from '../SessionSettingsDialog';
-import { UnreadDot } from '../UnreadDot';
-import { WorkingDot } from '../WorkingDot';
-import { FilterChips, Group, IconButton, Row, StatusTag, Text } from '../ui';
+import type { IconName } from '../Icon';
+import { FilterChips, Group, IconButton, Row, StatusTag, Text, TileMark } from '../ui';
+import type { TileMarkGlyph, TileMarkTone } from '../ui';
 import type { StatusIntent } from '../ui/Status';
 import { isLinkableSession } from '../../lib/sessionLinks';
 import { useSessionPreviews } from '../../lib/sessionPreviews';
@@ -70,6 +74,43 @@ export function workFilter(session: SessionSummary, filter: WorkFilter): boolean
   }
 }
 
+// The tile's phase glyph: git symbols for code, so a pull request's verdict is
+// always a mark on a PR glyph and never a bare check or cross.
+const TILE_ICON: Record<SessionTile['glyph'], IconName> = {
+  pull_request: 'git-pull-request',
+  merged: 'git-merge',
+  automation: 'repeat',
+  session: 'message-square',
+};
+
+const TILE_INTENT: Record<SessionTile['tone'], StatusIntent | undefined> = {
+  progress: 'transient',
+  ready: 'ready',
+  problem: 'needsSetup',
+  quiet: undefined,
+};
+
+const RESULT_MARK: Record<
+  NonNullable<SessionTile['result']>,
+  { tone: TileMarkTone; glyph: TileMarkGlyph }
+> = {
+  running: { tone: 'action', glyph: 'loader' },
+  passed: { tone: 'success', glyph: 'check' },
+  failed: { tone: 'attention', glyph: 'x' },
+  conflict: { tone: 'attention', glyph: '!' },
+  checking: { tone: 'muted', glyph: 'more-horizontal' },
+};
+
+// The labels the row's old leading dots carried, kept so VoiceOver says the same.
+const AGENT_MARK: Record<
+  SessionAgentMark,
+  { tone: TileMarkTone; glyph?: TileMarkGlyph; pulsing?: boolean; label: string }
+> = {
+  question: { tone: 'attention', glyph: '?', label: 'Waiting for you' },
+  working: { tone: 'signature', pulsing: true, label: 'Agent is working' },
+  unread: { tone: 'action', label: 'Unread messages' },
+};
+
 /** The line under a session's name: its pull request and what it wants, else its model. */
 function workSubtitle(session: SessionSummary): string | undefined {
   const parts: string[] = [];
@@ -93,8 +134,10 @@ function workSubtitle(session: SessionSummary): string | undefined {
 /**
  * A project's sessions as one list, filtered by what they are doing and ordered
  * by {@link workOrder}: what needs the operator or is moving first, then
- * favorites. Each row carries the session list's markers — the working dot, the
- * blue dot for a new answer, the star, automation and links. A row opens its
+ * favorites. Each row leads with its {@link sessionTile}: the pull request's
+ * phase and verdict, else automation, else a neutral tile, with the agent's
+ * state (working, new answer, waiting) as the tile's top mark. The trailing
+ * column keeps the session list's star, automation and link markers. A row opens its
  * session; a long press offers favorite, the session settings (rename, move,
  * linked sessions) and delete.
  */
@@ -212,6 +255,10 @@ export function ProjectWork({
             const label = sessionLabel(session);
             const working = session.status === 'running' || session.backgroundWorking === true;
             const unread = !working && unreadIds.has(session.sessionId);
+            const tile = sessionTile(session);
+            const agent = sessionAgentMark({ status: session.status, working, unread });
+            const result = tile.result !== undefined ? RESULT_MARK[tile.result] : undefined;
+            const intent = TILE_INTENT[tile.tone];
             const tag = showsSessionLabel(session.status) ? TAG_INTENT[session.status] : undefined;
             const markers = sessionMarkers({
               favorite: session.favorite === true,
@@ -237,11 +284,30 @@ export function ProjectWork({
                 title={label}
                 subtitle={workSubtitle(session)}
                 leading={{
-                  element: (
-                    <View style={styles.dot} testID={`work-dot-${session.sessionId}`}>
-                      {working ? <WorkingDot /> : unread ? <UnreadDot /> : null}
-                    </View>
-                  ),
+                  icon: TILE_ICON[tile.glyph],
+                  ...(intent !== undefined ? { intent } : { quiet: true }),
+                  marks: {
+                    top:
+                      agent !== undefined ? (
+                        <View
+                          testID={`work-agent-${session.sessionId}`}
+                          accessibilityRole="image"
+                          accessibilityLabel={AGENT_MARK[agent].label}
+                        >
+                          <TileMark
+                            tone={AGENT_MARK[agent].tone}
+                            glyph={AGENT_MARK[agent].glyph}
+                            pulsing={AGENT_MARK[agent].pulsing === true}
+                          />
+                        </View>
+                      ) : undefined,
+                    bottom:
+                      result !== undefined ? (
+                        <View testID={`work-result-${session.sessionId}`}>
+                          <TileMark tone={result.tone} glyph={result.glyph} />
+                        </View>
+                      ) : undefined,
+                  },
                 }}
                 trailing={
                   tag !== undefined || markers.length > 0 ? (
@@ -324,7 +390,5 @@ const styles = StyleSheet.create((theme) => ({
   flex: { flex: 1 },
   toolbar: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
   empty: { paddingVertical: theme.spacing.md },
-  // Every row keeps the slot, so names line up whether or not a dot is shown.
-  dot: { width: 12, alignItems: 'center' },
   trailing: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
 }));
