@@ -106,6 +106,84 @@ jobs:
           fi
 
   changes:
+    # Only local classification belongs here; evidence waits have their own job.
+    timeout-minutes: 5
+    if: ${{ !inputs['lint-comparison-only'] }}
+    runs-on: ubuntu-26.04
+    permissions:
+      contents: read
+    outputs:
+      tree: ${{ steps.classify.outputs.tree }}
+      event_kind: ${{ steps.classify.outputs.event_kind }}
+      path_count: ${{ steps.classify.outputs.path_count }}
+    steps:
+      # renovate: datasource=github-actions depName=actions/checkout
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+      - name: Validate Conventional Commit title
+        if: github.event_name == 'pull_request'
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: .github/scripts/validate-release-title "$PR_TITLE"
+      - name: Classify local event and changed paths
+        id: classify
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_ACTION: ${{ github.event.action }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tree="$(git rev-parse 'HEAD^{tree}')"
+          event_kind="$EVENT_NAME"
+          path_count=unknown
+          before=''
+          separator='..'
+          if [ "$EVENT_NAME" = pull_request ]; then
+            event_kind="pull_request:${EVENT_ACTION:-unknown}"
+            before="$PR_BASE"
+            separator='...'
+          elif [ "$EVENT_NAME" = push ]; then
+            before="$PUSH_BEFORE"
+            if ! git cat-file -e "${before}^{commit}" 2>/dev/null; then
+              before="$(git rev-parse --verify --quiet 'HEAD^' || true)"
+            fi
+          fi
+          if [ -n "$before" ] && git cat-file -e "${before}^{commit}" 2>/dev/null; then
+            # Capture the command status: process substitution would hide a bad diff.
+            paths="$(git diff --no-renames --name-only "$before$separator"HEAD)"
+            path_count=0
+            if [ -n "$paths" ]; then
+              path_count="$(printf '%s\n' "$paths" | wc -l | tr -d ' ')"
+            fi
+          fi
+          {
+            echo "tree=$tree"
+            echo "event_kind=$event_kind"
+            echo "path_count=$path_count"
+          } >> "$GITHUB_OUTPUT"
+          printf 'Classified %s (%s paths); evidence waits run in Resolve required checks.\n' "$event_kind" "$path_count"
+      - name: Record PR checkout context
+        if: github.event_name == 'pull_request'
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
+        run: node scripts/ci-pr-evidence.mjs write "$RUNNER_TEMP/ci-context.json"
+      # renovate: datasource=github-actions depName=actions/upload-artifact
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        with:
+          name: ci-context-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ci-context.json
+          retention-days: 3
+
+  resolve-check-plan:
+    name: Resolve required checks
+    needs: changes
     timeout-minutes: 65
     if: ${{ !inputs['lint-comparison-only'] }}
     runs-on: ubuntu-26.04
@@ -133,32 +211,16 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      - name: Validate Conventional Commit title
-        if: github.event_name == 'pull_request'
+          ref: ${{ github.sha }}
+      - name: Bind check plan to classified checkout
         env:
-          PR_TITLE: ${{ github.event.pull_request.title }}
-        run: .github/scripts/validate-release-title "$PR_TITLE"
-      # Generated release and promotion PRs are authored by the release app and
-      # scoped below by author and head branch. The app's `<slug>[bot]` login is
-      # an output of minting a token, so mint one that can only read metadata,
-      # and only for the branches that can be release PRs; a fork PR has no
-      # secrets and runs the full suite like any other PR.
-      # Publish the checkout identity before expensive jobs so later PR events
-      # can wait for this run. Each duplicate still validates its own title above.
-      - name: Record PR checkout context
-        if: github.event_name == 'pull_request'
-        env:
-          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-          PR_BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
-        run: node scripts/ci-pr-evidence.mjs write "$RUNNER_TEMP/ci-context.json"
-      # renovate: datasource=github-actions depName=actions/upload-artifact
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: github.event_name == 'pull_request'
-        continue-on-error: true
-        with:
-          name: ci-context-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/ci-context.json
-          retention-days: 3
+          CLASSIFIED_TREE: ${{ needs.changes.outputs.tree }}
+        run: |
+          set -euo pipefail
+          test -n "$CLASSIFIED_TREE"
+          test "$(git rev-parse 'HEAD^{tree}')" = "$CLASSIFIED_TREE"
+          # Both evidence paths share one budget, starting after runner allocation.
+          node -e 'require("node:fs").appendFileSync(process.env.GITHUB_ENV, `CI_EVIDENCE_DEADLINE=${Date.now() + 60 * 60 * 1000}\n`)'
       - name: Reuse identical PR checkout checks
         id: duplicate
         if: github.event_name == 'pull_request'
@@ -697,8 +759,8 @@ jobs:
             .
 
   lint:
-    needs: changes
-    if: needs.changes.outputs.lint == 'true'
+    needs: resolve-check-plan
+    if: needs.resolve-check-plan.outputs.lint == 'true'
     runs-on: ubuntu-26.04
     steps:
       # renovate: datasource=github-actions depName=actions/checkout
@@ -839,8 +901,8 @@ jobs:
       - run: npm run format
 
   knip:
-    needs: changes
-    if: needs.changes.outputs.lint == 'true'
+    needs: resolve-check-plan
+    if: needs.resolve-check-plan.outputs.lint == 'true'
     runs-on: ubuntu-26.04
     steps:
       # renovate: datasource=github-actions depName=actions/checkout
@@ -858,8 +920,8 @@ jobs:
       - run: npm run knip
 
   typecheck:
-    needs: changes
-    if: needs.changes.outputs.typecheck == 'true'
+    needs: resolve-check-plan
+    if: needs.resolve-check-plan.outputs.typecheck == 'true'
     runs-on: ubuntu-26.04
     steps:
       # renovate: datasource=github-actions depName=actions/checkout
@@ -891,8 +953,8 @@ jobs:
       - run: npm run build
 
   test:
-    needs: changes
-    if: needs.changes.outputs.test == 'true'
+    needs: resolve-check-plan
+    if: needs.resolve-check-plan.outputs.test == 'true'
     runs-on: ubuntu-26.04
     strategy:
       # Every shard reports, so one red shard never hides another's verdict.
@@ -958,7 +1020,7 @@ jobs:
           container-name: verity-test-postgres-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.shard }}
       - name: Run one isolated test shard
         env:
-          CONTRACT_TEST_SELECTED: ${{ needs.changes.outputs.contract_test }}
+          CONTRACT_TEST_SELECTED: ${{ needs.resolve-check-plan.outputs.contract_test }}
           SHARD: ${{ matrix.shard }}
           VERITY_TEST_SHARED_POSTGRES_URL: ${{ steps.postgres.outputs.url }}
         run: |
@@ -996,8 +1058,8 @@ jobs:
   # Repository script contracts validate declarative inputs and workflow wiring
   # without booting the Server/Store test matrix or PostgreSQL.
   contract-test:
-    needs: changes
-    if: needs.changes.outputs.contract_test == 'true'
+    needs: resolve-check-plan
+    if: needs.resolve-check-plan.outputs.contract_test == 'true'
     runs-on: ubuntu-26.04
     steps:
       # renovate: datasource=github-actions depName=actions/checkout
@@ -1034,8 +1096,8 @@ jobs:
   # network or Docker socket. It creates a mount namespace without uid remapping;
   # the ordinary installer suite stays non-root and capability-less.
   installer:
-    needs: changes
-    if: needs.changes.outputs.installer == 'true'
+    needs: resolve-check-plan
+    if: needs.resolve-check-plan.outputs.installer == 'true'
     runs-on: ubuntu-26.04
     timeout-minutes: 10
     env:
@@ -1120,8 +1182,8 @@ jobs:
         run: docker image rm "verity-installer-ci:${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >/dev/null 2>&1 || true
 
   runner-postgres-race:
-    needs: changes
-    if: needs.changes.outputs.test == 'true'
+    needs: resolve-check-plan
+    if: needs.resolve-check-plan.outputs.test == 'true'
     runs-on: ubuntu-26.04
     env:
       VERITY_RUNNER_RACE_POSTGRES: verity-runner-race-postgres-${{ github.run_id }}-${{ github.run_attempt }}
@@ -1179,14 +1241,14 @@ jobs:
         run: docker rm -f "$VERITY_RUNNER_RACE_POSTGRES" >/dev/null 2>&1 || true
 
   coverage:
-    needs: changes
+    needs: resolve-check-plan
     # Coverage runs the WHOLE suite with instrumentation (required for the
     # repo-wide threshold gate in vitest.config.ts) — the single slowest check,
     # and on a PR it just re-runs what the `test` job already ran. So it runs on
     # nightly. Pull requests and routed main pushes already run the relevant
     # uninstrumented tests; repeating the whole repository after every merge was
     # the slowest job in the pipeline and did not improve path-specific feedback.
-    if: needs.changes.outputs.coverage == 'true'
+    if: needs.resolve-check-plan.outputs.coverage == 'true'
     runs-on: ubuntu-26.04
     steps:
       # renovate: datasource=github-actions depName=actions/checkout
@@ -1248,8 +1310,8 @@ jobs:
   # native build are verified in the operator's RN environment. Root build/test
   # exclude packages/mobile; this job covers it.
   mobile:
-    needs: changes
-    if: needs.changes.outputs.mobile == 'true'
+    needs: resolve-check-plan
+    if: needs.resolve-check-plan.outputs.mobile == 'true'
     runs-on: ubuntu-26.04
     steps:
       # renovate: datasource=github-actions depName=actions/checkout
@@ -1279,8 +1341,8 @@ jobs:
   # `moduleNameMapper` also resolves @verity/mobile to that dist), and the native
   # build/bundle is verified in the operator's Expo environment, not CI.
   mobile-app:
-    needs: changes
-    if: needs.changes.outputs.mobile_app == 'true'
+    needs: resolve-check-plan
+    if: needs.resolve-check-plan.outputs.mobile_app == 'true'
     runs-on: ubuntu-26.04
     steps:
       # renovate: datasource=github-actions depName=actions/checkout
@@ -1376,8 +1438,8 @@ jobs:
           cache-from: type=registry,ref=ghcr.io/heey-global/verity/verity-matrix-connector:buildcache-amd64
 
   server-image-build:
-    needs: changes
-    if: needs.changes.outputs.server_image == 'true'
+    needs: resolve-check-plan
+    if: needs.resolve-check-plan.outputs.server_image == 'true'
     runs-on: ubuntu-26.04
     timeout-minutes: 45
     # Failed installer reruns reuse the successful producer from the same run.
@@ -1556,8 +1618,8 @@ jobs:
         run: rm -f "$RUNNER_TEMP/$VERITY_CI_IMAGE_ARCHIVE"
 
   server-image:
-    needs: [changes, server-image-build]
-    if: needs.changes.outputs.server_image == 'true'
+    needs: [resolve-check-plan, server-image-build]
+    if: needs.resolve-check-plan.outputs.server_image == 'true'
     runs-on: ubuntu-26.04
     # Bounded below the cache janitor's grace period (`CACHE_MIN_AGE_MINUTES` in
     # cache-janitor.yml). The janitor only deletes entries nothing has read for
@@ -1907,8 +1969,8 @@ jobs:
   # repo-root tree is the single source of truth and this guard fails the PR if
   # the bundled copy silently drifts.
   agent-seed-drift:
-    needs: changes
-    if: needs.changes.outputs.agent_seed_drift == 'true'
+    needs: resolve-check-plan
+    if: needs.resolve-check-plan.outputs.agent_seed_drift == 'true'
     runs-on: ubuntu-26.04
     permissions:
       contents: read
@@ -1940,6 +2002,7 @@ jobs:
     needs:
       [
         changes,
+        resolve-check-plan,
         public-snapshot,
         lint,
         knip,
@@ -2008,19 +2071,20 @@ jobs:
           }
 
           require_success changes "${{ needs.changes.result }}"
+          require_success resolve-check-plan "${{ needs.resolve-check-plan.result }}"
           require_success public-snapshot "${{ needs.public-snapshot.result }}"
-          require_when_changed lint "${{ needs.lint.result }}" "${{ needs.changes.outputs.lint }}"
-          require_when_changed knip "${{ needs.knip.result }}" "${{ needs.changes.outputs.lint }}"
-          require_when_changed agent-seed-drift "${{ needs.agent-seed-drift.result }}" "${{ needs.changes.outputs.agent_seed_drift }}"
-          require_when_changed typecheck "${{ needs.typecheck.result }}" "${{ needs.changes.outputs.typecheck }}"
-          require_when_changed test "${{ needs.test.result }}" "${{ needs.changes.outputs.test }}"
-          require_when_changed contract-test "${{ needs.contract-test.result }}" "${{ needs.changes.outputs.contract_test }}"
-          require_when_changed installer "${{ needs.installer.result }}" "${{ needs.changes.outputs.installer }}"
-          require_when_changed runner-postgres-race "${{ needs.runner-postgres-race.result }}" "${{ needs.changes.outputs.test }}"
-          require_when_changed coverage "${{ needs.coverage.result }}" "${{ needs.changes.outputs.coverage }}"
-          require_when_changed mobile "${{ needs.mobile.result }}" "${{ needs.changes.outputs.mobile }}"
-          require_when_changed mobile-app "${{ needs.mobile-app.result }}" "${{ needs.changes.outputs.mobile_app }}"
+          require_when_changed lint "${{ needs.lint.result }}" "${{ needs.resolve-check-plan.outputs.lint }}"
+          require_when_changed knip "${{ needs.knip.result }}" "${{ needs.resolve-check-plan.outputs.lint }}"
+          require_when_changed agent-seed-drift "${{ needs.agent-seed-drift.result }}" "${{ needs.resolve-check-plan.outputs.agent_seed_drift }}"
+          require_when_changed typecheck "${{ needs.typecheck.result }}" "${{ needs.resolve-check-plan.outputs.typecheck }}"
+          require_when_changed test "${{ needs.test.result }}" "${{ needs.resolve-check-plan.outputs.test }}"
+          require_when_changed contract-test "${{ needs.contract-test.result }}" "${{ needs.resolve-check-plan.outputs.contract_test }}"
+          require_when_changed installer "${{ needs.installer.result }}" "${{ needs.resolve-check-plan.outputs.installer }}"
+          require_when_changed runner-postgres-race "${{ needs.runner-postgres-race.result }}" "${{ needs.resolve-check-plan.outputs.test }}"
+          require_when_changed coverage "${{ needs.coverage.result }}" "${{ needs.resolve-check-plan.outputs.coverage }}"
+          require_when_changed mobile "${{ needs.mobile.result }}" "${{ needs.resolve-check-plan.outputs.mobile }}"
+          require_when_changed mobile-app "${{ needs.mobile-app.result }}" "${{ needs.resolve-check-plan.outputs.mobile_app }}"
           require_success matrix-connector-image "${{ needs.matrix-connector-image.result }}"
-          require_when_changed server-image-build "${{ needs.server-image-build.result }}" "${{ needs.changes.outputs.server_image }}"
-          require_when_changed server-image "${{ needs.server-image.result }}" "${{ needs.changes.outputs.server_image }}"
+          require_when_changed server-image-build "${{ needs.server-image-build.result }}" "${{ needs.resolve-check-plan.outputs.server_image }}"
+          require_when_changed server-image "${{ needs.server-image.result }}" "${{ needs.resolve-check-plan.outputs.server_image }}"
           echo "all required CI jobs succeeded"
