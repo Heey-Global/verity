@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { join, resolve } from 'node:path';
+import { join, posix, relative, resolve } from 'node:path';
 import { z } from 'zod';
 import type { RunnerTurnOwnershipRequest } from '@verity/store';
 import type { DockerClient } from './docker.js';
@@ -133,6 +133,20 @@ export class RunnerCacheMaintenance {
 
 const brokerCommand = `import('/usr/local/bin/verity-agent-spawn-broker').then(m=>{if(typeof m.reclaimPackageCachesOffline!=='function')process.exit(78); const {spawn}=require('node:child_process'); const p=spawn(process.execPath,['/usr/local/bin/verity-agent-spawn-broker','--reclaim-package-caches-maintenance'],{stdio:['pipe','inherit','inherit']}); p.on('error',()=>process.exit(1)); p.on('exit',(code)=>process.exit(code??1)); p.stdin.on('error',()=>{}); p.stdin.end(process.env.VERITY_CACHE_MAINTENANCE_REQUEST);}).catch(()=>process.exit(78));`;
 
+function volumeSubpathsOverlap(subpath: string | undefined, target: string): boolean {
+  if (subpath === undefined || subpath === '') return true;
+  // Malformed or platform-ambiguous inventory cannot prove independent storage.
+  if (posix.isAbsolute(subpath) || subpath.includes('\\') || subpath.split('/').includes('..'))
+    return true;
+  const path = posix.normalize(subpath).replace(/\/$/u, '');
+  return (
+    path === '.' ||
+    path === target ||
+    path.startsWith(`${target}/`) ||
+    target.startsWith(`${path}/`)
+  );
+}
+
 /** Called only inside the project lifecycle/storage barriers; it never starts a project. */
 export async function reclaimSleepingRunnerCaches(input: {
   docker: DockerClient;
@@ -162,6 +176,19 @@ export async function reclaimSleepingRunnerCaches(input: {
     throw cacheMaintenanceFailure('unsupported');
   await input.assertIdle();
   const runtimeRoot = resolve(input.runtimeRoot);
+  const self = await docker.inspectContainer(input.serverContainerId);
+  if (self.id !== input.serverContainerId || self.mounts === undefined)
+    throw cacheMaintenanceFailure('runtime-not-idle');
+  // Engine bind sources use host paths, while runtimeRoot is inside the Server.
+  // Translate through our own mount inventory so physical bind aliases cannot
+  // hide a writer of the same data behind a different path spelling.
+  const runtimeAliases = [runtimeRoot];
+  for (const mount of self.mounts) {
+    if (!mount.source || !mount.destination || mount.subpath) continue;
+    const destination = resolve(mount.destination);
+    if (runtimeRoot === destination || runtimeRoot.startsWith(`${destination}/`))
+      runtimeAliases.push(resolve(mount.source, relative(destination, runtimeRoot)));
+  }
   const consumers = await docker.listContainers();
   if (consumers.length > 1000) throw cacheMaintenanceFailure('runtime-not-idle');
   const inventoryDeadline = Date.now() + 5000;
@@ -172,22 +199,19 @@ export async function reclaimSleepingRunnerCaches(input: {
     if (inspect.id === input.serverContainerId) continue;
     if (inspect.mounts === undefined) throw cacheMaintenanceFailure('runtime-not-idle');
     const hasRuntime = inspect.mounts?.some((mount) => {
+      if (input.dataVolume !== undefined && mount.name === input.dataVolume.name)
+        return volumeSubpathsOverlap(mount.subpath, `runners/${input.projectId}`);
       if (
         mount.source &&
-        (resolve(mount.source) === runtimeRoot ||
-          runtimeRoot.startsWith(`${resolve(mount.source)}/`) ||
-          resolve(mount.source).startsWith(`${runtimeRoot}/`))
+        runtimeAliases.some(
+          (path) =>
+            resolve(mount.source!) === path ||
+            path.startsWith(`${resolve(mount.source!)}/`) ||
+            resolve(mount.source!).startsWith(`${path}/`),
+        )
       )
         return true;
-      return (
-        input.dataVolume !== undefined &&
-        mount.name === input.dataVolume.name &&
-        (mount.subpath === `runners/${input.projectId}` ||
-          (mount.source !== undefined &&
-            resolve(mount.source).endsWith(`/runners/${input.projectId}`)) ||
-          mount.subpath === undefined ||
-          mount.subpath === '')
-      );
+      return false;
     });
     if (!hasRuntime && inspect.labels?.['verity.project-id'] !== input.projectId) continue;
     if (

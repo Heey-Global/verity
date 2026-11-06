@@ -123,7 +123,23 @@ function fixture() {
       { id: 'project', imageId: 'old' },
     ]),
     inspectContainer: vi.fn(async (id: string): Promise<ContainerInspect> =>
-      id === 'helper' ? { id, running: false, status: 'exited', exitCode: 0 } : existing,
+      id === 'self'
+        ? {
+            id: 'self',
+            running: true,
+            status: 'running',
+            mounts: [
+              {
+                type: 'volume',
+                name: 'data',
+                source: '/var/lib/docker/volumes/data/_data',
+                destination: '/data',
+              },
+            ],
+          }
+        : id === 'helper'
+          ? { id, running: false, status: 'exited', exitCode: 0 }
+          : existing,
     ),
     createContainer: vi.fn(async (value: ContainerSpec) => {
       spec = value;
@@ -135,7 +151,7 @@ function fixture() {
     removeStoppedContainer: vi.fn(async () => {}),
   };
   const assertIdle = vi.fn(async () => {});
-  const run = () =>
+  const run = (dataVolume?: { name: string; root: string }) =>
     reclaimSleepingRunnerCaches({
       docker: docker as unknown as DockerClient,
       projectId: 'p',
@@ -146,6 +162,7 @@ function fixture() {
       sessionIds: ['idle'],
       maxBytes: 4096,
       assertIdle,
+      ...(dataVolume ? { dataVolume } : {}),
     });
   return {
     docker,
@@ -212,6 +229,64 @@ describe('sleeping runner cache helpers', () => {
       runnerCacheFailure: { code: 'runtime-not-idle' },
     });
   });
+  it.each([
+    'runners',
+    'runners/p',
+    'runners/p/session-homes',
+    'runners/./p/session-homes',
+    '',
+    '../runners/p',
+  ])('blocks unlabelled named-volume consumers of overlapping subpath %s', async (subpath) => {
+    const h = fixture();
+    h.existing.running = true;
+    h.existing.status = 'running';
+    h.existing.mounts = [
+      {
+        type: 'volume',
+        name: 'data',
+        source: '/var/lib/docker/volumes/data/_data',
+        subpath,
+        destination: '/foreign',
+      },
+    ];
+    await expect(h.run({ name: 'data', root: '/data' })).rejects.toMatchObject({
+      runnerCacheFailure: { code: 'runtime-not-idle' },
+    });
+    expect(h.docker.createContainer).not.toHaveBeenCalled();
+  });
+  it('blocks a host bind alias of the Server data volume', async () => {
+    const h = fixture();
+    h.existing.running = true;
+    h.existing.status = 'running';
+    h.existing.mounts = [
+      {
+        type: 'bind',
+        source: '/var/lib/docker/volumes/data/_data/runners/p/session-homes',
+        destination: '/foreign',
+      },
+    ];
+    await expect(h.run({ name: 'data', root: '/data' })).rejects.toMatchObject({
+      runnerCacheFailure: { code: 'runtime-not-idle' },
+    });
+    expect(h.docker.createContainer).not.toHaveBeenCalled();
+  });
+
+  it('allows a disjoint named-volume project subpath', async () => {
+    const h = fixture();
+    h.existing.running = true;
+    h.existing.status = 'running';
+    h.existing.mounts = [
+      {
+        type: 'volume',
+        name: 'data',
+        source: '/var/lib/docker/volumes/data/_data',
+        subpath: 'runners/other',
+        destination: '/foreign',
+      },
+    ];
+    expect(await h.run({ name: 'data', root: '/data' })).toEqual(report);
+  });
+
   it('fails closed on inventory and lifecycle errors', async () => {
     const h = fixture();
     h.docker.listContainers.mockRejectedValueOnce(new Error('inventory unavailable'));
