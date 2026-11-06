@@ -472,8 +472,8 @@ const styles = StyleSheet.create((theme) => ({
   tileAttention: { backgroundColor: tint(theme.colors.attention, 'fill') },
   tileReady: { backgroundColor: tint(theme.colors.success, 'fill') },
   tileSignature: { backgroundColor: tint(theme.colors.signature, 'fill') },
-  // Centred 3 px inside the tile's right edge and 3 px from its top or bottom, so
-  // a mark overlaps the corner without covering the 16 px glyph.
+  // Overhangs the tile's right corner by 3 px, so the mark sits on the corner
+  // without covering the 16 px glyph. The tile does not clip its children.
   tileMarkTop: { position: 'absolute', top: -3, right: -3 },
   tileMarkBottom: { position: 'absolute', bottom: -3, right: -3 },
   dotSlot: { width: 32, alignItems: 'center' },

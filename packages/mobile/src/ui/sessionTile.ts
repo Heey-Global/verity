@@ -25,7 +25,7 @@ export interface SessionTile {
   glyph: SessionTileGlyph;
   tone: SessionTileTone;
   result?: SessionTileResult;
-  /** What the tile says, for the row's accessibility label. */
+  /** What the tile says, spoken with the row and on its verdict mark. */
   label: string;
 }
 
@@ -47,6 +47,9 @@ const PR_TILES: Record<
   pr_unknown: { tone: 'quiet' },
 };
 
+type PrKind = keyof typeof PR_TILES;
+const isPrKind = (kind: AttentionKind): kind is PrKind => Object.hasOwn(PR_TILES, kind);
+
 /** The leading tile for a session row. */
 export function sessionTile(session: TileInput): SessionTile {
   const phase = session.pullRequest?.phase ?? session.pr?.phase;
@@ -54,13 +57,15 @@ export function sessionTile(session: TileInput): SessionTile {
   if (phase === 'closed')
     return { glyph: 'pull_request', tone: 'quiet', label: 'Pull request closed' };
   if (phase === 'open') {
+    // The first PR flag, by membership rather than by excluding the others, so a
+    // lifecycle flag ranked ahead of it can never take the verdict's place.
     const flag = markerAttention({
       status: session.status,
       pr: session.pr,
       attention: session.attention,
-    }).find((candidate) => candidate.kind !== 'unread');
-    const tile = flag ? PR_TILES[flag.kind as keyof typeof PR_TILES] : undefined;
-    if (flag && tile) return { glyph: 'pull_request', ...tile, label: flag.label };
+    }).find((candidate) => isPrKind(candidate.kind));
+    if (flag && isPrKind(flag.kind))
+      return { glyph: 'pull_request', ...PR_TILES[flag.kind], label: flag.label };
     return { glyph: 'pull_request', tone: 'quiet', label: 'Pull request open' };
   }
   if (session.automation)

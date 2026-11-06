@@ -322,7 +322,8 @@ describe('project page', () => {
     fireEvent.press(screen.getByRole('tab', { name: 'Work' }));
     // Both corners at once: the verdict below, the working agent above. Losing
     // either to the other is the regression this layout exists to prevent.
-    expect(screen.getByTestId('work-result-checks')).toBeTruthy();
+    expect(screen.getByTestId('work-result-checks').props.accessibilityLabel).toBe('CI failed');
+    expect(screen.getByLabelText('checks, working, CI failed')).toBeTruthy();
     expect(screen.getByTestId('work-agent-checks').props.accessibilityLabel).toBe(
       'Agent is working',
     );

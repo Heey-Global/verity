@@ -273,6 +273,9 @@ export function ProjectWork({
             const spoken = [
               label,
               working ? 'working' : unread ? 'new answer' : null,
+              // The row speaks one label, so the subtitle's PR verdict is not read on
+              // its own; the tile says it instead.
+              tile.glyph === 'pull_request' || tile.glyph === 'merged' ? tile.label : null,
               tag !== undefined ? sessionBadge(session.status).label : null,
               markers.length > 0 ? sessionMarkersLabel(markers) : null,
             ]
@@ -303,7 +306,11 @@ export function ProjectWork({
                       ) : undefined,
                     bottom:
                       result !== undefined ? (
-                        <View testID={`work-result-${session.sessionId}`}>
+                        <View
+                          testID={`work-result-${session.sessionId}`}
+                          accessibilityRole="image"
+                          accessibilityLabel={tile.label}
+                        >
                           <TileMark tone={result.tone} glyph={result.glyph} />
                         </View>
                       ) : undefined,

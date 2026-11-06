@@ -56,6 +56,16 @@ describe('sessionTile', () => {
     expect(sessionTile(withPr(pr, 'awaiting_input'))).toMatchObject({ result: 'failed' });
   });
 
+  it('keeps the PR verdict on a session that crashed or lost its sandbox', () => {
+    // Lifecycle flags rank above every PR flag in the attention model; the tile
+    // must still find the PR verdict behind them.
+    const pr = openPr({ pipeline: 'failure', mergeable: false });
+    expect(sessionTile(withPr(pr, 'crashed'))).toMatchObject({ result: 'failed' });
+    expect(
+      sessionTile({ ...withPr(pr), attention: [{ code: 'sandbox_disconnected', message: 'm' }] }),
+    ).toMatchObject({ result: 'failed' });
+  });
+
   it('shows a merged PR without a verdict mark', () => {
     expect(sessionTile(withPr({ ...openPr(), phase: 'merged' }))).toEqual({
       glyph: 'merged',
