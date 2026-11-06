@@ -719,17 +719,23 @@ function SessionList({ client }: { client: VerityClient }) {
       const session = sessions.find((candidate) => candidate.sessionId === sessionId);
       // `onOpenSession` only prefetches and marks the session seen; the rows
       // navigate through their own Link, so Home navigates here, once.
-      if (session) onOpenSession(session);
       if (wide) {
-        selectSession(sessionId);
-        router.setParams({ selected: sessionId, mockups: options?.mockups ? '1' : undefined });
-      } else
-        router.push({
-          pathname: '/session/[id]',
-          params: options?.mockups === true ? { id: sessionId, mockups: '1' } : { id: sessionId },
+        // Nothing happens until unsaved edits in a file beside it are given up.
+        afterDiscard(() => {
+          if (session) onOpenSession(session);
+          setKnowledgeFile(null);
+          setSelectedId(sessionId);
+          router.setParams({ selected: sessionId, mockups: options?.mockups ? '1' : undefined });
         });
+        return;
+      }
+      if (session) onOpenSession(session);
+      router.push({
+        pathname: '/session/[id]',
+        params: options?.mockups === true ? { id: sessionId, mockups: '1' } : { id: sessionId },
+      });
     },
-    [sessions, onOpenSession, wide],
+    [sessions, onOpenSession, wide, afterDiscard],
   );
   const repairFromHome = useCallback(
     (projectId: string) => void repairProjectRow(projectId),
@@ -1241,11 +1247,12 @@ function SessionList({ client }: { client: VerityClient }) {
               />
             </View>
           ) : null}
-          {/* While a file lies over it, the session stays mounted but out of reach
-              of VoiceOver, TalkBack and the keyboard, so no control under the file
-              (an Allow, say) can be activated unseen. */}
+          {/* While a file lies over it, the session stays mounted but takes no
+              touches and is hidden from VoiceOver and TalkBack, so no control under
+              the file (an Allow, say) can be activated unseen. */}
           <View
             style={styles.flex}
+            pointerEvents={knowledgeFile !== null ? 'none' : 'auto'}
             accessibilityElementsHidden={knowledgeFile !== null}
             importantForAccessibility={knowledgeFile !== null ? 'no-hide-descendants' : 'auto'}
             aria-hidden={knowledgeFile !== null}

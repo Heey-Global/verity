@@ -248,7 +248,14 @@ export function KnowledgeFileView({
   return (
     <View style={styles.root} testID="knowledge-file">
       {chrome === 'stack' ? (
-        <Stack.Screen options={{ title: name, headerRight: () => actions }} />
+        <Stack.Screen
+          options={{
+            title: name,
+            headerRight: () => actions,
+            // The native swipe ignores a held `beforeRemove`; with edits it is off.
+            gestureEnabled: !dirty,
+          }}
+        />
       ) : (
         <FileSheetHeader
           title={name}
