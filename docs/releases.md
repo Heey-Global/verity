@@ -61,6 +61,20 @@ rolled-back journal can restore its confirmed Server identity after validating
 it against the sealed deployment; ambiguous state remains an explicit error.
 The Gateway already restores its persisted backend before opening its listener.
 
+## Staging Network protection assessment repair
+
+Automatic Staging assessment now accepts installer-generated managed deployment
+identifiers and Docker 29.8.0 alongside 29.9.2 without upgrading or restarting
+Docker. Exact runtime, artifact and host identity checks remain required; this is
+not production profile acceptance. The provisioner prepares the reviewed relay
+runtime after admission.
+
+Failed assessments expose fixed precondition diagnostics and fail the host job
+instead of recording successful completion. Installed-state reconciliation retries
+legacy completion markers using a new operation identity. Deliver the repair
+through a normal signed server update; actual readiness and allowed/blocked
+traffic must still be verified on the updated Staging host.
+
 ## Network protection retrofit readiness
 
 The managed Network protection retrofit prepares a host controller, persistent

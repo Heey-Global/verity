@@ -95,3 +95,16 @@ it.each(['provisioning_in_progress', 'mandatory_inventory_incomplete'] as const)
     });
   },
 );
+
+it.each([
+  'assessment_authorization_invalid',
+  'docker_host_unsupported',
+  'native_package_unavailable',
+  'relay_runtime_missing',
+] as const)('retains fixed installation precondition %s without granting readiness', (reason) => {
+  expect(projectEgressInstallationFailure({ version: 1, state: 'unavailable', reason })).toEqual({
+    available: false,
+    reason,
+  });
+  expect(projectEgressInstallationFailure({ version: 1, state: 'ready', reason })).toBeUndefined();
+});

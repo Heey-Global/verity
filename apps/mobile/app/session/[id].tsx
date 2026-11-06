@@ -18,7 +18,6 @@ import { useFocusedSessionRead } from '../../hooks/useFocusedSessionRead';
 import { useSessionGoogleStatus } from '../../hooks/useSessionGoogleStatus';
 import { reportRecordedScrollDiagnostic } from '../../lib/scrollDiagnostics';
 import { SessionBar, SessionBarContent, SessionBarTarget } from '../../components/ui/SessionBar';
-import { SessionVulnerabilityCard } from '../../components/vulnerability/SessionVulnerabilityCard';
 import {
   VulnerabilityFixSheet,
   VulnerabilityStarterCard,
@@ -4342,9 +4341,11 @@ export const SessionChat = memo(function SessionChat({
       <VulnerabilityFixSheet
         groups={mainFixGroups}
         onClose={() => setMainFixGroups(null)}
-        onFix={(prompt) => {
+        onFix={(findings, prompt) => {
           setMainFixGroups(null);
-          sendQuickReply(prompt);
+          void sendTurn(prompt, {
+            vulnerabilityFix: { findings },
+          });
         }}
       />
       {staticPreviewOpen && projectId ? (
@@ -4887,8 +4888,6 @@ export const SessionChat = memo(function SessionChat({
       {client ? <QAApprovalCard client={client} sessionId={sessionId} /> : null}
       {client ? <SchedulingRequestsCard client={client} sessionId={sessionId} /> : null}
       {client ? <AssistantSchedulingOverview client={client} sessionId={sessionId} /> : null}
-      {/* Last above the composer: below the plan and the PR bar, never above them. */}
-      {client ? <SessionVulnerabilityCard client={client} sessionId={sessionId} /> : null}
       <InputBar
         hasPlan={planning === 'active' && planningPlan != null}
         planning={planning === 'active'}
@@ -9746,6 +9745,7 @@ function PullRequestBar({
   const [opening, setOpening] = useState(false);
   const [error, setError] = useState<string | undefined>(undefined);
   const [mergePermissionDenied, setMergePermissionDenied] = useState(false);
+  const [mergeRetryable, setMergeRetryable] = useState(false);
   const [mergeRejectedFor, setMergeRejectedFor] = useState<string | undefined>(undefined);
   const mounted = useRef(true);
   const { checks } = pullRequest;
@@ -9768,7 +9768,7 @@ function PullRequestBar({
   ].join(':');
   const pending = pullRequest.pipeline === 'running' || pullRequest.pipeline === 'pending';
   const mergeRejected = !pending && mergeRejectedFor === pullRequestStateKey && error !== undefined;
-  const visibleError = mergeRejected ? error : undefined;
+  const visibleError = mergeRejected && !mergeRetryable ? error : undefined;
   const merged = pullRequest.phase === 'merged';
   const checksText = pullRequestStatusText(pullRequest);
   // One verdict drives the dot and the button, so they cannot disagree. A conflicting
@@ -9779,7 +9779,7 @@ function PullRequestBar({
     mergeRejected && mergePermissionDenied
       ? { ...pullRequest, viewerCanMerge: false }
       : pullRequest,
-    { merging, mergeRejected },
+    { merging, mergeRejected, mergeRetryable: mergeRejected && mergeRetryable },
   );
   const mergeButtonEnabled = button.kind === 'merge';
   // Static on purpose: the waiting states show their spinner on the button, and a
@@ -9842,6 +9842,7 @@ function PullRequestBar({
       if (!result.ok) {
         setError(result.message);
         setMergePermissionDenied(result.permissionDenied === true);
+        setMergeRetryable(result.retryable === true);
         setMergeRejectedFor(pullRequestStateKey);
         return;
       }
@@ -9917,7 +9918,11 @@ function PullRequestBar({
             button.kind === 'refresh'
               ? () =>
                   void confirmHint().then((proceed) => {
-                    if (proceed && mounted.current) onRefresh();
+                    if (proceed && mounted.current) {
+                      setMergeRejectedFor(undefined);
+                      setError(undefined);
+                      onRefresh();
+                    }
                   })
               : merge
           }

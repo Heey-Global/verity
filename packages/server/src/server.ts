@@ -8,6 +8,8 @@ import {
   removeSessionRepositoryWorkspaces,
   registerSessionRepositoriesRoutes,
 } from './session-repositories.js';
+import { isVulnerabilityWorkspace } from './vulnerability-project.js';
+import { registerVulnerabilityFixRoute, buildVulnerabilityFixPrompt } from './vulnerability-fix.js';
 import { measureBranchReadStage, type BranchReadStage } from './branch-read-diagnostics.js';
 import { registerProjectContextRoutes } from './project-context-routes.js';
 import { registerUserContextRoutes } from './user-context-routes.js';
@@ -1405,6 +1407,13 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   registerVulnerabilityRoutes(app, {
     eventStore: deps.eventStore,
     service: vulnerabilityService,
+    fixPullRequest: (session) => sessionPrCache.get(session),
+    fixLiveState: (id) =>
+      conductor.pendingPermissions(id).length
+        ? 'needs_attention'
+        : conductor.isBusy(id)
+          ? 'in_progress'
+          : undefined,
     settingsChanged: () => {
       vulnerabilityScheduler.wake();
       void vulnerabilitySessions.rebuild();
@@ -1559,8 +1568,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         ? await deps.eventStore.repairs.attemptBoundary(dispatchId)
         : Number(receipt.prompt_seq);
     if (boundary === undefined || receipt?.state === 'reserved') return false;
-    const events = await deps.eventStore.listRecentSessionProjectionEvents(sessionId, 20);
-    return repairTurnTerminated(events.filter((row) => row.seq > boundary));
+    const latest = await deps.eventStore.latestSessionTurnControlEvent(sessionId, boundary);
+    return repairTurnTerminated(latest ? [latest] : []);
   };
   const reconcileSessionRepairs = async (projectId: string) => {
     for (const incident of await deps.eventStore.repairs.incidents(projectId)) {
@@ -1629,22 +1638,44 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           // the session is about to go with its project, and a delete that
           // fails leaves the PR state for the next poll to pick up.
           if (sessionsBeingReaped.has(sessionId)) return;
-          const latest = await sessionPrStatus(session).catch(() => null);
+          const currentSession = await deps.eventStore.getSession(sessionId);
+          if (!currentSession || currentSession.projectId !== session.projectId) return;
+          const latest = await sessionPrStatus(currentSession).catch(() => null);
           if (latest === null || !repair.applies(latest)) return;
           const initiatedBy = await deps.eventStore.latestPromptInitiator(sessionId);
           if (
-            session.planning === 'active' ||
+            currentSession.planning === 'active' ||
             (session.projectId !== null &&
               !(await canExecuteAs(initiatedBy?.userId, session.projectId)))
-          )
+          ) {
+            app.log.debug(
+              {
+                sessionId,
+                pullRequest: latest.number,
+                reason: currentSession.planning === 'active' ? 'planning' : 'execution_permission',
+              },
+              'automatic PR repair deferred',
+            );
             return;
+          }
           if (session.projectId !== null && latest.phase === 'open' && latest.headSha) {
             const origin = await deps.eventStore.repairs.registerSessionOrigin(
               session.projectId,
               `pr:${latest.number}`,
               sessionId,
             );
-            if (origin !== sessionId) return;
+            if (origin !== sessionId) {
+              app.log.debug(
+                {
+                  sessionId,
+                  pullRequest: latest.number,
+                  originatingSessionId: origin,
+                  reason: 'different_origin',
+                },
+                'automatic PR repair deferred',
+              );
+              return;
+            }
             await reconcileSessionRepairs(session.projectId);
           }
           marker = `${repair.id}:${repair.key(sessionId, latest)}`;
@@ -1671,7 +1702,33 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
               sessionId,
               marker,
             );
-            if (!claim?.dispatch_id) return;
+            if (!claim?.dispatch_id) {
+              const budgetUsed = await deps.eventStore.repairs.budgetUsed(
+                session.projectId,
+                `pr:${latest.number}`,
+              );
+              const incidents = await deps.eventStore.repairs.incidents(session.projectId);
+              const observed = incidents.find((row) => row.id === incident.id);
+              const owner = incidents.find((row) => row.owner_session_id !== null);
+              app.log.debug(
+                {
+                  sessionId,
+                  pullRequest: latest.number,
+                  incidentId: incident.id,
+                  incidentState: observed?.state,
+                  owningSessionId: owner?.owner_session_id,
+                  budgetUsed,
+                  reason:
+                    budgetUsed >= 2
+                      ? 'attempt_limit'
+                      : owner
+                        ? 'project_repair_active'
+                        : 'claim_unavailable',
+                },
+                'automatic PR repair deferred',
+              );
+              return;
+            }
             dispatchId = claim.dispatch_id;
             ownsMarker = true;
             preparingRepairDispatches.add(dispatchId);
@@ -1712,7 +1769,11 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
                 .deleteSessionAutomationMarker(sessionId, marker)
                 .catch(() => undefined);
           }
-        } catch {
+        } catch (err) {
+          app.log.warn(
+            { err, sessionId, pullRequest: pr.number, repair: repair.id },
+            'automatic PR repair failed',
+          );
           // Uncertain admission keeps its durable claim and marker until reconciled.
           if (dispatchId && !dispatchAttempted)
             await deps.eventStore.repairs.cancelReservedDispatch(dispatchId);
@@ -5679,6 +5740,30 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     clearInterval(inquiryTimer);
     done();
   });
+  registerVulnerabilityFixRoute(app, {
+    store: deps.eventStore,
+    spawn: sessionCreate.spawn,
+    pullRequest: (session) => sessionPrCache.get(session),
+    dispatch: async (sessionId, prompt, userId, displayPrompt, requestKey) => {
+      if (sessionsBeingReaped.has(sessionId)) throw new Error('Session is being deleted.');
+      const durableDispatchId = `vulnerability-fix:${sessionId}:${requestKey}`;
+      await deps.eventStore.reserveBackgroundDispatch(durableDispatchId, sessionId);
+      const result = await conductor.dispatchTurnWhenIdle(
+        sessionId,
+        prompt,
+        {},
+        {
+          displayPrompt,
+          durableDispatchId,
+          ...(userId ? { initiatedBy: { userId } } : {}),
+        },
+      );
+      if (!result.accepted)
+        throw Object.assign(new Error('The fix session is busy. Retry when it is idle.'), {
+          statusCode: 409,
+        });
+    },
+  });
   registerLiveMeetingIntakeRoutes(app, {
     store: deps.eventStore,
     meetings: attendeeMeetings,
@@ -5970,7 +6055,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         };
       }
       const body = parsedBody.data;
-      const prompt = stripRepeatedOperatorInstructions(body.prompt);
+      let prompt = stripRepeatedOperatorInstructions(body.prompt);
       if (prompt.trim().length === 0 && (body.attachments?.length ?? 0) === 0) {
         reply.code(400);
         return { error: 'a turn needs a prompt or at least one attachment' };
@@ -6017,6 +6102,23 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           };
         }
       }
+      let vulnerabilityDisplayPrompt: string | undefined;
+      if (body.vulnerabilityFix) {
+        if (!session?.projectId || !isVulnerabilityWorkspace(session))
+          return reply.code(409).send({ error: 'A Code session is required.' });
+        if (session.planning === 'active' || body.permissionMode === 'plan')
+          return reply
+            .code(409)
+            .send({ error: 'Leave planning before starting a vulnerability fix.' });
+        const fix = await buildVulnerabilityFixPrompt(
+          deps.eventStore,
+          session.projectId,
+          body.vulnerabilityFix,
+          id,
+        );
+        prompt = fix.prompt;
+        vulnerabilityDisplayPrompt = fix.displayPrompt;
+      }
       const opts: TurnOptions = {
         permissionMode: body.permissionMode,
         model: body.model,
@@ -6049,6 +6151,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         // Quick replies add their idempotency key; with neither, the turn keeps the
         // plain 3-arg dispatch.
         const dispatchOpts = {
+          ...(vulnerabilityDisplayPrompt ? { displayPrompt: vulnerabilityDisplayPrompt } : {}),
           ...(body.clientReplyId !== undefined ? { clientReplyId: body.clientReplyId } : {}),
           ...(body.queueBehindActiveTurn ? { queueBehindActiveTurn: true } : {}),
           ...(request.localUserId ? { initiatedBy: { userId: request.localUserId } } : {}),

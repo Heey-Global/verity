@@ -13,6 +13,13 @@ export function networkProtectionUnavailableReason(settings: VeritySettings | nu
   const reasons: Record<string, string> = {
     runtime_unsupported:
       'This host does not have a validated runtime profile for network protection.',
+    assessment_authorization_invalid:
+      'The updater could not authorize the Staging host assessment.',
+    docker_host_unsupported:
+      'The Docker version or daemon configuration is not supported for this host assessment.',
+    native_package_unavailable:
+      'A required host package is unavailable from the configured package repositories.',
+    relay_runtime_missing: 'The required project or relay runtime is missing.',
     provisioning_failed: 'Automatic host service provisioning failed.',
     controller_failed: 'The host service could not start or pass its readiness checks.',
     provisioning_in_progress: 'Automatic host service provisioning is in progress.',

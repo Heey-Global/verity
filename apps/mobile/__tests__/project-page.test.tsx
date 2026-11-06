@@ -3,9 +3,10 @@
 //
 // What is worth guarding: the switch decides which world a project link opens,
 // and a device with the preview on must not land on the old one while its
-// choice loads; the page's "For you" block shows exactly this project's items
-// and answers them through the same save as Home; Work filters by what a
-// session is doing; Knowledge moves off the settings index only with the switch.
+// choice loads; Now shows exactly what waits on the operator in this project,
+// answers it through the same performer as Home and leaves a dismissed item
+// out; All marks every session the same way; Knowledge moves off the settings
+// index only with the switch and opens from the page's Content.
 jest.mock('expo-clipboard', () => require('./support/settingsHarness').clipboardMock());
 jest.mock('expo-router', () => ({
   ...require('./support/settingsHarness').expoRouterMock(),
@@ -18,7 +19,10 @@ jest.mock('../lib/client', () => require('./support/settingsHarness').clientMock
 jest.mock('expo-crypto', () => ({ randomUUID: () => 'reply-1' }));
 jest.mock('../lib/voiceShortcut', () => ({ dispatchVerityShortcut: jest.fn() }));
 jest.mock('../lib/taskPreferences', () => ({ useTaskPreferences: () => ({ enabled: false }) }));
-jest.mock('../lib/tasksStore', () => ({ taskAccountScope: () => null }));
+jest.mock('../lib/tasksStore', () => ({
+  taskAccountScope: () => null,
+  useTasks: () => ({ tasks: [], pending: [], conflicts: [] }),
+}));
 const mockDesign = { value: true as boolean | undefined };
 const mockWide = { value: false };
 jest.mock('../lib/sessionLayout', () => ({
@@ -37,7 +41,7 @@ import { Alert } from 'react-native';
 import ProjectEntry from '../app/project/[id]/index';
 import ProjectSettingsIndexScreen from '../app/project/[id]/settings/index';
 import { ProjectPage, projectInboxItems, projectLine } from '../components/project/ProjectPage';
-import { workFilter } from '../components/project/ProjectWork';
+import { isActive, nowSections, workFilter } from '../components/project/ProjectWork';
 import { publishSessionPreviews } from '../lib/sessionPreviews';
 import { makeClient, makeDetail } from './support/projectHarness';
 import {
@@ -89,6 +93,12 @@ const merged = session('landing', {
   } as SessionSummary['pullRequest'],
 });
 
+// The compact PR state is what marks a session; the full status only names it.
+const failing = session('ci', {
+  pr: { phase: 'open', pipeline: 'failure', mergeable: true },
+  pullRequest: { ...merged.pullRequest!, number: 2041, title: 'Checkout' },
+});
+
 function clientWith(sessions: SessionSummary[], extra: Record<string, unknown> = {}) {
   const detail = makeDetail({ dopplerConfig: 'dev' });
   const client = makeClient({ detail: { ...detail, sessions } }) as unknown as Record<
@@ -108,6 +118,8 @@ function clientWith(sessions: SessionSummary[], extra: Record<string, unknown> =
     ),
     setProjectInboxDismissed: jest.fn(async () => [] as string[]),
     deleteSession: jest.fn().mockResolvedValue({ sessionId: 'deleted' }),
+    setSessionSeen: jest.fn().mockResolvedValue({}),
+    setSessionFavorite: jest.fn().mockResolvedValue({}),
     ...extra,
   });
   return client as unknown as VerityClient & Record<string, jest.Mock>;
@@ -186,45 +198,54 @@ describe('project page', () => {
     );
   });
 
-  it('says so when nothing in the project needs the operator', async () => {
-    await renderPage([running]);
-    expect(screen.getByTestId('project-for-you-empty')).toBeTruthy();
+  it('opens on Now and leaves out a section with nothing in it', async () => {
+    await renderPage([running, favorite]);
+    expect(screen.getByRole('tab', { name: 'Now · 1' })).toBeTruthy();
+    expect(screen.queryByTestId('work-needs-you')).toBeNull();
+    expect(within(screen.getByTestId('work-active')).getByLabelText('login, working')).toBeTruthy();
+    // Neither waiting nor moving, so only All lists it.
+    expect(screen.queryByLabelText(/^blog/)).toBeNull();
   });
 
-  it('dismisses and restores a project item through the person’s saved state', async () => {
-    const onInboxSaved = jest.fn();
-    const { client } = await renderPage([question, running], { onInboxSaved });
-    const card = screen.getByTestId('inbox-item-question');
-    fireEvent.press(within(card).getByLabelText('Dismiss'));
-    await act(async () => undefined);
-    expect(client.setSessionInboxDismissed).toHaveBeenCalledWith(
+  it('answers a question in place, as Home does', async () => {
+    const { client, onOpenSession } = await renderPage([question, running]);
+    Object.assign(client, { sendTurn: jest.fn().mockResolvedValue({ queued: false }) });
+    const needs = screen.getByTestId('work-needs-you');
+    // The row itself opens the session, for an answer of the operator's own.
+    fireEvent.press(within(needs).getByLabelText('form, Which validation library?, Question'));
+    expect(onOpenSession).toHaveBeenCalledWith('form');
+    await act(async () => fireEvent.press(within(needs).getByRole('button', { name: 'Zod' })));
+    expect(client.sendTurn).toHaveBeenCalledWith(
       'form',
-      expect.stringMatching(/^question:form/),
-      true,
+      expect.objectContaining({ prompt: expect.stringContaining('Zod') }),
     );
-    // The wide layout refreshes Home beside the page from this.
-    expect(onInboxSaved).toHaveBeenCalled();
-    expect(screen.queryByTestId('inbox-item-question')).toBeNull();
-    fireEvent.press(screen.getByText('1 hidden'));
-    fireEvent.press(within(screen.getByTestId('inbox-hidden-question')).getByText('Restore'));
-    await act(async () => undefined);
-    expect(client.setSessionInboxDismissed).toHaveBeenLastCalledWith(
-      'form',
-      expect.stringMatching(/^question:form/),
-      false,
-    );
+    // Answered, it leaves Now at once rather than waiting for the next poll.
+    expect(screen.queryByTestId('work-needs-you')).toBeNull();
   });
 
-  it('keeps a dismissal across a tab switch until the server reports it', async () => {
-    // The fake server never echoes the dismissal, so only the page's own state
-    // keeps the card away; losing it on a tab switch would bring the card back.
-    await renderPage([question]);
-    fireEvent.press(within(screen.getByTestId('inbox-item-question')).getByLabelText('Dismiss'));
-    await act(async () => undefined);
-    fireEvent.press(screen.getByRole('tab', { name: 'Work' }));
-    fireEvent.press(screen.getByRole('tab', { name: 'Overview' }));
-    expect(screen.queryByTestId('inbox-item-question')).toBeNull();
-    expect(screen.getByText('1 hidden')).toBeTruthy();
+  it('marks a plan waiting for approval in Now and in All', async () => {
+    // A plan that waits was invisible in every overview: nothing told the
+    // operator a session had stopped for them.
+    const planned = session('plan', {
+      planning: 'active',
+      planningRevision: 2,
+      planningPresented: true,
+    });
+    await renderPage([planned]);
+    expect(
+      within(screen.getByTestId('work-needs-you')).getByLabelText(
+        'plan, Plan ready for review, Plan',
+      ),
+    ).toBeTruthy();
+    fireEvent.press(screen.getByRole('tab', { name: 'All' }));
+    expect(screen.getByLabelText('plan, Plan')).toBeTruthy();
+  });
+
+  it('leaves a dismissed item out of Now', async () => {
+    const [item] = inboxItems({ sessions: [question], projects: [], now: Date.now() });
+    await renderPage([{ ...question, inboxDismissed: [item!.key] }, running]);
+    expect(screen.queryByTestId('work-needs-you')).toBeNull();
+    expect(screen.queryByLabelText(/^form/)).toBeNull();
   });
 
   it('lists the services the project uses, each leading to its setting', async () => {
@@ -239,13 +260,42 @@ describe('project page', () => {
     expect(screen.queryByLabelText(/^MCP/)).toBeNull();
   });
 
-  it('filters Work by what a session is doing and opens a session', async () => {
-    const { onOpenSession } = await renderPage([question, running, favorite, merged]);
-    fireEvent.press(screen.getByRole('tab', { name: 'Work' }));
+  it('highlights the session open beside the project Work list', async () => {
+    await renderPage([running, favorite], { inline: true, selectedSessionId: running.sessionId });
+    fireEvent.press(screen.getByRole('tab', { name: 'All' }));
+    expect(
+      screen.getByRole('button', { name: /login, working/ }).props.accessibilityState,
+    ).toMatchObject({
+      selected: true,
+    });
+    expect(
+      screen.getByRole('button', { name: /blog, Favorite/i }).props.accessibilityState,
+    ).toMatchObject({
+      selected: false,
+    });
+  });
+
+  it('highlights the open session in Needs you without hiding its answers', async () => {
+    await renderPage([question, running], { inline: true, selectedSessionId: question.sessionId });
+    expect(screen.getByRole('button', { name: /^form,/ }).props.accessibilityState).toMatchObject({
+      selected: true,
+    });
+    expect(screen.getByRole('button', { name: /^login,/ }).props.accessibilityState).toMatchObject({
+      selected: false,
+    });
+    expect(screen.getByRole('button', { name: 'Zod' })).toBeTruthy();
+  });
+
+  it('filters by what a session needs and opens a session', async () => {
+    const { onOpenSession } = await renderPage([question, running, favorite, merged, failing]);
     expect(screen.getByTestId('project-work')).toBeTruthy();
-    fireEvent.press(screen.getByRole('tab', { name: 'Running' }));
-    expect(screen.getByLabelText(/^form/)).toBeTruthy();
-    expect(screen.getByLabelText(/^login/)).toBeTruthy();
+    // Waiting first, each with what it waits for; then what is moving.
+    expect(
+      within(screen.getByTestId('work-needs-you'))
+        .getAllByRole('button')
+        .map((row) => row.props.accessibilityLabel as string | undefined)
+        .filter((label) => label?.includes(',')),
+    ).toEqual(['form, Which validation library?, Question', 'ci, PR #2041 · Checkout, CI failed']);
     expect(screen.queryByLabelText(/blog/)).toBeNull();
     // A star, named for VoiceOver: the word no longer fits beside "+" on a phone.
     fireEvent.press(screen.getByRole('tab', { name: 'Favorites' }));
@@ -257,6 +307,22 @@ describe('project page', () => {
     expect(mockPush).toHaveBeenCalledWith({ pathname: '/new', params: { projectId: 'p/1' } });
   });
 
+  it('clears and persists unread activity when opening a chat from Now', async () => {
+    const { client, onOpenSession } = await renderPage([
+      session('answered', {
+        eventCount: 7,
+        lastSeenEventCount: 5,
+        eventCountVersion: 'agent-text-v2',
+      }),
+    ]);
+    expect(screen.getByLabelText('Unread messages')).toBeTruthy();
+    fireEvent.press(screen.getByLabelText('answered, new answer'));
+    expect(onOpenSession).toHaveBeenCalledWith('answered');
+    expect(client.setSessionSeen).toHaveBeenCalledWith('answered', 7, 'agent-text-v2');
+    expect(screen.queryByLabelText('Unread messages')).toBeNull();
+    await act(async () => undefined);
+  });
+
   it('marks and orders Work the way the session list marks it', async () => {
     const answered = session('answered', {
       eventCount: 7,
@@ -265,24 +331,51 @@ describe('project page', () => {
     });
     const quiet = session('quiet', { lastActivityAt: Date.now() });
     await renderPage([quiet, favorite, answered, running, question]);
-    fireEvent.press(screen.getByRole('tab', { name: 'Work' }));
+    fireEvent.press(screen.getByRole('tab', { name: 'All' }));
     const rows = within(screen.getByTestId('project-work'))
       .getAllByRole('button')
       .map((row) => row.props.accessibilityLabel as string | undefined)
       .filter((label): label is string => label !== undefined && label.includes(','));
     // Asking, working and new answers lead, even over a favorite; then favorites.
     expect(rows).toEqual([
-      'form, Needs input',
+      'form, Question',
       'login, working',
       'answered, new answer',
       'blog, favorite',
     ]);
-    // Blue for a new answer, the pulse while working, nothing for a quiet session.
-    expect(within(screen.getByTestId('work-dot-answered')).getByLabelText('Unread messages'));
-    expect(within(screen.getByTestId('work-dot-login')).getByLabelText('Agent is working'));
-    expect(within(screen.getByTestId('work-dot-quiet')).queryByRole('image')).toBeNull();
+    // The agent's state is the tile's top mark: blue for a new answer, the pulse
+    // while working, the question while it waits, nothing for a quiet session.
+    expect(screen.getByTestId('work-agent-answered').props.accessibilityLabel).toBe(
+      'Unread messages',
+    );
+    expect(screen.getByTestId('work-agent-login').props.accessibilityLabel).toBe(
+      'Agent is working',
+    );
+    expect(screen.getByTestId('work-agent-form').props.accessibilityLabel).toBe('Waiting for you');
+    expect(screen.queryByTestId('work-agent-quiet')).toBeNull();
     // Done was drawn as a green status here; the session list never marked it.
     expect(screen.queryByLabelText('Done')).toBeNull();
+  });
+
+  it('marks a pull request verdict on the tile, apart from the agent state', async () => {
+    const failing = session('checks', {
+      status: 'running',
+      pr: { phase: 'open', pipeline: 'failure', mergeable: false },
+    });
+    const quiet = session('quiet');
+    await renderPage([failing, quiet]);
+    // All draws every session with its tile; Now gives a failing PR the "Needs
+    // you" status dot instead, beside the tag that names the problem.
+    fireEvent.press(screen.getByRole('tab', { name: 'All' }));
+    // Both corners at once: the verdict below, the working agent above. Losing
+    // either to the other is the regression this layout exists to prevent.
+    expect(screen.getByTestId('work-result-checks').props.accessibilityLabel).toBe('CI failed');
+    expect(screen.getByLabelText(/^checks, working, CI failed/)).toBeTruthy();
+    expect(screen.getByTestId('work-agent-checks').props.accessibilityLabel).toBe(
+      'Agent is working',
+    );
+    // A session without a pull request has no verdict to show.
+    expect(screen.queryByTestId('work-result-quiet')).toBeNull();
   });
 
   it('marks a session whose preview is running, as the session list does', async () => {
@@ -295,14 +388,14 @@ describe('project page', () => {
       online: new Set(['blog']),
     });
     await renderPage([running, favorite]);
-    fireEvent.press(screen.getByRole('tab', { name: 'Work' }));
+    fireEvent.press(screen.getByRole('tab', { name: 'All' }));
     expect(screen.getByLabelText('login, working, shared on the local network')).toBeTruthy();
     expect(screen.getByLabelText('blog, favorite, shared online')).toBeTruthy();
     expect(screen.getAllByTestId('session-marker-shared')).toHaveLength(2);
     publishSessionPreviews({ urls: new Map(), online: new Set() });
   });
 
-  it('shows the findings on main in the Overview and starts an agent to fix them', async () => {
+  it('puts severe findings on main into Now and starts an agent to fix them', async () => {
     const finding = {
       category: 'security' as const,
       classificationSource: 'osv',
@@ -329,36 +422,59 @@ describe('project page', () => {
         findings: [finding],
         sessions: [],
       }),
-      createSession: jest.fn().mockResolvedValue({ sessionId: 'fix-1' }),
+      startVulnerabilityFix: jest.fn().mockResolvedValue({ sessionId: 'fix-1', accepted: true }),
     });
     mockCreateVerityClient.mockReturnValue(client);
     render(<ProjectPage client={client} projectId="p/1" onOpenSession={onOpenSession} />);
     await screen.findByTestId('project-line');
     await act(async () => undefined);
-    expect(await screen.findByTestId('project-security')).toBeTruthy();
-    expect(screen.getByText('1 package to update')).toBeTruthy();
-    fireEvent.press(screen.getByRole('button', { name: 'Show findings' }));
+    const needs = await screen.findByTestId('work-needs-you');
+    expect(within(needs).getByText('1 package to update')).toBeTruthy();
+    // Content keeps its own row, so the findings stay reachable once fixed.
+    expect(screen.getByLabelText('Security, 1 package to update, Security')).toBeTruthy();
+    fireEvent.press(within(needs).getByRole('button', { name: 'Show findings' }));
     expect(mockPush).toHaveBeenLastCalledWith({
       pathname: '/project/[id]/vulnerability-scan',
       params: { id: 'p/1' },
     });
-    await act(async () => fireEvent.press(screen.getByRole('button', { name: 'Fix with agent' })));
-    const request = (client.createSession as jest.Mock).mock.calls[0]![0];
-    expect(request).toMatchObject({ projectId: 'p/1', name: 'Fix vulnerabilities' });
-    expect(request.prompt).toContain('example');
-    // Advisory prose is untrusted text; it never becomes part of the agent's instructions.
-    expect(request.prompt).not.toContain(finding.summary);
+    await act(async () =>
+      fireEvent.press(within(needs).getByRole('button', { name: 'Fix with agent' })),
+    );
+    expect(client.startVulnerabilityFix).toHaveBeenCalledWith('p/1', {
+      sessionId: expect.any(String),
+      findings: [
+        expect.objectContaining({
+          package: 'example',
+          ecosystem: 'npm',
+          advisoryId: finding.advisoryId,
+          source: finding.source,
+          version: finding.version,
+        }),
+      ],
+    });
+    const request = (client.startVulnerabilityFix as jest.Mock).mock.calls[0]![1];
+    expect(JSON.stringify(request)).not.toContain(finding.summary);
     expect(onOpenSession).toHaveBeenCalledWith('fix-1');
   });
 
-  it('leaves the Overview without a Security card while main has nothing to fix', async () => {
+  it('leaves Security out while main has nothing to fix', async () => {
     await renderPage([]);
     await act(async () => undefined);
-    expect(screen.queryByTestId('project-security')).toBeNull();
+    expect(screen.queryByLabelText(/^Security/)).toBeNull();
+  });
+
+  it('favorites from the swipe action without opening a long-press menu', async () => {
+    const alert = jest.spyOn(Alert, 'alert');
+    const onSessionChanged = jest.fn();
+    const { client } = await renderPage([running], { onSessionChanged });
+    fireEvent(screen.getByLabelText(/^login/), 'longPress');
+    expect(alert).not.toHaveBeenCalled();
+    await act(async () => fireEvent.press(screen.getByLabelText('Favorite')));
+    expect(client.setSessionFavorite).toHaveBeenCalledWith('login', true);
+    expect(onSessionChanged).toHaveBeenCalledWith('login', false);
   });
 
   it('links a session from Work through the session settings', async () => {
-    const alert = jest.spyOn(Alert, 'alert');
     const linked = session('pair', { linked: true });
     const { client } = await renderPage([running, linked]);
     Object.assign(client, {
@@ -366,16 +482,9 @@ describe('project page', () => {
       listSessions: jest.fn().mockResolvedValue([running, linked]),
       listSessionLinks: jest.fn().mockResolvedValue([]),
     });
-    fireEvent.press(screen.getByRole('tab', { name: 'Work' }));
-    fireEvent(screen.getByLabelText(/^login/), 'longPress');
-    const menu = alert.mock.calls.at(-1)![2]!;
-    expect(menu.map((button) => button.text)).toEqual([
-      'Add to favorites',
-      'Session settings',
-      'Delete',
-      'Cancel',
-    ]);
-    await act(async () => menu.find((button) => button.text === 'Session settings')!.onPress!());
+    // The linked session is quiet, so only All lists it with its marker.
+    fireEvent.press(screen.getByRole('tab', { name: 'All' }));
+    await act(async () => fireEvent.press(screen.getAllByLabelText('Edit')[0]!));
     expect(screen.getByText('Linked sessions')).toBeTruthy();
     // The link marker on a row goes straight to its links.
     fireEvent.press(screen.getByLabelText('Close session settings'));
@@ -388,10 +497,7 @@ describe('project page', () => {
     const alert = jest.spyOn(Alert, 'alert');
     const onSessionChanged = jest.fn();
     const { client } = await renderPage([running], { onSessionChanged });
-    fireEvent.press(screen.getByRole('tab', { name: 'Work' }));
-    fireEvent(screen.getByLabelText(/^login/), 'longPress');
-    const menu = alert.mock.calls.at(-1)![2]!;
-    act(() => menu.find((button) => button.text === 'Delete')!.onPress!());
+    fireEvent.press(screen.getByLabelText('Delete'));
     const confirm = alert.mock.calls.at(-1)![2]!;
     await act(async () => confirm.find((button) => button.text === 'Delete')!.onPress!());
     expect(client.deleteSession).toHaveBeenCalledWith('login', {});
@@ -399,17 +505,27 @@ describe('project page', () => {
     expect(onSessionChanged).toHaveBeenCalledWith('login', true);
   });
 
-  it('shows the project knowledge in its own tab', async () => {
+  it('opens the knowledge as its own screen on a phone', async () => {
     const { client } = await renderPage([]);
-    fireEvent.press(screen.getByRole('tab', { name: 'Knowledge' }));
-    expect(await screen.findByTestId('project-knowledge')).toBeTruthy();
-    // The tab is the top level; on a phone each area opens as its own screen.
-    fireEvent.press(screen.getByText('Wiki'));
+    expect(screen.queryByRole('tab', { name: 'Knowledge' })).toBeNull();
+    fireEvent.press(screen.getByLabelText(/^Knowledge/));
     expect(mockPush).toHaveBeenLastCalledWith({
       pathname: '/project/[id]/knowledge',
-      params: { id: 'p/1', folder: 'insights' },
+      params: { id: 'p/1' },
     });
     expect(client.listProjectKnowledgeFiles).not.toHaveBeenCalled();
+  });
+
+  it('opens the knowledge in the wide layout’s column and comes back', async () => {
+    await renderPage([], { inline: true });
+    fireEvent.press(screen.getByLabelText(/^Knowledge/));
+    expect(await screen.findByTestId('project-knowledge')).toBeTruthy();
+    expect(mockPush).not.toHaveBeenCalledWith(
+      expect.objectContaining({ pathname: '/project/[id]/knowledge' }),
+    );
+    fireEvent.press(screen.getByText('verity'));
+    expect(screen.queryByTestId('project-knowledge')).toBeNull();
+    expect(screen.getByTestId('project-work')).toBeTruthy();
   });
 
   it('reloads when the wide layout polled newer sessions beside it', async () => {
@@ -458,13 +574,13 @@ describe('project helpers', () => {
       expect(item.actions.some((action) => action.kind === 'open_project')).toBe(false);
   });
 
-  it('leaves vulnerabilities to the Security card instead of repeating them', () => {
+  it('leaves vulnerabilities to the page’s Security row instead of repeating them', () => {
     const project = {
       ...makeDetail().project,
       vulnerabilitySummary: { count: 2, critical: 1, high: 1 },
     };
     const items = projectInboxItems(project, [], Date.now());
-    // Home still lists them and leads here; this page shows the card instead.
+    // Home still lists them and leads here; this page shows its own row instead.
     expect(items.some((item) => item.tag === 'Vulnerabilities')).toBe(false);
     expect(
       inboxItems({ sessions: [], projects: [project], now: Date.now() }).some(
@@ -478,13 +594,18 @@ describe('project helpers', () => {
     expect(projectLine(detail.project, [])).toBe('Local project');
   });
 
-  it('counts a merged pull request as done and a waiting session as running', () => {
-    const done = session('x', {
-      pullRequest: { ...merged.pullRequest!, phase: 'merged' },
-      status: 'idle',
-    });
-    expect(workFilter(done, 'done')).toBe(true);
-    expect(workFilter(question, 'running')).toBe(true);
-    expect(workFilter(favorite, 'running')).toBe(false);
+  it('sorts Now into what waits and what moves, each session once', () => {
+    const items = projectInboxItems(makeDetail().project, [question, failing, running], Date.now());
+    const sections = nowSections([question, failing, running, favorite], items, new Set());
+    expect(
+      sections.needsYou.map((entry) =>
+        entry.kind === 'session' ? entry.session.sessionId : entry.item.key,
+      ),
+    ).toEqual(['form', 'ci']);
+    expect(sections.active.map((entry) => entry.sessionId)).toEqual(['login']);
+    expect(workFilter(favorite, 'favorites')).toBe(true);
+    expect(workFilter(running, 'favorites')).toBe(false);
+    expect(isActive(running)).toBe(true);
+    expect(isActive(question)).toBe(false);
   });
 });

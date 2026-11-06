@@ -4427,6 +4427,19 @@ export class EventStore implements EventSink {
 
   /** Accept a background dispatch, its prompt and recovery marker in one commit.
    * Cancellation races on the same receipt row; only the winner can run the backend. */
+  /** Reserve a server-authored dispatch for atomic prompt admission and replay. */
+  async reserveBackgroundDispatch(id: string, sessionId: string): Promise<void> {
+    await this.db
+      .insertInto('qa_dispatches')
+      .values({
+        id,
+        session_id: sessionId,
+        state: 'reserved',
+      })
+      .onConflict((oc) => oc.column('id').doNothing())
+      .execute();
+  }
+
   async admitBackgroundDispatch(
     id: string,
     sessionId: string,
@@ -5817,6 +5830,27 @@ export class EventStore implements EventSink {
       events.push({ seq: Number(row.id), ts: row.created_at.getTime(), event: parsed.data });
     }
     return events;
+  }
+
+  /** Task updates must not hide the completion that releases a repair claim. */
+  async latestSessionTurnControlEvent(
+    sessionId: string,
+    afterSeq: number,
+  ): Promise<SequencedEvent | undefined> {
+    const row = await this.db
+      .selectFrom('events')
+      .select(['id', 'payload', 'created_at'])
+      .where('session_id', '=', sessionId)
+      .where('id', '>', afterSeq)
+      .where('type', 'in', ['status', 'prompt', 'interrupted'])
+      .orderBy('id', 'desc')
+      .limit(1)
+      .executeTakeFirst();
+    if (!row) return undefined;
+    const parsed = parseAgentEvent(row.payload);
+    if (!parsed.success)
+      throw new Error(`corrupt event payload in session ${sessionId}: ${parsed.error.message}`);
+    return { seq: Number(row.id), ts: row.created_at.getTime(), event: parsed.data };
   }
 
   /**

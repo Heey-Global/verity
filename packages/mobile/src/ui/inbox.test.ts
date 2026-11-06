@@ -301,6 +301,47 @@ describe('inboxItems', () => {
       ).toEqual([]);
   });
 
+  it('asks to review a presented plan while the session waits, keyed per revision', () => {
+    const planned = (over: Partial<SessionSummary> = {}) =>
+      session('p', {
+        planning: 'active',
+        planningRevision: 3,
+        planningPresented: true,
+        status: 'completed',
+        ...over,
+      });
+    const [item] = inboxItems({ sessions: [planned()], projects: [project()], now: NOW });
+    expect(item).toMatchObject({ kind: 'plan_review', tag: 'Plan', tone: 'attention' });
+    // Approving needs the plan in front of the operator, so the item only opens it.
+    expect(item?.actions.map((action) => action.kind)).toEqual(['open_session']);
+    // Nothing to review while the agent still writes, before a plan is presented,
+    // or once the round ended.
+    for (const over of [
+      { status: 'running' as const },
+      { planningPresented: undefined },
+      { planning: 'implemented' as const },
+      { planning: 'discarded' as const },
+    ])
+      expect(inboxItems({ sessions: [planned(over)], projects: [project()], now: NOW })).toEqual(
+        [],
+      );
+    // A dismissed plan returns once the agent presents a revision.
+    const revised = inboxView({
+      sessions: [planned({ planningRevision: 4, inboxDismissed: [item!.key] })],
+      projects: [project()],
+      now: NOW,
+    });
+    expect(revised.visible.map((entry) => entry.kind)).toEqual(['plan_review']);
+    expect(
+      inboxView({
+        sessions: [planned({ inboxDismissed: [item!.key] })],
+        projects: [project()],
+        now: NOW,
+      }).visible,
+    ).toEqual([]);
+    expect(inboxSummary([item!])).toBe('1 plan to review');
+  });
+
   it('offers Merge exactly when the session’s merge button would', () => {
     const ready = inboxItems({
       sessions: [

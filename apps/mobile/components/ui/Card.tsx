@@ -124,9 +124,18 @@ export function Group({ children }: { children: ReactNode }) {
 
 /** A Feather icon or a status dot; `element` is for a mark that is not a
  *  Feather glyph (an agent's logo), drawn in the same tile. `signature` draws
- *  the icon in the brand pink — reserved for the Premium mark (§ 2). */
+ *  the icon in the brand pink — reserved for the Premium mark (§ 2). `quiet`
+ *  keeps the neutral tile in a row that can be tapped, for a tile that states a
+ *  fact rather than an action. `marks` sit on the tile's right corners
+ *  ({@link TileMark}): `top` for the subject's own state, `bottom` for a verdict. */
 type Leading =
-  | { icon: IconName; signature?: boolean; intent?: StatusIntent }
+  | {
+      icon: IconName;
+      signature?: boolean;
+      intent?: StatusIntent;
+      quiet?: boolean;
+      marks?: { top?: ReactNode; bottom?: ReactNode };
+    }
   | { dot: StatusIntent }
   | { element: ReactNode };
 
@@ -151,10 +160,12 @@ export function Row({
   onLongPress,
   navigates = false,
   selected,
+  active = false,
   disabled = false,
   accessibilityLabel,
   accessibilityHint,
   expanded,
+  answers,
 }: {
   title: string;
   subtitle?: string | undefined;
@@ -169,10 +180,15 @@ export function Row({
   onLongPress?: (() => void) | undefined;
   navigates?: boolean;
   selected?: boolean;
+  /** The navigation destination currently open beside this row. */
+  active?: boolean;
   disabled?: boolean;
   accessibilityLabel?: string;
   accessibilityHint?: string;
   expanded?: boolean;
+  /** Compact buttons that answer what the row waits on, in a strip under it and
+   *  outside its pressable area, so VoiceOver reaches each one. */
+  answers?: ReactNode;
 }) {
   const { theme } = useUnistyles();
   const choice = selected !== undefined;
@@ -207,10 +223,24 @@ export function Row({
       chevron={navigates && !choice}
     />
   );
+  const strip =
+    answers !== undefined ? (
+      <View style={[styles.answers, leading !== undefined ? styles.answersIndented : null]}>
+        {answers}
+      </View>
+    ) : null;
   if (onPress === undefined) {
-    return <View style={[styles.row, disabled ? styles.muted : null]}>{content}</View>;
+    const row = <View style={[styles.row, disabled ? styles.muted : null]}>{content}</View>;
+    return strip ? (
+      <View>
+        {row}
+        {strip}
+      </View>
+    ) : (
+      row
+    );
   }
-  return (
+  const pressable = (
     <Pressable
       onPress={onPress}
       onLongPress={onLongPress}
@@ -220,15 +250,26 @@ export function Row({
         accessibilityLabel ?? spokenLabel(title, subtitle, choice ? undefined : trailing)
       }
       accessibilityHint={accessibilityHint}
-      accessibilityState={choice ? { disabled, checked: selected } : { disabled, expanded }}
+      accessibilityState={
+        choice ? { disabled, checked: selected } : { disabled, expanded, selected: active }
+      }
       style={({ pressed }) => [
         styles.row,
         disabled ? styles.muted : null,
         pressed && !disabled ? styles.pressed : null,
+        active ? styles.rowActive : null,
       ]}
     >
       {content}
     </Pressable>
+  );
+  return strip ? (
+    <View>
+      {pressable}
+      {strip}
+    </View>
+  ) : (
+    pressable
   );
 }
 
@@ -327,11 +368,13 @@ function RowContent({
                 ? styles.tileAttention
                 : leading.intent === 'ready'
                   ? styles.tileReady
-                  : leading.signature === true
-                    ? styles.tileSignature
-                    : acts
-                      ? styles.tileAction
-                      : null,
+                  : leading.intent === 'transient'
+                    ? styles.tileAction
+                    : leading.signature === true
+                      ? styles.tileSignature
+                      : acts && leading.quiet !== true
+                        ? styles.tileAction
+                        : null,
             ]}
           >
             <Icon
@@ -342,13 +385,21 @@ function RowContent({
                   ? theme.colors.attention
                   : leading.intent === 'ready'
                     ? theme.colors.success
-                    : leading.signature === true
-                      ? theme.colors.signature
-                      : acts
-                        ? theme.colors.action
-                        : theme.colors.textMuted
+                    : leading.intent === 'transient'
+                      ? theme.colors.action
+                      : leading.signature === true
+                        ? theme.colors.signature
+                        : acts && leading.quiet !== true
+                          ? theme.colors.action
+                          : theme.colors.textMuted
               }
             />
+            {leading.marks?.top !== undefined ? (
+              <View style={styles.tileMarkTop}>{leading.marks.top}</View>
+            ) : null}
+            {leading.marks?.bottom !== undefined ? (
+              <View style={styles.tileMarkBottom}>{leading.marks.bottom}</View>
+            ) : null}
           </View>
         ) : 'element' in leading ? (
           <View style={styles.tile}>{leading.element}</View>
@@ -440,7 +491,18 @@ const styles = StyleSheet.create((theme) => ({
     paddingVertical: theme.spacing.sm + theme.spacing.xxs,
     paddingHorizontal: theme.spacing.md + theme.spacing.xxs,
   },
+  rowActive: { backgroundColor: tint(theme.colors.action, 'fill') },
   pressed: { backgroundColor: tint(theme.colors.text, 'neutral') },
+  // Under the row's text, so the answers read as belonging to it.
+  answers: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: theme.spacing.sm,
+    paddingHorizontal: theme.spacing.md + theme.spacing.xxs,
+    paddingBottom: theme.spacing.md,
+  },
+  // The leading tile (32) and the row's gap after it.
+  answersIndented: { paddingLeft: theme.spacing.md + theme.spacing.xxs + 32 + theme.spacing.md },
   tile: {
     width: 32,
     height: 32,
@@ -453,6 +515,10 @@ const styles = StyleSheet.create((theme) => ({
   tileAttention: { backgroundColor: tint(theme.colors.attention, 'fill') },
   tileReady: { backgroundColor: tint(theme.colors.success, 'fill') },
   tileSignature: { backgroundColor: tint(theme.colors.signature, 'fill') },
+  // Overhangs the tile's right corner by 3 px, so the mark sits on the corner
+  // without covering the 16 px glyph. The tile does not clip its children.
+  tileMarkTop: { position: 'absolute', top: -3, right: -3 },
+  tileMarkBottom: { position: 'absolute', bottom: -3, right: -3 },
   dotSlot: { width: 32, alignItems: 'center' },
   body: { flex: 1, minWidth: 0, gap: theme.spacing.xxs },
   title: { ...theme.typography.row, color: theme.colors.text },

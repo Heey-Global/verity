@@ -1,6 +1,37 @@
 import type { AgentEvent, Attachment } from '@verity/events';
 import type { ColumnType, Generated } from 'kysely';
 
+export interface ProjectInquiryGrantsTable {
+  source_project_id: string;
+  target_project_id: string;
+  enabled: Generated<boolean>;
+  created_at: Generated<Date>;
+}
+
+export interface ProjectInquirySessionsTable {
+  source_session_id: string;
+  target_project_id: string;
+  target_session_id: string;
+  change_approved: Generated<boolean>;
+}
+
+export interface ProjectInquiriesTable {
+  id: string;
+  source_session_id: string;
+  target_session_id: string;
+  source_project_id: string;
+  target_project_id: string;
+  title: string;
+  body: string;
+  kind: 'question' | 'change';
+  status: 'provisioning' | 'pending' | 'approved' | 'rejected' | 'queued' | 'answered' | 'blocked';
+  created_at: Generated<Date>;
+  answer: string | null;
+  answer_delivered: Generated<boolean>;
+  user_id: string | null;
+  decided_by: string | null;
+}
+
 export interface ProjectRepositoriesTable {
   id: string;
   project_id: string;
@@ -1700,7 +1731,20 @@ interface SessionDeletionsTable {
   cleanup_pending: Generated<boolean>;
 }
 
+interface VulnerabilityFixesTable {
+  project_id: string;
+  session_id: string;
+  finding_keys: string;
+  pending_keys: Generated<string>;
+  accepted: Generated<boolean>;
+  failed: Generated<boolean>;
+}
+
 export interface Database {
+  project_inquiry_grants: ProjectInquiryGrantsTable;
+  project_inquiry_sessions: ProjectInquirySessionsTable;
+  project_inquiries: ProjectInquiriesTable;
+  vulnerability_fixes: VulnerabilityFixesTable;
   session_deletions: SessionDeletionsTable;
   user_context: UserContextTable;
   user_view_state: UserViewStateTable;

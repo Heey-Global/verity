@@ -21,9 +21,10 @@ import {
   type SessionSummary,
   type VerityClient,
 } from '@verity/mobile';
-import { fireEvent, render, screen } from '@testing-library/react-native';
+import { fireEvent, render, screen, within } from '@testing-library/react-native';
 
 import { ProjectCard, projectCardFacts, projectCardLine } from '../components/project/ProjectCard';
+import { projectGroups } from '../lib/projectGroups';
 import type { ProjectReorderController } from '../components/useProjectReorder';
 import type { SessionProjectGroup } from '../lib/projectGroups';
 
@@ -128,10 +129,27 @@ describe('project card facts', () => {
 
   it('names the project’s own problem as its health', () => {
     const facts = projectCardFacts(
-      group([], { status: { label: 'Needs repair', tone: 'danger' } }),
+      group([], { health: { label: 'Needs repair', tone: 'danger' } }),
       Date.now(),
     );
     expect(facts.health).toEqual({ label: 'Needs repair', intent: 'needsSetup' });
+  });
+
+  // The project page's Security row shows findings; a red tag on every card
+  // repeated them. The project's own problems still show.
+  it('leaves vulnerabilities to the project page but keeps a broken sandbox', () => {
+    const vulnerable = { ...project, vulnerabilitySummary: { count: 3, critical: 1, high: 2 } };
+    const [quiet] = projectGroups([vulnerable], [], new Map(), new Map(), null);
+    expect(quiet!.status?.label).toBe('3 vulnerable packages');
+    expect(projectCardFacts(quiet!, Date.now()).health).toBeUndefined();
+    const [broken] = projectGroups(
+      [{ ...vulnerable, state: 'failed', provisionError: 'Sandbox container stopped' }],
+      [],
+      new Map(),
+      new Map(),
+      null,
+    );
+    expect(projectCardFacts(broken!, Date.now()).health?.intent).toBe('needsSetup');
   });
 
   it('falls back to the session count and then the metadata', () => {
@@ -165,5 +183,21 @@ describe('project card', () => {
     expect(screen.getByLabelText(/^loose/)).toBeTruthy();
     fireEvent.press(screen.getByLabelText(/^Other sessions,/));
     expect(onToggle).toHaveBeenCalled();
+  });
+
+  it('keeps a waiting session in Now without the page’s feed', () => {
+    // The card passes no inbox feed; without its own items a session waiting
+    // for an answer would drop out of Now while the head counts it.
+    const other = group([ask('loose')], {
+      id: 'default',
+      title: 'Other sessions',
+      project: undefined,
+    });
+    renderCard(other, undefined, true);
+    fireEvent.press(screen.getByRole('tab', { name: 'Now · 1' }));
+    const needs = screen.getByTestId('work-needs-you');
+    expect(within(needs).getByLabelText(/^loose, .*Question$/)).toBeTruthy();
+    // Answers need the feed that sends them, which only the page holds.
+    expect(within(needs).queryByRole('button', { name: 'Yes' })).toBeNull();
   });
 });

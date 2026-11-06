@@ -118,10 +118,10 @@ keys use the platform monospace font. All sizes scale with the in-app font-zoom 
 
 **Elevation:**
 
-| Level    | Look                                                    | Use                                                                                                                                                                                                                                                                |
-| -------- | ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Flat     | 1 px `border`, no shadow                                | Cards and lists — the default                                                                                                                                                                                                                                      |
-| Floating | Soft dark shadow downward (`0 18px 50px` black at 60 %) | Sheets, menus, dialogs                                                                                                                                                                                                                                             |
+| Level    | Look                                                    | Use                                                                                                                                                                                                                                                                                                                                      |
+| -------- | ------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Flat     | 1 px `border`, no shadow                                | Cards and lists — the default                                                                                                                                                                                                                                                                                                            |
+| Floating | Soft dark shadow downward (`0 18px 50px` black at 60 %) | Sheets, menus, dialogs                                                                                                                                                                                                                                                                                                                   |
 | Glow     | Colored halo                                            | Four uses only: brand moments in `signature` (success check), Verity's presence in a live meeting or on Home in `signature` (§ 5.8), the selected card in `action`, and success and attention status dots in their tone. Buttons never glow. Dark theme only — in light, the selected card keeps its plain border and dots have no halo. |
 
 **Website.** `docs/website/site/index.html` uses the same roles, Inter, the
@@ -171,13 +171,26 @@ Disabled is always 40 % opacity; pressed is always a slight darkening.
     tint with the icon in `textMuted`. The Premium row uses `signature` instead of `action`. A status-bearing icon may use
     `leading.intent`: `needsSetup` uses attention and `ready` uses success, both with
     the shared fill tint. Vulnerability finding rows use this to retain their severity
-    while still allowing navigation.
+    while still allowing navigation. `transient` uses the `action` tile for something in
+    motion, and `quiet` keeps the neutral tile in a row that can be tapped when the icon
+    states a fact rather than an action.
+  - **Tile marks (optional):** a 12 px filled disc (`TileMark`) on the tile's right corners,
+    with a 1.5 px ring in `surface` and its glyph cut out in `background`. The top corner
+    carries the subject's own state, the bottom corner a verdict; both corners use the same
+    mark, so a tile with two reads as one pair. Session rows in a project's Work list put the
+    agent's state on top (pulsing `signature` while working, `action` for a new answer,
+    `attention` with "?" while it waits) and an open pull request's checks below.
   - **Center:** title in `Row`, at most one subtitle in `Subtitle`. Never more than two lines.
   - **Trailing:** exactly one of value (muted), status, toggle or compact button. A trailing
     value is short ("On", "2"); a long one such as an address goes in the subtitle, so the
     title never wraps to make room. The trailing side takes at most 45 % of the row; a
     status longer than that truncates, so the title is never squeezed. The chevron `›`
     appears only when the row navigates.
+  - **Answers (optional):** a row that waits on a decision the operator can make in place
+    (a question's options, a repair) shows those answers as compact buttons in a strip
+    under it, aligned with the title, the first one primary. The strip sits outside the
+    row's pressable area, so VoiceOver reaches each button; the row itself still opens
+    its subject. Rows without such a decision never carry one.
 - States: default, pressed (slightly darker surface), disabled (40 %), selected (`action`
   border with glow).
 - A row that opens something may keep its secondary actions (rename, favorite, delete)
@@ -259,6 +272,21 @@ title; a log list keeps them dense and scannable.
 - An action next to the chips (starting something new) is an icon button, not a labelled
   button, so the row fits a phone without scrolling.
 
+### 5.5b Usage ring
+
+- One quota window as a small ring (`UsageRing`): the arc is the share used, a short
+  notch across the ring marks where usage would sit now at an even pace, and the window's
+  name (`5h`, `W`) sits inside in `Caption`.
+- A meter is a state, never an action or brand moment: the arc is `textMuted` while there
+  is room, `text` from 90 % and `attention` once the window is spent. A spent window has
+  no pace left to keep and draws no notch.
+- The reset time stands beside the ring. A figure appears only from 90 % (`93%`) or as
+  `Limit` in `attention`; below that the ring and notch carry the reading.
+- A window a provider does not report is left out, not drawn empty. Provider marks are
+  monochrome in `text`.
+- The ring is decoration for the text beside it; the group around it carries the spoken
+  label with figure, reset and pace for every window.
+
 ### 5.6 Sheet
 
 - One bottom-sheet component for every overlay that slides up.
@@ -315,9 +343,16 @@ Meeting and Premium; it does not introduce a separate palette or set of effects.
   `surface`, 2 px `signature`-to-`action` edge and `signature` glow. At most one such
   surface appears on Home. A compact header does not require a surrounding pane.
   In light theme use a plain border and no glow or gradient.
-- **Capture:** reuse the shared text-field and tonal action treatments. Signature
-  identifies Verity; typing, microphone and send controls use `action`. The meeting's
-  model selector is not part of this Home pattern.
+- **Capture:** one component, `CaptureField`, for Home's "Tell Verity" (which opens her
+  panel) and the panel's composer: the shared field with a tonal microphone that turns
+  into a tonal stop while dictating, and a tonal send. Signature identifies Verity;
+  typing, microphone and send controls use `action`. Listening is said once, in the
+  field. The meeting's model selector is not part of this Home pattern.
+- **Mark:** `VerityMark` is her V on its `signature` halo — with glow for her identity on
+  Home and her page, flat on the floating V, in her panel's header and before her
+  answers there.
+- **Floating V:** a whole circle on `surface`, a little in from the screen edge, never
+  half outside it. On a phone's Home it steps back, since Home has her header and field.
 - **Attribution:** a small V mark may identify Verity's recommendation inside an inbox
   item. Keep the originating project and role visible. Meeting-specific newest-answer
   borders do not automatically apply to inbox cards.

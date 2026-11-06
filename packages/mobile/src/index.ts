@@ -305,6 +305,15 @@ export {
   type AttentionKind,
 } from './ui/attention.js';
 export {
+  sessionAgentMark,
+  sessionTile,
+  type SessionAgentMark,
+  type SessionTile,
+  type SessionTileGlyph,
+  type SessionTileResult,
+  type SessionTileTone,
+} from './ui/sessionTile.js';
+export {
   isPullRequestCheckingMergeability,
   isPullRequestConflicted,
   pullRequestMergeButton,
@@ -719,6 +728,10 @@ export {
   type FindingGroup,
   type PackageFindingGroup,
   packageFixPrompt,
+  vulnerabilityFixSelection,
+  vulnerabilityFindingKey,
+  VULNERABILITY_FIX_MESSAGE,
+  type VulnerabilityFixSelection,
   vulnerabilityFixPrompt,
   type VulnerabilityFinding,
   type VulnerabilitySettings,

@@ -12,7 +12,7 @@ import {
   type IncomingMessage,
   type RequestListener,
 } from 'node:http';
-import { connect } from 'node:tls';
+import { connect, TLSSocket } from 'node:tls';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
@@ -86,6 +86,7 @@ afterEach(async () => {
   await Promise.all(
     servers.splice(0).map((server) => new Promise<void>((done) => server.close(() => done()))),
   );
+  vi.restoreAllMocks();
 });
 afterAll(async () => rm(dir, { recursive: true, force: true }));
 
@@ -109,6 +110,8 @@ async function harness(
     capabilities?: GhTokenCapabilityRegistry;
     mint?: () => Promise<string>;
     resolveRepository?: Parameters<typeof createBrokeredForgeProxy>[0]['resolveRepository'];
+    transport?: BrokeredHttpStreamTransport;
+    certificateFor?: (hostname: string) => Promise<PemCertificate>;
   } = {},
 ) {
   const upstreamPort = await listen(
@@ -169,7 +172,8 @@ async function harness(
       ? { certificateFor: () => issueGatewayServerCertificate(ca, { serverName: 'forge.test' }) }
       : {}),
     adapter,
-    transport,
+    transport: options.transport ?? transport,
+    ...(options.certificateFor ? { certificateFor: options.certificateFor } : {}),
     ...(options.resolveRepository ? { resolveRepository: options.resolveRepository } : {}),
     enabled: () => options.enabled ?? true,
     actions: () => options.actions ?? allActions,
@@ -187,8 +191,14 @@ async function harness(
     relayGid: process.getgid!(),
     forgeProxy: proxy,
   });
-  cleanups.push(async () => {
+  let closed = false;
+  const retire = async () => {
+    if (closed) return;
+    closed = true;
     await listener.close();
+  };
+  cleanups.push(async () => {
+    await retire();
     await app.close();
   });
   const server = createNetServer((socket) => {
@@ -203,7 +213,24 @@ async function harness(
     upstream.pipe(socket);
   });
   const port = await listen(server);
-  return { port, received, mint };
+  return { port, received, mint, retire };
+}
+async function tunnel(port: number): Promise<Socket> {
+  return await new Promise((done, reject) => {
+    const outer = request({
+      hostname: '127.0.0.1',
+      port,
+      method: 'CONNECT',
+      path: 'github.com:443',
+    });
+    outer.on('error', reject);
+    outer.on('connect', (_response, socket) => {
+      sockets.add(socket);
+      socket.on('error', () => {});
+      done(socket);
+    });
+    outer.end();
+  });
 }
 async function call(
   port: number,
@@ -286,6 +313,150 @@ function cliEnv(port: number): NodeJS.ProcessEnv {
 }
 
 describe('brokered forge TLS boundary', () => {
+  it('does not diagnose successful or policy-rejected requests as transport failures', async () => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const h = await harness((_req, res) => res.end('ok'));
+    expect((await call(h.port, '/repos/acme/app/issues')).status).toBe(200);
+    expect((await call(h.port, '/repos/other/app/issues')).status).toBe(403);
+    await new Promise(setImmediate);
+    expect(warning).not.toHaveBeenCalled();
+  });
+
+  it('diagnoses certificate provisioning failures without exposing error contents', async () => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const h = await harness(() => {}, {
+      certificateFor: () => Promise.reject(Object.assign(new Error(token), { code: token })),
+    });
+    await expect(call(h.port, '/repos/acme/app/issues')).rejects.toThrow();
+    expect(warning).toHaveBeenCalledExactlyOnceWith('Forge broker connection failed', {
+      connectionId: expect.stringMatching(/^[0-9a-f-]{36}$/),
+      phase: 'certificate',
+      code: 'UNKNOWN',
+    });
+    expect(JSON.stringify(warning.mock.calls)).not.toContain(token);
+  });
+
+  it.each(['client-tls', 'http-parser'] as const)(
+    'diagnoses %s errors once without logging client-controlled bytes',
+    async (phase) => {
+      const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const h = await harness(() => {});
+      const socket = await tunnel(h.port);
+      if (phase === 'client-tls') socket.write(`GET /${token} HTTP/1.1\r\n\r\n`);
+      else {
+        const tls = connect({ socket, servername: 'github.com', ca: ca.caCertPem });
+        tls.on('error', () => {});
+        await new Promise<void>((done) => tls.once('secureConnect', done));
+        tls.write(`INVALID-${token} / HTTP/1.1\r\n\r\n`);
+      }
+      await vi.waitFor(() => expect(warning).toHaveBeenCalledTimes(1));
+      expect(warning.mock.calls[0]).toEqual([
+        'Forge broker connection failed',
+        { connectionId: expect.any(String), phase, code: expect.any(String) },
+      ]);
+      await new Promise(setImmediate);
+      expect(warning).toHaveBeenCalledTimes(1);
+      expect(JSON.stringify(warning.mock.calls)).not.toContain(token);
+    },
+  );
+
+  it('diagnoses truncated upstream responses once', async () => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const h = await harness((_req, res) => {
+      res.writeHead(200, { 'content-length': '1000000' });
+      res.flushHeaders();
+      res.write('incomplete');
+      setImmediate(() => res.destroy(new Error(token)));
+    });
+    await expect(call(h.port, '/repos/acme/app/issues')).rejects.toThrow();
+    await vi.waitFor(() => expect(warning).toHaveBeenCalledTimes(1));
+    expect(warning.mock.calls[0]?.[1]).toEqual({
+      connectionId: expect.any(String),
+      phase: 'response',
+      code: expect.any(String),
+    });
+    expect(JSON.stringify(warning.mock.calls)).not.toContain(token);
+  });
+
+  it('distinguishes generation retirement from its cascading stream errors', async () => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    let started = false;
+    const h = await harness((_req, res) => {
+      started = true;
+      res.flushHeaders();
+    });
+    const pending = call(h.port, '/repos/acme/app/issues').catch(() => undefined);
+    await vi.waitFor(() => expect(started).toBe(true));
+    await h.retire();
+    await pending;
+    await vi.waitFor(() => expect(warning).toHaveBeenCalledTimes(1));
+    expect(warning.mock.calls[0]?.[1]).toEqual({
+      connectionId: expect.any(String),
+      phase: 'generation-abort',
+      code: 'UNKNOWN',
+    });
+  });
+
+  it.each(['idle-timeout', 'tunnel-timeout', 'request-timeout'] as const)(
+    'diagnoses %s without waiting for the production deadline',
+    async (phase) => {
+      const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const timers = vi.spyOn(globalThis, 'setTimeout');
+      const idle = vi.spyOn(TLSSocket.prototype, 'setTimeout');
+      let started = false;
+      const h = await harness((_req, res) => {
+        started = true;
+        res.flushHeaders();
+      });
+      const pending = call(h.port, '/repos/acme/app/issues').catch(() => undefined);
+      await vi.waitFor(() => expect(started).toBe(true));
+      if (phase === 'idle-timeout') {
+        const index = idle.mock.calls.findIndex(([delay]) => delay === 60_000);
+        const tls = idle.mock.contexts[index];
+        if (!(tls instanceof TLSSocket)) throw new Error('Missing server TLS socket');
+        tls.emit('timeout');
+      } else {
+        const deadlines = timers.mock.calls.filter(([, delay]) => delay === 10 * 60_000);
+        const callback = deadlines[phase === 'tunnel-timeout' ? 0 : 1]?.[0];
+        if (typeof callback !== 'function') throw new Error('Missing broker deadline');
+        callback();
+      }
+      await pending;
+      await vi.waitFor(() => expect(warning).toHaveBeenCalledTimes(1));
+      expect(warning.mock.calls[0]?.[1]).toEqual({
+        connectionId: expect.any(String),
+        phase,
+        code: 'UNKNOWN',
+      });
+    },
+  );
+
+  it('bounds diagnostics across connections and allows the next window', async () => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const h = await harness(() => {}, {
+      transport: () => Promise.reject(Object.assign(new Error(token), { code: 'ECONNRESET' })),
+    });
+    for (let i = 0; i < 22; i++) {
+      expect((await call(h.port, '/repos/acme/app/issues')).status).toBe(502);
+    }
+    expect(warning).toHaveBeenCalledTimes(20);
+    expect(
+      new Set(
+        warning.mock.calls.map((entry) => (entry[1] as { connectionId: string }).connectionId),
+      ).size,
+    ).toBe(20);
+    expect(warning.mock.calls[0]?.[1]).toEqual({
+      connectionId: expect.any(String),
+      phase: 'upstream',
+      code: 'ECONNRESET',
+    });
+    expect(JSON.stringify(warning.mock.calls)).not.toContain(token);
+    const now = Date.now();
+    vi.spyOn(Date, 'now').mockReturnValue(now + 60_001);
+    expect((await call(h.port, '/repos/acme/app/issues')).status).toBe(502);
+    expect(warning).toHaveBeenCalledTimes(21);
+  });
+
   it('streams gzip upload-pack requests unchanged', async () => {
     const bytes = gzipSync(Buffer.from('large Git negotiation fixture'.repeat(100)));
     const h = await harness(async (req, res) => {
@@ -501,7 +672,9 @@ describe('brokered forge TLS boundary', () => {
     });
     await expect(call(h.port, '/repos/acme/app/pulls')).rejects.toThrow();
     expect(h.received).toHaveLength(2);
-    expect(warning).toHaveBeenCalledWith('Forge broker upstream request failed', {
+    expect(warning).toHaveBeenCalledWith('Forge broker connection failed', {
+      connectionId: expect.any(String),
+      phase: 'upstream',
       code: 'UNKNOWN',
     });
     expect(JSON.stringify(warning.mock.calls)).not.toContain(token);

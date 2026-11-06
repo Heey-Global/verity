@@ -167,3 +167,29 @@ it('keeps the words instead of sending when dictation failed', () => {
   expect(sendToVerity).not.toHaveBeenCalled();
   expect(screen.getByDisplayValue('Call Han')).toBeTruthy();
 });
+
+// The panel looked unlike Verity anywhere else: a bare title, "Listening" twice,
+// unmarked answers and a composer of its own (docs/design-system.md § 5.8).
+it('wears Verity’s identity, says listening once and marks her answers', () => {
+  mockVoice.state = 'recording';
+  jest.mocked(useVerity).mockReturnValue({
+    ...ready,
+    conversation: {
+      ...ready.conversation!,
+      items: [
+        ...ready.conversation!.items,
+        { kind: 'reply', id: 'r-3', at: 3, text: 'Saved it for the Hansen project.' },
+      ],
+    },
+  });
+  const onClose = jest.fn();
+  const screen = render(<VerityPanel mode="voice" projectId="site" onClose={onClose} />);
+  expect(screen.getAllByTestId('verity-mark').length).toBeGreaterThanOrEqual(2);
+  expect(screen.queryByText('Listening')).toBeNull();
+  expect(screen.getByLabelText('Message to Verity').props.placeholder).toBe('Listening…');
+  expect(screen.getByRole('button', { name: 'Stop dictation' })).toBeTruthy();
+  expect(screen.getByTestId('verity-reply')).toHaveTextContent('Saved it for the Hansen project.');
+  fireEvent.press(screen.getByLabelText('Open full conversation'));
+  expect(onClose).toHaveBeenCalled();
+  expect(router.push).toHaveBeenCalledWith('/session/assistant');
+});

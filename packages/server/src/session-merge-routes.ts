@@ -130,6 +130,14 @@ export function registerSessionMergeRoutes(
       // status resolver retain the pre-existing merge behavior.
       if (deps.branchPrStatus !== undefined || deps.branchPrStatusForBranches !== undefined) {
         const current = await sessionPrStatus(session).catch(() => null);
+        if (current === null) {
+          invalidatePrSummaryAction(session);
+          reply.code(503);
+          return {
+            error: 'Pull request status is temporarily unavailable. Refresh status before merging.',
+            code: 'merge_status_unavailable',
+          };
+        }
         if (current?.number === number && current.phase === 'merged') {
           applyPrSummaryAction(session, compactPr(current));
           // Preserve idempotency while still repairing a checkout left stale by
@@ -139,6 +147,23 @@ export function registerSessionMergeRoutes(
             await deps.eventStore.appendPendingNote(id, note).catch(() => undefined);
           }
           return { merged: true };
+        }
+        if (
+          current.number === number &&
+          current.phase === 'open' &&
+          current.mergeState !== 'dirty' &&
+          current.viewerCanMerge !== false &&
+          (current.pipeline === 'pending' ||
+            current.pipeline === 'running' ||
+            (current.mergeable === null && current.pipeline !== 'failure'))
+        ) {
+          applyPrSummaryAction(session, compactPr(current));
+          reply.code(409);
+          return {
+            error:
+              'Pull request checks or mergeability are still being evaluated. Refresh status before merging.',
+            code: 'merge_status_pending',
+          };
         }
         if (
           current?.number !== number ||

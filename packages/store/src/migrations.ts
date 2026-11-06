@@ -5353,7 +5353,23 @@ migrations['0194_assistant_requests'] = {
   },
 };
 
-migrations['0195_project_repositories'] = {
+migrations['0195_vulnerability_fixes'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`create table vulnerability_fixes (
+      project_id text primary key references projects(id) on delete cascade,
+      session_id text not null,
+      finding_keys text not null,
+      pending_keys text not null default '[]',
+      accepted boolean not null default false,
+      failed boolean not null default false
+    )`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table vulnerability_fixes`.execute(db);
+  },
+};
+
+migrations['0196_project_repositories'] = {
   async up(db: Kysely<unknown>): Promise<void> {
     // The default repository remains in projects: upgrading never moves an existing
     // clone, worktree, branch or PR association. These rows describe extra modules.
@@ -5389,7 +5405,7 @@ migrations['0195_project_repositories'] = {
   },
 };
 
-migrations['0196_project_inquiries'] = {
+migrations['0197_project_inquiries'] = {
   async up(db: Kysely<unknown>): Promise<void> {
     await sql`create table project_inquiry_grants (
       source_project_id text not null references projects(id) on delete cascade,

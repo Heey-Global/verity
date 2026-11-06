@@ -33,14 +33,10 @@ import {
   type VerityClient,
   type ProjectRecord,
   type ProviderLimitRow,
-  type ProviderLimitState,
   type SessionSummary,
   isServerSecretSealedError,
   markerAttention,
   modelDisplayName,
-  rateLimitWindowLabel,
-  pacePercent,
-  quotaMeterLevel,
   projectBadge,
   projectRepoRef,
   sandboxUpdateAlertMessage,
@@ -60,12 +56,13 @@ import {
   type RepoIdentity,
   parseBranchIssue,
 } from '@verity/mobile';
-import { Link, router, useFocusEffect, useLocalSearchParams } from 'expo-router';
+import { Link, router, useFocusEffect, useLocalSearchParams, useNavigation } from 'expo-router';
 import {
   Fragment,
   memo,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -80,9 +77,7 @@ import {
   type LayoutChangeEvent,
   Linking,
   type ListRenderItemInfo,
-  Modal,
   Pressable,
-  ScrollView,
   Text,
   View,
   useWindowDimensions,
@@ -129,15 +124,16 @@ import {
   projectGroupSessionId,
   type SessionProjectGroup,
 } from '../lib/projectGroups';
-import { formatResetDisplay } from '../lib/time';
 import { SessionChat } from './session/[id]';
 import { HomeInbox } from '../components/home/HomeInbox';
+import { ProviderUsageGroup, ProviderUsageStrip } from '../components/ProviderUsage';
 import { HomeTabBar, type HomeTab } from '../components/home/HomeTabBar';
 import { useNewDesign } from '../lib/homePreferences';
 import { ProjectPage } from '../components/project/ProjectPage';
 import { KnowledgeFileView } from '../components/knowledge/KnowledgeFileView';
 import { KnowledgePaneContext, type KnowledgePane } from '../components/knowledge/KnowledgePane';
 import type { KnowledgeScope } from '../components/knowledge/knowledgeScope';
+import { setHomeShowsVerity } from '../lib/homeVerity';
 import { ProjectCard } from '../components/project/ProjectCard';
 import { VerityPage } from '../components/verity/VerityPage';
 import { toneColor } from '../theme/tokens';
@@ -282,6 +278,27 @@ function SessionList({ client }: { client: VerityClient }) {
     providerLimitRows,
     serverAttention,
   } = useSessionList(client);
+  // On a wide screen the usage sits in the header beside the wordmark, so it
+  // stays in view whatever the left column shows. The header lays out whatever
+  // the overview hands it as `headerRight`, centred between title and search.
+  const navigation = useNavigation();
+  // Every poll rebuilds the rows; only a change in what they say should
+  // reach the header, which re-renders on each `setOptions`.
+  const usageDigest = JSON.stringify(providerLimitRows);
+  const headerUsageRows = useMemo(
+    () => JSON.parse(usageDigest) as ProviderLimitRow[],
+    [usageDigest],
+  );
+  useLayoutEffect(() => {
+    navigation.setOptions({
+      headerRight:
+        wide && headerUsageRows.length > 0
+          ? () => <ProviderUsageGroup rows={headerUsageRows} presentation="popover" />
+          : undefined,
+    });
+    // Leaving the overview must not leave its rings, and their data, behind.
+    return () => navigation.setOptions({ headerRight: undefined });
+  }, [navigation, wide, headerUsageRows]);
   const onToggleFavoriteSession = useCallback(
     (session: SessionSummary) => setFavorite(session.sessionId, session.favorite !== true),
     [setFavorite],
@@ -672,6 +689,12 @@ function SessionList({ client }: { client: VerityClient }) {
   // On a phone the page is its own route.
   const [openProjectId, setOpenProjectId] = useState<string | null>(null);
   const [homeTab, setHomeTab] = useState<HomeTab>('home');
+  // On a phone, Home's own header and "Tell Verity" are the way to Verity there.
+  const homeShowsVerity = newDesign && !wide && homeTab === 'home';
+  useEffect(() => {
+    setHomeShowsVerity(homeShowsVerity);
+    return () => setHomeShowsVerity(false);
+  }, [homeShowsVerity]);
   const openProject = useCallback(
     (projectId: string) => {
       if (!wide) {
@@ -994,11 +1017,6 @@ function SessionList({ client }: { client: VerityClient }) {
       {projectsError ? (
         <StaleBanner message={`Projects: ${projectsError}`} onRetry={refreshProjects} />
       ) : null}
-      {/* Pinned above the list, not rendered as its header: the usage meters are
-          the one thing on this screen that must not scroll, drag or fold away. */}
-      {providerLimitRows.length > 0 ? (
-        <ProviderLimitMeters rows={providerLimitRows} compact={wide && sidebarWidth < 380} />
-      ) : null}
       <GestureDetector gesture={reorder.gesture}>
         <Reanimated.View
           ref={reorder.hostRef}
@@ -1162,6 +1180,7 @@ function SessionList({ client }: { client: VerityClient }) {
         key={openProjectId}
         client={client}
         projectId={openProjectId}
+        selectedSessionId={selectedId}
         inline
         onBack={() => setOpenProjectId(null)}
         onOpenSession={openSessionFromHome}
@@ -1174,7 +1193,6 @@ function SessionList({ client }: { client: VerityClient }) {
           if (deleted && selectedId === sessionId) setSelectedId(null);
           void refresh({ silent: true });
         }}
-        selectedSessionId={selectedId}
       />
     ) : null;
   const sidebar = newDesign ? (
@@ -1223,7 +1241,19 @@ function SessionList({ client }: { client: VerityClient }) {
   );
 
   finishHomeWork();
-  if (!wide) return <SchedulingDiagnostics stage="sidebar">{sidebar}</SchedulingDiagnostics>;
+  if (!wide)
+    return (
+      <SchedulingDiagnostics stage="sidebar">
+        {/* Above Home and Projects alike, and pinned rather than part of either
+            list: the usage is the one thing here that must not scroll, drag or
+            fold away. A project page and a session are their own routes on a
+            phone, so they never show it. */}
+        <View style={styles.flex}>
+          <ProviderUsageStrip rows={providerLimitRows} />
+          {sidebar}
+        </View>
+      </SchedulingDiagnostics>
+    );
 
   return (
     <KnowledgePaneContext.Provider value={knowledgePane}>
@@ -1914,244 +1944,6 @@ function isVerityControlPlaneProject(project: ProjectRecord): boolean {
   return project.kind === 'control_plane';
 }
 
-const WIDE_PROVIDER_LIMIT_MIN_WIDTH = 700;
-
-function ProviderLimitMeters({ rows, compact }: { rows: ProviderLimitRow[]; compact: boolean }) {
-  const segments = (row: ProviderLimitRow) => (
-    <>
-      <ProviderLimitSegment label="5h" window="five_hour" limit={row.fiveHour} compact={compact} />
-      <ProviderLimitSegment label="Week" window="weekly" limit={row.weekly} compact={compact} />
-    </>
-  );
-  return (
-    <View style={styles.limitMeters}>
-      {rows.map((row) => (
-        <View key={row.providerLabel} style={styles.limitMeterRow}>
-          <Text style={styles.limitProvider} numberOfLines={1}>
-            {row.providerLabel}
-          </Text>
-          {segments(row)}
-        </View>
-      ))}
-    </View>
-  );
-}
-
-function ProviderLimitSegment({
-  label,
-  window,
-  limit,
-  compact,
-}: {
-  label: string;
-  window: 'five_hour' | 'weekly';
-  limit: ProviderLimitState | null;
-  compact: boolean;
-}) {
-  const { theme } = useUnistyles();
-  const { width: screenWidth, height: screenHeight } = useWindowDimensions();
-  const usesWideSpacing = !compact && screenWidth >= WIDE_PROVIDER_LIMIT_MIN_WIDTH;
-  const chartRef = useRef<View>(null);
-  const [showPaceInfo, setShowPaceInfo] = useState(false);
-  const [paceInfoAnchor, setPaceInfoAnchor] = useState<{
-    top: number;
-    left: number;
-    width: number;
-    arrowLeft: number;
-  } | null>(null);
-  // Exhausted, not merely warned about: providers flag `allowed_warning` from
-  // around half a window, and painting the bar in the reached-limit colour there
-  // says "you are out" for days while every turn still runs.
-  const meterLevel = quotaMeterLevel(limit);
-  const blocked = meterLevel === 'spent';
-  // A warning whose percent the provider left out or garbled draws an empty bar
-  // in the warning tint, and `percentText` below stays blank: the colour carries
-  // what the provider told us, and inventing a length would be the one part we
-  // do not know. A finite percent is required — NaN would reach the flex widths.
-  const reported = limit?.usedPercent;
-  const percent =
-    reported !== undefined && Number.isFinite(reported) ? reported : blocked ? 100 : 0;
-  const usage = Math.max(0, percent);
-  const clamped = Math.min(100, usage);
-  // Faint while there is room, full text colour when it runs low, the problem
-  // colour once it is spent:
-  // a meter is a state, so it never takes the action or brand colour.
-  const fillColor =
-    meterLevel === 'spent'
-      ? theme.colors.attention
-      : meterLevel === 'low'
-        ? theme.colors.text
-        : theme.colors.textMuted;
-  // Even-burn marker: where usage "should" sit now if the quota were spent at a
-  // steady rate. Shown for both the five-hour and weekly windows.
-  const pace = limit === null ? null : pacePercent(limit.resetsAt, window);
-  useEffect(() => {
-    if (pace === null) {
-      setShowPaceInfo(false);
-      setPaceInfoAnchor(null);
-    }
-  }, [pace]);
-  useEffect(() => {
-    setShowPaceInfo(false);
-    setPaceInfoAnchor(null);
-  }, [screenHeight, screenWidth]);
-  const text =
-    limit === null ? '--' : formatResetDisplay(limit.resetsAt, window, { compact: true });
-  const percentText =
-    reported === undefined || !Number.isFinite(reported) ? undefined : `${Math.round(usage)}%`;
-  const accessibilityText =
-    limit === null ? 'unknown' : `${Math.round(usage)} percent, resets ${text}`;
-  const windowLabel = rateLimitWindowLabel(window);
-  const paceStatus =
-    pace === null
-      ? null
-      : usage > pace + 2
-        ? `Usage is above the even ${windowLabel} pace.`
-        : usage < pace - 2
-          ? `Usage is below the even ${windowLabel} pace.`
-          : `Usage matches the even ${windowLabel} pace.`;
-  const closePaceInfo = () => {
-    setShowPaceInfo(false);
-    setPaceInfoAnchor(null);
-  };
-  const openPaceInfo = () => {
-    chartRef.current?.measureInWindow((x, y, width, height) => {
-      const cardWidth = Math.min(280, screenWidth - 24);
-      const chartCenter = x + width / 2;
-      const left = Math.max(
-        12,
-        Math.min(chartCenter - cardWidth / 2, screenWidth - cardWidth - 12),
-      );
-      setPaceInfoAnchor({
-        top: y + height + 10,
-        left,
-        width: cardWidth,
-        arrowLeft: Math.max(16, Math.min(cardWidth - 16, chartCenter - left)),
-      });
-      setShowPaceInfo(true);
-    });
-  };
-  const chartContent = (
-    <>
-      <View
-        style={styles.limitTrack}
-        accessibilityLabel={`${rateLimitWindowLabel(window)} quota ${accessibilityText}`}
-      >
-        <View style={[styles.limitFill, { flex: clamped, backgroundColor: fillColor }]} />
-        <View style={[styles.limitRemainder, { flex: 100 - clamped }]} />
-      </View>
-      {pace !== null ? (
-        <View pointerEvents="none" style={[styles.limitPace, { left: `${pace}%` }]} />
-      ) : null}
-      {percentText !== undefined ? (
-        <Text
-          style={[styles.limitPercent, blocked ? styles.limitValueBlocked : null]}
-          numberOfLines={1}
-          ellipsizeMode="clip"
-        >
-          {percentText}
-        </Text>
-      ) : null}
-    </>
-  );
-  return (
-    <View
-      style={[
-        styles.limitSegment,
-
-        usesWideSpacing
-          ? window === 'weekly'
-            ? styles.limitWeeklySegmentWide
-            : styles.limitFiveHourSegmentWide
-          : null,
-      ]}
-    >
-      <Text style={styles.limitWindowLabel} numberOfLines={1} ellipsizeMode="clip">
-        {label}
-      </Text>
-      {compact || pace !== null ? (
-        <Pressable
-          ref={chartRef}
-          style={styles.limitChart}
-          onPress={showPaceInfo ? closePaceInfo : openPaceInfo}
-          accessibilityRole="button"
-          accessibilityLabel={`${windowLabel} token pace. ${accessibilityText}. ${paceStatus}`}
-          accessibilityHint="Shows or hides reset and pace details"
-          accessibilityState={{ expanded: showPaceInfo }}
-          hitSlop={11}
-        >
-          {chartContent}
-        </Pressable>
-      ) : (
-        <View style={styles.limitChart}>{chartContent}</View>
-      )}
-      {!compact ? (
-        <Text
-          style={[styles.limitValue, blocked ? styles.limitValueBlocked : null]}
-          numberOfLines={1}
-        >
-          {text}
-        </Text>
-      ) : null}
-      {paceInfoAnchor !== null ? (
-        <Modal
-          visible={showPaceInfo}
-          transparent
-          animationType="fade"
-          onRequestClose={closePaceInfo}
-        >
-          <View
-            style={styles.limitPaceInfoBackdrop}
-            accessibilityViewIsModal
-            onAccessibilityEscape={closePaceInfo}
-          >
-            <Pressable style={StyleSheet.absoluteFill} onPress={closePaceInfo} accessible={false} />
-            <View
-              style={[
-                styles.limitPaceInfo,
-                {
-                  top: paceInfoAnchor.top,
-                  left: paceInfoAnchor.left,
-                  width: paceInfoAnchor.width,
-                  maxHeight: Math.max(0, screenHeight - paceInfoAnchor.top - 12),
-                },
-              ]}
-            >
-              <View style={[styles.limitPaceInfoArrow, { left: paceInfoAnchor.arrowLeft - 7 }]} />
-              <ScrollView bounces={false} contentContainerStyle={styles.limitPaceInfoContent}>
-                <Text style={styles.limitPaceInfoTitle} accessibilityRole="header">
-                  {windowLabel === 'weekly' ? 'Weekly' : '5-hour'} usage pace
-                </Text>
-                <Text style={styles.limitPaceInfoText}>
-                  {percentText ?? 'Usage unknown'} · Resets {text}
-                </Text>
-                {pace !== null ? (
-                  <>
-                    <Text style={styles.limitPaceInfoText}>
-                      {Math.round(pace)}% at even pace. {paceStatus}
-                    </Text>
-                    <Text style={styles.limitPaceInfoHint}>
-                      The triangle shows where usage would be if your {windowLabel} limit were
-                      spread evenly.
-                    </Text>
-                  </>
-                ) : null}
-                <Pressable
-                  style={styles.limitPaceInfoClose}
-                  onPress={closePaceInfo}
-                  accessibilityRole="button"
-                >
-                  <Text style={styles.limitPaceInfoCloseText}>Got it</Text>
-                </Pressable>
-              </ScrollView>
-            </View>
-          </View>
-        </Modal>
-      ) : null}
-    </View>
-  );
-}
-
 // One session in the list: compact, table-like row inside its project group.
 // The project card owns the outer frame; session rows stay flat so the overview
 // does not read as nested cards.
@@ -2516,188 +2308,6 @@ const styles = StyleSheet.create((theme) => ({
     backgroundColor: theme.colors.background,
   },
   hiddenPane: { display: 'none' },
-  limitMeters: {
-    gap: 1,
-    paddingHorizontal: theme.spacing.md,
-    paddingVertical: 6,
-    backgroundColor: theme.colors.surfaceAlt,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: theme.colors.border,
-  },
-  limitMeterRow: {
-    minHeight: 26,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: theme.spacing.sm,
-  },
-  limitProvider: {
-    width: 48,
-    color: theme.colors.text,
-    fontSize: theme.typography.footnote.fontSize,
-    fontFamily: theme.fonts.extrabold,
-  },
-  limitSegment: {
-    flex: 1,
-    minWidth: 0,
-    flexDirection: 'row',
-    alignItems: 'center',
-    columnGap: 7,
-  },
-  // The phone layout fits both segments evenly. On wider iPad/desktop layouts a
-  // weekly reset includes a weekday plus its clock time, so shift WEEK left and
-  // give it more of the shared row without disturbing the compact phone layout.
-  limitFiveHourSegmentWide: {
-    flex: 0.92,
-  },
-  limitWeeklySegmentWide: {
-    flex: 1.08,
-  },
-  limitWindowLabel: {
-    width: 32,
-    flexShrink: 0,
-    color: theme.colors.textMuted,
-    fontSize: theme.typography.caption.fontSize,
-    fontFamily: theme.fonts.extrabold,
-    textAlign: 'right',
-    textTransform: 'uppercase',
-  },
-  limitChart: {
-    width: 46,
-    flexShrink: 0,
-    minWidth: 38,
-    // Taller than the bar to leave room for the pace tick below it (see
-    // limitTrack.marginBottom); percent text occupies the space above the bar.
-    height: 22,
-    justifyContent: 'flex-end',
-  },
-  limitTrack: {
-    height: 5,
-    flexDirection: 'row',
-    overflow: 'hidden',
-    borderRadius: theme.radius.pill,
-    backgroundColor: theme.colors.border,
-    // Lift the bar off the chart's bottom edge, reserving a lane for the pace
-    // tick. Using the track's margin (not chart padding) keeps the tick's
-    // absolute `bottom:0` anchored to the chart edge regardless of how Yoga
-    // resolves padding for absolutely-positioned children.
-    marginBottom: 4,
-  },
-  limitFill: {
-    minWidth: 0,
-    height: 5,
-  },
-  limitRemainder: {
-    minWidth: 0,
-    height: 5,
-    backgroundColor: 'transparent',
-  },
-  // Even-burn marker: a small triangle in the lane below the quota bar, its
-  // apex pointing up at the "you should be here now" position. Below the bar
-  // (not above) so it never collides with the percent text. Border trick draws
-  // the upward triangle; marginLeft recenters its 4px width on the left offset.
-  limitPace: {
-    position: 'absolute',
-    bottom: 0,
-    width: 0,
-    height: 0,
-    marginLeft: -2,
-    borderLeftWidth: 2,
-    borderRightWidth: 2,
-    borderBottomWidth: 3,
-    borderLeftColor: 'transparent',
-    borderRightColor: 'transparent',
-    borderBottomColor: theme.colors.text,
-    opacity: 0.5,
-  },
-  limitPaceInfo: {
-    position: 'absolute',
-    elevation: 6,
-    gap: 2,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.border,
-    borderRadius: theme.radius.md,
-    backgroundColor: theme.colors.surface,
-    shadowColor: theme.elevation.floating.shadowColor,
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.16,
-    shadowRadius: 6,
-  },
-  limitPaceInfoArrow: {
-    position: 'absolute',
-    top: -8,
-    width: 0,
-    height: 0,
-    borderLeftWidth: 7,
-    borderRightWidth: 7,
-    borderBottomWidth: 8,
-    borderLeftColor: 'transparent',
-    borderRightColor: 'transparent',
-    borderBottomColor: theme.colors.surface,
-  },
-  limitPaceInfoBackdrop: {
-    flex: 1,
-    backgroundColor: theme.colors.scrim,
-  },
-  limitPaceInfoContent: {
-    gap: 2,
-  },
-  limitPaceInfoTitle: {
-    color: theme.colors.text,
-    fontSize: theme.typography.caption.fontSize,
-    fontFamily: theme.fonts.extrabold,
-  },
-  limitPaceInfoText: {
-    color: theme.colors.text,
-    fontFamily: theme.fonts.regular,
-    fontSize: theme.typography.caption.fontSize,
-    lineHeight: 14 * theme.fontScale,
-  },
-  limitPaceInfoHint: {
-    marginTop: 2,
-    color: theme.colors.textMuted,
-    fontFamily: theme.fonts.regular,
-    fontSize: theme.typography.caption.fontSize,
-    lineHeight: 12 * theme.fontScale,
-  },
-  limitPaceInfoClose: {
-    alignSelf: 'flex-end',
-    minWidth: 44,
-    minHeight: 44,
-    marginTop: 4,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  limitPaceInfoCloseText: {
-    color: theme.colors.action,
-    fontSize: theme.typography.caption.fontSize,
-    fontFamily: theme.fonts.extrabold,
-  },
-  limitValue: {
-    flex: 1,
-    minWidth: 0,
-    color: theme.colors.textMuted,
-    fontSize: theme.typography.caption.fontSize,
-    fontFamily: theme.fonts.bold,
-  },
-  limitPercent: {
-    position: 'absolute',
-    left: 2,
-    // Track sits 4px up and is 5px tall (bottom edge at 9); the percent sits
-    // on it, and its Caption line fills the rest of the 22px chart.
-    bottom: 9,
-    // Wide enough for "100%" in Caption ExtraBold.
-    width: 36,
-    color: theme.colors.textMuted,
-    fontSize: theme.typography.caption.fontSize,
-    fontFamily: theme.fonts.extrabold,
-    lineHeight: theme.typography.caption.lineHeight,
-    textAlign: 'left',
-  },
-  limitValueBlocked: {
-    color: theme.colors.attention,
-  },
   centered: {
     flex: 1,
     alignItems: 'center',

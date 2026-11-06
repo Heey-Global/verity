@@ -1,8 +1,8 @@
 import type { AssistantConversationItem, AssistantQuestion } from '@verity/mobile';
 import { router } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
-import { Alert, TextInput, View } from 'react-native';
-import { StyleSheet, useUnistyles } from 'react-native-unistyles';
+import { Alert, View } from 'react-native';
+import { StyleSheet } from 'react-native-unistyles';
 
 import { useVoiceInput } from '../hooks/useVoiceInput';
 import { taskAccountScope } from '../lib/tasksStore';
@@ -17,7 +17,8 @@ import {
   type VerityState,
 } from '../lib/verityConversation';
 import { subscribeVerityShortcut } from '../lib/voiceShortcut';
-import { Button, Card, IconButton, Sheet, StatusDot, Text } from './ui';
+import { Button, CaptureField, Card, Sheet, SheetHeaderButton, StatusDot, Text } from './ui';
+import { VerityMark } from './VerityMark';
 
 /** Newest items shown in the panel; the full conversation is one tap away. */
 const RECENT = 8;
@@ -43,7 +44,6 @@ export function VerityPanel({
   projectId: string | null;
   onClose(): void;
 }) {
-  const { theme } = useUnistyles();
   const verity = useVerity(true);
   const [text, setText] = useState(() => (draft.scope === taskAccountScope() ? draft.text : ''));
   const [sending, setSending] = useState(false);
@@ -111,42 +111,39 @@ export function VerityPanel({
     <Sheet
       visible
       title="Verity"
+      titleLeading={<VerityMark size={32} glow={false} />}
+      headerAction={
+        sessionId ? (
+          <SheetHeaderButton
+            icon="maximize-2"
+            accessibilityLabel="Open full conversation"
+            onPress={() => {
+              onClose();
+              router.push(`/session/${sessionId}`);
+            }}
+          />
+        ) : undefined
+      }
       onClose={() => {
         if (voice.state === 'recording') voice.toggle();
         onClose();
       }}
       footer={
-        <View style={styles.composer}>
-          <View style={styles.field}>
-            <TextInput
-              value={text}
-              onChangeText={(value) => {
-                voice.onComposerEdit(value);
-                setText(value);
-              }}
-              placeholder={
-                voice.state === 'recording' ? 'Listening…' : 'Ask or tell Verity anything'
-              }
-              placeholderTextColor={theme.colors.textFaint}
-              multiline
-              autoFocus={mode === 'text'}
-              accessibilityLabel="Message to Verity"
-              style={styles.input}
-            />
-          </View>
-          <IconButton
-            icon={voice.state === 'recording' ? 'square' : 'mic'}
-            active={voice.state === 'recording'}
-            accessibilityLabel={voice.state === 'recording' ? 'Stop dictation' : 'Dictate'}
-            onPress={voice.toggle}
-          />
-          <IconButton
-            icon="arrow-up"
-            accessibilityLabel="Send to Verity"
-            disabled={!text.trim() || sending}
-            onPress={() => void send()}
-          />
-        </View>
+        // The same field as "Tell Verity" on Home; listening shows here, once.
+        <CaptureField
+          value={text}
+          onChangeText={(value) => {
+            voice.onComposerEdit(value);
+            setText(value);
+          }}
+          placeholder={voice.state === 'recording' ? 'Listening…' : 'Ask or tell Verity anything'}
+          listening={voice.state === 'recording'}
+          onMic={voice.toggle}
+          onSend={() => void send()}
+          sendDisabled={!text.trim() || sending}
+          autoFocus={mode === 'text'}
+          accessibilityLabel="Message to Verity"
+        />
       }
     >
       <View style={styles.body}>
@@ -195,24 +192,14 @@ export function VerityPanel({
             />
           </Card>
         ) : null}
-        {sessionId ? (
-          <Button
-            label="Open full conversation"
-            variant="text"
-            size="compact"
-            onPress={() => {
-              onClose();
-              router.push(`/session/${sessionId}`);
-            }}
-          />
-        ) : null}
       </View>
     </Sheet>
   );
 }
 
 function StateLine({ verity, listening }: { verity: VerityState; listening: boolean }) {
-  if (listening) return <StatusDot intent="transient" label="Listening" />;
+  // Listening is shown in the field below; a second line here repeated it.
+  if (listening) return null;
   if (verity.access === 'denied')
     return (
       <Text variant="subtitle">
@@ -293,7 +280,15 @@ function ItemView({ item }: { item: AssistantConversationItem }) {
         </View>
       );
     case 'reply':
-      return <Text variant="body">{item.text}</Text>;
+      // Her words carry her mark, as her recommendations do on Home (§ 5.8).
+      return (
+        <View style={styles.reply} testID="verity-reply">
+          <VerityMark size={22} glow={false} />
+          <Text variant="body" style={styles.flex}>
+            {item.text}
+          </Text>
+        </View>
+      );
     case 'task':
       return (
         <Card>
@@ -383,20 +378,8 @@ function QuestionCard({
 
 const styles = StyleSheet.create((theme) => ({
   body: { gap: theme.spacing.md },
-  composer: { flexDirection: 'row', alignItems: 'flex-end', gap: theme.spacing.sm },
-  field: {
-    flex: 1,
-    minHeight: 44,
-    maxHeight: 140,
-    borderRadius: theme.radius.control,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    backgroundColor: theme.colors.surfaceAlt,
-    paddingHorizontal: theme.spacing.md,
-    paddingVertical: theme.spacing.sm,
-  },
-  input: { ...theme.typography.body, color: theme.colors.text, fontFamily: theme.fonts.regular },
   row: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
+  reply: { flexDirection: 'row', alignItems: 'flex-start', gap: theme.spacing.sm },
   flex: { flex: 1 },
   options: { flexDirection: 'row', flexWrap: 'wrap', gap: theme.spacing.sm },
   mine: {
