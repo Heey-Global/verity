@@ -23,6 +23,9 @@ import { VerityMark } from './VerityMark';
 /** Newest items shown in the panel; the full conversation is one tap away. */
 const RECENT = 8;
 
+/** How old a meeting still being readied may be to open by itself once it is ready. */
+const RECENT_MEETING_MS = 2 * 60_000;
+
 type MeetingItem = Extract<AssistantConversationItem, { kind: 'meeting' }>;
 
 /** The live meeting screen for a meeting Verity prepared or joined, in her session. */
@@ -138,9 +141,13 @@ export function VerityPanel({
     if (!conversation) return;
     const meetings = conversation.items.filter((item) => item.kind === 'meeting');
     if (seenMeetings.current === null) {
-      // One still being readied is the one the user is waiting for.
+      // One still being readied moments ago is the one the user is waiting for; an older
+      // pending one belongs to a turn they left, and must not pull them into it later.
+      const recent = Date.now() - RECENT_MEETING_MS;
       seenMeetings.current = new Set(
-        meetings.filter((item) => item.state !== 'pending').map((item) => item.id),
+        meetings
+          .filter((item) => item.state !== 'pending' || item.at < recent)
+          .map((item) => item.id),
       );
       return;
     }

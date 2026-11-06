@@ -233,6 +233,21 @@ export default function MeetingScreen() {
   const [selectedEngine, setSelectedEngine] = useState<STTEngineId>('fluid-nemotron');
   const [expectedParticipants, setExpectedParticipants] = useState<number | null>(null);
   const [showNewMeeting, setShowNewMeeting] = useState(prepare === '1');
+  // The screen can already be on the stack when Verity prepares another meeting; the new
+  // parameters then arrive without a remount.
+  const preparedFor = useRef(prepare === '1' ? `${source ?? ''}|${eventKey ?? ''}` : null);
+  useEffect(() => {
+    if (prepare !== '1') return;
+    const key = `${source ?? ''}|${eventKey ?? ''}`;
+    if (preparedFor.current === key) return;
+    preparedFor.current = key;
+    setShowNewMeeting(true);
+    setMeetingSource(source === 'online' ? 'online' : 'presence');
+    if (eventKey) {
+      setManualLink(false);
+      setSelectedEventKey(eventKey);
+    }
+  }, [prepare, source, eventKey, setManualLink, setSelectedEventKey]);
   const [syncError, setSyncError] = useState(false);
   // Every save is briefly pending; only a backlog that lasts is worth showing.
   const [syncPendingSince, setSyncPendingSince] = useState<number | null>(null);

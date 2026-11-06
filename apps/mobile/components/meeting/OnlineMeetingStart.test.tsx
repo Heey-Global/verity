@@ -91,6 +91,12 @@ describe('useCalendarMeetingChoice', () => {
     expect(result.current.selectedEventKey).toBe('now');
   });
 
+  it('never preselects a meeting without a call link for an online start', () => {
+    const upcoming = [meeting('call', NOW), meeting('office', NOW, { provider: null })];
+    const { result } = renderHook(() => useCalendarMeetingChoice(upcoming, NOW, false, 'office'));
+    expect(result.current.selectedEventKey).toBe('call');
+  });
+
   it('opens the link field when the calendar has nothing to pick', () => {
     const { result, rerender } = renderHook(
       ({ upcoming }: { upcoming: UpcomingMeeting[] | null }) =>

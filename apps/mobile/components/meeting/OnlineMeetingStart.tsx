@@ -81,9 +81,13 @@ export function useCalendarMeetingChoice(
       const eligible = (item: UpcomingMeeting) =>
         canJoinCalendarMeeting(item, now) && (inPerson || item.provider !== null);
       const current = upcoming.find((item) => item.eventKey === selectedEventKey);
+      // Verity may name a meeting hours ahead to fill in its title, but never one without
+      // a call link for an online start.
       const preferred = sourceChanged
         ? undefined
-        : upcoming.find((item) => item.eventKey === preferredEventKey);
+        : upcoming.find(
+            (item) => item.eventKey === preferredEventKey && (inPerson || item.provider !== null),
+          );
       const soon =
         preferred ??
         (sourceChanged && current && eligible(current) ? current : upcoming.find(eligible));

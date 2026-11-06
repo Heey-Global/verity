@@ -199,7 +199,7 @@ describe('meetings Verity prepares', () => {
   const prepared = {
     kind: 'meeting' as const,
     id: 't-5',
-    at: 5,
+    at: Date.now(),
     action: 'prepare' as const,
     mode: 'online' as const,
     eventKey: 'ev-1',
@@ -228,6 +228,18 @@ describe('meetings Verity prepares', () => {
       params: { sessionId: 'assistant', prepare: '1', source: 'online', eventKey: 'ev-1' },
     });
     expect(onClose).toHaveBeenCalled();
+  });
+
+  it('does not pull the user into a meeting a turn they left was still readying', () => {
+    jest
+      .mocked(useVerity)
+      .mockReturnValue(withItems({ ...prepared, at: Date.now() - 10 * 60_000, state: 'pending' }));
+    const screen = render(<VerityPanel mode="text" projectId={null} onClose={jest.fn()} />);
+    jest
+      .mocked(useVerity)
+      .mockReturnValue(withItems({ ...prepared, at: Date.now() - 10 * 60_000, state: 'ready' }));
+    screen.rerender(<VerityPanel mode="text" projectId={null} onClose={jest.fn()} />);
+    expect(router.push).not.toHaveBeenCalled();
   });
 
   // Reopening the panel later must not throw the user into an old meeting.
