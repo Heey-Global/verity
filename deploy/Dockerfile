@@ -17,7 +17,7 @@
 # Stage 1: builder — compile the TypeScript monorepo.
 # ---------------------------------------------------------------------------
 # renovate: datasource=docker depName=node
-FROM node:26.13.0-bookworm-slim@sha256:bc0a2afd3b74ce12222fc8bab99271e66257f021078f5f4a5d687a77d280c1d9 AS builder-deps
+FROM node:26.13.0-bookworm-slim@sha256:add5c17c14752c54d2f3d519ec46a3815684d41c33f198bcb09fb998f7dcbf68 AS builder-deps
 
 WORKDIR /app
 
@@ -105,7 +105,7 @@ RUN CI=1 EXPO_NO_TELEMETRY=1 npm run build:web --workspace @verity/mobile-app --
 # runtime image stays lean. --include-workspace-root keeps root-level runtime
 # deps (there are none today, but it is correct if any are added).
 # renovate: datasource=docker depName=node
-FROM node:26.13.0-bookworm-slim@sha256:bc0a2afd3b74ce12222fc8bab99271e66257f021078f5f4a5d687a77d280c1d9 AS deps
+FROM node:26.13.0-bookworm-slim@sha256:add5c17c14752c54d2f3d519ec46a3815684d41c33f198bcb09fb998f7dcbf68 AS deps
 
 WORKDIR /app
 
@@ -134,7 +134,7 @@ RUN npm ci --omit=dev --ignore-scripts --workspace=@verity/server --include-work
 # the client binary from the static bundle and the buildx/compose CLI plugins
 # are needed — not dockerd/containerd.
 # renovate: datasource=docker depName=node
-FROM node:26.13.0-bookworm-slim@sha256:bc0a2afd3b74ce12222fc8bab99271e66257f021078f5f4a5d687a77d280c1d9 AS docker-cli
+FROM node:26.13.0-bookworm-slim@sha256:add5c17c14752c54d2f3d519ec46a3815684d41c33f198bcb09fb998f7dcbf68 AS docker-cli
 
 # The static CLI download version tracks Docker Engine (moby) releases, whose
 # GitHub tags are `docker-v<x.y.z>` — the extractVersion strips that prefix and
@@ -215,7 +215,7 @@ RUN set -eux; \
 # Stage 4: runtime — the shipped image.
 # ---------------------------------------------------------------------------
 # renovate: datasource=docker depName=node
-FROM node:26.13.0-bookworm-slim@sha256:bc0a2afd3b74ce12222fc8bab99271e66257f021078f5f4a5d687a77d280c1d9 AS runtime
+FROM node:26.13.0-bookworm-slim@sha256:add5c17c14752c54d2f3d519ec46a3815684d41c33f198bcb09fb998f7dcbf68 AS runtime
 
 # git: the provisioner clones project repos on the Server.
 # ca-certificates: TLS to github.com and Docker registries.
