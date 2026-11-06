@@ -20,8 +20,14 @@ jest.mock('../lib/tasksStore', () => ({
   resolveTaskConflict: jest.fn(),
 }));
 jest.mock('../lib/client', () => ({ createVerityClient: jest.fn(() => null) }));
+const mockEnabled = { value: true };
 jest.mock('../lib/taskPreferences', () => ({
-  useTaskPreferences: () => ({ tab: 'agent', projectId: null, loaded: true }),
+  useTaskPreferences: () => ({
+    tab: 'agent',
+    projectId: null,
+    loaded: true,
+    enabled: mockEnabled.value,
+  }),
   saveTaskPreferences: jest.fn(async () => undefined),
 }));
 jest.mock('../lib/taskDispatch', () => ({ dispatchTasks: jest.fn() }));
@@ -72,9 +78,11 @@ const tasks = [
   task('Other project chore', { projectId: 'p2' }),
   task('Agent step', { origin: 'agent', sessionId: 's1' }),
   task('Already done', { status: 'done' }),
+  task('Done elsewhere', { status: 'done', projectId: 'p2' }),
 ];
 
 beforeEach(() => {
+  mockEnabled.value = true;
   jest.mocked(useTasks).mockReturnValue({ tasks, pending: [], conflicts: [] } as never);
 });
 
@@ -94,7 +102,7 @@ it('counts this project’s open own tasks and opens its Tasks screen', async ()
   render(<ProjectTasksRow client={client} projectId="p1" />);
   await act(async () => undefined);
   // Not the other project's chore, the agent's step or the done task.
-  expect(screen.getByText('1 open · 2 GitHub issues')).toBeTruthy();
+  expect(await screen.findByText('1 open · 2 GitHub issues')).toBeTruthy();
   fireEvent.press(screen.getByText('Tasks'));
   expect(router.push).toHaveBeenCalledWith({
     pathname: '/project/[id]/tasks',
@@ -130,6 +138,24 @@ it('still shows the agents’ steps in the panel behind the V', () => {
     />,
   );
   expect(screen.getByRole('tab', { name: 'Agent' })).toBeTruthy();
+});
+
+it('counts only this project’s finished tasks behind Show done', () => {
+  render(
+    <TaskListBody
+      context={{ projectId: 'p1', sessionId: null }}
+      projects={projects}
+      scope="project"
+      onLeave={jest.fn()}
+    />,
+  );
+  expect(screen.getByText('Show done (1)')).toBeTruthy();
+});
+
+it('leaves the row out while tasks are switched off', () => {
+  mockEnabled.value = false;
+  render(<ProjectTasksRow client={{} as VerityClient} projectId="p1" />);
+  expect(screen.queryByText('Tasks')).toBeNull();
 });
 
 it('adds a task through Verity from the screen’s header', () => {

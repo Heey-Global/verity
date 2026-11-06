@@ -174,7 +174,13 @@ export function TaskListBody({
   // Everything the agent recorded is its working plan, never the operator's
   // list — also after its session has ended. Adopting moves a step across.
   const isStep = (task: Task) => task.origin === 'agent';
-  const done = tasks.filter((t) => t.status === 'done' && !isStep(t));
+  const done = tasks.filter(
+    (t) =>
+      t.status === 'done' &&
+      !isStep(t) &&
+      // A project's own screen counts only its own finished tasks.
+      (scope === 'panel' || t.projectId === suppliedContext.projectId),
+  );
   const visible = tasks.filter(
     (task) =>
       task.status !== 'dropped' && (task.status !== 'done' || showDone || undo.includes(task.id)),

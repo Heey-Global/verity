@@ -3,6 +3,7 @@ import { router } from 'expo-router';
 import { useEffect, useState } from 'react';
 
 import { Row } from '../ui';
+import { useTaskPreferences } from '../../lib/taskPreferences';
 import { useTasks } from '../../lib/tasksStore';
 
 /** "3 open · 5 GitHub issues"; issues only once GitHub answered for the project. */
@@ -25,6 +26,8 @@ export function ProjectTasksRow({
   projectId: string;
 }) {
   const { tasks } = useTasks();
+  // Tasks switched off in Settings: no row leading to a list nobody keeps.
+  const enabled = useTaskPreferences().enabled;
   const [issues, setIssues] = useState<number | null>(null);
   useEffect(() => {
     let active = true;
@@ -50,6 +53,7 @@ export function ProjectTasksRow({
       task.status !== 'done' &&
       task.status !== 'dropped',
   ).length;
+  if (!enabled) return null;
   return (
     <Row
       leading={{ icon: 'check-square' }}
