@@ -182,16 +182,25 @@ class ManagedTests(unittest.TestCase):
                        group_setup=lambda *_: None) for _ in range(2)]
         self.assertEqual(gate.call_count, 2)
         self.assertEqual(results, [{'available': False, 'reason': 'runtime_unsupported',
-                                   'controlGid': CONTROL_GID, 'step': 'prerequisites'}] * 2)
+                                   'controlGid': CONTROL_GID}] * 2)
         self.assertFalse((self.root / managed.INVENTORY_CONTRACT).exists())
         self.assertFalse((self.root / managed.JOURNAL).exists())
         self.assertFalse((self.root / 'opt/verity-egress').exists())
         self.assertEqual(self.calls, [])
 
+    def test_unsupported_activation_preserves_preparation_outcome_contract(self):
+        # Native boot staging compares ordinary rejection with prepare-only output.
+        prepared = self.provision(prepare_only=True)
+        rejected = self.provision(self.unsupported)
+        self.assertEqual(rejected, prepared)
+        self.assertFalse(rejected['available'])
+        self.assertFalse((self.root / managed.INVENTORY_CONTRACT).exists())
+        self.assertFalse((self.root / 'opt/verity-egress').is_symlink())
+
     def test_unsupported_prepares_usable_mounts_without_firewall_or_units(self):
         result = self.provision(self.unsupported)
         self.assertEqual(result, {'available': False, 'reason': 'runtime_unsupported',
-                                 'controlGid': CONTROL_GID, 'step': 'runtime_preflight'})
+                                 'controlGid': CONTROL_GID})
         self.assertEqual(self.calls, [])
         self.assertFalse((self.root / 'opt/verity-egress').exists())
         self.assertFalse((self.root / managed.INVENTORY_CONTRACT).exists())

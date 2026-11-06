@@ -632,8 +632,6 @@ def provision(source, relay=None, authority=None, gid=65531, root=Path('/'), run
             # An unsupported production profile remains a normal unavailable result.
             if reason != 'runtime_unsupported' or isinstance(error, base.PreflightError):
                 result.update(diagnostic)
-            else:
-                result['step'] = step
             return result
         try:
             reject_bridge_collisions(root, run)
