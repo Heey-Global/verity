@@ -34,12 +34,15 @@ export async function resolveForgeRepositoryBinding(
       continue;
     let host = 'github.com';
     let apiPrefix = '/repos/';
+    let prefix = '';
     if (repository.kind === 'forgejo') {
       if (!repository.forgeConnectionId) continue;
       const connection = await store.forgeConnections.get(repository.forgeConnectionId);
       if (!connection) continue;
-      host = new URL(connection.baseUrl).host;
-      apiPrefix = '/api/v1/repos/';
+      const base = new URL(connection.baseUrl);
+      host = base.host;
+      prefix = base.pathname.replace(/\/$/u, '').toLowerCase();
+      apiPrefix = `${prefix}/api/v1/repos/`;
     }
     const validHost =
       repository.kind === 'forgejo'
@@ -50,8 +53,10 @@ export async function resolveForgeRepositoryBinding(
     const urlPath = path.split('?')[0]!.toLowerCase();
     const repoPath = identity.toLowerCase();
     const matches =
-      urlPath === `/${repoPath}.git` ||
-      urlPath.startsWith(`/${repoPath}.git/`) ||
+      urlPath === `${prefix}/${repoPath}.git` ||
+      urlPath.startsWith(`${prefix}/${repoPath}.git/`) ||
+      urlPath === `${prefix}/${repoPath}` ||
+      urlPath.startsWith(`${prefix}/${repoPath}/`) ||
       urlPath === `${apiPrefix}${repoPath}`.toLowerCase() ||
       urlPath.startsWith(`${apiPrefix}${repoPath}/`.toLowerCase());
     if (matches)

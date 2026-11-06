@@ -31,7 +31,7 @@ function harness(planning = false, forge = false) {
     removedAt: null,
   };
   let revoked = false;
-  const git = vi.fn(async (args: readonly string[]) => {
+  const git = vi.fn(async (args: readonly string[]): Promise<string> => {
     if (args.includes('rev-parse')) throw new Error('missing');
     return args.includes('--get-regexp') ? 'http.https://github.com.proxy http://broker:8080' : '';
   });
@@ -109,4 +109,17 @@ it('cleans deterministic module paths after workspace database rows have disappe
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+it('never treats parent repository discovery as a reusable module checkout', async () => {
+  const h = harness();
+  const original = h.git.getMockImplementation()!;
+  h.git.mockImplementation(async (args) => {
+    if (args.includes('rev-parse')) return '/work';
+    if (args.includes('clone')) throw new Error('partial checkout is not empty');
+    return original(args);
+  });
+  await expect(h.service.open('s', 'r')).rejects.toThrow('partial checkout');
+  expect(h.git.mock.calls.some(([args]) => args.includes('checkout'))).toBe(false);
+  expect(h.save).not.toHaveBeenCalled();
 });

@@ -95,3 +95,32 @@ it('pages both recovery queues beyond 100 rows without relying on delivery succe
     20,
   );
 });
+
+it('applies target visibility before limiting pending approvals', async () => {
+  for (const id of ['source', 'target', 'other']) {
+    await ctx.store.createProject({
+      id,
+      owner: 'team',
+      repo: id,
+      containerName: id,
+      state: 'active',
+    });
+    await ctx.store.createSession({
+      sessionId: id,
+      projectId: id,
+      worktree: `/${id}`,
+      model: 'test',
+    });
+  }
+  await sql`insert into project_inquiries (id, source_session_id, target_session_id, source_project_id, target_project_id, title, body, kind, status, created_at)
+    select 'hidden' || n, 'source', 'other', 'source', 'other', 'Hidden', 'Body', 'change', 'pending', now() from generate_series(1,201) n`.execute(
+    ctx.db,
+  );
+  await sql`insert into project_inquiries (id, source_session_id, target_session_id, source_project_id, target_project_id, title, body, kind, status, created_at)
+    values ('visible', 'source', 'target', 'source', 'target', 'Visible', 'Body', 'change', 'pending', now() - interval '1 day')`.execute(
+    ctx.db,
+  );
+  const visible = await ctx.store.projectInquiries.list(undefined, true, ['target']);
+  expect(visible.map((row) => row.id)).toEqual(['visible']);
+  expect(await ctx.store.projectInquiries.list(undefined, true, [])).toEqual([]);
+});

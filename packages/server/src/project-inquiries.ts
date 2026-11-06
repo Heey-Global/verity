@@ -219,11 +219,15 @@ export function registerProjectInquiryRoutes(
     inquiries: await named(await deps.store.projectInquiries.list(params.parse(request.params).id)),
   }));
   app.get('/project-inquiries/pending', async (request) => {
-    const inquiries = [];
-    for (const inquiry of await deps.store.projectInquiries.list(undefined, true)) {
-      if (await deps.authorized(userId(request), inquiry.targetProjectId)) inquiries.push(inquiry);
+    const targets = [];
+    for (const project of await deps.store.listProjects()) {
+      if (await deps.authorized(userId(request), project.id)) targets.push(project.id);
     }
-    return { inquiries: await named(inquiries) };
+    // Apply access filtering before the bounded query so another user's requests
+    // cannot crowd all of this user's actionable approvals out of the overview.
+    return {
+      inquiries: await named(await deps.store.projectInquiries.list(undefined, true, targets)),
+    };
   });
   app.post('/sessions/:id/project-inquiries', async (request, reply) => {
     try {

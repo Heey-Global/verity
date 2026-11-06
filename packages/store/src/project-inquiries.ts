@@ -134,11 +134,17 @@ export class ProjectInquiryStore {
     return row ? record(row) : undefined;
   }
 
-  async list(sessionId?: string, pending = false): Promise<ProjectInquiry[]> {
+  async list(
+    sessionId?: string,
+    pending = false,
+    targetProjectIds?: readonly string[],
+  ): Promise<ProjectInquiry[]> {
     const rows = await sql<Row>`select * from project_inquiries
       where (${sessionId ?? null}::text is null or source_session_id=${sessionId ?? null}
         or target_session_id=${sessionId ?? null})
-      and (${!pending} or status='pending') order by created_at desc limit 200`.execute(this.db);
+      and (${!pending} or status='pending')
+      and (${targetProjectIds === undefined} or target_project_id in (select jsonb_array_elements_text(${JSON.stringify(targetProjectIds ?? [])}::jsonb)))
+      order by created_at desc limit 200`.execute(this.db);
     return rows.rows.map(record);
   }
 

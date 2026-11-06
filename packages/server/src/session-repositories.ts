@@ -118,7 +118,8 @@ export function createSessionRepositories(deps: {
       // Every git command executes in the sandbox; credentials stay in the broker.
       // A clone left by an interrupted request is reused rather than overwritten.
       try {
-        await git(['-C', worktree, 'rev-parse', '--git-dir']);
+        const discovered = (await git(['-C', worktree, 'rev-parse', '--show-toplevel'])).trim();
+        if (discovered !== path) throw new Error('module checkout root mismatch');
       } catch {
         await git([
           '-C',

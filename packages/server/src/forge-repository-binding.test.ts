@@ -120,3 +120,55 @@ it('offers only current GitHub assignments for full GraphQL policy validation', 
     await resolveForgeRepositoryBinding(store(true), binding, 'api.github.com', '/graphql'),
   ).toHaveLength(1);
 });
+
+it.each([
+  '/prefix/team/api.git/info/refs?service=git-upload-pack',
+  '/prefix/team/api/info/refs?service=git-upload-pack',
+  '/prefix/team/api/git-receive-pack',
+  '/prefix/api/v1/repos/team/api/pulls',
+])('preserves assigned Forgejo path prefixes for %s', async (path) => {
+  const repositoryStore = {
+    listProjectRepositories: vi.fn().mockResolvedValue([
+      {
+        kind: 'forgejo',
+        owner: 'team',
+        repo: 'api',
+        forgeConnectionId: 'forge',
+        removedAt: null,
+      },
+    ]),
+    forgeConnections: {
+      get: vi.fn().mockResolvedValue({ baseUrl: 'https://forge.test:8443/prefix/' }),
+    },
+  } as unknown as EventStore;
+  expect(
+    await resolveForgeRepositoryBinding(repositoryStore, binding, 'forge.test:8443', path),
+  ).toMatchObject({ owner: 'team', repo: 'api', forgeConnectionId: 'forge' });
+  expect(
+    await resolveForgeRepositoryBinding(
+      repositoryStore,
+      binding,
+      'forge.test:8443',
+      '/prefix/team/api-evil/info/refs',
+    ),
+  ).toBeUndefined();
+  expect(
+    await resolveForgeRepositoryBinding(
+      repositoryStore,
+      binding,
+      'forge.test:8443',
+      '/team/api.git/info/refs',
+    ),
+  ).toBeUndefined();
+});
+
+it('preserves extensionless GitHub remotes for assigned repositories', async () => {
+  expect(
+    await resolveForgeRepositoryBinding(
+      store(),
+      binding,
+      'github.com',
+      '/other-org/api/info/refs?service=git-upload-pack',
+    ),
+  ).toMatchObject({ owner: 'other-org', repo: 'api' });
+});
