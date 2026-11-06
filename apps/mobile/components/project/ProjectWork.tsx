@@ -1,5 +1,6 @@
 import {
   VerityApiError,
+  inboxView,
   markerAttention,
   modelDisplayName,
   sessionAttention,
@@ -192,7 +193,8 @@ export function ProjectWork({
   projectId?: string | undefined;
   sessions: readonly SessionSummary[];
   /** The page's inbox feed: what waits on the operator and how to answer it.
-   *  Without one, Now still marks sessions but answers nothing in place. */
+   *  Without one, Now derives the same items from the sessions — dismissed ones
+   *  left out — but offers no answers in place. */
   feed?: InboxFeed | undefined;
   /** Rows the page adds at the top of "Needs you", such as severe findings. */
   leadingRows?: readonly ReactElement[];
@@ -205,7 +207,14 @@ export function ProjectWork({
   const [filter, setFilter] = useState<WorkFilter>(initialFilter);
   const { unread: unreadIds, markSeen } = useUnread(client, sessions);
   const previews = useSessionPreviews();
-  const items = feed?.items;
+  const derived = useMemo(
+    () =>
+      feed === undefined
+        ? inboxView({ sessions, projects: [], now: Date.now() }).visible
+        : undefined,
+    [feed, sessions],
+  );
+  const items = feed?.items ?? derived;
   const now = useMemo(
     () => nowSections(sessions, items ?? [], unreadIds),
     [sessions, items, unreadIds],
