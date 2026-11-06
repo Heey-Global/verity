@@ -107,12 +107,14 @@ export function ProjectWork({
   projectId,
   sessions,
   onOpenSession,
+  selectedSessionId,
   onChanged,
 }: {
   client: VerityClient;
   /** The project a new session starts in; none for sessions outside a project. */
   projectId?: string | undefined;
   sessions: readonly SessionSummary[];
+  selectedSessionId?: string | null | undefined;
   onOpenSession: (sessionId: string) => void;
   /** After a rename, favorite, move, link or delete of `sessionId`, so the page
    *  and its host (the wide layout's list and session pane) catch up. */
@@ -236,6 +238,7 @@ export function ProjectWork({
               >
                 <Row
                   title={label}
+                  active={session.sessionId === selectedSessionId}
                   subtitle={workSubtitle(session)}
                   leading={{
                     element: (

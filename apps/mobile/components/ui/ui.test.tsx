@@ -40,6 +40,25 @@ describe('Button', () => {
 });
 
 describe('Row', () => {
+  it('highlights the active destination and keeps its trailing content', () => {
+    const { rerender } = render(
+      <Row title="Session" active onPress={jest.fn()} trailing="Running" />,
+    );
+    const row = screen.getByRole('button', { name: 'Session, Running' });
+    expect(row.props.accessibilityState).toMatchObject({ selected: true });
+    expect(row).toHaveStyle({ backgroundColor: tint(lightTheme.colors.action, 'fill') });
+    expect(screen.getByText('Running')).toBeOnTheScreen();
+    rerender(<Row title="Session" onPress={jest.fn()} trailing="Running" />);
+    expect(
+      screen.getByRole('button', { name: 'Session, Running' }).props.accessibilityState,
+    ).toMatchObject({
+      selected: false,
+    });
+    expect(screen.getByRole('button', { name: 'Session, Running' })).not.toHaveStyle({
+      backgroundColor: tint(lightTheme.colors.action, 'fill'),
+    });
+  });
+
   // The chevron promises navigation; a row that only acts in place must not show it.
   it('shows the chevron only for rows that navigate', () => {
     // Count the drawn glyph (the mocked Feather host), not the wrappers around it.

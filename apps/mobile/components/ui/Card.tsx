@@ -151,6 +151,7 @@ export function Row({
   onLongPress,
   navigates = false,
   selected,
+  active = false,
   disabled = false,
   accessibilityLabel,
   accessibilityHint,
@@ -169,6 +170,8 @@ export function Row({
   onLongPress?: (() => void) | undefined;
   navigates?: boolean;
   selected?: boolean;
+  /** The navigation destination currently open beside this row. */
+  active?: boolean;
   disabled?: boolean;
   accessibilityLabel?: string;
   accessibilityHint?: string;
@@ -220,11 +223,14 @@ export function Row({
         accessibilityLabel ?? spokenLabel(title, subtitle, choice ? undefined : trailing)
       }
       accessibilityHint={accessibilityHint}
-      accessibilityState={choice ? { disabled, checked: selected } : { disabled, expanded }}
+      accessibilityState={
+        choice ? { disabled, checked: selected } : { disabled, expanded, selected: active }
+      }
       style={({ pressed }) => [
         styles.row,
         disabled ? styles.muted : null,
         pressed && !disabled ? styles.pressed : null,
+        active ? styles.rowActive : null,
       ]}
     >
       {content}
@@ -440,6 +446,7 @@ const styles = StyleSheet.create((theme) => ({
     paddingVertical: theme.spacing.sm + theme.spacing.xxs,
     paddingHorizontal: theme.spacing.md + theme.spacing.xxs,
   },
+  rowActive: { backgroundColor: tint(theme.colors.action, 'fill') },
   pressed: { backgroundColor: tint(theme.colors.text, 'neutral') },
   tile: {
     width: 32,

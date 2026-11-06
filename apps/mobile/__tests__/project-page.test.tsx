@@ -244,6 +244,21 @@ describe('project page', () => {
     expect(screen.queryByLabelText(/^MCP/)).toBeNull();
   });
 
+  it('highlights the session open beside the project Work list', async () => {
+    await renderPage([running, favorite], { inline: true, selectedSessionId: running.sessionId });
+    fireEvent.press(screen.getByRole('tab', { name: 'Work' }));
+    expect(
+      screen.getByRole('button', { name: /login, working/ }).props.accessibilityState,
+    ).toMatchObject({
+      selected: true,
+    });
+    expect(
+      screen.getByRole('button', { name: /blog, Favorite/i }).props.accessibilityState,
+    ).toMatchObject({
+      selected: false,
+    });
+  });
+
   it('filters Work by what a session is doing and opens a session', async () => {
     const { onOpenSession } = await renderPage([question, running, favorite, merged]);
     fireEvent.press(screen.getByRole('tab', { name: 'Work' }));

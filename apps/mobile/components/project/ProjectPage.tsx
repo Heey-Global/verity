@@ -237,6 +237,7 @@ export function ProjectPage({
                 client={client}
                 projectId={projectId}
                 sessions={detail.sessions}
+                selectedSessionId={selectedSessionId}
                 onOpenSession={onOpenSession}
                 onChanged={sessionChanged}
               />
