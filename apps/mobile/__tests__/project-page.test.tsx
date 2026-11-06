@@ -108,6 +108,7 @@ function clientWith(sessions: SessionSummary[], extra: Record<string, unknown> =
     ),
     setProjectInboxDismissed: jest.fn(async () => [] as string[]),
     deleteSession: jest.fn().mockResolvedValue({ sessionId: 'deleted' }),
+    setSessionSeen: jest.fn().mockResolvedValue({}),
     ...extra,
   });
   return client as unknown as VerityClient & Record<string, jest.Mock>;
@@ -255,6 +256,23 @@ describe('project page', () => {
     expect(onOpenSession).toHaveBeenCalledWith('blog');
     fireEvent.press(screen.getByRole('button', { name: 'New session' }));
     expect(mockPush).toHaveBeenCalledWith({ pathname: '/new', params: { projectId: 'p/1' } });
+  });
+
+  it('clears and persists unread activity when opening a chat from Work', async () => {
+    const { client, onOpenSession } = await renderPage([
+      session('answered', {
+        eventCount: 7,
+        lastSeenEventCount: 5,
+        eventCountVersion: 'agent-text-v2',
+      }),
+    ]);
+    fireEvent.press(screen.getByRole('tab', { name: 'Work' }));
+    expect(screen.getByLabelText('Unread messages')).toBeTruthy();
+    fireEvent.press(screen.getByLabelText('answered, new answer'));
+    expect(onOpenSession).toHaveBeenCalledWith('answered');
+    expect(client.setSessionSeen).toHaveBeenCalledWith('answered', 7, 'agent-text-v2');
+    expect(screen.queryByLabelText('Unread messages')).toBeNull();
+    await act(async () => undefined);
   });
 
   it('marks and orders Work the way the session list marks it', async () => {
