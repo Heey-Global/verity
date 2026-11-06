@@ -76,7 +76,8 @@ RELAY_RUNTIME_AUTHORITY = 'etc/verity-egress/relay-runtime.json'
 PROJECT_RUNTIME_ARGS = ['--platform=systrap', '--network=sandbox', '--host-uds=create']
 NATIVE_PACKAGES = frozenset(('python3', 'iproute2', 'nftables', 'bpftool', 'libnftables1',
                              'util-linux', 'libatomic1', 'libstdc++6'))
-BPFFS_UNIT = b"""[Unit]
+# Retained only to identify and remove the obsolete Verity-owned mount unit.
+LEGACY_BPFFS_UNIT = b"""[Unit]
 Description=Persistent BPF filesystem for managed network protection
 Before=verity-egress-bootstrap.service docker.service
 [Mount]
@@ -468,16 +469,28 @@ def prepare_native_profile(root, run, profile):
                                      sort_keys=True) + '\n').encode(), 0o600)
     unit = root / 'etc/systemd/system/sys-fs-bpf.mount'
     trusted_native_file(unit, root)
-    if unit.exists() and unit.read_bytes() != BPFFS_UNIT:
+    if unit.exists() and unit.read_bytes() != LEGACY_BPFFS_UNIT:
         raise ValueError('Unmanaged persistent bpffs unit collision')
     mounts = (root / 'proc/mounts').read_text().splitlines()
     mounted = [line.split()[2] for line in mounts if len(line.split()) >= 3
                and line.split()[1] == '/sys/fs/bpf']
-    if mounted and mounted != ['bpf']:
-        raise ValueError('BPF mountpoint has an unrelated filesystem')
-    atomic_file(unit, BPFFS_UNIT)
+    if mounted != ['bpf']:
+        raise ValueError('Requires systemd-managed bpffs at /sys/fs/bpf')
+    # systemd mounts bpffs during API filesystem setup and rejects .mount units
+    # for that path. Retire only our exact old unit, without stopping the mount.
+    if unit.exists():
+        enabled = unit.parent / 'multi-user.target.wants/sys-fs-bpf.mount'
+        trusted_parent(enabled, root)
+        if enabled.exists() or enabled.is_symlink():
+            metadata = enabled.lstat()
+            if (not stat.S_ISLNK(metadata.st_mode) or metadata.st_uid != os.geteuid()
+                    or os.readlink(enabled) not in ('../sys-fs-bpf.mount', '/etc/systemd/system/sys-fs-bpf.mount')):
+                raise ValueError('Unmanaged persistent bpffs enablement collision')
+            enabled.unlink()
+            sync_directory(enabled.parent)
+        unit.unlink()
+        sync_directory(unit.parent)
     run('/usr/bin/systemctl', 'daemon-reload')
-    run('/usr/bin/systemctl', 'enable', '--now', 'sys-fs-bpf.mount')
     pin = root / 'sys/fs/bpf/verity_egress_deadline'
     trusted_parent(pin / 'entry', root)
     # bpffs is volatile kernel state and rejects directory fsync with EINVAL.
