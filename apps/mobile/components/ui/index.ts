@@ -12,6 +12,7 @@ export { Text } from './Text';
 export { LogList, LogRow } from './LogList';
 export { HintBox, TextField } from './TextField';
 export { Toggle } from './Toggle';
+export { UsageRing, type UsageRingLevel } from './UsageRing';
 export { CaptureField } from './CaptureField';
 
 export { useTextPrompt } from './TextPrompt';

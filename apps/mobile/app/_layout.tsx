@@ -595,7 +595,13 @@ const styles = StyleSheet.create((theme) => ({
   headerTitleSettings: {
     flex: 3,
   },
+  // The wordmark takes only its own width, so the two sides split the rest
+  // evenly and it stays centred. The overview's usage rings (its `headerRight`)
+  // then centre themselves in the whole span between wordmark and search,
+  // not in the right third of the row.
   headerTitleHome: {
+    flex: 0,
+    flexShrink: 0,
     color: theme.colors.signature,
   },
   headerIconButton: {
