@@ -1,6 +1,59 @@
 import type { AgentEvent, Attachment } from '@verity/events';
 import type { ColumnType, Generated } from 'kysely';
 
+export interface ProjectInquiryGrantsTable {
+  source_project_id: string;
+  target_project_id: string;
+  enabled: Generated<boolean>;
+  created_at: Generated<Date>;
+}
+
+export interface ProjectInquirySessionsTable {
+  source_session_id: string;
+  target_project_id: string;
+  target_session_id: string;
+  change_approved: Generated<boolean>;
+}
+
+export interface ProjectInquiriesTable {
+  id: string;
+  source_session_id: string;
+  target_session_id: string;
+  source_project_id: string;
+  target_project_id: string;
+  title: string;
+  body: string;
+  kind: 'question' | 'change';
+  status: 'provisioning' | 'pending' | 'approved' | 'rejected' | 'queued' | 'answered' | 'blocked';
+  created_at: Generated<Date>;
+  answer: string | null;
+  answer_delivered: Generated<boolean>;
+  user_id: string | null;
+  decided_by: string | null;
+}
+
+export interface ProjectRepositoriesTable {
+  id: string;
+  project_id: string;
+  name: string;
+  kind: 'github' | 'forgejo';
+  owner: string;
+  repo: string;
+  forge_connection_id: string | null;
+  default_branch: string | null;
+  removed_at: ColumnType<Date | null, Date | null | undefined, Date | null>;
+}
+
+export interface SessionRepositoryWorkspacesTable {
+  session_id: string;
+  repository_id: string;
+  project_id: string;
+  worktree: string;
+  branch: string;
+  pull_request: ColumnType<unknown, unknown, unknown>;
+  created_at: Generated<Date>;
+}
+
 /**
  * Postgres schema for the durable source of truth (concept §5a): an append-only
  * canonical-event log plus the session registry. The {@link EventStore} API
@@ -1688,6 +1741,9 @@ interface VulnerabilityFixesTable {
 }
 
 export interface Database {
+  project_inquiry_grants: ProjectInquiryGrantsTable;
+  project_inquiry_sessions: ProjectInquirySessionsTable;
+  project_inquiries: ProjectInquiriesTable;
   vulnerability_fixes: VulnerabilityFixesTable;
   session_deletions: SessionDeletionsTable;
   user_context: UserContextTable;
@@ -1771,6 +1827,8 @@ export interface Database {
   queued_turns: QueuedTurnsTable;
   running_turns: RunningTurnsTable;
   projects: ProjectsTable;
+  project_repositories: ProjectRepositoriesTable;
+  session_repository_workspaces: SessionRepositoryWorkspacesTable;
   users: UsersTable;
   project_memberships: ProjectMembershipsTable;
   project_identity_claims: ProjectIdentityClaimsTable;

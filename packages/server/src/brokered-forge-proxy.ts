@@ -121,6 +121,8 @@ async function bufferedBody(request: IncomingMessage): Promise<Buffer> {
   return Buffer.concat(chunks);
 }
 
+type RepositoryBinding = NonNullable<Awaited<ReturnType<GhTokenCapabilityRegistry['resolve']>>>;
+
 /** Extend the HTTP secret broker with a repository-bound streaming transport.
  * Only this server owns TLS keys and provider credentials. The project listener
  * supplies identity; neither CONNECT nor the decrypted request can choose it. */
@@ -129,6 +131,11 @@ export function createBrokeredForgeProxy(options: {
   certificateFor?(hostname: string): Promise<PemCertificate>;
   allowsHost?(authority: string): Promise<boolean>;
   capabilities: GhTokenCapabilityRegistry;
+  resolveRepository?: (
+    binding: NonNullable<Awaited<ReturnType<GhTokenCapabilityRegistry['resolve']>>>,
+    hostname: string,
+    path: string,
+  ) => Promise<RepositoryBinding | RepositoryBinding[] | undefined>;
   adapter: BrokeredForgeAdapter;
   enabled(projectId: string): boolean;
   actions?(projectId: string): ReadonlySet<ForgeAction>;
@@ -266,8 +273,32 @@ export function createBrokeredForgeProxy(options: {
               response.end();
               return;
             }
+            const path = inner.url ?? '';
             const presented = capability(inner);
-            const binding = presented ? await options.capabilities.resolve(presented) : undefined;
+            let chosen: RepositoryBinding | undefined;
+            let candidates: RepositoryBinding[] = [];
+            const resolveBinding = async () => {
+              const current = presented ? await options.capabilities.resolve(presented) : undefined;
+              const resolved =
+                current && options.resolveRepository
+                  ? await options.resolveRepository(current, hostname, path)
+                  : current;
+              candidates = (Array.isArray(resolved) ? resolved : resolved ? [resolved] : []).filter(
+                (candidate) =>
+                  candidate.projectId === identity.projectId &&
+                  candidate.containerGeneration === identity.containerGeneration,
+              );
+              const selected = chosen;
+              return selected
+                ? candidates.find(
+                    (candidate) =>
+                      candidate.owner === selected.owner &&
+                      candidate.repo === selected.repo &&
+                      candidate.forgeConnectionId === selected.forgeConnectionId,
+                  )
+                : candidates[0];
+            };
+            let binding = await resolveBinding();
             if (
               abort.signal.aborted ||
               !binding ||
@@ -293,7 +324,6 @@ export function createBrokeredForgeProxy(options: {
               fail(response, 403);
               return;
             }
-            const path = inner.url ?? '';
             // API envelopes are bounded before parsing/policy; Git bodies remain binary streams.
             const body = options.adapter.streams({ hostname, method: inner.method ?? '', path })
               ? inner
@@ -310,20 +340,35 @@ export function createBrokeredForgeProxy(options: {
               fail(response, 403);
               return;
             }
-            const auth = await options.adapter.authorize(
-              {
-                hostname,
-                method: inner.method ?? '',
-                path,
-                ...(Buffer.isBuffer(body) ? { body } : {}),
-              },
-              binding,
-              options.actions?.(binding.projectId) ?? ALL_ACTIONS,
-              abort.signal,
-            );
+            let auth: Awaited<ReturnType<BrokeredForgeAdapter['authorize']>> | undefined;
+            let rejected: unknown;
+            for (const candidate of candidates) {
+              try {
+                auth = await options.adapter.authorize(
+                  {
+                    hostname,
+                    method: inner.method ?? '',
+                    path,
+                    ...(Buffer.isBuffer(body) ? { body } : {}),
+                  },
+                  candidate,
+                  options.actions?.(candidate.projectId) ?? ALL_ACTIONS,
+                  abort.signal,
+                );
+                chosen = candidate;
+                binding = candidate;
+                break;
+              } catch (error) {
+                rejected = error;
+              }
+            }
+            if (!auth)
+              throw rejected instanceof Error
+                ? rejected
+                : new Error('repository authorization failed', { cause: rejected });
             // Credential resolution may wait on a provider. The exact capability
             // and repository binding must still be live when payload leaves.
-            const still = presented ? await options.capabilities.resolve(presented) : undefined;
+            const still = await resolveBinding();
             const matches = (current: typeof still) =>
               current !== undefined &&
               current.projectId === binding.projectId &&
@@ -346,8 +391,7 @@ export function createBrokeredForgeProxy(options: {
                 abort.abort();
               }, 1000);
               deadline.unref();
-              void options.capabilities
-                .resolve(presented!)
+              void resolveBinding()
                 .then(
                   (current) => {
                     if (!matches(current) || !options.enabled(identity.projectId)) {

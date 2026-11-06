@@ -1,3 +1,4 @@
+import { projectRepositorySchema, projectInquirySchema } from './projectCollaboration.js';
 import {
   projectEgressPolicySchema,
   projectEgressRequestSchema,
@@ -3420,6 +3421,123 @@ export class VerityClient {
       body: JSON.stringify({ projectId, ids }),
     });
     return z.object({ ids: z.array(z.string()) }).parse(await res.json()).ids;
+  }
+
+  async listSessionRepositories(sessionId: string) {
+    const res = await this.request(`/sessions/${encodeURIComponent(sessionId)}/repositories`, {
+      method: 'GET',
+    });
+    return z
+      .object({
+        repositories: z.array(
+          projectRepositorySchema.extend({
+            workspace: z
+              .object({
+                worktree: z.string(),
+                branch: z.string().nullable(),
+                pullRequest: z
+                  .object({
+                    number: z.number(),
+                    url: z.string(),
+                    state: z.string(),
+                    dependsOn: z.array(z.string()).optional(),
+                  })
+                  .nullable()
+                  .optional(),
+              })
+              .passthrough()
+              .nullable(),
+          }),
+        ),
+      })
+      .parse(await res.json()).repositories;
+  }
+
+  async openSessionRepository(sessionId: string, repositoryId: string) {
+    await this.request(
+      `/sessions/${encodeURIComponent(sessionId)}/repositories/${encodeURIComponent(repositoryId)}/open`,
+      { method: 'POST' },
+    );
+  }
+
+  async listProjectRepositories(projectId: string) {
+    const res = await this.request(`/projects/${encodeURIComponent(projectId)}/repositories`, {
+      method: 'GET',
+    });
+    return z.object({ repositories: z.array(projectRepositorySchema) }).parse(await res.json())
+      .repositories;
+  }
+
+  async addProjectRepository(
+    projectId: string,
+    input: {
+      name: string;
+      kind: 'github' | 'forgejo';
+      owner: string;
+      repo: string;
+      forgeConnectionId?: string;
+      defaultBranch?: string;
+    },
+  ) {
+    const res = await this.request(`/projects/${encodeURIComponent(projectId)}/repositories`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+    return res.json();
+  }
+
+  async removeProjectRepository(projectId: string, repositoryId: string) {
+    await this.request(
+      `/projects/${encodeURIComponent(projectId)}/repositories/${encodeURIComponent(repositoryId)}`,
+      { method: 'DELETE' },
+    );
+  }
+
+  async listInquiryGrants(projectId: string) {
+    const res = await this.request(`/projects/${encodeURIComponent(projectId)}/inquiry-grants`, {
+      method: 'GET',
+    });
+    return z
+      .object({
+        grants: z.array(
+          z.object({
+            sourceProjectId: z.string(),
+            targetProjectId: z.string(),
+            enabled: z.boolean(),
+            createdAt: z.string(),
+          }),
+        ),
+      })
+      .parse(await res.json()).grants;
+  }
+
+  async setInquiryGrant(projectId: string, targetProjectId: string, enabled: boolean) {
+    await this.request(`/projects/${encodeURIComponent(projectId)}/inquiry-grants`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ targetProjectId, enabled }),
+    });
+  }
+
+  async listProjectInquiries(sessionId?: string, projectId?: string) {
+    const path =
+      sessionId === undefined
+        ? `/project-inquiries/pending${projectId === undefined ? '' : `?projectId=${encodeURIComponent(projectId)}`}`
+        : `/sessions/${encodeURIComponent(sessionId)}/project-inquiries`;
+    const res = await this.request(path, { method: 'GET' });
+    return z.object({ inquiries: z.array(projectInquirySchema) }).parse(await res.json()).inquiries;
+  }
+
+  async decideProjectInquiry(sessionId: string, inquiryId: string, decision: 'approve' | 'reject') {
+    await this.request(
+      `/sessions/${encodeURIComponent(sessionId)}/project-inquiries/${encodeURIComponent(inquiryId)}/decision`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ decision }),
+      },
+    );
   }
 
   async listSessionLinks(

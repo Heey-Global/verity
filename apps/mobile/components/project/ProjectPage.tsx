@@ -1,3 +1,4 @@
+import { ProjectInquiryCards } from './ProjectInquiryCards';
 import {
   inboxDismissedKeys,
   inboxItems,
@@ -220,6 +221,7 @@ export function ProjectPage({
           onOpenSession={onOpenSession}
           onChanged={sessionChanged}
         />
+        <ProjectInquiryCards client={client} projectId={projectId} />
         <SectionHeader title="Content" variant="eyebrow" />
         <ProjectContent
           client={client}

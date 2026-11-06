@@ -768,3 +768,5 @@ export type {
   AssistantDelivery,
   AssistantQuestion,
 } from '@verity/events';
+
+export { type ProjectRepository, type ProjectInquiry } from './projectCollaboration.js';

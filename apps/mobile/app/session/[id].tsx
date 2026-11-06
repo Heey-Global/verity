@@ -1,3 +1,5 @@
+import { SessionRepositories } from '../../components/project/SessionRepositories';
+import { ProjectInquiryCards } from '../../components/project/ProjectInquiryCards';
 import { WikiDetails } from '../../components/WikiDetails';
 import { mockupBarView, mockupRoundView, qaAssignmentView } from '@verity/mobile';
 import { Card, CardHead } from '../../components/ui/Card';
@@ -4319,7 +4321,12 @@ export const SessionChat = memo(function SessionChat({
           );
         })}
       {switcherOpen ? (
-        <BranchSwitcherSheet branches={branches} onClose={() => setSwitcherOpen(false)} />
+        <BranchSwitcherSheet
+          client={client}
+          sessionId={sessionId}
+          branches={branches}
+          onClose={() => setSwitcherOpen(false)}
+        />
       ) : null}
       {bookmarksOpen ? (
         <BookmarksSheet
@@ -4794,6 +4801,7 @@ export const SessionChat = memo(function SessionChat({
             onDecide={decideLinkedMessage}
           />
         ))}
+      <ProjectInquiryCards client={client} sessionId={sessionId} />
       {waitingMessages.length > 0 ? (
         <QueuedMessages items={waitingMessages} onRetract={onRetractWaiting} />
       ) : null}
@@ -8579,9 +8587,13 @@ function BookmarksSheet({
 // the dirty-worktree case the sheet offers commit/stash retries inline. Rendered
 // only while open, so its branch fetch runs only then.
 function BranchSwitcherSheet({
+  client,
+  sessionId,
   branches,
   onClose,
 }: {
+  client: VerityClient;
+  sessionId: string;
   // Shared with the top chip (one source of truth) so a switch updates BOTH —
   // the chip's branch name and the sheet's list — not just the sheet.
   branches: UseBranches;
@@ -8654,6 +8666,7 @@ function BranchSwitcherSheet({
           <SheetResizeHandle panHandlers={sheet.panHandlers} />
           <Text style={styles.sheetTitle}>Switch branch</Text>
           <ScrollView style={styles.sheetList} keyboardShouldPersistTaps="handled">
+            <SessionRepositories client={client} sessionId={sessionId} />
             {error ? <Text style={styles.sheetError}>Couldn’t load branches: {error}</Text> : null}
             {switchError ? <Text style={styles.sheetError}>{switchError}</Text> : null}
             {loading && current === undefined ? (

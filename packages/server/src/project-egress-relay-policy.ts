@@ -94,6 +94,8 @@ export function relaySocketMounts(binding: ProjectEgressNetworkBinding, policy: 
  */
 function forgeRelayEnvironment(entry: string): boolean {
   if (entry === 'VERITY_FORGE_PROXY=github') return true;
+  // Broker mode delegates changing repository authorities to the authenticated Server.
+  if (entry === 'VERITY_FORGE_AUTHORITY_MODE=broker') return true;
   const prefix = 'VERITY_FORGE_AUTHORITIES=';
   if (!entry.startsWith(prefix)) return false;
   let authorities: unknown;

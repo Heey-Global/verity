@@ -1,3 +1,9 @@
+import { registerProjectInquiryRuntime } from './project-inquiry-runtime.js';
+import {
+  createSessionRepositories,
+  removeSessionRepositoryWorkspaces,
+  registerSessionRepositoriesRoutes,
+} from './session-repositories.js';
 import { isVulnerabilityWorkspace } from './vulnerability-project.js';
 import { registerVulnerabilityFixRoute, buildVulnerabilityFixPrompt } from './vulnerability-fix.js';
 import { measureBranchReadStage, type BranchReadStage } from './branch-read-diagnostics.js';
@@ -178,6 +184,7 @@ import {
   resolveProjectDefaultModel,
 } from './project-agent-policy.js';
 import { containerPathFor } from './project-backend.js';
+import { registerProjectRepositoriesRoutes } from './project-repositories-routes.js';
 import { registerProjectCollectionRoutes } from './project-collection-routes.js';
 import { registerProjectDetailRoutes } from './project-detail-routes.js';
 import { registerProjectEgressRoutes } from './project-egress-routes.js';
@@ -3540,11 +3547,21 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     },
     ...(deps.ghTokenCapabilities !== undefined ? { capabilities: deps.ghTokenCapabilities } : {}),
   });
+  const sessionRepositories = createSessionRepositories({
+    store: deps.eventStore,
+    cloneRoot: deps.projectCloneRoot,
+    git: deps.sandboxGit,
+  });
+  registerSessionRepositoriesRoutes(app, sessionRepositories);
   if (deps.ghTokenCapabilities !== undefined && deps.projectRepository !== undefined) {
     registerProjectRepoRoute(app, {
       capabilities: deps.ghTokenCapabilities,
       getProject: (projectId) => deps.eventStore.getProject(projectId),
       repositoryFor: deps.projectRepository,
+      store: deps.eventStore,
+      openRepository: sessionRepositories.openForSandbox,
+      currentRepositoryBranch: sessionRepositories.currentBranch,
+      getSession: (id) => deps.eventStore.getSession(id),
     });
   }
   registerUserContextRoutes(app, deps.eventStore.userContext);
@@ -3568,6 +3585,23 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     ...(deps.ghTokenCapabilities !== undefined ? { capabilities: deps.ghTokenCapabilities } : {}),
   });
   const decidePendingLinkedMessage = registerServerMcpRoutes({
+    inquiryTool: async (sessionId, userId, input) => {
+      const request = input as { operation: string; inquiryId: string; answer: string };
+      if (request.operation === 'list') {
+        const session = await deps.eventStore.getSession(sessionId);
+        return {
+          grants: session?.projectId
+            ? await deps.eventStore.projectInquiries.grants(session.projectId)
+            : [],
+          inquiries: await deps.eventStore.projectInquiries.list(sessionId),
+        };
+      }
+      if (request.operation === 'answer')
+        return projectInquiries.answer(sessionId, request.inquiryId, request.answer);
+      const body = { ...(input as Record<string, unknown>) };
+      delete body.operation;
+      return projectInquiries.request(sessionId, userId, body);
+    },
     deps,
     app,
     conductor,
@@ -3893,6 +3927,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   registerProjectGitHubIssueRoutes(app, {
     store: deps.eventStore,
     list: deps.listProjectGitHubIssues,
+  });
+  registerProjectRepositoriesRoutes(app, {
+    store: deps.eventStore,
+    repositoryFor: deps.projectRepository,
   });
   registerProjectCollectionRoutes(app, {
     store: deps.eventStore,
@@ -5453,6 +5491,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         const project = await deps.eventStore.getProject(session.projectId);
         if (project !== undefined && !isControlPlaneProject(project)) {
           const projectClone = projectClonePath(deps.projectCloneRoot, project);
+          await removeSessionRepositoryWorkspaces(projectClone, session.sessionId);
           cleanupWorktrees =
             isDocumentWorkspace(session.worktree) && deps.dataRoot
               ? createDocumentWorkspaceProvisioner(deps.dataRoot, project.id, projectClone)
@@ -5620,6 +5659,13 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     isSleepLifecycleState,
     publicProject: (project) => presentProject(project, null, UNKNOWN_SANDBOX_UPDATE, null),
     defaultModel: DEFAULT_MODEL,
+  });
+  const projectInquiries = registerProjectInquiryRuntime({
+    app,
+    store: deps.eventStore,
+    conductor,
+    authorized: canExecuteAs,
+    spawn: sessionCreate.spawn,
   });
   registerVulnerabilityFixRoute(app, {
     store: deps.eventStore,

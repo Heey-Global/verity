@@ -87,7 +87,7 @@ const context = {
 };
 
 describe('Docker project relay adapter', () => {
-  it('projects only the selected connection authority into a Forgejo relay', async () => {
+  it('enables dynamic server-broker authority checks for a Forgejo relay', async () => {
     const h = harness({
       forgeProxyEnabled: () => true,
       forgeAuthorities: () => Promise.resolve(['forge.test:8443']),
@@ -95,6 +95,9 @@ describe('Docker project relay adapter', () => {
     await h.start(context);
     expect(h.createContainer.mock.calls[0]?.[0].env).toContain(
       'VERITY_FORGE_AUTHORITIES=["forge.test:8443"]',
+    );
+    expect(h.createContainer.mock.calls[0]?.[0].env).toContain(
+      'VERITY_FORGE_AUTHORITY_MODE=broker',
     );
   });
   it('enables forge CONNECT only for explicitly selected projects', async () => {

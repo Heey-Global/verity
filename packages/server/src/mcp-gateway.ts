@@ -336,6 +336,26 @@ const TOOL_SCHEMAS = {
   verity_diagnostics: diagnosticsRequestSchema,
   verity_list_sessions: listSessionsRequestSchema,
   verity_session_handoff: sessionHandoffRequestSchema,
+  verity_project_inquiry: z.discriminatedUnion('operation', [
+    z
+      .object({
+        operation: z.literal('request'),
+        requestId: z.string().min(1).max(128),
+        targetProjectId: z.string().min(1).max(128),
+        title: z.string().trim().min(1).max(200),
+        body: z.string().trim().min(1).max(12000),
+        kind: z.enum(['question', 'change']),
+      })
+      .strict(),
+    z
+      .object({
+        operation: z.literal('answer'),
+        inquiryId: z.string().min(1).max(128),
+        answer: z.string().trim().min(1).max(20000),
+      })
+      .strict(),
+    z.object({ operation: z.literal('list') }).strict(),
+  ]),
   verity_send_session_message: z
     .object({
       targetSessionId: z.string().min(1).max(128),
@@ -499,6 +519,8 @@ const TOOL_DESCRIPTIONS: Record<GatewayToolName, string> = {
   verity_diagnostics: DIAGNOSTICS_TOOL_DESCRIPTION,
   verity_list_sessions: LIST_SESSIONS_TOOL_DESCRIPTION,
   verity_session_handoff: SESSION_HANDOFF_TOOL_DESCRIPTION,
+  verity_project_inquiry:
+    'Ask a once-authorized project using a reusable linked target session. Questions run read-only. Changes create a target-side human approval request. Reuse requestId for retries. Use list to see allowed target projects and request status; answer only from the target session.',
   verity_send_session_message:
     'Send a message to an explicitly linked session by its session id. Call verity_list_linked_sessions to get the target id. The message is attributed to this agent in the target chat. A small number of messages are allowed automatically; further sends ask the user to approve the message and renew the allowance.',
   verity_list_linked_sessions:

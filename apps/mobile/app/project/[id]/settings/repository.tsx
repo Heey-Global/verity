@@ -1,3 +1,4 @@
+import { ProjectRepositories } from '../../../../components/project/ProjectRepositories';
 // The repository behind a project. A linked project shows where it lives; a local
 // one can be connected to an existing repository on GitHub or Forgejo — whichever
 // code hosts this server is connected to. The Verity-wide screens own the code-host
@@ -166,6 +167,7 @@ function ProjectRepositoryView({ client, projectId }: { client: VerityClient; pr
           </SettingsPanel>
         </SettingsGroup>
       )}
+      <ProjectRepositories client={client} projectId={projectId} />
       {confirmSheet}
     </SettingsScaffold>
   );

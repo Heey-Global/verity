@@ -5368,3 +5368,85 @@ migrations['0195_vulnerability_fixes'] = {
     await sql`drop table vulnerability_fixes`.execute(db);
   },
 };
+
+migrations['0196_project_repositories'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    // The default repository remains in projects: upgrading never moves an existing
+    // clone, worktree, branch or PR association. These rows describe extra modules.
+    await sql`create table project_repositories (
+      id text primary key,
+      project_id text not null references projects(id) on delete cascade,
+      name text not null,
+      kind text not null check (kind in ('github', 'forgejo')),
+      owner text not null,
+      repo text not null,
+      forge_connection_id text,
+      default_branch text,
+      removed_at timestamptz,
+      check (id not like 'default:%')
+    )`.execute(db);
+    await sql`create unique index project_repositories_active_identity
+      on project_repositories(project_id, coalesce(forge_connection_id, ''), kind, lower(owner), lower(repo))
+      where removed_at is null`.execute(db);
+    await sql`create table session_repository_workspaces (
+      session_id text not null references sessions(session_id) on delete cascade,
+      repository_id text not null,
+      project_id text not null references projects(id) on delete cascade,
+      worktree text not null unique,
+      branch text not null,
+      pull_request jsonb,
+      created_at timestamptz not null default now(),
+      primary key (session_id, repository_id)
+    )`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table session_repository_workspaces`.execute(db);
+    await sql`drop table project_repositories`.execute(db);
+  },
+};
+
+migrations['0197_project_inquiries'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`create table project_inquiry_grants (
+      source_project_id text not null references projects(id) on delete cascade,
+      target_project_id text not null references projects(id) on delete cascade,
+      enabled boolean not null default true,
+      created_at timestamptz not null default now(),
+      primary key(source_project_id,target_project_id),
+      check(source_project_id <> target_project_id)
+    )`.execute(db);
+    // Keep the target boundary after source deletion; only deleting the target removes it.
+    await sql`create table project_inquiry_sessions (
+      source_session_id text not null,
+      target_project_id text not null references projects(id) on delete cascade,
+      target_session_id text not null unique references sessions(session_id) on delete cascade,
+      change_approved boolean not null default false,
+      primary key(source_session_id,target_project_id)
+    )`.execute(db);
+    // Target IDs are reserved before provisioning; session deletion removes matching requests.
+    await sql`create table project_inquiries (
+      id text primary key,
+      source_session_id text not null references sessions(session_id) on delete cascade,
+      target_session_id text not null,
+      source_project_id text not null references projects(id) on delete cascade,
+      target_project_id text not null references projects(id) on delete cascade,
+      title text not null,
+      body text not null,
+      kind text not null check(kind in ('question','change')),
+      status text not null check(status in ('provisioning','pending','approved','rejected','queued','answered','blocked')),
+      created_at timestamptz not null default now(),
+      answer text,
+      answer_delivered boolean not null default false,
+      user_id text,
+      decided_by text
+    )`.execute(db);
+    await sql`create index project_inquiries_delivery on project_inquiries(status,created_at)`.execute(
+      db,
+    );
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table project_inquiries`.execute(db);
+    await sql`drop table project_inquiry_sessions`.execute(db);
+    await sql`drop table project_inquiry_grants`.execute(db);
+  },
+};

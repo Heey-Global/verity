@@ -4901,6 +4901,13 @@ it('holds a conversation read on the interactive lane until it changes', async (
   expect(calls[0]?.init).toMatchObject({ signal, transportLane: 'interactive' });
 });
 
+it('scopes project inquiry approval requests in the query string', async () => {
+  const { fetch, calls } = fakeFetchSequence(json({ inquiries: [] }));
+  const client = new VerityClient({ baseUrl: 'http://host', fetch });
+  expect(await client.listProjectInquiries(undefined, 'project/id')).toEqual([]);
+  expect(calls[0]?.url).toBe('http://host/project-inquiries/pending?projectId=project%2Fid');
+});
+
 it('starts a vulnerability fix with encoded project identity and structured finding selection', async () => {
   const findings = [
     {
