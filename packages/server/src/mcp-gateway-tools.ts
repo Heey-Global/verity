@@ -199,6 +199,7 @@ export function createMcpGatewayToolExecutor(options: {
       toolName === 'verity_session_progress' ||
       toolName === 'verity_recent_session_messages' ||
       toolName === 'verity_publish_session_progress' ||
+      toolName === 'verity_project_inquiry' ||
       toolName === 'verity_send_session_message' ||
       toolName === 'verity_list_linked_sessions' ||
       toolName === 'verity_start_planning' ||

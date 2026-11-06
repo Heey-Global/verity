@@ -13,6 +13,46 @@ type PairedRoutePolicy =
  * permission are declared here. Everything else remains administrator-only,
  * including collections and cross-project actions. */
 const resourceRules: ReadonlyMap<string, ResourceRule> = new Map([
+  [
+    routeScopeKey('GET', '/projects/:id/inquiry-grants'),
+    { kind: 'project', parameter: 'id', permission: 'read' },
+  ],
+  [
+    routeScopeKey('PUT', '/projects/:id/inquiry-grants'),
+    { kind: 'project', parameter: 'id', permission: 'manage' },
+  ],
+  [
+    routeScopeKey('GET', '/sessions/:id/project-inquiries'),
+    { kind: 'session', parameter: 'id', permission: 'read' },
+  ],
+  [
+    routeScopeKey('POST', '/sessions/:id/project-inquiries'),
+    { kind: 'session', parameter: 'id', permission: 'execute' },
+  ],
+  [
+    routeScopeKey('POST', '/sessions/:id/project-inquiries/:inquiryId/decision'),
+    { kind: 'session', parameter: 'id', permission: 'execute' },
+  ],
+  [
+    routeScopeKey('GET', '/projects/:id/repositories'),
+    { kind: 'project', parameter: 'id', permission: 'read' },
+  ],
+  [
+    routeScopeKey('POST', '/projects/:id/repositories'),
+    { kind: 'project', parameter: 'id', permission: 'manage' },
+  ],
+  [
+    routeScopeKey('DELETE', '/projects/:id/repositories/:repositoryId'),
+    { kind: 'project', parameter: 'id', permission: 'manage' },
+  ],
+  [
+    routeScopeKey('GET', '/sessions/:id/repositories'),
+    { kind: 'session', parameter: 'id', permission: 'read' },
+  ],
+  [
+    routeScopeKey('POST', '/sessions/:id/repositories/:repositoryId/open'),
+    { kind: 'session', parameter: 'id', permission: 'execute' },
+  ],
   // The person's own view of a project or session (fold, read mark, dismissed
   // Home items) is stored per user and changes nothing anyone else sees, so
   // reading the resource is enough. Resources the member cannot read are refused
@@ -222,6 +262,7 @@ const resourceRules: ReadonlyMap<string, ResourceRule> = new Map([
 ]);
 
 const activeUserRoutes = new Set([
+  routeScopeKey('GET', '/project-inquiries/pending'),
   routeScopeKey('GET', '/knowledge/shared/files'),
   routeScopeKey('GET', '/knowledge/shared/recent'),
   routeScopeKey('GET', '/knowledge/shared/files/content'),

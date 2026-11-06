@@ -1,5 +1,32 @@
 # Changelog
 
+## [1.86.0](https://github.com/Heey-Global/verity/compare/mobile-v1.85.0...mobile-v1.86.0) (2026-11-06)
+
+
+### Features
+
+* **assistant:** prepare and join live meetings from the calendar ([#2342](https://github.com/Heey-Global/verity/issues/2342)) ([3455a7a](https://github.com/Heey-Global/verity/commit/3455a7a38b49ed50e77566730f68ede48af0710d))
+* **mobile:** add durable background meetings and live activities ([#2343](https://github.com/Heey-Global/verity/issues/2343)) ([7b6fd9b](https://github.com/Heey-Global/verity/commit/7b6fd9b4e1114eaa978c3a0e59ecc1c920587291))
+* **mobile:** compact project page with a Now work list and visible plan approvals ([#2331](https://github.com/Heey-Global/verity/issues/2331)) ([773d4ac](https://github.com/Heey-Global/verity/commit/773d4accfbd498779779f80173c703740e8d0d04))
+* **mobile:** navigable knowledge, Work markers, project security and readable approvals ([#2318](https://github.com/Heey-Global/verity/issues/2318)) ([fa1bc7c](https://github.com/Heey-Global/verity/commit/fa1bc7ca29894a859694353343665b202ed1720e))
+* **mobile:** project tasks on the Overview and Verity's V and panel in the design system ([#2325](https://github.com/Heey-Global/verity/issues/2325)) ([ac461b8](https://github.com/Heey-Global/verity/commit/ac461b855197ffee24c333328760c29954a08fde))
+* **mobile:** show agent usage as rings in the header and a fixed phone row ([#2340](https://github.com/Heey-Global/verity/issues/2340)) ([4f715e4](https://github.com/Heey-Global/verity/commit/4f715e40fa820ff1c77d0ae0ecb05115a5a50947))
+* **mobile:** show pull request and agent state on Work list tiles ([#2338](https://github.com/Heey-Global/verity/issues/2338)) ([1e1c827](https://github.com/Heey-Global/verity/commit/1e1c827fb533ee9882bb13a27b5905beb6d9a889))
+* **projects:** support multiple repositories and project inquiries ([#2341](https://github.com/Heey-Global/verity/issues/2341)) ([87acac9](https://github.com/Heey-Global/verity/commit/87acac95b1bd2b14537a94bc6edfe6d791d214fa))
+
+
+### Bug Fixes
+
+* **egress:** repair automatic Staging host assessment ([#2329](https://github.com/Heey-Global/verity/issues/2329)) ([bbd8fe4](https://github.com/Heey-Global/verity/commit/bbd8fe44b3e02457e1c083670e0e643a1357bb1b))
+* **meetings:** skip summaries of empty meetings and log the online meeting data path ([#2344](https://github.com/Heey-Global/verity/issues/2344)) ([237654a](https://github.com/Heey-Global/verity/commit/237654ac3ccd271e4f76e00828d4c2b1ad434384))
+* **mobile:** clear unread markers when opening project chats ([#2323](https://github.com/Heey-Global/verity/issues/2323)) ([6db99a4](https://github.com/Heey-Global/verity/commit/6db99a405a64ed8b94b33a8457571fa239c1abec))
+* **mobile:** highlight the selected project session ([#2339](https://github.com/Heey-Global/verity/issues/2339)) ([38b4854](https://github.com/Heey-Global/verity/commit/38b4854a0dad20adc0eaff6895ce189623f46d48))
+* **mobile:** remove vulnerability bar from sessions ([#2327](https://github.com/Heey-Global/verity/issues/2327)) ([9218d4b](https://github.com/Heey-Global/verity/commit/9218d4bf6228ff040d2f58e35159a7f549371be7))
+* **mobile:** restore project session swipe actions ([#2328](https://github.com/Heey-Global/verity/issues/2328)) ([db74c64](https://github.com/Heey-Global/verity/commit/db74c64b2ebf93baa3891f9a4b11100875b92133))
+* **mobile:** use supported speech recovery transcription options ([#2345](https://github.com/Heey-Global/verity/issues/2345)) ([4e66ed5](https://github.com/Heey-Global/verity/commit/4e66ed590e14bc06686ccee0c97ce943e25168ad))
+* **pr:** clarify merge feedback and recover completed repairs ([#2337](https://github.com/Heey-Global/verity/issues/2337)) ([78be57c](https://github.com/Heey-Global/verity/commit/78be57ceb815dcbd3b8c1eb95cd8f751293f8f02))
+* **security:** start vulnerability fixes directly and track progress ([#2330](https://github.com/Heey-Global/verity/issues/2330)) ([a596951](https://github.com/Heey-Global/verity/commit/a5969517ce292b5c5b9696db87664e984ef7764d))
+
 ## [1.85.0](https://github.com/Heey-Global/verity/compare/mobile-v1.84.0...mobile-v1.85.0) (2026-11-06)
 
 

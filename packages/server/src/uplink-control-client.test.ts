@@ -1169,6 +1169,26 @@ describe('UplinkControlClient', () => {
     await client.stop();
   });
 
+  it('logs the negotiated capabilities when the Uplink admits this installation', async () => {
+    const fixture = setup();
+    fixture.client.start();
+    await flush();
+    fixture.socket.open();
+    fixture.socket.message({
+      type: 'welcome',
+      installationId: 'installation-1',
+      features: ['sharing'],
+      capabilities: ['webhook-v1'],
+      leaseUntil: new Date(Date.now() + 60_000).toISOString(),
+    });
+    await flush();
+    expect(fixture.log.info).toHaveBeenCalledWith(
+      expect.objectContaining({ capabilities: ['webhook-v1'], features: ['sharing'] }),
+      'Uplink admitted this installation',
+    );
+    await fixture.client.stop();
+  });
+
   it('logs renewal requests and the lease returned by renewed', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-09-22T06:00:00.000Z'));

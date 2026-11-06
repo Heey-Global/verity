@@ -17,7 +17,10 @@ afterEach(async () => {
 
 type Handler = (body: Record<string, unknown>, reply: ServerResponse) => void;
 
-async function fixture(handler: Handler, options: { branch?: string | null; url?: boolean } = {}) {
+async function fixture(
+  handler: Handler,
+  options: { branch?: string | null; url?: boolean; sessionId?: string } = {},
+) {
   const root = mkdtempSync(join(tmpdir(), 'verity-repo-'));
   cleanups.push(() => rmSync(root, { recursive: true, force: true }));
   const git = (...args: string[]) =>
@@ -72,6 +75,7 @@ async function fixture(handler: Handler, options: { branch?: string | null; url?
             options.url === false ? '' : `http://127.0.0.1:${address.port}/internal/project/repo`,
           VERITY_GH_BROKER_CAPABILITY_FILE: capability,
           VERITY_REPO_TIMEOUT_SECONDS: '1',
+          VERITY_SESSION_ID: options.sessionId ?? '',
         },
       });
       let stdout = '';
@@ -122,6 +126,38 @@ describe.each(ROOTS)('verity-repo (%s)', (binRoot) => {
     expect(calls).toEqual([
       { action: 'pr.create', title: 'Add search', body: 'Closes #7', head: 'feat/7-search' },
     ]);
+  });
+
+  it('carries the sandbox session and explicit repository through PR requests', async () => {
+    const { calls, run } = await fixture(ok({ host: 'GitHub', pullRequest: pull }), {
+      sessionId: 'current-session',
+    });
+    expect((await run(binRoot, ['pr', 'view', '--repository', 'module'])).code).toBe(0);
+    expect(calls).toEqual([
+      {
+        action: 'pr.view',
+        head: 'feat/7-search',
+        repositoryId: 'module',
+        sessionId: 'current-session',
+      },
+    ]);
+  });
+
+  it('passes explicit PR dependency references without changing repository authority', async () => {
+    const { calls, run } = await fixture(ok({ host: 'GitHub', pullRequest: pull }));
+    expect(
+      (
+        await run(binRoot, [
+          'pr',
+          'create',
+          '--title',
+          'Consumer',
+          '--depends-on',
+          'https://github.com/team/api/pull/1',
+        ])
+      ).code,
+    ).toBe(0);
+    expect(calls[0]?.dependsOn).toEqual(['https://github.com/team/api/pull/1']);
   });
 
   it('marks the current branch pull request ready, or a numbered one', async () => {

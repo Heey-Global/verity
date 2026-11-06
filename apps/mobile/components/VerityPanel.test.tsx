@@ -17,6 +17,7 @@ const mockVoice = {
 jest.mock('../hooks/useVoiceInput', () => ({ useVoiceInput: () => mockVoice }));
 
 import { fireEvent, render } from '@testing-library/react-native';
+import type { AssistantConversationItem } from '@verity/mobile';
 import { router } from 'expo-router';
 
 import { answerVerity, sendToVerity, useVerity, type VerityState } from '../lib/verityConversation';
@@ -192,4 +193,119 @@ it('wears Verity’s identity, says listening once and marks her answers', () =>
   fireEvent.press(screen.getByLabelText('Open full conversation'));
   expect(onClose).toHaveBeenCalled();
   expect(router.push).toHaveBeenCalledWith('/session/assistant');
+});
+
+describe('meetings Verity prepares', () => {
+  const prepared = {
+    kind: 'meeting' as const,
+    id: 't-5',
+    at: Date.now(),
+    action: 'prepare' as const,
+    mode: 'online' as const,
+    eventKey: 'ev-1',
+    title: 'Hansen call',
+  };
+  const withItems = (...items: AssistantConversationItem[]): VerityState => ({
+    ...ready,
+    conversation: {
+      ...ready.conversation!,
+      revision: 9,
+      items: [...ready.conversation!.items, ...items],
+    },
+  });
+
+  it('opens the filled-in start screen once, when it is readied while the panel is open', () => {
+    const onClose = jest.fn();
+    jest.mocked(useVerity).mockReturnValue(withItems({ ...prepared, state: 'pending' }));
+    const screen = render(<VerityPanel mode="text" projectId={null} onClose={onClose} />);
+    expect(router.push).not.toHaveBeenCalled();
+    jest.mocked(useVerity).mockReturnValue(withItems({ ...prepared, state: 'ready' }));
+    screen.rerender(<VerityPanel mode="text" projectId={null} onClose={onClose} />);
+    screen.rerender(<VerityPanel mode="text" projectId={null} onClose={onClose} />);
+    expect(router.push).toHaveBeenCalledTimes(1);
+    expect(router.push).toHaveBeenCalledWith({
+      pathname: '/meeting/[sessionId]',
+      params: {
+        sessionId: 'assistant',
+        prepare: '1',
+        request: expect.any(String),
+        source: 'online',
+        eventKey: 'ev-1',
+      },
+    });
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it('does not pull the user into a meeting a turn they left was still readying', () => {
+    jest
+      .mocked(useVerity)
+      .mockReturnValue(withItems({ ...prepared, at: Date.now() - 10 * 60_000, state: 'pending' }));
+    const screen = render(<VerityPanel mode="text" projectId={null} onClose={jest.fn()} />);
+    jest
+      .mocked(useVerity)
+      .mockReturnValue(withItems({ ...prepared, at: Date.now() - 10 * 60_000, state: 'ready' }));
+    screen.rerender(<VerityPanel mode="text" projectId={null} onClose={jest.fn()} />);
+    expect(router.push).not.toHaveBeenCalled();
+  });
+
+  it('does not open a meeting readied long ago that a refresh brings in', () => {
+    const screen = render(<VerityPanel mode="text" projectId={null} onClose={jest.fn()} />);
+    jest
+      .mocked(useVerity)
+      .mockReturnValue(withItems({ ...prepared, at: Date.now() - 10 * 60_000, state: 'ready' }));
+    screen.rerender(<VerityPanel mode="text" projectId={null} onClose={jest.fn()} />);
+    expect(router.push).not.toHaveBeenCalled();
+  });
+
+  // Reopening the panel later must not throw the user into an old meeting.
+  it('leaves meetings that were there before the panel opened to a tap', () => {
+    jest
+      .mocked(useVerity)
+      .mockReturnValue(
+        withItems({ ...prepared, mode: 'in_person', eventKey: null, state: 'ready' }),
+      );
+    const screen = render(<VerityPanel mode="text" projectId={null} onClose={jest.fn()} />);
+    screen.rerender(<VerityPanel mode="text" projectId={null} onClose={jest.fn()} />);
+    expect(router.push).not.toHaveBeenCalled();
+    expect(screen.getByText('Ready to start · in person')).toBeTruthy();
+    fireEvent.press(screen.getByText('Open start screen'));
+    expect(router.push).toHaveBeenCalledWith({
+      pathname: '/meeting/[sessionId]',
+      params: {
+        sessionId: 'assistant',
+        prepare: '1',
+        request: expect.any(String),
+        source: 'presence',
+      },
+    });
+  });
+
+  it('opens the running meeting Verity joined, and the start screen when she could not', () => {
+    jest
+      .mocked(useVerity)
+      .mockReturnValue(
+        withItems(
+          { ...prepared, id: 't-6', action: 'join', state: 'ready' },
+          { ...prepared, id: 't-7', action: 'join', state: 'failed' },
+        ),
+      );
+    const screen = render(<VerityPanel mode="text" projectId={null} onClose={jest.fn()} />);
+    fireEvent.press(screen.getByText('Open meeting'));
+    expect(router.push).toHaveBeenLastCalledWith({
+      pathname: '/meeting/[sessionId]',
+      params: { sessionId: 'assistant' },
+    });
+    expect(screen.getByText('Verity could not join')).toBeTruthy();
+    fireEvent.press(screen.getByText('Open start screen'));
+    expect(router.push).toHaveBeenLastCalledWith({
+      pathname: '/meeting/[sessionId]',
+      params: {
+        sessionId: 'assistant',
+        prepare: '1',
+        request: expect.any(String),
+        source: 'online',
+        eventKey: 'ev-1',
+      },
+    });
+  });
 });

@@ -84,6 +84,32 @@ guest, the title and the time, never the guest's link; push notifications still 
 session that made the request. The assistant reads the same overview with
 `verity_assistant` action `scheduling`, without the guests' links.
 
+## Live meetings
+
+The assistant can find the meetings of the next hours in the watched meeting
+calendars (Settings → Meeting calendars) and start the live meeting for one of
+them. Its `verity_assistant` actions follow the start screen's rules:
+
+- `meetings` lists the meetings with their event key, title, time, calendar and
+  provider, and whether Verity can join now. Call links are never returned:
+  they often carry the passcode. `includeInPerson` adds meetings without a call
+  link and reads the calendars live.
+- `prepare_meeting` is the default. The phone opens the live meeting start
+  screen in the assistant session, with the meeting selected and online or in
+  person set, so the user checks participants and transcription and starts it
+  with one tap. The screen opens by itself while the V panel is open; otherwise
+  the conversation shows a card that opens it.
+- `join_meeting` sends Verity into an online meeting at once, inside the usual
+  join window from 15 minutes before the start. The assistant uses it only when
+  the user explicitly asks it to join, or when the request came from the Apple
+  Watch, which has no start screen. In-person meetings are always prepared,
+  since the phone records them.
+
+Only meetings from the listing can be prepared or joined, never a link from a
+message or mail. The meetings belong to the server's Google accounts, so these
+actions are limited to administrators, as the start screen is. A joined
+meeting, its transcript and its notes belong to the assistant session.
+
 ## Conversation on phone and Watch
 
 The floating V on the phone and the Watch app open one conversation with the
@@ -120,5 +146,7 @@ Requests are meant to be answered quickly:
 ## Not yet included
 
 - Capture from a widget, Control Center or the Dynamic Island.
+- Starting a meeting directly in a granted project; meetings start in the
+  assistant session.
 - Reading other projects' knowledge or listing sessions of granted projects.
 - A shared registry for functions; QA and the assistant keep separate storage.

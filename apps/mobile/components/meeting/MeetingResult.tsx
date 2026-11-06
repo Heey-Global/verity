@@ -299,7 +299,9 @@ export function MeetingResult(props: {
                 <Text variant="row">Summary</Text>
               </View>
               {ready ? (
-                <Text>{result.summary}</Text>
+                <Text tone={result.summary ? undefined : 'muted'}>
+                  {result.summary ?? 'Nothing was transcribed in this meeting.'}
+                </Text>
               ) : result?.status === 'failed' ? (
                 <>
                   <Text>Verity could not summarize this meeting.</Text>

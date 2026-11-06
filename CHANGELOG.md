@@ -6,6 +6,26 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.84.0](https://github.com/Heey-Global/verity/compare/v4.83.0...v4.84.0) (2026-11-06)
+
+
+### Features
+
+* **assistant:** prepare and join live meetings from the calendar ([#2342](https://github.com/Heey-Global/verity/issues/2342)) ([3455a7a](https://github.com/Heey-Global/verity/commit/3455a7a38b49ed50e77566730f68ede48af0710d))
+* **mobile:** compact project page with a Now work list and visible plan approvals ([#2331](https://github.com/Heey-Global/verity/issues/2331)) ([773d4ac](https://github.com/Heey-Global/verity/commit/773d4accfbd498779779f80173c703740e8d0d04))
+* **projects:** support multiple repositories and project inquiries ([#2341](https://github.com/Heey-Global/verity/issues/2341)) ([87acac9](https://github.com/Heey-Global/verity/commit/87acac95b1bd2b14537a94bc6edfe6d791d214fa))
+
+
+### Bug Fixes
+
+* **deps:** override vulnerable glob and minimatch releases ([#2324](https://github.com/Heey-Global/verity/issues/2324)) ([3cb7948](https://github.com/Heey-Global/verity/commit/3cb794819119dccbca993765ac84e5f99f48c4e1))
+* **deps:** update dependency @agentclientprotocol/sdk to v2.4.0 ([#2314](https://github.com/Heey-Global/verity/issues/2314)) ([7cbb7b0](https://github.com/Heey-Global/verity/commit/7cbb7b07af15e95b7b86171f53c0420abf7c3730))
+* **egress:** repair automatic Staging host assessment ([#2329](https://github.com/Heey-Global/verity/issues/2329)) ([bbd8fe4](https://github.com/Heey-Global/verity/commit/bbd8fe44b3e02457e1c083670e0e643a1357bb1b))
+* **meetings:** skip summaries of empty meetings and log the online meeting data path ([#2344](https://github.com/Heey-Global/verity/issues/2344)) ([237654a](https://github.com/Heey-Global/verity/commit/237654ac3ccd271e4f76e00828d4c2b1ad434384))
+* **pr:** clarify merge feedback and recover completed repairs ([#2337](https://github.com/Heey-Global/verity/issues/2337)) ([78be57c](https://github.com/Heey-Global/verity/commit/78be57ceb815dcbd3b8c1eb95cd8f751293f8f02))
+* **sandbox:** restore guarded Git path and diagnose broker failures ([#2336](https://github.com/Heey-Global/verity/issues/2336)) ([d5e1848](https://github.com/Heey-Global/verity/commit/d5e18486b6fe126e4821bcc528c3fd9aa2904b75))
+* **security:** start vulnerability fixes directly and track progress ([#2330](https://github.com/Heey-Global/verity/issues/2330)) ([a596951](https://github.com/Heey-Global/verity/commit/a5969517ce292b5c5b9696db87664e984ef7764d))
+
 ## [4.83.0](https://github.com/Heey-Global/verity/compare/v4.82.0...v4.83.0) (2026-11-06)
 
 

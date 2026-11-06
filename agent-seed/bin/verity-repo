@@ -2,13 +2,17 @@
 # Verity pull request and issue client for the project's code host.
 #
 # Every action runs on the Verity server through the project's code host
-# (GitHub, Forgejo, ...) via POST /internal/project/repo. The sandbox never names
-# the repository and never holds a token: it presents the per-container
+# (GitHub, Forgejo, ...) via POST /internal/project/repo. The sandbox can select
+# an assigned repository and never holds a token: it presents the per-container
 # capability, and the server resolves it to this project and its repository.
 #
 # Usage:
+#   verity-repo repository list [--json]
+#   verity-repo repository open <id> [--session <id>] [--json]
+#   Add --repository <id> to PR/issue commands; the checkout supplies it automatically.
+#   The sandbox supplies --session; explicit --session overrides it.
 #   verity-repo pr create --title <title> [--body <text> | --body-file <path|->]
-#                         [--base <branch>] [--head <branch>] [--json]
+#                         [--base <branch>] [--head <branch>] [--depends-on <PR URL>] [--json]
 #   verity-repo pr ready [<number>] [--json]   # default: the current branch's PR
 #   verity-repo pr view  [<number>] [--json]
 #   verity-repo issue list [--json]
@@ -20,7 +24,7 @@
 set -euo pipefail
 
 usage() {
-  sed -n '9,16p' "$0" | sed 's/^# \{0,1\}//' >&2
+  sed -n '/^# Usage:/,/^#$/p' "$0" | sed 's/^# \{0,1\}//' >&2
   exit 2
 }
 
@@ -40,9 +44,15 @@ body=''
 body_set=0
 base=''
 head=''
+repository_id=''
+session_id="${VERITY_SESSION_ID:-}"
+depends_on='[]'
 positional=()
 while [ "$#" -gt 0 ]; do
   case "$1" in
+    --depends-on) [ "$#" -ge 2 ] || fail '--depends-on needs a PR URL'; depends_on="$(jq -c --arg url "$2" '. + [$url]' <<<"$depends_on")"; shift ;;
+    --repository) [ "$#" -ge 2 ] || fail '--repository needs an id'; repository_id="$2"; shift ;;
+    --session) [ "$#" -ge 2 ] || fail '--session needs an id'; session_id="$2"; shift ;;
     --json) json=1 ;;
     --title) [ "$#" -ge 2 ] || fail '--title needs a value'; title="$2"; shift ;;
     --body) [ "$#" -ge 2 ] || fail '--body needs a value'; body="$2"; body_set=1; shift ;;
@@ -75,6 +85,14 @@ current_branch() {
 }
 
 case "$group $cmd" in
+  'repository list')
+    payload='{"action":"repository.list"}'
+    ;;
+  'repository open')
+    [ -n "$repository_id" ] || repository_id="${positional[0]:-}"
+    [ -n "$repository_id" ] && [ -n "$session_id" ] || fail 'repository open needs an id and --session'
+    payload="$(jq -cn --arg repositoryId "$repository_id" --arg sessionId "$session_id" '{action:"repository.open",repositoryId:$repositoryId,sessionId:$sessionId}')"
+    ;;
   'pr create')
     [ -n "${title//[[:space:]]/}" ] || fail 'pr create needs --title'
     [ -n "$head" ] || head="$(current_branch)"
@@ -112,6 +130,17 @@ case "$group $cmd" in
     ;;
 esac
 
+if [ "$depends_on" != '[]' ]; then
+  [ "$group $cmd" = 'pr create' ] || fail '--depends-on is only available for pr create'
+  payload="$(jq -c --argjson dependsOn "$depends_on" '. + {dependsOn:$dependsOn}' <<<"$payload")"
+fi
+[ -n "$repository_id" ] || repository_id="$(git config --get verity.repositoryId 2>/dev/null || true)"
+if [ -n "$repository_id" ]; then
+  payload="$(jq -c --arg repositoryId "$repository_id" '. + {repositoryId:$repositoryId}' <<<"$payload")"
+fi
+if [ -n "$session_id" ]; then
+  payload="$(jq -c --arg sessionId "$session_id" '. + {sessionId:$sessionId}' <<<"$payload")"
+fi
 url="${VERITY_PROJECT_REPO_URL:-}"
 [ -n "$url" ] || fail 'not available in this sandbox (VERITY_PROJECT_REPO_URL unset)'
 cap_file="${VERITY_GH_BROKER_CAPABILITY_FILE:-/run/verity/gh-token-capability}"
@@ -146,6 +175,12 @@ if [ "$json" = 1 ]; then
 fi
 
 case "$group $cmd" in
+  'repository list')
+    jq -r '.repositories[] | "\(.id)\t\(.name)\t\(.owner)/\(.repo)"' <<<"$response"
+    ;;
+  'repository open')
+    jq -r '.workspace | "\(.worktree)\n\(.branch)"' <<<"$response"
+    ;;
   'pr create')
     jq -r '"Opened pull request #\(.pullRequest.number) on \(.host): \(.pullRequest.url)"' <<<"$response"
     ;;

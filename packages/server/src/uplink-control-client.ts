@@ -1263,6 +1263,8 @@ export class UplinkControlClient implements PreviewEdgeControl {
             previousInstallationId,
             firstEver,
             idChanged,
+            // Negotiated wire capabilities, e.g. whether online meetings may request webhooks.
+            capabilities: [...negotiation.capabilities],
             features: Array.isArray(frame.features)
               ? frame.features.filter((value): value is string => typeof value === 'string')
               : [],

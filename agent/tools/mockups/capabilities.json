@@ -1,0 +1,13 @@
+[
+  {
+    "name": "verity_mockups_present",
+    "title": "Verity · Mockups · Present",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": null,
+    "skill": null,
+    "compatibility": {
+      "name": "verity_present_mockups"
+    }
+  }
+]

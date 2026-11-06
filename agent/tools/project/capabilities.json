@@ -1,0 +1,38 @@
+[
+  {
+    "name": "verity_project_inquiry_request",
+    "title": "Verity · Project · Inquiry Request",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": null,
+    "skill": null,
+    "compatibility": {
+      "name": "verity_project_inquiry",
+      "operation": "request"
+    }
+  },
+  {
+    "name": "verity_project_inquiry_answer",
+    "title": "Verity · Project · Inquiry Answer",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": null,
+    "skill": null,
+    "compatibility": {
+      "name": "verity_project_inquiry",
+      "operation": "answer"
+    }
+  },
+  {
+    "name": "verity_project_inquiry_list",
+    "title": "Verity · Project · Inquiry List",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": null,
+    "skill": null,
+    "compatibility": {
+      "name": "verity_project_inquiry",
+      "operation": "list"
+    }
+  }
+]

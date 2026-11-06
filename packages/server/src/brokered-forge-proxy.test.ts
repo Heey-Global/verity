@@ -109,6 +109,7 @@ async function harness(
     forgejo?: boolean;
     capabilities?: GhTokenCapabilityRegistry;
     mint?: () => Promise<string>;
+    resolveRepository?: Parameters<typeof createBrokeredForgeProxy>[0]['resolveRepository'];
     transport?: BrokeredHttpStreamTransport;
     certificateFor?: (hostname: string) => Promise<PemCertificate>;
   } = {},
@@ -173,6 +174,7 @@ async function harness(
     adapter,
     transport: options.transport ?? transport,
     ...(options.certificateFor ? { certificateFor: options.certificateFor } : {}),
+    ...(options.resolveRepository ? { resolveRepository: options.resolveRepository } : {}),
     enabled: () => options.enabled ?? true,
     actions: () => options.actions ?? allActions,
   });
@@ -1255,5 +1257,28 @@ it('closes an existing Forge stream when its exact capability is revoked', async
   await admitted;
   valid = false;
   await result;
+  expect(h.received).toHaveLength(1);
+});
+
+it('validates GraphQL against additional current assignments and rechecks revocation', async () => {
+  let assigned = true;
+  const extra = { ...binding, owner: 'other', repo: 'api' };
+  const h = await harness(
+    (_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ data: { repository: { id: 'repository-id' } } }));
+    },
+    {
+      resolveRepository: async (_binding, _host, path) =>
+        path === '/graphql' ? (assigned ? [binding, extra] : [binding]) : binding,
+    },
+  );
+  const body = JSON.stringify({
+    query: 'query { repository(owner: "other", name: "api") { id } }',
+  });
+  expect((await call(h.port, '/graphql', undefined, 'api.github.com', body)).status).toBe(200);
+  expect(h.received).toHaveLength(1);
+  assigned = false;
+  expect((await call(h.port, '/graphql', undefined, 'api.github.com', body)).status).not.toBe(200);
   expect(h.received).toHaveLength(1);
 });

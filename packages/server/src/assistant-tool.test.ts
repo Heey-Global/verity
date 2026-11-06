@@ -1,4 +1,5 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { calendarEventKey } from '@verity/store';
 import { createTestDb, truncateAll, type TestDb } from '@verity/store/testing';
 import { gatewayToolNameSchema } from '@verity/secret-contracts';
 import {
@@ -8,6 +9,7 @@ import {
   requireAssistantGrant,
   type AssistantToolDeps,
 } from './assistant-tool.js';
+import type { CalendarMeetingDeps } from './calendar-meeting-watcher.js';
 
 let ctx: TestDb;
 beforeAll(async () => {
@@ -250,5 +252,132 @@ describe('assistant tool policy', () => {
     expect(assistantToolRefusal(off, 'assistant', 'verity_gmail')).toMatch(/disabled/);
     expect(assistantToolRefusal(off, 'assistant', 'verity_app_help')).toBeUndefined();
     expect(assistantToolRefusal(on, 'control', 'verity_diagnostics')).toBeUndefined();
+  });
+});
+
+describe('assistant live meetings', () => {
+  const MIN = 60_000;
+  const NOW = Date.parse('2026-11-02T10:00:00Z');
+  let accountId: string;
+  const key = (eventId: string) => calendarEventKey(accountId, 'primary', eventId);
+
+  beforeEach(async () => {
+    accountId = (
+      await ctx.store.googleAccounts.save({
+        email: 'me@example.com',
+        clientId: 'client',
+        refreshToken: 'secret',
+        scopes: [],
+      })
+    ).id;
+    await ctx.store.calendarWatch.watch({
+      accountId,
+      calendarId: 'primary',
+      summary: 'Work',
+      autoJoin: false,
+    });
+    await ctx.store.calendarWatch.syncEvents(
+      accountId,
+      'primary',
+      { from: NOW - 60 * MIN, to: NOW + 48 * 60 * MIN },
+      [
+        { id: 'soon', at: NOW + 5 * MIN, url: 'https://acme.zoom.us/j/1?pwd=secret' },
+        { id: 'later', at: NOW + 3 * 60 * MIN, url: 'https://meet.google.com/abc-defg-hij' },
+      ].map((item) => ({
+        eventId: item.id,
+        title: `Meeting ${item.id}`,
+        meetingUrl: item.url,
+        startsAt: item.at,
+        endsAt: item.at + 30 * MIN,
+        accepted: true,
+      })),
+    );
+  });
+
+  function meetingDeps(administrator = true) {
+    const start = vi.fn(async () => ({ meetingId: 'meeting-1' }));
+    const calendar: CalendarMeetingDeps = {
+      store: {
+        calendarWatch: ctx.store.calendarWatch,
+        listActiveAdministratorIds: async () => [],
+        listDevicePushTokensForUsers: async () => [],
+        getSession: async () => undefined,
+      },
+      meetings: {
+        start,
+        runningFor: async () => undefined,
+      } as unknown as CalendarMeetingDeps['meetings'],
+      googleAccessToken: async () => undefined,
+      warn: () => undefined,
+      now: () => NOW,
+    };
+    return {
+      start,
+      deps: { ...deps(), meetings: calendar, administrator: async () => administrator },
+    };
+  }
+  const run = (rights: AssistantToolDeps, request: unknown) =>
+    executeAssistantTool(rights, { ...call, request });
+
+  it('lists watched meetings without their links and says which can be joined now', async () => {
+    const result = await run(meetingDeps().deps, { action: 'meetings' });
+    expect(result).toEqual({
+      meetings: [
+        expect.objectContaining({ eventKey: key('soon'), provider: 'zoom', joinableNow: true }),
+        expect.objectContaining({ eventKey: key('later'), provider: 'meet', joinableNow: false }),
+      ],
+    });
+    // The link carries the passcode; the model reading untrusted mail never sees it.
+    expect(JSON.stringify(result)).not.toContain('pwd=secret');
+  });
+
+  it('prepares only listed meetings and starts nothing', async () => {
+    const { deps: rights, start } = meetingDeps();
+    await expect(
+      run(rights, { action: 'prepare_meeting', mode: 'online', eventKey: key('later') }),
+    ).resolves.toEqual({ prepared: { sessionId: 'assistant', mode: 'online' } });
+    await expect(
+      run(rights, { action: 'prepare_meeting', mode: 'online', eventKey: 'unwatched' }),
+    ).rejects.toThrow(/not in the watched calendars/);
+    await expect(run(rights, { action: 'prepare_meeting', mode: 'in_person' })).resolves.toEqual({
+      prepared: { sessionId: 'assistant', mode: 'in_person' },
+    });
+    expect(start).not.toHaveBeenCalled();
+  });
+
+  it('joins a watched meeting into its own session, inside the join window only', async () => {
+    const { deps: rights, start } = meetingDeps();
+    await expect(run(rights, { action: 'join_meeting', eventKey: key('later') })).rejects.toThrow(
+      /starts later/,
+    );
+    await expect(run(rights, { action: 'join_meeting', eventKey: key('soon') })).resolves.toEqual({
+      joined: { sessionId: 'assistant', meetingId: 'meeting-1' },
+    });
+    expect(start).toHaveBeenCalledWith(
+      'assistant',
+      'https://acme.zoom.us/j/1?pwd=secret',
+      true,
+      'Meeting soon',
+    );
+    // A second join reports the running meeting instead of sending another bot.
+    await expect(run(rights, { action: 'join_meeting', eventKey: key('soon') })).rejects.toThrow(
+      /already in this meeting/,
+    );
+    expect(start).toHaveBeenCalledTimes(1);
+  });
+
+  it('never joins a link, and keeps the calendars to administrators', async () => {
+    const { deps: rights, start } = meetingDeps(false);
+    await expect(
+      run(meetingDeps().deps, {
+        action: 'join_meeting',
+        eventKey: 'https://meet.google.com/abc-defg-hij',
+      }),
+    ).rejects.toThrow();
+    await expect(run(rights, { action: 'meetings' })).rejects.toThrow(/administrators only/);
+    await expect(run(rights, { action: 'join_meeting', eventKey: key('soon') })).rejects.toThrow(
+      /administrators only/,
+    );
+    expect(start).not.toHaveBeenCalled();
   });
 });
