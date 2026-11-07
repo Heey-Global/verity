@@ -3632,7 +3632,8 @@ export class Conductor {
       // it runs as a `--resume` turn that materializes the file correctly. Images
       // still steer into the running turn as before.
       const hasFileAttachment = opts.attachments?.some((a) => a.kind === 'file') ?? false;
-      const planning = (await this.deps.store.getSession(sessionId))?.planning === 'active';
+      const currentSession = await this.deps.store.getSession(sessionId);
+      const planning = currentSession?.planning === 'active';
       // A mode change needs a fresh turn; steering retains the live permissions.
       const runningPlanning = this.runningPlanning.get(sessionId);
       const postureChanged = runningPlanning === undefined || planning !== runningPlanning;
@@ -3646,7 +3647,7 @@ export class Conductor {
       if (
         turn &&
         (await turn.steer({
-          text: prompt,
+          text: prompt + (currentSession ? this.mockupReviewSection(currentSession) : ''),
           ...(opts.attachments ? { attachments: opts.attachments } : {}),
         }))
       ) {
