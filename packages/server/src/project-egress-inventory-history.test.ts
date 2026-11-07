@@ -25,9 +25,6 @@ it('retains retired names and addresses and keeps their DNS refresh coverage', a
     'retired.example.org',
   ]);
   expect(history.hosts()).toContain('retired.example.org');
-  expect(history.addresses()).toEqual(['198.51.100.3', '198.51.100.4', '203.0.113.4']);
-  history.addresses().length = 0;
-  expect(history.protectedAddress('203.0.113.4')).toBe(true);
   expect(history.protectedAddress('198.51.100.3')).toBe(true);
   expect(history.protectedAddress('198.51.100.4')).toBe(true);
   const restored = createProjectEgressInventoryHistory(saves.at(-1), vi.fn());

@@ -60,6 +60,9 @@ it('allows Internet build downloads for a project with no grants or approved hos
     addresses: ['8.8.8.8', '2606:4700::1111'],
     ttlSeconds: 1,
   });
+  for (const host of ['ghcr.io', 'github.com', 'registry.npmjs.org', 'pypi.org']) {
+    expect((await f.admission.resolve(host)).addresses).toEqual(['8.8.8.8', '2606:4700::1111']);
+  }
   expect(f.dependencies.directTargetAllowed).not.toHaveBeenCalled();
   expect(f.dependencies.destinationAllowed).not.toHaveBeenCalled();
   const rules = f.dependencies.apply.mock.calls.at(-1)![0];
