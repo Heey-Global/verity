@@ -125,7 +125,7 @@ class ManagedTests(unittest.TestCase):
         parent.mkdir(parents=True)
         (parent / 'build-storage').symlink_to(self.source, target_is_directory=True)
         self.relay.write_text('{"packetEnforcement":true,"dataVolume":"verity-data"}')
-        with self.assertRaises(OSError):
+        with self.assertRaises((OSError, ValueError)):
             self.provision()
         self.assertNotIn(('/usr/bin/systemctl', 'start', managed.SERVICE), self.calls)
 

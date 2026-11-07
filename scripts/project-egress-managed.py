@@ -549,6 +549,8 @@ def prepare_build_storage(root, volume):
     parent = root / 'var/lib/docker/volumes' / volume / '_data'
     # Docker's volume directory is trusted; _data belongs to the Server user.
     base.trusted_parent(parent, root)
+    if not stat.S_ISDIR(parent.lstat().st_mode):
+        raise ValueError('Untrusted protected build data volume')
     with_parent = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
         owner = os.fstat(with_parent)
@@ -558,6 +560,8 @@ def prepare_build_storage(root, volume):
             created = True
         except FileExistsError:
             pass
+        if not stat.S_ISDIR(os.stat('build-storage', dir_fd=with_parent, follow_symlinks=False).st_mode):
+            raise ValueError('Untrusted protected build storage directory')
         child = os.open('build-storage', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
                         dir_fd=with_parent)
         try:
