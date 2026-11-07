@@ -147,7 +147,8 @@ Disabled is always 40 % opacity; pressed is always a slight darkening.
 | Destructive | No fill, `attention` outline and label                        | Remove, delete — always preceded by a confirmation |
 
 - Sizes: **large 48** (full width, pinned at the bottom of a flow), **compact 36** (inside
-  cards and rows, as wide as its label), **icon 40** (square, one symbol).
+  cards and rows, as wide as its label), **small 32** (a row's answers, 13 semibold),
+  **icon 40** (square, one symbol).
 - States: default, pressed, disabled, loading. Loading keeps the label, adds a spinner in
   front and keeps the width; the button is locked while loading.
 - At most one primary button per screen. Labels are verbs ("Activate", "Copy", "Remove key"),
@@ -185,10 +186,18 @@ Disabled is always 40 % opacity; pressed is always a slight darkening.
     value is short ("On", "2"); a long one such as an address goes in the subtitle, so the
     title never wraps to make room. The trailing side takes at most 45 % of the row; a
     status longer than that truncates, so the title is never squeezed. The chevron `›`
-    appears only when the row navigates.
+    appears only when the row navigates. An inbox row ("Needs you") puts its status tag
+    at the start of the subtitle line instead (`tag`), so the title keeps the full width
+    beside the chevron.
   - **Answers (optional):** a row that waits on a decision the operator can make in place
-    (a question's options, a repair) shows those answers as compact buttons in a strip
-    under it, aligned with the title, the first one primary. The strip sits outside the
+    (a question's options, a repair) shows those answers as small secondary buttons in a
+    strip under it, aligned with the title. None is primary: a list holds many such rows,
+    and a primary in each would leave the screen without a single main action. Sending one
+    answer locks only that row's answers; the other rows stay answerable. Up to three answers
+    of at most 24 characters show as buttons; otherwise the strip holds one "N answers"
+    button that opens a sheet listing every answer in full under the question, since a
+    sentence cut or wrapped into a pill is nothing to decide from. A row's answers move
+    together, never half in place and half in the sheet. The strip sits outside the
     row's pressable area, so VoiceOver reaches each button; the row itself still opens
     its subject. Rows without such a decision never carry one.
 - States: default, pressed (slightly darker surface), disabled (40 %), settled (60 %),

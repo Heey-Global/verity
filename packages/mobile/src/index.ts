@@ -120,6 +120,7 @@ export {
   planProposalContent,
   planProposalCounts,
   planDecisionAnswer,
+  planDecisionAnswers,
   planProposalFullyRepresented,
   planView,
   type PlanEntry,

@@ -56,21 +56,30 @@ function enteredAt(session: SessionSummary, tier: number): number {
 }
 
 /**
- * Work tiers. Active sessions keep a fixed order (their saved positions), so a
- * row does not move while the operator reaches for it; every other tier lists
- * its sessions in the order they entered it, the latest at the bottom.
+ * Work tiers, where whatever enters a tier joins it at the bottom. Active
+ * sessions that stay active keep their places from `previous`, so a row does
+ * not move while the operator reaches for it, and newly active ones append;
+ * every other tier lists its sessions in the order they entered it.
  */
 export function workOrder(
   sessions: readonly SessionSummary[],
   overrides: SeenOverrides = new Map(),
+  previous: readonly SessionSummary[] = [],
 ): SessionSummary[] {
+  const activeRanks = new Map(
+    previous
+      .filter((session) => workTier(session) === ACTIVE_TIER)
+      .map((session, index) => [session.sessionId, index]),
+  );
   return sessions
     .map((session, index) => ({ session, index, tier: workTier(session, overrides) }))
     .sort(
       (a, b) =>
         a.tier - b.tier ||
         (a.tier === ACTIVE_TIER
-          ? (a.session.sortOrder ?? Infinity) - (b.session.sortOrder ?? Infinity) ||
+          ? (activeRanks.get(a.session.sessionId) ?? Infinity) -
+              (activeRanks.get(b.session.sessionId) ?? Infinity) ||
+            (a.session.sortOrder ?? Infinity) - (b.session.sortOrder ?? Infinity) ||
             a.session.sessionId.localeCompare(b.session.sessionId)
           : enteredAt(a.session, a.tier) - enteredAt(b.session, b.tier)) ||
         a.index - b.index,
