@@ -1996,7 +1996,10 @@ describe('buildRunnerConductorWiring (Stage 5c runner cutover)', () => {
     // with the test rather than with the throw, so rewording the throw leaves both
     // green and the page quoting a message no Server emits — the one drift this
     // pairing exists to catch.
-    const embedded = await readFile(new URL('./embedded.ts', import.meta.url), 'utf8');
+    const embedded = await readFile(
+      new URL('./embedded-runner-wiring.ts', import.meta.url),
+      'utf8',
+    );
     const thrown =
       /deps\.mcpGatewayTokens === undefined &&[\s\S]*?throw new Error\(\s*'([^']+)'/u.exec(
         embedded,
@@ -2052,7 +2055,7 @@ describe('buildRunnerConductorWiring (Stage 5c runner cutover)', () => {
     };
 
     const here = await members(
-      new URL('./embedded.ts', import.meta.url),
+      new URL('./embedded-runner-wiring.ts', import.meta.url),
       // Anchored on BOTH conditions of the composition check, because the first alone
       // is not unique to it: an earlier `gatewayToolContext !== undefined` elsewhere in
       // the file would silently re-target this region, and a wrong-but-nonempty match

@@ -68,8 +68,10 @@ export async function retireStoppedContainers(input: {
       continue;
     }
     const maintenance =
-      candidate.labels?.[componentLabel] === 'storage-maintenance' &&
-      candidate.names?.some((name) => /^verity-query-[a-f0-9-]{36}$/.test(name));
+      (candidate.labels?.[componentLabel] === 'storage-maintenance' &&
+        candidate.names?.some((name) => /^verity-query-[a-f0-9-]{36}$/.test(name))) ||
+      (candidate.labels?.[componentLabel] === 'runner-cache-maintenance' &&
+        candidate.names?.some((name) => /^verity-cache-maintenance-[a-f0-9-]{36}$/.test(name)));
     const project = projects.find((p) => p.id === projectId);
     const ownedSandbox =
       !relay(candidate) &&

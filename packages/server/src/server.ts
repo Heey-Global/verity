@@ -270,6 +270,7 @@ import { registerSessionMetadataRoute } from './session-metadata-route.js';
 import { recentSessionDiagnostics } from './session-observation.js';
 import { registerSessionOrderRoute } from './session-order-route.js';
 import { createSessionPrCache } from './session-pr-cache.js';
+import { createPrActivityRefresh } from './pr-activity-refresh.js';
 import { registerSessionReadRoutes } from './session-read-routes.js';
 import { registerSessionRecoveryRoute } from './session-recovery-route.js';
 import { sessionParams } from './session-route-schemas.js';
@@ -2731,21 +2732,29 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     clearInterval(prRepairTimer);
     await prRepairSweep;
   });
-  const unsubscribePrChanges = deps.bus.subscribeAll((sessionId, { event }) => {
-    if (event.t !== 'result') return;
-    // A completed turn may have pushed a new head or opened its first PR. Drop
-    // quiet-session backoff so discovery resumes on the next foreground/background poll.
-    void deps.eventStore
-      .getSession(sessionId)
-      .then((session) => {
-        if (prRepairStopped || session === undefined) return;
-        invalidateBranchCache(session.worktree);
-        invalidatePrSummaryAction(session);
+  const prActivityRefresh = createPrActivityRefresh({
+    refresh: async (sessionId) => {
+      const session = await deps.eventStore.getSession(sessionId);
+      if (prRepairStopped || session === undefined) return;
+      invalidateBranchCache(session.worktree);
+      if (!(await prMarkerEnabled(session))) {
         resources.invalidate(`/sessions/${encodeURIComponent(sessionId)}/branches`);
-      })
-      .catch((err) => app.log.warn({ err, sessionId }, 'PR cache invalidation failed'));
+        return;
+      }
+      if (!invalidatePrSummaryAction(session, true)) return;
+      await sessionPrCache.get(session);
+      resources.invalidate(`/sessions/${encodeURIComponent(sessionId)}/branches`);
+    },
+    onError: (err, sessionId) => app.log.warn({ err, sessionId }, 'PR activity refresh failed'),
   });
-  app.addHook('onClose', () => unsubscribePrChanges());
+  const unsubscribePrChanges = deps.bus.subscribeAll((sessionId, { event }) => {
+    if (event.t === 'tool_result' || event.t === 'result')
+      prActivityRefresh.notify(sessionId, event.t === 'result');
+  });
+  app.addHook('onClose', async () => {
+    unsubscribePrChanges();
+    await prActivityRefresh.close();
+  });
   const pullRequestReadyMonitor =
     pushRouter !== undefined &&
     deps.branches !== undefined &&
@@ -2819,12 +2828,13 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     prSummaryGeneration.set(worktree, (prSummaryGeneration.get(worktree) ?? 0) + 1);
     prSummaryCache.set(worktree, { pr, at: Date.now() });
   };
-  const invalidatePrSummaryAction = (session: SessionRecord): void => {
+  const invalidatePrSummaryAction = (session: SessionRecord, retainStatus = false): boolean => {
     const { worktree } = session;
-    sessionPrCache.invalidate(worktree);
+    if (!sessionPrCache.invalidate(worktree, retainStatus)) return false;
     if (session.projectId) deps.invalidateProjectPrStatus?.(session.projectId);
     prSummaryGeneration.set(worktree, (prSummaryGeneration.get(worktree) ?? 0) + 1);
-    prSummaryCache.delete(worktree);
+    if (!retainStatus) prSummaryCache.delete(worktree);
+    return true;
   };
   // Read the cached PR summary and schedule a background refresh if stale. Never
   // awaits git/GitHub, so the 2s list poll stays cheap.

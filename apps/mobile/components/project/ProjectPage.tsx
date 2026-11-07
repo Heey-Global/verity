@@ -2,7 +2,6 @@ import { ProjectInquiryCards } from './ProjectInquiryCards';
 import {
   inboxDismissedKeys,
   inboxItems,
-  projectBadge,
   providerName,
   type InboxItem,
   type ProjectDetail,
@@ -15,14 +14,16 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } 
 import { ActivityIndicator, RefreshControl, ScrollView, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
-import { CodeHostIcon } from '../CodeHostIcon';
 import { useInboxFeed } from '../home/HomeInbox';
 import { KnowledgeColumn } from '../knowledge/KnowledgeBrowser';
-import type { KnowledgeScope } from '../knowledge/knowledgeScope';
+import {
+  folderIcon,
+  folderSubtitle,
+  folderTitle,
+  type KnowledgeScope,
+} from '../knowledge/knowledgeScope';
 import { Button, Group, IconButton, Row, SectionHeader, StatusTag, Text } from '../ui';
-import type { StatusIntent } from '../ui/Status';
 import { tint } from '../ui/tint';
-import { useProjectConnections, type ProjectConnections } from '../../lib/useProjectConnections';
 import { useProjectDetail } from '../../lib/useProjectDetail';
 import { ProjectTasksRow } from './ProjectTasksRow';
 import { ProjectWork } from './ProjectWork';
@@ -115,9 +116,8 @@ export function ProjectPage({
 }) {
   const { theme } = useUnistyles();
   const { detail, loading, error, load } = useProjectDetail(client, projectId);
-  const connections = useProjectConnections(client, projectId);
-  const refreshConnections = connections.refresh;
-  const [knowledgeOpen, setKnowledgeOpen] = useState(false);
+  /** The knowledge area open in the wide layout's column, if any. */
+  const [knowledgeArea, setKnowledgeArea] = useState<string>();
   const security = useProjectSecurity(client, projectId, onOpenSession);
   const knowledgeScope = useMemo<KnowledgeScope>(
     () => ({ kind: 'project', projectId }),
@@ -127,9 +127,8 @@ export function ProjectPage({
   const reload = useCallback(() => void load(true), [load]);
   const refresh = useCallback(() => {
     setRefreshing(true);
-    refreshConnections();
     void load(true).finally(() => setRefreshing(false));
-  }, [refreshConnections, load]);
+  }, [load]);
   // Compared with the last value rather than skipping a first run: the mount
   // already loads, and a re-run with the same token (a re-mounted effect, a new
   // `reload`) must not read again.
@@ -179,10 +178,13 @@ export function ProjectPage({
     () => router.push({ pathname: '/project/[id]/settings', params: { id: projectId } }),
     [projectId],
   );
-  const openKnowledge = useCallback(() => {
-    if (inline) setKnowledgeOpen(true);
-    else router.push({ pathname: '/project/[id]/knowledge', params: { id: projectId } });
-  }, [inline, projectId]);
+  const openKnowledge = useCallback(
+    (folder: string) => {
+      if (inline) setKnowledgeArea(folder);
+      else router.push({ pathname: '/project/[id]/knowledge', params: { id: projectId, folder } });
+    },
+    [inline, projectId],
+  );
   const name = detail?.project.repo ?? 'Project';
   const gear = (
     <IconButton icon="settings" accessibilityLabel="Project settings" onPress={openSettings} />
@@ -226,7 +228,7 @@ export function ProjectPage({
         <ProjectContent
           client={client}
           detail={detail}
-          connections={connections}
+          scope={knowledgeScope}
           security={security}
           onOpenKnowledge={openKnowledge}
         />
@@ -234,7 +236,7 @@ export function ProjectPage({
     );
   }
 
-  if (inline && knowledgeOpen) {
+  if (inline && knowledgeArea !== undefined) {
     return (
       <View style={styles.flex} testID="project-knowledge">
         <View style={styles.topBar}>
@@ -243,10 +245,15 @@ export function ProjectPage({
             icon="chevron-left"
             variant="text"
             size="compact"
-            onPress={() => setKnowledgeOpen(false)}
+            onPress={() => setKnowledgeArea(undefined)}
           />
         </View>
-        <KnowledgeColumn key={projectId} client={client} scope={knowledgeScope} />
+        <KnowledgeColumn
+          key={`${projectId}:${knowledgeArea}`}
+          client={client}
+          scope={knowledgeScope}
+          start={knowledgeArea}
+        />
       </View>
     );
   }
@@ -309,61 +316,34 @@ function openSandbox(projectId: string) {
   router.push({ pathname: '/project/[id]/settings/sandbox', params: { id: projectId } });
 }
 
-function sandboxIntent(badge: ReturnType<typeof projectBadge>, project: ProjectRecord) {
-  const intent: StatusIntent = badge.pulsing
-    ? 'transient'
-    : badge.needsRepair
-      ? 'needsSetup'
-      : project.state === 'active'
-        ? 'ready'
-        : 'optional';
-  return intent;
-}
-
-/**
- * What the project holds: its knowledge, its findings, and the services it uses,
- * each row leading to where it is read or configured. Only services the project
- * uses appear; adding one is a project setting.
- */
+/** The project’s Wiki (with its decisions), sources, tasks and security findings. */
 function ProjectContent({
   client,
   detail,
-  connections,
+  scope,
   security,
   onOpenKnowledge,
 }: {
   client: VerityClient;
   detail: ProjectDetail;
-  connections: ProjectConnections;
+  scope: KnowledgeScope;
   security: ProjectSecurity | undefined;
-  onOpenKnowledge: () => void;
+  onOpenKnowledge: (folder: string) => void;
 }) {
-  const { theme } = useUnistyles();
-  const { project, settings, sessions } = detail;
-  const { usage, driveFolderNames } = connections;
-  const id = project.id;
-  const toSettings = (
-    pathname:
-      | '/project/[id]/settings/repository'
-      | '/project/[id]/settings/sandbox'
-      | '/project/[id]/settings/services',
-    section?: 'doppler' | 'drive' | 'mcp' | 'matrix' | 'google',
-  ) => router.push({ pathname, params: section ? { id, section } : { id } });
-  const badge = projectBadge(project);
-  const open = openPullRequests(sessions);
-  const host = project.kind === 'github' || project.kind === 'forgejo' ? project.kind : null;
-  const drive =
-    driveFolderNames ?? (settings?.googleDriveFolderName ? [settings.googleDriveFolderName] : []);
+  const id = detail.project.id;
   const severe = security !== undefined && security.severe > 0;
   return (
     <Group>
-      <Row
-        leading={{ icon: 'book-open' }}
-        title="Knowledge"
-        subtitle="Wiki, decisions and sources"
-        navigates
-        onPress={onOpenKnowledge}
-      />
+      {(['insights', 'sources'] as const).map((area) => (
+        <Row
+          key={area}
+          leading={{ icon: folderIcon(area) }}
+          title={folderTitle(scope, area)}
+          subtitle={folderSubtitle(scope, area)}
+          navigates
+          onPress={() => onOpenKnowledge(area)}
+        />
+      ))}
       <ProjectTasksRow client={client} projectId={id} />
       {security !== undefined ? (
         <Row
@@ -380,79 +360,6 @@ function ProjectContent({
           onPress={security.show}
         />
       ) : null}
-      {host !== null ? (
-        <Row
-          leading={{
-            element: <CodeHostIcon provider={host} color={theme.colors.action} />,
-          }}
-          title={`${project.owner}/${project.repo}`}
-          subtitle={`${providerName(host)} · ${
-            open === 1 ? '1 open PR' : `${String(open)} open PRs`
-          }`}
-          navigates
-          onPress={() => toSettings('/project/[id]/settings/repository')}
-        />
-      ) : (
-        <Row
-          leading={{ icon: 'git-branch' }}
-          title="Code workspace"
-          subtitle="Local Git, no code host connected"
-          navigates
-          onPress={() => toSettings('/project/[id]/settings/repository')}
-        />
-      )}
-      {settings?.dopplerConfig ? (
-        <Row
-          leading={{ icon: 'key' }}
-          title="Doppler"
-          subtitle={settings.dopplerConfig}
-          navigates
-          onPress={() => toSettings('/project/[id]/settings/services', 'doppler')}
-        />
-      ) : null}
-      {drive.length > 0 ? (
-        <Row
-          leading={{ icon: 'folder' }}
-          title="Google Drive"
-          subtitle={drive.join(', ')}
-          navigates
-          onPress={() => toSettings('/project/[id]/settings/services', 'drive')}
-        />
-      ) : null}
-      {usage.google > 0 ? (
-        <Row
-          leading={{ icon: 'mail' }}
-          title="Google services"
-          subtitle={`${String(usage.google)} of Gmail, Calendar and Contacts`}
-          navigates
-          onPress={() => toSettings('/project/[id]/settings/services', 'google')}
-        />
-      ) : null}
-      {usage.mcp > 0 ? (
-        <Row
-          leading={{ icon: 'tool' }}
-          title="MCP"
-          subtitle={usage.mcp === 1 ? '1 connection' : `${String(usage.mcp)} connections`}
-          navigates
-          onPress={() => toSettings('/project/[id]/settings/services', 'mcp')}
-        />
-      ) : null}
-      {usage.matrix > 0 ? (
-        <Row
-          leading={{ icon: 'message-circle' }}
-          title="Matrix rooms"
-          subtitle={usage.matrix === 1 ? '1 room' : `${String(usage.matrix)} rooms`}
-          navigates
-          onPress={() => toSettings('/project/[id]/settings/services', 'matrix')}
-        />
-      ) : null}
-      <Row
-        leading={{ icon: 'server' }}
-        title="Sandbox"
-        trailing={<StatusTag intent={sandboxIntent(badge, project)} label={badge.label} />}
-        navigates
-        onPress={() => toSettings('/project/[id]/settings/sandbox')}
-      />
     </Group>
   );
 }
