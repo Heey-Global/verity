@@ -6767,7 +6767,21 @@ export class EventStore implements EventSink {
                 state: primary.state as ProjectState,
                 overviewVisible: primary.overview_visible,
               }));
-      if (adoptable) return this.upsertPrimaryProject(tx, input);
+      const repositoryArchive =
+        primary ??
+        (await tx
+          .selectFrom('projects')
+          .select('archived')
+          .where('forge_scope', '=', scope)
+          .where('owner', '=', owner)
+          .where('repo', '=', repo)
+          .orderBy('repository_instance', 'asc')
+          .executeTakeFirst());
+      if (adoptable)
+        return this.upsertPrimaryProject(tx, {
+          ...input,
+          archived: input.archived ?? repositoryArchive?.archived,
+        });
       const instance = await this.claimNextRepositoryInstance(
         tx,
         { owner, repo, forgeConnectionId: input.forgeConnectionId },
@@ -6791,7 +6805,7 @@ export class EventStore implements EventSink {
           state: input.state,
           // Archival is a property of the repository, recorded by the
           // installation sync on its first project.
-          archived: input.archived ?? primary?.archived ?? false,
+          archived: input.archived ?? repositoryArchive?.archived ?? false,
           overview_visible: input.overviewVisible ?? true,
           provision_error: null,
           provision_warning: null,

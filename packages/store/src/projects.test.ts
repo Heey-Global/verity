@@ -1702,6 +1702,21 @@ describe('EventStore — one repository, several projects', () => {
     expect(again.hiddenAt).toBeNull();
   });
 
+  it('inherits archival from surviving projects when recreating the first instance', async () => {
+    const first = await add();
+    await ctx.store.upsertProject({
+      id: first.id,
+      ...repository,
+      containerName: first.containerName,
+      state: 'absent',
+      archived: true,
+    });
+    const second = await add();
+    await ctx.store.deleteProject(first.id);
+    expect(await add()).toMatchObject({ repositoryInstance: 1, archived: true });
+    expect(await ctx.store.getProject(second.id)).toMatchObject({ archived: true });
+  });
+
   it('keeps every project of a repository when the installation sync re-runs', async () => {
     const first = await add();
     const second = await add();
