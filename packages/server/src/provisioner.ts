@@ -6325,6 +6325,8 @@ export class ProvisionerImpl implements Provisioner {
         { key: `http.${forgeOrigin}.proxy`, value: forgeProxyUrl },
         { key: `http.${forgeOrigin}.sslCAInfo`, value: FORGE_PROXY_CA_FILE },
         { key: `http.${forgeOrigin}.sslVerify`, value: 'true' },
+        // The broker terminates TLS into an HTTP/1.x parser.
+        { key: `http.${forgeOrigin}.version`, value: 'HTTP/1.1' },
         { key: 'credential.interactive', value: 'false' },
       );
     }

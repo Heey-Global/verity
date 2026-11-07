@@ -7172,7 +7172,7 @@ describe('ProvisionerImpl (#174)', () => {
         expect(spec.env).toContain(
           'VERITY_PROJECT_REPO_URL=http://relay:8080/internal/project/repo',
         );
-        expect(spec.env).toContain(`GIT_CONFIG_COUNT=${proxyTest ? 6 : 1}`);
+        expect(spec.env).toContain(`GIT_CONFIG_COUNT=${proxyTest ? 7 : 1}`);
         if (proxyTest) {
           const caPath = join(secretRoot, 'git', `forge_proxy_ca.${id}.crt`);
           expect(spec.binds).toContain(`${caPath}:/run/verity/forge-proxy/ca.crt:ro`);
@@ -7186,6 +7186,7 @@ describe('ProvisionerImpl (#174)', () => {
           expect(spec.env).toContain(`GIT_CONFIG_KEY_2=http.${origin}.proxy`);
           expect(spec.env).toContain('GIT_CONFIG_VALUE_2=http://relay:8080');
           expect(spec.env).toContain('GIT_CONFIG_VALUE_3=/run/verity/forge-proxy/ca.crt');
+          expect(gitConfigEnv(spec.env ?? [])[`http.${origin}.version`]).toBe('HTTP/1.1');
         } else
           expect(spec.env?.some((entry) => entry.startsWith('VERITY_FORGE_MODE='))).toBe(false);
         expect(spec.env).toContain(`GIT_CONFIG_KEY_0=credential.${origin}.helper`);
