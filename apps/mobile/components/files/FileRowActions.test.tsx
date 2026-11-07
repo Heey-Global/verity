@@ -122,3 +122,16 @@ it('offers Move and Delete to screen readers without requiring a swipe', async (
   expect(move).toHaveBeenCalledTimes(1);
   expect(remove).not.toHaveBeenCalled();
 });
+
+it('reveals non-mutating actions without offering deletion for read-only rows', async () => {
+  const menu = jest.fn();
+  render(
+    <FileRowActions label="draft.md" onMenu={menu}>
+      {row}
+    </FileRowActions>,
+  );
+  await act(async () => {});
+  expect(screen.queryByRole('button', { name: 'Delete' })).toBeNull();
+  fireEvent.press(screen.getByRole('button', { name: 'Actions' }));
+  expect(menu).toHaveBeenCalledTimes(1);
+});

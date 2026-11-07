@@ -6612,9 +6612,10 @@ function SessionFilesSheet({
                           >
                             <FileRowActions
                               label={entry.name}
-                              disabled={mutating || selecting || root === 'drafts' || inert}
+                              disabled={mutating || selecting || inert}
                               onDelete={
-                                entry.kind === 'file' || entry.kind === 'directory'
+                                root !== 'drafts' &&
+                                (entry.kind === 'file' || entry.kind === 'directory')
                                   ? () => confirmDelete([entry.path], () => undefined)
                                   : undefined
                               }
