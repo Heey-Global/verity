@@ -87,7 +87,7 @@ export function KnowledgeFolder({
               key={area}
               leading={{ icon: folderIcon(area) }}
               title={folderTitle(scope, area)}
-              subtitle={folderSubtitle(area)}
+              subtitle={folderSubtitle(scope, area)}
               navigates
               onPress={() => onOpenFolder(area)}
             />
@@ -114,7 +114,7 @@ export function KnowledgeFolder({
                 key={entry.path}
                 leading={{ icon: known ? folderIcon(entry.path) : 'folder' }}
                 title={known ? folderTitle(scope, entry.path) : entry.name}
-                subtitle={known ? folderSubtitle(entry.path) : undefined}
+                subtitle={known ? folderSubtitle(scope, entry.path) : undefined}
                 navigates
                 onPress={() => onOpenFolder(entry.path)}
               />

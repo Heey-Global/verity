@@ -40,8 +40,9 @@ export function folderIcon(folder: string): IconName {
   return KNOWN_FOLDERS[folder]?.icon ?? 'folder';
 }
 
-export function folderSubtitle(folder: string): string | undefined {
-  return KNOWN_FOLDERS[folder]?.subtitle;
+/** Only a project's areas explain themselves: Shared holds no project decisions. */
+export function folderSubtitle(scope: KnowledgeScope, folder: string): string | undefined {
+  return scope.kind === 'project' ? KNOWN_FOLDERS[folder]?.subtitle : undefined;
 }
 
 export function parentFolder(path: string): string {

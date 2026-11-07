@@ -228,6 +228,7 @@ export function ProjectPage({
         <ProjectContent
           client={client}
           detail={detail}
+          scope={knowledgeScope}
           security={security}
           onOpenKnowledge={openKnowledge}
         />
@@ -319,16 +320,17 @@ function openSandbox(projectId: string) {
 function ProjectContent({
   client,
   detail,
+  scope,
   security,
   onOpenKnowledge,
 }: {
   client: VerityClient;
   detail: ProjectDetail;
+  scope: KnowledgeScope;
   security: ProjectSecurity | undefined;
   onOpenKnowledge: (folder: string) => void;
 }) {
   const id = detail.project.id;
-  const scope = useMemo<KnowledgeScope>(() => ({ kind: 'project', projectId: id }), [id]);
   const severe = security !== undefined && security.severe > 0;
   return (
     <Group>
@@ -337,7 +339,7 @@ function ProjectContent({
           key={area}
           leading={{ icon: folderIcon(area) }}
           title={folderTitle(scope, area)}
-          subtitle={folderSubtitle(area)}
+          subtitle={folderSubtitle(scope, area)}
           navigates
           onPress={() => onOpenKnowledge(area)}
         />
