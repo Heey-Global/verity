@@ -18,7 +18,7 @@ jest.mock('expo-router', () => ({
 jest.mock('../lib/client', () => require('./support/settingsHarness').clientMock());
 jest.mock('expo-crypto', () => ({ randomUUID: () => 'reply-1' }));
 jest.mock('../lib/voiceShortcut', () => ({ dispatchVerityShortcut: jest.fn() }));
-jest.mock('../lib/taskPreferences', () => ({ useTaskPreferences: () => ({ enabled: false }) }));
+jest.mock('../lib/taskPreferences', () => ({ useTaskPreferences: () => ({ enabled: true }) }));
 jest.mock('../lib/tasksStore', () => ({
   taskAccountScope: () => null,
   useTasks: () => ({ tasks: [], pending: [], conflicts: [] }),
@@ -248,16 +248,27 @@ describe('project page', () => {
     expect(screen.queryByLabelText(/^form/)).toBeNull();
   });
 
-  it('lists the services the project uses, each leading to its setting', async () => {
+  it('keeps content focused and opens project settings from the gear', async () => {
     await renderPage([]);
-    fireEvent.press(screen.getByLabelText(/^Doppler/));
+    expect(screen.getByText('Knowledge')).toBeTruthy();
+    expect(screen.getByText('Tasks')).toBeTruthy();
+    for (const title of [
+      'Doppler',
+      'Sandbox',
+      'MCP',
+      'Matrix rooms',
+      'Google Drive',
+      'Google services',
+      'Code workspace',
+      'heey-global/verity',
+    ]) {
+      expect(screen.queryByLabelText(new RegExp(`^${title}`))).toBeNull();
+    }
+    fireEvent.press(screen.getByLabelText('Project settings'));
     expect(mockPush).toHaveBeenCalledWith({
-      pathname: '/project/[id]/settings/services',
-      params: { id: 'p/1', section: 'doppler' },
+      pathname: '/project/[id]/settings',
+      params: { id: 'p/1' },
     });
-    expect(screen.getByLabelText(/^Sandbox/)).toBeTruthy();
-    // Not in use here, so not listed; adding one is a project setting.
-    expect(screen.queryByLabelText(/^MCP/)).toBeNull();
   });
 
   it('highlights the session open beside the project Work list', async () => {
