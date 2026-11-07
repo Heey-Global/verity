@@ -4930,3 +4930,17 @@ it('starts a vulnerability fix with encoded project identity and structured find
     init: { method: 'POST', body: JSON.stringify(body) },
   });
 });
+
+it('uses a distinct marking action that older servers cannot interpret as build approval', async () => {
+  const { fetch, calls } = fakeFetchSequence(json({}));
+  const client = new VerityClient({ baseUrl: 'http://host', fetch });
+  await client.decideMockup('s1', 1, 'Home', { verdict: 'approved' });
+  expect(calls[0]?.init?.body).toBe(
+    JSON.stringify({
+      action: 'mark',
+      revision: 1,
+      screen: 'Home',
+      verdict: 'approved',
+    }),
+  );
+});

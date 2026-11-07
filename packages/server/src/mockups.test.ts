@@ -208,7 +208,7 @@ describe('POST /sessions/:id/mockups', () => {
   it('only marks screens, even when every screen is approved', async () => {
     await present();
     for (const screen of ['Home', 'Spec']) {
-      const response = await post({ action: 'decide', revision: 1, screen, verdict: 'approved' });
+      const response = await post({ action: 'mark', revision: 1, screen, verdict: 'approved' });
       expect(response.statusCode).toBe(200);
       expect(response.json().mockupReview.state).toBe('pending');
     }
@@ -221,14 +221,14 @@ describe('POST /sessions/:id/mockups', () => {
   it('discards a screen and takes the mark back', async () => {
     await present();
     const discarded = await post({
-      action: 'decide',
+      action: 'mark',
       revision: 1,
       screen: 'Spec',
       verdict: 'discarded',
     });
     expect(discarded.json().mockupReview.screens[1]).toMatchObject({ verdict: 'discarded' });
-    await post({ action: 'decide', revision: 1, screen: 'Spec', verdict: 'approved' });
-    await post({ action: 'decide', revision: 1, screen: 'Spec', verdict: 'open' });
+    await post({ action: 'mark', revision: 1, screen: 'Spec', verdict: 'approved' });
+    await post({ action: 'mark', revision: 1, screen: 'Spec', verdict: 'open' });
     expect((await store.getSession('s1'))?.mockupReview?.screens[1]?.verdict).toBe('open');
   });
 
@@ -242,7 +242,7 @@ describe('POST /sessions/:id/mockups', () => {
     await Promise.all(
       names.map((screen, index) =>
         post({
-          action: 'decide',
+          action: 'mark',
           revision: 1,
           screen,
           verdict: index % 2 === 0 ? 'approved' : 'discarded',
@@ -257,15 +257,17 @@ describe('POST /sessions/:id/mockups', () => {
   });
 
   it.each([
-    [{ action: 'decide', revision: 0, screen: 'Home', verdict: 'approved' }, 409, 'stale'],
-    [{ action: 'decide', revision: 1, screen: 'Nope', verdict: 'approved' }, 409, 'unknownScreen'],
+    [{ action: 'mark', revision: 0, screen: 'Home', verdict: 'approved' }, 409, 'stale'],
+    [{ action: 'mark', revision: 1, screen: 'Nope', verdict: 'approved' }, 409, 'unknownScreen'],
     // Earlier app versions send comments and a send action; neither may touch the round.
     [
-      { action: 'decide', revision: 1, screen: 'Home', verdict: 'comment', comment: 'Bigger' },
+      { action: 'mark', revision: 1, screen: 'Home', verdict: 'comment', comment: 'Bigger' },
       400,
       'invalid',
     ],
     [{ action: 'send', revision: 1 }, 400, 'invalid'],
+    // Legacy approvals authorize implementation; never accept them as mere marks.
+    [{ action: 'decide', revision: 1, screen: 'Home', verdict: 'approved' }, 400, 'invalid'],
   ])('refuses %j', async (payload, status, code) => {
     const round = await present();
     const response = await post(payload);
@@ -278,7 +280,7 @@ describe('POST /sessions/:id/mockups', () => {
   it('refuses marks once the review has ended', async () => {
     await present();
     expect((await mockups.complete('s1')).ok).toBe(true);
-    const response = await post({ action: 'decide', revision: 1, screen: 'Home', verdict: 'open' });
+    const response = await post({ action: 'mark', revision: 1, screen: 'Home', verdict: 'open' });
     expect(response.statusCode).toBe(409);
     expect(response.json().code).toBe('notPending');
   });
@@ -287,7 +289,7 @@ describe('POST /sessions/:id/mockups', () => {
     await present();
     expect(await store.startSessionPlanning('s1')).toBe(true);
     const response = await post({
-      action: 'decide',
+      action: 'mark',
       revision: 1,
       screen: 'Home',
       verdict: 'approved',
@@ -300,7 +302,7 @@ describe('POST /sessions/:id/mockups', () => {
     const response = await app.inject({
       method: 'POST',
       url: '/sessions/missing/mockups',
-      payload: { action: 'decide', revision: 1, screen: 'Home', verdict: 'approved' },
+      payload: { action: 'mark', revision: 1, screen: 'Home', verdict: 'approved' },
     });
     expect(response.statusCode).toBe(404);
   });

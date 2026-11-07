@@ -6089,7 +6089,7 @@ export class VerityClient {
     const res = await this.request(`/sessions/${encodeURIComponent(id)}/mockups`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ action: 'decide', revision, screen, ...decision }),
+      body: JSON.stringify({ action: 'mark', revision, screen, ...decision }),
     });
     return z.object({ mockupReview: mockupReviewSchema }).parse(await res.json()).mockupReview;
   }

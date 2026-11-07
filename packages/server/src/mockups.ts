@@ -168,7 +168,7 @@ export type SessionMockupActions = ReturnType<typeof createSessionMockups>;
 const sessionParams = z.object({ id: z.string().min(1) });
 const decideBody = z
   .object({
-    action: z.literal('decide'),
+    action: z.literal('mark'),
     revision: z.number().int().nonnegative(),
     screen: z.string().min(1).max(80),
     verdict: z.enum(['approved', 'discarded', 'open']),
