@@ -403,8 +403,8 @@ describe.each([
 
   it('follows one symlink inside the repository and refuses one that leaves it', async () => {
     const forge = emptyForge();
-    forge.files.set('main:AGENTS.md', { symlink: 'docs/CLAUDE.md' });
-    forge.files.set('main:docs/CLAUDE.md', 'Shared rules.');
+    forge.files.set('main:AGENTS.md', { symlink: 'docs/CLAUDE (1).md' });
+    forge.files.set('main:docs/CLAUDE (1).md', 'Shared rules.');
     forge.files.set('release/2:AGENTS.md', { symlink: '../outside.md' });
     forge.files.set('develop:AGENTS.md', { symlink: 'LINK.md' });
     forge.files.set('develop:LINK.md', { symlink: 'AGENTS.md' });

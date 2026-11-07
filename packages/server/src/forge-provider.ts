@@ -199,7 +199,14 @@ export async function readForgeFile(
 /** Each segment encoded on its own, so `/` stays literal — in a file path it
  *  separates directories, and in a ref (`release/2`) Forgejo refuses `%2F`. */
 export function forgeContentsPath(path: string): string {
-  return path.split('/').map(encodeURIComponent).join('/');
+  // encodeURIComponent leaves `!'()*~` as they are, and Forgejo's transport
+  // refuses them, so `CLAUDE (1).md` would fail before reaching the host.
+  const segment = (part: string) =>
+    encodeURIComponent(part).replace(
+      /[!'()*~]/gu,
+      (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`,
+    );
+  return path.split('/').map(segment).join('/');
 }
 
 export interface ForgeDiscoveryPage {
