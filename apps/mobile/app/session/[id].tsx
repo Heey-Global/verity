@@ -4844,6 +4844,7 @@ export const SessionChat = memo(function SessionChat({
             />
           )}
           markdown={planningPlan}
+          keyboardHeight={keyboardHeight}
           updated={planUpdated}
           deciding={
             decidingPlanning ||
@@ -6250,7 +6251,7 @@ function SessionFilesSheet({
             {(
               [
                 ['worktree', documentSession ? 'My edits' : 'Code'],
-                ['sources', 'Raw Sources'],
+                ['sources', 'Sources'],
                 ['documents', 'Wiki'],
               ] as const
             )
@@ -6365,7 +6366,7 @@ function SessionFilesSheet({
                   ? 'My edits'
                   : 'Code'
                 : root === 'sources'
-                  ? 'Raw Sources'
+                  ? 'Sources'
                   : root === 'documents'
                     ? 'Wiki'
                     : root === 'drafts'

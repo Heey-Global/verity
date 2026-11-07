@@ -88,6 +88,8 @@ export {
   type GoogleSlideImageCleanupRecord,
   type SessionInput,
   type RunningTurnRecord,
+  type RunnerTurnOwnership,
+  type RunnerTurnOwnershipRequest,
   type QueuedTurnRecord,
   type QueuedTurnInput,
   type ProjectRecord,

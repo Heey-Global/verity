@@ -171,10 +171,16 @@ export function createSessionPrCache(options: {
     void Promise.resolve().then(startNext);
     return token.promise;
   };
-  const invalidate = (worktree: string): void => {
-    entries.delete(worktree);
+  const invalidate = (worktree: string, retainStatus = false): boolean => {
+    const entry = entries.get(worktree);
+    // Tool activity must not turn a failing API into an unbounded retry loop.
+    if (retainStatus && entry && entry.failures > 0 && now() - entry.at < interval(entry, false))
+      return false;
+    if (retainStatus && entry) entries.set(worktree, { ...entry, at: -Infinity });
+    else entries.delete(worktree);
     const running = pending.get(worktree);
     if (running !== undefined) running.disowned = true;
+    return true;
   };
   const prune = (live: ReadonlySet<string>): void => {
     for (const key of new Set([...entries.keys(), ...pending.keys()])) {

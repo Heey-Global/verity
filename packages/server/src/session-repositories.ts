@@ -122,6 +122,7 @@ export function createSessionRepositories(deps: {
         `http.${origin}.proxy=${proxy}`,
         `http.${origin}.sslCAInfo=${FORGE_PROXY_CA_FILE}`,
         `http.${origin}.sslVerify=true`,
+        `http.${origin}.version=HTTP/1.1`,
         `credential.${origin}.helper=`,
         `credential.${origin}.helper=!VERITY_FORGE_AUTHORITY=${quote(new URL(origin).host)} /opt/agent-seed/bin/verity-gh-cred`,
       ];

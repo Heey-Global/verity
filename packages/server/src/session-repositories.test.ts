@@ -64,6 +64,9 @@ it('creates isolated module workspaces without resetting existing branch history
   const result = (await h.service.open('s', 'r')) as { workspace: { worktree: string } };
   expect(result.workspace.worktree).toMatch(/^\/clones\/project\/\.verity-repositories\//);
   expect(h.git.mock.calls.some(([args]) => args.includes('clone'))).toBe(true);
+  expect(h.git.mock.calls.find(([args]) => args.includes('clone'))?.[0]).toContain(
+    'http.https://github.com.version=HTTP/1.1',
+  );
   expect(h.git.mock.calls.some(([args]) => args.includes('-B'))).toBe(false);
   expect(h.save).toHaveBeenCalledTimes(1);
 });
@@ -81,6 +84,7 @@ it('persists broker proxy, CA and a host-specific capability helper before cross
   await h.service.open('s', 'r');
   const clone = h.git.mock.calls.find(([args]) => args.includes('clone'))?.[0];
   expect(clone).toContain('http.https://forge.test:8443.proxy=http://broker:8080');
+  expect(clone).toContain('http.https://forge.test:8443.version=HTTP/1.1');
   expect(clone).toContain('http.https://forge.test:8443.sslCAInfo=/run/verity/forge-proxy/ca.crt');
   expect(clone).toContain(
     "credential.https://forge.test:8443.helper=!VERITY_FORGE_AUTHORITY='forge.test:8443' /opt/agent-seed/bin/verity-gh-cred",

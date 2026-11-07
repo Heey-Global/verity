@@ -22,11 +22,12 @@ import {
   type VerityClient,
 } from '@verity/mobile';
 import { router } from 'expo-router';
-import { useMemo, useState, type ReactElement } from 'react';
+import { useEffect, useMemo, useState, type ReactElement } from 'react';
 import { Alert, Platform, View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 
-import type { InboxFeed } from '../home/HomeInbox';
+import { answerId, type InboxFeed } from '../home/HomeInbox';
+import { AnswerSheet, answersFitInline } from './AnswerSheet';
 import { SessionMarkerColumn, sessionMarkers, sessionMarkersLabel } from '../SessionMarkerColumn';
 import { SwipeableSessionRow } from '../SessionRowActions';
 import { SessionSettingsDialog } from '../SessionSettingsDialog';
@@ -116,6 +117,7 @@ export function nowSections(
   items: readonly InboxItem[],
   /** Sessions with an answer the operator has not read ({@link useUnread}). */
   unread: ReadonlySet<string>,
+  previous: readonly SessionSummary[] = [],
 ): { needsYou: NeedsYouEntry[]; active: SessionSummary[] } {
   const byId = new Map(sessions.map((session) => [session.sessionId, session]));
   const needsYou: NeedsYouEntry[] = [];
@@ -146,6 +148,8 @@ export function nowSections(
       (session) =>
         !taken.has(session.sessionId) && (isActive(session) || unread.has(session.sessionId)),
     ),
+    new Map(),
+    previous,
   );
   return { needsYou, active };
 }
@@ -240,7 +244,7 @@ function itemSubtitle(item: InboxItem, label: string): string | undefined {
 export function ProjectWork({
   client,
   projectId,
-  sessions,
+  sessions: serverSessions,
   feed,
   leadingRows = [],
   initialFilter = 'now',
@@ -265,7 +269,29 @@ export function ProjectWork({
    *  and its host (the wide layout's list and session pane) catch up. */
   onChanged: (sessionId: string, deleted: boolean) => void;
 }) {
+  // Keep confirmed removals hidden across stale parent refreshes while the
+  // server stops the session and cleans up its worktree.
+  const [removedIds, setRemovedIds] = useState<ReadonlySet<string>>(() => new Set());
+  const sessions = useMemo(
+    () => serverSessions.filter((session) => !removedIds.has(session.sessionId)),
+    [serverSessions, removedIds],
+  );
+  // Derive from the last snapshot so activity updates and newly started turns
+  // cannot insert rows ahead of sessions already working.
+  const [workSnapshot, setWorkSnapshot] = useState(() => ({
+    source: sessions,
+    ordered: workOrder(sessions),
+  }));
+  let ordered = workSnapshot.ordered;
+  if (workSnapshot.source !== sessions) {
+    ordered = workOrder(sessions, new Map(), workSnapshot.ordered);
+    setWorkSnapshot({ source: sessions, ordered });
+  }
   const [filter, setFilter] = useState<WorkFilter>(initialFilter);
+  // The key, not the item: the sheet follows the live feed, so a question
+  // answered elsewhere while it is open closes it instead of offering stale
+  // answers to a session that no longer waits.
+  const [answeringKey, setAnsweringKey] = useState<string | null>(null);
   const { unread: unreadIds, markSeen } = useUnread(client, sessions);
   const previews = useSessionPreviews();
   const derived = useMemo(
@@ -276,9 +302,14 @@ export function ProjectWork({
     [feed, sessions],
   );
   const items = feed?.items ?? derived;
+  const answering =
+    answeringKey === null ? null : (items?.find((item) => item.key === answeringKey) ?? null);
+  useEffect(() => {
+    if (answeringKey !== null && answering === null) setAnsweringKey(null);
+  }, [answeringKey, answering]);
   const now = useMemo(
-    () => nowSections(sessions, items ?? [], unreadIds),
-    [sessions, items, unreadIds],
+    () => nowSections(sessions, items ?? [], unreadIds, ordered),
+    [sessions, items, unreadIds, ordered],
   );
   // The visible item of each session, so All tags it the way Now does.
   const itemFor = useMemo(() => {
@@ -289,8 +320,14 @@ export function ProjectWork({
   }, [items]);
   const listed = useMemo(
     () =>
-      filter === 'now' ? [] : workOrder(sessions.filter((session) => workFilter(session, filter))),
-    [sessions, filter],
+      filter === 'now'
+        ? []
+        : workOrder(
+            sessions.filter((session) => workFilter(session, filter)),
+            new Map(),
+            ordered,
+          ),
+    [sessions, filter, ordered],
   );
   const needsCount = leadingRows.length + now.needsYou.length;
   const nowCount = needsCount + now.active.length;
@@ -319,13 +356,17 @@ export function ProjectWork({
     void client
       .setSessionFavorite(session.sessionId, session.favorite !== true)
       .then(() => onChanged(session.sessionId, false), failed('Could not update favorite'));
-  const remove = (session: SessionSummary, force = false) =>
+  const remove = (session: SessionSummary, force = false) => {
+    setRemovedIds((previous) => new Set(previous).add(session.sessionId));
+    setSettings(undefined);
     void client.deleteSession(session.sessionId, force ? { force } : {}).then(
-      () => {
-        setSettings(undefined);
-        onChanged(session.sessionId, true);
-      },
+      () => onChanged(session.sessionId, true),
       (caught) => {
+        setRemovedIds((previous) => {
+          const next = new Set(previous);
+          next.delete(session.sessionId);
+          return next;
+        });
         if (caught instanceof VerityApiError && caught.status === 409 && !force) {
           Alert.alert(
             'Session is still running',
@@ -340,6 +381,7 @@ export function ProjectWork({
         failed('Could not delete session')(caught);
       },
     );
+  };
   const confirmRemove = (session: SessionSummary) =>
     Alert.alert(
       'Delete session?',
@@ -452,10 +494,17 @@ export function ProjectWork({
                   },
                 }
           }
+          // In "Needs you" the tag leads the subtitle, so the title keeps the
+          // width the chevron leaves instead of wrapping beside the tag.
+          tag={
+            needs && statusTag !== undefined ? (
+              <StatusTag intent={statusTag.intent} label={statusTag.label} />
+            ) : undefined
+          }
           trailing={
-            statusTag !== undefined || markers.length > 0 ? (
+            (!needs && statusTag !== undefined) || markers.length > 0 ? (
               <View style={styles.trailing}>
-                {statusTag !== undefined ? (
+                {!needs && statusTag !== undefined ? (
                   <StatusTag intent={statusTag.intent} label={statusTag.label} />
                 ) : null}
                 <SessionMarkerColumn
@@ -482,25 +531,43 @@ export function ProjectWork({
       </SwipeableSessionRow>
     );
   };
+  const answersOf = (item: InboxItem) => item.actions.filter((action) => IN_PLACE.has(action.kind));
+  const send = (item: InboxItem, action: InboxAction) => {
+    // `perform` reports failures as outcomes; anything it throws is
+    // unexpected, but the operator still has to learn it was not sent.
+    feed?.run(item, action).catch(() => {
+      Alert.alert('Not sent', 'Something went wrong. Open the session and try again.');
+    });
+  };
   const answersFor = (item: InboxItem) => {
     if (feed === undefined) return undefined;
-    const answers = item.actions.filter((action) => IN_PLACE.has(action.kind));
+    const answers = answersOf(item);
     if (answers.length === 0) return undefined;
-    return answers.map((action, index) => (
+    // Only this item's answers wait; the other rows stay answerable.
+    const locked = feed.pending.has(item.key);
+    if (!answersFitInline(answers))
+      return (
+        <Button
+          label={`${String(answers.length)} answers`}
+          icon="chevron-down"
+          size="small"
+          variant="secondary"
+          loading={locked}
+          disabled={locked}
+          onPress={() => setAnsweringKey(item.key)}
+        />
+      );
+    return answers.map((action) => (
       <Button
         key={`${action.kind}:${action.label}`}
         label={action.label}
-        size="compact"
-        variant={index === 0 ? 'primary' : 'secondary'}
-        loading={feed.pending === item.key && index === 0}
-        disabled={feed.pending !== null}
-        onPress={() => {
-          // `perform` reports failures as outcomes; anything it throws is
-          // unexpected, but the operator still has to learn it was not sent.
-          feed.run(item, action).catch(() => {
-            Alert.alert('Not sent', 'Something went wrong. Open the session and try again.');
-          });
-        }}
+        // Small and neutral: a list carries many of these, and a primary in
+        // every row would leave the screen with no single main action.
+        size="small"
+        variant="secondary"
+        loading={feed.pending.get(item.key) === answerId(action)}
+        disabled={locked}
+        onPress={() => send(item, action)}
       />
     ));
   };
@@ -513,7 +580,7 @@ export function ProjectWork({
           title={item.context}
           subtitle={item.message}
           leading={{ icon: 'server', intent: 'needsSetup' }}
-          trailing={<StatusTag intent={TONE_INTENT[item.tone]} label={item.tag} />}
+          tag={<StatusTag intent={TONE_INTENT[item.tone]} label={item.tag} />}
           // A project's own item is about its sandbox; the settings explain it
           // even when no answer can be given here, such as a stalled update.
           navigates
@@ -601,6 +668,25 @@ export function ProjectWork({
           })}
         </Group>
       )}
+      <AnswerSheet
+        item={answering}
+        answers={answering !== null ? answersOf(answering) : []}
+        onAnswer={(action) => {
+          const item = answering!;
+          setAnsweringKey(null);
+          send(item, action);
+        }}
+        onOpenSession={
+          answering?.sessionId !== undefined
+            ? () => {
+                const id = answering.sessionId!;
+                setAnsweringKey(null);
+                onOpenSession(id);
+              }
+            : undefined
+        }
+        onClose={() => setAnsweringKey(null)}
+      />
       {settings ? (
         <SessionSettingsDialog
           key={settings.session.sessionId}

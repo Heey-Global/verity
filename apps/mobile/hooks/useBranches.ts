@@ -328,6 +328,7 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
         );
         publishPullRequestStatusMutation({
           sessionId,
+          number,
           pr: { phase: 'merged', pipeline: 'success', mergeable: false },
         });
         await load();

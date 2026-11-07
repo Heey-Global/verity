@@ -155,6 +155,13 @@ export function planDecisionAnswer(decision: PlanDecision, option: string): stri
   return `${decision.question} → ${option}`;
 }
 
+/** One message for several answers, a line each, so the agent revises the plan once. */
+export function planDecisionAnswers(
+  answers: readonly { decision: PlanDecision; option: string }[],
+): string {
+  return answers.map(({ decision, option }) => planDecisionAnswer(decision, option)).join('\n');
+}
+
 /** Fall back to the original proposal when structured fields would hide content.
  * Approval must cover the same text that the implementation turn receives. */
 export function planProposalFullyRepresented(markdown: string): boolean {

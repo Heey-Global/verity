@@ -6,6 +6,17 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.84.3](https://github.com/Heey-Global/verity/compare/v4.84.2...v4.84.3) (2026-11-07)
+
+
+### Bug Fixes
+
+* **deps:** update dependency @anthropic-ai/claude-code to v2.1.318 ([#2361](https://github.com/Heey-Global/verity/issues/2361)) ([9790c85](https://github.com/Heey-Global/verity/commit/9790c853dac9d6182f57b39ac708e9abab6aec86))
+* **deps:** update dependency fast-xml-parser to v5.12.0 ([#2362](https://github.com/Heey-Global/verity/issues/2362)) ([dc3bc2f](https://github.com/Heey-Global/verity/commit/dc3bc2fb2ea107fe12e104c1e98c3cef190f9399))
+* **git:** pin brokered forge transport to HTTP/1.1 ([#2370](https://github.com/Heey-Global/verity/issues/2370)) ([4dcc7dc](https://github.com/Heey-Global/verity/commit/4dcc7dc356a64fca02b369590f260ba348a693e5))
+* **sessions:** refresh pull request status during active turns ([#2371](https://github.com/Heey-Global/verity/issues/2371)) ([2e08681](https://github.com/Heey-Global/verity/commit/2e086813a957d379fc52485deca20240a3baca5f))
+* **storage:** reclaim runner caches with fenced maintenance ([#2365](https://github.com/Heey-Global/verity/issues/2365)) ([4334f53](https://github.com/Heey-Global/verity/commit/4334f53493d6c7cfb71f372c66bc98867dfa3de6))
+
 ## [4.84.2](https://github.com/Heey-Global/verity/compare/v4.84.1...v4.84.2) (2026-11-07)
 
 

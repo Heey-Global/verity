@@ -1103,6 +1103,20 @@ export interface RunningTurnRecord {
   startCommandId: string | null;
 }
 
+/** Local identities are evidence to compare, never an ownership assignment. */
+export interface RunnerTurnOwnershipRequest {
+  turnId: string;
+  startCommandId?: string;
+  runnerInstanceId?: string;
+}
+
+/** Ownership does not assert that a turn has settled or that its cache is idle. */
+export interface RunnerTurnOwnership {
+  turnId: string;
+  sessionId?: string;
+  conflict: boolean;
+}
+
 /**
  * The narrow persistence seam the Runner's ingest path drives (ADR 0006 D2). It
  * is EXACTLY the three {@link EventStore} methods the runner/ingest/backend
@@ -6220,6 +6234,85 @@ export class EventStore implements EventSink {
           ? query.where('marker_id', 'is', null)
           : query.where('marker_id', '=', markerId);
     await query.execute();
+  }
+
+  /** Resolve a bounded maintenance page against Server-owned execution records.
+   * The caller derives sessionIds from the runtime's authoritative routing, including
+   * dedicated control-plane routing. Query all owners before applying that scope:
+   * filtering first would hide a conflicting binding in another runtime. */
+  async resolveRunnerTurnOwnership(input: {
+    sessionIds: string[];
+    turns: RunnerTurnOwnershipRequest[];
+  }): Promise<RunnerTurnOwnership[]> {
+    const safeId = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u;
+    if (
+      input.sessionIds.length > 512 ||
+      input.turns.length > 512 ||
+      input.sessionIds.some((id) => !safeId.test(id)) ||
+      new Set(input.sessionIds).size !== input.sessionIds.length ||
+      new Set(input.turns.map((turn) => turn.turnId)).size !== input.turns.length ||
+      input.turns.some(
+        (turn) =>
+          !safeId.test(turn.turnId) ||
+          (turn.startCommandId !== undefined && !safeId.test(turn.startCommandId)) ||
+          (turn.runnerInstanceId !== undefined && !safeId.test(turn.runnerInstanceId)),
+      )
+    )
+      throw new Error('Invalid runner ownership inventory');
+    if (input.turns.length === 0) return [];
+    const turnIds = input.turns.map((turn) => turn.turnId);
+    const allowed = new Set(input.sessionIds);
+    return this.db
+      .transaction()
+      .setIsolationLevel('repeatable read')
+      .execute(async (tx) => {
+        // Bound distinct identities, not frames: a long valid turn can have many frames.
+        const frames = await tx
+          .selectFrom('runner_frames')
+          .select(['turn_id', 'session_id', 'runner_instance_id'])
+          .where('turn_id', 'in', turnIds)
+          .where('payload_hash', '!=', ABANDONED_TURN_FENCE_HASH)
+          .distinct()
+          .limit(1025)
+          .execute();
+        const running = await tx
+          .selectFrom('running_turns')
+          .select(['turn_id', 'session_id', 'start_command_id'])
+          .where('turn_id', 'in', turnIds)
+          .limit(1025)
+          .execute();
+        if (frames.length > 1024 || running.length > 1024)
+          throw new Error('Runner ownership inventory limit');
+        return input.turns.map((turn) => {
+          const boundFrames = frames.filter((row) => row.turn_id === turn.turnId);
+          const boundRunning = running.filter((row) => row.turn_id === turn.turnId);
+          const owners = new Set([
+            ...boundFrames.map((row) => row.session_id),
+            ...boundRunning.map((row) => row.session_id),
+          ]);
+          const conflict =
+            owners.size > 1 ||
+            [...owners].some((owner) => !safeId.test(owner)) ||
+            new Set(boundFrames.map((row) => row.runner_instance_id)).size > 1 ||
+            boundFrames.some(
+              (row) =>
+                turn.runnerInstanceId !== undefined &&
+                row.runner_instance_id !== turn.runnerInstanceId,
+            ) ||
+            boundRunning.some(
+              (row) =>
+                row.start_command_id === null ||
+                !safeId.test(row.start_command_id) ||
+                (turn.startCommandId !== undefined && row.start_command_id !== turn.startCommandId),
+            );
+          const owner = owners.size === 1 ? [...owners][0] : undefined;
+          return {
+            turnId: turn.turnId,
+            ...(owner !== undefined && allowed.has(owner) && !conflict ? { sessionId: owner } : {}),
+            conflict: conflict || (owner !== undefined && !allowed.has(owner)),
+          };
+        });
+      });
   }
 
   /** All in-flight markers. At startup a non-empty result flags sessions whose
