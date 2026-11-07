@@ -16,7 +16,7 @@ import { join } from 'node:path';
 import { EmbeddedKnowledge, KnowledgeScreen } from '../components/knowledge/KnowledgeBrowser';
 import { KnowledgeFileView } from '../components/knowledge/KnowledgeFileView';
 import { KnowledgePaneContext } from '../components/knowledge/KnowledgePane';
-import { SHARED } from '../components/knowledge/knowledgeScope';
+import { folderTitle, SHARED } from '../components/knowledge/knowledgeScope';
 import {
   attemptBack,
   mockCreateVerityClient,
@@ -241,6 +241,8 @@ it('keeps the project sections out of a Shared Wiki', async () => {
   // Shared has no confirmed project decisions; a folder there is just a folder.
   expect(await screen.findByText('decisions')).toBeTruthy();
   expect(screen.queryByText('Confirmed choices, with reason and origin')).toBeNull();
+  expect(folderTitle(SHARED, 'insights/decisions')).toBe('decisions');
+  expect(folderTitle(PROJECT, 'insights/decisions')).toBe('Decisions');
 });
 
 it('lists Decisions first inside a project Wiki and goes back up to the Wiki', async () => {

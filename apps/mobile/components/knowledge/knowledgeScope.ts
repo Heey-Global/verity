@@ -33,7 +33,10 @@ const KNOWN_FOLDERS: Record<string, { title: string; icon: IconName; subtitle: s
 /** What a folder is called on screen: the areas by their names, the rest by theirs. */
 export function folderTitle(scope: KnowledgeScope, folder: string): string {
   if (folder === '') return scopeTitle(scope);
-  return KNOWN_FOLDERS[folder]?.title ?? folder.split('/').at(-1) ?? folder;
+  const name = folder.split('/').at(-1) ?? folder;
+  // Shared names only its top-level areas; Decisions is a project's own section.
+  if (scope.kind === 'shared' && folder.includes('/')) return name;
+  return KNOWN_FOLDERS[folder]?.title ?? name;
 }
 
 export function folderIcon(folder: string): IconName {
