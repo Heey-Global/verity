@@ -539,3 +539,9 @@ it('reveals only Move and Delete, with completion kept on the dot', async () => 
   act(() => actions.props.onMove());
   expect(ui.getByText('Move to')).toBeTruthy();
 });
+
+it('mounts task gestures inside the modal gesture root', () => {
+  const ui = render(<TasksPanel {...props} />);
+  const root = ui.UNSAFE_getByType(require('react-native-gesture-handler').GestureHandlerRootView);
+  expect(root.findAllByType(FileRowActions).length).toBeGreaterThan(0);
+});

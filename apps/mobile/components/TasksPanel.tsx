@@ -1,3 +1,4 @@
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { Icon } from './Icon';
 import { FileRowActions } from './files/FileRowActions';
 import { TaskIssuesList } from './TaskIssuesList';
@@ -737,44 +738,46 @@ export function TasksPanel({
   );
   return (
     <Modal transparent animationType="fade" onRequestClose={onClose}>
-      <KeyboardAvoidingView
-        behavior="padding"
-        style={[styles.backdrop, wide ? styles.backdropWide : null]}
-      >
-        <Pressable
-          accessibilityLabel="Close Tasks"
-          onPress={onClose}
-          style={StyleSheet.absoluteFill}
-        />
-        <View
-          style={[
-            styles.panel,
-            { height: height * 0.7, maxHeight: '100%' },
-            wide
-              ? {
-                  width: 380,
-                  marginTop: Math.min(y, height * 0.25),
-                  marginLeft: side === 'left' ? 38 : width - 418,
-                }
-              : styles.panelSheet,
-          ]}
+      <GestureHandlerRootView style={{ flex: 1 }}>
+        <KeyboardAvoidingView
+          behavior="padding"
+          style={[styles.backdrop, wide ? styles.backdropWide : null]}
         >
-          {wide ? null : <View style={styles.grabber} />}
-          <View style={styles.head}>
-            <Text style={styles.heading} accessibilityRole="header">
-              Tasks
-            </Text>
-            {headerButton('Capture task', 'mic', onCapture)}
-            {headerButton('Close', 'x', onClose)}
-          </View>
-          <TaskListBody
-            context={context}
-            projects={projects}
-            sessions={sessions}
-            onLeave={onClose}
+          <Pressable
+            accessibilityLabel="Close Tasks"
+            onPress={onClose}
+            style={StyleSheet.absoluteFill}
           />
-        </View>
-      </KeyboardAvoidingView>
+          <View
+            style={[
+              styles.panel,
+              { height: height * 0.7, maxHeight: '100%' },
+              wide
+                ? {
+                    width: 380,
+                    marginTop: Math.min(y, height * 0.25),
+                    marginLeft: side === 'left' ? 38 : width - 418,
+                  }
+                : styles.panelSheet,
+            ]}
+          >
+            {wide ? null : <View style={styles.grabber} />}
+            <View style={styles.head}>
+              <Text style={styles.heading} accessibilityRole="header">
+                Tasks
+              </Text>
+              {headerButton('Capture task', 'mic', onCapture)}
+              {headerButton('Close', 'x', onClose)}
+            </View>
+            <TaskListBody
+              context={context}
+              projects={projects}
+              sessions={sessions}
+              onLeave={onClose}
+            />
+          </View>
+        </KeyboardAvoidingView>
+      </GestureHandlerRootView>
     </Modal>
   );
 }
