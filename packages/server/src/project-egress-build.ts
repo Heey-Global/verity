@@ -9,7 +9,7 @@ export const protectedBuildRequest = z.strictObject({
   noCache: z.boolean(),
 });
 export type ProtectedBuildRequest = z.infer<typeof protectedBuildRequest>;
-export type ProtectedBuildPhase = 'preparing' | 'running' | 'succeeded' | 'failed' | 'stopping';
+type ProtectedBuildPhase = 'preparing' | 'running' | 'succeeded' | 'failed' | 'stopping';
 export interface ProtectedBuildRecord {
   request: ProtectedBuildRequest;
   phase: ProtectedBuildPhase;
@@ -31,7 +31,7 @@ export interface ProtectedBuildRuntime {
   ended(this: void, request: ProtectedBuildRequest): Promise<boolean>;
   remove(this: void, request: ProtectedBuildRequest): Promise<void>;
 }
-export const protectedBuildRecord = z.strictObject({
+const protectedBuildRecord = z.strictObject({
   request: protectedBuildRequest,
   phase: z.enum(['preparing', 'running', 'succeeded', 'failed', 'stopping']),
   ended: z.boolean(),
