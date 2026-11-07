@@ -228,3 +228,45 @@ it('retries errors on refocus but not on app foreground alone', async () => {
   expect(read).toHaveBeenCalledTimes(2);
   expect(view.queryByText('offline')).toBeNull();
 });
+
+it('refreshes an approved inquiry when an older pending poll fails', async () => {
+  const inquiry = {
+    id: 'overlap',
+    sourceSessionId: 'source',
+    targetSessionId: 'target',
+    sourceProjectId: 'app',
+    targetProjectId: 'cluster',
+    title: 'Overlapping approval',
+    body: 'Change request',
+    kind: 'change',
+    status: 'pending',
+    createdAt: '2026-11-06',
+    answer: null,
+  };
+  const poll = deferred<never[]>();
+  const read = jest
+    .fn()
+    .mockResolvedValueOnce([inquiry])
+    .mockReturnValueOnce(poll.promise)
+    .mockResolvedValue([]);
+  const decideProjectInquiry = jest.fn().mockResolvedValue(undefined);
+  const view = render(
+    <ProjectInquiryCards
+      client={{ listProjectInquiries: read, decideProjectInquiry } as unknown as VerityClient}
+      sessionId="target"
+    />,
+  );
+  await flush();
+  await act(async () => {
+    jest.advanceTimersByTime(60_000);
+  });
+  fireEvent.press(view.getByText('Approve change'));
+  await flush();
+  expect(read).toHaveBeenCalledTimes(2);
+  await act(async () => {
+    poll.reject(new Error('old poll failed'));
+  });
+  expect(read).toHaveBeenCalledTimes(3);
+  expect(view.queryByText('Overlapping approval')).toBeNull();
+  expect(view.queryByText('old poll failed')).toBeNull();
+});

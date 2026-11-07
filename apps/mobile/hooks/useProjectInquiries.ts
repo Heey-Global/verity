@@ -56,8 +56,8 @@ export function useProjectInquiries(client: VerityClient, sessionId?: string, pr
           if (active && foreground && generation === owner) setSnapshot({ source, data });
         } catch (error) {
           if (active && foreground && generation === owner) {
-            failed = true;
-            queued = false;
+            // A completed decision may have requested a fresh read while this one ran.
+            failed = !queued;
             setSnapshot((old) => ({
               source,
               data: old?.source === source ? old.data : undefined,
