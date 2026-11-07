@@ -17,6 +17,7 @@ import { EmbeddedKnowledge, KnowledgeScreen } from '../components/knowledge/Know
 import { KnowledgeFileView } from '../components/knowledge/KnowledgeFileView';
 import { KnowledgePaneContext } from '../components/knowledge/KnowledgePane';
 import { folderTitle, SHARED } from '../components/knowledge/knowledgeScope';
+import { invalidateWikiCatalog } from '../components/knowledge/useWikiCatalog';
 import {
   attemptBack,
   mockCreateVerityClient,
@@ -52,13 +53,18 @@ function client(extra: Record<string, unknown> = {}) {
     getProjectKnowledgeFile: read,
     writeSharedKnowledgeFile: jest.fn(),
     writeProjectKnowledgeFile: jest.fn(),
+    // A server from before the Wiki catalog: the Wiki is a folder, as here.
+    getProjectWiki: jest.fn().mockResolvedValue(null),
     ...extra,
   };
   mockCreateVerityClient.mockReturnValue(value as unknown as VerityClient);
   return value as typeof value & Record<string, jest.Mock>;
 }
 
-beforeEach(() => resetSettingsHarness());
+beforeEach(() => {
+  resetSettingsHarness();
+  invalidateWikiCatalog('p');
+});
 
 it('opens each folder and file of a phone as its own screen', async () => {
   const api = client();
@@ -272,9 +278,13 @@ it('lists Decisions first inside a project Wiki and goes back up to the Wiki', a
   // Opened at the Wiki, the column offers no way up to the areas it replaced.
   expect(screen.queryByText('Project knowledge')).toBeNull();
   fireEvent.press(decisions);
-  expect(api.listProjectKnowledgeFiles).toHaveBeenLastCalledWith('p', 'insights/decisions');
+  await waitFor(() =>
+    expect(api.listProjectKnowledgeFiles).toHaveBeenLastCalledWith('p', 'insights/decisions'),
+  );
   fireEvent.press(await screen.findByText('Wiki'));
-  expect(api.listProjectKnowledgeFiles).toHaveBeenLastCalledWith('p', 'insights');
+  await waitFor(() =>
+    expect(api.listProjectKnowledgeFiles).toHaveBeenLastCalledWith('p', 'insights'),
+  );
 });
 
 it('keeps Shared out of the session root tabs and links Settings to the central screen', () => {

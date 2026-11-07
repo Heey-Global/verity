@@ -3,6 +3,7 @@ import { instructionSourcesSpec } from './instruction-sources';
 import { mockupReviewSpec } from './mockup-review';
 import { planCardSpec } from './plan-card';
 import type { MockupScreen, MockupSpec } from './types';
+import { wikiSpec } from './wiki';
 
 /** Every spec with mockups. A new spec folder is added here. */
 export const MOCKUP_SPECS: readonly MockupSpec[] = [
@@ -10,6 +11,7 @@ export const MOCKUP_SPECS: readonly MockupSpec[] = [
   mockupReviewSpec,
   instructionSourcesSpec,
   planCardSpec,
+  wikiSpec,
 ];
 
 export function findMockup(

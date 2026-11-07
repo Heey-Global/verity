@@ -1,4 +1,5 @@
 import { parseInline } from '@verity/mobile';
+import { createContext, useContext } from 'react';
 import { Linking, ScrollView, Text, View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 
@@ -10,9 +11,20 @@ const ORDERED = /^(\s*)(\d+)[.)]\s+(.*)$/;
 const QUOTE = /^>\s?(.*)$/;
 const RULE = /^\s*([-*_])(\s*\1){2,}\s*$/;
 
-/** Bold, inline code and links inside one line. Only web links open; a local
- *  path in a document has nothing to open outside its session. */
+/**
+ * What a local link in the document opens, if anything: the page that shows the
+ * document answers with a press handler for links it can open in the app (a
+ * Wiki page, a decision, a source) and with nothing for the rest, which stay
+ * plain references.
+ */
+export type MarkdownLinkOpener = (url: string) => (() => void) | undefined;
+
+const LinkOpenerContext = createContext<MarkdownLinkOpener | undefined>(undefined);
+
+/** Bold, inline code and links inside one line. Web links open in the browser;
+ *  a local link opens only where the page offers it. */
 function Inline({ text }: { text: string }) {
+  const openLocal = useContext(LinkOpenerContext);
   return (
     <>
       {parseInline(text).map((span, index) => {
@@ -28,7 +40,14 @@ function Inline({ text }: { text: string }) {
               {span.text}
             </Text>
           );
-        if (span.t === 'link')
+        if (span.t === 'link') {
+          const open = span.external ? undefined : openLocal?.(span.url);
+          if (open)
+            return (
+              <Text key={index} style={styles.wikiLink} accessibilityRole="link" onPress={open}>
+                {span.text}
+              </Text>
+            );
           return (
             <Text
               key={index}
@@ -47,6 +66,7 @@ function Inline({ text }: { text: string }) {
               {span.text}
             </Text>
           );
+        }
         return span.text;
       })}
     </>
@@ -59,7 +79,19 @@ function Inline({ text }: { text: string }) {
  * come from `fileMarkdownItems`, which already bounds every text node, so a
  * long page renders as a list of small pieces.
  */
-export function MarkdownItem({ item }: { item: FileMarkdownItem }) {
+export function MarkdownItem({
+  item,
+  openLink,
+}: {
+  item: FileMarkdownItem;
+  openLink?: MarkdownLinkOpener | undefined;
+}) {
+  if (openLink)
+    return (
+      <LinkOpenerContext.Provider value={openLink}>
+        <MarkdownItem item={item} />
+      </LinkOpenerContext.Provider>
+    );
   if (item.type === 'code')
     return (
       <ScrollView horizontal style={styles.codeBlock} contentContainerStyle={styles.codeContent}>
@@ -142,6 +174,7 @@ const styles = StyleSheet.create((theme) => ({
     color: theme.colors.signature,
   },
   link: { color: theme.colors.action, textDecorationLine: 'underline' },
+  wikiLink: { color: theme.colors.action },
   reference: { color: theme.colors.signature },
   headingLarge: {
     ...theme.typography.title,

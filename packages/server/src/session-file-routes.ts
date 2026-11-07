@@ -5,6 +5,7 @@ import { z } from 'zod';
 
 import { SESSION_FILE_ROOTS, isKnowledgeRoot, type SessionFileRootName } from './session-files.js';
 import { sessionParams } from './session-route-schemas.js';
+import { projectWikiCatalog } from './knowledge-wiki.js';
 
 /** Which of the explorer's roots a request addresses. Omitted → the worktree, so
  *  every pre-knowledge client keeps browsing exactly what it browsed before. */
@@ -184,6 +185,10 @@ export function registerSessionFileRoutes(app: FastifyInstance, deps: SessionFil
       return content && typeof content === 'object' && 'editable' in content
         ? { ...content, editable: wikiPath(path) && content.editable }
         : content;
+    });
+    app.get('/projects/:id/knowledge/wiki', async (request, reply) => {
+      const target = await projectTarget(request, reply);
+      return target ? projectWikiCatalog(target.dir) : reply;
     });
     app.get('/projects/:id/knowledge/files/download', async (request, reply) => {
       const { path } = sessionFileQuery.parse(request.query);

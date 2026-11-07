@@ -775,3 +775,14 @@ export {
   type ProjectInquiry,
   type RepositoryInstructions,
 } from './projectCollaboration.js';
+export {
+  resolveKnowledgeLink,
+  WIKI_INDEX,
+  WIKI_LOG,
+  type KnowledgePath,
+  type WikiCatalog,
+  type WikiDecision,
+  type WikiPage,
+  type WikiReviewItem,
+  type WikiTopic,
+} from '@verity/events';
