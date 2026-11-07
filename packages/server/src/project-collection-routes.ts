@@ -3,6 +3,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { viewerId } from './view-state-routes.js';
 import {
+  isInstallationPlaceholder,
   LOCAL_PROJECT_OWNER,
   type EventStore,
   type ProjectRecord,
@@ -34,6 +35,7 @@ export interface ProjectCollectionRouteDeps {
   store: Pick<
     EventStore,
     | 'createProject'
+    | 'createRepositoryProject'
     | 'getProject'
     | 'setProjectSetupStatus'
     | 'upsertProject'
@@ -72,6 +74,45 @@ export function localProjectInput(slug: string): ProjectUpsertInput {
   };
 }
 
+/**
+ * The GitHub repositories a new project can start from: each repository the
+ * installation offers exactly once, whether or not projects already use it.
+ * Every project of a repository carries the repository's own metadata, so the
+ * first one stands for it.
+ */
+export function repositoryCatalog(projects: readonly ProjectRecord[]): ProjectRecord[] {
+  const byRepository = new Map<string, ProjectRecord>();
+  for (const project of projects) {
+    if (project.kind !== undefined && project.kind !== 'github') continue;
+    if ((project.forgeConnectionId ?? 'legacy-github') !== 'legacy-github') continue;
+    const key = `${project.owner}/${project.repo}`.toLowerCase();
+    const current = byRepository.get(key);
+    if (
+      current === undefined ||
+      (project.repositoryInstance ?? 1) < (current.repositoryInstance ?? 1)
+    ) {
+      byRepository.set(key, project);
+    }
+  }
+  // A repository already in use is offered as the repository alone: the
+  // picker must not hand out another project's ID, state or sandbox details.
+  return [...byRepository.values()].map((project) =>
+    isInstallationPlaceholder(project) || project.hiddenAt !== null
+      ? project
+      : {
+          ...project,
+          id: `repository:${project.owner}/${project.repo}`,
+          state: 'absent' as const,
+          overviewVisible: false,
+          cloneDir: null,
+          imageRef: null,
+          imageOverrideRef: null,
+          provisionError: null,
+          provisionWarning: null,
+        },
+  );
+}
+
 /** Registers project collection, ordering, repository-picker, and creation routes. */
 export function registerProjectCollectionRoutes(
   app: FastifyInstance,
@@ -100,14 +141,7 @@ export function registerProjectCollectionRoutes(
 
   app.get('/github/repositories', async (): Promise<unknown[]> => {
     const projects = await deps.listAvailableRepositories();
-    return deps.presentRepositories(
-      projects.filter(
-        (project) =>
-          project.state === 'absent' &&
-          (project.kind === undefined || project.kind === 'github') &&
-          (project.hiddenAt !== null || project.overviewVisible !== true),
-      ),
-    );
+    return deps.presentRepositories(repositoryCatalog(projects));
   });
 
   app.post('/projects', async (request, reply): Promise<unknown> => {
@@ -143,14 +177,9 @@ export function registerProjectCollectionRoutes(
       return { error: local ? 'invalid project name' : 'invalid project' };
     }
     const parsedKey = `${parsed.owner}/${parsed.repo}`;
-    if (
-      deps.localIdentityReservations.has(parsedKey) ||
-      deps.githubTargetReservations.has(
-        connectionId && connectionId !== 'legacy-github'
-          ? `${connectionId}:${parsedKey}`
-          : parsedKey,
-      )
-    ) {
+    // A repository may back several projects, so a link in flight to the same
+    // repository is no reason to refuse: the store gives each its own instance.
+    if (local && deps.localIdentityReservations.has(parsedKey)) {
       reply.code(409);
       return {
         error: local
@@ -181,7 +210,7 @@ export function registerProjectCollectionRoutes(
     try {
       project = local
         ? await deps.store.createProject(input)
-        : await deps.store.upsertProject(input);
+        : await deps.store.createRepositoryProject(input);
     } catch (error) {
       if (local && deps.isUniqueViolation(error)) {
         reply.code(409);

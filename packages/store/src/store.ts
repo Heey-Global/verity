@@ -312,6 +312,9 @@ export interface ProjectRecord {
   containerName: string;
   kind?: ProjectKind;
   forgeConnectionId?: string | null;
+  /** 1 for the first project of a repository; a further project of the same
+   *  repository takes the next number. Absent on records from older readers. */
+  repositoryInstance?: number;
   /** Host clone-directory name override; `null` = derive `<owner>-<repo>`. Set
    *  for `local` projects and preserved when they are linked to GitHub, so the
    *  clone (and every session worktree persisted under it) never moves. */
@@ -6309,6 +6312,7 @@ export class EventStore implements EventSink {
     container_name: string;
     kind?: string | null;
     forge_connection_id?: string | null;
+    repository_instance?: number | null;
     clone_dir?: string | null;
     image_ref: string | null;
     image_override_ref?: string | null;
@@ -6340,6 +6344,7 @@ export class EventStore implements EventSink {
       containerName: row.container_name,
       kind: (row.kind ?? 'github') as ProjectKind,
       forgeConnectionId: row.forge_connection_id ?? null,
+      repositoryInstance: row.repository_instance ?? 1,
       cloneDir: row.clone_dir ?? null,
       imageRef: row.image_ref,
       imageOverrideRef: row.image_override_ref ?? null,
@@ -6381,6 +6386,7 @@ export class EventStore implements EventSink {
     'repo',
     'container_name',
     'kind',
+    'repository_instance',
     'clone_dir',
     'image_ref',
     'image_override_ref',
@@ -6429,6 +6435,23 @@ export class EventStore implements EventSink {
    *          `deleteProject` (slice 3) between insert and lookup.
    */
   async upsertProject(input: ProjectUpsertInput): Promise<ProjectRecord> {
+    const row = await this.db.transaction().execute(async (tx) => {
+      // Knowledge lifecycle mutations take this lock before touching a project
+      // row. Match that order here so sync cannot deadlock with hide/delete.
+      await sql`select pg_advisory_xact_lock(1447383636, 18)`.execute(tx);
+      return this.upsertPrimaryProject(tx, input);
+    });
+    if (!row) {
+      // The only way `RETURNING *` returns undefined here is if the ORM/dialect
+      // drops the returning clause — a contract bug, not a runtime path.
+      throw new Error('verity: upsertProject RETURNING yielded no row — dialect bug');
+    }
+    return this.projectRowToRecord(row);
+  }
+
+  /** The body of {@link upsertProject}: always targets the repository's first
+   *  project (instance 1). The caller holds the project lifecycle lock. */
+  private async upsertPrimaryProject(tx: Transaction<Database>, input: ProjectUpsertInput) {
     // Lowercase the canonical (owner, repo) and the derived container_name so
     // the persisted form honours §19.0/§19.2's lowercase-persist contract
     // (without forcing every caller — including GitHub-sync — to remember).
@@ -6438,161 +6461,279 @@ export class EventStore implements EventSink {
     const legacyContainerNames = [`dev-${owner}--${repo}`, `dev-${owner}-${repo}`];
     const shouldMigrateLegacyContainerName = containerName.startsWith('verity-');
 
-    const row = await this.db.transaction().execute(async (tx) => {
-      // Knowledge lifecycle mutations take this lock before touching a project
-      // row. Match that order here so sync cannot deadlock with hide/delete.
-      await sql`select pg_advisory_xact_lock(1447383636, 18)`.execute(tx);
-      // A sync may omit the connection, but must never change the provider of
-      // an existing project identified by its durable ID.
-      const byId = await tx
-        .selectFrom('projects')
-        .select(['kind', 'forge_connection_id'])
-        .where('id', '=', input.id)
-        .executeTakeFirst();
-      if (byId && (byId.kind === 'forgejo') !== (input.kind === 'forgejo')) {
-        throw new ProjectIdentityClaimConflict(
-          'Project identity belongs to another forge connection',
-        );
+    // A sync may omit the connection, but must never change the provider of
+    // an existing project identified by its durable ID.
+    const byId = await tx
+      .selectFrom('projects')
+      .select(['kind', 'forge_connection_id'])
+      .where('id', '=', input.id)
+      .executeTakeFirst();
+    if (byId && (byId.kind === 'forgejo') !== (input.kind === 'forgejo')) {
+      throw new ProjectIdentityClaimConflict(
+        'Project identity belongs to another forge connection',
+      );
+    }
+    if (input.forgeConnectionId === undefined && byId?.forge_connection_id) {
+      input = { ...input, forgeConnectionId: byId.forge_connection_id };
+    }
+    const existingBinding = await tx
+      .selectFrom('projects')
+      .select(['kind', 'forge_connection_id'])
+      .where('forge_scope', '=', input.forgeConnectionId ?? 'legacy-github')
+      .where('owner', '=', owner)
+      .where('repo', '=', repo)
+      .where('repository_instance', '=', 1)
+      .executeTakeFirst();
+    if (
+      existingBinding !== undefined &&
+      ((existingBinding.kind === 'forgejo') !== (input.kind === 'forgejo') ||
+        (input.forgeConnectionId !== undefined &&
+          existingBinding.forge_connection_id !== null &&
+          existingBinding.forge_connection_id !== input.forgeConnectionId))
+    ) {
+      throw new ProjectIdentityClaimConflict(
+        'Project identity belongs to another forge connection',
+      );
+    }
+    const claimed = await tx
+      .insertInto('project_identity_claims')
+      .values({
+        owner,
+        repo,
+        project_id: input.id,
+        forge_connection_id: input.forgeConnectionId ?? null,
+      })
+      .onConflict((conflict) =>
+        conflict.columns(['forge_scope', 'owner', 'repo', 'repository_instance']).doNothing(),
+      )
+      .returning('project_id')
+      .executeTakeFirst();
+    if (claimed === undefined) {
+      const [claim, existing] = await Promise.all([
+        tx
+          .selectFrom('project_identity_claims')
+          .select('project_id')
+          .where('forge_scope', '=', input.forgeConnectionId ?? 'legacy-github')
+          .where('owner', '=', owner)
+          .where('repo', '=', repo)
+          .where('repository_instance', '=', 1)
+          .executeTakeFirstOrThrow(),
+        tx
+          .selectFrom('projects')
+          .select('id')
+          .where('forge_scope', '=', input.forgeConnectionId ?? 'legacy-github')
+          .where('owner', '=', owner)
+          .where('repo', '=', repo)
+          .where('repository_instance', '=', 1)
+          .executeTakeFirst(),
+      ]);
+      if (existing === undefined || claim.project_id !== existing.id) {
+        throw new ProjectIdentityClaimConflict(`project identity ${owner}/${repo} is reserved`);
       }
-      if (input.forgeConnectionId === undefined && byId?.forge_connection_id) {
-        input = { ...input, forgeConnectionId: byId.forge_connection_id };
-      }
-      const existingBinding = await tx
-        .selectFrom('projects')
-        .select(['kind', 'forge_connection_id'])
-        .where('forge_scope', '=', input.forgeConnectionId ?? 'legacy-github')
+    }
+    const project = await tx
+      .insertInto('projects')
+      .values({
+        id: input.id,
+        owner,
+        repo,
+        container_name: containerName,
+        kind: input.kind ?? 'github',
+        forge_connection_id: input.forgeConnectionId ?? null,
+        clone_dir: input.cloneDir ?? null,
+        image_ref: input.imageRef ?? null,
+        image_override_ref: input.imageRef ?? null,
+        state: input.state,
+        archived: input.archived ?? false,
+        overview_visible: input.overviewVisible ?? false,
+        provision_error: null,
+        provision_warning: null,
+      })
+      .onConflict((oc) =>
+        oc.columns(['forge_scope', 'owner', 'repo', 'repository_instance']).doUpdateSet({
+          // Preserve custom adopted container names, but migrate old deterministic
+          // `dev-<owner>--<repo>` / `dev-<owner>-<repo>` rows to the current
+          // canonical `verity-<owner>--<repo>` name. Without this, fresh servers
+          // can keep pointing at a legacy Dogfood container and miss current
+          // runtime mounts and gateway routing configuration.
+          container_name: shouldMigrateLegacyContainerName
+            ? sql`case when projects.container_name in (${sql.join(legacyContainerNames)}) then ${containerName} else projects.container_name end`
+            : sql`projects.container_name`,
+          // Provisioning-owned state stays untouched (the worker's
+          // `cloning/container_starting/active/failed` survives a sync pass).
+          // The image fields are only touched when the caller EXPLICITLY sets an
+          // override: `input.imageRef === undefined` means
+          // "I have no opinion, leave what's pinned" (preserves a slice-3 pin
+          // across slice-2 list refreshes), while `null` means "explicitly
+          // clear the pin" (operator-driven unpin). Slice 2's sync passes
+          // undefined → no-op.
+          // `toolkit_identity` travels with `image_ref` because it is a
+          // statement ABOUT that image: an operator pinning a NEW one has
+          // pinned something nothing has attested, and carrying the old
+          // verdict forward would let the new image inherit an all-clear it
+          // never earned. The next provisioning writes the real answer.
+          //
+          // Which is why the clear is conditional on the image actually
+          // moving. Re-saving the same pin — an idempotent settings write, a
+          // re-add of a project that never changed — leaves the effective
+          // image exactly as attested, so discarding the verdict there would
+          // manufacture an "unknown toolkit" warning about an image that was
+          // checked and passed, and it would stay wrong until the next
+          // provisioning. `is distinct from` compares against the PRE-update
+          // row (`projects.` in an ON CONFLICT update), and treats a null on
+          // either side as a difference rather than as unknown.
+          ...(input.imageRef !== undefined
+            ? {
+                image_ref: input.imageRef,
+                image_override_ref: input.imageRef,
+                toolkit_identity: sql<
+                  string | null
+                >`case when projects.image_ref is distinct from ${input.imageRef} then null else projects.toolkit_identity end`,
+              }
+            : {}),
+          ...(input.forgeConnectionId !== undefined
+            ? { forge_connection_id: input.forgeConnectionId }
+            : {}),
+          ...(input.kind !== undefined ? { kind: input.kind } : {}),
+          ...(input.archived !== undefined ? { archived: input.archived } : {}),
+          ...(input.overviewVisible !== undefined
+            ? { overview_visible: input.overviewVisible }
+            : {}),
+          // `restore` (the POST /projects re-add path) un-hides an existing
+          // row. Omitted by the installation sync, so a re-sync of a repo the
+          // operator deleted keeps it hidden rather than resurrecting it.
+          ...(input.restore === true ? { hidden_at: null } : {}),
+          updated_at: sql`now()`,
+        }),
+      )
+      .returningAll()
+      .executeTakeFirst();
+    if (project && input.archived !== undefined) {
+      // Every project of the repository shares its archive state.
+      await tx
+        .updateTable('projects')
+        .set({ archived: input.archived, updated_at: sql`now()` })
+        .where('forge_scope', '=', project.forge_scope)
         .where('owner', '=', owner)
         .where('repo', '=', repo)
-        .executeTakeFirst();
-      if (
-        existingBinding !== undefined &&
-        ((existingBinding.kind === 'forgejo') !== (input.kind === 'forgejo') ||
-          (input.forgeConnectionId !== undefined &&
-            existingBinding.forge_connection_id !== null &&
-            existingBinding.forge_connection_id !== input.forgeConnectionId))
-      ) {
-        throw new ProjectIdentityClaimConflict(
-          'Project identity belongs to another forge connection',
-        );
-      }
-      const claimed = await tx
-        .insertInto('project_identity_claims')
-        .values({
-          owner,
-          repo,
-          project_id: input.id,
-          forge_connection_id: input.forgeConnectionId ?? null,
-        })
-        .onConflict((conflict) => conflict.columns(['forge_scope', 'owner', 'repo']).doNothing())
-        .returning('project_id')
-        .executeTakeFirst();
-      if (claimed === undefined) {
-        const [claim, existing] = await Promise.all([
-          tx
-            .selectFrom('project_identity_claims')
-            .select('project_id')
-            .where('forge_scope', '=', input.forgeConnectionId ?? 'legacy-github')
-            .where('owner', '=', owner)
-            .where('repo', '=', repo)
-            .executeTakeFirstOrThrow(),
-          tx
-            .selectFrom('projects')
-            .select('id')
-            .where('forge_scope', '=', input.forgeConnectionId ?? 'legacy-github')
-            .where('owner', '=', owner)
-            .where('repo', '=', repo)
-            .executeTakeFirst(),
-        ]);
-        if (existing === undefined || claim.project_id !== existing.id) {
-          throw new ProjectIdentityClaimConflict(`project identity ${owner}/${repo} is reserved`);
-        }
-      }
+        .where('repository_instance', '>', 1)
+        .where('archived', '!=', input.archived)
+        .execute();
+    }
+    if (project) await ensureProjectKnowledgeSpace(tx, project.id, project.repo);
+    return project;
+  }
+
+  /**
+   * Add a repository-backed project the operator chose. While the repository's
+   * first project (instance 1) is only an installation placeholder, it is
+   * adopted; when the operator had removed it, it is restored — both exactly as
+   * {@link upsertProject} does. Once that repository already backs a visible
+   * project (or a link is reserving it), a separate project is created as the
+   * next instance, with its own ID, clone directory and container. An existing
+   * project is never returned or reset for another project's request.
+   */
+  async createRepositoryProject(input: ProjectUpsertInput): Promise<ProjectRecord> {
+    const owner = input.owner.toLowerCase();
+    const repo = input.repo.toLowerCase();
+    const scope = input.forgeConnectionId ?? 'legacy-github';
+    const row = await this.db.transaction().execute(async (tx) => {
+      await sql`select pg_advisory_xact_lock(1447383636, 18)`.execute(tx);
+      const [primary, claim] = await Promise.all([
+        tx
+          .selectFrom('projects')
+          .select(['id', 'kind', 'state', 'overview_visible', 'hidden_at', 'archived'])
+          .where('forge_scope', '=', scope)
+          .where('owner', '=', owner)
+          .where('repo', '=', repo)
+          .where('repository_instance', '=', 1)
+          .executeTakeFirst(),
+        tx
+          .selectFrom('project_identity_claims')
+          .select('project_id')
+          .where('forge_scope', '=', scope)
+          .where('owner', '=', owner)
+          .where('repo', '=', repo)
+          .where('repository_instance', '=', 1)
+          .executeTakeFirst(),
+      ]);
+      const adoptable =
+        primary === undefined
+          ? claim === undefined
+          : claim?.project_id === primary.id &&
+            (primary.hidden_at !== null ||
+              isInstallationPlaceholder({
+                kind: primary.kind as ProjectKind,
+                state: primary.state as ProjectState,
+                overviewVisible: primary.overview_visible,
+              }));
+      if (adoptable) return this.upsertPrimaryProject(tx, input);
+      const instance = await this.claimNextRepositoryInstance(
+        tx,
+        { owner, repo, forgeConnectionId: input.forgeConnectionId },
+        input.id,
+      );
+      // The project ID keeps the directory and container apart from every other
+      // project of this repository, whatever the repository is called.
       const project = await tx
         .insertInto('projects')
         .values({
           id: input.id,
           owner,
           repo,
-          container_name: containerName,
+          repository_instance: instance,
+          container_name: `${input.containerName}--${input.id}`.toLowerCase(),
           kind: input.kind ?? 'github',
           forge_connection_id: input.forgeConnectionId ?? null,
-          clone_dir: input.cloneDir ?? null,
+          clone_dir: `${input.cloneDir ?? `${owner}-${repo}`}-${input.id}`,
           image_ref: input.imageRef ?? null,
           image_override_ref: input.imageRef ?? null,
           state: input.state,
-          archived: input.archived ?? false,
-          overview_visible: input.overviewVisible ?? false,
+          // Archival is a property of the repository, recorded by the
+          // installation sync on its first project.
+          archived: input.archived ?? primary?.archived ?? false,
+          overview_visible: input.overviewVisible ?? true,
           provision_error: null,
           provision_warning: null,
         })
-        .onConflict((oc) =>
-          oc.columns(['forge_scope', 'owner', 'repo']).doUpdateSet({
-            // Preserve custom adopted container names, but migrate old deterministic
-            // `dev-<owner>--<repo>` / `dev-<owner>-<repo>` rows to the current
-            // canonical `verity-<owner>--<repo>` name. Without this, fresh servers
-            // can keep pointing at a legacy Dogfood container and miss current
-            // runtime mounts and gateway routing configuration.
-            container_name: shouldMigrateLegacyContainerName
-              ? sql`case when projects.container_name in (${sql.join(legacyContainerNames)}) then ${containerName} else projects.container_name end`
-              : sql`projects.container_name`,
-            // Provisioning-owned state stays untouched (the worker's
-            // `cloning/container_starting/active/failed` survives a sync pass).
-            // The image fields are only touched when the caller EXPLICITLY sets an
-            // override: `input.imageRef === undefined` means
-            // "I have no opinion, leave what's pinned" (preserves a slice-3 pin
-            // across slice-2 list refreshes), while `null` means "explicitly
-            // clear the pin" (operator-driven unpin). Slice 2's sync passes
-            // undefined → no-op.
-            // `toolkit_identity` travels with `image_ref` because it is a
-            // statement ABOUT that image: an operator pinning a NEW one has
-            // pinned something nothing has attested, and carrying the old
-            // verdict forward would let the new image inherit an all-clear it
-            // never earned. The next provisioning writes the real answer.
-            //
-            // Which is why the clear is conditional on the image actually
-            // moving. Re-saving the same pin — an idempotent settings write, a
-            // re-add of a project that never changed — leaves the effective
-            // image exactly as attested, so discarding the verdict there would
-            // manufacture an "unknown toolkit" warning about an image that was
-            // checked and passed, and it would stay wrong until the next
-            // provisioning. `is distinct from` compares against the PRE-update
-            // row (`projects.` in an ON CONFLICT update), and treats a null on
-            // either side as a difference rather than as unknown.
-            ...(input.imageRef !== undefined
-              ? {
-                  image_ref: input.imageRef,
-                  image_override_ref: input.imageRef,
-                  toolkit_identity: sql<
-                    string | null
-                  >`case when projects.image_ref is distinct from ${input.imageRef} then null else projects.toolkit_identity end`,
-                }
-              : {}),
-            ...(input.forgeConnectionId !== undefined
-              ? { forge_connection_id: input.forgeConnectionId }
-              : {}),
-            ...(input.kind !== undefined ? { kind: input.kind } : {}),
-            ...(input.archived !== undefined ? { archived: input.archived } : {}),
-            ...(input.overviewVisible !== undefined
-              ? { overview_visible: input.overviewVisible }
-              : {}),
-            // `restore` (the POST /projects re-add path) un-hides an existing
-            // row. Omitted by the installation sync, so a re-sync of a repo the
-            // operator deleted keeps it hidden rather than resurrecting it.
-            ...(input.restore === true ? { hidden_at: null } : {}),
-            updated_at: sql`now()`,
-          }),
-        )
         .returningAll()
-        .executeTakeFirst();
-      if (project) await ensureProjectKnowledgeSpace(tx, project.id, project.repo);
+        .executeTakeFirstOrThrow();
+      await ensureProjectKnowledgeSpace(tx, project.id, project.repo);
       return project;
     });
-    if (!row) {
-      // The only way `RETURNING *` returns undefined here is if the ORM/dialect
-      // drops the returning clause — a contract bug, not a runtime path.
-      throw new Error('verity: upsertProject RETURNING yielded no row — dialect bug');
-    }
+    if (!row) throw new Error('verity: createRepositoryProject RETURNING yielded no row');
     return this.projectRowToRecord(row);
+  }
+
+  /** Reserve the next free instance of a repository for `projectId`. The
+   *  caller holds the project lifecycle lock, which serializes allocation. */
+  private async claimNextRepositoryInstance(
+    tx: Transaction<Database>,
+    target: { owner: string; repo: string; forgeConnectionId?: string | null | undefined },
+    projectId: string,
+  ): Promise<number> {
+    const scope = target.forgeConnectionId ?? 'legacy-github';
+    const next = await sql<{ instance: number }>`
+      select coalesce(max(repository_instance), 0) + 1 as instance from (
+        select repository_instance from projects
+          where forge_scope = ${scope} and owner = ${target.owner} and repo = ${target.repo}
+        union all
+        select repository_instance from project_identity_claims
+          where forge_scope = ${scope} and owner = ${target.owner} and repo = ${target.repo}
+      ) taken
+    `.execute(tx);
+    const instance = Number(next.rows[0]?.instance ?? 2);
+    await tx
+      .insertInto('project_identity_claims')
+      .values({
+        owner: target.owner,
+        repo: target.repo,
+        repository_instance: instance,
+        project_id: projectId,
+        forge_connection_id: target.forgeConnectionId ?? null,
+      })
+      .execute();
+    return instance;
   }
 
   /** Insert a project without adopting an existing `(owner, repo)` row. Used for
@@ -6612,7 +6753,9 @@ export class EventStore implements EventSink {
           project_id: input.id,
           forge_connection_id: input.forgeConnectionId ?? null,
         })
-        .onConflict((conflict) => conflict.columns(['forge_scope', 'owner', 'repo']).doNothing())
+        .onConflict((conflict) =>
+          conflict.columns(['forge_scope', 'owner', 'repo', 'repository_instance']).doNothing(),
+        )
         .returning('project_id')
         .executeTakeFirst();
       if (claimed === undefined) {
@@ -6785,14 +6928,26 @@ export class EventStore implements EventSink {
     // persisted from `'heey-global'/'VERITY'` lives as `'verity'` on disk, so the
     // caller can pass the raw GitHub-display form without having to know about
     // our persistence normalisation.
-    const row = await this.db
+    // Several projects may share a repository; this answers its first one.
+    // Callers that must not guess use listProjectsByOwnerRepo.
+    return (await this.listProjectsByOwnerRepo(owner, repo, forgeConnectionId))[0];
+  }
+
+  /** Every project of one repository, hidden ones included, first instance first. */
+  async listProjectsByOwnerRepo(
+    owner: string,
+    repo: string,
+    forgeConnectionId?: string | null,
+  ): Promise<ProjectRecord[]> {
+    const rows = await this.db
       .selectFrom('projects')
       .select(this.projectColumns)
       .where('forge_scope', '=', forgeConnectionId ?? 'legacy-github')
       .where('owner', '=', owner.toLowerCase())
       .where('repo', '=', repo.toLowerCase())
-      .executeTakeFirst();
-    return row ? this.projectRowToRecord(row) : undefined;
+      .orderBy('repository_instance')
+      .execute();
+    return rows.map((row) => this.projectRowToRecord(row));
   }
 
   /**
@@ -6826,35 +6981,45 @@ export class EventStore implements EventSink {
       if (existing === undefined) return undefined;
       const targetOwner = target.owner.toLowerCase();
       const targetRepo = target.repo.toLowerCase();
-      // The placeholder stays intact while publication runs. Retire it only in
-      // this final transaction, alongside the local project's identity rewrite,
-      // so a pre-publication failure can restore its claim without losing any of
-      // its dependent configuration.
-      await this.retireInstallationPlaceholder(
-        tx,
-        targetOwner,
-        targetRepo,
-        id,
-        target.forgeConnectionId,
-      );
-      await tx
-        .insertInto('project_identity_claims')
-        .values({
-          owner: targetOwner,
-          repo: targetRepo,
-          project_id: id,
-          forge_connection_id: target.forgeConnectionId ?? null,
-        })
-        .onConflict((conflict) => conflict.columns(['forge_scope', 'owner', 'repo']).doNothing())
-        .execute();
-      const claim = await tx
-        .selectFrom('project_identity_claims')
-        .select('project_id')
-        .where('forge_scope', '=', target.forgeConnectionId ?? 'legacy-github')
-        .where('owner', '=', targetOwner)
-        .where('repo', '=', targetRepo)
-        .executeTakeFirst();
-      if (claim?.project_id !== id) {
+      const findClaim = () =>
+        tx
+          .selectFrom('project_identity_claims')
+          .select('repository_instance')
+          .where('project_id', '=', id)
+          .where('forge_scope', '=', target.forgeConnectionId ?? 'legacy-github')
+          .where('owner', '=', targetOwner)
+          .where('repo', '=', targetRepo)
+          .executeTakeFirst();
+      let claim = await findClaim();
+      if (claim === undefined || claim.repository_instance === 1) {
+        // The placeholder stays intact while publication runs. Retire it only in
+        // this final transaction, alongside the local project's identity rewrite,
+        // so a pre-publication failure can restore its claim without losing any of
+        // its dependent configuration.
+        await this.retireInstallationPlaceholder(
+          tx,
+          targetOwner,
+          targetRepo,
+          id,
+          target.forgeConnectionId,
+        );
+      }
+      if (claim === undefined) {
+        await tx
+          .insertInto('project_identity_claims')
+          .values({
+            owner: targetOwner,
+            repo: targetRepo,
+            project_id: id,
+            forge_connection_id: target.forgeConnectionId ?? null,
+          })
+          .onConflict((conflict) =>
+            conflict.columns(['forge_scope', 'owner', 'repo', 'repository_instance']).doNothing(),
+          )
+          .execute();
+        claim = await findClaim();
+      }
+      if (claim === undefined) {
         throw new ProjectIdentityClaimConflict(
           `project identity ${targetOwner}/${targetRepo} is not reserved`,
         );
@@ -6864,6 +7029,7 @@ export class EventStore implements EventSink {
         .set({
           owner: targetOwner,
           repo: targetRepo,
+          repository_instance: claim.repository_instance,
           kind: target.kind ?? 'github',
           forge_connection_id: target.forgeConnectionId ?? null,
           clone_dir: existing.clone_dir ?? `${existing.owner}-${existing.repo}`,
@@ -6924,6 +7090,7 @@ export class EventStore implements EventSink {
           kind: 'local',
           owner: LOCAL_PROJECT_OWNER,
           repo: localRepo,
+          repository_instance: 1,
           forge_connection_id: null,
           clone_dir: existing.clone_dir ?? `${existing.owner}-${existing.repo}`,
           latest_release_tag: null,
@@ -6975,6 +7142,7 @@ export class EventStore implements EventSink {
       .where('forge_scope', '=', forgeConnectionId ?? 'legacy-github')
       .where('owner', '=', owner)
       .where('repo', '=', repo)
+      .where('repository_instance', '=', 1)
       .where('id', '!=', forProjectId)
       .executeTakeFirst();
     if (holder === undefined) return false;
@@ -7029,7 +7197,10 @@ export class EventStore implements EventSink {
   ): Promise<boolean> {
     const owner = target.owner.toLowerCase();
     const repo = target.repo.toLowerCase();
+    const scope = target.forgeConnectionId ?? 'legacy-github';
     return this.db.transaction().execute(async (tx) => {
+      // Serializes instance allocation with project creation and other links.
+      await sql`select pg_advisory_xact_lock(1447383636, 18)`.execute(tx);
       const project = await tx
         .selectFrom('projects')
         .select(['id', 'owner', 'repo', 'forge_scope'])
@@ -7055,6 +7226,14 @@ export class EventStore implements EventSink {
             claim.repo !== repo),
       );
       if (hasDifferentPendingTarget) return false;
+      // A retry of this project's own pending link keeps the instance it holds.
+      if (
+        claims.some(
+          (claim) => claim.forge_scope === scope && claim.owner === owner && claim.repo === repo,
+        )
+      ) {
+        return true;
+      }
       // Keep a sync placeholder (and all of its dependent configuration) intact
       // while publication runs; only transfer its claim temporarily. The final
       // link transaction retires it atomically with the identity rewrite, while
@@ -7063,22 +7242,26 @@ export class EventStore implements EventSink {
         .selectFrom('projects')
         .select(['id', 'kind', 'state', 'overview_visible'])
         .forUpdate()
-        .where('forge_scope', '=', target.forgeConnectionId ?? 'legacy-github')
+        .where('forge_scope', '=', scope)
         .where('owner', '=', owner)
         .where('repo', '=', repo)
+        .where('repository_instance', '=', 1)
         .where('id', '!=', id)
         .executeTakeFirst();
       if (holder !== undefined) {
+        // The repository already backs a project: this one becomes another,
+        // independent project of the same repository.
         if (
           !isInstallationPlaceholder({
             kind: holder.kind as ProjectKind,
             state: holder.state as ProjectState,
             overviewVisible: holder.overview_visible,
-          })
+          }) ||
+          (await this.installationPlaceholderHasDependents(tx, holder.id))
         ) {
-          return false;
+          await this.claimNextRepositoryInstance(tx, { ...target, owner, repo }, id);
+          return true;
         }
-        if (await this.installationPlaceholderHasDependents(tx, holder.id)) return false;
         // Hide the placeholder before releasing its row lock. createSession
         // takes a SHARE lock and rejects hidden projects, so this closes the
         // check-vs-spawn race for the entire external push window. `infinity`
@@ -7109,16 +7292,22 @@ export class EventStore implements EventSink {
           project_id: id,
           forge_connection_id: target.forgeConnectionId ?? null,
         })
-        .onConflict((conflict) => conflict.columns(['forge_scope', 'owner', 'repo']).doNothing())
+        .onConflict((conflict) =>
+          conflict.columns(['forge_scope', 'owner', 'repo', 'repository_instance']).doNothing(),
+        )
         .execute();
       const claim = await tx
         .selectFrom('project_identity_claims')
         .select('project_id')
-        .where('forge_scope', '=', target.forgeConnectionId ?? 'legacy-github')
+        .where('forge_scope', '=', scope)
         .where('owner', '=', owner)
         .where('repo', '=', repo)
+        .where('repository_instance', '=', 1)
         .executeTakeFirst();
-      return claim?.project_id === id;
+      if (claim?.project_id === id) return true;
+      // Another link is reserving the first instance; take the next one.
+      await this.claimNextRepositoryInstance(tx, { ...target, owner, repo }, id);
+      return true;
     });
   }
 
@@ -7140,15 +7329,28 @@ export class EventStore implements EventSink {
         .where('kind', '=', 'local')
         .executeTakeFirst();
       if (local === undefined) return;
-      const placeholder = await tx
-        .selectFrom('projects')
-        .select(['id', 'kind', 'state', 'overview_visible'])
-        .forUpdate()
+      const claim = await tx
+        .selectFrom('project_identity_claims')
+        .select('repository_instance')
+        .where('project_id', '=', id)
         .where('forge_scope', '=', target.forgeConnectionId ?? 'legacy-github')
         .where('owner', '=', owner)
         .where('repo', '=', repo)
-        .where('id', '!=', id)
         .executeTakeFirst();
+      // Only the first instance can have been taken over from a placeholder.
+      const placeholder =
+        claim?.repository_instance === 1
+          ? await tx
+              .selectFrom('projects')
+              .select(['id', 'kind', 'state', 'overview_visible'])
+              .forUpdate()
+              .where('forge_scope', '=', target.forgeConnectionId ?? 'legacy-github')
+              .where('owner', '=', owner)
+              .where('repo', '=', repo)
+              .where('repository_instance', '=', 1)
+              .where('id', '!=', id)
+              .executeTakeFirst()
+          : undefined;
       if (
         placeholder !== undefined &&
         isInstallationPlaceholder({

@@ -1394,9 +1394,28 @@ describe('EventStore — projects', () => {
       expect(forRepo.map((p) => p.id)).toEqual([id]);
     });
 
-    // Sessions are `ON DELETE SET NULL`, so adopting a project that was actually
-    // worked in would silently orphan its transcripts instead of failing.
-    it('refuses to adopt an absent project that still has sessions', async () => {
+    // A repository may back several projects. A project that cannot be adopted
+    // (it was worked in, explicitly added or configured) is never deleted or
+    // taken over: the linking project becomes another, separate project of the
+    // same repository. Sessions are `ON DELETE SET NULL`, so adopting a project
+    // that was actually worked in would silently orphan its transcripts.
+    const linkAsSecondProject = async (existing: string, owner: string, repo: string) => {
+      const id = await createLocal();
+      await expect(ctx.store.reserveProjectIdentity(id, { owner, repo })).resolves.toBe(true);
+      const linked = await ctx.store.linkProjectToGitHub(id, { owner, repo });
+      expect(linked).toMatchObject({ id, owner, repo, kind: 'github', repositoryInstance: 2 });
+      expect(await ctx.store.getProject(existing)).toMatchObject({
+        owner,
+        repo,
+        repositoryInstance: 1,
+      });
+      expect((await ctx.store.listProjectsByOwnerRepo(owner, repo)).map((p) => p.id)).toEqual([
+        existing,
+        id,
+      ]);
+    };
+
+    it('keeps an absent project with sessions and links as a second project', async () => {
       const worked = randomUUID();
       await ctx.store.upsertProject({
         id: worked,
@@ -1412,19 +1431,12 @@ describe('EventStore — projects', () => {
         model: 'claude-sonnet-4-6',
         projectId: worked,
       });
-      const id = await createLocal();
 
-      await expect(
-        ctx.store.reserveProjectIdentity(id, { owner: 'example-org', repo: 'sample-app' }),
-      ).resolves.toBe(false);
-      await expect(
-        ctx.store.linkProjectToGitHub(id, { owner: 'example-org', repo: 'sample-app' }),
-      ).rejects.toThrow();
-      expect(await ctx.store.getProject(worked)).toBeDefined();
+      await linkAsSecondProject(worked, 'example-org', 'sample-app');
       expect((await ctx.store.getSession(sessionId))?.projectId).toBe(worked);
     });
 
-    it('refuses to adopt an explicitly added project even when it is absent', async () => {
+    it('keeps an explicitly added absent project and links as a second project', async () => {
       const added = randomUUID();
       await ctx.store.upsertProject({
         id: added,
@@ -1434,18 +1446,12 @@ describe('EventStore — projects', () => {
         state: 'absent',
         overviewVisible: true,
       });
-      const id = await createLocal();
 
-      await expect(
-        ctx.store.reserveProjectIdentity(id, {
-          owner: 'heey-global',
-          repo: 'paused-project',
-        }),
-      ).resolves.toBe(false);
-      expect(await ctx.store.getProject(added)).toBeDefined();
+      await linkAsSecondProject(added, 'heey-global', 'paused-project');
+      expect((await ctx.store.getProject(added))?.hiddenAt).toBeNull();
     });
 
-    it('preserves Google grants when a local project tries to adopt their placeholder', async () => {
+    it('preserves Google grants of a placeholder it does not adopt', async () => {
       const configured = randomUUID();
       await ctx.store.upsertProject({
         id: configured,
@@ -1455,17 +1461,15 @@ describe('EventStore — projects', () => {
         state: 'absent',
       });
       await ctx.store.enableProjectGoogleConnection(configured, 'gmail', 'me@example.test');
-      const id = await createLocal();
-      // Adoption cascades the placeholder away, silently deleting its access configuration.
-      await expect(
-        ctx.store.reserveProjectIdentity(id, { owner: 'heey-global', repo: 'google-placeholder' }),
-      ).resolves.toBe(false);
+
+      // Adoption would cascade the placeholder away with its access configuration.
+      await linkAsSecondProject(configured, 'heey-global', 'google-placeholder');
       expect(await ctx.store.getProjectGoogleConnection(configured, 'gmail')).toMatchObject({
         accountEmail: 'me@example.test',
       });
     });
 
-    it('refuses to adopt a sync placeholder with dependent configuration', async () => {
+    it('keeps a sync placeholder with dependent configuration', async () => {
       const configured = randomUUID();
       await ctx.store.upsertProject({
         id: configured,
@@ -1475,14 +1479,8 @@ describe('EventStore — projects', () => {
         state: 'absent',
       });
       await ctx.store.updateProjectSettings(configured, { defaultBranch: 'develop' });
-      const id = await createLocal();
 
-      await expect(
-        ctx.store.reserveProjectIdentity(id, {
-          owner: 'heey-global',
-          repo: 'configured-placeholder',
-        }),
-      ).resolves.toBe(false);
+      await linkAsSecondProject(configured, 'heey-global', 'configured-placeholder');
       expect(await ctx.store.getProjectSettings(configured)).toMatchObject({
         defaultBranch: 'develop',
       });
@@ -1608,5 +1606,152 @@ it('allocates distinct local names for concurrent disconnects and skips occupied
     kind: 'local',
     repo: `code-${second}`,
     cloneDir: 'org-b-code',
+  });
+});
+
+describe('EventStore — one repository, several projects', () => {
+  const repository = { owner: 'northwind', repo: 'shop' };
+  const add = (id = randomUUID()) =>
+    ctx.store.createRepositoryProject({
+      id,
+      ...repository,
+      containerName: 'verity-northwind--shop',
+      state: 'absent',
+      restore: true,
+      overviewVisible: true,
+    });
+
+  it('adopts the installation placeholder for the first project of a repository', async () => {
+    const placeholder = randomUUID();
+    await ctx.store.upsertProject({
+      id: placeholder,
+      ...repository,
+      containerName: 'verity-northwind--shop',
+      state: 'absent',
+    });
+
+    const first = await add();
+
+    // Adoption keeps the placeholder's identity, so nothing existing moves.
+    expect(first).toMatchObject({
+      id: placeholder,
+      repositoryInstance: 1,
+      containerName: 'verity-northwind--shop',
+      cloneDir: null,
+      overviewVisible: true,
+    });
+  });
+
+  // The regression: adding a repository that already backs a project returned
+  // (and "restored") that very project instead of creating a new one.
+  it('creates a separate project with its own clone and container for a used repository', async () => {
+    const first = await add();
+    const secondId = randomUUID();
+    const second = await add(secondId);
+
+    expect(second.id).toBe(secondId);
+    expect(second.id).not.toBe(first.id);
+    expect(second).toMatchObject({
+      ...repository,
+      kind: 'github',
+      repositoryInstance: 2,
+      overviewVisible: true,
+      containerName: `verity-northwind--shop--${secondId}`,
+      cloneDir: `northwind-shop-${secondId}`,
+    });
+    expect(await ctx.store.getProject(first.id)).toMatchObject({
+      repositoryInstance: 1,
+      containerName: 'verity-northwind--shop',
+      cloneDir: null,
+    });
+    const third = await add();
+    expect(third.repositoryInstance).toBe(3);
+  });
+
+  it('gives concurrent requests for the same repository separate projects', async () => {
+    const ids = [randomUUID(), randomUUID(), randomUUID()];
+    const created = await Promise.all(ids.map((id) => add(id)));
+
+    expect(created.map((project) => project.id).sort()).toEqual([...ids].sort());
+    expect(created.map((project) => project.repositoryInstance).sort()).toEqual([1, 2, 3]);
+  });
+
+  it('restores a removed first project instead of creating another one', async () => {
+    const first = await add();
+    await ctx.store.hideProject(first.id);
+
+    const again = await add();
+
+    expect(again.id).toBe(first.id);
+    expect(again.hiddenAt).toBeNull();
+  });
+
+  it('keeps every project of a repository when the installation sync re-runs', async () => {
+    const first = await add();
+    const second = await add();
+    await ctx.store.updateProjectSettings(second.id, { defaultBranch: 'develop' });
+
+    await ctx.store.upsertProject({
+      id: randomUUID(),
+      ...repository,
+      containerName: 'verity-northwind--shop',
+      state: 'absent',
+      archived: true,
+    });
+
+    const projects = await ctx.store.listProjectsByOwnerRepo(repository.owner, repository.repo);
+    expect(projects.map((project) => project.id)).toEqual([first.id, second.id]);
+    // Archival belongs to the repository, so it reaches every project of it.
+    expect(projects.map((project) => project.archived)).toEqual([true, true]);
+    expect(projects[1]).toMatchObject({ overviewVisible: true, hiddenAt: null });
+    expect(await ctx.store.getProjectSettings(second.id)).toMatchObject({
+      defaultBranch: 'develop',
+    });
+  });
+
+  it('deletes and disconnects one project without touching the other', async () => {
+    const first = await add();
+    const second = await add();
+    const third = await add();
+
+    await ctx.store.deleteProject(second.id);
+    const disconnected = await ctx.store.disconnectProjectFromGitHub(third.id);
+
+    expect(disconnected).toMatchObject({ kind: 'local', repositoryInstance: 1 });
+    expect(await ctx.store.getProject(first.id)).toMatchObject({
+      ...repository,
+      kind: 'github',
+      hiddenAt: null,
+    });
+    // The freed instances are not reused while a claim or row remains, and a
+    // new project still gets a number of its own.
+    const fourth = await add();
+    expect(fourth.id).not.toBe(first.id);
+    expect(fourth.repositoryInstance).toBeGreaterThan(1);
+  });
+
+  it('releases only its own reserved instance after a failed link', async () => {
+    const first = await add();
+    const local = randomUUID();
+    await ctx.store.createProject({
+      id: local,
+      owner: 'local',
+      repo: 'storefront',
+      containerName: 'verity-local--storefront',
+      kind: 'local',
+      cloneDir: 'local-storefront',
+      state: 'absent',
+      overviewVisible: true,
+    });
+
+    await expect(ctx.store.reserveProjectIdentity(local, repository)).resolves.toBe(true);
+    // A retry of the same pending link keeps its reservation.
+    await expect(ctx.store.reserveProjectIdentity(local, repository)).resolves.toBe(true);
+    await ctx.store.releaseProjectIdentity(local, repository);
+
+    const next = await add();
+    expect(next.repositoryInstance).toBe(2);
+    expect(await ctx.store.getProject(first.id)).toMatchObject({ repositoryInstance: 1 });
+    expect(await ctx.store.getProject(local)).toMatchObject({ kind: 'local', owner: 'local' });
   });
 });
