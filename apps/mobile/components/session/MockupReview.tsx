@@ -5,7 +5,7 @@
 // the review reachable while the chat goes on (MockupReviewBar), and the
 // full-screen review marks one screen at a time (MockupReviewSheet).
 import type { MockupBarView, MockupReviewScreen, MockupScreenView } from '@verity/mobile';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   Modal,
   Pressable,

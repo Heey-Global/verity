@@ -134,7 +134,12 @@ export function storedMockupScreens(raw: unknown): MockupScreenRecord[] {
   // A malformed entry is dropped rather than failing every load of the session.
   const entries = raw.filter(
     (entry): entry is Omit<MockupScreenRecord, 'verdict'> & { verdict: string } =>
-      typeof entry === 'object' && entry !== null,
+      typeof entry === 'object' &&
+      entry !== null &&
+      typeof (entry as { name?: unknown }).name === 'string' &&
+      typeof (entry as { attachment?: unknown }).attachment === 'string' &&
+      typeof (entry as { width?: unknown }).width === 'number' &&
+      typeof (entry as { height?: unknown }).height === 'number',
   );
   return entries.map(({ name, attachment, mediaType, width, height, verdict }) => ({
     name,

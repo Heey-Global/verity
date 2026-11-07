@@ -26,9 +26,14 @@ describe('storedMockupScreens', () => {
     expect(storedMockupScreens(null)).toEqual([]);
     expect(storedMockupScreens({})).toEqual([]);
     // One corrupt entry must not fail every load of the session.
-    expect(storedMockupScreens([null, 'x', { ...screen, verdict: 'open' }])).toEqual([
-      { ...screen, verdict: 'open' },
-    ]);
+    expect(
+      storedMockupScreens([
+        null,
+        'x',
+        { name: 'Half', verdict: 'open' },
+        { ...screen, verdict: 'open' },
+      ]),
+    ).toEqual([{ ...screen, verdict: 'open' }]);
   });
 });
 
