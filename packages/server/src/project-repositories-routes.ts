@@ -50,7 +50,7 @@ export type RepositoryInstructions = Pick<
 /** Each code host request has its own deadline, but one repository can need
  *  several in a row; this bounds the whole lookup so a slow host cannot hold
  *  the list for every other repository. */
-export const REPOSITORY_INSTRUCTIONS_TIMEOUT_MS = 20_000;
+const REPOSITORY_INSTRUCTIONS_TIMEOUT_MS = 20_000;
 
 /**
  * The root AGENTS.md of every repository connected to the project, read from the

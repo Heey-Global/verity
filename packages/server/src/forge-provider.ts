@@ -150,7 +150,7 @@ export interface ForgeContentsRow {
 /** A directory listing is not the file that was asked for. Content
  *  the API declines to inline (GitHub omits files over 1 MB) is refused rather
  *  than shown as empty, which would read as "this repository has no rules". */
-export function forgeFileContent(
+function forgeFileContent(
   row: ForgeContentsRow | ForgeContentsRow[],
 ): { content: string; revision: string } | null {
   if (Array.isArray(row) || row.type !== 'file') return null;
@@ -161,7 +161,7 @@ export function forgeFileContent(
 
 /** Where a repository symlink at `path` points, or null when the target leaves
  *  the repository (absolute, or `..` past its root). */
-export function forgeSymlinkTarget(path: string, target: string): string | null {
+function forgeSymlinkTarget(path: string, target: string): string | null {
   if (target === '' || target.startsWith('/')) return null;
   const resolved = posix.normalize(posix.join(posix.dirname(path), target));
   return resolved === '.' || resolved === '..' || resolved.startsWith('../') ? null : resolved;
