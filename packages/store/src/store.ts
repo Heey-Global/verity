@@ -6780,7 +6780,7 @@ export class EventStore implements EventSink {
       if (adoptable)
         return this.upsertPrimaryProject(tx, {
           ...input,
-          archived: input.archived ?? repositoryArchive?.archived,
+          archived: input.archived ?? repositoryArchive?.archived ?? false,
         });
       const instance = await this.claimNextRepositoryInstance(
         tx,
