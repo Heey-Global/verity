@@ -45,6 +45,7 @@ import { renameWorktreeFile } from './rename-worktree-file.js';
 import { removeSessionDirectory } from './remove-session-directory.js';
 import type { ServerDeps } from './server-deps.js';
 import {
+  FILE_HISTORY_DIR,
   excludeFileHistoryFromGit,
   pruneFileHistory,
   recoverFileHistory,
@@ -703,8 +704,13 @@ export function registerServerSessionFiles(
                 file.directoryPath,
                 file.name,
                 root.root !== 'worktree'
-                  ? (relative) =>
-                      removeKnowledgeExtraction(...extractionArgs(root, `${file.rel}/${relative}`))
+                  ? async (relative) => {
+                      // Saved versions are internal artifacts, never extracted knowledge files.
+                      if (relative.split('/').includes(FILE_HISTORY_DIR)) return;
+                      await removeKnowledgeExtraction(
+                        ...extractionArgs(root, `${file.rel}/${relative}`),
+                      );
+                    }
                   : undefined,
               );
             } catch (error) {

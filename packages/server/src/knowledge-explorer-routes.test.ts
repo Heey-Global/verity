@@ -349,6 +349,31 @@ describe('session explorer knowledge roots', () => {
     expect(readFileSync(join(dir, 'sources/documents/original.txt'), 'utf8')).toBe('Original');
   });
 
+  it('deletes an edited Wiki folder together with its saved history', async () => {
+    await app.inject('/projects/p-1/knowledge/files');
+    const dir = projectKnowledgeDir(dataRoot, 'p-1');
+    mkdirSync(join(dir, 'insights/edited'), { recursive: true });
+    writeFileSync(join(dir, 'insights/edited/note.md'), '# Original');
+    const saved = await app.inject({
+      method: 'PUT',
+      url: '/projects/p-1/knowledge/files/content',
+      payload: {
+        path: 'insights/edited/note.md',
+        content: '# Updated',
+        expectedVersion: fileVersion(Buffer.from('# Original')),
+      },
+    });
+    expect(saved.statusCode).toBe(200);
+    expect(existsSync(join(dir, 'insights/edited/.verity-file-history'))).toBe(true);
+    const removed = await app.inject({
+      method: 'DELETE',
+      url: '/projects/p-1/knowledge/files?path=insights/edited',
+    });
+    expect(removed.statusCode).toBe(200);
+    expect(existsSync(join(dir, 'insights/edited'))).toBe(false);
+    expect(existsSync(knowledgeExtractionPath(dir, 'insights/edited/note.md'))).toBe(false);
+  });
+
   it('protects decisions reached through intermediate Wiki aliases', async () => {
     const dir = projectKnowledgeDir(dataRoot, 'p-1');
     await app.inject('/projects/p-1/knowledge/files');
