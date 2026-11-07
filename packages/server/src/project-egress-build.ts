@@ -17,19 +17,19 @@ export interface ProtectedBuildRecord {
   ended: boolean;
 }
 export interface ProtectedBuildRuntime {
-  ready(): Promise<boolean>;
+  ready(this: void): Promise<boolean>;
   /** Prepare an isolated, denied attempt. Must not run project input. */
-  prepare(request: ProtectedBuildRequest): Promise<void>;
+  prepare(this: void, request: ProtectedBuildRequest): Promise<void>;
   /** Inspect the exact live attachment and renew its project-derived packet authority. */
-  renew(request: ProtectedBuildRequest): Promise<void>;
+  renew(this: void, request: ProtectedBuildRequest): Promise<void>;
   /** Start the fixed CLI/daemon/worker contract only, never caller-supplied commands. */
-  start(request: ProtectedBuildRequest): Promise<void>;
-  status(request: ProtectedBuildRequest): Promise<'running' | 'succeeded' | 'failed'>;
+  start(this: void, request: ProtectedBuildRequest): Promise<void>;
+  status(this: void, request: ProtectedBuildRequest): Promise<'running' | 'succeeded' | 'failed'>;
   /** Revoke packets before asking the supervisor to terminate the whole attempt cgroup. */
-  deny(request: ProtectedBuildRequest): Promise<void>;
-  stop(request: ProtectedBuildRequest): Promise<void>;
-  ended(request: ProtectedBuildRequest): Promise<boolean>;
-  remove(request: ProtectedBuildRequest): Promise<void>;
+  deny(this: void, request: ProtectedBuildRequest): Promise<void>;
+  stop(this: void, request: ProtectedBuildRequest): Promise<void>;
+  ended(this: void, request: ProtectedBuildRequest): Promise<boolean>;
+  remove(this: void, request: ProtectedBuildRequest): Promise<void>;
 }
 export const protectedBuildRecord = z.strictObject({
   request: protectedBuildRequest,
@@ -153,7 +153,9 @@ export class ProtectedBuildHost {
         try {
           await this.contain(record);
         } catch (error) {
-          throw new AggregateError([cause, error], 'Protected build startup failed');
+          throw new AggregateError([cause, error], 'Protected build startup failed', {
+            cause: error,
+          });
         }
         throw cause;
       }
@@ -171,7 +173,9 @@ export class ProtectedBuildHost {
         try {
           await this.contain(record);
         } catch (error) {
-          throw new AggregateError([cause, error], 'Protected build renewal failed');
+          throw new AggregateError([cause, error], 'Protected build renewal failed', {
+            cause: error,
+          });
         }
         throw cause;
       }

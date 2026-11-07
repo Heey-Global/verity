@@ -38,6 +38,7 @@ function fixture(now?: () => number) {
     }),
   };
   const persist = vi.fn(async (_record: ProtectedBuildRecord | undefined) => {
+    void _record;
     calls.push('persist');
   });
   return { host: new ProtectedBuildHost(runtime, persist, now), runtime, persist, calls };

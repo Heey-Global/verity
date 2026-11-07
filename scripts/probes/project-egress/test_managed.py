@@ -81,6 +81,13 @@ class ManagedTests(unittest.TestCase):
         self.assertIn('MemoryMax=', (self.root / managed.BUILD_SLICE).read_text())
         self.assertIn('usr/local/libexec/verity-buildkit/protected-build-attempt', managed.TRANSACTION_FILES)
 
+    def test_controller_needs_no_ephemeral_cni_mounts_after_reboot(self):
+        self.assertTrue(self.provision()['available'])
+        unit = (self.root / managed.base.UNITS['verity-egress-host.service']).read_text()
+        writable = next(line for line in unit.splitlines() if line.startswith('ReadWritePaths='))
+        self.assertNotIn('/run/netns', writable)
+        self.assertNotIn('/run/verity-buildkit', writable)
+
     def test_existing_smaller_builder_budget_bounds_protected_attempts(self):
         unit = self.root / 'etc/systemd/system/verity-buildkit.service'
         unit.parent.mkdir(parents=True)

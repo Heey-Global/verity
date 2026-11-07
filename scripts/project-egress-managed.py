@@ -203,7 +203,7 @@ def unit_files(files, gid, root=Path('/'), data_volume=None):
             # Atomic endpoint refresh needs the parent writable under the
             # controller's ProtectSystem=strict filesystem namespace.
             content = content.replace('ReadWritePaths=',
-                                      'ReadWritePaths=/etc/verity-egress /var/lib/verity/protected-build /run/netns /run/verity-buildkit ', 1)
+                                      'ReadWritePaths=/etc/verity-egress /var/lib/verity/protected-build ', 1)
             content = content.replace('ExecStartPre=',
                                       'ExecStartPre=/usr/bin/python3 /usr/local/libexec/verity/'
                                       'project-egress-managed.py verify-runtime\n'

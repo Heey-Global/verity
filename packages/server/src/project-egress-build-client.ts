@@ -41,7 +41,12 @@ export function createProtectedBuildClient(options: {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        if (error !== undefined) reject(error);
+        if (error !== undefined)
+          reject(
+            error instanceof Error
+              ? error
+              : new Error('Protected build control failed', { cause: error }),
+          );
         else if (reply !== undefined) resolve(reply);
       };
       const timer = setTimeout(() => {

@@ -2,21 +2,21 @@ import { createHash, randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createServer, type Server } from 'node:net';
-import { constants, openSync, fstatSync, readFileSync, closeSync, fsyncSync } from 'node:fs';
+import { constants, openSync, fstatSync, closeSync, fsyncSync } from 'node:fs';
 import {
   chmod,
+  open,
   chown,
   copyFile,
   lstat,
   mkdir,
   readFile,
-  readlink,
   realpath,
   rename,
   rm,
   writeFile,
 } from 'node:fs/promises';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join } from 'node:path';
 import { z } from 'zod';
 import type { ProjectEgressStore } from '@verity/store';
 import { createDevcontainerBuildSnapshot } from './devcontainer-build-boundary.js';
@@ -35,10 +35,8 @@ import {
 } from './project-egress-build-network.js';
 import {
   createProtectedBuildRuntime,
-  protectedBuildLaunch,
   type ProtectedBuildRuntimeState,
 } from './project-egress-build-runtime.js';
-import type { ProjectEgressNetworkBinding } from './project-egress-host.js';
 
 const ROOT = '/var/lib/verity/protected-build';
 const INSPECTION = '/var/lib/verity-egress/build-anchors';
@@ -99,6 +97,62 @@ export function protectedBuildResourcesReady(slice: string, service: string): bo
   );
 }
 
+/** systemctl reports a collected/missing transient unit on stdout while exiting
+ * nonzero. Only that exact response is absence evidence; bus failures are not.
+ */
+export async function readProtectedBuildUnit(
+  name: string,
+  run: (file: string, args: readonly string[]) => Promise<string>,
+): Promise<Record<string, string>> {
+  if (!/^verity-protected-build-[a-f0-9]{32}\.service$/u.test(name))
+    throw new Error('Invalid protected build unit');
+  const parse = (output: string) => {
+    if (Buffer.byteLength(output) > 16384) throw new Error('Oversized protected unit state');
+    const fields: Record<string, string> = {};
+    for (const line of output.trim().split('\n').filter(Boolean)) {
+      const split = line.indexOf('=');
+      const key = line.slice(0, split);
+      if (
+        split < 1 ||
+        !['LoadState', 'ActiveState', 'SubState', 'Result', 'ControlGroup'].includes(key) ||
+        key in fields
+      )
+        throw new Error('Invalid protected unit state');
+      fields[key] = line.slice(split + 1);
+    }
+    return fields;
+  };
+  try {
+    return parse(
+      await run('/usr/bin/systemctl', [
+        'show',
+        name,
+        '--property=LoadState,ActiveState,SubState,Result,ControlGroup',
+        '--no-pager',
+      ]),
+    );
+  } catch (error) {
+    if (
+      typeof error === 'object' &&
+      error !== null &&
+      'code' in error &&
+      typeof error.code === 'number' &&
+      error.code !== 0 &&
+      'stdout' in error &&
+      typeof error.stdout === 'string'
+    ) {
+      const fields = parse(error.stdout);
+      if (
+        fields.LoadState === 'not-found' &&
+        fields.ActiveState === 'inactive' &&
+        fields.ControlGroup === ''
+      )
+        return fields;
+    }
+    throw error;
+  }
+}
+
 export async function protectedBuildUnitEnded(
   value: Record<string, string>,
   readEvents: (path: string) => Promise<string>,
@@ -107,7 +161,7 @@ export async function protectedBuildUnitEnded(
   if (!['inactive', 'failed'].includes(value.ActiveState ?? '')) return false;
   if (!value.ControlGroup) return true;
   if (
-    !/^\/verity.slice\/verity-buildkit.slice\//u.test(value.ControlGroup) ||
+    !/^\/verity\.slice\/verity-buildkit\.slice\//u.test(value.ControlGroup) ||
     value.ControlGroup.includes('..')
   )
     throw new Error('Untrusted protected build cgroup');
@@ -147,16 +201,17 @@ async function privateDirectory(path: string): Promise<void> {
   )
     throw new Error('Untrusted protected build directory');
 }
-async function privateRead(path: string): Promise<unknown | undefined> {
-  let fd: number;
-  try {
-    fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-  } catch (error) {
+async function privateRead(path: string): Promise<unknown> {
+  const fd = await open(
+    path,
+    constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+  ).catch((error: unknown) => {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
     throw error;
-  }
+  });
+  if (!fd) return undefined;
   try {
-    const value = fstatSync(fd);
+    const value = await fd.stat();
     if (
       !value.isFile() ||
       value.uid !== 0 ||
@@ -165,11 +220,12 @@ async function privateRead(path: string): Promise<unknown | undefined> {
       value.size > 128 * 1024
     )
       throw new Error('Untrusted protected build state');
-    return JSON.parse(readFileSync(fd, 'utf8')) as unknown;
+    return JSON.parse(await fd.readFile('utf8')) as unknown;
   } finally {
-    closeSync(fd);
+    await fd.close();
   }
 }
+
 async function privateWrite(path: string, value: unknown): Promise<void> {
   await privateDirectory(dirname(path));
   const temporary = path + '.' + randomUUID();
@@ -241,7 +297,7 @@ export interface NativeProtectedBuildOptions {
   requests?: Pick<ProjectEgressStore, 'requestFromSandbox'>;
   dependencies: Omit<ProjectFenceDependencies, 'policyCurrent' | 'inspect' | 'relay'>;
   verifyReady(): Promise<void>;
-  run?(file: string, args: readonly string[], timeout?: number): Promise<string>;
+  run?(this: void, file: string, args: readonly string[], timeout?: number): Promise<string>;
 }
 /** Real host adapter. Every project-selected input is confined to the shared
  * bounded snapshot; command plans, images, rules and policy derive from host state.
@@ -329,14 +385,14 @@ export async function createNativeProtectedBuildHost(options: NativeProtectedBui
     return { snapshot, staging, uid: value.uid, gid: value.gid };
   };
   const sharedJSON = async (path: string) => {
-    const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    const fd = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     try {
-      const value = fstatSync(fd);
+      const value = await fd.stat();
       if (!value.isFile() || value.nlink !== 1 || (value.mode & 0o077) !== 0 || value.size > 32768)
         throw new Error('Invalid protected build private input');
-      return JSON.parse(readFileSync(fd, 'utf8')) as unknown;
+      return JSON.parse(await fd.readFile('utf8')) as unknown;
     } finally {
-      closeSync(fd);
+      await fd.close();
     }
   };
   const checkpointPath = (request: ProtectedBuildRequest) =>
@@ -369,7 +425,29 @@ export async function createNativeProtectedBuildHost(options: NativeProtectedBui
     if (current && typeof current === 'object' && 'request' in current) {
       const req = protectedBuildRequest.parse(current.request);
       const point = await privateRead(checkpointPath(req));
-      if (point) known.add(checkpointSchema.parse(point).binding.bridge);
+      if (point) {
+        const saved = checkpointSchema.parse(point).binding;
+        if (links.some((link) => link.ifname === saved.bridge)) {
+          const live = z
+            .array(
+              z.object({
+                Id: oid,
+                Name: z.string(),
+                Driver: z.literal('bridge'),
+                Options: z.record(z.string(), z.string()),
+              }),
+            )
+            .length(1)
+            .parse(JSON.parse(await docker(['network', 'inspect', saved.networkId])))[0]!;
+          if (
+            live.Id !== saved.networkId ||
+            live.Name !== saved.networkName ||
+            live.Options['com.docker.network.bridge.name'] !== saved.bridge
+          )
+            throw new Error('Protected build bridge ownership changed');
+          known.add(saved.bridge);
+        }
+      }
     }
     if (
       links.some(
@@ -415,7 +493,7 @@ export async function createNativeProtectedBuildHost(options: NativeProtectedBui
       await bootstrap();
     },
   });
-  const admission = async (anchor: ProtectedBuildAnchor) => {
+  const admission = (anchor: ProtectedBuildAnchor) => {
     const key = attemptKey({
       projectId: anchor.binding.projectId,
       attemptId: anchor.attemptId,
@@ -444,26 +522,7 @@ export async function createNativeProtectedBuildHost(options: NativeProtectedBui
     const current = admissions.get(hash(`${anchor.binding.projectId}\0${anchor.attemptId}`));
     if (current) await current.revoke();
   };
-  const unitState = async (name: string) => {
-    if (!/^verity-protected-build-[a-f0-9]{32}\.service$/u.test(name))
-      throw new Error('Invalid protected build unit');
-    const output = await run('/usr/bin/systemctl', [
-      'show',
-      name,
-      '--property=LoadState,ActiveState,SubState,Result,ControlGroup',
-      '--no-pager',
-    ]);
-    return Object.fromEntries(
-      output
-        .trim()
-        .split('\n')
-        .filter(Boolean)
-        .map((line) => {
-          const split = line.indexOf('=');
-          return [line.slice(0, split), line.slice(split + 1)];
-        }),
-    );
-  };
+  const unitState = (name: string) => readProtectedBuildUnit(name, run);
   const ended = async (name: string) =>
     protectedBuildUnitEnded(await unitState(name), (path) => readFile(path, 'utf8'));
   const stopUnit = async (name: string) => {
@@ -509,7 +568,7 @@ export async function createNativeProtectedBuildHost(options: NativeProtectedBui
                 ),
             })
             .parse(JSON.parse(input.split('\n')[0]!));
-          const value = (await admission(anchor)).admitted(name);
+          const value = admission(anchor).admitted(name);
           if (!value) await requestDestination(request, name);
           connection.end(JSON.stringify(value ?? { addresses: [], ttlSeconds: 1 }) + '\n');
         })().catch(() => connection.destroy());
@@ -558,7 +617,7 @@ export async function createNativeProtectedBuildHost(options: NativeProtectedBui
     const found = z
       .array(z.object({ ID: oid, Names: z.literal(name) }))
       .max(1)
-      .parse(listing ? listing.split('\n').map((line) => JSON.parse(line)) : []);
+      .parse(listing ? listing.split('\n').map((line) => JSON.parse(line) as unknown) : []);
     if (!found.length) return undefined;
     const discovered = found[0]!.ID;
     if (point.containerId && point.containerId !== discovered)
@@ -604,7 +663,9 @@ export async function createNativeProtectedBuildHost(options: NativeProtectedBui
       (value.HostConfig.Devices?.length ?? 0) !== 0 ||
       (value.HostConfig.Binds?.length ?? 0) !== 0 ||
       Object.keys(value.HostConfig.PortBindings ?? {}).length !== 0 ||
-      !value.HostConfig.SecurityOpt.includes('no-new-privileges')
+      !value.HostConfig.SecurityOpt.some(
+        (option) => option === 'no-new-privileges' || option === 'no-new-privileges=true',
+      )
     )
       throw new Error('Changed protected build partial anchor');
     return { point, value };
@@ -700,8 +761,8 @@ export async function createNativeProtectedBuildHost(options: NativeProtectedBui
   const exportResult = async (request: ProtectedBuildRequest) => {
     try {
       await exportFile(request, 'build.log');
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    } catch {
+      // Optional diagnostics cannot turn a stopped attempt into an unknown process.
     }
     const result = protectedBuildResult.safeParse(
       await privateRead(join(folder(request), 'result.json')),
@@ -844,10 +905,10 @@ export async function createNativeProtectedBuildHost(options: NativeProtectedBui
           namespace: anchor.namespacePath,
           bootId: await bootId(),
         });
-        await (await admission(anchor)).prepare();
+        await admission(anchor).prepare();
       },
       async renew(anchor) {
-        await (await admission(anchor)).refresh();
+        await admission(anchor).refresh();
         active.add(anchor.binding.bridge);
         await bootstrap();
       },

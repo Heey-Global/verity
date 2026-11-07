@@ -614,3 +614,40 @@ builder: it must be renewed through the regular managed builder update before
 protected admission can establish the shared budget. Until verified, protected
 build readiness fails closed. No additional host-sized memory allowance is
 assigned for protected attempts.
+
+Protected builds use a separate authenticated host attempt identity, independent
+of the project's running sandbox generation. The private host-control socket
+accepts fixed operations only; the Server supplies the project ID and an
+immutable attempt ID, never host commands, executable paths or network grants.
+A lost reply is retried with that same identity. At most one attempt owns the
+host build slot. Missing prerequisites refuse admission without selecting the
+ordinary unrestricted builder.
+
+The host creates a dedicated, initially denied Docker namespace using the
+release-authorized relay image with pulling disabled. The devcontainer CLI,
+private metadata Docker daemon and gVisor BuildKit worker all use that namespace.
+The inner CNI bridge and its private results cache cannot expose host Docker
+sockets or another project's cache. Both daemons and the fixed anchor count
+against the shared builder slice. Registry credentials are scoped to GHCR,
+written only to private attempt files and removed when the attempt ends.
+
+DNS returns only the current project admission's A/AAAA records over a private
+attempt-bound Unix socket. Registry redirects, Feature downloads, Dockerfile
+frontends, remote sources and RUN downloads require the same explicit project
+destination grants; unknown names produce bounded destination requests. Host,
+broker and other project addresses remain excluded. Grant renewal and kernel
+packet deadlines are independent of the build's process lifetime.
+
+Authenticated heartbeats renew access; reads do not. A host sweep contains
+abandoned attempts, and systemd bounds their total lifetime. Cancellation,
+restart and storage release require evidence that the entire worker cgroup has
+ended. A CLI exit or ordinary BuildKit idleness cannot release protected work.
+The Server imports an archive only after the supervisor confirms success and
+termination. Uncertain transport outcomes retain storage reservations. A host
+restart restores denial rather than resuming old network access.
+
+Protected image tags include project identity. A tag alone is not accepted as
+proof of protected provenance: reuse goes through the host's project-private
+layer cache. Native install/update/reboot, actual CLI/daemon/RUN builds and
+independent dual-stack packet observations are still required for acceptance;
+unit tests alone do not authorize a production host profile.

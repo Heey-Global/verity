@@ -167,6 +167,9 @@ describe('protected build fixed host runtime', () => {
     ]);
     expect(plan.args).toContain(`--property=NetworkNamespacePath=${anchor.namespacePath}`);
     expect(plan.args).toContain('--slice=verity-buildkit.slice');
+    expect(plan.args).toContain(
+      '--property=TemporaryFileSystem=/run:rw,size=64M /var/lib/cni:rw,size=16M',
+    );
     expect(
       plan.args.some((value) => value.includes(request.image) || value.includes(request.snapshot)),
     ).toBe(false);

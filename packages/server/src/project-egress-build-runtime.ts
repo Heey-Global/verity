@@ -55,6 +55,7 @@ export function protectedBuildLaunch(
       '--property=NoNewPrivileges=yes',
       '--property=PrivateTmp=yes',
       '--property=PrivateMounts=yes',
+      '--property=TemporaryFileSystem=/run:rw,size=64M /var/lib/cni:rw,size=16M',
       '--property=ProtectHome=yes',
       '--property=ProtectSystem=strict',
       `--property=NetworkNamespacePath=${anchor.namespacePath}`,

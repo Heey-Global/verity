@@ -5,6 +5,7 @@ import {
   protectedBuildResourcesReady,
   protectedBuildResult,
   protectedBuildUnitEnded,
+  readProtectedBuildUnit,
 } from './project-egress-build-host.js';
 
 const budget = 'LoadState=loaded\nMemoryMax=4294967296\nCPUQuotaPerSecUSec=2s\nTasksMax=1024';
@@ -89,4 +90,27 @@ it('restored wildcard fence contains all reserved build bridges without runtime 
   expect(denied).not.toContain('elements =');
   expect(denied).not.toContain('vep');
   expect(() => protectedBuildBootstrapRules(['vep123'])).toThrow();
+});
+
+it('recognizes systemctl nonzero missing-unit replies without accepting bus or permission failures', async () => {
+  const name = 'verity-protected-build-' + 'a'.repeat(32) + '.service';
+  const missing = Object.assign(new Error('missing'), {
+    code: 1,
+    stdout: 'LoadState=not-found\nActiveState=inactive\nControlGroup=\n',
+  });
+  const run = vi.fn(async (): Promise<string> => {
+    throw missing;
+  });
+  expect(await readProtectedBuildUnit(name, run)).toMatchObject({ LoadState: 'not-found' });
+  for (const error of [
+    Object.assign(new Error('bus failed'), { code: 1, stdout: '' }),
+    Object.assign(new Error('permission'), { code: 'EACCES', stdout: missing.stdout }),
+    Object.assign(new Error('changed'), {
+      code: 1,
+      stdout: missing.stdout.replace('inactive', 'active'),
+    }),
+  ]) {
+    run.mockRejectedValue(error);
+    await expect(readProtectedBuildUnit(name, run)).rejects.toThrow();
+  }
 });

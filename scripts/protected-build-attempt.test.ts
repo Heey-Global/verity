@@ -168,3 +168,26 @@ print('denied')
   );
   expect(result.trim()).toBe('denied');
 });
+
+it('gives each daemon and CNI child the system networking utility search path', () => {
+  const output = execFileSync(
+    'python3',
+    [
+      '-c',
+      `
+import ast, pathlib
+source=ast.parse(pathlib.Path(${JSON.stringify(helper)}).read_text())
+run=next(node for node in source.body if isinstance(node,ast.FunctionDef) and node.name=='run')
+value=next(node.value for node in run.body if isinstance(node,ast.Assign) and any(isinstance(target,ast.Name) and target.id=='env' for target in node.targets))
+env=eval(compile(ast.Expression(value),'<helper-env>','eval'),{'TOOLS':pathlib.Path('/fixed/toolchain'),'directory':pathlib.Path('/fixed/attempt'),'config_dir':pathlib.Path('/fixed/config')})
+assert {'/usr/sbin','/sbin'}.issubset(set(env['PATH'].split(':')))
+for node in ast.walk(run):
+    if isinstance(node,ast.Call) and isinstance(node.func,ast.Attribute) and node.func.attr=='Popen':
+        assert any(arg.arg=='env' and isinstance(arg.value,ast.Name) and arg.value.id=='env' for arg in node.keywords)
+print('network-tools-inherited')
+`,
+    ],
+    { encoding: 'utf8' },
+  );
+  expect(output.trim()).toBe('network-tools-inherited');
+});
