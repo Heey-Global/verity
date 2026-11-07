@@ -148,6 +148,27 @@ retain a terminal tombstone or permanent pruned-turn index: deleting the whole
 turn directory could otherwise let a retry execute the same turn identity again.
 Local settled state and age alone are insufficient.
 
+Maintenance prepares a missing trusted default sandbox image on demand. It uses
+only the selected repository digest, verifies the local identity after download,
+and reserves the reference against image GC until helper use finishes. Cache
+maintenance and sleeping-worktree maintenance share preparation; retained Git
+template containers continue to supply their own image. Downloads run before
+project mutation locks, share work for the same digest, and run sequentially.
+Preparation has a 30-second caller deadline (including queue time); the last
+cancelled caller aborts and drains its download before releasing the reservation.
+A later pass retries after a failed preparation. Server shutdown cancels downloads
+and drains active cache and worktree maintenance.
+
+Image failures report `image-unavailable`, `image-preparation-failed`,
+`image-preparation-timeout` or `image-preparation-cancelled`, rather than claiming
+an unsupported broker. Preparation never substitutes an older sandbox or wakes a
+project, and preserves all ownership and idle checks. Publication of an image
+does not prove local availability: after an authorized rollout verify the selected
+sandbox digest, its local availability and a fresh maintenance `observedAt`.
+No separate Docker toolkit image is required for this helper; the sandbox must
+contain the matching broker. Existing running runtimes still need supported
+reconciliation to gain new capabilities.
+
 Rollout requires both the Server release and the matching sandbox toolkit/broker.
 An older active broker cannot perform the new maintenance protocol; the Server
 reports that state instead of falling back to direct filesystem deletion. After the usual release
