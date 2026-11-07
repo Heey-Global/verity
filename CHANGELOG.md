@@ -6,6 +6,17 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.85.0](https://github.com/Heey-Global/verity/compare/v4.84.3...v4.85.0) (2026-11-07)
+
+
+### Features
+
+* **egress:** support protected devcontainer builds ([#2384](https://github.com/Heey-Global/verity/issues/2384)) ([6e70fe9](https://github.com/Heey-Global/verity/commit/6e70fe9e1d407406cb076b09a31d36a66d55a114))
+* **instructions:** show repository AGENTS.md beside project Instructions ([#2381](https://github.com/Heey-Global/verity/issues/2381)) ([17f7cd6](https://github.com/Heey-Global/verity/commit/17f7cd646124c208d1579f5d6c9ff58324fcc289))
+* **mobile:** open the project Wiki on a start page with readable, linked pages ([#2380](https://github.com/Heey-Global/verity/issues/2380)) ([a616825](https://github.com/Heey-Global/verity/commit/a616825d76b8bdc2429ec400da1510bcfc532bd9))
+* **mockups:** mark screens and end the review from the chat ([#2379](https://github.com/Heey-Global/verity/issues/2379)) ([8bc4cdf](https://github.com/Heey-Global/verity/commit/8bc4cdf273ee3733b60c81fc7b81425936d6de72))
+* **projects:** allow one repository to back several projects ([#2377](https://github.com/Heey-Global/verity/issues/2377)) ([fa79ed1](https://github.com/Heey-Global/verity/commit/fa79ed1f1a3ceb8ed850e4945a6e387b9bf630f3))
+
 ## [4.84.3](https://github.com/Heey-Global/verity/compare/v4.84.2...v4.84.3) (2026-11-07)
 
 
