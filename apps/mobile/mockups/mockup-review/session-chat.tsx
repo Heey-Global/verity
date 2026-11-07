@@ -23,7 +23,7 @@ export function SessionChat({ gallery }: { gallery: ReactNode }) {
         <View style={styles.message}>
           <Text variant="body">
             Here are the mockups for the three screens in the approved plan, built from the app's
-            own components. Implementation waits until you approve them.
+            own components. Mark each one and tell me in the chat when to build.
           </Text>
           {gallery}
         </View>
@@ -39,7 +39,7 @@ export function SessionChat({ gallery }: { gallery: ReactNode }) {
           <SessionBarContent
             color={theme.colors.action}
             title="Mockups waiting for you"
-            subtitle="1 of 3 approved · 1 comment"
+            subtitle="1 approved · 1 discarded · 1 to review"
           />
         </SessionBarTarget>
       </SessionBar>

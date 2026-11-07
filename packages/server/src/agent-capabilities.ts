@@ -28,6 +28,7 @@ const renamed: Record<string, string> = {
   verity_start_planning: 'verity_planning_start',
   verity_present_plan: 'verity_planning_present',
   verity_present_mockups: 'verity_mockups_present',
+  verity_complete_mockups: 'verity_mockups_complete',
   verity_secret_output: 'verity_secret_read_output',
   verity_diagnostics: 'verity_diagnostics_read',
   verity_app_help: 'verity_app_help_lookup',

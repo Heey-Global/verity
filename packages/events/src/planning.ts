@@ -36,6 +36,12 @@ export const PRESENT_MOCKUPS_TOOL = 'verity_present_mockups';
 /** The focused name agents see for {@link PRESENT_MOCKUPS_TOOL}. */
 export const PRESENT_MOCKUPS_FOCUSED_TOOL = 'verity_mockups_present';
 
+/** Ends the mockup review once the user told the agent in the chat to implement. */
+export const COMPLETE_MOCKUPS_TOOL = 'verity_complete_mockups';
+
+/** The focused name agents see for {@link COMPLETE_MOCKUPS_TOOL}. */
+export const COMPLETE_MOCKUPS_FOCUSED_TOOL = 'verity_mockups_complete';
+
 /** Whether a reported tool name presents mockups, under any backend's qualification
  *  (bare for Codex, `mcp__verity__…` for Claude, `verity_…` for OpenCode) and under
  *  either its gateway or its focused name. */

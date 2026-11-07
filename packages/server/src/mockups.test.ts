@@ -1,7 +1,6 @@
 import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { MOCKUPS_APPROVED_DISPLAY, MOCKUPS_APPROVED_PROMPT } from '@verity/events';
 import { EventStore } from '@verity/store';
 import { Conductor, type Backend, type RunTurnOptions } from '@verity/session';
 import { createTestDb, truncateAll, type TestDb } from '@verity/store/testing';
@@ -15,7 +14,6 @@ import {
   registerMockupRoutes,
   type SessionMockupActions,
 } from './mockups.js';
-import type { PlanningDeps } from './planning.js';
 
 /** A minimal PNG header: signature, IHDR length and type, then width and height. */
 function png(width: number, height: number, salt = 0): Buffer {
@@ -77,27 +75,39 @@ describe('nextMockupRound', () => {
     height: 1,
   });
 
-  it('keeps an approval only for an unchanged image', () => {
+  it('keeps a mark only for an unchanged image', () => {
     const round = nextMockupRound(
       {
-        state: 'revising',
+        state: 'pending',
         revision: 3,
         screens: [
           { ...screen('Home', 'a'), verdict: 'approved' },
-          { ...screen('Spec', 'b'), verdict: 'comment', comment: 'Move it up.' },
+          { ...screen('Spec', 'b'), verdict: 'discarded' },
           { ...screen('Viewer', 'c'), verdict: 'approved' },
+          { ...screen('Help', 'd'), verdict: 'discarded' },
         ],
       },
-      [screen('Home', 'a'), screen('Spec', 'b2'), screen('Viewer', 'c2')],
+      [screen('Home', 'a'), screen('Spec', 'b2'), screen('Viewer', 'c2'), screen('Help', 'd')],
     );
     expect(round.revision).toBe(4);
     expect(round.state).toBe('pending');
-    // A revised image is a new screen to look at, even where the old one was approved.
-    expect(round.screens.map((s) => [s.name, s.verdict, s.comment])).toEqual([
-      ['Home', 'approved', undefined],
-      ['Spec', 'open', undefined],
-      ['Viewer', 'open', undefined],
+    // A revised image is a new screen to look at, even where the old one was
+    // approved; a discarded image presented again unchanged must not read as new.
+    expect(round.screens.map((s) => [s.name, s.verdict])).toEqual([
+      ['Home', 'approved'],
+      ['Spec', 'open'],
+      ['Viewer', 'open'],
+      ['Help', 'discarded'],
     ]);
+  });
+
+  it('keeps the review open even when every screen is unchanged and approved', () => {
+    // Approval marks never end the review; only the user in the chat does.
+    const round = nextMockupRound(
+      { state: 'pending', revision: 1, screens: [{ ...screen('Home', 'a'), verdict: 'approved' }] },
+      [screen('Home', 'a')],
+    );
+    expect(round.state).toBe('pending');
   });
 });
 
@@ -106,7 +116,6 @@ let store: EventStore;
 let worktree: string;
 let app: FastifyInstance;
 let mockups: SessionMockupActions;
-let dispatchTurn: ReturnType<typeof vi.fn<PlanningDeps['dispatchTurn']>>;
 
 beforeAll(async () => {
   ctx = await createTestDb();
@@ -121,22 +130,7 @@ beforeEach(async () => {
   writeFileSync(join(worktree, 'home.png'), png(393, 852));
   writeFileSync(join(worktree, 'spec.png'), png(393, 852, 1));
   await store.createSession({ sessionId: 's1', worktree, model: 'm' });
-  dispatchTurn = vi.fn<PlanningDeps['dispatchTurn']>(
-    async (sessionId, prompt, _opts, dispatchOpts) => ({
-      queued: true,
-      accepted: await store.enqueueMockupContinuation(
-        {
-          id: crypto.randomUUID(),
-          sessionId,
-          prompt,
-          opts: {},
-        },
-        dispatchOpts.mockupContinuation!,
-        dispatchOpts.mockupPreviousScreens,
-      ),
-    }),
-  );
-  mockups = createSessionMockups({ eventStore: store, dispatchTurn });
+  mockups = createSessionMockups({ eventStore: store });
   app = Fastify();
   registerMockupRoutes(app, { mockups });
 });
@@ -154,6 +148,7 @@ const present = () =>
   });
 const post = (payload: Record<string, unknown>) =>
   app.inject({ method: 'POST', url: '/sessions/s1/mockups', payload });
+const queuedTurns = () => ctx.db.selectFrom('queued_turns').selectAll().execute();
 
 describe('presenting mockups', () => {
   it('rejects a presentation overtaken by a planning restart', async () => {
@@ -174,6 +169,15 @@ describe('presenting mockups', () => {
     expect(stored?.mediaType).toBe('image/png');
     expect(mockupImage(stored!.bytes)).toMatchObject({ width: 393, height: 852 });
     expect((await store.getSession('s1'))?.mockupReview).toEqual(round);
+  });
+
+  it('replaces the round under review with a revision', async () => {
+    await present();
+    writeFileSync(join(worktree, 'spec.png'), png(393, 852, 2));
+    const next = await mockups.present('s1', { screens: [{ name: 'Spec', path: 'spec.png' }] });
+    // A screen left out of the revision is gone from the review, not kept beside it.
+    expect(next.revision).toBe(2);
+    expect(next.screens.map((screen) => screen.name)).toEqual(['Spec']);
   });
 
   it.each([
@@ -201,29 +205,34 @@ describe('presenting mockups', () => {
 });
 
 describe('POST /sessions/:id/mockups', () => {
-  it('continues the build only once every screen is approved', async () => {
+  it('only marks screens, even when every screen is approved', async () => {
     await present();
-    const first = await post({
-      action: 'decide',
-      revision: 1,
-      screen: 'Home',
-      verdict: 'approved',
-    });
-    expect(first.statusCode).toBe(200);
-    expect(first.json().mockupReview.state).toBe('pending');
-    expect(dispatchTurn).not.toHaveBeenCalled();
-
-    const last = await post({ action: 'decide', revision: 1, screen: 'Spec', verdict: 'approved' });
-    expect(last.json().mockupReview.state).toBe('approved');
-    expect(dispatchTurn).toHaveBeenCalledTimes(1);
-    expect(dispatchTurn.mock.calls[0]![1]).toBe(MOCKUPS_APPROVED_PROMPT);
-    expect(dispatchTurn.mock.calls[0]![3]).toMatchObject({
-      displayPrompt: MOCKUPS_APPROVED_DISPLAY,
-      queueBehindActiveTurn: true,
-    });
+    for (const screen of ['Home', 'Spec']) {
+      const response = await post({ action: 'mark', revision: 1, screen, verdict: 'approved' });
+      expect(response.statusCode).toBe(200);
+      expect(response.json().mockupReview.state).toBe('pending');
+    }
+    // The user starts the build in the chat; a mark that queued a turn would
+    // start it behind their back.
+    expect(await queuedTurns()).toEqual([]);
+    expect((await store.getSession('s1'))?.mockupReview?.state).toBe('pending');
   });
 
-  it('keeps every verdict when devices decide at once', async () => {
+  it('discards a screen and takes the mark back', async () => {
+    await present();
+    const discarded = await post({
+      action: 'mark',
+      revision: 1,
+      screen: 'Spec',
+      verdict: 'discarded',
+    });
+    expect(discarded.json().mockupReview.screens[1]).toMatchObject({ verdict: 'discarded' });
+    await post({ action: 'mark', revision: 1, screen: 'Spec', verdict: 'approved' });
+    await post({ action: 'mark', revision: 1, screen: 'Spec', verdict: 'open' });
+    expect((await store.getSession('s1'))?.mockupReview?.screens[1]?.verdict).toBe('open');
+  });
+
+  it('keeps every mark when devices decide at once', async () => {
     const names = Array.from({ length: 8 }, (_, index) => `Screen ${String(index)}`);
     for (const index of names.keys())
       writeFileSync(join(worktree, `${String(index)}.png`), png(10, 10, index));
@@ -231,114 +240,99 @@ describe('POST /sessions/:id/mockups', () => {
       screens: names.map((name, index) => ({ name, path: `${String(index)}.png` })),
     });
     await Promise.all(
-      names.map((screen) => post({ action: 'decide', revision: 1, screen, verdict: 'approved' })),
+      names.map((screen, index) =>
+        post({
+          action: 'mark',
+          revision: 1,
+          screen,
+          verdict: index % 2 === 0 ? 'approved' : 'discarded',
+        }),
+      ),
     );
-    // A lost verdict leaves the build waiting on a screen the user already
-    // approved; a doubled one starts the build twice. pglite serializes
-    // transactions on its single connection, so the row lock itself is only
-    // exercised when the suite runs against a shared PostgreSQL.
-    expect((await store.getSession('s1'))?.mockupReview?.state).toBe('approved');
-    expect(dispatchTurn).toHaveBeenCalledTimes(1);
-  });
-
-  it('sends comments to the agent and waits for the next round', async () => {
-    await present();
-    await post({ action: 'decide', revision: 1, screen: 'Home', verdict: 'approved' });
-    const comment = await post({
-      action: 'decide',
-      revision: 1,
-      screen: 'Spec',
-      verdict: 'comment',
-      comment: 'Put the decision above the criteria.',
-    });
-    expect(comment.json().mockupReview.screens[1]).toMatchObject({
-      verdict: 'comment',
-      comment: 'Put the decision above the criteria.',
-    });
-    const sent = await post({ action: 'send', revision: 1 });
-    expect(sent.json().mockupReview.state).toBe('revising');
-    expect(dispatchTurn.mock.calls[0]![1]).toContain(
-      '- Spec: Put the decision above the criteria.',
+    // pglite serializes transactions on its single connection, so the row lock
+    // itself is only exercised when the suite runs against a shared PostgreSQL.
+    expect((await store.getSession('s1'))?.mockupReview?.screens.map((s) => s.verdict)).toEqual(
+      names.map((_, index) => (index % 2 === 0 ? 'approved' : 'discarded')),
     );
-    expect(dispatchTurn.mock.calls[0]![3]).toMatchObject({ displayPrompt: '1 mockup comment' });
-
-    // The revised round keeps the unchanged, approved Home screen approved.
-    writeFileSync(join(worktree, 'spec.png'), png(393, 852, 2));
-    const next = await present();
-    expect(next.screens.map((s) => s.verdict)).toEqual(['approved', 'open']);
   });
 
   it.each([
-    [{ action: 'decide', revision: 0, screen: 'Home', verdict: 'approved' }, 'stale'],
-    [{ action: 'decide', revision: 1, screen: 'Nope', verdict: 'approved' }, 'unknownScreen'],
-    [{ action: 'send', revision: 1 }, 'noComments'],
-  ])('refuses %j', async (payload, code) => {
-    await present();
+    [{ action: 'mark', revision: 0, screen: 'Home', verdict: 'approved' }, 409, 'stale'],
+    [{ action: 'mark', revision: 1, screen: 'Nope', verdict: 'approved' }, 409, 'unknownScreen'],
+    // Earlier app versions send comments and a send action; neither may touch the round.
+    [
+      { action: 'mark', revision: 1, screen: 'Home', verdict: 'comment', comment: 'Bigger' },
+      400,
+      'invalid',
+    ],
+    [{ action: 'send', revision: 1 }, 400, 'invalid'],
+    // Legacy approvals authorize implementation; never accept them as mere marks.
+    [{ action: 'decide', revision: 1, screen: 'Home', verdict: 'approved' }, 400, 'invalid'],
+  ])('refuses %j', async (payload, status, code) => {
+    const round = await present();
     const response = await post(payload);
-    expect(response.statusCode).toBe(409);
+    expect(response.statusCode).toBe(status);
     expect(response.json().code).toBe(code);
-    expect(dispatchTurn).not.toHaveBeenCalled();
+    expect((await store.getSession('s1'))?.mockupReview).toEqual(round);
+    expect(await queuedTurns()).toEqual([]);
   });
 
-  it('refuses a comment without text', async () => {
+  it('refuses marks once the review has ended', async () => {
     await present();
-    const response = await post({
-      action: 'decide',
-      revision: 1,
-      screen: 'Home',
-      verdict: 'comment',
-      comment: '  ',
-    });
-    // The server's error handler answers the validation error with 400; the
-    // point here is that a blank comment never reaches the round.
-    expect(response.statusCode).toBeGreaterThanOrEqual(400);
-    expect((await store.getSession('s1'))?.mockupReview?.screens[0]?.verdict).toBe('open');
-  });
-
-  it('keeps continuation work durable after recreating the store', async () => {
-    await present();
-    await post({ action: 'decide', revision: 1, screen: 'Home', verdict: 'approved' });
-    await post({ action: 'decide', revision: 1, screen: 'Spec', verdict: 'approved' });
-    const restarted = new EventStore(ctx.db);
-    expect((await restarted.getSession('s1'))?.mockupReview?.state).toBe('approved');
-    const queued = await ctx.db.selectFrom('queued_turns').selectAll().execute();
-    expect(queued).toHaveLength(1);
-    expect(queued[0]?.prompt).toBe(MOCKUPS_APPROVED_PROMPT);
+    expect((await mockups.complete('s1')).ok).toBe(true);
+    const response = await post({ action: 'mark', revision: 1, screen: 'Home', verdict: 'open' });
+    expect(response.statusCode).toBe(409);
+    expect(response.json().code).toBe('notPending');
   });
 
   it('revokes the previous review when planning restarts', async () => {
     await present();
     expect(await store.startSessionPlanning('s1')).toBe(true);
     const response = await post({
-      action: 'decide',
+      action: 'mark',
       revision: 1,
       screen: 'Home',
       verdict: 'approved',
     });
     expect(response.statusCode).toBe(409);
-    expect(dispatchTurn).not.toHaveBeenCalled();
     expect((await store.getSession('s1'))?.mockupReview).toBeUndefined();
-  });
-
-  it('puts the round back when the continuation turn is refused', async () => {
-    dispatchTurn.mockResolvedValue({ queued: false, accepted: false });
-    await present();
-    await post({ action: 'decide', revision: 1, screen: 'Home', verdict: 'approved' });
-    const last = await post({ action: 'decide', revision: 1, screen: 'Spec', verdict: 'approved' });
-    // Otherwise the review reads as approved while no turn will ever continue it.
-    expect(last.statusCode).toBe(409);
-    expect(last.json().code).toBe('stale');
-    expect((await store.getSession('s1'))?.mockupReview?.screens[1]?.verdict).toBe('open');
-    expect((await store.getSession('s1'))?.mockupReview?.state).toBe('pending');
   });
 
   it('answers 404 for an unknown session', async () => {
     const response = await app.inject({
       method: 'POST',
       url: '/sessions/missing/mockups',
-      payload: { action: 'send', revision: 1 },
+      payload: { action: 'mark', revision: 1, screen: 'Home', verdict: 'approved' },
     });
     expect(response.statusCode).toBe(404);
+  });
+});
+
+describe('completing the review', () => {
+  it('ends the review with its marks and starts no work itself', async () => {
+    await present();
+    await mockups.decide('s1', 1, 'Spec', { verdict: 'discarded' });
+    const result = await mockups.complete('s1');
+    expect(result).toMatchObject({ ok: true, review: { state: 'approved' } });
+    const review = (await store.getSession('s1'))?.mockupReview;
+    expect(review?.state).toBe('approved');
+    expect(review?.screens.map((screen) => screen.verdict)).toEqual(['open', 'discarded']);
+    expect(await queuedTurns()).toEqual([]);
+  });
+
+  it('answers that nothing is waiting without a review', async () => {
+    expect(await mockups.complete('s1')).toEqual({ ok: false, code: 'notPending' });
+    await present();
+    await mockups.complete('s1');
+    expect(await mockups.complete('s1')).toEqual({ ok: false, code: 'notPending' });
+  });
+
+  it('reopens a review an earlier version left revising for marks and completion', async () => {
+    await present();
+    await ctx.db.updateTable('sessions').set({ mockup_review: 'revising' }).execute();
+    expect((await store.getSession('s1'))?.mockupReview?.state).toBe('pending');
+    expect((await mockups.decide('s1', 1, 'Home', { verdict: 'approved' })).ok).toBe(true);
+    expect((await mockups.complete('s1')).ok).toBe(true);
   });
 });
 
@@ -351,9 +345,8 @@ describe('mockup review through the real conductor', () => {
     }
   });
 
-  function liveReview() {
+  function liveConductor() {
     const runs: RunTurnOptions[] = [];
-    const errors: Error[] = [];
     const backend: Backend = {
       run: async (opts) => {
         runs.push(opts);
@@ -365,106 +358,28 @@ describe('mockup review through the real conductor', () => {
         return { sessionId: 's1', exitCode: 0, stderr: '', aborted: false };
       },
     };
-    const makeConductor = () => {
-      const instance = new Conductor({
-        store,
-        backend,
-        worktreeExists: async () => true,
-        onTurnError: (_id, error) => errors.push(error),
-      });
-      conductors.push(instance);
-      return instance;
-    };
-    const conductor = makeConductor();
-    mockups = createSessionMockups({
-      eventStore: store,
-      dispatchTurn: conductor.dispatchTurn.bind(conductor),
-    });
-    return { runs, errors, conductor, makeConductor };
+    const conductor = new Conductor({ store, backend, worktreeExists: async () => true });
+    conductors.push(conductor);
+    return { runs, conductor };
   }
 
-  it('dispatches comments, reviews revised images, then continues approved work', async () => {
-    const { runs, errors, conductor } = liveReview();
-    await present();
-    expect((await mockups.decide('s1', 1, 'Home', { verdict: 'approved' })).ok).toBe(true);
-    await mockups.decide('s1', 1, 'Spec', { verdict: 'comment', comment: 'Enlarge the title' });
-    expect((await mockups.sendComments('s1', 1)).ok).toBe(true);
-    await vi.waitFor(() => expect(runs).toHaveLength(1));
-    await vi.waitFor(() => expect(conductor.isBusy('s1')).toBe(false));
-    expect(runs[0]?.prompt).toContain('Enlarge the title');
-    expect((await store.getSession('s1'))?.mockupReview?.state).toBe('revising');
-    writeFileSync(join(worktree, 'spec.png'), png(393, 852, 2));
-    const revised = await present();
-    expect(revised.revision).toBe(2);
-    expect(revised.screens.map((screen) => screen.verdict)).toEqual(['approved', 'open']);
-    expect((await mockups.decide('s1', 2, 'Spec', { verdict: 'approved' })).ok).toBe(true);
-    await vi.waitFor(() => expect(runs).toHaveLength(2));
-    await vi.waitFor(() => expect(conductor.isBusy('s1')).toBe(false));
-    expect(runs[1]?.prompt).toBe(MOCKUPS_APPROVED_PROMPT);
-    expect(runs[1]?.planning).not.toBe(true);
-    expect(await store.listQueuedTurns()).toEqual([]);
-    expect(errors).toEqual([]);
-  });
-
-  it.each(['approved', 'comments'] as const)(
-    'recovers %s after interruption between durable enqueue and live dispatch',
-    async (action) => {
-      const { runs, errors, makeConductor } = liveReview();
-      await present();
-      await mockups.decide('s1', 1, 'Home', { verdict: 'approved' });
-      if (action === 'comments')
-        await mockups.decide('s1', 1, 'Spec', { verdict: 'comment', comment: 'Move the title' });
-      const enqueue = store.enqueueMockupContinuation.bind(store);
-      const interrupt = vi
-        .spyOn(store, 'enqueueMockupContinuation')
-        .mockImplementationOnce(async (...args) => {
-          const accepted = await enqueue(...args);
-          expect(accepted).toBe(true);
-          throw new Error('simulated process interruption');
-        });
-      const request =
-        action === 'approved'
-          ? mockups.decide('s1', 1, 'Spec', { verdict: 'approved' })
-          : mockups.sendComments('s1', 1);
-      await expect(request).rejects.toThrow('simulated process interruption');
-      interrupt.mockRestore();
-      expect(runs).toHaveLength(0);
-      expect(await store.listQueuedTurns()).toHaveLength(1);
-      expect((await store.getSession('s1'))?.mockupReview?.state).toBe(
-        action === 'approved' ? 'approved' : 'revising',
-      );
-      const restarted = makeConductor();
-      await restarted.recover();
-      await vi.waitFor(() => expect(runs).toHaveLength(1));
-      await vi.waitFor(() => expect(restarted.isBusy('s1')).toBe(false));
-      expect(runs[0]?.prompt).toContain(
-        action === 'approved' ? MOCKUPS_APPROVED_PROMPT : 'Move the title',
-      );
-      expect(await store.listQueuedTurns()).toEqual([]);
-      // A success without a terminal event would be recovered as an orphan prompt.
-      expect((await store.getEvents('s1')).at(-1)?.t).toBe('result');
-      await restarted.recover();
-      expect(runs).toHaveLength(1);
-      expect(errors).toEqual([]);
-    },
-  );
-
-  it('starts one continuation when two reviewers approve the last screen together', async () => {
-    const { conductor, runs, errors } = liveReview();
+  it('hands the current marks to the agent with the user message', async () => {
+    const { runs, conductor } = liveConductor();
     await present();
     await mockups.decide('s1', 1, 'Home', { verdict: 'approved' });
-    const otherDevice = createSessionMockups({
-      eventStore: store,
-      dispatchTurn: conductor.dispatchTurn.bind(conductor),
-    });
-    const results = await Promise.all([
-      mockups.decide('s1', 1, 'Spec', { verdict: 'approved' }),
-      otherDevice.decide('s1', 1, 'Spec', { verdict: 'approved' }),
-    ]);
-    expect(results.filter((result) => result.ok)).toHaveLength(1);
+    await mockups.decide('s1', 1, 'Spec', { verdict: 'discarded' });
+    // Marks alone start nothing; the next turn is the user's chat message.
+    expect(runs).toHaveLength(0);
+    await conductor.dispatchTurn('s1', 'Spec bitte mit größerem Titel.');
     await vi.waitFor(() => expect(runs).toHaveLength(1));
+    expect(runs[0]?.appendSystemPrompt).toContain('- Home: approved');
+    expect(runs[0]?.appendSystemPrompt).toContain('- Spec: discarded');
+
+    await mockups.complete('s1');
     await vi.waitFor(() => expect(conductor.isBusy('s1')).toBe(false));
-    expect(await store.listQueuedTurns()).toEqual([]);
-    expect(errors).toEqual([]);
+    await conductor.dispatchTurn('s1', 'Weiter.');
+    await vi.waitFor(() => expect(runs).toHaveLength(2));
+    // An ended review must not keep telling the agent to wait.
+    expect(runs[1]?.appendSystemPrompt ?? '').not.toContain('## Mockup review');
   });
 });

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import type { MockupReview } from '../api.js';
+import { mockupReviewSchema, type MockupReview } from '../api.js';
 import type { ToolCall } from '../happy/message.js';
-import { mockupBarView, mockupProgress, mockupRoundView, reviewOrder } from './mockups.js';
+import { mockupBarView, mockupProgress, mockupRoundView } from './mockups.js';
 
 const hash = (char: string) => char.repeat(64);
 const presented = {
@@ -24,19 +24,18 @@ const tool: ToolCall = {
 };
 const review = (
   revision: number,
-  verdicts: [string, MockupReview['screens'][number]['verdict'], string?][],
+  verdicts: [string, MockupReview['screens'][number]['verdict']][],
   state: MockupReview['state'] = 'pending',
 ): MockupReview => ({
   state,
   revision,
-  screens: verdicts.map(([name, verdict, comment]) => ({
+  screens: verdicts.map(([name, verdict]) => ({
     name,
     attachment: hash('a'),
     mediaType: 'image/png',
     width: 1,
     height: 1,
     verdict,
-    ...(comment !== undefined ? { comment } : {}),
   })),
 });
 
@@ -53,15 +52,12 @@ describe('mockupRoundView', () => {
     const view = mockupRoundView(
       tool,
       review(2, [
-        ['Spec', 'comment', 'Move the decision up'],
+        ['Spec', 'discarded'],
         ['Home', 'approved'],
       ]),
     );
     expect(view).toMatchObject({ revision: 2, current: true });
-    expect(view?.screens.map((screen) => [screen.verdict, screen.comment])).toEqual([
-      ['comment', 'Move the decision up'],
-      ['approved', undefined],
-    ]);
+    expect(view?.screens.map((screen) => screen.verdict)).toEqual(['discarded', 'approved']);
   });
 
   it('keeps a replaced round readable without claiming its verdicts', () => {
@@ -98,54 +94,62 @@ describe('mockupBarView', () => {
         review(1, [
           ['A', 'open'],
           ['B', 'approved'],
-          ['C', 'comment', 'x'],
+          ['C', 'discarded'],
         ]),
       ),
     ).toEqual({
       title: 'Mockups waiting for you',
-      subtitle: '1 of 3 approved · 1 comment',
+      subtitle: '1 approved · 1 discarded · 1 to review',
       action: 'review',
     });
   });
 
-  it('offers to send once every screen is decided and some carry comments', () => {
-    // Approving cannot finish this round, so a Review button alone would leave
-    // the build waiting with no visible way forward.
+  it('stays once every screen is marked, even when all are approved', () => {
+    // Marks never start the build: the bar must remain reachable until the user
+    // tells the agent in the chat, or a changed mind has nowhere to go.
     expect(
       mockupBarView(
         review(1, [
-          ['A', 'comment', 'x'],
+          ['A', 'approved'],
           ['B', 'approved'],
         ]),
-      )?.action,
-    ).toBe('send');
+      ),
+    ).toEqual({ title: 'Mockups reviewed', subtitle: '2 approved', action: 'review' });
   });
 
-  it('disappears once approved and waits quietly while revising', () => {
+  it('disappears once the review ended and waits quietly while revising', () => {
     expect(mockupBarView(review(1, [['A', 'approved']], 'approved'))).toBeUndefined();
-    expect(mockupBarView(review(1, [['A', 'comment', 'x']], 'revising'))?.action).toBeUndefined();
+    expect(mockupBarView(review(1, [['A', 'discarded']], 'revising'))?.action).toBeUndefined();
     expect(mockupBarView(undefined)).toBeUndefined();
   });
 });
 
-it('orders open screens first and keeps the presented order within a verdict', () => {
-  expect(
-    reviewOrder([
-      { name: 'a', verdict: 'approved' as const },
-      { name: 'b', verdict: 'open' as const },
-      { name: 'c', verdict: 'comment' as const },
-      { name: 'd', verdict: 'open' as const },
-    ]).map((screen) => screen.name),
-  ).toEqual(['b', 'd', 'c', 'a']);
-});
-
-it('counts comments in the progress line', () => {
+it('counts only the marks that exist in the progress line', () => {
   expect(
     mockupProgress(
       review(1, [
-        ['A', 'comment', 'x'],
-        ['B', 'comment', 'y'],
+        ['A', 'open'],
+        ['B', 'open'],
       ]),
     ),
-  ).toBe('0 of 2 approved · 2 comments');
+  ).toBe('2 to review');
+  expect(
+    mockupProgress(
+      review(1, [
+        ['A', 'discarded'],
+        ['B', 'discarded'],
+      ]),
+    ),
+  ).toBe('2 discarded');
+});
+
+it('reads a comment from an older server as discarded, never as approved', () => {
+  const screen = { name: 'A', attachment: hash('a'), mediaType: 'image/png', width: 1, height: 1 };
+  expect(
+    mockupReviewSchema.parse({
+      state: 'pending',
+      revision: 1,
+      screens: [{ ...screen, verdict: 'comment', comment: 'Larger' }],
+    })?.screens[0],
+  ).toEqual({ ...screen, verdict: 'discarded' });
 });

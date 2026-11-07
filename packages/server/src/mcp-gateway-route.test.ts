@@ -130,6 +130,7 @@ function build(
                   'verity_start_planning',
                   'verity_present_plan',
                   'verity_present_mockups',
+                  'verity_complete_mockups',
                   'verity_end_planning',
                   'verity_tasks',
                   'verity_repairs',
@@ -674,6 +675,44 @@ describe('mockup presentation through the project gateway', () => {
         mediaType: 'image/png',
         bytes: image,
       });
+    });
+    expect(harness.approvals).toEqual([]);
+    expect(harness.invocations).toEqual([]);
+  });
+
+  it('ends the review through the gateway without an approval card or new work', async () => {
+    const { harness, token } = await mockupCaller();
+    await withListener(harness, async (socketPath) => {
+      let id = 0;
+      const call = (name: string, args: Record<string, unknown>) =>
+        postUnix(socketPath, `Bearer ${token}`, {
+          jsonrpc: '2.0',
+          id: ++id,
+          method: 'tools/call',
+          params: { name, arguments: args },
+        });
+      const output = async (name: string, args: Record<string, unknown> = {}) => {
+        const response = await call(name, args);
+        const result = (
+          JSON.parse(response.body) as {
+            result: { isError?: boolean; content: { text: string }[] };
+          }
+        ).result;
+        expect(result.isError).toBeUndefined();
+        return JSON.parse(result.content[0]!.text) as Record<string, unknown>;
+      };
+      await output('verity_present_mockups', { screens: [{ name: 'Home', path: 'home.png' }] });
+      await harness.store.updateSessionMockups('s1', (current) => ({
+        ...current,
+        screens: current.screens.map((screen) => ({ ...screen, verdict: 'discarded' })),
+      }));
+      expect(await output('verity_complete_mockups')).toMatchObject({ completed: true });
+      // The marks stay as the user left them; ending the review approves nothing.
+      expect((await harness.store.getSession('s1'))?.mockupReview).toMatchObject({
+        state: 'approved',
+        screens: [{ name: 'Home', verdict: 'discarded' }],
+      });
+      expect(await output('verity_complete_mockups')).toMatchObject({ completed: false });
     });
     expect(harness.approvals).toEqual([]);
     expect(harness.invocations).toEqual([]);

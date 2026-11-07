@@ -7332,6 +7332,45 @@ describe('Conductor mid-turn steering (#101)', () => {
     expect(prompts.find((event) => event.text === 'Merged PR #119')?.steered).toBe(true);
   });
 
+  it('refreshes mockup marks when steering into a running turn', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    const fake = steerableBackend();
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: fake.backend,
+      worktreeExists: async () => true,
+    });
+    await conductor.dispatchTurn('s1', 'first');
+    await waitFor(fake.ready);
+    try {
+      // A mark changed after dispatch must reach the live agent with the instruction.
+      await ctx.store.updateSessionMockups('s1', () => ({
+        state: 'pending',
+        revision: 1,
+        screens: [
+          {
+            name: 'Home',
+            attachment: 'a'.repeat(64),
+            mediaType: 'image/png',
+            width: 393,
+            height: 852,
+            verdict: 'discarded',
+          },
+        ],
+      }));
+      expect(await conductor.dispatchTurn('s1', 'Implement the approved screens')).toEqual({
+        queued: false,
+      });
+      expect(fake.steered[0]?.text).toContain('Home: discarded');
+      expect(fake.steered[0]?.text).toContain('Implement the approved screens');
+      expect(await promptTexts('s1')).toContain('Implement the approved screens');
+      expect(await promptTexts('s1')).not.toContain(fake.steered[0]?.text);
+    } finally {
+      fake.release();
+      await waitFor(() => !conductor.isBusy('s1'));
+    }
+  });
+
   it('refuses chat implementation while newer steering awaits prompt persistence', async () => {
     await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
     await ctx.store.startSessionPlanning('s1');
