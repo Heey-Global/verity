@@ -22,6 +22,7 @@ import {
   wikiView,
 } from '../components/knowledge/knowledgeScope';
 import { invalidateWikiCatalog } from '../components/knowledge/useWikiCatalog';
+import { wikiDayInline } from '../components/knowledge/WikiViews';
 import { fileMarkdownItems } from '../lib/fileMarkdownPreview';
 import { mockCreateVerityClient, mockPush, resetSettingsHarness } from './support/settingsHarness';
 
@@ -354,4 +355,10 @@ it('moves off a decision group that the Wiki emptied', async () => {
   });
   await act(async () => invalidateWikiCatalog('p'));
   expect(await screen.findByText('Content lists Wiki and Sources')).toBeTruthy();
+});
+
+it('says a date inside a sentence without lowering the month', () => {
+  expect(wikiDayInline(new Date().toISOString())).toBe('today');
+  expect(wikiDayInline('2020-11-07T12:00:00.000Z')).toBe('7 Nov 2020');
+  expect(wikiDayInline('not a date')).toBe('at an unknown time');
 });

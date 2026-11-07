@@ -174,7 +174,7 @@ export function KnowledgeFolder({
           <Button label="Retry" variant="secondary" size="compact" onPress={wiki.retry} />
         </View>
       ) : null}
-      {directory?.truncated ? (
+      {listing && directory?.truncated ? (
         <Text variant="subtitle" tone="muted">
           This folder has more files than can be shown. Organize it into smaller folders.
         </Text>

@@ -44,17 +44,18 @@ function readCatalog(client: VerityClient, projectId: string) {
 export function useWikiCatalog(client: VerityClient, projectId: string | null) {
   const [state, setState] = useState<{
     key: string | null;
+    client: VerityClient | null;
     catalog: WikiCatalog | null | undefined;
     error?: string;
-  }>({ key: null, catalog: undefined });
+  }>({ key: null, client: null, catalog: undefined });
   const [attempt, setAttempt] = useState(0);
   const retry = useCallback(() => {
     if (projectId === null) return;
     cache.delete(projectId);
     // Loading again, not still failed: the error gives way to the spinner.
-    setState({ key: projectId, catalog: undefined });
+    setState({ key: projectId, client, catalog: undefined });
     setAttempt((value) => value + 1);
-  }, [projectId]);
+  }, [client, projectId]);
   useEffect(() => {
     if (projectId === null) return undefined;
     const subscribers = listeners.get(projectId) ?? new Set<() => void>();
@@ -63,6 +64,8 @@ export function useWikiCatalog(client: VerityClient, projectId: string | null) {
     listeners.set(projectId, subscribers);
     return () => {
       subscribers.delete(refresh);
+      if (!subscribers.size && listeners.get(projectId) === subscribers)
+        listeners.delete(projectId);
     };
   }, [projectId]);
   useEffect(() => {
@@ -70,12 +73,13 @@ export function useWikiCatalog(client: VerityClient, projectId: string | null) {
     let active = true;
     readCatalog(client, projectId).then(
       (catalog) => {
-        if (active) setState({ key: projectId, catalog });
+        if (active) setState({ key: projectId, client, catalog });
       },
       (failure: unknown) => {
         if (active)
           setState({
             key: projectId,
+            client,
             catalog: undefined,
             // A reply the app cannot read says nothing useful in its own words.
             error:
@@ -90,7 +94,9 @@ export function useWikiCatalog(client: VerityClient, projectId: string | null) {
     };
   }, [client, projectId, attempt]);
   if (projectId === null) return { catalog: null, error: undefined, retry };
-  // Another project's catalog, still in state until this one arrives, is not shown.
-  if (state.key !== projectId) return { catalog: undefined, error: undefined, retry };
+  // Another project's catalog, or another server's, still in state until this
+  // one arrives, is not shown.
+  if (state.key !== projectId || state.client !== client)
+    return { catalog: undefined, error: undefined, retry };
   return { catalog: state.catalog, error: state.error, retry };
 }

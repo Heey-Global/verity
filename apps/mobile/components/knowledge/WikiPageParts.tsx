@@ -3,7 +3,7 @@ import { View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 
 import { Group, Row, SectionHeader, Text } from '../ui';
-import { catalogTitle, DecisionRow, DecisionStatus, PageRow, wikiDay } from './WikiViews';
+import { catalogTitle, DecisionRow, DecisionStatus, PageRow, wikiDayInline } from './WikiViews';
 
 /** What the catalog knows about one knowledge file: a page or a decision. */
 export function wikiEntry(catalog: WikiCatalog | null | undefined, file: string) {
@@ -26,7 +26,7 @@ export function WikiPageHeader({ catalog, file }: { catalog: WikiCatalog; file: 
         <View style={styles.status}>
           <DecisionStatus status={entry.decision.status} />
           <Text variant="footnote" tone="muted">
-            {`Decision · recorded ${wikiDay(entry.decision.createdAt).toLowerCase()}`}
+            {`Decision · recorded ${wikiDayInline(entry.decision.createdAt)}`}
           </Text>
         </View>
       </View>
@@ -36,10 +36,7 @@ export function WikiPageHeader({ catalog, file }: { catalog: WikiCatalog; file: 
     <View style={styles.head}>
       <Text variant="title">{entry.page.title}</Text>
       <Text variant="footnote" tone="muted">
-        {[
-          topic ? `Topic · ${topic.title}` : '',
-          `updated ${wikiDay(entry.page.modifiedAt).toLowerCase()}`,
-        ]
+        {[topic ? `Topic · ${topic.title}` : '', `updated ${wikiDayInline(entry.page.modifiedAt)}`]
           .filter(Boolean)
           .join(' · ')}
       </Text>

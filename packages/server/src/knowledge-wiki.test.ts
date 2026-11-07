@@ -85,6 +85,26 @@ describe('parseWikiIndex', () => {
   });
 });
 
+it('reads no topics or overview from code blocks and comments on the start page', () => {
+  const index = parseWikiIndex(
+    [
+      '# Wiki',
+      '<!-- maintained by Verity',
+      'last run: today -->',
+      'Overview.',
+      '```',
+      '## Not a topic',
+      '[nor a page](fenced.md)',
+      '```',
+      '## Real',
+      '- [Page](page.md)',
+    ].join('\n'),
+  );
+  // A code example stays in the overview as text; it only is no topic.
+  expect(index.overview).toBe('Overview.\n```\n## Not a topic\n[nor a page](fenced.md)\n```');
+  expect(index.topics).toEqual([{ title: 'Real', description: '', pages: ['insights/page.md'] }]);
+});
+
 describe('projectWikiCatalog', () => {
   it('lists pages with titles, links both ways, decisions with status and what needs a look', async () => {
     write('insights/index.md', '# Wiki\n\nOverview.\n\n## Concepts\nThe ideas.\n- [Nav](nav.md)\n');
@@ -117,7 +137,8 @@ describe('projectWikiCatalog', () => {
         `insights/decisions/${'b'.repeat(32)}.md`,
         'insights/gone.md',
       ],
-      linkedFrom: ['insights/index.md', 'insights/topic/deep.md'],
+      // The start page links every page, so it is no backlink.
+      linkedFrom: ['insights/topic/deep.md'],
     });
     expect(catalog.index).toMatchObject({
       overview: 'Overview.',
@@ -172,7 +193,10 @@ describe('projectWikiCatalog', () => {
   it('counts links to images, conflicts and skipped pages as working when the file is there', async () => {
     write('insights/diagram.png', 'png');
     write('insights/huge.md', `# Huge\n\n${'x'.repeat(600 * 1024)}`);
-    write('insights/page.md', '# Page\n\n[d](diagram.png) [h](huge.md) [m](missing.png)\n');
+    write(
+      'insights/page.md',
+      '# Page\n\n[d](diagram.png) [h](huge.md) [s](../sources/meetings) [m](missing.png)\n',
+    );
     const catalog = await projectWikiCatalog(root);
     expect(catalog.review).toEqual([
       { kind: 'broken_links', path: 'insights/page.md', targets: ['insights/missing.png'] },

@@ -260,7 +260,11 @@ describe('session explorer knowledge roots', () => {
       decisions: [],
       review: [],
     });
-    expect((await app.inject('/projects/missing/knowledge/wiki')).statusCode).toBe(404);
+    // A named 404: the app falls back to the folder view only for the router's
+    // own "Not Found", which means a server without this route.
+    const missing = await app.inject('/projects/missing/knowledge/wiki');
+    expect(missing.statusCode).toBe(404);
+    expect(missing.json()).toEqual({ error: 'Project knowledge not found' });
   });
 
   it('browses project knowledge without sessions and confines edits to its Wiki', async () => {

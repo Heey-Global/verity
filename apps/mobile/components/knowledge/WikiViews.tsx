@@ -20,8 +20,14 @@ const RECENT_SHOWN = 5;
 
 type Open = { folder: (folder: string) => void; file: (file: string) => void };
 
+/** "today", "yesterday" or the date, inside a sentence ("updated today"). */
+export function wikiDayInline(iso: string): string {
+  const day = wikiDay(iso);
+  return day === 'Today' || day === 'Yesterday' ? day.toLowerCase() : day || 'at an unknown time';
+}
+
 /** "Today", "Yesterday" or the date, as lists of changes say it. */
-export function wikiDay(iso: string, now = new Date()): string {
+function wikiDay(iso: string, now = new Date()): string {
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return '';
   const key = (value: Date) => value.toDateString();
@@ -190,7 +196,7 @@ export function WikiHome({ catalog, open }: { catalog: WikiCatalog; open: Open }
             accessibilityLabel="Open the start page"
           >
             <Text variant="footnote" tone="muted">
-              {`Start page · updated ${wikiDay(index.modifiedAt).toLowerCase()}`}
+              {`Start page · updated ${wikiDayInline(index.modifiedAt)}`}
             </Text>
           </Pressable>
         </Card>

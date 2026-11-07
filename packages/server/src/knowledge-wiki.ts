@@ -12,6 +12,7 @@ import {
   resolveKnowledgeLink,
   WIKI_INDEX,
   WIKI_LOG,
+  type KnowledgePath,
   type WikiCatalog,
   type WikiPage,
   type WikiReviewItem,
@@ -31,10 +32,14 @@ const MAX_SUMMARY = 240;
 /** Not pages: decision records have their own list, conflicts their own item. */
 const OWN_FOLDERS = new Set(['decisions', 'Conflicts']);
 
+/** What the catalog keeps of a page once read: never its whole text. */
 interface ReadPage {
   path: string;
-  markdown: string;
   modifiedAt: string;
+  title: string;
+  summary: string;
+  links: KnowledgePath[];
+  index?: { overview: string; topics: WikiTopic[] };
 }
 
 /** Inline Markdown as plain text: link texts, no emphasis or code marks. */
@@ -126,9 +131,18 @@ export function parseWikiIndex(markdown: string): { overview: string; topics: Wi
     } else topics.push({ title: topic.title, description, pages });
   };
   let descriptionDone = false;
+  let fenced = false;
+  let comment = false;
   for (const raw of markdown.split('\n')) {
     const line = raw.trim();
-    const heading = /^(#{1,2})\s+(.*)$/.exec(line);
+    // A comment is the start page's own metadata, not part of the overview.
+    if (comment || line.startsWith('<!--')) {
+      comment = !line.includes('-->');
+      continue;
+    }
+    // Inside a code block a heading is an example, not a topic.
+    if (/^(```|~~~)/.test(line)) fenced = !fenced;
+    const heading = fenced ? null : /^(#{1,2})\s+(.*)$/.exec(line);
     if (heading?.[1] === '#' && !topic) continue;
     if (heading?.[1] === '##') {
       close();
@@ -137,7 +151,7 @@ export function parseWikiIndex(markdown: string): { overview: string; topics: Wi
       continue;
     }
     if (!topic) {
-      if (!line.startsWith('<!--')) overview.push(raw);
+      overview.push(raw);
       continue;
     }
     topic.body.push(raw);
@@ -196,10 +210,20 @@ async function readPages(insights: string): Promise<{ pages: ReadPage[]; truncat
           const content = await readDocument(insights, rel, false, MAX_PAGE_BYTES);
           if (!content || !isUtf8(content) || content.includes(0)) continue;
           bytes += content.length;
+          const markdown = content.toString('utf8');
+          const page = `insights/${rel}`;
           pages.push({
-            path: `insights/${rel}`,
-            markdown: content.toString('utf8'),
+            path: page,
             modifiedAt: stat.mtime.toISOString(),
+            ...pageHeadline(page, markdown),
+            links: [
+              ...new Set(
+                markdownLinks(markdown)
+                  .map((link) => resolveKnowledgeLink(page, link.href))
+                  .filter((target): target is KnowledgePath => target !== null),
+              ),
+            ],
+            ...(page === WIKI_INDEX ? { index: parseWikiIndex(markdown) } : {}),
           });
         } catch {
           // Oversized, replaced while read, or not a plain file: left out, and said so.
@@ -259,14 +283,14 @@ async function readConflicts(
   return { items, truncated };
 }
 
-/** Whether a knowledge file exists, without following links out of the root. */
+/** Whether a knowledge file or folder exists, without following links out of the root. */
 async function fileExists(knowledgeRoot: string, path: string): Promise<boolean> {
   try {
     const parts = path.split('/');
     const directory = await openDocumentDirectory(knowledgeRoot, parts.slice(0, -1).join('/'));
     try {
       const stat = await lstat(`/proc/self/fd/${directory.fd}/${parts.at(-1)!}`);
-      return stat.isFile();
+      return stat.isFile() || stat.isDirectory();
     } finally {
       await directory.close();
     }
@@ -293,13 +317,7 @@ export async function projectWikiCatalog(knowledgeRoot: string): Promise<WikiCat
   const pages: WikiPage[] = [];
   let index: WikiCatalog['index'] = null;
   for (const page of read) {
-    const links = [
-      ...new Set(
-        markdownLinks(page.markdown)
-          .map((link) => resolveKnowledgeLink(page.path, link.href))
-          .filter((path): path is NonNullable<typeof path> => path !== null),
-      ),
-    ];
+    const links = page.links;
     const broken: string[] = [];
     for (const target of links) {
       // A page the scan read or a decision is known; anything else the app could
@@ -313,21 +331,23 @@ export async function projectWikiCatalog(knowledgeRoot: string): Promise<WikiCat
           if (!(await diskChecks.get(target))) broken.push(target);
         }
       }
-      if (target !== page.path) {
+      // The start page and the log link everything; as backlinks they say nothing.
+      if (target !== page.path && page.path !== WIKI_INDEX && page.path !== WIKI_LOG) {
         const from = linkedFrom.get(target) ?? new Set<string>();
         from.add(page.path);
         linkedFrom.set(target, from);
       }
     }
     if (broken.length) review.push({ kind: 'broken_links', path: page.path, targets: broken });
-    if (page.path === WIKI_INDEX) {
-      index = { path: page.path, modifiedAt: page.modifiedAt, ...parseWikiIndex(page.markdown) };
+    if (page.index) {
+      index = { path: page.path, modifiedAt: page.modifiedAt, ...page.index };
       continue;
     }
     if (page.path === WIKI_LOG) continue;
     pages.push({
       path: page.path,
-      ...pageHeadline(page.path, page.markdown),
+      title: page.title,
+      summary: page.summary,
       modifiedAt: page.modifiedAt,
       links,
       linkedFrom: [],
