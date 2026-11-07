@@ -140,3 +140,19 @@ it('rejects unsupported additional GitHub connections before persisting a projec
     await ctx.store.getProjectByOwnerRepo('owner', 'unsupported', 'other-github'),
   ).toBeUndefined();
 });
+
+it('omits archived GitHub repositories from the picker', async () => {
+  for (const archived of [false, true]) {
+    await ctx.store.upsertProject({
+      id: `github-${String(archived)}`,
+      owner: 'owner',
+      repo: archived ? 'archived' : 'active',
+      containerName: `github-${String(archived)}`,
+      state: 'absent',
+      archived,
+    });
+  }
+  const response = await app.inject('/github/repositories');
+  expect(response.statusCode).toBe(200);
+  expect(response.json<{ repo: string }[]>().map(({ repo }) => repo)).toEqual(['active']);
+});

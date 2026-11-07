@@ -83,6 +83,7 @@ export function localProjectInput(slug: string): ProjectUpsertInput {
 export function repositoryCatalog(projects: readonly ProjectRecord[]): ProjectRecord[] {
   const byRepository = new Map<string, ProjectRecord>();
   for (const project of projects) {
+    if (project.archived === true) continue;
     if (project.kind !== undefined && project.kind !== 'github') continue;
     if ((project.forgeConnectionId ?? 'legacy-github') !== 'legacy-github') continue;
     const key = `${project.owner}/${project.repo}`.toLowerCase();
