@@ -38,8 +38,9 @@ export function UsageRing({
   const scale = size / 26;
   const stroke = STROKE * scale;
   const center = size / 2;
-  // Leave room for the pace line, which reaches past the ring's outer edge;
-  // only the round tip of its background gap may touch the box edge.
+  // Leave room for the pace line, which reaches past the ring's outer edge.
+  // Its round tips, and those of the gap behind it, may be clipped slightly
+  // by the box when the line lies along an axis.
   const radius = center - stroke / 2 - 1.6 * scale;
   const circumference = 2 * Math.PI * radius;
   const used = Math.min(100, Math.max(0, Number.isFinite(percent) ? percent : 0));
