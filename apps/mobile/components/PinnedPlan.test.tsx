@@ -1,5 +1,5 @@
-import { fireEvent, render, screen, within } from '@testing-library/react-native';
-import { Dimensions, ScrollView, StyleSheet, Text } from 'react-native';
+import { act, fireEvent, render, screen, within } from '@testing-library/react-native';
+import { AccessibilityInfo, Dimensions, ScrollView, StyleSheet, Text } from 'react-native';
 import type { ReactTestInstance } from 'react-test-renderer';
 import { PINNED_PLAN_MAX_HEIGHT_SHARE, PinnedPlan } from './PinnedPlan';
 
@@ -252,4 +252,16 @@ it('marks only answered decisions as done, not ones skipped with Next', () => {
   const open = color(0);
   const answered = color(1);
   expect(answered).not.toBe(open);
+});
+
+it('stays on the answered decision while a screen reader is running', async () => {
+  // Moving on would leave focus on a radio that no longer exists.
+  jest.spyOn(AccessibilityInfo, 'isScreenReaderEnabled').mockResolvedValueOnce(true);
+  render(<PinnedPlan {...props} markdown={decisions} />);
+  await act(async () => {});
+  fireEvent.press(screen.getByRole('radio', { name: 'Excl. VAT' }));
+  expect(screen.getByText('Decision 1 of 3')).toBeOnTheScreen();
+  expect(screen.getByRole('radio', { name: 'Excl. VAT' })).toBeChecked();
+  fireEvent.press(screen.getByLabelText('Next decision'));
+  expect(screen.getByText('Decision 2 of 3')).toBeOnTheScreen();
 });

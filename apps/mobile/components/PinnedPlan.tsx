@@ -1,6 +1,6 @@
 import { planDecisionAnswers, planProposalContent, planProposalCounts } from '@verity/mobile';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { Pressable, ScrollView, View, useWindowDimensions } from 'react-native';
+import { AccessibilityInfo, Pressable, ScrollView, View, useWindowDimensions } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { Icon } from './Icon';
@@ -63,6 +63,18 @@ export function PinnedPlan({
   const [stepsShown, setStepsShown] = useState(false);
   const [current, setCurrent] = useState(0);
   const [answers, setAnswers] = useState(() => initialAnswers(decisions));
+  const [screenReader, setScreenReader] = useState(false);
+  useEffect(() => {
+    let active = true;
+    void AccessibilityInfo.isScreenReaderEnabled().then((enabled) => {
+      if (active) setScreenReader(enabled);
+    });
+    const subscription = AccessibilityInfo.addEventListener('screenReaderChanged', setScreenReader);
+    return () => {
+      active = false;
+      subscription.remove();
+    };
+  }, []);
   const previousSend = useRef(sendNonce);
   useEffect(() => {
     // A new proposal asks its own questions: earlier selections do not carry over.
@@ -106,7 +118,9 @@ export function PinnedPlan({
 
   const select = (option: string) => {
     setAnswers((previous) => previous.map((answer, at) => (at === index ? option : answer)));
-    if (index < undecided - 1) setCurrent(index + 1);
+    // With a screen reader, moving on would drop focus onto a removed radio and
+    // hide the confirmation that the choice registered: Next stays explicit.
+    if (!screenReader && index < undecided - 1) setCurrent(index + 1);
   };
 
   const summary = (
