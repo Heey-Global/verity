@@ -1106,3 +1106,93 @@ it('logs the meeting data path without transcript text, PIN or credentials', asy
     await service.close();
   }
 });
+
+it.each([false, true])(
+  'records safe connector failures without changing startup cleanup (logger throws: %s)',
+  async (throws) => {
+    const { PreviewConnector } = await import('@verity/preview-tunnel');
+    const rows = new Map<string, unknown>();
+    const store = {
+      getSession: async () => ({ id: 'session' }),
+      getAttendeeState: async (id: string) => rows.get(id),
+      putAttendeeState: async (id: string, state: unknown) => {
+        rows.set(id, structuredClone(state));
+      },
+      listAttendeeState: async () => [],
+    } as unknown as EventStore;
+    const warn = vi.fn(() => {
+      if (throws) throw new Error('logger unavailable');
+    });
+    const request = vi.fn();
+    const remove = vi.fn();
+    const connect = vi
+      .spyOn(PreviewConnector.prototype, 'connect')
+      .mockImplementation(async function (this: import('@verity/preview-tunnel').PreviewConnector) {
+        const { options } = this as unknown as {
+          options: import('@verity/preview-tunnel').PreviewConnectorOptions;
+        };
+        options.onDiagnostic?.({
+          event: 'connect.failed',
+          cause: 'upgrade_rejected',
+          statusCode: 403,
+          elapsedMs: 12,
+        });
+        throw new Error('raw upstream error with secret-token');
+      });
+    const service = new AttendeeMeetings({
+      store,
+      ingest: vi.fn(),
+      log: { info: vi.fn(), warn },
+      client: () => ({ request }) as unknown as import('./attendee-client.js').AttendeeClient,
+      edge: {
+        isAvailable: () => true,
+        remove,
+        create: async () => ({
+          shareId: 'share',
+          publicOrigin: 'https://meeting.example.test',
+          edgeUrl: 'wss://meeting.example.test/__verity/connector',
+          connectorToken: 'secret-token',
+          sessionSecret: 'secret-session',
+          expiresAt: new Date(Date.now() + 60_000),
+        }),
+      },
+    });
+    await service.configure({
+      apiKey: 'secret-api',
+      webhookSecret: Buffer.alloc(32).toString('base64'),
+    });
+    await service.open();
+    try {
+      await expect(
+        service.start('session', 'https://meet.google.com/abc-defg-hij', false),
+      ).rejects.toThrow('its connector could not connect');
+      expect(warn).toHaveBeenCalledWith(
+        {
+          meetingId: expect.any(String),
+          shareId: 'share',
+          event: 'connect.failed',
+          cause: 'upgrade_rejected',
+          statusCode: 403,
+          elapsedMs: 12,
+        },
+        'Online meeting connector transport',
+      );
+      expect(warn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          meetingId: expect.any(String),
+          phase: 'connector_connect',
+          event: 'failed',
+          bindingPresent: true,
+          botCreateAttempted: false,
+        }),
+        'Online meeting start failed',
+      );
+      expect(JSON.stringify(warn.mock.calls)).not.toMatch(/secret-|meeting\.example|raw upstream/);
+      expect(request).not.toHaveBeenCalled();
+      expect(remove).toHaveBeenCalledWith('share');
+    } finally {
+      await service.close();
+      connect.mockRestore();
+    }
+  },
+);

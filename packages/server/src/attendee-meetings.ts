@@ -340,11 +340,26 @@ export class AttendeeMeetings {
       throw new Error('Online sharing authority lost before connection');
     const generation = this.sharingGeneration;
     const connector = new PreviewConnector({
+      shareId: state.binding.shareId,
       edgeUrl: state.binding.edgeUrl,
       connectorToken: state.binding.connectorToken,
       targetOrigin: this.targetOrigin,
       maxBodyBytes: 1_000_000,
       requestTimeoutMs: 8_000,
+      onDiagnostic: (diagnostic) => {
+        try {
+          const entry = {
+            meetingId: state.meeting.id,
+            shareId: state.binding?.shareId,
+            ...diagnostic,
+          };
+          if (diagnostic.event === 'connect.failed' || diagnostic.event === 'heartbeat.timeout')
+            this.options.log?.warn(entry, 'Online meeting connector transport');
+          else this.options.log?.info(entry, 'Online meeting connector transport');
+        } catch {
+          /* Diagnostics must not affect the connection. */
+        }
+      },
     });
     await connector.connect();
     if (generation !== this.sharingGeneration || this.options.edge?.isAvailable?.() === false) {
@@ -412,8 +427,8 @@ export class AttendeeMeetings {
       let shareCreateSent = false;
       const emit = (event: MeetingStartDiagnostic['event']) => {
         try {
-          diagnostics?.emit({
-            requestId: diagnostics.requestId,
+          const entry = {
+            ...(diagnostics?.requestId === undefined ? {} : { requestId: diagnostics.requestId }),
             meetingId: id,
             phase,
             code,
@@ -421,7 +436,11 @@ export class AttendeeMeetings {
             bindingPresent: Boolean(state.binding),
             botCreateAttempted: Boolean(state.botCreateAttempted),
             event,
-          });
+          } satisfies MeetingStartDiagnostic;
+          if (diagnostics) diagnostics.emit(entry);
+          // Calendar starts have no request diagnostic callback.
+          else if (event === 'failed') this.options.log?.warn(entry, 'Online meeting start failed');
+          else this.options.log?.info(entry, 'Online meeting start progress');
         } catch {
           /* Diagnostics must not affect meeting state. */
         }
