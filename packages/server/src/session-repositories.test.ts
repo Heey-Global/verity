@@ -1,6 +1,6 @@
 import { expect, it, vi } from 'vitest';
 import type { EventStore, ProjectRecord } from '@verity/store';
-import { mkdtemp, mkdir, writeFile, access, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, access, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -108,6 +108,16 @@ it("points the agent at an opened repository's own AGENTS.md, and only when it e
     const withFile = await h.service.openForSandbox('s', 'r');
     expect(withFile.instructions).toBe(`${withFile.workspace.worktree}/AGENTS.md`);
     expect(withFile.instructions).toMatch(/^\/work\/\.verity-repositories\//u);
+    // `AGENTS.md -> CLAUDE.md` inside the checkout is a file the agent can read;
+    // a link out of the checkout is not reported, whatever it points at.
+    await rm(join(opened.workspace.worktree, 'AGENTS.md'));
+    await writeFile(join(opened.workspace.worktree, 'CLAUDE.md'), 'Shared rules.');
+    await symlink('CLAUDE.md', join(opened.workspace.worktree, 'AGENTS.md'));
+    expect((await h.service.openForSandbox('s', 'r')).instructions).toBe(withFile.instructions);
+    await rm(join(opened.workspace.worktree, 'AGENTS.md'));
+    await writeFile(join(root, 'outside.md'), 'Not this repository.');
+    await symlink(join(root, 'outside.md'), join(opened.workspace.worktree, 'AGENTS.md'));
+    expect(await h.service.openForSandbox('s', 'r')).not.toHaveProperty('instructions');
   } finally {
     await rm(root, { recursive: true, force: true });
   }

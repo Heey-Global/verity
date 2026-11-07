@@ -1,5 +1,5 @@
 import type { RepositoryInstructions } from '@verity/mobile';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useUnistyles } from 'react-native-unistyles';
 import { createVerityClient } from '../../lib/client';
 import { CodeHostIcon } from '../CodeHostIcon';
@@ -44,17 +44,23 @@ export function ProjectInstructionsSettings({ projectId }: { projectId: string }
   );
   // Loaded on its own: a code host that is down must not keep the project's
   // own Instructions from being read or edited.
+  // A retry pressed while an earlier lookup is still out must win, even when
+  // the earlier answer arrives last.
+  const repositoryRequest = useRef(0);
   const loadRepositories = useCallback(async () => {
     if (!client) return;
+    const request = ++repositoryRequest.current;
     setRepositories({ state: 'loading' });
+    let next: Repositories;
     try {
-      setRepositories({
+      next = {
         state: 'loaded',
         repositories: await client.getProjectRepositoryInstructions(projectId),
-      });
+      };
     } catch {
-      setRepositories({ state: 'failed' });
+      next = { state: 'failed' };
     }
+    if (request === repositoryRequest.current) setRepositories(next);
   }, [client, projectId]);
   useEffect(() => {
     void loadInstructions();

@@ -167,11 +167,12 @@ describe('project Instructions', () => {
     const replace = jest
       .fn()
       .mockRejectedValueOnce(new Error('Project Instructions changed; reload before saving'))
-      .mockResolvedValue({ instructions: 'Reply in German.', revision: 'r2' });
+      .mockResolvedValue({ instructions: 'Reply in German.', revision: 'r3' });
     mockClient.mockReturnValue({
       getProjectInstructions: jest
         .fn()
-        .mockResolvedValue({ instructions: 'Write clearly.', revision: 'r1' }),
+        .mockResolvedValueOnce({ instructions: 'Write clearly.', revision: 'r1' })
+        .mockResolvedValue({ instructions: 'Changed elsewhere.', revision: 'r2' }),
       getProjectRepositoryInstructions: jest.fn().mockResolvedValue([
         repository({
           id: 'default:p',
@@ -209,11 +210,18 @@ describe('project Instructions', () => {
     fireEvent.press(screen.getByText('Save'));
     await screen.findByText('Project Instructions changed; reload before saving');
     expect(screen.getByDisplayValue('Reply in German.')).toBeTruthy();
+    // Retry fetches the current revision and keeps the draft; saving again is the
+    // person's explicit choice to replace what changed elsewhere.
+    fireEvent.press(screen.getByText('Retry'));
+    await waitFor(() =>
+      expect(screen.queryByText('Project Instructions changed; reload before saving')).toBeNull(),
+    );
+    expect(screen.getByDisplayValue('Reply in German.')).toBeTruthy();
     fireEvent.press(screen.getByText('Save'));
     await waitFor(() =>
       expect(replace).toHaveBeenLastCalledWith('p', {
         instructions: 'Reply in German.',
-        revision: 'r1',
+        revision: 'r2',
       }),
     );
     await waitFor(() => expect(screen.queryByText('Save')).toBeNull());

@@ -44,7 +44,9 @@ interface Forge {
   writes: string[];
   /** Repository contents by `ref:path`; `dir` is a directory, `large` a file
    *  the API lists without inlining its content. */
-  files: Map<string, string | { dir: true } | { large: true }>;
+  files: Map<string, string | { dir: true } | { large: true } | { symlink: string }>;
+  /** Branches that exist; a ref outside this set answers 404 like a lost one. */
+  branches: Set<string>;
 }
 
 /** The contents API answer GitHub and Forgejo share, or undefined for a 404. */
@@ -54,6 +56,8 @@ function contentsRow(forge: Forge, path: string): unknown {
   const file = forge.files.get(`${decodeURIComponent(match[2]!)}:${decodeURIComponent(match[1]!)}`);
   if (file === undefined) return undefined;
   if (typeof file === 'object' && 'dir' in file) return [{ type: 'file', name: 'nested.md' }];
+  if (typeof file === 'object' && 'symlink' in file)
+    return { type: 'symlink', target: file.symlink };
   if (typeof file === 'object') return { type: 'file', encoding: 'none', content: '', sha: 'big' };
   return {
     type: 'file',
@@ -110,6 +114,7 @@ function emptyForge(): Forge {
     comments: [],
     writes: [],
     files: new Map(),
+    branches: new Set(['main', 'release/2', 'develop']),
   };
 }
 
@@ -146,6 +151,12 @@ function forgejoFake(forge: Forge): ForgeRepositoryOperations {
       return row === undefined
         ? Promise.reject(new ForgejoRequestError(404))
         : Promise.resolve(row);
+    }
+    if (path.startsWith(`${base}/branches/`)) {
+      const branch = decodeURIComponent(path.slice(`${base}/branches/`.length));
+      return forge.branches.has(branch)
+        ? Promise.resolve({ name: branch })
+        : Promise.reject(new ForgejoRequestError(404));
     }
     if (path === `${base}/pulls` && method === 'POST') {
       const pull: Pull = {
@@ -231,6 +242,12 @@ function githubFake(forge: Forge): ForgeRepositoryOperations {
     if (path.startsWith(`${base}/contents/`)) {
       const row = contentsRow(forge, path);
       return row === undefined ? respond(404, { message: 'Not Found' }) : respond(200, row);
+    }
+    if (path.startsWith(`${base}/branches/`)) {
+      const branch = decodeURIComponent(path.slice(`${base}/branches/`.length));
+      return forge.branches.has(branch)
+        ? respond(200, { name: branch })
+        : respond(404, { message: 'Branch not found' });
     }
     if (path === '/graphql') {
       const id = (input!.variables as { id: string }).id;
@@ -376,9 +393,25 @@ describe.each([
       content: 'Release rules.',
     });
     expect(await ops.readFile('AGENTS.md', 'develop')).toBeNull();
+    // A 404 for a branch that does not exist (or a repository the token cannot
+    // see) is not "no AGENTS.md" and must not be reported as one.
+    await expect(ops.readFile('AGENTS.md', 'gone')).rejects.toThrow(/not found/u);
     expect(await ops.readFile('docs', 'main')).toBeNull();
     // Shown as empty, an uninlined file would read as "no rules" — it must fail.
     await expect(ops.readFile('huge.md', 'main')).rejects.toThrow(/did not return its content/u);
+  });
+
+  it('follows one symlink inside the repository and refuses one that leaves it', async () => {
+    const forge = emptyForge();
+    forge.files.set('main:AGENTS.md', { symlink: 'docs/CLAUDE.md' });
+    forge.files.set('main:docs/CLAUDE.md', 'Shared rules.');
+    forge.files.set('release/2:AGENTS.md', { symlink: '../outside.md' });
+    forge.files.set('develop:AGENTS.md', { symlink: 'LINK.md' });
+    forge.files.set('develop:LINK.md', { symlink: 'AGENTS.md' });
+    const ops = make(forge);
+    expect(await ops.readFile('AGENTS.md', 'main')).toMatchObject({ content: 'Shared rules.' });
+    await expect(ops.readFile('AGENTS.md', 'release/2')).rejects.toThrow(/symlink/u);
+    await expect(ops.readFile('AGENTS.md', 'develop')).rejects.toThrow(/symlink/u);
   });
 });
 

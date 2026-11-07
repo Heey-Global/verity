@@ -47,16 +47,22 @@ export type RepositoryInstructions = Pick<
     | { status: 'unavailable'; branch: string | null; path: 'AGENTS.md' }
   );
 
+/** Each code host request has its own deadline, but one repository can need
+ *  several in a row; this bounds the whole lookup so a slow host cannot hold
+ *  the list for every other repository. */
+export const REPOSITORY_INSTRUCTIONS_TIMEOUT_MS = 20_000;
+
 /**
  * The root AGENTS.md of every repository connected to the project, read from the
  * code host at the repository's default branch. Each repository is resolved on
- * its own: one host being down marks that repository unavailable and leaves the
- * others readable, and "unavailable" is never reported as "no AGENTS.md".
+ * its own: one host being down or slow marks that repository unavailable and
+ * leaves the others readable, and "unavailable" is never reported as "no AGENTS.md".
  */
 export async function readRepositoryInstructions(
   store: Pick<EventStore, 'listProjectRepositories'>,
   project: ProjectRecord,
   repositoryFor: ((project: ProjectRecord) => Promise<ProjectRepository | undefined>) | undefined,
+  timeoutMs = REPOSITORY_INSTRUCTIONS_TIMEOUT_MS,
 ): Promise<RepositoryInstructions[]> {
   const repositories = (await store.listProjectRepositories(project.id)).filter(
     (repository) => repository.kind === 'github' || repository.kind === 'forgejo',
@@ -66,14 +72,14 @@ export async function readRepositoryInstructions(
       const identity = {
         id: repository.id,
         name: repository.isDefault ? `${repository.owner}/${repository.repo}` : repository.name,
-        kind: repository.kind,
+        kind: repository.kind as 'github' | 'forgejo',
         owner: repository.owner,
         repo: repository.repo,
         isDefault: repository.isDefault,
         path: 'AGENTS.md' as const,
       };
       let branch: string | null = repository.defaultBranch;
-      try {
+      const read = async (): Promise<RepositoryInstructions> => {
         const remote = await repositoryFor?.(projectForRepository(project, repository));
         if (!remote) return { ...identity, status: 'unavailable', branch };
         branch ??= await remote.operations.defaultBranch();
@@ -84,17 +90,36 @@ export async function readRepositoryInstructions(
           ...identity,
           status: 'present',
           branch,
-          instructions: truncated
-            ? file.content.slice(0, REPOSITORY_INSTRUCTIONS_MAX_CHARS)
-            : file.content,
+          instructions: truncate(file.content, REPOSITORY_INSTRUCTIONS_MAX_CHARS),
           revision: file.revision,
           truncated,
         };
+      };
+      let timer: NodeJS.Timeout | undefined;
+      try {
+        return await Promise.race([
+          read(),
+          new Promise<RepositoryInstructions>((resolve) => {
+            timer = setTimeout(
+              () => resolve({ ...identity, status: 'unavailable', branch }),
+              timeoutMs,
+            );
+          }),
+        ]);
       } catch {
         return { ...identity, status: 'unavailable', branch };
+      } finally {
+        clearTimeout(timer);
       }
     }),
   );
+}
+
+/** Cut at a character boundary: a cut through a surrogate pair leaves half an emoji. */
+function truncate(text: string, max: number): string {
+  if (text.length <= max) return text;
+  const code = text.charCodeAt(max - 1);
+  return text.slice(0, code >= 0xd800 && code <= 0xdbff ? max - 1 : max);
 }
 
 export function registerProjectRepositoriesRoutes(

@@ -2,7 +2,7 @@ import type { ProjectRecord } from '@verity/store';
 import {
   ForgeOperationError,
   forgeContentsPath,
-  forgeFileContent,
+  readForgeFile,
   type ForgeContentsRow,
   type ForgeIssueView,
   type ForgePullRequestView,
@@ -82,21 +82,31 @@ export function createForgejoRepositoryOperations(
     forgejo(() => transport.json<ForgejoPullRow>(`${repoPath}/pulls/${number}`), 'pull request');
 
   return {
-    readFile: async (path, ref) => {
-      try {
-        const row = await forgejo(
-          () =>
-            transport.json<ForgeContentsRow | ForgeContentsRow[]>(
-              `${repoPath}/contents/${forgeContentsPath(path)}?ref=${forgeContentsPath(ref)}`,
+    readFile: (path, ref) =>
+      readForgeFile(
+        {
+          contents: async (current) => {
+            try {
+              return await forgejo(
+                () =>
+                  transport.json<ForgeContentsRow | ForgeContentsRow[]>(
+                    `${repoPath}/contents/${forgeContentsPath(current)}?ref=${forgeContentsPath(ref)}`,
+                  ),
+                'file',
+              );
+            } catch (error) {
+              if (notFound(error)) return null;
+              throw error;
+            }
+          },
+          requireRef: () =>
+            forgejo(
+              () => transport.json(`${repoPath}/branches/${forgeContentsPath(ref)}`),
+              'branch',
             ),
-          'file',
-        );
-        return forgeFileContent(row);
-      } catch (error) {
-        if (notFound(error)) return null;
-        throw error;
-      }
-    },
+        },
+        path,
+      ),
     defaultBranch: () =>
       forgejo(async () => {
         const repo = await transport.json<{ default_branch?: string }>(repoPath);

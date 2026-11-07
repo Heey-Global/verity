@@ -1,7 +1,12 @@
-import type { EventStore } from '@verity/store';
+import type { EventStore, ProjectRecord } from '@verity/store';
 import Fastify from 'fastify';
 import { expect, it, vi } from 'vitest';
-import { registerProjectRepositoriesRoutes } from './project-repositories-routes.js';
+import type { ProjectRepository } from './project-repo-route.js';
+import {
+  readRepositoryInstructions,
+  registerProjectRepositoriesRoutes,
+  REPOSITORY_INSTRUCTIONS_MAX_CHARS,
+} from './project-repositories-routes.js';
 
 it('validates remote access even when the caller supplies a default branch', async () => {
   const app = Fastify();
@@ -146,4 +151,47 @@ it('answers 404 for an unknown project without touching a code host', async () =
   } finally {
     await app.close();
   }
+});
+
+it('marks a hanging code host unavailable without holding back the other repositories', async () => {
+  const repository = (id: string, isDefault: boolean) => ({
+    id,
+    projectId: 'p',
+    name: id,
+    kind: 'github' as const,
+    owner: 'team',
+    repo: id,
+    forgeConnectionId: null,
+    defaultBranch: 'main',
+    isDefault,
+    removedAt: null,
+  });
+  const emoji = '😀';
+  const content = 'x'.repeat(REPOSITORY_INSTRUCTIONS_MAX_CHARS - 1) + emoji;
+  const result = await readRepositoryInstructions(
+    {
+      listProjectRepositories: vi
+        .fn()
+        .mockResolvedValue([repository('site', true), repository('slow', false)]),
+    },
+    { id: 'p', kind: 'github', owner: 'team', repo: 'site' } as ProjectRecord,
+    (target) =>
+      Promise.resolve({
+        operations: {
+          readFile: () =>
+            target.repo === 'slow'
+              ? new Promise<never>(() => undefined)
+              : Promise.resolve({ content, revision: 'r' }),
+        },
+      } as unknown as ProjectRepository),
+    50,
+  );
+  expect(result.map((entry) => [entry.id, entry.status])).toEqual([
+    ['site', 'present'],
+    ['slow', 'unavailable'],
+  ]);
+  // The cut falls inside the emoji's surrogate pair; half of it must not remain.
+  const shown = (result[0] as { instructions: string }).instructions;
+  expect(shown).toBe('x'.repeat(REPOSITORY_INSTRUCTIONS_MAX_CHARS - 1));
+  expect(result[0]).toMatchObject({ truncated: true });
 });
