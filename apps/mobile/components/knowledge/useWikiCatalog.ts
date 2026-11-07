@@ -49,7 +49,10 @@ export function useWikiCatalog(client: VerityClient, projectId: string | null) {
   }>({ key: null, catalog: undefined });
   const [attempt, setAttempt] = useState(0);
   const retry = useCallback(() => {
-    if (projectId !== null) cache.delete(projectId);
+    if (projectId === null) return;
+    cache.delete(projectId);
+    // Loading again, not still failed: the error gives way to the spinner.
+    setState({ key: projectId, catalog: undefined });
     setAttempt((value) => value + 1);
   }, [projectId]);
   useEffect(() => {

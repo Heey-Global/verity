@@ -115,6 +115,14 @@ it('addresses the Wiki views like folders, so back goes to the start page', () =
   expect(wikiView(PROJECT, DECISIONS)).toEqual({ kind: 'decisions' });
   expect(wikiView(PROJECT, WIKI_FILES)).toEqual({ kind: 'files' });
   expect(wikiView(PROJECT, topicFolder('A/B & C'))).toEqual({ kind: 'topic', title: 'A/B & C' });
+  // The router hands params back decoded; the folder must survive that, and a
+  // title must not split into folders or name a parent other than the Wiki.
+  for (const title of ['100% done', 'A/B', 'Über ✓', '~7e.'])
+    expect(wikiView(PROJECT, decodeURIComponent(topicFolder(title)))).toEqual({
+      kind: 'topic',
+      title,
+    });
+  expect(topicFolder('A/B')).not.toContain('/B');
   expect(folderTitle(PROJECT, topicFolder('A/B & C'))).toBe('A/B & C');
   expect(folderTitle(PROJECT, WIKI_FILES)).toBe('All files');
   // Shared has no Wiki catalog; its folders stay folders.
@@ -273,7 +281,7 @@ describe('a Wiki page', () => {
   });
 });
 
-it('drops one-line comments from the rendered page only', () => {
+it('drops one-line comments from rendered Markdown, not from the text around them', () => {
   expect(
     fileMarkdownItems('<!-- meta -->\n# T\n<!-- a --> kept <!-- b -->\n<!-- open\nstill -->'),
   ).toEqual([
@@ -284,10 +292,12 @@ it('drops one-line comments from the rendered page only', () => {
   ]);
 });
 
-it('reports a catalog that fails to load, with Retry', async () => {
+it('lists the Wiki’s files when its catalog fails to load, with Retry', async () => {
   const api = client(catalog, { getProjectWiki: jest.fn().mockRejectedValue(new Error('down')) });
   render(<KnowledgeScreen scope={PROJECT} folder="insights" />);
-  expect(await screen.findByText('down')).toBeTruthy();
+  expect(await screen.findByText(/could not be loaded \(down\)/)).toBeTruthy();
+  // The Wiki stays reachable through its files.
+  expect(await screen.findByText('nav.md')).toBeTruthy();
   api.getProjectWiki.mockResolvedValue(catalog);
   await act(async () => fireEvent.press(screen.getByText('Retry')));
   expect(await screen.findByTestId('wiki-home')).toBeTruthy();

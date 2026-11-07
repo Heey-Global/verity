@@ -58,10 +58,12 @@ export function KnowledgeFolder({
   const view = wikiView(scope, folder);
   const inWiki = folder === WIKI || folder.startsWith(`${WIKI}/`);
   const wiki = useWikiCatalog(client, scope.kind === 'project' && inWiki ? scope.projectId : null);
-  // The start page, the decisions and a topic come from the catalog; only a
-  // server without one lists their folders instead.
+  // The start page, the decisions and a topic come from the catalog. A server
+  // without one, or a catalog that cannot be read, lists their folder instead,
+  // so the Wiki is never less reachable than its files.
   const fromCatalog = view !== null && view.kind !== 'files';
-  const listing = !areas && (!fromCatalog || wiki.catalog === null);
+  const catalogFailed = fromCatalog && wiki.error !== undefined;
+  const listing = !areas && (!fromCatalog || wiki.catalog === null || catalogFailed);
   const titles = new Map((wiki.catalog?.pages ?? []).map((page) => [page.path, page]));
   const open = { folder: onOpenFolder, file: onOpenFile };
   const [directory, setDirectory] = useState<SessionDirectory>();
@@ -124,14 +126,7 @@ export function KnowledgeFolder({
         ) : view.kind === 'topic' ? (
           <WikiTopicPages catalog={wiki.catalog} title={view.title} open={open} />
         ) : null
-      ) : fromCatalog && wiki.error !== undefined ? (
-        <View style={styles.message}>
-          <Text variant="body" tone="muted">
-            {wiki.error}
-          </Text>
-          <Button label="Retry" variant="secondary" size="compact" onPress={wiki.retry} />
-        </View>
-      ) : fromCatalog && wiki.catalog === undefined ? (
+      ) : fromCatalog && wiki.catalog === undefined && !catalogFailed ? (
         <ActivityIndicator style={styles.loading} />
       ) : error !== undefined ? (
         <View style={styles.message}>
@@ -171,6 +166,14 @@ export function KnowledgeFolder({
           )}
         </Group>
       )}
+      {catalogFailed ? (
+        <View style={styles.message}>
+          <Text variant="subtitle" tone="muted">
+            {`The Wiki overview could not be loaded (${wiki.error ?? ''}), so its files are listed instead.`}
+          </Text>
+          <Button label="Retry" variant="secondary" size="compact" onPress={wiki.retry} />
+        </View>
+      ) : null}
       {directory?.truncated ? (
         <Text variant="subtitle" tone="muted">
           This folder has more files than can be shown. Organize it into smaller folders.

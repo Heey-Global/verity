@@ -30,7 +30,8 @@ export function fileMarkdownItems(content: string): FileMarkdownItem[] {
     }
     for (const prose of parseMarkdownBlocks(block.content)) {
       if (prose.type === 'lines') {
-        // A one-line comment is metadata (a decision record's header), not text.
+        // A one-line comment is metadata (a decision record's header), not text;
+        // rendered Markdown hides comments everywhere, so every preview does.
         for (const line of prose.lines)
           if (!/^\s*<!--(?:(?!-->).)*-->\s*$/.test(line)) text('line', line);
       } else {
