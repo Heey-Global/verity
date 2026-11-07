@@ -53,9 +53,10 @@ describe('GET /projects (#174)', () => {
       },
     ]);
   });
-  it('hides already-registered (non-absent) projects from the picker list', async () => {
-    // `p-absent` was never added; `p-active` is an existing project. The picker
-    // must offer only the former so added projects don't reappear as duplicates.
+  it('keeps repositories that already back a project in the picker list', async () => {
+    // `p-absent` was never added; `p-active` is an existing project. A repository
+    // may back several projects, so both stay selectable — the used one as the
+    // repository alone, without the other project's identity or state.
     await ctx.store.upsertProject({
       id: 'p-absent',
       owner: 'heey-global',
@@ -72,7 +73,164 @@ describe('GET /projects (#174)', () => {
     });
     const res = await app.inject({ method: 'GET', url: '/github/repositories' });
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toMatchObject([{ id: 'p-absent', repo: 'available', state: 'absent' }]);
+    const listed = res.json<{ id: string; repo: string; state: string }[]>();
+    expect(listed.map(({ repo }) => repo).sort()).toEqual(['added', 'available']);
+    expect(listed.find(({ repo }) => repo === 'available')).toMatchObject({
+      id: 'p-absent',
+      state: 'absent',
+    });
+    expect(listed.find(({ repo }) => repo === 'added')).toMatchObject({
+      id: 'repository:heey-global/added',
+      state: 'absent',
+    });
+  });
+
+  it('never exposes a removed active project through the picker', async () => {
+    await ctx.store.upsertProject({
+      id: 'p-removed',
+      owner: 'heey-global',
+      repo: 'removed',
+      containerName: 'verity-heey-global--removed',
+      state: 'active',
+      overviewVisible: true,
+    });
+    await ctx.store.hideProject('p-removed');
+
+    const res = await app.inject({ method: 'GET', url: '/github/repositories' });
+
+    const [entry] = res.json<Record<string, unknown>[]>();
+    expect(entry).toMatchObject({
+      id: 'repository:heey-global/removed',
+      repo: 'removed',
+      state: 'absent',
+    });
+    // Nothing of the removed project itself may travel with the repository.
+    expect(JSON.stringify(entry)).not.toContain('p-removed');
+    expect(JSON.stringify(entry)).not.toContain('verity-heey-global--removed');
+  });
+
+  it('resolves a session by repository past an installation placeholder', async () => {
+    // A placeholder with configuration stays instance 1 when a local project
+    // links as instance 2; it is not a second project to choose between.
+    await ctx.store.upsertProject({
+      id: 'p-placeholder',
+      owner: 'northwind',
+      repo: 'shop',
+      containerName: 'verity-northwind--shop',
+      state: 'absent',
+    });
+    await ctx.store.updateProjectSettings('p-placeholder', { defaultBranch: 'develop' });
+    await ctx.store.createProject({
+      id: 'p-local',
+      owner: 'local',
+      repo: 'storefront',
+      containerName: 'verity-local--storefront',
+      kind: 'local',
+      cloneDir: 'local-storefront',
+      state: 'absent',
+      overviewVisible: true,
+    });
+    const target = { owner: 'northwind', repo: 'shop' };
+    expect(await ctx.store.reserveProjectIdentity('p-local', target)).toBe(true);
+    expect(await ctx.store.linkProjectToGitHub('p-local', target)).toMatchObject({
+      repositoryInstance: 2,
+    });
+    const spawning = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      provisioner: { provision: vi.fn() },
+      projectCloneRoot: '/clones',
+      projectBackend: {} as never,
+    });
+    try {
+      const res = await spawning.inject({
+        method: 'POST',
+        url: '/sessions',
+        payload: { project: 'northwind/shop' },
+      });
+      expect(res.json<{ error?: string }>().error ?? '').not.toMatch(/several projects/);
+    } finally {
+      await spawning.close();
+    }
+  });
+
+  it('lists a repository once however many projects use it', async () => {
+    for (const id of ['p-first', 'p-second']) {
+      await ctx.store.createRepositoryProject({
+        id,
+        owner: 'northwind',
+        repo: 'shop',
+        containerName: 'verity-northwind--shop',
+        state: 'absent',
+        overviewVisible: true,
+      });
+    }
+
+    const res = await app.inject({ method: 'GET', url: '/github/repositories' });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject([{ owner: 'northwind', repo: 'shop' }]);
+    expect(res.json()).toHaveLength(1);
+  });
+
+  it('creates a second project when POST /projects names a used repository', async () => {
+    const first = await app.inject({
+      method: 'POST',
+      url: '/projects',
+      payload: { repo: 'northwind/shop' },
+    });
+    const second = await app.inject({
+      method: 'POST',
+      url: '/projects',
+      payload: { repo: 'northwind/shop' },
+    });
+
+    expect(first.statusCode).toBe(201);
+    expect(second.statusCode).toBe(201);
+    const a = first.json<{ project: { id: string; cloneDir: string | null } }>().project;
+    const b = second.json<{ project: { id: string; cloneDir: string | null } }>().project;
+    expect(b.id).not.toBe(a.id);
+    expect(b.cloneDir).toBe(`northwind-shop-${b.id}`);
+    const overview = await app.inject({ method: 'GET', url: '/projects' });
+    expect(
+      overview
+        .json<{ id: string }[]>()
+        .map(({ id }) => id)
+        .sort(),
+    ).toEqual([a.id, b.id].sort());
+  });
+
+  it('refuses to guess a project when a session names a shared repository', async () => {
+    for (const id of ['p-first', 'p-second']) {
+      await ctx.store.createRepositoryProject({
+        id,
+        owner: 'northwind',
+        repo: 'shop',
+        containerName: 'verity-northwind--shop',
+        state: 'active',
+        overviewVisible: true,
+      });
+    }
+    const spawning = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      provisioner: { provision: vi.fn() },
+      projectCloneRoot: '/clones',
+      projectBackend: {} as never,
+    });
+    try {
+      const res = await spawning.inject({
+        method: 'POST',
+        url: '/sessions',
+        payload: { project: 'northwind/shop' },
+      });
+      expect(res.statusCode).toBe(409);
+      expect(res.json<{ error: string }>().error).toMatch(/several projects use northwind\/shop/);
+    } finally {
+      await spawning.close();
+    }
   });
   it('hides absent repository-cache rows from the overview project list', async () => {
     await ctx.store.upsertProject({
@@ -462,7 +620,7 @@ describe('GET /projects (#174)', () => {
     });
   });
 
-  it('keeps explicitly added paused projects in the overview and out of the picker', async () => {
+  it('keeps explicitly added paused projects in the overview and in the picker', async () => {
     await ctx.store.upsertProject({
       id: 'p-paused',
       owner: 'heey-global',
@@ -476,9 +634,11 @@ describe('GET /projects (#174)', () => {
     expect(overview.statusCode).toBe(200);
     expect(overview.json()).toMatchObject([{ id: 'p-paused', repo: 'paused', state: 'absent' }]);
 
+    // The repository stays selectable for another project, without exposing
+    // this project's identity.
     const picker = await app.inject({ method: 'GET', url: '/github/repositories' });
     expect(picker.statusCode).toBe(200);
-    expect(picker.json()).toEqual([]);
+    expect(picker.json()).toMatchObject([{ id: 'repository:heey-global/paused', repo: 'paused' }]);
   });
 
   it('offers soft-deleted absent projects in the picker so re-add can restore them', async () => {
@@ -498,7 +658,17 @@ describe('GET /projects (#174)', () => {
 
     const picker = await app.inject({ method: 'GET', url: '/github/repositories' });
     expect(picker.statusCode).toBe(200);
-    expect(picker.json()).toMatchObject([{ id: 'p-deleted', repo: 'deleted', state: 'absent' }]);
+    expect(picker.json()).toMatchObject([
+      { id: 'repository:heey-global/deleted', repo: 'deleted', state: 'absent' },
+    ]);
+    // Choosing it again restores the removed project rather than forking one.
+    const readd = await app.inject({
+      method: 'POST',
+      url: '/projects',
+      payload: { repo: 'heey-global/deleted' },
+    });
+    expect(readd.statusCode).toBe(201);
+    expect(readd.json()).toMatchObject({ project: { id: 'p-deleted', hiddenAt: null } });
   });
 
   it('returns the provider list when configured (ProjectRecord shape round-trip)', async () => {
@@ -1941,9 +2111,9 @@ describe('POST /projects/:id/link-github', () => {
     }
   });
 
-  // (owner, repo) is UNIQUE, so an unchecked link would fail in the DB AFTER the
-  // push already happened.
-  it('409s before pushing when another project owns the target pair', async () => {
+  // A repository may back several projects: linking to one that already has a
+  // project creates a separate project instead of refusing or merging.
+  it('links a local project to a repository another project already uses', async () => {
     await ctx.store.upsertProject({
       id: 'p-existing',
       owner: 'heey-global',
@@ -1953,18 +2123,30 @@ describe('POST /projects/:id/link-github', () => {
     });
     await createLocal('p-dup');
     const provisioner = fakeProvisioner();
-    const a = buildServer({ eventStore: ctx.store, bus, conductor, provisioner });
+    const a = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      provisioner,
+      ghTokenMint: vi.fn(async () => 'gh-token'),
+    });
     try {
       const res = await a.inject({
         method: 'POST',
         url: '/projects/p-dup/link-github',
         payload: { repo: 'heey-global/verity' },
       });
-      expect(res.statusCode).toBe(409);
-      expect(res.json()).toEqual({
-        error: 'heey-global/verity is already registered as a project',
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toMatchObject({
+        project: { id: 'p-dup', owner: 'heey-global', repo: 'verity', repositoryInstance: 2 },
       });
-      expect(provisioner.linkCloneToGitHub).not.toHaveBeenCalled();
+      expect(provisioner.linkCloneToGitHub).toHaveBeenCalled();
+      expect(await ctx.store.getProject('p-existing')).toMatchObject({
+        owner: 'heey-global',
+        repo: 'verity',
+        state: 'active',
+        repositoryInstance: 1,
+      });
     } finally {
       await a.close();
     }
@@ -2009,10 +2191,9 @@ describe('POST /projects/:id/link-github', () => {
     }
   });
 
-  // The narrow half of adoption: a project someone actually worked in is a real
-  // conflict, and it must be refused BEFORE the push rather than by deleting
-  // the row out from under its sessions.
-  it('409s before pushing when the target project has sessions', async () => {
+  // The narrow half of adoption: a project someone actually worked in is never
+  // deleted out from under its sessions; the link becomes a separate project.
+  it('keeps a worked-in project of the target repository and links alongside it', async () => {
     await ctx.store.upsertProject({
       id: 'p-worked-in',
       owner: 'example-org',
@@ -2042,12 +2223,10 @@ describe('POST /projects/:id/link-github', () => {
         payload: { repo: 'example-org/sample-app' },
       });
 
-      expect(res.statusCode).toBe(409);
-      expect(res.json()).toEqual({
-        error: 'example-org/sample-app is already registered as a project',
-      });
-      expect(provisioner.linkCloneToGitHub).not.toHaveBeenCalled();
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toMatchObject({ project: { id: 'p-collide', repositoryInstance: 2 } });
       expect(await ctx.store.getProject('p-worked-in')).toBeDefined();
+      expect((await ctx.store.getSession('s-worked-in'))?.projectId).toBe('p-worked-in');
     } finally {
       await a.close();
     }

@@ -834,7 +834,10 @@ export async function syncProjectsFromInstallation(
       .filter(
         (project) =>
           (project.kind === undefined || project.kind === 'github') &&
-          (project.forgeConnectionId ?? 'legacy-github') === 'legacy-github',
+          (project.forgeConnectionId ?? 'legacy-github') === 'legacy-github' &&
+          // The sync maintains each repository's first project; further projects
+          // of the same repository follow its archive state in the store.
+          (project.repositoryInstance ?? 1) === 1,
       )
       .map((project) => [`${project.owner.toLowerCase()}/${project.repo.toLowerCase()}`, project]),
   );

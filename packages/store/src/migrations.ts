@@ -5450,3 +5450,37 @@ migrations['0197_project_inquiries'] = {
     await sql`drop table project_inquiry_grants`.execute(db);
   },
 };
+
+migrations['0198_project_repository_instances'] = {
+  // A repository may back several projects. Every existing project keeps
+  // instance 1, so its identity, clone and container stay exactly as before;
+  // another project for the same repository takes the next instance.
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table projects add column repository_instance integer not null default 1
+      check (repository_instance >= 1)`.execute(db);
+    await sql`alter table project_identity_claims add column repository_instance integer not null
+      default 1 check (repository_instance >= 1)`.execute(db);
+    await sql`drop index projects_forge_repo_uniq`.execute(db);
+    await sql`create unique index projects_forge_repo_uniq
+      on projects(forge_scope, owner, repo, repository_instance)`.execute(db);
+    await sql`alter table project_identity_claims drop constraint project_identity_claims_pkey,
+      add primary key(forge_scope, owner, repo, repository_instance)`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    // Rolling back would merge projects that share a repository; refuse instead.
+    await sql`do $$ begin
+      if exists (select 1 from projects where repository_instance > 1)
+        or exists (select 1 from project_identity_claims where repository_instance > 1) then
+        raise exception 'projects share a repository; remove the additional projects first';
+      end if;
+    end $$`.execute(db);
+    await sql`alter table project_identity_claims drop constraint project_identity_claims_pkey,
+      add primary key(forge_scope, owner, repo)`.execute(db);
+    await sql`drop index projects_forge_repo_uniq`.execute(db);
+    await sql`create unique index projects_forge_repo_uniq on projects(forge_scope, owner, repo)`.execute(
+      db,
+    );
+    await sql`alter table project_identity_claims drop column repository_instance`.execute(db);
+    await sql`alter table projects drop column repository_instance`.execute(db);
+  },
+};

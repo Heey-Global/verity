@@ -431,6 +431,9 @@ export interface ProjectsTable {
   owner: string;
   /** Lowercase canonical repo (`verity`). */
   repo: string;
+  /** 1 for the first project of a repository; each further project of the same
+   *  repository takes the next number. Part of the unique repository identity. */
+  repository_instance: ColumnType<number, number | undefined, number>;
   /** `verity-<owner>--<repo>` — single hyphen-slug, lowercased. */
   container_name: string;
   /** `github` or `forgejo` for repository projects; `control_plane` for Verity's
@@ -524,6 +527,7 @@ interface ProjectIdentityClaimsTable {
   forge_connection_id: ColumnType<string | null, string | null | undefined, string | null>;
   owner: string;
   repo: string;
+  repository_instance: ColumnType<number, number | undefined, never>;
   project_id: string;
   created_at: ColumnType<Date, string | undefined, never>;
 }

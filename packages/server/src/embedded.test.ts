@@ -3632,7 +3632,21 @@ process.stdout.write(JSON.stringify({ type: 'thread.started', thread_id: 'codex-
     );
     const repositories = await server.app.inject({ method: 'GET', url: '/github/repositories' });
     expect(repositories.statusCode).toBe(200);
-    expect(repositories.json()).toEqual([]);
+    expect(repositories.json()).toEqual([
+      expect.objectContaining({
+        id: 'repository:heey-global/legal-docs',
+        owner: 'heey-global',
+        repo: 'legal-docs',
+        containerName: 'repository:heey-global/legal-docs',
+        state: 'absent',
+        imageRef: null,
+        provisionError: null,
+        sandboxUpdate: expect.objectContaining({
+          state: 'unknown',
+          reason: 'project is not active',
+        }),
+      }),
+    ]);
   });
 
   it('rejects an unknown permissionMode at build time (not a background spawn failure)', async () => {
