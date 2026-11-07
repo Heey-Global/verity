@@ -5,7 +5,7 @@ import { Icon, type IconName } from '../Icon';
 import { tint } from './tint';
 
 export type ButtonVariant = 'primary' | 'secondary' | 'text' | 'destructive';
-export type ButtonSize = 'large' | 'compact';
+export type ButtonSize = 'large' | 'compact' | 'small';
 
 /**
  * The one button (docs/design-system.md § 5.1). Primary is tonal — a quiet cyan
@@ -63,7 +63,7 @@ export function Button({
       accessibilityState={{ disabled: locked, busy: loading }}
       style={({ pressed }) => [
         styles.base,
-        size === 'compact' ? styles.compact : styles.large,
+        size === 'compact' ? styles.compact : size === 'small' ? styles.small : styles.large,
         styles[variant],
         fullWidth ? styles.fullWidth : null,
         disabled ? styles.disabled : null,
@@ -73,9 +73,15 @@ export function Button({
       {loading ? (
         <ActivityIndicator size="small" color={color} testID="button-spinner" />
       ) : icon !== undefined ? (
-        <Icon name={icon} size={size === 'compact' ? 16 : 18} color={color} />
+        <Icon name={icon} size={size === 'large' ? 18 : 16} color={color} />
       ) : null}
-      <Text style={[styles.label, size === 'compact' ? styles.labelCompact : null, { color }]}>
+      <Text
+        style={[
+          styles.label,
+          size === 'compact' ? styles.labelCompact : size === 'small' ? styles.labelSmall : null,
+          { color },
+        ]}
+      >
         {label}
       </Text>
     </Pressable>
@@ -135,6 +141,9 @@ const styles = StyleSheet.create((theme) => ({
   // No alignSelf: in a row the parent centers it; in a column, place it in a row
   // to keep it as wide as its label.
   compact: { minHeight: 36, paddingHorizontal: theme.spacing.md + 2 },
+  // An answer under a list row: secondary to the row it belongs to, so it is
+  // lighter than a card's compact button and never draws the eye first.
+  small: { minHeight: 32, paddingHorizontal: theme.spacing.md },
   fullWidth: { alignSelf: 'stretch' },
   primary: {
     backgroundColor: tint(theme.colors.action, 'fill'),
@@ -147,6 +156,11 @@ const styles = StyleSheet.create((theme) => ({
   pressed: { opacity: 0.8 },
   label: { ...theme.typography.button },
   labelCompact: { fontSize: theme.typography.bodySmall.fontSize },
+  labelSmall: {
+    fontFamily: theme.fonts.semibold,
+    fontSize: theme.typography.subtitle.fontSize,
+    lineHeight: theme.typography.subtitle.lineHeight,
+  },
   icon: {
     width: 40,
     height: 40,
