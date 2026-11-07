@@ -191,6 +191,8 @@ it('measures its bound against the part of the window the keyboard leaves', () =
   const { height } = Dimensions.get('window');
   const style = StyleSheet.flatten(screen.getByTestId('pinned-plan').props.style);
   expect(style.maxHeight).toBe(Math.round((height - 300) * PINNED_PLAN_MAX_HEIGHT_SHARE));
+  // With the keyboard up, the first tap on an answer must select it.
+  expect(screen.UNSAFE_getByType(ScrollView).props.keyboardShouldPersistTaps).toBe('handled');
 });
 
 it('opens the collapsed card instead of sending answers out of sight', () => {

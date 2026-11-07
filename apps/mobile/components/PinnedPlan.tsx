@@ -206,7 +206,13 @@ export function PinnedPlan({
         />
       </Pressable>
       {expanded ? (
-        <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent}>
+        <ScrollView
+          style={styles.scroll}
+          contentContainerStyle={styles.scrollContent}
+          // The composer often has focus: a tap on an answer must count, not
+          // only dismiss the keyboard.
+          keyboardShouldPersistTaps="handled"
+        >
           {details ? (
             <>
               {renderMarkdown(markdown)}
