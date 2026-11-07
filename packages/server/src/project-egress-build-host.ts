@@ -67,6 +67,11 @@ export const protectedBuildHostConfig = z.strictObject({
   dataVolume: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/u),
 });
 
+export const protectedBuildDockerHost = z.object({
+  CgroupDriver: z.literal('systemd'),
+  CgroupVersion: z.literal('2'),
+});
+
 export const protectedBuildResult = z.strictObject({
   version: z.literal(1),
   state: z.enum(['succeeded', 'failed']),
@@ -158,7 +163,11 @@ export async function protectedBuildUnitEnded(
   readEvents: (path: string) => Promise<string>,
 ): Promise<boolean> {
   if (value.LoadState === 'not-found') return true;
-  if (!['inactive', 'failed'].includes(value.ActiveState ?? '')) return false;
+  if (
+    !['inactive', 'failed'].includes(value.ActiveState ?? '') &&
+    !(value.ActiveState === 'active' && value.SubState === 'exited')
+  )
+    return false;
   if (!value.ControlGroup) return true;
   if (
     !/^\/verity\.slice\/verity-buildkit\.slice\//u.test(value.ControlGroup) ||
@@ -773,6 +782,7 @@ export async function createNativeProtectedBuildHost(options: NativeProtectedBui
     networks,
     async ready() {
       await options.verifyReady();
+      protectedBuildDockerHost.parse(JSON.parse(await docker(['info', '--format', '{{json .}}'])));
       await run('/usr/local/libexec/verity-buildkit/protected-build-attempt', ['check'], 5000);
       const slice = await run('/usr/bin/systemctl', [
         'show',
@@ -863,7 +873,11 @@ export async function createNativeProtectedBuildHost(options: NativeProtectedBui
     },
     async status(name) {
       const value = await unitState(name);
-      if (!['inactive', 'failed'].includes(value.ActiveState ?? '')) return 'running';
+      if (
+        !['inactive', 'failed'].includes(value.ActiveState ?? '') &&
+        !(value.ActiveState === 'active' && value.SubState === 'exited')
+      )
+        return 'running';
       if (value.Result !== 'success' || !(await ended(name))) return 'failed';
       const raw = await privateRead(join(ROOT, 'controller.json'));
       if (!raw || typeof raw !== 'object' || !('request' in raw)) return 'failed';
@@ -877,15 +891,8 @@ export async function createNativeProtectedBuildHost(options: NativeProtectedBui
       return 'succeeded';
     },
     stop: stopUnit,
-    async ended(name) {
-      if (!(await ended(name))) return false;
-      const raw = await privateRead(join(ROOT, 'controller.json'));
-      if (raw && typeof raw === 'object' && 'request' in raw) {
-        const request = protectedBuildRequest.parse(raw.request);
-        if (unit(request) === name) await exportResult(request);
-      }
-      return true;
-    },
+    // Termination proof must survive disposal of the Server's exported artifacts.
+    ended,
     async cleanup(request, plan) {
       const server = dns.get(attemptKey(request));
       if (server) {

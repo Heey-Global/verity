@@ -178,3 +178,7 @@ describe('protected build fixed host runtime', () => {
     ).toThrow('identity mismatch');
   });
 });
+
+it('retains successful transient unit completion until explicit cleanup', () => {
+  expect(protectedBuildLaunch(request, anchor).args).toContain('--property=RemainAfterExit=yes');
+});

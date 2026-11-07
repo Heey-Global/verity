@@ -52,6 +52,7 @@ export function protectedBuildLaunch(
       '--property=TimeoutStopSec=30',
       '--property=RuntimeMaxSec=2700',
       '--property=Restart=no',
+      '--property=RemainAfterExit=yes',
       '--property=NoNewPrivileges=yes',
       '--property=PrivateTmp=yes',
       '--property=PrivateMounts=yes',

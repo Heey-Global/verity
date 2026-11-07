@@ -2,6 +2,7 @@ import { expect, it, vi } from 'vitest';
 import {
   protectedBuildBootstrapRules,
   protectedBuildHostConfig,
+  protectedBuildDockerHost,
   protectedBuildResourcesReady,
   protectedBuildResult,
   protectedBuildUnitEnded,
@@ -113,4 +114,33 @@ it('recognizes systemctl nonzero missing-unit replies without accepting bus or p
     run.mockRejectedValue(error);
     await expect(readProtectedBuildUnit(name, run)).rejects.toThrow();
   }
+});
+
+it('requires unified systemd Docker cgroups so the anchor shares the actual builder slice', () => {
+  expect(
+    protectedBuildDockerHost.safeParse({ CgroupDriver: 'systemd', CgroupVersion: '2' }).success,
+  ).toBe(true);
+  expect(
+    protectedBuildDockerHost.safeParse({ CgroupDriver: 'cgroupfs', CgroupVersion: '2' }).success,
+  ).toBe(false);
+  expect(
+    protectedBuildDockerHost.safeParse({ CgroupDriver: 'systemd', CgroupVersion: '1' }).success,
+  ).toBe(false);
+});
+
+it('proves retained successful units empty without needing exported Server artifacts', async () => {
+  const state = {
+    LoadState: 'loaded',
+    ActiveState: 'active',
+    SubState: 'exited',
+    Result: 'success',
+    ControlGroup: '/verity.slice/verity-buildkit.slice/verity-protected-build-abc.service',
+  };
+  const read = vi.fn(async () => 'populated 0\n');
+  expect(await protectedBuildUnitEnded(state, read)).toBe(true);
+  expect(read).toHaveBeenCalledExactlyOnceWith(
+    '/sys/fs/cgroup' + state.ControlGroup + '/cgroup.events',
+  );
+  read.mockResolvedValue('populated 1\n');
+  expect(await protectedBuildUnitEnded(state, read)).toBe(false);
 });

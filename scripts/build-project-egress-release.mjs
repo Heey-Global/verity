@@ -1,5 +1,6 @@
 /** Assemble the fixed host payload from release-built artifacts, never host downloads. */
 import { createHash } from 'node:crypto';
+import { Buffer } from 'node:buffer';
 import {
   chmod,
   copyFile,
@@ -52,9 +53,18 @@ const files = augment
     ]);
 await mkdir(destination, { recursive: true });
 /** @type {Record<string, string>} */
-const manifest = augment
-  ? JSON.parse(await readFile(join(destination, 'manifest.json'), 'utf8'))
-  : {};
+const manifest = {};
+if (augment) {
+  /** @type {unknown} */
+  const existing = JSON.parse(await readFile(join(destination, 'manifest.json'), 'utf8'));
+  if (!existing || typeof existing !== 'object' || Array.isArray(existing))
+    throw new Error('Invalid release manifest');
+  for (const [name, digest] of Object.entries(existing)) {
+    if (typeof digest !== 'string' || !/^[a-f0-9]{64}$/.test(digest))
+      throw new Error(`Invalid release artifact digest: ${name}`);
+    manifest[name] = digest;
+  }
+}
 for (const [name, source] of files) {
   if (!(await lstat(source)).isFile())
     throw new Error(`Expected regular release artifact: ${name}`);
