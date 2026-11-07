@@ -11,13 +11,19 @@ function arc(percent: number) {
   render(<UsageRing label="5h" percent={percent} pace={50} level="calm" size={34} />);
   const props = screen.getByTestId('usage-ring-arc', hidden).props;
   const [dash] = String(props.strokeDasharray).split(/[ ,]+/).map(Number);
-  const offset = Number(props.strokeDashoffset ?? 0);
+  // The arc starts where its rotation puts it: -90° is 12 o'clock. A dash
+  // offset would shift it too, so it is folded in rather than assumed absent.
+  const [a, b] = props.matrix as number[];
+  const turn = ((Math.atan2(b!, a!) * 180) / Math.PI + 90 + 360) % 360;
+  const offset =
+    Number(props.strokeDashoffset ?? 0) -
+    ((turn > 180 ? turn - 360 : turn) / 360) * 2 * Math.PI * Number(props.r);
   const width = Number(props.strokeWidth);
   // react-native-svg passes the cap to native code as an enum (1 = round).
   const round = props.strokeLinecap === 1 || props.strokeLinecap === 'round';
   const circumference = 2 * Math.PI * Number(props.r);
   // Where the painted stroke begins and ends along the circle, measured from
-  // 12 o'clock (the ring is rotated by -90°), including what a cap adds.
+  // 12 o'clock, including what a cap adds.
   const cap = round ? width / 2 : 0;
   return { start: -offset - cap, end: -offset + dash! + cap, circumference };
 }

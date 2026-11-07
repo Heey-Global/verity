@@ -50,6 +50,9 @@ export function UsageRing({
   const arcLength = (circumference * used) / 100;
   const round = used < 100 && arcLength >= stroke;
   const capInset = round ? stroke / 2 : 0;
+  // The inset start is a rotation rather than a negative dash offset, which
+  // not every native renderer applies the same way.
+  const startAngle = -90 + (capInset / circumference) * 360;
   const pacePosition = level !== 'spent' && pace !== null && Number.isFinite(pace) ? pace : null;
   const paceEnds =
     pacePosition === null
@@ -84,9 +87,8 @@ export function UsageRing({
             strokeWidth={stroke}
             strokeLinecap={round ? 'round' : 'butt'}
             strokeDasharray={`${Math.max(0.01, arcLength - 2 * capInset)} ${circumference * 2}`}
-            strokeDashoffset={-capInset}
             fill="none"
-            transform={`rotate(-90 ${center} ${center})`}
+            transform={`rotate(${startAngle} ${center} ${center})`}
           />
         ) : null}
         {paceEnds !== null ? (

@@ -280,7 +280,8 @@ title; a log list keeps them dense and scannable.
   name (`5h`, `W`) sits inside in `Caption`.
 - The arc is the reading, so it is the brightest mark: `text` while there is room and
   `attention` once the window is spent. Both ends are round and inset by half a stroke,
-  so the arc starts exactly at 12 o'clock and ends exactly at the used share. The pace
+  so the arc starts exactly at 12 o'clock and ends exactly at the used share; a full ring
+  and a sliver shorter than the stroke have straight ends instead. The pace
   line cuts a gap in `surface` through the arc so it stays readable on top of it. A spent
   window has no pace left to keep and draws no line.
 - A meter is a state, never an action or brand moment. The reset time stands beside the
