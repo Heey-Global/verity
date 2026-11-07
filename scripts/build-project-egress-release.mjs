@@ -11,7 +11,7 @@ import {
   rename,
   writeFile,
 } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 
 const [destination, objects, node = process.execPath] = process.argv.slice(2);
 const augment = objects === '--protected-toolchain';
@@ -23,8 +23,15 @@ const files = augment
   ? new Map([
       [
         'devcontainer.js',
-        await realpath(
-          node === process.execPath ? '/usr/local/bin/devcontainer' : join(node, 'devcontainer.js'),
+        join(
+          dirname(
+            await realpath(
+              node === process.execPath
+                ? '/usr/local/bin/devcontainer'
+                : join(node, 'devcontainer.js'),
+            ),
+          ),
+          'dist/spec-node/devContainersSpecCLI.js',
         ),
       ],
       [

@@ -285,8 +285,6 @@ const builds =
     ? await createNativeProtectedBuildHost({
         imageRef: relayPolicy.image,
         dataVolume: relayPolicy.dataVolume,
-        store: policyStore,
-        ...(projectPolicy ? { requests: projectPolicy } : {}),
         dependencies: { ...fenceDependencies, deadline },
         verifyReady: async () => {
           systemInventory.verify();

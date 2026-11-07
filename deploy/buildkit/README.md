@@ -631,12 +631,17 @@ sockets or another project's cache. Both daemons and the fixed anchor count
 against the shared builder slice. Registry credentials are scoped to GHCR,
 written only to private attempt files and removed when the attempt ends.
 
-DNS returns only the current project admission's A/AAAA records over a private
-attempt-bound Unix socket. Registry redirects, Feature downloads, Dockerfile
-frontends, remote sources and RUN downloads require the same explicit project
-destination grants; unknown names produce bounded destination requests. Host,
-broker and other project addresses remain excluded. Grant renewal and kernel
-packet deadlines are independent of the build's process lifetime.
+Builds have a temporary public Internet policy independent of runtime project
+grants. New projects can download base images, Features, packages, remote sources
+and registry redirects without first collecting destination approvals. The CLI,
+metadata daemon and RUN steps share the same policy, including direct public IP
+connections and TCP/UDP ports. A private attempt-bound Unix socket supplies DNS.
+Private, reserved and transition addresses, host-connected networks and every
+Docker network remain blocked, including publicly addressed host/project networks.
+The host refreshes that exclusion inventory with each authenticated renewal;
+inventory errors revoke access. Short nft timeouts and kernel packet deadlines
+remain independent of the build's process lifetime. The running project sandbox
+continues to require its ordinary project destination grants.
 
 Authenticated heartbeats renew access; reads do not. A host sweep contains
 abandoned attempts, and systemd bounds their total lifetime. Cancellation,

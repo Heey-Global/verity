@@ -18,9 +18,9 @@ import {
 } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { z } from 'zod';
-import type { ProjectEgressStore } from '@verity/store';
 import { createDevcontainerBuildSnapshot } from './devcontainer-build-boundary.js';
-import { createProjectEgressAdmission } from './project-egress-admission.js';
+import { createProtectedBuildAdmission } from './project-egress-build-admission.js';
+import { egressBuildProtectedNetworks } from './project-egress-host-authority.js';
 import { inspectProjectFenceAttachment } from './project-egress-attachment.js';
 import type { ProjectFenceBinding, ProjectFenceDependencies } from './project-egress-fence.js';
 import {
@@ -303,8 +303,6 @@ export function protectedBuildBootstrapRules(active: readonly string[] = []): st
 export interface NativeProtectedBuildOptions {
   imageRef: string;
   dataVolume: string;
-  store: Pick<ProjectEgressStore, 'readForAdmission'>;
-  requests?: Pick<ProjectEgressStore, 'requestFromSandbox'>;
   dependencies: Omit<ProjectFenceDependencies, 'policyCurrent' | 'inspect' | 'relay'>;
   verifyReady(): Promise<void>;
   run?(this: void, file: string, args: readonly string[], timeout?: number): Promise<string>;
@@ -335,26 +333,8 @@ export async function createNativeProtectedBuildHost(options: NativeProtectedBui
       ).stdout);
   const docker = (args: readonly string[]) => run('/usr/bin/docker', args, 30000);
   const active = new Set<string>();
-  const admissions = new Map<string, ReturnType<typeof createProjectEgressAdmission>>();
+  const admissions = new Map<string, ReturnType<typeof createProtectedBuildAdmission>>();
   const dns = new Map<string, Server>();
-  const requested = new Map<string, number>();
-  const recent = new Map<string, number[]>();
-  const requestDestination = async (request: ProtectedBuildRequest, name: string) => {
-    if (!options.requests || !(await options.dependencies.directTargetAllowed(name))) return;
-    const now = Date.now();
-    const id = request.projectId + '|' + name;
-    if ((requested.get(id) ?? -Infinity) > now - 60_000) return;
-    const times = (recent.get(request.projectId) ?? []).filter((at) => at > now - 60_000);
-    if (times.length >= 20) return;
-    for (const [entry, at] of requested) if (at <= now - 60_000) requested.delete(entry);
-    recent.set(request.projectId, [...times, now]);
-    requested.set(id, now);
-    await options.requests.requestFromSandbox(request.projectId, {
-      host: name,
-      protocol: 'tcp',
-      port: 443,
-    });
-  };
   const bootstrap = () => options.dependencies.apply(protectedBuildBootstrapRules([...active]));
   const volume = async () => {
     const value = z
@@ -535,10 +515,9 @@ export async function createNativeProtectedBuildHost(options: NativeProtectedBui
     } as ProtectedBuildRequest);
     let value = admissions.get(key);
     if (!value) {
-      value = createProjectEgressAdmission({
+      value = createProtectedBuildAdmission({
         binding: binding(anchor),
-        continuous: true,
-        store: options.store,
+        networkInventory: () => egressBuildProtectedNetworks(),
         dependencies: {
           ...options.dependencies,
           inspect: async (expected) => {
@@ -603,8 +582,7 @@ export async function createNativeProtectedBuildHost(options: NativeProtectedBui
                 ),
             })
             .parse(JSON.parse(input.split('\n')[0]!));
-          const value = admission(anchor).admitted(name);
-          if (!value) await requestDestination(request, name);
+          const value = await admission(anchor).resolve(name);
           connection.end(JSON.stringify(value ?? { addresses: [], ttlSeconds: 1 }) + '\n');
         })().catch(() => connection.destroy());
       });
