@@ -13,6 +13,9 @@ function arc(percent: number) {
   const [dash] = String(props.strokeDasharray).split(/[ ,]+/).map(Number);
   // The arc starts where its rotation puts it: -90° is 12 o'clock. A dash
   // offset would shift it too, so it is folded in rather than assumed absent.
+  // A react-native-svg change in how it serialises transforms must fail here,
+  // not turn every position into NaN.
+  expect(props.matrix).toHaveLength(6);
   const [a, b] = props.matrix as number[];
   const turn = ((Math.atan2(b!, a!) * 180) / Math.PI + 90 + 360) % 360;
   const offset =
