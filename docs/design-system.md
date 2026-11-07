@@ -274,14 +274,19 @@ title; a log list keeps them dense and scannable.
 
 ### 5.5b Usage ring
 
-- One quota window as a small ring (`UsageRing`): the arc is the share used, a short
-  notch across the ring marks where usage would sit now at an even pace, and the window's
+- One quota window as a small ring (`UsageRing`): the arc is the share used, filling
+  clockwise from 12 o'clock, a short line across the ring in `textMuted` marks how much
+  of the window has passed (where usage would sit now at an even pace), and the window's
   name (`5h`, `W`) sits inside in `Caption`.
-- A meter is a state, never an action or brand moment: the arc is `textMuted` while there
-  is room, `text` from 90 % and `attention` once the window is spent. A spent window has
-  no pace left to keep and draws no notch.
-- The reset time stands beside the ring. A figure appears only from 90 % (`93%`) or as
-  `Limit` in `attention`; below that the ring and notch carry the reading.
+- The arc is the reading, so it is the brightest mark: `text` while there is room and
+  `attention` once the window is spent. Both ends are round and inset by half a stroke,
+  so the arc starts exactly at 12 o'clock and ends exactly at the used share; a full ring
+  and a sliver shorter than the stroke have straight ends instead. The pace
+  line cuts a gap in `surface` through the arc so it stays readable on top of it. A spent
+  window has no pace left to keep and draws no line.
+- A meter is a state, never an action or brand moment. The reset time stands beside the
+  ring. A figure appears only from 90 % (`93%`) or as `Limit` in `attention`; below that
+  the ring and pace line carry the reading.
 - A window a provider does not report is left out, not drawn empty. Provider marks are
   monochrome in `text`.
 - The ring is decoration for the text beside it; the group around it carries the spoken
