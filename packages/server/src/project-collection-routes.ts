@@ -99,20 +99,36 @@ export function repositoryCatalog(projects: readonly ProjectRecord[]): ProjectRe
   // picker must not hand out that project's ID, state or sandbox details.
   // Choosing it still restores a removed first project (createRepositoryProject).
   return [...byRepository.values()].map((project) =>
-    isInstallationPlaceholder(project)
-      ? project
-      : {
-          ...project,
-          id: `repository:${project.owner}/${project.repo}`,
-          state: 'absent' as const,
-          overviewVisible: false,
-          cloneDir: null,
-          imageRef: null,
-          imageOverrideRef: null,
-          provisionError: null,
-          provisionWarning: null,
-        },
+    isInstallationPlaceholder(project) ? project : repositoryOnly(project),
   );
+}
+
+/** A repository-level record built from an allowlist, so no project-level
+ *  field (container, visibility, order, sandbox state) can leak through. */
+function repositoryOnly(project: ProjectRecord): ProjectRecord {
+  const id = `repository:${project.owner}/${project.repo}`;
+  return {
+    id,
+    owner: project.owner,
+    repo: project.repo,
+    containerName: id,
+    kind: 'github',
+    forgeConnectionId: project.forgeConnectionId ?? null,
+    archived: project.archived ?? false,
+    state: 'absent',
+    imageRef: null,
+    provisionError: null,
+    provisionWarning: null,
+    hiddenAt: null,
+    overviewVisible: false,
+    latestReleaseTag: project.latestReleaseTag,
+    latestReleaseName: project.latestReleaseName,
+    latestReleaseUrl: project.latestReleaseUrl,
+    latestReleasePublishedAt: project.latestReleasePublishedAt,
+    createdAt: project.createdAt,
+    updatedAt: project.updatedAt,
+    stateChangedAt: project.stateChangedAt,
+  };
 }
 
 /** Registers project collection, ordering, repository-picker, and creation routes. */

@@ -98,9 +98,61 @@ describe('GET /projects (#174)', () => {
 
     const res = await app.inject({ method: 'GET', url: '/github/repositories' });
 
-    expect(res.json()).toMatchObject([
-      { id: 'repository:heey-global/removed', repo: 'removed', state: 'absent', cloneDir: null },
-    ]);
+    const [entry] = res.json<Record<string, unknown>[]>();
+    expect(entry).toMatchObject({
+      id: 'repository:heey-global/removed',
+      repo: 'removed',
+      state: 'absent',
+    });
+    // Nothing of the removed project itself may travel with the repository.
+    expect(JSON.stringify(entry)).not.toContain('p-removed');
+    expect(JSON.stringify(entry)).not.toContain('verity-heey-global--removed');
+  });
+
+  it('resolves a session by repository past an installation placeholder', async () => {
+    // A placeholder with configuration stays instance 1 when a local project
+    // links as instance 2; it is not a second project to choose between.
+    await ctx.store.upsertProject({
+      id: 'p-placeholder',
+      owner: 'northwind',
+      repo: 'shop',
+      containerName: 'verity-northwind--shop',
+      state: 'absent',
+    });
+    await ctx.store.updateProjectSettings('p-placeholder', { defaultBranch: 'develop' });
+    await ctx.store.createProject({
+      id: 'p-local',
+      owner: 'local',
+      repo: 'storefront',
+      containerName: 'verity-local--storefront',
+      kind: 'local',
+      cloneDir: 'local-storefront',
+      state: 'absent',
+      overviewVisible: true,
+    });
+    const target = { owner: 'northwind', repo: 'shop' };
+    expect(await ctx.store.reserveProjectIdentity('p-local', target)).toBe(true);
+    expect(await ctx.store.linkProjectToGitHub('p-local', target)).toMatchObject({
+      repositoryInstance: 2,
+    });
+    const spawning = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      provisioner: { provision: vi.fn() },
+      projectCloneRoot: '/clones',
+      projectBackend: {} as never,
+    });
+    try {
+      const res = await spawning.inject({
+        method: 'POST',
+        url: '/sessions',
+        payload: { project: 'northwind/shop' },
+      });
+      expect(res.json<{ error?: string }>().error ?? '').not.toMatch(/several projects/);
+    } finally {
+      await spawning.close();
+    }
   });
 
   it('lists a repository once however many projects use it', async () => {

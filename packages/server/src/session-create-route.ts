@@ -2,7 +2,7 @@ import { parseSpawnRequestBody, type SpawnBody } from './session-create-schema.j
 import { isLocalProject } from '@verity/store';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
-import { DeletedProjectError, type ProjectRecord } from '@verity/store';
+import { DeletedProjectError, isInstallationPlaceholder, type ProjectRecord } from '@verity/store';
 import type { FastifyBaseLogger, FastifyInstance } from 'fastify';
 import { parseOwnerRepo } from './canonical.js';
 import {
@@ -194,13 +194,17 @@ export function registerSessionCreateRoute(
             parsed!.repo,
           );
           // A repository can back several projects; never pick one of them.
-          if (matches.filter((match) => match.hiddenAt === null).length > 1) {
+          // Installation placeholders are not projects and do not count.
+          const projects = matches.filter(
+            (match) => match.hiddenAt === null && !isInstallationPlaceholder(match),
+          );
+          if (projects.length > 1) {
             reply.code(409);
             return {
               error: `several projects use ${parsed!.owner}/${parsed!.repo}; choose one by projectId`,
             };
           }
-          project = matches.find((match) => match.hiddenAt === null) ?? matches[0];
+          project = projects[0] ?? matches.find((match) => match.hiddenAt === null) ?? matches[0];
         }
         // A soft-deleted project is gone as far as every caller is concerned:
         // `getProject` still returns the row (the hide keeps it so the
