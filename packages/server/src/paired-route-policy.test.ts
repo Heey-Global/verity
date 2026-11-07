@@ -189,6 +189,7 @@ it('scopes direct project knowledge reads and edits to project permissions', asy
     '/projects/:id/knowledge/files',
     '/projects/:id/knowledge/files/content',
     '/projects/:id/knowledge/files/download',
+    '/projects/:id/knowledge/wiki',
   ]) {
     expect(await authorizePairedRoute(store, 'reader', 'GET', route, { id: 'p' })).toBe('allow');
     expect(await authorizePairedRoute(store, 'reader', 'GET', route, { id: 'other' })).toBe(

@@ -10,8 +10,12 @@ import {
   folderSubtitle,
   folderTitle,
   listKnowledge,
+  WIKI,
+  wikiView,
   type KnowledgeScope,
 } from './knowledgeScope';
+import { useWikiCatalog } from './useWikiCatalog';
+import { WikiDecisions, WikiHome, WikiTopicPages } from './WikiViews';
 
 const PROJECT_AREAS = ['insights', 'sources'] as const;
 
@@ -28,8 +32,11 @@ const DESCRIPTION: Record<KnowledgeScope['kind'], string> = {
  * caller's choice — its own screen on a phone, the same column in the wide
  * layout — so this draws no navigation of its own.
  *
- * A project's top level is its two areas, Wiki and Sources. Inside the Wiki,
- * Decisions comes first: it is the Wiki's own section, not one folder among many.
+ * A project's top level is its two areas, Wiki and Sources. The Wiki opens on
+ * its start page, with decisions, topics and their pages drawn from the Wiki's
+ * catalog, and its files listed by title; a server without a catalog shows the
+ * Wiki as a folder, Decisions first: it is the Wiki's own section, not one
+ * folder among many.
  */
 export function KnowledgeFolder({
   client,
@@ -48,11 +55,20 @@ export function KnowledgeFolder({
   // Folders take their area names only where the areas are: a project's tree,
   // or the top of a library. Below that, a Shared folder named `sources` is just that.
   const known = scope.kind === 'project' || folder === '';
+  const view = wikiView(scope, folder);
+  const inWiki = folder === WIKI || folder.startsWith(`${WIKI}/`);
+  const wiki = useWikiCatalog(client, scope.kind === 'project' && inWiki ? scope.projectId : null);
+  // The start page, the decisions and a topic come from the catalog; only a
+  // server without one lists their folders instead.
+  const fromCatalog = view !== null && view.kind !== 'files';
+  const listing = !areas && (!fromCatalog || wiki.catalog === null);
+  const titles = new Map((wiki.catalog?.pages ?? []).map((page) => [page.path, page]));
+  const open = { folder: onOpenFolder, file: onOpenFile };
   const [directory, setDirectory] = useState<SessionDirectory>();
   const [error, setError] = useState<string>();
   const [attempt, setAttempt] = useState(0);
   useEffect(() => {
-    if (areas) return;
+    if (!listing) return;
     let active = true;
     setDirectory(undefined);
     setError(undefined);
@@ -70,7 +86,14 @@ export function KnowledgeFolder({
     };
     // `scope` is compared by what it names, so a fresh object does not reload.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [client, scope.kind, scope.kind === 'project' ? scope.projectId : '', folder, areas, attempt]);
+  }, [
+    client,
+    scope.kind,
+    scope.kind === 'project' ? scope.projectId : '',
+    folder,
+    listing,
+    attempt,
+  ]);
   const retry = useCallback(() => setAttempt((value) => value + 1), []);
 
   return (
@@ -93,6 +116,23 @@ export function KnowledgeFolder({
             />
           ))}
         </Group>
+      ) : fromCatalog && wiki.catalog ? (
+        view.kind === 'home' ? (
+          <WikiHome catalog={wiki.catalog} open={open} />
+        ) : view.kind === 'decisions' ? (
+          <WikiDecisions catalog={wiki.catalog} open={open} />
+        ) : view.kind === 'topic' ? (
+          <WikiTopicPages catalog={wiki.catalog} title={view.title} open={open} />
+        ) : null
+      ) : fromCatalog && wiki.error !== undefined ? (
+        <View style={styles.message}>
+          <Text variant="body" tone="muted">
+            {wiki.error}
+          </Text>
+          <Button label="Retry" variant="secondary" size="compact" onPress={wiki.retry} />
+        </View>
+      ) : fromCatalog && wiki.catalog === undefined ? (
+        <ActivityIndicator style={styles.loading} />
       ) : error !== undefined ? (
         <View style={styles.message}>
           <Text variant="body" tone="muted">
@@ -122,7 +162,8 @@ export function KnowledgeFolder({
               <Row
                 key={entry.path}
                 leading={{ icon: 'file-text' }}
-                title={entry.name}
+                title={titles.get(entry.path)?.title ?? entry.name}
+                subtitle={titles.get(entry.path)?.summary || undefined}
                 navigates
                 onPress={() => onOpenFile(entry.path)}
               />

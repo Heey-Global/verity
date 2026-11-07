@@ -4769,6 +4769,34 @@ it('browses project knowledge without a session and sends the revision for edits
   await expect(client.listProjectKnowledgeFiles('p/1')).rejects.toThrow('Update the Verity server');
 });
 
+it('reads the project Wiki catalog and treats a server without it as none', async () => {
+  const catalog = {
+    pages: [
+      {
+        path: 'insights/plan.md',
+        title: 'The plan',
+        summary: 'Next.',
+        modifiedAt: '2026-11-07T10:00:00.000Z',
+        links: [],
+        linkedFrom: [],
+      },
+    ],
+    index: null,
+    decisions: [],
+    review: [],
+    truncated: false,
+  };
+  const { fetch, calls } = fakeFetchSequence(
+    json(catalog),
+    json({ error: 'Route not found' }, 404),
+  );
+  const client = new VerityClient({ baseUrl: 'http://host', fetch });
+  expect(await client.getProjectWiki('p/1')).toEqual(catalog);
+  expect(calls[0]?.url).toBe('http://host/projects/p%2F1/knowledge/wiki');
+  // An older server has no catalog: the app falls back to the folder view.
+  expect(await client.getProjectWiki('p/1')).toBeNull();
+});
+
 it('browses Shared without a session and sends the revision for edits', async () => {
   const directory = { root: 'shared', path: 'insights', entries: [], truncated: false };
   const file = {

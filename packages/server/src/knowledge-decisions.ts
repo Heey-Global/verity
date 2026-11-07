@@ -314,3 +314,45 @@ export async function projectDecisionDirectory(
     release();
   }
 }
+
+/** Every decision record of a project knowledge root with its computed status and
+ *  its neighbours in the revision chain, for the app's Wiki. The same scan as
+ *  lookups, so a status in the app is the status agents are given. */
+export async function projectDecisionSummaries(knowledgeRoot: string): Promise<{
+  decisions: {
+    id: string;
+    path: string;
+    title: string;
+    createdAt: string;
+    status: RecordEntry['status'];
+    predecessor?: string;
+    successor?: string;
+  }[];
+  incomplete: boolean;
+}> {
+  const release = await acquireKnowledgeMutationLock(knowledgeRoot);
+  try {
+    const state = await scan(join(knowledgeRoot, 'insights'));
+    const successor = new Map<string, string>();
+    for (const record of state.records)
+      if (record.metadata.predecessor && record.status !== 'unresolved')
+        successor.set(record.metadata.predecessor, record.metadata.id);
+    return {
+      decisions: state.records.map((record) => {
+        const next = successor.get(record.metadata.id);
+        return {
+          id: record.metadata.id,
+          path: `insights/${documentPath(record.metadata.id)}`,
+          title: record.metadata.title,
+          createdAt: record.metadata.createdAt,
+          status: record.status,
+          ...(record.metadata.predecessor ? { predecessor: record.metadata.predecessor } : {}),
+          ...(next ? { successor: next } : {}),
+        };
+      }),
+      incomplete: state.incomplete || state.warnings.length > 0,
+    };
+  } finally {
+    release();
+  }
+}

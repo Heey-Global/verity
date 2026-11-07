@@ -30,9 +30,45 @@ const KNOWN_FOLDERS: Record<string, { title: string; icon: IconName; subtitle: s
   },
 };
 
+/**
+ * A project Wiki's own views, addressed like folders so a phone's route stack
+ * and the wide column move through them like any other level: `insights` is the
+ * start page, `insights/decisions` the decision list, `insights/:files` the
+ * folder as it lies on disk and `insights/:topic:<title>` one topic's pages.
+ */
+export const WIKI = 'insights';
+export const WIKI_FILES = 'insights/:files';
+const TOPIC = 'insights/:topic:';
+
+export type WikiView =
+  { kind: 'home' } | { kind: 'decisions' } | { kind: 'files' } | { kind: 'topic'; title: string };
+
+export function topicFolder(title: string): string {
+  return `${TOPIC}${encodeURIComponent(title)}`;
+}
+
+/** The Wiki view a project folder names, or null for an ordinary folder. */
+export function wikiView(scope: KnowledgeScope, folder: string): WikiView | null {
+  if (scope.kind !== 'project') return null;
+  if (folder === WIKI) return { kind: 'home' };
+  if (folder === DECISIONS) return { kind: 'decisions' };
+  if (folder === WIKI_FILES) return { kind: 'files' };
+  if (folder.startsWith(TOPIC)) {
+    try {
+      return { kind: 'topic', title: decodeURIComponent(folder.slice(TOPIC.length)) };
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
 /** What a folder is called on screen: the areas by their names, the rest by theirs. */
 export function folderTitle(scope: KnowledgeScope, folder: string): string {
   if (folder === '') return scopeTitle(scope);
+  const view = wikiView(scope, folder);
+  if (view?.kind === 'files') return 'All files';
+  if (view?.kind === 'topic') return view.title;
   const name = folder.split('/').at(-1) ?? folder;
   // Shared names only its top-level areas; Decisions is a project's own section.
   if (scope.kind === 'shared' && folder.includes('/')) return name;
@@ -59,7 +95,7 @@ export function listKnowledge(
 ): Promise<SessionDirectory> {
   return scope.kind === 'shared'
     ? client.listSharedKnowledgeFiles(folder)
-    : client.listProjectKnowledgeFiles(scope.projectId, folder);
+    : client.listProjectKnowledgeFiles(scope.projectId, folder === WIKI_FILES ? WIKI : folder);
 }
 
 export function readKnowledge(
