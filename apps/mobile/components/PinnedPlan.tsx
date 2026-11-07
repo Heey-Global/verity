@@ -83,7 +83,15 @@ export function PinnedPlan({
   // A plan with open decisions cannot be implemented: the server refuses it too.
   const undecided = decisions.length;
   const answerable = decisions.flatMap((decision, index) =>
-    decision.options.length > 0 ? [{ decision, option: answers[index] }] : [],
+    decision.options.length > 0
+      ? [
+          {
+            decision,
+            // Until the reset effect runs, a new proposal still sees the old selection.
+            option: decision.options.includes(answers[index] ?? '') ? answers[index] : undefined,
+          },
+        ]
+      : [],
   );
   const chosen = answerable.flatMap(({ decision, option }) =>
     option === undefined ? [] : [{ decision, option }],
