@@ -117,6 +117,7 @@ export function nowSections(
   items: readonly InboxItem[],
   /** Sessions with an answer the operator has not read ({@link useUnread}). */
   unread: ReadonlySet<string>,
+  previous: readonly SessionSummary[] = [],
 ): { needsYou: NeedsYouEntry[]; active: SessionSummary[] } {
   const byId = new Map(sessions.map((session) => [session.sessionId, session]));
   const needsYou: NeedsYouEntry[] = [];
@@ -147,6 +148,8 @@ export function nowSections(
       (session) =>
         !taken.has(session.sessionId) && (isActive(session) || unread.has(session.sessionId)),
     ),
+    new Map(),
+    previous,
   );
   return { needsYou, active };
 }
@@ -273,6 +276,17 @@ export function ProjectWork({
     () => serverSessions.filter((session) => !removedIds.has(session.sessionId)),
     [serverSessions, removedIds],
   );
+  // Derive from the last snapshot so activity updates and newly started turns
+  // cannot insert rows ahead of sessions already working.
+  const [workSnapshot, setWorkSnapshot] = useState(() => ({
+    source: sessions,
+    ordered: workOrder(sessions),
+  }));
+  let ordered = workSnapshot.ordered;
+  if (workSnapshot.source !== sessions) {
+    ordered = workOrder(sessions, new Map(), workSnapshot.ordered);
+    setWorkSnapshot({ source: sessions, ordered });
+  }
   const [filter, setFilter] = useState<WorkFilter>(initialFilter);
   // The key, not the item: the sheet follows the live feed, so a question
   // answered elsewhere while it is open closes it instead of offering stale
@@ -294,8 +308,8 @@ export function ProjectWork({
     if (answeringKey !== null && answering === null) setAnsweringKey(null);
   }, [answeringKey, answering]);
   const now = useMemo(
-    () => nowSections(sessions, items ?? [], unreadIds),
-    [sessions, items, unreadIds],
+    () => nowSections(sessions, items ?? [], unreadIds, ordered),
+    [sessions, items, unreadIds, ordered],
   );
   // The visible item of each session, so All tags it the way Now does.
   const itemFor = useMemo(() => {
@@ -306,8 +320,14 @@ export function ProjectWork({
   }, [items]);
   const listed = useMemo(
     () =>
-      filter === 'now' ? [] : workOrder(sessions.filter((session) => workFilter(session, filter))),
-    [sessions, filter],
+      filter === 'now'
+        ? []
+        : workOrder(
+            sessions.filter((session) => workFilter(session, filter)),
+            new Map(),
+            ordered,
+          ),
+    [sessions, filter, ordered],
   );
   const needsCount = leadingRows.length + now.needsYou.length;
   const nowCount = needsCount + now.active.length;
