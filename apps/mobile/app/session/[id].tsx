@@ -351,6 +351,7 @@ import {
   loadSharingModule,
   parentPath,
   pdfFileName,
+  fileDeletionBatch,
   renameProblem,
 } from '../../lib/sessionFileUi';
 import {
@@ -5282,7 +5283,7 @@ function SessionFilesSheet({
   const openWithRef = useRef<((filePath: string) => void) | null>(null);
 
   useEffect(() => {
-    if (codeAvailable || driveActive) return;
+    if (codeAvailable) return;
     let active = true;
     const timer = setInterval(() => {
       void client
@@ -5299,7 +5300,7 @@ function SessionFilesSheet({
       active = false;
       clearInterval(timer);
     };
-  }, [client, sessionId, codeAvailable, documentSession, driveActive]);
+  }, [client, sessionId, codeAvailable, documentSession]);
 
   useEffect(() => {
     if (!initialFilePath) return;
@@ -5875,6 +5876,9 @@ function SessionFilesSheet({
       const folder =
         paths.length === 1 &&
         entries.some((entry) => entry.path === paths[0] && entry.kind === 'directory');
+      const batch = fileDeletionBatch(paths, (filePath) =>
+        client.deleteSessionFile(sessionId, root, filePath),
+      );
       confirm({
         title: folder
           ? 'Delete folder and its contents?'
@@ -5891,12 +5895,9 @@ function SessionFilesSheet({
         destructive: true,
         onConfirm: async () => {
           setMutating(true);
-          const deleted: string[] = [];
+          const deleted = batch.deleted;
           try {
-            for (const filePath of paths) {
-              await client.deleteSessionFile(sessionId, root, filePath);
-              deleted.push(filePath);
-            }
+            await batch.run();
             onDeleted(deleted, true);
           } catch (error) {
             onDeleted(deleted, false);
