@@ -1,10 +1,26 @@
-import { planDecisionAnswer, planProposalContent, planProposalCounts } from '@verity/mobile';
+import { planDecisionAnswers, planProposalContent, planProposalCounts } from '@verity/mobile';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { Pressable, ScrollView, Text, View, useWindowDimensions } from 'react-native';
+import { Pressable, ScrollView, View, useWindowDimensions } from 'react-native';
+import { StyleSheet, useUnistyles } from 'react-native-unistyles';
+
 import { Icon } from './Icon';
-import { Button } from './ui';
-import { useUnistyles } from 'react-native-unistyles';
-import { StyleSheet } from 'react-native-unistyles';
+import { Button, OptionList, Text } from './ui';
+import { tint } from './ui/tint';
+
+/** The card never takes more than this share of the window: whatever the plan
+ *  holds, its actions and the composer below stay on screen. */
+export const PINNED_PLAN_MAX_HEIGHT_SHARE = 0.55;
+
+type Decision = ReturnType<typeof planProposalContent>['decisions'][number];
+
+/** Each decision starts on its recommendation, so accepting them all is one tap. */
+function initialAnswers(decisions: readonly Decision[]): (string | undefined)[] {
+  return decisions.map((decision) =>
+    decision.recommended !== undefined && decision.options.includes(decision.recommended)
+      ? decision.recommended
+      : undefined,
+  );
+}
 
 /** The current proposal stays beside the input, where its decision is made. */
 export function PinnedPlan({
@@ -30,16 +46,25 @@ export function PinnedPlan({
   renderMarkdown(markdown: string): ReactNode;
   onDismiss(): void;
   onImplement(): void;
-  /** Sends the answer to an open decision as a chat message; the agent then
-   *  presents the plan revised without it. */
+  /** Sends the answers to the open decisions as one chat message; the agent
+   *  then presents the plan revised without them. */
   onAnswerDecision(answer: string): void;
 }) {
+  const content = planProposalContent(markdown);
+  const { decisions } = content;
   const [details, setDetails] = useState(false);
   const [expanded, setExpanded] = useState(true);
+  const [stepsShown, setStepsShown] = useState(false);
+  const [current, setCurrent] = useState(0);
+  const [answers, setAnswers] = useState(() => initialAnswers(decisions));
   const previousSend = useRef(sendNonce);
   useEffect(() => {
+    // A new proposal asks its own questions: earlier selections do not carry over.
     setExpanded(true);
     setDetails(false);
+    setStepsShown(false);
+    setCurrent(0);
+    setAnswers(initialAnswers(planProposalContent(markdown).decisions));
   }, [markdown, revision]);
   useEffect(() => {
     if (previousSend.current !== sendNonce) {
@@ -50,12 +75,86 @@ export function PinnedPlan({
   }, [sendNonce]);
   const { height } = useWindowDimensions();
   const { theme } = useUnistyles();
-  const content = planProposalContent(markdown);
   const blocked = deciding || disabled;
   // A plan with open decisions cannot be implemented: the server refuses it too.
-  const undecided = content.decisions.length;
+  const undecided = decisions.length;
+  const answerable = decisions.flatMap((decision, index) =>
+    decision.options.length > 0 ? [{ decision, option: answers[index] }] : [],
+  );
+  const chosen = answerable.flatMap(({ decision, option }) =>
+    option === undefined ? [] : [{ decision, option }],
+  );
+  const complete = chosen.length > 0 && chosen.length === answerable.length;
+  const index = Math.min(current, Math.max(undecided - 1, 0));
+  const decision = decisions[index];
+
+  const select = (option: string) => {
+    setAnswers((previous) => previous.map((answer, at) => (at === index ? option : answer)));
+    if (index < undecided - 1) setCurrent(index + 1);
+  };
+
+  const summary = (
+    <>
+      {content.steps.map((step, at) => {
+        const title = /^\*\*(.+?)\*\*/.exec(step)?.[1] ?? step.split(/\s+[—–]\s+/)[0];
+        return (
+          <View key={at} style={styles.step}>
+            <Text variant="bodySmall" tone="muted">
+              •
+            </Text>
+            <Text variant="bodySmall" style={styles.stepText}>
+              {title}
+            </Text>
+          </View>
+        );
+      })}
+      {content.mockups.length > 0 ? (
+        <>
+          <Text variant="label" style={styles.sectionLabel}>
+            Mockups
+          </Text>
+          {content.mockups.map((mockup, at) => (
+            <View key={at} style={styles.step}>
+              <Icon name="image" size={12} color={theme.colors.textMuted} />
+              <Text variant="footnote" tone="muted" style={styles.stepText}>
+                {mockup}
+              </Text>
+            </View>
+          ))}
+        </>
+      ) : null}
+      {content.criteria.length > 0 ? (
+        <>
+          <Text variant="label" style={styles.sectionLabel}>
+            Acceptance criteria
+          </Text>
+          {content.criteria.map((criterion, at) => (
+            <View key={at} style={styles.step}>
+              <Icon name="circle" size={12} color={theme.colors.textMuted} />
+              <Text variant="footnote" tone="muted" style={styles.stepText}>
+                {criterion}
+              </Text>
+            </View>
+          ))}
+        </>
+      ) : null}
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={details ? 'Hide full plan' : 'Show full plan'}
+        onPress={() => setDetails(!details)}
+      >
+        <Text variant="subtitle" tone="action">
+          {details ? 'Hide full plan' : 'Show full plan'}
+        </Text>
+      </Pressable>
+    </>
+  );
+
   return (
-    <View style={styles.card}>
+    <View
+      testID="pinned-plan"
+      style={[styles.card, { maxHeight: Math.round(height * PINNED_PLAN_MAX_HEIGHT_SHARE) }]}
+    >
       <Pressable
         style={styles.header}
         accessibilityRole="button"
@@ -64,128 +163,161 @@ export function PinnedPlan({
         onPress={() => setExpanded(!expanded)}
       >
         <View style={styles.dot} />
-        <Text style={styles.label}>Plan</Text>
+        <Text
+          variant="bodySmall"
+          style={[styles.label, !expanded && styles.headerTitle]}
+          numberOfLines={1}
+        >
+          {expanded ? 'Plan' : content.title}
+        </Text>
         {updated ? <Text style={styles.updated}>Updated</Text> : null}
-        <Text style={styles.count}>{planProposalCounts(markdown)}</Text>
+        <Text variant="footnote" tone="muted" style={styles.count} numberOfLines={1}>
+          {expanded
+            ? planProposalCounts(markdown)
+            : undecided > 0
+              ? `${String(undecided)} ${undecided === 1 ? 'decision' : 'decisions'}`
+              : `${String(content.steps.length)} ${content.steps.length === 1 ? 'step' : 'steps'}`}
+        </Text>
         <Icon
-          name={expanded ? 'chevron-down' : 'chevron-right'}
+          name={expanded ? 'chevron-down' : 'chevron-up'}
           size={16}
           color={theme.colors.textMuted}
         />
       </Pressable>
       {expanded ? (
-        <>
-          <ScrollView style={{ maxHeight: Math.min(240, height * 0.25) }}>
-            {details ? (
-              renderMarkdown(markdown)
-            ) : (
-              <>
-                <Text style={styles.title}>{content.title}</Text>
-                {content.steps.map((step, index) => {
-                  const title = /^\*\*(.+?)\*\*/.exec(step)?.[1] ?? step.split(/\s+[—–]\s+/)[0];
-                  return (
-                    <View key={index} style={styles.step}>
-                      <Text style={styles.stepTitle}>•</Text>
-                      <Text style={[styles.stepTitle, styles.stepText]}>{title}</Text>
-                    </View>
-                  );
-                })}
-                {content.mockups.length > 0 ? (
-                  <>
-                    <Text style={styles.sectionLabel}>Mockups</Text>
-                    {content.mockups.map((mockup, index) => (
-                      <View key={index} style={styles.step}>
-                        <Icon name="image" size={12} color={theme.colors.textMuted} />
-                        <Text style={[styles.description, styles.stepText]}>{mockup}</Text>
-                      </View>
-                    ))}
-                  </>
-                ) : null}
-                {content.criteria.length > 0 ? (
-                  <>
-                    <Text style={styles.sectionLabel}>Acceptance criteria</Text>
-                    {content.criteria.map((criterion, index) => (
-                      <View key={index} style={styles.step}>
-                        <Icon name="circle" size={12} color={theme.colors.textMuted} />
-                        <Text style={[styles.description, styles.stepText]}>{criterion}</Text>
-                      </View>
-                    ))}
-                  </>
-                ) : null}
-              </>
-            )}
-          </ScrollView>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={details ? 'Hide full plan' : 'Show full plan'}
-            onPress={() => setDetails(!details)}
-          >
-            <Text style={styles.description}>{details ? 'Hide full plan' : 'Show full plan'}</Text>
-          </Pressable>
-          {content.decisions.map((decision, index) => (
-            // Outside the scroll area: an open decision blocks the plan, so its
-            // answers stay in view however long the plan is.
-            <View key={`${String(index)}:${decision.question}`} style={styles.decision}>
-              <Text style={styles.stepTitle}>{decision.question}</Text>
-              {decision.options.length > 0 ? (
-                <View style={styles.options}>
-                  {decision.options.map((option, optionIndex) => (
-                    <Button
-                      key={`${String(optionIndex)}:${option}`}
-                      label={option === decision.recommended ? `${option} · recommended` : option}
-                      accessibilityLabel={`Answer ${decision.question} with ${option}`}
-                      size="compact"
-                      variant={option === decision.recommended ? 'primary' : 'secondary'}
-                      disabled={blocked}
-                      onPress={() => onAnswerDecision(planDecisionAnswer(decision, option))}
+        <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent}>
+          {details ? (
+            <>
+              {renderMarkdown(markdown)}
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Hide full plan"
+                onPress={() => setDetails(false)}
+              >
+                <Text variant="subtitle" tone="action">
+                  Hide full plan
+                </Text>
+              </Pressable>
+            </>
+          ) : (
+            <View style={styles.summary}>
+              <Text variant="row">{content.title}</Text>
+              {undecided > 0 && !stepsShown ? (
+                // Open decisions come first: the steps wait behind one tap.
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="Show plan steps"
+                  onPress={() => setStepsShown(true)}
+                >
+                  <Text variant="subtitle" tone="action">
+                    {`Show plan · ${String(content.steps.length)} ${content.steps.length === 1 ? 'step' : 'steps'}`}
+                  </Text>
+                </Pressable>
+              ) : (
+                summary
+              )}
+            </View>
+          )}
+          {decision !== undefined ? (
+            <View style={styles.decision}>
+              <View style={styles.decisionHead}>
+                <Text variant="label">
+                  {`Decision ${String(index + 1)} of ${String(undecided)}`}
+                </Text>
+                <View style={styles.progress}>
+                  {decisions.map((_, at) => (
+                    <View
+                      key={at}
+                      style={[
+                        styles.progressDot,
+                        at < index && styles.progressDone,
+                        at === index && styles.progressCurrent,
+                      ]}
                     />
                   ))}
                 </View>
+              </View>
+              <Text variant="row">{decision.question}</Text>
+              {decision.options.length > 0 ? (
+                <OptionList
+                  accessibilityLabel={decision.question}
+                  options={decision.options}
+                  selected={answers[index]}
+                  recommended={decision.recommended}
+                  disabled={blocked}
+                  onSelect={select}
+                />
               ) : (
-                <Text style={styles.description}>Answer in the chat.</Text>
+                <Text variant="footnote" tone="muted">
+                  Answer in the chat.
+                </Text>
               )}
+              {undecided > 1 ? (
+                <View style={styles.stepNav}>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel="Previous decision"
+                    accessibilityState={{ disabled: index === 0 }}
+                    disabled={index === 0}
+                    onPress={() => setCurrent(index - 1)}
+                    style={[styles.navButton, index === 0 && styles.navDisabled]}
+                  >
+                    <Icon name="chevron-left" size={16} color={theme.colors.textMuted} />
+                    <Text variant="subtitle">Back</Text>
+                  </Pressable>
+                  {index < undecided - 1 ? (
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel="Next decision"
+                      onPress={() => setCurrent(index + 1)}
+                      style={styles.navButton}
+                    >
+                      <Text variant="subtitle">Next</Text>
+                      <Icon name="chevron-right" size={16} color={theme.colors.textMuted} />
+                    </Pressable>
+                  ) : null}
+                </View>
+              ) : null}
             </View>
-          ))}
-        </>
+          ) : null}
+        </ScrollView>
       ) : null}
-      {error !== undefined ? <Text style={styles.error}>{error}</Text> : null}
-      {undecided > 0 ? (
-        <Text style={styles.description}>
-          {undecided === 1
-            ? 'Answer the open decision to implement.'
-            : `Answer the ${String(undecided)} open decisions to implement.`}
+      {error !== undefined ? (
+        <Text variant="footnote" tone="attention">
+          {error}
+        </Text>
+      ) : null}
+      {undecided > 0 && expanded && answerable.length > 0 && !complete ? (
+        <Text variant="footnote" tone="muted">
+          Choose an answer for each decision to send them.
         </Text>
       ) : null}
       <View style={styles.actions}>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Cancel plan"
+        <Button
+          label="Cancel plan"
+          variant="secondary"
+          size="compact"
           disabled={blocked}
           onPress={onDismiss}
-          style={({ pressed }) => [
-            styles.button,
-            styles.dismiss,
-            blocked && styles.disabled,
-            pressed && styles.pressed,
-          ]}
-        >
-          <Text style={styles.dismissLabel}>Cancel plan</Text>
-        </Pressable>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Implement plan"
-          accessibilityState={{ disabled: blocked || undecided > 0 }}
-          disabled={blocked || undecided > 0}
-          onPress={onImplement}
-          style={({ pressed }) => [
-            styles.button,
-            styles.implement,
-            (blocked || undecided > 0) && styles.disabled,
-            pressed && styles.pressed,
-          ]}
-        >
-          <Text style={styles.implementLabel}>Implement</Text>
-        </Pressable>
+        />
+        {undecided > 0 ? (
+          <Button
+            label={`Send answers (${String(chosen.length)})`}
+            accessibilityLabel="Send answers"
+            accessibilityHint="The agent revises the plan from your answers."
+            size="compact"
+            disabled={blocked || !complete}
+            onPress={() => onAnswerDecision(planDecisionAnswers(chosen))}
+          />
+        ) : (
+          <Button
+            label="Implement"
+            accessibilityLabel="Implement plan"
+            size="compact"
+            disabled={blocked}
+            onPress={onImplement}
+          />
+        )}
       </View>
     </View>
   );
@@ -195,14 +327,12 @@ const styles = StyleSheet.create((theme) => ({
   card: {
     marginHorizontal: theme.spacing.md,
     marginBottom: theme.spacing.sm,
-    paddingHorizontal: theme.spacing.md,
-    paddingTop: theme.spacing.sm,
-    paddingBottom: theme.spacing.md,
+    padding: theme.spacing.md,
     borderRadius: theme.radius.md,
     borderWidth: 1,
-    borderColor: theme.colors.attention,
+    borderColor: tint(theme.colors.attention, 'border'),
     backgroundColor: theme.colors.surfaceAlt,
-    gap: theme.spacing.sm,
+    gap: theme.spacing.md,
   },
   header: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
   dot: {
@@ -211,112 +341,48 @@ const styles = StyleSheet.create((theme) => ({
     borderRadius: theme.radius.pill,
     backgroundColor: theme.colors.attention,
   },
-  label: {
-    color: theme.colors.text,
-    fontSize: theme.typography.bodySmall.fontSize,
-    fontFamily: theme.fonts.semibold,
-  },
-  count: {
-    marginLeft: 'auto',
-    color: theme.colors.textMuted,
-    fontFamily: theme.fonts.regular,
-    fontSize: theme.typography.footnote.fontSize,
-  },
+  label: { fontFamily: theme.fonts.semibold },
+  headerTitle: { flexShrink: 1 },
+  count: { marginLeft: 'auto', flexShrink: 0 },
   updated: {
+    ...theme.typography.caption,
     color: theme.colors.background,
     backgroundColor: theme.colors.signature,
-    fontSize: theme.typography.caption.fontSize,
     fontFamily: theme.fonts.bold,
     textTransform: 'uppercase',
     borderRadius: theme.radius.sm,
     paddingHorizontal: 6,
     paddingVertical: 1,
   },
-  title: {
-    color: theme.colors.text,
-    fontSize: theme.typography.row.fontSize,
-    fontFamily: theme.fonts.bold,
-    marginTop: theme.spacing.xs,
-    marginBottom: theme.spacing.sm,
-  },
-  goal: {
-    color: theme.colors.textMuted,
-    fontFamily: theme.fonts.regular,
-    fontSize: theme.typography.bodySmall.fontSize,
-    marginBottom: theme.spacing.sm,
-  },
-  step: { flexDirection: 'row', gap: theme.spacing.sm, marginBottom: theme.spacing.sm },
-  number: {
-    width: 22,
-    height: 22,
-    borderRadius: theme.radius.pill,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    backgroundColor: theme.colors.surface,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  numberText: {
-    color: theme.colors.text,
-    fontSize: theme.typography.footnote.fontSize,
-    fontFamily: theme.fonts.semibold,
-  },
+  scroll: { flexShrink: 1 },
+  scrollContent: { gap: theme.spacing.lg },
+  summary: { gap: theme.spacing.sm },
+  step: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
   stepText: { flex: 1 },
-  sectionLabel: {
-    ...theme.typography.label,
-    color: theme.colors.textMuted,
-    marginTop: theme.spacing.xs,
-    marginBottom: theme.spacing.sm,
-  },
+  sectionLabel: { marginTop: theme.spacing.xs },
   decision: {
-    gap: theme.spacing.sm,
-    paddingTop: theme.spacing.sm,
+    gap: theme.spacing.md,
+    paddingTop: theme.spacing.lg,
     borderTopWidth: 1,
     borderTopColor: theme.colors.border,
   },
-  options: { flexDirection: 'row', flexWrap: 'wrap', gap: theme.spacing.sm },
-  stepTitle: {
-    color: theme.colors.text,
-    fontSize: theme.typography.bodySmall.fontSize,
-    fontFamily: theme.fonts.semibold,
+  decisionHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  progress: { flexDirection: 'row', gap: theme.spacing.xs },
+  progressDot: {
+    width: 6,
+    height: 6,
+    borderRadius: theme.radius.pill,
+    backgroundColor: theme.colors.border,
   },
-  description: {
-    color: theme.colors.textMuted,
-    fontFamily: theme.fonts.regular,
-    fontSize: theme.typography.footnote.fontSize,
-  },
-  actions: {
+  progressDone: { backgroundColor: theme.colors.action },
+  progressCurrent: { width: 16, backgroundColor: theme.colors.action },
+  stepNav: { flexDirection: 'row', justifyContent: 'space-between' },
+  navButton: {
     flexDirection: 'row',
-    justifyContent: 'flex-end',
-    gap: theme.spacing.sm,
-    marginTop: theme.spacing.xs,
-  },
-  button: {
-    minWidth: 84,
     alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: theme.spacing.lg,
-    paddingVertical: theme.spacing.sm,
-    borderRadius: theme.radius.md,
-    borderWidth: 1,
+    gap: theme.spacing.xxs,
+    paddingVertical: theme.spacing.xs,
   },
-  dismiss: { borderColor: theme.colors.border, backgroundColor: 'transparent' },
-  implement: { borderColor: theme.colors.action, backgroundColor: theme.colors.action },
-  dismissLabel: {
-    color: theme.colors.text,
-    fontSize: theme.typography.bodySmall.fontSize,
-    fontFamily: theme.fonts.semibold,
-  },
-  implementLabel: {
-    color: theme.colors.onAction,
-    fontSize: theme.typography.bodySmall.fontSize,
-    fontFamily: theme.fonts.semibold,
-  },
-  disabled: { opacity: 0.5 },
-  pressed: { opacity: 0.7 },
-  error: {
-    color: theme.colors.attention,
-    fontFamily: theme.fonts.regular,
-    fontSize: theme.typography.footnote.fontSize,
-  },
+  navDisabled: { opacity: 0.4 },
+  actions: { flexDirection: 'row', justifyContent: 'flex-end', gap: theme.spacing.sm },
 }));

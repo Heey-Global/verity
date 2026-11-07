@@ -6,6 +6,7 @@ import {
   planProposalContent,
   planProposalCounts,
   planDecisionAnswer,
+  planDecisionAnswers,
   planProposalFullyRepresented,
   planProposal,
   planProposalRevision,
@@ -251,4 +252,16 @@ it('answers a decision with its question, so the agent knows which choice was ma
   expect(planDecisionAnswer({ question: 'Region?', options: ['EU', 'US'] }, 'EU')).toBe(
     'Region? → EU',
   );
+});
+
+it('sends all answers in one message, one line per question in the order asked', () => {
+  // Separate messages would make the agent revise the plan once per answer.
+  const region = { question: 'Region?', options: ['EU', 'US'] };
+  const tier = { question: 'Tier?', options: ['Free', 'Pro'] };
+  expect(
+    planDecisionAnswers([
+      { decision: region, option: 'US' },
+      { decision: tier, option: 'Pro' },
+    ]),
+  ).toBe('Region? → US\nTier? → Pro');
 });

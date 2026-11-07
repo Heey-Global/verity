@@ -1,6 +1,6 @@
-import { fireEvent, render, screen } from '@testing-library/react-native';
-import { Text } from 'react-native';
-import { PinnedPlan } from './PinnedPlan';
+import { fireEvent, render, screen, within } from '@testing-library/react-native';
+import { Dimensions, ScrollView, StyleSheet, Text } from 'react-native';
+import { PINNED_PLAN_MAX_HEIGHT_SHARE, PinnedPlan } from './PinnedPlan';
 
 const markdown =
   '# Separate gestures\n\n## Goal\nStop accidental drags.\n\n## Steps\n1. **Require long press** — Update SessionList.tsx.\n2. **Add haptics** — Signal drag start.';
@@ -83,9 +83,11 @@ it('collapses on sending and reopens a new revision, including identical text', 
   fireEvent.press(screen.getByLabelText('Show full plan'));
   view.rerender(<PinnedPlan {...props} sendNonce={1} />);
   expect(screen.queryByText(markdown)).toBeNull();
-  expect(screen.queryByText('Separate gestures')).toBeNull();
-  fireEvent.press(screen.getByLabelText('Expand plan'));
+  // Collapsed, the card is one line: the title stays, the steps go.
   expect(screen.getByText('Separate gestures')).toBeOnTheScreen();
+  expect(screen.queryByText('Require long press')).toBeNull();
+  fireEvent.press(screen.getByLabelText('Expand plan'));
+  expect(screen.getByText('Require long press')).toBeOnTheScreen();
   fireEvent.press(screen.getByLabelText('Collapse plan'));
   view.rerender(<PinnedPlan {...props} sendNonce={1} revision={2} updated />);
   expect(screen.getByText('Separate gestures')).toBeOnTheScreen();
@@ -106,27 +108,100 @@ const spec = [
   '1. **Page** — build it.',
 ].join('\n');
 
-it('shows criteria and answers an open decision through the chat', () => {
+const decisions = spec.replace(
+  '1. **Show prices incl. VAT?** — Incl. VAT (recommended) | Excl. VAT',
+  [
+    '1. **Show prices incl. VAT?** — Incl. VAT (recommended) | Excl. VAT',
+    '2. **Billing period?** — Monthly | Yearly (recommended)',
+    '3. **Free trial?** — 14 days | 30 days',
+  ].join('\n'),
+);
+
+it('puts the open decision under the title and keeps the steps one tap away', () => {
   render(<PinnedPlan {...props} markdown={spec} />);
   expect(screen.getByText('1 step · 2 criteria · 1 decision')).toBeOnTheScreen();
+  expect(screen.getByText('Show prices incl. VAT?')).toBeOnTheScreen();
+  expect(screen.queryByText('Toggle above the plans')).toBeNull();
+  fireEvent.press(screen.getByLabelText('Show plan steps'));
   expect(screen.getByText('Toggle above the plans')).toBeOnTheScreen();
   expect(screen.getByText('Show prices incl. VAT?')).toBeOnTheScreen();
-  expect(screen.getByText('Incl. VAT · recommended')).toBeOnTheScreen();
-  fireEvent.press(screen.getByLabelText('Answer Show prices incl. VAT? with Excl. VAT'));
-  expect(props.onAnswerDecision).toHaveBeenCalledWith('Show prices incl. VAT? → Excl. VAT');
 });
 
-it('keeps Implement locked while a decision is open, and only then', () => {
-  // The server refuses such a plan; an enabled button would only produce an error.
+it('preselects the recommendation and marks it with a tag, not a suffix', () => {
+  render(<PinnedPlan {...props} markdown={spec} />);
+  // A suffix would end up in the answer text the agent receives.
+  expect(screen.queryByText('Incl. VAT · recommended')).toBeNull();
+  expect(screen.getByText('Recommended')).toBeOnTheScreen();
+  expect(screen.getByRole('radio', { name: 'Incl. VAT, recommended' })).toBeChecked();
+  expect(screen.getByRole('radio', { name: 'Excl. VAT' })).not.toBeChecked();
+  fireEvent.press(screen.getByLabelText('Send answers'));
+  expect(props.onAnswerDecision).toHaveBeenCalledWith('Show prices incl. VAT? → Incl. VAT');
+});
+
+it('shows one decision at a time and sends every answer in a single message', () => {
+  render(<PinnedPlan {...props} markdown={decisions} />);
+  expect(screen.getByText('Decision 1 of 3')).toBeOnTheScreen();
+  expect(screen.queryByText('Billing period?')).toBeNull();
+  fireEvent.press(screen.getByRole('radio', { name: 'Excl. VAT' }));
+  // Choosing moves on to the next decision.
+  expect(screen.getByText('Decision 2 of 3')).toBeOnTheScreen();
+  expect(screen.queryByText('Show prices incl. VAT?')).toBeNull();
+  fireEvent.press(screen.getByLabelText('Next decision'));
+  expect(screen.getByText('Free trial?')).toBeOnTheScreen();
+  // Without a recommendation nothing is chosen, so nothing can be sent yet.
+  expect(screen.getByLabelText('Send answers')).toBeDisabled();
+  expect(screen.getByText('Choose an answer for each decision to send them.')).toBeOnTheScreen();
+  fireEvent.press(screen.getByRole('radio', { name: '30 days' }));
+  expect(screen.getByText('Send answers (3)')).toBeOnTheScreen();
+  fireEvent.press(screen.getByLabelText('Previous decision'));
+  expect(screen.getByRole('radio', { name: 'Yearly, recommended' })).toBeChecked();
+  fireEvent.press(screen.getByLabelText('Send answers'));
+  expect(props.onAnswerDecision).toHaveBeenCalledTimes(1);
+  expect(props.onAnswerDecision).toHaveBeenCalledWith(
+    'Show prices incl. VAT? → Excl. VAT\nBilling period? → Yearly\nFree trial? → 30 days',
+  );
+});
+
+it('starts a new revision from its own recommendations, not the earlier selection', () => {
+  const view = render(<PinnedPlan {...props} markdown={decisions} />);
+  fireEvent.press(screen.getByRole('radio', { name: 'Excl. VAT' }));
+  expect(screen.getByText('Decision 2 of 3')).toBeOnTheScreen();
+  view.rerender(<PinnedPlan {...props} markdown={decisions} revision={2} updated />);
+  expect(screen.getByText('Decision 1 of 3')).toBeOnTheScreen();
+  expect(screen.getByRole('radio', { name: 'Incl. VAT, recommended' })).toBeChecked();
+});
+
+it('bounds its height and keeps the actions outside the scrolling content', () => {
+  // An unbounded card pushed Implement and the composer off a phone screen.
+  render(<PinnedPlan {...props} markdown={decisions} />);
+  const { height } = Dimensions.get('window');
+  const style = StyleSheet.flatten(screen.getByTestId('pinned-plan').props.style);
+  expect(style.maxHeight).toBe(Math.round(height * PINNED_PLAN_MAX_HEIGHT_SHARE));
+  expect(style.maxHeight).toBeLessThan(height);
+  const scroll = within(screen.UNSAFE_getByType(ScrollView));
+  expect(scroll.getByText('Show prices incl. VAT?')).toBeOnTheScreen();
+  expect(scroll.queryByLabelText('Send answers')).toBeNull();
+  expect(scroll.queryByLabelText('Cancel plan')).toBeNull();
+  expect(screen.getByLabelText('Send answers')).toBeOnTheScreen();
+});
+
+it('keeps Implement away while a decision is open, and only then', () => {
+  // The server refuses such a plan; an Implement button would only produce an error.
   const view = render(<PinnedPlan {...props} markdown={spec} />);
-  expect(screen.getByText('Answer the open decision to implement.')).toBeOnTheScreen();
-  fireEvent.press(screen.getByLabelText('Implement plan'));
-  expect(props.onImplement).not.toHaveBeenCalled();
+  expect(screen.queryByLabelText('Implement plan')).toBeNull();
 
   view.rerender(
     <PinnedPlan {...props} markdown={spec.replace(/## Open decisions\n.*\n/, '')} revision={2} />,
   );
-  expect(screen.queryByText('Answer the open decision to implement.')).toBeNull();
+  expect(screen.queryByLabelText('Send answers')).toBeNull();
   fireEvent.press(screen.getByLabelText('Implement plan'));
   expect(props.onImplement).toHaveBeenCalledTimes(1);
+});
+
+it('leaves a decision without options to the chat', () => {
+  render(
+    <PinnedPlan {...props} markdown={spec.replace('— Incl. VAT (recommended) | Excl. VAT', '')} />,
+  );
+  expect(screen.getByText('Answer in the chat.')).toBeOnTheScreen();
+  expect(screen.getByLabelText('Send answers')).toBeDisabled();
 });
