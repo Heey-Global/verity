@@ -55,12 +55,6 @@ export function KnowledgeScreen({
   );
 }
 
-/** One level up in the wide column. A project lists Decisions beside the Wiki
- *  at its top, so going up from Decisions returns there, not into the Wiki. */
-function upFrom(scope: KnowledgeScope, folder: string): string {
-  return scope.kind === 'project' && folder === 'insights/decisions' ? '' : parentFolder(folder);
-}
-
 // The folder list reports its own load failure in place, with Retry beside it.
 const NO_STATE = { error: undefined, saving: false };
 
@@ -74,23 +68,27 @@ const NO_STATE = { error: undefined, saving: false };
 export function EmbeddedKnowledge({
   client,
   scope,
+  start = '',
   exit,
 }: {
   client: VerityClient;
   scope: KnowledgeScope;
+  /** The folder the library opens at and never leaves upwards, such as a
+   *  project's Wiki opened from its page. */
+  start?: string;
   /** Where "‹" at the top level leads, when the library is not the page's root. */
   exit?: { label: string; onPress: () => void };
 }) {
   const pane = useKnowledgePane();
-  const [folder, setFolder] = useState('');
+  const [folder, setFolder] = useState(start);
   const open = {
     folder: (next: string) => (pane ? setFolder(next) : pushKnowledge(scope, { folder: next })),
     file: (next: string) =>
       pane ? pane.openFile(scope, next) : pushKnowledge(scope, { file: next }),
   };
-  const up = upFrom(scope, folder);
+  const up = parentFolder(folder);
   const back =
-    folder !== '' ? { label: folderTitle(scope, up), onPress: () => setFolder(up) } : exit;
+    folder !== start ? { label: folderTitle(scope, up), onPress: () => setFolder(up) } : exit;
   return (
     <View style={styles.root} testID="embedded-knowledge">
       {back ? (

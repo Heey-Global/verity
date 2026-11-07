@@ -4,15 +4,22 @@ import { ActivityIndicator, View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 
 import { Button, Group, Row, Text } from '../ui';
-import { folderTitle, listKnowledge, type KnowledgeScope } from './knowledgeScope';
+import {
+  DECISIONS,
+  folderIcon,
+  folderSubtitle,
+  folderTitle,
+  listKnowledge,
+  type KnowledgeScope,
+} from './knowledgeScope';
 
-const PROJECT_AREAS = ['insights/decisions', 'insights', 'sources'] as const;
+const PROJECT_AREAS = ['insights', 'sources'] as const;
 
 const DESCRIPTION: Record<KnowledgeScope['kind'], string> = {
   shared:
     'Reference material shared across projects. Agents can read it from every project. Administrators can edit supported text files; original sources remain protected.',
   project:
-    'Decisions, Wiki and original sources for this project. Wiki edits require project management access.',
+    'The Wiki with its decisions, and the original sources of this project. Wiki edits require project management access.',
 };
 
 /**
@@ -21,8 +28,8 @@ const DESCRIPTION: Record<KnowledgeScope['kind'], string> = {
  * caller's choice — its own screen on a phone, the same column in the wide
  * layout — so this draws no navigation of its own.
  *
- * A project's top level is its three areas rather than the raw tree, which
- * would show Decisions only inside the Wiki.
+ * A project's top level is its two areas, Wiki and Sources. Inside the Wiki,
+ * Decisions comes first: it is the Wiki's own section, not one folder among many.
  */
 export function KnowledgeFolder({
   client,
@@ -75,8 +82,9 @@ export function KnowledgeFolder({
           {PROJECT_AREAS.map((area) => (
             <Row
               key={area}
-              leading={{ icon: 'folder' }}
+              leading={{ icon: folderIcon(area) }}
               title={folderTitle(scope, area)}
+              subtitle={folderSubtitle(area)}
               navigates
               onPress={() => onOpenFolder(area)}
             />
@@ -97,12 +105,13 @@ export function KnowledgeFolder({
         </Text>
       ) : (
         <Group>
-          {directory.entries.map((entry) =>
+          {sectionsFirst(scope, directory.entries).map((entry) =>
             entry.kind === 'directory' ? (
               <Row
                 key={entry.path}
-                leading={{ icon: 'folder' }}
-                title={folder === '' ? folderTitle(scope, entry.path) : entry.name}
+                leading={{ icon: folderIcon(entry.path) }}
+                title={folderTitle(scope, entry.path)}
+                subtitle={folderSubtitle(entry.path)}
                 navigates
                 onPress={() => onOpenFolder(entry.path)}
               />
@@ -125,6 +134,19 @@ export function KnowledgeFolder({
       ) : null}
     </View>
   );
+}
+
+/** A project's Decisions ahead of the Wiki's other entries; the rest keep the
+ *  server's order. */
+function sectionsFirst(
+  scope: KnowledgeScope,
+  entries: SessionDirectory['entries'],
+): SessionDirectory['entries'] {
+  if (scope.kind !== 'project') return entries;
+  return [
+    ...entries.filter((entry) => entry.path === DECISIONS),
+    ...entries.filter((entry) => entry.path !== DECISIONS),
+  ];
 }
 
 const styles = StyleSheet.create((theme) => ({

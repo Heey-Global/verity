@@ -132,7 +132,7 @@ function ProjectSettingsIndexView({
             <SettingsNavRow
               icon="book-open"
               title="Project knowledge"
-              subtitle="Decisions, Wiki and Raw Sources"
+              subtitle="Wiki with decisions, and Sources"
               onPress={() =>
                 router.push({ pathname: '/project/[id]/knowledge', params: { id: projectId } })
               }

@@ -16,7 +16,12 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { useInboxFeed } from '../home/HomeInbox';
 import { KnowledgeColumn } from '../knowledge/KnowledgeBrowser';
-import type { KnowledgeScope } from '../knowledge/knowledgeScope';
+import {
+  folderIcon,
+  folderSubtitle,
+  folderTitle,
+  type KnowledgeScope,
+} from '../knowledge/knowledgeScope';
 import { Button, Group, IconButton, Row, SectionHeader, StatusTag, Text } from '../ui';
 import { tint } from '../ui/tint';
 import { useProjectDetail } from '../../lib/useProjectDetail';
@@ -111,7 +116,8 @@ export function ProjectPage({
 }) {
   const { theme } = useUnistyles();
   const { detail, loading, error, load } = useProjectDetail(client, projectId);
-  const [knowledgeOpen, setKnowledgeOpen] = useState(false);
+  /** The knowledge area open in the wide layout's column, if any. */
+  const [knowledgeArea, setKnowledgeArea] = useState<string>();
   const security = useProjectSecurity(client, projectId, onOpenSession);
   const knowledgeScope = useMemo<KnowledgeScope>(
     () => ({ kind: 'project', projectId }),
@@ -172,10 +178,13 @@ export function ProjectPage({
     () => router.push({ pathname: '/project/[id]/settings', params: { id: projectId } }),
     [projectId],
   );
-  const openKnowledge = useCallback(() => {
-    if (inline) setKnowledgeOpen(true);
-    else router.push({ pathname: '/project/[id]/knowledge', params: { id: projectId } });
-  }, [inline, projectId]);
+  const openKnowledge = useCallback(
+    (folder: string) => {
+      if (inline) setKnowledgeArea(folder);
+      else router.push({ pathname: '/project/[id]/knowledge', params: { id: projectId, folder } });
+    },
+    [inline, projectId],
+  );
   const name = detail?.project.repo ?? 'Project';
   const gear = (
     <IconButton icon="settings" accessibilityLabel="Project settings" onPress={openSettings} />
@@ -226,7 +235,7 @@ export function ProjectPage({
     );
   }
 
-  if (inline && knowledgeOpen) {
+  if (inline && knowledgeArea !== undefined) {
     return (
       <View style={styles.flex} testID="project-knowledge">
         <View style={styles.topBar}>
@@ -235,10 +244,15 @@ export function ProjectPage({
             icon="chevron-left"
             variant="text"
             size="compact"
-            onPress={() => setKnowledgeOpen(false)}
+            onPress={() => setKnowledgeArea(undefined)}
           />
         </View>
-        <KnowledgeColumn key={projectId} client={client} scope={knowledgeScope} />
+        <KnowledgeColumn
+          key={`${projectId}:${knowledgeArea}`}
+          client={client}
+          scope={knowledgeScope}
+          start={knowledgeArea}
+        />
       </View>
     );
   }
@@ -301,7 +315,7 @@ function openSandbox(projectId: string) {
   router.push({ pathname: '/project/[id]/settings/sandbox', params: { id: projectId } });
 }
 
-/** The project’s knowledge, tasks and security findings. */
+/** The project’s Wiki (with its decisions), sources, tasks and security findings. */
 function ProjectContent({
   client,
   detail,
@@ -311,19 +325,23 @@ function ProjectContent({
   client: VerityClient;
   detail: ProjectDetail;
   security: ProjectSecurity | undefined;
-  onOpenKnowledge: () => void;
+  onOpenKnowledge: (folder: string) => void;
 }) {
   const id = detail.project.id;
+  const scope = useMemo<KnowledgeScope>(() => ({ kind: 'project', projectId: id }), [id]);
   const severe = security !== undefined && security.severe > 0;
   return (
     <Group>
-      <Row
-        leading={{ icon: 'book-open' }}
-        title="Knowledge"
-        subtitle="Wiki, decisions and sources"
-        navigates
-        onPress={onOpenKnowledge}
-      />
+      {(['insights', 'sources'] as const).map((area) => (
+        <Row
+          key={area}
+          leading={{ icon: folderIcon(area) }}
+          title={folderTitle(scope, area)}
+          subtitle={folderSubtitle(area)}
+          navigates
+          onPress={() => onOpenKnowledge(area)}
+        />
+      ))}
       <ProjectTasksRow client={client} projectId={id} />
       {security !== undefined ? (
         <Row

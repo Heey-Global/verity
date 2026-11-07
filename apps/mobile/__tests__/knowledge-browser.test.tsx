@@ -194,10 +194,10 @@ it('starts a project at its areas, without reading the Shared library', async ()
   const api = client();
   render(<KnowledgeScreen scope={PROJECT} />);
   await act(async () => undefined);
+  expect(screen.queryByText('Decisions')).toBeNull();
   for (const [label, folder] of [
-    ['Decisions', 'insights/decisions'],
     ['Wiki', 'insights'],
-    ['Raw Sources', 'sources'],
+    ['Sources', 'sources'],
   ] as const) {
     fireEvent.press(screen.getByText(label));
     expect(mockPush).toHaveBeenLastCalledWith({
@@ -205,6 +205,8 @@ it('starts a project at its areas, without reading the Shared library', async ()
       params: { id: 'p', folder },
     });
   }
+  // Without this line Sources reads as one more folder, not as the originals.
+  expect(screen.getByText('Documents, meeting transcripts and attachments')).toBeTruthy();
   expect(api.listSharedKnowledgeFiles).not.toHaveBeenCalled();
   expect(api.listProjectKnowledgeFiles).not.toHaveBeenCalled();
 });
@@ -223,7 +225,39 @@ it('in the wide layout opens folders in the column and files beside it', async (
   expect(mockPush).not.toHaveBeenCalled();
   // One level up from the Wiki is the project's areas, named on the way back.
   fireEvent.press(screen.getByText('Project knowledge'));
-  expect(await screen.findByText('Decisions')).toBeTruthy();
+  expect(await screen.findByText('Sources')).toBeTruthy();
+});
+
+it('lists Decisions first inside a project Wiki and goes back up to the Wiki', async () => {
+  const api = client({
+    listProjectKnowledgeFiles: jest.fn().mockResolvedValue({
+      root: 'knowledge',
+      path: 'insights',
+      entries: [
+        { path: 'insights/architecture', name: 'architecture', kind: 'directory' },
+        { path: 'insights/decisions', name: 'decisions', kind: 'directory' },
+        { path: file.path, name: 'reference.md', kind: 'file' },
+      ],
+      truncated: false,
+    }),
+  });
+  render(
+    <KnowledgePaneContext.Provider value={{ openFile: jest.fn() }}>
+      <EmbeddedKnowledge client={api as unknown as VerityClient} scope={PROJECT} start="insights" />
+    </KnowledgePaneContext.Provider>,
+  );
+  const decisions = await screen.findByText('Decisions');
+  // The server orders folders by name; Decisions is the Wiki's section, so it leads.
+  const titles = screen
+    .getAllByText(/^(Decisions|architecture)$/)
+    .map((node) => node.props.children);
+  expect(titles).toEqual(['Decisions', 'architecture']);
+  // Opened at the Wiki, the column offers no way up to the areas it replaced.
+  expect(screen.queryByText('Project knowledge')).toBeNull();
+  fireEvent.press(decisions);
+  expect(api.listProjectKnowledgeFiles).toHaveBeenLastCalledWith('p', 'insights/decisions');
+  fireEvent.press(await screen.findByText('Wiki'));
+  expect(api.listProjectKnowledgeFiles).toHaveBeenLastCalledWith('p', 'insights');
 });
 
 it('keeps Shared out of the session root tabs and links Settings to the central screen', () => {

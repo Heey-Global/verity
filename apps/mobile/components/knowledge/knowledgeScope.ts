@@ -1,6 +1,8 @@
 import type { SessionDirectory, SessionFileContent, VerityClient } from '@verity/mobile';
 import { router } from 'expo-router';
 
+import type { IconName } from '../Icon';
+
 /** Which library a knowledge screen browses: Shared, or one project's. */
 export type KnowledgeScope = { kind: 'shared' } | { kind: 'project'; projectId: string };
 
@@ -10,13 +12,36 @@ export function scopeTitle(scope: KnowledgeScope): string {
   return scope.kind === 'shared' ? 'Shared knowledge' : 'Project knowledge';
 }
 
+export const DECISIONS = 'insights/decisions';
+
+/** The folders with a name, glyph and one line of their own, wherever they are
+ *  listed, so Sources reads as originals rather than one more folder. */
+const KNOWN_FOLDERS: Record<string, { title: string; icon: IconName; subtitle: string }> = {
+  insights: { title: 'Wiki', icon: 'book-open', subtitle: 'Maintained knowledge and decisions' },
+  [DECISIONS]: {
+    title: 'Decisions',
+    icon: 'check-circle',
+    subtitle: 'Confirmed choices, with reason and origin',
+  },
+  sources: {
+    title: 'Sources',
+    icon: 'paperclip',
+    subtitle: 'Documents, meeting transcripts and attachments',
+  },
+};
+
 /** What a folder is called on screen: the areas by their names, the rest by theirs. */
 export function folderTitle(scope: KnowledgeScope, folder: string): string {
   if (folder === '') return scopeTitle(scope);
-  if (folder === 'insights/decisions') return 'Decisions';
-  if (folder === 'insights') return 'Wiki';
-  if (folder === 'sources') return 'Raw Sources';
-  return folder.split('/').at(-1) ?? folder;
+  return KNOWN_FOLDERS[folder]?.title ?? folder.split('/').at(-1) ?? folder;
+}
+
+export function folderIcon(folder: string): IconName {
+  return KNOWN_FOLDERS[folder]?.icon ?? 'folder';
+}
+
+export function folderSubtitle(folder: string): string | undefined {
+  return KNOWN_FOLDERS[folder]?.subtitle;
 }
 
 export function parentFolder(path: string): string {

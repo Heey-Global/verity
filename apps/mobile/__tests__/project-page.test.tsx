@@ -250,8 +250,12 @@ describe('project page', () => {
 
   it('keeps content focused and opens project settings from the gear', async () => {
     await renderPage([]);
-    expect(screen.getByText('Knowledge')).toBeTruthy();
+    expect(screen.getByText('Wiki')).toBeTruthy();
+    expect(screen.getByText('Sources')).toBeTruthy();
     expect(screen.getByText('Tasks')).toBeTruthy();
+    // Decisions belong to the Wiki; a row of their own would split the knowledge again.
+    expect(screen.queryByText('Knowledge')).toBeNull();
+    expect(screen.queryByText('Decisions')).toBeNull();
     for (const title of [
       'Doppler',
       'Sandbox',
@@ -516,21 +520,28 @@ describe('project page', () => {
     expect(onSessionChanged).toHaveBeenCalledWith('login', true);
   });
 
-  it('opens the knowledge as its own screen on a phone', async () => {
+  it('opens the Wiki and the Sources as their own screens on a phone', async () => {
     const { client } = await renderPage([]);
     expect(screen.queryByRole('tab', { name: 'Knowledge' })).toBeNull();
-    fireEvent.press(screen.getByLabelText(/^Knowledge/));
-    expect(mockPush).toHaveBeenLastCalledWith({
-      pathname: '/project/[id]/knowledge',
-      params: { id: 'p/1' },
-    });
+    for (const [label, folder] of [
+      ['Wiki', 'insights'],
+      ['Sources', 'sources'],
+    ] as const) {
+      fireEvent.press(screen.getByLabelText(new RegExp(`^${label}`)));
+      expect(mockPush).toHaveBeenLastCalledWith({
+        pathname: '/project/[id]/knowledge',
+        params: { id: 'p/1', folder },
+      });
+    }
     expect(client.listProjectKnowledgeFiles).not.toHaveBeenCalled();
   });
 
-  it('opens the knowledge in the wide layout’s column and comes back', async () => {
-    await renderPage([], { inline: true });
-    fireEvent.press(screen.getByLabelText(/^Knowledge/));
+  it('opens the Wiki in the wide layout’s column and comes back', async () => {
+    const { client } = await renderPage([], { inline: true });
+    fireEvent.press(screen.getByLabelText(/^Wiki/));
     expect(await screen.findByTestId('project-knowledge')).toBeTruthy();
+    // At the Wiki itself, not at the areas above it.
+    expect(client.listProjectKnowledgeFiles).toHaveBeenCalledWith('p/1', 'insights');
     expect(mockPush).not.toHaveBeenCalledWith(
       expect.objectContaining({ pathname: '/project/[id]/knowledge' }),
     );
