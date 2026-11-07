@@ -4844,6 +4844,7 @@ export const SessionChat = memo(function SessionChat({
             />
           )}
           markdown={planningPlan}
+          keyboardHeight={keyboardHeight}
           updated={planUpdated}
           deciding={
             decidingPlanning ||

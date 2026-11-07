@@ -34,14 +34,15 @@ jest.mock('../lib/homePreferences', () => ({
 }));
 
 import type { SessionSummary, VerityClient } from '@verity/mobile';
-import { inboxItems } from '@verity/mobile';
+import { inboxItems, VerityApiError } from '@verity/mobile';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react-native';
 import { Alert } from 'react-native';
 
 import ProjectEntry from '../app/project/[id]/index';
 import ProjectSettingsIndexScreen from '../app/project/[id]/settings/index';
 import { ProjectPage, projectInboxItems, projectLine } from '../components/project/ProjectPage';
-import { isActive, nowSections, workFilter } from '../components/project/ProjectWork';
+import { INLINE_ANSWERS, SHORT_ANSWER } from '../components/project/AnswerSheet';
+import { ProjectWork, isActive, nowSections, workFilter } from '../components/project/ProjectWork';
 import { publishSessionPreviews } from '../lib/sessionPreviews';
 import { makeClient, makeDetail } from './support/projectHarness';
 import {
@@ -192,6 +193,32 @@ describe('the /project/[id] route', () => {
 });
 
 describe('project page', () => {
+  it('keeps working rows stable and appends newly started and restarted sessions', async () => {
+    const client = clientWith([]);
+    const props = { client, onOpenSession: jest.fn(), onChanged: jest.fn() };
+    const z = session('z', { status: 'running' });
+    const a = session('a');
+    const view = render(<ProjectWork {...props} sessions={[z, a]} />);
+    await act(async () => undefined);
+    const workingNames = () =>
+      within(screen.getByTestId('work-active'))
+        .getAllByLabelText(/, working$/)
+        .map((row) => row.props.accessibilityLabel);
+    view.rerender(<ProjectWork {...props} sessions={[{ ...a, status: 'running' }, z]} />);
+    expect(workingNames()).toEqual(['z, working', 'a, working']);
+    view.rerender(
+      <ProjectWork
+        {...props}
+        sessions={[
+          { ...z, status: 'completed' },
+          { ...a, status: 'running' },
+        ]}
+      />,
+    );
+    view.rerender(<ProjectWork {...props} sessions={[z, { ...a, status: 'running' }]} />);
+    expect(workingNames()).toEqual(['a, working', 'z, working']);
+  });
+
   it('names where the code lives and how many pull requests are open', async () => {
     await renderPage([merged, running]);
     expect(screen.getByTestId('project-line')).toHaveTextContent(
@@ -222,6 +249,81 @@ describe('project page', () => {
     );
     // Answered, it leaves Now at once rather than waiting for the next poll.
     expect(screen.queryByTestId('work-needs-you')).toBeNull();
+  });
+
+  it('locks only the answered row while its answer is on the way', async () => {
+    // A merge can wait on the code host for a while; one lock for the whole
+    // list left every other row unanswerable until it came back.
+    const second = session('api', {
+      status: 'awaiting_input',
+      openChoices: {
+        question: 'Which framework?',
+        options: [{ label: 'Hono' }, { label: 'Express' }],
+      },
+    });
+    const both = {
+      ...question,
+      openChoices: { ...question.openChoices!, options: [{ label: 'Zod' }, { label: 'Yup' }] },
+    };
+    const { client } = await renderPage([both, second]);
+    Object.assign(client, { sendTurn: jest.fn(() => new Promise(() => undefined)) });
+    await act(async () => fireEvent.press(screen.getByRole('button', { name: 'Yup' })));
+    const busy = (name: string) => screen.getByRole('button', { name }).props.accessibilityState;
+    // The spinner sits on the answer tapped, not on the row's first one.
+    expect(busy('Yup')).toMatchObject({ busy: true, disabled: true });
+    expect(busy('Zod')).toMatchObject({ busy: false, disabled: true });
+    expect(busy('Hono')).toMatchObject({ busy: false, disabled: false });
+    await act(async () => fireEvent.press(screen.getByRole('button', { name: 'Hono' })));
+    expect(client.sendTurn).toHaveBeenCalledTimes(2);
+  });
+
+  it('shows short answers in place and longer ones in a sheet', async () => {
+    // Limits from the rule itself: a label at the limit stays a button, one
+    // character more moves every answer of its row into the sheet.
+    const fits = 'x'.repeat(SHORT_ANSWER);
+    const long = `${'y'.repeat(SHORT_ANSWER)}!`;
+    const ask = (id: string, labels: string[]) =>
+      session(id, {
+        status: 'awaiting_input',
+        openChoices: { question: `${id}?`, options: labels.map((label) => ({ label })) },
+      });
+    const many = Array.from(
+      { length: INLINE_ANSWERS + 1 },
+      (_, index) => `Option ${String(index)}`,
+    );
+    const { client } = await renderPage([
+      ask('short', [fits, 'Wait']),
+      ask('wordy', [long, 'Wait']),
+      ask('many', many),
+    ]);
+    Object.assign(client, { sendTurn: jest.fn().mockResolvedValue({ queued: false }) });
+    expect(screen.getByRole('button', { name: fits })).toBeTruthy();
+    // A row is never half in place and half in a sheet: its short answer goes too.
+    expect(screen.queryByRole('button', { name: long })).toBeNull();
+    expect(screen.getAllByRole('button', { name: 'Wait' })).toHaveLength(1);
+    expect(screen.getByRole('button', { name: `${String(many.length)} answers` })).toBeTruthy();
+
+    fireEvent.press(screen.getByRole('button', { name: '2 answers' }));
+    // The sheet shows the answer whole; a row wrapped or cut it into a pill.
+    const option = screen.getByRole('button', { name: long });
+    await act(async () => fireEvent.press(option));
+    expect(client.sendTurn).toHaveBeenCalledWith(
+      'wordy',
+      expect.objectContaining({ prompt: expect.stringContaining(long) }),
+    );
+    expect(screen.queryByRole('button', { name: long })).toBeNull();
+  });
+
+  it('keeps the title wide beside the chevron in Needs you', async () => {
+    await renderPage([question]);
+    // Beside the chevron a trailing tag wrapped or cut the title; it leads the
+    // subtitle instead, so nothing but the chevron shares the title's line.
+    const row = screen.getByRole('button', { name: /^form,/ });
+    let line = within(row).getByText('Which validation library?').parent;
+    while (line && within(line).queryByText('Question') === null) line = line.parent;
+    // The smallest part holding tag and subtitle leaves the title out.
+    expect(line).toBeTruthy();
+    expect(within(line!).queryByText('form')).toBeNull();
   });
 
   it('marks a plan waiting for approval in Now and in All', async () => {
@@ -521,6 +623,66 @@ describe('project page', () => {
     expect(onSessionChanged).toHaveBeenCalledWith('login', true);
   });
 
+  it.each(['success', 'failure', 'busy'] as const)(
+    'hides a confirmed deletion immediately and handles %s',
+    async (outcome) => {
+      const alert = jest.spyOn(Alert, 'alert');
+      const onSessionChanged = jest.fn();
+      const { client } = await renderPage([running, favorite], { onSessionChanged });
+      let resolve!: (value: { sessionId: string }) => void;
+      let reject!: (error: Error) => void;
+      const deleteSession = jest.spyOn(client, 'deleteSession');
+      deleteSession.mockImplementationOnce(
+        () =>
+          new Promise((yes, no) => {
+            resolve = yes;
+            reject = no;
+          }),
+      );
+      fireEvent.press(screen.getByLabelText('Delete'));
+      expect(screen.getByLabelText('login, working')).toBeTruthy();
+      expect(client.deleteSession).not.toHaveBeenCalled();
+      const confirm = alert.mock.calls.at(-1)![2]!;
+      act(() => confirm.find((button) => button.text === 'Delete')!.onPress!());
+      expect(screen.queryByLabelText('login, working')).toBeNull();
+      expect(onSessionChanged).not.toHaveBeenCalled();
+      // Switching filters must not revive a row from the parent's stale snapshot.
+      fireEvent.press(screen.getByRole('tab', { name: 'All' }));
+      expect(screen.queryByLabelText('login, working')).toBeNull();
+      expect(screen.getByLabelText('blog, favorite')).toBeTruthy();
+
+      await act(async () => {
+        if (outcome === 'success') resolve({ sessionId: 'login' });
+        else reject(outcome === 'busy' ? new VerityApiError(409, 'busy') : new Error('offline'));
+      });
+      if (outcome === 'success') {
+        expect(screen.queryByLabelText('login, working')).toBeNull();
+        expect(onSessionChanged).toHaveBeenCalledWith('login', true);
+      } else {
+        expect(screen.getByLabelText('login, working')).toBeTruthy();
+        expect(onSessionChanged).not.toHaveBeenCalled();
+        expect(alert.mock.calls.at(-1)![0]).toBe(
+          outcome === 'busy' ? 'Session is still running' : 'Could not delete session',
+        );
+        if (outcome === 'busy') {
+          const retry = alert.mock.calls.at(-1)![2]!;
+          let finish!: (value: { sessionId: string }) => void;
+          deleteSession.mockImplementationOnce(
+            () =>
+              new Promise((yes) => {
+                finish = yes;
+              }),
+          );
+          act(() => retry.find((button) => button.text === 'Delete anyway')!.onPress!());
+          expect(screen.queryByLabelText('login, working')).toBeNull();
+          expect(client.deleteSession).toHaveBeenLastCalledWith('login', { force: true });
+          await act(async () => finish({ sessionId: 'login' }));
+          expect(onSessionChanged).toHaveBeenCalledWith('login', true);
+        }
+      }
+    },
+  );
+
   it('opens the Wiki and the Sources as their own screens on a phone', async () => {
     const { client } = await renderPage([]);
     expect(screen.queryByRole('tab', { name: 'Knowledge' })).toBeNull();
@@ -551,6 +713,34 @@ describe('project page', () => {
     fireEvent.press(screen.getByText('verity'));
     expect(screen.queryByTestId('project-knowledge')).toBeNull();
     expect(screen.getByTestId('project-work')).toBeTruthy();
+  });
+
+  it('closes the answer sheet once its question was answered elsewhere', async () => {
+    // A sheet left open on a stale question would send its answer to a session
+    // that no longer waits, as an unwanted prompt.
+    const long = `${'y'.repeat(SHORT_ANSWER)}!`;
+    const wordy = session('wordy', {
+      status: 'awaiting_input',
+      openChoices: { question: 'How?', options: [{ label: long }, { label: 'Wait' }] },
+    });
+    const client = clientWith([wordy]);
+    mockCreateVerityClient.mockReturnValue(client);
+    const page = (reloadOn: unknown) => (
+      <ProjectPage client={client} projectId="p/1" onOpenSession={jest.fn()} reloadOn={reloadOn} />
+    );
+    const view = render(page(1));
+    await screen.findByTestId('project-line');
+    await act(async () => undefined);
+    fireEvent.press(screen.getByRole('button', { name: '2 answers' }));
+    expect(screen.getByRole('button', { name: long })).toBeTruthy();
+    const detail = await (client.getProject as jest.Mock).mock.results[0]!.value;
+    (client.getProject as jest.Mock).mockResolvedValue({
+      ...detail,
+      sessions: [session('wordy', { status: 'running' })],
+    });
+    view.rerender(page(2));
+    await act(async () => undefined);
+    expect(screen.queryByRole('button', { name: long })).toBeNull();
   });
 
   it('reloads when the wide layout polled newer sessions beside it', async () => {

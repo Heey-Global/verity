@@ -275,7 +275,8 @@ function UsageDetails({
         );
       })}
       <Text style={styles.detailsFootnote}>
-        The notch on each ring marks where usage would be now if the limit were spread evenly.
+        Each ring fills clockwise from the top as you use the limit. The line across it shows how
+        much of the window has passed — where usage would be now at an even pace.
       </Text>
     </View>
   );

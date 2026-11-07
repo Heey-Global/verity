@@ -716,6 +716,106 @@ describe('SessionListModel.settlePermission', () => {
 });
 
 describe('SessionListModel.applyPullRequestStatus', () => {
+  it('does not apply a late merge for the previous PR to its successor', async () => {
+    const { client, listSessions } = makeClient();
+    const successor: SessionSummary = {
+      ...session('s1', 'idle'),
+      pr: { phase: 'open', pipeline: 'running', mergeable: false },
+      pullRequest: {
+        number: 120,
+        title: 'Next PR',
+        url: 'https://example.test/pr/120',
+        phase: 'open',
+        pipeline: 'running',
+        mergeable: false,
+        checks: { completed: 0, total: 1, successful: 0, failed: 0, pending: 1 },
+      },
+    };
+    listSessions.mockResolvedValueOnce([successor]);
+    const model = new SessionListModel({ client });
+    await model.refresh();
+    let finish!: (sessions: SessionSummary[]) => void;
+    listSessions.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const stale = model.refresh();
+    model.applyPullRequestStatus(
+      's1',
+      { phase: 'merged', pipeline: 'success', mergeable: false },
+      119,
+    );
+    expect(model.state.sessions[0]).toEqual(successor);
+    finish([successor]);
+    await stale;
+    expect(model.state.sessions[0]).toEqual(successor);
+  });
+
+  it('keeps the full projection consistent and ignores a pre-merge overview read', async () => {
+    const { client, listSessions } = makeClient();
+    const before: SessionSummary = {
+      ...session('s1', 'idle'),
+      pr: { phase: 'open', pipeline: 'success', mergeable: true },
+      pullRequest: {
+        number: 119,
+        title: 'First PR',
+        url: 'https://example.test/pr/119',
+        phase: 'open',
+        pipeline: 'success',
+        mergeable: true,
+        checks: { completed: 1, total: 1, successful: 1, failed: 0, pending: 0 },
+      },
+    };
+    listSessions.mockResolvedValueOnce([before]);
+    const model = new SessionListModel({ client });
+    await model.refresh();
+    let finish!: (sessions: SessionSummary[]) => void;
+    listSessions.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const stale = model.refresh();
+    model.applyPullRequestStatus('s1', { phase: 'merged', pipeline: 'success', mergeable: false });
+    expect(model.state.sessions[0]?.pullRequest).toMatchObject({ number: 119, phase: 'merged' });
+    finish([before]);
+    await stale;
+    expect(model.state.sessions[0]?.pullRequest?.phase).toBe('merged');
+    expect(model.state.sessions[0]?.pr?.phase).toBe('merged');
+    listSessions.mockResolvedValueOnce([
+      {
+        ...before,
+        pr: { phase: 'open', pipeline: 'running', mergeable: false },
+        pullRequest: { ...before.pullRequest!, number: 120, phase: 'open', pipeline: 'running' },
+      },
+    ]);
+    await model.refresh();
+    expect(model.state.sessions[0]?.pullRequest).toMatchObject({ number: 120, phase: 'open' });
+    expect(model.state.sessions[0]?.pr?.pipeline).toBe('running');
+  });
+
+  it('preserves initial loading and applies a confirmed action when the snapshot arrives', async () => {
+    const { client, listSessions } = makeClient();
+    let finish!: (sessions: SessionSummary[]) => void;
+    listSessions.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const model = new SessionListModel({ client });
+    const loading = model.refresh();
+    model.applyPullRequestStatus('s1', { phase: 'merged', pipeline: 'success', mergeable: false });
+    expect(model.state.loading).toBe(true);
+    finish([session('s1', 'idle')]);
+    await loading;
+    expect(model.state.sessions[0]?.pr?.phase).toBe('merged');
+    expect(model.state.sessions[0]?.pullRequest).toBeUndefined();
+  });
+
   it('updates the overview projection immediately', async () => {
     const { client, listSessions } = makeClient();
     listSessions.mockResolvedValueOnce([
