@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { join, posix, relative, resolve } from 'node:path';
+import { posix, relative, resolve } from 'node:path';
 import { z } from 'zod';
 import type { RunnerTurnOwnershipRequest } from '@verity/store';
 import type { DockerClient } from './docker.js';
@@ -184,6 +184,20 @@ export async function reclaimSleepingRunnerCaches(input: {
   // Translate through our own mount inventory so physical bind aliases cannot
   // hide a writer of the same data behind a different path spelling.
   const runtimeAliases = [runtimeRoot];
+  const coveringMounts = self.mounts
+    .filter(
+      (mount) =>
+        mount.destination &&
+        (runtimeRoot === resolve(mount.destination) ||
+          runtimeRoot.startsWith(`${resolve(mount.destination)}/`)),
+    )
+    .sort((a, b) => resolve(b.destination!).length - resolve(a.destination!).length);
+  const runtimeMount = coveringMounts[0];
+  const hostRuntimeRoot =
+    runtimeMount?.source && !runtimeMount.subpath
+      ? resolve(runtimeMount.source, relative(resolve(runtimeMount.destination!), runtimeRoot))
+      : undefined;
+  if (!input.dataVolume && !hostRuntimeRoot) throw cacheMaintenanceFailure('runtime-not-idle');
   for (const mount of self.mounts) {
     if (!mount.source || !mount.destination || mount.subpath) continue;
     const destination = resolve(mount.destination);
@@ -257,7 +271,7 @@ export async function reclaimSleepingRunnerCaches(input: {
             },
           ],
         }
-      : { binds: [`${join(runtimeRoot)}:/run/verity-runner`] }),
+      : { binds: [`${hostRuntimeRoot!}:/run/verity-runner`] }),
     labels: {
       'verity.project-id': input.projectId,
       'verity.component': 'runner-cache-maintenance',

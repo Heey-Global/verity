@@ -185,10 +185,40 @@ describe('sleeping runner cache helpers', () => {
       readOnlyRootfs: true,
       capDrop: ['ALL'],
       runtime: 'runsc',
-      binds: ['/data/runners/p:/run/verity-runner'],
+      binds: ['/var/lib/docker/volumes/data/_data/runners/p:/run/verity-runner'],
       labels: { 'verity.project-id': 'p', 'verity.component': 'runner-cache-maintenance' },
     });
     expect(h.docker.removeStoppedContainer).toHaveBeenCalledExactlyOnceWith('helper');
+  });
+  it('uses the proven Docker host path when Server paths differ', async () => {
+    const h = fixture();
+    const inspect = h.docker.inspectContainer.getMockImplementation()!;
+    h.docker.inspectContainer.mockImplementation(async (id) => {
+      const result = await inspect(id);
+      return id === 'self'
+        ? {
+            ...result,
+            mounts: [
+              { type: 'bind', source: '/srv/verity', destination: '/data' },
+              { type: 'bind', source: '/srv/project-runtime', destination: '/data/runners/p' },
+            ],
+          }
+        : result;
+    });
+    await h.run();
+    expect(h.spec?.binds).toEqual(['/srv/project-runtime:/run/verity-runner']);
+  });
+  it('refuses a helper bind without proven host storage', async () => {
+    const h = fixture();
+    const inspect = h.docker.inspectContainer.getMockImplementation()!;
+    h.docker.inspectContainer.mockImplementation(async (id) => {
+      const result = await inspect(id);
+      return id === 'self' ? { ...result, mounts: [] } : result;
+    });
+    await expect(h.run()).rejects.toMatchObject({
+      runnerCacheFailure: { code: 'runtime-not-idle' },
+    });
+    expect(h.docker.createContainer).not.toHaveBeenCalled();
   });
   it.each(['running', 'created', 'paused', 'unknown'])(
     'retains caches when a consumer is %s',
