@@ -225,7 +225,51 @@ describe('runner cache storage', () => {
       await vi.advanceTimersByTimeAsync(60_000);
       expect(request).toHaveBeenCalledTimes(2);
     } finally {
-      storage.stop();
+      await storage.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it('drains an active continuation before shutdown and admits no further projects', async () => {
+    vi.useFakeTimers();
+    let release!: () => void;
+    const active = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce({ ...response(), maintenancePending: true })
+      .mockResolvedValueOnce(response())
+      .mockImplementationOnce(async () => {
+        await active;
+        return response();
+      });
+    const storage = new RunnerCacheStorage({
+      listRuntimes: async () => [
+        { projectId: 'one', sessionIds: [] },
+        { projectId: 'two', sessionIds: [] },
+      ],
+      request,
+    });
+    try {
+      await storage.runOnce();
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(request).toHaveBeenCalledTimes(3);
+      let closed = false;
+      const closing = storage.stop().then(() => {
+        closed = true;
+      });
+      await Promise.resolve();
+      expect(closed).toBe(false);
+      release();
+      await closing;
+      expect(closed).toBe(true);
+      await storage.runOnce();
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(request).toHaveBeenCalledTimes(3);
+    } finally {
+      release();
+      await storage.stop();
       vi.useRealTimers();
     }
   });
@@ -242,11 +286,11 @@ describe('runner cache storage', () => {
     });
     try {
       await storage.runOnce();
-      storage.stop();
+      await storage.stop();
       await vi.advanceTimersByTimeAsync(60_000);
       expect(request).toHaveBeenCalledTimes(1);
     } finally {
-      storage.stop();
+      await storage.stop();
       vi.useRealTimers();
     }
   });

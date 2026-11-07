@@ -134,10 +134,11 @@ export class RunnerCacheStorage {
     return this.report;
   }
 
-  stop(): void {
+  stop(): Promise<void> {
     this.stopped = true;
     clearTimeout(this.continuationTimer);
     this.continuationTimer = undefined;
+    return this.flight ?? Promise.resolve();
   }
 
   runOnce(): Promise<void> {
@@ -202,6 +203,7 @@ export class RunnerCacheStorage {
           ...rotated.filter((runtime) => !this.pendingProjects.has(runtime.projectId)),
         ];
         for (const runtime of priority.slice(0, MAX_RUNTIMES)) {
+          if (this.stopped) break;
           // An in-flight broker request has its own bound; do not start another after this budget.
           if (Date.now() >= deadline) {
             this.nextProject = runtime.projectId;

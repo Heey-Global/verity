@@ -4778,9 +4778,8 @@ export async function buildEmbeddedServer(
     });
   };
 
-  app.addHook('onClose', (_instance, done) => {
-    runnerCacheStorage?.stop();
-    done();
+  app.addHook('onClose', async () => {
+    await runnerCacheStorage?.stop();
   });
 
   if (embeddedSecretJobs !== undefined) {
