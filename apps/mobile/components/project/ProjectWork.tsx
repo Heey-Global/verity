@@ -26,14 +26,13 @@ import { useEffect, useMemo, useState, type ReactElement } from 'react';
 import { Alert, Platform, View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 
-import { answerId, type InboxFeed } from '../home/HomeInbox';
-import { AnswerSheet, answersFitInline } from './AnswerSheet';
+import type { InboxFeed } from '../home/HomeInbox';
+import { AnswerButtons, AnswerSheet } from './AnswerSheet';
 import { SessionMarkerColumn, sessionMarkers, sessionMarkersLabel } from '../SessionMarkerColumn';
 import { SwipeableSessionRow } from '../SessionRowActions';
 import { SessionSettingsDialog } from '../SessionSettingsDialog';
 import type { IconName } from '../Icon';
 import {
-  Button,
   FilterChips,
   Group,
   IconButton,
@@ -554,31 +553,15 @@ export function ProjectWork({
     if (answers.length === 0) return undefined;
     // Only this item's answers wait; the other rows stay answerable.
     const locked = feed.pending.has(item.key);
-    if (!answersFitInline(answers))
-      return (
-        <Button
-          label={`${String(answers.length)} answers`}
-          icon="chevron-down"
-          size="small"
-          variant="secondary"
-          loading={locked}
-          disabled={locked}
-          onPress={() => setAnsweringKey(item.key)}
-        />
-      );
-    return answers.map((action) => (
-      <Button
-        key={`${action.kind}:${action.label}`}
-        label={action.label}
-        // Small and neutral: a list carries many of these, and a primary in
-        // every row would leave the screen with no single main action.
-        size="small"
-        variant="secondary"
-        loading={feed.pending.get(item.key) === answerId(action)}
+    return (
+      <AnswerButtons
+        answers={answers}
+        pending={feed.pending.get(item.key) ?? false}
         disabled={locked}
-        onPress={() => send(item, action)}
+        onMore={() => setAnsweringKey(item.key)}
+        onAnswer={(action) => send(item, action)}
       />
-    ));
+    );
   };
   const needsYouRow = (entry: NeedsYouEntry) => {
     if (entry.kind === 'project') {

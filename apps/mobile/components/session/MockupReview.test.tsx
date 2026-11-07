@@ -25,6 +25,7 @@ const props = {
   deciding: false,
   error: undefined,
   onDecide: jest.fn(async () => true),
+  onComplete: jest.fn(async () => undefined),
   onClose: jest.fn(),
 };
 
@@ -57,7 +58,18 @@ it('locks both marks while one is being saved', () => {
   render(<MockupReviewSheet {...props} deciding />);
   fireEvent.press(screen.getByRole('button', { name: 'Approve' }));
   fireEvent.press(screen.getByRole('button', { name: 'Discard' }));
+  fireEvent.press(screen.getByRole('button', { name: 'End review' }));
   expect(props.onDecide).not.toHaveBeenCalled();
+  expect(props.onComplete).not.toHaveBeenCalled();
+});
+
+it('ends the review separately from marking screens or closing the viewer', async () => {
+  render(<MockupReviewSheet {...props} />);
+  expect(screen.getByText(/This does not start implementation/)).toBeTruthy();
+  await act(async () => fireEvent.press(screen.getByRole('button', { name: 'End review' })));
+  expect(props.onComplete).toHaveBeenCalledTimes(1);
+  expect(props.onDecide).not.toHaveBeenCalled();
+  expect(props.onClose).not.toHaveBeenCalled();
 });
 
 const spec: MockupReviewScreen = { ...home, name: 'Spec', attachment: 'b'.repeat(64) };

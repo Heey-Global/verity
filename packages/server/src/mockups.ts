@@ -147,10 +147,18 @@ export function createSessionMockups(deps: MockupDeps) {
       return { ok: true, review: stored };
     },
 
-    /** End the review the user closed in the chat; its marks stay as they were. */
-    async complete(sessionId: string): Promise<MockupActionResult> {
+    /** End a review without changing its marks or starting work. A device supplies
+     *  the revision it saw so a new round cannot be closed by an old screen. */
+    async complete(sessionId: string, revision?: number): Promise<MockupActionResult> {
       let failure: MockupActionResult | undefined;
       const stored = await store.updateSessionMockups(sessionId, (current) => {
+        if (revision !== undefined && current.revision !== revision) {
+          failure = { ok: false, code: 'stale' };
+          return undefined;
+        }
+        // Retrying the same device request is safe, but the agent's existing
+        // no-revision call still reports that there was nothing left to close.
+        if (revision !== undefined && current.state === 'approved') return current;
         if (current.state !== 'pending' && current.state !== 'revising') {
           failure = { ok: false, code: 'notPending' };
           return undefined;
@@ -166,14 +174,22 @@ export function createSessionMockups(deps: MockupDeps) {
 export type SessionMockupActions = ReturnType<typeof createSessionMockups>;
 
 const sessionParams = z.object({ id: z.string().min(1) });
-const decideBody = z
-  .object({
-    action: z.literal('mark'),
-    revision: z.number().int().nonnegative(),
-    screen: z.string().min(1).max(80),
-    verdict: z.enum(['approved', 'discarded', 'open']),
-  })
-  .strict();
+const decideBody = z.discriminatedUnion('action', [
+  z
+    .object({
+      action: z.literal('mark'),
+      revision: z.number().int().nonnegative(),
+      screen: z.string().min(1).max(80),
+      verdict: z.enum(['approved', 'discarded', 'open']),
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal('complete'),
+      revision: z.number().int().nonnegative(),
+    })
+    .strict(),
+]);
 
 const ERRORS: Record<Exclude<MockupActionResult, { ok: true }>['code'], [number, string]> = {
   notFound: [404, 'session not found'],
@@ -182,8 +198,8 @@ const ERRORS: Record<Exclude<MockupActionResult, { ok: true }>['code'], [number,
   unknownScreen: [409, 'This screen is not part of the current mockups.'],
 };
 
-/** `POST /sessions/:id/mockups` — the reviewer marks one screen. Comments and
- *  sending them belonged to earlier versions; the chat carries them now. */
+/** `POST /sessions/:id/mockups` — mark a screen or explicitly end the current
+ * review. Neither action grants approval to implement or queues a turn. */
 export function registerMockupRoutes(
   app: FastifyInstance,
   deps: { mockups: SessionMockupActions },
@@ -193,11 +209,17 @@ export function registerMockupRoutes(
     const body = decideBody.safeParse(request.body);
     if (!body.success) {
       reply.code(400);
-      return { error: 'Mark the screen as approved, discarded or open.', code: 'invalid' };
+      return {
+        error: 'Mark a screen or end the current review with its revision.',
+        code: 'invalid',
+      };
     }
-    const result = await deps.mockups.decide(id, body.data.revision, body.data.screen, {
-      verdict: body.data.verdict,
-    });
+    const result =
+      body.data.action === 'complete'
+        ? await deps.mockups.complete(id, body.data.revision)
+        : await deps.mockups.decide(id, body.data.revision, body.data.screen, {
+            verdict: body.data.verdict,
+          });
     if (!result.ok) {
       const [status, error] = ERRORS[result.code];
       reply.code(status);

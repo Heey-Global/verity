@@ -17,14 +17,20 @@ jest.mock('../../lib/taskPreferences', () => ({
 }));
 jest.mock('../../lib/tasksStore', () => ({ taskAccountScope: () => mockCapture.scope }));
 
-import type { ProjectRecord, SessionSummary, UpcomingMeeting, VerityClient } from '@verity/mobile';
+import type {
+  InboxItem,
+  ProjectRecord,
+  SessionSummary,
+  UpcomingMeeting,
+  VerityClient,
+} from '@verity/mobile';
 import { act, fireEvent, render, screen } from '@testing-library/react-native';
 import { Alert } from 'react-native';
 import { router } from 'expo-router';
 import { randomUUID } from 'expo-crypto';
 
 import { dispatchVerityShortcut } from '../../lib/voiceShortcut';
-import { HomeInbox, RESUME_PROMPT, replyFor } from './HomeInbox';
+import { HomeInbox, InboxCard, RESUME_PROMPT, replyFor } from './HomeInbox';
 
 const ZERO_USAGE = {
   inputTokens: 0,
@@ -137,6 +143,137 @@ it('answers a question in place and hides it until the session moves on', async 
   });
   expect(screen.queryByText('Which validation library?')).toBeNull();
   expect(onCountChange).toHaveBeenLastCalledWith(0);
+});
+
+it('opens long answers in full before sending a selected answer', async () => {
+  const label = 'Build the admin bot with a token stored in Doppler';
+  const longQuestion = {
+    ...question,
+    openChoices: {
+      question: 'How should access work?',
+      options: [{ label }, { label: 'Use the database' }],
+    },
+  };
+  const { client } = await renderInbox([longQuestion]);
+  expect(screen.queryByText(label)).toBeNull();
+  fireEvent.press(screen.getByRole('button', { name: '2 answers' }));
+  expect(screen.getByText(label)).toBeTruthy();
+  expect(client.sendTurn).not.toHaveBeenCalled();
+  await act(async () => fireEvent.press(screen.getByRole('button', { name: label })));
+  expect(client.sendTurn).toHaveBeenCalledTimes(1);
+  expect(client.sendTurn).toHaveBeenCalledWith('form', expect.objectContaining({ prompt: label }));
+  expect(screen.queryByRole('button', { name: '2 answers' })).toBeNull();
+});
+
+it('keeps opening a long-answer sheet separate from writing an own answer', async () => {
+  const label = 'Build the admin bot with a token stored in Doppler';
+  const { client, onOpenSession } = await renderInbox([
+    { ...question, openChoices: { question: 'How?', options: [{ label }] } },
+  ]);
+  fireEvent.press(screen.getByRole('button', { name: '1 answers' }));
+  fireEvent.press(screen.getByRole('button', { name: 'Open session' }));
+  expect(onOpenSession).toHaveBeenCalledWith('form');
+  expect(client.sendTurn).not.toHaveBeenCalled();
+  expect(screen.queryByText(label)).toBeNull();
+});
+
+it('sends a long answer only once when tapped twice before the sheet closes', async () => {
+  const label = 'Build the admin bot with a token stored in Doppler';
+  const client = fakeClient();
+  let resolveSend!: (value: object) => void;
+  client.sendTurn.mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        resolveSend = resolve;
+      }),
+  );
+  await renderInbox(
+    [{ ...question, openChoices: { question: 'How?', options: [{ label }] } }],
+    client,
+  );
+  fireEvent.press(screen.getByRole('button', { name: '1 answers' }));
+  const choice = screen.getByRole('button', { name: label });
+  act(() => {
+    fireEvent.press(choice);
+    fireEvent.press(choice);
+  });
+  expect(client.sendTurn).toHaveBeenCalledTimes(1);
+  expect(screen.queryByText(label)).toBeNull();
+  await act(async () => resolveSend({}));
+});
+
+it('removes a long-answer sheet when another client resolves the question', async () => {
+  const label = 'Build the admin bot with a token stored in Doppler';
+  const { client, rerender, onOpenSession, onRepairProject } = await renderInbox([
+    { ...question, openChoices: { question: 'How?', options: [{ label }] } },
+  ]);
+  fireEvent.press(screen.getByRole('button', { name: '1 answers' }));
+  expect(screen.getByText(label)).toBeTruthy();
+  rerender(
+    <HomeInbox
+      client={client as unknown as VerityClient}
+      sessions={[session('form')]}
+      projects={[project]}
+      refreshing={false}
+      onRefresh={jest.fn()}
+      onOpenSession={onOpenSession}
+      onRepairProject={onRepairProject}
+    />,
+  );
+  expect(screen.queryByText(label)).toBeNull();
+  expect(client.sendTurn).not.toHaveBeenCalled();
+});
+
+it('closes an open sheet when its question changes or the card becomes hidden', () => {
+  const label = 'Build the admin bot with a token stored in Doppler';
+  const item: InboxItem = {
+    key: 'q',
+    kind: 'question',
+    title: 'How?',
+    tag: 'Question',
+    tone: 'attention',
+    context: 'Project',
+    at: 0,
+    actions: [{ kind: 'answer', label, answer: label, sessionId: 'form' }],
+  };
+  const props = {
+    item,
+    selected: false,
+    pending: false as const,
+    disabled: false,
+    onAction: jest.fn(),
+  };
+  const view = render(<InboxCard {...props} />);
+  fireEvent.press(screen.getByRole('button', { name: '1 answers' }));
+  expect(screen.getByText(label)).toBeTruthy();
+  view.rerender(
+    <InboxCard
+      {...props}
+      item={{
+        ...item,
+        actions: [
+          {
+            kind: 'answer',
+            label,
+            answer: 'A changed payload behind the same label',
+            sessionId: 'form',
+          },
+        ],
+      }}
+    />,
+  );
+  expect(screen.queryByText(label)).toBeNull();
+  fireEvent.press(screen.getByRole('button', { name: '1 answers' }));
+  view.rerender(
+    <InboxCard
+      {...props}
+      item={{ ...item, actions: [{ ...item.actions[0]!, label: `${label} instead` }] }}
+    />,
+  );
+  expect(screen.queryByText(`${label} instead`)).toBeNull();
+  fireEvent.press(screen.getByRole('button', { name: '1 answers' }));
+  view.rerender(<InboxCard {...props} onRestore={jest.fn()} />);
+  expect(screen.queryByText(label)).toBeNull();
 });
 
 it('keeps an item when the answer could not be delivered', async () => {

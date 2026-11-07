@@ -764,6 +764,7 @@ export const SessionChat = memo(function SessionChat({
     decidingMockup,
     mockupError,
     decideMockup,
+    completeMockups,
     decidingPermission,
     permissionError,
     sendTurn,
@@ -4873,6 +4874,10 @@ export const SessionChat = memo(function SessionChat({
         deciding={decidingMockup}
         error={mockupError}
         onDecide={decideMockup}
+        onComplete={async () => {
+          if (mockupReview !== undefined && (await completeMockups(mockupReview.revision)))
+            setMockupSheet(null);
+        }}
         onClose={() => setMockupSheet(null)}
       />
       {client ? <QAApprovalCard client={client} sessionId={sessionId} /> : null}

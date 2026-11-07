@@ -1482,6 +1482,17 @@ export class SessionModel {
     return ok;
   }
 
+  /** Close the round the user is viewing, without changing marks or sending a turn. */
+  async completeMockups(revision: number): Promise<boolean> {
+    if (
+      this._decidingMockup ||
+      this._mockupReview === undefined ||
+      this._mockupReview.revision !== revision
+    )
+      return false;
+    return this.mockupAction(() => this.opts.client.completeMockups(this.opts.sessionId, revision));
+  }
+
   async decidePermission(toolUseId: string, decision: PermissionDecision): Promise<void> {
     if (this._decidingPermission !== undefined) return; // a decision is already in flight
     const allowTiming =

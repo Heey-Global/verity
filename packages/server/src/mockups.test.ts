@@ -205,6 +205,41 @@ describe('presenting mockups', () => {
 });
 
 describe('POST /sessions/:id/mockups', () => {
+  it('ends a review manually without changing its screens or starting implementation', async () => {
+    await present();
+    await mockups.decide('s1', 1, 'Spec', { verdict: 'discarded' });
+    const before = (await store.getSession('s1'))!.mockupReview!;
+    const response = await post({ action: 'complete', revision: before.revision });
+    expect(response.statusCode).toBe(200);
+    expect(response.json().mockupReview).toEqual({ ...before, state: 'approved' });
+    expect((await store.getSession('s1'))?.mockupReview).toEqual({ ...before, state: 'approved' });
+    expect(await store.getAttachment(before.screens[0]!.attachment)).toBeDefined();
+    expect(await queuedTurns()).toEqual([]);
+    // A retry from the same device must succeed without reopening the review.
+    expect((await post({ action: 'complete', revision: before.revision })).statusCode).toBe(200);
+    expect(await queuedTurns()).toEqual([]);
+  });
+
+  it('cannot close a new round from an old review or a retry of its completion', async () => {
+    await present();
+    await post({ action: 'complete', revision: 1 });
+    const next = await present();
+    const response = await post({ action: 'complete', revision: 1 });
+    expect(response.statusCode).toBe(409);
+    expect(response.json().code).toBe('stale');
+    expect((await store.getSession('s1'))?.mockupReview).toEqual(next);
+  });
+
+  it.each([
+    { action: 'complete' },
+    { action: 'complete', revision: -1 },
+    { action: 'complete', revision: 1, verdict: 'approved' },
+  ])('requires an explicit revision-bound completion request: %j', async (payload) => {
+    const before = await present();
+    expect((await post(payload)).statusCode).toBe(400);
+    expect((await store.getSession('s1'))?.mockupReview).toEqual(before);
+  });
+
   it('only marks screens, even when every screen is approved', async () => {
     await present();
     for (const screen of ['Home', 'Spec']) {

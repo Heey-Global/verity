@@ -22,12 +22,15 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { Icon } from '../Icon';
 import { VerityMark } from '../VerityMark';
 import { MockupThumbs } from '../session/MockupReview';
+import { AnswerButtons, AnswerSheet, answerId } from '../project/AnswerSheet';
 import { Button, CaptureField, Card, CardHead, StatusTag, Text } from '../ui';
 import { Disclosure } from '../ui/Disclosure';
 import { tint } from '../ui/tint';
 import { useTaskPreferences } from '../../lib/taskPreferences';
 import { taskAccountScope } from '../../lib/tasksStore';
 import { dispatchVerityShortcut } from '../../lib/voiceShortcut';
+
+export { answerId } from '../project/AnswerSheet';
 
 /** The cached calendar list is cheap, but a watched calendar rarely changes. */
 const MEETING_REFRESH_MS = 5 * 60_000;
@@ -440,6 +443,13 @@ export function InboxCard({
   onRestore?: (() => void) | undefined;
 }) {
   const restoring = onRestore !== undefined;
+  const [answering, setAnswering] = useState(false);
+  const answers = item.actions.filter((action) => action.kind === 'answer');
+  const otherActions = item.actions.filter((action) => action.kind !== 'answer');
+  const ownAnswer = otherActions.find((action) => action.kind === 'open_session');
+  // Labels can stay the same while the underlying answer or question changes.
+  const answerKey = JSON.stringify([item.key, item.title, item.message, answers]);
+  useEffect(() => setAnswering(false), [answerKey, restoring, disabled]);
   return (
     <View testID={restoring ? `inbox-hidden-${item.kind}` : `inbox-item-${item.kind}`}>
       <Card stacked selected={selected} muted={restoring}>
@@ -493,12 +503,21 @@ export function InboxCard({
           {restoring ? (
             <Button label="Restore" size="compact" variant="secondary" onPress={onRestore} />
           ) : null}
-          {(restoring ? [] : item.actions).map((action, index) => (
+          {restoring ? null : (
+            <AnswerButtons
+              answers={answers}
+              pending={pending}
+              disabled={disabled}
+              onAnswer={onAction}
+              onMore={() => setAnswering(true)}
+            />
+          )}
+          {(restoring ? [] : otherActions).map((action, index) => (
             <Button
               key={`${String(index)}:${action.kind}:${action.label}`}
               label={action.label}
-              size="compact"
-              variant={index === 0 ? 'primary' : 'secondary'}
+              size={item.kind === 'permission' ? 'compact' : 'small'}
+              variant={item.kind === 'permission' && index === 0 ? 'primary' : 'secondary'}
               loading={pending === answerId(action)}
               disabled={disabled}
               onPress={() => onAction(action)}
@@ -506,13 +525,25 @@ export function InboxCard({
           ))}
         </View>
       </Card>
+      <AnswerSheet
+        item={answering && !restoring && !disabled ? item : null}
+        answers={answers}
+        onAnswer={(action) => {
+          setAnswering(false);
+          onAction(action);
+        }}
+        onOpenSession={
+          ownAnswer === undefined
+            ? undefined
+            : () => {
+                setAnswering(false);
+                onAction(ownAnswer);
+              }
+        }
+        onClose={() => setAnswering(false)}
+      />
     </View>
   );
-}
-
-/** Names one answer of an item, so the spinner shows on the button tapped. */
-export function answerId(action: InboxAction): string {
-  return `${action.kind}:${action.label}`;
 }
 
 /** The network reply an answer becomes; navigation actions have none. */
