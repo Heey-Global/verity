@@ -235,3 +235,26 @@ it('denies direct admission when configured-host resolution is missing or stale'
   now = 101;
   expect(inventory.allows('203.0.113.9')).toBe(false);
 });
+
+it('exports only complete fresh mandatory exclusions for builds, without runtime grants', async () => {
+  let now = 1000;
+  const inventory = createProtectedAddressInventory({
+    hosts: ['broker.example'],
+    configuredHosts: ['system.example'],
+    now: () => now,
+    maxAgeMs: 10,
+    resolve: async (host) => ({
+      addresses: [host === 'broker.example' ? '8.8.8.8' : '9.9.9.9'],
+      expiresAt: 10000,
+    }),
+  });
+  expect(() => inventory.excludedAddresses()).toThrow('stale');
+  await inventory.refresh();
+  expect(inventory.excludedAddresses()).toEqual(['8.8.8.8', '9.9.9.9']);
+  const copy = [...inventory.excludedAddresses()];
+  copy.length = 0;
+  expect(inventory.allows('8.8.8.8')).toBe(false);
+  now += 11;
+  expect(() => inventory.excludedAddresses()).toThrow('stale');
+  expect(inventory.allows('1.1.1.1')).toBe(false);
+});

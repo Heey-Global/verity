@@ -285,6 +285,12 @@ const builds =
     ? await createNativeProtectedBuildHost({
         imageRef: relayPolicy.image,
         dataVolume: relayPolicy.dataVolume,
+        protectedAddresses: () => {
+          systemInventory.verify();
+          if (inventoryPersistenceFailed)
+            throw new ProjectEgressHealthError('mandatory_inventory_incomplete');
+          return [...protectedAddresses.excludedAddresses(), ...inventoryHistory.addresses()];
+        },
         dependencies: { ...fenceDependencies, deadline },
         verifyReady: async () => {
           systemInventory.verify();

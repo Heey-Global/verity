@@ -638,6 +638,9 @@ metadata daemon and RUN steps share the same policy, including direct public IP
 connections and TCP/UDP ports. A private attempt-bound Unix socket supplies DNS.
 Private, reserved and transition addresses, host-connected networks and every
 Docker network remain blocked, including publicly addressed host/project networks.
+Mandatory broker/system addresses, including retained addresses across configuration
+changes, remain excluded independently of runtime grants. Stale or incomplete
+mandatory inventories cannot establish build access.
 The host refreshes that exclusion inventory with each authenticated renewal;
 inventory errors revoke access. Short nft timeouts and kernel packet deadlines
 remain independent of the build's process lifetime. The running project sandbox

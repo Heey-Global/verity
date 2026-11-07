@@ -305,6 +305,7 @@ export interface NativeProtectedBuildOptions {
   dataVolume: string;
   dependencies: Omit<ProjectFenceDependencies, 'policyCurrent' | 'inspect' | 'relay'>;
   verifyReady(): Promise<void>;
+  protectedAddresses(): readonly string[];
   run?(this: void, file: string, args: readonly string[], timeout?: number): Promise<string>;
 }
 /** Real host adapter. Every project-selected input is confined to the shared
@@ -517,7 +518,18 @@ export async function createNativeProtectedBuildHost(options: NativeProtectedBui
     if (!value) {
       value = createProtectedBuildAdmission({
         binding: binding(anchor),
-        networkInventory: () => egressBuildProtectedNetworks(),
+        networkInventory: async () => {
+          const inventory = await egressBuildProtectedNetworks();
+          return {
+            ...inventory,
+            blocked: [
+              ...inventory.blocked,
+              ...options
+                .protectedAddresses()
+                .map((address) => `${address}/${address.includes(':') ? 128 : 32}`),
+            ],
+          };
+        },
         dependencies: {
           ...options.dependencies,
           inspect: async (expected) => {

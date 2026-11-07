@@ -113,6 +113,8 @@ export interface ProtectedAddressInventory {
   refresh(): Promise<void>;
   /** False for protected addresses and whenever any built-in host's entry is stale. */
   allows(address: string): boolean;
+  /** Complete fresh exclusion snapshot for temporary build Internet access. */
+  excludedAddresses(): readonly string[];
 }
 
 /** Public addresses a complete answer established, or undefined for a transient
@@ -191,6 +193,16 @@ export function createProtectedAddressInventory(options: {
     if (failures.length)
       throw new AggregateError(failures, 'Protected destination inventory incomplete');
   };
+  const excludedAddresses = () => {
+    const at = now();
+    const all = [
+      ...hosts.map((host) => entries.get(host)),
+      ...(options.configuredHosts ?? []).map((host) => configured.get(host)),
+    ];
+    if (all.some((entry) => entry === undefined || at - entry.at > maxAgeMs))
+      throw new Error('Protected destination inventory stale');
+    return [...new Set(all.flatMap((entry) => entry!.addresses))];
+  };
   return {
     refresh() {
       // Serialized: a slow refresh is joined rather than overtaken by a later tick.
@@ -199,6 +211,7 @@ export function createProtectedAddressInventory(options: {
       });
       return pending;
     },
+    excludedAddresses,
     allows(address) {
       const at = now();
       for (const host of hosts) {

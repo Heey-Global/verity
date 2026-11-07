@@ -52,6 +52,7 @@ export function createProjectEgressInventoryHistory(
     addHosts: (hosts: readonly string[]) => add(hosts, []),
     addAddresses: (addresses: readonly string[]) => add([], addresses),
     hosts: () => [...value.hosts],
+    addresses: () => [...value.addresses],
     dnsHosts: (current: readonly string[]) => {
       if (current.some((host) => !value.hosts.includes(host)))
         throw new Error('Active system host is absent from durable history');
