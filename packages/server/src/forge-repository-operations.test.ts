@@ -38,6 +38,25 @@ interface Forge {
   comments: { number: number; body: string }[];
   /** Write requests the fake received, as `METHOD path`. */
   writes: string[];
+  /** Repository contents by `ref:path`; `dir` is a directory, `large` a file
+   *  the API lists without inlining its content. */
+  files: Map<string, string | { dir: true } | { large: true }>;
+}
+
+/** The contents API answer GitHub and Forgejo share, or undefined for a 404. */
+function contentsRow(forge: Forge, path: string): unknown {
+  const match = /\/contents\/(.+)\?ref=(.+)$/u.exec(path);
+  if (!match) return undefined;
+  const file = forge.files.get(`${decodeURIComponent(match[2]!)}:${decodeURIComponent(match[1]!)}`);
+  if (file === undefined) return undefined;
+  if (typeof file === 'object' && 'dir' in file) return [{ type: 'file', name: 'nested.md' }];
+  if (typeof file === 'object') return { type: 'file', encoding: 'none', content: '', sha: 'big' };
+  return {
+    type: 'file',
+    encoding: 'base64',
+    content: Buffer.from(file).toString('base64'),
+    sha: `sha-${file.length}`,
+  };
 }
 
 function emptyForge(): Forge {
@@ -86,6 +105,7 @@ function emptyForge(): Forge {
     ],
     comments: [],
     writes: [],
+    files: new Map(),
   };
 }
 
@@ -110,6 +130,12 @@ function forgejoFake(forge: Forge): ForgeRepositoryOperations {
     if (method !== 'GET') forge.writes.push(`${method} ${path}`);
     const base = '/repos/team/site';
     if (path === base) return Promise.resolve({ default_branch: 'main' });
+    if (path.startsWith(`${base}/contents/`)) {
+      const row = contentsRow(forge, path);
+      return row === undefined
+        ? Promise.reject(new ForgejoRequestError(404))
+        : Promise.resolve(row);
+    }
     if (path === `${base}/pulls` && method === 'POST') {
       const pull: Pull = {
         number: forge.pulls.length + 10,
@@ -191,6 +217,10 @@ function githubFake(forge: Forge): ForgeRepositoryOperations {
     if (method !== 'GET') forge.writes.push(`${method} ${path}`);
     const base = '/repos/team/site';
     if (path === base) return respond(200, { default_branch: 'main' });
+    if (path.startsWith(`${base}/contents/`)) {
+      const row = contentsRow(forge, path);
+      return row === undefined ? respond(404, { message: 'Not Found' }) : respond(200, row);
+    }
     if (path === '/graphql') {
       const id = (input!.variables as { id: string }).id;
       const pull = forge.pulls.find((entry) => `PR_${entry.number}` === id);
@@ -317,6 +347,27 @@ describe.each([
     const forge = emptyForge();
     await make(forge).commentOnIssue(3, 'On it');
     expect(forge.comments).toEqual([{ number: 3, body: 'On it' }]);
+  });
+
+  it('reads a file at a ref, and tells an absent file from one it cannot show', async () => {
+    const forge = emptyForge();
+    forge.files.set('main:AGENTS.md', 'Run the tests.\nÜmlaut kept.');
+    forge.files.set('release/2:AGENTS.md', 'Release rules.');
+    forge.files.set('main:docs', { dir: true });
+    forge.files.set('main:huge.md', { large: true });
+    const ops = make(forge);
+    expect(await ops.readFile('AGENTS.md', 'main')).toEqual({
+      content: 'Run the tests.\nÜmlaut kept.',
+      revision: 'sha-27',
+    });
+    // The ref is part of the request: another branch's file is another answer.
+    expect(await ops.readFile('AGENTS.md', 'release/2')).toMatchObject({
+      content: 'Release rules.',
+    });
+    expect(await ops.readFile('AGENTS.md', 'develop')).toBeNull();
+    expect(await ops.readFile('docs', 'main')).toBeNull();
+    // Shown as empty, an uninlined file would read as "no rules" — it must fail.
+    await expect(ops.readFile('huge.md', 'main')).rejects.toThrow(/did not return its content/u);
   });
 });
 

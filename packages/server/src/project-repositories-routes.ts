@@ -1,4 +1,9 @@
-import type { EventStore, ProjectRecord } from '@verity/store';
+import {
+  projectForRepository,
+  type EventStore,
+  type ProjectRecord,
+  type ProjectRepositoryRecord,
+} from '@verity/store';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { isSafeRefName } from './branches.js';
@@ -21,6 +26,77 @@ const create = z
   })
   .strict();
 
+/** Larger than any instructions file worth reading; beyond it the text is cut
+ *  and marked, so a stray generated file cannot flood the settings screen. */
+export const REPOSITORY_INSTRUCTIONS_MAX_CHARS = 100_000;
+
+export type RepositoryInstructions = Pick<
+  ProjectRepositoryRecord,
+  'id' | 'name' | 'kind' | 'owner' | 'repo' | 'isDefault'
+> &
+  (
+    | {
+        status: 'present';
+        branch: string;
+        path: 'AGENTS.md';
+        instructions: string;
+        revision: string;
+        truncated: boolean;
+      }
+    | { status: 'missing'; branch: string; path: 'AGENTS.md' }
+    | { status: 'unavailable'; branch: string | null; path: 'AGENTS.md' }
+  );
+
+/**
+ * The root AGENTS.md of every repository connected to the project, read from the
+ * code host at the repository's default branch. Each repository is resolved on
+ * its own: one host being down marks that repository unavailable and leaves the
+ * others readable, and "unavailable" is never reported as "no AGENTS.md".
+ */
+export async function readRepositoryInstructions(
+  store: Pick<EventStore, 'listProjectRepositories'>,
+  project: ProjectRecord,
+  repositoryFor: ((project: ProjectRecord) => Promise<ProjectRepository | undefined>) | undefined,
+): Promise<RepositoryInstructions[]> {
+  const repositories = (await store.listProjectRepositories(project.id)).filter(
+    (repository) => repository.kind === 'github' || repository.kind === 'forgejo',
+  );
+  return Promise.all(
+    repositories.map(async (repository): Promise<RepositoryInstructions> => {
+      const identity = {
+        id: repository.id,
+        name: repository.isDefault ? `${repository.owner}/${repository.repo}` : repository.name,
+        kind: repository.kind,
+        owner: repository.owner,
+        repo: repository.repo,
+        isDefault: repository.isDefault,
+        path: 'AGENTS.md' as const,
+      };
+      let branch: string | null = repository.defaultBranch;
+      try {
+        const remote = await repositoryFor?.(projectForRepository(project, repository));
+        if (!remote) return { ...identity, status: 'unavailable', branch };
+        branch ??= await remote.operations.defaultBranch();
+        const file = await remote.operations.readFile('AGENTS.md', branch);
+        if (file === null) return { ...identity, status: 'missing', branch };
+        const truncated = file.content.length > REPOSITORY_INSTRUCTIONS_MAX_CHARS;
+        return {
+          ...identity,
+          status: 'present',
+          branch,
+          instructions: truncated
+            ? file.content.slice(0, REPOSITORY_INSTRUCTIONS_MAX_CHARS)
+            : file.content,
+          revision: file.revision,
+          truncated,
+        };
+      } catch {
+        return { ...identity, status: 'unavailable', branch };
+      }
+    }),
+  );
+}
+
 export function registerProjectRepositoriesRoutes(
   app: FastifyInstance,
   deps: {
@@ -34,6 +110,15 @@ export function registerProjectRepositoriesRoutes(
     if (!(await deps.store.getProject(id)))
       return reply.code(404).send({ error: 'project not found' });
     return { repositories: await deps.store.listProjectRepositories(id) };
+  });
+  app.get('/projects/:id/repository-instructions', async (request, reply) => {
+    const { id } = params.parse(request.params);
+    const project = await deps.store.getProject(id);
+    if (!project) return reply.code(404).send({ error: 'project not found' });
+    reply.header('cache-control', 'no-store');
+    return {
+      repositories: await readRepositoryInstructions(deps.store, project, deps.repositoryFor),
+    };
   });
   app.post('/projects/:id/repositories', async (request, reply) => {
     const { id } = params.parse(request.params);

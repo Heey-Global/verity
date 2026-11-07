@@ -127,6 +127,34 @@ export interface ForgeRepositoryOperations {
   markPullRequestReady: (number: number) => Promise<ForgePullRequestView>;
   viewIssue: (number: number) => Promise<ForgeIssueView | null>;
   commentOnIssue: (number: number, body: string) => Promise<{ url: string }>;
+  /** A text file at `ref`; null when the path is absent or not a regular file.
+   *  `revision` is the code host's blob id, so a reader can tell versions apart. */
+  readFile: (path: string, ref: string) => Promise<{ content: string; revision: string } | null>;
+}
+
+/** The shape GitHub and Forgejo share for `GET /repos/:owner/:repo/contents/:path`. */
+export interface ForgeContentsRow {
+  type?: string;
+  encoding?: string | null;
+  content?: string | null;
+  sha?: string;
+}
+
+/** A directory listing or a symlink is not the file that was asked for. Content
+ *  the API declines to inline (GitHub omits files over 1 MB) is refused rather
+ *  than shown as empty, which would read as "this repository has no rules". */
+export function forgeFileContent(
+  row: ForgeContentsRow | ForgeContentsRow[],
+): { content: string; revision: string } | null {
+  if (Array.isArray(row) || row.type !== 'file') return null;
+  if (row.encoding !== 'base64' || typeof row.content !== 'string' || !row.sha)
+    throw new ForgeOperationError('file: the code host did not return its content', 422);
+  return { content: Buffer.from(row.content, 'base64').toString('utf8'), revision: row.sha };
+}
+
+/** Each path segment encoded on its own, so `/` keeps separating directories. */
+export function forgeContentsPath(path: string): string {
+  return path.split('/').map(encodeURIComponent).join('/');
 }
 
 export interface ForgeDiscoveryPage {

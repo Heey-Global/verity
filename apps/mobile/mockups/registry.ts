@@ -1,9 +1,14 @@
 import { factorySpec } from './factory-spec';
+import { instructionSourcesSpec } from './instruction-sources';
 import { mockupReviewSpec } from './mockup-review';
 import type { MockupScreen, MockupSpec } from './types';
 
 /** Every spec with mockups. A new spec folder is added here. */
-export const MOCKUP_SPECS: readonly MockupSpec[] = [factorySpec, mockupReviewSpec];
+export const MOCKUP_SPECS: readonly MockupSpec[] = [
+  factorySpec,
+  mockupReviewSpec,
+  instructionSourcesSpec,
+];
 
 export function findMockup(
   specId: string | undefined,

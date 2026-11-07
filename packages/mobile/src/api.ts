@@ -1,4 +1,8 @@
-import { projectRepositorySchema, projectInquirySchema } from './projectCollaboration.js';
+import {
+  projectRepositorySchema,
+  projectInquirySchema,
+  repositoryInstructionsSchema,
+} from './projectCollaboration.js';
 import {
   projectEgressPolicySchema,
   projectEgressRequestSchema,
@@ -4972,6 +4976,15 @@ export class VerityClient {
       method: 'GET',
     });
     return z.object({ instructions: z.string(), revision: z.string() }).parse(await res.json());
+  }
+
+  /** The root AGENTS.md of each connected repository, read-only, with where it came from. */
+  async getProjectRepositoryInstructions(id: string) {
+    const res = await this.request(`/projects/${encodeURIComponent(id)}/repository-instructions`, {
+      method: 'GET',
+    });
+    return z.object({ repositories: z.array(repositoryInstructionsSchema) }).parse(await res.json())
+      .repositories;
   }
 
   async replaceProjectInstructions(id: string, input: { instructions: string; revision: string }) {

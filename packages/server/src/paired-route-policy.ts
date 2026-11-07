@@ -38,6 +38,10 @@ const resourceRules: ReadonlyMap<string, ResourceRule> = new Map([
     { kind: 'project', parameter: 'id', permission: 'read' },
   ],
   [
+    routeScopeKey('GET', '/projects/:id/repository-instructions'),
+    { kind: 'project', parameter: 'id', permission: 'read' },
+  ],
+  [
     routeScopeKey('POST', '/projects/:id/repositories'),
     { kind: 'project', parameter: 'id', permission: 'manage' },
   ],

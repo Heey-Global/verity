@@ -1,6 +1,9 @@
 import type { ProjectRecord } from '@verity/store';
 import {
   ForgeOperationError,
+  forgeContentsPath,
+  forgeFileContent,
+  type ForgeContentsRow,
   type ForgeIssueView,
   type ForgePullRequestView,
   type ForgeRepositoryOperations,
@@ -103,6 +106,15 @@ export function createGitHubRepositoryOperations(options: {
   };
 
   return {
+    readFile: async (path, ref) => {
+      const row = await orNull(
+        request<ForgeContentsRow | ForgeContentsRow[]>(
+          'file',
+          `${repoPath}/contents/${forgeContentsPath(path)}?ref=${encodeURIComponent(ref)}`,
+        ),
+      );
+      return row === null ? null : forgeFileContent(row);
+    },
     defaultBranch: async () => {
       const repo = await request<{ default_branch?: string }>('repository', repoPath);
       if (!repo.default_branch)

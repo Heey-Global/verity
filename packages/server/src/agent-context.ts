@@ -32,7 +32,7 @@ export async function resolveAgentContext(
   const sections = [
     user?.instructions ? `## User Instructions\n${user.instructions}` : '',
     project?.instructions
-      ? `## Project Instructions (managed AGENTS.md; code repository guidance remains developer-owned)\n${project.instructions}`
+      ? `## Project Instructions (apply to every agent in this project; a repository's own AGENTS.md adds rules for work in that repository)\n${project.instructions}`
       : '',
     user?.memory ? `## User Memory (facts; may be stale, verify)\n${user.memory}` : '',
     memory ? `## Project Memory (facts; may be stale, verify)\n${memory}` : '',

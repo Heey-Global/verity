@@ -1,6 +1,9 @@
 import type { ProjectRecord } from '@verity/store';
 import {
   ForgeOperationError,
+  forgeContentsPath,
+  forgeFileContent,
+  type ForgeContentsRow,
   type ForgeIssueView,
   type ForgePullRequestView,
   type ForgeRepositoryOperations,
@@ -79,6 +82,21 @@ export function createForgejoRepositoryOperations(
     forgejo(() => transport.json<ForgejoPullRow>(`${repoPath}/pulls/${number}`), 'pull request');
 
   return {
+    readFile: async (path, ref) => {
+      try {
+        const row = await forgejo(
+          () =>
+            transport.json<ForgeContentsRow | ForgeContentsRow[]>(
+              `${repoPath}/contents/${forgeContentsPath(path)}?ref=${encodeURIComponent(ref)}`,
+            ),
+          'file',
+        );
+        return forgeFileContent(row);
+      } catch (error) {
+        if (notFound(error)) return null;
+        throw error;
+      }
+    },
     defaultBranch: () =>
       forgejo(async () => {
         const repo = await transport.json<{ default_branch?: string }>(repoPath);

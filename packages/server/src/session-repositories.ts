@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { rm } from 'node:fs/promises';
+import { lstat, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { projectForRepository, type EventStore, type ProjectRecord } from '@verity/store';
 import type { FastifyInstance } from 'fastify';
@@ -192,15 +192,23 @@ export function createSessionRepositories(deps: {
     const session = await deps.store.getSession(sessionId);
     const project = session?.projectId ? await deps.store.getProject(session.projectId) : undefined;
     if (!project || !deps.cloneRoot) throw new Error('project sandbox unavailable');
+    const root = projectClonePath(deps.cloneRoot, project);
+    const worktree = containerPathFor(result.workspace.worktree, root);
+    // The session backend loads only the AGENTS.md of the worktree it starts in.
+    // A repository opened later brings its own, which the agent has to be told
+    // about or it works there without that repository's rules.
+    const instructions =
+      result.workspace.worktree !== session?.worktree &&
+      (await lstat(join(result.workspace.worktree, 'AGENTS.md')).then(
+        (stat) => stat.isFile(),
+        () => false,
+      ))
+        ? `${worktree}/AGENTS.md`
+        : undefined;
     return {
       ...result,
-      workspace: {
-        ...result.workspace,
-        worktree: containerPathFor(
-          result.workspace.worktree,
-          projectClonePath(deps.cloneRoot, project),
-        ),
-      },
+      workspace: { ...result.workspace, worktree },
+      ...(instructions !== undefined ? { instructions } : {}),
     };
   }
   return { list, open, currentBranch, openForSandbox };

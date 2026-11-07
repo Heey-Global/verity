@@ -70,17 +70,22 @@ export function Card({
 export function CardHead({
   title,
   subtitle,
+  leading,
   trailing,
   onDismiss,
 }: {
   title: string;
   subtitle?: string | undefined;
+  /** A mark that is not a Feather glyph (a code host's logo), drawn in the
+   *  same tile a `Row` uses, so the head lines up with the card's content. */
+  leading?: { element: ReactNode };
   trailing?: ReactNode;
   /** Draws an X after the trailing status that dismisses the card. */
   onDismiss?: (() => void) | undefined;
 }) {
   return (
     <View style={styles.head}>
+      {leading !== undefined ? <View style={styles.tile}>{leading.element}</View> : null}
       <View style={styles.body}>
         <Text style={styles.title} numberOfLines={2} accessibilityRole="header">
           {title}
