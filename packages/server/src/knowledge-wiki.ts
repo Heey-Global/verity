@@ -29,6 +29,8 @@ const MAX_CONFLICTS = 50;
 /** Linked files the scan did not read, looked up on disk per request. */
 const MAX_DISK_CHECKS = 200;
 const MAX_SUMMARY = 240;
+/** Links kept per page; a page past it is cut, and the catalog says so. */
+const MAX_LINKS_PER_PAGE = 200;
 /** Not pages: decision records have their own list, conflicts their own item. */
 const OWN_FOLDERS = new Set(['decisions', 'Conflicts']);
 
@@ -68,12 +70,24 @@ export function pageHeadline(path: string, markdown: string): { title: string; s
   let summary: string | undefined;
   let paragraph: string[] = [];
   let fenced = false;
+  let comment = false;
   const finish = () => {
     if (summary === undefined && paragraph.length) summary = clip(plain(paragraph.join(' ')));
     paragraph = [];
   };
-  for (const raw of markdown.split('\n')) {
+  const lines = markdown.split('\n');
+  // Frontmatter is metadata, not the page's first paragraph.
+  if (lines[0]?.trim() === '---') {
+    const end = lines.findIndex((line, index) => index > 0 && line.trim() === '---');
+    if (end > 0) lines.splice(0, end + 1);
+  }
+  for (const raw of lines) {
     const line = raw.trim();
+    if (comment || line.startsWith('<!--')) {
+      finish();
+      comment = !line.includes('-->');
+      continue;
+    }
     if (/^(```|~~~)/.test(line)) {
       finish();
       fenced = !fenced;
@@ -88,7 +102,6 @@ export function pageHeadline(path: string, markdown: string): { title: string; s
     }
     if (
       line === '' ||
-      line.startsWith('<!--') ||
       line.startsWith('|') ||
       line.startsWith('>') ||
       /^([-*+]|\d+[.)])\s/.test(line) ||
@@ -216,13 +229,18 @@ async function readPages(insights: string): Promise<{ pages: ReadPage[]; truncat
             path: page,
             modifiedAt: stat.mtime.toISOString(),
             ...pageHeadline(page, markdown),
-            links: [
-              ...new Set(
-                markdownLinks(markdown)
-                  .map((link) => resolveKnowledgeLink(page, link.href))
-                  .filter((target): target is KnowledgePath => target !== null),
-              ),
-            ],
+            links: (() => {
+              const links = [
+                ...new Set(
+                  markdownLinks(markdown)
+                    .map((link) => resolveKnowledgeLink(page, link.href))
+                    .filter((target): target is KnowledgePath => target !== null),
+                ),
+              ];
+              if (links.length <= MAX_LINKS_PER_PAGE) return links;
+              truncated = true;
+              return links.slice(0, MAX_LINKS_PER_PAGE);
+            })(),
             ...(page === WIKI_INDEX ? { index: parseWikiIndex(markdown) } : {}),
           });
         } catch {
@@ -245,8 +263,10 @@ async function readConflicts(
   let handle;
   try {
     handle = await openDocumentDirectory(insights, 'Conflicts');
-  } catch {
-    return { items: [], truncated: false };
+  } catch (error) {
+    // No conflicts is the usual case; a folder that cannot be read hides some.
+    const code = (error as NodeJS.ErrnoException).code;
+    return { items: [], truncated: code !== 'ENOENT' };
   }
   const items: WikiReviewItem[] = [];
   let truncated: boolean;
@@ -283,14 +303,15 @@ async function readConflicts(
   return { items, truncated };
 }
 
-/** Whether a knowledge file or folder exists, without following links out of the root. */
+/** Whether a knowledge file exists, without following links out of the root. A
+ *  folder is no file: the app cannot open a link to one, so it counts as broken. */
 async function fileExists(knowledgeRoot: string, path: string): Promise<boolean> {
   try {
     const parts = path.split('/');
     const directory = await openDocumentDirectory(knowledgeRoot, parts.slice(0, -1).join('/'));
     try {
       const stat = await lstat(`/proc/self/fd/${directory.fd}/${parts.at(-1)!}`);
-      return stat.isFile() || stat.isDirectory();
+      return stat.isFile();
     } finally {
       await directory.close();
     }

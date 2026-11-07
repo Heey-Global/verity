@@ -53,6 +53,15 @@ describe('pageHeadline', () => {
   });
 });
 
+it('takes no summary from frontmatter or the inside of a comment', () => {
+  expect(
+    pageHeadline(
+      'insights/x.md',
+      '---\ntags: wiki\n---\n<!-- note\nhidden line\n-->\n# Title\n\nReal summary.',
+    ),
+  ).toEqual({ title: 'Title', summary: 'Real summary.' });
+});
+
 describe('parseWikiIndex', () => {
   it('reads the overview and one topic per second-level heading', () => {
     const index = parseWikiIndex(
@@ -199,7 +208,12 @@ describe('projectWikiCatalog', () => {
     );
     const catalog = await projectWikiCatalog(root);
     expect(catalog.review).toEqual([
-      { kind: 'broken_links', path: 'insights/page.md', targets: ['insights/missing.png'] },
+      // A folder is not a file the app can open.
+      {
+        kind: 'broken_links',
+        path: 'insights/page.md',
+        targets: ['sources/meetings', 'insights/missing.png'],
+      },
     ]);
   });
 
@@ -212,6 +226,24 @@ describe('projectWikiCatalog', () => {
     );
     expect(broken).toHaveLength(200);
     expect(catalog.truncated).toBe(true);
+  });
+
+  it('keeps a bounded number of links per page and says when it cut them', async () => {
+    const links = Array.from({ length: 250 }, (_, n) => `[p](p-${String(n)}.md)`).join(' ');
+    write('insights/hub.md', `# Hub\n\n${links}\n`);
+    const catalog = await projectWikiCatalog(root);
+    expect(catalog.pages.find((page) => page.path === 'insights/hub.md')?.links).toHaveLength(200);
+    expect(catalog.truncated).toBe(true);
+  });
+
+  it('says partial when the conflicts cannot be read', async () => {
+    const outside = mkdtempSync(join(tmpdir(), 'wiki-conflicts-'));
+    try {
+      symlinkSync(outside, join(root, 'insights/Conflicts'));
+      expect((await projectWikiCatalog(root)).truncated).toBe(true);
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
   });
 
   it('says when an oversized page was left out', async () => {

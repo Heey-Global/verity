@@ -296,7 +296,7 @@ it('drops one-line comments from rendered Markdown, not from the text around the
 it('lists the Wiki’s files when its catalog fails to load, with Retry', async () => {
   const api = client(catalog, { getProjectWiki: jest.fn().mockRejectedValue(new Error('down')) });
   render(<KnowledgeScreen scope={PROJECT} folder="insights" />);
-  expect(await screen.findByText(/could not be loaded \(down\)/)).toBeTruthy();
+  expect(await screen.findByText(/view could not be loaded \(down\)/)).toBeTruthy();
   // The Wiki stays reachable through its files.
   expect(await screen.findByText('nav.md')).toBeTruthy();
   api.getProjectWiki.mockResolvedValue(catalog);

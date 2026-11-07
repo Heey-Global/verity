@@ -169,7 +169,7 @@ export function KnowledgeFolder({
       {catalogFailed ? (
         <View style={styles.message}>
           <Text variant="subtitle" tone="muted">
-            {`The Wiki overview could not be loaded (${wiki.error ?? ''}), so its files are listed instead.`}
+            {`This Wiki view could not be loaded (${wiki.error ?? ''}), so its files are listed instead.`}
           </Text>
           <Button label="Retry" variant="secondary" size="compact" onPress={wiki.retry} />
         </View>
