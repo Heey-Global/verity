@@ -28,24 +28,29 @@ export function ProjectInstructionsSettings({ projectId }: { projectId: string }
   const [saving, setSaving] = useState(false);
   const [repositories, setRepositories] = useState<Repositories>({ state: 'loading' });
 
+  // Every load and save takes a ticket; only the latest may set the snapshot.
+  // A reload that lands after a save would otherwise put back the revision the
+  // save replaced, and the next Save would fail with a conflict nobody caused.
+  const instructionsRequest = useRef(0);
   const loadInstructions = useCallback(
     async (preserveDraft = false) => {
       if (!client) return;
+      const request = ++instructionsRequest.current;
       try {
         const next = await client.getProjectInstructions(projectId);
+        if (request !== instructionsRequest.current) return;
         setSnapshot(next);
         if (!preserveDraft) setDraft(next.instructions);
         setError(undefined);
       } catch (failure) {
+        if (request !== instructionsRequest.current) return;
         setError(failure instanceof Error ? failure.message : 'Could not load Instructions');
       }
     },
     [client, projectId],
   );
   // Loaded on its own: a code host that is down must not keep the project's
-  // own Instructions from being read or edited.
-  // A retry pressed while an earlier lookup is still out must win, even when
-  // the earlier answer arrives last.
+  // own Instructions from being read or edited. The same ticket rule applies.
   const repositoryRequest = useRef(0);
   const loadRepositories = useCallback(async () => {
     if (!client) return;
@@ -70,11 +75,14 @@ export function ProjectInstructionsSettings({ projectId }: { projectId: string }
   const save = async () => {
     if (!client || !snapshot || saving) return;
     setSaving(true);
+    const request = ++instructionsRequest.current;
     try {
       const next = await client.replaceProjectInstructions(projectId, {
         instructions: draft,
         revision: snapshot.revision,
       });
+      // A reload started after this save is newer and wins.
+      if (request !== instructionsRequest.current) return;
       setSnapshot(next);
       setDraft(next.instructions);
       setError(undefined);

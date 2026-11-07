@@ -248,4 +248,47 @@ describe('project Instructions', () => {
     expect(listRepositories).toHaveBeenCalledTimes(2);
     expect(screen.queryByText('From repositories')).toBeNull();
   });
+
+  it('keeps the revision of a save when an older reload answers after it', async () => {
+    let finishReload!: (value: { instructions: string; revision: string }) => void;
+    const replace = jest
+      .fn()
+      .mockRejectedValueOnce(new Error('Could not reach the server'))
+      .mockResolvedValueOnce({ instructions: 'Saved rules.', revision: 'r3' })
+      .mockResolvedValue({ instructions: 'Saved rules, again.', revision: 'r4' });
+    mockClient.mockReturnValue({
+      getProjectInstructions: jest
+        .fn()
+        .mockResolvedValueOnce({ instructions: 'Rules.', revision: 'r1' })
+        .mockImplementationOnce(
+          () =>
+            new Promise((resolve) => {
+              finishReload = resolve;
+            }),
+        ),
+      getProjectRepositoryInstructions: jest.fn().mockResolvedValue([]),
+      replaceProjectInstructions: replace,
+    } as unknown as VerityClient);
+    render(<ContextSettings kind="instructions" projectId="p" />);
+    fireEvent.changeText(await screen.findByDisplayValue('Rules.'), 'Saved rules.');
+    fireEvent.press(screen.getByText('Save'));
+    await screen.findByText('Could not reach the server');
+    fireEvent.press(screen.getByText('Retry'));
+    fireEvent.press(screen.getByText('Save'));
+    await waitFor(() => expect(screen.queryByText('Save')).toBeNull());
+    // The reload began before the save finished; its older revision must not
+    // replace the one the save returned.
+    await act(async () => {
+      finishReload({ instructions: 'Rules.', revision: 'r2' });
+    });
+    expect(screen.getByDisplayValue('Saved rules.')).toBeTruthy();
+    fireEvent.changeText(screen.getByDisplayValue('Saved rules.'), 'Saved rules, again.');
+    fireEvent.press(screen.getByText('Save'));
+    await waitFor(() =>
+      expect(replace).toHaveBeenLastCalledWith('p', {
+        instructions: 'Saved rules, again.',
+        revision: 'r3',
+      }),
+    );
+  });
 });
