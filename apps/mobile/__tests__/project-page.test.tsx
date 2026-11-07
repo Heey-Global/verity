@@ -18,7 +18,7 @@ jest.mock('expo-router', () => ({
 jest.mock('../lib/client', () => require('./support/settingsHarness').clientMock());
 jest.mock('expo-crypto', () => ({ randomUUID: () => 'reply-1' }));
 jest.mock('../lib/voiceShortcut', () => ({ dispatchVerityShortcut: jest.fn() }));
-jest.mock('../lib/taskPreferences', () => ({ useTaskPreferences: () => ({ enabled: false }) }));
+jest.mock('../lib/taskPreferences', () => ({ useTaskPreferences: () => ({ enabled: true }) }));
 jest.mock('../lib/tasksStore', () => ({
   taskAccountScope: () => null,
   useTasks: () => ({ tasks: [], pending: [], conflicts: [] }),
@@ -248,16 +248,31 @@ describe('project page', () => {
     expect(screen.queryByLabelText(/^form/)).toBeNull();
   });
 
-  it('lists the services the project uses, each leading to its setting', async () => {
+  it('keeps content focused and opens project settings from the gear', async () => {
     await renderPage([]);
-    fireEvent.press(screen.getByLabelText(/^Doppler/));
+    expect(screen.getByText('Wiki')).toBeTruthy();
+    expect(screen.getByText('Sources')).toBeTruthy();
+    expect(screen.getByText('Tasks')).toBeTruthy();
+    // Decisions belong to the Wiki; a row of their own would split the knowledge again.
+    expect(screen.queryByText('Knowledge')).toBeNull();
+    expect(screen.queryByText('Decisions')).toBeNull();
+    for (const title of [
+      'Doppler',
+      'Sandbox',
+      'MCP',
+      'Matrix rooms',
+      'Google Drive',
+      'Google services',
+      'Code workspace',
+      'heey-global/verity',
+    ]) {
+      expect(screen.queryByLabelText(new RegExp(`^${title}`))).toBeNull();
+    }
+    fireEvent.press(screen.getByLabelText('Project settings'));
     expect(mockPush).toHaveBeenCalledWith({
-      pathname: '/project/[id]/settings/services',
-      params: { id: 'p/1', section: 'doppler' },
+      pathname: '/project/[id]/settings',
+      params: { id: 'p/1' },
     });
-    expect(screen.getByLabelText(/^Sandbox/)).toBeTruthy();
-    // Not in use here, so not listed; adding one is a project setting.
-    expect(screen.queryByLabelText(/^MCP/)).toBeNull();
   });
 
   it('highlights the session open beside the project Work list', async () => {
@@ -505,21 +520,28 @@ describe('project page', () => {
     expect(onSessionChanged).toHaveBeenCalledWith('login', true);
   });
 
-  it('opens the knowledge as its own screen on a phone', async () => {
+  it('opens the Wiki and the Sources as their own screens on a phone', async () => {
     const { client } = await renderPage([]);
     expect(screen.queryByRole('tab', { name: 'Knowledge' })).toBeNull();
-    fireEvent.press(screen.getByLabelText(/^Knowledge/));
-    expect(mockPush).toHaveBeenLastCalledWith({
-      pathname: '/project/[id]/knowledge',
-      params: { id: 'p/1' },
-    });
+    for (const [label, folder] of [
+      ['Wiki', 'insights'],
+      ['Sources', 'sources'],
+    ] as const) {
+      fireEvent.press(screen.getByLabelText(new RegExp(`^${label}`)));
+      expect(mockPush).toHaveBeenLastCalledWith({
+        pathname: '/project/[id]/knowledge',
+        params: { id: 'p/1', folder },
+      });
+    }
     expect(client.listProjectKnowledgeFiles).not.toHaveBeenCalled();
   });
 
-  it('opens the knowledge in the wide layout’s column and comes back', async () => {
-    await renderPage([], { inline: true });
-    fireEvent.press(screen.getByLabelText(/^Knowledge/));
+  it('opens the Wiki in the wide layout’s column and comes back', async () => {
+    const { client } = await renderPage([], { inline: true });
+    fireEvent.press(screen.getByLabelText(/^Wiki/));
     expect(await screen.findByTestId('project-knowledge')).toBeTruthy();
+    // At the Wiki itself, not at the areas above it.
+    expect(client.listProjectKnowledgeFiles).toHaveBeenCalledWith('p/1', 'insights');
     expect(mockPush).not.toHaveBeenCalledWith(
       expect.objectContaining({ pathname: '/project/[id]/knowledge' }),
     );
