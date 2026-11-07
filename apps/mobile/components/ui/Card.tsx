@@ -162,6 +162,7 @@ export function Row({
   selected,
   active = false,
   disabled = false,
+  settled = false,
   accessibilityLabel,
   accessibilityHint,
   expanded,
@@ -185,6 +186,9 @@ export function Row({
   /** The navigation destination currently open beside this row. */
   active?: boolean;
   disabled?: boolean;
+  /** Finished and only kept around (a session whose pull request merged): the
+   *  row stays fully usable but recedes, lighter than a disabled one. */
+  settled?: boolean;
   accessibilityLabel?: string;
   accessibilityHint?: string;
   expanded?: boolean;
@@ -241,7 +245,11 @@ export function Row({
       </View>
     ) : null;
   if (onPress === undefined) {
-    const row = <View style={[styles.row, disabled ? styles.muted : null]}>{content}</View>;
+    const row = (
+      <View style={[styles.row, disabled ? styles.muted : settled ? styles.settled : null]}>
+        {content}
+      </View>
+    );
     return strip ? (
       <View>
         {row}
@@ -266,7 +274,7 @@ export function Row({
       }
       style={({ pressed }) => [
         styles.row,
-        disabled ? styles.muted : null,
+        disabled ? styles.muted : settled ? styles.settled : null,
         pressed && !disabled ? styles.pressed : null,
         active ? styles.rowActive : null,
       ]}
@@ -493,6 +501,7 @@ const styles = StyleSheet.create((theme) => ({
     ...theme.elevation.glow,
   },
   muted: { opacity: 0.4 },
+  settled: { opacity: 0.6 },
   group: {
     borderRadius: theme.radius.card,
     borderWidth: 1,

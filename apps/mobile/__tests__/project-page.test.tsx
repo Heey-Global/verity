@@ -475,6 +475,45 @@ describe('project page', () => {
     expect(screen.queryByLabelText('Done')).toBeNull();
   });
 
+  // Merged work that sorted by activity would sit among the open work and hide
+  // which sessions are only left to delete.
+  it('sinks quiet merged sessions to the bottom of All and lets them recede', async () => {
+    const mergedPr = (number: number, updatedAt: string) =>
+      ({
+        pr: { phase: 'merged', pipeline: 'success', mergeable: null },
+        pullRequest: { ...merged.pullRequest!, number, phase: 'merged', updatedAt },
+      }) as Partial<SessionSummary>;
+    const shippedLater = session('shipped-later', {
+      ...mergedPr(7, '2026-11-02T00:00:00Z'),
+      lastActivityAt: Date.now() - 300_000,
+    });
+    const shippedEarlier = session('shipped-earlier', {
+      ...mergedPr(6, '2026-11-01T00:00:00Z'),
+      lastActivityAt: Date.now(),
+    });
+    const chat = session('chat', { lastActivityAt: Date.now() - 600_000 });
+    const shippedStarred = session('shipped-starred', {
+      ...mergedPr(8, '2026-11-03T00:00:00Z'),
+      favorite: true,
+    });
+    await renderPage([shippedLater, shippedEarlier, chat, shippedStarred]);
+    fireEvent.press(screen.getByRole('tab', { name: 'All' }));
+    const rows = within(screen.getByTestId('project-work'))
+      .getAllByRole('button')
+      .filter((row) => /^(chat|shipped)/.test(String(row.props.accessibilityLabel)));
+    // A star keeps a merged session with the favorites, at full strength.
+    expect(rows.map((row) => String(row.props.accessibilityLabel).split(',')[0])).toEqual([
+      'shipped-starred',
+      'chat',
+      'shipped-earlier',
+      'shipped-later',
+    ]);
+    expect(rows[0]).not.toHaveStyle({ opacity: 0.6 });
+    expect(rows[1]).not.toHaveStyle({ opacity: 0.6 });
+    expect(rows[2]).toHaveStyle({ opacity: 0.6 });
+    expect(rows[3]).toHaveStyle({ opacity: 0.6 });
+  });
+
   it('marks a pull request verdict on the tile, apart from the agent state', async () => {
     const failing = session('checks', {
       status: 'running',
