@@ -6108,6 +6108,16 @@ export class VerityClient {
     return z.object({ mockupReview: mockupReviewSchema }).parse(await res.json()).mockupReview;
   }
 
+  /** End only the displayed review round, keeping images and marks. Starts no work. */
+  async completeMockups(id: string, revision: number): Promise<MockupReview | undefined> {
+    const res = await this.request(`/sessions/${encodeURIComponent(id)}/mockups`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'complete', revision }),
+    });
+    return z.object({ mockupReview: mockupReviewSchema }).parse(await res.json()).mockupReview;
+  }
+
   async renameSession(id: string, name: string | null): Promise<SessionRenamed> {
     const res = await this.request(`/sessions/${encodeURIComponent(id)}`, {
       method: 'PATCH',

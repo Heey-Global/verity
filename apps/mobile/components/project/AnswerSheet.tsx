@@ -15,11 +15,56 @@ export const INLINE_ANSWERS = 3;
  * or wrapped into a pill, is not something to decide from. All answers go
  * together, so a row is never half inline and half in a sheet.
  */
-export function answersFitInline(answers: readonly InboxAction[]): boolean {
+function answersFitInline(answers: readonly InboxAction[]): boolean {
   return (
     answers.length <= INLINE_ANSWERS &&
     answers.every((action) => action.label.length <= SHORT_ANSWER)
   );
+}
+
+/** Names one answer so every overview shows progress on the same button. */
+export function answerId(action: InboxAction): string {
+  return `${action.kind}:${action.label}`;
+}
+
+/** Shared quiet answers for Home cards and project rows. */
+export function AnswerButtons({
+  answers,
+  pending,
+  disabled,
+  onAnswer,
+  onMore,
+}: {
+  answers: readonly InboxAction[];
+  pending: string | false;
+  disabled: boolean;
+  onAnswer: (action: InboxAction) => void;
+  onMore: () => void;
+}) {
+  if (answers.length === 0) return null;
+  if (!answersFitInline(answers))
+    return (
+      <Button
+        label={`${String(answers.length)} answers`}
+        icon="chevron-down"
+        size="small"
+        variant="secondary"
+        loading={pending !== false}
+        disabled={disabled}
+        onPress={onMore}
+      />
+    );
+  return answers.map((action) => (
+    <Button
+      key={answerId(action)}
+      label={action.label}
+      size="small"
+      variant="secondary"
+      loading={pending === answerId(action)}
+      disabled={disabled}
+      onPress={() => onAnswer(action)}
+    />
+  ));
 }
 
 /**

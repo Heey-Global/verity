@@ -1,6 +1,39 @@
 import { expect, it, vi } from 'vitest';
 import { authorizePairedRoute, type PairedRoutePolicyStore } from './paired-route-policy.js';
 
+it('requires execute access to mark or end a session mockup review', async () => {
+  const store: PairedRoutePolicyStore = {
+    isActiveLocalUser: async () => true,
+    isActiveAdministrator: async () => false,
+    hasProjectPermission: async (userId, projectId, permission) =>
+      projectId === 'shared' && (permission === 'read' || userId === 'executor'),
+    getSession: async (id) =>
+      id === 'session'
+        ? { projectId: 'shared' }
+        : id === 'foreign'
+          ? { projectId: 'other' }
+          : undefined,
+  };
+  expect(
+    await authorizePairedRoute(store, 'reader', 'POST', '/sessions/:id/mockups', { id: 'session' }),
+  ).toBe('forbidden');
+  expect(
+    await authorizePairedRoute(store, 'executor', 'POST', '/sessions/:id/mockups', {
+      id: 'session',
+    }),
+  ).toBe('allow');
+  expect(
+    await authorizePairedRoute(store, 'executor', 'POST', '/sessions/:id/mockups', {
+      id: 'foreign',
+    }),
+  ).toBe('forbidden');
+  expect(
+    await authorizePairedRoute(store, 'executor', 'POST', '/sessions/:id/mockups', {
+      id: 'missing',
+    }),
+  ).toBe('not_found');
+});
+
 it('resolves project and session reads while keeping undeclared routes administrator-only', async () => {
   const store: PairedRoutePolicyStore = {
     isActiveLocalUser: vi.fn(async (userId) => userId !== 'disabled'),

@@ -4978,3 +4978,14 @@ it('uses a distinct marking action that older servers cannot interpret as build 
     }),
   );
 });
+
+it('ends only the displayed mockup revision without changing screen marks', async () => {
+  const review = { state: 'approved', revision: 7, screens: [] };
+  const { fetch, calls } = fakeFetch(json({ mockupReview: review }));
+  const client = new VerityClient({ baseUrl: 'http://host', fetch });
+  expect(await client.completeMockups('session/id', 7)).toEqual(review);
+  expect(calls[0]).toMatchObject({
+    url: 'http://host/sessions/session%2Fid/mockups',
+    init: { method: 'POST', body: JSON.stringify({ action: 'complete', revision: 7 }) },
+  });
+});

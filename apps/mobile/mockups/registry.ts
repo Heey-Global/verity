@@ -1,4 +1,5 @@
 import { factorySpec } from './factory-spec';
+import { homeAnswersSpec } from './home-answers';
 import { instructionSourcesSpec } from './instruction-sources';
 import { mockupReviewSpec } from './mockup-review';
 import { planCardSpec } from './plan-card';
@@ -8,6 +9,7 @@ import { wikiSpec } from './wiki';
 /** Every spec with mockups. A new spec folder is added here. */
 export const MOCKUP_SPECS: readonly MockupSpec[] = [
   factorySpec,
+  homeAnswersSpec,
   mockupReviewSpec,
   instructionSourcesSpec,
   planCardSpec,

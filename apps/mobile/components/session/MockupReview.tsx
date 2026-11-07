@@ -238,6 +238,7 @@ export function MockupReviewSheet({
   deciding,
   error,
   onDecide,
+  onComplete,
   onClose,
 }: {
   visible: boolean;
@@ -248,6 +249,7 @@ export function MockupReviewSheet({
   deciding: boolean;
   error: string | undefined;
   onDecide: (screen: string, decision: { verdict: Verdict }) => Promise<boolean>;
+  onComplete: () => Promise<void>;
   onClose: () => void;
 }) {
   const { theme } = useUnistyles();
@@ -355,6 +357,18 @@ export function MockupReviewSheet({
               </View>
             </View>
           )}
+          <Text variant="bodySmall" tone="muted">
+            Already implemented? End this review to remove it from Home and Needs you. Images and
+            marks stay in the chat. This does not start implementation.
+          </Text>
+          <Button
+            label="End review"
+            size="compact"
+            variant="secondary"
+            fullWidth
+            disabled={deciding}
+            onPress={() => void onComplete()}
+          />
         </View>
       </View>
     </Modal>

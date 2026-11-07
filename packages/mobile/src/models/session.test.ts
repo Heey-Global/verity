@@ -3125,6 +3125,110 @@ describe('SessionModel — mockup review lifecycle', () => {
     mockupReview,
   });
 
+  it('keeps a completed review closed when an older poll returns late, preserving open marks', async () => {
+    const client = stubClient();
+    const sendTurn = vi.spyOn(client, 'sendTurn');
+    const completed = { ...pending, state: 'approved' as const };
+    let resolvePoll!: (value: ReturnType<typeof activity>) => void;
+    const delayed = new Promise<ReturnType<typeof activity>>((resolve) => {
+      resolvePoll = resolve;
+    });
+    client.getActivity = vi
+      .fn()
+      .mockResolvedValueOnce(activity(pending))
+      .mockReturnValueOnce(delayed)
+      .mockResolvedValue(activity(completed));
+    const completeMockups = vi.fn().mockResolvedValue(completed);
+    client.completeMockups = completeMockups;
+    const model = new SessionModel({
+      client,
+      sessionId: 's1',
+      transport: recordingConnect().connect,
+      activityPollMs: 0,
+    });
+    try {
+      model.start();
+      await vi.waitFor(() => expect(model.state.mockupReview).toEqual(pending));
+      const oldPoll = model.refreshActivity();
+      expect(await model.completeMockups(pending.revision)).toBe(true);
+      expect(completeMockups).toHaveBeenCalledWith('s1', pending.revision);
+      resolvePoll(activity(pending));
+      await oldPoll;
+      expect(model.state.mockupReview).toEqual(completed);
+      expect(model.state.mockupReview?.screens).toEqual(pending.screens);
+      expect(sendTurn).not.toHaveBeenCalled();
+    } finally {
+      model.stop();
+    }
+  });
+
+  it('rejects a stale viewer and locks completion against concurrent marking', async () => {
+    const client = stubClient();
+    client.getActivity = vi.fn().mockResolvedValue(activity(pending));
+    let finish!: (review: MockupReview) => void;
+    const completeMockups = vi.fn().mockImplementation(
+      () =>
+        new Promise<MockupReview>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    client.completeMockups = completeMockups;
+    const decideMockup = vi.fn();
+    client.decideMockup = decideMockup;
+    const model = new SessionModel({
+      client,
+      sessionId: 's1',
+      transport: recordingConnect().connect,
+      activityPollMs: 0,
+    });
+    try {
+      model.start();
+      await vi.waitFor(() => expect(model.state.mockupReview).toEqual(pending));
+      expect(await model.completeMockups(pending.revision - 1)).toBe(false);
+      expect(completeMockups).not.toHaveBeenCalled();
+      const completing = model.completeMockups(pending.revision);
+      expect(model.state.decidingMockup).toBe(true);
+      expect(await model.completeMockups(pending.revision)).toBe(false);
+      expect(await model.decideMockup('Home', { verdict: 'approved' })).toBe(false);
+      expect(decideMockup).not.toHaveBeenCalled();
+      finish({ ...pending, state: 'approved' });
+      expect(await completing).toBe(true);
+      expect(completeMockups).toHaveBeenCalledTimes(1);
+    } finally {
+      model.stop();
+    }
+  });
+
+  it('keeps a failed completion actionable and refreshes a superseding round', async () => {
+    const client = stubClient();
+    const replacement = { ...pending, revision: pending.revision + 1 };
+    client.getActivity = vi
+      .fn()
+      .mockResolvedValueOnce(activity(pending))
+      .mockResolvedValue(activity(replacement));
+    client.completeMockups = vi
+      .fn()
+      .mockRejectedValue(new VerityApiError(409, 'Review changed', { code: 'stale' }));
+    const model = new SessionModel({
+      client,
+      sessionId: 's1',
+      transport: recordingConnect().connect,
+      activityPollMs: 0,
+    });
+    try {
+      model.start();
+      await vi.waitFor(() => expect(model.state.mockupReview).toEqual(pending));
+      expect(await model.completeMockups(pending.revision)).toBe(false);
+      await vi.waitFor(() => expect(model.state.mockupReview?.revision).toBe(replacement.revision));
+      expect(model.state.mockupError).toBe(
+        'The mockups were updated. Please review the current ones.',
+      );
+      expect(model.state.decidingMockup).toBe(false);
+    } finally {
+      model.stop();
+    }
+  });
+
   it('keeps the saved verdict when an earlier activity poll returns late', async () => {
     const client = stubClient();
     let resolvePoll!: (value: ReturnType<typeof activity>) => void;
