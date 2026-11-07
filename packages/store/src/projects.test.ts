@@ -1394,6 +1394,22 @@ describe('EventStore — projects', () => {
       expect(forRepo.map((p) => p.id)).toEqual([id]);
     });
 
+    it('inherits the repository archive state when linking as another project', async () => {
+      await ctx.store.upsertProject({
+        id: randomUUID(),
+        owner: 'northwind',
+        repo: 'archived',
+        containerName: 'verity-northwind--archived',
+        state: 'active',
+        archived: true,
+      });
+      const id = await createLocal();
+      await ctx.store.reserveProjectIdentity(id, { owner: 'northwind', repo: 'archived' });
+      expect(
+        await ctx.store.linkProjectToGitHub(id, { owner: 'northwind', repo: 'archived' }),
+      ).toMatchObject({ id, repositoryInstance: 2, archived: true });
+    });
+
     // A repository may back several projects. A project that cannot be adopted
     // (it was worked in, explicitly added or configured) is never deleted or
     // taken over: the linking project becomes another, separate project of the

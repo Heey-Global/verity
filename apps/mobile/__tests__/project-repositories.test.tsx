@@ -36,15 +36,16 @@ const available = ['api', 'campaign', 'shop', 'shipping'].map((repo) => ({
   repo,
 }));
 
-function setup() {
+function setup(
+  repositories = [connected('campaign', 'campaign', true), connected('api', 'api', false)],
+  catalog = available,
+) {
   const addProjectRepository = jest.fn().mockResolvedValue(undefined);
   const client = {
-    listProjectRepositories: jest
-      .fn()
-      .mockResolvedValue([connected('campaign', 'campaign', true), connected('api', 'api', false)]),
+    listProjectRepositories: jest.fn().mockResolvedValue(repositories),
     getVeritySettings: jest.fn().mockResolvedValue({ githubAppInstallationId: 1 }),
     listConnections: jest.fn().mockResolvedValue(null),
-    listAvailableRepositories: jest.fn().mockResolvedValue(available),
+    listAvailableRepositories: jest.fn().mockResolvedValue(catalog),
     addProjectRepository,
     removeProjectRepository: jest.fn(),
   } as unknown as VerityClient;
@@ -61,6 +62,27 @@ it('lists connected repositories compactly and removes only additional ones', as
   expect(view.queryByLabelText('Remove campaign')).toBeNull();
   // The picker stays closed until the operator asks to add something.
   expect(view.queryByText('northwind/shop')).toBeNull();
+});
+
+it('bounds generated names and avoids collisions after truncation', async () => {
+  const repo = 'r'.repeat(100);
+  const base = `northwind-${repo}`.slice(0, 100);
+  const { view, addProjectRepository } = setup(
+    [connected(repo, 'existing', true), connected(base, 'another', false)],
+    [{ id: `repository:northwind/${repo}`, owner: 'northwind', repo }],
+  );
+  await waitFor(() => expect(view.getByText('Add repository')).toBeEnabled());
+  fireEvent.press(view.getByText('Add repository'));
+  await waitFor(() => expect(view.getByLabelText(`Add northwind/${repo}`)).toBeTruthy());
+  fireEvent.press(view.getByLabelText(`Add northwind/${repo}`));
+  await waitFor(() =>
+    expect(addProjectRepository).toHaveBeenCalledWith('campaign', {
+      name: `${base.slice(0, 98)}-2`,
+      kind: 'github',
+      owner: 'northwind',
+      repo,
+    }),
+  );
 });
 
 it('adds a repository another project uses with one tap, named after it', async () => {

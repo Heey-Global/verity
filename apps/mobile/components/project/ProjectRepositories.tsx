@@ -62,9 +62,13 @@ export function ProjectRepositories({
     if (!owner || !repo) return;
     // The module is named after its repository; the owner only joins the name
     // when another module already uses the repository name.
-    const name = connected.some((item) => item.name.toLowerCase() === repo.toLowerCase())
-      ? `${owner}-${repo}`
-      : repo;
+    const names = new Set((resource.data ?? []).map((item) => item.name.toLowerCase()));
+    const base = names.has(repo.toLowerCase()) ? `${owner}-${repo}` : repo;
+    let name = base.slice(0, 100);
+    for (let suffix = 2; names.has(name.toLowerCase()); suffix++) {
+      const tail = `-${suffix}`;
+      name = `${base.slice(0, 100 - tail.length)}${tail}`;
+    }
     setBusy(true);
     try {
       await client.addProjectRepository(projectId, {

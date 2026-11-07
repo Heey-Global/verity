@@ -7081,6 +7081,14 @@ export class EventStore implements EventSink {
       if (existing === undefined) return undefined;
       const targetOwner = target.owner.toLowerCase();
       const targetRepo = target.repo.toLowerCase();
+      const targetProject = await tx
+        .selectFrom('projects')
+        .select('archived')
+        .where('forge_scope', '=', target.forgeConnectionId ?? 'legacy-github')
+        .where('owner', '=', targetOwner)
+        .where('repo', '=', targetRepo)
+        .orderBy('repository_instance', 'asc')
+        .executeTakeFirst();
       const findClaim = () =>
         tx
           .selectFrom('project_identity_claims')
@@ -7130,6 +7138,7 @@ export class EventStore implements EventSink {
           owner: targetOwner,
           repo: targetRepo,
           repository_instance: claim.repository_instance,
+          archived: targetProject?.archived ?? false,
           kind: target.kind ?? 'github',
           forge_connection_id: target.forgeConnectionId ?? null,
           clone_dir: existing.clone_dir ?? `${existing.owner}-${existing.repo}`,
