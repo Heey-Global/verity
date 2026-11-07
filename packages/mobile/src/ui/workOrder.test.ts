@@ -78,4 +78,33 @@ describe('workOrder', () => {
       ]).map((s) => s.sessionId),
     ).toEqual(['b', 'a', 'c']);
   });
+
+  it('appends newly running sessions even when their IDs or saved positions sort first', () => {
+    const existing = session('z', { status: 'running', sortOrder: 9 });
+    const idle = session('a', { sortOrder: 0 });
+    const before = workOrder([idle, existing]);
+    const next = workOrder(
+      [
+        { ...idle, status: 'running', lastActivityAt: 999 },
+        { ...existing, lastActivityAt: 1000 },
+      ],
+      new Map(),
+      before,
+    );
+    expect(next.map((s) => s.sessionId)).toEqual(['z', 'a']);
+    expect(workOrder([...next].reverse(), new Map(), next).map((s) => s.sessionId)).toEqual([
+      'z',
+      'a',
+    ]);
+  });
+
+  it('appends a restarted session after removing its old active position', () => {
+    const a = session('a', { status: 'running' });
+    const b = session('b', { backgroundWorking: true });
+    const before = workOrder([a, b]);
+    const completed = workOrder([{ ...a, status: 'completed' }, b], new Map(), before);
+    expect(workOrder([a, b], new Map(), completed).map((s) => s.sessionId)).toEqual(['b', 'a']);
+    const removed = workOrder([b], new Map(), before);
+    expect(workOrder([a, b], new Map(), removed).map((s) => s.sessionId)).toEqual(['b', 'a']);
+  });
 });

@@ -41,7 +41,7 @@ import { Alert } from 'react-native';
 import ProjectEntry from '../app/project/[id]/index';
 import ProjectSettingsIndexScreen from '../app/project/[id]/settings/index';
 import { ProjectPage, projectInboxItems, projectLine } from '../components/project/ProjectPage';
-import { isActive, nowSections, workFilter } from '../components/project/ProjectWork';
+import { ProjectWork, isActive, nowSections, workFilter } from '../components/project/ProjectWork';
 import { publishSessionPreviews } from '../lib/sessionPreviews';
 import { makeClient, makeDetail } from './support/projectHarness';
 import {
@@ -191,6 +191,32 @@ describe('the /project/[id] route', () => {
 });
 
 describe('project page', () => {
+  it('keeps working rows stable and appends newly started and restarted sessions', async () => {
+    const client = clientWith([]);
+    const props = { client, onOpenSession: jest.fn(), onChanged: jest.fn() };
+    const z = session('z', { status: 'running' });
+    const a = session('a');
+    const view = render(<ProjectWork {...props} sessions={[z, a]} />);
+    await act(async () => undefined);
+    const workingNames = () =>
+      within(screen.getByTestId('work-active'))
+        .getAllByLabelText(/, working$/)
+        .map((row) => row.props.accessibilityLabel);
+    view.rerender(<ProjectWork {...props} sessions={[{ ...a, status: 'running' }, z]} />);
+    expect(workingNames()).toEqual(['z, working', 'a, working']);
+    view.rerender(
+      <ProjectWork
+        {...props}
+        sessions={[
+          { ...z, status: 'completed' },
+          { ...a, status: 'running' },
+        ]}
+      />,
+    );
+    view.rerender(<ProjectWork {...props} sessions={[z, { ...a, status: 'running' }]} />);
+    expect(workingNames()).toEqual(['a, working', 'z, working']);
+  });
+
   it('names where the code lives and how many pull requests are open', async () => {
     await renderPage([merged, running]);
     expect(screen.getByTestId('project-line')).toHaveTextContent(

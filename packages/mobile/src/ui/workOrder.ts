@@ -23,18 +23,26 @@ function workTier(session: SessionSummary, overrides: SeenOverrides = new Map())
   return 4;
 }
 
-/** Work tiers, with a fixed order for active sessions and latest activity for the rest. */
+/** Work tiers; retained active sessions keep their places and newcomers append. */
 export function workOrder(
   sessions: readonly SessionSummary[],
   overrides: SeenOverrides = new Map(),
+  previous: readonly SessionSummary[] = [],
 ): SessionSummary[] {
+  const activeRanks = new Map(
+    previous
+      .filter((session) => workTier(session) === 1)
+      .map((session, index) => [session.sessionId, index]),
+  );
   return sessions
     .map((session, index) => ({ session, index, tier: workTier(session, overrides) }))
     .sort(
       (a, b) =>
         a.tier - b.tier ||
         (a.tier === 1
-          ? (a.session.sortOrder ?? Infinity) - (b.session.sortOrder ?? Infinity) ||
+          ? (activeRanks.get(a.session.sessionId) ?? Infinity) -
+              (activeRanks.get(b.session.sessionId) ?? Infinity) ||
+            (a.session.sortOrder ?? Infinity) - (b.session.sortOrder ?? Infinity) ||
             a.session.sessionId.localeCompare(b.session.sessionId)
           : (b.session.lastActivityAt ?? 0) - (a.session.lastActivityAt ?? 0)) ||
         a.index - b.index,
