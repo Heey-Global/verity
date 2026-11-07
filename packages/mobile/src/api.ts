@@ -241,9 +241,10 @@ const pendingPermissionRequestSchema = z.object({
   input: z.unknown().optional(),
 });
 
-/** A mockup review: the screens the agent presented after the plan was accepted,
- * each approved, commented or still open. A value this build does not understand
- * reads as absent rather than failing the whole response, like `planning`. */
+/** A mockup review: the screens the agent presented, each marked approved,
+ * discarded or still open. An older server's `comment` reads as discarded, as the
+ * server itself reads it. A value this build does not understand reads as absent
+ * rather than failing the whole response, like `planning`. */
 export const mockupReviewSchema = z
   .object({
     state: z.enum(['pending', 'revising', 'approved']),
@@ -255,8 +256,9 @@ export const mockupReviewSchema = z
         mediaType: z.string(),
         width: z.number(),
         height: z.number(),
-        verdict: z.enum(['open', 'approved', 'comment']),
-        comment: z.string().optional(),
+        verdict: z
+          .enum(['open', 'approved', 'discarded', 'comment'])
+          .transform((verdict) => (verdict === 'comment' ? 'discarded' : verdict)),
       }),
     ),
   })
@@ -6089,28 +6091,19 @@ export class VerityClient {
       .parse(await res.json());
   }
 
-  /** Approve a mockup screen, comment on it, or reopen it. 409 when the round
-   * changed meanwhile (`stale`) or no longer waits for review (`notPending`). */
+  /** Mark a mockup screen approved or discarded, or take the mark back. A mark
+   * starts no work. 409 when the round changed meanwhile (`stale`) or no longer
+   * waits for review (`notPending`). */
   async decideMockup(
     id: string,
     revision: number,
     screen: string,
-    decision: { verdict: 'approved' | 'open' } | { verdict: 'comment'; comment: string },
+    decision: { verdict: MockupReviewScreen['verdict'] },
   ): Promise<MockupReview | undefined> {
     const res = await this.request(`/sessions/${encodeURIComponent(id)}/mockups`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ action: 'decide', revision, screen, ...decision }),
-    });
-    return z.object({ mockupReview: mockupReviewSchema }).parse(await res.json()).mockupReview;
-  }
-
-  /** Send the round's comments to the agent, which revises the mockups. */
-  async sendMockupComments(id: string, revision: number): Promise<MockupReview | undefined> {
-    const res = await this.request(`/sessions/${encodeURIComponent(id)}/mockups`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ action: 'send', revision }),
+      body: JSON.stringify({ action: 'mark', revision, screen, ...decision }),
     });
     return z.object({ mockupReview: mockupReviewSchema }).parse(await res.json()).mockupReview;
   }

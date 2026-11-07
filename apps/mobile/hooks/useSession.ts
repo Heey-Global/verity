@@ -44,13 +44,12 @@ export interface UseSession extends SessionModelState {
   decidePermission: (toolUseId: string, decision: PermissionDecision) => void;
   /** End planning mode: implement the latest plan or discard it. */
   decidePlanning: (action: 'implement' | 'discard', planningRevision?: number) => void;
-  /** Approve, comment on or reopen one mockup screen; resolves false on failure. */
+  /** Mark one mockup screen approved or discarded, or take the mark back;
+   *  resolves false on failure. A mark starts no work. */
   decideMockup: (
     screen: string,
-    decision: { verdict: 'approved' | 'open' } | { verdict: 'comment'; comment: string },
+    decision: { verdict: 'approved' | 'discarded' | 'open' },
   ) => Promise<boolean>;
-  /** Send the commented screens back to the agent; resolves false on failure. */
-  sendMockupComments: () => Promise<boolean>;
   /** Switch the session's engine/model from its next turn onward; the choice is
    * persisted, so the header chip + subsequent turns reflect it. */
   switchModel: (model: string) => void;
@@ -228,13 +227,10 @@ export function useSession(client: VerityClient, sessionId: string, baseUrl: str
   );
 
   const decideMockup = useCallback(
-    (
-      screen: string,
-      decision: { verdict: 'approved' | 'open' } | { verdict: 'comment'; comment: string },
-    ) => model.decideMockup(screen, decision),
+    (screen: string, decision: { verdict: 'approved' | 'discarded' | 'open' }) =>
+      model.decideMockup(screen, decision),
     [model],
   );
-  const sendMockupComments = useCallback(() => model.sendMockupComments(), [model]);
 
   return {
     ...state,
@@ -249,7 +245,6 @@ export function useSession(client: VerityClient, sessionId: string, baseUrl: str
     decidePermission,
     decidePlanning,
     decideMockup,
-    sendMockupComments,
     switchModel,
   };
 }

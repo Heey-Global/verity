@@ -105,9 +105,10 @@ export interface SessionRecord {
  *  which tells the app whether the newest plan was carried out. */
 export type SessionPlanning = 'active' | 'implemented' | 'discarded';
 
-/** `pending`: screens wait for the reviewer. `revising`: the reviewer sent comments
- *  and the agent is reworking them. `approved`: every screen was approved, and the
- *  implementation went on. */
+/** `pending`: screens wait for the reviewer, who marks each one and discusses them
+ *  in the chat. `revising`: written by earlier versions, which sent comments for a
+ *  revision; read as `pending` (see {@link storedMockupState}). `approved`: the user told the agent to implement and
+ *  the review ended. */
 export type SessionMockupState = 'pending' | 'revising' | 'approved';
 
 /** One presented screen. The image is a snapshot in the attachment store, so the
@@ -119,9 +120,35 @@ export interface MockupScreenRecord {
   mediaType: 'image/png' | 'image/jpeg';
   width: number;
   height: number;
-  verdict: 'open' | 'approved' | 'comment';
-  /** The reviewer's comment while `verdict` is `comment`. */
-  comment?: string;
+  verdict: MockupVerdict;
+}
+
+/** The reviewer's mark on one screen. Only marks: neither starts any work. */
+export type MockupVerdict = 'open' | 'approved' | 'discarded';
+
+/** Stored screens, with marks from earlier versions mapped onto the current ones:
+ *  a commented screen was one the reviewer did not accept, so it reads as
+ *  discarded and never as approved. */
+export function storedMockupScreens(raw: unknown): MockupScreenRecord[] {
+  if (!Array.isArray(raw)) return [];
+  // A malformed entry is dropped rather than failing every load of the session.
+  const entries = raw.filter(
+    (entry): entry is Omit<MockupScreenRecord, 'verdict'> & { verdict: string } =>
+      typeof entry === 'object' &&
+      entry !== null &&
+      typeof (entry as { name?: unknown }).name === 'string' &&
+      typeof (entry as { attachment?: unknown }).attachment === 'string' &&
+      typeof (entry as { width?: unknown }).width === 'number' &&
+      typeof (entry as { height?: unknown }).height === 'number',
+  );
+  return entries.map(({ name, attachment, mediaType, width, height, verdict }) => ({
+    name,
+    attachment,
+    mediaType,
+    width,
+    height,
+    verdict: verdict === 'approved' ? 'approved' : verdict === 'open' ? 'open' : 'discarded',
+  }));
 }
 
 export interface SessionMockupReview {
@@ -138,17 +165,24 @@ export interface SessionMockups {
   screens: MockupScreenRecord[];
 }
 
+/** A round an earlier version left `revising` already handed its comments to the
+ *  agent; nothing moves it on any more, so it reads as open for marks again. */
+export function storedMockupState(state: SessionMockupState | null): SessionMockupState | null {
+  return state === 'revising' ? 'pending' : state;
+}
+
 function mockupReview(
-  state: SessionMockupState | null,
+  rawState: SessionMockupState | null,
   revision: number,
   screens: unknown,
 ): { mockupReview?: SessionMockupReview } {
+  const state = storedMockupState(rawState);
   if (state === null) return {};
   return {
     mockupReview: {
       state,
       revision,
-      screens: Array.isArray(screens) ? (screens as MockupScreenRecord[]) : [],
+      screens: storedMockupScreens(screens),
     },
   };
 }
@@ -3496,11 +3530,9 @@ export class EventStore implements EventSink {
       )
         return undefined;
       const next = change({
-        state: row.mockup_review,
+        state: storedMockupState(row.mockup_review),
         revision: row.mockup_revision,
-        screens: Array.isArray(row.mockup_screens)
-          ? (row.mockup_screens as MockupScreenRecord[])
-          : [],
+        screens: storedMockupScreens(row.mockup_screens),
       });
       if (next === undefined) return undefined;
       await tx
@@ -5946,35 +5978,6 @@ export class EventStore implements EventSink {
         opts: JSON.stringify(input.opts),
       })
       .execute();
-  }
-
-  /** Commit the reviewed snapshot and its continuation together for restart recovery. */
-  async enqueueMockupContinuation(
-    input: QueuedTurnInput,
-    review: SessionMockups,
-    previousScreens: SessionMockups['screens'] = review.screens,
-  ): Promise<boolean> {
-    return this.db.transaction().execute(async (tx) => {
-      const result = await tx
-        .updateTable('sessions')
-        .set({ mockup_review: review.state, mockup_screens: JSON.stringify(review.screens) })
-        .where('session_id', '=', input.sessionId)
-        .where('mockup_revision', '=', review.revision)
-        .where('mockup_review', '=', 'pending')
-        .where(sql<boolean>`mockup_screens::jsonb = ${JSON.stringify(previousScreens)}::jsonb`)
-        .executeTakeFirst();
-      if (result.numUpdatedRows === 0n) return false;
-      await tx
-        .insertInto('queued_turns')
-        .values({
-          id: input.id,
-          session_id: input.sessionId,
-          prompt: input.prompt,
-          opts: JSON.stringify(input.opts),
-        })
-        .execute();
-      return true;
-    });
   }
 
   /** Accept a plan and its implementation backlog entry together. A restart

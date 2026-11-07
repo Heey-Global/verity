@@ -31,7 +31,7 @@ export default function DesignSettingsMockup() {
     <SettingsScaffold title="Design" detail state={{ error: undefined, saving: false }}>
       <SettingsGroup
         title="Mockups"
-        description="Mockups are shown after you approve a plan and before the agent builds it. You approve each screen or comment on it."
+        description="Mockups are shown after you approve a plan and before the agent builds it. You approve or discard each screen and tell the agent in the chat what to change and when to build."
       >
         <SettingsListPanel>
           {LEVELS.map((entry) => (

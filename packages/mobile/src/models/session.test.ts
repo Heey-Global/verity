@@ -3225,7 +3225,7 @@ describe('SessionModel — mockup review lifecycle', () => {
     }
   });
 
-  it('rejects duplicate decisions and comment submission while a verdict is in flight', async () => {
+  it('rejects duplicate marks while one is in flight', async () => {
     const client = stubClient();
     client.getActivity = vi
       .fn()
@@ -3239,8 +3239,6 @@ describe('SessionModel — mockup review lifecycle', () => {
         }),
     );
     client.decideMockup = decideMockup;
-    const sendComments = vi.fn();
-    client.sendMockupComments = sendComments;
     const model = new SessionModel({
       client,
       sessionId: 's1',
@@ -3252,10 +3250,8 @@ describe('SessionModel — mockup review lifecycle', () => {
       await vi.waitFor(() => expect(model.state.mockupReview).toEqual(pending));
       const saving = model.decideMockup('Home', { verdict: 'approved' });
       expect(model.state.decidingMockup).toBe(true);
-      expect(await model.decideMockup('Home', { verdict: 'open' })).toBe(false);
-      expect(await model.sendMockupComments()).toBe(false);
+      expect(await model.decideMockup('Home', { verdict: 'discarded' })).toBe(false);
       expect(decideMockup).toHaveBeenCalledTimes(1);
-      expect(sendComments).not.toHaveBeenCalled();
       resolveDecision(approved);
       expect(await saving).toBe(true);
       expect(model.state.decidingMockup).toBe(false);

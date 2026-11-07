@@ -4,7 +4,7 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { Icon, type IconName } from '../../components/Icon';
 import { Text } from '../../components/ui';
 
-type ScreenState = { kind: 'approved' } | { kind: 'comment'; text: string } | { kind: 'open' };
+type ScreenState = { kind: 'approved' } | { kind: 'discarded' } | { kind: 'open' };
 
 export interface MockupScreenSample {
   name: string;
@@ -26,7 +26,7 @@ export const SAMPLE_SCREENS: readonly MockupScreenSample[] = [
     name: 'Spec',
     image: require('./assets/spec.png') as number,
     ratio: 393 / 852,
-    state: { kind: 'comment', text: 'Put the decision above the criteria.' },
+    state: { kind: 'discarded' },
   },
   {
     name: 'Home',
@@ -38,7 +38,7 @@ export const SAMPLE_SCREENS: readonly MockupScreenSample[] = [
 
 const STATE_ICON: Record<ScreenState['kind'], IconName> = {
   approved: 'check-circle',
-  comment: 'message-circle',
+  discarded: 'x-circle',
   open: 'circle',
 };
 
@@ -64,8 +64,8 @@ export function MockupThumbs({ screens }: { screens: readonly MockupScreenSample
         const tone =
           screen.state.kind === 'approved'
             ? theme.colors.success
-            : screen.state.kind === 'comment'
-              ? theme.colors.action
+            : screen.state.kind === 'discarded'
+              ? theme.colors.attention
               : theme.colors.textFaint;
         const width = Math.min(height * screen.ratio, maxWidth);
         return (
@@ -124,8 +124,8 @@ export function MockupPager({
   const tone =
     screen.state.kind === 'approved'
       ? theme.colors.success
-      : screen.state.kind === 'comment'
-        ? theme.colors.action
+      : screen.state.kind === 'discarded'
+        ? theme.colors.attention
         : theme.colors.textFaint;
   return (
     <View style={styles.pager}>
