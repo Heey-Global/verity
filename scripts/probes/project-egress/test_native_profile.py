@@ -259,7 +259,7 @@ class NativeProfileTests(unittest.TestCase):
         self.assertEqual(json.loads((self.root / 'etc/docker/daemon.json').read_text())['runtimes']['runsc-relay'], self.relay)
         self.assertTrue(any('reload' in call and 'docker.service' in call for call in self.calls))
         self.assertFalse(any('restart' in call or 'stop' in call for call in self.calls))
-        self.assertEqual((self.root / 'etc/systemd/system/sys-fs-bpf.mount').read_bytes(), installer.BPFFS_UNIT)
+        self.assertFalse((self.root / 'etc/systemd/system/sys-fs-bpf.mount').exists())
         self.assertEqual((self.root / 'sys/fs/bpf/verity_egress_deadline').stat().st_mode & 0o777, 0o700)
         self.calls.clear()
         self.prepare()
@@ -429,6 +429,53 @@ class NativeProfileTests(unittest.TestCase):
         with patch.object(installer, 'sync_directory', side_effect=sync):
             self.prepare()
         self.assertTrue((self.root / 'sys/fs/bpf/verity_egress_deadline').is_dir())
+
+    def test_systemd_api_bpffs_never_uses_a_mount_unit(self):
+        def execute(*args):
+            if 'sys-fs-bpf.mount' in args:
+                raise RuntimeError('systemd refuses mount units for API filesystems')
+            return self.execute(*args)
+
+        installer.prepare_managed_prerequisites(self.root, execute, str(self.release / 'node'))
+        self.assertFalse((self.root / 'etc/systemd/system/sys-fs-bpf.mount').exists())
+        self.assertTrue((self.root / 'sys/fs/bpf/verity_egress_deadline').is_dir())
+
+    def test_removes_only_legacy_bpffs_unit_and_its_enablement_without_unmounting(self):
+        unit = self.root / 'etc/systemd/system/sys-fs-bpf.mount'
+        unit.parent.mkdir(parents=True)
+        unit.write_bytes(installer.LEGACY_BPFFS_UNIT)
+        enabled = unit.parent / 'multi-user.target.wants/sys-fs-bpf.mount'
+        enabled.parent.mkdir()
+        enabled.symlink_to('/etc/systemd/system/sys-fs-bpf.mount')
+        self.prepare()
+        self.assertFalse(unit.exists())
+        self.assertFalse(enabled.is_symlink())
+        self.assertTrue((self.root / 'sys/fs/bpf/verity_egress_deadline').is_dir())
+        self.assertFalse(any('sys-fs-bpf.mount' in call or 'umount' in call for call in self.calls))
+        self.prepare()
+
+    def test_foreign_bpffs_unit_or_enablement_is_preserved(self):
+        unit = self.root / 'etc/systemd/system/sys-fs-bpf.mount'
+        unit.parent.mkdir(parents=True)
+        unit.write_bytes(b'foreign unit\n')
+        with self.assertRaisesRegex(ValueError, 'unit collision'):
+            self.prepare()
+        self.assertEqual(unit.read_bytes(), b'foreign unit\n')
+        unit.write_bytes(installer.LEGACY_BPFFS_UNIT)
+        enabled = unit.parent / 'multi-user.target.wants/sys-fs-bpf.mount'
+        enabled.parent.mkdir()
+        enabled.symlink_to('/foreign/unit')
+        with self.assertRaisesRegex(ValueError, 'enablement collision'):
+            self.prepare()
+        self.assertEqual(os.readlink(enabled), '/foreign/unit')
+        self.assertEqual(unit.read_bytes(), installer.LEGACY_BPFFS_UNIT)
+
+    def test_missing_or_foreign_bpffs_mount_never_creates_pin_directory(self):
+        for mounts in ('', 'none /sys/fs/bpf tmpfs rw 0 0\n'):
+            (self.root / 'proc/mounts').write_text(mounts)
+            with self.subTest(mounts=mounts), self.assertRaisesRegex(ValueError, 'systemd-managed bpffs'):
+                self.prepare()
+            self.assertFalse((self.root / 'sys/fs/bpf/verity_egress_deadline').exists())
 
     def test_relay_collision_preserves_unrelated_runtime(self):
         daemon = self.root / 'etc/docker/daemon.json'

@@ -23,8 +23,11 @@ reload restores the previous configuration. A private ownership record binds the
 managed relay registration to its runtime binary and complete tree. A subsequent
 runtime upgrade may migrate only that exact verified registration; a foreign or
 changed registration remains a collision. Unrelated relay registrations and
-bpffs unit/filesystem collisions are refused. Persistent bpffs uses a fixed mount
-unit and a private root-owned pin directory recreated through tmpfiles. Controller
+bpffs unit/filesystem collisions are refused. The preparer requires the bpffs API
+filesystem mounted by systemd at `/sys/fs/bpf`; systemd rejects a separate mount
+unit for this path. Upgrades remove only the exact obsolete Verity mount unit and
+its known enablement link, without unmounting bpffs. The private root-owned pin
+directory is recreated through tmpfiles. Controller
 startup rechecks the exact profile and package versions; a changed kernel/runtime
 or artifact cannot silently inherit a prior acceptance.
 
