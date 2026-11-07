@@ -185,6 +185,28 @@ it('bounds its height and keeps the actions outside the scrolling content', () =
   expect(screen.getByLabelText('Send answers')).toBeOnTheScreen();
 });
 
+it('measures its bound against the part of the window the keyboard leaves', () => {
+  // A share of the full window still overflows once the keyboard covers half of it.
+  render(<PinnedPlan {...props} markdown={decisions} keyboardHeight={300} />);
+  const { height } = Dimensions.get('window');
+  const style = StyleSheet.flatten(screen.getByTestId('pinned-plan').props.style);
+  expect(style.maxHeight).toBe(Math.round((height - 300) * PINNED_PLAN_MAX_HEIGHT_SHARE));
+});
+
+it('opens the collapsed card instead of sending answers out of sight', () => {
+  const view = render(<PinnedPlan {...props} markdown={decisions} />);
+  view.rerender(<PinnedPlan {...props} markdown={decisions} sendNonce={1} />);
+  expect(screen.queryByText('Decision 1 of 3')).toBeNull();
+  fireEvent.press(screen.getByLabelText('Send answers'));
+  expect(props.onAnswerDecision).not.toHaveBeenCalled();
+  expect(screen.getByText('Decision 1 of 3')).toBeOnTheScreen();
+});
+
+it('tells which decisions still belong in the chat when others have options', () => {
+  render(<PinnedPlan {...props} markdown={decisions.replace('— 14 days | 30 days', '')} />);
+  expect(screen.getByText('One decision has no options: answer it in the chat.')).toBeOnTheScreen();
+});
+
 it('keeps Implement away while a decision is open, and only then', () => {
   // The server refuses such a plan; an Implement button would only produce an error.
   const view = render(<PinnedPlan {...props} markdown={spec} />);

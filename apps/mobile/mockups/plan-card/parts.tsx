@@ -4,6 +4,7 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import type { ReactNode } from 'react';
 
 import { Icon } from '../../components/Icon';
+import { PINNED_PLAN_MAX_HEIGHT_SHARE } from '../../components/PinnedPlan';
 import { Button, OptionList, Text } from '../../components/ui';
 import { tint } from '../../components/ui/tint';
 
@@ -142,7 +143,7 @@ export function PlanCard({
   const { theme } = useUnistyles();
   const { height } = useWindowDimensions();
   return (
-    <View style={[styles.card, { maxHeight: Math.round(height * 0.55) }]}>
+    <View style={[styles.card, { maxHeight: Math.round(height * PINNED_PLAN_MAX_HEIGHT_SHARE) }]}>
       <Pressable accessibilityRole="button" onPress={ignore} style={styles.header}>
         <View style={styles.dot} />
         {expanded ? (

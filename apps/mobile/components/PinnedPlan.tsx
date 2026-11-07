@@ -7,8 +7,9 @@ import { Icon } from './Icon';
 import { Button, OptionList, Text } from './ui';
 import { tint } from './ui/tint';
 
-/** The card never takes more than this share of the window: whatever the plan
- *  holds, its actions and the composer below stay on screen. */
+/** The card never takes more than this share of the visible window (above an
+ *  open keyboard): whatever the plan holds, its actions and the composer below
+ *  stay on screen. */
 export const PINNED_PLAN_MAX_HEIGHT_SHARE = 0.55;
 
 type Decision = ReturnType<typeof planProposalContent>['decisions'][number];
@@ -32,6 +33,7 @@ export function PinnedPlan({
   disabled,
   error,
   renderMarkdown,
+  keyboardHeight = null,
   onDismiss,
   onImplement,
   onAnswerDecision,
@@ -44,6 +46,8 @@ export function PinnedPlan({
   disabled: boolean;
   error: string | undefined;
   renderMarkdown(markdown: string): ReactNode;
+  /** Height of the open software keyboard, which covers part of the window. */
+  keyboardHeight?: number | null;
   onDismiss(): void;
   onImplement(): void;
   /** Sends the answers to the open decisions as one chat message; the agent
@@ -85,6 +89,8 @@ export function PinnedPlan({
     option === undefined ? [] : [{ decision, option }],
   );
   const complete = chosen.length > 0 && chosen.length === answerable.length;
+  // A decision without options is answered in the chat, not by Send.
+  const chatOnly = undecided - answerable.length;
   const index = Math.min(current, Math.max(undecided - 1, 0));
   const decision = decisions[index];
 
@@ -140,11 +146,11 @@ export function PinnedPlan({
       ) : null}
       <Pressable
         accessibilityRole="button"
-        accessibilityLabel={details ? 'Hide full plan' : 'Show full plan'}
-        onPress={() => setDetails(!details)}
+        accessibilityLabel="Show full plan"
+        onPress={() => setDetails(true)}
       >
         <Text variant="subtitle" tone="action">
-          {details ? 'Hide full plan' : 'Show full plan'}
+          Show full plan
         </Text>
       </Pressable>
     </>
@@ -153,7 +159,14 @@ export function PinnedPlan({
   return (
     <View
       testID="pinned-plan"
-      style={[styles.card, { maxHeight: Math.round(height * PINNED_PLAN_MAX_HEIGHT_SHARE) }]}
+      style={[
+        styles.card,
+        {
+          maxHeight: Math.round(
+            Math.max(height - (keyboardHeight ?? 0), 0) * PINNED_PLAN_MAX_HEIGHT_SHARE,
+          ),
+        },
+      ]}
     >
       <Pressable
         style={styles.header}
@@ -292,6 +305,13 @@ export function PinnedPlan({
           Choose an answer for each decision to send them.
         </Text>
       ) : null}
+      {expanded && chatOnly > 0 && answerable.length > 0 ? (
+        <Text variant="footnote" tone="muted">
+          {chatOnly === 1
+            ? 'One decision has no options: answer it in the chat.'
+            : `${String(chatOnly)} decisions have no options: answer them in the chat.`}
+        </Text>
+      ) : null}
       <View style={styles.actions}>
         <Button
           label="Cancel plan"
@@ -306,8 +326,12 @@ export function PinnedPlan({
             accessibilityLabel="Send answers"
             accessibilityHint="The agent revises the plan from your answers."
             size="compact"
-            disabled={blocked || !complete}
-            onPress={() => onAnswerDecision(planDecisionAnswers(chosen))}
+            disabled={blocked || (expanded && !complete)}
+            onPress={() => {
+              // Collapsed, the answers are out of sight: show them before sending.
+              if (!expanded) setExpanded(true);
+              else onAnswerDecision(planDecisionAnswers(chosen));
+            }}
           />
         ) : (
           <Button
