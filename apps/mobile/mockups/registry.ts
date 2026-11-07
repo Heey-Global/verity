@@ -1,4 +1,5 @@
 import { factorySpec } from './factory-spec';
+import { instructionSourcesSpec } from './instruction-sources';
 import { mockupReviewSpec } from './mockup-review';
 import { planCardSpec } from './plan-card';
 import type { MockupScreen, MockupSpec } from './types';
@@ -8,6 +9,7 @@ import { wikiSpec } from './wiki';
 export const MOCKUP_SPECS: readonly MockupSpec[] = [
   factorySpec,
   mockupReviewSpec,
+  instructionSourcesSpec,
   planCardSpec,
   wikiSpec,
 ];

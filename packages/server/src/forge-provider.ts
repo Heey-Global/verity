@@ -1,3 +1,4 @@
+import { posix } from 'node:path';
 import type { ProjectRecord } from '@verity/store';
 
 /**
@@ -127,6 +128,91 @@ export interface ForgeRepositoryOperations {
   markPullRequestReady: (number: number) => Promise<ForgePullRequestView>;
   viewIssue: (number: number) => Promise<ForgeIssueView | null>;
   commentOnIssue: (number: number, body: string) => Promise<{ url: string }>;
+  /** A text file on `branch`, following one symlink inside the repository;
+   *  null only when the branch exists and the path is absent or a directory.
+   *  A missing repository, branch or permission throws, as does a symlink that
+   *  leads nowhere, so none of them is read as "no file". `branch` must be a
+   *  branch name: the absence check looks it up as one. `revision` is the code
+   *  host's blob id, so a reader can tell versions apart. */
+  readFile: (path: string, branch: string) => Promise<{ content: string; revision: string } | null>;
+}
+
+/** The shape GitHub and Forgejo share for `GET /repos/:owner/:repo/contents/:path`. */
+export interface ForgeContentsRow {
+  type?: string;
+  encoding?: string | null;
+  content?: string | null;
+  sha?: string;
+  /** For `type: 'symlink'`: the link target, relative to the link's directory. */
+  target?: string | null;
+}
+
+/** A directory listing is not the file that was asked for. Content
+ *  the API declines to inline (GitHub omits files over 1 MB) is refused rather
+ *  than shown as empty, which would read as "this repository has no rules". */
+function forgeFileContent(
+  row: ForgeContentsRow | ForgeContentsRow[],
+): { content: string; revision: string } | null {
+  if (Array.isArray(row) || row.type !== 'file') return null;
+  if (row.encoding !== 'base64' || typeof row.content !== 'string' || !row.sha)
+    throw new ForgeOperationError('file: the code host did not return its content', 422);
+  return { content: Buffer.from(row.content, 'base64').toString('utf8'), revision: row.sha };
+}
+
+/** Where a repository symlink at `path` points, or null when the target leaves
+ *  the repository (absolute, or `..` past its root). */
+function forgeSymlinkTarget(path: string, target: string): string | null {
+  if (target === '' || target.startsWith('/')) return null;
+  const resolved = posix.normalize(posix.join(posix.dirname(path), target));
+  return resolved === '.' || resolved === '..' || resolved.startsWith('../') ? null : resolved;
+}
+
+/**
+ * The shared `readFile` behaviour over one host's contents and branch lookups.
+ * `contents` answers null for a 404; `requireRef` throws when the ref (or the
+ * repository, or access to it) does not resolve. A 404 alone cannot tell "no
+ * such file" from "no such branch" or "no access", and only the first may be
+ * reported as an absent file.
+ */
+export async function readForgeFile(
+  host: {
+    contents: (path: string) => Promise<ForgeContentsRow | ForgeContentsRow[] | null>;
+    requireRef: () => Promise<unknown>;
+  },
+  path: string,
+): Promise<{ content: string; revision: string } | null> {
+  let current = path;
+  // `AGENTS.md -> CLAUDE.md` is a common layout; one hop covers it, and a chain
+  // or a link out of the repository is refused rather than reported as absent.
+  for (let hop = 0; ; hop++) {
+    const row = await host.contents(current);
+    // Past a symlink, nothing but a file will do: a link to a directory or to
+    // nothing is a link that exists, not an absent file.
+    if (hop > 0 && (row === null || Array.isArray(row)))
+      throw new ForgeOperationError('file: the symlink does not lead to a repository file', 422);
+    if (row === null) {
+      await host.requireRef();
+      return null;
+    }
+    if (Array.isArray(row) || row.type !== 'symlink') return forgeFileContent(row);
+    const next = hop === 0 && row.target ? forgeSymlinkTarget(current, row.target) : null;
+    if (next === null)
+      throw new ForgeOperationError('file: the symlink does not lead to a repository file', 422);
+    current = next;
+  }
+}
+
+/** Each segment encoded on its own, so `/` stays literal — in a file path it
+ *  separates directories, and in a ref (`release/2`) Forgejo refuses `%2F`. */
+export function forgeContentsPath(path: string): string {
+  // encodeURIComponent leaves `!'()*~` as they are, and Forgejo's transport
+  // refuses them, so `CLAUDE (1).md` would fail before reaching the host.
+  const segment = (part: string) =>
+    encodeURIComponent(part).replace(
+      /[!'()*~]/gu,
+      (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`,
+    );
+  return path.split('/').map(segment).join('/');
 }
 
 export interface ForgeDiscoveryPage {

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
-import { rm } from 'node:fs/promises';
-import { join } from 'node:path';
+import { realpath, rm, stat } from 'node:fs/promises';
+import { join, sep } from 'node:path';
 import { projectForRepository, type EventStore, type ProjectRecord } from '@verity/store';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
@@ -22,6 +22,19 @@ export async function removeSessionRepositoryWorkspaces(
   sessionId: string,
 ): Promise<void> {
   await rm(sessionRepositoryRoot(projectRoot, sessionId), { recursive: true, force: true });
+}
+
+/** Whether a checkout has a root AGENTS.md an agent can read. A symlink to a
+ *  file inside the checkout counts (`AGENTS.md -> CLAUDE.md` is common); one
+ *  that leaves it does not, so the server never reports on host paths outside. */
+async function repositoryInstructionsFile(worktree: string): Promise<boolean> {
+  try {
+    const root = await realpath(worktree);
+    const target = await realpath(join(worktree, 'AGENTS.md'));
+    return target.startsWith(root + sep) && (await stat(target)).isFile();
+  } catch {
+    return false;
+  }
 }
 
 export function createSessionRepositories(deps: {
@@ -193,15 +206,20 @@ export function createSessionRepositories(deps: {
     const session = await deps.store.getSession(sessionId);
     const project = session?.projectId ? await deps.store.getProject(session.projectId) : undefined;
     if (!project || !deps.cloneRoot) throw new Error('project sandbox unavailable');
+    const root = projectClonePath(deps.cloneRoot, project);
+    const worktree = containerPathFor(result.workspace.worktree, root);
+    // The session backend loads only the AGENTS.md of the worktree it starts in.
+    // A repository opened later brings its own, which the agent has to be told
+    // about or it works there without that repository's rules.
+    const instructions =
+      result.workspace.worktree !== session?.worktree &&
+      (await repositoryInstructionsFile(result.workspace.worktree))
+        ? `${worktree}/AGENTS.md`
+        : undefined;
     return {
       ...result,
-      workspace: {
-        ...result.workspace,
-        worktree: containerPathFor(
-          result.workspace.worktree,
-          projectClonePath(deps.cloneRoot, project),
-        ),
-      },
+      workspace: { ...result.workspace, worktree },
+      ...(instructions !== undefined ? { instructions } : {}),
     };
   }
   return { list, open, currentBranch, openForSandbox };

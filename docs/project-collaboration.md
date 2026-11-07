@@ -3,7 +3,9 @@
 Connect additional GitHub or Forgejo repositories in project repository settings.
 The existing repository remains the default. Open a module from the session branch
 sheet or with `verity repo repository open <repository-id>`. Repository-specific
-instructions apply in that checkout. Each session/module pair has an isolated
+instructions apply in that checkout: when the module has a root `AGENTS.md`, the
+command names it on stderr so the agent reads it before working there, while its two
+lines on stdout stay the checkout path and branch. Each session/module pair has an isolated
 checkout and branch; reopening never resets existing history. Sandbox callers receive
 container-accessible checkout paths. Session deletion removes module clones after
 the session runtime is fenced, using deterministic paths even after database rows
@@ -39,3 +41,19 @@ Requests and answers survive restarts. Recovery processes at most 100 requests a
 remain busy, revoked or unavailable. Failed deliveries are retried on subsequent
 sweeps. Inquiry targets cannot forward requests, and each source project is limited
 to 20 requests per day. There is no monetary budget for inquiries.
+
+## Instructions across repositories
+
+Project settings > Instructions holds the project's own Instructions, which every
+agent in the project receives regardless of how many repositories are connected.
+Below them, the screen lists the root `AGENTS.md` of each connected GitHub or
+Forgejo repository, read from the code host at the repository's default branch.
+These files are shown read-only: they belong to their repository and change
+through its normal commit and review flow. They add rules for work in that
+repository and never replace the project's Instructions. Sessions use the version
+on their own branch, which can differ from the default branch shown in settings.
+
+A repository without an `AGENTS.md` is omitted. A repository whose code host
+cannot be reached is named as not loaded, so a missing file and an unanswered
+request are never shown the same way. Reading the list requires read access to
+the project; editing project Instructions requires manage access.
