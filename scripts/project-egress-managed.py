@@ -542,6 +542,37 @@ def reconcile_stopped_relay_policy(root, run, target):
     return (json.dumps(new, sort_keys=True) + '\n').encode()
 
 
+def prepare_build_storage(root, volume):
+    """Create the narrow writable mount before systemd builds its namespace."""
+    if volume is None:
+        return
+    parent = root / 'var/lib/docker/volumes' / volume / '_data'
+    # Docker's volume directory is trusted; _data belongs to the Server user.
+    base.trusted_parent(parent, root)
+    with_parent = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        owner = os.fstat(with_parent)
+        created = False
+        try:
+            os.mkdir('build-storage', 0o700, dir_fd=with_parent)
+            created = True
+        except FileExistsError:
+            pass
+        child = os.open('build-storage', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                        dir_fd=with_parent)
+        try:
+            if created:
+                os.fchown(child, owner.st_uid, owner.st_gid)
+                os.fsync(with_parent)
+            info = os.fstat(child)
+            if info.st_uid != owner.st_uid or info.st_mode & 0o022:
+                raise ValueError('Untrusted protected build storage directory')
+        finally:
+            os.close(child)
+    finally:
+        os.close(with_parent)
+
+
 def activate(root, run, release, files, configs, gid):
     current = root / 'opt/verity-egress'
     if current.exists() and not current.is_symlink():
@@ -554,6 +585,7 @@ def activate(root, run, release, files, configs, gid):
                'usr/local/libexec/verity-buildkit/protected-build-attempt': files['protected-build-attempt']}
     relay_config = json.loads(configs.get('etc/verity-egress/relay.json', b'{}'))
     changes = {**unit_files(files, gid, root, relay_config.get('dataVolume')), **helpers, **configs}
+    prepare_build_storage(root, relay_config.get('dataVolume'))
     snapshots = {}
     for relative in changes:
         path = root / relative

@@ -99,13 +99,35 @@ class ManagedTests(unittest.TestCase):
 
     def test_protected_export_can_write_only_the_managed_data_volume(self):
         self.relay.write_text('{"packetEnforcement":true,"dataVolume":"verity-data"}')
-        self.assertTrue(self.provision()['available'])
+        parent = self.root / 'var/lib/docker/volumes/verity-data/_data'
+        parent.mkdir(parents=True)
+        storage = parent / 'build-storage'
+        self.assertFalse(storage.exists())
+        def execute(*args):
+            if args == ('/usr/bin/systemctl', 'start', managed.SERVICE):
+                self.assertTrue(storage.is_dir())
+                self.assertEqual(storage.stat().st_uid, parent.stat().st_uid)
+                self.assertEqual(storage.stat().st_mode & 0o777, 0o700)
+            return self.execute(*args)
+        self.assertTrue(self.provision(run=execute)['available'])
+        (storage / 'preserved').write_text('existing build')
+        self.assertTrue(self.provision(run=execute)['available'])
+        self.assertEqual((storage / 'preserved').read_text(), 'existing build')
         unit = (self.root / managed.base.UNITS['verity-egress-host.service']).read_text()
         self.assertIn('-/var/lib/docker/volumes/verity-data/_data/build-storage ', unit)
         self.assertNotIn('ReadWritePaths=/var/lib/docker/volumes ', unit)
         self.relay.write_text('{"packetEnforcement":true,"dataVolume":"../foreign"}')
         with self.assertRaises(ValueError):
             self.provision()
+
+    def test_build_storage_rejects_symlink_before_controller_start(self):
+        parent = self.root / 'var/lib/docker/volumes/verity-data/_data'
+        parent.mkdir(parents=True)
+        (parent / 'build-storage').symlink_to(self.source, target_is_directory=True)
+        self.relay.write_text('{"packetEnforcement":true,"dataVolume":"verity-data"}')
+        with self.assertRaises(OSError):
+            self.provision()
+        self.assertNotIn(('/usr/bin/systemctl', 'start', managed.SERVICE), self.calls)
 
     def test_prior_release_without_protected_assets_remains_recoverable(self):
         files = {name: self.source.joinpath(name).read_bytes() for name in managed.LEGACY_ASSETS}
