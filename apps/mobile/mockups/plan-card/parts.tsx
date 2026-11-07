@@ -16,8 +16,8 @@ export interface SampleDecision {
   recommended: string;
 }
 
-export const SAMPLE_TITLE = 'Wiki als lesbares, gepflegtes Projektwissen';
-export const SAMPLE_STEPS = [
+const SAMPLE_TITLE = 'Wiki als lesbares, gepflegtes Projektwissen';
+const SAMPLE_STEPS = [
   'Server: Wiki-Katalog.',
   'App: Wiki-Startseite.',
   'App: Seiten lesbar und verlinkt.',
