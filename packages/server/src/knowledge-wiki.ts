@@ -25,6 +25,8 @@ const MAX_DEPTH = 6;
 const MAX_PAGE_BYTES = 512 * 1024;
 const MAX_TOTAL_BYTES = 32 * 1024 * 1024;
 const MAX_CONFLICTS = 50;
+/** Linked files the scan did not read, looked up on disk per request. */
+const MAX_DISK_CHECKS = 200;
 const MAX_SUMMARY = 240;
 /** Not pages: decision records have their own list, conflicts their own item. */
 const OWN_FOLDERS = new Set(['decisions', 'Conflicts']);
@@ -115,7 +117,13 @@ export function parseWikiIndex(markdown: string): { overview: string; topics: Wi
           .filter((path): path is `insights/${string}` => path?.startsWith('insights/') === true),
       ),
     ];
-    topics.push({ title: topic.title, description: plain(topic.description.join(' ')), pages });
+    const description = plain(topic.description.join(' '));
+    // A heading used twice is one topic: the app opens topics by their title.
+    const same = topics.find((other) => other.title === topic!.title);
+    if (same) {
+      same.pages = [...new Set([...same.pages, ...pages])];
+      same.description ||= description;
+    } else topics.push({ title: topic.title, description, pages });
   };
   let descriptionDone = false;
   for (const raw of markdown.split('\n')) {
@@ -276,7 +284,7 @@ export async function projectWikiCatalog(knowledgeRoot: string): Promise<WikiCat
     projectDecisionSummaries(knowledgeRoot).catch(() => ({ decisions: [], incomplete: true })),
     readConflicts(insights).catch(() => ({ items: [] as WikiReviewItem[], truncated: true })),
   ]);
-  const truncated = pagesCut || decisionState.incomplete || conflicts.truncated;
+  let truncated = pagesCut || decisionState.incomplete || conflicts.truncated;
   const decisionPaths = new Set(decisionState.decisions.map((decision) => decision.path));
   const known = new Set([...read.map((page) => page.path), ...decisionPaths]);
   const linkedFrom = new Map<string, Set<string>>();
@@ -298,8 +306,12 @@ export async function projectWikiCatalog(knowledgeRoot: string): Promise<WikiCat
       // open (a source, an image, a page past the limits) is looked up on disk,
       // so a link counts as broken only when there is nothing to open.
       if (!known.has(target)) {
-        if (!diskChecks.has(target)) diskChecks.set(target, fileExists(knowledgeRoot, target));
-        if (!(await diskChecks.get(target))) broken.push(target);
+        // Past the limit a link is unchecked, not broken, and the catalog partial.
+        if (!diskChecks.has(target) && diskChecks.size >= MAX_DISK_CHECKS) truncated = true;
+        else {
+          if (!diskChecks.has(target)) diskChecks.set(target, fileExists(knowledgeRoot, target));
+          if (!(await diskChecks.get(target))) broken.push(target);
+        }
       }
       if (target !== page.path) {
         const from = linkedFrom.get(target) ?? new Set<string>();

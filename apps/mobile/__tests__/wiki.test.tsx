@@ -319,3 +319,15 @@ it('never shows one project’s catalog for another', async () => {
   await act(async () => finish({ ...catalog, index: null }));
   expect(await screen.findByText('Pages · 2')).toBeTruthy();
 });
+
+it('opens the decision list on a group that has decisions in it', async () => {
+  client({
+    ...catalog,
+    decisions: catalog.decisions.map((decision) => ({
+      ...decision,
+      status: 'superseded' as const,
+    })),
+  });
+  render(<KnowledgeScreen scope={PROJECT} folder={DECISIONS} />);
+  expect(await screen.findByText('Knowledge is one entry')).toBeTruthy();
+});

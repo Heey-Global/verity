@@ -69,6 +69,8 @@ describe('parseWikiIndex', () => {
         '- [Outside](https://example.com)',
         '## Meetings',
         '- [Intake](intake.md)',
+        '## Mobile app',
+        '- [Release](release.md)',
       ].join('\n'),
     );
     expect(index.overview).toBe('Start with the [concept](concept.md).');
@@ -76,7 +78,7 @@ describe('parseWikiIndex', () => {
       {
         title: 'Mobile app',
         description: 'Design system and performance.',
-        pages: ['insights/mobile/audit.md'],
+        pages: ['insights/mobile/audit.md', 'insights/release.md'],
       },
       { title: 'Meetings', description: '', pages: ['insights/intake.md'] },
     ]);
@@ -175,6 +177,17 @@ describe('projectWikiCatalog', () => {
     expect(catalog.review).toEqual([
       { kind: 'broken_links', path: 'insights/page.md', targets: ['insights/missing.png'] },
     ]);
+  });
+
+  it('checks a bounded number of linked files and says when it stopped', async () => {
+    const links = Array.from({ length: 205 }, (_, n) => `[x](missing-${String(n)}.png)`).join(' ');
+    write('insights/many.md', `# Many\n\n${links}\n`);
+    const catalog = await projectWikiCatalog(root);
+    const broken = catalog.review.flatMap((item) =>
+      item.kind === 'broken_links' ? item.targets : [],
+    );
+    expect(broken).toHaveLength(200);
+    expect(catalog.truncated).toBe(true);
   });
 
   it('says when an oversized page was left out', async () => {

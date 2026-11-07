@@ -97,8 +97,10 @@ function useDecisionFilter(decisions: WikiDecision[]) {
     for (const decision of decisions) result[decision.status]++;
     return result;
   }, [decisions]);
+  // The first group with something in it, so the list never opens empty.
   const [filter, setFilter] = useState<DecisionFilter>(
-    counts.current > 0 || counts.unresolved === 0 ? 'current' : 'unresolved',
+    (['current', 'unresolved', 'superseded'] as const).find((status) => counts[status] > 0) ??
+      'current',
   );
   const options = [
     { value: 'current' as const, label: `Current · ${String(counts.current)}` },

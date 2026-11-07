@@ -4788,13 +4788,19 @@ it('reads the project Wiki catalog and treats a server without it as none', asyn
   };
   const { fetch, calls } = fakeFetchSequence(
     json(catalog),
-    json({ error: 'Route not found' }, 404),
+    json(
+      { error: 'Not Found', message: 'Route GET:/projects/p%2F1/knowledge/wiki not found' },
+      404,
+    ),
+    json({ error: 'Project knowledge not found' }, 404),
   );
   const client = new VerityClient({ baseUrl: 'http://host', fetch });
   expect(await client.getProjectWiki('p/1')).toEqual(catalog);
   expect(calls[0]?.url).toBe('http://host/projects/p%2F1/knowledge/wiki');
   // An older server has no catalog: the app falls back to the folder view.
   expect(await client.getProjectWiki('p/1')).toBeNull();
+  // A project that is gone is not an old server: the app says so.
+  await expect(client.getProjectWiki('p/1')).rejects.toThrow('Project knowledge not found');
 });
 
 it('browses Shared without a session and sends the revision for edits', async () => {

@@ -6226,7 +6226,10 @@ export class VerityClient {
       });
       return wikiCatalogSchema.parse(await res.json());
     } catch (err) {
-      if (err instanceof VerityApiError && err.status === 404) return null;
+      // Only the router's own not-found means an older server; a missing
+      // project is a 404 that names it, and stays an error.
+      if (err instanceof VerityApiError && err.status === 404 && err.message === 'Not Found')
+        return null;
       throw err;
     }
   }
