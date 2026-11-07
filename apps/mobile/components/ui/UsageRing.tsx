@@ -9,11 +9,12 @@ const STROKE = 2.6;
 
 /**
  * One quota window as a small ring (docs/design-system.md § 5.5b): the arc is
- * the share already used, the notch marks where usage would sit now at an even
- * pace, and the label inside names the window. A meter is a state, never an
- * action or brand moment, so the arc is muted while there is room, `text` once
- * the window runs low and `attention` once it is spent. A spent window has no
- * pace left to keep, so it draws no notch.
+ * the share already used, filling clockwise from 12 o'clock, and a muted line
+ * across the ring marks how much of the window has passed — where usage would
+ * sit now at an even pace. The label inside names the window. A meter is a
+ * state, never an action or brand moment, so the arc is `text` while there is
+ * room and `attention` once the window is spent. A spent window has no pace
+ * left to keep, so it draws no line.
  *
  * The ring is decoration for the text beside it; the caller owns the spoken
  * label.
@@ -37,22 +38,25 @@ export function UsageRing({
   const scale = size / 26;
   const stroke = STROKE * scale;
   const center = size / 2;
-  // Leave room for the notch, which reaches past the ring's outer edge.
-  const radius = center - stroke / 2 - 1.4 * scale;
+  // Leave room for the pace line, which reaches past the ring's outer edge.
+  const radius = center - stroke / 2 - 1.6 * scale;
   const circumference = 2 * Math.PI * radius;
   const used = Math.min(100, Math.max(0, Number.isFinite(percent) ? percent : 0));
-  const arcColor =
-    level === 'spent'
-      ? theme.colors.attention
-      : level === 'low'
-        ? theme.colors.text
-        : theme.colors.textMuted;
-  const notch = level !== 'spent' && pace !== null && Number.isFinite(pace) ? pace : null;
-  const notchEnds =
-    notch === null
+  const arcColor = level === 'spent' ? theme.colors.attention : theme.colors.text;
+  // A round cap reaches half a stroke past each end of the dash. Inset the
+  // dash by that much at both ends so the arc starts exactly at 12 o'clock and
+  // ends exactly at the used share. A full ring has no ends, and a sliver
+  // shorter than the stroke cannot hold two caps, so both stay butt.
+  const arcLength = (circumference * used) / 100;
+  const round = used < 100 && arcLength >= stroke;
+  const capInset = round ? stroke / 2 : 0;
+  const pacePosition = level !== 'spent' && pace !== null && Number.isFinite(pace) ? pace : null;
+  const paceEnds =
+    pacePosition === null
       ? null
-      : [radius - stroke, radius + stroke].map((r) => {
-          const angle = (2 * Math.PI * Math.min(100, Math.max(0, notch))) / 100 - Math.PI / 2;
+      : [radius - stroke / 2 - 1.4 * scale, radius + stroke / 2 + 1.4 * scale].map((r) => {
+          const angle =
+            (2 * Math.PI * Math.min(100, Math.max(0, pacePosition))) / 100 - Math.PI / 2;
           return { x: center + r * Math.cos(angle), y: center + r * Math.sin(angle) };
         });
   return (
@@ -78,33 +82,33 @@ export function UsageRing({
             r={radius}
             stroke={arcColor}
             strokeWidth={stroke}
-            strokeLinecap="round"
-            // A full circle with a round cap would close on itself; stop just short.
-            strokeDasharray={`${(circumference * Math.min(used, 99.6)) / 100} ${circumference}`}
+            strokeLinecap={round ? 'round' : 'butt'}
+            strokeDasharray={`${Math.max(0.01, arcLength - 2 * capInset)} ${circumference * 2}`}
+            strokeDashoffset={-capInset}
             fill="none"
             transform={`rotate(-90 ${center} ${center})`}
           />
         ) : null}
-        {notchEnds !== null ? (
+        {paceEnds !== null ? (
           <>
-            {/* A halo in the background colour keeps the notch readable on the arc. */}
+            {/* A gap in the background colour keeps the line readable on the arc. */}
             <Line
-              x1={notchEnds[0]!.x}
-              y1={notchEnds[0]!.y}
-              x2={notchEnds[1]!.x}
-              y2={notchEnds[1]!.y}
+              x1={paceEnds[0]!.x}
+              y1={paceEnds[0]!.y}
+              x2={paceEnds[1]!.x}
+              y2={paceEnds[1]!.y}
               stroke={theme.colors.surface}
-              strokeWidth={3.2 * scale}
+              strokeWidth={2.6 * scale}
               strokeLinecap="round"
             />
             <Line
-              testID="usage-ring-notch"
-              x1={notchEnds[0]!.x}
-              y1={notchEnds[0]!.y}
-              x2={notchEnds[1]!.x}
-              y2={notchEnds[1]!.y}
-              stroke={theme.colors.text}
-              strokeWidth={1.5 * scale}
+              testID="usage-ring-pace"
+              x1={paceEnds[0]!.x}
+              y1={paceEnds[0]!.y}
+              x2={paceEnds[1]!.x}
+              y2={paceEnds[1]!.y}
+              stroke={theme.colors.textMuted}
+              strokeWidth={1.1 * scale}
               strokeLinecap="round"
             />
           </>
