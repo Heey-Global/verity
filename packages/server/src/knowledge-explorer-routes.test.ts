@@ -368,6 +368,60 @@ describe('session explorer knowledge roots', () => {
     expect(readFileSync(join(topic, 'nested/another.md'), 'utf8')).toBe('Another decision');
   });
 
+  it('protects decisions across session delete roots and intermediate aliases', async () => {
+    const dir = projectKnowledgeDir(dataRoot, 'p-1');
+    await app.inject('/projects/p-1/knowledge/files');
+    const topic = join(dir, 'insights/decisions/topic');
+    mkdirSync(join(topic, 'nested'), { recursive: true });
+    writeFileSync(join(topic, 'record.md'), 'Protected decision');
+    writeFileSync(join(topic, 'nested/another.md'), 'Another decision');
+    symlinkSync('decisions', join(dir, 'insights/session-alias'));
+    const remove = (root: string, path: string, id = 's-knowledge') =>
+      app.inject({
+        method: 'DELETE',
+        url: `/sessions/${id}/files?root=${root}&path=${encodeURIComponent(path)}`,
+      });
+    for (const [root, path] of [
+      ['documents', 'decisions'],
+      ['wiki', 'decisions/topic'],
+      ['documents', 'session-alias/topic/record.md'],
+      ['documents', 'session-alias/topic/nested'],
+      ['knowledge', 'insights/decisions/topic/record.md'],
+      ['knowledge', 'insights/session-alias/topic/record.md'],
+    ] as const)
+      expect((await remove(root, path)).statusCode).toBe(400);
+    await ctx.store.createSession({
+      sessionId: 's-canonical-wiki',
+      projectId: 'p-1',
+      worktree: join(dir, 'insights'),
+      model: 'm',
+    });
+    expect((await remove('worktree', 'decisions', 's-canonical-wiki')).statusCode).toBe(400);
+    expect(
+      (await remove('worktree', 'session-alias/topic/record.md', 's-canonical-wiki')).statusCode,
+    ).toBe(400);
+    await ctx.store.createSession({
+      sessionId: 's-canonical-knowledge',
+      projectId: 'p-1',
+      worktree: dir,
+      model: 'm',
+    });
+    expect((await remove('worktree', 'insights', 's-canonical-knowledge')).statusCode).toBe(400);
+    await ctx.store.createSession({
+      sessionId: 's-canonical-decision',
+      projectId: 'p-1',
+      worktree: topic,
+      model: 'm',
+    });
+    expect((await remove('worktree', 'record.md', 's-canonical-decision')).statusCode).toBe(400);
+    expect(readFileSync(join(topic, 'record.md'), 'utf8')).toBe('Protected decision');
+    expect(readFileSync(join(topic, 'nested/another.md'), 'utf8')).toBe('Another decision');
+    // The same name in an ordinary code checkout is not a project decision directory.
+    mkdirSync(join(worktree, 'decisions'), { recursive: true });
+    writeFileSync(join(worktree, 'decisions/design.md'), 'Code design');
+    expect((await remove('worktree', 'decisions')).statusCode).toBe(200);
+  });
+
   it('deletes Sources files and folders with their extracted text without following aliases', async () => {
     const dir = projectKnowledgeDir(dataRoot, 'p-1');
     await app.inject('/projects/p-1/knowledge/files');

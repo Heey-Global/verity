@@ -15,7 +15,7 @@ import {
   statfs,
   unlink,
 } from 'node:fs/promises';
-import { basename, dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import {
@@ -35,6 +35,8 @@ import {
   ensureProjectKnowledge,
   ensureSharedKnowledge,
   KNOWLEDGE_INSIGHTS_DIR,
+  knowledgeRootDir,
+  SHARED_KNOWLEDGE_DIR,
 } from './knowledge-folder.js';
 import { acquireKnowledgeMutationLock } from './knowledge-mutation-lock.js';
 import { markProjectOverviewAuthoritative } from './project-overview-file.js';
@@ -659,9 +661,28 @@ export function registerServerSessionFiles(
       }
     },
     remove: async (reply, root, path) => {
+      const protectedPaths = [...(root.protectedPaths ?? [])];
+      if (root.root === 'documents') protectedPaths.push('decisions');
+      if (root.root === 'knowledge') protectedPaths.push('insights/decisions');
+      // A legacy session can name canonical project knowledge as its worktree.
+      // Protect its physical decision storage regardless of the requested root.
+      if (root.root === 'worktree' && deps.dataRoot) {
+        const storage = await realpath(knowledgeRootDir(deps.dataRoot)).catch(() => undefined);
+        if (storage) {
+          const actualRoot = await realpath(root.dir).catch(() => undefined);
+          const project = actualRoot ? relative(storage, actualRoot).split(sep)[0] : undefined;
+          if (
+            actualRoot &&
+            project &&
+            /^[A-Za-z0-9_-]+$/.test(project) &&
+            project !== SHARED_KNOWLEDGE_DIR
+          )
+            protectedPaths.push(relative(actualRoot, join(storage, project, 'insights/decisions')));
+        }
+      }
       let file;
       try {
-        file = await openKnowledgeFileSlot(root, path);
+        file = await openKnowledgeFileSlot({ ...root, protectedPaths }, path);
       } catch (error) {
         return knowledgeSlotFailure(reply, error);
       }

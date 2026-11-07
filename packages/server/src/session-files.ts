@@ -160,12 +160,17 @@ export async function openKnowledgeFileSlot(
     // Check the pinned parent rather than the requested spelling: an intermediate
     // alias within the Wiki can otherwise hide a path into protected decisions.
     if (target.protectedPaths?.length) {
-      const resolvedPath = relative(await realpath(target.dir), resolve(resolvedParent, name));
+      const rootReal = await realpath(target.dir);
+      const resolvedPath = resolve(resolvedParent, name);
       if (
-        target.protectedPaths.some(
-          (protectedPath) =>
-            resolvedPath === protectedPath || resolvedPath.startsWith(`${protectedPath}${sep}`),
-        )
+        target.protectedPaths.some((path) => {
+          const protectedPath = resolve(rootReal, path);
+          return (
+            resolvedPath === protectedPath ||
+            resolvedPath.startsWith(`${protectedPath}${sep}`) ||
+            protectedPath.startsWith(`${resolvedPath}${sep}`)
+          );
+        })
       )
         throw new ManagedKnowledgePathError('this path is managed by Verity');
     }
