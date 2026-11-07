@@ -46,7 +46,9 @@ export function PinnedPlan({
   disabled: boolean;
   error: string | undefined;
   renderMarkdown(markdown: string): ReactNode;
-  /** Height of the open software keyboard, which covers part of the window. */
+  /** Height of the open software keyboard, which covers part of the window.
+   *  The app's keyboard controller keeps the window at full height on iOS and
+   *  Android, so this is subtracted once from the window height. */
   keyboardHeight?: number | null;
   onDismiss(): void;
   onImplement(): void;
@@ -251,13 +253,19 @@ export function PinnedPlan({
                 <Text variant="label">
                   {`Decision ${String(index + 1)} of ${String(undecided)}`}
                 </Text>
-                <View style={styles.progress}>
+                <View style={styles.progress} testID="decision-progress">
                   {decisions.map((_, at) => (
                     <View
                       key={at}
                       style={[
                         styles.progressDot,
-                        at < index && styles.progressDone,
+                        // Done means passed and answered: one skipped with Next stays open.
+                        at < index &&
+                          answerable.some(
+                            (entry) =>
+                              entry.decision === decisions[at] && entry.option !== undefined,
+                          ) &&
+                          styles.progressDone,
                         at === index && styles.progressCurrent,
                       ]}
                     />
@@ -336,9 +344,14 @@ export function PinnedPlan({
         />
         {undecided > 0 ? (
           <Button
-            label={`Send answers (${String(chosen.length)})`}
-            accessibilityLabel="Send answers"
-            accessibilityHint="The agent revises the plan from your answers."
+            label={`${expanded ? 'Send' : 'Show'} answers (${String(chosen.length)})`}
+            // Collapsed, the button only opens the card; say so to screen readers.
+            accessibilityLabel={expanded ? 'Send answers' : 'Show answers'}
+            accessibilityHint={
+              expanded
+                ? 'The agent revises the plan from your answers.'
+                : 'Opens the plan to review your answers before sending.'
+            }
             size="compact"
             disabled={blocked || (expanded && !complete)}
             onPress={() => {

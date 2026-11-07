@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, within } from '@testing-library/react-native';
 import { Dimensions, ScrollView, StyleSheet, Text } from 'react-native';
+import type { ReactTestInstance } from 'react-test-renderer';
 import { PINNED_PLAN_MAX_HEIGHT_SHARE, PinnedPlan } from './PinnedPlan';
 
 const markdown =
@@ -199,7 +200,10 @@ it('opens the collapsed card instead of sending answers out of sight', () => {
   const view = render(<PinnedPlan {...props} markdown={decisions} />);
   view.rerender(<PinnedPlan {...props} markdown={decisions} sendNonce={1} />);
   expect(screen.queryByText('Decision 1 of 3')).toBeNull();
-  fireEvent.press(screen.getByLabelText('Send answers'));
+  // A screen reader must not announce a send that does not happen.
+  expect(screen.queryByLabelText('Send answers')).toBeNull();
+  expect(screen.getByText('Show answers (2)')).toBeOnTheScreen();
+  fireEvent.press(screen.getByLabelText('Show answers'));
   expect(props.onAnswerDecision).not.toHaveBeenCalled();
   expect(screen.getByText('Decision 1 of 3')).toBeOnTheScreen();
 });
@@ -228,4 +232,24 @@ it('leaves a decision without options to the chat', () => {
   );
   expect(screen.getByText('Answer in the chat.')).toBeOnTheScreen();
   expect(screen.getByLabelText('Send answers')).toBeDisabled();
+});
+
+it('marks only answered decisions as done, not ones skipped with Next', () => {
+  // The trial decision has no recommendation, so skipping it leaves it open.
+  const skipFirst = decisions.replace(
+    /1\. \*\*Show prices.*\n2\. (.*)\n3\. (.*)/,
+    '1. **Free trial?** — 14 days | 30 days\n2. $1\n3. **Show prices incl. VAT?** — Incl. VAT (recommended) | Excl. VAT',
+  );
+  render(<PinnedPlan {...props} markdown={skipFirst} />);
+  expect(screen.getByText('Free trial?')).toBeOnTheScreen();
+  fireEvent.press(screen.getByLabelText('Next decision'));
+  fireEvent.press(screen.getByLabelText('Next decision'));
+  expect(screen.getByText('Decision 3 of 3')).toBeOnTheScreen();
+  const color = (at: number) =>
+    StyleSheet.flatten(
+      (screen.getByTestId('decision-progress').children[at] as ReactTestInstance).props.style,
+    ).backgroundColor;
+  const open = color(0);
+  const answered = color(1);
+  expect(answered).not.toBe(open);
 });
