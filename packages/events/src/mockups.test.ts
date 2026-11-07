@@ -75,7 +75,9 @@ describe('mockupReviewPrompt', () => {
       state: 'pending',
       screens: screens.map((screen) => ({ ...screen, verdict: 'approved' as const })),
     });
-    expect(prompt).toMatch(/Do not implement the rest of the plan until the user tells you/);
+    expect(prompt).toMatch(
+      /implement the rest of a plan, until the user tells you in the chat to implement/,
+    );
   });
 
   it.each([

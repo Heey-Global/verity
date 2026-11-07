@@ -48,5 +48,5 @@ export function mockupReviewPrompt(
   if (review?.state !== 'pending' || review.screens.length === 0) return '';
   const label = { open: 'not marked yet', approved: 'approved', discarded: 'discarded' } as const;
   const lines = review.screens.map((screen) => `- ${screen.name}: ${label[screen.verdict]}`);
-  return `## Mockup review\nThe mockups you presented are under review. The user's current marks:\n${lines.join('\n')}\n\nMarks are opinions, not instructions to build: the user explains them in the chat. To revise, render the changed screens and present the whole round again with ${PRESENT}; drop or redo discarded screens as the user asks. Do not implement the rest of the plan until the user tells you in the chat to implement. When they do, call ${COMPLETE} before you continue; it ends the review.`;
+  return `## Mockup review\nThe mockups you presented are under review. The user's current marks:\n${lines.join('\n')}\n\nMarks are opinions, not instructions to build: the user explains them in the chat. To revise, render the changed screens and present the whole round again with ${PRESENT}; drop or redo discarded screens as the user asks. Do not build the mockups into the product, or implement the rest of a plan, until the user tells you in the chat to implement. When they do, call ${COMPLETE} before you continue; it ends the review.`;
 }

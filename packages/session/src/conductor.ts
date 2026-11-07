@@ -1618,7 +1618,7 @@ export class Conductor {
     }
     runOpts.appendSystemPrompt += await this.projectKnowledgePrompt(session);
     runOpts.appendSystemPrompt += await this.assignedTasksPrompt(session);
-    runOpts.appendSystemPrompt += this.mockupReviewPrompt(session);
+    runOpts.appendSystemPrompt += this.mockupReviewSection(session);
     runOpts.appendSystemPrompt = withBackendSystemPrompt(
       runOpts.appendSystemPrompt,
       backend,
@@ -5394,7 +5394,7 @@ export class Conductor {
               context?.prompt ?? (await this.projectMemoryPrompt(session));
             runOpts.appendSystemPrompt += await this.projectKnowledgePrompt(session);
             runOpts.appendSystemPrompt += await this.assignedTasksPrompt(session);
-            runOpts.appendSystemPrompt += this.mockupReviewPrompt(session);
+            runOpts.appendSystemPrompt += this.mockupReviewSection(session);
             contextProjectId = session.projectId;
           }
         }
@@ -6223,14 +6223,14 @@ export class Conductor {
     return `\n\n## Project memory (operator-curated; may be stale — verify before relying on it)\n${memory}`;
   }
 
-  /** The per-turn "Assigned tasks" section, framed like the other appended blocks. */
   /** The round under review and the user's marks, on every turn while it waits:
    *  a resumed context would otherwise act on marks the user has changed since. */
-  private mockupReviewPrompt(session: SessionRecord): string {
+  private mockupReviewSection(session: SessionRecord): string {
     const prompt = mockupReviewPrompt(session.mockupReview);
     return prompt ? `\n\n${prompt}` : '';
   }
 
+  /** The per-turn "Assigned tasks" section, framed like the other appended blocks. */
   private async assignedTasksPrompt(session: SessionRecord): Promise<string> {
     const prompt = (await this.deps.assignedTasksPrompt?.(session))?.trim();
     return prompt ? `\n\n${prompt}` : '';

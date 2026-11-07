@@ -325,9 +325,11 @@ describe('completing the review', () => {
     expect(await mockups.complete('s1')).toEqual({ ok: false, code: 'notPending' });
   });
 
-  it('ends a review left revising by an earlier version', async () => {
+  it('reopens a review an earlier version left revising for marks and completion', async () => {
     await present();
-    await store.updateSessionMockups('s1', (current) => ({ ...current, state: 'revising' }));
+    await ctx.db.updateTable('sessions').set({ mockup_review: 'revising' }).execute();
+    expect((await store.getSession('s1'))?.mockupReview?.state).toBe('pending');
+    expect((await mockups.decide('s1', 1, 'Home', { verdict: 'approved' })).ok).toBe(true);
     expect((await mockups.complete('s1')).ok).toBe(true);
   });
 });

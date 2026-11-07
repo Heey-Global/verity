@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { storedMockupScreens } from './store.js';
+import { storedMockupScreens, storedMockupState } from './store.js';
 
 describe('storedMockupScreens', () => {
   const screen = { name: 'Home', attachment: 'a', mediaType: 'image/png', width: 1, height: 1 };
@@ -22,8 +22,21 @@ describe('storedMockupScreens', () => {
     ).toEqual(['approved', 'open', 'discarded', 'discarded']);
   });
 
-  it('reads anything but an array as no screens', () => {
+  it('reads anything but an array as no screens and drops malformed entries', () => {
     expect(storedMockupScreens(null)).toEqual([]);
     expect(storedMockupScreens({})).toEqual([]);
+    // One corrupt entry must not fail every load of the session.
+    expect(storedMockupScreens([null, 'x', { ...screen, verdict: 'open' }])).toEqual([
+      { ...screen, verdict: 'open' },
+    ]);
+  });
+});
+
+describe('storedMockupState', () => {
+  it('reopens a round an earlier version left revising', () => {
+    // Nothing moves a revising round on any more; read as is it would stay stuck.
+    expect(storedMockupState('revising')).toBe('pending');
+    expect(storedMockupState('approved')).toBe('approved');
+    expect(storedMockupState(null)).toBeNull();
   });
 });

@@ -107,7 +107,7 @@ export type SessionPlanning = 'active' | 'implemented' | 'discarded';
 
 /** `pending`: screens wait for the reviewer, who marks each one and discusses them
  *  in the chat. `revising`: written by earlier versions, which sent comments for a
- *  revision; read as before. `approved`: the user told the agent to implement and
+ *  revision; read as `pending` (see {@link storedMockupState}). `approved`: the user told the agent to implement and
  *  the review ended. */
 export type SessionMockupState = 'pending' | 'revising' | 'approved';
 
@@ -131,16 +131,19 @@ export type MockupVerdict = 'open' | 'approved' | 'discarded';
  *  discarded and never as approved. */
 export function storedMockupScreens(raw: unknown): MockupScreenRecord[] {
   if (!Array.isArray(raw)) return [];
-  return (raw as (Omit<MockupScreenRecord, 'verdict'> & { verdict: string })[]).map(
-    ({ name, attachment, mediaType, width, height, verdict }) => ({
-      name,
-      attachment,
-      mediaType,
-      width,
-      height,
-      verdict: verdict === 'approved' ? 'approved' : verdict === 'open' ? 'open' : 'discarded',
-    }),
+  // A malformed entry is dropped rather than failing every load of the session.
+  const entries = raw.filter(
+    (entry): entry is Omit<MockupScreenRecord, 'verdict'> & { verdict: string } =>
+      typeof entry === 'object' && entry !== null,
   );
+  return entries.map(({ name, attachment, mediaType, width, height, verdict }) => ({
+    name,
+    attachment,
+    mediaType,
+    width,
+    height,
+    verdict: verdict === 'approved' ? 'approved' : verdict === 'open' ? 'open' : 'discarded',
+  }));
 }
 
 export interface SessionMockupReview {
@@ -157,11 +160,18 @@ export interface SessionMockups {
   screens: MockupScreenRecord[];
 }
 
+/** A round an earlier version left `revising` already handed its comments to the
+ *  agent; nothing moves it on any more, so it reads as open for marks again. */
+export function storedMockupState(state: SessionMockupState | null): SessionMockupState | null {
+  return state === 'revising' ? 'pending' : state;
+}
+
 function mockupReview(
-  state: SessionMockupState | null,
+  rawState: SessionMockupState | null,
   revision: number,
   screens: unknown,
 ): { mockupReview?: SessionMockupReview } {
+  const state = storedMockupState(rawState);
   if (state === null) return {};
   return {
     mockupReview: {
@@ -3515,7 +3525,7 @@ export class EventStore implements EventSink {
       )
         return undefined;
       const next = change({
-        state: row.mockup_review,
+        state: storedMockupState(row.mockup_review),
         revision: row.mockup_revision,
         screens: storedMockupScreens(row.mockup_screens),
       });

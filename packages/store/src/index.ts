@@ -81,6 +81,7 @@ export {
   type MockupScreenRecord,
   type MockupVerdict,
   storedMockupScreens,
+  storedMockupState,
   type SessionSlideDeckRecord,
   type SessionWorkspaceFileRecord,
   type SessionGmailConnection,
