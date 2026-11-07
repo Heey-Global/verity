@@ -389,19 +389,26 @@ describe('project page', () => {
       lastActivityAt: Date.now(),
     });
     const chat = session('chat', { lastActivityAt: Date.now() - 600_000 });
-    await renderPage([shippedLater, shippedEarlier, chat]);
+    const shippedStarred = session('shipped-starred', {
+      ...mergedPr(8, '2026-11-03T00:00:00Z'),
+      favorite: true,
+    });
+    await renderPage([shippedLater, shippedEarlier, chat, shippedStarred]);
     fireEvent.press(screen.getByRole('tab', { name: 'All' }));
     const rows = within(screen.getByTestId('project-work'))
       .getAllByRole('button')
       .filter((row) => /^(chat|shipped)/.test(String(row.props.accessibilityLabel)));
+    // A star keeps a merged session with the favorites, at full strength.
     expect(rows.map((row) => String(row.props.accessibilityLabel).split(',')[0])).toEqual([
+      'shipped-starred',
       'chat',
       'shipped-earlier',
       'shipped-later',
     ]);
     expect(rows[0]).not.toHaveStyle({ opacity: 0.6 });
-    expect(rows[1]).toHaveStyle({ opacity: 0.6 });
+    expect(rows[1]).not.toHaveStyle({ opacity: 0.6 });
     expect(rows[2]).toHaveStyle({ opacity: 0.6 });
+    expect(rows[3]).toHaveStyle({ opacity: 0.6 });
   });
 
   it('marks a pull request verdict on the tile, apart from the agent state', async () => {

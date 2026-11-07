@@ -145,7 +145,7 @@ describe('workOrder', () => {
 
   // Newest-first would push a session that just went quiet, asked or got its
   // answer above the ones that have been waiting longer.
-  it('appends a session to the bottom of the tier it just entered', () => {
+  it('appends a session that just asked, got an answer or went quiet to the bottom of its tier', () => {
     const order = workOrder([
       session('asked-now', { status: 'awaiting_input', lastActivityAt: 9 }),
       session('asked-before', { status: 'awaiting_input', lastActivityAt: 2 }),

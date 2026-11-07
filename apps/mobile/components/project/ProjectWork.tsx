@@ -430,8 +430,14 @@ export function ProjectWork({
           title={label}
           active={session.sessionId === selectedSessionId}
           // Merged and quiet: the work is done and the row only waits to be
-          // deleted, so it recedes the way it sinks to the bottom of the list.
-          settled={tile.glyph === 'merged' && agent === undefined && statusTag === undefined}
+          // deleted, so it recedes the way it sinks to the bottom of the list. A
+          // star keeps it with the favorites, at full strength.
+          settled={
+            tile.glyph === 'merged' &&
+            agent === undefined &&
+            statusTag === undefined &&
+            session.favorite !== true
+          }
           subtitle={waiting?.subtitle ?? workSubtitle(session)}
           leading={
             needs && waiting !== undefined

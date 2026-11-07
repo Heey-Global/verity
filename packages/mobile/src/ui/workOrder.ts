@@ -40,11 +40,12 @@ function isMerged(session: Pick<SessionSummary, 'pr' | 'pullRequest'>): boolean 
 }
 
 /**
- * When a session entered its tier, so whatever changed last joins its tier at
- * the bottom instead of jumping to the top. A session that asks, crashes, gets
- * an answer or goes quiet does so with its last activity. A merged pull request
- * rarely changes again, so its last update stands for the merge; without one the
- * session's own last activity stands in.
+ * When a session entered its tier, read from its last activity, so a session
+ * that just asked, crashed, got an answer or went quiet joins its tier at the
+ * bottom instead of jumping to the top. Starring or reading a session does not
+ * touch its activity, so those changes keep its place by activity. A merged pull
+ * request rarely changes again, so its last update stands for the merge; without
+ * one the session's own last activity stands in.
  */
 function enteredAt(session: SessionSummary, tier: number): number {
   if (tier === MERGED_TIER) {
