@@ -90,6 +90,10 @@ it('opens the web menu by right-click or keyboard and keeps Delete out of text f
   dispatch('keydown', { key: 'F10', shiftKey: true });
   dispatch('keydown', { key: 'ContextMenu' });
   expect(menu).toHaveBeenCalledTimes(3);
+  dispatch('contextmenu', { target: { tagName: 'INPUT' } });
+  dispatch('contextmenu', { target: { tagName: 'TEXTAREA' } });
+  dispatch('contextmenu', { target: { isContentEditable: true } });
+  expect(menu).toHaveBeenCalledTimes(3);
   dispatch('keydown', { key: 'Delete', target: { tagName: 'INPUT' } });
   expect(remove).not.toHaveBeenCalled();
   dispatch('keydown', { key: 'Delete' });

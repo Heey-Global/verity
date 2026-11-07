@@ -195,6 +195,9 @@ export function bindFileRowShortcuts(
   remove?: () => void,
 ): () => void {
   const context = (event: MouseEvent) => {
+    const source = event.target as HTMLElement | null;
+    if (source?.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(source?.tagName ?? ''))
+      return;
     event.preventDefault();
     event.stopPropagation();
     openMenu();
