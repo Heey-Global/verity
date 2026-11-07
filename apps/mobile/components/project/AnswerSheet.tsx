@@ -15,7 +15,7 @@ export const INLINE_ANSWERS = 3;
  * or wrapped into a pill, is not something to decide from. All answers go
  * together, so a row is never half inline and half in a sheet.
  */
-export function answersFitInline(answers: readonly InboxAction[]): boolean {
+function answersFitInline(answers: readonly InboxAction[]): boolean {
   return (
     answers.length <= INLINE_ANSWERS &&
     answers.every((action) => action.label.length <= SHORT_ANSWER)

@@ -30,8 +30,6 @@ import { useTaskPreferences } from '../../lib/taskPreferences';
 import { taskAccountScope } from '../../lib/tasksStore';
 import { dispatchVerityShortcut } from '../../lib/voiceShortcut';
 
-export { answerId } from '../project/AnswerSheet';
-
 /** The cached calendar list is cheap, but a watched calendar rarely changes. */
 const MEETING_REFRESH_MS = 5 * 60_000;
 /** Re-evaluates the meeting window and "in N min" without new data. */

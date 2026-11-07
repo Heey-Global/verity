@@ -19,11 +19,11 @@ import {
 export const ignore = () => undefined;
 const answers = (labels: string[]): InboxAction[] =>
   labels.map((label) => ({ kind: 'answer', label, answer: label, sessionId: 'sample' }));
-export const longAnswers = answers([
+const longAnswers = answers([
   'Variante 1: Admin-Bot @ops mit Token in Doppler bauen',
   'Variante 2: Kurzlebiges Token über die Datenbank bauen',
 ]);
-export const question: InboxItem = {
+const question: InboxItem = {
   key: 'sample',
   kind: 'question',
   tag: 'Question',
