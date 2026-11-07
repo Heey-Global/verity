@@ -7085,6 +7085,8 @@ export class EventStore implements EventSink {
     target: { owner: string; repo: string; forgeConnectionId?: string | null; kind?: ProjectKind },
   ): Promise<ProjectRecord | undefined> {
     const row = await this.db.transaction().execute(async (tx) => {
+      // Serialize archive inheritance with installation sync and identity allocation.
+      await sql`select pg_advisory_xact_lock(1447383636, 18)`.execute(tx);
       const existing = await tx
         .selectFrom('projects')
         .select(this.projectColumns)
