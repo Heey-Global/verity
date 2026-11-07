@@ -85,6 +85,24 @@ describe('GET /projects (#174)', () => {
     });
   });
 
+  it('never exposes a removed active project through the picker', async () => {
+    await ctx.store.upsertProject({
+      id: 'p-removed',
+      owner: 'heey-global',
+      repo: 'removed',
+      containerName: 'verity-heey-global--removed',
+      state: 'active',
+      overviewVisible: true,
+    });
+    await ctx.store.hideProject('p-removed');
+
+    const res = await app.inject({ method: 'GET', url: '/github/repositories' });
+
+    expect(res.json()).toMatchObject([
+      { id: 'repository:heey-global/removed', repo: 'removed', state: 'absent', cloneDir: null },
+    ]);
+  });
+
   it('lists a repository once however many projects use it', async () => {
     for (const id of ['p-first', 'p-second']) {
       await ctx.store.createRepositoryProject({
@@ -588,7 +606,17 @@ describe('GET /projects (#174)', () => {
 
     const picker = await app.inject({ method: 'GET', url: '/github/repositories' });
     expect(picker.statusCode).toBe(200);
-    expect(picker.json()).toMatchObject([{ id: 'p-deleted', repo: 'deleted', state: 'absent' }]);
+    expect(picker.json()).toMatchObject([
+      { id: 'repository:heey-global/deleted', repo: 'deleted', state: 'absent' },
+    ]);
+    // Choosing it again restores the removed project rather than forking one.
+    const readd = await app.inject({
+      method: 'POST',
+      url: '/projects',
+      payload: { repo: 'heey-global/deleted' },
+    });
+    expect(readd.statusCode).toBe(201);
+    expect(readd.json()).toMatchObject({ project: { id: 'p-deleted', hiddenAt: null } });
   });
 
   it('returns the provider list when configured (ProjectRecord shape round-trip)', async () => {

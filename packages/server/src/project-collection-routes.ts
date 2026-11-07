@@ -94,10 +94,12 @@ export function repositoryCatalog(projects: readonly ProjectRecord[]): ProjectRe
       byRepository.set(key, project);
     }
   }
-  // A repository already in use is offered as the repository alone: the
-  // picker must not hand out another project's ID, state or sandbox details.
+  // Only an installation placeholder is offered as itself. A repository behind
+  // a project, current or removed, is offered as the repository alone: the
+  // picker must not hand out that project's ID, state or sandbox details.
+  // Choosing it still restores a removed first project (createRepositoryProject).
   return [...byRepository.values()].map((project) =>
-    isInstallationPlaceholder(project) || project.hiddenAt !== null
+    isInstallationPlaceholder(project)
       ? project
       : {
           ...project,
