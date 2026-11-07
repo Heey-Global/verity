@@ -7,7 +7,7 @@ export const KnowledgeDeleteContext = createContext<
 >(undefined);
 
 /** Virtual sections and provenance-bearing decisions are not ordinary files. */
-export function canDeleteKnowledgeEntry(path: string): boolean {
+function canDeleteKnowledgeEntry(path: string): boolean {
   return (
     (path.startsWith('insights/') || path.startsWith('sources/')) &&
     !path.startsWith('insights/decisions/') &&
