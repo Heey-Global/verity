@@ -291,4 +291,36 @@ describe('project Instructions', () => {
       }),
     );
   });
+
+  it('offers no reload while a save is out, and shows the failure of that save', async () => {
+    let failSave!: (error: Error) => void;
+    mockClient.mockReturnValue({
+      getProjectInstructions: jest
+        .fn()
+        .mockResolvedValue({ instructions: 'Rules.', revision: 'r1' }),
+      getProjectRepositoryInstructions: jest.fn().mockResolvedValue([]),
+      replaceProjectInstructions: jest
+        .fn()
+        .mockRejectedValueOnce(new Error('Could not reach the server'))
+        .mockImplementationOnce(
+          () =>
+            new Promise((_resolve, reject) => {
+              failSave = reject;
+            }),
+        ),
+    } as unknown as VerityClient);
+    render(<ContextSettings kind="instructions" projectId="p" />);
+    fireEvent.changeText(await screen.findByDisplayValue('Rules.'), 'New rules.');
+    fireEvent.press(screen.getByText('Save'));
+    await screen.findByText('Could not reach the server');
+    fireEvent.press(screen.getByText('Save'));
+    // Whichever of a reload and a save answered last would decide the revision.
+    await waitFor(() => expect(screen.queryByText('Retry')).toBeNull());
+    await act(async () => {
+      failSave(new Error('Still offline'));
+    });
+    expect(await screen.findByText('Still offline')).toBeTruthy();
+    expect(screen.getByText('Retry')).toBeTruthy();
+    expect(screen.getByDisplayValue('New rules.')).toBeTruthy();
+  });
 });

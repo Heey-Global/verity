@@ -128,11 +128,13 @@ export interface ForgeRepositoryOperations {
   markPullRequestReady: (number: number) => Promise<ForgePullRequestView>;
   viewIssue: (number: number) => Promise<ForgeIssueView | null>;
   commentOnIssue: (number: number, body: string) => Promise<{ url: string }>;
-  /** A text file at `ref`, following one symlink inside the repository; null
-   *  only when `ref` exists and the path is absent or a directory. A missing
-   *  repository, branch or permission throws, so it is never read as "no file".
-   *  `revision` is the code host's blob id, so a reader can tell versions apart. */
-  readFile: (path: string, ref: string) => Promise<{ content: string; revision: string } | null>;
+  /** A text file on `branch`, following one symlink inside the repository;
+   *  null only when the branch exists and the path is absent or a directory.
+   *  A missing repository, branch or permission throws, as does a symlink that
+   *  leads nowhere, so none of them is read as "no file". `branch` must be a
+   *  branch name: the absence check looks it up as one. `revision` is the code
+   *  host's blob id, so a reader can tell versions apart. */
+  readFile: (path: string, branch: string) => Promise<{ content: string; revision: string } | null>;
 }
 
 /** The shape GitHub and Forgejo share for `GET /repos/:owner/:repo/contents/:path`. */
@@ -184,6 +186,10 @@ export async function readForgeFile(
   // or a link out of the repository is refused rather than reported as absent.
   for (let hop = 0; ; hop++) {
     const row = await host.contents(current);
+    // Past a symlink, nothing but a file will do: a link to a directory or to
+    // nothing is a link that exists, not an absent file.
+    if (hop > 0 && (row === null || Array.isArray(row)))
+      throw new ForgeOperationError('file: the symlink does not lead to a repository file', 422);
     if (row === null) {
       await host.requireRef();
       return null;

@@ -75,6 +75,9 @@ export function ProjectInstructionsSettings({ projectId }: { projectId: string }
   const save = async () => {
     if (!client || !snapshot || saving) return;
     setSaving(true);
+    // A new attempt replaces the last failure, so its Retry is not offered
+    // while this save is out (see `onRetry` below).
+    setError(undefined);
     const request = ++instructionsRequest.current;
     try {
       const next = await client.replaceProjectInstructions(projectId, {
@@ -87,6 +90,7 @@ export function ProjectInstructionsSettings({ projectId }: { projectId: string }
       setDraft(next.instructions);
       setError(undefined);
     } catch (failure) {
+      if (request !== instructionsRequest.current) return;
       // The draft stays: a conflict or a lost connection must not cost the edit.
       setError(failure instanceof Error ? failure.message : 'Could not save Instructions');
     } finally {
@@ -116,9 +120,15 @@ export function ProjectInstructionsSettings({ projectId }: { projectId: string }
       title="Instructions"
       detail
       state={{ error, saving }}
-      onRetry={() => {
-        void loadInstructions(snapshot !== undefined);
-      }}
+      // No reload while a save is out: whichever answered last would decide the
+      // revision, and a reload that lost the race would cause a false conflict.
+      onRetry={
+        saving
+          ? undefined
+          : () => {
+              void loadInstructions(snapshot !== undefined);
+            }
+      }
     >
       <Text variant="bodySmall" tone="muted">
         Instructions are rules every agent in this project follows. Repositories can add their own

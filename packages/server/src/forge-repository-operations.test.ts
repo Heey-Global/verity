@@ -412,6 +412,11 @@ describe.each([
     expect(await ops.readFile('AGENTS.md', 'main')).toMatchObject({ content: 'Shared rules.' });
     await expect(ops.readFile('AGENTS.md', 'release/2')).rejects.toThrow(/symlink/u);
     await expect(ops.readFile('AGENTS.md', 'develop')).rejects.toThrow(/symlink/u);
+    forge.files.set('main:LINKED.md', { symlink: 'docs' });
+    forge.files.set('main:docs', { dir: true });
+    forge.files.set('main:DANGLING.md', { symlink: 'nowhere.md' });
+    await expect(ops.readFile('LINKED.md', 'main')).rejects.toThrow(/symlink/u);
+    await expect(ops.readFile('DANGLING.md', 'main')).rejects.toThrow(/symlink/u);
   });
 });
 
