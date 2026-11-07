@@ -13,7 +13,7 @@ import { ProviderUsageGroup, ProviderUsageStrip } from '../components/ProviderUs
 
 const HOUR = 3600;
 // The rings are hidden from assistive technology — the group speaks for them —
-// so queries for their labels and notches must include hidden elements.
+// so queries for their labels and pace lines must include hidden elements.
 const hidden = { includeHiddenElements: true } as const;
 // The visible row, without the invisible copy that measures its full width.
 const row = () => within(screen.getByTestId('provider-usage'));
@@ -80,7 +80,7 @@ describe('ProviderUsageGroup', () => {
     expect(screen.getByText('93%')).toBeOnTheScreen();
   });
 
-  it('marks a spent window as "Limit" and draws no pace notch on it', () => {
+  it('marks a spent window as "Limit" and draws no pace line on it', () => {
     render(
       <ProviderUsageGroup
         rows={[claude(limit('five_hour', 100, { status: 'rejected' }))]}
@@ -88,8 +88,8 @@ describe('ProviderUsageGroup', () => {
       />,
     );
     expect(screen.getByText('Limit')).toBeOnTheScreen();
-    // Only the weekly ring, which still has a pace to keep, carries a notch.
-    expect(row().getAllByTestId('usage-ring-notch', hidden)).toHaveLength(1);
+    // Only the weekly ring, which still has a pace to keep, carries a pace line.
+    expect(row().getAllByTestId('usage-ring-pace', hidden)).toHaveLength(1);
   });
 
   it('says a spent window has reached its limit, even short of 100 %', () => {
@@ -105,22 +105,22 @@ describe('ProviderUsageGroup', () => {
     expect(label).toMatch(/5-hour window, 80 percent used, Limit reached, resets /);
   });
 
-  it('draws a pace notch on every window that has one', () => {
+  it('draws a pace line on every window that has one', () => {
     render(
       <ProviderUsageGroup rows={[claude(limit('five_hour', 72)), codex]} presentation="popover" />,
     );
-    expect(row().getAllByTestId('usage-ring-notch', hidden)).toHaveLength(3);
+    expect(row().getAllByTestId('usage-ring-pace', hidden)).toHaveLength(3);
   });
 
-  it('moves the pace notch with the clock while the data stays the same', () => {
+  it('moves the pace line with the clock while the data stays the same', () => {
     // The header only re-renders when the rows change; an idle window must
-    // still advance its even-pace position, or the notch freezes until a poll
+    // still advance its even-pace position, or the line freezes until a poll
     // brings different numbers.
     jest.useFakeTimers();
     try {
       render(<ProviderUsageGroup rows={[codex]} presentation="popover" />);
       const position = () => {
-        const props = row().getByTestId('usage-ring-notch', hidden).props;
+        const props = row().getByTestId('usage-ring-pace', hidden).props;
         return `${props.x1},${props.y1}`;
       };
       const before = position();

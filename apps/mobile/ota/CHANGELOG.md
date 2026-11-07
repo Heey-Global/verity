@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.86.1](https://github.com/Heey-Global/verity/compare/mobile-v1.86.0...mobile-v1.86.1) (2026-11-07)
+
+
+### Features
+
+* **mobile:** list Wiki, Sources, Tasks and Security under project Content ([#2366](https://github.com/Heey-Global/verity/issues/2366)) ([19db886](https://github.com/Heey-Global/verity/commit/19db886425b96a7e787d13eb67ed0c8baba09018))
+
+
+### Bug Fixes
+
+* **deps:** update dependency fast-xml-parser to v5.12.0 ([#2362](https://github.com/Heey-Global/verity/issues/2362)) ([dc3bc2f](https://github.com/Heey-Global/verity/commit/dc3bc2fb2ea107fe12e104c1e98c3cef190f9399))
+* **mobile:** avoid premature session inquiry errors and excessive polling ([#2368](https://github.com/Heey-Global/verity/issues/2368)) ([648895a](https://github.com/Heey-Global/verity/commit/648895a955d4bfb07227b90282642a3bdbe86de7))
+* **mobile:** hide deleted project sessions immediately ([#2367](https://github.com/Heey-Global/verity/issues/2367)) ([70a9673](https://github.com/Heey-Global/verity/commit/70a96730fd5bb1ee7e0e30f3507131a559337f73))
+* **mobile:** make the usage ring read from 12 o'clock with a clear pace line ([#2369](https://github.com/Heey-Global/verity/issues/2369)) ([22f5688](https://github.com/Heey-Global/verity/commit/22f5688b8ea4a3418de2f9b139307231a4612c4e))
+* **sessions:** refresh pull request status during active turns ([#2371](https://github.com/Heey-Global/verity/issues/2371)) ([2e08681](https://github.com/Heey-Global/verity/commit/2e086813a957d379fc52485deca20240a3baca5f))
+
 ## [1.85.3](https://github.com/Heey-Global/verity/compare/mobile-v1.85.2...mobile-v1.85.3) (2026-11-06)
 
 

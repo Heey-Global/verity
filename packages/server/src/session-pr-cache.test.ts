@@ -29,6 +29,26 @@ function deferred<T>() {
 }
 
 describe('shared session PR cache', () => {
+  it('refreshes terminal status on activity while retaining failure backoff and identity', async () => {
+    let now = 0;
+    const load = vi
+      .fn<() => Promise<PullRequestStatus | null>>()
+      .mockResolvedValueOnce({ ...pr, phase: 'merged', pipeline: 'success' })
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValue({ ...pr, number: 2 });
+    const cache = createSessionPrCache({ load, now: () => now });
+    await cache.get(session);
+    expect(cache.invalidate(session.worktree, true)).toBe(true);
+    expect(await cache.get(session)).toMatchObject({ number: 1, pipeline: 'unknown' });
+    now = 1_000;
+    expect(cache.invalidate(session.worktree, true)).toBe(false);
+    await cache.get(session);
+    expect(load).toHaveBeenCalledTimes(2);
+    now = 30_000;
+    expect(cache.invalidate(session.worktree, true)).toBe(true);
+    expect(await cache.get(session)).toMatchObject({ number: 2, phase: 'open' });
+  });
+
   it('shares an in-flight read and its result across foreground and background consumers', async () => {
     const read = deferred<PullRequestStatus>();
     const load = vi.fn(() => read.promise);

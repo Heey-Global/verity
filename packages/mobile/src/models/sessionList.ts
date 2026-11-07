@@ -121,6 +121,10 @@ export class SessionListModel {
     string,
     { status: SessionSummary['status']; maxRequest: number }
   >();
+  private pendingPrStatuses = new Map<
+    string,
+    { pr: SessionPr; number?: number; maxRequest: number }
+  >();
   // Sessions being deleted stay hidden even if an overlapping poll returns the
   // server's pre-delete snapshot. A successful tombstone remains until a later
   // snapshot confirms the session is absent.
@@ -205,6 +209,12 @@ export class SessionListModel {
               if (automation.automation === undefined) delete session.automation;
               else session.automation = automation.automation;
             }
+          }
+          const pendingPr = this.pendingPrStatuses.get(session.sessionId);
+          if (pendingPr !== undefined) {
+            this.pendingPrStatuses.delete(session.sessionId);
+            if (req <= pendingPr.maxRequest)
+              session = this.withPrStatus(session, pendingPr.pr, pendingPr.number);
           }
           const pending = this.pendingSessionStatuses.get(session.sessionId);
           if (pending === undefined) return session;
@@ -384,11 +394,28 @@ export class SessionListModel {
   }
 
   /** Apply a PR action result immediately; the regular poll then reconciles it. */
-  applyPullRequestStatus(sessionId: string, pr: SessionPr): void {
+  applyPullRequestStatus(sessionId: string, pr: SessionPr, number?: number): void {
+    this.pendingPrStatuses.set(sessionId, {
+      pr,
+      ...(number === undefined ? {} : { number }),
+      maxRequest: this.reqSeq,
+    });
     this._sessions = this._sessions.map((session) =>
-      session.sessionId === sessionId ? { ...session, pr } : session,
+      session.sessionId === sessionId ? this.withPrStatus(session, pr, number) : session,
     );
     this.emit();
+  }
+
+  private withPrStatus(session: SessionSummary, pr: SessionPr, number?: number): SessionSummary {
+    if (number !== undefined && session.pullRequest && session.pullRequest.number !== number)
+      return session;
+    return {
+      ...session,
+      pr,
+      ...(session.pullRequest
+        ? { pullRequest: { ...session.pullRequest, ...pr, mergeState: pr.mergeState } }
+        : {}),
+    };
   }
 
   /** Reflect a confirmed, paused, resumed, or deleted automation before polling. */

@@ -152,13 +152,24 @@ export function useInboxFeed({
 }) {
   const perform = useMemo(() => createPushReplyPerformer(client), [client]);
   const [settled, setSettled] = useState<ReadonlySet<string>>(() => new Set());
-  const [pending, setPending] = useState<string | null>(null);
+  // Item key → the answer being sent for it. Per item, so a slow answer (a merge
+  // waiting on the code host) never locks the answers of every other item.
+  const [pending, setPending] = useState<ReadonlyMap<string, string>>(() => new Map());
   // One reply id per item until it is delivered: a second tap after a `retry`
   // (whose first request may have landed) reuses it, so the server's idempotency
   // key turns it into the same reply instead of a second prompt.
   const replyIds = useRef(new Map<string, string>());
   // State re-renders too late to stop a fast double tap; the ref does not.
-  const running = useRef(false);
+  const running = useRef(new Set<string>());
+  const release = useCallback((key: string) => {
+    running.current.delete(key);
+    setPending((current) => {
+      if (!current.has(key)) return current;
+      const next = new Map(current);
+      next.delete(key);
+      return next;
+    });
+  }, []);
 
   // A dismissal or restore shows before it is saved: `true` hides, `false` shows,
   // until the synced lists agree or the item is gone.
@@ -241,9 +252,9 @@ export function useInboxFeed({
       if (action.kind === 'repair_project') return onRepairProject(action.projectId);
       const reply = replyFor(action);
       if (reply === null) return;
-      if (running.current) return;
-      running.current = true;
-      setPending(item.key);
+      if (running.current.has(item.key)) return;
+      running.current.add(item.key);
+      setPending((current) => new Map(current).set(item.key, answerId(action)));
       const replyKey = `${item.key}:${action.kind}:${action.label}`;
       const replyId = replyIds.current.get(replyKey) ?? randomUUID();
       replyIds.current.set(replyKey, replyId);
@@ -258,11 +269,10 @@ export function useInboxFeed({
         setSettled((current) => new Set(current).add(item.key));
         onSaved?.();
       } finally {
-        running.current = false;
-        setPending(null);
+        release(item.key);
       }
     },
-    [onOpenSession, onOpenProject, onRepairProject, onSaved, perform],
+    [onOpenSession, onOpenProject, onRepairProject, onSaved, perform, release],
   );
   const dismiss = useCallback(
     (item: InboxItem) => {
@@ -270,14 +280,14 @@ export function useInboxFeed({
         const skip = item.actions.find((action) => action.kind === 'skip_meeting');
         if (skip)
           run(item, skip).catch(() => {
-            setPending(null);
+            release(item.key);
             Alert.alert('Not sent', 'Something went wrong. Try again in a moment.');
           });
         return;
       }
       setDismissed(item, true);
     },
-    [run, setDismissed],
+    [run, setDismissed, release],
   );
 
   return {
@@ -308,8 +318,8 @@ function InboxFeedList({
           key={item.key}
           item={item}
           selected={item.sessionId !== undefined && item.sessionId === selectedSessionId}
-          pending={pending === item.key}
-          disabled={pending !== null}
+          pending={pending.get(item.key) ?? false}
+          disabled={pending.has(item.key)}
           onDismiss={item.dismiss !== undefined ? () => dismiss(item) : undefined}
           onAction={(action) => {
             // `perform` reports failures as outcomes; anything it throws is
@@ -420,7 +430,8 @@ export function InboxCard({
 }: {
   item: InboxItem;
   selected: boolean;
-  pending: boolean;
+  /** The {@link answerId} of the answer being sent, which shows the spinner. */
+  pending: string | false;
   disabled: boolean;
   onAction: (action: InboxAction) => void;
   /** Shows the X that sets the item aside. */
@@ -488,7 +499,7 @@ export function InboxCard({
               label={action.label}
               size="compact"
               variant={index === 0 ? 'primary' : 'secondary'}
-              loading={pending && index === 0}
+              loading={pending === answerId(action)}
               disabled={disabled}
               onPress={() => onAction(action)}
             />
@@ -497,6 +508,11 @@ export function InboxCard({
       </Card>
     </View>
   );
+}
+
+/** Names one answer of an item, so the spinner shows on the button tapped. */
+export function answerId(action: InboxAction): string {
+  return `${action.kind}:${action.label}`;
 }
 
 /** The network reply an answer becomes; navigation actions have none. */

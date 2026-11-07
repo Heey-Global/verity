@@ -41,6 +41,7 @@ import { Alert } from 'react-native';
 import ProjectEntry from '../app/project/[id]/index';
 import ProjectSettingsIndexScreen from '../app/project/[id]/settings/index';
 import { ProjectPage, projectInboxItems, projectLine } from '../components/project/ProjectPage';
+import { INLINE_ANSWERS, SHORT_ANSWER } from '../components/project/AnswerSheet';
 import { ProjectWork, isActive, nowSections, workFilter } from '../components/project/ProjectWork';
 import { publishSessionPreviews } from '../lib/sessionPreviews';
 import { makeClient, makeDetail } from './support/projectHarness';
@@ -247,6 +248,81 @@ describe('project page', () => {
     );
     // Answered, it leaves Now at once rather than waiting for the next poll.
     expect(screen.queryByTestId('work-needs-you')).toBeNull();
+  });
+
+  it('locks only the answered row while its answer is on the way', async () => {
+    // A merge can wait on the code host for a while; one lock for the whole
+    // list left every other row unanswerable until it came back.
+    const second = session('api', {
+      status: 'awaiting_input',
+      openChoices: {
+        question: 'Which framework?',
+        options: [{ label: 'Hono' }, { label: 'Express' }],
+      },
+    });
+    const both = {
+      ...question,
+      openChoices: { ...question.openChoices!, options: [{ label: 'Zod' }, { label: 'Yup' }] },
+    };
+    const { client } = await renderPage([both, second]);
+    Object.assign(client, { sendTurn: jest.fn(() => new Promise(() => undefined)) });
+    await act(async () => fireEvent.press(screen.getByRole('button', { name: 'Yup' })));
+    const busy = (name: string) => screen.getByRole('button', { name }).props.accessibilityState;
+    // The spinner sits on the answer tapped, not on the row's first one.
+    expect(busy('Yup')).toMatchObject({ busy: true, disabled: true });
+    expect(busy('Zod')).toMatchObject({ busy: false, disabled: true });
+    expect(busy('Hono')).toMatchObject({ busy: false, disabled: false });
+    await act(async () => fireEvent.press(screen.getByRole('button', { name: 'Hono' })));
+    expect(client.sendTurn).toHaveBeenCalledTimes(2);
+  });
+
+  it('shows short answers in place and longer ones in a sheet', async () => {
+    // Limits from the rule itself: a label at the limit stays a button, one
+    // character more moves every answer of its row into the sheet.
+    const fits = 'x'.repeat(SHORT_ANSWER);
+    const long = `${'y'.repeat(SHORT_ANSWER)}!`;
+    const ask = (id: string, labels: string[]) =>
+      session(id, {
+        status: 'awaiting_input',
+        openChoices: { question: `${id}?`, options: labels.map((label) => ({ label })) },
+      });
+    const many = Array.from(
+      { length: INLINE_ANSWERS + 1 },
+      (_, index) => `Option ${String(index)}`,
+    );
+    const { client } = await renderPage([
+      ask('short', [fits, 'Wait']),
+      ask('wordy', [long, 'Wait']),
+      ask('many', many),
+    ]);
+    Object.assign(client, { sendTurn: jest.fn().mockResolvedValue({ queued: false }) });
+    expect(screen.getByRole('button', { name: fits })).toBeTruthy();
+    // A row is never half in place and half in a sheet: its short answer goes too.
+    expect(screen.queryByRole('button', { name: long })).toBeNull();
+    expect(screen.getAllByRole('button', { name: 'Wait' })).toHaveLength(1);
+    expect(screen.getByRole('button', { name: `${String(many.length)} answers` })).toBeTruthy();
+
+    fireEvent.press(screen.getByRole('button', { name: '2 answers' }));
+    // The sheet shows the answer whole; a row wrapped or cut it into a pill.
+    const option = screen.getByRole('button', { name: long });
+    await act(async () => fireEvent.press(option));
+    expect(client.sendTurn).toHaveBeenCalledWith(
+      'wordy',
+      expect.objectContaining({ prompt: expect.stringContaining(long) }),
+    );
+    expect(screen.queryByRole('button', { name: long })).toBeNull();
+  });
+
+  it('keeps the title wide beside the chevron in Needs you', async () => {
+    await renderPage([question]);
+    // Beside the chevron a trailing tag wrapped or cut the title; it leads the
+    // subtitle instead, so nothing but the chevron shares the title's line.
+    const row = screen.getByRole('button', { name: /^form,/ });
+    let line = within(row).getByText('Which validation library?').parent;
+    while (line && within(line).queryByText('Question') === null) line = line.parent;
+    // The smallest part holding tag and subtitle leaves the title out.
+    expect(line).toBeTruthy();
+    expect(within(line!).queryByText('form')).toBeNull();
   });
 
   it('marks a plan waiting for approval in Now and in All', async () => {
@@ -634,6 +710,34 @@ describe('project page', () => {
     fireEvent.press(screen.getByText('verity'));
     expect(screen.queryByTestId('project-knowledge')).toBeNull();
     expect(screen.getByTestId('project-work')).toBeTruthy();
+  });
+
+  it('closes the answer sheet once its question was answered elsewhere', async () => {
+    // A sheet left open on a stale question would send its answer to a session
+    // that no longer waits, as an unwanted prompt.
+    const long = `${'y'.repeat(SHORT_ANSWER)}!`;
+    const wordy = session('wordy', {
+      status: 'awaiting_input',
+      openChoices: { question: 'How?', options: [{ label: long }, { label: 'Wait' }] },
+    });
+    const client = clientWith([wordy]);
+    mockCreateVerityClient.mockReturnValue(client);
+    const page = (reloadOn: unknown) => (
+      <ProjectPage client={client} projectId="p/1" onOpenSession={jest.fn()} reloadOn={reloadOn} />
+    );
+    const view = render(page(1));
+    await screen.findByTestId('project-line');
+    await act(async () => undefined);
+    fireEvent.press(screen.getByRole('button', { name: '2 answers' }));
+    expect(screen.getByRole('button', { name: long })).toBeTruthy();
+    const detail = await (client.getProject as jest.Mock).mock.results[0]!.value;
+    (client.getProject as jest.Mock).mockResolvedValue({
+      ...detail,
+      sessions: [session('wordy', { status: 'running' })],
+    });
+    view.rerender(page(2));
+    await act(async () => undefined);
+    expect(screen.queryByRole('button', { name: long })).toBeNull();
   });
 
   it('reloads when the wide layout polled newer sessions beside it', async () => {
