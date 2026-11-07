@@ -4,7 +4,7 @@ set -euo pipefail
 [[ $EUID == 0 ]] || { echo 'Run as root on the Docker host.' >&2; exit 1; }
 source_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # renovate: datasource=docker depName=moby/buildkit
-buildkit_image=moby/buildkit:v0.34.1@sha256:99368f3e46177c6405b9740e4461d91cee004128daeecca78d4ceac50ec1da5c
+buildkit_image=moby/buildkit:v0.34.2@sha256:c5f8862f52499773af85bc07695b2379ef08e8002352b0df2c4864c91d78dabe
 builder_gid=${VERITY_BUILDKIT_GID:-1102}
 [[ $builder_gid =~ ^[0-9]+$ && $builder_gid -gt 0 && $builder_gid -lt 65535 ]] || { echo 'Invalid VERITY_BUILDKIT_GID' >&2; exit 1; }
 # Serialize release installation with the separately scheduled snapshotter transaction.
