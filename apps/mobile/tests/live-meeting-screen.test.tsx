@@ -1,6 +1,8 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
 import { Alert, FlatList } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
+import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
+import { KEYBOARD_BOTTOM_OFFSET } from '../lib/keyboardOffsets';
 
 import MeetingScreen from '../app/meeting/[sessionId]';
 import { discardFinishedMeeting } from '../lib/liveMeetingSync';
@@ -29,6 +31,13 @@ import {
   type MeetingRecord,
 } from '../lib/liveMeetingStore';
 import { liveMeetingSTT } from '../lib/liveMeetingSTT';
+
+// Keep a distinct component identity so a plain ScrollView cannot pass the keyboard guard.
+jest.mock('react-native-keyboard-controller', () => ({
+  ...require('react-native-keyboard-controller/jest'),
+  KeyboardAwareScrollView: (props: object) =>
+    require('react').createElement(require('react-native').ScrollView, props),
+}));
 
 jest.mock('expo-router', () => ({
   router: { back: jest.fn(), push: jest.fn(), replace: jest.fn(), canGoBack: jest.fn(() => true) },
@@ -2486,6 +2495,25 @@ it('shows calendar entries for in-person meetings and uses the selected title', 
   fireEvent.press(screen.getByLabelText('Start meeting'));
   await waitFor(() =>
     expect(startMeeting).toHaveBeenCalledWith('session-1', 'fluid-nemotron', 4, 'Office review'),
+  );
+});
+
+it('keeps manual meeting link entry in a keyboard-aware form', async () => {
+  jest.mocked(createVerityClient).mockReturnValue({
+    getUpcomingMeetings: jest.fn().mockResolvedValue([]),
+  } as never);
+  render(<MeetingScreen />);
+  fireEvent.press(await screen.findByText('Online meeting'));
+  await waitFor(() => expect(screen.getByLabelText('Online meeting link')).toBeOnTheScreen());
+  const form = screen.UNSAFE_getByType(KeyboardAwareScrollView);
+  expect(form.findByProps({ accessibilityLabel: 'Online meeting link' })).toBeTruthy();
+  expect(form.props.bottomOffset).toBe(KEYBOARD_BOTTOM_OFFSET);
+  fireEvent.changeText(
+    screen.getByLabelText('Online meeting link'),
+    'https://meet.google.com/abc-defg-hij',
+  );
+  expect(screen.getByLabelText('Online meeting link').props.value).toBe(
+    'https://meet.google.com/abc-defg-hij',
   );
 });
 

@@ -154,8 +154,8 @@ describe('CalendarMeetingPicker', () => {
     expect(screen.getByText('Started 6 min ago · Google Meet')).toBeOnTheScreen();
     expect(screen.queryByLabelText('Online meeting link')).toBeNull();
     fireEvent.press(screen.getByText('Meeting b'));
-    // Starts in more than 15 minutes: listed, but not joinable yet.
-    expect(props.onSelect).not.toHaveBeenCalled();
+    // An explicit selection may join before the default preselection window.
+    expect(props.onSelect).toHaveBeenCalledWith('b');
     fireEvent.press(screen.getByText('Meeting a'));
     expect(props.onSelect).toHaveBeenCalledWith('a');
     fireEvent.press(screen.getByText('Enter link manually'));
@@ -174,6 +174,20 @@ describe('CalendarMeetingPicker', () => {
     fireEvent.press(screen.getByText('Meeting office'));
     expect(props.onSelect).toHaveBeenCalledWith('office');
     expect(screen.queryByText('Enter link manually')).toBeNull();
+  });
+
+  it('allows choosing a meeting half an hour before its start', () => {
+    const onSelect = jest.fn();
+    render(
+      <CalendarMeetingPicker
+        {...props}
+        upcoming={[meeting('early', NOW + 30 * 60_000)]}
+        onSelect={onSelect}
+        manual={false}
+      />,
+    );
+    fireEvent.press(screen.getByText('Meeting early'));
+    expect(onSelect).toHaveBeenCalledWith('early');
   });
 
   it('shows calendar request failures distinctly from empty calendars', () => {

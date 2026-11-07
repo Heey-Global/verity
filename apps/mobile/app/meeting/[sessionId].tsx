@@ -24,7 +24,8 @@ import {
   useWindowDimensions,
   View,
 } from 'react-native';
-import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
+import { KeyboardAvoidingView, KeyboardAwareScrollView } from 'react-native-keyboard-controller';
+import { KEYBOARD_BOTTOM_OFFSET } from '../../lib/keyboardOffsets';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import type { LiveMeetingInsight, SessionHistoryPage } from '@verity/mobile';
@@ -1955,10 +1956,11 @@ export default function MeetingScreen() {
     return (
       <View style={[styles.root, { paddingTop: insets.top + 12 }]}>
         <Stack.Screen options={{ headerShown: false }} />
-        <ScrollView
+        <KeyboardAwareScrollView
           style={styles.fill}
           contentContainerStyle={[styles.content, styles.narrow]}
           keyboardShouldPersistTaps="handled"
+          bottomOffset={KEYBOARD_BOTTOM_OFFSET}
         >
           <View style={styles.titleRow}>
             <Text style={styles.title}>New meeting</Text>
@@ -2176,7 +2178,7 @@ export default function MeetingScreen() {
             onPress={start}
             fullWidth
           />
-        </ScrollView>
+        </KeyboardAwareScrollView>
         {confirmSheet}
       </View>
     );

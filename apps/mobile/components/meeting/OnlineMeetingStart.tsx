@@ -10,11 +10,11 @@ import { StatusTag } from '../ui/Status';
 
 const PROVIDER = { meet: 'Google Meet', teams: 'Teams', zoom: 'Zoom' } as const;
 const REFRESH_MS = 30_000;
-/** Matches the server's limit on joining early (`calendar-meeting-routes.ts`). */
-const JOIN_EARLY_MS = 15 * 60_000;
+/** Prefer a meeting near its start without preventing an explicit earlier join. */
+const PRESELECT_EARLY_MS = 15 * 60_000;
 
 export const canJoinCalendarMeeting = (meeting: UpcomingMeeting, now: number) =>
-  meeting.startsAt - now <= JOIN_EARLY_MS && meeting.endsAt > now;
+  meeting.endsAt > now;
 
 const clock = (ms: number) =>
   new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -79,7 +79,9 @@ export function useCalendarMeetingChoice(
     if (!preselected.current || sourceChanged) {
       preselected.current = true;
       const eligible = (item: UpcomingMeeting) =>
-        canJoinCalendarMeeting(item, now) && (inPerson || item.provider !== null);
+        canJoinCalendarMeeting(item, now) &&
+        item.startsAt - now <= PRESELECT_EARLY_MS &&
+        (inPerson || item.provider !== null);
       const current = upcoming.find((item) => item.eventKey === selectedEventKey);
       // Verity may name a meeting hours ahead to fill in its title, but never one without
       // a call link for an online start.
