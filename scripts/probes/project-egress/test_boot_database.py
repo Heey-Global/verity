@@ -63,6 +63,22 @@ class NativeDatabaseTests(unittest.TestCase):
         self.assertLess(setup.index("(ROOT / 'controller-enabled').touch()"),
                         setup.index("run('systemctl', 'restart', 'verity-egress-host.service')"))
 
+    def test_fixture_controller_can_initialize_native_build_state(self):
+        installer = Path(__file__).with_name('boot-native-install.sh').read_text()
+        dropin = installer.split("packet-fixture.conf <<'UNIT'", 1)[1].split('\nUNIT', 1)[0]
+        base = (ROOT / 'deploy/egress/verity-egress-host.service').read_text()
+        host = (ROOT / 'packages/server/src/project-egress-build-host.ts').read_text()
+        state = re.search(r"const ROOT = '([^']+)'", host).group(1)
+        # The state root must be created and writable in the service namespace;
+        # creating it elsewhere still fails with ProtectSystem=strict.
+        directories = [path for unit in (base, dropin)
+                       for line in unit.splitlines() if line.startswith('StateDirectory=')
+                       for path in line.split('=', 1)[1].split()]
+        self.assertIn(state.removeprefix('/var/lib/'), directories)
+        self.assertIn('[Service]', dropin)
+        self.assertIn('ProtectSystem=strict', base)
+        self.assertIn('StateDirectoryMode=0700', base)
+
     def test_readiness_requires_final_tcp_listener_not_initdb_socket(self):
         with patch.object(guest, 'run', side_effect=['/var/run/postgresql:5432 - accepting connections',
                                                   '127.0.0.1:5432 - accepting connections']) as run:
