@@ -21,6 +21,7 @@ import type { Conductor } from '@verity/session';
 import {
   answerAppHelp,
   appHelpRequestSchema,
+  COMPLETE_MOCKUPS_TOOL,
   END_PLANNING_TOOL,
   planningDesignNote,
   PRESENT_MOCKUPS_TOOL,
@@ -1143,7 +1144,7 @@ export function registerServerMcpRoutes({
           );
         }
         if (toolName === 'verity_project_inquiry') return;
-        if (toolName === PRESENT_MOCKUPS_TOOL) {
+        if (toolName === PRESENT_MOCKUPS_TOOL || toolName === COMPLETE_MOCKUPS_TOOL) {
           const session = await deps.eventStore.getSession(sessionId);
           if (session?.projectId !== projectId)
             throw new ControlPlaneSessionAuthorityError('session project changed');
@@ -1485,11 +1486,13 @@ export function registerServerMcpRoutes({
         }
 
         // Presenting mockups only stores images the session already has and asks the
-        // user to look at them; the review itself is the user's decision.
+        // user to look at them; the review itself is the user's decision. Completing
+        // it only follows what the user said in the chat and starts no work itself.
         if (
           toolName === START_PLANNING_TOOL ||
           toolName === PRESENT_PLAN_TOOL ||
-          toolName === PRESENT_MOCKUPS_TOOL
+          toolName === PRESENT_MOCKUPS_TOOL ||
+          toolName === COMPLETE_MOCKUPS_TOOL
         ) {
           const session = await deps.eventStore.getSession(sessionId);
           return session?.projectId === projectId;
@@ -1648,10 +1651,19 @@ export function registerServerMcpRoutes({
               height,
               verdict,
             })),
-            note:
-              review.state === 'approved'
-                ? 'Every screen is unchanged from an approved one. Continue implementing the accepted plan.'
-                : 'Verity shows the mockups in the chat and waits for the user to review each screen. End your turn now and do not implement the rest of the plan until Verity tells you they were approved.',
+            note: 'Verity shows the mockups in the chat; the user marks each screen and explains in the chat. End your turn now and do not implement the rest of the plan until the user tells you in the chat to implement.',
+          };
+        }
+        if (input.toolName === COMPLETE_MOCKUPS_TOOL) {
+          const result = await sessionMockups.complete(input.sessionId);
+          if (!result.ok)
+            return {
+              completed: false,
+              note: 'No mockup review is waiting. Continue as the user asked.',
+            };
+          return {
+            completed: true,
+            note: 'The mockup review has ended. Continue implementing as the user asked, keeping the approved screens and leaving out discarded ones.',
           };
         }
         if (input.toolName === PRESENT_PLAN_TOOL) {

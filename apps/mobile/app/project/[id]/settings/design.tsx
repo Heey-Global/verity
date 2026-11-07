@@ -60,7 +60,7 @@ function ProjectDesignView({ client, projectId }: { client: VerityClient; projec
     >
       <SettingsGroup
         title="Mockups"
-        description="Mockups are shown after you approve a plan and before the agent builds it. You approve each screen or comment on it. The agent builds them from the project's own components where it has them."
+        description="Mockups are shown after you approve a plan and before the agent builds it. You approve or discard each screen and tell the agent in the chat what to change and when to build. The agent builds them from the project's own components where it has them."
       >
         <SettingsListPanel>
           {DESIGN_LEVELS.map((entry) => (

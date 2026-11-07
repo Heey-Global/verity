@@ -764,7 +764,6 @@ export const SessionChat = memo(function SessionChat({
     decidingMockup,
     mockupError,
     decideMockup,
-    sendMockupComments,
     decidingPermission,
     permissionError,
     sendTurn,
@@ -4862,16 +4861,7 @@ export const SessionChat = memo(function SessionChat({
         />
       ) : null}
       {mockupBar !== undefined ? (
-        <MockupReviewBar
-          view={mockupBar}
-          busy={decidingMockup}
-          onReview={() => openMockups()}
-          onSend={() => {
-            void sendMockupComments().then((sent) => {
-              if (!sent) openMockups();
-            });
-          }}
-        />
+        <MockupReviewBar view={mockupBar} onReview={() => openMockups()} />
       ) : null}
       <MockupReviewSheet
         key={mockupReview?.revision}
@@ -4882,7 +4872,6 @@ export const SessionChat = memo(function SessionChat({
         deciding={decidingMockup}
         error={mockupError}
         onDecide={decideMockup}
-        onSend={sendMockupComments}
         onClose={() => setMockupSheet(null)}
       />
       {client ? <QAApprovalCard client={client} sessionId={sessionId} /> : null}

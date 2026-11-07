@@ -1,6 +1,6 @@
 import type { MockupReviewScreen, ProjectRecord, SessionSummary, UpcomingMeeting } from '../api.js';
 import { sessionAttention } from './attention.js';
-import { mockupProgress, reviewOrder } from './mockups.js';
+import { mockupProgress } from './mockups.js';
 import { projectNeedsRepair } from './projectBadge.js';
 import { projectDisplayName } from './projectName.js';
 import { pullRequestMergeButton } from './pullRequest.js';
@@ -348,7 +348,8 @@ function sessionItems(
     });
   }
 
-  // Mockups: the build waits until every screen is approved or comments are sent.
+  // Mockups: open until the user tells the agent in the chat to build; marks alone
+  // never end the review.
   const review = session.mockupReview;
   if (review?.state === 'pending' && review.screens.length > 0) {
     const undecided = review.screens.some((screen) => screen.verdict === 'open');
@@ -359,12 +360,12 @@ function sessionItems(
       kind: 'mockup_review',
       tag: 'Mockups',
       tone: 'attention',
-      title: undecided ? 'Review mockups' : 'Send your mockup comments',
+      title: undecided ? 'Review mockups' : 'Mockups reviewed',
       context: `${where} · ${String(review.screens.length)} ${
         review.screens.length === 1 ? 'screen' : 'screens'
       }`,
-      message: `${mockupProgress(review)}. Implementation waits for your review.`,
-      mockups: reviewOrder(review.screens),
+      message: `${mockupProgress(review)}. Implementation starts when you say so in the chat.`,
+      mockups: review.screens,
       actions: [
         { kind: 'review_mockups', label: 'Review', sessionId: session.sessionId },
         open('Open session'),

@@ -270,7 +270,7 @@ describe('inboxItems', () => {
   });
 
   it('asks for a mockup review only while the round waits, keyed per round', () => {
-    const screen = (name: string, verdict: 'open' | 'approved' | 'comment') => ({
+    const screen = (name: string, verdict: 'open' | 'approved' | 'discarded') => ({
       name,
       attachment: 'a'.repeat(64),
       mediaType: 'image/png',
@@ -288,9 +288,21 @@ describe('inboxItems', () => {
     const [item] = inboxItems({ sessions: [waiting], projects: [project()], now: NOW });
     // A dismissed round must come back once the agent presents a revised one.
     expect(item).toMatchObject({ kind: 'mockup_review', key: 'mockups:w:2' });
-    expect(item?.mockups?.map((entry) => entry.name)).toEqual(['Spec', 'Home']);
+    expect(item?.mockups?.map((entry) => entry.name)).toEqual(['Home', 'Spec']);
+    // Every screen marked still waits for the user to say in the chat how to go on.
+    const marked = session('m', {
+      mockupReview: {
+        state: 'pending',
+        revision: 1,
+        screens: [screen('Home', 'approved'), screen('Spec', 'discarded')],
+      },
+    });
+    expect(inboxItems({ sessions: [marked], projects: [project()], now: NOW })[0]).toMatchObject({
+      kind: 'mockup_review',
+      title: 'Mockups reviewed',
+    });
     expect(item?.actions.map((action) => action.kind)).toEqual(['review_mockups', 'open_session']);
-    // Approved or revising rounds wait on nobody; an item would ask for nothing.
+    // An ended or revising review waits on nobody; an item would ask for nothing.
     for (const state of ['approved', 'revising'] as const)
       expect(
         inboxItems({

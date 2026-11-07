@@ -64,6 +64,8 @@ export {
   PLANNING_ACTIVE_SYSTEM_PROMPT,
   PLANNING_SYSTEM_PROMPT,
   PRESENT_PLAN_TOOL,
+  COMPLETE_MOCKUPS_FOCUSED_TOOL,
+  COMPLETE_MOCKUPS_TOOL,
   PRESENT_MOCKUPS_FOCUSED_TOOL,
   PRESENT_MOCKUPS_TOOL,
   START_PLANNING_TOOL,
@@ -72,14 +74,11 @@ export {
   type PlanningToolName,
 } from './planning.js';
 export {
-  MOCKUPS_APPROVED_DISPLAY,
-  MOCKUPS_APPROVED_PROMPT,
   MOCKUPS_FIRST_PROMPT,
-  mockupFeedbackDisplay,
-  mockupFeedbackPrompt,
+  mockupReviewPrompt,
   planningDesignNote,
   type DesignLevel,
-  type MockupFeedback,
+  type MockupMark,
 } from './mockups.js';
 export { DELEGATION_SYSTEM_PROMPT } from './delegation.js';
 export { AUTONOMY_RESUME_SYSTEM_PROMPT, AUTONOMY_SYSTEM_PROMPT } from './autonomy.js';

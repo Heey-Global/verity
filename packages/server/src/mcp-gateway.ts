@@ -370,6 +370,7 @@ const TOOL_SCHEMAS = {
   verity_present_plan: z.object({ plan: z.string().trim().min(1).max(50_000) }).strict(),
   verity_end_planning: z.object({ action: z.enum(['implement', 'discard']).optional() }).strict(),
   verity_present_mockups: presentMockupsRequestSchema,
+  verity_complete_mockups: z.object({}).strict(),
   verity_repairs: z.object({ action: z.literal('status') }).strict(),
   verity_assistant: assistantRequestSchema,
   verity_qa_analysis: qaAnalysisRequestSchema,
@@ -535,7 +536,9 @@ const TOOL_DESCRIPTIONS: Record<GatewayToolName, string> = {
   verity_end_planning:
     'Implement the latest submitted plan when the user explicitly tells you to go ahead in the chat. Their message is the approval, so there is no second confirmation. End your turn immediately; implementation starts in a new turn. Use action discard to ask once to leave planning without implementing, including before a plan exists.',
   verity_present_mockups:
-    'Present rendered mockups for review after an accepted plan listed them, before implementing the rest. Give each screen a short name and the path of its PNG or JPEG image relative to this session worktree, at most 12 screens. Verity shows them in the chat and waits until the user approves every screen; end your turn right after this call. When the user comments, Verity tells you what to change: revise those screens and present all of them again. Unchanged approved screens stay approved.',
+    'Present rendered mockups for review: always use this, not images in the chat, when the user asks for mockups, when an accepted plan lists them, and for every revision. Give each screen a short name and the path of its PNG or JPEG image relative to this session worktree, one screen per image, at most 12 screens. Each call replaces the round under review, so include every screen of the revised set. The user marks each screen approved or discarded and explains in the chat; marks never start work. End your turn right after this call. A screen presented unchanged keeps its mark.',
+  verity_complete_mockups:
+    'End the mockup review once the user tells you in the chat to implement. Call it before continuing with the implementation; it removes the review from the session and Home and keeps the presented rounds in the chat. Do not call it on your own judgment or because every screen is marked approved.',
   verity_repairs:
     'Read the current project repair mandate and incidents, including assigned sessions and verification state. This tool grants no execution rights and cannot mark a repair successful.',
   verity_assistant: ASSISTANT_TOOL_DESCRIPTION,

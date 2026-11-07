@@ -79,6 +79,8 @@ export {
   type SessionMockupReview,
   type SessionMockups,
   type MockupScreenRecord,
+  type MockupVerdict,
+  storedMockupScreens,
   type SessionSlideDeckRecord,
   type SessionWorkspaceFileRecord,
   type SessionGmailConnection,

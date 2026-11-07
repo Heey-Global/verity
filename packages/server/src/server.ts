@@ -698,10 +698,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     eventStore: deps.eventStore,
     dispatchTurn: dispatchServerTurn,
   });
-  const sessionMockups = createSessionMockups({
-    eventStore: deps.eventStore,
-    dispatchTurn: dispatchServerTurn,
-  });
+  const sessionMockups = createSessionMockups({ eventStore: deps.eventStore });
   // Teardown exclusion for `DELETE /projects/:id`. Between the moment that route
   // quiesces a project's sessions and the moment its purge has removed the clone
   // root, nothing may start work on the project or its sessions: a turn
