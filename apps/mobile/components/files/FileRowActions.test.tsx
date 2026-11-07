@@ -1,5 +1,6 @@
+import { useEffect, useState } from 'react';
 import { act, fireEvent, render, screen } from '@testing-library/react-native';
-import { AccessibilityInfo, Modal, Platform, Pressable, Text } from 'react-native';
+import { AccessibilityInfo, Modal, Platform, Pressable, Text, TextInput } from 'react-native';
 import Swipeable from 'react-native-gesture-handler/ReanimatedSwipeable';
 
 import { bindFileRowShortcuts, FileRowActions } from './FileRowActions';
@@ -200,4 +201,43 @@ it('runs web menu actions immediately', async () => {
   fireEvent.press(screen.getByRole('button', { name: 'Actions for notes' }));
   fireEvent.press(screen.getByRole('menuitem', { name: 'Move' }));
   expect(move).toHaveBeenCalledTimes(1);
+});
+
+it('keeps an editor mounted with its unsaved state while actions become disabled', async () => {
+  const mounted = jest.fn();
+  const unmounted = jest.fn();
+  function Editor() {
+    const [value, setValue] = useState('Original');
+    useEffect(() => {
+      mounted();
+      return () => unmounted();
+    }, []);
+    return <TextInput accessibilityLabel="Draft" value={value} onChangeText={setValue} />;
+  }
+  const remove = jest.fn();
+  const view = render(
+    <FileRowActions label="notes" onDelete={remove}>
+      <Editor />
+    </FileRowActions>,
+  );
+  await act(async () => {});
+  fireEvent.changeText(screen.getByLabelText('Draft'), 'Unsaved edit');
+  view.rerender(
+    <FileRowActions label="notes" onDelete={remove} disabled>
+      <Editor />
+    </FileRowActions>,
+  );
+  expect(screen.getByLabelText('Draft')).toHaveDisplayValue('Unsaved edit');
+  expect(view.UNSAFE_getByType(Swipeable).props.enabled).toBe(false);
+  expect(unmounted).not.toHaveBeenCalled();
+  view.rerender(
+    <FileRowActions label="notes" onDelete={remove}>
+      <Editor />
+    </FileRowActions>,
+  );
+  expect(screen.getByLabelText('Draft')).toHaveDisplayValue('Unsaved edit');
+  expect(mounted).toHaveBeenCalledTimes(1);
+  expect(unmounted).not.toHaveBeenCalled();
+  view.unmount();
+  expect(unmounted).toHaveBeenCalledTimes(1);
 });

@@ -116,11 +116,12 @@ export function FileRowActions({
 
   return (
     <View ref={target} testID={`file-actions-${label}`}>
-      {(onDelete || onMenu || onMove) && available && !screenReader ? (
-        <ReanimatedSwipeable
-          ref={swipeable}
-          overshootRight={false}
-          renderRightActions={() => (
+      <ReanimatedSwipeable
+        ref={swipeable}
+        enabled={available && !screenReader}
+        overshootRight={false}
+        renderRightActions={() =>
+          available && !screenReader ? (
             <View style={styles.deleteAction}>
               {onMove ? (
                 <Button label={moveLabel} variant="secondary" size="compact" onPress={move} />
@@ -132,13 +133,11 @@ export function FileRowActions({
                 <Button label={deleteLabel} variant="destructive" size="compact" onPress={remove} />
               ) : null}
             </View>
-          )}
-        >
-          {children}
-        </ReanimatedSwipeable>
-      ) : (
-        children
-      )}
+          ) : null
+        }
+      >
+        {children}
+      </ReanimatedSwipeable>
       {screenReader && available ? (
         <Button label={`Actions for ${label}`} variant="text" size="compact" onPress={openMenu} />
       ) : null}
