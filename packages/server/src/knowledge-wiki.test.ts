@@ -155,6 +155,28 @@ describe('projectWikiCatalog', () => {
     }
   });
 
+  it('reads a project without a Wiki yet as an empty one', async () => {
+    rmSync(join(root, 'insights'), { recursive: true });
+    expect(await projectWikiCatalog(root)).toEqual({
+      pages: [],
+      index: null,
+      decisions: [],
+      review: [],
+      truncated: false,
+    });
+  });
+
+  // The app opens any knowledge file a link names; only a link to nothing is broken.
+  it('counts links to images, conflicts and skipped pages as working when the file is there', async () => {
+    write('insights/diagram.png', 'png');
+    write('insights/huge.md', `# Huge\n\n${'x'.repeat(600 * 1024)}`);
+    write('insights/page.md', '# Page\n\n[d](diagram.png) [h](huge.md) [m](missing.png)\n');
+    const catalog = await projectWikiCatalog(root);
+    expect(catalog.review).toEqual([
+      { kind: 'broken_links', path: 'insights/page.md', targets: ['insights/missing.png'] },
+    ]);
+  });
+
   it('says when an oversized page was left out', async () => {
     write('insights/small.md', '# Small');
     write('insights/huge.md', `# Huge\n\n${'x'.repeat(600 * 1024)}`);

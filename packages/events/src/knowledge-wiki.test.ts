@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { markdownLinks, resolveKnowledgeLink } from './knowledge-wiki.js';
+import { markdownLinks, resolveKnowledgeLink, wikiCatalogSchema } from './knowledge-wiki.js';
 
 describe('resolveKnowledgeLink', () => {
   it('opens Wiki pages, decisions and sources relative to the page', () => {
@@ -73,6 +73,34 @@ describe('markdownLinks', () => {
       'https://example.com',
       'decisions/a.md',
       'cell.md',
+    ]);
+  });
+});
+
+describe('wikiCatalogSchema', () => {
+  // A server newer than the app must not cost the app its whole Wiki.
+  it('reads what it knows from a newer server and leaves the rest', () => {
+    const catalog = wikiCatalogSchema.parse({
+      pages: [],
+      index: null,
+      decisions: [
+        {
+          id: 'a',
+          path: 'insights/decisions/a.md',
+          title: 'A',
+          createdAt: '',
+          status: 'retracted',
+        },
+      ],
+      review: [
+        { kind: 'contradiction', path: 'insights/a.md' },
+        { kind: 'edit_conflict', path: 'insights/a.md', conflict: 'insights/Conflicts/c' },
+      ],
+      truncated: false,
+    });
+    expect(catalog.decisions[0]?.status).toBe('unresolved');
+    expect(catalog.review).toEqual([
+      { kind: 'edit_conflict', path: 'insights/a.md', conflict: 'insights/Conflicts/c' },
     ]);
   });
 });

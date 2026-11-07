@@ -351,6 +351,11 @@ export function WikiTopicPages({
       <Group>
         {topic.pages.map((path) => {
           const page = catalog.pages.find((candidate) => candidate.path === path);
+          const decision = catalog.decisions.find((candidate) => candidate.path === path);
+          if (decision)
+            return (
+              <DecisionRow key={path} decision={decision} catalog={catalog} onOpen={open.file} />
+            );
           return page ? (
             <PageRow key={path} page={page} onOpen={open.file} />
           ) : (

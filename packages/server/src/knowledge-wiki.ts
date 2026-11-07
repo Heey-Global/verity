@@ -154,9 +154,16 @@ async function readPages(insights: string): Promise<{ pages: ReadPage[]; truncat
       truncated = true;
       return;
     }
-    const handle = path
-      ? await openDocumentDirectory(insights, path)
-      : await open(insights, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+    let handle;
+    try {
+      handle = path
+        ? await openDocumentDirectory(insights, path)
+        : await open(insights, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+    } catch (error) {
+      // A project that has written no Wiki yet has an empty one, not a broken one.
+      if (!path && (error as NodeJS.ErrnoException).code === 'ENOENT') return;
+      throw error;
+    }
     try {
       const entries = (await readdir(`/proc/self/fd/${handle.fd}`, { withFileTypes: true })).sort(
         (a, b) => a.name.localeCompare(b.name),
@@ -200,18 +207,23 @@ async function readPages(insights: string): Promise<{ pages: ReadPage[]; truncat
 }
 
 /** Pages whose edits collided with a newer version, from the Wiki's `Conflicts`. */
-async function readConflicts(insights: string): Promise<WikiReviewItem[]> {
+async function readConflicts(
+  insights: string,
+): Promise<{ items: WikiReviewItem[]; truncated: boolean }> {
   let handle;
   try {
     handle = await openDocumentDirectory(insights, 'Conflicts');
   } catch {
-    return [];
+    return { items: [], truncated: false };
   }
   const items: WikiReviewItem[] = [];
+  let truncated: boolean;
   try {
-    const entries = await readdir(`/proc/self/fd/${handle.fd}`, { withFileTypes: true });
+    const entries = (await readdir(`/proc/self/fd/${handle.fd}`, { withFileTypes: true }))
+      .filter((entry) => entry.isDirectory() && !entry.name.startsWith('.'))
+      .sort((a, b) => a.name.localeCompare(b.name));
+    truncated = entries.length > MAX_CONFLICTS;
     for (const entry of entries.slice(0, MAX_CONFLICTS)) {
-      if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
       try {
         const raw = await readDocument(
           insights,
@@ -236,11 +248,11 @@ async function readConflicts(insights: string): Promise<WikiReviewItem[]> {
   } finally {
     await handle.close();
   }
-  return items;
+  return { items, truncated };
 }
 
-/** Whether a Sources file exists, without following links out of the root. */
-async function sourceExists(knowledgeRoot: string, path: string): Promise<boolean> {
+/** Whether a knowledge file exists, without following links out of the root. */
+async function fileExists(knowledgeRoot: string, path: string): Promise<boolean> {
   try {
     const parts = path.split('/');
     const directory = await openDocumentDirectory(knowledgeRoot, parts.slice(0, -1).join('/'));
@@ -258,16 +270,18 @@ async function sourceExists(knowledgeRoot: string, path: string): Promise<boolea
 /** The project Wiki under `knowledgeRoot` as the app's start page reads it. */
 export async function projectWikiCatalog(knowledgeRoot: string): Promise<WikiCatalog> {
   const insights = join(knowledgeRoot, 'insights');
-  const [{ pages: read, truncated }, decisionState, conflicts] = await Promise.all([
+  const [{ pages: read, truncated: pagesCut }, decisionState, conflicts] = await Promise.all([
     readPages(insights).catch(() => ({ pages: [] as ReadPage[], truncated: true })),
-    projectDecisionSummaries(knowledgeRoot),
-    readConflicts(insights),
+    // Without decisions the Wiki still reads; the catalog says it is partial.
+    projectDecisionSummaries(knowledgeRoot).catch(() => ({ decisions: [], incomplete: true })),
+    readConflicts(insights).catch(() => ({ items: [] as WikiReviewItem[], truncated: true })),
   ]);
+  const truncated = pagesCut || decisionState.incomplete || conflicts.truncated;
   const decisionPaths = new Set(decisionState.decisions.map((decision) => decision.path));
   const known = new Set([...read.map((page) => page.path), ...decisionPaths]);
   const linkedFrom = new Map<string, Set<string>>();
   const review: WikiReviewItem[] = [];
-  const sourceChecks = new Map<string, Promise<boolean>>();
+  const diskChecks = new Map<string, Promise<boolean>>();
   const pages: WikiPage[] = [];
   let index: WikiCatalog['index'] = null;
   for (const page of read) {
@@ -280,12 +294,12 @@ export async function projectWikiCatalog(knowledgeRoot: string): Promise<WikiCat
     ];
     const broken: string[] = [];
     for (const target of links) {
-      if (target.startsWith('insights/')) {
-        if (!known.has(target)) broken.push(target);
-      } else {
-        if (!sourceChecks.has(target))
-          sourceChecks.set(target, sourceExists(knowledgeRoot, target));
-        if (!(await sourceChecks.get(target))) broken.push(target);
+      // A page the scan read or a decision is known; anything else the app could
+      // open (a source, an image, a page past the limits) is looked up on disk,
+      // so a link counts as broken only when there is nothing to open.
+      if (!known.has(target)) {
+        if (!diskChecks.has(target)) diskChecks.set(target, fileExists(knowledgeRoot, target));
+        if (!(await diskChecks.get(target))) broken.push(target);
       }
       if (target !== page.path) {
         const from = linkedFrom.get(target) ?? new Set<string>();
@@ -312,7 +326,7 @@ export async function projectWikiCatalog(knowledgeRoot: string): Promise<WikiCat
     pages,
     index,
     decisions: decisionState.decisions,
-    review: [...conflicts, ...review],
+    review: [...conflicts.items, ...review],
     truncated,
   };
 }

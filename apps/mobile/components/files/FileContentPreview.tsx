@@ -41,6 +41,9 @@ export function FileContentPreview({
   const [source, setSource] = useState(false);
   const markdown = isMarkdownFile(path);
   const formatted = markdown && !source;
+  // Whether there is a header, not which element: a new one each render must
+  // not parse the whole file again.
+  const withHeader = header !== undefined;
   const items = useMemo(() => {
     if (!formatted)
       return chunkFilePreview(content).map((content): FileMarkdownItem => ({
@@ -48,12 +51,12 @@ export function FileContentPreview({
         content,
       }));
     const all = fileMarkdownItems(content);
-    if (!header) return all;
+    if (!withHeader) return all;
     // The header names the page; its own title line would say it twice.
     const first = all.findIndex((item) => item.type !== 'line' || item.content.trim() !== '');
     const title = all[first];
     return title?.type === 'line' && /^#\s/.test(title.content) ? all.slice(first + 1) : all;
-  }, [content, formatted, header]);
+  }, [content, formatted, withHeader]);
   return (
     <>
       {markdown ? (

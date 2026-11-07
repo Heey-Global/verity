@@ -273,8 +273,11 @@ describe('a Wiki page', () => {
 });
 
 it('drops one-line comments from the rendered page only', () => {
-  expect(fileMarkdownItems('<!-- meta -->\n# T\n<!-- open\nstill -->')).toEqual([
+  expect(
+    fileMarkdownItems('<!-- meta -->\n# T\n<!-- a --> kept <!-- b -->\n<!-- open\nstill -->'),
+  ).toEqual([
     { type: 'line', content: '# T' },
+    { type: 'line', content: '<!-- a --> kept <!-- b -->' },
     { type: 'line', content: '<!-- open' },
     { type: 'line', content: 'still -->' },
   ]);
@@ -287,4 +290,32 @@ it('reports a catalog that fails to load, with Retry', async () => {
   api.getProjectWiki.mockResolvedValue(catalog);
   await act(async () => fireEvent.press(screen.getByText('Retry')));
   expect(await screen.findByTestId('wiki-home')).toBeTruthy();
+});
+
+it('reads the catalog again on screens already open when the Wiki changes', async () => {
+  const api = client();
+  render(<KnowledgeScreen scope={PROJECT} folder="insights" />);
+  expect(await screen.findByText('Product concept')).toBeTruthy();
+  api.getProjectWiki.mockResolvedValue({
+    ...catalog,
+    index: { ...catalog.index!, topics: [{ title: 'Renamed', description: '', pages: [] }] },
+  });
+  await act(async () => invalidateWikiCatalog('p'));
+  expect(await screen.findByText('Renamed')).toBeTruthy();
+});
+
+it('never shows one project’s catalog for another', async () => {
+  const api = client();
+  const view = (projectId: string) => (
+    <KnowledgeScreen scope={{ kind: 'project', projectId }} folder="insights" />
+  );
+  const { rerender } = render(view('p'));
+  expect(await screen.findByText('Product concept')).toBeTruthy();
+  let finish: (value: WikiCatalog) => void = () => undefined;
+  api.getProjectWiki.mockReturnValue(new Promise((resolve) => (finish = resolve)));
+  rerender(view('q'));
+  await act(async () => undefined);
+  expect(screen.queryByText('Product concept')).toBeNull();
+  await act(async () => finish({ ...catalog, index: null }));
+  expect(await screen.findByText('Pages · 2')).toBeTruthy();
 });

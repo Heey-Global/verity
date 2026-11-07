@@ -143,7 +143,11 @@ export function KnowledgeFileView({
       .finally(() => setDownloading(false));
   }, [client, file, projectId, scope]);
 
-  const wiki = useWikiCatalog(client, scope.kind === 'project' ? scope.projectId : null);
+  // Only Wiki files are pages; a source opens without reading the catalog.
+  const wiki = useWikiCatalog(
+    client,
+    scope.kind === 'project' && file.startsWith('insights/') ? scope.projectId : null,
+  );
   const entry = wikiEntry(wiki.catalog, file);
   const name =
     entry?.kind === 'page'

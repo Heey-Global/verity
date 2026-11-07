@@ -31,7 +31,8 @@ export function fileMarkdownItems(content: string): FileMarkdownItem[] {
     for (const prose of parseMarkdownBlocks(block.content)) {
       if (prose.type === 'lines') {
         // A one-line comment is metadata (a decision record's header), not text.
-        for (const line of prose.lines) if (!/^\s*<!--.*-->\s*$/.test(line)) text('line', line);
+        for (const line of prose.lines)
+          if (!/^\s*<!--(?:(?!-->).)*-->\s*$/.test(line)) text('line', line);
       } else {
         // Oversized cells use bounded text rather than one unrenderable table.
         if ([prose.header, ...prose.rows].some((row) => row.join('').length > 8000)) {

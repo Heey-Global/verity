@@ -89,7 +89,12 @@ const wikiDecisionSchema = z.object({
   path: pathSchema,
   title: z.string(),
   createdAt: z.string(),
-  status: z.enum(['current', 'superseded', 'unresolved']),
+  // A status this app does not know yet is one it cannot vouch for.
+  status: z
+    .string()
+    .transform((value): 'current' | 'superseded' | 'unresolved' =>
+      value === 'current' || value === 'superseded' ? value : 'unresolved',
+    ),
   predecessor: z.string().optional(),
   successor: z.string().optional(),
 });
@@ -111,7 +116,14 @@ export const wikiCatalogSchema = z.object({
     })
     .nullable(),
   decisions: z.array(wikiDecisionSchema),
-  review: z.array(wikiReviewItemSchema),
+  // Kinds of review items added later are left out rather than failing the whole
+  // catalog, which would cost an older app its Wiki.
+  review: z.array(z.unknown()).transform((items) =>
+    items.flatMap((item) => {
+      const parsed = wikiReviewItemSchema.safeParse(item);
+      return parsed.success ? [parsed.data] : [];
+    }),
+  ),
   /** A limit cut the scan short; counts and lists are then partial. */
   truncated: z.boolean(),
 });

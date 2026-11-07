@@ -5,19 +5,30 @@ import { useCallback, useEffect, useState } from 'react';
  *  enough that a page Verity just maintained shows up on the next visit. */
 const FRESH_MS = 30_000;
 
-const cache = new Map<string, { at: number; read: Promise<WikiCatalog | null> }>();
+/** One read per project, remembered with the client it came from: another
+ *  server can hold a project with the same id. */
+const cache = new Map<
+  string,
+  { client: VerityClient; at: number; read: Promise<WikiCatalog | null> }
+>();
+/** Mounted screens of a project, told when its catalog is stale. */
+const listeners = new Map<string, Set<() => void>>();
 
-/** Forget a project's catalog, so a saved edit shows in its lists. */
+/**
+ * Forget a project's catalog after a change to its Wiki, and have every screen
+ * showing it read it again — the lists under an edited page as well as the page.
+ */
 export function invalidateWikiCatalog(projectId: string): void {
   cache.delete(projectId);
+  for (const listener of listeners.get(projectId) ?? []) listener();
 }
 
-function readCatalog(client: VerityClient, projectId: string, force: boolean) {
+function readCatalog(client: VerityClient, projectId: string) {
   const cached = cache.get(projectId);
-  if (!force && cached && Date.now() - cached.at < FRESH_MS) return cached.read;
+  if (cached && cached.client === client && Date.now() - cached.at < FRESH_MS) return cached.read;
   // A client that throws instead of rejecting must still end in an error state.
   const read = Promise.resolve().then(() => client.getProjectWiki(projectId));
-  cache.set(projectId, { at: Date.now(), read });
+  cache.set(projectId, { client, at: Date.now(), read });
   // A failed read must not be served to the next screen.
   read.catch(() => {
     if (cache.get(projectId)?.read === read) cache.delete(projectId);
@@ -31,29 +42,48 @@ function readCatalog(client: VerityClient, projectId: string, force: boolean) {
  * catalog; pass `null` as the project for them.
  */
 export function useWikiCatalog(client: VerityClient, projectId: string | null) {
-  const [catalog, setCatalog] = useState<WikiCatalog | null>();
-  const [error, setError] = useState<string>();
+  const [state, setState] = useState<{
+    key: string | null;
+    catalog: WikiCatalog | null | undefined;
+    error?: string;
+  }>({ key: null, catalog: undefined });
   const [attempt, setAttempt] = useState(0);
+  const retry = useCallback(() => {
+    if (projectId !== null) cache.delete(projectId);
+    setAttempt((value) => value + 1);
+  }, [projectId]);
   useEffect(() => {
-    if (projectId === null) {
-      setCatalog(null);
-      return undefined;
-    }
+    if (projectId === null) return undefined;
+    const subscribers = listeners.get(projectId) ?? new Set<() => void>();
+    const refresh = () => setAttempt((value) => value + 1);
+    subscribers.add(refresh);
+    listeners.set(projectId, subscribers);
+    return () => {
+      subscribers.delete(refresh);
+    };
+  }, [projectId]);
+  useEffect(() => {
+    if (projectId === null) return undefined;
     let active = true;
-    setError(undefined);
-    readCatalog(client, projectId, attempt > 0).then(
-      (next) => {
-        if (active) setCatalog(next);
+    readCatalog(client, projectId).then(
+      (catalog) => {
+        if (active) setState({ key: projectId, catalog });
       },
       (failure: unknown) => {
         if (active)
-          setError(failure instanceof Error ? failure.message : 'Could not load the Wiki');
+          setState({
+            key: projectId,
+            catalog: undefined,
+            error: failure instanceof Error ? failure.message : 'Could not load the Wiki',
+          });
       },
     );
     return () => {
       active = false;
     };
   }, [client, projectId, attempt]);
-  const retry = useCallback(() => setAttempt((value) => value + 1), []);
-  return { catalog, error, retry };
+  if (projectId === null) return { catalog: null, error: undefined, retry };
+  // Another project's catalog, still in state until this one arrives, is not shown.
+  if (state.key !== projectId) return { catalog: undefined, error: undefined, retry };
+  return { catalog: state.catalog, error: state.error, retry };
 }
