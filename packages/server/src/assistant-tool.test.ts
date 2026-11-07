@@ -324,7 +324,7 @@ describe('assistant live meetings', () => {
     expect(result).toEqual({
       meetings: [
         expect.objectContaining({ eventKey: key('soon'), provider: 'zoom', joinableNow: true }),
-        expect.objectContaining({ eventKey: key('later'), provider: 'meet', joinableNow: false }),
+        expect.objectContaining({ eventKey: key('later'), provider: 'meet', joinableNow: true }),
       ],
     });
     // The link carries the passcode; the model reading untrusted mail never sees it.
@@ -345,22 +345,19 @@ describe('assistant live meetings', () => {
     expect(start).not.toHaveBeenCalled();
   });
 
-  it('joins a watched meeting into its own session, inside the join window only', async () => {
+  it('joins a watched meeting into its own session, including before its scheduled start', async () => {
     const { deps: rights, start } = meetingDeps();
-    await expect(run(rights, { action: 'join_meeting', eventKey: key('later') })).rejects.toThrow(
-      /starts later/,
-    );
-    await expect(run(rights, { action: 'join_meeting', eventKey: key('soon') })).resolves.toEqual({
+    await expect(run(rights, { action: 'join_meeting', eventKey: key('later') })).resolves.toEqual({
       joined: { sessionId: 'assistant', meetingId: 'meeting-1' },
     });
     expect(start).toHaveBeenCalledWith(
       'assistant',
-      'https://acme.zoom.us/j/1?pwd=secret',
+      'https://meet.google.com/abc-defg-hij',
       true,
-      'Meeting soon',
+      'Meeting later',
     );
     // A second join reports the running meeting instead of sending another bot.
-    await expect(run(rights, { action: 'join_meeting', eventKey: key('soon') })).rejects.toThrow(
+    await expect(run(rights, { action: 'join_meeting', eventKey: key('later') })).rejects.toThrow(
       /already in this meeting/,
     );
     expect(start).toHaveBeenCalledTimes(1);
