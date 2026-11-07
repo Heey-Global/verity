@@ -16,6 +16,7 @@ import {
   type GitOutput,
 } from './branches.js';
 import { ForgeMergePermissionError } from './forge-provider.js';
+import { createForgeStatusCache, selectBranchStatus } from './forge-status-cache.js';
 import type { PullRequestStatus } from './github.js';
 import { SandboxUnavailableError } from './sandbox-git.js';
 import {
@@ -316,6 +317,107 @@ describe('GET /sessions/:id/branches', () => {
       await cachedApp.close();
     }
   });
+
+  it.each([false, true])(
+    'discovers a new PR before turn completion (another branch: %s)',
+    async (anotherBranch) => {
+      await createExistingSession('s1');
+      await ctx.store.upsertProject({
+        id: 'pr-project',
+        owner: 'team',
+        repo: 'app',
+        containerName: 'app',
+        state: 'active',
+      });
+      await ctx.store.setSessionProject('s1', 'pr-project');
+      branchSvc.current.mockResolvedValue('feat/first');
+      const identity = { authority: 'test', owner: 'team', repo: 'app' };
+      const forge = createForgeStatusCache();
+      const merged: PullRequestStatus = {
+        number: 119,
+        title: 'First PR',
+        url: 'https://example.test/pr/119',
+        phase: 'merged',
+        pipeline: 'success',
+        mergeable: false,
+        checks: { completed: 1, total: 1, successful: 1, failed: 0, pending: 0 },
+      };
+      const next: PullRequestStatus = {
+        ...merged,
+        number: 120,
+        title: 'Next PR',
+        url: 'https://example.test/pr/120',
+        phase: 'open',
+        pipeline: 'running',
+        checks: { completed: 0, total: 1, successful: 0, failed: 0, pending: 1 },
+      };
+      let opened = false;
+      const sessionBranches = vi.fn(async () =>
+        opened && anotherBranch ? ['feat/first', 'feat/next'] : ['feat/first'],
+      );
+      const load = vi.fn(async (branch: string) =>
+        opened && (!anotherBranch || branch === 'feat/next') ? next : merged,
+      );
+      const cachedApp = buildServer({
+        eventStore: ctx.store,
+        bus,
+        conductor,
+        branches: { ...branchSvc, sessionBranches } as unknown as NonNullable<
+          ServerDeps['branches']
+        >,
+        branchPrStatusForBranches: async (branches) =>
+          selectBranchStatus(
+            await Promise.all(
+              branches.map((branch) => forge.read(identity, branch, () => load(branch))),
+            ),
+            'github',
+          ),
+        invalidateProjectPrStatus: () => forge.invalidate(identity),
+      });
+      try {
+        expect((await cachedApp.inject('/sessions/s1/branches')).json().pullRequest).toMatchObject({
+          number: 119,
+          phase: 'merged',
+        });
+        opened = true;
+        bus.publish('s1', {
+          seq: 1,
+          ts: Date.now(),
+          event: {
+            t: 'tool_result',
+            id: 'open-pr',
+            output: 'Created pull request',
+            isError: false,
+          },
+        });
+        // No result event or client request drives discovery of the replacement PR.
+        await vi.waitFor(() =>
+          expect(
+            load.mock.calls.some(
+              ([branch]) =>
+                branch === (anotherBranch ? 'feat/next' : 'feat/first') &&
+                load.mock.calls.length > 1,
+            ),
+          ).toBe(true),
+        );
+        const branches = (await cachedApp.inject('/sessions/s1/branches')).json();
+        const overview = (await cachedApp.inject('/sessions')).json()[0];
+        expect(branches.pullRequest).toMatchObject({
+          number: 120,
+          phase: 'open',
+          pipeline: 'running',
+        });
+        expect(overview.pullRequest).toMatchObject({
+          number: 120,
+          phase: 'open',
+          pipeline: 'running',
+        });
+        expect(overview.pr).toMatchObject({ phase: 'open', pipeline: 'running' });
+      } finally {
+        await cachedApp.close();
+      }
+    },
+  );
 
   it.each(['ci', 'conflict', 'running-conflict'] as const)(
     'repairs %s in the background without app requests or push registration',
