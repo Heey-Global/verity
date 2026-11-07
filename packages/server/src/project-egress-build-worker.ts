@@ -52,7 +52,16 @@ export async function superviseProtectedBuild(
       const reply = await retry({ operation: 'status', ...reference });
       if (!('record' in reply)) throw new Error('Invalid protected build status');
       if (reply.record.ended) return { success: reply.record.phase === 'succeeded' };
-      if (reply.record.phase === 'running') await retry({ operation: 'heartbeat', ...reference });
+      if (reply.record.phase === 'running') {
+        try {
+          await retry({ operation: 'heartbeat', ...reference });
+        } catch (error) {
+          const current = await retry({ operation: 'status', ...reference });
+          if ('record' in current && current.record.ended)
+            return { success: current.record.phase === 'succeeded' };
+          throw error;
+        }
+      }
       await pause(200);
     }
     const stopped = await command({ operation: 'cancel', ...reference });

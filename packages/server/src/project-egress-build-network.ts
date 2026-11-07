@@ -295,7 +295,36 @@ export class ProtectedBuildNetworks {
   ): Promise<void> {
     await this.io.deny(expected.binding);
     if (!(await workloadEnded())) throw new Error('Protected build termination is unconfirmed');
-    await this.inspect(expected);
+    const raw: unknown = JSON.parse(
+      await this.io.docker(['container', 'inspect', expected.containerId]),
+    );
+    const stopped = containerSchema.element
+      .omit({ State: true, NetworkSettings: true })
+      .extend({
+        State: z.object({ Running: z.literal(false) }),
+      })
+      .array()
+      .length(1)
+      .safeParse(raw);
+    if (stopped.success) {
+      const value = stopped.data[0]!;
+      const config = value.HostConfig;
+      if (
+        value.Id !== expected.containerId ||
+        value.Config.Image !== this.io.imageRef ||
+        value.Config.Entrypoint.join('\0') !== '/nodejs/bin/node' ||
+        value.Config.Cmd.join('\0') !== '-e\0setInterval(() => {}, 2147483647)' ||
+        config.NetworkMode !== expected.binding.networkId ||
+        (config.CapAdd?.length ?? 0) !== 0 ||
+        config.CapDrop.join('\0') !== 'ALL' ||
+        !['no-new-privileges', 'no-new-privileges=true'].includes(config.SecurityOpt.join('\0')) ||
+        (config.Binds?.length ?? 0) !== 0 ||
+        (config.Devices?.length ?? 0) !== 0 ||
+        Object.keys(config.PortBindings ?? {}).length !== 0
+      )
+        throw new Error('Stopped protected build anchor contract mismatch');
+      await this.inspectNetwork(expected.binding, [expected.containerId]);
+    } else await this.inspect(expected);
     await this.io.docker(['container', 'stop', expected.containerId]);
     await this.io.docker(['container', 'rm', expected.containerId]);
     await this.inspectNetwork(expected.binding, []);

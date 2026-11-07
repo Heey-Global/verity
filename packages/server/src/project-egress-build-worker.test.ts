@@ -95,3 +95,18 @@ describe('protected build worker supervision', () => {
     expect(command).toHaveBeenCalledTimes(1);
   });
 });
+
+it('recovers completion between a running status and heartbeat refusal', async () => {
+  let statuses = 0;
+  const command = vi.fn(async (input: ProtectedBuildCommand): Promise<ProtectedBuildReply> => {
+    if (input.operation === 'health') return { version: 1, available: true };
+    if (input.operation === 'heartbeat') throw new Error('terminal');
+    if (input.operation === 'status')
+      return ++statuses === 1 ? record(false) : record(true, 'succeeded');
+    return record(false);
+  });
+  expect(await superviseProtectedBuild(request, command, { pause: async () => undefined })).toEqual(
+    { success: true },
+  );
+  expect(command.mock.calls.some(([input]) => input.operation === 'cancel')).toBe(false);
+});

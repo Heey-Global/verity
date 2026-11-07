@@ -13,6 +13,7 @@ function fixture() {
   let replaced = false;
   let denyFails = false;
   let mount = false;
+  let stopped = false;
   const networkId = '1'.repeat(64),
     containerId = '2'.repeat(64);
   const io: ProtectedBuildNetworkIO = {
@@ -84,7 +85,7 @@ function fixture() {
               PortBindings: null,
             },
             Mounts: mount ? [{}] : [],
-            State: { Running: true, Pid: 77 },
+            State: { Running: !stopped, Pid: stopped ? 0 : 77 },
             NetworkSettings: {
               SandboxKey: '/var/run/docker/netns/abc',
               Networks: {
@@ -114,6 +115,9 @@ function fixture() {
     },
     replace() {
       replaced = true;
+    },
+    stop() {
+      stopped = true;
     },
     mount() {
       mount = true;
@@ -222,4 +226,14 @@ it('persists unpredictable network creation intent before Docker can create a br
   expect(intent).toBeLessThan(creation);
   const args = f.calls[creation]!;
   expect(args[args.indexOf('--label') + 1]).toMatch(/^io\.verity\.build-intent=[a-f0-9]{64}$/u);
+});
+
+it('removes owned stopped anchors after reboot without requiring the old namespace', async () => {
+  const f = fixture();
+  const network = new ProtectedBuildNetworks(f.io);
+  const anchor = await network.create('project-a', 'attempt-a');
+  f.stop();
+  f.replace();
+  await network.remove(anchor, async () => true);
+  expect(f.calls.at(-1)).toEqual(['remove-deny']);
 });

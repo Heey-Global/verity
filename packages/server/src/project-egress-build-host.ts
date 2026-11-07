@@ -620,6 +620,7 @@ export async function createNativeProtectedBuildHost(options: NativeProtectedBui
     dns.set(key, server);
   };
   const partial = async (request: ProtectedBuildRequest) => {
+    await ensureBootstrap();
     const value = await privateRead(checkpointPath(request));
     if (value === undefined) return undefined;
     const result = checkpointSchema.parse(value);
