@@ -270,3 +270,24 @@ it('refreshes an approved inquiry when an older pending poll fails', async () =>
   expect(view.queryByText('Overlapping approval')).toBeNull();
   expect(view.queryByText('old poll failed')).toBeNull();
 });
+
+it('starts a fresh read after a pre-blur flight instead of publishing its stale result', async () => {
+  const old = deferred<never[]>();
+  const fresh = deferred<never[]>();
+  const read = jest.fn().mockReturnValueOnce(old.promise).mockReturnValueOnce(fresh.promise);
+  const props = { client: { listProjectInquiries: read } as unknown as VerityClient };
+  const view = render(<ProjectInquiryCards {...props} />);
+  mockFocused = false;
+  view.rerender(<ProjectInquiryCards {...props} />);
+  mockFocused = true;
+  view.rerender(<ProjectInquiryCards {...props} />);
+  expect(read).toHaveBeenCalledTimes(1);
+  await act(async () => {
+    old.reject(new Error('pre-blur failure'));
+  });
+  expect(view.queryByText('pre-blur failure')).toBeNull();
+  expect(read).toHaveBeenCalledTimes(2);
+  await act(async () => {
+    fresh.resolve([]);
+  });
+});

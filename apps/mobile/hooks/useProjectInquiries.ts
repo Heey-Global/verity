@@ -11,7 +11,10 @@ export function useProjectInquiries(client: VerityClient, sessionId?: string, pr
     let flight: ReturnType<VerityClient['listProjectInquiries']> | undefined;
     return {
       ready,
-      read: () => {
+      read: async (isCurrent: () => boolean) => {
+        // Refocus must not publish a read started before leaving the screen.
+        if (flight !== undefined) await flight.catch(() => undefined);
+        if (!isCurrent()) return undefined;
         flight ??= client.listProjectInquiries(sessionId, projectId).finally(() => {
           flight = undefined;
         });
@@ -52,8 +55,9 @@ export function useProjectInquiries(client: VerityClient, sessionId?: string, pr
         running = true;
         const owner = generation;
         try {
-          const data = await source.read();
-          if (active && foreground && generation === owner) setSnapshot({ source, data });
+          const isCurrent = () => active && foreground && generation === owner;
+          const data = await source.read(isCurrent);
+          if (isCurrent() && data !== undefined) setSnapshot({ source, data });
         } catch (error) {
           if (active && foreground && generation === owner) {
             // A completed decision may have requested a fresh read while this one ran.
