@@ -45,6 +45,7 @@ import {
   runtimeOtherRequestGroup,
 } from './runtimeDiagnostics.js';
 import { recordingDigest, type RecordingDigest } from './recording-digest.js';
+import { wikiCatalogSchema, type WikiCatalog } from '@verity/events';
 import {
   recordingFailureReasonSchema,
   selectedEvidenceMetadataSchema,
@@ -6214,6 +6215,23 @@ export class VerityClient {
       ...(signal ? { signal } : {}),
     });
     return branchListSchema.parse(await res.json());
+  }
+
+  /** The project Wiki's catalog for its start page, or null from a server that
+   *  predates it — the app then shows the Wiki as a folder, as before. */
+  async getProjectWiki(projectId: string): Promise<WikiCatalog | null> {
+    try {
+      const res = await this.request(`/projects/${encodeURIComponent(projectId)}/knowledge/wiki`, {
+        method: 'GET',
+      });
+      return wikiCatalogSchema.parse(await res.json());
+    } catch (err) {
+      // Only the router's own not-found means an older server; a missing
+      // project is a 404 that names it, and stays an error.
+      if (err instanceof VerityApiError && err.status === 404 && err.message === 'Not Found')
+        return null;
+      throw err;
+    }
   }
 
   async listProjectKnowledgeFiles(projectId: string, path = ''): Promise<SessionDirectory> {

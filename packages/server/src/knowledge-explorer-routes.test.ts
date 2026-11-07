@@ -248,6 +248,25 @@ describe('session explorer knowledge roots', () => {
     ).toBe(400);
   });
 
+  it('serves the project Wiki catalog to the app', async () => {
+    const dir = projectKnowledgeDir(dataRoot, 'p-1');
+    mkdirSync(join(dir, 'insights'), { recursive: true });
+    writeFileSync(join(dir, 'insights/plan.md'), '# The plan\n\nWhat we build next.');
+    const res = await app.inject('/projects/p-1/knowledge/wiki');
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({
+      pages: [{ path: 'insights/plan.md', title: 'The plan', summary: 'What we build next.' }],
+      index: null,
+      decisions: [],
+      review: [],
+    });
+    // A named 404: the app falls back to the folder view only for the router's
+    // own "Not Found", which means a server without this route.
+    const missing = await app.inject('/projects/missing/knowledge/wiki');
+    expect(missing.statusCode).toBe(404);
+    expect(missing.json()).toEqual({ error: 'Project knowledge not found' });
+  });
+
   it('browses project knowledge without sessions and confines edits to its Wiki', async () => {
     await ctx.store.deleteSession('s-knowledge');
     const base = '/projects/p-1/knowledge/files';

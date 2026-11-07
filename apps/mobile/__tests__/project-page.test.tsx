@@ -35,7 +35,7 @@ jest.mock('../lib/homePreferences', () => ({
 
 import type { SessionSummary, VerityClient } from '@verity/mobile';
 import { inboxItems, VerityApiError } from '@verity/mobile';
-import { act, fireEvent, render, screen, within } from '@testing-library/react-native';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react-native';
 import { Alert } from 'react-native';
 
 import ProjectEntry from '../app/project/[id]/index';
@@ -114,6 +114,7 @@ function clientWith(sessions: SessionSummary[], extra: Record<string, unknown> =
     listProjectKnowledgeFiles: jest
       .fn()
       .mockResolvedValue({ root: 'project', path: '', entries: [], truncated: false }),
+    getProjectWiki: jest.fn().mockResolvedValue(null),
     setSessionInboxDismissed: jest.fn(async (_id: string, key: string, dismissed: boolean) =>
       dismissed ? [key] : [],
     ),
@@ -703,7 +704,9 @@ describe('project page', () => {
     fireEvent.press(screen.getByLabelText(/^Wiki/));
     expect(await screen.findByTestId('project-knowledge')).toBeTruthy();
     // At the Wiki itself, not at the areas above it.
-    expect(client.listProjectKnowledgeFiles).toHaveBeenCalledWith('p/1', 'insights');
+    await waitFor(() =>
+      expect(client.listProjectKnowledgeFiles).toHaveBeenCalledWith('p/1', 'insights'),
+    );
     expect(mockPush).not.toHaveBeenCalledWith(
       expect.objectContaining({ pathname: '/project/[id]/knowledge' }),
     );

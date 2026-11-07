@@ -30,9 +30,65 @@ const KNOWN_FOLDERS: Record<string, { title: string; icon: IconName; subtitle: s
   },
 };
 
+/**
+ * A project Wiki's own views, addressed like folders so a phone's route stack
+ * and the wide column move through them like any other level: `insights` is the
+ * start page, `insights/decisions` the decision list, `insights/:files` the
+ * folder as it lies on disk and `insights/:topic:<title>` one topic's pages.
+ */
+export const WIKI = 'insights';
+export const WIKI_FILES = 'insights/:files';
+const TOPIC = 'insights/:topic:';
+
+export type WikiView =
+  { kind: 'home' } | { kind: 'decisions' } | { kind: 'files' } | { kind: 'topic'; title: string };
+
+/**
+ * A topic's title as part of a folder. The router decodes its params itself, so
+ * percent-encoding would be undone on the way; this spelling has no `%` and no
+ * `/` (which would make the topic look like a folder inside another).
+ */
+export function topicFolder(title: string): string {
+  return `${TOPIC}${title.replace(/[^A-Za-z0-9 _-]/gu, (char) => `~${char.codePointAt(0)!.toString(16)}.`)}`;
+}
+
+function topicTitle(encoded: string): string | null {
+  if (!/^(?:[A-Za-z0-9 _-]|~[0-9a-f]{1,6}\.)*$/u.test(encoded)) return null;
+  try {
+    return encoded.replace(/~([0-9a-f]{1,6})\./gu, (_, hex: string) =>
+      String.fromCodePoint(parseInt(hex, 16)),
+    );
+  } catch {
+    return null;
+  }
+}
+
+/** The Wiki view a project folder names, or null for an ordinary folder. */
+export function wikiView(scope: KnowledgeScope, folder: string): WikiView | null {
+  if (scope.kind !== 'project') return null;
+  if (folder === WIKI) return { kind: 'home' };
+  if (folder === DECISIONS) return { kind: 'decisions' };
+  if (folder === WIKI_FILES) return { kind: 'files' };
+  if (folder.startsWith(TOPIC)) {
+    const title = topicTitle(folder.slice(TOPIC.length));
+    return title === null ? null : { kind: 'topic', title };
+  }
+  return null;
+}
+
+/** The folder on disk behind a Wiki view: the Wiki's own for its start page,
+ *  its files and a topic, which a server without a catalog lists instead. */
+function wikiFolder(scope: KnowledgeScope, folder: string): string {
+  const view = wikiView(scope, folder);
+  return view && view.kind !== 'decisions' ? WIKI : folder;
+}
+
 /** What a folder is called on screen: the areas by their names, the rest by theirs. */
 export function folderTitle(scope: KnowledgeScope, folder: string): string {
   if (folder === '') return scopeTitle(scope);
+  const view = wikiView(scope, folder);
+  if (view?.kind === 'files') return 'All files';
+  if (view?.kind === 'topic') return view.title;
   const name = folder.split('/').at(-1) ?? folder;
   // Shared names only its top-level areas; Decisions is a project's own section.
   if (scope.kind === 'shared' && folder.includes('/')) return name;
@@ -59,7 +115,7 @@ export function listKnowledge(
 ): Promise<SessionDirectory> {
   return scope.kind === 'shared'
     ? client.listSharedKnowledgeFiles(folder)
-    : client.listProjectKnowledgeFiles(scope.projectId, folder);
+    : client.listProjectKnowledgeFiles(scope.projectId, wikiFolder(scope, folder));
 }
 
 export function readKnowledge(
