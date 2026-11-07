@@ -191,8 +191,10 @@ Disabled is always 40 % opacity; pressed is always a slight darkening.
     under it, aligned with the title, the first one primary. The strip sits outside the
     row's pressable area, so VoiceOver reaches each button; the row itself still opens
     its subject. Rows without such a decision never carry one.
-- States: default, pressed (slightly darker surface), disabled (40 %), selected (`action`
-  border with glow).
+- States: default, pressed (slightly darker surface), disabled (40 %), settled (60 %),
+  selected (`action` border with glow). Settled marks a row whose subject is finished and
+  only kept around — a session whose pull request merged — so it recedes while staying
+  fully usable.
 - A row that opens something may keep its secondary actions (rename, favorite, delete)
   behind a long press (`onLongPress`), never behind a second button in the row. The
   `accessibilityHint` names them, since a long press is invisible.

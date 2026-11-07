@@ -429,6 +429,9 @@ export function ProjectWork({
         <Row
           title={label}
           active={session.sessionId === selectedSessionId}
+          // Merged and quiet: the work is done and the row only waits to be
+          // deleted, so it recedes the way it sinks to the bottom of the list.
+          settled={tile.glyph === 'merged' && agent === undefined && statusTag === undefined}
           subtitle={waiting?.subtitle ?? workSubtitle(session)}
           leading={
             needs && waiting !== undefined
