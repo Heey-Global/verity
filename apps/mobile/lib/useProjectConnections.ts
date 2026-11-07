@@ -1,5 +1,5 @@
-// Which services a project can use and which it does: the connector rows of the
-// project settings and the Content block of the project page read the same facts.
+// Which services a project can use and which it does, as the connector rows of
+// the project settings show them.
 import {
   forgejoConnection,
   githubRepositoryAccessReady,
@@ -8,8 +8,6 @@ import {
 } from '@verity/mobile';
 import { useFocusEffect } from 'expo-router';
 import { useCallback, useState } from 'react';
-
-export type ProjectConnections = ReturnType<typeof useProjectConnections>;
 
 /**
  * Loads on every focus. Each source settles on its own, so one unreachable
