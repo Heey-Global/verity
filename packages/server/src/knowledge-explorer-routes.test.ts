@@ -349,6 +349,25 @@ describe('session explorer knowledge roots', () => {
     expect(readFileSync(join(dir, 'sources/documents/original.txt'), 'utf8')).toBe('Original');
   });
 
+  it('protects decisions reached through intermediate Wiki aliases', async () => {
+    const dir = projectKnowledgeDir(dataRoot, 'p-1');
+    await app.inject('/projects/p-1/knowledge/files');
+    const topic = join(dir, 'insights/decisions/topic');
+    mkdirSync(join(topic, 'nested'), { recursive: true });
+    writeFileSync(join(topic, 'record.md'), 'Protected decision');
+    writeFileSync(join(topic, 'nested/another.md'), 'Another decision');
+    symlinkSync('decisions', join(dir, 'insights/alias'));
+    const remove = (path: string) =>
+      app.inject({
+        method: 'DELETE',
+        url: `/projects/p-1/knowledge/files?path=${encodeURIComponent(path)}`,
+      });
+    expect((await remove('insights/alias/topic/record.md')).statusCode).toBe(400);
+    expect((await remove('insights/alias/topic/nested')).statusCode).toBe(400);
+    expect(readFileSync(join(topic, 'record.md'), 'utf8')).toBe('Protected decision');
+    expect(readFileSync(join(topic, 'nested/another.md'), 'utf8')).toBe('Another decision');
+  });
+
   it('deletes Sources files and folders with their extracted text without following aliases', async () => {
     const dir = projectKnowledgeDir(dataRoot, 'p-1');
     await app.inject('/projects/p-1/knowledge/files');

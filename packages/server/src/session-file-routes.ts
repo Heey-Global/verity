@@ -72,6 +72,7 @@ type SessionFileMoveBody = z.infer<typeof sessionFileMoveBody>;
 interface SessionFileTarget {
   root: SessionFileRootName;
   dir: string;
+  protectedPaths?: readonly string[];
 }
 
 export class SessionFileRootUnavailableError extends Error {
@@ -216,6 +217,7 @@ export function registerSessionFileRoutes(app: FastifyInstance, deps: SessionFil
             {
               root: area === 'insights' ? 'documents' : 'sources',
               dir: join(target.dir, area),
+              protectedPaths: area === 'insights' ? ['decisions'] : [],
             },
             parts.slice(1).join('/'),
           )
