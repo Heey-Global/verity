@@ -228,6 +228,21 @@ it('in the wide layout opens folders in the column and files beside it', async (
   expect(await screen.findByText('Sources')).toBeTruthy();
 });
 
+it('keeps the project sections out of a Shared Wiki', async () => {
+  client({
+    listSharedKnowledgeFiles: jest.fn().mockResolvedValue({
+      root: 'shared',
+      path: 'insights',
+      entries: [{ path: 'insights/decisions', name: 'decisions', kind: 'directory' }],
+      truncated: false,
+    }),
+  });
+  render(<KnowledgeScreen scope={SHARED} folder="insights" />);
+  // Shared has no confirmed project decisions; a folder there is just a folder.
+  expect(await screen.findByText('decisions')).toBeTruthy();
+  expect(screen.queryByText('Confirmed choices, with reason and origin')).toBeNull();
+});
+
 it('lists Decisions first inside a project Wiki and goes back up to the Wiki', async () => {
   const api = client({
     listProjectKnowledgeFiles: jest.fn().mockResolvedValue({

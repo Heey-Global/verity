@@ -45,6 +45,9 @@ export function KnowledgeFolder({
   onOpenFile: (file: string) => void;
 }) {
   const areas = scope.kind === 'project' && folder === '';
+  // Folders take their area names only where the areas are: a project's tree,
+  // or the top of a library. Below that, a Shared folder named `sources` is just that.
+  const known = scope.kind === 'project' || folder === '';
   const [directory, setDirectory] = useState<SessionDirectory>();
   const [error, setError] = useState<string>();
   const [attempt, setAttempt] = useState(0);
@@ -109,9 +112,9 @@ export function KnowledgeFolder({
             entry.kind === 'directory' ? (
               <Row
                 key={entry.path}
-                leading={{ icon: folderIcon(entry.path) }}
-                title={folderTitle(scope, entry.path)}
-                subtitle={folderSubtitle(entry.path)}
+                leading={{ icon: known ? folderIcon(entry.path) : 'folder' }}
+                title={known ? folderTitle(scope, entry.path) : entry.name}
+                subtitle={known ? folderSubtitle(entry.path) : undefined}
                 navigates
                 onPress={() => onOpenFolder(entry.path)}
               />
