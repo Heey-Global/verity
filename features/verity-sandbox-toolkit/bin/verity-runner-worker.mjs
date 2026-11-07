@@ -24702,6 +24702,8 @@ function planningToolName(name2) {
 }
 var PRESENT_MOCKUPS_TOOL = "verity_present_mockups";
 var PRESENT_MOCKUPS_FOCUSED_TOOL = "verity_mockups_present";
+var COMPLETE_MOCKUPS_TOOL = "verity_complete_mockups";
+var COMPLETE_MOCKUPS_FOCUSED_TOOL = "verity_mockups_complete";
 var PLANNING_SYSTEM_PROMPT = `# Planning mode (Verity)
 
 Before a materially larger change with real design choices, offer to plan it first: ask with a \`verity:choices\` block whose options include "Plan first" (recommended) and "Implement directly". When the user picks "Plan first", or asks in any wording to plan before implementing, call \`${START_PLANNING_TOOL}\` and then work out the plan without changing any files. Small, clear tasks need no planning.`;
@@ -24742,7 +24744,8 @@ Never start implementing on your own. If the user tells you in the chat to go ah
 
 // node_modules/@verity/events/dist/mockups.js
 var PRESENT = `\`${PRESENT_MOCKUPS_FOCUSED_TOOL}\` (\`${PRESENT_MOCKUPS_TOOL}\` in tool sets without focused names)`;
-var MOCKUPS_FIRST_PROMPT = `The plan lists mockups. Build only those first, without implementing the rest of the plan: render each listed screen as a PNG or JPEG file in this worktree (use the project's own mockup tooling where it has one), then call ${PRESENT} with a short name and the relative path of each image, and end your turn. Verity shows them to the user for review. Continue with the remaining steps only after Verity tells you every screen was approved; when the user comments instead, revise the affected screens and present all of them again.`;
+var COMPLETE = `\`${COMPLETE_MOCKUPS_FOCUSED_TOOL}\` (\`${COMPLETE_MOCKUPS_TOOL}\` in tool sets without focused names)`;
+var MOCKUPS_FIRST_PROMPT = `The plan lists mockups. Build only those first, without implementing the rest of the plan: render each listed screen as its own PNG or JPEG file in this worktree (one screen per image, composed from the app's real components and design tokens; use the project's own mockup tooling where it has one), then call ${PRESENT} with a short name and the relative path of each image, and end your turn. The user marks each screen as approved or discarded and tells you in the chat what to change. A revision replaces the round: present every screen again with ${PRESENT}, not as images in the chat. Continue with the rest of the plan only after the user tells you in the chat to implement; then call ${COMPLETE} first.`;
 
 // node_modules/@verity/events/dist/session-handoff-tool.js
 var import_zod2 = __toESM(require_zod(), 1);
@@ -25638,6 +25641,7 @@ function actionTitle(name2, title3, source) {
     verity_present_plan: "verity_planning_present",
     verity_end_planning: "verity_planning_implement",
     verity_present_mockups: "verity_mockups_present",
+    verity_complete_mockups: "verity_mockups_complete",
     verity_list_sessions: "verity_session_list",
     verity_send_session_message: "verity_session_send_message",
     verity_list_linked_sessions: "verity_session_list_links",
