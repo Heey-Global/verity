@@ -236,6 +236,8 @@ import { openFailureAlert, RunningServerCard } from '../../components/project/Ru
 import { StaticPreviewSheet } from '../../components/project/StaticPreviewSheet';
 import { SessionFolderRow } from '../../components/SessionFolderRow';
 import { type FileAction, FileActionMenu } from '../../components/files/FileActionMenu';
+import { useConfirm } from '../../components/ui';
+import { FileRowActions } from '../../components/files/FileRowActions';
 import { FileBreadcrumb } from '../../components/files/FileBreadcrumb';
 import { FileNameDialog } from '../../components/files/FileNameDialog';
 import {
@@ -5209,6 +5211,7 @@ function SessionFilesSheet({
 }) {
   const { theme } = useUnistyles();
   const sheet = useResizableSheet();
+  const [confirm, confirmSheet] = useConfirm();
   const [documentSession, setDocumentSession] = useState(false);
   const [codeAvailable, setCodeAvailable] = useState(true);
   const [documentStatus, setDocumentStatus] = useState<{
@@ -5218,7 +5221,6 @@ function SessionFilesSheet({
     inspectionError?: boolean;
     excludedEntries?: { path: string; reason: 'generated' | 'unsupported' }[];
   }>();
-  const workspaceClassified = useRef(false);
   const [path, setPath] = useState(initialFilePath ? parentPath(initialFilePath) : '');
   const [root, setRoot] = useState<SessionFileRoot>(initialRoot);
   const [entries, setEntries] = useState<SessionFileEntry[]>([]);
@@ -5341,23 +5343,14 @@ function SessionFilesSheet({
         if (!active) return;
         setDocumentStatus(dir.documentStatus);
         setCodeAvailable(dir.codeAvailable ?? true);
-        if (dir.codeAvailable === false && root === 'worktree' && !initialFilePath) {
-          setRoot('documents');
-          setPath('');
-        }
-        if (dir.workspaceKind) {
-          setDocumentSession(dir.workspaceKind === 'documents');
-          if (
-            !workspaceClassified.current &&
-            dir.workspaceKind === 'documents' &&
-            !initialFilePath &&
-            initialRoot === 'worktree'
-          ) {
-            setRoot('documents');
-            setPath('');
-          }
-          workspaceClassified.current = true;
-        }
+        if (dir.workspaceKind) setDocumentSession(dir.workspaceKind === 'documents');
+        if (
+          !initialFilePath &&
+          root === 'worktree' &&
+          (dir.codeAvailable === false || dir.workspaceKind === 'documents') &&
+          projectId
+        )
+          setDriveActive(true);
         setEntries(dir.entries);
         setTruncated(dir.truncated);
       })
@@ -5374,7 +5367,17 @@ function SessionFilesSheet({
     return () => {
       active = false;
     };
-  }, [client, driveActive, sessionId, path, root, reloadKey, initialFilePath, initialRoot]);
+  }, [
+    client,
+    driveActive,
+    sessionId,
+    path,
+    root,
+    reloadKey,
+    initialFilePath,
+    initialRoot,
+    projectId,
+  ]);
 
   useEffect(() => {
     if (!driveActive || !projectId) return;
@@ -5862,60 +5865,86 @@ function SessionFilesSheet({
     modifierClick.current = { anchor: null, range: [] };
   }, []);
 
-  // One confirmation for every delete, from a row's menu, the open file or the
-  // selection. It names the files and the root they leave: Shared is read by
-  // every project, so "this file" is not enough to know what is at stake.
   const confirmDelete = useCallback(
     (
       paths: readonly string[],
       onDeleted: (deleted: readonly string[], complete: boolean) => void,
     ) => {
       if (mutating || paths.length === 0) return;
-      setMutating(true);
-      const names = paths.slice(0, 5).map((filePath) => `• ${fileNameFromPath(filePath)}`);
-      if (paths.length > names.length) names.push(`… and ${paths.length - names.length} more`);
-      Alert.alert(
-        paths.length === 1 ? 'Delete file?' : `Delete ${paths.length} files?`,
-        `${names.join('\n')}\n\n${
-          root === 'worktree'
-            ? 'This permanently removes them from the workspace.'
-            : root === 'shared'
-              ? 'This removes them from Global Knowledge, for every project, with their extracted text.'
-              : 'This removes them from the project with their extracted text.'
-        }`,
-        [
-          { text: 'Cancel', style: 'cancel', onPress: () => setMutating(false) },
-          {
-            text: 'Delete',
-            style: 'destructive',
-            onPress: () => {
-              void (async () => {
-                const deleted: string[] = [];
-                try {
-                  for (const filePath of paths) {
-                    await client.deleteSessionFile(sessionId, root, filePath);
-                    deleted.push(filePath);
-                  }
-                  onDeleted(deleted, true);
-                } catch (err) {
-                  onDeleted(deleted, false);
-                  Alert.alert(
-                    'Could not delete file',
-                    err instanceof Error ? err.message : String(err),
-                  );
-                } finally {
-                  if (deleted.length > 0) setReloadKey((key) => key + 1);
-                  setMutating(false);
-                }
-              })();
-            },
-          },
-        ],
-        { cancelable: false },
-      );
+      const folder =
+        paths.length === 1 &&
+        entries.some((entry) => entry.path === paths[0] && entry.kind === 'directory');
+      confirm({
+        title: folder
+          ? 'Delete folder and its contents?'
+          : paths.length === 1
+            ? 'Delete file?'
+            : `Delete ${paths.length} files?`,
+        message: `${paths
+          .slice(0, 5)
+          .map((filePath) => fileNameFromPath(filePath))
+          .join(
+            '\n',
+          )}\n\n${folder ? 'This permanently removes the folder and everything inside it.' : 'This permanently removes the selected files.'}`,
+        confirmLabel: 'Delete',
+        destructive: true,
+        onConfirm: async () => {
+          setMutating(true);
+          const deleted: string[] = [];
+          try {
+            for (const filePath of paths) {
+              await client.deleteSessionFile(sessionId, root, filePath);
+              deleted.push(filePath);
+            }
+            onDeleted(deleted, true);
+          } catch (error) {
+            onDeleted(deleted, false);
+            Alert.alert('Could not delete', error instanceof Error ? error.message : String(error));
+            throw error;
+          } finally {
+            if (deleted.length) setReloadKey((key) => key + 1);
+            setMutating(false);
+          }
+        },
+      });
     },
-    [client, mutating, root, sessionId],
+    [client, confirm, entries, mutating, root, sessionId],
   );
+
+  const trashDriveFile = async (file: DriveFile) => {
+    if (!projectId || !driveFolderId || !driveCanWrite || mutating) return;
+    try {
+      const snapshot = await client.getProjectGoogleDriveFile(projectId, driveFolderId, file.id);
+      if (!snapshot.version)
+        throw new Error('This file has no version. Reload the folder and try again.');
+      const expectedVersion = snapshot.version;
+      confirm({
+        title: 'Move to Google Drive trash?',
+        message: `${file.name}\n\n${file.mimeType === 'application/vnd.google-apps.folder' ? 'The folder and its contents will be moved to the trash.' : 'The file will be moved to the trash.'}`,
+        confirmLabel: 'Move to trash',
+        destructive: true,
+        onConfirm: async () => {
+          setMutating(true);
+          try {
+            await client.trashProjectGoogleDriveFile(
+              projectId,
+              driveFolderId,
+              file.id,
+              expectedVersion,
+            );
+            setReloadKey((key) => key + 1);
+          } catch (error) {
+            Alert.alert('Could not delete', error instanceof Error ? error.message : String(error));
+            throw error;
+          } finally {
+            setMutating(false);
+          }
+        },
+      });
+    } catch (error) {
+      setError(error instanceof Error ? error.message : String(error));
+    }
+  };
 
   const deleteSelectedFiles = useCallback(() => {
     confirmDelete(selected, (deleted, complete) => {
@@ -6242,68 +6271,31 @@ function SessionFilesSheet({
         ) : null}
         {!preview ? (
           <View style={styles.filesRootBar}>
-            {(
-              [
-                ['worktree', documentSession ? 'My edits' : 'Code'],
-                ['sources', 'Sources'],
-                ['documents', 'Wiki'],
-              ] as const
-            )
-              .filter(
-                ([candidate]) => !((documentSession || !codeAvailable) && candidate === 'worktree'),
-              )
-              .map(([candidate, label]) => (
-                <Pressable
-                  key={candidate}
-                  disabled={mutating}
-                  onPress={() => {
-                    navigateRoot(candidate);
-                  }}
-                  accessibilityRole="tab"
-                  accessibilityState={{
-                    selected:
-                      !driveActive &&
-                      (root === candidate ||
-                        (candidate === 'documents' &&
-                          (root === 'drafts' || (documentSession && root === 'worktree')))),
-                  }}
-                  accessibilityLabel={label}
-                  style={[
-                    styles.filesRootButton,
-                    !driveActive &&
-                    (root === candidate ||
-                      (candidate === 'documents' &&
-                        (root === 'drafts' || (documentSession && root === 'worktree'))))
-                      ? styles.filesRootButtonActive
-                      : null,
-                  ]}
-                >
-                  <Icon
-                    name={FILE_ROOT_ICON[candidate]}
-                    size={14}
-                    color={
-                      !driveActive &&
-                      (root === candidate ||
-                        (candidate === 'documents' &&
-                          (root === 'drafts' || (documentSession && root === 'worktree'))))
-                        ? theme.colors.text
-                        : theme.colors.textMuted
-                    }
-                  />
-                  <Text
-                    style={
-                      !driveActive &&
-                      (root === candidate ||
-                        (candidate === 'documents' &&
-                          (root === 'drafts' || (documentSession && root === 'worktree'))))
-                        ? styles.filesRootLabelActive
-                        : styles.filesRootLabel
-                    }
-                  >
-                    {label}
-                  </Text>
-                </Pressable>
-              ))}
+            <Pressable
+              disabled={mutating || documentSession || !codeAvailable}
+              onPress={() => navigateRoot('worktree')}
+              accessibilityRole="tab"
+              accessibilityState={{
+                selected: !driveActive && root === 'worktree',
+                disabled: documentSession || !codeAvailable,
+              }}
+              accessibilityLabel="Code"
+              style={[
+                styles.filesRootButton,
+                !driveActive && root === 'worktree' ? styles.filesRootButtonActive : null,
+              ]}
+            >
+              <Icon name={FILE_ROOT_ICON.worktree} size={14} color={theme.colors.textMuted} />
+              <Text
+                style={
+                  !driveActive && root === 'worktree'
+                    ? styles.filesRootLabelActive
+                    : styles.filesRootLabel
+                }
+              >
+                Code
+              </Text>
+            </Pressable>
             {projectId ? (
               <Pressable
                 disabled={mutating}
@@ -6428,37 +6420,53 @@ function SessionFilesSheet({
               driveEntries.map((file) => {
                 const folder = file.mimeType === 'application/vnd.google-apps.folder';
                 return (
-                  <Pressable
+                  <FileRowActions
                     key={file.id}
-                    onPress={() =>
-                      folder
-                        ? setDrivePath((current) => [...current, { id: file.id, name: file.name }])
-                        : openDriveFile(file)
-                    }
+                    label={file.name}
+                    deleteLabel="Move to trash"
                     disabled={mutating}
-                    accessibilityRole="button"
-                    accessibilityLabel={folder ? `Open folder ${file.name}` : file.name}
-                    style={({ pressed }) => [
-                      styles.fileRow,
-                      pressed ? styles.sheetRowPressed : null,
-                    ]}
+                    onDelete={
+                      driveCanWrite && driveFolderId
+                        ? () => {
+                            void trashDriveFile(file);
+                          }
+                        : undefined
+                    }
                   >
-                    <Icon
-                      name={folder ? 'folder' : 'file'}
-                      size={18}
-                      color={theme.colors.textMuted}
-                    />
-                    <View style={styles.fileMain}>
-                      <Text style={[styles.sheetRowLabel, styles.fileName]} numberOfLines={2}>
-                        {file.name}
-                      </Text>
-                    </View>
-                    <Icon
-                      name={folder ? 'chevron-right' : 'more-horizontal'}
-                      size={17}
-                      color={theme.colors.textFaint}
-                    />
-                  </Pressable>
+                    <Pressable
+                      onPress={() =>
+                        folder
+                          ? setDrivePath((current) => [
+                              ...current,
+                              { id: file.id, name: file.name },
+                            ])
+                          : openDriveFile(file)
+                      }
+                      disabled={mutating}
+                      accessibilityRole="button"
+                      accessibilityLabel={folder ? `Open folder ${file.name}` : file.name}
+                      style={({ pressed }) => [
+                        styles.fileRow,
+                        pressed ? styles.sheetRowPressed : null,
+                      ]}
+                    >
+                      <Icon
+                        name={folder ? 'folder' : 'file'}
+                        size={18}
+                        color={theme.colors.textMuted}
+                      />
+                      <View style={styles.fileMain}>
+                        <Text style={[styles.sheetRowLabel, styles.fileName]} numberOfLines={2}>
+                          {file.name}
+                        </Text>
+                      </View>
+                      <Icon
+                        name={folder ? 'chevron-right' : 'file'}
+                        size={17}
+                        color={theme.colors.textFaint}
+                      />
+                    </Pressable>
+                  </FileRowActions>
                 );
               })
             )}
@@ -6590,87 +6598,87 @@ function SessionFilesSheet({
                           onDelivered={selecting && picked ? endSelection : undefined}
                           onModifiers={rememberModifiers}
                         >
-                          {entry.kind === 'directory' && !selecting ? (
-                            <SessionFolderRow
-                              name={entry.name}
-                              onPress={() => pressFileRow(entry)}
-                              accessibilityLabel={entry.name}
-                            />
-                          ) : (
-                            <Pressable
-                              onPress={() => {
-                                pressFileRow(entry);
-                              }}
-                              // Not on iPad, where a long press is the lift that
-                              // starts a native drag (UIDragInteraction is off on
-                              // iPhone by default); both firing at ~500 ms would
-                              // race. There the row menu and ⌘-click remain.
-                              onLongPress={
-                                !selecting && selectable && !longPressDrags
-                                  ? () => startSelection(entry)
-                                  : undefined
-                              }
-                              disabled={inert}
-                              accessibilityRole={selecting ? 'checkbox' : 'button'}
-                              accessibilityLabel={entry.name}
-                              accessibilityState={selecting ? { checked: picked } : undefined}
-                              style={({ pressed }) => [
-                                styles.fileRow,
-                                pressed || picked ? styles.sheetRowPressed : null,
-                                inert ? styles.sheetRowDisabled : null,
-                              ]}
-                            >
-                              <Icon
-                                name={fileIcon(entry)}
-                                size={18}
-                                color={theme.colors.textMuted}
+                          <FileRowActions
+                            label={entry.name}
+                            disabled={mutating || selecting || root === 'drafts' || inert}
+                            onDelete={
+                              entry.kind === 'file' || entry.kind === 'directory'
+                                ? () => confirmDelete([entry.path], () => undefined)
+                                : undefined
+                            }
+                            onMenu={
+                              entry.kind === 'file'
+                                ? () => setMenuFor({ path: entry.path, inPreview: false })
+                                : undefined
+                            }
+                          >
+                            {entry.kind === 'directory' && !selecting ? (
+                              <SessionFolderRow
+                                name={entry.name}
+                                onPress={() => pressFileRow(entry)}
+                                accessibilityLabel={entry.name}
                               />
-                              <View style={styles.fileMain}>
-                                <Text
-                                  style={[styles.sheetRowLabel, styles.fileName]}
-                                  numberOfLines={2}
-                                  ellipsizeMode="tail"
-                                >
-                                  {entry.name}
-                                </Text>
-                                {meta.length > 0 ? (
-                                  <Text style={styles.fileMeta} numberOfLines={1}>
-                                    {meta}
-                                  </Text>
-                                ) : null}
-                              </View>
-                              {selecting ? (
-                                <View style={styles.fileDownload}>
-                                  <Icon
-                                    name={picked ? 'check-circle' : 'circle'}
-                                    size={18}
-                                    color={picked ? theme.colors.action : theme.colors.textFaint}
-                                  />
-                                </View>
-                              ) : entry.kind === 'file' ? (
-                                <Pressable
-                                  onPress={() => setMenuFor({ path: entry.path, inPreview: false })}
-                                  disabled={mutating}
-                                  hitSlop={8}
-                                  accessibilityRole="button"
-                                  accessibilityLabel={`More actions for ${entry.name}`}
-                                  style={styles.fileDownload}
-                                >
-                                  <Icon
-                                    name="more-horizontal"
-                                    size={18}
-                                    color={theme.colors.textMuted}
-                                  />
-                                </Pressable>
-                              ) : (
+                            ) : (
+                              <Pressable
+                                onPress={() => {
+                                  pressFileRow(entry);
+                                }}
+                                // Not on iPad, where a long press is the lift that
+                                // starts a native drag (UIDragInteraction is off on
+                                // iPhone by default); both firing at ~500 ms would
+                                // race. There the row menu and ⌘-click remain.
+                                onLongPress={
+                                  !selecting && selectable && !longPressDrags
+                                    ? () => startSelection(entry)
+                                    : undefined
+                                }
+                                disabled={inert}
+                                accessibilityRole={selecting ? 'checkbox' : 'button'}
+                                accessibilityLabel={entry.name}
+                                accessibilityState={selecting ? { checked: picked } : undefined}
+                                style={({ pressed }) => [
+                                  styles.fileRow,
+                                  pressed || picked ? styles.sheetRowPressed : null,
+                                  inert ? styles.sheetRowDisabled : null,
+                                ]}
+                              >
                                 <Icon
-                                  name="chevron-right"
-                                  size={17}
-                                  color={theme.colors.textFaint}
+                                  name={fileIcon(entry)}
+                                  size={18}
+                                  color={theme.colors.textMuted}
                                 />
-                              )}
-                            </Pressable>
-                          )}
+                                <View style={styles.fileMain}>
+                                  <Text
+                                    style={[styles.sheetRowLabel, styles.fileName]}
+                                    numberOfLines={2}
+                                    ellipsizeMode="tail"
+                                  >
+                                    {entry.name}
+                                  </Text>
+                                  {meta.length > 0 ? (
+                                    <Text style={styles.fileMeta} numberOfLines={1}>
+                                      {meta}
+                                    </Text>
+                                  ) : null}
+                                </View>
+                                {selecting ? (
+                                  <View style={styles.fileDownload}>
+                                    <Icon
+                                      name={picked ? 'check-circle' : 'circle'}
+                                      size={18}
+                                      color={picked ? theme.colors.action : theme.colors.textFaint}
+                                    />
+                                  </View>
+                                ) : entry.kind === 'directory' ? (
+                                  <Icon
+                                    name="chevron-right"
+                                    size={17}
+                                    color={theme.colors.textFaint}
+                                  />
+                                ) : null}
+                              </Pressable>
+                            )}
+                          </FileRowActions>
                         </DragSource>
                       );
                     })
@@ -6702,6 +6710,7 @@ function SessionFilesSheet({
             ) : null}
           </>
         )}
+        {confirmSheet}
         {menuFor ? (
           <FileActionMenu
             title={fileNameFromPath(menuFor.path)}

@@ -239,20 +239,12 @@ export function ProjectPage({
   if (inline && knowledgeArea !== undefined) {
     return (
       <View style={styles.flex} testID="project-knowledge">
-        <View style={styles.topBar}>
-          <Button
-            label={name}
-            icon="chevron-left"
-            variant="text"
-            size="compact"
-            onPress={() => setKnowledgeArea(undefined)}
-          />
-        </View>
         <KnowledgeColumn
           key={`${projectId}:${knowledgeArea}`}
           client={client}
           scope={knowledgeScope}
           start={knowledgeArea}
+          exit={{ label: name, onPress: () => setKnowledgeArea(undefined) }}
         />
       </View>
     );

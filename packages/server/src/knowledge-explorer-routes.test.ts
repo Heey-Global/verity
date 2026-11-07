@@ -322,6 +322,66 @@ describe('session explorer knowledge roots', () => {
     ).not.toContain('shared');
   });
 
+  it('deletes ordinary Wiki entries without sessions and protects library roots and decisions', async () => {
+    const dir = projectKnowledgeDir(dataRoot, 'p-1');
+    await app.inject('/projects/p-1/knowledge/files');
+    writeFileSync(join(dir, 'insights/deletable.md'), 'Temporary');
+    writeFileSync(join(dir, 'sources/documents/original.txt'), 'Original');
+    const remove = (path: string) =>
+      app.inject({
+        method: 'DELETE',
+        url: `/projects/p-1/knowledge/files?path=${encodeURIComponent(path)}`,
+      });
+    expect((await remove('insights/deletable.md')).statusCode).toBe(200);
+    expect(existsSync(join(dir, 'insights/deletable.md'))).toBe(false);
+    for (const path of [
+      'sources',
+      'insights',
+      'insights/decisions',
+      'insights/decisions/record.md',
+      'insights/./decisions/record.md',
+      'insights/../sources/documents/original.txt',
+    ]) {
+      expect((await remove(path)).statusCode).toBe(403);
+    }
+    symlinkSync('../sources', join(dir, 'insights/deletion-alias'));
+    expect((await remove('insights/deletion-alias/documents/original.txt')).statusCode).toBe(400);
+    expect(readFileSync(join(dir, 'sources/documents/original.txt'), 'utf8')).toBe('Original');
+  });
+
+  it('deletes Sources files and folders with their extracted text without following aliases', async () => {
+    const dir = projectKnowledgeDir(dataRoot, 'p-1');
+    await app.inject('/projects/p-1/knowledge/files');
+    const sourcePath = 'sources/documents/import/batch/original.txt';
+    mkdirSync(join(dir, 'sources/documents/import/batch'), { recursive: true });
+    writeFileSync(join(dir, sourcePath), 'Original');
+    const extracted = knowledgeExtractionPath(dir, sourcePath);
+    mkdirSync(join(extracted, '..'), { recursive: true });
+    writeFileSync(extracted, 'Extracted original');
+    writeFileSync(`${extracted}.meta.json`, '{}');
+    writeFileSync(join(dir, 'insights/retained.md'), 'Retained Wiki');
+    symlinkSync('../../../insights', join(dir, 'sources/documents/import/wiki-alias'));
+    const remove = (path: string) =>
+      app.inject({
+        method: 'DELETE',
+        url: `/projects/p-1/knowledge/files?path=${encodeURIComponent(path)}`,
+      });
+    expect((await remove('sources/documents/import')).statusCode).toBe(200);
+    expect(existsSync(join(dir, 'sources/documents/import'))).toBe(false);
+    expect(existsSync(extracted)).toBe(false);
+    expect(existsSync(`${extracted}.meta.json`)).toBe(false);
+    expect(readFileSync(join(dir, 'insights/retained.md'), 'utf8')).toBe('Retained Wiki');
+    writeFileSync(join(dir, 'sources/documents/another.txt'), 'Another');
+    expect((await remove('sources/documents/another.txt')).statusCode).toBe(200);
+    expect(existsSync(join(dir, 'sources/documents/another.txt'))).toBe(false);
+    expect((await remove('sources/../insights/retained.md')).statusCode).toBe(403);
+    expect((await remove('sources\\..\\insights\\retained.md')).statusCode).toBe(403);
+    expect((await remove('sources/documents\\..\\..\\insights/retained.md')).statusCode).toBe(403);
+    symlinkSync('../../insights', join(dir, 'sources/documents/wiki-alias'));
+    expect((await remove('sources/documents/wiki-alias/retained.md')).statusCode).toBe(400);
+    expect(readFileSync(join(dir, 'insights/retained.md'), 'utf8')).toBe('Retained Wiki');
+  });
+
   it('keeps the worktree root exactly what it was', async () => {
     // The default when no root is named, so every client built before the
     // knowledge roots existed keeps browsing the worktree.
@@ -382,6 +442,21 @@ describe('session explorer knowledge roots', () => {
     expect(readFileSync(join(worktree, EXTRACTED_TEXT_DIR, 'ok.txt.md'), 'utf8')).toBe(
       'unrelated worktree file',
     );
+  });
+
+  it('deletes a worktree folder recursively and preserves external symlink targets', async () => {
+    mkdirSync(join(worktree, 'remove/nested'), { recursive: true });
+    mkdirSync(join(worktree, 'keep'), { recursive: true });
+    writeFileSync(join(worktree, 'remove/nested/note.md'), 'remove');
+    writeFileSync(join(worktree, 'keep/note.md'), 'keep');
+    symlinkSync(join(worktree, 'keep'), join(worktree, 'remove/link'));
+    const res = await app.inject({
+      method: 'DELETE',
+      url: '/sessions/s-knowledge/files?root=worktree&path=remove',
+    });
+    expect(res.statusCode).toBe(200);
+    expect(existsSync(join(worktree, 'remove'))).toBe(false);
+    expect(readFileSync(join(worktree, 'keep/note.md'), 'utf8')).toBe('keep');
   });
 
   it('refuses to delete derived text or the shared mount point', async () => {

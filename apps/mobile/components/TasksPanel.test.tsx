@@ -1,12 +1,13 @@
 jest.mock('expo-router', () => ({ router: { push: jest.fn() } }));
 import { act, render, fireEvent } from '@testing-library/react-native';
 import { TasksPanel } from './TasksPanel';
+import { FileRowActions } from './files/FileRowActions';
 import { Alert } from 'react-native';
 import { router } from 'expo-router';
 import { dispatchTasks } from '../lib/taskDispatch';
 import { saveTaskPreferences } from '../lib/taskPreferences';
 import { createVerityClient } from '../lib/client';
-import { patchTask, useTasks } from '../lib/tasksStore';
+import { patchTask, removeTask, useTasks } from '../lib/tasksStore';
 import type { Task } from '@verity/mobile';
 jest.mock('../lib/tasksStore', () => ({
   useTasks: jest.fn(),
@@ -40,6 +41,7 @@ beforeEach(() => {
   jest.mocked(router.push).mockClear();
   props.onClose.mockClear();
   jest.mocked(patchTask).mockClear();
+  jest.mocked(removeTask).mockClear();
   void saveTaskPreferences({ tab: 'mine', projectId: null });
 });
 jest.mock('../lib/taskDispatch', () => ({ dispatchTasks: jest.fn() }));
@@ -190,9 +192,14 @@ it('separates agent steps and includes completed steps in the current session', 
   expect(ui.getByText('Rate-limit login')).toBeTruthy();
   expect(ui.queryByText('Other session step')).toBeNull();
   expect(ui.queryByText(/New Session/)).toBeNull();
-  // Step actions live in the shared "…" card, not inline chips.
-  expect(ui.queryByText('Move to my tasks')).toBeNull();
-  expect(ui.getAllByA11yHint('Opens step actions')).toHaveLength(2);
+  // Agent steps use the same revealable actions as user tasks.
+  expect(
+    ui
+      .UNSAFE_getAllByType(FileRowActions)
+      .every((row) => row.props.moveLabel === 'Move to my tasks'),
+  ).toBe(true);
+  expect(ui.UNSAFE_getAllByType(FileRowActions)).toHaveLength(2);
+  expect(ui.queryByLabelText('Step actions')).toBeNull();
   expect(ui.queryByLabelText('Session · 1')).toBeNull();
   expect(ui.getAllByText('1/2')).toHaveLength(2);
   ui.rerender(<TasksPanel {...props} context={{ projectId: 'p', sessionId: 'x' }} />);
@@ -225,6 +232,7 @@ it('edits the text in place and saves it when the field is left', () => {
   expect(patchTask).toHaveBeenCalledWith(task, { title: 'Sharper outcome' });
   // Emptying the field restores the text instead of saving nothing.
   jest.mocked(patchTask).mockClear();
+  jest.mocked(removeTask).mockClear();
   fireEvent(field, 'focus');
   fireEvent.changeText(field, '   ');
   fireEvent(field, 'blur');
@@ -255,6 +263,7 @@ it('keeps steps of ended sessions out of the operator list', () => {
 
 it('does not overwrite a concurrent title on blur without typing', () => {
   jest.mocked(patchTask).mockClear();
+  jest.mocked(removeTask).mockClear();
   jest.mocked(useTasks).mockReturnValue({ tasks: [task], pending: [], conflicts: [] });
   const ui = render(<TasksPanel {...props} />);
   fireEvent(ui.getByLabelText('Task text'), 'focus');
@@ -453,8 +462,80 @@ it('preserves a focused description edit when generation switches to a title', (
   expect(ui.getByDisplayValue(readyTask.title)).toBeTruthy();
   expect(patchTask).toHaveBeenCalledWith(pendingTask, { detail: 'Edited description' });
   jest.mocked(patchTask).mockClear();
+  jest.mocked(removeTask).mockClear();
   fireEvent(ui.getByLabelText('Task text'), 'focus');
   fireEvent.changeText(ui.getByLabelText('Task text'), 'Better title');
   fireEvent(ui.getByLabelText('Task text'), 'blur');
   expect(patchTask).toHaveBeenCalledWith(readyTask, { title: 'Better title' });
+});
+
+it('confirms a revealed Delete before deleting a task, and retains completion', async () => {
+  jest.useFakeTimers();
+  const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+  jest.mocked(removeTask).mockReset().mockResolvedValue(undefined);
+  jest.mocked(patchTask).mockResolvedValue(undefined);
+  jest.mocked(useTasks).mockReturnValue({ tasks: [task], pending: [], conflicts: [] });
+  try {
+    const ui = render(<TasksPanel {...props} />);
+    await act(async () => {});
+    await act(async () => fireEvent.press(ui.getByLabelText('Complete task')));
+    expect(patchTask).toHaveBeenCalledWith(task, { status: 'done' });
+    act(() => ui.UNSAFE_getByType(FileRowActions).props.onDelete());
+    act(() => jest.advanceTimersByTime(350));
+    expect(removeTask).not.toHaveBeenCalled();
+    expect(alert).toHaveBeenLastCalledWith('Delete task?', task.title, expect.any(Array));
+    await act(async () =>
+      alert.mock.calls
+        .at(-1)?.[2]
+        ?.find((button) => button.text === 'Delete')
+        ?.onPress?.(),
+    );
+    expect(removeTask).toHaveBeenCalledWith(task.id);
+  } finally {
+    alert.mockRestore();
+    jest.useRealTimers();
+  }
+});
+
+it('drops agent steps through the same reveal gesture without deleting task records', async () => {
+  jest.useFakeTimers();
+  const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+  const step = { ...task, origin: 'agent' as const, projectId: 'p', sessionId: 's' };
+  jest.mocked(removeTask).mockReset();
+  jest.mocked(patchTask).mockResolvedValue(undefined);
+  jest.mocked(useTasks).mockReturnValue({ tasks: [step], pending: [], conflicts: [] });
+  try {
+    const ui = render(<TasksPanel {...props} context={{ projectId: 'p', sessionId: 's' }} />);
+    await act(async () => {});
+    fireEvent.press(ui.getByLabelText('Agent'));
+    const actions = ui.UNSAFE_getByType(FileRowActions);
+    expect(actions.props.deleteLabel).toBe('Drop step');
+    act(() => actions.props.onDelete());
+    act(() => jest.advanceTimersByTime(350));
+    expect(patchTask).not.toHaveBeenCalled();
+    await act(async () =>
+      alert.mock.calls
+        .at(-1)?.[2]
+        ?.find((button) => button.text === 'Drop')
+        ?.onPress?.(),
+    );
+    expect(patchTask).toHaveBeenCalledWith(step, { status: 'dropped' });
+    expect(removeTask).not.toHaveBeenCalled();
+  } finally {
+    alert.mockRestore();
+    jest.useRealTimers();
+  }
+});
+
+it('reveals only Move and Delete, with completion kept on the dot', async () => {
+  jest.mocked(useTasks).mockReturnValue({ tasks: [task], pending: [], conflicts: [] });
+  const ui = render(<TasksPanel {...props} />);
+  await act(async () => {});
+  const actions = ui.UNSAFE_getByType(FileRowActions);
+  expect(actions.props.onMenu).toBeUndefined();
+  expect(ui.queryByLabelText('Task actions')).toBeNull();
+  expect(ui.queryByText('Mark done')).toBeNull();
+  expect(ui.getByLabelText('Complete task')).toBeTruthy();
+  act(() => actions.props.onMove());
+  expect(ui.getByText('Move to')).toBeTruthy();
 });

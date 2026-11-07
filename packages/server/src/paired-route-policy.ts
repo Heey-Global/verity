@@ -98,6 +98,10 @@ const resourceRules: ReadonlyMap<string, ResourceRule> = new Map([
     { kind: 'project', parameter: 'id', permission: 'read' },
   ],
   [
+    routeScopeKey('DELETE', '/projects/:id/knowledge/files'),
+    { kind: 'project', parameter: 'id', permission: 'manage' },
+  ],
+  [
     routeScopeKey('PUT', '/projects/:id/knowledge/files/content'),
     { kind: 'project', parameter: 'id', permission: 'manage' },
   ],

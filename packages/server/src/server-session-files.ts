@@ -40,6 +40,7 @@ import { acquireKnowledgeMutationLock } from './knowledge-mutation-lock.js';
 import { markProjectOverviewAuthoritative } from './project-overview-file.js';
 import { projectClonePath } from './provisioner.js';
 import { renameWorktreeFile } from './rename-worktree-file.js';
+import { removeSessionDirectory } from './remove-session-directory.js';
 import type { ServerDeps } from './server-deps.js';
 import {
   excludeFileHistoryFromGit,
@@ -672,11 +673,29 @@ export function registerServerSessionFiles(
             reply.code(404);
             return { error: 'file not found' };
           }
-          if (!stats.isFile()) {
+          if (
+            stats.isDirectory() &&
+            (root.root === 'worktree' || root.root === 'documents' || root.root === 'sources')
+          ) {
+            try {
+              await removeSessionDirectory(
+                file.directoryPath,
+                file.name,
+                root.root !== 'worktree'
+                  ? (relative) =>
+                      removeKnowledgeExtraction(...extractionArgs(root, `${file.rel}/${relative}`))
+                  : undefined,
+              );
+            } catch (error) {
+              reply.code(400);
+              return { error: error instanceof Error ? error.message : 'Could not delete folder' };
+            }
+          } else if (stats.isFile()) {
+            await unlink(`${file.directoryPath}/${file.name}`);
+          } else {
             reply.code(400);
-            return { error: 'only files can be deleted' };
+            return { error: 'only files and writable folders can be deleted' };
           }
-          await unlink(`${file.directoryPath}/${file.name}`);
           if (root.root === 'knowledge' && file.rel === 'overview.md')
             await markProjectOverviewAuthoritative(root.dir);
           if (root.root !== 'worktree')

@@ -4989,3 +4989,17 @@ it('ends only the displayed mockup revision without changing screen marks', asyn
     init: { method: 'POST', body: JSON.stringify({ action: 'complete', revision: 7 }) },
   });
 });
+
+it('reads a Drive snapshot and preserves its version when moving it to trash', async () => {
+  const file = { id: 'file/1', name: 'Note', mimeType: 'text/plain', version: '"v1"' };
+  const { fetch, calls } = fakeFetchSequence(json({ file }), new Response(null, { status: 204 }));
+  const client = new VerityClient({ baseUrl: 'http://host', fetch });
+  expect(await client.getProjectGoogleDriveFile('p/1', 'root/1', file.id)).toEqual(file);
+  await client.trashProjectGoogleDriveFile('p/1', 'root/1', file.id, file.version);
+  expect(calls.map(({ url }) => url)).toEqual([
+    'http://host/projects/p%2F1/google-drive/folders/root%2F1/files/file%2F1',
+    'http://host/projects/p%2F1/google-drive/folders/root%2F1/files/file%2F1',
+  ]);
+  expect(calls[1]?.init?.method).toBe('DELETE');
+  expect(jsonBody(calls[1])).toEqual({ confirmed: true, expectedVersion: '"v1"' });
+});
