@@ -368,7 +368,7 @@ export interface EmbeddedServer {
  * app entirely: the key travels between two Verity processes over the Updater's
  * control socket, and never over a route a device could reach.
  */
-export interface EmbeddedSecretKeyHandoff {
+interface EmbeddedSecretKeyHandoff {
   /** Key material to seal for the successor, or undefined while sealed. */
   exportKeyMaterial(): string | undefined;
 }

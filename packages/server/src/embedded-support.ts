@@ -116,7 +116,7 @@ export async function materializeControlPlaneAgentEnv(
  * signature VERIFICATION keeps working in a control-plane session — git uses the
  * same program for both, and refusing wholesale would break reading history.
  */
-export async function materializeControlPlaneGitSigner(
+async function materializeControlPlaneGitSigner(
   secretRoot: string,
   inherited: NodeJS.ProcessEnv = process.env,
 ): Promise<NodeJS.ProcessEnv> {
@@ -590,7 +590,7 @@ export function devcontainerBuildOptionsForDockerBaseUrl(dockerBaseUrl: string):
 // just as gone: the reset deleted the toolkit Feature package outright, so every
 // tag of it 404s. Shared with the rest rather than re-derived here, which is how
 // this one came to lag the other by eight patch versions unnoticed.
-export const DEFAULT_SANDBOX_TOOLKIT_FEATURE_REF = DEFAULT_TOOLKIT_FEATURE_FALLBACK;
+const DEFAULT_SANDBOX_TOOLKIT_FEATURE_REF = DEFAULT_TOOLKIT_FEATURE_FALLBACK;
 
 export function rejectLatestImageRef(ref: string, label: string): string {
   const trimmed = ref.trim();
@@ -618,7 +618,7 @@ export function normalizeFeatureTag(ref: string): string {
 }
 
 /** The repository portion of an OCI ref (drops any `:tag` and `@digest`). */
-export function featureRepoFromRef(ref: string): string {
+function featureRepoFromRef(ref: string): string {
   const at = ref.indexOf('@');
   const noDigest = at === -1 ? ref : ref.slice(0, at);
   const lastSlash = noDigest.lastIndexOf('/');
@@ -931,7 +931,7 @@ export function readBundledDevcontainerFeature():
   }
 }
 
-export function bundledFeatureIdentity(dir: string): string {
+function bundledFeatureIdentity(dir: string): string {
   const hash = createHash('sha256');
   const files: string[] = [];
   const walk = (current: string): void => {
