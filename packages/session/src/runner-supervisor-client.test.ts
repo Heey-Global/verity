@@ -1870,13 +1870,21 @@ describe('SupervisorRunnerRecovery', () => {
     projectId = 'project-1',
     sessionProjectId: string | null = projectId,
     workerStatus?: string,
+    persistedSessionId?: unknown,
   ) {
     const runtime = join(dir, 'runners', projectId);
     const turn = join(runtime, 'turns', 'turn-1');
     await mkdir(turn, { recursive: true });
     if (eventContents !== null) await writeFile(join(turn, 'events.jsonl'), eventContents);
     const supervisor = join(runtime, 'supervisor.sock');
-    await serve(supervisor, { ok: true, state: state(status), workerStatus });
+    await serve(supervisor, {
+      ok: true,
+      state: {
+        ...state(status),
+        ...(persistedSessionId === undefined ? {} : { sessionId: persistedSessionId }),
+      },
+      workerStatus,
+    });
     if (status === 'running') {
       const control = createServer();
       servers.push(control);
@@ -1908,6 +1916,25 @@ describe('SupervisorRunnerRecovery', () => {
       },
     });
   });
+
+  it.each(['session-1', 'another-session', '../invalid', 42, null])(
+    'validates persisted session ownership before recovery: %j',
+    async (persistedSessionId) => {
+      const recovery = await fixture(
+        'running',
+        '{}\n',
+        'project-1',
+        'project-1',
+        'live',
+        persistedSessionId,
+      );
+      await expect(
+        recovery.discover({ sessionId: 'session-1', turnId: 'turn-1', startCommandId: 'start-1' }),
+      ).resolves.toMatchObject({
+        status: persistedSessionId === 'session-1' ? 'live' : 'uncertain',
+      });
+    },
+  );
 
   it.each(['uncertain', 'invalid'])(
     'does not mistake stale state/socket for a live worker (%s)',

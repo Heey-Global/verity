@@ -14,7 +14,18 @@ import {
 } from 'node:fs';
 import { createConnection, createServer } from 'node:net';
 import { constants as osConstants } from 'node:os';
-import { access, chmod, lstat, mkdir, open, readFile, readdir, rename, rm } from 'node:fs/promises';
+import {
+  access,
+  chmod,
+  lstat,
+  mkdir,
+  open,
+  opendir,
+  readFile,
+  readdir,
+  rename,
+  rm,
+} from 'node:fs/promises';
 import { delimiter, dirname, join, resolve } from 'node:path';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { fileURLToPath, URL } from 'node:url';
@@ -1509,7 +1520,7 @@ export async function readTurnState(runtimeDir, turnId) {
     throw error;
   });
   if (stats === undefined) return undefined;
-  if (!stats.isFile() || stats.isSymbolicLink())
+  if (!stats.isFile() || stats.isSymbolicLink() || stats.size > 64 * 1024)
     throw new Error(`invalid state file for ${turnId}`);
   const raw = await readFile(path, 'utf8').catch((error) => {
     if (error?.code === 'ENOENT') return undefined;
@@ -1525,6 +1536,8 @@ export async function readTurnState(runtimeDir, turnId) {
     !SAFE_ID.test(parsed.startCommandId) ||
     typeof parsed.runnerInstanceId !== 'string' ||
     !SAFE_ID.test(parsed.runnerInstanceId) ||
+    (parsed.sessionId !== undefined &&
+      (typeof parsed.sessionId !== 'string' || !SAFE_ID.test(parsed.sessionId))) ||
     !['claimed', 'running', 'settled'].includes(parsed.status) ||
     typeof parsed.createdAt !== 'number' ||
     !Number.isFinite(parsed.createdAt) ||
@@ -1555,12 +1568,33 @@ export async function readTurnState(runtimeDir, turnId) {
   return parsed;
 }
 
+const cacheClaimEpochs = new Map();
+const cacheScans = new Map();
+const activeCacheClaims = new Map();
+const cacheFinalAdmissions = new Map();
+
 export async function claimTurn(runtimeDir, request, runnerInstanceId) {
-  const { turnId, startCommandId } = request;
+  while (cacheFinalAdmissions.has(runtimeDir)) await cacheFinalAdmissions.get(runtimeDir);
+  activeCacheClaims.set(runtimeDir, (activeCacheClaims.get(runtimeDir) ?? 0) + 1);
+  cacheClaimEpochs.set(runtimeDir, (cacheClaimEpochs.get(runtimeDir) ?? 0) + 1);
+  try {
+    return await claimTurnImpl(runtimeDir, request, runnerInstanceId);
+  } finally {
+    cacheClaimEpochs.set(runtimeDir, (cacheClaimEpochs.get(runtimeDir) ?? 0) + 1);
+    const active = activeCacheClaims.get(runtimeDir) - 1;
+    if (active === 0) activeCacheClaims.delete(runtimeDir);
+    else activeCacheClaims.set(runtimeDir, active);
+  }
+}
+
+async function claimTurnImpl(runtimeDir, request, runnerInstanceId) {
+  const { turnId, startCommandId, sessionId } = request;
   if (typeof turnId !== 'string' || !SAFE_ID.test(turnId)) throw new Error('invalid turnId');
   if (typeof startCommandId !== 'string' || !SAFE_ID.test(startCommandId)) {
     throw new Error('invalid startCommandId');
   }
+  if (sessionId !== undefined && (typeof sessionId !== 'string' || !SAFE_ID.test(sessionId)))
+    throw new Error('invalid sessionId');
   const turnsDir = join(runtimeDir, 'turns');
   const turnDir = join(turnsDir, turnId);
   const createdTurnsPath = await mkdir(turnsDir, { recursive: true, mode: 0o770 });
@@ -1581,6 +1615,7 @@ export async function claimTurn(runtimeDir, request, runnerInstanceId) {
       turnId,
       startCommandId,
       runnerInstanceId,
+      ...(sessionId === undefined ? {} : { sessionId }),
       status: 'claimed',
       createdAt: now,
       updatedAt: now,
@@ -1598,6 +1633,9 @@ export async function claimTurn(runtimeDir, request, runnerInstanceId) {
   const state = await readTurnState(runtimeDir, turnId);
   if (state === undefined) {
     return { outcome: 'ambiguous', reason: 'turn-directory-without-state' };
+  }
+  if (state.sessionId !== undefined && state.sessionId !== sessionId) {
+    return { outcome: 'conflict', reason: 'session-identity-mismatch', state };
   }
   if (state.startCommandId !== startCommandId) {
     return { outcome: 'conflict', reason: 'start-command-mismatch', state };
@@ -2668,6 +2706,225 @@ async function brokerStorageRequest(request) {
   });
 }
 
+const CACHE_SCAN_PAGE = 256;
+const CACHE_SCAN_TTL_MS = 5 * 60_000;
+const cacheMaintenanceFlights = new Map();
+
+function cacheMaintenanceFailure(code) {
+  return Object.assign(new Error('Runner cache maintenance inventory is unavailable'), {
+    runnerCacheFailure: { code },
+  });
+}
+
+async function closeCacheScan(runtimeDir, scan) {
+  if (cacheScans.get(runtimeDir) === scan) cacheScans.delete(runtimeDir);
+  clearTimeout(scan.timer);
+  await scan.directory?.close().catch(() => undefined);
+}
+
+async function cacheTurnSummary(runtimeDir, turnId) {
+  try {
+    const state = await readTurnState(runtimeDir, turnId);
+    if (state === undefined) return { turnId, status: 'ambiguous', reason: 'missing-state' };
+    return {
+      turnId,
+      status: state.status,
+      startCommandId: state.startCommandId,
+      runnerInstanceId: state.runnerInstanceId,
+      ...(state.sessionId === undefined ? {} : { sessionId: state.sessionId }),
+    };
+  } catch {
+    return { turnId, status: 'ambiguous', reason: 'invalid-state' };
+  }
+}
+
+/** Scanning never grants deletion until every page has been classified. */
+function reclaimPackageCachesPaged(runtimeDir, request) {
+  const previous = cacheMaintenanceFlights.get(runtimeDir) ?? Promise.resolve();
+  const current = previous
+    .catch(() => undefined)
+    .then(() => reclaimPackageCachesPage(runtimeDir, request));
+  cacheMaintenanceFlights.set(runtimeDir, current);
+  void current
+    .finally(() => {
+      if (cacheMaintenanceFlights.get(runtimeDir) === current)
+        cacheMaintenanceFlights.delete(runtimeDir);
+    })
+    .catch(() => undefined);
+  return current;
+}
+
+async function withFinalCacheAdmission(runtimeDir, scan, run) {
+  if (activeCacheClaims.has(runtimeDir) || scan.epoch !== (cacheClaimEpochs.get(runtimeDir) ?? 0))
+    throw cacheMaintenanceFailure('turn-inventory-unavailable');
+  let release;
+  const barrier = new Promise((resolveBarrier) => {
+    release = resolveBarrier;
+  });
+  cacheFinalAdmissions.set(runtimeDir, barrier);
+  try {
+    return await run();
+  } finally {
+    if (cacheFinalAdmissions.get(runtimeDir) === barrier) cacheFinalAdmissions.delete(runtimeDir);
+    release();
+  }
+}
+
+async function reclaimPackageCachesPage(runtimeDir, request) {
+  const fingerprint = JSON.stringify([request.sessionIds, request.maxBytes]);
+  let scan = cacheScans.get(runtimeDir);
+  if (request.scanId === undefined) {
+    if (scan) await closeCacheScan(runtimeDir, scan);
+    const directory = await opendir(join(runtimeDir, 'turns')).catch((error) => {
+      if (error.code === 'ENOENT') return undefined;
+      throw cacheMaintenanceFailure('turn-inventory-unavailable');
+    });
+    scan = {
+      id: randomUUID(),
+      fingerprint,
+      directory,
+      cursor: 0,
+      epoch: cacheClaimEpochs.get(runtimeDir) ?? 0,
+      busy: new Set(),
+      pending: [],
+      counts: { missingState: 0, invalidState: 0, unsettledWithoutSession: 0 },
+    };
+    scan.timer = setTimeout(() => {
+      void closeCacheScan(runtimeDir, scan);
+    }, CACHE_SCAN_TTL_MS);
+    scan.timer.unref?.();
+    cacheScans.set(runtimeDir, scan);
+  } else if (!scan || scan.id !== request.scanId || scan.fingerprint !== fingerprint) {
+    throw cacheMaintenanceFailure('turn-inventory-unavailable');
+  }
+  try {
+    scan.timer.refresh(); // Expire abandoned scans, not an inventory making bounded progress.
+    if (scan.epoch !== (cacheClaimEpochs.get(runtimeDir) ?? 0))
+      throw cacheMaintenanceFailure('turn-inventory-unavailable');
+    if (request.scanId !== undefined) {
+      if (!Array.isArray(request.turnOwners) || request.turnOwners.length > CACHE_SCAN_PAGE)
+        throw new Error('invalid turn ownership response');
+      const pending = new Map(scan.pending.map((turn) => [turn.turnId, turn]));
+      const owners = new Map();
+      for (const owner of request.turnOwners) {
+        if (
+          !isObject(owner) ||
+          !pending.has(owner.turnId) ||
+          owners.has(owner.turnId) ||
+          typeof owner.conflict !== 'boolean' ||
+          (owner.sessionId !== undefined &&
+            (typeof owner.sessionId !== 'string' || !SAFE_ID.test(owner.sessionId)))
+        )
+          throw new Error('invalid turn ownership response');
+        owners.set(owner.turnId, owner);
+      }
+      for (const prior of scan.pending) {
+        const current = await cacheTurnSummary(runtimeDir, prior.turnId);
+        // An identity changed while the Server resolved a page: start a fresh scan.
+        if (
+          current.startCommandId !== prior.startCommandId ||
+          current.runnerInstanceId !== prior.runnerInstanceId
+        )
+          throw cacheMaintenanceFailure('turn-inventory-unavailable');
+        if (current.status === 'settled') continue;
+        const owner = owners.get(prior.turnId);
+        const sessionId = owner?.conflict ? undefined : owner?.sessionId;
+        if (
+          sessionId !== undefined &&
+          (current.sessionId === undefined || current.sessionId === sessionId)
+        ) {
+          if (request.sessionIds.includes(sessionId)) scan.busy.add(sessionId);
+        } else {
+          const key =
+            current.reason === 'missing-state'
+              ? 'missingState'
+              : current.reason === 'invalid-state'
+                ? 'invalidState'
+                : 'unsettledWithoutSession';
+          scan.counts[key] = Math.min(1_000_000, scan.counts[key] + 1);
+        }
+      }
+      scan.pending = [];
+    }
+    let done = scan.directory === undefined;
+    for (
+      let inspected = 0;
+      !done && inspected < CACHE_SCAN_PAGE && scan.pending.length < 64;
+      inspected++
+    ) {
+      const entry = await scan.directory.read();
+      if (entry === null) {
+        done = true;
+        break;
+      }
+      scan.cursor++;
+      if (!entry.isDirectory() || !SAFE_ID.test(entry.name)) continue;
+      const turn = await cacheTurnSummary(runtimeDir, entry.name);
+      if (turn.status === 'settled') continue;
+      if (turn.sessionId !== undefined) {
+        if (request.sessionIds.includes(turn.sessionId)) scan.busy.add(turn.sessionId);
+      } else scan.pending.push(turn);
+    }
+    if (!done || scan.pending.length > 0) {
+      return {
+        ok: true,
+        maintenancePending: true,
+        scanId: scan.id,
+        cursor: String(scan.cursor),
+        turnsNeedingOwnership: scan.pending,
+      };
+    }
+    if (scan.epoch !== (cacheClaimEpochs.get(runtimeDir) ?? 0))
+      throw cacheMaintenanceFailure('turn-inventory-unavailable');
+    const unknown = Object.values(scan.counts).some((count) => count > 0);
+    let response;
+    try {
+      response = await withFinalCacheAdmission(runtimeDir, scan, async () => {
+        const capabilities = await brokerStorageRequest({ protocolVersion: 1, kind: 'status' });
+        if (
+          capabilities.cacheMaintenanceVersion !== 2 ||
+          capabilities.runtimeAdmissionFenceVersion !== 1
+        )
+          throw cacheMaintenanceFailure('unsupported');
+        return await brokerStorageRequest({
+          protocolVersion: 1,
+          kind: 'reclaim-package-caches',
+          sessionIds: unknown ? [] : request.sessionIds.filter((id) => !scan.busy.has(id)),
+          maxBytes: request.maxBytes,
+        });
+      });
+    } catch (error) {
+      if (error?.runnerCacheFailure) throw error;
+      const code = ['EACCES', 'EPERM'].includes(error?.code)
+        ? 'broker-access-denied'
+        : ['ENOENT', 'ECONNREFUSED'].includes(error?.code)
+          ? 'broker-unavailable'
+          : error?.message === 'runner storage request timed out'
+            ? 'broker-timeout'
+            : error instanceof SyntaxError || error?.code === 'ERR_INVALID_RUNNER_STORAGE_RESPONSE'
+              ? 'broker-invalid-response'
+              : 'broker-rejected';
+      throw cacheMaintenanceFailure(code);
+    }
+    if (response.report && (unknown || scan.busy.size > 0)) {
+      response.report.usageComplete = false;
+      response.report.legacyBytes = null;
+      response.report.turnOwnershipCounts = scan.counts;
+      response.report.blockers = [
+        ...(response.report.blockers ?? []).slice(0, 99),
+        unknown
+          ? 'Runner turn ownership is unknown; legacy package caches were retained'
+          : 'Runner sessions have unsettled turns; their legacy package caches were retained',
+      ];
+    }
+    await closeCacheScan(runtimeDir, scan);
+    return response;
+  } catch (error) {
+    await closeCacheScan(runtimeDir, scan);
+    throw error;
+  }
+}
+
 export async function handleSupervisorRequest(
   runtimeDir,
   runnerInstanceId,
@@ -2697,6 +2954,8 @@ export async function handleSupervisorRequest(
         builtInSkillsVersion: skillsManifestHash ? 1 : 0,
         ...(skillsManifestHash ? { builtInSkillsManifestHash: skillsManifestHash } : {}),
         persistentSessionHomes: true,
+        cacheMaintenanceVersion: 2,
+        turnOwnershipVersion: 1,
         planningIsolation: capabilities.scriptIsolation,
         knowledgeIsolation: capabilities.scriptIsolation,
         scriptIsolation: capabilities.scriptIsolation,
@@ -2721,6 +2980,9 @@ export async function handleSupervisorRequest(
         request.maxBytes <= 0
       )
         throw new Error('invalid package cache request');
+      if (request.maintenanceVersion === 2)
+        return await reclaimPackageCachesPaged(runtimeDir, request);
+      if (request.maintenanceVersion !== undefined) throw cacheMaintenanceFailure('unsupported');
       const fail = (code, counts) =>
         Object.assign(
           new Error(

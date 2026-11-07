@@ -520,3 +520,111 @@ describe('EventStore.fenceRunningTurnIfSilent', () => {
     expect(await ctx.store.getEvents('s1')).toContainEqual({ t: 'prompt', text: 'work' });
   });
 });
+
+describe('maintenance turn ownership', () => {
+  beforeEach(async () => {
+    await ctx.store.createSession(SESSION);
+    await ctx.store.createSession({ ...SESSION, sessionId: 's2', worktree: '/wt/agent-s2' });
+  });
+
+  const resolve = (turns = [{ turnId: TURN }], sessionIds = ['s1']) =>
+    ctx.store.resolveRunnerTurnOwnership({ sessionIds, turns });
+
+  it('resolves an exact pre-frame running binding without claiming settlement', async () => {
+    await ctx.store.markTurnRunning({ sessionId: 's1', promptSeq: 1 });
+    await ctx.store.bindTurnIdentity('s1', { turnId: TURN, startCommandId: 'start-a' });
+    expect(
+      await ctx.store.resolveRunnerTurnOwnership({
+        sessionIds: ['s1'],
+        turns: [{ turnId: TURN, startCommandId: 'start-a' }],
+      }),
+    ).toEqual([{ turnId: TURN, sessionId: 's1', conflict: false }]);
+    expect(await ctx.store.listRunningTurns()).toHaveLength(1);
+  });
+
+  it('resolves missing local state from an immutable historical binding', async () => {
+    await ctx.store.ingestRunnerFrame('s1', slot(1));
+    await ctx.store.ingestRunnerFrame('s1', slot(2, { terminal: true }));
+    expect(await resolve()).toEqual([{ turnId: TURN, sessionId: 's1', conflict: false }]);
+  });
+
+  it('does not substitute an owner for a mismatched local start command', async () => {
+    await ctx.store.markTurnRunning({ sessionId: 's1', promptSeq: 1 });
+    await ctx.store.bindTurnIdentity('s1', { turnId: TURN, startCommandId: 'start-a' });
+    await ctx.store.ingestRunnerFrame('s1', slot(1));
+    expect(
+      await ctx.store.resolveRunnerTurnOwnership({
+        sessionIds: ['s1'],
+        turns: [{ turnId: TURN, startCommandId: 'different', runnerInstanceId: INSTANCE }],
+      }),
+    ).toEqual([{ turnId: TURN, conflict: true }]);
+  });
+
+  it('does not substitute an owner for a mismatched runner instance', async () => {
+    await ctx.store.ingestRunnerFrame('s1', slot(1));
+    expect(
+      await ctx.store.resolveRunnerTurnOwnership({
+        sessionIds: ['s1'],
+        turns: [{ turnId: TURN, runnerInstanceId: 'different' }],
+      }),
+    ).toEqual([{ turnId: TURN, conflict: true }]);
+  });
+
+  it('does not treat a recovery fence placeholder as an execution binding', async () => {
+    await ctx.store.fenceAbandonedTurn('s1', TURN);
+    expect(await resolve()).toEqual([{ turnId: TURN, conflict: false }]);
+  });
+
+  it('does not hide conflicting ownership outside the requested runtime', async () => {
+    await ctx.store.ingestRunnerFrame('s1', slot(1));
+    await ctx.store.markTurnRunning({ sessionId: 's2', promptSeq: 1 });
+    await ctx.store.bindTurnIdentity('s2', { turnId: TURN, startCommandId: 'start-b' });
+    expect(await resolve()).toEqual([{ turnId: TURN, conflict: true }]);
+  });
+
+  it('requires the caller to include the session in its authoritative runtime scope', async () => {
+    await ctx.store.ingestRunnerFrame('s1', slot(1));
+    expect(await resolve([{ turnId: TURN }], ['s2'])).toEqual([{ turnId: TURN, conflict: true }]);
+    // Dedicated control-plane routing can supply the same session in its own scope.
+    expect(await resolve([{ turnId: TURN }], ['s1', 's2'])).toEqual([
+      { turnId: TURN, sessionId: 's1', conflict: false },
+    ]);
+  });
+
+  it('leaves pre-frame failures without a surviving binding unknown', async () => {
+    await ctx.store.markTurnRunning({ sessionId: 's1', promptSeq: 1 });
+    await ctx.store.bindTurnIdentity('s1', { turnId: TURN, startCommandId: 'start-a' });
+    await ctx.store.clearRunningTurn('s1');
+    expect(await resolve()).toEqual([{ turnId: TURN, conflict: false }]);
+  });
+
+  it('rejects conflicting frame instances even without local state', async () => {
+    await ctx.store.ingestRunnerFrame('s1', slot(1));
+    await ctx.db
+      .insertInto('runner_frames')
+      .values({
+        turn_id: TURN,
+        frame_seq: 2,
+        session_id: 's1',
+        runner_instance_id: 'other-instance',
+        payload_hash: 'corrupt-binding',
+      })
+      .execute();
+    expect(await resolve()).toEqual([{ turnId: TURN, conflict: true }]);
+  });
+
+  it('bounds request identities before issuing ownership queries', async () => {
+    await expect(
+      ctx.store.resolveRunnerTurnOwnership({
+        sessionIds: ['s1'],
+        turns: Array.from({ length: 513 }, (_, index) => ({ turnId: `turn-${index}` })),
+      }),
+    ).rejects.toThrow('Invalid runner ownership inventory');
+    await expect(resolve([{ turnId: '../escape' }])).rejects.toThrow(
+      'Invalid runner ownership inventory',
+    );
+    await expect(resolve([{ turnId: TURN }, { turnId: TURN }])).rejects.toThrow(
+      'Invalid runner ownership inventory',
+    );
+  });
+});

@@ -5,6 +5,14 @@ export const DEFAULT_RUNTIME_DIR: string;
 export const DEFAULT_CONTROL_DIR: string;
 export const DEFAULT_WORKTREE_ROOT: string;
 export const DEFAULT_SCRIPT_SANDBOX_PATH: string;
+export function acquireRuntimeAdmissionLease(
+  options: AgentSpawnBrokerOptions,
+  exclusive?: boolean,
+): Promise<import('node:fs/promises').FileHandle>;
+export function reclaimPackageCachesOffline(
+  request: { sessionIds: string[]; maxBytes: number },
+  options: AgentSpawnBrokerOptions,
+): ReturnType<typeof reclaimPackageCaches>;
 export function acquirePackageCacheLease(
   options: AgentSpawnBrokerOptions,
   exclusive?: boolean,
@@ -50,6 +58,8 @@ export function resolveDockerGid(
 
 export interface AgentSpawnBrokerOptions {
   runtimeDir?: string;
+  /** Internal inherited fence for an offline owner-operation child. */
+  runtimeAdmissionLockFd?: number;
   controlDir?: string;
   enforceRoot?: boolean;
   agentUid: number;

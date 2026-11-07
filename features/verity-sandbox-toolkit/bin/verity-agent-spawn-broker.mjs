@@ -1138,6 +1138,92 @@ async function packageCacheDirectory(options) {
   return cache;
 }
 
+/** Admission and offline maintenance share an inode; children inherit the open-file-description lease. */
+export async function acquireRuntimeAdmissionLease(options, exclusive = false) {
+  const runtime = options.runtimeDir ?? DEFAULT_RUNTIME_DIR;
+  const root = await lstat(runtime);
+  if (
+    !root.isDirectory() ||
+    root.isSymbolicLink() ||
+    (options.runnerUid === undefined && root.uid !== process.getuid()) ||
+    (root.mode & 0o002) !== 0 ||
+    (await realpath(runtime)) !== runtime
+  )
+    throw new Error('unsafe runner runtime');
+  validateRunnerRuntimeStats(root, options);
+  const handle = await open(
+    join(runtime, 'admission.lock'),
+    constants.O_CREAT | constants.O_RDWR | constants.O_NOFOLLOW,
+    0o600,
+  );
+  try {
+    const metadata = await handle.stat();
+    if (
+      !metadata.isFile() ||
+      metadata.uid !== process.getuid() ||
+      metadata.nlink !== 1 ||
+      (metadata.mode & 0o077) !== 0
+    )
+      throw new Error('invalid runtime admission lease');
+    await new Promise((resolveLock, rejectLock) => {
+      const child = spawn(
+        '/usr/bin/flock',
+        [...(exclusive ? ['--exclusive', '--nonblock'] : ['--shared', '--wait', '30']), '3'],
+        { stdio: ['ignore', 'ignore', 'ignore', handle.fd] },
+      );
+      child.once('error', rejectLock);
+      child.once('exit', (code) =>
+        code === 0 ? resolveLock() : rejectLock(new Error('runner runtime is in use')),
+      );
+    });
+    return handle;
+  } catch (error) {
+    await handle.close();
+    throw error;
+  }
+}
+
+/** Caller must independently prove that every runtime consumer supports exclusion or is stopped. */
+export async function reclaimPackageCachesOffline(request, options) {
+  const lease = await acquireRuntimeAdmissionLease(options, true);
+  try {
+    return await reclaimPackageCaches(request, { ...options, runtimeAdmissionLockFd: lease.fd });
+  } finally {
+    await lease.close();
+  }
+}
+
+async function packageCacheMaintenanceMain(runtimeDir) {
+  let input = '';
+  const inputDeadline = setTimeout(() => {
+    process.stdin.destroy(new Error('package cache maintenance request timed out'));
+  }, 5_000);
+  try {
+    for await (const chunk of process.stdin) {
+      input += chunk.toString();
+      if (Buffer.byteLength(input) > 96 * 1024)
+        throw new Error('invalid package cache maintenance request');
+    }
+  } finally {
+    clearTimeout(inputDeadline);
+  }
+  const request = JSON.parse(input);
+  if (!isObject(request) || !Array.isArray(request.sessionIds) || request.sessionIds.length > 512)
+    throw new Error('invalid package cache maintenance request');
+  const report = await reclaimPackageCachesOffline(request, {
+    runtimeDir,
+    agentUid: Number(process.env.VERITY_AGENT_UID ?? 1000),
+    agentGid: Number(process.env.VERITY_AGENT_GID ?? 1000),
+    runnerUid: Number(process.env.VERITY_RUNNER_RUNTIME_UID ?? 1101),
+    runnerGid: Number(process.env.VERITY_RUNNER_RUNTIME_GID ?? 1101),
+  });
+  const output = JSON.stringify({ ok: true, report });
+  if (Buffer.byteLength(output) > 64 * 1024)
+    throw new Error('invalid package cache maintenance result');
+  process.stdout.write(output);
+  return true;
+}
+
 /** flock's open-file-description lease survives broker death in the spawned child. */
 export async function acquirePackageCacheLease(options, exclusive = false) {
   await packageCacheDirectory(options);
@@ -1230,7 +1316,15 @@ async function maintainPackageCache(parent, options, budget, maxBytes, shared = 
         fileURLToPath(import.meta.url),
         '--package-cache-leaf',
       ],
-      { stdio: ['pipe', 'pipe', 'ignore'], env: { PATH: '/usr/local/bin:/usr/bin:/bin' } },
+      {
+        stdio: [
+          'pipe',
+          'pipe',
+          'ignore',
+          ...(options.runtimeAdmissionLockFd === undefined ? [] : [options.runtimeAdmissionLockFd]),
+        ],
+        env: { PATH: '/usr/local/bin:/usr/bin:/bin' },
+      },
     );
     let output = '';
     const timer = setTimeout(
@@ -3551,6 +3645,22 @@ async function readConnectorUrl(path, expectedUid) {
 }
 
 export async function runAgentSpawnBroker(options = {}) {
+  if (options.enforceRoot !== false && process.getuid?.() !== 0)
+    throw new Error('agent spawn broker must run as root');
+  const admissionLease = await acquireRuntimeAdmissionLease(options);
+  let brokerLock;
+  try {
+    return await runAgentSpawnBrokerOnce(options, admissionLease, (lock) => {
+      brokerLock = lock;
+    });
+  } catch (error) {
+    await brokerLock?.close();
+    await admissionLease.close();
+    throw error;
+  }
+}
+
+async function runAgentSpawnBrokerOnce(options, admissionLease, onLock) {
   if (options.enforceRoot !== false && process.getuid?.() !== 0) {
     throw new Error('agent spawn broker must run as root');
   }
@@ -3591,6 +3701,7 @@ export async function runAgentSpawnBroker(options = {}) {
   const identity = validateIdentity(options);
   const managedRoots = await resolveAgentWorktreeRoots(options);
   const lock = await acquireLock(join(controlDir, 'agent-spawn-broker.lock'));
+  onLock(lock);
   await removeLegacyTrustedCliSecretFiles(options);
   const socketPath = join(controlDir, 'agent-spawn-broker.sock');
   await rm(socketPath, { force: true });
@@ -3601,8 +3712,14 @@ export async function runAgentSpawnBroker(options = {}) {
     options.connectorConfigPath ?? join(controlDir, 'egress-connector.url');
   const connectorConfigOwner = options.enforceRoot === false ? (process.getuid?.() ?? 0) : 0;
   let closing = false;
-  const spawnChild =
-    options.spawnChild ?? ((command, args, spawnOptions) => spawn(command, args, spawnOptions));
+  const spawnChild = (command, args, spawnOptions) => {
+    const stdio = Array.isArray(spawnOptions.stdio)
+      ? [...spawnOptions.stdio]
+      : Array(3).fill(spawnOptions.stdio ?? 'pipe');
+    // Managed servers and escaped descendants must keep offline maintenance excluded too.
+    stdio.push(admissionLease.fd);
+    return (options.spawnChild ?? spawn)(command, args, { ...spawnOptions, stdio });
+  };
   // Codex opens one shared SQLite state runtime for every fresh ACP process. Its
   // startup path can return EAGAIN when two processes open that runtime together,
   // even after all databases already exist. Serialize only that startup window:
@@ -3683,6 +3800,8 @@ export async function runAgentSpawnBroker(options = {}) {
             protocolVersion: AGENT_SPAWN_PROTOCOL_VERSION,
             managedAgentConfig: true,
             persistentSessionHomes: true,
+            cacheMaintenanceVersion: 2,
+            runtimeAdmissionFenceVersion: 1,
             planningIsolation: scriptIsolation.available,
             knowledgeIsolation: scriptIsolation.available,
             scriptIsolation: scriptIsolation.available,
@@ -4086,6 +4205,7 @@ export async function runAgentSpawnBroker(options = {}) {
       await new Promise((resolveClose) => server.close(resolveClose));
       await rm(socketPath, { force: true });
       await lock.close();
+      await admissionLease.close();
     },
   };
 }
@@ -4139,37 +4259,39 @@ if (invokedPath === fileURLToPath(import.meta.url)) {
       ? SHARED_SESSION_ROOT
       : undefined;
   const launch =
-    process.argv[2] === '--package-cache-leaf'
-      ? packageCacheLeafMain()
-      : process.argv[2] === '--probe'
-        ? probeAgentSpawnBroker(controlDir)
-        : runAgentSpawnBroker({
-            runtimeDir,
-            controlDir,
-            ...(sharedSessionRoot === undefined ? {} : { sharedSessionRoot }),
-            agentUid: Number(process.env.VERITY_AGENT_UID ?? 1000),
-            agentGid: Number(process.env.VERITY_AGENT_GID ?? 1000),
-            runnerUid: Number(process.env.VERITY_RUNNER_RUNTIME_UID ?? 1101),
-            runnerGid: Number(process.env.VERITY_RUNNER_RUNTIME_GID ?? 1101),
-            // ADR 0006 Amendment 1. Set by `verity-control-plane-runner-start` and
-            // by nothing else — but a project image CAN declare the same name, so
-            // the value is re-checked against the mounted inode here rather than
-            // trusted. See {@link resolveDockerGid}: no socket owned by the claimed
-            // group, no grant, which is every project Sandbox.
-            ...(() => {
-              const dockerGid = resolveDockerGid(process.env, (path) => statSync(path).gid);
-              return dockerGid === undefined ? {} : { dockerGid };
-            })(),
-            // Thread the broker's own (container-provided) environment into the
-            // Claude child through the `childEnvironment` allowlist. The container
-            // sets CLAUDE_CONFIG_DIR=/run/verity-runner/claude on the
-            // runner-supervisor path; without this the allowlisted copy() has no
-            // source and Claude never sees the config dir, so its transcript would
-            // land off the shared mount. The allowlist bounds exposure to the
-            // vetted keys only — inherited OAuth/API/egress secrets never cross
-            // (see the "passes only the local Claude connector coordinates" test).
-            env: process.env,
-          });
+    process.argv[2] === '--reclaim-package-caches-maintenance'
+      ? packageCacheMaintenanceMain(runtimeDir)
+      : process.argv[2] === '--package-cache-leaf'
+        ? packageCacheLeafMain()
+        : process.argv[2] === '--probe'
+          ? probeAgentSpawnBroker(controlDir)
+          : runAgentSpawnBroker({
+              runtimeDir,
+              controlDir,
+              ...(sharedSessionRoot === undefined ? {} : { sharedSessionRoot }),
+              agentUid: Number(process.env.VERITY_AGENT_UID ?? 1000),
+              agentGid: Number(process.env.VERITY_AGENT_GID ?? 1000),
+              runnerUid: Number(process.env.VERITY_RUNNER_RUNTIME_UID ?? 1101),
+              runnerGid: Number(process.env.VERITY_RUNNER_RUNTIME_GID ?? 1101),
+              // ADR 0006 Amendment 1. Set by `verity-control-plane-runner-start` and
+              // by nothing else — but a project image CAN declare the same name, so
+              // the value is re-checked against the mounted inode here rather than
+              // trusted. See {@link resolveDockerGid}: no socket owned by the claimed
+              // group, no grant, which is every project Sandbox.
+              ...(() => {
+                const dockerGid = resolveDockerGid(process.env, (path) => statSync(path).gid);
+                return dockerGid === undefined ? {} : { dockerGid };
+              })(),
+              // Thread the broker's own (container-provided) environment into the
+              // Claude child through the `childEnvironment` allowlist. The container
+              // sets CLAUDE_CONFIG_DIR=/run/verity-runner/claude on the
+              // runner-supervisor path; without this the allowlisted copy() has no
+              // source and Claude never sees the config dir, so its transcript would
+              // land off the shared mount. The allowlist bounds exposure to the
+              // vetted keys only — inherited OAuth/API/egress secrets never cross
+              // (see the "passes only the local Claude connector coordinates" test).
+              env: process.env,
+            });
   launch
     .then((broker) => {
       if (typeof broker === 'boolean') {
@@ -4181,9 +4303,19 @@ if (invokedPath === fileURLToPath(import.meta.url)) {
       process.once('SIGINT', shutdown);
     })
     .catch((error) => {
-      process.stderr.write(
-        `verity-agent-spawn-broker: ${error instanceof Error ? error.message : String(error)}\n`,
-      );
+      if (process.argv[2] === '--reclaim-package-caches-maintenance') {
+        process.stdout.write(
+          JSON.stringify({
+            ok: false,
+            code:
+              error?.message === 'runner runtime is in use' ? 'runtime-busy' : 'maintenance-failed',
+          }),
+        );
+      } else {
+        process.stderr.write(
+          `verity-agent-spawn-broker: ${error instanceof Error ? error.message : String(error)}\n`,
+        );
+      }
       process.exitCode = 1;
     });
 }

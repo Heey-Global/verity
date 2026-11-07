@@ -1330,6 +1330,7 @@ export class SupervisorRunnerClient implements RunnerClient {
       if (
         state === undefined ||
         state.startCommandId !== opts.startCommandId ||
+        (state.sessionId !== undefined && state.sessionId !== opts.storeSessionId) ||
         (response.outcome === 'terminal' ? state.status !== 'settled' : state.status !== 'running')
       ) {
         // `terminal` is the one outcome that cannot strand anything: the supervisor
@@ -1882,6 +1883,7 @@ function workerStartFailure(
 }
 
 type SupervisorState = {
+  sessionId?: string;
   protocolVersion: number;
   turnId: string;
   startCommandId: string;
@@ -1906,6 +1908,8 @@ function parseState(value: unknown, turnId: string): SupervisorState | undefined
     !SAFE_ID.test(value.startCommandId) ||
     typeof value.runnerInstanceId !== 'string' ||
     !SAFE_ID.test(value.runnerInstanceId) ||
+    (value.sessionId !== undefined &&
+      (typeof value.sessionId !== 'string' || !SAFE_ID.test(value.sessionId))) ||
     !['claimed', 'running', 'settled'].includes(String(value.status)) ||
     (value.workerExitCode !== undefined &&
       value.workerExitCode !== null &&
@@ -2415,7 +2419,11 @@ export class SupervisorRunnerRecovery implements RunnerRecovery {
       // Missing state is NOT proof of death: claimTurn creates the directory before
       // its atomic state write, so a concurrent get-turn can observe this window.
       if (state === undefined) return { status: 'uncertain' };
-      if (state.startCommandId !== marker.startCommandId || state.status === 'claimed') {
+      if (
+        state.startCommandId !== marker.startCommandId ||
+        (state.sessionId !== undefined && state.sessionId !== marker.sessionId) ||
+        state.status === 'claimed'
+      ) {
         return { status: 'uncertain' };
       }
       // New supervisors distinguish their actual/adopted workers from stale durable

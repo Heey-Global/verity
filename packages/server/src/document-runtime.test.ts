@@ -85,6 +85,14 @@ it('publishes turn edits through the runtime and exposes retained working copies
       expect(deleted.statusCode).toBe(200);
     });
     expect(await ctx.store.getSession('docs')).toBeUndefined();
+    // DELETE acknowledges logical deletion before retained document publication finishes.
+    // Keep the fixture alive until the durable cleanup marker confirms all writes completed.
+    await vi.waitFor(async () => {
+      expect(await ctx.store.getSessionDeletion('docs')).toMatchObject({ cleanupPending: false });
+    });
+    expect(await readFile(join(dataRoot, 'knowledge', 'p', 'insights', 'late.md'), 'utf8')).toBe(
+      'Unpublished late edit',
+    );
     const retained = await app.inject({
       method: 'GET',
       url: '/sessions/remaining/files/content?root=drafts&path=session/result.md',
