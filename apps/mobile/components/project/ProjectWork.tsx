@@ -240,7 +240,7 @@ function itemSubtitle(item: InboxItem, label: string): string | undefined {
 export function ProjectWork({
   client,
   projectId,
-  sessions,
+  sessions: serverSessions,
   feed,
   leadingRows = [],
   initialFilter = 'now',
@@ -265,6 +265,13 @@ export function ProjectWork({
    *  and its host (the wide layout's list and session pane) catch up. */
   onChanged: (sessionId: string, deleted: boolean) => void;
 }) {
+  // Keep confirmed removals hidden across stale parent refreshes while the
+  // server stops the session and cleans up its worktree.
+  const [removedIds, setRemovedIds] = useState<ReadonlySet<string>>(() => new Set());
+  const sessions = useMemo(
+    () => serverSessions.filter((session) => !removedIds.has(session.sessionId)),
+    [serverSessions, removedIds],
+  );
   const [filter, setFilter] = useState<WorkFilter>(initialFilter);
   const { unread: unreadIds, markSeen } = useUnread(client, sessions);
   const previews = useSessionPreviews();
@@ -319,13 +326,17 @@ export function ProjectWork({
     void client
       .setSessionFavorite(session.sessionId, session.favorite !== true)
       .then(() => onChanged(session.sessionId, false), failed('Could not update favorite'));
-  const remove = (session: SessionSummary, force = false) =>
+  const remove = (session: SessionSummary, force = false) => {
+    setRemovedIds((previous) => new Set(previous).add(session.sessionId));
+    setSettings(undefined);
     void client.deleteSession(session.sessionId, force ? { force } : {}).then(
-      () => {
-        setSettings(undefined);
-        onChanged(session.sessionId, true);
-      },
+      () => onChanged(session.sessionId, true),
       (caught) => {
+        setRemovedIds((previous) => {
+          const next = new Set(previous);
+          next.delete(session.sessionId);
+          return next;
+        });
         if (caught instanceof VerityApiError && caught.status === 409 && !force) {
           Alert.alert(
             'Session is still running',
@@ -340,6 +351,7 @@ export function ProjectWork({
         failed('Could not delete session')(caught);
       },
     );
+  };
   const confirmRemove = (session: SessionSummary) =>
     Alert.alert(
       'Delete session?',

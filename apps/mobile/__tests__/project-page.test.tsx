@@ -34,7 +34,7 @@ jest.mock('../lib/homePreferences', () => ({
 }));
 
 import type { SessionSummary, VerityClient } from '@verity/mobile';
-import { inboxItems } from '@verity/mobile';
+import { inboxItems, VerityApiError } from '@verity/mobile';
 import { act, fireEvent, render, screen, within } from '@testing-library/react-native';
 import { Alert } from 'react-native';
 
@@ -519,6 +519,66 @@ describe('project page', () => {
     // The wide layout clears its session pane and refreshes its list from this.
     expect(onSessionChanged).toHaveBeenCalledWith('login', true);
   });
+
+  it.each(['success', 'failure', 'busy'] as const)(
+    'hides a confirmed deletion immediately and handles %s',
+    async (outcome) => {
+      const alert = jest.spyOn(Alert, 'alert');
+      const onSessionChanged = jest.fn();
+      const { client } = await renderPage([running, favorite], { onSessionChanged });
+      let resolve!: (value: { sessionId: string }) => void;
+      let reject!: (error: Error) => void;
+      const deleteSession = jest.spyOn(client, 'deleteSession');
+      deleteSession.mockImplementationOnce(
+        () =>
+          new Promise((yes, no) => {
+            resolve = yes;
+            reject = no;
+          }),
+      );
+      fireEvent.press(screen.getByLabelText('Delete'));
+      expect(screen.getByLabelText('login, working')).toBeTruthy();
+      expect(client.deleteSession).not.toHaveBeenCalled();
+      const confirm = alert.mock.calls.at(-1)![2]!;
+      act(() => confirm.find((button) => button.text === 'Delete')!.onPress!());
+      expect(screen.queryByLabelText('login, working')).toBeNull();
+      expect(onSessionChanged).not.toHaveBeenCalled();
+      // Switching filters must not revive a row from the parent's stale snapshot.
+      fireEvent.press(screen.getByRole('tab', { name: 'All' }));
+      expect(screen.queryByLabelText('login, working')).toBeNull();
+      expect(screen.getByLabelText('blog, favorite')).toBeTruthy();
+
+      await act(async () => {
+        if (outcome === 'success') resolve({ sessionId: 'login' });
+        else reject(outcome === 'busy' ? new VerityApiError(409, 'busy') : new Error('offline'));
+      });
+      if (outcome === 'success') {
+        expect(screen.queryByLabelText('login, working')).toBeNull();
+        expect(onSessionChanged).toHaveBeenCalledWith('login', true);
+      } else {
+        expect(screen.getByLabelText('login, working')).toBeTruthy();
+        expect(onSessionChanged).not.toHaveBeenCalled();
+        expect(alert.mock.calls.at(-1)![0]).toBe(
+          outcome === 'busy' ? 'Session is still running' : 'Could not delete session',
+        );
+        if (outcome === 'busy') {
+          const retry = alert.mock.calls.at(-1)![2]!;
+          let finish!: (value: { sessionId: string }) => void;
+          deleteSession.mockImplementationOnce(
+            () =>
+              new Promise((yes) => {
+                finish = yes;
+              }),
+          );
+          act(() => retry.find((button) => button.text === 'Delete anyway')!.onPress!());
+          expect(screen.queryByLabelText('login, working')).toBeNull();
+          expect(client.deleteSession).toHaveBeenLastCalledWith('login', { force: true });
+          await act(async () => finish({ sessionId: 'login' }));
+          expect(onSessionChanged).toHaveBeenCalledWith('login', true);
+        }
+      }
+    },
+  );
 
   it('opens the Wiki and the Sources as their own screens on a phone', async () => {
     const { client } = await renderPage([]);
