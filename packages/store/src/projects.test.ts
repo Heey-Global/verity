@@ -1730,6 +1730,23 @@ describe('EventStore — one repository, several projects', () => {
     expect(fourth.repositoryInstance).toBeGreaterThan(1);
   });
 
+  it('refuses to upsert through a further project of the repository', async () => {
+    const first = await add();
+    const second = await add();
+
+    await expect(
+      ctx.store.upsertProject({
+        id: second.id,
+        ...repository,
+        containerName: 'verity-northwind--shop',
+        state: 'absent',
+        imageRef: 'ghcr.io/example/image:1',
+      }),
+    ).rejects.toThrow(/further project/);
+    expect((await ctx.store.getProject(first.id))?.imageRef).toBeNull();
+    expect((await ctx.store.getProject(second.id))?.imageRef).toBeNull();
+  });
+
   it('releases only its own reserved instance after a failed link', async () => {
     const first = await add();
     const local = randomUUID();

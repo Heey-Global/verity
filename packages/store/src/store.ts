@@ -6465,9 +6465,16 @@ export class EventStore implements EventSink {
     // an existing project identified by its durable ID.
     const byId = await tx
       .selectFrom('projects')
-      .select(['kind', 'forge_connection_id'])
+      .select(['kind', 'forge_connection_id', 'repository_instance'])
       .where('id', '=', input.id)
       .executeTakeFirst();
+    // The upsert resolves by the repository's first project. A further project
+    // of the same repository must never be rewritten into, or confused with, it.
+    if (byId && byId.repository_instance !== 1) {
+      throw new ProjectIdentityClaimConflict(
+        'Project is a further project of its repository and cannot be upserted',
+      );
+    }
     if (byId && (byId.kind === 'forgejo') !== (input.kind === 'forgejo')) {
       throw new ProjectIdentityClaimConflict(
         'Project identity belongs to another forge connection',
