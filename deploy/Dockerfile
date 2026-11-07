@@ -212,6 +212,19 @@ RUN set -eux; \
     docker-compose version
 
 # ---------------------------------------------------------------------------
+# Native boot probes transport the same immutable build tools as the Server.
+FROM docker-cli AS protected-build-toolchain
+COPY features/verity-sandbox-toolkit/npm /opt/verity-cli/npm
+COPY features/verity-sandbox-toolkit/bin/verity-cli-install.mjs /opt/verity-cli/bin/verity-cli-install.mjs
+COPY deploy/buildkit/protected-build-attempt /opt/verity-install/deploy/buildkit/protected-build-attempt
+COPY scripts/build-project-egress-release.mjs /opt/verity-install/scripts/build-project-egress-release.mjs
+RUN mkdir /protected-toolchain \
+    && printf '{}\n' > /protected-toolchain/manifest.json \
+    && node /opt/verity-cli/bin/verity-cli-install.mjs devcontainers \
+    && node /opt/verity-install/scripts/build-project-egress-release.mjs /protected-toolchain --protected-toolchain \
+    && node /protected-toolchain/devcontainer.js --version \
+    && /protected-toolchain/docker-buildx version
+
 # Stage 4: runtime — the shipped image.
 # ---------------------------------------------------------------------------
 # renovate: datasource=docker depName=node
