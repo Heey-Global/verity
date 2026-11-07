@@ -152,7 +152,8 @@ export function forgeFileContent(
   return { content: Buffer.from(row.content, 'base64').toString('utf8'), revision: row.sha };
 }
 
-/** Each path segment encoded on its own, so `/` keeps separating directories. */
+/** Each segment encoded on its own, so `/` stays literal — in a file path it
+ *  separates directories, and in a ref (`release/2`) Forgejo refuses `%2F`. */
 export function forgeContentsPath(path: string): string {
   return path.split('/').map(encodeURIComponent).join('/');
 }

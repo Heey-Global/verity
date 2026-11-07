@@ -110,7 +110,7 @@ export function createGitHubRepositoryOperations(options: {
       const row = await orNull(
         request<ForgeContentsRow | ForgeContentsRow[]>(
           'file',
-          `${repoPath}/contents/${forgeContentsPath(path)}?ref=${encodeURIComponent(ref)}`,
+          `${repoPath}/contents/${forgeContentsPath(path)}?ref=${forgeContentsPath(ref)}`,
         ),
       );
       return row === null ? null : forgeFileContent(row);

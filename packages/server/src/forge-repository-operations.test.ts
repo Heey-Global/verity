@@ -4,7 +4,11 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import type { ForgeRepositoryOperations } from './forge-provider.js';
-import { ForgejoRequestError, ForgejoTransport } from './forgejo-transport.js';
+import {
+  assertForgejoApiPath,
+  ForgejoRequestError,
+  ForgejoTransport,
+} from './forgejo-transport.js';
 import {
   createForgejoRepositoryOperations,
   withoutWipPrefix,
@@ -126,6 +130,13 @@ function forgejoFake(forge: Forge): ForgeRepositoryOperations {
     base: { ref: pull.base },
   });
   vi.spyOn(transport, 'json').mockImplementation((path: string, method = 'GET', body?: unknown) => {
+    // The real transport refuses some paths before any request; the fake must
+    // too, or a path Forgejo never receives would pass here.
+    try {
+      assertForgejoApiPath(path);
+    } catch (error) {
+      return Promise.reject(error instanceof Error ? error : new Error(String(error)));
+    }
     const input = body as Record<string, string> | undefined;
     if (method !== 'GET') forge.writes.push(`${method} ${path}`);
     const base = '/repos/team/site';

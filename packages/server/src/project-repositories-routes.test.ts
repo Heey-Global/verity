@@ -89,7 +89,10 @@ it('reads each repository AGENTS.md on its own and never reports an outage as no
           repository('notes', { kind: 'local' }),
         ]),
     } as unknown as EventStore,
-    repositoryFor,
+    // Only `operations` is read here; the full ProjectRepository is not needed.
+    repositoryFor: repositoryFor as unknown as Parameters<
+      typeof registerProjectRepositoriesRoutes
+    >[1]['repositoryFor'],
   });
   try {
     const response = await app.inject({

@@ -87,7 +87,7 @@ export function createForgejoRepositoryOperations(
         const row = await forgejo(
           () =>
             transport.json<ForgeContentsRow | ForgeContentsRow[]>(
-              `${repoPath}/contents/${forgeContentsPath(path)}?ref=${encodeURIComponent(ref)}`,
+              `${repoPath}/contents/${forgeContentsPath(path)}?ref=${forgeContentsPath(ref)}`,
             ),
           'file',
         );

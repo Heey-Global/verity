@@ -169,7 +169,7 @@ function ProjectInstructionsCard({
         placeholder="Add rules every agent in this project follows."
         multiline
         // Sized to the text, so the card reads as a document rather than a box.
-        lines={{ min: Math.max(3, draft.split('\n').length), max: 40 }}
+        lines={{ min: Math.min(Math.max(3, draft.split('\n').length), 40), max: 40 }}
         maxLength={INSTRUCTIONS_LIMIT}
         disabled={!loaded || saving}
       />

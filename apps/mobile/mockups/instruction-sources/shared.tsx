@@ -69,14 +69,14 @@ function ProjectInstructions({
         value={draft}
         onChangeText={onChange}
         multiline
-        lines={{ min: Math.max(3, draft.split('\n').length), max: 40 }}
+        lines={{ min: Math.min(Math.max(3, draft.split('\n').length), 40), max: 40 }}
       />
       {footer}
     </Card>
   );
 }
 
-/** The whole screen; `edited` decides whether the save action is offered. */
+/** The whole screen; `footer` is the save action, offered only after an edit. */
 export function InstructionsScreen({
   initial,
   footer,
