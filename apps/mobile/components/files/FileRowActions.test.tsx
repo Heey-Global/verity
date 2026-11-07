@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen } from '@testing-library/react-native';
-import { AccessibilityInfo, Pressable, Text } from 'react-native';
+import { AccessibilityInfo, Modal, Platform, Pressable, Text } from 'react-native';
 import Swipeable from 'react-native-gesture-handler/ReanimatedSwipeable';
 
 import { bindFileRowShortcuts, FileRowActions } from './FileRowActions';
@@ -119,6 +119,7 @@ it('offers Move and Delete to screen readers without requiring a swipe', async (
     'Delete',
   ]);
   fireEvent.press(screen.getByRole('menuitem', { name: 'Move' }));
+  act(() => screen.UNSAFE_getByType(Modal).props.onDismiss());
   expect(move).toHaveBeenCalledTimes(1);
   expect(remove).not.toHaveBeenCalled();
 });
@@ -134,4 +135,69 @@ it('reveals non-mutating actions without offering deletion for read-only rows', 
   expect(screen.queryByRole('button', { name: 'Delete' })).toBeNull();
   fireEvent.press(screen.getByRole('button', { name: 'Actions' }));
   expect(menu).toHaveBeenCalledTimes(1);
+});
+
+it.each(['Delete', 'Move'])('waits for iOS dismissal before running %s', async (action) => {
+  jest.replaceProperty(Platform, 'OS', 'ios');
+  jest.spyOn(AccessibilityInfo, 'isScreenReaderEnabled').mockResolvedValue(true);
+  const remove = jest.fn();
+  const move = jest.fn();
+  render(
+    <FileRowActions label="notes" onDelete={remove} onMove={move}>
+      {row}
+    </FileRowActions>,
+  );
+  await act(async () => {});
+  fireEvent.press(screen.getByRole('button', { name: 'Actions for notes' }));
+  fireEvent.press(screen.getByRole('menuitem', { name: action }));
+  expect(remove).not.toHaveBeenCalled();
+  expect(move).not.toHaveBeenCalled();
+  const modal = screen.UNSAFE_getByType(Modal);
+  expect(modal.props.visible).toBe(false);
+  act(() => modal.props.onDismiss());
+  expect(action === 'Delete' ? remove : move).toHaveBeenCalledTimes(1);
+  act(() => modal.props.onDismiss());
+  expect(action === 'Delete' ? remove : move).toHaveBeenCalledTimes(1);
+});
+
+it('defers Android actions until the fade finishes and cancels work on unmount', async () => {
+  jest.useFakeTimers();
+  jest.replaceProperty(Platform, 'OS', 'android');
+  jest.spyOn(AccessibilityInfo, 'isScreenReaderEnabled').mockResolvedValue(true);
+  const remove = jest.fn();
+  try {
+    const view = render(
+      <FileRowActions label="notes" onDelete={remove}>
+        {row}
+      </FileRowActions>,
+    );
+    await act(async () => {});
+    fireEvent.press(screen.getByRole('button', { name: 'Actions for notes' }));
+    fireEvent.press(screen.getByRole('menuitem', { name: 'Delete' }));
+    expect(remove).not.toHaveBeenCalled();
+    act(() => jest.advanceTimersByTime(350));
+    expect(remove).toHaveBeenCalledTimes(1);
+    fireEvent.press(screen.getByRole('button', { name: 'Actions for notes' }));
+    fireEvent.press(screen.getByRole('menuitem', { name: 'Delete' }));
+    view.unmount();
+    act(() => jest.runOnlyPendingTimers());
+    expect(remove).toHaveBeenCalledTimes(1);
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+it('runs web menu actions immediately', async () => {
+  jest.replaceProperty(Platform, 'OS', 'web');
+  jest.spyOn(AccessibilityInfo, 'isScreenReaderEnabled').mockResolvedValue(true);
+  const move = jest.fn();
+  render(
+    <FileRowActions label="notes" onDelete={jest.fn()} onMove={move}>
+      {row}
+    </FileRowActions>,
+  );
+  await act(async () => {});
+  fireEvent.press(screen.getByRole('button', { name: 'Actions for notes' }));
+  fireEvent.press(screen.getByRole('menuitem', { name: 'Move' }));
+  expect(move).toHaveBeenCalledTimes(1);
 });

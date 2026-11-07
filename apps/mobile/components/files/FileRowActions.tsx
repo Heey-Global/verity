@@ -34,6 +34,41 @@ export function FileRowActions({
   const [menu, setMenu] = useState(false);
   const [screenReader, setScreenReader] = useState(false);
   const available = !disabled && Boolean(onDelete || onMenu || onMove);
+  const availableRef = useRef(available);
+  availableRef.current = available;
+  const pendingAction = useRef<(() => void) | null>(null);
+  const dismissTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const finishDismiss = useCallback(() => {
+    if (dismissTimer.current) clearTimeout(dismissTimer.current);
+    dismissTimer.current = null;
+    const action = pendingAction.current;
+    pendingAction.current = null;
+    if (availableRef.current) action?.();
+  }, []);
+  const afterDismiss = useCallback(
+    (action: () => void) => {
+      setMenu(false);
+      if (Platform.OS === 'web') {
+        action();
+        return;
+      }
+      pendingAction.current = action;
+      // Android does not report Modal.onDismiss. Let its fade finish before
+      // presenting a confirmation or another native modal.
+      if (Platform.OS !== 'ios') {
+        if (dismissTimer.current) clearTimeout(dismissTimer.current);
+        dismissTimer.current = setTimeout(finishDismiss, 350);
+      }
+    },
+    [finishDismiss],
+  );
+  useEffect(
+    () => () => {
+      pendingAction.current = null;
+      if (dismissTimer.current) clearTimeout(dismissTimer.current);
+    },
+    [],
+  );
   const openMenu = useCallback(() => {
     if (!available) return;
     swipeable.current?.close();
@@ -65,6 +100,9 @@ export function FileRowActions({
   }, []);
   useEffect(() => {
     if (!available) {
+      pendingAction.current = null;
+      if (dismissTimer.current) clearTimeout(dismissTimer.current);
+      dismissTimer.current = null;
       setMenu(false);
       swipeable.current?.close();
     }
@@ -104,20 +142,33 @@ export function FileRowActions({
       {screenReader && available ? (
         <Button label={`Actions for ${label}`} variant="text" size="compact" onPress={openMenu} />
       ) : null}
-      {menu && available && onDelete ? (
-        <Modal transparent visible onRequestClose={() => setMenu(false)} animationType="fade">
+      {available && onDelete ? (
+        <Modal
+          transparent
+          visible={menu}
+          onRequestClose={() => setMenu(false)}
+          onDismiss={finishDismiss}
+          animationType="fade"
+        >
           <FileActionMenu
             title={label}
             actions={[
               ...(onMove
-                ? [{ key: 'move', label: moveLabel, icon: 'folder' as const, onPress: move }]
+                ? [
+                    {
+                      key: 'move',
+                      label: moveLabel,
+                      icon: 'folder' as const,
+                      onPress: () => afterDismiss(move),
+                    },
+                  ]
                 : []),
               {
                 key: 'delete',
                 label: deleteLabel,
                 icon: 'trash-2',
                 destructive: true,
-                onPress: remove,
+                onPress: () => afterDismiss(remove),
               },
             ]}
             onDismiss={() => setMenu(false)}
