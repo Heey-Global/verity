@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import {
   resolveSandboxMemory,
   DEFAULT_SANDBOX_OOM_SCORE_ADJ,
@@ -131,6 +132,7 @@ import type { VeritySettingsRecord, Database, EventStore, ProjectRecord } from '
 import {
   DockerError,
   type DockerClient,
+  type DockerContainerSummary,
   type ContainerInspect,
   type ContainerSpec,
   type CreateContainerResult,
@@ -3193,8 +3195,9 @@ export class ProvisionerImpl implements Provisioner {
    *  recreate rather than each racing a stop/remove against the others. */
   private readonly turnSandboxRepairs = new Map<
     string,
-    { promise: Promise<boolean>; requestingSessionIds: Set<string> }
+    { promise: Promise<boolean>; requestingSessionIds: Set<string>; ownerToken: object }
   >();
+  private readonly projectMutationContext = new AsyncLocalStorage<ReadonlyMap<string, object>>();
   private readonly projectSandboxActivities = new Map<string, number>();
   private readonly projectSandboxLastActivities = new Map<string, number>();
   private readonly projectWakeAttempts = new Map<string, Promise<ProjectRecord>>();
@@ -3236,8 +3239,13 @@ export class ProvisionerImpl implements Provisioner {
       return existing.promise;
     }
     const requestingSessionIds = new Set([requestingSessionId, ...(queuedSessionIds ?? [])]);
-    const attempt = this.repairSandboxForTurnOnce(projectId, requestingSessionIds, options);
-    this.turnSandboxRepairs.set(projectId, { promise: attempt, requestingSessionIds });
+    const ownerToken = {};
+    const context = new Map(this.projectMutationContext.getStore());
+    context.set(projectId, ownerToken);
+    const attempt = this.projectMutationContext.run(context, () =>
+      this.repairSandboxForTurnOnce(projectId, requestingSessionIds, options),
+    );
+    this.turnSandboxRepairs.set(projectId, { promise: attempt, requestingSessionIds, ownerToken });
     try {
       return await attempt;
     } finally {
@@ -3329,9 +3337,11 @@ export class ProvisionerImpl implements Provisioner {
     });
     // Install synchronously before the first await. New backend admissions now
     // wait; the checks below account for work that entered before this barrier.
+    const ownerToken = {};
     this.turnSandboxRepairs.set(projectId, {
       promise: barrier,
       requestingSessionIds: new Set(),
+      ownerToken,
     });
     try {
       if ((this.projectSandboxActivities.get(projectId) ?? 0) > 0) {
@@ -3340,7 +3350,9 @@ export class ProvisionerImpl implements Provisioner {
       if (this.projectBusyProbe && (await this.projectBusyProbe(projectId, exceptSessionIds))) {
         throw new ProvisioningError(`project ${projectId} has a turn in flight`);
       }
-      return await mutation();
+      const context = new Map(this.projectMutationContext.getStore());
+      context.set(projectId, ownerToken);
+      return await this.projectMutationContext.run(context, mutation);
     } finally {
       releaseBarrier(true);
       const current = this.turnSandboxRepairs.get(projectId);
@@ -3602,6 +3614,30 @@ export class ProvisionerImpl implements Provisioner {
     });
   }
 
+  /** Docker-owned helpers survive a Server restart and keep the runtime fenced.
+   * Older project toolkits do not know that fence, so admission must also check
+   * the daemon before restarting any container that can access the runtime. */
+  private async assertNoRunnerCacheMaintenance(projectId: string): Promise<void> {
+    if (this.opts.runnerSupervisor !== true || this.opts.dataVolumeRoot === undefined) return;
+    if (this.opts.docker.listContainers === undefined)
+      throw new ProvisioningError('Runner cache maintenance inventory is unavailable');
+    let containers: DockerContainerSummary[];
+    try {
+      containers = await this.opts.docker.listContainers();
+    } catch (cause) {
+      throw new ProvisioningError('Runner cache maintenance inventory is unavailable', cause);
+    }
+    if (
+      containers.some(
+        (container) =>
+          container.labels?.[PROJECT_ID_LABEL] === projectId &&
+          container.labels?.['verity.component'] === 'runner-cache-maintenance' &&
+          !['exited', 'dead'].includes(container.state ?? ''),
+      )
+    )
+      throw new ProvisioningError('Runner cache maintenance is still in progress');
+  }
+
   async ensureProjectSandboxAwake(
     projectId: string,
     requestingSessionIds?: ReadonlySet<string>,
@@ -3664,6 +3700,7 @@ export class ProvisionerImpl implements Provisioner {
         async () => {
           const project = await this.opts.store.getProject(projectId);
           if (project === undefined) throw new ProvisioningError('project gone mid-wake');
+          await this.assertNoRunnerCacheMaintenance(projectId);
           if (project.state !== 'sleeping' || project.sleepCompatibilityFingerprint == null) {
             throw new ProvisioningError(`project ${projectId} is not sleeping`);
           }
@@ -4693,14 +4730,20 @@ export class ProvisionerImpl implements Provisioner {
    */
   async provision(projectId: string, opts: ProvisionOptions = {}): Promise<ProjectRecord> {
     this.markProjectSandboxActivity(projectId);
-    // Coalesce onto an already-running attempt (see inFlightProvisions). The
-    // joining caller's own `opts` are intentionally ignored — it observes the
-    // running attempt's outcome, exactly as if its request had arrived while
-    // that attempt's 202 was still in flight.
-    const running = this.inFlightProvisions.get(projectId);
-    if (running !== undefined) return running;
-    const attempt = this.provisionOnce(projectId, opts);
-    return this.trackProvision(projectId, attempt);
+    for (;;) {
+      const repair = this.turnSandboxRepairs.get(projectId);
+      if (
+        repair !== undefined &&
+        this.projectMutationContext.getStore()?.get(projectId) !== repair.ownerToken
+      ) {
+        await repair.promise.catch(() => undefined);
+        continue;
+      }
+      // No await separates the barrier check from registering this attempt.
+      const running = this.inFlightProvisions.get(projectId);
+      if (running !== undefined) return running;
+      return this.trackProvision(projectId, this.provisionOnce(projectId, opts));
+    }
   }
 
   /** The ownership promise settles only after reference cleanup has released the gate. */
@@ -4721,6 +4764,7 @@ export class ProvisionerImpl implements Provisioner {
   }
 
   private async provisionOnce(projectId: string, opts: ProvisionOptions): Promise<ProjectRecord> {
+    await this.assertNoRunnerCacheMaintenance(projectId);
     // Phase 1: acquire lock, check state, transition to `cloning` (or
     // short-circuit if already `active`/mid-transition).
     const project = await this.claimForCloning(projectId);
@@ -4747,14 +4791,21 @@ export class ProvisionerImpl implements Provisioner {
     projectId: string,
     opts: RecreateContainerOptions = {},
   ): Promise<ProjectRecord> {
-    // Unlike `provision`, a recreate does NOT coalesce: it promises a fresh
-    // container + forced image pull, which a run already past those steps
-    // cannot deliver. Reject instead — same contract as the state check below.
-    if (this.inFlightProvisions.has(projectId)) {
-      throw new ProvisioningError(`project ${projectId} is already provisioning`);
+    for (;;) {
+      const repair = this.turnSandboxRepairs.get(projectId);
+      if (
+        repair !== undefined &&
+        this.projectMutationContext.getStore()?.get(projectId) !== repair.ownerToken
+      ) {
+        await repair.promise.catch(() => undefined);
+        continue;
+      }
+      // A lifecycle owner may call recreate itself; unrelated callers wait above.
+      // Recreate promises a fresh replacement and cannot join another provision.
+      if (this.inFlightProvisions.has(projectId))
+        throw new ProvisioningError(`project ${projectId} is already provisioning`);
+      return this.trackProvision(projectId, this.recreateContainerOnce(projectId, opts));
     }
-    const attempt = this.recreateContainerOnce(projectId, opts);
-    return this.trackProvision(projectId, attempt);
   }
 
   /** Whether this process still owns provisioning/replacement work for a project.
@@ -4772,6 +4823,7 @@ export class ProvisionerImpl implements Provisioner {
     if (project === undefined) {
       throw new ProvisioningError('project gone mid-recreate');
     }
+    await this.assertNoRunnerCacheMaintenance(projectId);
     if (project.state === 'cloning' || project.state === 'container_starting') {
       throw new ProvisioningError(`project ${projectId} is already provisioning`);
     }
@@ -6623,6 +6675,7 @@ export class ProvisionerImpl implements Provisioner {
       // sandbox reaches the control-plane signing broker by service DNS name.
       ...(sandboxNetwork ? { network: sandboxNetwork } : {}),
     };
+    await this.assertNoRunnerCacheMaintenance(project.id);
     try {
       let containerId: string;
       let reusedExisting = false;

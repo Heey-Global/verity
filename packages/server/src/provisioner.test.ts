@@ -381,7 +381,9 @@ function fakeDocker(overrides?: Partial<DockerClient> & { createdContainerId?: s
     | 'removeContainer'
     | 'inspectContainer'
     | 'ensureNetwork'
+    | 'listContainers'
   > = {
+    listContainers: vi.fn(async () => []),
     ensureNetwork: vi.fn(async (name: string) => {
       calls.push({ method: 'ensureNetwork', payload: name });
     }),
@@ -596,6 +598,231 @@ describe('ProvisionerImpl (#174)', () => {
     await ctx.store.upsertProject({ id, ...baseInput, state: stateOverride });
     return id;
   }
+
+  it.each(['running', 'restarting', 'created', 'paused', 'unknown', undefined])(
+    'blocks a retained wake while a labelled cache helper is %s',
+    async (state) => {
+      const id = await seedProject('active');
+      await ctx.store.updateProjectSleepState(id, 'sleeping', {
+        sleepCompatibilityFingerprint: 'retained',
+        sleepingSince: new Date(),
+        wakeStartedAt: null,
+      });
+      const { client: docker, calls } = fakeDocker({
+        listContainers: vi.fn(async () => [
+          {
+            id: 'helper',
+            imageId: 'helper-image',
+            ...(state === undefined ? {} : { state }),
+            labels: { 'verity.project-id': id, 'verity.component': 'runner-cache-maintenance' },
+          },
+        ]),
+      });
+      const provisioner = createProvisioner({
+        store: ctx.store,
+        db: ctx.db,
+        docker,
+        projectTokenMint: async () => undefined,
+        defaultImageRef: 'sandbox:test',
+        hostCloneRoot: '/work',
+        dataVolumeRoot: '/srv',
+        runnerSupervisor: true,
+      });
+      await expect(provisioner.ensureProjectSandboxAwake(id)).rejects.toThrow(
+        'Runner cache maintenance is still in progress',
+      );
+      expect(
+        calls.some((call) => ['createContainer', 'startContainer'].includes(call.method)),
+      ).toBe(false);
+      expect((await ctx.store.getProject(id))?.state).toBe('sleeping');
+    },
+  );
+
+  it.each(['provision', 'recreateContainer'] as const)(
+    'blocks %s before a surviving cache helper can lose exclusion',
+    async (operation) => {
+      const id = await seedProject(operation === 'provision' ? 'absent' : 'active');
+      const { client: docker, calls } = fakeDocker({
+        listContainers: vi.fn(async () => [
+          {
+            id: 'helper',
+            imageId: 'helper-image',
+            state: 'running',
+            labels: { 'verity.project-id': id, 'verity.component': 'runner-cache-maintenance' },
+          },
+        ]),
+      });
+      const provisioner = createProvisioner({
+        store: ctx.store,
+        db: ctx.db,
+        docker,
+        projectTokenMint: async () => undefined,
+        defaultImageRef: 'sandbox:test',
+        hostCloneRoot: '/work',
+        dataVolumeRoot: '/srv',
+        runnerSupervisor: true,
+      });
+      await expect(provisioner[operation](id)).rejects.toThrow(
+        'Runner cache maintenance is still in progress',
+      );
+      expect(calls).toEqual([]);
+    },
+  );
+
+  it.each(['exited', 'dead', 'unrelated-project', 'name-only'])(
+    'does not treat %s as a live owned cache helper',
+    async (kind) => {
+      const id = await seedProject('active');
+      await ctx.store.updateProjectSleepState(id, 'sleeping', {
+        sleepCompatibilityFingerprint: 'retained',
+        sleepingSince: new Date(),
+        wakeStartedAt: null,
+      });
+      const { client: docker } = fakeDocker({
+        listContainers: vi.fn(async () => [
+          {
+            id: 'helper',
+            imageId: 'helper-image',
+            names: ['verity-cache-maintenance-name-only'],
+            state: ['exited', 'dead'].includes(kind) ? kind : 'running',
+            labels:
+              kind === 'name-only'
+                ? {}
+                : {
+                    'verity.project-id': kind === 'unrelated-project' ? 'other-project' : id,
+                    'verity.component': 'runner-cache-maintenance',
+                  },
+          },
+        ]),
+      });
+      const provisioner = createProvisioner({
+        store: ctx.store,
+        db: ctx.db,
+        docker,
+        projectTokenMint: async () => undefined,
+        defaultImageRef: 'sandbox:test',
+        hostCloneRoot: '/work',
+        dataVolumeRoot: '/srv',
+        runnerSupervisor: true,
+      });
+      // Reaching normal wake admission proves the helper guard did not block.
+      await expect(provisioner.ensureProjectSandboxAwake(id)).rejects.toThrow(
+        'project relay does not support wake',
+      );
+    },
+  );
+
+  it.each(['missing', 'failed'])(
+    'retains admission when cache helper inventory is %s',
+    async (kind) => {
+      const id = await seedProject();
+      const { client: docker, calls } = fakeDocker({
+        listContainers: vi.fn(async () => {
+          throw new Error('daemon unavailable');
+        }),
+      });
+      if (kind === 'missing') delete docker.listContainers;
+      const provisioner = createProvisioner({
+        store: ctx.store,
+        db: ctx.db,
+        docker,
+        projectTokenMint: async () => undefined,
+        defaultImageRef: 'sandbox:test',
+        hostCloneRoot: '/work',
+        dataVolumeRoot: '/srv',
+        runnerSupervisor: true,
+      });
+      await expect(provisioner.provision(id)).rejects.toThrow(
+        'Runner cache maintenance inventory is unavailable',
+      );
+      expect(calls).toEqual([]);
+      expect((await ctx.store.getProject(id))?.state).toBe('absent');
+    },
+  );
+
+  it.each(['provision', 'recreateContainer'] as const)(
+    'waits for the maintenance owner before %s inspects surviving helpers',
+    async (operation) => {
+      const id = await seedProject(operation === 'provision' ? 'absent' : 'active');
+      const listContainers = vi.fn(async () => [
+        {
+          id: 'helper',
+          imageId: 'helper-image',
+          state: 'running',
+          labels: { 'verity.project-id': id, 'verity.component': 'runner-cache-maintenance' },
+        },
+      ]);
+      const { client: docker, calls } = fakeDocker({ listContainers });
+      const provisioner = createProvisioner({
+        store: ctx.store,
+        db: ctx.db,
+        docker,
+        projectTokenMint: async () => undefined,
+        defaultImageRef: 'sandbox:test',
+        hostCloneRoot: '/work',
+        dataVolumeRoot: '/srv',
+        runnerSupervisor: true,
+      });
+      let release!: () => void;
+      let entered!: () => void;
+      const pending = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const started = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      const maintenance = provisioner.withProjectExclusiveMutation(id, async () => {
+        entered();
+        await pending;
+      });
+      await started;
+      const admission = provisioner[operation](id);
+      const rejected = expect(admission).rejects.toThrow(
+        'Runner cache maintenance is still in progress',
+      );
+      try {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(provisioner.isProjectProvisioning(id)).toBe(false);
+        expect(listContainers).not.toHaveBeenCalled();
+      } finally {
+        // Simulate a lost Docker wait: the local owner ends while its helper survives.
+        release();
+      }
+      await maintenance;
+      await rejected;
+      expect(listContainers).toHaveBeenCalledOnce();
+      expect(calls).toEqual([]);
+    },
+  );
+
+  it('allows an exclusive lifecycle owner to call recreate without waiting on itself', async () => {
+    const id = await seedProject('active');
+    const { client: docker } = fakeDocker({
+      listContainers: vi.fn(async () => [
+        {
+          id: 'helper',
+          imageId: 'helper-image',
+          state: 'running',
+          labels: { 'verity.project-id': id, 'verity.component': 'runner-cache-maintenance' },
+        },
+      ]),
+    });
+    const provisioner = createProvisioner({
+      store: ctx.store,
+      db: ctx.db,
+      docker,
+      projectTokenMint: async () => undefined,
+      defaultImageRef: 'sandbox:test',
+      hostCloneRoot: '/work',
+      dataVolumeRoot: '/srv',
+      runnerSupervisor: true,
+    });
+    await provisioner.withProjectExclusiveMutation(id, async () => {
+      await expect(provisioner.recreateContainer(id)).rejects.toThrow(
+        'Runner cache maintenance is still in progress',
+      );
+    });
+  });
 
   it('drains pending cleanup after the runner starts and before a retained wake admits turns', async () => {
     const id = await seedProject('active');

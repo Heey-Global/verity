@@ -79,6 +79,7 @@ export function writeSyntheticTerminalFrame(
 ): Promise<boolean>;
 
 export interface SupervisorTurnState {
+  sessionId?: string;
   protocolVersion: number;
   turnId: string;
   startCommandId: string;
@@ -124,7 +125,7 @@ export function readTurnState(
 ): Promise<SupervisorTurnState | undefined>;
 export function claimTurn(
   runtimeDir: string,
-  request: { turnId: string; startCommandId: string },
+  request: { turnId: string; startCommandId: string; sessionId?: string },
   runnerInstanceId: string,
 ): Promise<{
   outcome: 'created' | 'already-running' | 'terminal' | 'ambiguous' | 'conflict';
