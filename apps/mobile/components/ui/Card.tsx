@@ -165,7 +165,9 @@ export function Row({
   accessibilityLabel,
   accessibilityHint,
   expanded,
+  tag,
   answers,
+  wrap = false,
 }: {
   title: string;
   subtitle?: string | undefined;
@@ -186,9 +188,16 @@ export function Row({
   accessibilityLabel?: string;
   accessibilityHint?: string;
   expanded?: boolean;
+  /** A status tag ({@link StatusTag}) at the start of the subtitle line instead
+   *  of on the trailing side, for a row whose title needs the full width — an
+   *  inbox row, where a trailing tag beside the chevron would wrap the title. */
+  tag?: ReactNode;
   /** Compact buttons that answer what the row waits on, in a strip under it and
    *  outside its pressable area, so VoiceOver reaches each one. */
   answers?: ReactNode;
+  /** Shows the whole title however many lines it takes, for a row whose title
+   *  is the thing to read and decide on — an answer in full. */
+  wrap?: boolean;
 }) {
   const { theme } = useUnistyles();
   const choice = selected !== undefined;
@@ -209,6 +218,8 @@ export function Row({
     <RowContent
       title={title}
       subtitle={subtitle}
+      tag={tag}
+      wrap={wrap}
       leading={leading}
       acts={onPress !== undefined}
       trailing={
@@ -247,7 +258,7 @@ export function Row({
       disabled={disabled}
       accessibilityRole={choice ? 'radio' : 'button'}
       accessibilityLabel={
-        accessibilityLabel ?? spokenLabel(title, subtitle, choice ? undefined : trailing)
+        accessibilityLabel ?? spokenLabel(title, subtitle, choice ? undefined : trailing, tag)
       }
       accessibilityHint={accessibilityHint}
       accessibilityState={
@@ -328,14 +339,19 @@ export function ToggleRow({
  * everything the row shows: the title, the subtitle and the trailing value or
  * status — otherwise "Server update · UPDATE" is heard as just "Server update".
  */
-function spokenLabel(title: string, subtitle: string | undefined, trailing: ReactNode): string {
-  const trailingText =
-    typeof trailing === 'string'
-      ? trailing
-      : isValidElement<{ label?: unknown }>(trailing) && typeof trailing.props.label === 'string'
-        ? trailing.props.label
+function spokenLabel(
+  title: string,
+  subtitle: string | undefined,
+  trailing: ReactNode,
+  tag?: ReactNode,
+): string {
+  const text = (node: ReactNode) =>
+    typeof node === 'string'
+      ? node
+      : isValidElement<{ label?: unknown }>(node) && typeof node.props.label === 'string'
+        ? node.props.label
         : undefined;
-  return [title, subtitle, trailingText]
+  return [title, subtitle, text(trailing), text(tag)]
     .filter((part) => part !== undefined && part !== '')
     .join(', ');
 }
@@ -343,6 +359,8 @@ function spokenLabel(title: string, subtitle: string | undefined, trailing: Reac
 function RowContent({
   title,
   subtitle,
+  tag,
+  wrap = false,
   leading,
   acts,
   trailing,
@@ -350,6 +368,8 @@ function RowContent({
 }: {
   title: string;
   subtitle?: string | undefined;
+  tag?: ReactNode;
+  wrap?: boolean;
   leading?: Leading | undefined;
   /** Whether the row can be tapped: its icon then takes the action color (§ 2). */
   acts: boolean;
@@ -410,10 +430,19 @@ function RowContent({
         )
       ) : null}
       <View style={styles.body}>
-        <Text style={styles.title} numberOfLines={2}>
+        <Text style={styles.title} numberOfLines={wrap ? undefined : 2}>
           {title}
         </Text>
-        {subtitle ? (
+        {tag !== undefined ? (
+          <View style={styles.tagLine}>
+            <View style={styles.tagSlot}>{tag}</View>
+            {subtitle ? (
+              <Text style={[styles.subtitle, styles.tagSubtitle]} numberOfLines={2}>
+                {subtitle}
+              </Text>
+            ) : null}
+          </View>
+        ) : subtitle ? (
           <Text style={styles.subtitle} numberOfLines={2}>
             {subtitle}
           </Text>
@@ -523,6 +552,10 @@ const styles = StyleSheet.create((theme) => ({
   body: { flex: 1, minWidth: 0, gap: theme.spacing.xxs },
   title: { ...theme.typography.row, color: theme.colors.text },
   subtitle: { ...theme.typography.subtitle, color: theme.colors.textMuted },
+  // The tag keeps its width and leads the subtitle, which wraps beside it.
+  tagLine: { flexDirection: 'row', alignItems: 'flex-start', gap: theme.spacing.sm },
+  tagSlot: { flexShrink: 0, maxWidth: '50%' },
+  tagSubtitle: { flex: 1, minWidth: 0 },
   // The trailing side takes at most 45 % of the row; a long value or status
   // truncates there, so the title is never squeezed into a column of fragments.
   trailing: {
