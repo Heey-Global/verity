@@ -476,6 +476,15 @@ class ManagedTests(unittest.TestCase):
         network['Id'] = 'c' * 64
         with self.assertRaisesRegex(ValueError, 'identity changed'):
             managed.reject_bridge_collisions(self.root, lambda *_: json.dumps([network]))
+        binding['networkName'] = 'verity-build-intent'
+        point = {'binding': binding, 'attemptId': request['attemptId'], 'pending': True}
+        checkpoint.write_text(json.dumps(point))
+        network.update(Name=binding['networkName'], EnableIPv6=True,
+                       Labels={'io.verity.build-intent': binding['networkId']})
+        managed.reject_bridge_collisions(self.root, lambda *_: json.dumps([network]))
+        network['Labels']['io.verity.build-intent'] = 'd' * 64
+        with self.assertRaisesRegex(ValueError, 'intent changed'):
+            managed.reject_bridge_collisions(self.root, lambda *_: json.dumps([network]))
         checkpoint.chmod(0o666)
         with self.assertRaises(ValueError):
             managed.reject_bridge_collisions(self.root, lambda *_: json.dumps([network]))

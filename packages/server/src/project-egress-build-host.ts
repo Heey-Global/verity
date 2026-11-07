@@ -58,6 +58,7 @@ const checkpointSchema = z.object({
   }),
   attemptId: z.string(),
   containerId: oid.optional(),
+  pending: z.boolean().optional(),
 });
 const bootId = () =>
   readFile('/proc/sys/kernel/random/boot_id', 'utf8').then((value) => value.trim());
@@ -435,7 +436,16 @@ export async function createNativeProtectedBuildHost(options: NativeProtectedBui
       const req = protectedBuildRequest.parse(current.request);
       const point = await privateRead(checkpointPath(req));
       if (point) {
-        const saved = checkpointSchema.parse(point).binding;
+        const checkpoint = checkpointSchema.parse(point);
+        const saved = checkpoint.binding;
+        if (checkpoint.pending && !links.some((link) => link.ifname === saved.bridge)) {
+          const listed = (await docker(['network', 'ls', '--format', '{{.Name}}']))
+            .trim()
+            .split('\n');
+          if (listed.includes(saved.networkName))
+            throw new Error('Pending build bridge is missing');
+          await rm(checkpointPath(req), { force: true });
+        }
         if (links.some((link) => link.ifname === saved.bridge)) {
           const live = z
             .array(
@@ -444,16 +454,32 @@ export async function createNativeProtectedBuildHost(options: NativeProtectedBui
                 Name: z.string(),
                 Driver: z.literal('bridge'),
                 Options: z.record(z.string(), z.string()),
+                Labels: z.record(z.string(), z.string()).default({}),
               }),
             )
             .length(1)
-            .parse(JSON.parse(await docker(['network', 'inspect', saved.networkId])))[0]!;
+            .parse(
+              JSON.parse(
+                await docker([
+                  'network',
+                  'inspect',
+                  checkpoint.pending ? saved.networkName : saved.networkId,
+                ]),
+              ),
+            )[0]!;
           if (
-            live.Id !== saved.networkId ||
+            (checkpoint.pending
+              ? live.Labels['io.verity.build-intent'] !== saved.networkId
+              : live.Id !== saved.networkId) ||
             live.Name !== saved.networkName ||
             live.Options['com.docker.network.bridge.name'] !== saved.bridge
           )
             throw new Error('Protected build bridge ownership changed');
+          if (checkpoint.pending) {
+            checkpoint.binding.networkId = live.Id;
+            delete checkpoint.pending;
+            await privateWrite(checkpointPath(req), checkpoint);
+          }
           known.add(saved.bridge);
         }
       }
@@ -878,11 +904,19 @@ export async function createNativeProtectedBuildHost(options: NativeProtectedBui
         !(value.ActiveState === 'active' && value.SubState === 'exited')
       )
         return 'running';
-      if (value.Result !== 'success' || !(await ended(name))) return 'failed';
+      if (!(await ended(name))) return 'failed';
       const raw = await privateRead(join(ROOT, 'controller.json'));
       if (!raw || typeof raw !== 'object' || !('request' in raw)) return 'failed';
       const request = protectedBuildRequest.parse(raw.request);
       if (unit(request) !== name) return 'failed';
+      if (value.Result !== 'success') {
+        try {
+          await exportFile(request, 'build.log');
+        } catch {
+          /* Diagnostics are optional. */
+        }
+        return 'failed';
+      }
       const result = protectedBuildResult.safeParse(
         await privateRead(join(folder(request), 'result.json')),
       );

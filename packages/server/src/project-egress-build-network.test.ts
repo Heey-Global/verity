@@ -17,8 +17,8 @@ function fixture() {
     containerId = '2'.repeat(64);
   const io: ProtectedBuildNetworkIO = {
     imageRef: image,
-    async checkpoint() {
-      calls.push(['checkpoint']);
+    async checkpoint(value) {
+      calls.push([value.pending ? 'intent' : 'checkpoint']);
     },
     async ensureBootstrap() {
       calls.push(['bootstrap']);
@@ -211,4 +211,13 @@ describe('protected build Docker namespace anchor', () => {
       () => new ProtectedBuildNetworks({ ...f.io, imageRef: 'example/server:latest' }),
     ).toThrow('pinned');
   });
+});
+
+it('persists unpredictable network creation intent before Docker can create a bridge', async () => {
+  const f = fixture();
+  await new ProtectedBuildNetworks(f.io).create('project-a', 'attempt-a');
+  const creation = f.calls.findIndex((c) => c[0] === 'network' && c[1] === 'create');
+  expect(f.calls.findIndex((c) => c[0] === 'intent')).toBeLessThan(creation);
+  const args = f.calls[creation]!;
+  expect(args[args.indexOf('--label') + 1]).toMatch(/^io\.verity\.build-intent=[a-f0-9]{64}$/u);
 });

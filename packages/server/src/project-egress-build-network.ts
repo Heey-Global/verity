@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { z } from 'zod';
 import type { ProjectEgressNetworkBinding } from './project-egress-host.js';
 
@@ -31,6 +31,7 @@ export interface ProtectedBuildNetworkIO {
     binding: ProjectEgressNetworkBinding;
     attemptId: string;
     containerId?: string;
+    pending?: boolean;
   }): Promise<void>;
   docker(args: readonly string[]): Promise<string>;
   /** Inspect a host-owned namespace inode with stat/nsenter; never evaluate a shell path. */
@@ -144,6 +145,14 @@ export class ProtectedBuildNetworks {
     if (existing.some((value) => value.Name === named.networkName))
       throw new Error('Protected build network name collision');
     await this.io.assertBridgeFree(named.bridge);
+    const intent: ProjectEgressNetworkBinding = {
+      projectId,
+      generation: attemptId,
+      networkId: randomBytes(32).toString('hex'),
+      networkName: named.networkName,
+      bridge: named.bridge,
+    };
+    await this.io.checkpoint({ binding: intent, attemptId, pending: true });
     const networkId = id.parse(
       (
         await this.io.docker([
@@ -152,6 +161,8 @@ export class ProtectedBuildNetworks {
           '--driver',
           'bridge',
           '--ipv6',
+          '--label',
+          `io.verity.build-intent=${intent.networkId}`,
           '--opt',
           `com.docker.network.bridge.name=${named.bridge}`,
           named.networkName,

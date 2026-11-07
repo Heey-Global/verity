@@ -154,6 +154,15 @@ def reject_bridge_collisions(root, run):
         if (binding.get('projectId') != request['projectId'] or point.get('attemptId') != request['attemptId']
                 or not re.fullmatch(r'veb[a-f0-9]{12}', binding.get('bridge', ''))):
             raise ValueError('Invalid protected build bridge registry')
+        if point.get('pending'):
+            inspected = json.loads(run('/usr/bin/docker', 'network', 'inspect', binding['networkName']))
+            if (len(inspected) != 1 or inspected[0].get('Name') != binding['networkName']
+                    or inspected[0].get('Driver') != 'bridge'
+                    or inspected[0].get('EnableIPv6') is not True
+                    or inspected[0].get('Labels', {}).get('io.verity.build-intent') != binding['networkId']
+                    or inspected[0].get('Options', {}).get('com.docker.network.bridge.name') != binding['bridge']):
+                raise ValueError('Protected build creation intent changed')
+            binding = dict(binding, networkId=inspected[0]['Id'])
         bindings.append(binding)
     owned = set()
     for binding in bindings:
