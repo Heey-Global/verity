@@ -6,6 +6,19 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.84.2](https://github.com/Heey-Global/verity/compare/v4.84.1...v4.84.2) (2026-11-07)
+
+
+### Bug Fixes
+
+* **egress:** use systemd API bpffs during host provisioning ([#2355](https://github.com/Heey-Global/verity/issues/2355)) ([e85912b](https://github.com/Heey-Global/verity/commit/e85912b18761f185a1a0fa2afcf13c5b19bdfd10))
+* **server:** retire completed update helper containers ([#2356](https://github.com/Heey-Global/verity/issues/2356)) ([2dacf19](https://github.com/Heey-Global/verity/commit/2dacf19f2eec50801e25bcae20a77137909dbcb2))
+
+
+### Performance Improvements
+
+* **ci:** run backup recovery acceptance in its own server-image leg ([#2352](https://github.com/Heey-Global/verity/issues/2352)) ([e982bd8](https://github.com/Heey-Global/verity/commit/e982bd82bb79b2a77d2422a395dc3df507b87442))
+
 ## [4.84.1](https://github.com/Heey-Global/verity/compare/v4.84.0...v4.84.1) (2026-11-06)
 
 
