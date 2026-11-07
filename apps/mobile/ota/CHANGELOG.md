@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.86.2](https://github.com/Heey-Global/verity/compare/mobile-v1.86.1...mobile-v1.86.2) (2026-11-07)
+
+
+### Features
+
+* **instructions:** show repository AGENTS.md beside project Instructions ([#2381](https://github.com/Heey-Global/verity/issues/2381)) ([17f7cd6](https://github.com/Heey-Global/verity/commit/17f7cd646124c208d1579f5d6c9ff58324fcc289))
+* **mobile:** open the project Wiki on a start page with readable, linked pages ([#2380](https://github.com/Heey-Global/verity/issues/2380)) ([a616825](https://github.com/Heey-Global/verity/commit/a616825d76b8bdc2429ec400da1510bcfc532bd9))
+* **mobile:** sink merged sessions and append status changes to their tier ([#2378](https://github.com/Heey-Global/verity/issues/2378)) ([4287a7a](https://github.com/Heey-Global/verity/commit/4287a7a46e50a776f8b49a55bf63aec59b6772c9))
+* **mockups:** mark screens and end the review from the chat ([#2379](https://github.com/Heey-Global/verity/issues/2379)) ([8bc4cdf](https://github.com/Heey-Global/verity/commit/8bc4cdf273ee3733b60c81fc7b81425936d6de72))
+* **projects:** allow one repository to back several projects ([#2377](https://github.com/Heey-Global/verity/issues/2377)) ([fa79ed1](https://github.com/Heey-Global/verity/commit/fa79ed1f1a3ceb8ed850e4945a6e387b9bf630f3))
+
+
+### Bug Fixes
+
+* **mobile:** append newly active sessions to stable work order ([#2376](https://github.com/Heey-Global/verity/issues/2376)) ([27c44d4](https://github.com/Heey-Global/verity/commit/27c44d4a09afb2f197e33433e008d607eea83d7e))
+* **mobile:** calm the Needs you answers and stop one answer locking all ([#2372](https://github.com/Heey-Global/verity/issues/2372)) ([d31e442](https://github.com/Heey-Global/verity/commit/d31e442b35db7276d4b43a7da86e788e440cdaef))
+* **mobile:** keep the plan card on screen and answer decisions together ([#2373](https://github.com/Heey-Global/verity/issues/2373)) ([46ebbb8](https://github.com/Heey-Global/verity/commit/46ebbb802d0dc774789d0bf53453ed3c15d1c1a7))
+
 ## [1.86.1](https://github.com/Heey-Global/verity/compare/mobile-v1.86.0...mobile-v1.86.1) (2026-11-07)
 
 
