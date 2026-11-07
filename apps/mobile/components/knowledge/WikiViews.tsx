@@ -97,11 +97,14 @@ function useDecisionFilter(decisions: WikiDecision[]) {
     for (const decision of decisions) result[decision.status]++;
     return result;
   }, [decisions]);
-  // The first group with something in it, so the list never opens empty.
-  const [filter, setFilter] = useState<DecisionFilter>(
-    (['current', 'unresolved', 'superseded'] as const).find((status) => counts[status] > 0) ??
-      'current',
-  );
+  const [chosen, setFilter] = useState<DecisionFilter>('current');
+  // A chosen group that is empty, at first or after the Wiki changed, gives way
+  // to the first group with something in it, so the list never shows empty.
+  const filter =
+    counts[chosen] > 0
+      ? chosen
+      : ((['current', 'unresolved', 'superseded'] as const).find((status) => counts[status] > 0) ??
+        chosen);
   const options = [
     { value: 'current' as const, label: `Current · ${String(counts.current)}` },
     { value: 'superseded' as const, label: `Superseded · ${String(counts.superseded)}` },

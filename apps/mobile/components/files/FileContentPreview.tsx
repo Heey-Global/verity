@@ -102,7 +102,10 @@ export function FileContentPreview({
             </Text>
           )
         }
-        ListEmptyComponent={<Text style={textStyle}>Empty file</Text>}
+        // With a header the page has its title even when nothing follows it.
+        ListEmptyComponent={
+          formatted && withHeader ? null : <Text style={textStyle}>Empty file</Text>
+        }
         ListHeaderComponent={formatted ? header : undefined}
         ListFooterComponent={formatted ? footer : undefined}
       />

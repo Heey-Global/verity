@@ -74,7 +74,11 @@ export function useWikiCatalog(client: VerityClient, projectId: string | null) {
           setState({
             key: projectId,
             catalog: undefined,
-            error: failure instanceof Error ? failure.message : 'Could not load the Wiki',
+            // A reply the app cannot read says nothing useful in its own words.
+            error:
+              failure instanceof Error && failure.name !== 'ZodError'
+                ? failure.message
+                : 'Could not load the Wiki',
           });
       },
     );

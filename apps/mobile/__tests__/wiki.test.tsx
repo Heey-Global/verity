@@ -238,8 +238,9 @@ describe('a Wiki page', () => {
       ].join('\n'),
     );
     expect(await screen.findByText('Topic · Product concept · updated today')).toBeTruthy();
-    // The title is said once, by the page header, not again by the Markdown.
-    expect(screen.getAllByText('Navigation concept')).toHaveLength(2); // pane header + page
+    // The pane's header and the page each name it; the Markdown's own title line
+    // is not shown a third time.
+    expect(screen.getAllByText('Navigation concept')).toHaveLength(2);
     fireEvent.press(screen.getByText('roles'));
     expect(openFile).toHaveBeenLastCalledWith(PROJECT, 'insights/roles.md');
     fireEvent.press(screen.getByText('the decision'));
@@ -330,4 +331,17 @@ it('opens the decision list on a group that has decisions in it', async () => {
   });
   render(<KnowledgeScreen scope={PROJECT} folder={DECISIONS} />);
   expect(await screen.findByText('Knowledge is one entry')).toBeTruthy();
+});
+
+it('moves off a decision group that the Wiki emptied', async () => {
+  const api = client();
+  render(<KnowledgeScreen scope={PROJECT} folder={DECISIONS} />);
+  fireEvent.press(await screen.findByText('Superseded · 1'));
+  expect(screen.getByText('Knowledge is one entry')).toBeTruthy();
+  api.getProjectWiki.mockResolvedValue({
+    ...catalog,
+    decisions: catalog.decisions.filter((decision) => decision.status === 'current'),
+  });
+  await act(async () => invalidateWikiCatalog('p'));
+  expect(await screen.findByText('Content lists Wiki and Sources')).toBeTruthy();
 });
