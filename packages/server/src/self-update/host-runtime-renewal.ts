@@ -336,6 +336,8 @@ async function renewHostRuntimeServiceImpl(
     ],
     env: ['HOME=/tmp', 'TUF_ROOT=/tmp/tuf'],
   });
+  // Signature verification is complete; later failures must not pin the installed image.
+  await docker.removeContainer(verificationId);
   const installationId = await runHostRenewalJob(
     docker,
     {
@@ -366,7 +368,6 @@ async function renewHostRuntimeServiceImpl(
   );
   await options.verifyInstalled();
   await docker.removeContainer(installationId);
-  await docker.removeContainer(verificationId);
 }
 
 /** Preserve the host-write boundary even when Docker fails before returning a job result. */
