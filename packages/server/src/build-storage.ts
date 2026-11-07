@@ -60,7 +60,7 @@ const ownerSchema = z.object({
 });
 const remoteRecordSchema = z.object({
   version: z.literal(1),
-  operation: z.enum(['build-export', 'image-import']),
+  operation: z.enum(['build-export', 'image-import', 'protected-build']),
   hostBootId: z.uuid(),
   hostIdentity: z.string().regex(/^[a-f0-9]{64}$/),
   startedAt: z.iso.datetime(),
@@ -100,6 +100,9 @@ const TRANSPORT_FAILURE =
  * leaves the remote state unknown, and reconciliation decides later.
  */
 export function remoteOperationEnded(operation: RemoteOperation, output: string): boolean {
+  // Only the authenticated build supervisor can establish termination; default
+  // BuildKit idleness and build-produced output say nothing about a private worker.
+  if (operation === 'protected-build') return false;
   const lines = output
     .split('\n')
     .map((line) => line.trim())
@@ -212,7 +215,7 @@ export interface BuildStorageLease {
     command: string,
     args: string[],
     options: {
-      remoteOperation?: 'build-export' | 'image-import';
+      remoteOperation?: 'build-export' | 'image-import' | 'protected-build';
       env: NodeJS.ProcessEnv;
       signal?: AbortSignal;
       timeout: number;

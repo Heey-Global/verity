@@ -102,7 +102,7 @@ import { createBuildDiagnosticStore } from './build-diagnostics.js';
 import { brokeredDopplerBindingId } from './brokered-doppler-binding.js';
 import { BuildStorage } from './build-storage.js';
 import { createProjectImageReferences } from './derived-image-references.js';
-import { pinToolkitFeature } from './devcontainer-feature-pin.js';
+import { pinToolkitFeature, releaseToolkitFeature } from './devcontainer-feature-pin.js';
 import { createGoogleAccountAccessToken } from './google-account-token.js';
 import { createMatrixTool } from './matrix-tool.js';
 import { createManagedDevServerSecretResolver } from './managed-dev-server-secrets.js';
@@ -332,6 +332,7 @@ import { createProjectRelayRuntime } from './project-relay-runtime.js';
 import type { ProjectRelayLifecycle } from './project-relay-lifecycle.js';
 import { ProjectEgressLifecycle } from './project-egress-lifecycle.js';
 import { projectEgressAvailability } from './project-egress-health.js';
+import { createProtectedDevcontainerBuilder } from './protected-devcontainer-builder.js';
 import { createProjectEgressHostClient } from './project-egress-host-client.js';
 import { readCodexAccessToken, type AgentGatewayConfiguration } from './agent-gateway-control.js';
 import {
@@ -2223,9 +2224,13 @@ export async function buildEmbeddedServer(
       ? undefined
       : async () =>
           pinToolkitFeature(
-            typeof selectedDevcontainerFeature === 'function'
-              ? await selectedDevcontainerFeature()
-              : selectedDevcontainerFeature,
+            releaseToolkitFeature(
+              typeof selectedDevcontainerFeature === 'function'
+                ? await selectedDevcontainerFeature()
+                : selectedDevcontainerFeature,
+              process.env.VERITY_BUNDLED_PROTECTED_TOOLKIT_FEATURE,
+              devcontainerFeatureRefConfigured,
+            ),
           );
   if (projectDocker !== undefined && config.hostCloneRoot) {
     if (config.dockerBaseUrl === undefined) {
@@ -2514,6 +2519,15 @@ export async function buildEmbeddedServer(
       projectEgressEnabled: async () =>
         (await eventStore.getVeritySettingsRaw())?.projectEgressEnabled === true,
       buildStorage,
+      ...(config.projectEgressSocketPath && config.projectEgressKeyPath
+        ? {
+            protectedDevcontainerBuild: createProtectedDevcontainerBuilder({
+              root: buildStorage.root,
+              socketPath: config.projectEgressSocketPath,
+              keyPath: config.projectEgressKeyPath,
+            }),
+          }
+        : {}),
       buildFailureLogDirectory: join(
         config.dataVolumeRoot ?? config.dataDir ?? config.workspacesDir ?? join(tmpdir(), 'verity'),
         'build-failures',

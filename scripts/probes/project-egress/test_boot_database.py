@@ -1,5 +1,6 @@
 """Native database fixture stays private and follows the shipped PostgreSQL pin."""
 import importlib.util
+import ast
 import json
 from pathlib import Path
 import re
@@ -24,6 +25,34 @@ def container():
 
 
 class NativeDatabaseTests(unittest.TestCase):
+    def test_managed_stage_resolves_every_installer_asset(self):
+        spec = importlib.util.spec_from_file_location('boot_managed', ROOT / 'scripts/project-egress-managed.py')
+        managed = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(managed)
+        tree = ast.parse(Path(__file__).with_name('boot-managed-stage.py').read_text())
+        function = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == 'release_source')
+        namespace = {'Path': Path}
+        exec(compile(ast.Module(body=[function], type_ignores=[]), '<release_source>', 'exec'), namespace)
+        with tempfile.TemporaryDirectory() as directory:
+            assets = Path(directory)
+            for name in managed.LEGACY_ASSETS:
+                target = (assets / name if name in ('node', 'native-runtime-pins.env', 'project-egress-host-main.mjs')
+                          else assets / ('objects' if name.endswith('.bpf.o') else 'units') / name)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(name.encode())
+            # Derive the added payload from the installer's actual closure.
+            for name in set(managed.ASSETS) - set(managed.LEGACY_ASSETS):
+                target = assets / 'toolchain' / name
+                target.parent.mkdir(exist_ok=True)
+                target.write_bytes(name.encode())
+            for name in managed.ASSETS:
+                with self.subTest(name=name):
+                    self.assertEqual(namespace['release_source'](assets, name, managed.LEGACY_ASSETS,
+                                                               assets / 'objects').read_bytes(), name.encode())
+        build = Path(__file__).with_name('boot-build.sh').read_text()
+        self.assertIn('--target protected-build-toolchain', build)
+        self.assertIn('docker cp "$toolchain:/protected-toolchain" "$assets/toolchain"', build)
+
     def test_controller_cannot_autostart_before_negative_activation_probe(self):
         units = Path(__file__).with_name('boot-native-install.sh').read_text()
         self.assertIn('ConditionPathExists=/var/lib/verity-egress-fixture/controller-enabled', units)

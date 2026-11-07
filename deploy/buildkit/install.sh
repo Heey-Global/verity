@@ -101,6 +101,16 @@ mv /etc/verity-buildkit/buildkitd.toml.new /etc/verity-buildkit/buildkitd.toml
 resources=$(bash "$source_dir/resources.sh")
 cpu_quota=$(sed -n 's/^CPU_QUOTA=//p' <<<"$resources")
 memory_max=$(sed -n 's/^MEMORY_MAX=//p' <<<"$resources")
+cat > /etc/systemd/system/verity-buildkit.slice <<SLICE
+[Unit]
+Description=Shared Verity build budget
+[Slice]
+CPUQuota=$cpu_quota
+MemoryMax=$memory_max
+MemorySwapMax=0
+TasksMax=512
+SLICE
+chmod 0644 /etc/systemd/system/verity-buildkit.slice
 sed -e "s/@CPU_QUOTA@/$cpu_quota/" -e "s/@MEMORY_MAX@/$memory_max/" "$source_dir/verity-buildkit.service" \
     > /etc/systemd/system/verity-buildkit.service.new
 chmod 0644 /etc/systemd/system/verity-buildkit.service.new

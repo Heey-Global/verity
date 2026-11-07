@@ -59,6 +59,13 @@ describe('offline build storage reconciliation', () => {
       expect(() => fixture().verify([executable])).toThrow('processes still exist');
     },
   );
+  it('requires the same independent reboot evidence for protected attempts', () => {
+    const f = fixture();
+    f.record.operation = 'protected-build';
+    expect(() => f.verify()).not.toThrow();
+    f.host.bootId = f.record.hostBootId;
+    expect(() => f.verify()).toThrow('host boot has not ended');
+  });
   it('rejects missing host proof and malformed records', () => {
     const f = fixture();
     f.record.hostBootId = '';

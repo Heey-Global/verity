@@ -1,3 +1,4 @@
+import { ProtectedBuildHost } from './project-egress-build.js';
 import { afterEach, expect, it, vi } from 'vitest';
 import { mkdtemp, rm, chmod, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -254,15 +255,35 @@ it('stores atomically and refuses corrupt or symlinked registry files', async ()
 it('requires authentication on the real Unix listener and never exposes raw execution', async () => {
   const root = await directory();
   const { host, deps } = fixture();
-  servers.push(
-    await listenProjectEgressHost({ directory: root, token: 'a'.repeat(64), controller: host }),
+  const buildReady = vi.fn(async () => true);
+  const builds = new ProtectedBuildHost(
+    {
+      ready: buildReady,
+      prepare: async () => {},
+      renew: async () => {},
+      start: async () => {},
+      status: async () => 'running',
+      deny: async () => {},
+      stop: async () => {},
+      ended: async () => true,
+      remove: async () => {},
+    },
+    async () => {},
   );
-  const send = (token: string, body: unknown) =>
+  servers.push(
+    await listenProjectEgressHost({
+      directory: root,
+      token: 'a'.repeat(64),
+      controller: host,
+      builds,
+    }),
+  );
+  const send = (token: string, body: unknown, path = '/v1/command') =>
     new Promise<number>((resolve, reject) => {
       const call = request(
         {
           socketPath: join(root, 'control.sock'),
-          path: '/v1/command',
+          path,
           method: 'POST',
           headers: { authorization: `Bearer ${token}` },
         },
@@ -274,6 +295,11 @@ it('requires authentication on the real Unix listener and never exposes raw exec
       call.on('error', reject);
       call.end(JSON.stringify(body));
     });
+  expect(await send('wrong', { operation: 'health' }, '/v1/build')).toBe(401);
+  expect(buildReady).not.toHaveBeenCalled();
+  expect(await send('a'.repeat(64), { operation: 'health' }, '/v1/build')).toBe(200);
+  expect(buildReady).toHaveBeenCalledTimes(1);
+  expect(await send('a'.repeat(64), { operation: 'exec', command: 'true' }, '/v1/build')).toBe(409);
   expect(await send('wrong', { operation: 'health' })).toBe(401);
   expect(await send('a'.repeat(64), { operation: 'health' })).toBe(200);
   expect(deps.save).not.toHaveBeenCalled();
