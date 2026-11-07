@@ -6,8 +6,15 @@ import { join } from 'node:path';
 import { parse } from 'yaml';
 import { describe, expect, it } from 'vitest';
 
-type Step = { name?: string; run?: string; if?: string };
+type Step = {
+  name?: string;
+  run?: string;
+  if?: string;
+  id?: string;
+  with?: Record<string, string>;
+};
 type Job = {
+  outputs?: Record<string, string>;
   if?: string;
   needs?: string | string[];
   steps?: Step[];
@@ -157,5 +164,27 @@ describe('artifact-only maintenance release', () => {
     ).run;
     expect(evidence).toContain('.release-envelope.json');
     expect(evidence).toContain('"$envelope" --clobber');
+  });
+});
+
+describe('protected build release toolkit authority', () => {
+  it('passes only the signature-verified published Feature digest into the Server', () => {
+    const publish = release.jobs['publish-toolkit']!;
+    const verify = step('publish-toolkit', 'Sign and verify published artifacts');
+    const signature = verify.run!.indexOf('cosign verify');
+    const output = verify.run!.indexOf('echo "ref=${image}@${digest}"');
+    expect(signature).toBeGreaterThanOrEqual(0);
+    expect(output).toBeGreaterThan(signature);
+    expect(publish.outputs?.['protected-feature']).toBe(
+      '${{ steps.' + verify.id + '.outputs.ref }}',
+    );
+    const build = release.jobs['build-server']!;
+    expect(build.needs).toContain('publish-toolkit');
+    const assemble = build.steps!.find((entry) => entry.with?.['file'] === 'deploy/Dockerfile')!;
+    expect(assemble.with?.['build-args']).toContain(
+      'VERITY_BUNDLED_PROTECTED_TOOLKIT_FEATURE=${{ needs.publish-toolkit.outputs.protected-feature }}',
+    );
+    // Artifact-only bridges deliberately publish no new Feature authority.
+    expect(verify.if).toBe("${{ !inputs['backend-artifact-only'] }}");
   });
 });

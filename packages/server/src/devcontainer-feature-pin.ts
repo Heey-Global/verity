@@ -31,3 +31,21 @@ export async function pinToolkitFeature(
   }
   return { ...feature, ref: pinned, identity: `${feature.identity}\n${pinned}` };
 }
+
+/** The signed Server release names the exact Feature authorized by its host
+ * helper. Numeric version aliases can move after publication; do not resolve
+ * those aliases again when a release-owned pin is available. Explicit operator
+ * configuration remains explicit and is checked against the host's allowlist.
+ */
+export function releaseToolkitFeature(
+  feature: PinnedToolkitFeature | undefined,
+  releaseRef: string | undefined,
+  configured: boolean,
+): PinnedToolkitFeature | undefined {
+  if (configured || feature === undefined || !releaseRef) return feature;
+  const matched = /^([^\s@]+)@sha256:[a-f0-9]{64}$/u.exec(releaseRef);
+  if (!matched) throw new Error('Invalid release toolkit Feature pin');
+  const repository = feature.ref.split('@')[0]!.replace(/:[^/:]+$/u, '');
+  if (matched[1] !== repository) throw new Error('Release toolkit Feature repository mismatch');
+  return { ...feature, ref: releaseRef, identity: `${feature.identity}\n${releaseRef}` };
+}

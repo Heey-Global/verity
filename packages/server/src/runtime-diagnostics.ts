@@ -143,7 +143,7 @@ const buildStorageEvidenceSchema = z
 const buildStorageReservationSchema = z
   .object({
     attempt: z.string().max(80),
-    operation: z.enum(['build-export', 'image-import', 'local']),
+    operation: z.enum(['build-export', 'image-import', 'protected-build', 'local']),
     startedAt: timestamp.optional(),
     reservedBytes: number,
     reason: z.string().max(200),

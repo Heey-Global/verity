@@ -28,7 +28,13 @@ it('assembles every host asset with verified contents and an executable pinned N
         ])
       ).stdout,
     ) as string[];
-    for (const name of names) {
+    const protectedAssets = [
+      'devcontainer.js',
+      'docker-buildx',
+      'protected-build-attempt',
+      'protected-build-toolchain.json',
+    ];
+    for (const name of names.filter((name) => !protectedAssets.includes(name))) {
       const path =
         name === 'node'
           ? join(root, 'node')
@@ -51,6 +57,20 @@ it('assembles every host asset with verified contents and an executable pinned N
     }
     await writeFile(join(root, 'node'), 'release-pinned-node');
     await run(process.execPath, [builder, 'release', 'objects', join(root, 'node')], { cwd: root });
+    const tools = join(root, 'tools');
+    await mkdir(tools);
+    for (const name of protectedAssets.filter((name) => !name.endsWith('.json')))
+      await writeFile(join(tools, name), `fixture:${name}`);
+    const feature = 'ghcr.io/heey-global/verity/verity-sandbox-toolkit@sha256:' + 'a'.repeat(64);
+    await run(process.execPath, [builder, 'release', '--protected-toolchain', tools], {
+      cwd: root,
+      env: { ...process.env, VERITY_BUNDLED_PROTECTED_TOOLKIT_FEATURE: feature },
+    });
+    const policy = JSON.parse(
+      await readFile(join(root, 'release/protected-build-toolchain.json'), 'utf8'),
+    );
+    expect(policy.additionalFeatures).toEqual([feature]);
+    expect(policy.nodeOptions).toEqual({ version: '26.13.0' });
     const manifest = JSON.parse(
       await readFile(join(root, 'release/manifest.json'), 'utf8'),
     ) as Record<string, string>;

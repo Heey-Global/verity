@@ -588,3 +588,29 @@ operations and unknown consumers remain authoritative blockers. After the durabl
 native-retired marker is written, native configuration rollback is unavailable;
 the overlay worker and shared daemon metadata are preserved. A host helper update
 is required; updating only the Server does not enable host-root cleanup.
+
+## Protected build release toolchain
+
+Signed Server images carry a second-stage host manifest containing the exact
+Node binary, the integrity-locked devcontainer CLI bundle, the checked buildx
+binary and the fixed protected-attempt supervisor. The immutable egress release
+holds these files together with `protected-build-toolchain.json`; the supervisor
+resolves that release once before starting an attempt. The whitelist contains
+the release's digest-pinned Node Feature and, when published, the separately
+verified toolkit Feature digest. Images without that toolkit digest cannot
+admit protected builds. No project supplies tool paths or Feature authority.
+
+The managed controller transaction installs the fixed executable supervisor and
+private attempt directories, and restores them on rollback. Its previous-release
+validation continues to accept the older immutable asset inventory so an update
+can recover to a release that predates protected builds. Native host Docker
+utilities, including `dockerd`, remain prerequisites: private attempt daemons
+must never replace or restart the host Docker daemon.
+
+Ordinary and protected builders share `verity-buildkit.slice`. The slice uses
+the ordinary builder's host budget and preserves a smaller explicitly installed
+budget. Writing a slice drop-in does not move an already running ordinary
+builder: it must be renewed through the regular managed builder update before
+protected admission can establish the shared budget. Until verified, protected
+build readiness fails closed. No additional host-sized memory allowance is
+assigned for protected attempts.

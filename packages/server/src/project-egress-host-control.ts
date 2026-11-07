@@ -3,6 +3,7 @@ import { lstat, chmod } from 'node:fs/promises';
 import { timingSafeEqual } from 'node:crypto';
 import { join } from 'node:path';
 import { ProjectEgressHealthError } from './project-egress-health.js';
+import type { ProtectedBuildHost } from './project-egress-build.js';
 import type { ProjectEgressHost } from './project-egress-host.js';
 
 /** Bind only below a pre-created, root-owned runtime directory. There is no TCP
@@ -13,6 +14,7 @@ export async function listenProjectEgressHost(options: {
   directory: string;
   token: string;
   controller: ProjectEgressHost;
+  builds?: ProtectedBuildHost;
 }): Promise<Server> {
   if (!/^[a-f0-9]{64}$/u.test(options.token)) throw new Error('Invalid host control key');
   const directory = await lstat(options.directory);
@@ -36,7 +38,10 @@ export async function listenProjectEgressHost(options: {
         request.resume();
         return;
       }
-      if (request.method !== 'POST' || request.url !== '/v1/command') {
+      if (
+        request.method !== 'POST' ||
+        !(request.url === '/v1/command' || (request.url === '/v1/build' && options.builds))
+      ) {
         response.writeHead(404).end();
         request.resume();
         return;
@@ -60,9 +65,8 @@ export async function listenProjectEgressHost(options: {
           }
           chunks.push(buffer);
         }
-        const result = await options.controller.execute(
-          JSON.parse(Buffer.concat(chunks).toString('utf8')),
-        );
+        const controller = request.url === '/v1/build' ? options.builds! : options.controller;
+        const result = await controller.execute(JSON.parse(Buffer.concat(chunks).toString('utf8')));
         response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(result));
       })()
         .catch((error: unknown) => {

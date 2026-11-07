@@ -1260,6 +1260,8 @@ jobs:
       allow-no-rollback: ${{ github.event_name == 'workflow_dispatch' && inputs['backend-accept-no-rollback'] && inputs['backend-republish'] }}
 
   publish-toolkit:
+    outputs:
+      protected-feature: ${{ steps.protected-feature.outputs.ref }}
     needs: [release-please, self-update-gate, prepare-server-build-context]
     if: needs.release-please.outputs.backend-release-created == 'true'
     runs-on: ubuntu-26.04
@@ -1448,6 +1450,7 @@ jobs:
           cosign-release: v3.1.4
 
       - name: Sign and verify published artifacts
+        id: protected-feature
         if: ${{ !inputs['backend-artifact-only'] }}
         shell: bash
         run: |
@@ -1461,6 +1464,7 @@ jobs:
               --certificate-identity https://github.com/Heey-Global/verity/.github/workflows/release.yml@refs/heads/main \
               "${image}@${digest}" >/dev/null
           done
+          echo "ref=${image}@${digest}" >> "$GITHUB_OUTPUT"
 
   save-script-sandbox-cache:
     # Recovery inputs must never seed a cache later consumed by main.
@@ -1642,7 +1646,7 @@ jobs:
     # still holds every version tag, including the Server's own in
     # `publish-server`, and the relay and connector promotions confirm that
     # their version tags name exactly these digests.
-    needs: [release-please, stage-bundled-images, prepare-server-build-context]
+    needs: [release-please, stage-bundled-images, prepare-server-build-context, publish-toolkit]
     if: needs.release-please.outputs.backend-release-created == 'true'
     strategy:
       fail-fast: false
@@ -1744,6 +1748,7 @@ jobs:
           tags: ${{ steps.tags.outputs.tag }}
           build-args: |
             VERITY_SERVER_VERSION=${{ env.VERSION }}
+            VERITY_BUNDLED_PROTECTED_TOOLKIT_FEATURE=${{ needs.publish-toolkit.outputs.protected-feature }}
             VERITY_SCHEMA_FORWARD_MAX=${{ env.SCHEMA_FORWARD_MAX }}
             VERITY_BUNDLED_PROJECT_RELAY_IMAGE=${{ needs.stage-bundled-images.outputs.project-relay-image }}
             VERITY_BUNDLED_MATRIX_CONNECTOR_IMAGE=${{ needs.stage-bundled-images.outputs.matrix-connector-image }}

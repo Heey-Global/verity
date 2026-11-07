@@ -253,7 +253,13 @@ RUN chmod 0755 /usr/local/bin/verity-transcribe-meeting
 # Install shared CLI lockfiles with integrity checks, preserving global paths.
 COPY features/verity-sandbox-toolkit/npm /opt/verity-cli/npm
 COPY features/verity-sandbox-toolkit/bin/verity-cli-install.mjs /opt/verity-cli/bin/verity-cli-install.mjs
-RUN node /opt/verity-cli/bin/verity-cli-install.mjs devcontainers
+ARG VERITY_BUNDLED_PROTECTED_TOOLKIT_FEATURE=
+ENV VERITY_BUNDLED_PROTECTED_TOOLKIT_FEATURE=${VERITY_BUNDLED_PROTECTED_TOOLKIT_FEATURE}
+COPY scripts/build-project-egress-release.mjs /opt/verity-install/scripts/build-project-egress-release.mjs
+RUN node /opt/verity-cli/bin/verity-cli-install.mjs devcontainers \
+    && node /opt/verity-install/scripts/build-project-egress-release.mjs /opt/verity-install/egress-release --protected-toolchain \
+    && node /opt/verity-install/egress-release/devcontainer.js --version \
+    && /opt/verity-install/egress-release/docker-buildx version
 RUN node /opt/verity-cli/bin/verity-cli-install.mjs claude-code
 RUN node /opt/verity-cli/bin/verity-cli-install.mjs claude-acp
 # Harden that install: upstream (through 0.66.0) builds tool-call titles out of

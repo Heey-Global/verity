@@ -1,3 +1,7 @@
+import {
+  createNativeProtectedBuildHost,
+  protectedBuildBootstrapRules,
+} from './project-egress-build-host.js';
 import { openProjectEgressInventoryHistory } from './project-egress-inventory-history.js';
 import { ProjectEgressHealthError } from './project-egress-health.js';
 import { createManagedSystemInventory } from './project-egress-system-inventory.js';
@@ -32,7 +36,11 @@ import { egressRelayPolicy } from './project-egress-relay-policy.js';
 /** Managed host entrypoint. Activation requires a validated runtime profile and complete inventory. */
 import { readFile } from 'node:fs/promises';
 import { ProjectEgressHost, projectEgressBootstrapRules } from './project-egress-host.js';
-import { applyProjectFenceRules, projectFenceTable } from './project-egress-fence.js';
+import {
+  applyProjectFenceRules,
+  projectFenceTable,
+  type ProjectFenceDependencies,
+} from './project-egress-fence.js';
 import { listenProjectEgressHost } from './project-egress-host-control.js';
 import {
   inspectEgressHostContainer,
@@ -52,7 +60,10 @@ if (!['deny', 'restore', 'serve'].includes(mode ?? ''))
 // Paths are host installation constants, not request-controlled configuration.
 await applyProjectFenceRules(projectEgressBootstrapRules());
 // ExecStopPost must fence even a corrupt registry or missing Docker daemon.
-if (mode === 'deny') process.exit(0);
+if (mode === 'deny') {
+  await applyProjectFenceRules(protectedBuildBootstrapRules());
+  process.exit(0);
+}
 verifyProjectEgressServiceManager(
   (await promisify(execFile)('/usr/bin/systemctl', ['--version'], { timeout: 5000 })).stdout,
   await readFile('/proc/1/comm', 'utf8'),
@@ -173,6 +184,49 @@ const systemInventory = createManagedSystemInventory({
   },
 });
 const deadline = hostProjectDeadlineEnforcer();
+const fenceDependencies: Omit<ProjectFenceDependencies, 'policyCurrent' | 'deadline'> = {
+  inspect: inspectProjectFenceAttachment,
+  apply: applyProjectFenceRules,
+  ...(() => {
+    const checks = egressHostDirectChecks(authority, {
+      allows: (address) => protectedAddresses.allows(address),
+    });
+    return {
+      directTargetAllowed: async (host: string) =>
+        !inventoryPersistenceFailed &&
+        systemInventory.ready() &&
+        (await checks.directTargetAllowed(host)),
+      destinationAllowed: async (address: string) =>
+        !inventoryPersistenceFailed &&
+        systemInventory.ready() &&
+        !inventoryHistory.protectedAddress(address) &&
+        (await checks.destinationAllowed(address)),
+    };
+  })(),
+  reportSystemFailure: (target, error) =>
+    console.error(`System destination ${target.host} was not admitted`, error),
+  resolve,
+  existing: async (binding) => {
+    const tables = z
+      .object({
+        nftables: z.array(
+          z.object({ table: z.object({ family: z.string(), name: z.string() }).optional() }),
+        ),
+      })
+      .parse(
+        JSON.parse(
+          (
+            await promisify(execFile)('/usr/sbin/nft', ['-j', 'list', 'tables'], {
+              timeout: 1000,
+            })
+          ).stdout,
+        ),
+      );
+    return tables.nftables.some(
+      (item) => item.table?.family === 'inet' && item.table.name === projectFenceTable(binding),
+    );
+  },
+};
 const enforcement = createProjectEgressHostEnforcement({
   deadline,
   store: policyStore,
@@ -181,49 +235,7 @@ const enforcement = createProjectEgressHostEnforcement({
   reportRequestFailure: (error) => console.error('Destination request was not recorded', error),
   directAuthority: () => authority !== undefined,
   inspect: inspectEgressHostDirect,
-  dependencies: {
-    inspect: inspectProjectFenceAttachment,
-    apply: applyProjectFenceRules,
-    ...(() => {
-      const checks = egressHostDirectChecks(authority, {
-        allows: (address) => protectedAddresses.allows(address),
-      });
-      return {
-        directTargetAllowed: async (host: string) =>
-          !inventoryPersistenceFailed &&
-          systemInventory.ready() &&
-          (await checks.directTargetAllowed(host)),
-        destinationAllowed: async (address: string) =>
-          !inventoryPersistenceFailed &&
-          systemInventory.ready() &&
-          !inventoryHistory.protectedAddress(address) &&
-          (await checks.destinationAllowed(address)),
-      };
-    })(),
-    reportSystemFailure: (target, error) =>
-      console.error(`System destination ${target.host} was not admitted`, error),
-    resolve,
-    existing: async (binding) => {
-      const tables = z
-        .object({
-          nftables: z.array(
-            z.object({ table: z.object({ family: z.string(), name: z.string() }).optional() }),
-          ),
-        })
-        .parse(
-          JSON.parse(
-            (
-              await promisify(execFile)('/usr/sbin/nft', ['-j', 'list', 'tables'], {
-                timeout: 1000,
-              })
-            ).stdout,
-          ),
-        );
-      return tables.nftables.some(
-        (item) => item.table?.family === 'inet' && item.table.name === projectFenceTable(binding),
-      );
-    },
-  },
+  dependencies: fenceDependencies,
 });
 
 const verifyHost = async () => {
@@ -268,7 +280,26 @@ const controller = new ProjectEgressHost(await store.load(), {
     await projectEgressHostDocker('container', 'stop', '--time', '1', id);
   },
 });
+const builds =
+  relayPolicy?.packetEnforcement === true
+    ? await createNativeProtectedBuildHost({
+        imageRef: relayPolicy.image,
+        dataVolume: relayPolicy.dataVolume,
+        store: policyStore,
+        ...(projectPolicy ? { requests: projectPolicy } : {}),
+        dependencies: { ...fenceDependencies, deadline },
+        verifyReady: async () => {
+          systemInventory.verify();
+          if (inventoryPersistenceFailed)
+            throw new ProjectEgressHealthError('mandatory_inventory_incomplete');
+          verifyEgressHostAuthorityReady(authority);
+          await verifyServingRuntimeRegistration();
+          await verifyHost();
+        },
+      })
+    : undefined;
 if (mode === 'restore') {
+  await builds?.restore();
   await controller.restore(relayPolicy?.packetEnforcement === true);
   deadline.close();
   await database?.destroy();
@@ -283,13 +314,26 @@ if (mode === 'restore') {
     authority === undefined ? undefined : setInterval(() => void refreshProtected(), 60_000);
   inventoryTimer?.unref();
   const service = await serveProjectEgressHost({
-    restore: () => controller.restore(),
-    deny: () => controller.shutdown(),
+    restore: async () => {
+      await builds?.restore();
+      await controller.restore();
+    },
+    deny: async () => {
+      await Promise.all([builds?.close(), controller.shutdown()]);
+    },
     verifyHost,
-    revalidate: () => controller.revalidate(),
+    revalidate: async () => {
+      await builds?.controller.revalidate();
+      await controller.revalidate();
+    },
     listen: async () => {
       const token = (await readFile('/etc/verity-egress/control.key', 'utf8')).trim();
-      return listenProjectEgressHost({ directory: '/run/verity-egress', token, controller });
+      return listenProjectEgressHost({
+        directory: '/run/verity-egress',
+        token,
+        controller,
+        ...(builds ? { builds: builds.controller } : {}),
+      });
     },
     notifyReady: async () => {
       if (!process.env.NOTIFY_SOCKET) throw new Error('Systemd readiness channel is required');
@@ -299,7 +343,24 @@ if (mode === 'restore') {
       });
     },
   });
+  let sweeping = false;
+  const buildSweep = builds
+    ? setInterval(() => {
+        if (sweeping) return;
+        sweeping = true;
+        void builds.controller
+          .revalidate()
+          .catch((error: unknown) => {
+            console.error('Protected build supervision failed', error);
+          })
+          .finally(() => {
+            sweeping = false;
+          });
+      }, 1000)
+    : undefined;
+  buildSweep?.unref();
   const stop = () => {
+    clearInterval(buildSweep);
     clearInterval(inventoryTimer);
     void service.stop().then(
       async () => {

@@ -377,6 +377,7 @@ const defaultGitRunner: GitRunner = async (args, opts) => {
  *  message carries the build stderr so the provisioner can surface a truncated
  *  `provision_error`. Kept injectable so tests never spawn a real build. */
 export type DevcontainerBuildSpawner = (args: {
+  projectId?: string;
   storageLease?: BuildStorageLease;
   signal?: AbortSignal;
   workspaceFolder: string;
@@ -759,6 +760,7 @@ export interface LinkCloneToGitHubResult {
 export interface ProvisionerOptions {
   /** Host egress service client; present only when the host service is configured. */
   projectEgress?: ProjectEgressLifecycle;
+  protectedDevcontainerBuild?: DevcontainerBuildSpawner;
   /** The system-wide network protection switch, read at each container start. When
    * absent, a configured `projectEgress` protects every start. */
   projectEgressEnabled?: () => Promise<boolean>;
@@ -7009,7 +7011,10 @@ export class ProvisionerImpl implements Provisioner {
       .where('project_id', '=', project.id)
       .executeTakeFirst();
     const devcontainerDir = join(dirs.clonePath, '.devcontainer');
-    const build = this.opts.devcontainerBuild;
+    const protectedBuild = await this.projectEgressEnabled();
+    const build = protectedBuild
+      ? this.opts.protectedDevcontainerBuild
+      : this.opts.devcontainerBuild;
     const dockerHost = this.opts.dockerHostForBuild;
     if (policy?.devcontainer_enabled === false || !this.isDir(devcontainerDir)) {
       return {
@@ -7018,8 +7023,10 @@ export class ProvisionerImpl implements Provisioner {
         usesConfiguredOverride: !usesDefaultImage,
       };
     }
-    if (await this.projectEgressEnabled())
-      throw new Error('Devcontainer builds are unavailable while network protection is on');
+    if (protectedBuild && build === undefined)
+      throw new Error(
+        'The protected devcontainer builder is not ready; update the managed host builder before retrying',
+      );
     if (build === undefined || dockerHost === undefined) {
       throw new Error(
         'Devcontainer build support is unavailable; configure the secure builder or disable repository devcontainers for this project',
@@ -7047,7 +7054,8 @@ export class ProvisionerImpl implements Provisioner {
         `${DEVCONTAINER_NODE_FEATURE_REF}:${JSON.stringify(DEVCONTAINER_NODE_FEATURE_OPTIONS)}\n${feature.identity}:${JSON.stringify(DEVCONTAINER_TOOLKIT_FEATURE_OPTIONS)}` +
           // Only for Dockerfiles the pin applies to, so every other project keeps
           // its cached image across this change.
-          (pinsBase ? `\n${DEVCONTAINER_BASE_IMAGE_ARG}=${baseImageRef}` : ''),
+          (pinsBase ? `\n${DEVCONTAINER_BASE_IMAGE_ARG}=${baseImageRef}` : '') +
+          (protectedBuild ? `\nprotected-build-v1:${project.id}` : ''),
       );
       return {
         devcontainerDir,
@@ -7056,6 +7064,9 @@ export class ProvisionerImpl implements Provisioner {
         derivedTag: devcontainerImageTag(project.owner, project.repo, hash),
       };
     };
+    // Protected builds always consult the host supervisor. A daemon tag alone
+    // proves neither project ownership nor that the image was built under policy.
+    // Their host-owned layer cache still avoids repeated work within a project.
     // Reusing an existing image builds nothing, so it must not need build storage.
     // The derived tag depends only on `.devcontainer`, so name it from a copy of that
     // directory alone, without a lease that a busy or blocked build storage would
@@ -7063,7 +7074,7 @@ export class ProvisionerImpl implements Provisioner {
     // another project's build holds or blocks the storage. Anything this shortcut
     // cannot decide (an unconfined config, a configuration the snapshot refuses)
     // falls through to the full path below, which reports it.
-    if (!forceRebuild && this.opts.docker.imageExists !== undefined) {
+    if (!protectedBuild && !forceRebuild && this.opts.docker.imageExists !== undefined) {
       let probe: DevcontainerBuildSnapshot | undefined;
       try {
         probe = await createDevcontainerBuildSnapshot(dirs.clonePath, undefined, {
@@ -7115,6 +7126,7 @@ export class ProvisionerImpl implements Provisioner {
       // to re-run — it checksums the copied context files, so an unchanged tree
       // is a cheap all-hit no-op and a changed one rebuilds and re-tags in place.
       if (
+        !protectedBuild &&
         !forceRebuild &&
         devcontainerBuildInputsConfined(snapshotDevcontainerDir) &&
         this.opts.docker.imageExists !== undefined
@@ -7196,6 +7208,7 @@ export class ProvisionerImpl implements Provisioner {
       });
       try {
         await build({
+          ...(protectedBuild ? { projectId: project.id } : {}),
           ...(storageLease === undefined ? {} : { storageLease }),
           workspaceFolder: snapshot.workspaceFolder,
           imageName: derivedTag,

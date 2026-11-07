@@ -68,6 +68,48 @@ class ManagedTests(unittest.TestCase):
         return managed.provision(self.source, self.relay, self.authority, CONTROL_GID,
                                  self.root, run or self.execute, check, group_setup=lambda *_: None, **kwargs)
 
+    def test_protected_toolchain_is_immutable_and_helper_is_transactional(self):
+        self.assertTrue(self.provision()['available'])
+        release = (self.root / 'opt/verity-egress').resolve()
+        for name in ('node', 'devcontainer.js', 'docker-buildx', 'protected-build-toolchain.json'):
+            self.assertEqual((release / name).read_bytes(), name.encode())
+            self.assertEqual((release / name).stat().st_mode & 0o222, 0)
+        helper = self.root / 'usr/local/libexec/verity-buildkit/protected-build-attempt'
+        self.assertEqual(helper.read_bytes(), b'protected-build-attempt')
+        self.assertEqual(helper.stat().st_mode & 0o777, 0o755)
+        self.assertIn('Slice=verity-buildkit.slice', (self.root / managed.BUILD_DROPIN).read_text())
+        self.assertIn('MemoryMax=', (self.root / managed.BUILD_SLICE).read_text())
+        self.assertIn('usr/local/libexec/verity-buildkit/protected-build-attempt', managed.TRANSACTION_FILES)
+
+    def test_existing_smaller_builder_budget_bounds_protected_attempts(self):
+        unit = self.root / 'etc/systemd/system/verity-buildkit.service'
+        unit.parent.mkdir(parents=True)
+        unit.write_text('[Service]\nCPUQuota=50%\nMemoryMax=512M\n')
+        self.assertTrue(self.provision()['available'])
+        budget = (self.root / managed.BUILD_SLICE).read_text()
+        self.assertIn('CPUQuota=50%', budget)
+        self.assertIn('MemoryMax=512M', budget)
+
+    def test_protected_export_can_write_only_the_managed_data_volume(self):
+        self.relay.write_text('{"packetEnforcement":true,"dataVolume":"verity-data"}')
+        self.assertTrue(self.provision()['available'])
+        unit = (self.root / managed.base.UNITS['verity-egress-host.service']).read_text()
+        self.assertIn('-/var/lib/docker/volumes/verity-data/_data/build-storage ', unit)
+        self.assertNotIn('ReadWritePaths=/var/lib/docker/volumes ', unit)
+        self.relay.write_text('{"packetEnforcement":true,"dataVolume":"../foreign"}')
+        with self.assertRaises(ValueError):
+            self.provision()
+
+    def test_prior_release_without_protected_assets_remains_recoverable(self):
+        files = {name: self.source.joinpath(name).read_bytes() for name in managed.LEGACY_ASSETS}
+        identity = managed.base.digest(b''.join(name.encode() + files[name] for name in managed.LEGACY_ASSETS))
+        release = self.root / 'opt/verity-egress-releases' / identity
+        managed.prepare_release(release, files)
+        self.assertEqual(managed.verified_release(self.root, str(release)), release)
+        (release / 'node').chmod(0o644)
+        with self.assertRaises(ValueError):
+            managed.verified_release(self.root, str(release))
+
     def unsupported(self, *_):
         raise ValueError('Kernel has no accepted native installation profile')
 
@@ -394,11 +436,42 @@ class ManagedTests(unittest.TestCase):
         self.assertEqual((self.root / 'opt/verity-egress/node').stat().st_mode & 0o777, 0o555)
 
     def test_unmanaged_prefix_collision_never_applies_rules(self):
-        (self.root / 'sys/class/net/vep-unrelated').mkdir(parents=True)
-        with self.assertRaisesRegex(ValueError, 'collides'):
-            self.provision()
-        self.assertFalse(any(cmd[-1] == 'deny' for cmd in self.calls))
-        self.assertFalse((self.root / 'etc/systemd').exists())
+        for prefix in ('vep', 'veb'):
+            with self.subTest(prefix=prefix):
+                bridge = self.root / ('sys/class/net/' + prefix + '-unrelated')
+                bridge.mkdir(parents=True)
+                try:
+                    with self.assertRaisesRegex(ValueError, 'collides'):
+                        self.provision()
+                    self.assertFalse(any(cmd[-1] == 'deny' for cmd in self.calls))
+                    self.assertFalse((self.root / 'etc/systemd').exists())
+                finally:
+                    bridge.rmdir()
+
+    def test_build_bridge_ownership_requires_private_checkpoint_and_live_network_identity(self):
+        bridge = 'veb' + 'a' * 12
+        (self.root / 'sys/class/net' / bridge).mkdir(parents=True)
+        request = {'projectId': 'project-one', 'attemptId': 'attempt-one'}
+        state = self.root / 'var/lib/verity/protected-build'
+        state.mkdir(parents=True)
+        controller = state / 'controller.json'
+        controller.write_text(json.dumps({'request': request}))
+        controller.chmod(0o600)
+        key = managed.base.digest((request['projectId'] + '\0' + request['attemptId']).encode())
+        checkpoint = state / 'attempts' / key / 'checkpoint.json'
+        checkpoint.parent.mkdir(parents=True)
+        binding = {'projectId': request['projectId'], 'bridge': bridge, 'networkId': 'b' * 64}
+        checkpoint.write_text(json.dumps({'binding': binding, 'attemptId': request['attemptId']}))
+        checkpoint.chmod(0o600)
+        network = {'Id': binding['networkId'], 'Driver': 'bridge',
+                   'Options': {'com.docker.network.bridge.name': bridge}}
+        managed.reject_bridge_collisions(self.root, lambda *_: json.dumps([network]))
+        network['Id'] = 'c' * 64
+        with self.assertRaisesRegex(ValueError, 'identity changed'):
+            managed.reject_bridge_collisions(self.root, lambda *_: json.dumps([network]))
+        checkpoint.chmod(0o666)
+        with self.assertRaises(ValueError):
+            managed.reject_bridge_collisions(self.root, lambda *_: json.dumps([network]))
 
     def test_failed_upgrade_restores_bundle_and_config_without_touching_docker(self):
         self.provision()

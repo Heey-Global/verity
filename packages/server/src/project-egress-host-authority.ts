@@ -125,7 +125,11 @@ export async function egressHostDestinationAllowed(
       for (const subnet of network.IPAM.Config ?? []) {
         if (!subnet.Subnet) continue;
         const range = ipaddr.parseCIDR(subnet.Subnet);
-        if (candidate.kind() === range[0].kind() && candidate.match(range)) return false;
+        if (candidate instanceof ipaddr.IPv4 && range[0] instanceof ipaddr.IPv4) {
+          if (candidate.match(range[0], range[1])) return false;
+        } else if (candidate instanceof ipaddr.IPv6 && range[0] instanceof ipaddr.IPv6) {
+          if (candidate.match(range[0], range[1])) return false;
+        }
       }
   }
   return true;
