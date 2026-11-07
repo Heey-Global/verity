@@ -351,7 +351,8 @@ function spokenLabel(
       : isValidElement<{ label?: unknown }>(node) && typeof node.props.label === 'string'
         ? node.props.label
         : undefined;
-  return [title, subtitle, text(trailing), text(tag)]
+  // The tag is read where it is drawn: before the subtitle.
+  return [title, text(tag), subtitle, text(trailing)]
     .filter((part) => part !== undefined && part !== '')
     .join(', ');
 }

@@ -22,7 +22,7 @@ import {
   type VerityClient,
 } from '@verity/mobile';
 import { router } from 'expo-router';
-import { useMemo, useState, type ReactElement } from 'react';
+import { useEffect, useMemo, useState, type ReactElement } from 'react';
 import { Alert, Platform, View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 
@@ -267,7 +267,10 @@ export function ProjectWork({
   onChanged: (sessionId: string, deleted: boolean) => void;
 }) {
   const [filter, setFilter] = useState<WorkFilter>(initialFilter);
-  const [answering, setAnswering] = useState<InboxItem | null>(null);
+  // The key, not the item: the sheet follows the live feed, so a question
+  // answered elsewhere while it is open closes it instead of offering stale
+  // answers to a session that no longer waits.
+  const [answeringKey, setAnsweringKey] = useState<string | null>(null);
   const { unread: unreadIds, markSeen } = useUnread(client, sessions);
   const previews = useSessionPreviews();
   const derived = useMemo(
@@ -278,6 +281,11 @@ export function ProjectWork({
     [feed, sessions],
   );
   const items = feed?.items ?? derived;
+  const answering =
+    answeringKey === null ? null : (items?.find((item) => item.key === answeringKey) ?? null);
+  useEffect(() => {
+    if (answeringKey !== null && answering === null) setAnsweringKey(null);
+  }, [answeringKey, answering]);
   const now = useMemo(
     () => nowSections(sessions, items ?? [], unreadIds),
     [sessions, items, unreadIds],
@@ -514,7 +522,7 @@ export function ProjectWork({
           variant="secondary"
           loading={locked}
           disabled={locked}
-          onPress={() => setAnswering(item)}
+          onPress={() => setAnsweringKey(item.key)}
         />
       );
     return answers.map((action) => (
@@ -633,19 +641,19 @@ export function ProjectWork({
         answers={answering !== null ? answersOf(answering) : []}
         onAnswer={(action) => {
           const item = answering!;
-          setAnswering(null);
+          setAnsweringKey(null);
           send(item, action);
         }}
         onOpenSession={
           answering?.sessionId !== undefined
             ? () => {
                 const id = answering.sessionId!;
-                setAnswering(null);
+                setAnsweringKey(null);
                 onOpenSession(id);
               }
             : undefined
         }
-        onClose={() => setAnswering(null)}
+        onClose={() => setAnsweringKey(null)}
       />
       {settings ? (
         <SessionSettingsDialog

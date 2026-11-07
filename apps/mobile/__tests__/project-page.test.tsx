@@ -604,6 +604,34 @@ describe('project page', () => {
     expect(screen.getByTestId('project-work')).toBeTruthy();
   });
 
+  it('closes the answer sheet once its question was answered elsewhere', async () => {
+    // A sheet left open on a stale question would send its answer to a session
+    // that no longer waits, as an unwanted prompt.
+    const long = `${'y'.repeat(SHORT_ANSWER)}!`;
+    const wordy = session('wordy', {
+      status: 'awaiting_input',
+      openChoices: { question: 'How?', options: [{ label: long }, { label: 'Wait' }] },
+    });
+    const client = clientWith([wordy]);
+    mockCreateVerityClient.mockReturnValue(client);
+    const page = (reloadOn: unknown) => (
+      <ProjectPage client={client} projectId="p/1" onOpenSession={jest.fn()} reloadOn={reloadOn} />
+    );
+    const view = render(page(1));
+    await screen.findByTestId('project-line');
+    await act(async () => undefined);
+    fireEvent.press(screen.getByRole('button', { name: '2 answers' }));
+    expect(screen.getByRole('button', { name: long })).toBeTruthy();
+    const detail = await (client.getProject as jest.Mock).mock.results[0]!.value;
+    (client.getProject as jest.Mock).mockResolvedValue({
+      ...detail,
+      sessions: [session('wordy', { status: 'running' })],
+    });
+    view.rerender(page(2));
+    await act(async () => undefined);
+    expect(screen.queryByRole('button', { name: long })).toBeNull();
+  });
+
   it('reloads when the wide layout polled newer sessions beside it', async () => {
     const client = clientWith([running]);
     mockCreateVerityClient.mockReturnValue(client);

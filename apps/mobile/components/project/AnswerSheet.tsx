@@ -44,7 +44,8 @@ export function AnswerSheet({
   return (
     <Sheet
       visible={item !== null}
-      title={item?.message ?? item?.title ?? ''}
+      // `||`: an empty message would leave the sheet without its question.
+      title={item?.message || item?.title || ''}
       onClose={onClose}
       footer={
         onOpenSession !== undefined ? (
