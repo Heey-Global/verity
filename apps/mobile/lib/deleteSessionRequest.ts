@@ -17,7 +17,7 @@ export function deleteSessionRequest(
     title: 'Delete session?',
     // The history goes; only the switch, where offered, keeps the conversation
     // for a while, and says so itself.
-    message: `This permanently removes "${session.label}" — its history${session.automation ? ', its automation,' : ''} and worktree. This can't be undone.`,
+    message: `This deletes "${session.label}" with its history${session.automation ? ', its automation,' : ''} and worktree. This can't be undone.`,
     ...(afterSheet ? { afterSheet } : {}),
     confirmLabel: 'Delete',
     destructive: true,
@@ -30,6 +30,6 @@ export function deleteSessionRequest(
           },
         }
       : {}),
-    onConfirm: (wiki) => onDelete({ wiki: session.projectId !== null && wiki }),
+    onConfirm: (wiki) => onDelete({ wiki: Boolean(session.projectId) && wiki }),
   };
 }
