@@ -340,9 +340,7 @@ function identity(root) {
 function receiptMatches(root, value) {
   const receipt = read(join(root, 'node_modules', '.verity-install.json'));
   try {
-    return receipt === undefined
-      ? packedSources(root).length === 0
-      : JSON.parse(receipt).identity === value;
+    return receipt !== undefined && JSON.parse(receipt)?.identity === value;
   } catch {
     return false;
   }

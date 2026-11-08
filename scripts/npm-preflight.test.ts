@@ -103,6 +103,37 @@ it('uses the native npm root instead of trusting an ancestor lockfile', () => {
   expect(npmProjectRoot(executable, nested, process.env, ['install'])).toBe(nested);
 });
 
+it('follows actual npm workspace membership and keeps independent nested projects separate', () => {
+  const root = fixture({ lockfileVersion: 3, packages: {} });
+  writeFileSync(
+    join(root, 'package.json'),
+    JSON.stringify({ name: 'workspace-root', private: true, workspaces: ['packages/*'] }),
+  );
+  const workspace = join(root, 'packages', 'web');
+  const independent = join(root, 'independent');
+  for (const [directory, name] of [
+    [workspace, 'web'],
+    [independent, 'independent'],
+  ]) {
+    mkdirSync(directory!, { recursive: true });
+    writeFileSync(join(directory!, 'package.json'), JSON.stringify({ name }));
+  }
+  const userConfig = join(root, 'user.npmrc');
+  const globalConfig = join(root, 'global.npmrc');
+  writeFileSync(userConfig, '');
+  writeFileSync(globalConfig, '');
+  const env = {
+    ...process.env,
+    VERITY_SESSION_ID: '',
+    npm_config_userconfig: userConfig,
+    NPM_CONFIG_USERCONFIG: userConfig,
+    npm_config_globalconfig: globalConfig,
+    NPM_CONFIG_GLOBALCONFIG: globalConfig,
+  };
+  expect(npmProjectRoot('npm', workspace, env, [])).toBe(root);
+  expect(npmProjectRoot('npm', independent, env, [])).toBe(independent);
+});
+
 it('preserves root and workspace packages before frozen ci can remove local patches', () => {
   const root = fixture({ lockfileVersion: 3, packages: { '': {}, 'packages/web': {} } });
   for (const directory of [root, join(root, 'packages', 'web')]) {

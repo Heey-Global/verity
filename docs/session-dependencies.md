@@ -60,6 +60,9 @@ worktrees through independent copies, with workspace links restored for the
 destination session. Writable packages are never hardlinked between sessions.
 Compatibility includes dependency manifests, lockfiles, npm configuration and
 runtime identity (including libc), rather than only the presence of `node_modules`.
+Existing npm trees without a managed `.verity-install.json` receipt cannot prove
+these inputs and require one managed preparation. Their files are preserved;
+subsequent checks and compatible sessions can reuse the verified result.
 Packed local `file:` sources also participate in identity; traversal is limited
 to 64 MiB and 10,000 entries and rejects unsupported symlinks or special files.
 Linked workspace sources remain live in the receiving session.
