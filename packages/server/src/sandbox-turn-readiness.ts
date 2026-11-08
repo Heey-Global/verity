@@ -69,6 +69,10 @@ export function parseEgressReadiness(reply: Record<string, unknown>): SandboxEgr
  * the turn proceeds exactly as it did before this gate existed and meets the
  * same failure it always would, rather than stalling first.
  */
+// A missing or refusing supervisor socket is read as `unsupported` rather than
+// waited on because turns are admitted only after the Runner stack reported
+// ready (`beforeRunnerAdmission` on wake and recreate); a socket absent at that
+// point is not a start-up race this gate could outwait.
 export function classifyProbeError(error: unknown): SandboxEgressProbe {
   const code =
     typeof error === 'object' && error !== null && 'code' in error
@@ -77,9 +81,9 @@ export function classifyProbeError(error: unknown): SandboxEgressProbe {
   return code === 'ETIMEDOUT' ? { kind: 'unavailable' } : { kind: 'unsupported' };
 }
 
-/** Hops still in the way. `not_configured` is not waited on: a Sandbox
- *  provisioned without that leg will not grow one, and the connector already
- *  answers such a request with its own specific message. */
+/** Hops still in the way. `not_configured` and `invalid` are not waited on:
+ *  they come from the Sandbox's own environment, which no amount of waiting
+ *  changes, and the forward reports them as it always did. */
 export function pendingEgressHops(
   probe: SandboxEgressProbe,
   required: readonly EgressHop[],
@@ -88,7 +92,7 @@ export function pendingEgressHops(
   if (probe.kind === 'unsupported') return [];
   return required.filter((hop) => {
     const state = probe.readiness[hop];
-    return state !== 'ready' && state !== 'not_configured';
+    return state !== 'ready' && state !== 'not_configured' && state !== 'invalid';
   });
 }
 
@@ -143,7 +147,7 @@ export async function waitForSandboxTurnReadiness(
   for (;;) {
     attempts += 1;
     last = await input.probe();
-    if (last.kind === 'unsupported' && attempts === 1) return { outcome: 'unsupported' };
+    if (last.kind === 'unsupported') return { outcome: 'unsupported' };
     pending = pendingEgressHops(last, required);
     const durationMs = Math.max(0, now() - startedAt);
     if (pending !== 'supervisor' && pending.length === 0) {

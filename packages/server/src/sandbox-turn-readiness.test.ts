@@ -134,6 +134,17 @@ describe('waitForSandboxTurnReadiness', () => {
   });
 
   // Sandboxes built from an older toolkit keep starting turns as before.
+  it('reports an older toolkit found after the supervisor came up as unsupported', async () => {
+    const h = harness([{ kind: 'unavailable' }, { kind: 'unsupported' }]);
+    await expect(waitForSandboxTurnReadiness(h.input)).resolves.toEqual({
+      outcome: 'unsupported',
+    });
+    expect(h.log.info).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.stringContaining('became ready'),
+    );
+  });
+
   it('lets an older toolkit through untouched', async () => {
     const h = harness([{ kind: 'unsupported' }]);
     await expect(waitForSandboxTurnReadiness(h.input)).resolves.toEqual({
@@ -160,8 +171,9 @@ describe('egress readiness parsing', () => {
     expect(requiredEgressHops('opencode')).toContain('codex');
   });
 
-  it('does not wait on a leg the Sandbox was provisioned without', () => {
+  it('does not wait on a leg the Sandbox was provisioned without or misconfigured', () => {
     expect(pendingEgressHops(readiness({ codex: 'not_configured' }), ['codex'])).toEqual([]);
+    expect(pendingEgressHops(readiness({ codex: 'invalid' }), ['codex'])).toEqual([]);
   });
 
   it('reads a malformed reply as an older toolkit, never as a failure', () => {
