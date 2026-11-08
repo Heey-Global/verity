@@ -27,6 +27,10 @@ afterEach(() => {
 const env = {
   ...process.env,
   VERITY_SESSION_ID: '',
+  // npm test exports its own configuration paths; the fake npm must use the
+  // fixture's global configuration so drift assertions exercise that file.
+  NPM_CONFIG_GLOBALCONFIG: undefined,
+  npm_config_globalconfig: undefined,
   GIT_CONFIG_GLOBAL: '/dev/null',
   GIT_CONFIG_SYSTEM: '/dev/null',
 };
