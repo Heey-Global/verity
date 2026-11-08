@@ -75,6 +75,8 @@ import {
   Alert,
   Animated,
   type LayoutChangeEvent,
+  type FlatList,
+  type ScrollView,
   Linking,
   type ListRenderItemInfo,
   Pressable,
@@ -128,6 +130,7 @@ import { SessionChat } from './session/[id]';
 import { HomeInbox } from '../components/home/HomeInbox';
 import { ProviderUsageGroup, ProviderUsageStrip } from '../components/ProviderUsage';
 import { HomeTabBar, type HomeTab } from '../components/home/HomeTabBar';
+import { pressHomeTab } from '../components/home/pressHomeTab';
 import { useNewDesign } from '../lib/homePreferences';
 import { ProjectPage } from '../components/project/ProjectPage';
 import { KnowledgeFileView } from '../components/knowledge/KnowledgeFileView';
@@ -740,6 +743,19 @@ function SessionList({ client }: { client: VerityClient }) {
     // Consumed: the same link must open the page again after "Projects" closed it.
     router.setParams({ project: undefined });
   }, [projectParam, newDesign]);
+  const homeScrollRef = useRef<ScrollView>(null);
+  const onHomeTabPress = (next: HomeTab) =>
+    pressHomeTab(next, {
+      tab: homeTab,
+      setTab: setHomeTab,
+      projectOpen: wide && openProjectId !== null,
+      verityOpen: wide && verityOpen,
+      closeProject: () => setOpenProjectId(null),
+      closeVerity: () => setVerityOpen(false),
+      scrollProjects: () =>
+        (reorder.listRef.current as FlatList | null)?.scrollToOffset({ offset: 0, animated: true }),
+      scrollHome: () => homeScrollRef.current?.scrollTo({ y: 0, animated: true }),
+    });
   const [homeCount, setHomeCount] = useState(0);
   const openSessionFromHome = useCallback(
     (sessionId: string, options?: { mockups?: boolean }) => {
@@ -1219,6 +1235,7 @@ function SessionList({ client }: { client: VerityClient }) {
         ]}
       >
         <HomeInbox
+          scrollRef={homeScrollRef}
           client={client}
           sessions={sessions}
           projects={projects}
@@ -1240,7 +1257,7 @@ function SessionList({ client }: { client: VerityClient }) {
       </View>
       <HomeTabBar
         tab={homeTab}
-        onChange={setHomeTab}
+        onChange={onHomeTabPress}
         count={homeCount}
         bottomInset={insets.bottom}
       />
