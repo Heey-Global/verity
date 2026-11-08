@@ -29,6 +29,7 @@ import { tint } from '../ui/tint';
 import { useTaskPreferences } from '../../lib/taskPreferences';
 import { taskAccountScope } from '../../lib/tasksStore';
 import { dispatchVerityShortcut } from '../../lib/voiceShortcut';
+import { syncWatchInbox } from '../../lib/watchCapture';
 
 /** The cached calendar list is cheap, but a watched calendar rarely changes. */
 const MEETING_REFRESH_MS = 5 * 60_000;
@@ -101,6 +102,8 @@ export function HomeInbox({
     onRepairProject,
   });
   useEffect(() => onCountChange?.(feed.items.length), [feed.items.length, onCountChange]);
+  // The watch lists the same items under "Needs you" (targets/VerityWatch).
+  useEffect(() => syncWatchInbox(feed.items), [feed.items]);
 
   return (
     <ScrollView

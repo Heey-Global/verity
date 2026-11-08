@@ -1,4 +1,4 @@
-import type { AssistantConversation } from '@verity/mobile';
+import type { AssistantConversation, InboxItem } from '@verity/mobile';
 
 import { getAuthToken, isBiometricUnlockEnabled } from './authToken';
 import { getVerityBaseUrl } from './client';
@@ -6,10 +6,13 @@ import { getServerProfile } from './serverProfile';
 
 import {
   createWatchInboxDrainer,
+  createWatchInboxSync,
   showWatchSettings,
   watchLink,
   watchScopeAllowed,
+  watchInbox,
   watchSnapshot,
+  WATCH_INBOX_LIMIT,
   type WatchCapture,
 } from './watchCapture';
 
@@ -202,5 +205,56 @@ describe('watch settings visibility', () => {
     expect(showWatchSettings({ supported: true, activated: true, paired: false, waiting: 2 })).toBe(
       true,
     );
+  });
+});
+
+const item = (index: number, extra: Partial<InboxItem> = {}): InboxItem => ({
+  key: `item-${String(index)}`,
+  kind: 'question',
+  tag: 'Question',
+  tone: 'action',
+  title: `Which environment ${String(index)}?`,
+  context: 'Website',
+  actions: [{ kind: 'answer', label: 'Staging', answer: 'Staging', sessionId: 's' }],
+  at: 0,
+  ...extra,
+});
+
+describe('watch "Needs you" list', () => {
+  it('sends Home’s items in Home’s order, cut to what the wrist lists', () => {
+    const items = Array.from({ length: WATCH_INBOX_LIMIT + 3 }, (_, index) => item(index));
+    items[0] = item(0, { message: 'x'.repeat(1000) });
+    const payload = watchInbox(items, 'account-1', 1234);
+    expect(payload?.scope).toBe('account-1');
+    expect(payload?.at).toBe(1234);
+    expect(payload?.items.map((entry) => entry.key)).toEqual(
+      items.slice(0, WATCH_INBOX_LIMIT).map((entry) => entry.key),
+    );
+    expect(payload?.items[0]).toMatchObject({
+      tag: 'Question',
+      tone: 'action',
+      context: 'Website',
+    });
+    expect(payload?.items[0]?.message).toHaveLength(400);
+    // A property list has no undefined: an item without a message carries no key.
+    expect(payload?.items[1]).not.toHaveProperty('message');
+  });
+
+  it('sends nothing for a signed-out iPhone, so the watch clears its list', () => {
+    expect(watchInbox([item(0)], null, 1)).toBeNull();
+  });
+
+  it('sends a changed list at once and an unchanged one only to refresh its time', () => {
+    const send = jest.fn(async () => undefined);
+    const sync = createWatchInboxSync(send, () => 'account-1');
+    sync([item(0)], 0);
+    sync([item(0)], 60_000);
+    expect(send).toHaveBeenCalledTimes(1);
+    sync([item(0), item(1)], 61_000);
+    expect(send).toHaveBeenCalledTimes(2);
+    // Without a resend the watch would call a correct list outdated.
+    sync([item(0), item(1)], 61_000 + 5 * 60_000);
+    expect(send).toHaveBeenCalledTimes(3);
+    expect(send).toHaveBeenLastCalledWith(expect.objectContaining({ at: 61_000 + 5 * 60_000 }));
   });
 });

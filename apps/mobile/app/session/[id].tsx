@@ -57,6 +57,15 @@ import {
 import { beginSessionSwitch, type SwitchTiming } from '@verity/mobile';
 import { markSessionSwitch, sessionSwitchTiming } from '@verity/mobile';
 import { PinnedPlan } from '../../components/PinnedPlan';
+import {
+  HighlightedSearchText,
+  MarkdownLine,
+  MarkdownTable,
+  MarkdownText,
+  SearchHighlightContext,
+  type OpenAppLink,
+  type OpenLocalFile,
+} from '../../components/chat/MarkdownText';
 import { shouldSendWebKey } from '../../lib/composerWebKey';
 import { subscribeLiveRefresh } from '../../lib/liveConnection';
 import { openTasksPanel } from '../../lib/taskPanelEvents';
@@ -672,19 +681,11 @@ const FILE_ROOT_ICON: Record<SessionFileRoot, IconName> = {
   drafts: 'folder',
 };
 
-type OpenLocalFile = (path: string, root?: SessionFileRoot) => void;
 const SessionFileOpenContext = createContext<OpenLocalFile | null>(null);
-// An agent's `verity://` link resolved by `parseAppLink`. The screen owns the
-// navigation and the sheets, so it answers with the handler for a target, or null
-// when the target cannot be opened here; the renderer then shows the same
-// non-tappable reference styling as an unknown target instead of a link that
-// would do nothing.
-type OpenAppLink = (target: AppLinkTarget) => (() => void) | null;
 const AppLinkOpenContext = createContext<OpenAppLink | null>(null);
 const SessionFileImageSourceContext = createContext<
   ((path: string) => ImageSource | undefined) | null
 >(null);
-const SearchHighlightContext = createContext<string | null>(null);
 
 function useTranscriptRows(messages: readonly Message[], sessionId: string): Row[] {
   const previous = useRef<Row[]>([]);
@@ -6915,14 +6916,6 @@ function renderRow(item: Row, isLatest: boolean, bookmarkable = true) {
 // so it never disappears for the duration of a slow round trip; the model retires
 // the echo the moment the canonical message arrives, so there is exactly one
 // bubble at every point in time (see `SessionModel.retirePending`).
-function HighlightedSearchText({ text }: { text: string }) {
-  const query = useContext(SearchHighlightContext);
-  return splitSearchHighlights(text, query).map((segment, index) => (
-    <Text key={index} style={segment.highlighted ? styles.searchTermHighlight : undefined}>
-      {segment.text}
-    </Text>
-  ));
-}
 
 function UserBubble({ message }: { message: UserTextMessage }) {
   const attachments = message.attachments ?? [];
@@ -7421,268 +7414,6 @@ function MessageActionsMenu({
   );
 }
 
-function MarkdownText({
-  content,
-  onOpenLocalFile,
-  onOpenAppLink,
-  sessionFileImageSource,
-  onOpenImage,
-}: {
-  content: string;
-  onOpenLocalFile: OpenLocalFile | null;
-  onOpenAppLink: OpenAppLink | null;
-  sessionFileImageSource: ((path: string) => ImageSource | undefined) | null;
-  onOpenImage: (source: ImageSource, label: string) => void;
-}) {
-  const finishMarkdownWork = beginRenderWork(
-    'markdown-body',
-    useContext(TranscriptTimingContext) ?? '',
-  );
-  const blocks = useMemo(() => parseMarkdownBlocks(content), [content]);
-  const rendered = (
-    <View>
-      {blocks.map((block, i) =>
-        block.type === 'table' ? (
-          <MarkdownTable key={i} header={block.header} rows={block.rows} />
-        ) : (
-          block.lines.map((line, j) => (
-            <MarkdownLine
-              key={`${i}-${j}`}
-              line={line}
-              onOpenLocalFile={onOpenLocalFile}
-              onOpenAppLink={onOpenAppLink}
-              sessionFileImageSource={sessionFileImageSource}
-              onOpenImage={onOpenImage}
-            />
-          ))
-        ),
-      )}
-    </View>
-  );
-  finishMarkdownWork();
-  return rendered;
-}
-
-// A markdown table (GitHub-flavored: a header row, a `|---|` separator, body
-// rows) → an aligned grid. The block-level parsing (`parseMarkdownBlocks` /
-// `splitTableCells`) lives in @verity/mobile and is unit-tested; this component
-// renders the parsed header + rows.
-function MarkdownTable({ header, rows }: { header: string[]; rows: string[][] }) {
-  return (
-    <View style={styles.table}>
-      <View style={[styles.tableRow, styles.tableHeaderRow]}>
-        {header.map((cell, i) => (
-          <View key={i} style={styles.tableCell}>
-            <SelectableMarkdownText textStyle={[styles.agentText, styles.tableHeaderText]}>
-              <Inline text={cell} onOpenLocalFile={null} onOpenAppLink={null} />
-            </SelectableMarkdownText>
-          </View>
-        ))}
-      </View>
-      {rows.map((row, ri) => (
-        <View
-          key={ri}
-          style={[styles.tableRow, ri === rows.length - 1 ? styles.tableRowLast : null]}
-        >
-          {row.map((cell, ci) => (
-            <View key={ci} style={styles.tableCell}>
-              <SelectableMarkdownText textStyle={styles.agentText}>
-                <Inline text={cell} onOpenLocalFile={null} onOpenAppLink={null} />
-              </SelectableMarkdownText>
-            </View>
-          ))}
-        </View>
-      ))}
-    </View>
-  );
-}
-
-const HEADING = /^(#{1,6})\s+(.*)$/;
-const BULLET = /^\s*[-*]\s+(.*)$/;
-const ORDERED = /^\s*(\d+)\.\s+(.*)$/;
-
-// Agent prose uses native RN <Text>, not react-native-uitextview. Keep it out of
-// generic flex rows: on iOS, selectable Text in a row can measure as one wide
-// line and clip at the right edge. Direct column layout wraps normally and also
-// avoids UITextView's clipped-height mis-measure.
-function SelectableMarkdownText({
-  textStyle,
-  children,
-}: {
-  textStyle: StyleProp<TextStyle>;
-  children: ReactNode;
-}) {
-  return (
-    <Text style={[styles.mdText, textStyle]} selectable>
-      {children}
-    </Text>
-  );
-}
-
-function MarkdownLine({
-  line,
-  onOpenLocalFile,
-  onOpenAppLink,
-  sessionFileImageSource,
-  onOpenImage,
-}: {
-  line: string;
-  onOpenLocalFile: OpenLocalFile | null;
-  onOpenAppLink: OpenAppLink | null;
-  sessionFileImageSource: ((path: string) => ImageSource | undefined) | null;
-  onOpenImage: (source: ImageSource, label: string) => void;
-}) {
-  const imageLinks = useMemo(() => localImageLinks(line), [line]);
-  const heading = HEADING.exec(line);
-  if (heading) {
-    return (
-      <SelectableMarkdownText textStyle={[styles.agentText, styles.mdHeading]}>
-        <Inline
-          text={heading[2] ?? ''}
-          onOpenLocalFile={onOpenLocalFile}
-          onOpenAppLink={onOpenAppLink}
-        />
-      </SelectableMarkdownText>
-    );
-  }
-  const bullet = BULLET.exec(line);
-  if (bullet) {
-    return (
-      <View style={styles.mdListRow}>
-        <Text style={styles.mdBullet}>•</Text>
-        <View style={styles.mdTextSlot}>
-          <SelectableMarkdownText textStyle={styles.agentText}>
-            <Inline
-              text={bullet[1] ?? ''}
-              onOpenLocalFile={onOpenLocalFile}
-              onOpenAppLink={onOpenAppLink}
-            />
-          </SelectableMarkdownText>
-          <LocalImageLinks
-            links={imageLinks}
-            sessionFileImageSource={sessionFileImageSource}
-            onOpenImage={onOpenImage}
-          />
-        </View>
-      </View>
-    );
-  }
-  const ordered = ORDERED.exec(line);
-  if (ordered) {
-    return (
-      <View style={styles.mdListRow}>
-        <Text style={styles.mdBullet}>{ordered[1]}.</Text>
-        <View style={styles.mdTextSlot}>
-          <SelectableMarkdownText textStyle={styles.agentText}>
-            <Inline
-              text={ordered[2] ?? ''}
-              onOpenLocalFile={onOpenLocalFile}
-              onOpenAppLink={onOpenAppLink}
-            />
-          </SelectableMarkdownText>
-          <LocalImageLinks
-            links={imageLinks}
-            sessionFileImageSource={sessionFileImageSource}
-            onOpenImage={onOpenImage}
-          />
-        </View>
-      </View>
-    );
-  }
-  const section = markdownSectionTitle(line);
-  if (section) {
-    return (
-      <SelectableMarkdownText textStyle={[styles.agentText, styles.mdSectionHeading]}>
-        <HighlightedSearchText text={section} />
-      </SelectableMarkdownText>
-    );
-  }
-  if (line.trim() === '') return <View style={styles.mdGap} />;
-  return (
-    <View>
-      <SelectableMarkdownText textStyle={styles.agentText}>
-        <Inline text={line} onOpenLocalFile={onOpenLocalFile} onOpenAppLink={onOpenAppLink} />
-      </SelectableMarkdownText>
-      <LocalImageLinks
-        links={imageLinks}
-        sessionFileImageSource={sessionFileImageSource}
-        onOpenImage={onOpenImage}
-      />
-    </View>
-  );
-}
-
-function localImageLinks(line: string): Array<{ path: string; label: string }> {
-  const seen = new Set<string>();
-  const links: Array<{ path: string; label: string }> = [];
-  for (const span of parseInline(line)) {
-    if (span.t !== 'link' || span.external) continue;
-    const path = sessionFilePathFromLocalLink(span.url);
-    if (path === null || !isSessionImageFilePath(path) || seen.has(path)) continue;
-    seen.add(path);
-    links.push({ path, label: span.text });
-  }
-  return links;
-}
-
-function LocalImageLinks({
-  links,
-  sessionFileImageSource,
-  onOpenImage,
-}: {
-  links: Array<{ path: string; label: string }>;
-  sessionFileImageSource: ((path: string) => ImageSource | undefined) | null;
-  onOpenImage: (source: ImageSource, label: string) => void;
-}) {
-  if (links.length === 0 || sessionFileImageSource === null) return null;
-  return (
-    <View style={styles.localLinkImages}>
-      {links.map((link) => (
-        <LocalImageLink
-          key={link.path}
-          link={link}
-          sessionFileImageSource={sessionFileImageSource}
-          onOpenImage={onOpenImage}
-        />
-      ))}
-    </View>
-  );
-}
-
-// A session-file image goes through the pinned downloader like a tool image: a
-// direct HTTPS URL would reach expo-image, which rejects the self-signed
-// certificate of a TLS-pinned endpoint and leaves an empty frame behind.
-function LocalImageLink({
-  link,
-  sessionFileImageSource,
-  onOpenImage,
-}: {
-  link: { path: string; label: string };
-  sessionFileImageSource: (path: string) => ImageSource | undefined;
-  onOpenImage: (source: ImageSource, label: string) => void;
-}) {
-  const immediate = useMemo(
-    () => sessionFileImageSource(link.path),
-    [sessionFileImageSource, link.path],
-  );
-  const source = usePinnedImageSource(immediate, `session-file-${link.path}`);
-  if (source === undefined) return null;
-  return (
-    <Pressable
-      onPress={() => onOpenImage(source, link.label)}
-      accessibilityRole="imagebutton"
-      accessibilityLabel={`View ${link.label} full screen`}
-    >
-      <ExpoImage
-        source={source}
-        style={styles.localLinkImage}
-        contentFit="contain"
-        transition={120}
-      />
-    </Pressable>
-  );
-}
-
 function ImageSourceViewer({
   source,
   label,
@@ -7710,79 +7441,6 @@ function SessionFileImageViewer({
   const source = usePinnedImageSource(immediate, `session-file-${path}`, onUnavailable);
   if (source === undefined) return null;
   return <ImageLightbox source={source} label={fileNameFromPath(path)} onClose={onClose} />;
-}
-
-// Render inline **bold** / `code` / link spans (nested Text lays them out inline).
-// A link tap opens the URL in the system browser, a `verity://` link opens the
-// whitelisted screen or sheet in the app; selection still works via a long-press
-// on the surrounding selectable Text.
-function Inline({
-  text,
-  onOpenLocalFile,
-  onOpenAppLink,
-}: {
-  text: string;
-  onOpenLocalFile: OpenLocalFile | null;
-  onOpenAppLink: OpenAppLink | null;
-}) {
-  const { theme } = useUnistyles();
-  return (
-    <>
-      {parseInline(text).map((span, i) => {
-        if (span.t === 'bold') {
-          return (
-            <Text key={i} style={styles.mdBold}>
-              <HighlightedSearchText text={span.text} />
-            </Text>
-          );
-        }
-        if (span.t === 'code') {
-          return (
-            <Text key={i} style={[styles.mdCode, { color: theme.colors.signature }]}>
-              <HighlightedSearchText text={span.text} />
-            </Text>
-          );
-        }
-        if (span.t === 'link') {
-          const appLink = span.external ? null : parseAppLink(span.url);
-          const openApp =
-            appLink !== null && onOpenAppLink !== null ? onOpenAppLink(appLink) : null;
-          const local =
-            span.external || appLink !== null ? null : sessionFileTargetFromLocalLink(span.url);
-          const canOpenLocal = local !== null && onOpenLocalFile !== null;
-          const asLink = span.external || openApp !== null;
-          return (
-            <Text
-              key={i}
-              style={[
-                asLink ? styles.mdLink : styles.mdReference,
-                { color: asLink ? theme.colors.action : theme.colors.signature },
-              ]}
-              // openURL rejects only if no handler can open it (no browser); swallow
-              // so it never surfaces as an unhandled rejection (only http(s) reach here).
-              onPress={
-                span.external
-                  ? () => void Linking.openURL(span.url).catch(() => undefined)
-                  : openApp !== null
-                    ? openApp
-                    : canOpenLocal
-                      ? () => onOpenLocalFile(local.path, local.root)
-                      : undefined
-              }
-              accessibilityRole={asLink || canOpenLocal ? 'link' : undefined}
-            >
-              <HighlightedSearchText text={span.text} />
-            </Text>
-          );
-        }
-        return (
-          <Text key={i}>
-            <HighlightedSearchText text={span.text} />
-          </Text>
-        );
-      })}
-    </>
-  );
 }
 
 // The agent's reasoning, collapsed to a subtle one-line chip by default. Only
@@ -11541,11 +11199,6 @@ const styles = StyleSheet.create((theme) => ({
   invertedItem: {
     transform: [{ scaleY: -1 }],
   },
-  searchTermHighlight: {
-    color: theme.colors.text,
-    backgroundColor: tint(theme.colors.signature, 'border'),
-    borderRadius: 3,
-  },
   // Spinner at the top of the transcript while older history is loading (scroll-up).
   olderSpinner: {
     paddingVertical: theme.spacing.md,
@@ -11738,83 +11391,6 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: theme.typography.bodySmall.fontSize,
     lineHeight: 18 * theme.fontScale,
   },
-  mdHeading: {
-    fontSize: theme.typography.title.fontSize,
-    fontFamily: theme.fonts.bold,
-    marginTop: theme.spacing.xs,
-  },
-  mdSectionHeading: {
-    fontFamily: theme.fonts.bold,
-    marginTop: theme.spacing.sm,
-  },
-  mdListRow: {
-    flexDirection: 'row',
-    gap: theme.spacing.sm,
-    paddingLeft: theme.spacing.xs,
-  },
-  mdBullet: {
-    color: theme.colors.textMuted,
-    fontFamily: theme.fonts.regular,
-    fontSize: theme.typography.row.fontSize,
-    lineHeight: 22 * theme.fontScale,
-  },
-  // Native selectable Text wraps reliably in normal column flow. Inside list
-  // rows, give it an explicit flex slot so it can shrink before wrapping instead
-  // of measuring as one clipped line on iOS.
-  mdText: {
-    width: '100%',
-    flexShrink: 1,
-  },
-  mdTextSlot: {
-    flex: 1,
-    minWidth: 0,
-  },
-  mdGap: {
-    height: theme.spacing.sm,
-  },
-  mdBold: {
-    fontFamily: theme.fonts.bold,
-  },
-  mdCode: {
-    fontFamily: Platform.select({ ios: 'Menlo', android: 'monospace', default: 'monospace' }),
-    fontSize: theme.typography.bodySmall.fontSize,
-  },
-  mdLink: {
-    textDecorationLine: 'underline',
-  },
-  mdReference: {
-    fontFamily: Platform.select({ ios: 'Menlo', android: 'monospace', default: 'monospace' }),
-    fontSize: theme.typography.bodySmall.fontSize,
-  },
-  table: {
-    marginVertical: theme.spacing.xs,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    borderRadius: theme.radius.md,
-    overflow: 'hidden',
-  },
-  tableRow: {
-    flexDirection: 'row',
-    borderBottomWidth: 1,
-    borderBottomColor: theme.colors.border,
-  },
-  tableRowLast: {
-    borderBottomWidth: 0,
-  },
-  tableHeaderRow: {
-    backgroundColor: theme.colors.surfaceAlt,
-  },
-  tableCell: {
-    flex: 1,
-    paddingHorizontal: theme.spacing.sm,
-    paddingVertical: theme.spacing.xs,
-    borderRightWidth: 1,
-    borderRightColor: theme.colors.border,
-  },
-  tableHeaderText: {
-    fontFamily: theme.fonts.bold,
-    color: theme.colors.text,
-  },
   thinkingRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -11936,19 +11512,6 @@ const styles = StyleSheet.create((theme) => ({
     marginLeft: theme.spacing.lg,
   },
   toolImage: {
-    width: '100%',
-    height: 220,
-    borderRadius: theme.radius.md,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    backgroundColor: theme.colors.surfaceAlt,
-  },
-  localLinkImages: {
-    gap: theme.spacing.xs,
-    marginTop: theme.spacing.xs,
-    marginBottom: theme.spacing.xs,
-  },
-  localLinkImage: {
     width: '100%',
     height: 220,
     borderRadius: theme.radius.md,

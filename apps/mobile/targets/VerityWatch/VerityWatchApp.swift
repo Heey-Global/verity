@@ -68,12 +68,19 @@ private struct HomeView: View {
           )
           .font(.footnote).foregroundStyle(.secondary)
         }
+        if let inbox = currentInbox {
+          NeedsYouSection(inbox: inbox)
+        }
         if let reply = store.verity?.reply, !reply.isEmpty {
-          NavigationLink { ReplyDetail(text: reply) } label: {
-            Text(reply).font(.footnote).lineLimit(5)
+          Section {
+            NavigationLink { ReplyDetail(text: reply) } label: {
+              Text(reply).font(.footnote).lineLimit(3)
+            }
+          } header: {
+            Text("Verity").textCase(nil)
           }
         }
-        if store.captures.isEmpty && store.verity?.reply == nil {
+        if store.captures.isEmpty && store.verity?.reply == nil && currentInbox == nil {
           Text("Tap the V and tell Verity what you need: a task, a question, an appointment.")
             .font(.footnote).foregroundStyle(.secondary)
         }
@@ -98,6 +105,14 @@ private struct HomeView: View {
         }
       }
     }
+  }
+
+  /// Home's open items for the signed-in account, when there are any.
+  private var currentInbox: WatchInbox? {
+    guard let inbox = store.inbox, !inbox.items.isEmpty,
+      inbox.scope == store.projectList.scope
+    else { return nil }
+    return inbox
   }
 
   /// The usual dark row; a capture still on its way carries a magenta stripe.
@@ -129,7 +144,8 @@ private struct StatusRow: View {
         case (_, "working"):
           ProgressView().controlSize(.mini).tint(sky)
           Text("Verity is working")
-        case (_, "needs_you"): Text("Verity needs you").foregroundStyle(accent)
+        // Waiting on an answer is a next step, not a problem: the action color.
+        case (_, "needs_you"): Text("Verity needs you").foregroundStyle(sky)
         case (_, "failed"): Text("Stopped with an error").foregroundStyle(recordRed)
         default: Text("Ready")
         }
@@ -161,6 +177,83 @@ private struct QuestionSection: View {
     } header: {
       Text(question.text ?? "Verity asks").textCase(nil)
     }
+  }
+}
+
+/// Home's "For you" items, the same list the iPhone shows. They are decided on
+/// the iPhone; Verity's own question above is answered here.
+private struct NeedsYouSection: View {
+  let inbox: WatchInbox
+
+  var body: some View {
+    Section {
+      ForEach(inbox.items) { item in
+        NavigationLink { InboxItemDetail(item: item) } label: { InboxItemRow(item: item) }
+      }
+    } header: {
+      Text("Needs you · \(inbox.items.count)").textCase(nil)
+    } footer: {
+      // An old list may already be done on the iPhone; say how old it is.
+      if Date().timeIntervalSince(inbox.at) > 10 * 60 {
+        Text("As of \(inbox.at.formatted(date: .omitted, time: .shortened))")
+      }
+    }
+  }
+}
+
+private struct InboxItemRow: View {
+  let item: WatchInbox.Item
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 2) {
+      Text(item.title).font(.footnote).lineLimit(2)
+      HStack(spacing: 4) {
+        InboxTag(item: item)
+        Text(item.context).lineLimit(1).foregroundStyle(.secondary)
+      }
+      .font(.caption2)
+    }
+  }
+}
+
+/// The item's tag in its tone, as on Home: a word, never color alone.
+private struct InboxTag: View {
+  let item: WatchInbox.Item
+
+  var body: some View {
+    Text(item.tag.uppercased()).fontWeight(.semibold).foregroundStyle(tone)
+  }
+
+  private var tone: Color {
+    switch item.tone {
+    case "attention": return recordRed
+    case "success": return .green
+    case "action": return sky
+    default: return .secondary
+    }
+  }
+}
+
+private struct InboxItemDetail: View {
+  let item: WatchInbox.Item
+
+  var body: some View {
+    ScrollView {
+      VStack(alignment: .leading, spacing: 6) {
+        InboxTag(item: item).font(.caption2)
+        Text(item.title).font(.headline)
+        if !item.context.isEmpty {
+          Text(item.context).font(.footnote).foregroundStyle(.secondary)
+        }
+        if let message = item.message, !message.isEmpty {
+          Text(message).font(.footnote)
+        }
+        Label("Decide on iPhone", systemImage: "iphone")
+          .font(.footnote).foregroundStyle(.secondary)
+      }
+      .frame(maxWidth: .infinity, alignment: .leading)
+    }
+    .navigationTitle("Needs you")
   }
 }
 
