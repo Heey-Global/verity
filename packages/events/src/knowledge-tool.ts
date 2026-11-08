@@ -110,6 +110,28 @@ export const knowledgeToolRequestSchema = z.discriminatedUnion('operation', [
     .strict(),
   z
     .object({
+      operation: z.literal('read_wiki_occasions'),
+      // Without an id: the open occasions. With one: its text from `offset` on.
+      id: z.string().trim().min(1).max(100).optional(),
+      offset: z.number().int().min(0).optional(),
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal('close_wiki_occasions'),
+      // Each read version: an occasion reopened since keeps its newer text open.
+      occasions: z
+        .array(
+          z
+            .object({ id: z.string().trim().min(1).max(100), createdAt: z.string().datetime() })
+            .strict(),
+        )
+        .min(1)
+        .max(50),
+    })
+    .strict(),
+  z
+    .object({
       operation: z.literal('publish_shared'),
       path: z.string().trim().min(1).max(512),
       sharedPath: z.string().trim().min(1).max(512).optional(),
@@ -133,6 +155,7 @@ export const KNOWLEDGE_TOOL_DESCRIPTION =
   'For publish_shared, path is relative to the session Documents working copy when supplied, otherwise `/knowledge/insights`; sharedPath is relative to `/knowledge/shared/insights` and defaults to the same path. ' +
   'A conflicting destination is never overwritten silently: reread it and retry with its expectedDigest only when reconciling the existing shared insight. ' +
   'Propose Wiki changes with propose_wiki instead of writing them when the user has not confirmed the concrete change: mode inline offers one change in chat at a natural conclusion (at most one per answer), mode maintenance is for maintenance runs. Each change names a Wiki page path (relative to `/knowledge/insights`, Markdown, never log.md or decisions), its complete new content and a one-line summary; sources cite the knowledge paths or URLs it rests on. The server records the base version and appends log.md when a person applies it; changes already applied, rejected or proposed are skipped. ' +
+  "In a Wiki maintenance run, read_wiki_occasions without id lists what happened in the project since the last run (oldest first); with an id it returns that occasion and a page of its kept text from offset, with nextOffset while more follows. close_wiki_occasions marks the read versions (id and createdAt as listed) done after their proposals were made; it also drops their kept text. Both work only in the project's maintenance session. " +
   'Read knowledge through ordinary filesystem tools. Write project documents in the session Documents working copy when one is supplied; Verity publishes it automatically.';
 
 export const KNOWLEDGE_CONTEXT_INSTRUCTIONS =

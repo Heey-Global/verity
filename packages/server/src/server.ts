@@ -147,6 +147,7 @@ import { registerIntegrationRoutes } from './integrations/routes.js';
 import {
   knowledgeRef,
   noteDeletedSession,
+  hasProjectWiki,
   noteWikiOccasion,
   occasionTitle,
 } from './wiki-occasions.js';
@@ -243,7 +244,15 @@ import type { ServerDeps } from './server-deps.js';
 import { registerServerMcpRoutes } from './server-mcp-routes.js';
 import { createMeetingTranscriptController } from './server-meeting-transcripts.js';
 import { registerServerSessionFiles } from './server-session-files.js';
+import { parseSpawnRequestBody } from './session-create-schema.js';
 import { WikiProposals } from './wiki-proposals.js';
+import {
+  startWikiMaintenanceTrigger,
+  WIKI_MAINTENANCE_DISPLAY_PROMPT,
+  WIKI_MAINTENANCE_PROMPT,
+  WIKI_MAINTENANCE_SESSION_NAME,
+  type WikiMaintenanceTrigger,
+} from './wiki-maintenance-trigger.js';
 import { registerWikiProposalRoutes } from './wiki-proposal-routes.js';
 import { registerServerSessionMove } from './server-session-move.js';
 import type {
@@ -1032,10 +1041,16 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             ? {}
             : { debounceMs: deps.pushFirePointDebounceMs }),
         });
+  // Wiki maintenance runs in a quiet session per project that no list shows and
+  // that never notifies anyone; its results surface only as proposals to review.
+  // Filled from the store when the server is ready and as sessions are created.
+  const wikiMaintenanceSessions = new Set<string>();
   const unsubscribePushFirePoints =
     pushFirePoints === undefined
       ? undefined
-      : deps.bus.subscribeAll((sessionId, event) => pushFirePoints.observe(sessionId, event));
+      : deps.bus.subscribeAll((sessionId, event) => {
+          if (!wikiMaintenanceSessions.has(sessionId)) pushFirePoints.observe(sessionId, event);
+        });
   // Scheduling requests run on their own once approved: the service owns holds, the public
   // booking links (one Uplink share and loopback page each) and cleanup; the scheduler resumes
   // all of it from durable state after a restart.
@@ -3435,6 +3450,14 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     pruneBranchCache,
     summarizeSessions,
     collectAttention,
+    // From the store, so a session another server generation created is hidden
+    // too; the local set covers one created moments ago and not yet recorded.
+    hiddenSessionIds: async () => {
+      const recorded = await deps.eventStore.wikiMaintenance.sessionIds();
+      for (const id of recorded) wikiMaintenanceSessions.add(id);
+      for (const id of wikiMaintenanceSessions) recorded.add(id);
+      return recorded;
+    },
   });
 
   registerMessageSearchRoute(app, { eventStore: deps.eventStore });
@@ -6158,6 +6181,75 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     notifySessionCreated: (sessionId, projectId) =>
       liveHub.notify({ sessionId, projectId, topics: ['session', 'status'] }),
   });
+
+  // Wiki maintenance runs when something new happened in a project (see
+  // wiki-maintenance-trigger.ts and docs/knowledge.md).
+  if (deps.dataRoot !== undefined) {
+    const dataRoot = deps.dataRoot;
+    let wikiMaintenance: WikiMaintenanceTrigger | undefined;
+    app.addHook('onReady', async () => {
+      try {
+        for (const id of await deps.eventStore.wikiMaintenance.sessionIds())
+          wikiMaintenanceSessions.add(id);
+      } catch (err) {
+        // The session list reads them again on every load; the runs still start.
+        app.log.warn({ err }, 'wiki maintenance sessions could not be read');
+      }
+      wikiMaintenance = startWikiMaintenanceTrigger({
+        store: deps.eventStore,
+        hasWiki: (projectId) => hasProjectWiki(dataRoot, projectId),
+        isProjectBusy: (projectId) => isProjectBusy(projectId),
+        ensureSession: async (project) => {
+          const known = (await deps.eventStore.wikiMaintenance.get(project.id))?.sessionId;
+          const existing = known ? await deps.eventStore.getSession(known) : undefined;
+          if (existing?.projectId === project.id) {
+            wikiMaintenanceSessions.add(existing.sessionId);
+            return existing.sessionId;
+          }
+          // Hidden before it exists, so no list or notification ever sees it.
+          const sessionId = randomUUID();
+          wikiMaintenanceSessions.add(sessionId);
+          const created = await sessionCreate.spawn(
+            parseSpawnRequestBody({
+              projectId: project.id,
+              sessionId,
+              name: WIKI_MAINTENANCE_SESSION_NAME,
+            }),
+            app.log,
+          );
+          if (!('sessionId' in created.result)) {
+            wikiMaintenanceSessions.delete(sessionId);
+            return undefined;
+          }
+          try {
+            await deps.eventStore.wikiMaintenance.setSession(project.id, sessionId);
+          } catch (err) {
+            // Unrecorded, it would show up in lists after a restart and never be reused.
+            await deleteSessionEverywhere(sessionId).catch(() => false);
+            throw err;
+          }
+          return sessionId;
+        },
+        dispatch: (sessionId) =>
+          sessionsBeingReaped.has(sessionId)
+            ? Promise.resolve({ accepted: false })
+            : conductor.dispatchTurnWhenIdle(
+                sessionId,
+                WIKI_MAINTENANCE_PROMPT,
+                {},
+                {
+                  displayPrompt: WIKI_MAINTENANCE_DISPLAY_PROMPT,
+                  validateSession: (session) =>
+                    deps.eventStore.wikiMaintenance.isSession(session.sessionId),
+                },
+              ),
+        log: app.log,
+      });
+    });
+    app.addHook('onClose', async () => {
+      await wikiMaintenance?.stop();
+    });
+  }
 
   // Steering (M3-3): trigger one operator turn on a session. We answer 202 the
   // moment it is accepted; live progress flows over the WS stream. What happens to

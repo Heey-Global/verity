@@ -25004,6 +25004,17 @@ var knowledgeToolRequestSchema = import_zod7.z.discriminatedUnion("operation", [
     }).strict()).min(1).max(20).refine((changes) => changes.reduce((total, change) => total + change.content.length, 0) <= 4e5, "a proposal holds at most 400,000 characters of page content")
   }).strict(),
   import_zod7.z.object({
+    operation: import_zod7.z.literal("read_wiki_occasions"),
+    // Without an id: the open occasions. With one: its text from `offset` on.
+    id: import_zod7.z.string().trim().min(1).max(100).optional(),
+    offset: import_zod7.z.number().int().min(0).optional()
+  }).strict(),
+  import_zod7.z.object({
+    operation: import_zod7.z.literal("close_wiki_occasions"),
+    // Each read version: an occasion reopened since keeps its newer text open.
+    occasions: import_zod7.z.array(import_zod7.z.object({ id: import_zod7.z.string().trim().min(1).max(100), createdAt: import_zod7.z.string().datetime() }).strict()).min(1).max(50)
+  }).strict(),
+  import_zod7.z.object({
     operation: import_zod7.z.literal("publish_shared"),
     path: import_zod7.z.string().trim().min(1).max(512),
     sharedPath: import_zod7.z.string().trim().min(1).max(512).optional(),

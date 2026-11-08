@@ -102,3 +102,48 @@ it('reads only the end of a long conversation, without tool output or notices', 
   expect(transcript).not.toContain('NOTICE');
   expect(transcript.endsWith(`User: LATEST ${chunk}`)).toBe(true);
 });
+
+it('reports how much is waiting and discards only what is older than the cutoff', async () => {
+  const occasions = ctx.store.wikiOccasions;
+  expect(await occasions.pending('p')).toEqual({ count: 0, oldestAt: null, newestAt: null });
+  await occasions.record({ projectId: 'p', kind: 'merge', ref: 'pr/1', title: 'Merged #1' });
+  await ctx.db
+    .updateTable('wiki_occasions')
+    .set({ created_at: new Date('2026-01-01T00:00:00Z') })
+    .execute();
+  await occasions.record({ projectId: 'p', kind: 'merge', ref: 'pr/2', title: 'Merged #2' });
+  const pending = await occasions.pending('p');
+  expect(pending.count).toBe(2);
+  expect(pending.oldestAt?.toISOString()).toBe('2026-01-01T00:00:00.000Z');
+  expect(pending.newestAt!.getTime()).toBeGreaterThan(pending.oldestAt!.getTime());
+  expect(await occasions.discardOpenBefore('p', new Date('2026-02-01T00:00:00Z'))).toBe(1);
+  expect((await occasions.open('p')).map((occasion) => occasion.ref)).toEqual(['pr/2']);
+});
+
+it('starts at most one run inside the interval, and a released claim may run again', async () => {
+  const runs = ctx.store.wikiMaintenance;
+  const first = new Date('2026-11-01T10:00:00Z');
+  const interval = 20 * 60 * 60 * 1000;
+  const claim = (at: Date) => runs.claimRun('p', at, new Date(at.getTime() - interval));
+  expect(await claim(first)).toBe(true);
+  // A second generation in the same pass, or an hour later, loses.
+  expect(await claim(first)).toBe(false);
+  expect(await claim(new Date(first.getTime() + 60 * 60 * 1000))).toBe(false);
+  const later = new Date(first.getTime() + interval);
+  expect(await claim(later)).toBe(true);
+  // A run that could not start gives its slot back.
+  await runs.releaseRun('p', later, first);
+  expect((await runs.get('p'))?.lastRunAt?.toISOString()).toBe(first.toISOString());
+  expect(await claim(later)).toBe(true);
+});
+
+it('knows the maintenance session and forgets it with the session', async () => {
+  const runs = ctx.store.wikiMaintenance;
+  await ctx.store.createSession({ sessionId: 'm', worktree: '/m', model: 'm', projectId: 'p' });
+  await runs.setSession('p', 'm');
+  expect(await runs.isSession('m')).toBe(true);
+  expect(await runs.sessionIds()).toEqual(new Set(['m']));
+  await ctx.db.deleteFrom('sessions').where('session_id', '=', 'm').execute();
+  expect(await runs.isSession('m')).toBe(false);
+  expect((await runs.get('p'))?.sessionId).toBeNull();
+});

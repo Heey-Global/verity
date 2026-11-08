@@ -87,6 +87,40 @@ export class WikiOccasionStore {
     return result.rows.map(record);
   }
 
+  /** How many occasions are open, and when the oldest and newest were recorded. */
+  async pending(
+    projectId: string,
+  ): Promise<{ count: number; oldestAt: Date | null; newestAt: Date | null }> {
+    const result = await sql<{
+      count: string | number;
+      oldest: Date | null;
+      newest: Date | null;
+    }>`select count(*) as count, min(created_at) as oldest, max(created_at) as newest
+      from wiki_occasions where project_id=${projectId} and closed_at is null`.execute(this.db);
+    const row = result.rows[0];
+    return {
+      count: Number(row?.count ?? 0),
+      oldestAt: row?.oldest ?? null,
+      newestAt: row?.newest ?? null,
+    };
+  }
+
+  /** Drops open occasions recorded before `before`, kept text included. */
+  async discardOpenBefore(projectId: string, before: Date): Promise<number> {
+    const result = await sql`delete from wiki_occasions where project_id=${projectId}
+      and closed_at is null and created_at < ${before}`.execute(this.db);
+    return Number(result.numAffectedRows ?? 0);
+  }
+
+  /** One open occasion with its kept text. */
+  async openOne(projectId: string, id: string): Promise<WikiOccasion | undefined> {
+    const result = await sql<Row>`select id,project_id,kind,ref,title,body,created_at
+      from wiki_occasions where project_id=${projectId} and id=${id}
+        and closed_at is null`.execute(this.db);
+    const row = result.rows[0];
+    return row ? record(row) : undefined;
+  }
+
   async countOpen(projectId: string): Promise<number> {
     const result = await sql<{ count: string | number }>`select count(*) as count
       from wiki_occasions where project_id=${projectId} and closed_at is null`.execute(this.db);
@@ -144,5 +178,68 @@ export class WikiOccasionStore {
   async forgetSession(projectId: string, sessionId: string): Promise<void> {
     await sql`delete from wiki_occasions where project_id=${projectId}
       and kind='session' and ref=${sessionId}`.execute(this.db);
+  }
+}
+
+export interface WikiMaintenanceRecord {
+  projectId: string;
+  /** The quiet session runs happen in; null before the first run or after it was deleted. */
+  sessionId: string | null;
+  lastRunAt: Date | null;
+}
+
+/** Where and when each project's Wiki was last maintained. */
+export class WikiMaintenanceStore {
+  constructor(private readonly db: Kysely<Database>) {}
+
+  async get(projectId: string): Promise<WikiMaintenanceRecord | undefined> {
+    const result = await sql<{
+      project_id: string;
+      session_id: string | null;
+      last_run_at: Date | null;
+    }>`select project_id,session_id,last_run_at from wiki_maintenance
+      where project_id=${projectId}`.execute(this.db);
+    const row = result.rows[0];
+    return row
+      ? { projectId: row.project_id, sessionId: row.session_id, lastRunAt: row.last_run_at }
+      : undefined;
+  }
+
+  /**
+   * Claims a run at `at` unless one started after `notAfter`. Claiming before
+   * any work means two server generations, or a crash mid-run, never start a
+   * second run inside the minimum interval.
+   */
+  async claimRun(projectId: string, at: Date, notAfter: Date): Promise<boolean> {
+    const result = await sql`insert into wiki_maintenance(project_id,last_run_at)
+      values(${projectId},${at})
+      on conflict(project_id) do update set last_run_at=excluded.last_run_at
+      where wiki_maintenance.last_run_at is null
+        or wiki_maintenance.last_run_at <= ${notAfter}`.execute(this.db);
+    return Number(result.numAffectedRows ?? 0) > 0;
+  }
+
+  /** Gives back a claim whose run never started, so the next pass may try again. */
+  async releaseRun(projectId: string, at: Date, previous: Date | null): Promise<void> {
+    await sql`update wiki_maintenance set last_run_at=${previous}
+      where project_id=${projectId} and last_run_at=${at}`.execute(this.db);
+  }
+
+  async setSession(projectId: string, sessionId: string): Promise<void> {
+    await sql`insert into wiki_maintenance(project_id,session_id) values(${projectId},${sessionId})
+      on conflict(project_id) do update set session_id=excluded.session_id`.execute(this.db);
+  }
+
+  /** Every maintenance session, so lists and notifications can leave them out. */
+  async sessionIds(): Promise<Set<string>> {
+    const result = await sql<{ session_id: string }>`select session_id from wiki_maintenance
+      where session_id is not null`.execute(this.db);
+    return new Set(result.rows.map((row) => row.session_id));
+  }
+
+  async isSession(sessionId: string): Promise<boolean> {
+    const result = await sql`select 1 from wiki_maintenance
+      where session_id=${sessionId}`.execute(this.db);
+    return result.rows.length > 0;
   }
 }

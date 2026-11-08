@@ -345,3 +345,16 @@ it('does not forward work whose caller lookup finishes after generation retireme
     await h.close();
   }
 });
+
+// The Wiki maintenance run reads untrusted text unattended; a project MCP server
+// would let injected text reach the outside, so its session never gets one.
+it('refuses project MCP servers to the Wiki maintenance session', async () => {
+  const h = await fixture();
+  try {
+    await h.store.wikiMaintenance.setSession('p', 's');
+    expect((await h.open()).statusCode).toBe(401);
+    expect(transport.request).not.toHaveBeenCalled();
+  } finally {
+    await h.close();
+  }
+});
