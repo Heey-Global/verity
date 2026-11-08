@@ -216,11 +216,7 @@ export function VerityPanel({
         {/* One continuing conversation, oldest first: the sheet opens at its end. */}
         {(conversation?.items ?? []).map((item, index, items) => (
           <View key={item.id} style={styles.body}>
-            {dayLabel(item.at, items[index - 1]?.at) !== null ? (
-              <Text variant="footnote" style={styles.day} accessibilityRole="header">
-                {dayLabel(item.at, items[index - 1]?.at)}
-              </Text>
-            ) : null}
+            <DayHeading at={item.at} previous={items[index - 1]?.at} />
             <ItemView item={item} onOpenMeeting={sessionId ? openMeeting : null} />
           </View>
         ))}
@@ -526,8 +522,6 @@ function QuestionCard({
 
 const ignoreImage = () => undefined;
 
-const DAY_MS = 24 * 60 * 60_000;
-
 /** "Today", "Yesterday" or the date, when an entry starts a new day; otherwise null. */
 export function dayLabel(
   at: number,
@@ -538,12 +532,24 @@ export function dayLabel(
   if (previous !== undefined && new Date(previous).toDateString() === day) return null;
   const today = new Date(now);
   if (today.toDateString() === day) return 'Today';
-  if (new Date(now - DAY_MS).toDateString() === day) return 'Yesterday';
+  // Calendar arithmetic: a day around a clock change is not 24 hours long.
+  const yesterday = new Date(today);
+  yesterday.setDate(today.getDate() - 1);
+  if (yesterday.toDateString() === day) return 'Yesterday';
   return new Date(at).toLocaleDateString(undefined, {
     weekday: 'short',
     day: 'numeric',
     month: 'short',
   });
+}
+
+function DayHeading({ at, previous }: { at: number; previous: number | undefined }) {
+  const label = dayLabel(at, previous);
+  return label === null ? null : (
+    <Text variant="footnote" style={styles.day} accessibilityRole="header">
+      {label}
+    </Text>
+  );
 }
 
 const styles = StyleSheet.create((theme) => ({

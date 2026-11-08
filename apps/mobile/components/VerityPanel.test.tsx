@@ -344,18 +344,21 @@ it('shows the whole conversation, with a heading where a new day starts', () => 
     at: index < 6 ? yesterday + index : now + index,
     text: `Message ${String(index)}`,
   }));
-  jest.spyOn(Date, 'now').mockReturnValue(now + 100);
-  jest.mocked(useVerity).mockReturnValue({
-    ...ready,
-    conversation: { ...ready.conversation!, items },
-  });
-  const screen = render(<VerityPanel mode="text" projectId={null} onClose={jest.fn()} />);
-  // The panel used to cut the conversation to its last eight entries.
-  expect(screen.getByText('Message 0')).toBeTruthy();
-  expect(screen.getByText('Message 11')).toBeTruthy();
-  expect(screen.getAllByText('Yesterday')).toHaveLength(1);
-  expect(screen.getAllByText('Today')).toHaveLength(1);
-  jest.mocked(Date.now).mockRestore();
+  const clock = jest.spyOn(Date, 'now').mockReturnValue(now + 100);
+  try {
+    jest.mocked(useVerity).mockReturnValue({
+      ...ready,
+      conversation: { ...ready.conversation!, items },
+    });
+    const screen = render(<VerityPanel mode="text" projectId={null} onClose={jest.fn()} />);
+    // The panel used to cut the conversation to its last eight entries.
+    expect(screen.getByText('Message 0')).toBeTruthy();
+    expect(screen.getByText('Message 11')).toBeTruthy();
+    expect(screen.getAllByText('Yesterday')).toHaveLength(1);
+    expect(screen.getAllByText('Today')).toHaveLength(1);
+  } finally {
+    clock.mockRestore();
+  }
 });
 
 it('labels a day once, by name for today and yesterday', () => {

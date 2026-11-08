@@ -261,8 +261,13 @@ export function createWatchInboxSync(
     const payload = watchInbox(items, scope(), now);
     const key = JSON.stringify(payload === null ? null : [payload.scope, payload.items]);
     if (last?.key === key && now - last.at < INBOX_REFRESH_MS) return;
-    last = { key, at: now };
-    void send(payload).catch(() => undefined);
+    const sent = { key, at: now };
+    last = sent;
+    // A send that failed (watch session not active yet) is tried again on the
+    // next change instead of waiting out the refresh interval.
+    void send(payload).catch(() => {
+      if (last === sent) last = null;
+    });
   };
 }
 
@@ -322,6 +327,9 @@ export function startWatchInbox(): () => void {
     scope = next;
     // The watch only needs the account now; it has no project picker.
     void native.setProjects(next, [], null).catch(() => undefined);
+    // Home may be gone before it could send an empty list: never leave another
+    // account's items on the iPhone's side of the link.
+    if (next === null) void native.setInbox?.(null).catch(() => undefined);
     syncLink();
     run();
   };

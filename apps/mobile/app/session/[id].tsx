@@ -62,6 +62,7 @@ import {
   MarkdownLine,
   MarkdownTable,
   MarkdownText,
+  markdownStyles,
   SearchHighlightContext,
   type OpenAppLink,
   type OpenLocalFile,
@@ -102,7 +103,6 @@ import {
   type SessionFileEntry,
   type SessionFileContent,
   type SessionFileRoot,
-  type AppLinkTarget,
   type SessionGoogleWorkspaceFile,
   type MockupReview,
   type SessionPlanning,
@@ -140,7 +140,6 @@ import {
   withPlanningSnapshot,
   pullRequestMergeButton,
   pullRequestStatusText,
-  markdownSectionTitle,
   modelRateLimited,
   modelDisplayName,
   excludedAgentsNote,
@@ -148,9 +147,6 @@ import {
   partitionModels,
   publishSessionAutomationMutation,
   parseBranchIssue,
-  parseAppLink,
-  parseInline,
-  parseMarkdownBlocks,
   rateLimitNotice,
   rateLimitNoticeText,
   rateLimitNoticeTone,
@@ -177,8 +173,6 @@ import {
   spellOutBidiControls,
   trustedCliSecretLabel,
   trustedCliSummary,
-  splitSearchHighlights,
-  sessionFilePathFromLocalLink,
   sessionFileTargetFromLocalLink,
   splitRichText,
   toolCallView,
@@ -7466,7 +7460,7 @@ function ThinkingBlock({ text }: { text: string }) {
           color={theme.colors.textFaint}
         />
       </Pressable>
-      {open ? <Text style={[styles.agentText, styles.thinkingText]}>{text}</Text> : null}
+      {open ? <Text style={[markdownStyles.agentText, styles.thinkingText]}>{text}</Text> : null}
     </View>
   );
 }
@@ -11356,12 +11350,6 @@ const styles = StyleSheet.create((theme) => ({
     position: 'absolute',
     top: theme.spacing.xs,
     right: theme.spacing.xs,
-  },
-  agentText: {
-    color: theme.colors.text,
-    fontSize: theme.typography.row.fontSize,
-    lineHeight: 22 * theme.fontScale,
-    fontFamily: theme.fonts.regular,
   },
   localMeetingUploadStatus: {
     flexDirection: 'row',

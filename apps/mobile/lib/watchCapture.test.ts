@@ -257,4 +257,18 @@ describe('watch "Needs you" list', () => {
     expect(send).toHaveBeenCalledTimes(3);
     expect(send).toHaveBeenLastCalledWith(expect.objectContaining({ at: 61_000 + 5 * 60_000 }));
   });
+
+  it('tries a list again on the next change after a failed send', async () => {
+    const send = jest
+      .fn<Promise<void>, [unknown]>()
+      .mockRejectedValueOnce(new Error('not activated'))
+      .mockResolvedValue(undefined);
+    const sync = createWatchInboxSync(send, () => 'account-1');
+    sync([item(0)], 0);
+    await Promise.resolve();
+    await Promise.resolve();
+    // Kept as sent, the list would wait out the refresh interval on the iPhone.
+    sync([item(0)], 1_000);
+    expect(send).toHaveBeenCalledTimes(2);
+  });
 });

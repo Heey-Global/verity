@@ -193,9 +193,12 @@ private struct NeedsYouSection: View {
     } header: {
       Text("Needs you · \(inbox.items.count)").textCase(nil)
     } footer: {
-      // An old list may already be done on the iPhone; say how old it is.
-      if Date().timeIntervalSince(inbox.at) > 10 * 60 {
-        Text("As of \(inbox.at.formatted(date: .omitted, time: .shortened))")
+      // An old list may already be done on the iPhone; say how old it is. The
+      // timeline re-checks while the screen stays open.
+      TimelineView(.periodic(from: .now, by: 60)) { context in
+        if context.date.timeIntervalSince(inbox.at) > 10 * 60 {
+          Text("As of \(inbox.at.formatted(date: .omitted, time: .shortened))")
+        }
       }
     }
   }

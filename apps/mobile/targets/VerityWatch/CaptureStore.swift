@@ -305,7 +305,8 @@ final class CaptureStore: NSObject, ObservableObject {
         let inbox = WatchInbox(context: reply)
         Task { @MainActor in
           if let snapshot { self.receive(snapshot) }
-          if let inbox { self.inbox = inbox }
+          // The iPhone leaves `inbox` out when it has none (signed out).
+          self.inbox = inbox
         }
       }, errorHandler: nil)
   }
@@ -528,7 +529,7 @@ extension CaptureStore: WCSessionDelegate {
       self.phoneReachable = reachable
       if let list { self.receive(list) }
       self.receive(snapshot)
-      if let inbox { self.inbox = inbox }
+      self.inbox = inbox
       if activationState == .activated {
         self.resend()
         self.refreshVerity()

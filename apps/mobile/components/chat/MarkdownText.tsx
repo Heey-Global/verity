@@ -491,3 +491,6 @@ const styles = StyleSheet.create((theme) => ({
     borderRadius: 3,
   },
 }));
+
+/** The reply text style, shared with the session transcript's other prose. */
+export const markdownStyles = { agentText: styles.agentText };
