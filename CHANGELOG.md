@@ -6,6 +6,20 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.89.0](https://github.com/Heey-Global/verity/compare/v4.88.0...v4.89.0) (2026-11-08)
+
+
+### Features
+
+* **knowledge:** rename Sources entries and share swipe actions across lists ([#2434](https://github.com/Heey-Global/verity/issues/2434)) ([9ae4c6b](https://github.com/Heey-Global/verity/commit/9ae4c6b21f0e382a06a142485134532c0420dc88))
+
+
+### Bug Fixes
+
+* **deps:** verify npm release age and reuse session installations ([#2440](https://github.com/Heey-Global/verity/issues/2440)) ([0f1cbe1](https://github.com/Heey-Global/verity/commit/0f1cbe1bc967ba2a5b4f7d72cc51d80fd64b547b))
+* **server:** reclaim abandoned project networks safely ([#2441](https://github.com/Heey-Global/verity/issues/2441)) ([60ff9bb](https://github.com/Heey-Global/verity/commit/60ff9bb401ff0f733bc1b67c65cf1b04bd39b1b5))
+* **server:** wait for sandbox agent connections before starting a turn ([#2432](https://github.com/Heey-Global/verity/issues/2432)) ([e4f2cfe](https://github.com/Heey-Global/verity/commit/e4f2cfeeb7c5b8715b084605128d0231aeaa280d))
+
 ## [4.88.0](https://github.com/Heey-Global/verity/compare/v4.87.0...v4.88.0) (2026-11-08)
 
 
