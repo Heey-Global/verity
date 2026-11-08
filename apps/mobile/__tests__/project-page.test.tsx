@@ -370,6 +370,21 @@ describe('project page', () => {
     expect(active.getByText('form')).toBeTruthy();
   });
 
+  it('removes a deliberately unfavorited session from Favorites', async () => {
+    const props = { client: clientWith([]), onOpenSession: jest.fn(), onChanged: jest.fn() };
+    const view = render(<ProjectWork {...props} sessions={[favorite]} initialFilter="favorites" />);
+    await act(async () => undefined);
+    expect(screen.getByText('blog')).toBeTruthy();
+    view.rerender(
+      <ProjectWork
+        {...props}
+        sessions={[{ ...favorite, favorite: false }]}
+        initialFilter="favorites"
+      />,
+    );
+    expect(screen.queryByText('blog')).toBeNull();
+  });
+
   it('names where the code lives and how many pull requests are open', async () => {
     await renderPage([merged, running]);
     expect(screen.getByTestId('project-line')).toHaveTextContent(

@@ -368,7 +368,9 @@ export function ProjectWork({
     freshNow.active.map((s) => s.sessionId).filter((id) => !needs.includes(id)),
   );
   const ids = retain(
-    layout.ids,
+    filter === 'favorites'
+      ? layout.ids.filter((id) => live.get(id)?.favorite === true)
+      : layout.ids,
     freshListed.map((s) => s.sessionId),
   );
   if (reset || layout.source !== sessions || layout.nowSource !== freshNow) {
