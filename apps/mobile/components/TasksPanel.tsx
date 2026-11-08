@@ -819,16 +819,24 @@ export function TaskListBody({
           onClose={() => setEditing(null)}
           onSave={async (text) => {
             if (!editing) return;
+            // Busy like every other task action, so the row's swipe and V wait
+            // for the save; failing keeps the sheet open with the text.
+            if (busyRef.current) throw new Error('Another task action is running');
+            busyRef.current = true;
+            setBusy(true);
             const describes = taskText(editing) !== editing.title;
-            await patchTask(editing, describes ? { detail: text } : { title: text }).catch(
-              (error: unknown) => {
-                Alert.alert(
-                  'Could not save task',
-                  error instanceof Error ? error.message : 'Try again',
-                );
-                throw error;
-              },
-            );
+            try {
+              await patchTask(editing, describes ? { detail: text } : { title: text });
+            } catch (error) {
+              Alert.alert(
+                'Could not save task',
+                error instanceof Error ? error.message : 'Try again',
+              );
+              throw error;
+            } finally {
+              busyRef.current = false;
+              setBusy(false);
+            }
           }}
           onOpenAttachment={(index) => {
             if (editing) void run(() => openTaskAttachment(editing, index, pending));

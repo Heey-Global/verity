@@ -366,3 +366,28 @@ it('reopens a done task from its row', async () => {
   await act(async () => fireEvent.press(screen.getAllByText('Reopen')[0]!));
   expect(patchTask).toHaveBeenCalledWith(finished, { status: 'open' });
 });
+
+// A screen reader cannot swipe; a conflict on the row must not take its
+// remaining way to Delete and Done away.
+it('keeps a screen reader’s task actions beside a conflict', async () => {
+  jest.mocked(useTasks).mockReturnValue({
+    tasks: [tasks[0]],
+    pending: [],
+    conflicts: [tasks[0]!.id],
+  } as never);
+  jest.spyOn(AccessibilityInfo, 'isScreenReaderEnabled').mockResolvedValue(true);
+  render(
+    <TaskListBody
+      context={{ projectId: 'p1', sessionId: null }}
+      projects={projects}
+      scope="project"
+      onLeave={jest.fn()}
+    />,
+  );
+  await act(async () => undefined);
+  expect(screen.getByText('Keep my edit')).toBeTruthy();
+  // Each once in the swipe lane, which a screen reader cannot open, and once
+  // as the button it can reach.
+  expect(screen.getAllByText('Delete')).toHaveLength(2);
+  expect(screen.getAllByText('Done')).toHaveLength(2);
+});

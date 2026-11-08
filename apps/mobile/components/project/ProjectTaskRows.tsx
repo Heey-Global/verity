@@ -90,49 +90,65 @@ export function ProjectTaskRow({
   onResolveConflict: (keepMine: boolean) => void;
 }) {
   const done = task.status === 'done';
+  // The row's own answers (a conflict, an undo) come first; a screen reader
+  // keeps Done, Edit and Delete beside them, since a swipe is out of its reach.
   const answers =
-    conflict !== undefined ? (
+    conflict !== undefined || undo || screenReader ? (
       <>
-        <Button
-          label="Keep my edit"
-          size="small"
-          variant="secondary"
-          disabled={busy}
-          onPress={() => onResolveConflict(true)}
-        />
-        <Button
-          label="Use server version"
-          size="small"
-          variant="secondary"
-          disabled={busy}
-          onPress={() => onResolveConflict(false)}
-        />
-      </>
-    ) : undo ? (
-      <Button
-        label="Undo"
-        size="small"
-        variant="secondary"
-        disabled={busy}
-        onPress={onToggleDone}
-      />
-    ) : screenReader ? (
-      <>
-        <Button
-          label={done ? 'Reopen' : 'Done'}
-          size="small"
-          variant="secondary"
-          disabled={busy}
-          onPress={onToggleDone}
-        />
-        <Button label="Edit" size="small" variant="secondary" disabled={busy} onPress={onEdit} />
-        <Button
-          label="Delete"
-          size="small"
-          variant="secondary"
-          disabled={busy}
-          onPress={onDelete}
-        />
+        {conflict !== undefined ? (
+          <>
+            <Button
+              label="Keep my edit"
+              size="small"
+              variant="secondary"
+              disabled={busy}
+              onPress={() => onResolveConflict(true)}
+            />
+            <Button
+              label="Use server version"
+              size="small"
+              variant="secondary"
+              disabled={busy}
+              onPress={() => onResolveConflict(false)}
+            />
+          </>
+        ) : null}
+        {undo ? (
+          <Button
+            label="Undo"
+            size="small"
+            variant="secondary"
+            disabled={busy}
+            onPress={onToggleDone}
+          />
+        ) : null}
+        {screenReader ? (
+          <>
+            {undo ? null : (
+              <Button
+                label={done ? 'Reopen' : 'Done'}
+                size="small"
+                variant="secondary"
+                disabled={busy}
+                onPress={onToggleDone}
+              />
+            )}
+            <Button
+              label="Edit"
+              size="small"
+              variant="secondary"
+              disabled={busy}
+              onPress={onEdit}
+            />
+            <Button
+              label="Delete"
+              size="small"
+              variant="secondary"
+              disabled={busy}
+              onPress={onDelete}
+            />
+          </>
+        ) : null}
       </>
     ) : undefined;
   return (
