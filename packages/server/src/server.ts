@@ -144,6 +144,12 @@ import { registerGoogleDriveRoutes } from './google-drive-routes.js';
 import { registerHealthRoute } from './health-route.js';
 import { registerHttpMcpConnectionRoutes } from './http-mcp-connections-route.js';
 import { registerIntegrationRoutes } from './integrations/routes.js';
+import {
+  knowledgeRef,
+  noteDeletedSession,
+  noteWikiOccasion,
+  occasionTitle,
+} from './wiki-occasions.js';
 import { createKnowledgeImageQuery } from './knowledge-image-query.js';
 import { createImageTextExtractor, type ImageTextJob } from './knowledge-image-text.js';
 import { registerKnowledgeRoutes } from './knowledge-routes.js';
@@ -233,6 +239,8 @@ import type { ServerDeps } from './server-deps.js';
 import { registerServerMcpRoutes } from './server-mcp-routes.js';
 import { createMeetingTranscriptController } from './server-meeting-transcripts.js';
 import { registerServerSessionFiles } from './server-session-files.js';
+import { WikiProposals } from './wiki-proposals.js';
+import { registerWikiProposalRoutes } from './wiki-proposal-routes.js';
 import { registerServerSessionMove } from './server-session-move.js';
 import type {
   ActivityProjection,
@@ -2717,6 +2725,22 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     now: deps.pullRequestCacheNow,
     onChange: (session, status) => {
       prSummaryCache.set(session.worktree, { pr: compactPr(status), at: Date.now() });
+      // A merged change is when the product changed. The occasion is recorded once
+      // per pull request; a cache refilled after a restart reports it again. It
+      // names the pull request only: the session's conversation is kept for the
+      // Wiki solely when the user deletes the session as done.
+      if (status?.phase === 'merged' && session.projectId !== null)
+        void noteWikiOccasion(
+          deps.eventStore,
+          {
+            projectId: session.projectId,
+            kind: 'merge',
+            ref: status.url,
+            title: `#${String(status.number)} ${status.title}`,
+            body: `Merged pull request ${status.url} from session ${session.sessionId}.`,
+          },
+          app.log,
+        );
       // Cache completion is not an HTTP mutation; without this the overview waits
       // for a later observation even though the opened session already knows the PR.
       resources.invalidate(`/sessions/${encodeURIComponent(session.sessionId)}/branches`);
@@ -3641,7 +3665,26 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     },
     ...(deps.ghTokenCapabilities !== undefined ? { capabilities: deps.ghTokenCapabilities } : {}),
   });
+  // Proposals write through the Wiki's file routes, which are registered further below.
+  const sessionFiles: { current?: ReturnType<typeof registerServerSessionFiles> } = {};
+  const wikiFiles = () => {
+    if (!sessionFiles.current) throw new Error('Wiki files are not ready');
+    return sessionFiles.current;
+  };
+  const wikiProposals =
+    deps.dataRoot === undefined
+      ? undefined
+      : new WikiProposals(deps.dataRoot, {
+          readProjectWiki: (projectId, path) => wikiFiles().readProjectWiki(projectId, path),
+          writeProjectWiki: (projectId, path, content, version) =>
+            wikiFiles().writeProjectWiki(projectId, path, content, version),
+          onFailure: (err, details) =>
+            app.log.warn({ err, ...details }, 'Wiki proposal page could not be written'),
+          onChange: (projectId) =>
+            resources.invalidate(`/projects/${encodeURIComponent(projectId)}/knowledge/proposals`),
+        });
   const decidePendingLinkedMessage = registerServerMcpRoutes({
+    wikiProposals,
     inquiryTool: async (sessionId, userId, input) => {
       const request = input as { operation: string; inquiryId: string; answer: string };
       if (request.operation === 'list') {
@@ -4078,6 +4121,18 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         });
   registerIntegrationRoutes(app, {
     store: deps.eventStore.integrations,
+    onChatDay: (projectId, path, room) =>
+      noteWikiOccasion(
+        deps.eventStore,
+        {
+          projectId,
+          kind: 'chat',
+          ref: knowledgeRef(path),
+          title: `${room} · ${occasionTitle(path)}`,
+          reopen: true,
+        },
+        app.log,
+      ),
     ...(deps.dataRoot !== undefined ? { dataRoot: deps.dataRoot } : {}),
     ...(deps.matrixConnectorToken !== undefined
       ? { connectorToken: deps.matrixConnectorToken }
@@ -5127,6 +5182,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         dataRoot: deps.dataRoot,
         sessionId,
         meetingId,
+        log: app.log,
       }),
     onDiscarded: async (sessionId, meeting) => {
       // Independent steps, all attempted: a provider failure must not skip removing the
@@ -5222,7 +5278,12 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     await attendeeMeetings.close();
   });
   meetingTranscripts.registerRoutes();
-  registerServerSessionFiles(app, deps, conductor);
+  sessionFiles.current = registerServerSessionFiles(app, deps, conductor);
+  if (wikiProposals)
+    registerWikiProposalRoutes(app, wikiProposals, async (projectId) => {
+      const project = await deps.eventStore.getProject(projectId);
+      return project !== undefined && !project.hiddenAt;
+    });
 
   // Serve a content-addressed image attachment by its SHA-256 hash. The `prompt`
   // event references images by this id; the client fetches them lazily (only the
@@ -5586,7 +5647,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   });
 
   registerSessionDeleteRoute(app, {
-    remove: async (request, reply, id, force) => {
+    remove: async (request, reply, id, force, options) => {
       if (conductor.isMovingSession?.(id)) {
         reply.code(409);
         return { error: 'Wait for the session move to finish before deleting.' };
@@ -5632,14 +5693,21 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         return { error: `session ${id} is busy — finish the turn before deleting it` };
       }
       deletionRequestIds.set(id, request.id);
+      // Read before the transcript goes with the session; only once deletion is admitted.
+      const noteForWiki = () =>
+        noteDeletedSession(deps.eventStore, session, options?.keepForWiki === true, request.log);
       try {
-        if (force) return await sessionDeletions.remove(session);
+        if (force) {
+          await noteForWiki();
+          return await sessionDeletions.remove(session);
+        }
         let removal: ReturnType<typeof sessionDeletions.remove> | undefined;
         const admission = await conductor.tryRunExclusive(id, async () => {
           let release!: () => void;
           const admitted = new Promise<void>((resolve) => {
             release = resolve;
           });
+          await noteForWiki();
           removal = sessionDeletions.remove(session, release);
           // The HTTP deadline must not release an unfinished admission operation.
           void removal.catch(() => undefined);

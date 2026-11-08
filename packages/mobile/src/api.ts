@@ -49,7 +49,16 @@ import {
   runtimeOtherRequestGroup,
 } from './runtimeDiagnostics.js';
 import { recordingDigest, type RecordingDigest } from './recording-digest.js';
-import { wikiCatalogSchema, type WikiCatalog } from '@verity/events';
+import {
+  wikiCatalogSchema,
+  wikiProposalDecisionSchema,
+  wikiProposalListSchema,
+  wikiProposalSchema,
+  type WikiCatalog,
+  type WikiProposal,
+  type WikiProposalDecision,
+  type WikiProposalSummary,
+} from '@verity/events';
 import {
   recordingFailureReasonSchema,
   selectedEvidenceMetadataSchema,
@@ -6227,9 +6236,16 @@ export class VerityClient {
   /** Permanently delete a session: drops its history and removes its worktree on
    * the server. Non-2xx (404 unknown, 409 busy) throws a {@link VerityApiError}
    * carrying the server's status + message. `force` bypasses the busy guard after
-   * an explicit destructive confirmation. Returns the deleted session id. */
-  async deleteSession(id: string, opts: { force?: boolean } = {}): Promise<SessionDeleted> {
-    const query = opts.force ? '?force=true' : '';
+   * an explicit destructive confirmation. `wiki` keeps the conversation for the
+   * project's Wiki maintenance until it was read (the session was done, not
+   * worthless). Returns the deleted session id. */
+  async deleteSession(
+    id: string,
+    opts: { force?: boolean; wiki?: boolean } = {},
+  ): Promise<SessionDeleted> {
+    // Built by hand: URLSearchParams is incomplete in some React Native runtimes.
+    const params = [opts.force ? 'force=true' : '', opts.wiki ? 'wiki=true' : ''].filter(Boolean);
+    const query = params.length ? `?${params.join('&')}` : '';
     const res = await this.request(`/sessions/${encodeURIComponent(id)}${query}`, {
       method: 'DELETE',
     });
@@ -6272,6 +6288,48 @@ export class VerityClient {
         return null;
       throw err;
     }
+  }
+
+  /** Proposed Wiki changes waiting for review, or null from a server without proposals. */
+  async listWikiProposals(projectId: string): Promise<WikiProposalSummary[] | null> {
+    try {
+      const res = await this.request(
+        `/projects/${encodeURIComponent(projectId)}/knowledge/proposals`,
+        { method: 'GET' },
+      );
+      return wikiProposalListSchema.parse(await res.json()).proposals;
+    } catch (err) {
+      if (err instanceof VerityApiError && err.status === 404 && err.message === 'Not Found')
+        return null;
+      throw err;
+    }
+  }
+
+  /** One proposal with each page's proposed and current text. */
+  async getWikiProposal(projectId: string, proposalId: string): Promise<WikiProposal> {
+    const res = await this.request(
+      `/projects/${encodeURIComponent(projectId)}/knowledge/proposals/${encodeURIComponent(proposalId)}`,
+      { method: 'GET' },
+    );
+    return wikiProposalSchema.parse(await res.json());
+  }
+
+  /** Applies or rejects a proposal's pending pages, or only the `paths` named. */
+  async decideWikiProposal(
+    projectId: string,
+    proposalId: string,
+    decision: 'apply' | 'reject',
+    paths?: readonly string[],
+  ): Promise<WikiProposalDecision> {
+    const res = await this.request(
+      `/projects/${encodeURIComponent(projectId)}/knowledge/proposals/${encodeURIComponent(proposalId)}/${decision}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(paths ? { paths } : {}),
+      },
+    );
+    return wikiProposalDecisionSchema.parse(await res.json());
   }
 
   async listProjectKnowledgeFiles(projectId: string, path = ''): Promise<SessionDirectory> {
