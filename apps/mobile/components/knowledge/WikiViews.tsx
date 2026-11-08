@@ -39,7 +39,11 @@ type Open = { folder: (folder: string) => void; file: (file: string) => void };
  */
 function currentChange(page: WikiPage): WikiPage['lastChange'] {
   const change = page.lastChange;
-  return change && change.at >= page.modifiedAt.slice(0, 10) ? change : undefined;
+  const edited = new Date(page.modifiedAt);
+  if (!change || Number.isNaN(edited.getTime())) return change;
+  // The entry's day is the writer's; a publish past midnight may land a day later.
+  edited.setUTCDate(edited.getUTCDate() - 1);
+  return change.at >= edited.toISOString().slice(0, 10) ? change : undefined;
 }
 
 /** When a page last changed: its current log entry, else its file age. */

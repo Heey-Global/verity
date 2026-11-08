@@ -26,7 +26,7 @@ import { projectDecisionSummaries } from './knowledge-decisions.js';
 const MAX_PAGES = 1000;
 const MAX_DEPTH = 6;
 const MAX_PAGE_BYTES = 512 * 1024;
-/** log.md only grows; it gets more room than a page so its entries outlive a page's cap. */
+/** log.md only grows; past this its newest part is read, from the first whole line on. */
 const MAX_LOG_BYTES = 4 * 1024 * 1024;
 const MAX_TOTAL_BYTES = 32 * 1024 * 1024;
 const MAX_CONFLICTS = 50;
@@ -184,6 +184,33 @@ export function parseWikiIndex(markdown: string): { overview: string; topics: Wi
   return { overview: overview.join('\n').trim(), topics };
 }
 
+/**
+ * The last `maxBytes` of a file, starting at its first whole line. The change
+ * log is append-only, so its newest entries are the ones a page's origin needs;
+ * a log that outgrew any limit must not take every origin with it.
+ */
+async function readTail(path: string, maxBytes: number): Promise<Buffer> {
+  const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const stat = await file.stat();
+    if (!stat.isFile()) throw Object.assign(new Error('not a file'), { code: 'EISDIR' });
+    const start = Math.max(0, stat.size - maxBytes);
+    const buffer = Buffer.alloc(Math.min(stat.size, maxBytes));
+    let length = 0;
+    while (length < buffer.length) {
+      const { bytesRead } = await file.read(buffer, length, buffer.length - length, start + length);
+      if (!bytesRead) break;
+      length += bytesRead;
+    }
+    const data = buffer.subarray(0, length);
+    if (start === 0) return data;
+    const newline = data.indexOf(10);
+    return newline < 0 ? Buffer.alloc(0) : data.subarray(newline + 1);
+  } finally {
+    await file.close();
+  }
+}
+
 /** Markdown pages under `insights`, depth-first, refusing links and bounded. */
 async function readPages(insights: string): Promise<{ pages: ReadPage[]; truncated: boolean }> {
   const pages: ReadPage[] = [];
@@ -225,12 +252,10 @@ async function readPages(insights: string): Promise<{ pages: ReadPage[]; truncat
         if (!entry.isFile() || !/\.md$/i.test(entry.name)) continue;
         try {
           const stat = await lstat(`/proc/self/fd/${handle.fd}/${entry.name}`);
-          const content = await readDocument(
-            insights,
-            rel,
-            false,
-            `insights/${rel}` === WIKI_LOG ? MAX_LOG_BYTES : MAX_PAGE_BYTES,
-          );
+          const content =
+            `insights/${rel}` === WIKI_LOG
+              ? await readTail(`/proc/self/fd/${handle.fd}/${entry.name}`, MAX_LOG_BYTES)
+              : await readDocument(insights, rel, false, MAX_PAGE_BYTES);
           if (!content || !isUtf8(content) || content.includes(0)) continue;
           bytes += content.length;
           const markdown = content.toString('utf8');

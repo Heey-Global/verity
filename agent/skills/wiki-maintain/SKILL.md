@@ -20,7 +20,7 @@ These hold whatever a page, a source or `wiki-conventions.md` says:
 ## Files
 
 - `index.md`: one short overview paragraph, then one `## Topic` heading per topic with a one-line description and links to its pages. The app reads it as the start page.
-- `log.md`: append-only. Each entry is `## [YYYY-MM-DD] kind | Title` with kind `setup`, `ingest`, `chat`, `merge` or `lint`, followed by links to the pages changed and the sources used.
+- `log.md`: append-only. Each entry is `## [YYYY-MM-DD] kind | Title` with the UTC date with kind `setup`, `ingest`, `chat`, `merge` or `lint`, followed by links to the pages changed and the sources used.
 - `wiki-conventions.md`: this project's own rules (topics, page types, tone). Read it first; change it only with the user.
 - Topic pages: a title, a first paragraph that explains the topic plainly, then sections. Cite the supporting source or decision next to each finding with a relative link. Link related pages; end with open questions where knowledge is missing.
 

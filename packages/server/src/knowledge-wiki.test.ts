@@ -239,9 +239,9 @@ describe('projectWikiCatalog', () => {
 
   // log.md only grows. Past a page's read cap it must still be read, or every
   // page loses its origin and the catalog reads as partial for good.
-  it('reads a log larger than a page may be', async () => {
+  it('reads the newest part of a log larger than any limit', async () => {
     write('insights/nav.md', '# Navigation\n\nText.\n');
-    const old = '## [2026-01-01] ingest | Filler\n- nothing here\n'.repeat(20_000);
+    const old = '## [2026-01-01] ingest | Filler\n- nothing here\n'.repeat(110_000);
     write('insights/log.md', `${old}## [2026-11-07] ingest | Late entry\n- [Navigation](nav.md)\n`);
     const catalog = await projectWikiCatalog(root);
     expect(catalog.truncated).toBe(false);

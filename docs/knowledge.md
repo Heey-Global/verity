@@ -205,7 +205,7 @@ writes `index.md`, `wiki-conventions.md` (the project's own Wiki rules) and a
 header, explains the roles and links the conventions and the change log;
 **Rebuild overview…** runs the same setup again.
 
-`log.md` is append-only. An entry is a heading `## [YYYY-MM-DD] kind | Title`, with
+`log.md` is append-only. An entry is a heading `## [YYYY-MM-DD] kind | Title` (UTC date), with
 kind `setup`, `ingest`, `chat`, `merge` or `lint`, followed by links to the pages it
 changed and the sources it used. The Wiki catalog gives every page the latest entry
 that links to it, so **Recently updated** names where a change came from; pages the
