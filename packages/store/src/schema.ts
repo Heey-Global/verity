@@ -15,6 +15,17 @@ export interface ProjectInquirySessionsTable {
   change_approved: Generated<boolean>;
 }
 
+export interface WikiOccasionsTable {
+  id: string;
+  project_id: string;
+  kind: 'source' | 'meeting' | 'decision' | 'chat' | 'session' | 'merge';
+  ref: string;
+  title: string;
+  body: string | null;
+  created_at: Generated<Date>;
+  closed_at: Date | null;
+}
+
 export interface ProjectInquiriesTable {
   id: string;
   source_session_id: string;
@@ -1757,6 +1768,7 @@ export interface Database {
   project_inquiry_grants: ProjectInquiryGrantsTable;
   project_inquiry_sessions: ProjectInquirySessionsTable;
   project_inquiries: ProjectInquiriesTable;
+  wiki_occasions: WikiOccasionsTable;
   vulnerability_fixes: VulnerabilityFixesTable;
   session_deletions: SessionDeletionsTable;
   user_context: UserContextTable;

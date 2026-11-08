@@ -9,6 +9,12 @@ const deleteSessionQuery = z.object({
     .enum(['true', 'false'])
     .optional()
     .transform((value) => value === 'true'),
+  // Deleted as done: keep the conversation for the project's Wiki maintenance.
+  // Absent means no, so a client that never offered the choice keeps nothing.
+  wiki: z
+    .enum(['true', 'false'])
+    .optional()
+    .transform((value) => value === 'true'),
 });
 
 export interface SessionDeleteRouteDeps {
@@ -17,6 +23,7 @@ export interface SessionDeleteRouteDeps {
     reply: FastifyReply,
     sessionId: string,
     force: boolean,
+    options?: { keepForWiki: boolean },
   ) => Promise<unknown>;
 }
 
@@ -27,7 +34,7 @@ export function registerSessionDeleteRoute(
 ): void {
   app.delete('/sessions/:id', async (request, reply): Promise<unknown> => {
     const { id } = sessionParams.parse(request.params);
-    const { force } = deleteSessionQuery.parse(request.query);
+    const { force, wiki } = deleteSessionQuery.parse(request.query);
     const startedAt = Date.now();
     request.log.info(
       { sessionId: id, phase: 'request', outcome: 'started' },
@@ -35,7 +42,10 @@ export function registerSessionDeleteRoute(
     );
     let outcome = 'completed';
     try {
-      return await deletionDeadline(deps.remove(request, reply, id, force), 15_000);
+      return await deletionDeadline(
+        deps.remove(request, reply, id, force, { keepForWiki: wiki }),
+        15_000,
+      );
     } catch (error) {
       outcome = error instanceof SessionDeletionDeadlineError ? 'deadline' : 'failed';
       if (!(error instanceof SessionDeletionDeadlineError)) throw error;

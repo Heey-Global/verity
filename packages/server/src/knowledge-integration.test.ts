@@ -212,6 +212,10 @@ it('imports a worktree transcript into project Sources through the bound tool', 
     expect(readFileSync(join(h.dataRoot, 'knowledge/p/sources/meetings/planning.md'), 'utf8')).toBe(
       '# Planning\n',
     );
+    // An imported source is material the Wiki may need to reflect.
+    expect(await ctx.store.wikiOccasions.open('p')).toMatchObject([
+      { kind: 'source', ref: 'sources/meetings/planning.md' },
+    ]);
     expect(h.permission).not.toHaveBeenCalled();
     const conflict = await h.agent({
       operation: 'import_source',
@@ -467,6 +471,12 @@ it('records a decision through the project gateway and returns persisted evidenc
     expect(
       readFileSync(join(h.dataRoot, 'knowledge/p/insights/decisions', `${receipt.id}.md`), 'utf8'),
     ).toContain('30 days');
+    expect(await ctx.store.wikiOccasions.open('p')).toContainEqual(
+      expect.objectContaining({
+        kind: 'decision',
+        ref: `insights/decisions/${receipt.id}.md`,
+      }),
+    );
     const freshCaller = async (sessionId: string) => {
       await ctx.store.createSession({
         sessionId,

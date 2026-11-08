@@ -312,6 +312,14 @@ export {
 } from './project-repositories.js';
 
 export {
+  WIKI_OCCASION_BODY_LIMIT,
+  WikiOccasionStore,
+  type RecordWikiOccasion,
+  type WikiOccasion,
+  type WikiOccasionKind,
+} from './wiki-occasions.js';
+
+export {
   ProjectInquiryStore,
   type ProjectInquiry,
   type ProjectInquiryGrant,
