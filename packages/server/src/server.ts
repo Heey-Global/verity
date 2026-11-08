@@ -6378,8 +6378,16 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       withPrVisibility(session, async () => {
         try {
           if (status?.phase === 'merged') {
+            // Pre-cleanup evidence cannot identify later work, even if probing fails.
+            await deps.eventStore.clearSessionPrVisibility(
+              session.sessionId,
+              session.worktree,
+              status.url,
+            );
             const branches = await branchesForSession(session);
-            const fingerprint = await branches?.worktreeFingerprint?.(session.worktree, false);
+            const fingerprint = await branches
+              ?.worktreeFingerprint?.(session.worktree, false)
+              .catch(() => undefined);
             if (fingerprint !== undefined)
               await deps.eventStore.resetSessionPrVisibility(
                 session.sessionId,

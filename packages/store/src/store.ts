@@ -3941,6 +3941,15 @@ export class EventStore implements EventSink {
   }
 
   /** Seed the final baseline after managed post-merge housekeeping has settled. */
+  async clearSessionPrVisibility(sessionId: string, worktree: string, url: string): Promise<void> {
+    await this.db
+      .deleteFrom('session_pr_visibility')
+      .where('session_id', '=', sessionId)
+      .where('worktree', '=', worktree)
+      .where('pr_url', '=', url)
+      .execute();
+  }
+
   async resetSessionPrVisibility(
     sessionId: string,
     worktree: string,

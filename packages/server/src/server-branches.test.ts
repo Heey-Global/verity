@@ -1808,17 +1808,18 @@ describe('POST /sessions/:id/pull-request/merge', () => {
   });
 
   it.each([
-    [false, false],
-    [true, false],
-    [false, true],
+    [false, false, false],
+    [true, false, false],
+    [false, true, false],
+    [false, false, true],
   ])(
     'seeds PR visibility after managed cleanup before admitting later work (deferred: %s, forge unavailable after merge: %s)',
-    async (deferred, failRead) => {
+    async (deferred, failRead, failFingerprint) => {
       const worktree = await createExistingSession('s1');
       isBusy.mockReturnValue(deferred);
       let status: PullRequestStatus = prStatus();
       let forgeUnavailable = false;
-      let fingerprint = 'before-cleanup';
+      let fingerprint: string | undefined = 'before-cleanup';
       await ctx.store.observeSessionPrVisibility('s1', worktree, status.url, fingerprint);
       const server = buildServer({
         eventStore: ctx.store,
@@ -1828,7 +1829,7 @@ describe('POST /sessions/:id/pull-request/merge', () => {
           ...branchSvc,
           worktreeFingerprint: async () => fingerprint,
           resetToMergedBase: async () => {
-            fingerprint = 'settled-cleanup';
+            fingerprint = failFingerprint ? undefined : 'settled-cleanup';
             return { base: 'main' };
           },
         } as unknown as NonNullable<ServerDeps['branches']>,
@@ -1862,6 +1863,15 @@ describe('POST /sessions/:id/pull-request/merge', () => {
           const cleanup = runWhenIdle.mock.calls.at(-1)?.[1];
           expect(cleanup).toBeTypeOf('function');
           await cleanup!();
+        }
+        if (failFingerprint) {
+          expect(
+            await ctx.store.getSessionPrVisibility('s1', worktree, status.url),
+          ).toBeUndefined();
+          fingerprint = 'settled-cleanup';
+          expect((await server.inject('/sessions/s1/branches')).json().pullRequest?.phase).toBe(
+            'merged',
+          );
         }
         expect(await ctx.store.getSessionPrVisibility('s1', worktree, status.url)).toEqual({
           fingerprint: 'settled-cleanup',
