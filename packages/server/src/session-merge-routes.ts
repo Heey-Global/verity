@@ -252,49 +252,52 @@ export function registerSessionMergeRoutes(
       await conductor
         .runWhenIdle(id, async () => {
           let note = `Pull request #${String(number)} was merged.`;
-          const branches = await branchesForSession(session);
-          if (branches) {
-            try {
-              // Against the branch the PR merged into, not the project's base: a
-              // stacked PR targets another session's branch, and resetting to the
-              // project base would force-check-out a commit without the merged work.
-              //
-              // Re-resolved now that the merge has landed, because a base retargeted
-              // between the pre-merge check and the merge itself would leave the
-              // earlier answer describing a branch this PR did not merge into. This
-              // reads GitHub rather than the pre-merge row because a successful merge
-              // drops the PR service's per-branch cache (`github.ts`); without that it
-              // would replay the very answer it is meant to re-check. The pre-merge
-              // value stands in when the PR no longer resolves — GitHub deletes the
-              // head branch this looks the PR up by.
-              const settled = await sessionPrStatus(session).catch(() => null);
-              const target =
-                settled?.number === number && settled.phase === 'merged'
-                  ? (settled.baseRef ?? mergedBaseRef)
-                  : mergedBaseRef;
-              const { base, deletedBranch } = await branches.resetToMergedBase(
-                session.worktree,
-                target === undefined ? {} : { base: target },
-              );
-              const deletedClause = deletedBranch
-                ? ` and the merged local branch "${deletedBranch}" was deleted`
-                : '';
-              // Purely informational — the reset already happened; the agent is not
-              // instructed to do anything (the detached HEAD is the server's doing).
-              note = `Pull request #${String(number)} was merged and your worktree has been reset to ${base} (detached at the merged commit)${deletedClause}.`;
-            } catch {
-              // Housekeeping is non-atomic (fetch → detach → delete the merged branch):
-              // on failure the worktree MAY already be reset (only the branch delete
-              // failed) or not (the fetch/checkout failed). We can't tell which here, so
-              // word it neutrally — never falsely claim the reset did or didn't happen.
-              note = `Pull request #${String(number)} was merged, but the automatic worktree cleanup afterwards did not fully complete.`;
+          try {
+            const branches = await branchesForSession(session);
+            if (branches) {
+              try {
+                // Against the branch the PR merged into, not the project's base: a
+                // stacked PR targets another session's branch, and resetting to the
+                // project base would force-check-out a commit without the merged work.
+                //
+                // Re-resolved now that the merge has landed, because a base retargeted
+                // between the pre-merge check and the merge itself would leave the
+                // earlier answer describing a branch this PR did not merge into. This
+                // reads GitHub rather than the pre-merge row because a successful merge
+                // drops the PR service's per-branch cache (`github.ts`); without that it
+                // would replay the very answer it is meant to re-check. The pre-merge
+                // value stands in when the PR no longer resolves — GitHub deletes the
+                // head branch this looks the PR up by.
+                const settled = await sessionPrStatus(session).catch(() => null);
+                const target =
+                  settled?.number === number && settled.phase === 'merged'
+                    ? (settled.baseRef ?? mergedBaseRef)
+                    : mergedBaseRef;
+                const { base, deletedBranch } = await branches.resetToMergedBase(
+                  session.worktree,
+                  target === undefined ? {} : { base: target },
+                );
+                const deletedClause = deletedBranch
+                  ? ` and the merged local branch "${deletedBranch}" was deleted`
+                  : '';
+                // Purely informational — the reset already happened; the agent is not
+                // instructed to do anything (the detached HEAD is the server's doing).
+                note = `Pull request #${String(number)} was merged and your worktree has been reset to ${base} (detached at the merged commit)${deletedClause}.`;
+              } catch {
+                // Housekeeping is non-atomic (fetch → detach → delete the merged branch):
+                // on failure the worktree MAY already be reset (only the branch delete
+                // failed) or not (the fetch/checkout failed). We can't tell which here, so
+                // word it neutrally — never falsely claim the reset did or didn't happen.
+                note = `Pull request #${String(number)} was merged, but the automatic worktree cleanup afterwards did not fully complete.`;
+              }
             }
+            if (projectCheckoutSyncFailed) {
+              note +=
+                " The project's managed default-branch checkout could not be refreshed automatically.";
+            }
+          } finally {
+            await finishCleanup();
           }
-          if (projectCheckoutSyncFailed) {
-            note +=
-              " The project's managed default-branch checkout could not be refreshed automatically.";
-          }
-          await finishCleanup();
           // The merge and cleanup need no model reasoning. Keep the detail available
           // to the agent on its next genuine turn, while showing the user one concise
           // transcript marker now. Both are best-effort because the PR already landed.
