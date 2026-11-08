@@ -13,15 +13,22 @@ jest.mock('../components/files/FileRowActions', () => ({
     children,
     label,
     onDelete,
+    onRename,
   }: {
     children: React.ReactNode;
     label: string;
     onDelete?: () => void;
+    onRename?: () => void;
   }) => {
     const { View, Pressable, Text } = require('react-native');
     return (
       <View>
         {children}
+        {onRename ? (
+          <Pressable accessibilityLabel={`Rename ${label}`} onPress={onRename}>
+            <Text>Rename entry</Text>
+          </Pressable>
+        ) : null}
         {onDelete ? (
           <Pressable accessibilityLabel={`Delete ${label}`} onPress={onDelete}>
             <Text>Delete entry</Text>
@@ -40,7 +47,7 @@ import { join } from 'node:path';
 
 import { EmbeddedKnowledge, KnowledgeScreen } from '../components/knowledge/KnowledgeBrowser';
 import { KnowledgeFileView } from '../components/knowledge/KnowledgeFileView';
-import { KnowledgePaneContext } from '../components/knowledge/KnowledgePane';
+import { followMove, KnowledgePaneContext } from '../components/knowledge/KnowledgePane';
 import { folderTitle, SHARED } from '../components/knowledge/knowledgeScope';
 import { invalidateWikiCatalog } from '../components/knowledge/useWikiCatalog';
 import {
@@ -387,6 +394,108 @@ it('confirms Sources folder deletion and refreshes its files', async () => {
   fireEvent.press(screen.getByRole('button', { name: 'Delete' }));
   await waitFor(() => expect(remove).toHaveBeenCalledWith('p', 'sources/documents/import'));
   await waitFor(() => expect(list).toHaveBeenCalledTimes(2));
+});
+
+it('renames a source, reloads the folder and keeps the open file on its new path', async () => {
+  const list = jest.fn().mockResolvedValue({
+    path: 'sources/documents',
+    entries: [
+      { path: 'sources/documents/import', name: 'import', kind: 'directory' },
+      { path: 'sources/documents/call.md', name: 'call.md', kind: 'file' },
+    ],
+    truncated: false,
+  });
+  const rename = jest.fn().mockResolvedValue({ path: 'sources/documents/kickoff.md' });
+  const api = client({ listProjectKnowledgeFiles: list, renameProjectKnowledgeFile: rename });
+  const moved = jest.fn();
+  render(
+    <KnowledgePaneContext.Provider value={{ openFile: jest.fn(), moved }}>
+      <EmbeddedKnowledge
+        client={api as unknown as VerityClient}
+        scope={PROJECT}
+        start="sources/documents"
+      />
+    </KnowledgePaneContext.Provider>,
+  );
+  expect(await screen.findByLabelText('Rename import')).toBeTruthy();
+  fireEvent.press(screen.getByLabelText('Rename call.md'));
+  expect(
+    screen.getByText('Wiki pages that cite this source keep pointing to the old name.'),
+  ).toBeTruthy();
+  fireEvent.changeText(screen.getByLabelText('File name'), 'kickoff.md');
+  fireEvent.press(screen.getByRole('button', { name: 'Rename' }));
+  await waitFor(() =>
+    expect(rename).toHaveBeenCalledWith('p', 'sources/documents/call.md', 'kickoff.md'),
+  );
+  await waitFor(() => expect(list).toHaveBeenCalledTimes(2));
+  expect(moved).toHaveBeenCalledWith(
+    PROJECT,
+    'sources/documents/call.md',
+    'sources/documents/kickoff.md',
+  );
+  expect(screen.queryByLabelText('File name')).toBeNull();
+});
+
+it('moves the open file with a renamed file or folder, and nothing else', () => {
+  const open = { scope: PROJECT, file: 'sources/interviews/2026/anna.md' };
+  expect(followMove(open, PROJECT, 'sources/interviews', 'sources/customers')).toEqual({
+    scope: PROJECT,
+    file: 'sources/customers/2026/anna.md',
+  });
+  expect(followMove(open, PROJECT, open.file, 'sources/interviews/2026/ben.md')?.file).toBe(
+    'sources/interviews/2026/ben.md',
+  );
+  // A sibling sharing the name's start is another folder.
+  expect(followMove(open, PROJECT, 'sources/inter', 'sources/x')).toBe(open);
+  expect(
+    followMove(open, { kind: 'project', projectId: 'other' }, 'sources/interviews', 'sources/x'),
+  ).toBe(open);
+  expect(followMove(null, PROJECT, 'sources/interviews', 'sources/x')).toBeNull();
+});
+
+it('keeps the rename dialog open with the server refusal', async () => {
+  client({
+    listProjectKnowledgeFiles: jest.fn().mockResolvedValue({
+      path: 'sources',
+      entries: [{ path: 'sources/interviews', name: 'interviews', kind: 'directory' }],
+      truncated: false,
+    }),
+    renameProjectKnowledgeFile: jest.fn().mockRejectedValue(new Error('"taken" already exists')),
+  });
+  render(<KnowledgeScreen scope={PROJECT} folder="sources" />);
+  fireEvent.press(await screen.findByLabelText('Rename interviews'));
+  expect(screen.getByText('Rename folder')).toBeTruthy();
+  fireEvent.changeText(screen.getByLabelText('File name'), 'taken');
+  fireEvent.press(screen.getByRole('button', { name: 'Rename' }));
+  expect(await screen.findByText('"taken" already exists')).toBeTruthy();
+  expect(screen.getByLabelText('File name')).toBeTruthy();
+});
+
+it('offers rename only for ordinary Sources entries', async () => {
+  client({
+    listProjectKnowledgeFiles: jest.fn().mockResolvedValue({
+      path: 'sources',
+      entries: [
+        { path: 'sources/documents', name: 'documents', kind: 'directory' },
+        { path: 'sources/meetings', name: 'meetings', kind: 'directory' },
+        { path: 'sources/interviews', name: 'interviews', kind: 'directory' },
+      ],
+      truncated: false,
+    }),
+  });
+  render(<KnowledgeScreen scope={PROJECT} folder="sources" />);
+  expect(await screen.findByLabelText('Rename interviews')).toBeTruthy();
+  // Verity's own entry folders: an import would recreate them empty.
+  expect(screen.queryByLabelText('Rename documents')).toBeNull();
+  expect(screen.queryByLabelText('Rename meetings')).toBeNull();
+  expect(screen.getByLabelText('Delete meetings')).toBeTruthy();
+});
+
+it('does not offer rename in the Wiki, whose pages other pages link to', async () => {
+  client();
+  render(<KnowledgeScreen scope={PROJECT} folder="insights/:files" />);
+  expect(await screen.findByLabelText('Delete reference.md')).toBeTruthy();
+  expect(screen.queryByLabelText('Rename reference.md')).toBeNull();
 });
 
 it('uses one breadcrumb for nested Sources and can return to Sources or the project', async () => {

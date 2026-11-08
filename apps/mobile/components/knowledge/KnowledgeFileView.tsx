@@ -305,32 +305,35 @@ export function KnowledgeFileView({
           }}
         />
       ) : (
-        <FileSheetHeader
-          title={name}
-          subtitle={folderTitle(scope, parentFolder(file))}
-          trailing={
-            <View style={styles.actions}>
-              {actions}
-              {onClose ? (
-                <HeaderIconButton
-                  icon="x"
-                  accessibilityLabel="Close file"
-                  onPress={() =>
-                    dirty
-                      ? confirm({
-                          title: 'Discard changes?',
-                          message: 'Your edits to this file are not saved.',
-                          confirmLabel: 'Discard',
-                          destructive: true,
-                          onConfirm: onClose,
-                        })
-                      : onClose()
-                  }
-                />
-              ) : null}
-            </View>
-          }
-        />
+        // The header lines up with the text below it rather than the column's edge.
+        <View style={styles.paneHeader}>
+          <FileSheetHeader
+            title={name}
+            subtitle={folderTitle(scope, parentFolder(file))}
+            trailing={
+              <View style={styles.actions}>
+                {actions}
+                {onClose ? (
+                  <HeaderIconButton
+                    icon="x"
+                    accessibilityLabel="Close file"
+                    onPress={() =>
+                      dirty
+                        ? confirm({
+                            title: 'Discard changes?',
+                            message: 'Your edits to this file are not saved.',
+                            confirmLabel: 'Discard',
+                            destructive: true,
+                            onConfirm: onClose,
+                          })
+                        : onClose()
+                    }
+                  />
+                ) : null}
+              </View>
+            }
+          />
+        </View>
       )}
       {content?.warning ? (
         <Text variant="subtitle" tone="muted" style={styles.warning}>
@@ -346,6 +349,7 @@ export function KnowledgeFileView({
 const styles = StyleSheet.create((theme) => ({
   root: { flex: 1, backgroundColor: theme.colors.background },
   actions: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
+  paneHeader: { paddingHorizontal: theme.spacing.lg, paddingTop: theme.spacing.md },
   reader: { flex: 1, paddingHorizontal: theme.spacing.lg, paddingTop: theme.spacing.sm },
   list: { flex: 1 },
   listBody: { paddingVertical: theme.spacing.md, gap: theme.spacing.xs },

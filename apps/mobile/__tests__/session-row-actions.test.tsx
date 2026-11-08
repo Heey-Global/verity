@@ -7,10 +7,10 @@ import { GestureDetector } from 'react-native-gesture-handler';
 import {
   favoriteAction,
   isFullSwipe,
-  mixColor,
   SessionContextMenu,
   SwipeableSessionRow,
 } from '../components/SessionRowActions';
+import { mixColor, SwipeActionButton } from '../components/ui/SwipeActions';
 import { exportGestureDiagnostics, setGestureDiagnosticsEnabled } from '../lib/gestureDiagnostics';
 
 function renderMenu(favorite: boolean) {
@@ -122,6 +122,17 @@ describe('SwipeableSessionRow', () => {
 
     fireEvent.press(screen.getByLabelText('Delete'));
     expect(onDelete).toHaveBeenCalledTimes(1);
+  });
+
+  it('draws its actions with the lanes every swipeable row shares', () => {
+    renderRow(false);
+    expect(
+      screen.UNSAFE_getAllByType(SwipeActionButton).map(({ props }) => [props.label, props.tone]),
+    ).toEqual([
+      ['Favorite', 'action'],
+      ['Edit', 'action'],
+      ['Delete', 'destructive'],
+    ]);
   });
 
   it('opens the session settings from the Edit action beside Delete', () => {

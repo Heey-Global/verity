@@ -3,19 +3,22 @@ import { AccessibilityInfo, Modal, Platform, View } from 'react-native';
 import ReanimatedSwipeable, {
   type SwipeableMethods,
 } from 'react-native-gesture-handler/ReanimatedSwipeable';
-import { StyleSheet } from 'react-native-unistyles';
+import { useUnistyles } from 'react-native-unistyles';
 
 import { Button } from '../ui';
-import { FileActionMenu } from './FileActionMenu';
+import { SwipeActionLane, type SwipeLaneAction } from '../ui/SwipeActions';
+import { FileActionMenu, type FileAction } from './FileActionMenu';
 
 /** File actions never fire on a full swipe: revealing the action and choosing
- * it are separate steps, including for folders. Navigation stays on the row. */
+ * it are separate steps, including for folders. Navigation stays on the row.
+ * The revealed actions are the session row's lanes, Delete outermost. */
 export function FileRowActions({
   children,
   label,
   onDelete,
   onMenu,
   onMove,
+  onRename,
   moveLabel = 'Move',
   disabled = false,
   deleteLabel = 'Delete',
@@ -25,15 +28,17 @@ export function FileRowActions({
   onDelete?: (() => void) | undefined;
   onMenu?: (() => void) | undefined;
   onMove?: (() => void) | undefined;
+  onRename?: (() => void) | undefined;
   moveLabel?: string;
   disabled?: boolean;
   deleteLabel?: string;
 }) {
+  const { theme } = useUnistyles();
   const target = useRef<View>(null);
   const swipeable = useRef<SwipeableMethods>(null);
   const [menu, setMenu] = useState(false);
   const [screenReader, setScreenReader] = useState(false);
-  const available = !disabled && Boolean(onDelete || onMenu || onMove);
+  const available = !disabled && Boolean(onDelete || onMenu || onMove || onRename);
   const availableRef = useRef(available);
   availableRef.current = available;
   const pendingAction = useRef<(() => void) | null>(null);
@@ -87,6 +92,12 @@ export function FileRowActions({
     onMove?.();
   }, [available, onMove]);
 
+  const rename = useCallback(() => {
+    if (!available) return;
+    swipeable.current?.close();
+    onRename?.();
+  }, [available, onRename]);
+
   useEffect(() => {
     let active = true;
     void AccessibilityInfo.isScreenReaderEnabled().then((enabled) => {
@@ -120,19 +131,21 @@ export function FileRowActions({
         ref={swipeable}
         enabled={available && !screenReader}
         overshootRight={false}
+        // The row slides over the opaque lanes and needs its own surface, or a
+        // transparent row lets the lanes' labels show through its name.
+        childrenContainerStyle={{ backgroundColor: theme.colors.surface }}
         renderRightActions={() =>
           available && !screenReader ? (
-            <View style={styles.deleteAction}>
-              {onMove ? (
-                <Button label={moveLabel} variant="secondary" size="compact" onPress={move} />
-              ) : null}
-              {onMenu ? (
-                <Button label="Actions" variant="secondary" size="compact" onPress={openMenu} />
-              ) : null}
-              {onDelete ? (
-                <Button label={deleteLabel} variant="destructive" size="compact" onPress={remove} />
-              ) : null}
-            </View>
+            <SwipeActionLane
+              actions={[
+                ...(onMove ? [lane('move', moveLabel, 'folder', 'action', move)] : []),
+                ...(onMenu ? [lane('menu', 'Actions', 'more-horizontal', 'action', openMenu)] : []),
+                ...(onRename ? [lane('rename', 'Rename', 'edit-2', 'action', rename)] : []),
+                ...(onDelete
+                  ? [lane('delete', deleteLabel, 'trash-2', 'destructive', remove)]
+                  : []),
+              ]}
+            />
           ) : null
         }
       >
@@ -141,7 +154,7 @@ export function FileRowActions({
       {screenReader && available ? (
         <Button label={`Actions for ${label}`} variant="text" size="compact" onPress={openMenu} />
       ) : null}
-      {available && onDelete ? (
+      {available && !onMenu ? (
         <Modal
           transparent
           visible={menu}
@@ -153,22 +166,19 @@ export function FileRowActions({
             title={label}
             actions={[
               ...(onMove
+                ? [menuAction('move', moveLabel, 'folder', () => afterDismiss(move))]
+                : []),
+              ...(onRename
+                ? [menuAction('rename', 'Rename…', 'edit-2', () => afterDismiss(rename))]
+                : []),
+              ...(onDelete
                 ? [
                     {
-                      key: 'move',
-                      label: moveLabel,
-                      icon: 'folder' as const,
-                      onPress: () => afterDismiss(move),
+                      ...menuAction('delete', deleteLabel, 'trash-2', () => afterDismiss(remove)),
+                      destructive: true,
                     },
                   ]
                 : []),
-              {
-                key: 'delete',
-                label: deleteLabel,
-                icon: 'trash-2',
-                destructive: true,
-                onPress: () => afterDismiss(remove),
-              },
             ]}
             onDismiss={() => setMenu(false)}
           />
@@ -178,15 +188,20 @@ export function FileRowActions({
   );
 }
 
-const styles = StyleSheet.create((theme) => ({
-  deleteAction: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: theme.spacing.xs,
-    paddingHorizontal: theme.spacing.sm,
-    backgroundColor: theme.colors.surface,
-  },
-}));
+const lane = (
+  key: string,
+  label: string,
+  icon: SwipeLaneAction['icon'],
+  tone: SwipeLaneAction['tone'],
+  onPress: () => void,
+): SwipeLaneAction => ({ key, label, icon, tone, onPress });
+
+const menuAction = (
+  key: string,
+  label: string,
+  icon: FileAction['icon'],
+  onPress: () => void,
+): FileAction => ({ key, label, icon, onPress });
 
 /** Attach to the row container so shortcuts also work while its child has focus. */
 export function bindFileRowShortcuts(

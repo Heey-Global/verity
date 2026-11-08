@@ -259,6 +259,17 @@ it('requires project management permission to delete Wiki entries', async () => 
       id: 'p',
     }),
   ).toBe('allow');
+  // Renaming a source changes the library like deleting it does.
+  expect(
+    await authorizePairedRoute(store, 'reader', 'POST', '/projects/:id/knowledge/files/rename', {
+      id: 'p',
+    }),
+  ).toBe('forbidden');
+  expect(
+    await authorizePairedRoute(store, 'manager', 'POST', '/projects/:id/knowledge/files/rename', {
+      id: 'p',
+    }),
+  ).toBe('allow');
 });
 
 it('lets a reader keep their own view state but hides resources they cannot read', async () => {

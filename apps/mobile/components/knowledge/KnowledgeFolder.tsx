@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 
+import { FileNameDialog } from '../files/FileNameDialog';
 import { Button, Group, Row, Text, useConfirm } from '../ui';
 import {
   DECISIONS,
@@ -15,7 +16,8 @@ import {
   wikiView,
   type KnowledgeScope,
 } from './knowledgeScope';
-import { KnowledgeDeleteContext, KnowledgeEntryActions } from './KnowledgeEntryActions';
+import { KnowledgeEntryActions, KnowledgeEntryContext } from './KnowledgeEntryActions';
+import { useKnowledgePane } from './KnowledgePane';
 import { invalidateWikiCatalog, useWikiCatalog } from './useWikiCatalog';
 import { useWikiProposals } from './useWikiProposals';
 import { startWikiSetup, type WikiSetupMode } from './WikiGuide';
@@ -57,6 +59,8 @@ export function KnowledgeFolder({
 }) {
   const [confirm, confirmSheet] = useConfirm();
   const [deleting, setDeleting] = useState(false);
+  const [renaming, setRenaming] = useState<{ path: string; directory: boolean } | null>(null);
+  const pane = useKnowledgePane();
   const areas = scope.kind === 'project' && folder === '';
   // Folders take their area names only where the areas are: a project's tree,
   // or the top of a library. Below that, a Shared folder named `sources` is just that.
@@ -146,8 +150,23 @@ export function KnowledgeFolder({
         }
       : undefined;
 
+  const rename =
+    scope.kind === 'project'
+      ? (path: string, directory: boolean) => setRenaming({ path, directory })
+      : undefined;
+  const submitRename = async (name: string) => {
+    if (!renaming || scope.kind !== 'project') return;
+    const renamed = await client.renameProjectKnowledgeFile(scope.projectId, renaming.path, name);
+    setRenaming(null);
+    retry();
+    pane?.moved?.(scope, renaming.path, renamed.path);
+    if (renamed.warning) Alert.alert('Renamed', renamed.warning);
+  };
+
   return (
-    <KnowledgeDeleteContext.Provider value={deleting ? undefined : remove}>
+    <KnowledgeEntryContext.Provider
+      value={deleting ? {} : { remove, rename: renaming ? undefined : rename }}
+    >
       <View style={styles.root} testID="knowledge-folder">
         {folder === '' ? (
           <Text variant="subtitle" tone="muted">
@@ -245,9 +264,36 @@ export function KnowledgeFolder({
           </Text>
         ) : null}
         {confirmSheet}
+        {renaming ? (
+          <FileNameDialog
+            title={renaming.directory ? 'Rename folder' : 'Rename file'}
+            subtitle={
+              renaming.directory
+                ? 'Wiki pages that cite sources in this folder keep pointing to the old name.'
+                : 'Wiki pages that cite this source keep pointing to the old name.'
+            }
+            initialName={renaming.path.split('/').at(-1) ?? renaming.path}
+            confirmLabel="Rename"
+            validate={validateSourceName}
+            onSubmit={submitRename}
+            onCancel={() => setRenaming(null)}
+          />
+        ) : null}
       </View>
-    </KnowledgeDeleteContext.Provider>
+    </KnowledgeEntryContext.Provider>
   );
+}
+
+/** What the server would refuse anyway, said before the request. */
+function validateSourceName(name: string): string | null {
+  const trimmed = name.trim();
+  if (trimmed === '') return 'Enter a name.';
+  if (trimmed !== name) return 'Remove the spaces at the start or end.';
+  if (/[\\/\0]/.test(name)) return 'Use a name without slashes.';
+  if (name === '.' || name === '..' || name === '.text') return 'This name is reserved.';
+  // The app addresses its own virtual sections with a leading colon.
+  if (name.startsWith(':')) return 'Use a name that does not start with “:”.';
+  return null;
 }
 
 /** A project's Decisions ahead of the Wiki's other entries; the rest keep the
