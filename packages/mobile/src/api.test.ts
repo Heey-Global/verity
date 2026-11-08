@@ -4930,6 +4930,32 @@ it('browses project knowledge without a session and sends the revision for edits
   await expect(client.listProjectKnowledgeFiles('p/1')).rejects.toThrow('Update the Verity server');
 });
 
+it('renames a Sources entry and tells an older server apart from a name that is taken', async () => {
+  const { fetch, calls } = fakeFetchSequence(
+    json({ path: 'sources/documents/kickoff.md' }),
+    json({ error: '"taken.md" already exists' }, 409),
+    json(
+      {
+        error: 'Not Found',
+        message: 'Route POST:/projects/p%2F1/knowledge/files/rename not found',
+      },
+      404,
+    ),
+  );
+  const client = new VerityClient({ baseUrl: 'http://host', fetch });
+  expect(
+    await client.renameProjectKnowledgeFile('p/1', 'sources/documents/call.md', 'kickoff.md'),
+  ).toBe('sources/documents/kickoff.md');
+  expect(calls[0]?.url).toBe('http://host/projects/p%2F1/knowledge/files/rename');
+  expect(jsonBody(calls[0])).toEqual({ path: 'sources/documents/call.md', name: 'kickoff.md' });
+  await expect(
+    client.renameProjectKnowledgeFile('p/1', 'sources/documents/kickoff.md', 'taken.md'),
+  ).rejects.toThrow('already exists');
+  await expect(
+    client.renameProjectKnowledgeFile('p/1', 'sources/documents/kickoff.md', 'other.md'),
+  ).rejects.toThrow('Update the Verity server to rename Sources');
+});
+
 it('reads the project Wiki catalog and treats a server without it as none', async () => {
   const catalog = {
     pages: [

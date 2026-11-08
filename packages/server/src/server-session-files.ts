@@ -12,6 +12,9 @@ import {
   readdir,
   readFile,
   realpath,
+  rename as renamePath,
+  rm,
+  rmdir,
   statfs,
   unlink,
 } from 'node:fs/promises';
@@ -34,6 +37,7 @@ import {
 import {
   ensureProjectKnowledge,
   ensureSharedKnowledge,
+  EXTRACTED_TEXT_DIR,
   KNOWLEDGE_INSIGHTS_DIR,
   knowledgeRootDir,
   SHARED_KNOWLEDGE_DIR,
@@ -171,6 +175,45 @@ export function registerServerSessionFiles(
       release();
       await slot.close();
     }
+  };
+
+  /**
+   * Carries the extracted text of every file in a renamed folder along with it.
+   * Each artifact names its source inside (heading, `Source:` line, metadata),
+   * so they move one by one rather than as a folder; a file without one is
+   * extracted afresh, and what is left under the old folder is derived text of
+   * files that no longer exist there.
+   */
+  const renameExtractionTree = async (
+    root: { root: SessionFileRootName; dir: string },
+    from: string,
+    to: string,
+  ) => {
+    const walk = async (folder: string): Promise<string[]> => {
+      const entries = await readdir(join(root.dir, to, folder), { withFileTypes: true });
+      const files = await Promise.all(
+        entries
+          .filter((entry) => entry.name !== FILE_HISTORY_DIR)
+          .map(async (entry) => {
+            const child = folder ? `${folder}/${entry.name}` : entry.name;
+            if (entry.isDirectory()) return walk(child);
+            return entry.isFile() ? [child] : [];
+          }),
+      );
+      return files.flat();
+    };
+    for (const file of await walk('')) {
+      const moved = await moveKnowledgeExtraction(
+        ...extractionArgs(root, `${from}/${file}`),
+        ...extractionArgs(root, `${to}/${file}`),
+      );
+      if (!moved) await extractKnowledgeFile(...extractionArgs(root, `${to}/${file}`));
+    }
+    const [storage, relativeFrom] = extractionArgs(root, from);
+    await rm(join(storage, EXTRACTED_TEXT_DIR, relativeFrom), {
+      recursive: true,
+      force: true,
+    });
   };
 
   registerSessionFileRoutes(app, {
@@ -827,6 +870,69 @@ export function registerServerSessionFiles(
         throw error;
       } finally {
         for (const release of releases.reverse()) release();
+        await source.close();
+        await destination.close();
+      }
+    },
+    rename: async (reply, root, path, name) => {
+      let source;
+      let destination;
+      try {
+        source = await openKnowledgeFileSlot(root, path);
+        destination = await openKnowledgeFileSlot(
+          root,
+          [dirname(source.rel), name].filter((part) => part !== '.').join('/'),
+        );
+      } catch (error) {
+        await source?.close();
+        return knowledgeSlotFailure(reply, error);
+      }
+      const sourcePath = `${source.directoryPath}/${source.name}`;
+      const destinationPath = `${destination.directoryPath}/${destination.name}`;
+      const release = await acquireKnowledgeMutationLock(fileStorageRoot(root));
+      try {
+        if (destination.rel === source.rel) return { path: source.rel };
+        const stats = await lstat(sourcePath).catch(() => undefined);
+        if (stats === undefined) {
+          reply.code(404);
+          return { error: 'file not found' };
+        }
+        if (stats.isFile()) {
+          // Link-then-unlink: `rename` would silently replace a file that already
+          // has the new name.
+          await link(sourcePath, destinationPath);
+          await unlink(sourcePath);
+          const moved = await moveKnowledgeExtraction(
+            ...extractionArgs(root, source.rel),
+            ...extractionArgs(root, destination.rel),
+          );
+          if (!moved) await extractKnowledgeFile(...extractionArgs(root, destination.rel));
+        } else if (stats.isDirectory()) {
+          // Reserve the new name as an empty folder first: renaming a folder onto
+          // an empty one succeeds, onto anything else it fails, so an entry that
+          // already has the name — or appears meanwhile — is never replaced.
+          await mkdir(destinationPath);
+          try {
+            await renamePath(sourcePath, destinationPath);
+          } catch (error) {
+            await rmdir(destinationPath).catch(() => undefined);
+            throw error;
+          }
+          await renameExtractionTree(root, source.rel, destination.rel);
+        } else {
+          reply.code(400);
+          return { error: 'only files and folders can be renamed' };
+        }
+        return { path: destination.rel };
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code === 'EEXIST' || code === 'ENOTEMPTY') {
+          reply.code(409);
+          return { error: `"${destination.name}" already exists` };
+        }
+        throw error;
+      } finally {
+        release();
         await source.close();
         await destination.close();
       }

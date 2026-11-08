@@ -117,6 +117,10 @@ const resourceRules: ReadonlyMap<string, ResourceRule> = new Map([
     routeScopeKey('PUT', '/projects/:id/knowledge/files/content'),
     { kind: 'project', parameter: 'id', permission: 'manage' },
   ],
+  [
+    routeScopeKey('POST', '/projects/:id/knowledge/files/rename'),
+    { kind: 'project', parameter: 'id', permission: 'manage' },
+  ],
   // Proposed Wiki changes are read like the Wiki and decided like an edit of it.
   [
     routeScopeKey('GET', '/projects/:id/knowledge/proposals'),

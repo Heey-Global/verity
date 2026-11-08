@@ -3,6 +3,7 @@ import { act, fireEvent, render, screen } from '@testing-library/react-native';
 import { AccessibilityInfo, Modal, Platform, Pressable, Text, TextInput } from 'react-native';
 import Swipeable from 'react-native-gesture-handler/ReanimatedSwipeable';
 
+import { SwipeActionButton } from '../ui/SwipeActions';
 import { bindFileRowShortcuts, FileRowActions } from './FileRowActions';
 
 jest.mock('react-native-gesture-handler/ReanimatedSwipeable', () => {
@@ -45,6 +46,47 @@ it('requires choosing Delete after revealing actions, even after a full swipe', 
   expect(remove).not.toHaveBeenCalled();
   fireEvent.press(screen.getByRole('button', { name: 'Delete' }));
   expect(remove).toHaveBeenCalledTimes(1);
+});
+
+it('reveals its actions in the session row lanes, Delete outermost', async () => {
+  // A row drawn with its own buttons looks fine in every test of its own; only
+  // the shared lane keeps file rows looking like session rows.
+  const rename = jest.fn();
+  const remove = jest.fn();
+  const view = render(
+    <FileRowActions label="notes" onRename={rename} onDelete={remove}>
+      {row}
+    </FileRowActions>,
+  );
+  await act(async () => {});
+  expect(
+    view.UNSAFE_getAllByType(SwipeActionButton).map(({ props }) => [props.label, props.tone]),
+  ).toEqual([
+    ['Rename', 'action'],
+    ['Delete', 'destructive'],
+  ]);
+  fireEvent.press(screen.getByRole('button', { name: 'Rename' }));
+  expect(rename).toHaveBeenCalledTimes(1);
+  expect(remove).not.toHaveBeenCalled();
+});
+
+it('offers Rename in the menu, ahead of Delete', async () => {
+  jest.replaceProperty(Platform, 'OS', 'web');
+  jest.spyOn(AccessibilityInfo, 'isScreenReaderEnabled').mockResolvedValue(true);
+  const rename = jest.fn();
+  render(
+    <FileRowActions label="notes" onRename={rename} onDelete={jest.fn()}>
+      {row}
+    </FileRowActions>,
+  );
+  await act(async () => {});
+  fireEvent.press(screen.getByRole('button', { name: 'Actions for notes' }));
+  expect(screen.getAllByRole('menuitem').map((item) => item.props.accessibilityLabel)).toEqual([
+    'Rename…',
+    'Delete',
+  ]);
+  fireEvent.press(screen.getByRole('menuitem', { name: 'Rename…' }));
+  expect(rename).toHaveBeenCalledTimes(1);
 });
 
 it('keeps navigation separate and exposes actions to screen readers without swiping', async () => {

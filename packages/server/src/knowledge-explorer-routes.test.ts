@@ -580,6 +580,103 @@ describe('session explorer knowledge roots', () => {
     expect(existsSync(join(dir, SHARED_KNOWLEDGE_DIR))).toBe(true);
   });
 
+  it('renames a Sources file with its extracted text and never replaces another', async () => {
+    const dir = projectKnowledgeDir(dataRoot, 'p-1');
+    await app.inject('/projects/p-1/knowledge/files');
+    const from = 'sources/documents/call.md';
+    writeFileSync(join(dir, from), '# Call');
+    writeFileSync(join(dir, 'sources/documents/taken.md'), 'Taken');
+    const extracted = knowledgeExtractionPath(dir, from);
+    mkdirSync(join(extracted, '..'), { recursive: true });
+    writeFileSync(extracted, `# call.md\n\nSource: ${from}\n\nCall transcript\n`);
+    const rename = (path: string, name: string) =>
+      app.inject({
+        method: 'POST',
+        url: '/projects/p-1/knowledge/files/rename',
+        payload: { path, name },
+      });
+
+    const renamed = await rename(from, 'kickoff.md');
+    expect(renamed.statusCode).toBe(200);
+    expect(renamed.json()).toEqual({ path: 'sources/documents/kickoff.md' });
+    expect(existsSync(join(dir, from))).toBe(false);
+    expect(readFileSync(join(dir, 'sources/documents/kickoff.md'), 'utf8')).toBe('# Call');
+    // Search reads the extracted text, so it has to name the file by its new path.
+    expect(existsSync(extracted)).toBe(false);
+    expect(
+      readFileSync(knowledgeExtractionPath(dir, 'sources/documents/kickoff.md'), 'utf8'),
+    ).toContain('Source: sources/documents/kickoff.md');
+
+    const conflict = await rename('sources/documents/kickoff.md', 'taken.md');
+    expect(conflict.statusCode).toBe(409);
+    expect(readFileSync(join(dir, 'sources/documents/taken.md'), 'utf8')).toBe('Taken');
+    expect(readFileSync(join(dir, 'sources/documents/kickoff.md'), 'utf8')).toBe('# Call');
+    expect((await rename('sources/documents/missing.md', 'other.md')).statusCode).toBe(404);
+    expect((await rename('sources/documents/kickoff.md', '../escape.md')).statusCode).toBe(400);
+    expect((await rename('sources/documents/kickoff.md', 'nested/name.md')).statusCode).toBe(400);
+  });
+
+  it('renames a Sources folder with the extracted text of everything inside', async () => {
+    const dir = projectKnowledgeDir(dataRoot, 'p-1');
+    await app.inject('/projects/p-1/knowledge/files');
+    mkdirSync(join(dir, 'sources/interviews/2026'), { recursive: true });
+    const inner = 'sources/interviews/2026/anna.md';
+    writeFileSync(join(dir, inner), '# Anna');
+    const extracted = knowledgeExtractionPath(dir, inner);
+    mkdirSync(join(extracted, '..'), { recursive: true });
+    writeFileSync(extracted, `# anna.md\n\nSource: ${inner}\n\nInterview\n`);
+    mkdirSync(join(dir, 'sources/taken'));
+    writeFileSync(join(dir, 'sources/taken/keep.md'), 'Keep');
+    const rename = (path: string, name: string) =>
+      app.inject({
+        method: 'POST',
+        url: '/projects/p-1/knowledge/files/rename',
+        payload: { path, name },
+      });
+
+    expect((await rename('sources/interviews', 'taken')).statusCode).toBe(409);
+    expect(readFileSync(join(dir, 'sources/taken/keep.md'), 'utf8')).toBe('Keep');
+    expect(readFileSync(join(dir, inner), 'utf8')).toBe('# Anna');
+
+    const renamed = await rename('sources/interviews', 'customer-interviews');
+    expect(renamed.statusCode).toBe(200);
+    expect(renamed.json()).toEqual({ path: 'sources/customer-interviews' });
+    expect(existsSync(join(dir, 'sources/interviews'))).toBe(false);
+    const moved = 'sources/customer-interviews/2026/anna.md';
+    expect(readFileSync(join(dir, moved), 'utf8')).toBe('# Anna');
+    expect(readFileSync(knowledgeExtractionPath(dir, moved), 'utf8')).toContain(`Source: ${moved}`);
+    expect(existsSync(join(dir, EXTRACTED_TEXT_DIR, 'sources/interviews'))).toBe(false);
+  });
+
+  it('renames only ordinary Sources entries', async () => {
+    const dir = projectKnowledgeDir(dataRoot, 'p-1');
+    await app.inject('/projects/p-1/knowledge/files');
+    writeFileSync(join(dir, 'insights/page.md'), 'Page');
+    const rename = (path: string) =>
+      app.inject({
+        method: 'POST',
+        url: '/projects/p-1/knowledge/files/rename',
+        payload: { path, name: 'renamed' },
+      });
+    for (const path of [
+      'sources',
+      // Verity's entry points write into these; renamed, they would come back empty.
+      'sources/documents',
+      'sources/meetings',
+      'sources/matrix',
+      // Renaming a Wiki page would break the links to it.
+      'insights/page.md',
+      'insights/decisions',
+      'sources/../insights/page.md',
+      'sources\\..\\insights\\page.md',
+    ])
+      expect((await rename(path)).statusCode).toBe(403);
+    expect(readFileSync(join(dir, 'insights/page.md'), 'utf8')).toBe('Page');
+    symlinkSync('../../insights', join(dir, 'sources/documents/wiki-alias'));
+    expect((await rename('sources/documents/wiki-alias/page.md')).statusCode).toBe(400);
+    expect(readFileSync(join(dir, 'insights/page.md'), 'utf8')).toBe('Page');
+  });
+
   it('moves a file between the project folder and the shared one', async () => {
     // The only scope change there is (ADR 0022 D1): what is in `shared/` is
     // readable by every project, what is in the project folder is not.

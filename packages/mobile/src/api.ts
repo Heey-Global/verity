@@ -6486,6 +6486,27 @@ export class VerityClient {
     );
   }
 
+  /** Gives a Sources file or folder a new name in its folder; resolves to its
+   *  new path. A name that is taken is refused (409), never replaced. */
+  async renameProjectKnowledgeFile(projectId: string, path: string, name: string): Promise<string> {
+    try {
+      const res = await this.request(
+        `/projects/${encodeURIComponent(projectId)}/knowledge/files/rename`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path, name }),
+        },
+      );
+      return z.object({ path: z.string() }).parse(await res.json()).path;
+    } catch (err) {
+      // The router's own 404, not a missing file: a server without this route.
+      if (err instanceof VerityApiError && err.status === 404 && err.message === 'Not Found')
+        throw new Error('Update the Verity server to rename Sources', { cause: err });
+      throw err;
+    }
+  }
+
   async writeProjectKnowledgeFile(
     projectId: string,
     path: string,

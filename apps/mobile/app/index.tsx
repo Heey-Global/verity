@@ -131,7 +131,11 @@ import { HomeTabBar, type HomeTab } from '../components/home/HomeTabBar';
 import { useNewDesign } from '../lib/homePreferences';
 import { ProjectPage } from '../components/project/ProjectPage';
 import { KnowledgeFileView } from '../components/knowledge/KnowledgeFileView';
-import { KnowledgePaneContext, type KnowledgePane } from '../components/knowledge/KnowledgePane';
+import {
+  followMove,
+  KnowledgePaneContext,
+  type KnowledgePane,
+} from '../components/knowledge/KnowledgePane';
 import type { KnowledgeScope } from '../components/knowledge/knowledgeScope';
 import { setHomeShowsVerity } from '../lib/homeVerity';
 import { ProjectCard } from '../components/project/ProjectCard';
@@ -209,7 +213,11 @@ function SessionList({ client }: { client: VerityClient }) {
     ]);
   }, []);
   const knowledgePane = useMemo<KnowledgePane>(
-    () => ({ openFile: (scope, file) => afterDiscard(() => setKnowledgeFile({ scope, file })) }),
+    () => ({
+      openFile: (scope, file) => afterDiscard(() => setKnowledgeFile({ scope, file })),
+      moved: (scope, from, to) =>
+        setKnowledgeFile((current) => followMove(current, scope, from, to)),
+    }),
     [afterDiscard],
   );
   // Any other way to a session (a deep link, a move, a deletion) as well —
