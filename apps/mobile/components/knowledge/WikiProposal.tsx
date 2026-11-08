@@ -107,12 +107,13 @@ export function WikiProposalScreen({
   const [attempt, setAttempt] = useState(0);
   // A decision may finish after the user left; it must not move another screen.
   const mounted = useRef(true);
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    // Set again on mount: development mode mounts effects twice.
+    mounted.current = true;
+    return () => {
       mounted.current = false;
-    },
-    [],
-  );
+    };
+  }, []);
   useEffect(() => {
     let active = true;
     setError(undefined);
@@ -165,7 +166,15 @@ export function WikiProposalScreen({
           notes = decisionNotice(
             await client.decideWikiProposal(projectId, proposalId, 'apply', apply),
           );
-        if (reject.length) await client.decideWikiProposal(projectId, proposalId, 'reject', reject);
+        if (reject.length)
+          await client
+            .decideWikiProposal(projectId, proposalId, 'reject', reject)
+            .catch((failure: unknown) => {
+              // The chosen pages are written already; only the rest is undecided.
+              throw new Error(
+                `${apply.length ? 'The chosen pages were applied, but the others could not be rejected: ' : ''}${failure instanceof Error ? failure.message : 'Could not save the decision'}`,
+              );
+            });
       } catch (failure) {
         failed = true;
         if (mounted.current)
