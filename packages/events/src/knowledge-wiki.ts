@@ -158,6 +158,10 @@ export interface WikiLogEntry {
  * Title` heading and the lines up to the next heading; other headings and text
  * are kept by the file but are no entries. Links resolve from log.md itself.
  */
+/** A log title is copied to every page its entry names; links per entry are bounded too. */
+const MAX_LOG_TITLE = 160;
+const MAX_LOG_LINKS = 200;
+
 export function parseWikiLog(markdown: string): WikiLogEntry[] {
   const entries: WikiLogEntry[] = [];
   let current: WikiLogEntry | null = null;
@@ -166,13 +170,18 @@ export function parseWikiLog(markdown: string): WikiLogEntry[] {
       // Every repetition is followed by a character it cannot match, and the title
       // is trimmed in code, so a heading of many spaces cannot make this backtrack.
       const match = /^##[ \t]+\[(\d{4}-\d{2}-\d{2})\][ \t]+([a-z][a-z-]*)[ \t]*\|(.*)$/.exec(line);
-      const title = match?.[3]!.trim();
+      const full = match?.[3]!.trim();
+      const title =
+        full && full.length > MAX_LOG_TITLE
+          ? `${full.slice(0, MAX_LOG_TITLE - 1).trimEnd()}…`
+          : full;
       current = match && title ? { at: match[1]!, kind: match[2]!, title, links: [] } : null;
       if (current) entries.push(current);
       continue;
     }
     if (!current) continue;
     for (const link of markdownLinks(line)) {
+      if (current.links.length >= MAX_LOG_LINKS) break;
       const target = resolveKnowledgeLink(WIKI_LOG, link.href);
       if (target && !current.links.includes(target)) current.links.push(target);
     }

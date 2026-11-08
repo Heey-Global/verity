@@ -132,6 +132,21 @@ describe('parseWikiLog', () => {
     const started = Date.now();
     const entries = parseWikiLog(hostile);
     expect(Date.now() - started).toBeLessThan(500);
-    expect(entries.map((entry) => entry.title)).toEqual([`x${' '.repeat(50_000)}!`]);
+    expect(entries).toHaveLength(1);
+  });
+
+  // The title is copied to every page the entry names; unbounded, one line
+  // could blow the catalog up for every page it links.
+  it('bounds an entry’s title and links', () => {
+    const links = Array.from(
+      { length: 500 },
+      (_, index) => `[p${String(index)}](p${String(index)}.md)`,
+    );
+    const [entry] = parseWikiLog(
+      `## [2026-11-07] ingest | ${'t'.repeat(10_000)}\n${links.join(' ')}`,
+    );
+    expect(entry!.title.length).toBeLessThanOrEqual(160);
+    expect(entry!.title.endsWith('…')).toBe(true);
+    expect(entry!.links).toHaveLength(200);
   });
 });
