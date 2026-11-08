@@ -30,6 +30,23 @@ describe('workOrder', () => {
   });
 
   // The operator chose this: a starred session must not push a waiting one down.
+  it('puts pending and running CI after unread sessions and before favorites', () => {
+    const ci = (id: string, pipeline: 'pending' | 'running') =>
+      session(id, {
+        pr: { phase: 'open', pipeline, mergeable: null },
+      });
+    expect(
+      workOrder([
+        session('favorite', { favorite: true }),
+        ci('running-ci', 'running'),
+        session('unread', { eventCount: 3, lastSeenEventCount: 1 }),
+        ci('pending-ci', 'pending'),
+        session('active', { status: 'running' }),
+        session('quiet'),
+      ]).map((s) => s.sessionId),
+    ).toEqual(['active', 'unread', 'running-ci', 'pending-ci', 'favorite', 'quiet']);
+  });
+
   it('ranks a favorite that is active with the active sessions, not above them', () => {
     const order = workOrder([
       session('starred-idle', { favorite: true, lastActivityAt: 10 }),

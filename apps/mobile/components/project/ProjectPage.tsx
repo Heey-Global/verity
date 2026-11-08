@@ -128,11 +128,15 @@ export function ProjectPage({
     () => ({ kind: 'project', projectId }),
     [projectId],
   );
+  const [layoutRevision, setLayoutRevision] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
   const reload = useCallback(() => void load(true), [load]);
   const refresh = useCallback(() => {
     setRefreshing(true);
-    void load(true).finally(() => setRefreshing(false));
+    void load(true).finally(() => {
+      setLayoutRevision((value) => value + 1);
+      setRefreshing(false);
+    });
   }, [load]);
   // Compared with the last value rather than skipping a first run: the mount
   // already loads, and a re-run with the same token (a re-mounted effect, a new
@@ -222,6 +226,7 @@ export function ProjectPage({
           client={client}
           projectId={projectId}
           sessions={detail.sessions}
+          layoutRevision={layoutRevision}
           selectedSessionId={selectedSessionId}
           feed={feed}
           leadingRows={securityRows(security)}
