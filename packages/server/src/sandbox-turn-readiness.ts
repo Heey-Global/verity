@@ -43,15 +43,17 @@ export type TurnAgent = 'claude' | 'codex' | 'opencode';
 /** The hops a turn of this agent cannot start without. OpenCode reaches its
  *  provider through the Codex leg (`/opencode` on the connector).
  *
- *  The gateway legs are waited on only behind a project relay, where a refusal
- *  is the relay still starting. Without one they point straight at the gateway,
- *  which opens its Codex listener only once a credential exists: a refusal there
- *  can be permanent, and the turn should meet it at once as it always did. */
+ *  The relay legs (Claude, Codex and the broker that serves the `verity` MCP
+ *  gateway) are waited on only behind a project relay, where a refusal is the
+ *  relay still starting. Without one they point straight at their services —
+ *  the gateway opens its Codex listener only once a credential exists — so a
+ *  refusal there can be permanent, and the turn should meet it at once as it
+ *  always did. */
 export function requiredEgressHops(
   agent: TurnAgent,
   options: { relayed?: boolean } = {},
 ): readonly EgressHop[] {
-  if (options.relayed === false) return ['connector', 'broker'];
+  if (options.relayed === false) return ['connector'];
   return agent === 'claude' ? ['connector', 'claude', 'broker'] : ['connector', 'codex', 'broker'];
 }
 
