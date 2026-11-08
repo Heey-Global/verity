@@ -11,6 +11,7 @@ import {
   ScrollView,
   Text,
   View,
+  InteractionManager,
 } from 'react-native';
 import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -18,6 +19,7 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { Icon, type IconName } from '../Icon';
 import { Button } from './Button';
+import { Group, ToggleRow } from './Card';
 
 // How far the sheet has to be dragged down before letting go closes it.
 const DISMISS_DISTANCE = 80;
@@ -220,6 +222,7 @@ export function ConfirmSheet({
   message,
   confirmLabel,
   destructive = false,
+  option,
   onConfirm,
   onCancel,
 }: {
@@ -231,6 +234,8 @@ export function ConfirmSheet({
   /** A verb: "Turn off", "Remove key". */
   confirmLabel: string;
   destructive?: boolean;
+  /** One switch below the message for a choice that goes with the action. */
+  option?: ConfirmOption & { value: boolean; onValueChange: (value: boolean) => void };
   onConfirm: () => void | Promise<void>;
   onCancel: () => void;
 }) {
@@ -287,17 +292,40 @@ export function ConfirmSheet({
       }
     >
       <Text style={styles.message}>{message}</Text>
+      {option ? (
+        <Group>
+          <ToggleRow
+            title={option.title}
+            subtitle={option.subtitle}
+            value={option.value}
+            onValueChange={option.onValueChange}
+            disabled={running}
+          />
+        </Group>
+      ) : null}
     </Sheet>
   );
 }
 
-/** What a confirmation asks; `onConfirm` may be async (see `ConfirmSheet`). */
+/** A switch offered with a confirmation, on or off when the sheet opens. */
+export type ConfirmOption = { title: string; subtitle?: string | undefined; initial?: boolean };
+
+/**
+ * What a confirmation asks; `onConfirm` may be async (see `ConfirmSheet`) and
+ * receives the option's final value when one was offered.
+ */
 export type ConfirmRequest = {
   title: string;
   message: string;
   confirmLabel: string;
   destructive?: boolean;
-  onConfirm: () => void | Promise<void>;
+  option?: ConfirmOption;
+  /**
+   * Asked right after another sheet was closed: it appears once that sheet has
+   * faded out, since iOS does not present a modal while another is dismissed.
+   */
+  afterSheet?: boolean;
+  onConfirm: (option: boolean) => void | Promise<void>;
 };
 
 /**
@@ -309,9 +337,32 @@ export type ConfirmRequest = {
 export function useConfirm(): [(request: ConfirmRequest) => void, ReactNode] {
   const [request, setRequest] = useState<ConfirmRequest | null>(null);
   const [visible, setVisible] = useState(false);
+  const [chosen, setChosen] = useState(false);
+  const pending = useRef<() => void>(undefined);
+  useEffect(() => () => pending.current?.(), []);
   const confirm = useCallback((next: ConfirmRequest) => {
+    pending.current?.();
     setRequest(next);
-    setVisible(true);
+    setChosen(next.option?.initial ?? false);
+    if (!next.afterSheet) {
+      setVisible(true);
+      return;
+    }
+    // Whichever comes first: the fade-out settled, or a fallback a little longer
+    // than the fade, so a lingering interaction cannot keep it from appearing.
+    let shown = false;
+    const show = () => {
+      if (shown) return;
+      shown = true;
+      setVisible(true);
+    };
+    const task = InteractionManager.runAfterInteractions(show);
+    const fallback = setTimeout(show, 350);
+    pending.current = () => {
+      shown = true;
+      task.cancel();
+      clearTimeout(fallback);
+    };
   }, []);
   const sheet =
     request === null ? null : (
@@ -321,8 +372,11 @@ export function useConfirm(): [(request: ConfirmRequest) => void, ReactNode] {
         message={request.message}
         confirmLabel={request.confirmLabel}
         destructive={request.destructive ?? false}
+        {...(request.option
+          ? { option: { ...request.option, value: chosen, onValueChange: setChosen } }
+          : {})}
         onConfirm={async () => {
-          await request.onConfirm();
+          await request.onConfirm(chosen);
           setVisible(false);
         }}
         onCancel={() => setVisible(false)}

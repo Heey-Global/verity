@@ -1119,6 +1119,20 @@ describe('SessionListModel.delete', () => {
     expect(model.state.error).toBeUndefined();
   });
 
+  // Without this the switch in the delete dialog would be shown and ignored:
+  // the conversation would be gone although the user asked to keep it.
+  it('asks the server to keep the conversation for the Wiki only when chosen', async () => {
+    const { client, listSessions, deleteSession } = makeClient();
+    listSessions.mockResolvedValue([session('a', 'idle'), session('b', 'idle')]);
+    deleteSession.mockResolvedValue({ sessionId: 'a' });
+    const model = new SessionListModel({ client, onChange: () => {} });
+    await model.refresh();
+    await model.delete('a', { wiki: true });
+    expect(deleteSession).toHaveBeenLastCalledWith('a', { wiki: true });
+    await model.delete('b', { wiki: false });
+    expect(deleteSession).toHaveBeenLastCalledWith('b');
+  });
+
   it('re-inserts the session and surfaces the error when the delete fails', async () => {
     const { client, listSessions, deleteSession } = makeClient();
     listSessions.mockResolvedValue([session('a', 'idle'), session('b', 'idle')]);

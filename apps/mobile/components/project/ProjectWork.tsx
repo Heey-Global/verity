@@ -33,6 +33,7 @@ import { SessionMarkerColumn, sessionMarkers, sessionMarkersLabel } from '../Ses
 import { SwipeableSessionRow } from '../SessionRowActions';
 import { SessionSettingsDialog } from '../SessionSettingsDialog';
 import type { IconName } from '../Icon';
+import { deleteSessionRequest } from '../../lib/deleteSessionRequest';
 import {
   FilterChips,
   Group,
@@ -42,6 +43,7 @@ import {
   StatusTag,
   Text,
   TileMark,
+  useConfirm,
 } from '../ui';
 import type { TileMarkGlyph, TileMarkTone } from '../ui';
 import type { StatusIntent } from '../ui/Status';
@@ -422,40 +424,53 @@ export function ProjectWork({
     void client
       .setSessionFavorite(session.sessionId, session.favorite !== true)
       .then(() => onChanged(session.sessionId, false), failed('Could not update favorite'));
-  const remove = (session: SessionSummary, force = false) => {
+  const [confirm, confirmSheet] = useConfirm();
+  const remove = (session: SessionSummary, force = false, wiki = false) => {
     setRemovedIds((previous) => new Set(previous).add(session.sessionId));
     setSettings(undefined);
-    void client.deleteSession(session.sessionId, force ? { force } : {}).then(
-      () => onChanged(session.sessionId, true),
-      (caught) => {
-        setRemovedIds((previous) => {
-          const next = new Set(previous);
-          next.delete(session.sessionId);
-          return next;
-        });
-        if (caught instanceof VerityApiError && caught.status === 409 && !force) {
-          Alert.alert(
-            'Session is still running',
-            `Verity could not stop "${sessionLabel(session)}" automatically. Delete it anyway? This permanently removes its history and worktree.`,
-            [
-              { text: 'Cancel', style: 'cancel' },
-              { text: 'Delete anyway', style: 'destructive', onPress: () => remove(session, true) },
-            ],
-          );
-          return;
-        }
-        failed('Could not delete session')(caught);
-      },
-    );
+    void client
+      .deleteSession(session.sessionId, {
+        ...(force ? { force } : {}),
+        ...(wiki ? { wiki } : {}),
+      })
+      .then(
+        () => onChanged(session.sessionId, true),
+        (caught) => {
+          setRemovedIds((previous) => {
+            const next = new Set(previous);
+            next.delete(session.sessionId);
+            return next;
+          });
+          if (caught instanceof VerityApiError && caught.status === 409 && !force) {
+            Alert.alert(
+              'Session is still running',
+              `Verity could not stop "${sessionLabel(session)}" automatically. Delete it anyway? This permanently removes its history and worktree.`,
+              [
+                { text: 'Cancel', style: 'cancel' },
+                {
+                  text: 'Delete anyway',
+                  style: 'destructive',
+                  onPress: () => remove(session, true, wiki),
+                },
+              ],
+            );
+            return;
+          }
+          failed('Could not delete session')(caught);
+        },
+      );
   };
-  const confirmRemove = (session: SessionSummary) =>
-    Alert.alert(
-      'Delete session?',
-      `This permanently removes "${sessionLabel(session)}" — its history${session.automation ? ', its automation,' : ''} and worktree. This can't be undone.`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Delete', style: 'destructive', onPress: () => remove(session) },
-      ],
+  const confirmRemove = (session: SessionSummary, afterSheet = false) =>
+    confirm(
+      deleteSessionRequest(
+        {
+          label: sessionLabel(session),
+          projectId: session.projectId ?? null,
+          automation: Boolean(session.automation),
+        },
+        ({ wiki }) => remove(session, false, wiki),
+        afterSheet,
+      ),
     );
 
   const sessionRow = (
@@ -794,10 +809,16 @@ export function ProjectWork({
               detail: modelDisplayName(candidate.model),
             }))}
           onClose={() => setSettings(undefined)}
-          onDelete={() => confirmRemove(settings.session)}
+          onDelete={() => {
+            // One sheet at a time: the confirmation replaces the settings.
+            const { session } = settings;
+            setSettings(undefined);
+            confirmRemove(session, true);
+          }}
           onChanged={() => onChanged(settings.session.sessionId, false)}
         />
       ) : null}
+      {confirmSheet}
     </View>
   );
 }

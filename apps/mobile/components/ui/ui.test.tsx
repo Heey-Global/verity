@@ -527,6 +527,62 @@ describe('useConfirm', () => {
     });
     expect(screen.getByRole('button', { name: 'Remove' })).toBeEnabled();
   });
+
+  function Asking({
+    onConfirm,
+    afterSheet = false,
+  }: {
+    onConfirm: (option: boolean) => void;
+    afterSheet?: boolean;
+  }) {
+    const [confirm, sheet] = useConfirm();
+    return (
+      <>
+        <Button
+          label="Delete session"
+          onPress={() =>
+            confirm({
+              title: 'Delete session?',
+              message: 'It is removed.',
+              confirmLabel: 'Delete',
+              option: { title: 'Use for the Wiki', initial: true },
+              afterSheet,
+              onConfirm,
+            })
+          }
+        />
+        {sheet}
+      </>
+    );
+  }
+
+  // The switch is part of the answer: its final value, not its initial one,
+  // reaches the action.
+  it('hands the switch’s final value to the action', async () => {
+    const onConfirm = jest.fn();
+    render(<Asking onConfirm={onConfirm} />);
+    fireEvent.press(screen.getByRole('button', { name: 'Delete session' }));
+    fireEvent.press(screen.getByText('Use for the Wiki'));
+    await act(async () => {
+      fireEvent.press(screen.getByRole('button', { name: 'Delete' }));
+    });
+    expect(onConfirm).toHaveBeenCalledWith(false);
+  });
+
+  // Asked right after another sheet closed, it waits for that sheet's fade-out,
+  // but it does appear even when the interaction never settles.
+  it('appears after a closing sheet has faded out', () => {
+    jest.useFakeTimers();
+    try {
+      render(<Asking onConfirm={jest.fn()} afterSheet />);
+      fireEvent.press(screen.getByRole('button', { name: 'Delete session' }));
+      expect(screen.queryByText('Delete session?')).toBeNull();
+      act(() => jest.advanceTimersByTime(400));
+      expect(screen.getByText('Delete session?')).toBeOnTheScreen();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
 });
 
 describe('tint', () => {

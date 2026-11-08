@@ -913,11 +913,21 @@ describe('project page', () => {
     const onSessionChanged = jest.fn();
     const { client } = await renderPage([running], { onSessionChanged });
     fireEvent.press(screen.getByLabelText('Delete'));
-    const confirm = alert.mock.calls.at(-1)![2]!;
-    await act(async () => confirm.find((button) => button.text === 'Delete')!.onPress!());
-    expect(client.deleteSession).toHaveBeenCalledWith('login', {});
+    expect(alert).not.toHaveBeenCalled();
+    // A project session is kept for its Wiki unless the switch is turned off.
+    expect(screen.getByText('Use for the Wiki')).toBeTruthy();
+    await act(async () => fireEvent.press(screen.getAllByText('Delete').at(-1)!));
+    expect(client.deleteSession).toHaveBeenCalledWith('login', { wiki: true });
     // The wide layout clears its session pane and refreshes its list from this.
     expect(onSessionChanged).toHaveBeenCalledWith('login', true);
+  });
+
+  it('deletes without keeping anything for the Wiki when the switch is off', async () => {
+    const { client } = await renderPage([running]);
+    fireEvent.press(screen.getByLabelText('Delete'));
+    fireEvent.press(screen.getByText('Use for the Wiki'));
+    await act(async () => fireEvent.press(screen.getAllByText('Delete').at(-1)!));
+    expect(client.deleteSession).toHaveBeenCalledWith('login', {});
   });
 
   it.each(['success', 'failure', 'busy'] as const)(
@@ -939,8 +949,7 @@ describe('project page', () => {
       fireEvent.press(screen.getByLabelText('Delete'));
       expect(screen.getByLabelText('login, working')).toBeTruthy();
       expect(client.deleteSession).not.toHaveBeenCalled();
-      const confirm = alert.mock.calls.at(-1)![2]!;
-      act(() => confirm.find((button) => button.text === 'Delete')!.onPress!());
+      act(() => fireEvent.press(screen.getAllByText('Delete').at(-1)!));
       expect(screen.queryByLabelText('login, working')).toBeNull();
       expect(onSessionChanged).not.toHaveBeenCalled();
       // Switching filters must not revive a row from the parent's stale snapshot.
@@ -972,7 +981,11 @@ describe('project page', () => {
           );
           act(() => retry.find((button) => button.text === 'Delete anyway')!.onPress!());
           expect(screen.queryByLabelText('login, working')).toBeNull();
-          expect(client.deleteSession).toHaveBeenLastCalledWith('login', { force: true });
+          // Forcing a busy session keeps the choice to use it for the Wiki.
+          expect(client.deleteSession).toHaveBeenLastCalledWith('login', {
+            force: true,
+            wiki: true,
+          });
           await act(async () => finish({ sessionId: 'login' }));
           expect(onSessionChanged).toHaveBeenCalledWith('login', true);
         }

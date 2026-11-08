@@ -8,9 +8,8 @@ import { ignore } from './parts';
  * Deleting a finished session. Deleting means done, not worthless: by default
  * the session leaves your lists at once but stays in the database until the
  * next maintenance run has read it. Nothing is copied; only the passages a
- * confirmed proposal cites are kept under Sources. Design-system gap: the delete dialog is a native alert
- * today, which cannot hold a switch; the plan moves it to `ConfirmSheet` with
- * one optional switch.
+ * confirmed proposal cites are kept under Sources. The app draws it as the
+ * shared `ConfirmSheet` with its optional switch (`deleteSessionRequest`).
  */
 export default function DeleteMockup() {
   return (
