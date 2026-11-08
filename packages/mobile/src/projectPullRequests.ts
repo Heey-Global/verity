@@ -19,7 +19,7 @@ export const PULL_REQUEST_STATES = [
 ] as const;
 export type PullRequestState = (typeof PULL_REQUEST_STATES)[number];
 
-export const projectPullRequestSchema = z.object({
+const projectPullRequestSchema = z.object({
   number: z.number().int().positive(),
   title: z.string(),
   url: z.string().nullable(),

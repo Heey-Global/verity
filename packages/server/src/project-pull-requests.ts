@@ -42,12 +42,12 @@ export interface SessionPullRequestLink {
 
 export type PullRequestState = 'conflict' | 'failing' | 'running' | 'ready' | 'blocked' | 'unknown';
 
-export type PullRequestOrigin =
+type PullRequestOrigin =
   | { kind: 'session'; sessionId: string; name: string | null }
   | { kind: 'renovate' }
   | { kind: 'external' };
 
-export interface ProjectPullRequest {
+interface ProjectPullRequest {
   number: number;
   title: string;
   url: string | null;
@@ -62,7 +62,7 @@ export interface ProjectPullRequest {
   origin: PullRequestOrigin;
 }
 
-export type ProjectRepositoryPullRequests = Pick<
+type ProjectRepositoryPullRequests = Pick<
   ProjectRepositoryRecord,
   'id' | 'kind' | 'owner' | 'repo' | 'isDefault'
 > & { name: string } & (
@@ -86,13 +86,13 @@ export function pullRequestState(status: PullRequestStatus | null): PullRequestS
 }
 
 /** Renovate opens its pull requests as an app (`renovate[bot]`) or a bot account. */
-export function isRenovateAuthor(author: string | undefined): boolean {
+function isRenovateAuthor(author: string | undefined): boolean {
   return author !== undefined && /^renovate(?:\[bot\]|-bot|bot)?$/i.test(author);
 }
 
 /** The key a fix session is registered under, shared with CI repair for the default
  *  repository so a manual fix and an automatic repair never work on one PR at once. */
-export function pullRequestResource(repository: ProjectRepositoryRecord, number: number): string {
+function pullRequestResource(repository: ProjectRepositoryRecord, number: number): string {
   return repository.isDefault
     ? `pr:${String(number)}`
     : `repo:${repository.id}:pr:${String(number)}`;
@@ -127,7 +127,7 @@ const STATE_ORDER: Record<PullRequestState, number> = {
 };
 
 /** Each repository answers on its own: one slow or failing host marks only itself. */
-export async function readProjectPullRequests(input: {
+async function readProjectPullRequests(input: {
   store: Pick<EventStore, 'listProjectRepositories'> & {
     repairs: Pick<EventStore['repairs'], 'sessionOrigins'>;
   };
@@ -208,7 +208,7 @@ export async function readProjectPullRequests(input: {
  * Why a pull request must not be merged now, or null when it may. The status is
  * re-read at action time: the list the person tapped can be minutes old.
  */
-export function mergeRefusal(
+function mergeRefusal(
   status: PullRequestStatus | null,
   number: number,
   expectedHeadSha: string,
@@ -278,7 +278,7 @@ export function buildPullRequestFixPrompt(
   );
 }
 
-export interface PullRequestFixInput {
+interface PullRequestFixInput {
   project: ProjectRecord;
   repository: ProjectRepositoryRecord;
   resource: string;

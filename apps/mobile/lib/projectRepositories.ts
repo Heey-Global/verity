@@ -30,7 +30,7 @@ export function projectLine(
 }
 
 /** Pull requests that wait for someone: a failure or a conflict. */
-export function needsAttention(pulls: readonly ProjectPullRequest[]): number {
+function needsAttention(pulls: readonly ProjectPullRequest[]): number {
   return pulls.filter((pull) => pull.state === 'failing' || pull.state === 'conflict').length;
 }
 

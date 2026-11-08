@@ -19,8 +19,8 @@ import { tint } from '../../components/ui/tint';
 const ignore = () => undefined;
 
 /** Sample data only: what the server's per-repository pull request list returns. */
-export type PullState = 'conflict' | 'failing' | 'running' | 'ready';
-export type PullOrigin =
+type PullState = 'conflict' | 'failing' | 'running' | 'ready';
+type PullOrigin =
   { kind: 'session'; title: string } | { kind: 'renovate' } | { kind: 'external'; author: string };
 
 export interface SamplePull {
@@ -130,14 +130,14 @@ const STATE_TAG: Record<
   ready: { intent: 'ready', label: 'Ready' },
 };
 
-export function originLabel(origin: PullOrigin): string {
+function originLabel(origin: PullOrigin): string {
   if (origin.kind === 'session') return `Session · ${origin.title}`;
   if (origin.kind === 'renovate') return 'Renovate';
   return `External · ${origin.author}`;
 }
 
 /** "6 open · 2 failing · 1 conflict": failing and conflict only when present. */
-export function pullSummary(pulls: readonly SamplePull[]): string {
+function pullSummary(pulls: readonly SamplePull[]): string {
   const count = (state: PullState) => pulls.filter((pull) => pull.state === state).length;
   const parts = [`${String(pulls.length)} open`];
   if (count('failing') > 0) parts.push(`${String(count('failing'))} failing`);
@@ -147,7 +147,7 @@ export function pullSummary(pulls: readonly SamplePull[]): string {
 }
 
 /** One open pull request: what it is, where it came from, and whether it is green. */
-export function PullRow({ pull, onPress }: { pull: SamplePull; onPress?: () => void }) {
+function PullRow({ pull, onPress }: { pull: SamplePull; onPress?: () => void }) {
   const tag = STATE_TAG[pull.state];
   return (
     <Row
@@ -168,7 +168,7 @@ export function PullRow({ pull, onPress }: { pull: SamplePull; onPress?: () => v
 }
 
 /** A repository as a heading on the page, its open pull requests in the box below. */
-export function RepositorySection({ repository }: { repository: SampleRepository }) {
+function RepositorySection({ repository }: { repository: SampleRepository }) {
   const { theme } = useUnistyles();
   const pulls = repository.pulls;
   const unavailable = pulls === 'unavailable';
