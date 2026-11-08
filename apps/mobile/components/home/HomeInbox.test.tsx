@@ -25,7 +25,8 @@ import type {
   VerityClient,
 } from '@verity/mobile';
 import { act, fireEvent, render, screen } from '@testing-library/react-native';
-import { Alert } from 'react-native';
+import { Alert, StyleSheet } from 'react-native';
+import { darkTheme, lightTheme } from '../../theme/tokens';
 import { router } from 'expo-router';
 import { randomUUID } from 'expo-crypto';
 
@@ -566,4 +567,29 @@ it('opens Verity’s page from her header only when Home is given the way there'
 it('keeps Verity’s header a plain identity without a page to open', async () => {
   await renderInbox([]);
   expect(screen.queryByTestId('home-verity')).toBeNull();
+});
+
+it('shows a waiting mockup review as a normal action rather than a problem', async () => {
+  await renderInbox([
+    session('review', {
+      mockupReview: {
+        state: 'pending',
+        revision: 1,
+        screens: [
+          {
+            name: 'Home',
+            attachment: 'a'.repeat(64),
+            mediaType: 'image/png',
+            width: 1,
+            height: 1,
+            verdict: 'open',
+          },
+        ],
+      },
+    }),
+  ]);
+  expect(screen.getByLabelText('Mockups, waiting for you')).toBeTruthy();
+  const style = StyleSheet.flatten(screen.getByText('Mockups').props.style) as { color: string };
+  expect([darkTheme.colors.action, lightTheme.colors.action]).toContain(style.color);
+  expect(screen.queryByLabelText('Mockups, needs attention')).toBeNull();
 });

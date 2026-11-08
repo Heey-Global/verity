@@ -3,8 +3,8 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { tint } from './tint';
 
-/** The five status intents (docs/design-system.md § 8). */
-export type StatusIntent = 'ready' | 'needsSetup' | 'optional' | 'transient' | 'unknown';
+/** The status intents (docs/design-system.md § 8). */
+export type StatusIntent = 'action' | 'ready' | 'needsSetup' | 'optional' | 'transient' | 'unknown';
 
 /**
  * The state of a single element as a small uppercase word on a tinted ground
@@ -20,7 +20,13 @@ export function StatusTag({ intent, label }: { intent: StatusIntent; label: stri
       style={[
         styles.tag,
         styles.shrink,
-        intent === 'ready' ? styles.tagReady : intent === 'needsSetup' ? styles.tagAttention : null,
+        intent === 'action'
+          ? styles.tagAction
+          : intent === 'ready'
+            ? styles.tagReady
+            : intent === 'needsSetup'
+              ? styles.tagAttention
+              : null,
       ]}
       accessible
       accessibilityLabel={`${label}, ${describe(intent)}`}
@@ -31,11 +37,13 @@ export function StatusTag({ intent, label }: { intent: StatusIntent; label: stri
           styles.tagLabel,
           {
             color:
-              intent === 'ready'
-                ? theme.colors.success
-                : intent === 'needsSetup'
-                  ? theme.colors.attention
-                  : theme.colors.textMuted,
+              intent === 'action'
+                ? theme.colors.action
+                : intent === 'ready'
+                  ? theme.colors.success
+                  : intent === 'needsSetup'
+                    ? theme.colors.attention
+                    : theme.colors.textMuted,
           },
         ]}
       >
@@ -75,7 +83,13 @@ export function Dot({ intent }: { intent: StatusIntent }) {
       accessibilityElementsHidden
       style={[
         styles.dot,
-        intent === 'ready' ? styles.dotReady : intent === 'needsSetup' ? styles.dotAttention : null,
+        intent === 'action'
+          ? styles.dotAction
+          : intent === 'ready'
+            ? styles.dotReady
+            : intent === 'needsSetup'
+              ? styles.dotAttention
+              : null,
       ]}
     />
   );
@@ -102,15 +116,17 @@ function StatusText({ intent, label }: { intent: StatusIntent; label: string }) 
 }
 
 function describe(intent: StatusIntent): string {
-  return intent === 'ready'
-    ? 'ready'
-    : intent === 'needsSetup'
-      ? 'needs attention'
-      : intent === 'transient'
-        ? 'in progress'
-        : intent === 'unknown'
-          ? 'outcome unknown'
-          : 'optional';
+  return intent === 'action'
+    ? 'waiting for you'
+    : intent === 'ready'
+      ? 'ready'
+      : intent === 'needsSetup'
+        ? 'needs attention'
+        : intent === 'transient'
+          ? 'in progress'
+          : intent === 'unknown'
+            ? 'outcome unknown'
+            : 'optional';
 }
 
 const styles = StyleSheet.create((theme) => ({
@@ -120,6 +136,7 @@ const styles = StyleSheet.create((theme) => ({
     borderRadius: theme.radius.tag,
     backgroundColor: tint(theme.colors.text, 'neutral'),
   },
+  tagAction: { backgroundColor: tint(theme.colors.action, 'fill') },
   tagReady: { backgroundColor: tint(theme.colors.success, 'fill') },
   tagAttention: { backgroundColor: tint(theme.colors.attention, 'fill') },
   tagLabel: { ...theme.typography.label },
@@ -127,6 +144,7 @@ const styles = StyleSheet.create((theme) => ({
   // A status word truncates instead of pushing the row's title aside.
   shrink: { flexShrink: 1, minWidth: 0 },
   dot: { width: 8, height: 8, borderRadius: 4, backgroundColor: theme.colors.textFaint },
+  dotAction: { backgroundColor: theme.colors.action },
   dotReady: {
     backgroundColor: theme.colors.success,
     shadowColor: theme.colors.success,

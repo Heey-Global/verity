@@ -287,7 +287,7 @@ describe('inboxItems', () => {
     });
     const [item] = inboxItems({ sessions: [waiting], projects: [project()], now: NOW });
     // A dismissed round must come back once the agent presents a revised one.
-    expect(item).toMatchObject({ kind: 'mockup_review', key: 'mockups:w:2' });
+    expect(item).toMatchObject({ kind: 'mockup_review', key: 'mockups:w:2', tone: 'action' });
     expect(item?.mockups?.map((entry) => entry.name)).toEqual(['Home', 'Spec']);
     // Every screen marked still waits for the user to say in the chat how to go on.
     const marked = session('m', {

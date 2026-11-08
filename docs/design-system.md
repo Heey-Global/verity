@@ -249,7 +249,7 @@ title; a log list keeps them dense and scannable.
 ### 5.4 Status
 
 - **Tag** — the state of a single element: uppercase `Label` text on a 14 % tint of its
-  tone, radius 6. Tones: success (`success`), attention (`attention`) and neutral
+  tone, radius 6. Tones: action (`action`) for normal review requests, success (`success`), attention (`attention`) and neutral
   (`textMuted` label on a 6 % `text` tint). Examples: `ACTIVE`, `SOON`, `UPDATE`.
 - **Dot and word** — rows in pure status lists: an 8 px dot in its tone (`textFaint` when
   neutral) followed by a muted word. Example: `● Connected`.
@@ -259,6 +259,7 @@ title; a log list keeps them dense and scannable.
 
   | Intent       | Tag                                                      | Dot and word         |
   | ------------ | -------------------------------------------------------- | -------------------- |
+  | `action`     | action tone                                              | static action dot    |
   | `ready`      | success tone                                             | success dot          |
   | `needsSetup` | attention tone                                           | attention dot        |
   | `optional`   | muted word; neutral tag only for `Soon` on feature cards | faint dot            |
@@ -423,14 +424,15 @@ For diagnostics and overviews:
 
 ## 8. Status intents
 
-Every status shown anywhere in the app is one of **five intents**. The intent decides the
+Every status shown anywhere in the app is one of **six intents**. The intent decides the
 meaning and the words; [§ 5.4 Status](#54-status) decides how each intent is drawn (tag or
 dot and word) and in which color.
 
-### The five intents
+### The status intents
 
 | Intent       | Meaning                                 | Example labels                                                                      |
 | ------------ | --------------------------------------- | ----------------------------------------------------------------------------------- |
+| `action`     | Waiting for a normal user action         | Review mockups |
 | `ready`      | Works, nothing to do                    | Connected, Configured, Active, Running, Minted, Signing ready, Unlocked, Up to date |
 | `needsSetup` | Something required is missing or failed | Needs setup, Update available, Rejected, Error                                      |
 | `optional`   | Optional and empty — not a to-do        | Optional, Not configured, Off                                                       |

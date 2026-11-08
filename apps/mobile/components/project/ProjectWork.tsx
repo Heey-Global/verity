@@ -69,6 +69,7 @@ const TAG_INTENT: Partial<Record<SessionStatus, StatusIntent>> = {
 
 const TONE_INTENT: Record<InboxItem['tone'], StatusIntent> = {
   attention: 'needsSetup',
+  action: 'action',
   success: 'ready',
   neutral: 'optional',
 };
