@@ -2,12 +2,12 @@ import { act, fireEvent, render } from '@testing-library/react-native';
 import type { RepositoryIssues } from '@verity/mobile';
 import { FIRST_ISSUES, TaskIssuesList } from './TaskIssuesList';
 import { createVerityClient } from '../lib/client';
-import { dispatchTaskIssue, taskIssueRetry, taskIssueSessions } from '../lib/taskIssueDispatch';
+import { dispatchTaskIssue, taskIssueRecords, taskIssueRetry } from '../lib/taskIssueDispatch';
 jest.mock('../lib/client', () => ({ createVerityClient: jest.fn(() => null) }));
 jest.mock('../lib/taskIssueDispatch', () => ({
   dispatchTaskIssue: jest.fn(),
   taskIssueRetry: jest.fn(async () => null),
-  taskIssueSessions: jest.fn(async () => []),
+  taskIssueRecords: jest.fn(async () => []),
 }));
 const issues = Array.from({ length: FIRST_ISSUES + 1 }, (_, index) => ({
   number: index + 1,
@@ -39,10 +39,15 @@ const list = (repositories: RepositoryIssues[], extra: { currentSessionId?: stri
     {...extra}
   />
 );
+/** Every listed issue answers with the same hand-over record. */
+const records = (record: { retry: { targetSessionId?: string } | null; sessions: string[] }) =>
+  jest
+    .mocked(taskIssueRecords)
+    .mockImplementation(async (_projectId, items) => items.map(() => record));
 beforeEach(() => {
   jest.mocked(createVerityClient).mockReturnValue(null);
   jest.mocked(taskIssueRetry).mockResolvedValue(null);
-  jest.mocked(taskIssueSessions).mockResolvedValue([]);
+  records({ retry: null, sessions: [] });
 });
 
 it('shows the first issues then expands and filters the API results', async () => {
@@ -88,6 +93,7 @@ it('keeps retry available when a created issue session has an unsent initial tur
     ]),
   } as unknown as NonNullable<ReturnType<typeof createVerityClient>>);
   jest.mocked(taskIssueRetry).mockResolvedValue({});
+  records({ retry: {}, sessions: [] });
   jest.mocked(dispatchTaskIssue).mockResolvedValue('created');
   const onOpen = jest.fn();
   const main = repository({ issues: [issues[0]!] });
@@ -161,7 +167,7 @@ it('finds the session started for another repository’s issue', async () => {
       { sessionId: 'started', projectId: 'p', branch: 'verity/abc', resumable: true },
     ]),
   } as unknown as NonNullable<ReturnType<typeof createVerityClient>>);
-  jest.mocked(taskIssueSessions).mockResolvedValue(['started']);
+  records({ retry: null, sessions: ['started'] });
   const onOpen = jest.fn();
   const site = repository({ id: 'site', isDefault: false, issues: [issues[0]!] });
   const ui = render(
@@ -173,7 +179,10 @@ it('finds the session started for another repository’s issue', async () => {
     />,
   );
   await act(async () => {});
-  expect(taskIssueSessions).toHaveBeenCalledWith('p', 1, site);
+  expect(taskIssueRecords).toHaveBeenCalledWith(
+    'p',
+    expect.arrayContaining([{ number: 1, repository: site }]),
+  );
   expect(ui.queryByLabelText('Let Verity fix: Issue 1')).toBeNull();
   fireEvent.press(ui.getByText('Issue 1'));
   expect(onOpen).toHaveBeenCalledWith('started');

@@ -43,28 +43,59 @@ const dispatchKey = (
 
 const HOST_NAME = { github: 'GitHub', forgejo: 'Forgejo' } as const;
 
+/** What this device recorded about handing one issue to Verity. */
+export interface TaskIssueRecord {
+  /** A turn not yet accepted: retry it (into `targetSessionId` when it went to one). */
+  retry: { targetSessionId?: string } | null;
+  /** Sessions whose turn for the issue was accepted. */
+  sessions: string[];
+}
+
+/**
+ * The hand-over records of many issues at once, with one key listing for all of
+ * them: a list of several repositories asks for every issue on each refresh.
+ */
+export async function taskIssueRecords(
+  projectId: string,
+  items: readonly { number: number; repository?: IssueRepository | undefined }[],
+): Promise<TaskIssueRecord[]> {
+  const scope = identity();
+  const empty = () => items.map((): TaskIssueRecord => ({ retry: null, sessions: [] }));
+  const all = await AsyncStorage.getAllKeys();
+  if (identity() !== scope) return empty();
+  const prefixes = items.map((item) =>
+    dispatchKey(scope, projectId, item.repository, item.number, ''),
+  );
+  const keys = prefixes.map((prefix) => all.filter((key) => key.startsWith(prefix)));
+  const values = new Map(await AsyncStorage.multiGet([...new Set(keys.flat())]));
+  if (identity() !== scope) return empty();
+  return items.map((_, index): TaskIssueRecord => {
+    const record: TaskIssueRecord = { retry: null, sessions: [] };
+    for (const key of keys[index]!) {
+      const saved = values.get(key);
+      if (!saved) continue;
+      try {
+        const value = JSON.parse(saved) as { sent?: unknown; sessionId?: unknown };
+        if (typeof value.sessionId !== 'string') continue;
+        if (value.sent === true) record.sessions.push(value.sessionId);
+        else if (value.sent === false && record.retry === null)
+          record.retry =
+            key === `${prefixes[index]!}new` ? {} : { targetSessionId: value.sessionId };
+      } catch {
+        // One damaged record must not hide another hand-over.
+      }
+    }
+    return record;
+  });
+}
+
 /** A created session does not prove that its initial issue turn was accepted. */
 export async function taskIssueRetry(
   projectId: string,
   issueNumber: number,
   repository?: IssueRepository,
 ): Promise<{ targetSessionId?: string } | null> {
-  const scope = identity();
-  const prefix = dispatchKey(scope, projectId, repository, issueNumber, '');
-  const keys = (await AsyncStorage.getAllKeys()).filter((key) => key.startsWith(prefix));
-  for (const key of keys) {
-    const saved = await AsyncStorage.getItem(key);
-    if (identity() !== scope) return null;
-    if (!saved) continue;
-    try {
-      const value = JSON.parse(saved) as { sent: boolean; sessionId: string };
-      if (value.sent === false && typeof value.sessionId === 'string')
-        return key === `${prefix}new` ? {} : { targetSessionId: value.sessionId };
-    } catch {
-      // One damaged record must not hide another pending issue turn.
-    }
-  }
-  return null;
+  return (await taskIssueRecords(projectId, [{ number: issueNumber, repository }]))[0]!.retry;
 }
 
 /**
@@ -78,23 +109,7 @@ export async function taskIssueSessions(
   issueNumber: number,
   repository?: IssueRepository,
 ): Promise<string[]> {
-  const scope = identity();
-  const prefix = dispatchKey(scope, projectId, repository, issueNumber, '');
-  const keys = (await AsyncStorage.getAllKeys()).filter((key) => key.startsWith(prefix));
-  const sessions: string[] = [];
-  for (const key of keys) {
-    const saved = await AsyncStorage.getItem(key);
-    if (identity() !== scope) return [];
-    if (!saved) continue;
-    try {
-      const value = JSON.parse(saved) as { sent?: unknown; sessionId?: unknown };
-      if (value.sent === true && typeof value.sessionId === 'string')
-        sessions.push(value.sessionId);
-    } catch {
-      // One damaged record must not hide another hand-over.
-    }
-  }
-  return sessions;
+  return (await taskIssueRecords(projectId, [{ number: issueNumber, repository }]))[0]!.sessions;
 }
 
 const pending = new Map<string, Promise<string>>();

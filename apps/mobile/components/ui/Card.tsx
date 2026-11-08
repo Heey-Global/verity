@@ -291,8 +291,7 @@ export function Row({
       style={({ pressed }) => [
         styles.row,
         action !== undefined ? styles.rowBesideAction : null,
-        // Beside an action the wrapper dims the whole row once.
-        disabled && action === undefined ? styles.muted : settled ? styles.settled : null,
+        disabled ? styles.muted : settled ? styles.settled : null,
         pressed && !disabled ? styles.pressed : null,
         active ? styles.rowActive : null,
       ]}
@@ -302,7 +301,8 @@ export function Row({
   );
   const body =
     action !== undefined ? (
-      <View style={[styles.withAction, disabled ? styles.muted : null]}>
+      // The action dims itself when disabled; the wrapper must not dim it again.
+      <View style={styles.withAction}>
         {pressable}
         <View style={styles.action}>{action}</View>
       </View>

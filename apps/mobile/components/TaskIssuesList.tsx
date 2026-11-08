@@ -10,8 +10,8 @@ import { Button, FilterChips, Group, StatusTag, Text } from './ui';
 import { createVerityClient } from '../lib/client';
 import {
   dispatchTaskIssue,
+  taskIssueRecords,
   taskIssueRetry,
-  taskIssueSessions,
   type IssueRepository,
 } from '../lib/taskIssueDispatch';
 
@@ -61,49 +61,27 @@ export function TaskIssuesList({
   useEffect(() => {
     let active = true;
     setRetries({});
-    void Promise.all(
-      available.flatMap((repository) =>
-        repository.issues.map(
-          async (issue) =>
-            [
-              retryKey(repository, issue.number),
-              await taskIssueRetry(projectId, issue.number, repository),
-            ] as const,
-        ),
-      ),
-    )
-      .then((entries) => {
-        if (active)
-          setRetries(
-            Object.fromEntries(entries.filter((entry) => entry[1] !== null)) as Record<
-              string,
-              Retry
-            >,
-          );
-      })
-      .catch(() => undefined);
-    void Promise.all(
-      available
-        .filter((repository) => !repository.isDefault)
-        .flatMap((repository) =>
-          repository.issues.map(
-            async (issue) =>
-              [
-                retryKey(repository, issue.number),
-                await taskIssueSessions(projectId, issue.number, repository),
-              ] as const,
-          ),
-        ),
-    )
-      .then((entries) => {
+    const items = available.flatMap((repository) =>
+      repository.issues.map((issue) => ({ number: issue.number, repository })),
+    );
+    void taskIssueRecords(projectId, items)
+      .then((records) => {
+        if (!active) return;
+        const retry: Record<string, Retry> = {};
+        const handed: Record<string, string[]> = {};
+        records.forEach((record, index) => {
+          const key = retryKey(items[index]!.repository, items[index]!.number);
+          if (record.retry) retry[key] = record.retry;
+          if (record.sessions.length > 0) handed[key] = record.sessions;
+        });
+        setRetries(retry);
         // A union: a hand-over that finished while these were read adds to them.
-        if (active)
-          setStarted((value) => {
-            const next = { ...value };
-            for (const [key, ids] of entries)
-              if (ids.length > 0) next[key] = [...new Set([...ids, ...(value[key] ?? [])])];
-            return next;
-          });
+        setStarted((value) => {
+          const next = { ...value };
+          for (const [key, ids] of Object.entries(handed))
+            next[key] = [...new Set([...ids, ...(value[key] ?? [])])];
+          return next;
+        });
       })
       .catch(() => undefined);
     return () => {
