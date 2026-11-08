@@ -35,6 +35,9 @@ export function useProjectPullRequests(
     [client, projectId, enabled],
   );
   useEffect(() => {
+    // Another project's list must not stay actionable under this project's id.
+    setRepositories(undefined);
+    setError(undefined);
     void reload();
   }, [reload]);
   return { repositories, error, reload };

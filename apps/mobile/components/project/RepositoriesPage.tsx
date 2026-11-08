@@ -73,16 +73,13 @@ export function RepositoriesPage({
       confirmLabel: 'Merge',
       onConfirm: async () => {
         try {
-          // A session's own pull request merges through the session, which also
-          // settles its worktree afterwards.
-          // Either way only the confirmed commit merges.
-          if (pull.origin.kind === 'session')
-            await client.mergePullRequest(pull.origin.sessionId, pull.number, pull.headSha);
-          else
-            await client.mergeProjectPullRequest(projectId, repository.id, pull.number, {
-              branch: pull.branch,
-              expectedHeadSha: pull.headSha,
-            });
+          // Always by repository and number: a session linked here may only be
+          // fixing someone else's pull request, and the session route would check
+          // the session's own branch instead of this one.
+          await client.mergeProjectPullRequest(projectId, repository.id, pull.number, {
+            branch: pull.branch,
+            expectedHeadSha: pull.headSha,
+          });
         } catch (caught) {
           Alert.alert(
             'Not merged',

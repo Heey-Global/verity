@@ -81,9 +81,9 @@ it('lets the next Fix tap start over when the first session never got its prompt
     const failed = await tapFix(app);
     expect(failed.statusCode).toBe(503);
     expect(failed.json()).toEqual({ error: 'The fix session could not be started. Try again.' });
-    const orphan = await ctx.store.repairs.sessionOrigin('p-fix', 'pr:7');
     // The unprompted session is gone rather than left as a silent "fix".
-    if (orphan !== undefined) expect(await ctx.store.getSession(orphan)).toBeUndefined();
+    const unprompted = dispatchTurn.mock.calls.at(-1)![0];
+    expect(await ctx.store.getSession(unprompted)).toBeUndefined();
 
     const retried = await tapFix(app);
     expect(retried.statusCode).toBe(200);
