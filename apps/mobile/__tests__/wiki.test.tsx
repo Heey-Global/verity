@@ -595,4 +595,35 @@ describe('proposed Wiki changes', () => {
     await act(async () => {});
     expect(await screen.findByText(/Project management access required/)).toBeTruthy();
   });
+
+  it('keeps pages left out after a failed decision and shows every passage on request', async () => {
+    const decideWikiProposal = jest.fn().mockRejectedValue(new Error('offline'));
+    // Six separate passages: unchanged paragraphs between the changed ones.
+    const page = (word: string) =>
+      Array.from({ length: 6 }, (_, n) => `Keep ${String(n)}\n\n${word} ${String(n)}`).join('\n\n');
+    client(catalog, {
+      getWikiProposal: jest.fn().mockResolvedValue({
+        ...head,
+        changes: [
+          { ...pending, path: 'faq.md', summary: 'Add FAQ', current: null, content: '# FAQ' },
+          {
+            ...pending,
+            path: 'long.md',
+            summary: 'Rewrite',
+            current: page('Old'),
+            content: page('New'),
+          },
+        ],
+      }),
+      decideWikiProposal,
+    });
+    render(<KnowledgeScreen scope={PROJECT} proposal="a1" />);
+    fireEvent.press(await screen.findByText('faq · Add FAQ'));
+    fireEvent.press(screen.getByText('Apply 1 change'));
+    await act(async () => {});
+    expect(await screen.findByText('Changes · 1 of 2 selected')).toBeTruthy();
+    expect(screen.getByText('Apply 1 change')).toBeTruthy();
+    fireEvent.press(screen.getByText(/Show \d+ more/));
+    expect(screen.getByText('New 5')).toBeTruthy();
+  });
 });

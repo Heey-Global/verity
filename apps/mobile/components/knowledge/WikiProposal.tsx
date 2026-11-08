@@ -103,6 +103,7 @@ export function WikiProposalScreen({
   const [notice, setNotice] = useState('');
   const [saving, setSaving] = useState(false);
   const [left, setLeft] = useState<ReadonlySet<string>>(new Set());
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
   const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     let active = true;
@@ -111,13 +112,18 @@ export function WikiProposalScreen({
       (loaded) => {
         if (!active) return;
         setProposal(loaded);
-        // A page edited since cannot be applied; it starts left out.
+        // A page edited since cannot be applied; it starts left out. Pages the
+        // user left out stay out when the proposal is read again.
         setLeft(
-          new Set(
-            loaded.changes
-              .filter((change) => change.status === 'pending' && change.stale)
-              .map((change) => change.path),
-          ),
+          (previous) =>
+            new Set(
+              loaded.changes
+                .filter(
+                  (change) =>
+                    change.status === 'pending' && (change.stale || previous.has(change.path)),
+                )
+                .map((change) => change.path),
+            ),
         );
       },
       (failure: unknown) => {
@@ -267,9 +273,11 @@ export function WikiProposalScreen({
                     })
                   }
                 />
-                {passages.slice(0, PASSAGES_SHOWN).map((passage, position) => (
-                  <Passage key={position} passage={passage} />
-                ))}
+                {(expanded.has(change.path) ? passages : passages.slice(0, PASSAGES_SHOWN)).map(
+                  (passage, position) => (
+                    <Passage key={position} passage={passage} />
+                  ),
+                )}
                 {spacing ? (
                   <View style={styles.passage}>
                     <Text variant="footnote" tone="muted">
@@ -277,11 +285,14 @@ export function WikiProposalScreen({
                     </Text>
                   </View>
                 ) : null}
-                {passages.length > PASSAGES_SHOWN ? (
+                {passages.length > PASSAGES_SHOWN && !expanded.has(change.path) ? (
                   <View style={styles.passage}>
-                    <Text variant="footnote" tone="muted">
-                      {`${String(passages.length - PASSAGES_SHOWN)} more changed ${passages.length - PASSAGES_SHOWN === 1 ? 'passage' : 'passages'}`}
-                    </Text>
+                    <Button
+                      label={`Show ${String(passages.length - PASSAGES_SHOWN)} more ${passages.length - PASSAGES_SHOWN === 1 ? 'passage' : 'passages'}`}
+                      variant="text"
+                      size="compact"
+                      onPress={() => setExpanded((previous) => new Set(previous).add(change.path))}
+                    />
                   </View>
                 ) : null}
               </Group>
