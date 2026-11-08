@@ -3,19 +3,18 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { Icon } from '../Icon';
 import { Text } from './Text';
-import { tint } from './tint';
 
 type Shared = {
   placeholder: string;
-  /** Dictation is running: the microphone becomes a tonal stop. */
+  /** Dictation is running: the microphone becomes a filled confirmation button. */
   listening?: boolean;
   onMic?: () => void;
 };
 
 /**
  * The one field for telling Verity something (docs/design-system.md § 5.8,
- * Capture): a `surfaceAlt` field with a tonal microphone and, where it sends
- * itself, a tonal send button — `action` for everything that acts, nothing in
+ * Capture): a `surfaceAlt` field with circular microphone and send controls
+ * below the text, matching the session chat composer — `action` for everything that acts, nothing in
  * Verity's pink.
  *
  * With `onOpen` it is a doorway (Home's "Tell Verity"): the whole field opens
@@ -44,12 +43,16 @@ export function CaptureField(
       accessibilityState={{ selected: props.listening === true }}
       hitSlop={2}
       style={({ pressed }) => [
-        styles.tonal,
-        props.listening ? styles.tonalActive : null,
+        styles.control,
+        props.listening ? styles.controlActive : null,
         pressed ? styles.pressed : null,
       ]}
     >
-      <Icon name={props.listening ? 'square' : 'mic'} size={18} color={theme.colors.action} />
+      <Icon
+        name={props.listening ? 'check' : 'mic'}
+        size={22}
+        color={props.listening ? theme.colors.onAction : theme.colors.textMuted}
+      />
     </Pressable>
   ) : null;
   if ('onOpen' in props)
@@ -59,13 +62,13 @@ export function CaptureField(
         accessibilityLabel={props.accessibilityLabel}
         {...(props.accessibilityHint ? { accessibilityHint: props.accessibilityHint } : {})}
         onPress={props.onOpen}
-        style={({ pressed }) => [styles.field, pressed ? styles.pressed : null]}
+        style={({ pressed }) => [styles.field, styles.doorway, pressed ? styles.pressed : null]}
       >
         <Text variant="body" tone="faint" style={styles.flex}>
           {props.placeholder}
         </Text>
-        <View style={styles.tonal} accessible={false}>
-          <Icon name="mic" size={18} color={theme.colors.action} />
+        <View style={styles.control} accessible={false}>
+          <Icon name="mic" size={22} color={theme.colors.textMuted} />
         </View>
       </Pressable>
     );
@@ -81,60 +84,75 @@ export function CaptureField(
         accessibilityLabel={props.accessibilityLabel}
         style={styles.input}
       />
-      {mic}
-      <Pressable
-        onPress={props.onSend}
-        disabled={props.sendDisabled}
-        accessibilityRole="button"
-        accessibilityLabel="Send to Verity"
-        accessibilityState={{ disabled: props.sendDisabled === true }}
-        hitSlop={2}
-        style={({ pressed }) => [
-          styles.tonal,
-          props.sendDisabled ? styles.disabled : null,
-          pressed && !props.sendDisabled ? styles.pressed : null,
-        ]}
-      >
-        <Icon name="arrow-up" size={18} color={theme.colors.action} />
-      </Pressable>
+      <View style={styles.actions}>
+        {mic}
+        <Pressable
+          onPress={props.onSend}
+          disabled={props.sendDisabled}
+          accessibilityRole="button"
+          accessibilityLabel="Send to Verity"
+          accessibilityState={{ disabled: props.sendDisabled === true }}
+          hitSlop={2}
+          style={({ pressed }) => [
+            styles.control,
+            !props.sendDisabled ? styles.sendActive : null,
+            pressed && !props.sendDisabled ? styles.pressed : null,
+          ]}
+        >
+          <Icon
+            name="arrow-up"
+            size={22}
+            color={props.sendDisabled ? theme.colors.textMuted : theme.colors.onAction}
+          />
+        </Pressable>
+      </View>
     </View>
   );
 }
 
 const styles = StyleSheet.create((theme) => ({
   field: {
-    minHeight: 48,
-    maxHeight: 160,
-    flexDirection: 'row',
-    alignItems: 'flex-end',
-    gap: theme.spacing.sm,
-    paddingLeft: theme.spacing.md,
-    paddingRight: theme.spacing.xs,
-    paddingVertical: theme.spacing.xs,
-    borderRadius: theme.radius.control,
+    gap: 10,
+    paddingHorizontal: theme.spacing.md,
+    paddingTop: theme.spacing.sm,
+    paddingBottom: theme.spacing.xs,
+    borderRadius: theme.radius.lg,
     borderWidth: 1,
     borderColor: theme.colors.border,
     backgroundColor: theme.colors.surfaceAlt,
   },
+  doorway: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  actions: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: theme.spacing.sm,
+  },
   flex: { flex: 1, alignSelf: 'center' },
   input: {
-    ...theme.typography.body,
-    flex: 1,
-    alignSelf: 'center',
     color: theme.colors.text,
-    paddingVertical: theme.spacing.xs,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.row.fontSize,
+    lineHeight: 21 * theme.fontScale,
+    minHeight: 24,
+    maxHeight: 21 * 8,
+    padding: 0,
+    paddingTop: 2,
+    textAlignVertical: 'top',
   },
-  tonal: {
+  control: {
     width: 40,
     height: 40,
-    borderRadius: theme.radius.control,
+    borderRadius: theme.radius.pill,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: tint(theme.colors.action, 'fill'),
+    backgroundColor: theme.colors.surface,
     borderWidth: 1,
-    borderColor: tint(theme.colors.action, 'border'),
+    borderColor: theme.colors.border,
   },
-  tonalActive: { borderColor: theme.colors.action },
-  disabled: { opacity: 0.4 },
+  controlActive: { backgroundColor: theme.colors.action, borderColor: theme.colors.action },
+  sendActive: { backgroundColor: theme.colors.action, borderColor: theme.colors.action },
   pressed: { opacity: 0.7 },
 }));
