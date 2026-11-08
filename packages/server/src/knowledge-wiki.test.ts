@@ -238,6 +238,8 @@ describe('projectWikiCatalog', () => {
     });
     expect(change('insights/quiet.md')).toBeUndefined();
     expect(catalog.log).toMatchObject({ path: 'insights/log.md' });
+    // The log links a meeting this Wiki does not have; history is no broken link.
+    expect(catalog.review).toEqual([]);
   });
 
   // log.md only grows. Past a page's read cap it must still be read, or every

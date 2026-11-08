@@ -395,7 +395,9 @@ export async function projectWikiCatalog(knowledgeRoot: string): Promise<WikiCat
   for (const page of read) {
     const links = page.links;
     const broken: string[] = [];
-    for (const target of links) {
+    // The log records history and is append-only: a page renamed since must not
+    // turn its old entry into a review item nobody may fix.
+    for (const target of page.path === WIKI_LOG ? [] : links) {
       // A page the scan read or a decision is known; anything else the app could
       // open (a source, an image, a page past the limits) is looked up on disk,
       // so a link counts as broken only when there is nothing to open.
