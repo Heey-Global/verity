@@ -69,20 +69,47 @@ export function mixColor(tone: string, base: string, alpha: number): string {
 // Only one row may hold an action open; opening another closes it, like iOS lists.
 let openRow: SwipeableMethods | null = null;
 
+/** The action on the leading edge (swipe right): a session's favorite star by
+ *  default, or another non-destructive action of the row's subject. */
+export interface LeadingSwipeAction {
+  /** Short, under the icon in the lane ("Favorite", "Done"). */
+  label: string;
+  /** The same action in the browser's context menu ("Add to favorites"). */
+  menuLabel: string;
+  icon: IconName;
+  /** Drawn in the action color in the menu, for a state that is on. */
+  active?: boolean;
+  onPress: () => void;
+}
+
+/** A session's favorite star as the leading action. */
+export function favoriteAction(favorite: boolean, onToggle: () => void): LeadingSwipeAction {
+  return {
+    label: favorite ? 'Unfavorite' : 'Favorite',
+    menuLabel: favorite ? 'Remove from favorites' : 'Add to favorites',
+    icon: 'star',
+    active: favorite,
+    onPress: onToggle,
+  };
+}
+
 export function SwipeableSessionRow({
-  favorite,
+  favorite = false,
   label,
   onToggleFavorite,
+  leading,
   onDelete,
   onEdit,
   children,
   disabled = false,
   diagnostics,
 }: {
-  favorite: boolean;
+  favorite?: boolean;
   /** Session title, shown as the menu header. */
   label: string;
-  onToggleFavorite: () => void;
+  onToggleFavorite?: () => void;
+  /** Replaces the favorite star on the leading edge; a row with neither has none. */
+  leading?: LeadingSwipeAction | undefined;
   onDelete: () => void;
   onEdit: () => void;
   children: ReactNode;
@@ -91,6 +118,10 @@ export function SwipeableSessionRow({
   diagnostics?: { rowKey: string; projectKind: string | undefined };
 }) {
   const { theme } = useUnistyles();
+  const primary: LeadingSwipeAction | undefined =
+    leading ??
+    (onToggleFavorite !== undefined ? favoriteAction(favorite, onToggleFavorite) : undefined);
+  const onPrimary = primary?.onPress;
   const swipeable = useRef<SwipeableMethods>(null);
   const armed = useRef<SwipeSide | null>(null);
   const [width, setWidth] = useState(0);
@@ -106,10 +137,10 @@ export function SwipeableSessionRow({
     (side: SwipeSide) => {
       if (disabledRef.current) return;
       swipeable.current?.close();
-      if (side === 'favorite') onToggleFavorite();
+      if (side === 'favorite') onPrimary?.();
       else onDelete();
     },
-    [onDelete, onToggleFavorite],
+    [onDelete, onPrimary],
   );
   const onArm = useCallback((side: SwipeSide, on: boolean) => {
     if (disabledRef.current) return;
@@ -218,17 +249,24 @@ export function SwipeableSessionRow({
           record('swipe', 'close');
           if (openRow === swipeable.current) openRow = null;
         }}
-        renderLeftActions={(_progress, translation) => (
-          <SwipeAction
-            side="favorite"
-            label={favorite ? 'Unfavorite' : 'Favorite'}
-            icon="star"
-            translation={translation}
-            fullSwipe={fullSwipe}
-            onArm={onArm}
-            onPress={() => run('favorite')}
-          />
-        )}
+        {...(primary !== undefined
+          ? {
+              renderLeftActions: (
+                _progress: SharedValue<number>,
+                translation: SharedValue<number>,
+              ) => (
+                <SwipeAction
+                  side="favorite"
+                  label={primary.label}
+                  icon={primary.icon}
+                  translation={translation}
+                  fullSwipe={fullSwipe}
+                  onArm={onArm}
+                  onPress={() => run('favorite')}
+                />
+              ),
+            }
+          : {})}
         renderRightActions={(_progress, translation) => (
           <SwipeAction
             side="delete"
@@ -256,9 +294,8 @@ export function SwipeableSessionRow({
         <SessionContextMenu
           at={menuAt}
           title={label}
-          favorite={favorite}
+          leading={primary}
           onClose={() => setMenuAt(null)}
-          onToggleFavorite={onToggleFavorite}
           onEdit={onEdit}
           onDelete={onDelete}
         />
@@ -486,17 +523,15 @@ const MENU_HEIGHT = 168;
 export function SessionContextMenu({
   at,
   title,
-  favorite,
+  leading,
   onClose,
-  onToggleFavorite,
   onEdit,
   onDelete,
 }: {
   at: { x: number; y: number };
   title: string;
-  favorite: boolean;
+  leading: LeadingSwipeAction | undefined;
   onClose: () => void;
-  onToggleFavorite: () => void;
   onEdit: () => void;
   onDelete: () => void;
 }) {
@@ -528,12 +563,14 @@ export function SessionContextMenu({
         <Text style={styles.menuTitle} numberOfLines={1}>
           {title}
         </Text>
-        <MenuItem
-          icon="star"
-          label={favorite ? 'Remove from favorites' : 'Add to favorites'}
-          color={favorite ? theme.colors.action : theme.colors.text}
-          onPress={pick(onToggleFavorite)}
-        />
+        {leading !== undefined ? (
+          <MenuItem
+            icon={leading.icon}
+            label={leading.menuLabel}
+            color={leading.active === true ? theme.colors.action : theme.colors.text}
+            onPress={pick(leading.onPress)}
+          />
+        ) : null}
         <MenuItem icon="edit-2" label="Edit…" color={theme.colors.text} onPress={pick(onEdit)} />
         <View style={styles.menuDivider} />
         <MenuItem

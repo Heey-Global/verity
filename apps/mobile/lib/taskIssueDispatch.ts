@@ -16,16 +16,41 @@ const identity = () =>
         : null,
   ]);
 
-const dispatchKey = (scope: string, projectId: string, issueNumber: number, target?: string) =>
-  `verity.issues.dispatch.${scope}.${projectId}.${issueNumber}.${target ?? 'new'}`;
+/** The repository an issue belongs to; without one it is the project's default repository. */
+export interface IssueRepository {
+  id: string;
+  kind: 'github' | 'forgejo';
+  owner: string;
+  repo: string;
+  isDefault: boolean;
+}
+
+/** Issue numbers repeat across repositories. The default repository keeps the key
+ *  used before projects had several, so a retry pending across an update survives. */
+const issueScope = (projectId: string, repository: IssueRepository | undefined) =>
+  repository === undefined || repository.isDefault
+    ? projectId
+    : `${projectId}.repository:${encodeURIComponent(repository.id)}`;
+
+const dispatchKey = (
+  scope: string,
+  projectId: string,
+  repository: IssueRepository | undefined,
+  issueNumber: number,
+  target?: string,
+) =>
+  `verity.issues.dispatch.${scope}.${issueScope(projectId, repository)}.${issueNumber}.${target ?? 'new'}`;
+
+const HOST_NAME = { github: 'GitHub', forgejo: 'Forgejo' } as const;
 
 /** A created session does not prove that its initial issue turn was accepted. */
 export async function taskIssueRetry(
   projectId: string,
   issueNumber: number,
+  repository?: IssueRepository,
 ): Promise<{ targetSessionId?: string } | null> {
   const scope = identity();
-  const prefix = dispatchKey(scope, projectId, issueNumber, '');
+  const prefix = dispatchKey(scope, projectId, repository, issueNumber, '');
   const keys = (await AsyncStorage.getAllKeys()).filter((key) => key.startsWith(prefix));
   for (const key of keys) {
     const saved = await AsyncStorage.getItem(key);
@@ -48,9 +73,10 @@ export function dispatchTaskIssue(
   projectId: string,
   issue: { number: number; title: string; url: string },
   targetSessionId?: string,
+  repository?: IssueRepository,
 ): Promise<string> {
   const scope = identity();
-  const key = dispatchKey(scope, projectId, issue.number, targetSessionId);
+  const key = dispatchKey(scope, projectId, repository, issue.number, targetSessionId);
   const existing = pending.get(key);
   if (existing) return existing;
   const run = (async () => {
@@ -93,7 +119,9 @@ export function dispatchTaskIssue(
       await createSessionConfirmingWarnings(client, {
         sessionId: dispatch.sessionId,
         projectId,
-        issue: issue.number,
+        // The number names the session's branch, which is cut from the default
+        // repository; another repository's number would name it after the wrong issue.
+        ...(repository === undefined || repository.isDefault ? { issue: issue.number } : {}),
       });
       guard();
       // A missing list entry is ambiguous until the idempotent create resolves.
@@ -102,7 +130,10 @@ export function dispatchTaskIssue(
       guard();
     }
     await client.sendTurn(dispatch.sessionId, {
-      prompt: `Work on GitHub issue #${issue.number}: ${issue.title}\n${issue.url}`,
+      prompt:
+        repository === undefined
+          ? `Work on GitHub issue #${issue.number}: ${issue.title}\n${issue.url}`
+          : `Work on ${HOST_NAME[repository.kind]} issue ${repository.owner}/${repository.repo}#${issue.number}: ${issue.title}\n${issue.url}`,
       clientReplyId: dispatch.replyId,
     });
     guard();

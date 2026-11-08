@@ -227,6 +227,10 @@ const resourceRules: ReadonlyMap<string, ResourceRule> = new Map([
     { kind: 'project', parameter: 'id', permission: 'read' },
   ],
   [
+    routeScopeKey('GET', '/projects/:id/issues'),
+    { kind: 'project', parameter: 'id', permission: 'read' },
+  ],
+  [
     routeScopeKey('GET', '/sessions/:id/vulnerability-scan'),
     { kind: 'session', parameter: 'id', permission: 'read' },
   ],

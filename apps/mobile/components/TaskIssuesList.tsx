@@ -1,53 +1,75 @@
 import { useEffect, useState } from 'react';
-import { Alert, Linking, Pressable, Text, View } from 'react-native';
-import { type SessionSummary } from '@verity/mobile';
+import { Alert, Linking, Pressable, View } from 'react-native';
+import type { RepositoryIssues, SessionSummary } from '@verity/mobile';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
-import { Icon } from './Icon';
-import { createVerityClient } from '../lib/client';
-import { dispatchTaskIssue, taskIssueRetry } from '../lib/taskIssueDispatch';
 
-type Issue = {
-  number: number;
-  title: string;
-  url: string;
-  labels: string[];
-  assignees: string[];
-};
+import { CodeHostIcon } from './CodeHostIcon';
+import { HandOffRow, handOffSession } from './HandOffRow';
+import { Icon } from './Icon';
+import { Button, FilterChips, Group, StatusTag, Text } from './ui';
+import { createVerityClient } from '../lib/client';
+import { dispatchTaskIssue, taskIssueRetry, type IssueRepository } from '../lib/taskIssueDispatch';
+
+type Issue = Extract<RepositoryIssues, { status: 'ok' }>['issues'][number];
+type Retry = { targetSessionId?: string };
+
+/** Issues a repository shows before "Show all". */
+export const FIRST_ISSUES = 10;
+
+const HOST = { github: 'GitHub', forgejo: 'Forgejo' } as const;
+const isBug = (label: string) => /^bugs?$/i.test(label);
+const retryKey = (repository: IssueRepository, number: number) =>
+  `${repository.id}#${String(number)}`;
+
+/**
+ * The open issues of a project's repositories as things Verity can take on,
+ * one section per repository with its code host. The default repository leads
+ * and is open; with several, every section folds. A repository whose host did
+ * not answer says so in its own section, and the others stay usable.
+ */
 export function TaskIssuesList({
   projectId,
-  projectName = projectId,
   currentSessionId,
-  issues,
-  viewerLogin,
+  repositories,
+  onRetry,
   onOpenSession,
 }: {
   projectId: string;
-  projectName?: string;
   currentSessionId?: string;
-  issues: Issue[];
-  viewerLogin?: string | null;
+  repositories: RepositoryIssues[];
+  onRetry(): void;
   onOpenSession(id: string): void;
 }) {
-  const { theme } = useUnistyles();
   const [filter, setFilter] = useState<'all' | 'mine' | 'bugs'>('all');
-  const [expanded, setExpanded] = useState(false);
+  const [folded, setFolded] = useState<string[]>([]);
+  const [expanded, setExpanded] = useState<string[]>([]);
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [busy, setBusy] = useState(false);
-  const [retries, setRetries] = useState<Record<number, { targetSessionId?: string }>>({});
+  const [retries, setRetries] = useState<Record<string, Retry>>({});
+  const available = repositories.filter(
+    (repository): repository is Extract<RepositoryIssues, { status: 'ok' }> =>
+      repository.status === 'ok',
+  );
   useEffect(() => {
     let active = true;
     setRetries({});
     void Promise.all(
-      issues.map(
-        async (issue) => [issue.number, await taskIssueRetry(projectId, issue.number)] as const,
+      available.flatMap((repository) =>
+        repository.issues.map(
+          async (issue) =>
+            [
+              retryKey(repository, issue.number),
+              await taskIssueRetry(projectId, issue.number, repository),
+            ] as const,
+        ),
       ),
     )
       .then((entries) => {
         if (active)
           setRetries(
             Object.fromEntries(entries.filter((entry) => entry[1] !== null)) as Record<
-              number,
-              { targetSessionId?: string }
+              string,
+              Retry
             >,
           );
       })
@@ -55,12 +77,15 @@ export function TaskIssuesList({
     return () => {
       active = false;
     };
-  }, [projectId, issues]);
+    // `available` is derived from `repositories` on every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId, repositories]);
   useEffect(() => {
     let active = true;
     setSessions([]);
     setFilter('all');
-    setExpanded(false);
+    setExpanded([]);
+    setFolded([]);
     void createVerityClient()
       ?.listSessions()
       .then((value) => {
@@ -71,45 +96,20 @@ export function TaskIssuesList({
       active = false;
     };
   }, [projectId]);
-  const filtered = issues.filter(
-    (issue) =>
-      filter === 'all' ||
-      (filter === 'mine'
-        ? issue.assignees.some((login) => login.toLowerCase() === viewerLogin?.toLowerCase())
-        : issue.labels.some((label) => /^bugs?$/i.test(label))),
-  );
-  const chip = (
-    label: string,
-    onPress: () => void,
-    selected = false,
-    disabled = false,
-    hint?: string,
-  ) => (
-    <Pressable
-      key={label}
-      accessibilityRole="button"
-      accessibilityLabel={label}
-      accessibilityHint={hint}
-      accessibilityState={{ selected, disabled }}
-      disabled={disabled || busy}
-      onPress={onPress}
-      style={[styles.chip, selected ? styles.selected : null, disabled ? styles.disabled : null]}
-    >
-      <Text style={[styles.chipText, selected ? styles.selectedText : null]}>{label}</Text>
-    </Pressable>
-  );
-  const dispatch = (issue: Issue, target?: string) => {
+  const viewers = available.filter((repository) => repository.viewerLogin !== null);
+  const dispatch = (repository: IssueRepository, issue: Issue, target?: string) => {
     if (busy) return;
     setBusy(true);
-    void dispatchTaskIssue(projectId, issue, target)
+    void dispatchTaskIssue(projectId, issue, target, repository)
       .then(onOpenSession)
-      .catch((error) => {
-        void taskIssueRetry(projectId, issue.number)
+      .catch((error: unknown) => {
+        void taskIssueRetry(projectId, issue.number, repository)
           .then((retry) => {
             setRetries((value) => {
               const next = { ...value };
-              if (retry) next[issue.number] = retry;
-              else delete next[issue.number];
+              const key = retryKey(repository, issue.number);
+              if (retry) next[key] = retry;
+              else delete next[key];
               return next;
             });
           })
@@ -118,180 +118,223 @@ export function TaskIssuesList({
       })
       .finally(() => setBusy(false));
   };
-  return (
-    <View>
-      <View style={styles.chips}>
-        {chip(
-          'All',
-          () => {
-            setFilter('all');
-            setExpanded(false);
-          },
-          filter === 'all',
-        )}
-        {chip(
-          'Assigned to me',
-          () => {
-            setFilter('mine');
-            setExpanded(false);
-          },
-          filter === 'mine',
-          !viewerLogin,
-          !viewerLogin
-            ? 'Requires a personal GitHub connection to identify your assignments'
-            : undefined,
-        )}
-        {chip(
-          'Bugs',
-          () => {
-            setFilter('bugs');
-            setExpanded(false);
-          },
-          filter === 'bugs',
-        )}
-      </View>
-      <View style={styles.section}>
-        <View style={styles.currentDot} />
-        <Text style={styles.sectionLabel}>{projectName}</Text>
-        <View style={styles.count}>
-          <Text style={styles.countLabel}>{filtered.length} open</Text>
-        </View>
-      </View>
-      {(expanded ? filtered : filtered.slice(0, 3)).map((issue) => {
-        const session = sessions.find(
+  // Sessions name their branch after the issue they were started for; branches
+  // come from the default repository, so only its issues can be matched.
+  const sessionFor = (repository: IssueRepository, issue: Issue) =>
+    repository.isDefault
+      ? sessions.find(
           (item) =>
             item.projectId === projectId &&
             item.resumable !== false &&
             item.branch?.match(/^[^/]+\/(\d+)(?:-|$)/)?.[1] === String(issue.number),
-        );
-        return (
-          <View key={issue.number} style={styles.row}>
-            <View style={styles.rowMain}>
-              <View style={styles.icon}>
-                <Icon name="circle" size={20} color={theme.colors.success} />
-              </View>
-              <View style={styles.body}>
-                <Pressable
-                  accessibilityRole="link"
-                  accessibilityLabel={`GitHub issue #${issue.number}: ${issue.title}`}
-                  onPress={() => {
-                    void Linking.openURL(issue.url).catch(() =>
-                      Alert.alert('Could not open issue', 'Try again'),
-                    );
-                  }}
-                >
-                  <Text style={styles.title}>{issue.title}</Text>
-                </Pressable>
-                <Text style={styles.meta}>
-                  #{issue.number}
-                  {issue.labels.length ? ` · ${issue.labels.join(' · ')}` : ''}
-                  {issue.assignees.length ? ` · ${issue.assignees.join(', ')}` : ''}
+        )
+      : undefined;
+  const several = repositories.length > 1;
+  return (
+    <View style={styles.list}>
+      <FilterChips
+        accessibilityLabel="Filter issues"
+        compact
+        wrap
+        value={filter}
+        onChange={(value) => {
+          setFilter(value);
+          setExpanded([]);
+        }}
+        options={[
+          { value: 'all', label: 'All' },
+          ...(viewers.length > 0 ? [{ value: 'mine' as const, label: 'Assigned to me' }] : []),
+          { value: 'bugs', label: 'Bugs' },
+        ]}
+      />
+      {repositories.map((repository) => {
+        const open = !several || !folded.includes(repository.id);
+        if (repository.status !== 'ok')
+          return (
+            <View key={repository.id}>
+              <RepositoryHeader repository={repository} count={null} />
+              <View style={styles.unavailable} accessibilityRole="alert">
+                <Text variant="bodySmall" tone="muted" style={styles.flex}>
+                  Could not load issues
                 </Text>
+                <Button label="Retry" size="small" variant="secondary" onPress={onRetry} />
               </View>
             </View>
-            <View style={[styles.chips, styles.indent]}>
-              {session
-                ? chip('↳ Open session', () => onOpenSession(session.sessionId), true)
-                : null}
-              {retries[issue.number]
-                ? chip('Retry', () => dispatch(issue, retries[issue.number]?.targetSessionId), true)
-                : null}
-              {!session ? (
-                <>
-                  {currentSessionId
-                    ? chip('↳ This Session', () => dispatch(issue, currentSessionId), true)
-                    : null}
-                  {chip('+ New Session', () => dispatch(issue))}
-                </>
-              ) : null}
-            </View>
+          );
+        const filtered = repository.issues.filter(
+          (issue) =>
+            filter === 'all' ||
+            (filter === 'mine'
+              ? issue.assignees.some(
+                  (login) => login.toLowerCase() === repository.viewerLogin?.toLowerCase(),
+                )
+              : issue.labels.some(isBug)),
+        );
+        const all = expanded.includes(repository.id);
+        return (
+          <View key={repository.id}>
+            <RepositoryHeader
+              repository={repository}
+              count={filtered.length}
+              {...(several
+                ? {
+                    expanded: open,
+                    onToggle: () =>
+                      setFolded((ids) =>
+                        ids.includes(repository.id)
+                          ? ids.filter((id) => id !== repository.id)
+                          : [...ids, repository.id],
+                      ),
+                  }
+                : {})}
+            />
+            {open && filtered.length > 0 ? (
+              <Group>
+                {(all ? filtered : filtered.slice(0, FIRST_ISSUES)).map((issue) => {
+                  const session = sessionFor(repository, issue);
+                  const state = session === undefined ? undefined : handOffSession(session);
+                  const retry = retries[retryKey(repository, issue.number)];
+                  const others = issue.labels.filter((label) => !isBug(label));
+                  return (
+                    <HandOffRow
+                      key={issue.number}
+                      title={issue.title}
+                      subtitle={[`#${String(issue.number)}`, ...others].join(' · ')}
+                      icon="disc"
+                      tag={
+                        issue.labels.some(isBug) ? (
+                          <StatusTag intent="needsSetup" label="Bug" />
+                        ) : undefined
+                      }
+                      session={state}
+                      onOpenSession={() => {
+                        if (session) onOpenSession(session.sessionId);
+                      }}
+                      onPress={() => {
+                        void Linking.openURL(issue.url).catch(() =>
+                          Alert.alert('Could not open issue', 'Try again'),
+                        );
+                      }}
+                      accessibilityHint={`Opens the issue on ${HOST[repository.kind]}`}
+                      onHandOff={() => dispatch(repository, issue)}
+                      handOffLabel={`Let Verity fix: ${issue.title}`}
+                      busy={busy}
+                      answers={
+                        retry || (currentSessionId && !session) ? (
+                          <>
+                            {retry ? (
+                              <Button
+                                label="Retry"
+                                size="small"
+                                variant="secondary"
+                                disabled={busy}
+                                onPress={() => dispatch(repository, issue, retry.targetSessionId)}
+                              />
+                            ) : null}
+                            {currentSessionId && !session ? (
+                              <Button
+                                label="This session"
+                                size="small"
+                                variant="secondary"
+                                disabled={busy}
+                                onPress={() => dispatch(repository, issue, currentSessionId)}
+                              />
+                            ) : null}
+                          </>
+                        ) : undefined
+                      }
+                    />
+                  );
+                })}
+              </Group>
+            ) : null}
+            {open && !all && filtered.length > FIRST_ISSUES ? (
+              <View style={styles.more}>
+                <Button
+                  label={`Show all ${String(filtered.length)} issues`}
+                  variant="text"
+                  size="compact"
+                  onPress={() => setExpanded((ids) => [...ids, repository.id])}
+                />
+              </View>
+            ) : null}
           </View>
         );
       })}
-      {!expanded && filtered.length > 3 ? (
-        <Pressable accessibilityRole="button" onPress={() => setExpanded(true)} style={styles.show}>
-          <Text style={styles.link}>Show all {filtered.length} issues</Text>
-        </Pressable>
-      ) : null}
     </View>
   );
 }
+
+/** A repository's section: code host mark, name and open count; folds with several. */
+function RepositoryHeader({
+  repository,
+  count,
+  expanded,
+  onToggle,
+}: {
+  repository: RepositoryIssues;
+  count: number | null;
+  expanded?: boolean;
+  onToggle?: () => void;
+}) {
+  const { theme } = useUnistyles();
+  const label = `${repository.name}${count === null ? '' : ` · ${String(count)} open`}`;
+  const content = (
+    <>
+      <CodeHostIcon provider={repository.kind} size={14} color={theme.colors.textMuted} />
+      <Text variant="label" tone="muted" style={styles.flex} numberOfLines={1}>
+        {repository.name}
+      </Text>
+      {count !== null ? (
+        <Text variant="caption" tone="muted">{`${String(count)} open`}</Text>
+      ) : null}
+      {onToggle !== undefined ? (
+        <Icon
+          name={expanded ? 'chevron-down' : 'chevron-right'}
+          size={16}
+          color={theme.colors.textFaint}
+        />
+      ) : null}
+    </>
+  );
+  return onToggle !== undefined ? (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={`${HOST[repository.kind]} ${label}`}
+      accessibilityState={{ expanded: expanded === true }}
+      onPress={onToggle}
+      style={styles.section}
+    >
+      {content}
+    </Pressable>
+  ) : (
+    <View
+      style={styles.section}
+      accessible
+      accessibilityRole="header"
+      accessibilityLabel={`${HOST[repository.kind]} ${label}`}
+    >
+      {content}
+    </View>
+  );
+}
+
 const styles = StyleSheet.create((theme) => ({
+  list: { gap: theme.spacing.xs, paddingTop: theme.spacing.sm },
   section: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: theme.spacing.sm,
-    paddingTop: theme.spacing.lg,
+    minHeight: 44,
+    paddingTop: theme.spacing.md,
     paddingBottom: theme.spacing.xs,
   },
-  sectionLabel: {
-    color: theme.colors.textMuted,
-    fontSize: theme.typography.footnote.fontSize,
-    fontFamily: theme.fonts.bold,
-    letterSpacing: 0.6,
-    textTransform: 'uppercase',
-  },
-  currentDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: theme.colors.action },
-  count: {
-    paddingHorizontal: theme.spacing.sm,
-    paddingVertical: 1,
-    borderRadius: theme.radius.pill,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    backgroundColor: theme.colors.surfaceAlt,
-  },
-  countLabel: {
-    color: theme.colors.text,
-    fontSize: theme.typography.caption.fontSize,
-    fontFamily: theme.fonts.semibold,
-  },
-  row: {
-    paddingVertical: theme.spacing.sm,
-    gap: theme.spacing.sm,
-    borderBottomWidth: 1,
-    borderBottomColor: theme.colors.border,
-  },
-  rowMain: { flexDirection: 'row', alignItems: 'flex-start', gap: theme.spacing.sm },
-  icon: { paddingTop: 2 },
-  body: { flex: 1, gap: 2 },
-  title: {
-    color: theme.colors.text,
-    fontFamily: theme.fonts.regular,
-    fontSize: theme.typography.row.fontSize,
-    lineHeight: 21 * theme.fontScale,
-  },
-  meta: {
-    color: theme.colors.textFaint,
-    fontFamily: theme.fonts.regular,
-    fontSize: theme.typography.footnote.fontSize,
-  },
-  chips: {
+  flex: { flex: 1 },
+  unavailable: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
+    alignItems: 'center',
     gap: theme.spacing.sm,
+    paddingVertical: theme.spacing.sm,
   },
-  indent: { marginLeft: 28 },
-  chip: {
-    minHeight: 32,
-    justifyContent: 'center',
-    paddingHorizontal: theme.spacing.md,
-    borderRadius: theme.radius.pill,
-    backgroundColor: theme.colors.surfaceAlt,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-  },
-  chipText: {
-    color: theme.colors.text,
-    fontSize: theme.typography.bodySmall.fontSize,
-    fontFamily: theme.fonts.regular,
-  },
-  selected: { borderColor: theme.colors.action },
-  selectedText: { color: theme.colors.action, fontFamily: theme.fonts.semibold },
-  disabled: { opacity: 0.5 },
-  show: { padding: theme.spacing.sm },
-  link: {
-    color: theme.colors.action,
-    fontFamily: theme.fonts.regular,
-    fontSize: theme.typography.bodySmall.fontSize,
-  },
+  more: { flexDirection: 'row' },
 }));

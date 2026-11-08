@@ -1,4 +1,4 @@
-import type { VerityClient } from '@verity/mobile';
+import type { ProjectRecord, RepositoryIssues, VerityClient } from '@verity/mobile';
 import { router } from 'expo-router';
 import { useEffect, useState } from 'react';
 
@@ -6,11 +6,29 @@ import { Row } from '../ui';
 import { useTaskPreferences } from '../../lib/taskPreferences';
 import { useTasks } from '../../lib/tasksStore';
 
-/** "3 open · 5 GitHub issues"; issues only once GitHub answered for the project. */
-export function projectTasksLine(open: number, issues: number | null): string {
+/** Open issues across the repositories that answered, named by their code host
+ *  when they share one; null while none has answered. */
+export function issueSummary(
+  repositories: RepositoryIssues[],
+): { count: number; host: 'GitHub' | 'Forgejo' | null } | null {
+  const answered = repositories.filter((repository) => repository.status === 'ok');
+  if (answered.length === 0) return null;
+  const kinds = new Set(answered.map((repository) => repository.kind));
+  return {
+    count: answered.reduce((sum, repository) => sum + repository.issues.length, 0),
+    host: kinds.size > 1 ? null : kinds.has('forgejo') ? 'Forgejo' : 'GitHub',
+  };
+}
+
+/** "3 open · 5 GitHub issues"; issues only once a code host answered for the project. */
+export function projectTasksLine(
+  open: number,
+  issues: { count: number; host: 'GitHub' | 'Forgejo' | null } | null,
+): string {
   const tasks = open === 0 ? 'No open tasks' : `${String(open)} open`;
   if (issues === null) return tasks;
-  return `${tasks} · ${String(issues)} GitHub ${issues === 1 ? 'issue' : 'issues'}`;
+  const noun = issues.count === 1 ? 'issue' : 'issues';
+  return `${tasks} · ${String(issues.count)} ${issues.host === null ? '' : `${issues.host} `}${noun}`;
 }
 
 /**
@@ -20,24 +38,25 @@ export function projectTasksLine(open: number, issues: number | null): string {
  */
 export function ProjectTasksRow({
   client,
-  projectId,
+  project,
 }: {
   client: VerityClient;
-  projectId: string;
+  project: Pick<ProjectRecord, 'id' | 'kind' | 'owner' | 'repo'>;
 }) {
+  const projectId = project.id;
   const { tasks } = useTasks();
   // Tasks switched off in Settings: no row leading to a list nobody keeps.
   const enabled = useTaskPreferences().enabled;
-  const [issues, setIssues] = useState<number | null>(null);
+  const [issues, setIssues] = useState<ReturnType<typeof issueSummary>>(null);
   useEffect(() => {
     let active = true;
     setIssues(null);
     // Inside the promise, so a client without the read fails like a failed read.
     void Promise.resolve()
-      .then(() => client.listProjectGitHubIssues(projectId))
+      .then(() => client.listProjectIssues(project))
       .then(
-        (result) => {
-          if (active) setIssues(result.connected ? result.issues.length : null);
+        (repositories) => {
+          if (active) setIssues(issueSummary(repositories));
         },
         // Without an answer the row still counts the tasks; the screen retries.
         () => undefined,
@@ -45,7 +64,9 @@ export function ProjectTasksRow({
     return () => {
       active = false;
     };
-  }, [client, projectId]);
+    // The project's identity is its id and its default repository.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [client, projectId, project.kind, project.owner, project.repo]);
   const open = tasks.filter(
     (task) =>
       task.projectId === projectId &&

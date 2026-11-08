@@ -113,6 +113,26 @@ const projectGitHubIssuesSchema = z.object({
 export type ProjectGitHubIssues = z.infer<typeof projectGitHubIssuesSchema>;
 export type ProjectGitHubIssue = ProjectGitHubIssues['issues'][number];
 
+const repositoryIdentity = {
+  id: z.string(),
+  name: z.string(),
+  kind: z.enum(['github', 'forgejo']),
+  owner: z.string(),
+  repo: z.string(),
+  isDefault: z.boolean(),
+};
+const repositoryIssuesSchema = z.discriminatedUnion('status', [
+  z.object({
+    ...repositoryIdentity,
+    status: z.literal('ok'),
+    viewerLogin: z.string().nullable(),
+    issues: projectGitHubIssuesSchema.shape.issues,
+  }),
+  z.object({ ...repositoryIdentity, status: z.literal('unavailable') }),
+]);
+/** Open issues of one repository connected to a project; `unavailable` is never "none". */
+export type RepositoryIssues = z.infer<typeof repositoryIssuesSchema>;
+
 export type { Attachment, AttachmentUpload } from '@verity/events';
 
 /**
@@ -3722,6 +3742,40 @@ export class VerityClient {
       method: 'GET',
     });
     return projectGitHubIssuesSchema.parse(await res.json());
+  }
+
+  /**
+   * Open issues of every repository connected to the project, the default one
+   * first. A server that predates the per-repository route answers for the
+   * default repository only.
+   */
+  async listProjectIssues(
+    project: Pick<ProjectRecord, 'id' | 'kind' | 'owner' | 'repo'>,
+  ): Promise<RepositoryIssues[]> {
+    try {
+      const res = await this.request(`/projects/${encodeURIComponent(project.id)}/issues`, {
+        method: 'GET',
+      });
+      return z.object({ repositories: z.array(repositoryIssuesSchema) }).parse(await res.json())
+        .repositories;
+    } catch (err) {
+      if (!(err instanceof VerityApiError) || err.status !== 404) throw err;
+    }
+    const legacy = await this.listProjectGitHubIssues(project.id);
+    if (!legacy.connected || (project.kind !== 'github' && project.kind !== 'forgejo')) return [];
+    return [
+      {
+        id: `default:${project.id}`,
+        name: `${project.owner}/${project.repo}`,
+        kind: project.kind,
+        owner: project.owner,
+        repo: project.repo,
+        isDefault: true,
+        status: 'ok',
+        viewerLogin: legacy.viewerLogin,
+        issues: legacy.issues,
+      },
+    ];
   }
 
   async listAvailableRepositories(): Promise<ProjectRecord[]> {

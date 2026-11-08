@@ -336,7 +336,7 @@ function ProjectContent({
           onPress={() => onOpenKnowledge(area)}
         />
       ))}
-      <ProjectTasksRow client={client} projectId={id} />
+      <ProjectTasksRow client={client} project={detail.project} />
       {security !== undefined ? (
         <Row
           leading={{ icon: 'shield', ...(severe ? { intent: 'needsSetup' as const } : {}) }}

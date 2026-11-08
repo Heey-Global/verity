@@ -2,6 +2,14 @@ import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { Icon } from './Icon';
 import { FileRowActions } from './files/FileRowActions';
 import { TaskIssuesList } from './TaskIssuesList';
+import { handOffSession, type HandOffSession } from './HandOffRow';
+import {
+  ProjectTaskRow,
+  TaskEditSheet,
+  TaskSummary,
+  useScreenReader,
+} from './project/ProjectTaskRows';
+import { Group } from './ui';
 import { createVerityClient } from '../lib/client';
 import {
   projectDisplayName,
@@ -10,7 +18,7 @@ import {
   type Task,
   type TaskContext,
   type SessionSummary,
-  type ProjectGitHubIssues,
+  type RepositoryIssues,
 } from '@verity/mobile';
 import { router } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
@@ -82,36 +90,52 @@ export function TaskListBody({
     projectId: selectedProjectId,
     sessionId: selectedProjectId === suppliedContext.projectId ? suppliedContext.sessionId : null,
   };
-  const [github, setGithub] = useState<{ projectId: string; data: ProjectGitHubIssues } | null>(
-    null,
-  );
-  const [githubError, setGithubError] = useState<string | null>(null);
-  const [githubRetry, setGithubRetry] = useState(0);
+  const [issues, setIssues] = useState<{
+    projectId: string;
+    repositories: RepositoryIssues[];
+  } | null>(null);
+  const [issuesError, setIssuesError] = useState<string | null>(null);
+  const [issuesRetry, setIssuesRetry] = useState(0);
+  const issueProject = projects.find((project) => project.id === context.projectId);
   useEffect(() => {
     let active = true;
-    setGithub(null);
-    setGithubError(null);
-    if (context.projectId) {
-      const projectId = context.projectId;
+    setIssues(null);
+    setIssuesError(null);
+    if (issueProject) {
+      const projectId = issueProject.id;
       const client = createVerityClient();
+      // Inside the promise, so a client without the read fails like a failed read.
       if (client)
-        void client
-          .listProjectGitHubIssues(projectId)
-          .then((data) => {
-            if (active) setGithub({ projectId, data });
+        void Promise.resolve()
+          .then(() => client.listProjectIssues(issueProject))
+          .then((repositories) => {
+            if (active) setIssues({ projectId, repositories });
           })
           .catch(() => {
-            if (active) setGithubError('Could not load GitHub issues');
+            if (active) setIssuesError('Could not load issues');
           });
     }
     return () => {
       active = false;
     };
-  }, [context.projectId, githubRetry]);
-  const githubData = github?.projectId === context.projectId ? github.data : null;
-  const githubConnected = githubData?.connected === true;
+    // The project record is read for its repository; its identity is the id.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [issueProject?.id, issueProject?.kind, issueProject?.owner, issueProject?.repo, issuesRetry]);
+  const repositories = issues?.projectId === context.projectId ? issues.repositories : [];
+  // A tab appears once a repository answered; an unavailable one alone shows its
+  // retry inside the tab rather than hiding the tab.
+  const issuesShown = repositories.some((repository) => repository.status === 'ok');
+  const issueCount = repositories.reduce(
+    (sum, repository) => sum + (repository.status === 'ok' ? repository.issues.length : 0),
+    0,
+  );
+  const issueKinds = new Set(repositories.map((repository) => repository.kind));
+  const issuesLabel =
+    issueKinds.size === 1 ? `${issueKinds.has('forgejo') ? 'Forgejo' : 'GitHub'} Issues` : 'Issues';
+  const screenReader = useScreenReader();
+  const [editing, setEditing] = useState<Task | null>(null);
   const tab =
-    (preferences.tab === 'issues' && !githubConnected) ||
+    (preferences.tab === 'issues' && !issuesShown) ||
     (preferences.tab === 'agent' && (context.sessionId === null || scope === 'project'))
       ? 'mine'
       : preferences.tab;
@@ -261,7 +285,64 @@ export function TaskListBody({
       </Text>
     </Pressable>
   );
+  // The text a row shows: the title, or the dictated text while no title could
+  // be made from it.
+  const taskText = (task: Task) =>
+    !!task.detail &&
+    (task.titleGenerationStatus === 'pending' || task.titleGenerationStatus === 'failed')
+      ? task.detail
+      : task.title;
+  const sessionState = (task: Task): HandOffSession | undefined => {
+    if (task.sessionId === null) return undefined;
+    const session = sessions.find((item) => item.sessionId === task.sessionId);
+    // A deleted session leaves nothing to open.
+    return session === undefined ? undefined : handOffSession(session);
+  };
+  const openSession = (id: string) => {
+    onLeave();
+    router.push({ pathname: '/session/[id]', params: { id } });
+  };
+  const projectRow = (task: Task) => {
+    const syncing = pending.some((op) => op.id === task.id);
+    const subtitle = [
+      taskAge(task.createdAt),
+      ...(task.attachments.length
+        ? [
+            `${String(task.attachments.length)} attachment${task.attachments.length === 1 ? '' : 's'}`,
+          ]
+        : []),
+      ...(syncing ? ['waiting to sync'] : []),
+    ].join(' · ');
+    return (
+      <ProjectTaskRow
+        key={task.id}
+        task={task}
+        text={taskText(task)}
+        subtitle={subtitle}
+        session={sessionState(task)}
+        busy={busy}
+        conflict={
+          conflicts.includes(task.id)
+            ? (errors?.[task.id] ?? 'Changed on another device. Your edit is kept locally.')
+            : undefined
+        }
+        undo={undo.includes(task.id)}
+        screenReader={screenReader}
+        onHandOff={implementable(task) ? () => implement([task]) : undefined}
+        onOpenSession={() => {
+          if (task.sessionId !== null) openSession(task.sessionId);
+        }}
+        onToggleDone={() => complete(task)}
+        onEdit={() => setEditing(task)}
+        onDelete={() => confirm('Delete task?', 'Delete', task, () => removeTask(task.id))}
+        onResolveConflict={(keepMine) => {
+          void run(() => resolveTaskConflict(task.id, keepMine));
+        }}
+      />
+    );
+  };
   const row = (task: Task) => {
+    if (scope === 'project') return projectRow(task);
     const isDone = task.status === 'done';
     const descriptionFirst =
       !!task.detail &&
@@ -513,6 +594,11 @@ export function TaskListBody({
     );
   };
 
+  const tabs = [
+    'mine',
+    ...(context.sessionId !== null && scope === 'panel' ? (['agent'] as const) : []),
+    ...(issuesShown ? (['issues'] as const) : []),
+  ] as const;
   return (
     <>
       {suppliedContext.projectId === null ? (
@@ -533,56 +619,52 @@ export function TaskListBody({
           ) : null}
         </View>
       ) : null}
-      <View style={styles.tabs} accessibilityRole="tablist">
-        {(
-          [
-            'mine',
-            ...(context.sessionId !== null && scope === 'panel' ? (['agent'] as const) : []),
-            ...(githubConnected ? (['issues'] as const) : []),
-          ] as const
-        ).map((value) => (
-          <Pressable
-            key={value}
-            accessibilityRole="tab"
-            disabled={preferences.loaded === false}
-            accessibilityLabel={
-              value === 'mine' ? 'Mine' : value === 'agent' ? 'Agent' : 'GitHub Issues'
-            }
-            accessibilityState={{ selected: tab === value }}
-            onPress={() => selectTab(value)}
-            style={[styles.tab, tab === value ? styles.tabSelected : null]}
-          >
-            <Text style={[styles.tabLabel, tab === value ? styles.tabLabelSelected : null]}>
-              {value === 'mine' ? 'Mine' : value === 'agent' ? 'Agent' : 'Issues'}
-            </Text>
-            <View style={[styles.count, tab === value ? styles.tabCountSelected : null]}>
-              <Text
-                style={[styles.countLabel, tab === value ? styles.tabCountLabelSelected : null]}
-              >
-                {value === 'mine'
-                  ? String(
-                      tasks.filter(
-                        (task) =>
-                          !isStep(task) &&
-                          task.status !== 'done' &&
-                          task.status !== 'dropped' &&
-                          (scope === 'panel' || task.projectId === context.projectId),
-                      ).length,
-                    )
-                  : value === 'agent'
-                    ? `${String(agentDone)}/${String(agentAll.length)}`
-                    : String(githubData?.issues.length ?? 0)}
+      {tabs.length > 1 || scope === 'panel' ? (
+        <View style={styles.tabs} accessibilityRole="tablist">
+          {tabs.map((value) => (
+            <Pressable
+              key={value}
+              accessibilityRole="tab"
+              disabled={preferences.loaded === false}
+              accessibilityLabel={
+                value === 'mine' ? 'Mine' : value === 'agent' ? 'Agent' : issuesLabel
+              }
+              accessibilityState={{ selected: tab === value }}
+              onPress={() => selectTab(value)}
+              style={[styles.tab, tab === value ? styles.tabSelected : null]}
+            >
+              <Text style={[styles.tabLabel, tab === value ? styles.tabLabelSelected : null]}>
+                {value === 'mine' ? 'Mine' : value === 'agent' ? 'Agent' : 'Issues'}
               </Text>
-            </View>
-          </Pressable>
-        ))}
-      </View>
-      {githubError ? (
+              <View style={[styles.count, tab === value ? styles.tabCountSelected : null]}>
+                <Text
+                  style={[styles.countLabel, tab === value ? styles.tabCountLabelSelected : null]}
+                >
+                  {value === 'mine'
+                    ? String(
+                        tasks.filter(
+                          (task) =>
+                            !isStep(task) &&
+                            task.status !== 'done' &&
+                            task.status !== 'dropped' &&
+                            (scope === 'panel' || task.projectId === context.projectId),
+                        ).length,
+                      )
+                    : value === 'agent'
+                      ? `${String(agentDone)}/${String(agentAll.length)}`
+                      : String(issueCount)}
+                </Text>
+              </View>
+            </Pressable>
+          ))}
+        </View>
+      ) : null}
+      {issuesError ? (
         <View style={styles.footer}>
           <Text accessibilityRole="alert" style={styles.meta}>
-            {githubError}
+            {issuesError}
           </Text>
-          {chip('Retry GitHub', () => setGithubRetry((value) => value + 1))}
+          {chip('Retry issues', () => setIssuesRetry((value) => value + 1))}
         </View>
       ) : null}
       {dispatching ? (
@@ -616,21 +698,37 @@ export function TaskListBody({
         </KeyboardAwareScrollView>
       ) : (
         <KeyboardAwareScrollView bottomOffset={24}>
-          {tab === 'issues' && context.projectId && githubData ? (
+          {tab === 'issues' && context.projectId && issuesShown ? (
             <TaskIssuesList
               key={context.projectId}
               projectId={context.projectId}
-              projectName={projectName(context.projectId)}
               currentSessionId={context.sessionId ?? undefined}
-              issues={githubData.issues}
-              viewerLogin={githubData.viewerLogin}
-              onOpenSession={(id) => {
-                onLeave();
-                router.push({ pathname: '/session/[id]', params: { id } });
-              }}
+              repositories={repositories}
+              onRetry={() => setIssuesRetry((value) => value + 1)}
+              onOpenSession={openSession}
             />
           ) : null}
-          {(tab === 'issues' ? [] : tab === 'agent' ? agentGroups : groups).map((group) => (
+          {scope === 'project' && tab === 'mine'
+            ? groups.map((group) => (
+                <View key={group.key}>
+                  <TaskSummary
+                    open={group.items.filter((task) => task.status !== 'done').length}
+                    done={done.length}
+                  />
+                  {group.items.length > 0 ? (
+                    <Group>{group.items.map(projectRow)}</Group>
+                  ) : (
+                    <Text style={styles.meta}>No open tasks. Add one with +.</Text>
+                  )}
+                </View>
+              ))
+            : null}
+          {(tab === 'issues' || scope === 'project'
+            ? []
+            : tab === 'agent'
+              ? agentGroups
+              : groups
+          ).map((group) => (
             <View key={group.key}>
               <Pressable
                 disabled={!group.collapsible}
@@ -699,6 +797,29 @@ export function TaskListBody({
             {showDone ? 'Hide done' : `Show done (${String(done.length)})`}
           </Text>
         </Pressable>
+      ) : null}
+      {scope === 'project' ? (
+        <TaskEditSheet
+          task={editing}
+          text={editing ? taskText(editing) : ''}
+          onClose={() => setEditing(null)}
+          onSave={async (text) => {
+            if (!editing) return;
+            const describes = taskText(editing) !== editing.title;
+            await patchTask(editing, describes ? { detail: text } : { title: text }).catch(
+              (error: unknown) => {
+                Alert.alert(
+                  'Could not save task',
+                  error instanceof Error ? error.message : 'Try again',
+                );
+                throw error;
+              },
+            );
+          }}
+          onOpenAttachment={(index) => {
+            if (editing) void run(() => openTaskAttachment(editing, index, pending));
+          }}
+        />
       ) : null}
     </>
   );

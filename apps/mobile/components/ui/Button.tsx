@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import { ActivityIndicator, Pressable, Text, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
@@ -88,21 +89,23 @@ export function Button({
   );
 }
 
+/** What an icon button shows: a Feather symbol, or a brand mark in its place. */
+type IconButtonFace =
+  | { icon: IconName; mark?: undefined }
+  /** A brand mark drawn instead of a symbol, such as Verity's V on a hand-over. */
+  | { mark: ReactNode; icon?: undefined };
+
 /** A square button with a single symbol, the same corners as every control. */
-export function IconButton({
-  icon,
-  onPress,
-  accessibilityLabel,
-  disabled = false,
-  active = false,
-}: {
-  icon: IconName;
-  onPress: () => void;
-  /** Required: an icon alone says nothing to VoiceOver. */
-  accessibilityLabel: string;
-  disabled?: boolean;
-  active?: boolean;
-}) {
+export function IconButton(
+  props: IconButtonFace & {
+    onPress: () => void;
+    /** Required: an icon alone says nothing to VoiceOver. */
+    accessibilityLabel: string;
+    disabled?: boolean;
+    active?: boolean;
+  },
+) {
+  const { onPress, accessibilityLabel, disabled = false, active = false } = props;
   const { theme } = useUnistyles();
   return (
     <Pressable
@@ -121,7 +124,15 @@ export function IconButton({
       ]}
     >
       <View pointerEvents="none">
-        <Icon name={icon} size={18} color={active ? theme.colors.action : theme.colors.textMuted} />
+        {props.icon !== undefined ? (
+          <Icon
+            name={props.icon}
+            size={18}
+            color={active ? theme.colors.action : theme.colors.textMuted}
+          />
+        ) : (
+          props.mark
+        )}
       </View>
     </Pressable>
   );

@@ -349,14 +349,28 @@ it('shows GitHub Issues only for a connected project and hides Mine while select
     .mocked(useTasks)
     .mockReturnValue({ tasks: [{ ...task, projectId: 'p' }], pending: [], conflicts: [] });
   jest.mocked(createVerityClient).mockReturnValue({
-    listProjectGitHubIssues: jest.fn(async () => ({
-      connected: true,
-      viewerLogin: null,
-      issues: [],
-    })),
+    listProjectIssues: jest.fn(async () => [
+      {
+        id: 'default:p',
+        name: 'acme/app',
+        kind: 'github',
+        owner: 'acme',
+        repo: 'app',
+        isDefault: true,
+        status: 'ok',
+        viewerLogin: 'me',
+        issues: [],
+      },
+    ]),
     listSessions: jest.fn(async () => []),
   } as unknown as NonNullable<ReturnType<typeof createVerityClient>>);
-  const ui = render(<TasksPanel {...props} context={{ projectId: 'p', sessionId: 's' }} />);
+  const ui = render(
+    <TasksPanel
+      {...props}
+      projects={[{ id: 'p', owner: 'acme', repo: 'app', kind: 'github' } as never]}
+      context={{ projectId: 'p', sessionId: 's' }}
+    />,
+  );
   await act(async () => {});
   fireEvent.press(ui.getByLabelText('GitHub Issues'));
   expect(ui.queryByDisplayValue(task.title)).toBeNull();

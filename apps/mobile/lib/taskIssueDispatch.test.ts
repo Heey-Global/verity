@@ -139,3 +139,46 @@ it.each([{ sessions: [] }, { sessions: [{ sessionId: 's', projectId: 'p', resuma
     expect(await taskIssueRetry('p', issue.number)).toBeNull();
   },
 );
+
+describe('issues of several repositories', () => {
+  const site = {
+    id: 'site',
+    kind: 'forgejo' as const,
+    owner: 'acme',
+    repo: 'site',
+    isDefault: false,
+  };
+  const main = { ...site, id: 'default:p', kind: 'github' as const, repo: 'app', isDefault: true };
+
+  // Issue #42 exists in both repositories; a shared record would offer the
+  // default repository's pending retry on the other repository's issue.
+  it('keeps pending retries apart per repository', async () => {
+    mockClient.sendTurn.mockRejectedValueOnce(new Error('Network lost'));
+    await expect(dispatchTaskIssue('p', issue, undefined, site)).rejects.toThrow('Network lost');
+    expect(await taskIssueRetry('p', issue.number, site)).toEqual({});
+    expect(await taskIssueRetry('p', issue.number)).toBeNull();
+    expect(await taskIssueRetry('p', issue.number, main)).toBeNull();
+  });
+
+  // A retry recorded before projects had several repositories must still be
+  // found once the list passes the default repository along.
+  it('finds a default-repository retry recorded without a repository', async () => {
+    mockClient.sendTurn.mockRejectedValueOnce(new Error('Network lost'));
+    await expect(dispatchTaskIssue('p', issue)).rejects.toThrow('Network lost');
+    expect(await taskIssueRetry('p', issue.number, main)).toEqual({});
+  });
+
+  it('names the repository and leaves the branch unnumbered for another repository', async () => {
+    await dispatchTaskIssue('p', issue, undefined, site);
+    expect(createSessionConfirmingWarnings).toHaveBeenCalledWith(
+      mockClient,
+      expect.not.objectContaining({ issue: expect.anything() }),
+    );
+    expect(mockClient.sendTurn).toHaveBeenCalledWith(
+      'uuid-1',
+      expect.objectContaining({
+        prompt: expect.stringMatching(/^Work on Forgejo issue acme\/site#42: Fix keyboard/),
+      }),
+    );
+  });
+});

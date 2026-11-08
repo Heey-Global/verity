@@ -5,6 +5,7 @@ import { Platform, Text } from 'react-native';
 import { GestureDetector } from 'react-native-gesture-handler';
 
 import {
+  favoriteAction,
   isFullSwipe,
   mixColor,
   SessionContextMenu,
@@ -23,14 +24,32 @@ function renderMenu(favorite: boolean) {
     <SessionContextMenu
       at={{ x: 40, y: 80 }}
       title="Fix login"
-      favorite={favorite}
-      {...handlers}
+      leading={favoriteAction(favorite, handlers.onToggleFavorite)}
+      onClose={handlers.onClose}
+      onEdit={handlers.onEdit}
+      onDelete={handlers.onDelete}
     />,
   );
   return handlers;
 }
 
 describe('SessionContextMenu', () => {
+  // A task row has no favorite; its menu must not offer one it cannot keep.
+  it('leaves out the leading action for a row without one', () => {
+    render(
+      <SessionContextMenu
+        at={{ x: 40, y: 80 }}
+        title="Fix login"
+        leading={undefined}
+        onClose={jest.fn()}
+        onEdit={jest.fn()}
+        onDelete={jest.fn()}
+      />,
+    );
+    expect(screen.queryByLabelText('Add to favorites')).toBeNull();
+    expect(screen.getByLabelText('Edit…')).toBeTruthy();
+  });
+
   it('offers to add a session that is not a favorite yet', () => {
     const { onToggleFavorite, onClose } = renderMenu(false);
 
