@@ -1,7 +1,9 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+let mockSource: { uri: string } | undefined;
 jest.mock('../../hooks/useAttachmentImageSource', () => ({
-  useAttachmentImageSource: () => undefined,
+  // A real source by default, so the full-size viewer (which needs one) renders.
+  useAttachmentImageSource: () => mockSource,
 }));
 
 import { act, fireEvent, render, screen } from '@testing-library/react-native';
@@ -29,7 +31,10 @@ const props = {
   onClose: jest.fn(),
 };
 
-beforeEach(() => jest.clearAllMocks());
+beforeEach(() => {
+  jest.clearAllMocks();
+  mockSource = { uri: 'https://verity.test/attachments/a' };
+});
 
 it('marks the current screen and takes the mark back on a second tap', async () => {
   const view = render(<MockupReviewSheet {...props} />);
@@ -146,4 +151,34 @@ it('opens a revised round at its first screen when the host keys it by revision'
   );
   // A kept position would mark a screen of the new round the user has not seen.
   expect(screen.getByText('Review flow · 1 of 2')).toBeTruthy();
+});
+
+it('enlarges the tapped screen in the full-screen viewer and closes it again', () => {
+  render(<MockupReviewSheet {...props} />);
+  expect(screen.queryByLabelText('Close image')).toBeNull();
+
+  fireEvent.press(screen.getByLabelText('Enlarge Home'));
+  expect(screen.getByLabelText('Close image')).toBeTruthy();
+  // Enlarging is only for looking: it marks nothing and leaves the review open.
+  expect(props.onDecide).not.toHaveBeenCalled();
+  expect(props.onClose).not.toHaveBeenCalled();
+
+  fireEvent.press(screen.getByLabelText('Close image'));
+  expect(screen.queryByLabelText('Close image')).toBeNull();
+});
+
+it('does not bring back an enlarged screen when the review is reopened', () => {
+  const view = render(<MockupReviewSheet {...props} />);
+  fireEvent.press(screen.getByLabelText('Enlarge Home'));
+  view.rerender(<MockupReviewSheet {...props} visible={false} />);
+  view.rerender(<MockupReviewSheet {...props} />);
+  expect(screen.queryByLabelText('Close image')).toBeNull();
+});
+
+it('does not enlarge a screen whose image has no source yet', () => {
+  // A tap that opened nothing would otherwise pop the viewer up once it loads.
+  mockSource = undefined;
+  render(<MockupReviewSheet {...props} />);
+  fireEvent.press(screen.getByLabelText('Enlarge Home'));
+  expect(screen.queryByLabelText('Close image')).toBeNull();
 });
